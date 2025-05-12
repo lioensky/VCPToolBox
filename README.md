@@ -59,7 +59,8 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`FluxGen` (`synchronous`)**: 集成 SiliconFlow API 实现文生图功能，并将图片保存到本地服务器。
 *   **`Wan2.1VideoGen` (`synchronous`)**: 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频功能。
 *   **`SunoGen` (`synchronous`)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或继续生成模式。
-
+*   **`TavilySearch` (`synchronous`)**: 集成 Tavily API 提供网络搜索能力。
+  
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
 
