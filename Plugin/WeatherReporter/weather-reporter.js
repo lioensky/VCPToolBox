@@ -43,10 +43,16 @@ async function fetchRawWeatherDataWithTavily(city, tavilyApiKey) {
     }
 
     const tavilyApiUrl = 'https://api.tavily.com/search'; // Standard Tavily API endpoint
-    const query = `${city}一周天气预报`;
+    // Get current date in MM月DD日 format (Shanghai time)
+    const now = new Date();
+    const month = now.toLocaleDateString('zh-CN', { month: 'numeric', timeZone: 'Asia/Shanghai' });
+    const day = now.toLocaleDateString('zh-CN', { day: 'numeric', timeZone: 'Asia/Shanghai' });
+    const currentDateFormatted = `${month}${day}`; // e.g., "5月13日"
+
+    const query = `${currentDateFormatted}开始，${city}的一周天气预报`; // Construct the query with date
 
     try {
-        console.log(`[WeatherReporter] Fetching raw weather data from Tavily for city: ${city}`);
+        console.log(`[WeatherReporter] Fetching raw weather data from Tavily for city: ${city} with query: "${query}"`);
         const response = await fetch(tavilyApiUrl, {
             method: 'POST',
             headers: {
