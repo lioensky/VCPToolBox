@@ -61,7 +61,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`SunoGen` (`synchronous`)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或继续生成模式。
 
 ## 加载插件的方式
-*   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……
+*   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
 
 ## 安装与运行
 
