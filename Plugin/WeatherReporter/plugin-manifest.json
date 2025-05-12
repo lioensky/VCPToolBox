@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "WeatherReporter",
+  "version": "1.0.0",
+  "displayName": "天气预报员",
+  "description": "提供实时的天气信息，并将其集成到系统提示词的 {{VCPWeatherInfo}} 占位符中。",
+  "author": "System",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node weather-reporter.js"
+  },
+  "communication": {
+    "protocol": "stdio" 
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPWeatherInfo}}",
+        "description": "当前的实时天气信息。"
+      }
+    ],
+    "invocationCommands": [] 
+  },
+  "configSchema": {
+    "API_URL": "string",
+    "API_Key": "string",
+    "WeatherModel": "string",
+    "WeatherPrompt": "string",
+    "VarCity": "string", 
+    "WeatherModelMaxTokens": "integer"
+  },
+  "refreshIntervalCron": "0 4 * * *" 
+}

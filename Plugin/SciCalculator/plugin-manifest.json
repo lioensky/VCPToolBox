@@ -1,0 +1,32 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SciCalculator",
+  "version": "1.1.1", 
+  "displayName": "科学计算器",
+  "description": "执行数学表达式计算。AI应使用特定格式请求此工具。",
+  "author": "UserProvided (Adapted by Roo)",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python calculator.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000 
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [],
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SciCalculatorRequest", 
+        "description": "要使用科学计算器，请在回复的末尾使用以下格式发出请求，确保所有参数值都用「始」和「末」准确包裹：```Tool\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」您要计算的完整数学表达式「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n支持功能:\n- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)\n- 常量: pi, e\n- 数学函数: sin(x), cos(x), tan(x), asin(x), acos(x), atan(x), sqrt(x), root(x, n), log(x, [base]), exp(x), abs(x), ceil(x), floor(x), sinh(x), cosh(x), tanh(x), asinh(x), acosh(x), atanh(x)\n- 统计函数: mean([x1,x2,...]), median([...]), mode([...]), variance([...]), stdev([...]), norm_pdf(x, mean, std), norm_cdf(x, mean, std), t_test([data], mu)\n- 微积分 (重要提示: 表达式参数expr_str必须用单引号或双引号包裹的字符串，并在「始」...「末」之内):\n  - 定积分: integral('expr_str', lower_bound, upper_bound)\n  - 不定积分: integral('expr_str') (返回KaTeX格式的LaTeX数学公式)\n- 误差传递: error_propagation('expr_str', {'var1':(value, error), 'var2':(value, error), ...})\n- 置信区间: confidence_interval([data_list], confidence_level)",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SciCalculator「末」,\nexpression:「始」sqrt(variance([2,4,4,4,5,5,7,9])) + integral('exp(-x**2)', '-inf', 'inf')「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ],
+    "responseFormatToAI": "###计算结果：{result}###"
+  },
+  "dependencies": {
+    "python": ">=3.7",
+    "libraries": ["sympy", "scipy", "numpy"]
+  }
+}

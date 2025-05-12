@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图像缓存编辑器</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        .container {
+            max-width: 1400px; /* 4. 加宽整个网页的宽度 */
+            margin: auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        input[type="file"], button {
+            padding: 10px 15px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            cursor: pointer;
+        }
+        input[type="file"] {
+            flex-grow: 1;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border-color: #007bff;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        h2 {
+            color: #007bff;
+            margin-top: 0;
+        }
+        #imageList {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr); /* 2. 你现在是一行3个图像，可以弄成4个 */
+            gap: 20px;
+        }
+        .image-entry {
+            position: relative; /* 为了定位删除按钮 */
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .image-entry h3 {
+            font-size: 0.9em;
+            color: #555;
+            margin-top: 0;
+            margin-bottom: 10px;
+            word-wrap: break-word;
+        }
+        .image-entry img {
+            max-width: 100%;
+            height: auto;
+            max-height: 250px; /* 限制最大高度 */
+            object-fit: contain; /* 保持宽高比，完整显示图片 */
+            display: block;
+            margin-bottom: 10px;
+            border: 1px solid #eee;
+            border-radius: 3px;
+            cursor: pointer; /* 3. 允许图片点击放大预览 (添加指针) */
+        }
+        .image-entry label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        .image-entry textarea {
+            width: calc(100% - 22px); /* 考虑 padding 和 border */
+            min-height: 100px; /* 1. 输入框可以更大一点 (针对图像描述的textarea) */
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            margin-bottom: 10px;
+            font-family: sans-serif;
+            font-size: 0.9em;
+            resize: vertical;
+        }
+        .base64-key {
+            font-size: 0.8em;
+            color: #777;
+            word-break: break-all;
+            margin-top: 10px;
+            background-color: #efefef;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        p {
+            color: #666;
+        }
+
+        /* 3. 允许图片点击放大预览 - Modal CSS */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1000; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%; /* Full width */
+            height: 100%; /* Full height */
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0,0,0,0.8); /* Black w/ opacity */
+            padding-top: 50px;
+        }
+
+        .modal-content {
+            margin: auto;
+            display: block;
+            max-width: 80%;
+            max-height: 80vh; /* Use viewport height for better responsiveness */
+            object-fit: contain;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+
+        .modal-close:hover,
+        .modal-close:focus {
+            color: #bbb;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background-color: #ff4d4d; /* 红色背景 */
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 22px;
+            height: 22px;
+            font-size: 16px;
+            font-weight: bold;
+            line-height: 22px; /* 垂直居中 '×' */
+            text-align: center;
+            cursor: pointer;
+            z-index: 10; /* 确保在其他内容之上 */
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        .delete-btn:hover {
+            background-color: #cc0000; /* 深红色 */
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="controls">
+        <input type="file" id="fileLoader" accept=".json">
+        <button id="saveButton">保存更改到新文件</button>
+    </div>
+
+    <h2>图像列表</h2>
+    <div id="imageList">
+        <p>请先加载 imagebase64.json 文件。</p>
+    </div>
+</div>
+
+<script>
+    let imageCacheData = {};
+    const fileLoader = document.getElementById('fileLoader');
+    const imageListDiv = document.getElementById('imageList');
+    const saveButton = document.getElementById('saveButton');
+
+    fileLoader.addEventListener('change', handleFileLoad);
+    saveButton.addEventListener('click', handleSave);
+
+    function guessMimeType(base64String) {
+        if (base64String.startsWith('/9j/')) return 'image/jpeg';
+        if (base64String.startsWith('iVBOR')) return 'image/png';
+        if (base64String.startsWith('R0lGOD')) return 'image/gif';
+        if (base64String.startsWith('UklGR')) return 'image/webp';
+        return 'image/png'; // 默认
+    }
+
+    async function handleFileLoad(event) {
+        const file = event.target.files[0];
+        if (!file) {
+            alert('未选择文件。');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                imageCacheData = JSON.parse(e.target.result);
+                renderImageList();
+            } catch (error) {
+                alert('文件解析失败，请确保是有效的 JSON 文件。\n错误: ' + error.message);
+                console.error("JSON 解析错误:", error);
+            }
+        };
+        reader.onerror = function() {
+            alert('文件读取失败。');
+            console.error("文件读取错误:", reader.error);
+        };
+        reader.readAsText(file);
+    }
+
+    function renderImageList() {
+        imageListDiv.innerHTML = ''; // 清空现有列表
+
+        if (Object.keys(imageCacheData).length === 0) {
+            imageListDiv.innerHTML = '<p>缓存文件为空或未加载。</p>';
+            return;
+        }
+
+        const imageKeys = Object.keys(imageCacheData).reverse(); // 获取键并反转顺序
+
+        for (const base64Key of imageKeys) {
+            // hasOwnProperty 检查在 Object.keys 之后理论上不是必需的，但保留也无妨
+            if (imageCacheData.hasOwnProperty(base64Key)) {
+                const entry = imageCacheData[base64Key];
+                
+                const entryDiv = document.createElement('div');
+                entryDiv.className = 'image-entry';
+                entryDiv.dataset.base64Key = base64Key; // 存储 key 用于保存
+
+                // 创建删除按钮
+                const deleteBtn = document.createElement('span');
+                deleteBtn.className = 'delete-btn';
+                deleteBtn.innerHTML = '&times;'; // '×' 符号
+                deleteBtn.title = '删除此条目';
+
+                deleteBtn.addEventListener('click', function(event) {
+                    event.stopPropagation(); // 阻止事件冒泡到卡片或图片的其他点击事件
+
+                    if (!confirm(`确定要删除这个图片条目吗？\nKey (部分): ${base64Key.substring(0,20)}...`)) {
+                        return;
+                    }
+
+                    // 1. 从 imageCacheData 中删除
+                    if (imageCacheData.hasOwnProperty(base64Key)) {
+                        delete imageCacheData[base64Key];
+                        console.log(`Deleted ${base64Key} from cache data.`);
+                    }
+
+                    // 2. 从 DOM 中移除卡片
+                    entryDiv.remove();
+                    console.log(`Removed image entry for ${base64Key} from DOM.`);
+
+                    // 可选: 如果列表为空，显示提示信息
+                    if (Object.keys(imageCacheData).length === 0) {
+                        imageListDiv.innerHTML = '<p>缓存文件为空或所有条目已删除。</p>';
+                    }
+                });
+                entryDiv.appendChild(deleteBtn);
+
+                const title = document.createElement('h3');
+                title.textContent = `时间戳: ${entry.timestamp || 'N/A'}`;
+                entryDiv.appendChild(title);
+
+                const img = document.createElement('img');
+                const mimeType = guessMimeType(base64Key);
+                img.src = `data:${mimeType};base64,${base64Key}`;
+                img.alt = '图像预览';
+                img.onerror = function() { 
+                    this.alt = '预览失败'; 
+                    this.style.display = 'none'; // 或者显示一个占位符
+                    const errorMsg = document.createElement('p');
+                    errorMsg.textContent = '图像预览失败，可能是不支持的格式或损坏的数据。';
+                    errorMsg.style.color = 'red';
+                    entryDiv.insertBefore(errorMsg, this.nextSibling);
+                };
+                entryDiv.appendChild(img);
+
+                // 3. 允许图片点击放大预览 - Add click listener to image
+                img.addEventListener('click', function() {
+                    const modal = document.getElementById('imageModal');
+                    const modalImg = document.getElementById('modalImage');
+                    if (modal && modalImg) {
+                        modal.style.display = "block";
+                        modalImg.src = this.src;
+                    }
+                });
+                
+                const descriptionLabel = document.createElement('label');
+                descriptionLabel.textContent = '图像描述 (可编辑):';
+                entryDiv.appendChild(descriptionLabel);
+
+                const descriptionTextarea = document.createElement('textarea');
+                descriptionTextarea.value = entry.description || '';
+                entryDiv.appendChild(descriptionTextarea);
+
+                const keyInfo = document.createElement('div');
+                keyInfo.className = 'base64-key';
+                keyInfo.textContent = `Base64 Key (部分): ${base64Key.substring(0, 30)}...`;
+                entryDiv.appendChild(keyInfo);
+
+                imageListDiv.appendChild(entryDiv);
+            }
+        }
+    }
+
+    function handleSave() {
+        if (Object.keys(imageCacheData).length === 0) {
+            alert('没有数据可保存。请先加载文件。');
+            return;
+        }
+
+        const entries = imageListDiv.getElementsByClassName('image-entry');
+        for (let i = 0; i < entries.length; i++) {
+            const entryDiv = entries[i];
+            const base64Key = entryDiv.dataset.base64Key;
+            const textarea = entryDiv.querySelector('textarea');
+            if (imageCacheData[base64Key]) {
+                imageCacheData[base64Key].description = textarea.value;
+            }
+        }
+
+        try {
+            const updatedJsonString = JSON.stringify(imageCacheData, null, 2);
+            const blob = new Blob([updatedJsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'imagebase64_updated.json'; // 保存的文件名
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            alert('文件已准备好下载！');
+        } catch (error) {
+            alert('保存文件时发生错误: ' + error.message);
+            console.error("保存错误:", error);
+        }
+    }
+
+    // 3. 允许图片点击放大预览 - Modal handling JavaScript
+    window.addEventListener('DOMContentLoaded', () => {
+        const modal = document.getElementById('imageModal');
+        const modalCloseButton = document.getElementById('modalCloseButton');
+
+        if (modal && modalCloseButton) {
+            modalCloseButton.onclick = function() {
+                modal.style.display = "none";
+            }
+
+            // Close modal when clicking on the modal background (outside the image)
+            modal.onclick = function(event) {
+                if (event.target === modal) { // Only close if the click is directly on the modal background
+                    modal.style.display = "none";
+                }
+            }
+
+            // Optional: Close modal with Escape key
+            document.addEventListener('keydown', function(event) {
+                if (event.key === "Escape" && modal.style.display === "block") {
+                    modal.style.display = "none";
+                }
+            });
+        } else {
+            console.error('Modal or modal close button not found on DOMContentLoaded. Check IDs: imageModal, modalCloseButton');
+        }
+    });
+</script>
+
+<!-- 3. 允许图片点击放大预览 - Modal HTML Structure -->
+<div id="imageModal" class="modal">
+    <span class="modal-close" id="modalCloseButton">&times;</span>
+    <img class="modal-content" id="modalImage">
+</div>
+</body>
+</html>

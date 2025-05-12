@@ -1,0 +1,27 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ImageServer",
+  "version": "1.0.0",
+  "displayName": "图床服务",
+  "description": "提供受密码保护的静态图片服务。",
+  "author": "SystemMigration",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "image-server.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "Image_Key": "string"
+  },
+  "capabilities": {
+  "services": [
+    {
+      "serviceName": "ProtectedImageHosting",
+      "description": "通过 /pw=[Image_Key]/images/... 路径提供图片服务。"
+    }
+  ]
+}
+}
