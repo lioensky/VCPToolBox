@@ -9,6 +9,7 @@ const SILICONFLOW_API_KEY = process.env.SILICONFLOW_API_KEY;
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY; // Key for our own image server
+const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
 
 // SiliconFlow API specific configurations
 const SILICONFLOW_API_CONFIG = {
@@ -46,6 +47,9 @@ async function generateImageAndSave(args) {
     }
     if (!IMAGESERVER_IMAGE_KEY) {
         throw new Error("FluxGen Plugin Error: IMAGESERVER_IMAGE_KEY environment variable is required for constructing image URL.");
+    }
+    if (!VAR_HTTP_URL) {
+        throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
     }
 
     if (!isValidFluxGenArgs(args)) {
@@ -118,8 +122,8 @@ async function generateImageAndSave(args) {
     // Construct the URL accessible via our own ImageServer plugin
     // Ensure path separators are URL-friendly (/)
     const relativeServerPathForUrl = path.join('fluxgen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `http://localhost:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-    
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+
     // Construct a message that strongly guides the AI to use an HTML img tag
     const altText = args.prompt ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "") : (generatedFileName || "生成的图片");
     const successMessage =
