@@ -126,7 +126,9 @@ app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
 // Image server logic is now handled by the ImageServer plugin.
 
 app.use((req, res, next) => {
-    console.log(`[${new Date().toLocaleString()}] Received ${req.method} request for ${req.url} from ${req.ip}`);
+    if (DEBUG_MODE) {
+        console.log(`[${new Date().toLocaleString()}] Received ${req.method} request for ${req.url} from ${req.ip}`);
+    }
     next();
 });
 
