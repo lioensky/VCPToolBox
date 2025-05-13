@@ -597,7 +597,8 @@ p.command-status.info {
 }
 
 .notes-toolbar button,
-.notes-toolbar select {
+.notes-toolbar select,
+.notes-toolbar input[type="search"] {
     padding: 8px 12px;
     font-size: 0.9em;
     border-radius: 6px;
@@ -605,6 +606,10 @@ p.command-status.info {
     background-color: #1e1e30;
     color: #e0e0e0;
     cursor: pointer;
+}
+.notes-toolbar input[type="search"] {
+    flex-grow: 1; /* 让搜索框占据更多空间 */
+    max-width: 300px; /* 但不要无限宽 */
 }
 .notes-toolbar button:disabled,
 .notes-toolbar select:disabled {

@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const moveSelectedNotesButton = document.getElementById('move-selected-notes');
     const moveTargetFolderSelect = document.getElementById('move-target-folder');
     const notesActionStatusSpan = document.getElementById('notes-action-status');
+    const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
 
 
     const API_BASE_URL = '/admin_api'; // Corrected API base path
@@ -870,6 +871,7 @@ Description Length: ${newDescription.length}`);
         noteEditorAreaDiv.style.display = 'none'; // Hide editor
         notesActionStatusSpan.textContent = '';
         moveSelectedNotesButton.disabled = true;
+        if (searchDailyNotesInput) searchDailyNotesInput.value = ''; // 清空搜索框
         await loadNotesFolders();
         // Optionally, load notes from the first folder automatically or show a placeholder
     }
@@ -945,6 +947,24 @@ Description Length: ${newDescription.length}`);
             notesListViewDiv.innerHTML = `<p>加载文件夹 "${folderName}" 中的日记失败。</p>`;
             showMessage(`加载日记失败: ${error.message}`, 'error');
         }
+        filterNotesBySearch(); // 加载文件夹后执行一次搜索过滤
+    }
+
+    function filterNotesBySearch() {
+        if (!searchDailyNotesInput) return;
+        const searchTerm = searchDailyNotesInput.value.toLowerCase().trim();
+        const noteCards = notesListViewDiv.querySelectorAll('.note-card');
+
+        noteCards.forEach(card => {
+            const fileName = card.dataset.fileName ? card.dataset.fileName.toLowerCase() : '';
+            const preview = card.querySelector('.note-card-preview') ? card.querySelector('.note-card-preview').textContent.toLowerCase() : '';
+            
+            if (fileName.includes(searchTerm) || preview.includes(searchTerm)) {
+                card.style.display = ''; // 或者 'flex' 如果你的卡片是 flex 布局
+            } else {
+                card.style.display = 'none';
+            }
+        });
     }
 
     function renderNoteCard(note, folderName) {
@@ -1138,6 +1158,7 @@ Description Length: ${newDescription.length}`);
     if (saveNoteButton) saveNoteButton.addEventListener('click', saveNoteChanges);
     if (cancelEditNoteButton) cancelEditNoteButton.addEventListener('click', closeNoteEditor);
     if (moveSelectedNotesButton) moveSelectedNotesButton.addEventListener('click', moveSelectedNotesHandler);
+    if (searchDailyNotesInput) searchDailyNotesInput.addEventListener('input', filterNotesBySearch);
 
 
     // --- End Daily Notes Manager Functions ---
