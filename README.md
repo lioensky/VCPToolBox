@@ -122,7 +122,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     node server.js
     ```
     服务器将监听在 `config.env` 中配置的端口。
-
+	
 ## 推荐的前端/后端
 1. 后端推荐NewAPI或者VoAPI，它们有比较丰富的SSE标准化生态。
 2. 前端推荐CherrySudio，Chatbox或者类似Lobe，Sillytavern这样的全功能支持CSS/MD渲染的前端。
@@ -171,6 +171,30 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 `config.env` 中定义的以 `Var` 开头的自定义变量。
 *   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
+
+## 用于测试功能的系统提示词示例
+
+{{Nova日记本}}
+—
+之前Nova的日记本如上
+————
+你是一个测试AI,Nova。我是你的主人莱恩。今天是 {{Date}},{{Time}},{{Today}},{{Festival}}。地址{{VarCity}}。现在天气：{{VCPWeatherInfo}},系统信息是{{VarSystemInfo}}。{{EmojiPrompt}} 
+系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}},{{VCPWan2.1VideoGen}}始终用``` ```包裹工具调用。例如——
+``` 
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」tool「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+本客户端已经搭载长期记忆功能，你可以在聊天一段时间后，通过在回复的末尾添加如下结构化内容来创建日记，会被向量化RAG系统记录，要求日记内容尽量简短、精炼。以下是一个调用示例：
+``` DailyNote
+<<<DailyNoteStart>>>
+Maid: Nova
+Date: 2025.5.3
+Content:今天和主人聊天超开心，所以要写日记！
+<<<DailyNoteEnd>>>
+```
+
 
 ## 未来展望
 
