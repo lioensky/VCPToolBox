@@ -1521,6 +1521,96 @@ adminApiRouter.get('/dailynotes/folder/:folderName', async (req, res) => {
     }
 });
 
+// New API endpoint for searching notes with full content
+adminApiRouter.get('/dailynotes/search', async (req, res) => {
+    const { term, folder } = req.query; // term for searchTerm, folder for folderName
+
+    if (!term || typeof term !== 'string' || term.trim() === '') {
+        return res.status(400).json({ error: 'Search term is required.' });
+    }
+
+    const searchTerm = term.trim().toLowerCase();
+    const PREVIEW_LENGTH = 100; // Consistent with existing preview logic
+    let foldersToSearch = [];
+    const matchedNotes = [];
+
+    try {
+        if (folder && typeof folder === 'string' && folder.trim() !== '') {
+            // Search in a specific folder
+            const specificFolderPath = path.join(dailyNoteRootPath, folder);
+            try {
+                await fs.access(specificFolderPath); // Check if folder exists
+                if ((await fs.stat(specificFolderPath)).isDirectory()) {
+                    foldersToSearch.push({ name: folder, path: specificFolderPath });
+                } else {
+                    console.warn(`[AdminAPI Search] Specified path '${folder}' is not a directory.`);
+                    return res.status(404).json({ error: `Specified path '${folder}' is not a directory.`});
+                }
+            } catch (e) {
+                console.warn(`[AdminAPI Search] Specified folder '${folder}' not found during access check.`);
+                return res.status(404).json({ error: `Specified folder '${folder}' not found.` });
+            }
+        } else {
+            // Search in all folders (Global Search if folder is not provided)
+            // This part can be enabled if global search is desired.
+            // For now, let's assume if folder is not provided, it's an error or not supported by current client UI.
+            // However, to make the API flexible:
+            await fs.access(dailyNoteRootPath);
+            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            entries.filter(entry => entry.isDirectory()).forEach(dir => {
+                foldersToSearch.push({ name: dir.name, path: path.join(dailyNoteRootPath, dir.name) });
+            });
+            if (foldersToSearch.length === 0) {
+                 console.log('[AdminAPI Search] No folders found in dailynote directory for global search.');
+                 return res.json({ notes: [] });
+            }
+        }
+
+        for (const dir of foldersToSearch) {
+            const files = await fs.readdir(dir.path);
+            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+
+            for (const fileName of txtFiles) {
+                const filePath = path.join(dir.path, fileName);
+                try {
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    if (content.toLowerCase().includes(searchTerm)) {
+                        const stats = await fs.stat(filePath);
+                        let preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
+                        matchedNotes.push({
+                            name: fileName,
+                            folderName: dir.name, // Include folderName in the response
+                            lastModified: stats.mtime.toISOString(),
+                            preview: preview
+                            // Optionally, include full content if needed by client, but for search result list, preview is usually enough.
+                            // content: content // If client needs full content for display after search
+                        });
+                    }
+                } catch (readError) {
+                    console.warn(`[AdminAPI Search] Error reading file ${filePath} for search: ${readError.message}`);
+                }
+            }
+        }
+
+        // Sort notes by folderName, then by note name
+        matchedNotes.sort((a, b) => {
+            const folderCompare = a.folderName.localeCompare(b.folderName);
+            if (folderCompare !== 0) return folderCompare;
+            return a.name.localeCompare(b.name);
+        });
+
+        res.json({ notes: matchedNotes });
+
+    } catch (error) {
+        if (error.code === 'ENOENT' && dailyNoteRootPath === error.path) {
+            console.warn('[AdminAPI Search] dailynote directory not found.');
+            return res.json({ notes: [] }); // Return empty if root daily note dir doesn't exist
+        }
+        console.error('[AdminAPI Search] Error during daily note search:', error);
+        res.status(500).json({ error: 'Failed to search daily notes', details: error.message });
+    }
+});
+
 // GET content of a specific note file
 adminApiRouter.get('/dailynotes/note/:folderName/:fileName', async (req, res) => {
     const { folderName, fileName } = req.params;

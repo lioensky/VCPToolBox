@@ -931,13 +931,16 @@ Description Length: ${newDescription.length}`);
         updateMoveButtonStatus();
         notesListViewDiv.innerHTML = '<p>正在加载日记...</p>'; // Loading state
         noteEditorAreaDiv.style.display = 'none'; // Ensure editor is hidden
+        if(searchDailyNotesInput) searchDailyNotesInput.value = ''; // Clear search input when loading a folder
 
         try {
             const data = await apiFetch(`${API_BASE_URL}/dailynotes/folder/${folderName}`);
             notesListViewDiv.innerHTML = ''; // Clear loading state
             if (data.notes && data.notes.length > 0) {
                 data.notes.forEach(note => {
-                    const card = renderNoteCard(note, folderName);
+                    // renderNoteCard now expects note.folderName to be part of the note object for consistency
+                    // or pass folderName explicitly if the endpoint doesn't return it per note
+                    const card = renderNoteCard(note, folderName); // Pass folderName explicitly
                     notesListViewDiv.appendChild(card);
                 });
             } else {
@@ -947,27 +950,49 @@ Description Length: ${newDescription.length}`);
             notesListViewDiv.innerHTML = `<p>加载文件夹 "${folderName}" 中的日记失败。</p>`;
             showMessage(`加载日记失败: ${error.message}`, 'error');
         }
-        filterNotesBySearch(); // 加载文件夹后执行一次搜索过滤
+        // No longer call filterNotesBySearch here, search is independent or triggered by input
     }
 
-    function filterNotesBySearch() {
+    async function filterNotesBySearch() {
         if (!searchDailyNotesInput) return;
-        const searchTerm = searchDailyNotesInput.value.toLowerCase().trim();
-        const noteCards = notesListViewDiv.querySelectorAll('.note-card');
+        const searchTerm = searchDailyNotesInput.value.trim();
 
-        noteCards.forEach(card => {
-            const fileName = card.dataset.fileName ? card.dataset.fileName.toLowerCase() : '';
-            const preview = card.querySelector('.note-card-preview') ? card.querySelector('.note-card-preview').textContent.toLowerCase() : '';
-            
-            if (fileName.includes(searchTerm) || preview.includes(searchTerm)) {
-                card.style.display = ''; // 或者 'flex' 如果你的卡片是 flex 布局
+        if (searchTerm === '') {
+            // If search term is empty, reload notes for the current folder
+            if (currentNotesFolder) {
+                loadNotesForFolder(currentNotesFolder);
             } else {
-                card.style.display = 'none';
+                notesListViewDiv.innerHTML = '<p>请输入搜索词或选择一个文件夹。</p>';
             }
-        });
+            return;
+        }
+
+        notesListViewDiv.innerHTML = '<p>正在搜索日记...</p>';
+        try {
+            // Use currentNotesFolder if available for targeted search, otherwise global (if API supports)
+            const searchUrl = currentNotesFolder
+                ? `${API_BASE_URL}/dailynotes/search?term=${encodeURIComponent(searchTerm)}&folder=${encodeURIComponent(currentNotesFolder)}`
+                : `${API_BASE_URL}/dailynotes/search?term=${encodeURIComponent(searchTerm)}`; // Global search
+
+            const data = await apiFetch(searchUrl);
+            notesListViewDiv.innerHTML = ''; // Clear loading/previous results
+
+            if (data.notes && data.notes.length > 0) {
+                data.notes.forEach(note => {
+                    // The search API now returns folderName with each note
+                    const card = renderNoteCard(note, note.folderName);
+                    notesListViewDiv.appendChild(card);
+                });
+            } else {
+                notesListViewDiv.innerHTML = `<p>没有找到与 "${searchTerm}" 相关的日记。</p>`;
+            }
+        } catch (error) {
+            notesListViewDiv.innerHTML = `<p>搜索日记失败: ${error.message}</p>`;
+            showMessage(`搜索失败: ${error.message}`, 'error');
+        }
     }
 
-    function renderNoteCard(note, folderName) {
+    function renderNoteCard(note, folderName) { // folderName is passed explicitly or from note object
         const card = document.createElement('div');
         card.className = 'note-card';
         card.dataset.fileName = note.name;
