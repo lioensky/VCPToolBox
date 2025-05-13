@@ -222,7 +222,7 @@ tool_name:「始」tool「末」
 本客户端已经搭载长期记忆功能，你可以在聊天一段时间后，通过在回复的末尾添加如下结构化内容来创建日记，会被向量化RAG系统记录，要求日记内容尽量简短、精炼。以下是一个调用示例：
 ``` DailyNote
 <<<DailyNoteStart>>>
-Maid: Nova
+Maid: Nova  //使用'[公共]Nova'署名将会使得日记向所有智能体暴露
 Date: 2025.5.3
 Content:今天和主人聊天超开心，所以要写日记！
 <<<DailyNoteEnd>>>
