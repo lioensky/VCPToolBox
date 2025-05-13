@@ -1,3 +1,6 @@
+[English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
+
+---
 # VCP (Variable & Command Protocol) - AI 能力增强中间层工具箱
 
 ## 项目愿景
