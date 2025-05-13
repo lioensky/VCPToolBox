@@ -134,3 +134,12 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Custom VCPToolBox ignores
+config.env
+config.env.local
+Plugin/EmojiListGenerator/generated_lists/
+Plugin/ImageProcessor/image_cache.json
+Plugin/WeatherReporter/weather_cache.txt
+DebugLog/
+dailynote/

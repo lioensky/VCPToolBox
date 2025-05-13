@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "6005:6005"
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules # 避免覆盖容器内的 node_modules
+    env_file:
+      - config.env
+    command: node server.js
