@@ -33,6 +33,16 @@ async function writeDiary(maidName, dateString, contentText) {
         throw new Error('Invalid input: Missing Maid, Date, or Content.');
     }
 
+    let folderName = maidName;
+    let actualMaidName = maidName;
+    const publicPrefix = "[公共]";
+
+    if (maidName.startsWith(publicPrefix)) {
+        folderName = "公共";
+        actualMaidName = maidName.substring(publicPrefix.length).trim();
+        debugLog(`Public note detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
+    }
+
     const datePart = dateString.replace(/[.-]/g, '.');
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
@@ -40,7 +50,7 @@ async function writeDiary(maidName, dateString, contentText) {
     const seconds = now.getSeconds().toString().padStart(2, '0');
     const timeStringForFile = `${hours}_${minutes}_${seconds}`;
 
-    const dirPath = path.join(dailyNoteRootPath, maidName);
+    const dirPath = path.join(dailyNoteRootPath, folderName);
     const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
     const fileExtension = '.txt';
     const finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
@@ -49,7 +59,7 @@ async function writeDiary(maidName, dateString, contentText) {
     debugLog(`Target file path: ${filePath}`);
 
     await fs.mkdir(dirPath, { recursive: true });
-    const fileContent = `[${datePart}] - ${maidName}\n${contentText}`;
+    const fileContent = `[${datePart}] - ${actualMaidName}\n${contentText}`;
     await fs.writeFile(filePath, fileContent);
     debugLog(`Successfully wrote file (length: ${fileContent.length})`);
     return filePath; // Return the path on success
