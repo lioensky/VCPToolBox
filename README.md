@@ -104,8 +104,8 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 
 1.  **克隆项目**:
     ```bash
-    git clone <repository_url>
-    cd <project_directory>
+    git clone https://github.com/lioensky/VCPToolBox.git
+    cd VCPToolBox
     ```
 2.  **安装主依赖 (Node.js)**:
     ```bash
