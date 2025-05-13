@@ -104,8 +104,8 @@ To facilitate user management of server configuration and plugins, the project i
 
 1.  **Clone Project**:
     ```bash
-    git clone <repository_url>
-    cd <project_directory>
+    git clone https://github.com/lioensky/VCPToolBox.git
+    cd VCPToolBox
     ```
 2.  **Install Main Dependencies (Node.js)**:
     ```bash
