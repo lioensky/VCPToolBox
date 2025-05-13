@@ -194,7 +194,7 @@ def main():
     dotenv_path = os.path.join(os.path.dirname(__file__), 'config.env')
     load_dotenv(dotenv_path=dotenv_path)
     # Use the new environment variable name for the API key
-    api_key = os.getenv("Wan_API_Key")
+    api_key = os.getenv("SILICONFLOW_API_KEY")
     t2v_model = os.getenv("Text2VideoModelName")
     i2v_model = os.getenv("Image2VideoModelName")
     debug_mode = os.getenv("DebugMode", "False").lower() == "true"
