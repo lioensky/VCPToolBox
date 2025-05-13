@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const mainConfigContent = document.getElementById('mainConfigContent');
     const saveMainConfigButton = document.getElementById('saveMainConfig');
     const mainConfigStatus = document.getElementById('mainConfigStatus');
+    const restartServerButton = document.getElementById('restartServer'); // 新增：获取重启按钮
     const pluginListDiv = document.getElementById('pluginList');
     const pluginStatus = document.getElementById('pluginStatus');
 
@@ -115,6 +116,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- 服务器操作 ---
+    async function restartServer() {
+        try {
+            mainConfigStatus.textContent = '正在发送重启服务器命令...';
+            const response = await fetch(`${API_BASE_URL}/server/restart`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: '未知错误，服务器可能已关闭或正在重启' }));
+                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
+            }
+            const data = await response.json();
+            mainConfigStatus.textContent = data.message || '服务器重启命令已发送。请稍后检查服务器状态。';
+        } catch (error) {
+            console.error('重启服务器失败:', error);
+            mainConfigStatus.textContent = `重启服务器失败: ${error.message}`;
+        }
+    }
+ 
     // --- 插件管理 ---
     async function loadPlugins() {
         try {
@@ -322,6 +345,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- 初始化 ---
     if (saveMainConfigButton) {
         saveMainConfigButton.addEventListener('click', saveMainConfig);
+    }
+    if (restartServerButton) { // 新增：为重启按钮添加事件监听器
+        restartServerButton.addEventListener('click', restartServer);
     }
     
     loadMainConfig();

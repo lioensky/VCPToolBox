@@ -1360,6 +1360,17 @@ adminApiRouter.post('/plugins/:pluginName/config', async (req, res) => {
     }
 });
 
+// POST to restart the server
+adminApiRouter.post('/server/restart', async (req, res) => {
+    res.json({ message: '服务器重启命令已发送。服务器正在关闭，如果由进程管理器（如 PM2）管理，它应该会自动重启。' });
+    
+    // Give a short delay for the response to be sent before exiting
+    setTimeout(() => {
+        console.log('[AdminPanel] Received restart command. Shutting down...');
+        process.exit(1); // Exit with code 1 to indicate an intentional restart/shutdown
+    }, 1000); // 1 second delay
+});
+ 
 
 app.use('/admin_api', adminApiRouter);
 // --- End Admin API Router ---
