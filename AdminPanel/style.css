@@ -678,6 +678,11 @@ p.command-status.info {
     font-size: 0.8em;
     padding: 5px 8px;
     background-color: #4a4a70;
+    border-radius: 6px; /* 添加圆角 */
+    border: none; /* 移除边框，与其他按钮统一 */
+    color: white; /* 设置文字颜色为白色 */
+    cursor: pointer; /* 添加指针手势 */
+    transition: background-color 0.2s ease; /* 添加悬停过渡效果 */
 }
 .note-card-actions button:hover {
     background-color: #5f5f8a;
