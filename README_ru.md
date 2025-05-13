@@ -104,8 +104,8 @@ VCP стремится создать промежуточный уровень,
 
 1.  **Клонировать проект**:
     ```bash
-    git clone <repository_url>
-    cd <project_directory>
+    git clone https://github.com/lioensky/VCPToolBox.git
+    cd VCPToolBox
     ```
 2.  **Установить основные зависимости (Node.js)**:
     ```bash
