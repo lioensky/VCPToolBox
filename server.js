@@ -1360,6 +1360,88 @@ adminApiRouter.post('/plugins/:pluginName/config', async (req, res) => {
     }
 });
 
+// POST to update a specific invocation command's description in a plugin's manifest
+adminApiRouter.post('/plugins/:pluginName/commands/:commandIdentifier/description', async (req, res) => {
+    const { pluginName, commandIdentifier } = req.params;
+    const { description } = req.body;
+    const PLUGIN_DIR = path.join(__dirname, 'Plugin');
+    const manifestFileName = 'plugin-manifest.json';
+    const blockedManifestExtension = '.block';
+
+    if (typeof description !== 'string') {
+        return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
+    }
+
+    try {
+        // Find the plugin folder and its active manifest file
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        let targetManifestPath = null;
+        let manifest = null;
+        let pluginFound = false;
+
+        for (const folder of pluginFolders) {
+            if (folder.isDirectory()) {
+                const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
+                const potentialManifestPath = path.join(potentialPluginPath, manifestFileName);
+                const potentialBlockedPath = potentialManifestPath + blockedManifestExtension;
+                let currentPath = null;
+                let manifestContent = null;
+
+                try {
+                    manifestContent = await fs.readFile(potentialManifestPath, 'utf-8');
+                    currentPath = potentialManifestPath;
+                } catch (err) {
+                    if (err.code === 'ENOENT') {
+                        try {
+                            manifestContent = await fs.readFile(potentialBlockedPath, 'utf-8');
+                            currentPath = potentialBlockedPath;
+                        } catch (blockedErr) { continue; }
+                    } else { continue; }
+                }
+
+                try {
+                    const parsedManifest = JSON.parse(manifestContent);
+                    if (parsedManifest.name === pluginName) {
+                        targetManifestPath = currentPath;
+                        manifest = parsedManifest;
+                        pluginFound = true;
+                        break;
+                    }
+                } catch (parseErr) {
+                    console.warn(`[AdminPanel] Error parsing manifest for ${folder.name} while updating command description: ${parseErr.message}`);
+                    continue;
+                }
+            }
+        }
+
+        if (!pluginFound || !manifest) {
+            return res.status(404).json({ error: `Plugin '${pluginName}' or its manifest file not found.` });
+        }
+
+        // Find and update the command description
+        let commandUpdated = false;
+        if (manifest.capabilities && manifest.capabilities.invocationCommands && Array.isArray(manifest.capabilities.invocationCommands)) {
+            const commandIndex = manifest.capabilities.invocationCommands.findIndex(cmd => cmd.commandIdentifier === commandIdentifier);
+            if (commandIndex !== -1) {
+                manifest.capabilities.invocationCommands[commandIndex].description = description;
+                commandUpdated = true;
+            }
+        }
+
+        if (!commandUpdated) {
+            return res.status(404).json({ error: `Command '${commandIdentifier}' not found in plugin '${pluginName}'.` });
+        }
+
+        // Write the updated manifest back to the file
+        await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+        res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新。` });
+
+    } catch (error) {
+        console.error(`[AdminPanel] Error updating command description for plugin ${pluginName}, command ${commandIdentifier}:`, error);
+        res.status(500).json({ error: `更新指令描述时出错`, details: error.message });
+    }
+});
+
 // POST to restart the server
 adminApiRouter.post('/server/restart', async (req, res) => {
     res.json({ message: '服务器重启命令已发送。服务器正在关闭，如果由进程管理器（如 PM2）管理，它应该会自动重启。' });

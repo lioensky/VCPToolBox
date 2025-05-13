@@ -288,13 +288,13 @@ class PluginManager {
 
                         manifest.pluginSpecificEnvConfig = {};
                         try {
-                            await fs.access(path.join(pluginPath, '.env'));
-                            const pluginEnvContent = await fs.readFile(path.join(pluginPath, '.env'), 'utf-8');
+                            await fs.access(path.join(pluginPath, 'config.env'));
+                            const pluginEnvContent = await fs.readFile(path.join(pluginPath, 'config.env'), 'utf-8');
                             manifest.pluginSpecificEnvConfig = dotenv.parse(pluginEnvContent);
-                            if (this.debugMode) console.log(`[PluginManager] Loaded specific .env for plugin: ${manifest.name}`);
+                            if (this.debugMode) console.log(`[PluginManager] Loaded specific config.env for plugin: ${manifest.name}`);
                         } catch (envError) {
                             if (envError.code !== 'ENOENT') {
-                                if (this.debugMode) console.warn(`[PluginManager] Error reading or parsing .env for plugin ${manifest.name}:`, envError.message);
+                                if (this.debugMode) console.warn(`[PluginManager] Error reading or parsing config.env for plugin ${manifest.name}:`, envError.message);
                             }
                         }
                         
