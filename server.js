@@ -363,77 +363,235 @@ app.post('/v1/chat/completions', async (req, res) => {
             }
         }
 
-        let fullContentFromAI = ''; 
-        let firstResponseRawDataForClientAndDiary = ""; 
+        let firstResponseRawDataForClientAndDiary = ""; // Used for non-streaming and initial diary
 
         if (isOriginalResponseStreaming) {
-            let lineBuffer = "";
-            await new Promise((resolve, reject) => {
-                firstAiAPIResponse.body.on('data', (chunk) => {
-                    const chunkString = chunk.toString('utf-8');
-                    firstResponseRawDataForClientAndDiary += chunkString;
-                    lineBuffer += chunkString;
-                    
-                    let lines = lineBuffer.split('\n');
-                    lineBuffer = lines.pop(); 
+            let currentMessagesForLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
+            let recursionDepth = 0;
+            const maxRecursion = parseInt(process.env.MaxVCPLoopStream) || 5;
+            let currentAIContentForLoop = '';
+            let currentAIRawDataForDiary = '';
 
-                    for (const line of lines) {
-                        if (line.trim() === 'data: [DONE]') {
-                        } else if (line.trim() !== "" && !res.writableEnded) {
-                            res.write(`${line}\n`);
-                        } else if (line.trim() === "" && !res.writableEnded) { 
-                            res.write('\n');
+            // Helper function to process an AI response stream
+            async function processAIResponseStreamHelper(aiResponse, isInitialCall) {
+                return new Promise((resolve, reject) => {
+                    let sseBuffer = ""; // Buffer for incomplete SSE lines
+                    let collectedContentThisTurn = ""; // Collects textual content from delta
+                    let rawResponseDataThisTurn = ""; // Collects all raw chunks for diary
+
+                    aiResponse.body.on('data', (chunk) => {
+                        const chunkString = chunk.toString('utf-8');
+                        rawResponseDataThisTurn += chunkString;
+                        if (!res.writableEnded) {
+                             // Forward chunk to client, except for the final [DONE] if it's not the true end
+                            if (chunkString.includes("data: [DONE]")) {
+                                // Don't forward AI's own [DONE] if we are in a loop
+                            } else {
+                                res.write(chunkString);
+                            }
                         }
-                    }
-                });
-                firstAiAPIResponse.body.on('end', () => {
-                    if (lineBuffer.trim() !== "" && lineBuffer.trim() !== 'data: [DONE]' && !res.writableEnded) {
-                        res.write(`${lineBuffer}\n`); 
-                    }
-                    const sseLines = firstResponseRawDataForClientAndDiary.trim().split('\n');
-                    let sseContent = '';
-                    for (const line of sseLines) {
-                        if (line.startsWith('data: ')) {
-                            const jsonData = line.substring(5).trim();
-                            if (jsonData === '[DONE]') continue;
+                        
+                        sseBuffer += chunkString;
+                        let lines = sseBuffer.split('\n');
+                        sseBuffer = lines.pop(); // Keep incomplete line
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const jsonData = line.substring(5).trim();
+                                if (jsonData !== '[DONE]') {
+                                    try {
+                                        const parsedData = JSON.parse(jsonData);
+                                        collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
+                                    } catch (e) { /* ignore parse error for intermediate chunks */ }
+                                }
+                            }
+                        }
+                    });
+
+                    aiResponse.body.on('end', () => {
+                        // Process remaining buffer for content
+                        if (sseBuffer.startsWith('data: ')) {
+                            const jsonData = sseBuffer.substring(5).trim();
+                            if (jsonData !== '[DONE]') {
+                                try {
+                                    const parsedData = JSON.parse(jsonData);
+                                    collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
+                                } catch (e) { /* ignore */ }
+                            }
+                        }
+                        resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
+                    });
+                    aiResponse.body.on('error', (streamError) => {
+                        console.error("Error reading AI response stream in loop:", streamError);
+                        if (!res.writableEnded) {
+                            // Try to send an error message before closing if possible
                             try {
-                                const parsedData = JSON.parse(jsonData);
-                                const contentChunk = parsedData.choices?.[0]?.delta?.content || '';
-                                if (contentChunk) sseContent += contentChunk;
-                            } catch (e) { /* ignore */ }
+                                res.write(`data: ${JSON.stringify({error: "STREAM_READ_ERROR", message: streamError.message})}\n\n`);
+                            } catch (e) { /* ignore if write fails */ }
+                            res.end();
+                        }
+                        reject(streamError);
+                    });
+                });
+            }
+
+            // --- Initial AI Call ---
+            if (DEBUG_MODE) console.log('[VCP Stream Loop] Processing initial AI call.');
+            let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
+            currentAIContentForLoop = initialAIResponseData.content;
+            currentAIRawDataForDiary = initialAIResponseData.raw;
+            await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+            if (DEBUG_MODE) console.log('[VCP Stream Loop] Initial AI content (first 200):', currentAIContentForLoop.substring(0,200));
+
+            // --- VCP Loop ---
+            while (recursionDepth < maxRecursion) {
+                currentMessagesForLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+
+                const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
+                const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
+                let toolCallsInThisAIResponse = [];
+                let searchOffset = 0;
+
+                while (searchOffset < currentAIContentForLoop.length) {
+                    const startIndex = currentAIContentForLoop.indexOf(toolRequestStartMarker, searchOffset);
+                    if (startIndex === -1) break;
+
+                    const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
+                    if (endIndex === -1) {
+                        if (DEBUG_MODE) console.warn("[VCP Stream Loop] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
+                        searchOffset = startIndex + toolRequestStartMarker.length;
+                        continue;
+                    }
+
+                    const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
+                    let parsedToolArgs = {};
+                    let requestedToolName = null;
+                    const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
+                    let regexMatch;
+                    while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
+                        const key = regexMatch[1];
+                        const value = regexMatch[2].trim();
+                        if (key === "tool_name") requestedToolName = value;
+                        else parsedToolArgs[key] = value;
+                    }
+
+                    if (requestedToolName) {
+                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
+                         if (DEBUG_MODE) console.log(`[VCP Stream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs);
+                    } else {
+                        if (DEBUG_MODE) console.warn("[VCP Stream Loop] Parsed a tool request block but no tool_name found:", requestBlockContent.substring(0,100));
+                    }
+                    searchOffset = endIndex + toolRequestEndMarker.length;
+                }
+
+                if (toolCallsInThisAIResponse.length === 0) {
+                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Exiting loop.');
+                    break;
+                }
+                if (DEBUG_MODE) console.log(`[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
+
+                let allToolResultsContentForAI = [];
+                const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
+                    let toolResultText;
+                    if (pluginManager.getPlugin(toolCall.name)) {
+                        try {
+                            if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
+                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                            if (SHOW_VCP_OUTPUT && !res.writableEnded) {
+                                const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'success', content: toolResultText };
+                                res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
+                            }
+                        } catch (pluginError) {
+                             console.error(`[VCP Stream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
+                             toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
+                             if (SHOW_VCP_OUTPUT && !res.writableEnded) {
+                                const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
+                                res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
+                             }
+                        }
+                    } else {
+                        toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
+                        if (DEBUG_MODE) console.warn(`[VCP Stream Loop] ${toolResultText}`);
+                        if (SHOW_VCP_OUTPUT && !res.writableEnded) {
+                            const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
+                            res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
                         }
                     }
-                    fullContentFromAI = sseContent;
-                    resolve(); 
+                    return `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}`;
                 });
-                firstAiAPIResponse.body.on('error', (streamError) => {
-                    console.error("Error reading first AI response stream:", streamError);
-                    if (!res.writableEnded) { res.status(500).end("Stream reading error"); }
-                    reject(streamError); 
+
+                allToolResultsContentForAI = await Promise.all(toolExecutionPromises);
+                const combinedToolResultsForAI = allToolResultsContentForAI.join("\n\n---\n\n");
+                currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Combined tool results for next AI call (first 200):', combinedToolResultsForAI.substring(0,200));
+
+                // --- Make next AI call (stream: true) ---
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Fetching next AI response.');
+                const nextAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                        ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                        'Accept': 'text/event-stream', // Ensure streaming for subsequent calls
+                    },
+                    body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
                 });
-            });
-        } else { 
+
+                if (!nextAiAPIResponse.ok) {
+                    const errorBodyText = await nextAiAPIResponse.text();
+                    console.error(`[VCP Stream Loop] AI call in loop failed (${nextAiAPIResponse.status}): ${errorBodyText}`);
+                    if (!res.writableEnded) {
+                        try {
+                            res.write(`data: ${JSON.stringify({error: "AI_CALL_FAILED_IN_LOOP", status: nextAiAPIResponse.status, message: errorBodyText})}\n\n`);
+                        } catch (e) { /* ignore */ }
+                    }
+                    break;
+                }
+                
+                // Process the stream from the next AI call
+                let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
+                currentAIContentForLoop = nextAIResponseData.content;
+                currentAIRawDataForDiary = nextAIResponseData.raw;
+                await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
+                
+                recursionDepth++;
+            }
+
+            // After loop (or if no tools called initially / max recursion hit)
+            if (!res.writableEnded) {
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Sending final [DONE].');
+                res.write('data: [DONE]\n\n');
+                res.end();
+            }
+
+        } else { // Non-streaming (originalBody.stream === false)
             const firstArrayBuffer = await firstAiAPIResponse.arrayBuffer();
             const responseBuffer = Buffer.from(firstArrayBuffer);
             const aiResponseText = responseBuffer.toString('utf-8');
-            firstResponseRawDataForClientAndDiary = aiResponseText; 
+            // firstResponseRawDataForClientAndDiary is used by the non-streaming logic later
+            firstResponseRawDataForClientAndDiary = aiResponseText;
 
+            let fullContentFromAI = ''; // This will be populated by the non-streaming logic
             try {
                 const parsedJson = JSON.parse(aiResponseText);
                 fullContentFromAI = parsedJson.choices?.[0]?.message?.content || '';
             } catch (e) {
                 if (DEBUG_MODE) console.warn('[PluginCall] First AI response (non-stream) not valid JSON. Raw:', aiResponseText.substring(0, 200));
-                fullContentFromAI = aiResponseText;
+                fullContentFromAI = aiResponseText; // Use raw text if not JSON
             }
-            // 非流式分支递归工具链闭环处理
+            
+            // --- Non-streaming VCP Loop ---
             let recursionDepth = 0;
-            const maxRecursion = 5; // Max VCP calls for non-streaming
-            let conversationHistoryForClient = [];
-            let currentAIContentForLoop = fullContentFromAI;
-            // Start with original messages + first AI response for the loop state
+            const maxRecursion = parseInt(process.env.MaxVCPLoopNonStream) || 5;
+            let conversationHistoryForClient = []; // To build the final response for client
+            let currentAIContentForLoop = fullContentFromAI; // Start with the first AI's response content
             let currentMessagesForNonStreamLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
-            // Note: The first AI response is already captured in currentAIContentForLoop
-            let toolRequestBlockFound = false;
+            // `firstResponseRawDataForClientAndDiary` holds the raw first AI response for diary purposes.
+            // Subsequent raw AI responses in the non-stream loop will also need diary handling.
+            let accumulatedRawResponseDataForDiary = firstResponseRawDataForClientAndDiary;
 
             do {
                 let anyToolProcessedInCurrentIteration = false; // Reset for each iteration of the outer AI-Tool-AI loop
@@ -587,211 +745,160 @@ app.post('/v1/chat/completions', async (req, res) => {
             if (!res.writableEnded) {
                  res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
             }
-            // Handle diary after the entire non-stream process is complete
-            await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary); // Use the initially collected raw data
-        }
-        
-        if (DEBUG_MODE) console.log('[PluginCall] AI First Full Response Text (from fullContentFromAI):', fullContentFromAI.substring(0, 200) + "...");
+            // Handle diary for the *first* AI response in non-streaming mode
+            await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary);
 
-        let needsSecondAICall = false;
-        let messagesForNextAICall = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
-        const firstAIResponseContent = fullContentFromAI || null; 
+            // Loop for subsequent tool calls and AI responses in non-streaming mode
+            do {
+                let anyToolProcessedInCurrentIteration = false;
+                conversationHistoryForClient.push({ type: 'ai', content: currentAIContentForLoop });
 
-        const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
-        const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
-        let parsedToolArgs = {}; 
-        let requestedToolName = null;
-        let toolRequestBlockFound = false; 
+                const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
+                const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
+                let toolCallsInThisAIResponse = [];
+                let searchOffset = 0;
 
-        const startIndex = fullContentFromAI.indexOf(toolRequestStartMarker);
-        if (startIndex !== -1) {
-            const endIndex = fullContentFromAI.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
-            if (endIndex !== -1) {
-                toolRequestBlockFound = true;
-                const requestBlock = fullContentFromAI.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
-                if (DEBUG_MODE) console.log("[PluginCall Debug] Extracted Tool Request Block:\n", requestBlock);
-                
-                const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
-                let regexMatch;
-
-                while ((regexMatch = paramRegex.exec(requestBlock)) !== null) {
-                    const key = regexMatch[1];
-                    const value = regexMatch[2].trim(); 
-                    if (key === "tool_name") {
-                        requestedToolName = value;
-                    } else {
-                        parsedToolArgs[key] = value;
+                while (searchOffset < currentAIContentForLoop.length) {
+                    const startIndex = currentAIContentForLoop.indexOf(toolRequestStartMarker, searchOffset);
+                    if (startIndex === -1) break;
+                    const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
+                    if (endIndex === -1) {
+                        if (DEBUG_MODE) console.warn("[VCP NonStream Loop] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
+                        searchOffset = startIndex + toolRequestStartMarker.length;
+                        continue;
                     }
-                }
-                const lastIndex = paramRegex.lastIndex;
-                if (requestBlock.length > 0 && lastIndex < requestBlock.length && requestBlock.substring(lastIndex).trim() !== "") {
-                    if (DEBUG_MODE) console.warn("[PluginCall Debug] Remaining unparsed text in tool request block:", requestBlock.substring(lastIndex).trim());
+                    const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
+                    let parsedToolArgs = {};
+                    let requestedToolName = null;
+                    const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
+                    let regexMatch;
+                    while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
+                        const key = regexMatch[1];
+                        const value = regexMatch[2].trim();
+                        if (key === "tool_name") requestedToolName = value;
+                        else parsedToolArgs[key] = value;
+                    }
+                    if (requestedToolName) {
+                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
+                        if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs);
+                    } else {
+                         if (DEBUG_MODE) console.warn("[VCP NonStream Loop] Parsed a tool request block but no tool_name found:", requestBlockContent.substring(0,100));
+                    }
+                    searchOffset = endIndex + toolRequestEndMarker.length;
                 }
 
-                if (DEBUG_MODE) console.log("[PluginCall Debug] Parsed Tool Name:", requestedToolName);
-                if (DEBUG_MODE) console.log("[PluginCall Debug] Parsed Tool Arguments:", parsedToolArgs);
+                if (toolCallsInThisAIResponse.length > 0) {
+                    anyToolProcessedInCurrentIteration = true;
+                    if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
+                    currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+                    
+                    let allToolResultsContentForAI = [];
+                    const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
+                        let toolResultText;
+                        if (pluginManager.getPlugin(toolCall.name)) {
+                            try {
+                                if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
+                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                                if (SHOW_VCP_OUTPUT) {
+                                    conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用结果:\n${toolResultText}` });
+                                }
+                            } catch (pluginError) {
+                                 console.error(`[VCP NonStream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
+                                 toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
+                                 if (SHOW_VCP_OUTPUT) {
+                                    conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用错误:\n${toolResultText}` });
+                                 }
+                            }
+                        } else {
+                            toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
+                            if (DEBUG_MODE) console.warn(`[VCP NonStream Loop] ${toolResultText}`);
+                            if (SHOW_VCP_OUTPUT) {
+                                conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
+                            }
+                        }
+                        return `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}`;
+                    });
 
-                if (requestedToolName && pluginManager.getPlugin(requestedToolName)) {
-                    const pluginManifest = pluginManager.getPlugin(requestedToolName);
-                    messagesForNextAICall.push({ role: 'assistant', content: firstAIResponseContent }); 
+                    allToolResultsContentForAI = await Promise.all(toolExecutionPromises);
+                    const combinedToolResultsForAI = allToolResultsContentForAI.join("\n\n---\n\n");
+                    currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
+                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] Combined tool results for next AI call (first 200):', combinedToolResultsForAI.substring(0,200));
+
+                    if (DEBUG_MODE) console.log("[VCP NonStream Loop] Fetching next AI response after processing tools.");
+                    const recursionAiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${apiKey}`,
+                            ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                            'Accept': 'application/json', // Non-streaming for subsequent calls in this loop
+                        },
+                        body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
+                    });
+
+                    const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
+                    const recursionBuffer = Buffer.from(recursionArrayBuffer);
+                    const recursionText = recursionBuffer.toString('utf-8');
+                    
+                    // Handle diary for this AI response
+                    await handleDiaryFromAIResponse(recursionText);
+                    accumulatedRawResponseDataForDiary += "\n\n--- Next AI Turn (Non-Stream) ---\n\n" + recursionText;
+
 
                     try {
-                        // 使用新的 processToolCall 方法，它会处理 executionParam 的准备
-                        if (DEBUG_MODE) console.log(`[PluginCall Debug] Attempting to call pluginManager.processToolCall for: ${requestedToolName} with args:`, parsedToolArgs);
-                        const pluginResult = await pluginManager.processToolCall(requestedToolName, parsedToolArgs);
-                        // pluginResult is now expected to be the final, pre-formatted string for AI,
-                        // as formatting logic has been moved into individual plugins and processToolCall.
-                        // Log the result, handling objects correctly using JSON.stringify
-                        const resultLogPreview = pluginResult
-                            ? JSON.stringify(pluginResult).substring(0, 200) + (JSON.stringify(pluginResult).length > 200 ? "..." : "")
-                            : pluginResult;
-                        if (DEBUG_MODE) console.log(`[PluginCall Debug] Plugin ${requestedToolName} executed. Result from processToolCall:`, resultLogPreview);
-
-                        // Directly use the result from processToolCall as it's already formatted.
-                        // If processToolCall encountered an error (either from plugin's JSON or execution failure),
-                        // it would have thrown an error, which is caught by the outer catch block.
-                        // If pluginResult is null or undefined (e.g. plugin had no output but didn't error),
-                        // provide a generic message.
-                        let messageContentForAI;
-                        if (pluginResult !== undefined && pluginResult !== null) {
-                            // Directly stringify the object returned by the plugin
-                            messageContentForAI = `来自工具 "${requestedToolName}" 的结果:\n${JSON.stringify(pluginResult, null, 2)}`;
-                        } else {
-                            messageContentForAI = `来自工具 "${requestedToolName}" 的结果:\n插件 ${requestedToolName} 执行完毕，但没有返回明确内容。`;
-                        }
-                        
-                        messagesForNextAICall.push({ role: 'user', content: messageContentForAI });
-                        needsSecondAICall = true;
-
-                    } catch (pluginError) {
-                        console.error(`[PluginCall EXECUTION ERROR] Error executing plugin ${requestedToolName} with args:`, parsedToolArgs, "Error:", pluginError.message);
-                        if (pluginError.stack) {
-                            console.error(`[PluginCall EXECUTION ERROR] Stack trace for ${requestedToolName}:`, pluginError.stack);
-                        }
-                        messagesForNextAICall.push({ role: 'user', content: `\n执行插件 ${requestedToolName} 时发生错误：${pluginError.message || '未知错误'}` }); // Added \n here
-                        needsSecondAICall = true;
+                        const recursionJson = JSON.parse(recursionText);
+                        currentAIContentForLoop = recursionJson.choices?.[0]?.message?.content || '';
+                    } catch (e) {
+                        currentAIContentForLoop = recursionText;
                     }
-                } else if (requestedToolName) {
-                    if (DEBUG_MODE) console.warn(`[PluginCall Debug] Requested tool "${requestedToolName}" not found or not loaded.`);
-                    messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-                } else if (requestBlock.length > 0) {
-                    if (DEBUG_MODE) console.warn(`[PluginCall Debug] Tool request block found but no valid 'tool_name' was parsed from: ${requestBlock}`);
-                    messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
+                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
+
                 } else {
-                     if (DEBUG_MODE) console.warn(`[PluginCall Debug] Tool request markers found, but the block between them was empty or whitespace.`);
-                     messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-                }
-            } else if (startIndex !== -1 && endIndex === -1) {
-                 if (DEBUG_MODE) console.warn("[PluginCall Debug] Found TOOL_REQUEST_START but no END marker in AI response.");
-                 toolRequestBlockFound = true;
-                 messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-            }
-        }
-        
-        if (!toolRequestBlockFound) { 
-            messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-        }
-        
-        if (needsSecondAICall) {
-            if (DEBUG_MODE) console.log('[PluginCall] Proceeding with second AI call with tool results.');
-            if (DEBUG_MODE) console.log('[PluginCall Debug] messagesForNextAICall for second call:', JSON.stringify(messagesForNextAICall, null, 2));
-            await writeDebugLog('LogOutputWithPluginCall_BeforeSecondCall', { messages: messagesForNextAICall, originalRequestBody: originalBody });
-
-            try {
-                const secondAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 
-                        ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                        'Accept': originalBody.stream ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
-                    },
-                    body: JSON.stringify({ ...originalBody, messages: messagesForNextAICall }),
-                });
-                if (DEBUG_MODE) console.log(`[PluginCall Debug] Second AI call response status: ${secondAiAPIResponse.status}`);
-                await writeDebugLog('LogOutputWithPluginCall_AfterSecondCall_Status', { status: secondAiAPIResponse.status, headers: Object.fromEntries(secondAiAPIResponse.headers.entries()) });
-
-                if (!secondAiAPIResponse.ok && !originalBody.stream) {
-                    const errorBody = await secondAiAPIResponse.text();
-                    console.error(`[PluginCall Debug] Second AI call non-OK response body: ${errorBody}`);
-                    throw new Error(`Second AI call failed with status ${secondAiAPIResponse.status}: ${errorBody}`);
-                }
-
-                if (!isOriginalResponseStreaming) {
-                    if (res.statusCode !== secondAiAPIResponse.status && secondAiAPIResponse.ok) {
-                         res.status(secondAiAPIResponse.status);
-                    }
-                    secondAiAPIResponse.headers.forEach((value, name) => {
-                        if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                            if (!res.headersSent && name.toLowerCase() === 'content-type') res.setHeader(name, value);
-                        }
-                    });
+                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] No tool calls found in AI response. Exiting loop.');
+                    anyToolProcessedInCurrentIteration = false;
                 }
                 
-                const secondResponseIsStreaming = originalBody.stream === true && secondAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
-                let secondResponseFullText = "";
+                if (!anyToolProcessedInCurrentIteration) break;
+                recursionDepth++;
+            } while (recursionDepth < maxRecursion);
 
-                if (secondResponseIsStreaming) {
-                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response is streaming.');
-                    let finalResponseAggregated = "";
-                    await new Promise((resolve, reject) => {
-                        secondAiAPIResponse.body.on('data', (chunk) => {
-                            const chunkString = chunk.toString('utf-8');
-                            finalResponseAggregated += chunkString;
-                            if (!res.writableEnded) res.write(chunkString);
-                        });
-                        secondAiAPIResponse.body.on('end', async () => {
-                            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
-                            secondResponseFullText = finalResponseAggregated;
-                            await handleDiaryFromAIResponse(secondResponseFullText); 
-                            resolve();
-                        });
-                        secondAiAPIResponse.body.on('error', async (streamError) => {
-                            console.error('[PluginCall Debug] Second AI response stream reading error:', streamError);
-                            if (!res.writableEnded) res.end('\nError during second AI response stream.');
-                            secondResponseFullText = finalResponseAggregated; 
-                            await handleDiaryFromAIResponse(secondResponseFullText);
-                            reject(streamError); 
-                        });
-                    });
-                } else {
-                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response is NOT streaming.');
-                    const secondArrayBuffer = await secondAiAPIResponse.arrayBuffer();
-                    const secondResponseBuffer = Buffer.from(secondArrayBuffer);
-                    secondResponseFullText = secondResponseBuffer.toString('utf-8');
-                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response (non-stream) full text (first 500 chars):', secondResponseFullText.substring(0,500));
-                    
-                    if (!isOriginalResponseStreaming && !res.getHeader('Content-Type')) {
-                        try { JSON.parse(secondResponseFullText); if (!res.headersSent) res.setHeader('Content-Type', 'application/json');}
-                        catch (e) { if (!res.headersSent) res.setHeader('Content-Type', 'text/plain');}
-                    }
-                    if (!res.writableEnded) res.send(secondResponseBuffer); 
-                    await handleDiaryFromAIResponse(secondResponseFullText);
+            // Rename variables to avoid redeclaration errors
+            const finalContentForClient_nonStream = conversationHistoryForClient
+                .map(item => {
+                    if (item.type === 'ai') return item.content;
+                    if (item.type === 'vcp' && SHOW_VCP_OUTPUT) return `\n<<<[VCP_RESULT]>>>\n${item.content}\n<<<[END_VCP_RESULT]>>>\n`;
+                    return '';
+                }).join('');
+
+            let finalJsonResponse_nonStream;
+            try {
+                finalJsonResponse_nonStream = JSON.parse(firstResponseRawDataForClientAndDiary); // Try to use structure of first response
+                 if (!finalJsonResponse_nonStream.choices || !Array.isArray(finalJsonResponse_nonStream.choices) || finalJsonResponse_nonStream.choices.length === 0) {
+                    finalJsonResponse_nonStream.choices = [{ message: {} }];
                 }
-            } catch (secondCallError) {
-                console.error('[PluginCall SECOND CALL ERROR] Error during second AI call or its response processing:', secondCallError.message);
-                if (secondCallError.stack) {
-                    console.error('[PluginCall SECOND CALL ERROR] Stack trace:', secondCallError.stack);
+                if (!finalJsonResponse_nonStream.choices[0].message) {
+                    finalJsonResponse_nonStream.choices[0].message = {};
                 }
-                throw secondCallError; 
+                finalJsonResponse_nonStream.choices[0].message.content = finalContentForClient_nonStream; // Use renamed variable
+                finalJsonResponse_nonStream.choices[0].finish_reason = (recursionDepth >= maxRecursion && toolCallsInThisAIResponse.length > 0) ? 'length' : 'stop';
+            } catch (e) {
+                 // Use renamed variables
+                finalJsonResponse_nonStream = { choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient_nonStream }, finish_reason: (recursionDepth >= maxRecursion && toolCallsInThisAIResponse.length > 0 ? 'length' : 'stop') }] };
             }
-        } else { 
-            if (isOriginalResponseStreaming && !res.writableEnded) {
-                res.write('data: [DONE]\n\n');
-                res.end();
-            } else if (!isOriginalResponseStreaming && !res.writableEnded) {
-                 if(!res.writableEnded) res.end();
+
+            if (!res.writableEnded) {
+                 res.send(Buffer.from(JSON.stringify(finalJsonResponse_nonStream))); // Use renamed variable
             }
-            await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary); 
+            // Diary for all turns in non-streaming already handled inside the loop for subsequent, and outside for first.
         }
     } catch (error) {
         console.error('处理请求或转发时出错:', error.message, error.stack);
         if (!res.headersSent) {
              res.status(500).json({ error: 'Internal Server Error', details: error.message });
-        } else {
+        } else if (!res.writableEnded) {
              console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
-             if (!res.writableEnded) {
-                res.end();
-             }
+             res.end();
         }
     }
 });
