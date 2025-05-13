@@ -12,7 +12,7 @@
     "timeout": 180000 
   },
   "configSchema": {
-    "API_Key": "string",
+    "Wan_API_Key": "string",
     "Text2VideoModelName": "string",
     "Image2VideoModelName": "string",
     "DebugMode": "boolean"
