@@ -504,8 +504,24 @@ document.addEventListener('DOMContentLoaded', () => {
         statusElement.textContent = '正在保存描述...';
         statusElement.className = 'status command-status info'; // Reset and indicate processing
 
+        const apiUrl = `${API_BASE_URL}/plugins/${pluginName}/commands/${commandIdentifier}/description`;
+        // Log the values before making the API call
+        console.log(`[saveInvocationCommandDescription] Attempting to save:
+Plugin Name: ${pluginName}
+Command Identifier: ${commandIdentifier}
+API URL: ${apiUrl}
+Description Length: ${newDescription.length}`);
+
+        if (!pluginName || !commandIdentifier) {
+            const errorMsg = `保存描述失败: 插件名称或命令标识符为空。Plugin: '${pluginName}', Command: '${commandIdentifier}'`;
+            console.error(errorMsg);
+            showMessage(errorMsg, 'error');
+            statusElement.textContent = '保存失败: 内部错误 (缺少标识符)';
+            statusElement.className = 'status command-status error';
+            return;
+        }
+
         try {
-            const apiUrl = `${API_BASE_URL}/plugins/${pluginName}/commands/${commandIdentifier}/description`;
             await apiFetch(apiUrl, {
                 method: 'POST',
                 body: JSON.stringify({ description: newDescription })

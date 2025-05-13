@@ -1008,11 +1008,7 @@ adminApiRouter.get('/config/main', async (req, res) => {
     try {
         const configPath = path.join(__dirname, 'config.env');
         const content = await fs.readFile(configPath, 'utf-8');
-        // Filter out sensitive keys before sending to client
-        const filteredContent = content.split('\n').filter(line =>
-            !/^\s*(AdminPassword|AdminUsername)\s*=/i.test(line)
-        ).join('\n');
-        res.json({ content: filteredContent });
+        res.json({ content: content });
     } catch (error) {
         console.error('Error reading main config for admin panel:', error);
         res.status(500).json({ error: 'Failed to read main config file', details: error.message });
@@ -1421,7 +1417,7 @@ adminApiRouter.post('/plugins/:pluginName/commands/:commandIdentifier/descriptio
         // Find and update the command description
         let commandUpdated = false;
         if (manifest.capabilities && manifest.capabilities.invocationCommands && Array.isArray(manifest.capabilities.invocationCommands)) {
-            const commandIndex = manifest.capabilities.invocationCommands.findIndex(cmd => cmd.commandIdentifier === commandIdentifier);
+            const commandIndex = manifest.capabilities.invocationCommands.findIndex(cmd => cmd.commandIdentifier === commandIdentifier || cmd.command === commandIdentifier);
             if (commandIndex !== -1) {
                 manifest.capabilities.invocationCommands[commandIndex].description = description;
                 commandUpdated = true;
