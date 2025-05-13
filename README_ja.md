@@ -104,8 +104,8 @@ VCP は、従来の AI インタラクションモードを超える中間層を
 
 1.  **プロジェクトのクローン**:
     ```bash
-    git clone <repository_url>
-    cd <project_directory>
+    git clone https://github.com/lioensky/VCPToolBox.git
+    cd VCPToolBox
     ```
 2.  **主な依存関係のインストール (Node.js)**:
     ```bash
