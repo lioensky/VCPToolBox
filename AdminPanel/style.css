@@ -1,116 +1,263 @@
+/* Top Bar Styles */
+.top-bar {
+    background-color: #2c3e50; /* 深蓝灰色，与h1标题协调 */
+    color: #ecf0f1; /* 浅灰色文字 */
+    padding: 12px 0;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.15);
+    width: 100%;
+    position: sticky; /* 可以考虑粘性定位 */
+    top: 0;
+    z-index: 1000; /* 确保在最上层 */
+}
+
+.top-bar-content {
+    width: 90%; /* 与 .container 宽度一致 */
+    max-width: 1200px; /* 与 .container 最大宽度一致 */
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.server-name {
+    font-size: 1.1em;
+    font-weight: 600;
+    background-color: #5e7c9a; /* 更浅的背景色，例如淡灰色 */
+    padding: 6px 12px;
+    border-radius: 5px;
+    color: #2c3e50; /* 深色文字，与顶部栏背景色形成对比 */
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 更柔和的阴影 */
+}
+
+.plugin-stats {
+    font-size: 0.95em;
+    background-color: #34495e; /* 稍浅一点的背景 */
+    padding: 5px 10px;
+    border-radius: 4px;
+}
+
 body {
-    font-family: sans-serif;
-    margin: 0;
-    background-color: #f4f4f4;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* 更现代的字体 */
+    margin: 0; /* 确保顶部栏可以接触到页面边缘，如果 sticky 定位 */
+    background-color: #f0f2f5; /* 淡雅的背景色 */
     color: #333;
     line-height: 1.6;
 }
 
 .container {
-    width: 80%;
-    margin: 20px auto;
-    background: #fff;
-    padding: 20px;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-    border-radius: 8px;
+    width: 90%; /* 更宽一些 */
+    max-width: 1200px; /* 最大宽度 */
+    margin: 30px auto;
+    background: #ffffff;
+    padding: 25px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* 更柔和的阴影 */
+    border-radius: 12px; /* 更大的圆角 */
 }
 
-h1, h2 {
-    color: #333;
+h1 {
+    color: #2c3e50; /* 深蓝灰色 */
     text-align: center;
-    margin-bottom: 20px;
-}
-
-.section {
     margin-bottom: 30px;
-    padding: 20px;
-    background-color: #fff;
-    border: 1px solid #ddd;
-    border-radius: 5px;
+    font-weight: 600;
 }
 
-.section h2 {
-    margin-top: 0;
-    border-bottom: 2px solid #eee;
+h2 {
+    color: #34495e; /* 次级标题颜色 */
+    text-align: left; /* 标题左对齐 */
+    margin-bottom: 20px;
+    font-weight: 500;
+    border-bottom: 1px solid #ecf0f1; /* 更细的分割线 */
     padding-bottom: 10px;
 }
 
-textarea {
-    width: calc(100% - 22px); /* Adjust for padding and border */
-    padding: 10px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    margin-bottom: 10px;
-    min-height: 100px;
-    white-space: pre-wrap; /* Ensure newlines are rendered */
-    word-wrap: break-word; /* Ensure long lines wrap */
+.section {
+    margin-bottom: 35px;
+    padding: 25px;
+    background-color: #fff;
+    border: 1px solid #e0e0e0; /* 更浅的边框 */
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.04);
 }
 
+.section h2 { /* section 内的 h2 特殊处理 */
+    margin-top: 0;
+    font-size: 1.3em;
+}
+
+textarea,
+.config-editor input[type="text"] { /* 统一文本输入框样式 */
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d1d5db; /* 浅灰色边框 */
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    box-sizing: border-box; /* 确保 padding 不会撑大宽度 */
+    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+textarea:focus,
+.config-editor input[type="text"]:focus {
+    border-color: #007bff; /* 蓝色高亮 */
+    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+    outline: none;
+}
+
+
+/* 主配置编辑器样式 */
+.config-editor {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 15px;
+    background-color: #f9fafb; /* 轻微的背景色 */
+}
+
+.config-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 8px 0;
+    border-bottom: 1px dashed #ecf0f1; /* 项目间虚线分隔 */
+}
+.config-item:last-child {
+    border-bottom: none;
+}
+
+.config-key {
+    flex: 0 0 200px; /* 固定标签宽度 */
+    font-weight: 500;
+    color: #34495e;
+    padding-right: 15px;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.config-value { /* class for the input field itself */
+    flex-grow: 1;
+    /* Specific styles for input are now combined with textarea */
+}
+
+.config-comment {
+    color: #7f8c8d; /* 注释颜色 */
+    font-style: italic;
+    padding: 5px 0;
+    font-size: 13px;
+    white-space: pre-wrap; /* 保留换行和空格 */
+}
+
+
 button {
-    background-color: #5cb85c;
+    background-color: #007bff; /* 主题蓝色 */
     color: white;
-    padding: 10px 15px;
+    padding: 12px 20px; /* 稍大的 padding */
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
-    font-size: 16px;
-    transition: background-color 0.3s ease;
+    font-size: 15px;
+    font-weight: 500;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    margin-right: 10px; /* 按钮间距 */
+}
+button:last-child {
+    margin-right: 0;
 }
 
 button:hover {
-    background-color: #4cae4c;
+    background-color: #0056b3; /* 深一点的蓝色 */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
+
+button#restartServer { /* 重启按钮特殊颜色 */
+    background-color: #ffc107; /* 警告黄色 */
+    color: #212529;
+}
+button#restartServer:hover {
+    background-color: #e0a800;
+}
+
 
 .status {
-    margin-top: 10px;
-    font-style: italic;
-    color: #777;
+    margin-top: 15px;
+    font-style: normal; /* 不用斜体 */
+    color: #6c757d; /* 柔和的灰色 */
+    font-size: 14px;
+    padding: 8px 12px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+    display: inline-block; /* 让背景适应内容 */
+}
+.status.error { /* 错误状态 */
+    color: #721c24;
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
 }
 
+
 #pluginList .plugin-item {
-    border: 1px solid #eee;
-    padding: 15px;
-    margin-bottom: 15px;
-    border-radius: 5px;
-    background-color: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    background-color: #fdfdfd; /* 比 section 更浅一点 */
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
 }
 
 #pluginList .plugin-item h3 {
     margin-top: 0;
-    margin-bottom: 10px;
-    color: #555;
+    margin-bottom: 12px;
+    color: #2c3e50;
+    font-size: 1.15em;
 }
 
 #pluginList .plugin-item p {
-    margin-bottom: 10px;
+    margin-bottom: 8px;
+    font-size: 14px;
 }
 
 #pluginList .plugin-item textarea {
-    min-height: 60px;
+    min-height: 70px;
     margin-bottom: 10px;
+    font-size: 13px;
 }
 
 #pluginList .plugin-item .actions button {
-    margin-right: 10px;
-    background-color: #007bff;
+    padding: 8px 12px; /* 插件操作按钮小一点 */
+    font-size: 13px;
+    margin-right: 8px;
 }
 
-#pluginList .plugin-item .actions button:hover {
-    background-color: #0056b3;
-}
-
+/* 插件启用/禁用按钮颜色调整 */
 #pluginList .plugin-item .actions .toggle-button.enabled {
-    background-color: #d9534f; /* Red for "Disable" */
+    background-color: #dc3545; /* 禁用按钮 - 红色 */
 }
-
 #pluginList .plugin-item .actions .toggle-button.enabled:hover {
-    background-color: #c9302c;
+    background-color: #c82333;
 }
 
 #pluginList .plugin-item .actions .toggle-button.disabled {
-    background-color: #5cb85c; /* Green for "Enable" */
+    background-color: #28a745; /* 启用按钮 - 绿色 */
+}
+#pluginList .plugin-item .actions .toggle-button.disabled:hover {
+    background-color: #218838;
 }
 
-#pluginList .plugin-item .actions .toggle-button.disabled:hover {
-    background-color: #4cae4c;
+/* 编辑/保存/取消描述按钮 */
+#pluginList .plugin-item .actions .edit-description-button,
+#pluginList .plugin-item .actions .save-description-button,
+#pluginList .plugin-item .actions .cancel-edit-description-button {
+    background-color: #6c757d; /* 中性灰色 */
+}
+#pluginList .plugin-item .actions .edit-description-button:hover,
+#pluginList .plugin-item .actions .save-description-button:hover,
+#pluginList .plugin-item .actions .cancel-edit-description-button:hover {
+    background-color: #5a6268;
+}
+
+/* 插件特定状态消息 */
+.plugin-specific-status {
+    font-size: 13px;
+    margin-top: 8px;
 }

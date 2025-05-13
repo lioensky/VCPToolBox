@@ -1,96 +1,227 @@
+// Helper function to parse .env content string into a list of objects
+function parseEnvToList(content) {
+    const lines = content.split(/\r?\n/);
+    const entries = []; // Array of { key, value, isCommentOrEmpty, isMultilineQuoted, originalLineNumStart, originalLineNumEnd }
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+        const currentLineNum = i;
+
+        if (trimmedLine.startsWith('#') || trimmedLine === '') {
+            entries.push({
+                key: null,
+                value: line, // For comments/empty, value holds the full line
+                isCommentOrEmpty: true,
+                isMultilineQuoted: false,
+                originalLineNumStart: currentLineNum,
+                originalLineNumEnd: currentLineNum
+            });
+            i++;
+            continue;
+        }
+
+        const eqIndex = line.indexOf('=');
+        if (eqIndex === -1) {
+            // Line without '=', treat as a comment or malformed
+            entries.push({ key: null, value: line, isCommentOrEmpty: true, note: 'Malformed line (no equals sign)', originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
+            i++;
+            continue;
+        }
+
+        const key = line.substring(0, eqIndex).trim();
+        let valueString = line.substring(eqIndex + 1); // Don't trim initial valueString to check for quotes accurately
+
+        // Check for single-quoted values (can be multiline)
+        if (valueString.trim().startsWith("'")) {
+            let accumulatedValue;
+            // Remove leading quote and any space before it for the first line's content part
+            let firstLineContent = valueString.substring(valueString.indexOf("'") + 1);
+            
+            if (firstLineContent.endsWith("'") && !lines.slice(i + 1).some(l => l.trim().endsWith("'") && !l.trim().startsWith("'"))) {
+                // Single line quoted value: KEY='VALUE'
+                accumulatedValue = firstLineContent.substring(0, firstLineContent.length - 1);
+                entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: i });
+            } else {
+                // Multiline quoted value
+                let multilineContent = [firstLineContent];
+                let endLineNum = i;
+                i++; // Move to next line
+                while (i < lines.length) {
+                    const nextLine = lines[i];
+                    multilineContent.push(nextLine);
+                    endLineNum = i;
+                    if (nextLine.trim().endsWith("'")) {
+                        // Found the end of the multiline quote
+                        // Remove trailing quote from the last line of multiline content
+                        let lastContentLine = multilineContent.pop();
+                        multilineContent.push(lastContentLine.substring(0, lastContentLine.lastIndexOf("'")));
+                        break;
+                    }
+                    i++;
+                }
+                accumulatedValue = multilineContent.join('\n');
+                entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: endLineNum });
+            }
+        } else {
+            // Normal, unquoted key-value, or value might have spaces but not quoted
+            entries.push({ key, value: valueString.trim(), isCommentOrEmpty: false, isMultilineQuoted: false, originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
+        }
+        i++;
+    }
+    return entries;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-    const mainConfigContent = document.getElementById('mainConfigContent');
+    const mainConfigEditor = document.getElementById('mainConfigEditor');
     const saveMainConfigButton = document.getElementById('saveMainConfig');
     const mainConfigStatus = document.getElementById('mainConfigStatus');
     const restartServerButton = document.getElementById('restartServer'); // 新增：获取重启按钮
     const pluginListDiv = document.getElementById('pluginList');
     const pluginStatus = document.getElementById('pluginStatus');
-
+    const pluginStatsDisplay = document.getElementById('pluginStatsDisplay'); // 获取顶部栏插件统计元素
+ 
     const API_BASE_URL = '/admin_api'; // 我们将在 server.js 中定义这个基础路径
 
     // --- 主配置处理 ---
     async function loadMainConfig() {
         try {
             mainConfigStatus.textContent = '正在加载主配置...';
+            mainConfigEditor.innerHTML = ''; // 清空旧内容
+            // Fetch the filtered content for display (sensitive info like AdminPassword should be absent)
             const response = await fetch(`${API_BASE_URL}/config/main`);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
-            // 过滤掉包含密码的行
-            const filteredContent = data.content.split('\n').filter(line => 
-                !/^\s*(AdminPassword|AdminUsername)\s*=/i.test(line)
-            ).join('\n');
-            mainConfigContent.value = filteredContent;
-            mainConfigStatus.textContent = '主配置已加载 (敏感信息已隐藏)。';
+            const parsedEntries = parseEnvToList(data.content); // Use the new parser
+
+            parsedEntries.forEach((entry, index) => {
+                const lineElement = document.createElement('div');
+                lineElement.classList.add('config-item');
+
+                if (entry.isCommentOrEmpty) {
+                    const commentElement = document.createElement('div');
+                    commentElement.classList.add('config-comment');
+                    commentElement.textContent = entry.value; // entry.value holds the full comment/empty line
+                    lineElement.appendChild(commentElement);
+                    lineElement.dataset.entryType = 'commentOrEmpty';
+                    // For comments/empty lines, store the original content for reconstruction
+                    lineElement.dataset.originalContentForSave = entry.value;
+                } else { // KV pair
+                    const key = entry.key;
+                    const value = entry.value; // This is the pure value, quotes removed, \n are actual newlines
+
+                    const keyLabel = document.createElement('label');
+                    keyLabel.classList.add('config-key');
+                    keyLabel.textContent = key;
+                    const elementId = `config-value-${index}`;
+                    keyLabel.htmlFor = elementId;
+
+                    let valueElement;
+                    // Use textarea if the pure value contains newlines OR if it was originally a multiline quoted string
+                    if (value.includes('\n') || entry.isMultilineQuoted) {
+                        valueElement = document.createElement('textarea');
+                        // Estimate rows: at least 3, or enough for content + a bit more
+                        valueElement.rows = Math.max(3, value.split('\n').length + (entry.isMultilineQuoted ? 1 : 0));
+                        valueElement.value = value; // Textarea handles actual \n correctly
+                    } else {
+                        valueElement = document.createElement('input');
+                        valueElement.type = 'text';
+                        valueElement.value = value;
+                    }
+                    
+                    valueElement.classList.add('config-value');
+                    valueElement.id = elementId;
+                    valueElement.dataset.key = key;
+                    // Store if the original value was multiline quoted to help with saving format
+                    valueElement.dataset.isMultilineQuoted = entry.isMultilineQuoted;
+
+                    lineElement.appendChild(keyLabel);
+                    lineElement.appendChild(valueElement); // Corrected from valueInput to valueElement
+                    lineElement.dataset.entryType = 'kv';
+                    lineElement.dataset.key = key; // Also on lineElement for easier access during save
+                }
+                mainConfigEditor.appendChild(lineElement);
+            });
+            mainConfigStatus.textContent = '主配置已加载。';
         } catch (error) {
             console.error('加载主配置失败:', error);
-            mainConfigContent.value = '';
+            mainConfigEditor.innerHTML = `<p class="error">加载主配置失败: ${error.message}</p>`;
             mainConfigStatus.textContent = `加载主配置失败: ${error.message}`;
         }
     }
 
     async function saveMainConfig() {
-        // 注意：从安全角度考虑，不建议直接通过前端修改包含敏感信息（如密码）的主配置文件。
-        // 这里的实现是为了满足请求，但在生产环境中应有更安全的机制。
-        // 我们需要获取原始文件内容，合并修改，然后保存，以避免丢失密码行。
         try {
             mainConfigStatus.textContent = '正在保存主配置...';
-            
-            // 1. 获取当前显示的（可能已修改的）非敏感内容
-            const editedContentLines = mainConfigContent.value.split('\n');
-            
-            // 2. 获取服务器上的原始完整内容（包括敏感信息）
-            const originalResponse = await fetch(`${API_BASE_URL}/config/main/raw`); // 需要一个新的后端端点
-             if (!originalResponse.ok) {
+
+            // 1. Collect UI values
+            const editedFieldValues = new Map(); // key -> {value: ui_value (with \n), originalIsMultilineQuoted: boolean}
+            const configItems = mainConfigEditor.querySelectorAll('.config-item');
+
+            configItems.forEach(item => {
+                const entryType = item.dataset.entryType;
+                if (entryType === 'kv') {
+                    const key = item.dataset.key;
+                    const valueElement = item.querySelector('input.config-value, textarea.config-value');
+                    if (valueElement) {
+                        // Read the isMultilineQuoted state that was set during load
+                        const isMultilineQuotedFromLoad = valueElement.dataset.isMultilineQuoted === 'true';
+                        editedFieldValues.set(key, {
+                            value: valueElement.value, // value from UI, already has \n if it was a textarea
+                            isMultilineQuoted: isMultilineQuotedFromLoad
+                        });
+                    }
+                }
+                // For 'commentOrEmpty' items, we'll fetch their original content later if needed, or rely on originalParsedEntries
+            });
+
+            // 2. Get original raw content and parse it
+            const originalResponse = await fetch(`${API_BASE_URL}/config/main/raw`);
+            if (!originalResponse.ok) {
                 throw new Error(`获取原始配置失败! status: ${originalResponse.status}`);
             }
             const originalData = await originalResponse.json();
-            const originalContentLines = originalData.content.split('\n');
+            const originalParsedEntries = parseEnvToList(originalData.content);
 
-            // 3. 合并：保留原始敏感行，更新其他行
-            const sensitiveKeys = ['AdminPassword', 'AdminUsername'];
+            // 3. Merge and construct final content
             const finalContentLines = [];
-            const editedKeys = new Set();
+            const sensitiveKeys = ['AdminPassword', 'AdminUsername'];
 
-            // 添加编辑过的非敏感行
-            editedContentLines.forEach(line => {
-                const match = line.match(/^\s*([^#=\s]+)\s*=/);
-                if (match) {
-                    const key = match[1];
-                     if (!sensitiveKeys.some(sensitiveKey => new RegExp(`^${sensitiveKey}$`, 'i').test(key))) {
-                        finalContentLines.push(line);
-                        editedKeys.add(key.toLowerCase()); // 记录已处理的key的小写形式
+            originalParsedEntries.forEach(originalEntry => {
+                if (originalEntry.isCommentOrEmpty) {
+                    // For comments or empty lines from the original raw file, push their original content
+                    finalContentLines.push(originalEntry.value);
+                } else { // KV pair from original raw file
+                    const key = originalEntry.key;
+                    let valueToSave;
+                    let saveWithQuotes;
+
+                    if (sensitiveKeys.includes(key)) {
+                        valueToSave = originalEntry.value; // Use original value for sensitive keys
+                        saveWithQuotes = originalEntry.isMultilineQuoted; // And original quoting style
+                    } else if (editedFieldValues.has(key)) {
+                        const editedData = editedFieldValues.get(key);
+                        valueToSave = editedData.value; // UI value, contains \n if textarea
+                        // Decide on quoting: if new value has \n, or if original was multiline quoted (even if new value is single line)
+                        saveWithQuotes = valueToSave.includes('\n') || editedData.isMultilineQuoted;
+                    } else {
+                        // Key was in original but not in UI (e.g., a new key added to original file not yet reflected in UI load after a refresh)
+                        // Or a key that /config/main might have filtered but /config/main/raw has.
+                        // Fallback to original value and quoting.
+                        valueToSave = originalEntry.value;
+                        saveWithQuotes = originalEntry.isMultilineQuoted;
                     }
-                } else {
-                     // 保留注释和空行
-                    finalContentLines.push(line);
+
+                    if (saveWithQuotes) {
+                        // Value already contains \n if it's multiline. Just wrap with single quotes.
+                        finalContentLines.push(`${key}='${valueToSave}'`);
+                    } else {
+                        finalContentLines.push(`${key}=${valueToSave}`);
+                    }
                 }
             });
-            
-             // 添加原始文件中的敏感行 (如果它们没有被错误地包含在编辑内容中)
-            originalContentLines.forEach(line => {
-                const match = line.match(/^\s*([^#=\s]+)\s*=/);
-                 if (match) {
-                    const key = match[1];
-                    if (sensitiveKeys.some(sensitiveKey => new RegExp(`^${sensitiveKey}$`, 'i').test(key))) {
-                         // 检查编辑内容中是否已存在此敏感key，理论上不应该有，但以防万一
-                         if (!editedContentLines.some(editedLine => new RegExp(`^\\s*${key}\\s*=`, 'i').test(editedLine))) {
-                            finalContentLines.push(line); // 添加原始敏感行
-                         }
-                    } else if (!editedKeys.has(key.toLowerCase())) {
-                         // 如果原始行不是敏感行，并且在编辑内容中没有出现过，也添加（防止删除未编辑的行）
-                         // 但这可能导致意外行为，如果用户删除了某行。更安全的做法可能是只合并已知key。
-                         // 暂时注释掉，只保存编辑过的和敏感的。
-                         // finalContentLines.push(line);
-                    }
-                } else if (!editedContentLines.includes(line) && /^\s*#/.test(line)) {
-                     // 如果原始行是注释，并且编辑内容里没有这一行（可能被删了），也考虑是否保留
-                     // 暂时不保留被删除的注释
-                }
-            });
-
-
             const finalContent = finalContentLines.join('\n');
 
             // 4. 发送合并后的内容到后端保存
@@ -153,6 +284,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 pluginStatus.textContent = '未找到插件。';
                 return;
             }
+            
+            // 更新顶部栏插件数量
+            if (pluginStatsDisplay) {
+                 pluginStatsDisplay.textContent = `插件: ${plugins.length}`;
+            }
 
             plugins.forEach(plugin => {
                 const pluginItem = document.createElement('div');
@@ -192,6 +328,10 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('加载插件列表失败:', error);
             pluginListDiv.innerHTML = `<p>加载插件列表失败: ${error.message}</p>`;
             pluginStatus.textContent = `加载插件列表失败: ${error.message}`;
+            // 加载失败时也更新状态显示
+            if (pluginStatsDisplay) {
+                 pluginStatsDisplay.textContent = `插件: 加载失败`;
+            }
         }
     }
 
