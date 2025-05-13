@@ -3,6 +3,7 @@ const express = require('express');
 const path = require('path');
 
 let serverImageKeyForAuth; // Stores Image_Key from config
+let pluginDebugMode = false; // To store the debug mode state for this plugin
 
 /**
  * Registers the image server routes and middleware with the Express app.
@@ -11,8 +12,11 @@ let serverImageKeyForAuth; // Stores Image_Key from config
  * @param {string} projectBasePath - The absolute path to the project's root directory.
  */
 function registerRoutes(app, pluginConfig, projectBasePath) {
-    // console.log('[ImageServerPlugin] Registering routes. Received pluginConfig:', pluginConfig); // Sensitive data removed
-    console.log(`[ImageServerPlugin] Registering routes for ImageServer. DebugMode: ${pluginConfig ? pluginConfig.DebugMode : 'N/A'}`);
+    pluginDebugMode = pluginConfig && pluginConfig.DebugMode === true; // Set module-level debug mode
+
+    if (pluginDebugMode) console.log(`[ImageServerPlugin] Registering routes for ImageServer. DebugMode is ON.`);
+    else console.log(`[ImageServerPlugin] Registering routes for ImageServer. DebugMode is OFF.`); // Optional: log when off
+
     if (!app || typeof app.use !== 'function') {
         console.error('[ImageServerPlugin] Express app instance is required for registerRoutes.');
         return;
@@ -34,25 +38,24 @@ function registerRoutes(app, pluginConfig, projectBasePath) {
             return res.status(500).type('text/plain').send('Server Configuration Error: Image key not set for plugin.');
         }
         const pathSegmentWithKey = req.params.pathSegmentWithKey;
-        console.log(`[ImageAuthMiddleware] req.params.pathSegmentWithKey: '${pathSegmentWithKey}'`);
+        if (pluginDebugMode) console.log(`[ImageAuthMiddleware] req.params.pathSegmentWithKey: '${pathSegmentWithKey}'`);
 
         if (pathSegmentWithKey && pathSegmentWithKey.startsWith('pw=')) {
             const requestImageKey = pathSegmentWithKey.substring(3);
             // console.log(`[ImageAuthMiddleware] Extracted requestImageKey: '${requestImageKey}' (Type: ${typeof requestImageKey})`); // Potentially sensitive if key is guessed or logged elsewhere
             
             const match = requestImageKey === serverImageKeyForAuth;
-            // console.log(`[ImageAuthMiddleware] Comparing requestKey '${requestImageKey}' === serverKey '${serverImageKeyForAuth}'. Match result: ${match}`); // Sensitive
-            console.log(`[ImageAuthMiddleware] Key comparison result: ${match}`);
+            if (pluginDebugMode) console.log(`[ImageAuthMiddleware] Key comparison result: ${match}`);
 
             if (match) {
-                console.log('[ImageAuthMiddleware] Authentication successful.');
+                if (pluginDebugMode) console.log('[ImageAuthMiddleware] Authentication successful.');
                 next();
             } else {
-                console.log('[ImageAuthMiddleware] Authentication failed: Invalid key.');
+                if (pluginDebugMode) console.log('[ImageAuthMiddleware] Authentication failed: Invalid key.');
                 return res.status(401).type('text/plain').send('Unauthorized: Invalid key for image access.');
             }
         } else {
-            console.log('[ImageAuthMiddleware] Authentication failed: Invalid path format (does not start with pw= or pathSegmentWithKey is missing).');
+            if (pluginDebugMode) console.log('[ImageAuthMiddleware] Authentication failed: Invalid path format (does not start with pw= or pathSegmentWithKey is missing).');
             return res.status(400).type('text/plain').send('Bad Request: Invalid image access path format.');
         }
     };

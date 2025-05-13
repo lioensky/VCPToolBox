@@ -1,0 +1,22 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DailyNoteWrite",
+  "version": "1.0.0",
+  "displayName": "日记写入器 (同步)",
+  "description": "接收日记数据 (maidName, dateString, contentText) 作为标准输入，将其写入对应的日记文件，并通过标准输出返回结果。",
+  "author": "System",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node daily-note-write.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 5000 
+  },
+  "capabilities": {},
+  "configSchema": {
+    "DebugMode": "boolean"
+  },
+  "lifecycle": {}
+}

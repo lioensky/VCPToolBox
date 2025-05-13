@@ -17,11 +17,12 @@ class PluginManager {
         this.serviceModules = new Map();
         this.projectBasePath = null;
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
+        this.debugMode = (process.env.DebugMode || "False").toLowerCase() === "true";
     }
 
     setProjectBasePath(basePath) {
         this.projectBasePath = basePath;
-        console.log(`[PluginManager] Project base path set to: ${this.projectBasePath}`);
+        if (this.debugMode) console.log(`[PluginManager] Project base path set to: ${this.projectBasePath}`);
     }
 
     _getPluginConfig(pluginManifest) {
@@ -46,7 +47,7 @@ class PluginManager {
                 if (expectedType === 'integer') {
                     value = parseInt(value, 10);
                     if (isNaN(value)) {
-                       console.warn(`[PluginManager] Config key '${key}' for ${pluginManifest.name} expected integer, got NaN from raw value '${rawValue}'. Using undefined.`);
+                       if (this.debugMode) console.warn(`[PluginManager] Config key '${key}' for ${pluginManifest.name} expected integer, got NaN from raw value '${rawValue}'. Using undefined.`);
                        value = undefined;
                     }
                 } else if (expectedType === 'boolean') {
@@ -103,8 +104,8 @@ class PluginManager {
 
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
-                    console.error(`[PluginManager] Static plugin "${plugin.name}" execution timed out after ${timeoutDuration}ms.`);
-                    pluginProcess.kill('SIGKILL'); 
+                    console.error(`[PluginManager] Static plugin "${plugin.name}" execution timed out after ${timeoutDuration}ms.`); // Keep error
+                    pluginProcess.kill('SIGKILL');
                     reject(new Error(`Static plugin "${plugin.name}" execution timed out.`));
                 }
             }, timeoutDuration);
@@ -130,7 +131,7 @@ class PluginManager {
                     console.error(`[PluginManager] ${errMsg}`);
                     reject(new Error(errMsg));
                 } else {
-                    if (errorOutput.trim()) {
+                    if (errorOutput.trim() && this.debugMode) {
                         console.warn(`[PluginManager] Static plugin ${plugin.name} produced stderr output: ${errorOutput.trim()}`);
                     }
                     resolve(output.trim());
@@ -143,7 +144,7 @@ class PluginManager {
         let newValue = null;
         let executionError = null;
         try {
-            console.log(`[PluginManager] Updating static plugin: ${plugin.name}`);
+            if (this.debugMode) console.log(`[PluginManager] Updating static plugin: ${plugin.name}`);
             newValue = await this._executeStaticPluginCommand(plugin);
         } catch (error) {
             console.error(`[PluginManager] Error executing static plugin ${plugin.name} script:`, error.message);
@@ -157,20 +158,20 @@ class PluginManager {
 
                 if (newValue !== null && newValue.trim() !== "") {
                     this.staticPlaceholderValues.set(placeholderKey, newValue.trim());
-                    console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} updated with value: "${(newValue.trim()).substring(0,70)}..."`);
+                    if (this.debugMode) console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} updated with value: "${(newValue.trim()).substring(0,70)}..."`);
                 } else if (executionError) {
                     const errorMessage = `[Error updating ${plugin.name}: ${executionError.message.substring(0,100)}...]`;
                     if (!currentValue || (currentValue && currentValue.startsWith("[Error"))) {
                         this.staticPlaceholderValues.set(placeholderKey, errorMessage);
-                        console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to error state: ${errorMessage}`);
+                        if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to error state: ${errorMessage}`);
                     } else {
-                        console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} failed to update. Keeping stale value: "${(currentValue || "").substring(0,70)}..."`);
+                        if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} failed to update. Keeping stale value: "${(currentValue || "").substring(0,70)}..."`);
                     }
                 } else {
-                    console.warn(`[PluginManager] Static plugin ${plugin.name} produced no new output for ${placeholderKey}. Keeping stale value (if any).`);
+                    if (this.debugMode) console.warn(`[PluginManager] Static plugin ${plugin.name} produced no new output for ${placeholderKey}. Keeping stale value (if any).`);
                     if (!this.staticPlaceholderValues.has(placeholderKey)) {
                         this.staticPlaceholderValues.set(placeholderKey, `[${plugin.name} data currently unavailable]`);
-                        console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to 'unavailable'.`);
+                        if (this.debugMode) console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to 'unavailable'.`);
                     }
                 }
             });
@@ -178,28 +179,28 @@ class PluginManager {
     }
 
     async initializeStaticPlugins() {
-        console.log('[PluginManager] Initializing static plugins...');
+        console.log('[PluginManager] Initializing static plugins...'); // Keep
         for (const plugin of this.plugins.values()) {
             if (plugin.pluginType === 'static') {
-                await this._updateStaticPluginValue(plugin); 
+                await this._updateStaticPluginValue(plugin);
                 if (plugin.refreshIntervalCron) {
                     if (this.scheduledJobs.has(plugin.name)) {
                         this.scheduledJobs.get(plugin.name).cancel();
                     }
                     try {
                         const job = schedule.scheduleJob(plugin.refreshIntervalCron, async () => {
-                            console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
+                            if (this.debugMode) console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
                             await this._updateStaticPluginValue(plugin);
                         });
                         this.scheduledJobs.set(plugin.name, job);
-                        console.log(`[PluginManager] Scheduled ${plugin.name} with cron: ${plugin.refreshIntervalCron}`);
+                        if (this.debugMode) console.log(`[PluginManager] Scheduled ${plugin.name} with cron: ${plugin.refreshIntervalCron}`);
                     } catch (e) {
-                        console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${e.message}`);
+                        console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${e.message}`); // Keep error
                     }
                 }
             }
         }
-        console.log('[PluginManager] Static plugins initialized.');
+        console.log('[PluginManager] Static plugins initialized.'); // Keep
     }
     
     getPlaceholderValue(placeholder) {
@@ -218,10 +219,10 @@ class PluginManager {
             return messages;
         }
         try {
-            console.log(`[PluginManager] Executing message preprocessor: ${pluginName}`);
+            if (this.debugMode) console.log(`[PluginManager] Executing message preprocessor: ${pluginName}`);
             const pluginSpecificConfig = this._getPluginConfig(pluginManifest);
             const processedMessages = await processorModule.processMessages(messages, pluginSpecificConfig);
-            console.log(`[PluginManager] Message preprocessor ${pluginName} finished.`);
+            if (this.debugMode) console.log(`[PluginManager] Message preprocessor ${pluginName} finished.`);
             return processedMessages;
         } catch (error) {
             console.error(`[PluginManager] Error in message preprocessor ${pluginName}:`, error);
@@ -230,25 +231,25 @@ class PluginManager {
     }
     
     async shutdownAllPlugins() {
-        console.log('[PluginManager] Shutting down all plugins...');
-        for (const [name, pluginModuleData] of this.messagePreprocessors) { 
-             const pluginModule = pluginModuleData.module || pluginModuleData; 
+        console.log('[PluginManager] Shutting down all plugins...'); // Keep
+        for (const [name, pluginModuleData] of this.messagePreprocessors) {
+             const pluginModule = pluginModuleData.module || pluginModuleData;
             if (pluginModule && typeof pluginModule.shutdown === 'function') {
                 try {
-                    console.log(`[PluginManager] Calling shutdown for ${name}...`);
+                    if (this.debugMode) console.log(`[PluginManager] Calling shutdown for ${name}...`);
                     await pluginModule.shutdown();
                 } catch (error) {
-                    console.error(`[PluginManager] Error during shutdown of plugin ${name}:`, error);
+                    console.error(`[PluginManager] Error during shutdown of plugin ${name}:`, error); // Keep error
                 }
             }
         }
         for (const [name, serviceData] of this.serviceModules) {
             if (serviceData.module && typeof serviceData.module.shutdown === 'function') {
                 try {
-                    console.log(`[PluginManager] Calling shutdown for service plugin ${name}...`);
+                    if (this.debugMode) console.log(`[PluginManager] Calling shutdown for service plugin ${name}...`);
                     await serviceData.module.shutdown();
                 } catch (error) {
-                    console.error(`[PluginManager] Error during shutdown of service plugin ${name}:`, error);
+                    console.error(`[PluginManager] Error during shutdown of service plugin ${name}:`, error); // Keep error
                 }
             }
         }
@@ -256,11 +257,11 @@ class PluginManager {
             job.cancel();
         }
         this.scheduledJobs.clear();
-        console.log('[PluginManager] All plugin shutdown processes initiated and scheduled jobs cancelled.');
+        console.log('[PluginManager] All plugin shutdown processes initiated and scheduled jobs cancelled.'); // Keep
     }
 
     async loadPlugins() {
-        console.log('[PluginManager] Starting plugin discovery...');
+        console.log('[PluginManager] Starting plugin discovery...'); // Keep
         this.plugins.clear();
         this.messagePreprocessors.clear();
         this.staticPlaceholderValues.clear();
@@ -276,29 +277,29 @@ class PluginManager {
                         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
                         const manifest = JSON.parse(manifestContent);
                         if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) {
-                            console.warn(`[PluginManager] Invalid manifest in ${folder.name}: Missing fields.`);
+                            if (this.debugMode) console.warn(`[PluginManager] Invalid manifest in ${folder.name}: Missing fields.`);
                             continue;
                         }
                         if (this.plugins.has(manifest.name)) {
-                            console.warn(`[PluginManager] Duplicate plugin name '${manifest.name}' in ${folder.name}. Skipping.`);
+                            if (this.debugMode) console.warn(`[PluginManager] Duplicate plugin name '${manifest.name}' in ${folder.name}. Skipping.`);
                             continue;
                         }
                         manifest.basePath = pluginPath;
 
-                        manifest.pluginSpecificEnvConfig = {}; 
+                        manifest.pluginSpecificEnvConfig = {};
                         try {
-                            await fs.access(path.join(pluginPath, '.env')); 
+                            await fs.access(path.join(pluginPath, '.env'));
                             const pluginEnvContent = await fs.readFile(path.join(pluginPath, '.env'), 'utf-8');
                             manifest.pluginSpecificEnvConfig = dotenv.parse(pluginEnvContent);
-                            console.log(`[PluginManager] Loaded specific .env for plugin: ${manifest.name}`);
+                            if (this.debugMode) console.log(`[PluginManager] Loaded specific .env for plugin: ${manifest.name}`);
                         } catch (envError) {
-                            if (envError.code !== 'ENOENT') { 
-                                console.warn(`[PluginManager] Error reading or parsing .env for plugin ${manifest.name}:`, envError.message);
+                            if (envError.code !== 'ENOENT') {
+                                if (this.debugMode) console.warn(`[PluginManager] Error reading or parsing .env for plugin ${manifest.name}:`, envError.message);
                             }
                         }
                         
                         this.plugins.set(manifest.name, manifest);
-                        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`);
+                        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`); // Keep important load log
                         
                         if (manifest.pluginType === 'messagePreprocessor') {
                             if (manifest.entryPoint.script) {
@@ -306,20 +307,20 @@ class PluginManager {
                                     const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
                                     if (manifest.communication?.protocol === 'direct') {
                                         const pluginModule = require(scriptPath);
-                                        const initialConfig = this._getPluginConfig(manifest); 
+                                        const initialConfig = this._getPluginConfig(manifest);
                                         if (pluginModule && typeof pluginModule.initialize === 'function') {
                                             await pluginModule.initialize(initialConfig);
-                                            console.log(`[PluginManager] Initialized messagePreprocessor: ${manifest.name}`);
+                                            if (this.debugMode) console.log(`[PluginManager] Initialized messagePreprocessor: ${manifest.name}`);
                                         }
-                                        this.messagePreprocessors.set(manifest.name, pluginModule); 
+                                        this.messagePreprocessors.set(manifest.name, pluginModule);
                                     } else {
-                                         console.warn(`[PluginManager] messagePreprocessor ${manifest.name} has non-direct communication, not yet fully supported for this type.`);
+                                         if (this.debugMode) console.warn(`[PluginManager] messagePreprocessor ${manifest.name} has non-direct communication, not yet fully supported for this type.`);
                                     }
                                 } catch (e) {
-                                    console.error(`[PluginManager] Error requiring/initializing messagePreprocessor ${manifest.name}:`, e);
+                                    console.error(`[PluginManager] Error requiring/initializing messagePreprocessor ${manifest.name}:`, e); // Keep error
                                 }
                             } else {
-                                console.warn(`[PluginManager] messagePreprocessor ${manifest.name} missing entryPoint.script.`);
+                                if (this.debugMode) console.warn(`[PluginManager] messagePreprocessor ${manifest.name} missing entryPoint.script.`);
                             }
                         } else if (manifest.pluginType === 'service') {
                             if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
@@ -328,29 +329,31 @@ class PluginManager {
                                     const serviceModule = require(scriptPath);
                                     if (serviceModule && typeof serviceModule.registerRoutes === 'function') {
                                         this.serviceModules.set(manifest.name, { manifest, module: serviceModule });
-                                        console.log(`[PluginManager] Loaded service module: ${manifest.name}`);
+                                        if (this.debugMode) console.log(`[PluginManager] Loaded service module: ${manifest.name}`);
                                     } else {
-                                        console.warn(`[PluginManager] Service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
+                                        if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
                                     }
                                 } catch (e) {
-                                    console.error(`[PluginManager] Error requiring service plugin ${manifest.name}:`, e);
+                                    console.error(`[PluginManager] Error requiring service plugin ${manifest.name}:`, e); // Keep error
                                 }
                             } else {
-                                console.warn(`[PluginManager] Service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
+                                if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
                             }
                         }
                     } catch (error) {
                         if (error.code === 'ENOENT') {
+                            // Manifest not found, common, no need to log unless debugging
+                            if (this.debugMode) console.warn(`[PluginManager] Manifest file not found for plugin in ${folder.name}. Skipping.`);
                         } else if (error instanceof SyntaxError) {
-                            console.warn(`[PluginManager] Invalid JSON in ${manifestPath}. Skipping ${folder.name}.`);
+                            console.warn(`[PluginManager] Invalid JSON in ${manifestPath}. Skipping ${folder.name}.`); // Keep as warning
                         } else {
-                            console.error(`[PluginManager] Error loading plugin from ${folder.name}:`, error);
+                            console.error(`[PluginManager] Error loading plugin from ${folder.name}:`, error); // Keep error
                         }
                     }
                 }
             }
-            this.buildVCPDescription(); 
-            console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`);
+            this.buildVCPDescription();
+            console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`); // Keep
         } catch (error) {
             if (error.code === 'ENOENT') {
                 console.error(`[PluginManager] Plugin directory ${PLUGIN_DIR} not found.`);
@@ -394,7 +397,7 @@ class PluginManager {
         if (this.individualPluginDescriptions.size === 0) {
             overallLog.push("  - No VCP plugins with invocation commands found to generate descriptions for.");
         }
-        console.log(overallLog.join('\n'));
+        if (this.debugMode) console.log(overallLog.join('\n'));
     }
 
     // New method to get all individual descriptions
@@ -448,7 +451,7 @@ async processToolCall(toolName, toolArgs) {
             // 如果 toolArgs 是 null 或 undefined，executionParam 也会是 null，executePlugin 会处理
         }
         const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0,100) + '...' : executionParam) : null;
-        console.log(`[PluginManager processToolCall] Calling executePlugin for: ${toolName} with prepared param:`, logParam);
+        if (this.debugMode) console.log(`[PluginManager processToolCall] Calling executePlugin for: ${toolName} with prepared param:`, logParam);
         
         try {
             const pluginOutput = await this.executePlugin(toolName, executionParam); // executePlugin now returns {status, result/error}
@@ -492,7 +495,7 @@ async processToolCall(toolName, toolArgs) {
         if (this.projectBasePath) {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
         } else {
-            console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
+            if (this.debugMode) console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
         }
         if (process.env.PORT) {
             additionalEnv.SERVER_PORT = process.env.PORT;
@@ -507,9 +510,9 @@ async processToolCall(toolName, toolArgs) {
         const finalEnv = { ...envForProcess, ...additionalEnv };
 
         return new Promise((resolve, reject) => {
-            console.log(`[PluginManager executePlugin Internal] For plugin "${pluginName}", manifest entryPoint command is: "${plugin.entryPoint.command}"`);
+            if (this.debugMode) console.log(`[PluginManager executePlugin Internal] For plugin "${pluginName}", manifest entryPoint command is: "${plugin.entryPoint.command}"`);
             const [command, ...args] = plugin.entryPoint.command.split(' ');
-            console.log(`[PluginManager executePlugin Internal] Attempting to spawn command: "${command}" with args: [${args.join(', ')}] in cwd: ${plugin.basePath}`);
+            if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Attempting to spawn command: "${command}" with args: [${args.join(', ')}] in cwd: ${plugin.basePath}`);
 
             const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv });
             let output = '';
@@ -518,9 +521,9 @@ async processToolCall(toolName, toolArgs) {
             const timeoutDuration = plugin.communication.timeout || 5000;
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
-                    console.error(`[PluginManager executePlugin Internal] Plugin "${pluginName}" timed out after ${timeoutDuration}ms.`);
+                    console.error(`[PluginManager executePlugin Internal] Plugin "${pluginName}" timed out after ${timeoutDuration}ms.`); // Keep error
                     pluginProcess.kill('SIGKILL');
-                    reject(new Error(`Plugin "${pluginName}" execution timed out.`)); // This error will be caught by processToolCall
+                    reject(new Error(`Plugin "${pluginName}" execution timed out.`));
                 }
             }, timeoutDuration);
 
@@ -545,21 +548,18 @@ async processToolCall(toolName, toolArgs) {
                     if (parsedOutput && (parsedOutput.status === "success" || parsedOutput.status === "error")) {
                         // If plugin exited with non-zero but provided valid JSON error
                         if (code !== 0 && parsedOutput.status === "success") {
-                             console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code ${code} but reported success in JSON. Trusting JSON.`);
+                             if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code ${code} but reported success in JSON. Trusting JSON.`);
                         }
                         // If plugin exited 0 but reported error in JSON
                         if (code === 0 && parsedOutput.status === "error") {
-                            console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code 0 but reported error in JSON. Trusting JSON.`);
+                            if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code 0 but reported error in JSON. Trusting JSON.`);
                         }
-                        resolve(parsedOutput); // Resolve with the parsed {status, result/error} object
+                        resolve(parsedOutput);
                         return;
                     }
-                    // If JSON is not in the expected format, fall through to error handling based on exit code
-                    console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout was not in the expected JSON format: ${output.trim().substring(0,100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout was not in the expected JSON format: ${output.trim().substring(0,100)}`);
                 } catch (e) {
-                    // JSON parsing failed. This is an issue if the plugin was supposed to output JSON.
-                    // Proceed to handle based on exit code, but log this parsing failure.
-                    console.warn(`[PluginManager executePlugin Internal] Failed to parse stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${output.trim().substring(0,100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${output.trim().substring(0,100)}`);
                 }
 
                 // Fallback error handling if JSON parsing failed or wasn't as expected
@@ -573,10 +573,10 @@ async processToolCall(toolName, toolArgs) {
                 } else {
                     // Exit code 0, but JSON parsing failed or was not in the expected {status: 'success'} format.
                     // This is problematic. Report as an error.
-                    if (errorOutput.trim()) {
+                    if (errorOutput.trim() && this.debugMode) {
                         console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" (exit code 0) produced stderr: ${errorOutput.trim()}`);
                     }
-                    reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid JSON response. Stdout: ${output.trim().substring(0,200)}`));
+                    reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid JSON response. Stdout: ${output.trim().substring(0,200)}`)); // Keep error
                 }
             });
 
@@ -599,22 +599,21 @@ async processToolCall(toolName, toolArgs) {
             return;
         }
         if (!projectBasePath) {
-            console.error('[PluginManager] Cannot initialize services without projectBasePath.');
+            console.error('[PluginManager] Cannot initialize services without projectBasePath.'); // Keep error
             return;
         }
-        console.log('[PluginManager] Initializing service plugins...');
+        console.log('[PluginManager] Initializing service plugins...'); // Keep
         for (const [name, serviceData] of this.serviceModules) {
             try {
                 const pluginConfig = this._getPluginConfig(serviceData.manifest);
-                // console.log(`[PluginManager] Registering routes for service plugin: ${name} with config:`, pluginConfig); // Sensitive
-                const debugMode = typeof pluginConfig.DebugMode === 'boolean' ? pluginConfig.DebugMode : 'N/A';
-                console.log(`[PluginManager] Registering routes for service plugin: ${name}. DebugMode: ${debugMode}`);
+                const effectiveDebugMode = typeof pluginConfig.DebugMode === 'boolean' ? pluginConfig.DebugMode : 'N/A'; // Use resolved debug mode for this log
+                if (this.debugMode) console.log(`[PluginManager] Registering routes for service plugin: ${name}. Plugin DebugMode: ${effectiveDebugMode}`);
                 serviceData.module.registerRoutes(app, pluginConfig, projectBasePath);
             } catch (e) {
-                console.error(`[PluginManager] Error initializing service plugin ${name}:`, e);
+                console.error(`[PluginManager] Error initializing service plugin ${name}:`, e); // Keep error
             }
         }
-        console.log('[PluginManager] Service plugins initialized.');
+        console.log('[PluginManager] Service plugins initialized.'); // Keep
     }
 }
 

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理面板</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>服务器管理面板</h1>
+
+        <div class="section">
+            <h2>主配置 (config.env)</h2>
+            <textarea id="mainConfigContent" rows="10" cols="80"></textarea>
+            <button id="saveMainConfig">保存主配置</button>
+            <p class="status" id="mainConfigStatus"></p>
+        </div>
+
+        <div class="section">
+            <h2>插件管理</h2>
+            <div id="pluginList">
+                <!-- 插件列表将在这里动态生成 -->
+            </div>
+            <p class="status" id="pluginStatus"></p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

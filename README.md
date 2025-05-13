@@ -17,10 +17,10 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     *   **服务插件 (`service`)**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口（如图床服务）。
 *   **灵活的配置管理**: 支持全局配置文件 (`config.env`) 以及插件专属的 `.env` 文件，实现配置的层级化和隔离。
 *   **通用变量替换**: 在与 AI 交互的各个阶段（系统提示词、用户消息）自动替换预定义的占位符变量。
-*   **内置实用功能**:
-    *   **日记/记忆库系统**: 自动提取和存储 AI 生成的结构化日记，并通过变量注入到提示词。
-    *   **动态表情包系统**: 自动扫描和加载表情包，并通过变量和提示词模板供 AI 使用。
-    *   **提示词转换**: 支持基于规则的系统提示词和全局上下文文本替换。
+*   **内置实用功能 (部分已插件化)**:
+   *   **日记/记忆库系统**: 通过 `DailyNoteGet` (静态插件) 读取日记内容，并通过 `DailyNoteWrite` (同步插件) 存储 AI 生成的结构化日记。相关内容通过 `{{角色名日记本}}` 和 `{{AllCharacterDiariesData}}` 占位符注入提示词。
+   *   **动态表情包系统**: 由 `EmojiListGenerator` (静态插件) 扫描 `image/` 目录并在其插件目录内生成表情包列表 `.txt` 文件。服务器在启动时执行此插件并加载这些列表到内存缓存，供 `{{xx表情包}}` 占位符使用。
+   *   **提示词转换**: 支持基于规则的系统提示词和全局上下文文本替换。
 *   **工具调用能力**:
     *   **非流式模式**: 已实现对 AI 单次响应中包含的**多个**工具调用指令的循环处理和结果反馈。
     *   **流式模式 (SSE)**: 当前主要支持 AI 单次响应中包含的**单个**工具调用指令的流式处理（即，AI首次响应流式输出，插件执行后，二次AI响应继续在原SSE流中输出）。
@@ -42,15 +42,42 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 5.  **`Plugin.js` (插件管理器)**:
     *   根据工具名称查找已加载的插件。
     *   为插件准备执行环境和配置。
-    *   通过 `stdio` (或其他协议) 与插件脚本交互，发送输入并接收输出。
+    *   通过 `stdio` (或其他协议) 与插件脚本交互，发送输入并接收输出 (例如，`DailyNoteWrite` 插件通过 stdin 接收日记数据，`SciCalculator` 接收计算表达式)。
     *   将插件的执行结果（通常是 JSON）返回给 `server.js`。
 6.  **`server.js` 二次 AI 调用**:
     *   将插件的执行结果格式化后，作为新的用户消息添加到对话历史中。
     *   再次调用后端 AI 模型，将包含插件结果的完整对话历史发送过去。
     *   将 AI 的最终响应流式或非流式地返回给客户端。
 7.  **静态与服务插件**:
-    *   `static` 插件（如 `WeatherReporter`）在服务器启动和定时任务中被 `PluginManager` 调用，其结果用于更新占位符变量。
+    *   `static` 插件在服务器启动和/或定时任务中被 `PluginManager` 调用。它们可以：
+        *   直接更新占位符变量，如 `WeatherReporter` (提供天气信息给 `{{VCPWeatherInfo}}`) 或 `DailyNoteGet` (提供所有日记数据给 `{{AllCharacterDiariesData}}`)。
+        *   执行特定任务，如 `EmojiListGenerator`，它在初始化时被调用以生成表情包列表 `.txt` 文件，这些文件随后被服务器加载到内存缓存中。
     *   `service` 插件（如 `ImageServer`）在服务器启动时由 `PluginManager` 初始化，向 Express 应用注册自己的路由。
+
+## Web 管理面板
+
+为了方便用户管理服务器配置和插件，项目内置了一个简单的 Web 管理面板。
+
+**主要功能**:
+
+*   **主配置管理**: 在线预览和编辑项目根目录下的 `config.env` 文件内容。
+    *   **注意**: 出于安全考虑，管理界面在显示主配置时会自动隐藏 `AdminUsername` 和 `AdminPassword` 字段。保存时，系统会合并您修改的内容和服务器上原始的敏感字段值，以确保凭据不丢失。
+*   **插件管理**:
+    *   **列表与状态**: 显示 `Plugin/` 目录下所有已发现的插件及其启用/禁用状态。
+    *   **描述编辑**: 直接在界面上编辑各插件 `plugin-manifest.json` 文件中的描述信息。
+    *   **启停插件**: 通过界面开关切换插件的启用状态（通过重命名插件的 `plugin-manifest.json` 为 `plugin-manifest.json.block` 或反之实现）。
+    *   **插件配置**: 读取和编辑各个插件目录（如果存在）下的 `config.env` 文件。
+
+**访问与登录**:
+
+1.  **设置凭据**: 首次使用前，请确保已在项目根目录的 `config.env` 文件中设置了以下两个变量：
+    ```env
+    AdminUsername=your_admin_username
+    AdminPassword=your_admin_password
+    ```
+    **重要**: 如果未设置 `AdminUsername` 或 `AdminPassword`，管理面板及其 API 将无法访问，并会返回 503 Service Unavailable 错误。必须配置这些凭据才能启用管理面板。
+2.  **访问地址**: 启动服务器后，通过浏览器访问 `http://<您的服务器IP或域名>:<端口>/AdminPanel`。
+3.  **登录**: 浏览器会弹出 HTTP Basic Auth 认证窗口，请输入您在 `config.env` 中设置的 `AdminUsername` 和 `AdminPassword` 进行登录。
 
 ## 已实现插件示例
 
@@ -62,7 +89,10 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`Wan2.1VideoGen` (`synchronous`)**: 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频功能。
 *   **`SunoGen` (`synchronous`)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或继续生成模式。
 *   **`TavilySearch` (`synchronous`)**: 集成 Tavily API 提供网络搜索能力。
-  
+*   **`DailyNoteGet` (`static`)**: 定期读取 `dailynote/` 目录下所有角色的日记，并通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器，以支持 `{{角色名日记本}}` 的解析。
+*   **`DailyNoteWrite` (`synchronous`)**: 接收包含角色名、日期和内容的日记数据（通过 stdin），并将其写入到对应的日记文件中。
+*   **`EmojiListGenerator` (`static`)**: 扫描项目 `image/` 目录下的表情包文件夹，并在插件自身的 `generated_lists/` 目录下生成对应的 `.txt` 列表文件，供服务器加载和使用。
+ 
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
 
@@ -126,9 +156,15 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   `{{Time}}`: 当前时间 (格式: H:MM:SS)。
 *   `{{Today}}`: 当天星期几 (中文)。
 *   `{{Festival}}`: 农历日期、生肖、节气。
-*   `{{VCPWeatherInfo}}`: 当前缓存的天气预报文本 (由 WeatherReporter 插件提供)。
+*   `{{VCPWeatherInfo}}`: 当前缓存的天气预报文本 (由 `WeatherReporter` 插件提供)。
+*   `{{角色名日记本}}`: 特定角色（如 `小克`）的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
+*   `{{AllCharacterDiariesData}}`: (由 `DailyNoteGet` 插件提供) 一个 JSON 字符串，解析后为包含所有角色日记内容的对象。服务器内部使用此数据来支持 `{{角色名日记本}}` 的解析。
+*   `{{xx表情包}}`: 特定表情包（如 `通用表情包`）的图片文件名列表 (以 `|` 分隔)。数据由 `EmojiListGenerator` 插件生成列表文件，服务器加载到内存缓存后提供。
+*   `{{EmojiList}}`: (环境变量 `EmojiList` 指定，例如 `通用表情包`) 默认表情包的图片文件名列表。其数据来源与 `{{xx表情包}}` 相同。
+*   `{{Port}}`: 服务器运行的端口号。
+*   `{{Image_Key}}`: (由 `ImageServer` 插件配置提供) 图床服务的访问密钥。
+*   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 `config.env` 中定义的以 `Var` 开头的自定义变量。
 *   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
-*   ... (其他在旧 README 中定义的 `Var*`, `Emoji*`, `Image_Key` 等变量) ...
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
 
 ## 未来展望

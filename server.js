@@ -8,8 +8,12 @@ const path = require('path');
 const { Writable } = require('stream');
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
+const basicAuth = require('basic-auth');
 
 dotenv.config({ path: 'config.env' });
+
+const ADMIN_USERNAME = process.env.AdminUsername;
+const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog');
@@ -78,59 +82,75 @@ const cachedEmojiLists = new Map();
 app.use(express.json({ limit: '300mb' }));
 app.use(express.urlencoded({ limit: '300mb', extended: true }));
 
+// Authentication middleware for Admin Panel and Admin API
+const adminAuth = (req, res, next) => {
+    const isAdminPath = req.path.startsWith('/AdminPanel') || req.path.startsWith('/admin_api');
+
+    if (isAdminPath) {
+        // Check if admin credentials are configured
+        if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+            console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
+            if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
+                 res.status(503).json({
+                    error: 'Service Unavailable: Admin credentials not configured.',
+                    message: 'Please set AdminUsername and AdminPassword in the config.env file to enable the admin panel.'
+                });
+            } else {
+                 res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
+            }
+            return; // Stop further processing
+        }
+
+        // Credentials are configured, proceed with Basic Auth
+        const credentials = basicAuth(req);
+        if (!credentials || credentials.name !== ADMIN_USERNAME || credentials.pass !== ADMIN_PASSWORD) {
+            res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
+            if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
+                return res.status(401).json({ error: 'Unauthorized' });
+            } else {
+                return res.status(401).send('<h1>401 Unauthorized</h1><p>Authentication required to access the Admin Panel.</p>');
+            }
+        }
+        // Authentication successful
+        return next();
+    }
+    // Not an admin path, proceed
+    return next();
+};
+app.use(adminAuth); // Apply admin authentication globally (it will only act on /AdminPanel and /admin_api paths)
+
+// Serve Admin Panel static files (will only be reached if adminAuth passes for /AdminPanel paths)
+app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+
+
 // Image server logic is now handled by the ImageServer plugin.
 
 app.use((req, res, next) => {
     console.log(`[${new Date().toLocaleString()}] Received ${req.method} request for ${req.url} from ${req.ip}`);
     next();
 });
+
+// General API authentication (Bearer token) - This was the original one, now adminAuth handles its paths
 app.use((req, res, next) => {
-    const imageServicePathRegex = /^\/pw=[^/]+\/images\//; 
+    // Skip bearer token check for admin panel API and static files, as they use basic auth or no auth
+    if (req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel')) {
+        return next();
+    }
+
+    const imageServicePathRegex = /^\/pw=[^/]+\/images\//;
     if (imageServicePathRegex.test(req.path)) {
-        return next(); 
+        return next();
     }
 
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
-        return res.status(401).json({ error: 'Unauthorized (Bearer token required)' }); 
+        return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
     }
     next();
 });
 
-async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) {
-    console.log(`尝试更新 ${agentName} 表情包列表...`);
-    let newList = '';
-    let errorMessage = '';
-    try {
-        const files = await fs.readdir(dirPath);
-        const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
-        newList = imageFiles.join('|');
-        await fs.writeFile(filePath, newList);
-        console.log(`${agentName} 表情包列表已更新并写入 ${filePath}`);
-        errorMessage = newList;
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            errorMessage = `${agentName} 表情包目录 ${dirPath} 不存在，无法生成列表。`;
-        } else {
-            errorMessage = `更新或写入 ${agentName} 表情包列表 ${filePath} 时出错: ${error.message}`;
-        }
-        console.error(errorMessage, error.code !== 'ENOENT' ? error : '');
-        try {
-            await fs.writeFile(filePath, errorMessage);
-        } catch (writeError) {
-            console.error(`创建空的 ${filePath} 文件失败:`, writeError);
-        }
-        try {
-            const oldList = await fs.readFile(filePath, 'utf-8');
-            if (oldList !== errorMessage) {
-                errorMessage = oldList;
-            }
-        } catch (readError) {
-            if (readError.code !== 'ENOENT') console.error(`读取旧的 ${agentName} 表情包列表 ${filePath} 失败:`, readError);
-        }
-    }
-    return errorMessage;
-}
+// This function is no longer needed as the EmojiListGenerator plugin handles generation.
+// async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 
 async function replaceCommonVariables(text) {
     if (text == null) return '';
@@ -179,7 +199,7 @@ async function replaceCommonVariables(text) {
     if (processedText && typeof processedText === 'string' && effectiveImageKey) {
         processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
     } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
-        console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
+        if (DEBUG_MODE) console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
     }
     if (processedText.includes('{{EmojiList}}') && process.env.EmojiList) {
         const emojiListFileName = process.env.EmojiList;
@@ -189,7 +209,7 @@ async function replaceCommonVariables(text) {
             processedText = processedText.replaceAll('{{EmojiList}}', specificEmojiListContent);
         } else {
             processedText = processedText.replaceAll('{{EmojiList}}', `[名为 ${emojiCacheKey} 的表情列表不可用 (源: ${emojiListFileName})]`);
-            console.warn(`[EmojiList Variable] 未能从缓存中找到 ${emojiCacheKey} 的列表.`);
+            if (DEBUG_MODE) console.warn(`[EmojiList Variable] 未能从缓存中找到 ${emojiCacheKey} 的列表.`);
         }
     }
     const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
@@ -201,42 +221,46 @@ async function replaceCommonVariables(text) {
         processedText = processedText.replaceAll(placeholder, emojiList || `${emojiName}列表不可用`);
     }
     const diaryPlaceholderRegex = /\{\{(.+?)日记本\}\}/g;
-    let tempProcessedText = processedText;
-    const diaryMatches = tempProcessedText.matchAll(diaryPlaceholderRegex);
-    const processedCharacters = new Set();
-    for (const match of diaryMatches) {
-        const placeholder = match[0];
-        const characterName = match[1];
-        if (processedCharacters.has(characterName)) continue;
-        const diaryDirPath = path.join(__dirname, 'dailynote', characterName);
-        let diaryContent = `[${characterName}日记本内容为空或不存在]`;
+    let tempProcessedText = processedText; // Work on a temporary copy
+
+    // Attempt to get and parse the AllCharacterDiariesData placeholder from PluginManager
+    let allDiariesData = {};
+    const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
+
+    if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
         try {
-            const files = await fs.readdir(diaryDirPath);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt')).sort();
-            if (txtFiles.length > 0) {
-                const fileContents = await Promise.all(
-                    txtFiles.map(async (file) => {
-                        const filePath = path.join(diaryDirPath, file);
-                        try {
-                            return await fs.readFile(filePath, 'utf-8');
-                        } catch (readErr) {
-                            console.error(`读取日记文件 ${filePath} 失败:`, readErr);
-                            return `[读取文件 ${file} 失败]`;
-                        }
-                    })
-                );
-                diaryContent = fileContents.join('\n\n---\n\n');
-            }
-        } catch (error) {
-            if (error.code !== 'ENOENT') {
-                console.error(`读取 ${characterName} 日记目录 ${diaryDirPath} 出错:`, error);
-                diaryContent = `[读取${characterName}日记时出错]`;
-            }
+            allDiariesData = JSON.parse(allDiariesDataString);
+        } catch (e) {
+            console.error(`[replaceCommonVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
+            // Keep allDiariesData as an empty object, so individual lookups will fail gracefully
         }
-        tempProcessedText = tempProcessedText.replaceAll(placeholder, diaryContent);
-        processedCharacters.add(characterName);
+    } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
+         if (DEBUG_MODE) console.warn(`[replaceCommonVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
     }
-    processedText = tempProcessedText;
+
+
+    // Use a loop that allows for async operations if needed, though simple string replacement is sync here
+    // We need to re-evaluate regex on each replacement as the string length changes
+    let match;
+    while ((match = diaryPlaceholderRegex.exec(tempProcessedText)) !== null) {
+        const placeholder = match[0]; // e.g., "{{小明同学日记本}}"
+        const characterName = match[1]; // e.g., "小明同学"
+        
+        let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`; // Default message
+
+        if (allDiariesData.hasOwnProperty(characterName)) {
+            diaryContent = allDiariesData[characterName];
+        } else {
+            // console.warn(`[replaceCommonVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
+            // No need to log for every miss, default message is sufficient
+        }
+        
+        // ReplaceAll is important if the same character's diary is mentioned multiple times
+        tempProcessedText = tempProcessedText.replaceAll(placeholder, diaryContent);
+        // Reset regex lastIndex because the string has changed, to re-scan from the beginning
+        diaryPlaceholderRegex.lastIndex = 0;
+    }
+    processedText = tempProcessedText; // Assign the fully processed text back
     for (const rule of detectors) {
         if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
             processedText = processedText.replaceAll(rule.detector, rule.output);
@@ -248,53 +272,6 @@ async function replaceCommonVariables(text) {
         }
     }
     return processedText;
-}
-
-async function handleDailyNote(noteBlockContent) {
-    const lines = noteBlockContent.trim().split('\n');
-    let maidName = null;
-    let dateString = null;
-    let contentLines = [];
-    let isContentSection = false;
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith('Maid:')) {
-            maidName = trimmedLine.substring(5).trim();
-            isContentSection = false;
-        } else if (trimmedLine.startsWith('Date:')) {
-            dateString = trimmedLine.substring(5).trim();
-            isContentSection = false;
-        } else if (trimmedLine.startsWith('Content:')) {
-            isContentSection = true;
-            const firstContentPart = trimmedLine.substring(8).trim();
-            if (firstContentPart) contentLines.push(firstContentPart);
-        } else if (isContentSection) {
-            contentLines.push(line);
-        }
-    }
-    const contentText = contentLines.join('\n').trim();
-    if (!maidName || !dateString || !contentText) {
-        console.error('[handleDailyNote] 无法从日记块中完整提取 Maid, Date, 或 Content:', { maidName, dateString, contentText: contentText.substring(0,100)+ '...' });
-        return;
-    }
-    const datePart = dateString.replace(/[.-]/g, '.');
-    const now = new Date();
-    const hours = now.getHours().toString().padStart(2, '0');
-    const minutes = now.getMinutes().toString().padStart(2, '0');
-    const seconds = now.getSeconds().toString().padStart(2, '0');
-    const timeStringForFile = `${hours}_${minutes}_${seconds}`;
-    const dirPath = path.join(__dirname, 'dailynote', maidName);
-    const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
-    const fileExtension = '.txt';
-    let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
-    let filePath = path.join(dirPath, finalFileName);
-    try {
-        await fs.mkdir(dirPath, { recursive: true });
-        await fs.writeFile(filePath, `[${datePart}] - ${maidName}\n${contentText}`);
-        console.log(`[handleDailyNote] 日记文件写入成功: ${filePath}`);
-    } catch (error) {
-        console.error(`[handleDailyNote] 处理日记文件 ${filePath} 时捕获到错误:`, error);
-    }
 }
 
 app.post('/v1/chat/completions', async (req, res) => {
@@ -322,17 +299,18 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
                 if (foundPlaceholderInMsg) {
                     shouldProcessImages = false;
-                    console.log('[Server] Image processing disabled by {{ShowBase64}} placeholder.');
+                    if (DEBUG_MODE) console.log('[Server] Image processing disabled by {{ShowBase64}} placeholder.');
                     break;
                 }
             }
         }
 
         if (shouldProcessImages) {
-            console.log('[Server] Image processing enabled, calling ImageProcessor plugin...');
+            if (DEBUG_MODE) console.log('[Server] Image processing enabled, calling ImageProcessor plugin...');
+            if (DEBUG_MODE) console.log('[Server Pre-ImageProcessor] Messages:', JSON.stringify(originalBody.messages, null, 2).substring(0, 500) + "..."); // Log before call
             try {
                 originalBody.messages = await pluginManager.executeMessagePreprocessor("ImageProcessor", originalBody.messages);
-                console.log('[Server] ImageProcessor plugin finished.');
+                if (DEBUG_MODE) console.log('[Server Post-ImageProcessor] Messages:', JSON.stringify(originalBody.messages, null, 2).substring(0, 500) + "..."); // Log after call
             } catch (pluginError) {
                 console.error('[Server] Error executing ImageProcessor plugin:', pluginError);
             }
@@ -444,7 +422,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                 const parsedJson = JSON.parse(aiResponseText);
                 fullContentFromAI = parsedJson.choices?.[0]?.message?.content || '';
             } catch (e) {
-                console.warn('[PluginCall] First AI response (non-stream) not valid JSON. Raw:', aiResponseText.substring(0, 200));
+                if (DEBUG_MODE) console.warn('[PluginCall] First AI response (non-stream) not valid JSON. Raw:', aiResponseText.substring(0, 200));
                 fullContentFromAI = aiResponseText;
             }
             // 非流式分支递归工具链闭环处理
@@ -473,7 +451,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
                     const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
                     if (endIndex === -1) {
-                        console.warn("[Multi-Tool] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
+                        if (DEBUG_MODE) console.warn("[Multi-Tool] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
                         searchOffset = startIndex + toolRequestStartMarker.length; // Skip malformed start
                         continue;
                     }
@@ -493,7 +471,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     if (requestedToolName) {
                         toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
                     } else {
-                        console.warn("[Multi-Tool] Parsed a tool request block but no tool_name found:", requestBlockContent);
+                        if (DEBUG_MODE) console.warn("[Multi-Tool] Parsed a tool request block but no tool_name found:", requestBlockContent);
                     }
                     searchOffset = endIndex + toolRequestEndMarker.length; // Move past the processed block
                 }
@@ -511,7 +489,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                         let toolResultText;
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
-                                console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
+                                if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
                                 const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
                                 toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
                                 if (SHOW_VCP_OUTPUT) {
@@ -526,7 +504,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                             }
                         } else {
                             toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
-                            console.warn(`[Multi-Tool] ${toolResultText}`);
+                            if (DEBUG_MODE) console.warn(`[Multi-Tool] ${toolResultText}`);
                             if (SHOW_VCP_OUTPUT) {
                                 conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
                             }
@@ -541,7 +519,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
 
                     // Fetch the next AI response
-                    console.log("[Multi-Tool] Fetching next AI response after processing tools.");
+                    if (DEBUG_MODE) console.log("[Multi-Tool] Fetching next AI response after processing tools.");
                     const recursionAiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
                         method: 'POST',
                         headers: {
@@ -613,7 +591,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary); // Use the initially collected raw data
         }
         
-        console.log('[PluginCall] AI First Full Response Text (from fullContentFromAI):', fullContentFromAI.substring(0, 200) + "...");
+        if (DEBUG_MODE) console.log('[PluginCall] AI First Full Response Text (from fullContentFromAI):', fullContentFromAI.substring(0, 200) + "...");
 
         let needsSecondAICall = false;
         let messagesForNextAICall = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
@@ -629,9 +607,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         if (startIndex !== -1) {
             const endIndex = fullContentFromAI.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
             if (endIndex !== -1) {
-                toolRequestBlockFound = true; 
+                toolRequestBlockFound = true;
                 const requestBlock = fullContentFromAI.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
-                console.log("[PluginCall Debug] Extracted Tool Request Block:\n", requestBlock);
+                if (DEBUG_MODE) console.log("[PluginCall Debug] Extracted Tool Request Block:\n", requestBlock);
                 
                 const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
                 let regexMatch;
@@ -647,11 +625,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
                 const lastIndex = paramRegex.lastIndex;
                 if (requestBlock.length > 0 && lastIndex < requestBlock.length && requestBlock.substring(lastIndex).trim() !== "") {
-                    console.warn("[PluginCall Debug] Remaining unparsed text in tool request block:", requestBlock.substring(lastIndex).trim());
+                    if (DEBUG_MODE) console.warn("[PluginCall Debug] Remaining unparsed text in tool request block:", requestBlock.substring(lastIndex).trim());
                 }
 
-                console.log("[PluginCall Debug] Parsed Tool Name:", requestedToolName);
-                console.log("[PluginCall Debug] Parsed Tool Arguments:", parsedToolArgs);
+                if (DEBUG_MODE) console.log("[PluginCall Debug] Parsed Tool Name:", requestedToolName);
+                if (DEBUG_MODE) console.log("[PluginCall Debug] Parsed Tool Arguments:", parsedToolArgs);
 
                 if (requestedToolName && pluginManager.getPlugin(requestedToolName)) {
                     const pluginManifest = pluginManager.getPlugin(requestedToolName);
@@ -659,7 +637,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
                     try {
                         // 使用新的 processToolCall 方法，它会处理 executionParam 的准备
-                        console.log(`[PluginCall Debug] Attempting to call pluginManager.processToolCall for: ${requestedToolName} with args:`, parsedToolArgs);
+                        if (DEBUG_MODE) console.log(`[PluginCall Debug] Attempting to call pluginManager.processToolCall for: ${requestedToolName} with args:`, parsedToolArgs);
                         const pluginResult = await pluginManager.processToolCall(requestedToolName, parsedToolArgs);
                         // pluginResult is now expected to be the final, pre-formatted string for AI,
                         // as formatting logic has been moved into individual plugins and processToolCall.
@@ -667,7 +645,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                         const resultLogPreview = pluginResult
                             ? JSON.stringify(pluginResult).substring(0, 200) + (JSON.stringify(pluginResult).length > 200 ? "..." : "")
                             : pluginResult;
-                        console.log(`[PluginCall Debug] Plugin ${requestedToolName} executed. Result from processToolCall:`, resultLogPreview);
+                        if (DEBUG_MODE) console.log(`[PluginCall Debug] Plugin ${requestedToolName} executed. Result from processToolCall:`, resultLogPreview);
 
                         // Directly use the result from processToolCall as it's already formatted.
                         // If processToolCall encountered an error (either from plugin's JSON or execution failure),
@@ -693,19 +671,19 @@ app.post('/v1/chat/completions', async (req, res) => {
                         messagesForNextAICall.push({ role: 'user', content: `\n执行插件 ${requestedToolName} 时发生错误：${pluginError.message || '未知错误'}` }); // Added \n here
                         needsSecondAICall = true;
                     }
-                } else if (requestedToolName) { 
-                    console.warn(`[PluginCall Debug] Requested tool "${requestedToolName}" not found or not loaded.`);
+                } else if (requestedToolName) {
+                    if (DEBUG_MODE) console.warn(`[PluginCall Debug] Requested tool "${requestedToolName}" not found or not loaded.`);
                     messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-                } else if (requestBlock.length > 0) { 
-                    console.warn(`[PluginCall Debug] Tool request block found but no valid 'tool_name' was parsed from: ${requestBlock}`);
+                } else if (requestBlock.length > 0) {
+                    if (DEBUG_MODE) console.warn(`[PluginCall Debug] Tool request block found but no valid 'tool_name' was parsed from: ${requestBlock}`);
                     messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
-                } else { 
-                     console.warn(`[PluginCall Debug] Tool request markers found, but the block between them was empty or whitespace.`);
+                } else {
+                     if (DEBUG_MODE) console.warn(`[PluginCall Debug] Tool request markers found, but the block between them was empty or whitespace.`);
                      messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
                 }
-            } else if (startIndex !== -1 && endIndex === -1) { 
-                 console.warn("[PluginCall Debug] Found TOOL_REQUEST_START but no END marker in AI response.");
-                 toolRequestBlockFound = true; 
+            } else if (startIndex !== -1 && endIndex === -1) {
+                 if (DEBUG_MODE) console.warn("[PluginCall Debug] Found TOOL_REQUEST_START but no END marker in AI response.");
+                 toolRequestBlockFound = true;
                  messagesForNextAICall.push({ role: 'user', content: firstAIResponseContent });
             }
         }
@@ -715,11 +693,11 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
         
         if (needsSecondAICall) {
-            console.log('[PluginCall] Proceeding with second AI call with tool results.');
-            console.log('[PluginCall Debug] messagesForNextAICall for second call:', JSON.stringify(messagesForNextAICall, null, 2));
+            if (DEBUG_MODE) console.log('[PluginCall] Proceeding with second AI call with tool results.');
+            if (DEBUG_MODE) console.log('[PluginCall Debug] messagesForNextAICall for second call:', JSON.stringify(messagesForNextAICall, null, 2));
             await writeDebugLog('LogOutputWithPluginCall_BeforeSecondCall', { messages: messagesForNextAICall, originalRequestBody: originalBody });
 
-            try { 
+            try {
                 const secondAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
                     method: 'POST',
                     headers: { 
@@ -729,7 +707,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     },
                     body: JSON.stringify({ ...originalBody, messages: messagesForNextAICall }),
                 });
-                console.log(`[PluginCall Debug] Second AI call response status: ${secondAiAPIResponse.status}`);
+                if (DEBUG_MODE) console.log(`[PluginCall Debug] Second AI call response status: ${secondAiAPIResponse.status}`);
                 await writeDebugLog('LogOutputWithPluginCall_AfterSecondCall_Status', { status: secondAiAPIResponse.status, headers: Object.fromEntries(secondAiAPIResponse.headers.entries()) });
 
                 if (!secondAiAPIResponse.ok && !originalBody.stream) {
@@ -753,8 +731,8 @@ app.post('/v1/chat/completions', async (req, res) => {
                 let secondResponseFullText = "";
 
                 if (secondResponseIsStreaming) {
-                    console.log('[PluginCall Debug] Second AI response is streaming.');
-                    let finalResponseAggregated = ""; 
+                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response is streaming.');
+                    let finalResponseAggregated = "";
                     await new Promise((resolve, reject) => {
                         secondAiAPIResponse.body.on('data', (chunk) => {
                             const chunkString = chunk.toString('utf-8');
@@ -775,14 +753,14 @@ app.post('/v1/chat/completions', async (req, res) => {
                             reject(streamError); 
                         });
                     });
-                } else { 
-                    console.log('[PluginCall Debug] Second AI response is NOT streaming.');
+                } else {
+                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response is NOT streaming.');
                     const secondArrayBuffer = await secondAiAPIResponse.arrayBuffer();
                     const secondResponseBuffer = Buffer.from(secondArrayBuffer);
                     secondResponseFullText = secondResponseBuffer.toString('utf-8');
-                    console.log('[PluginCall Debug] Second AI response (non-stream) full text (first 500 chars):', secondResponseFullText.substring(0,500));
+                    if (DEBUG_MODE) console.log('[PluginCall Debug] Second AI response (non-stream) full text (first 500 chars):', secondResponseFullText.substring(0,500));
                     
-                    if (!isOriginalResponseStreaming && !res.getHeader('Content-Type')) { 
+                    if (!isOriginalResponseStreaming && !res.getHeader('Content-Type')) {
                         try { JSON.parse(secondResponseFullText); if (!res.headersSent) res.setHeader('Content-Type', 'application/json');}
                         catch (e) { if (!res.headersSent) res.setHeader('Content-Type', 'text/plain');}
                     }
@@ -863,13 +841,422 @@ async function handleDiaryFromAIResponse(responseText) {
         const match = fullAiResponseTextForDiary.match(dailyNoteRegex);
         if (match && match[1]) {
             const noteBlockContent = match[1].trim();
-            console.log('[DailyNote Check from handleDiary] Found structured daily note.');
-            handleDailyNote(noteBlockContent).catch(err => {
-                console.error("[DailyNote Check from handleDiary] Error processing daily note:", err);
-            });
+            if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
+
+            // Extract Maid, Date, Content from noteBlockContent
+            const lines = noteBlockContent.trim().split('\n');
+            let maidName = null;
+            let dateString = null;
+            let contentLines = [];
+            let isContentSection = false;
+
+            for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine.startsWith('Maid:')) {
+                    maidName = trimmedLine.substring(5).trim();
+                    isContentSection = false;
+                } else if (trimmedLine.startsWith('Date:')) {
+                    dateString = trimmedLine.substring(5).trim();
+                    isContentSection = false;
+                } else if (trimmedLine.startsWith('Content:')) {
+                    isContentSection = true;
+                    const firstContentPart = trimmedLine.substring(8).trim();
+                    if (firstContentPart) contentLines.push(firstContentPart);
+                } else if (isContentSection) {
+                    contentLines.push(line);
+                }
+            }
+            const contentText = contentLines.join('\n').trim();
+
+            if (maidName && dateString && contentText) {
+                const diaryPayload = { maidName, dateString, contentText };
+                try {
+                    if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Calling DailyNoteWrite plugin with payload:', diaryPayload);
+                    // pluginManager.executePlugin is expected to handle JSON stringification if the plugin expects a string
+                    // and to parse the JSON response from the plugin.
+                    // The third argument to executePlugin in Plugin.js is inputData, which can be a string or object.
+                    // For stdio, it's better to stringify here.
+                    const pluginResult = await pluginManager.executePlugin("DailyNoteWrite", JSON.stringify(diaryPayload));
+
+                    if (pluginResult && pluginResult.status === "success") {
+                        if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${pluginResult.result?.message || pluginResult.message}`);
+                    } else {
+                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported error or unexpected response:`, pluginResult?.error || pluginResult?.message || pluginResult); // Keep as error
+                    }
+                } catch (pluginError) {
+                    console.error('[handleDiaryFromAIResponse] Error calling DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
+                }
+            } else {
+                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0,50) });
+            }
         }
     }
 }
+
+// --- Admin API Router ---
+const adminApiRouter = express.Router();
+
+// GET main config.env content (filtered)
+adminApiRouter.get('/config/main', async (req, res) => {
+    try {
+        const configPath = path.join(__dirname, 'config.env');
+        const content = await fs.readFile(configPath, 'utf-8');
+        // Filter out sensitive keys before sending to client
+        const filteredContent = content.split('\n').filter(line =>
+            !/^\s*(AdminPassword|AdminUsername)\s*=/i.test(line)
+        ).join('\n');
+        res.json({ content: filteredContent });
+    } catch (error) {
+        console.error('Error reading main config for admin panel:', error);
+        res.status(500).json({ error: 'Failed to read main config file', details: error.message });
+    }
+});
+
+// GET raw main config.env content (for saving purposes)
+adminApiRouter.get('/config/main/raw', async (req, res) => {
+    try {
+        const configPath = path.join(__dirname, 'config.env');
+        const content = await fs.readFile(configPath, 'utf-8');
+        res.json({ content: content });
+    } catch (error) {
+        console.error('Error reading raw main config for admin panel:', error);
+        res.status(500).json({ error: 'Failed to read raw main config file', details: error.message });
+    }
+});
+
+// POST to save main config.env content
+adminApiRouter.post('/config/main', async (req, res) => {
+    const { content } = req.body;
+    if (typeof content !== 'string') {
+        return res.status(400).json({ error: 'Invalid content format. String expected.' });
+    }
+    try {
+        const configPath = path.join(__dirname, 'config.env');
+        await fs.writeFile(configPath, content, 'utf-8');
+        // Re-load dotenv to reflect changes in the current process (optional, might have side effects)
+        // dotenv.config({ path: 'config.env', override: true });
+        // console.log('[AdminPanel] Main config.env reloaded into process.env');
+        res.json({ message: '主配置已成功保存。更改可能需要重启服务才能完全生效。' });
+    } catch (error) {
+        console.error('Error writing main config for admin panel:', error);
+        res.status(500).json({ error: 'Failed to write main config file', details: error.message });
+    }
+});
+
+// GET plugin list with manifest, status, and config.env content
+adminApiRouter.get('/plugins', async (req, res) => {
+    const PLUGIN_DIR = path.join(__dirname, 'Plugin');
+    const manifestFileName = 'plugin-manifest.json';
+    const blockedManifestExtension = '.block';
+
+    try {
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        const pluginDataList = [];
+
+        for (const folder of pluginFolders) {
+            if (folder.isDirectory()) {
+                const pluginPath = path.join(PLUGIN_DIR, folder.name);
+                const manifestPath = path.join(pluginPath, manifestFileName);
+                const blockedManifestPath = manifestPath + blockedManifestExtension;
+                let manifest = null;
+                let isEnabled = false;
+                let configEnvContent = null;
+
+                try {
+                    // Check for enabled manifest first
+                    await fs.access(manifestPath);
+                    const manifestContent = await fs.readFile(manifestPath, 'utf-8');
+                    manifest = JSON.parse(manifestContent);
+                    isEnabled = true;
+                } catch (error) {
+                    if (error.code === 'ENOENT') {
+                        // If enabled not found, check for disabled (blocked) manifest
+                        try {
+                            await fs.access(blockedManifestPath);
+                            const manifestContent = await fs.readFile(blockedManifestPath, 'utf-8');
+                            manifest = JSON.parse(manifestContent);
+                            isEnabled = false; // It exists but is blocked
+                        } catch (blockedError) {
+                            if (blockedError.code !== 'ENOENT') {
+                                console.warn(`[AdminPanel] Error reading blocked manifest for ${folder.name}:`, blockedError);
+                            }
+                            // If neither manifest exists, skip this folder or handle as error
+                            continue;
+                        }
+                    } else if (error instanceof SyntaxError) {
+                         console.warn(`[AdminPanel] Invalid JSON in manifest for ${folder.name}: ${manifestPath}`);
+                         continue; // Skip invalid manifest
+                    } else {
+                        console.warn(`[AdminPanel] Error accessing manifest for ${folder.name}:`, error);
+                        continue; // Skip on other errors
+                    }
+                }
+                
+                // Try reading plugin-specific config.env
+                try {
+                    const pluginConfigPath = path.join(pluginPath, 'config.env');
+                    await fs.access(pluginConfigPath);
+                    configEnvContent = await fs.readFile(pluginConfigPath, 'utf-8');
+                } catch (envError) {
+                     if (envError.code !== 'ENOENT') {
+                         console.warn(`[AdminPanel] Error reading config.env for ${folder.name}:`, envError);
+                     }
+                     // If config.env doesn't exist, configEnvContent remains null
+                }
+
+
+                if (manifest && manifest.name) { // Ensure manifest was loaded and has a name
+                    pluginDataList.push({
+                        name: manifest.name,
+                        manifest: manifest,
+                        enabled: isEnabled,
+                        configEnvContent: configEnvContent
+                    });
+                }
+            }
+        }
+        res.json(pluginDataList);
+    } catch (error) {
+        console.error('[AdminPanel] Error listing plugins:', error);
+        res.status(500).json({ error: 'Failed to list plugins', details: error.message });
+    }
+});
+
+// POST to toggle plugin enabled/disabled status
+adminApiRouter.post('/plugins/:pluginName/toggle', async (req, res) => {
+    const pluginName = req.params.pluginName;
+    const { enable } = req.body; // Expecting { enable: true } or { enable: false }
+    const PLUGIN_DIR = path.join(__dirname, 'Plugin');
+    const manifestFileName = 'plugin-manifest.json';
+    const blockedManifestExtension = '.block';
+
+    if (typeof enable !== 'boolean') {
+        return res.status(400).json({ error: 'Invalid request body. Expected { enable: boolean }.' });
+    }
+
+    try {
+        // Find the plugin folder by iterating and checking manifest 'name' field
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        let targetPluginPath = null;
+        let currentManifestPath = null;
+        let currentBlockedPath = null;
+        let foundManifest = null;
+
+        for (const folder of pluginFolders) {
+             if (folder.isDirectory()) {
+                const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
+                const potentialManifestPath = path.join(potentialPluginPath, manifestFileName);
+                const potentialBlockedPath = potentialManifestPath + blockedManifestExtension;
+                let manifestContent = null;
+                let isCurrentlyEnabled = false;
+
+                try {
+                    manifestContent = await fs.readFile(potentialManifestPath, 'utf-8');
+                    isCurrentlyEnabled = true;
+                } catch (err) {
+                    if (err.code === 'ENOENT') {
+                        try {
+                            manifestContent = await fs.readFile(potentialBlockedPath, 'utf-8');
+                            isCurrentlyEnabled = false;
+                        } catch (blockedErr) { continue; /* Not this folder */ }
+                    } else { continue; /* Error reading manifest */ }
+                }
+
+                try {
+                    const manifest = JSON.parse(manifestContent);
+                    if (manifest.name === pluginName) {
+                        targetPluginPath = potentialPluginPath;
+                        currentManifestPath = potentialManifestPath;
+                        currentBlockedPath = potentialBlockedPath;
+                        foundManifest = manifest; // Store the found manifest
+                        break; // Found the plugin
+                    }
+                } catch (parseErr) { continue; /* Invalid JSON */ }
+            }
+        }
+
+        if (!targetPluginPath || !foundManifest) {
+            return res.status(404).json({ error: `Plugin '${pluginName}' not found.` });
+        }
+
+        const manifestPath = currentManifestPath; //path.join(targetPluginPath, manifestFileName);
+        const blockedManifestPath = currentBlockedPath; //manifestPath + blockedManifestExtension;
+
+        if (enable) {
+            // Enable: Rename .block to .json (if it exists)
+            try {
+                await fs.rename(blockedManifestPath, manifestPath);
+                res.json({ message: `插件 ${pluginName} 已启用。请注意，更改可能需要重启服务才能完全生效。` });
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // If .block doesn't exist, it might already be enabled
+                     try {
+                         await fs.access(manifestPath); // Check if .json exists
+                         res.json({ message: `插件 ${pluginName} 已经是启用状态。` });
+                     } catch (accessError) {
+                         res.status(500).json({ error: `无法启用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
+                     }
+                } else {
+                    console.error(`[AdminPanel] Error enabling plugin ${pluginName}:`, error);
+                    res.status(500).json({ error: `启用插件 ${pluginName} 时出错`, details: error.message });
+                }
+            }
+        } else {
+            // Disable: Rename .json to .block (if it exists)
+            try {
+                await fs.rename(manifestPath, blockedManifestPath);
+                res.json({ message: `插件 ${pluginName} 已禁用。请注意，更改可能需要重启服务才能完全生效。` });
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // If .json doesn't exist, it might already be disabled
+                    try {
+                         await fs.access(blockedManifestPath); // Check if .block exists
+                         res.json({ message: `插件 ${pluginName} 已经是禁用状态。` });
+                     } catch (accessError) {
+                         res.status(500).json({ error: `无法禁用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
+                     }
+                } else {
+                    console.error(`[AdminPanel] Error disabling plugin ${pluginName}:`, error);
+                    res.status(500).json({ error: `禁用插件 ${pluginName} 时出错`, details: error.message });
+                }
+            }
+        }
+    } catch (error) {
+        console.error(`[AdminPanel] Error toggling plugin ${pluginName}:`, error);
+        res.status(500).json({ error: `处理插件 ${pluginName} 状态切换时出错`, details: error.message });
+    }
+});
+
+// POST to update plugin description in manifest
+adminApiRouter.post('/plugins/:pluginName/description', async (req, res) => {
+    const pluginName = req.params.pluginName;
+    const { description } = req.body;
+    const PLUGIN_DIR = path.join(__dirname, 'Plugin');
+    const manifestFileName = 'plugin-manifest.json';
+    const blockedManifestExtension = '.block';
+
+    if (typeof description !== 'string') {
+        return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
+    }
+
+    try {
+        // Find the plugin folder and the active manifest file (.json or .json.block)
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        let targetManifestPath = null;
+        let manifest = null;
+
+        for (const folder of pluginFolders) {
+            if (folder.isDirectory()) {
+                const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
+                const potentialManifestPath = path.join(potentialPluginPath, manifestFileName);
+                const potentialBlockedPath = potentialManifestPath + blockedManifestExtension;
+                let currentPath = null;
+                let manifestContent = null;
+
+                try { // Try reading enabled first
+                    manifestContent = await fs.readFile(potentialManifestPath, 'utf-8');
+                    currentPath = potentialManifestPath;
+                } catch (err) {
+                    if (err.code === 'ENOENT') {
+                        try { // Try reading disabled
+                            manifestContent = await fs.readFile(potentialBlockedPath, 'utf-8');
+                            currentPath = potentialBlockedPath;
+                        } catch (blockedErr) { continue; }
+                    } else { continue; }
+                }
+
+                try {
+                    const parsedManifest = JSON.parse(manifestContent);
+                    if (parsedManifest.name === pluginName) {
+                        targetManifestPath = currentPath;
+                        manifest = parsedManifest;
+                        break;
+                    }
+                } catch (parseErr) { continue; }
+            }
+        }
+
+
+        if (!targetManifestPath || !manifest) {
+            return res.status(404).json({ error: `Plugin '${pluginName}' or its manifest file not found.` });
+        }
+
+        // Update the description in the manifest object
+        manifest.description = description;
+
+        // Write the updated manifest back to the file
+        await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8'); // Pretty print JSON
+
+        res.json({ message: `插件 ${pluginName} 的描述已更新。` });
+
+    } catch (error) {
+        console.error(`[AdminPanel] Error updating description for plugin ${pluginName}:`, error);
+        res.status(500).json({ error: `更新插件 ${pluginName} 描述时出错`, details: error.message });
+    }
+});
+
+// POST to save plugin-specific config.env
+adminApiRouter.post('/plugins/:pluginName/config', async (req, res) => {
+    const pluginName = req.params.pluginName;
+    const { content } = req.body;
+    const PLUGIN_DIR = path.join(__dirname, 'Plugin');
+
+     if (typeof content !== 'string') {
+        return res.status(400).json({ error: 'Invalid content format. String expected.' });
+    }
+
+    try {
+        // Find the plugin folder by name (similar logic to toggle/description)
+        const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+        let targetPluginPath = null;
+
+        for (const folder of pluginFolders) {
+             if (folder.isDirectory()) {
+                const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
+                // We need to read the manifest to confirm the plugin name matches
+                const manifestPath = path.join(potentialPluginPath, manifestFileName);
+                const blockedManifestPath = manifestPath + blockedManifestExtension;
+                let manifestContent = null;
+                 try {
+                    manifestContent = await fs.readFile(manifestPath, 'utf-8');
+                 } catch (err) {
+                     if (err.code === 'ENOENT') {
+                         try { manifestContent = await fs.readFile(blockedManifestPath, 'utf-8'); }
+                         catch (blockedErr) { continue; }
+                     } else { continue; }
+                 }
+                 try {
+                     const manifest = JSON.parse(manifestContent);
+                     if (manifest.name === pluginName) {
+                         targetPluginPath = potentialPluginPath;
+                         break;
+                     }
+                 } catch (parseErr) { continue; }
+             }
+        }
+
+        if (!targetPluginPath) {
+             return res.status(404).json({ error: `Plugin folder for '${pluginName}' not found.` });
+        }
+
+        const configPath = path.join(targetPluginPath, 'config.env');
+        await fs.writeFile(configPath, content, 'utf-8');
+        
+        // Optionally, try to update the plugin's config in pluginManager if loaded?
+        // This might be complex depending on how pluginManager handles config updates.
+        // For now, just saving the file. Restart might be needed for plugin to see changes.
+        
+        res.json({ message: `插件 ${pluginName} 的配置已保存。更改可能需要重启插件或服务才能生效。` });
+    } catch (error) {
+        console.error(`[AdminPanel] Error writing config.env for plugin ${pluginName}:`, error);
+        res.status(500).json({ error: `保存插件 ${pluginName} 配置时出错`, details: error.message });
+    }
+});
+
+
+app.use('/admin_api', adminApiRouter);
+// --- End Admin API Router ---
+
 
 async function initialize() {
     console.log('开始加载插件...');
@@ -883,35 +1270,44 @@ async function initialize() {
 
     console.log('开始初始化静态插件...');
     await pluginManager.initializeStaticPlugins();
-    console.log('静态插件初始化完成。');
+    console.log('静态插件初始化完成。'); // Keep
+    // EmojiListGenerator (static plugin) is automatically executed as part of the initializeStaticPlugins call above.
+    // Its script (`emoji-list-generator.js`) will run and generate/update the .txt files
+    // in its `generated_lists` directory. No need to call it separately here.
 
-    console.log('开始初始化表情包列表...');
-    const imageDir = path.join(__dirname, 'image');
+    if (DEBUG_MODE) console.log('开始从插件目录加载表情包列表到缓存 (由EmojiListGenerator插件生成)...');
+    const emojiListSourceDir = path.join(__dirname, 'Plugin', 'EmojiListGenerator', 'generated_lists');
+    cachedEmojiLists.clear();
+
     try {
-        const entries = await fs.readdir(imageDir, { withFileTypes: true });
-        const emojiDirs = entries.filter(entry => entry.isDirectory() && entry.name.endsWith('表情包'));
-        if (emojiDirs.length === 0) {
-            console.warn(`警告: 在 ${imageDir} 目录下未找到任何以 '表情包' 结尾的文件夹。`);
+        const listFiles = await fs.readdir(emojiListSourceDir);
+        const txtFiles = listFiles.filter(file => file.toLowerCase().endsWith('.txt'));
+
+        if (txtFiles.length === 0) {
+            if (DEBUG_MODE) console.warn(`[initialize] Warning: No .txt files found in emoji list source directory: ${emojiListSourceDir}`);
         } else {
-            console.log(`找到 ${emojiDirs.length} 个表情包目录，开始加载...`);
-            await Promise.all(emojiDirs.map(async (dirEntry) => {
-                const emojiName = dirEntry.name;
-                const dirPath = path.join(imageDir, emojiName);
-                const filePath = path.join(__dirname, `${emojiName}.txt`);
+            if (DEBUG_MODE) console.log(`[initialize] Found ${txtFiles.length} emoji list files in ${emojiListSourceDir}. Loading...`);
+            await Promise.all(txtFiles.map(async (fileName) => {
+                const emojiName = fileName.replace(/\.txt$/i, '');
+                const filePath = path.join(emojiListSourceDir, fileName);
                 try {
-                    const listContent = await updateAndLoadAgentEmojiList(emojiName, dirPath, filePath);
+                    const listContent = await fs.readFile(filePath, 'utf-8');
                     cachedEmojiLists.set(emojiName, listContent);
-                } catch (loadError) {
-                    console.error(`加载 ${emojiName} 列表时出错:`, loadError);
-                    cachedEmojiLists.set(emojiName, `${emojiName}列表加载失败`);
+                } catch (readError) {
+                    console.error(`[initialize] Error reading emoji list file ${filePath}:`, readError.message); // Keep as error
+                    cachedEmojiLists.set(emojiName, `[加载 ${emojiName} 列表失败: ${readError.code}]`);
                 }
             }));
-            console.log('所有表情包列表加载完成。');
+            if (DEBUG_MODE) console.log('[initialize] All available emoji lists loaded into cache.');
         }
     } catch (error) {
-        console.error(`读取 image 目录 ${imageDir} 时出错:`, error);
+         if (error.code === 'ENOENT') {
+             console.error(`[initialize] Error: Emoji list source directory not found: ${emojiListSourceDir}. Make sure the EmojiListGenerator plugin ran successfully.`); // Keep as error
+         } else {
+            console.error(`[initialize] Error reading emoji list source directory ${emojiListSourceDir}:`, error.message); // Keep as error
+         }
     }
-    console.log('表情包列表初始化结束。');
+    if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
 }
 
 app.listen(port, async () => {

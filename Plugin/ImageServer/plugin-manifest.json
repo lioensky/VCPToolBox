@@ -14,7 +14,8 @@
     "protocol": "direct"
   },
   "configSchema": {
-    "Image_Key": "string"
+    "Image_Key": "string",
+    "DebugMode": "boolean"
   },
   "capabilities": {
   "services": [
