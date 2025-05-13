@@ -126,6 +126,36 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     ```
     服务器将监听在 `config.env` 中配置的端口。
 	
+### 使用 Docker Compose 运行 (推荐)
+
+您也可以使用 Docker Compose 来简化项目的部署和管理。
+
+1.  **前提条件**:
+    *   确保您已安装 [Docker](https://docs.docker.com/get-docker/)。
+    *   确保您已安装 [Docker Compose](https://docs.docker.com/compose/install/)。
+
+2.  **配置**:
+    *   复制 `config.env.example` 为 `config.env`，并根据说明填写所有必要的 API 密钥、URL、端口等信息。Docker Compose 会自动加载此文件中的环境变量。
+
+3.  **构建并启动服务**:
+    在项目根目录下，运行以下命令：
+    ```bash
+    docker-compose up --build -d
+    ```
+    此命令会：
+    *   构建 Docker 镜像 (如果尚未构建或 Dockerfile 已更改)。
+    *   在后台启动服务容器。
+    *   服务将监听在 `config.env` 中 `PORT`变量定义的端口上 (默认为 `6005`)。
+
+4.  **查看日志**:
+    ```bash
+    docker-compose logs -f
+    ```
+
+5.  **停止服务**:
+    ```bash
+    docker-compose down
+    ```
 ## 推荐的前端/后端
 1. 后端推荐NewAPI或者VoAPI，它们有比较丰富的SSE标准化生态。
 2. 前端推荐CherrySudio，Chatbox或者类似Lobe，Sillytavern这样的全功能支持CSS/MD渲染的前端。
