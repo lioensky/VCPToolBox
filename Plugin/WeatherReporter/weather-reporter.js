@@ -52,7 +52,7 @@ async function fetchRawWeatherDataWithTavily(city, tavilyApiKey) {
     const query = `${currentDateFormatted}开始，${city}的一周天气预报`; // Construct the query with date
 
     try {
-        console.log(`[WeatherReporter] Fetching raw weather data from Tavily for city: ${city} with query: "${query}"`);
+        console.error(`[WeatherReporter] Fetching raw weather data from Tavily for city: ${city} with query: "${query}"`);
         const response = await fetch(tavilyApiUrl, {
             method: 'POST',
             headers: {
@@ -86,7 +86,7 @@ async function fetchRawWeatherDataWithTavily(city, tavilyApiKey) {
             resultString = JSON.stringify(searchResult, null, 2);
         }
 
-        console.log(`[WeatherReporter] Successfully fetched raw weather data from Tavily for ${city}. Found ${urls.length} URLs.`);
+        console.error(`[WeatherReporter] Successfully fetched raw weather data from Tavily for ${city}. Found ${urls.length} URLs.`);
         // Return URLs along with the original data string
         return { success: true, data: resultString, urls: urls, error: null };
 
@@ -104,7 +104,7 @@ async function fetchWebPageContent(url) {
     const TIMEOUT = 10000; // 10 seconds timeout per page fetch
 
     try {
-        console.log(`[WeatherReporter] Fetching content from URL: ${url}`);
+        console.error(`[WeatherReporter] Fetching content from URL: ${url}`);
         const response = await fetch(url, {
             headers: {
                 // Mimic a browser User-Agent
@@ -144,7 +144,7 @@ async function fetchWebPageContent(url) {
             content = content.substring(0, MAX_CONTENT_LENGTH) + '... [内容截断]';
         }
 
-        console.log(`[WeatherReporter] Successfully fetched and processed content from ${url} (length: ${content.length})`);
+        console.error(`[WeatherReporter] Successfully fetched and processed content from ${url} (length: ${content.length})`);
         return { success: true, url: url, content: content };
 
     } catch (error) {
@@ -197,7 +197,7 @@ async function fetchAndCacheWeather() {
         // Continue, but webPagesContent will be empty or indicate failure later
     } else if (tavilyResult.urls && tavilyResult.urls.length > 0) {
         // 2. Fetch content from the URLs returned by Tavily
-        console.log(`[WeatherReporter] Fetching content for ${tavilyResult.urls.length} URLs...`);
+        console.error(`[WeatherReporter] Fetching content for ${tavilyResult.urls.length} URLs...`);
         const fetchPromises = tavilyResult.urls.map(url => fetchWebPageContent(url));
         const pageResults = await Promise.all(fetchPromises);
 
@@ -213,9 +213,9 @@ async function fetchAndCacheWeather() {
                 }
             })
             .join('\n\n');
-        console.log(`[WeatherReporter] Successfully fetched content from ${successfulPages}/${tavilyResult.urls.length} URLs.`);
+        console.error(`[WeatherReporter] Successfully fetched content from ${successfulPages}/${tavilyResult.urls.length} URLs.`);
     } else {
-        console.log("[WeatherReporter] Tavily search succeeded but returned no URLs to fetch.");
+        console.error("[WeatherReporter] Tavily search succeeded but returned no URLs to fetch.");
         webPagesContent = "[Tavily未返回可抓取的网页URL]";
     }
 
@@ -237,7 +237,7 @@ async function fetchAndCacheWeather() {
             llmApiPayload.max_tokens = weatherModelMaxTokens;
         }
 
-        console.log(`[WeatherReporter] Calling LLM to summarize weather. Prompt (first 200 chars): ${promptForLLM.substring(0,200)}...`);
+        console.error(`[WeatherReporter] Calling LLM to summarize weather. Prompt (first 200 chars): ${promptForLLM.substring(0,200)}...`);
 
         const response = await fetch(`${apiUrl}/v1/chat/completions`, {
             method: 'POST',
@@ -259,7 +259,7 @@ async function fetchAndCacheWeather() {
         if (weatherInfoMatch && weatherInfoMatch[1] && weatherContent.includes(successMarker)) {
             const extractedInfo = weatherInfoMatch[1].trim();
             await fs.writeFile(CACHE_FILE_PATH, extractedInfo, 'utf-8');
-            console.log(`[WeatherReporter] Successfully summarized, fetched and cached new weather info.`);
+            console.error(`[WeatherReporter] Successfully summarized, fetched and cached new weather info.`);
             return { success: true, data: extractedInfo, error: null };
         } else {
             const detail = tavilyResult.success ? "LLM未能有效总结Tavily数据" : "Tavily搜索失败且LLM未能处理";
