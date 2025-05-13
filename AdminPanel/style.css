@@ -15,7 +15,7 @@
     max-width: 1200px; /* 与 .container 最大宽度一致 */
     margin: 0 auto;
     display: flex;
-    justify-content: space-between;
+    justify-content: space-between; /* Keep space-between for overall structure */
     align-items: center;
 }
 
@@ -261,3 +261,226 @@ button#restartServer:hover {
     font-size: 13px;
     margin-top: 8px;
 }
+/* Invocation Commands Section Styles */
+.invocation-commands-section {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid #e0e0e0; /* Separator from plugin config */
+}
+
+.invocation-commands-section h4 {
+    font-size: 1.1em;
+    color: #34495e;
+    margin-bottom: 15px;
+}
+
+.commands-list .command-item {
+    background-color: #f9fafb; /* Slightly different background for each command block */
+    padding: 15px;
+    border: 1px solid #e7e7e7;
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
+
+.command-item h5 {
+    font-size: 1em;
+    color: #2c3e50;
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+
+.command-item label {
+    display: block;
+    font-weight: 500;
+    color: #555;
+    margin-bottom: 5px;
+    font-size: 0.9em;
+}
+
+textarea.command-description-edit {
+    width: 100%;
+    min-height: 120px; /* Good default height for descriptions */
+    padding: 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 10px;
+    box-sizing: border-box;
+    resize: vertical; /* Allow vertical resizing */
+    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+}
+
+textarea.command-description-edit:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+    outline: none;
+}
+
+.command-item .save-command-description-button {
+    background-color: #17a2b8; /* Info blue/teal for command specific save */
+    color: white;
+    padding: 8px 12px;
+    font-size: 13px;
+    margin-top: 5px;
+}
+
+.command-item .save-command-description-button:hover {
+    background-color: #138496; /* Darker shade for hover */
+}
+/* Top Bar Title Styles */
+.top-bar-title {
+    color: #ecf0f1;
+    font-size: 1.2em; /* 根据需要调整大小 */
+    font-weight: bold;
+    margin: 0 10px; /* Add some margin to prevent touching edges if server-name or plugin-stats are short */
+    flex-grow: 1; /* Allow title to take available space */
+    text-align: center; /* Center the text within the title element */
+    min-width: 0; /* Allow shrinking if needed */
+}
+
+.server-name, .plugin-stats {
+    flex-shrink: 0; /* Prevent server name and plugin stats from shrinking too much */
+}
+
+/* Main Config Actions Styles */
+.main-config-actions {
+    display: flex;
+    align-items: center; /* Vertically align items to the center of the line */
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.main-config-actions button,
+.main-config-actions .status {
+    height: 45px; /* Explicit height */
+    padding: 0 15px; /* Horizontal padding only */
+    font-size: 14px;
+    margin-right: -3px;
+    margin-top: -15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border-radius: 6px;
+    border: 1px solid transparent; /* Base border for box model consistency */
+}
+
+.main-config-actions .status {
+    margin-top: 0;
+    background-color: #e9ecef;
+    color: #6c757d;
+    border-color: #ced4da; /* Override with visible border */
+}
+
+/* Ensure specific button styles don't override height and maintain consistent border for box model */
+.main-config-actions button#saveMainConfig {
+    background-color: #007bff;
+    color: white;
+    /* border: 1px solid #007bff; /* Or keep transparent if no visible border desired */
+}
+.main-config-actions button#restartServer {
+     background-color: #ffc107;
+     color: #212529;
+     /* border: 1px solid #ffc107; /* Or keep transparent */
+}
+
+/* Ensure buttons also use box-sizing for consistent height calculation */
+/* General button box-sizing is good, but ensure it doesn't conflict with explicit height */
+button {
+    box-sizing: border-box;
+}
+
+/* Plugin save button area - fix for the small square */
+/* Assuming the "small square" is the status paragraph next to the save button */
+/* We can style the container of the button and status for better alignment */
+#pluginList .plugin-item .actions + h4 + textarea + button + p.plugin-specific-status {
+    margin-left: 10px; /* Add some space if it's too close */
+}
+
+/* If the "小方块" is an unexpected element, we might need to hide it.
+   For example, if it's an empty p tag or a mis-styled element.
+   Let's first try to improve spacing for the existing status element.
+   If the issue is a specific unwanted element, a more targeted CSS rule would be needed.
+   Based on the screenshot, it seems like the status message itself.
+   Let's ensure plugin buttons and their associated status messages are well-aligned.
+*/
+
+#pluginList .plugin-item > button.save-plugin-config-button,
+#pluginList .plugin-item > p.plugin-specific-status {
+    display: inline-block; /* Align them on the same line */
+    vertical-align: middle; /* Vertically align them */
+    margin-top: 10px; /* Add some top margin for spacing */
+}
+
+#pluginList .plugin-item > p.plugin-specific-status {
+    margin-left: 8px; /* Space between button and status */
+    padding: 8px 12px; /* Consistent padding */
+}
+
+/* Adjusting the plugin actions container for better button alignment */
+#pluginList .plugin-item .actions {
+    display: flex;
+    flex-wrap: wrap; /* Allow buttons to wrap if not enough space */
+    align-items: center;
+    gap: 8px; /* Spacing between action buttons */
+    margin-bottom: 15px; /* Space below action buttons */
+}
+
+#pluginList .plugin-item .actions button {
+    margin-right: 0; /* Remove individual margins, use gap */
+}
+
+/* Specific styling for the container of plugin config save button and its status */
+.plugin-config-controls {
+    display: flex;
+    align-items: center; /* Vertically align items to the center of the line */
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.plugin-config-controls .save-plugin-config-button,
+.plugin-config-controls .plugin-specific-status {
+    height: 36px; /* Explicit height */
+    padding: 0 12px; /* Horizontal padding */
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    margin-top: -5px;
+    border-radius: 6px;
+    border: 1px solid transparent; /* Base border for box model consistency */
+}
+
+.plugin-config-controls .save-plugin-config-button {
+    background-color: #007bff;
+    color: white;
+    /* border: 1px solid #007bff; /* Or keep transparent */
+}
+
+.plugin-config-controls .plugin-specific-status {
+    background-color: #e9ecef;
+    color: #6c757d;
+    border-color: #ced4da; /* Override with visible border */
+    margin-top: 4px;
+    margin-right: 50px;
+    /* If status is empty, it will still take up height. JS might be needed to hide if truly empty. */
+}
+
+/* Remove the overly broad rule that might be conflicting */
+/* Commenting out the rule from lines 380-385 if it's causing issues with the new .plugin-config-controls styling */
+/*
+#pluginList .plugin-item > button.save-plugin-config-button,
+#pluginList .plugin-item > p.plugin-specific-status {
+    display: inline-block;
+    vertical-align: middle;
+    margin-top: 10px;
+}
+
+#pluginList .plugin-item > p.plugin-specific-status {
+    margin-left: 8px;
+    padding: 8px 12px;
+}
+*/

@@ -10,22 +10,24 @@
     <header class="top-bar">
         <div class="top-bar-content">
             <span class="server-name">VCPToolBox By Lionsky</span>
+            <h1 class="top-bar-title">服务器管理面板</h1>
             <span class="plugin-stats" id="pluginStatsDisplay">插件: 0</span>
         </div>
     </header>
     <div class="container">
-        <h1>服务器管理面板</h1>
  
         <div class="section">
             <h2>主配置 (config.env)</h2>
             <div id="mainConfigEditor" class="config-editor">
                 <!-- 配置项将在这里动态生成 -->
             </div>
-            <button id="saveMainConfig">保存主配置</button>
-            <button id="restartServer" style="background-color: #f0ad4e; margin-left: 10px;">重启服务器</button>
-            <p class="status" id="mainConfigStatus"></p>
+            <div class="main-config-actions">
+                <button id="saveMainConfig">保存主配置</button>
+                <button id="restartServer" style="background-color: #f0ad4e;">重启服务器</button>
+                <p class="status" id="mainConfigStatus"></p>
+            </div>
         </div>
-
+ 
         <div class="section">
             <h2>插件管理</h2>
             <div id="pluginList">

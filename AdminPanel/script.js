@@ -144,7 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 mainConfigEditor.appendChild(lineElement);
             });
-            mainConfigStatus.textContent = '主配置已加载。';
+            mainConfigStatus.textContent = '主配置已加载';
         } catch (error) {
             console.error('加载主配置失败:', error);
             mainConfigEditor.innerHTML = `<p class="error">加载主配置失败: ${error.message}</p>`;
@@ -317,9 +317,39 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <h4>插件配置 (config.env)</h4>
                     <textarea class="plugin-config-content" rows="5" placeholder="此插件没有独立的 config.env 文件，或加载失败。">${plugin.configEnvContent || ''}</textarea>
-                    <button class="save-plugin-config-button">保存插件配置</button>
-                    <p class="status plugin-specific-status"></p>
+                    <div class="plugin-config-controls">
+                        <button class="save-plugin-config-button">保存插件配置</button>
+                        <p class="status plugin-specific-status" id="plugin-config-status-${plugin.name}"></p>
+                    </div>
                 `;
+                
+                // --- 新增：显示和编辑 Invocation Commands ---
+                const commandsSection = document.createElement('div');
+                commandsSection.classList.add('invocation-commands-section');
+                let commandsHtml = '<h4>调用命令 (Invocation Commands)</h4>';
+                
+                if (plugin.manifest && plugin.manifest.capabilities && plugin.manifest.capabilities.invocationCommands && plugin.manifest.capabilities.invocationCommands.length > 0) {
+                    commandsHtml += '<div class="commands-list">';
+                    plugin.manifest.capabilities.invocationCommands.forEach((command, cmdIndex) => {
+                        const commandId = command.commandIdentifier || `cmd-${cmdIndex}`;
+                        commandsHtml += `
+                            <div class="command-item" data-command-identifier="${escapeHtml(commandId)}">
+                                <h5>命令: ${escapeHtml(command.commandIdentifier)}</h5>
+                                <label for="cmd-desc-${plugin.name}-${commandId}">指令描述:</label>
+                                <textarea id="cmd-desc-${plugin.name}-${commandId}" class="command-description-edit" rows="8">${escapeHtml(command.description || '')}</textarea>
+                                <button class="save-command-description-button" data-plugin-name="${plugin.name}" data-command-id="${commandId}">保存此指令描述</button>
+                                <p class="status command-specific-status" id="command-status-${plugin.name}-${commandId}"></p>
+                            </div>
+                        `;
+                    });
+                    commandsHtml += '</div>';
+                } else {
+                    commandsHtml += '<p>此插件没有定义调用命令。</p>';
+                }
+                commandsSection.innerHTML = commandsHtml;
+                pluginItem.appendChild(commandsSection);
+                // --- 结束新增 ---
+
                 pluginListDiv.appendChild(pluginItem);
             });
             pluginStatus.textContent = '插件列表已加载。';
@@ -346,8 +376,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const descriptionEdit = item.querySelector('.description-edit');
             const savePluginConfigButton = item.querySelector('.save-plugin-config-button');
             const pluginConfigContent = item.querySelector('.plugin-config-content');
-            const pluginSpecificStatus = item.querySelector('.plugin-specific-status');
+            // const pluginSpecificStatus = item.querySelector('.plugin-specific-status'); // This might be too generic now
 
+            // Event listeners for new command description save buttons
+            item.querySelectorAll('.save-command-description-button').forEach(saveCmdDescButton => {
+                saveCmdDescButton.addEventListener('click', async () => {
+                    const cmdPluginName = saveCmdDescButton.dataset.pluginName;
+                    const commandId = saveCmdDescButton.dataset.commandId;
+                    const commandItemElement = saveCmdDescButton.closest('.command-item');
+                    const descriptionTextarea = commandItemElement.querySelector('.command-description-edit');
+                    const newDescription = descriptionTextarea.value;
+                    // Placeholder for the actual save function call
+                    await saveInvocationCommandDescription(cmdPluginName, commandId, newDescription, commandItemElement);
+                });
+            });
 
             if (toggleButton) {
                 toggleButton.addEventListener('click', async () => {
@@ -464,6 +506,36 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error(`保存插件 ${pluginName} 配置失败:`, error);
             statusElement.textContent = `保存插件 ${pluginName} 配置失败: ${error.message}`;
+        }
+    }
+
+    // 新增：函数用于保存调用命令的描述
+    async function saveInvocationCommandDescription(pluginName, commandIdentifier, description, commandItemElement) {
+        const statusElement = commandItemElement.querySelector('.command-specific-status');
+        if (!statusElement) {
+            console.error("Status element not found for command item:", commandItemElement);
+            pluginStatus.textContent = `保存 ${pluginName} - ${commandIdentifier} 指令描述时发生内部错误。`; // Fallback status
+            return;
+        }
+
+        statusElement.textContent = `正在保存 ${commandIdentifier} 的描述...`;
+        try {
+            const response = await fetch(`${API_BASE_URL}/plugins/${pluginName}/commands/${commandIdentifier}/description`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ description: description }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
+                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
+            }
+            const data = await response.json();
+            statusElement.textContent = data.message || `指令 ${commandIdentifier} 的描述已保存。`;
+            // Optionally, re-disable textarea or give other visual feedback
+        } catch (error) {
+            console.error(`保存指令 ${commandIdentifier} 描述失败:`, error);
+            statusElement.textContent = `保存指令 ${commandIdentifier} 描述失败: ${error.message}`;
         }
     }
 
