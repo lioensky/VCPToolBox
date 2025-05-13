@@ -123,6 +123,10 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     ```
     服务器将监听在 `config.env` 中配置的端口。
 
+## 推荐的前端/后端
+1. 后端推荐NewAPI或者VoAPI，它们有比较丰富的SSE标准化生态。
+2. 前端推荐CherrySudio，Chatbox或者类似Lobe，Sillytavern这样的全功能支持CSS/MD渲染的前端。
+
 ## 开发者指南：创建新插件
 
 1.  **创建插件目录**: 在 `Plugin/` 目录下创建一个新的文件夹，例如 `Plugin/MyNewPlugin/`。
