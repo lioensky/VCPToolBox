@@ -1,567 +1,820 @@
-// Helper function to parse .env content string into a list of objects
-function parseEnvToList(content) {
-    const lines = content.split(/\r?\n/);
-    const entries = []; // Array of { key, value, isCommentOrEmpty, isMultilineQuoted, originalLineNumStart, originalLineNumEnd }
-    let i = 0;
-    while (i < lines.length) {
-        const line = lines[i];
-        const trimmedLine = line.trim();
-        const currentLineNum = i;
-
-        if (trimmedLine.startsWith('#') || trimmedLine === '') {
-            entries.push({
-                key: null,
-                value: line, // For comments/empty, value holds the full line
-                isCommentOrEmpty: true,
-                isMultilineQuoted: false,
-                originalLineNumStart: currentLineNum,
-                originalLineNumEnd: currentLineNum
-            });
-            i++;
-            continue;
-        }
-
-        const eqIndex = line.indexOf('=');
-        if (eqIndex === -1) {
-            // Line without '=', treat as a comment or malformed
-            entries.push({ key: null, value: line, isCommentOrEmpty: true, note: 'Malformed line (no equals sign)', originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
-            i++;
-            continue;
-        }
-
-        const key = line.substring(0, eqIndex).trim();
-        let valueString = line.substring(eqIndex + 1); // Don't trim initial valueString to check for quotes accurately
-
-        // Check for single-quoted values (can be multiline)
-        if (valueString.trim().startsWith("'")) {
-            let accumulatedValue;
-            // Remove leading quote and any space before it for the first line's content part
-            let firstLineContent = valueString.substring(valueString.indexOf("'") + 1);
-            
-            if (firstLineContent.endsWith("'") && !lines.slice(i + 1).some(l => l.trim().endsWith("'") && !l.trim().startsWith("'"))) {
-                // Single line quoted value: KEY='VALUE'
-                accumulatedValue = firstLineContent.substring(0, firstLineContent.length - 1);
-                entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: i });
-            } else {
-                // Multiline quoted value
-                let multilineContent = [firstLineContent];
-                let endLineNum = i;
-                i++; // Move to next line
-                while (i < lines.length) {
-                    const nextLine = lines[i];
-                    multilineContent.push(nextLine);
-                    endLineNum = i;
-                    if (nextLine.trim().endsWith("'")) {
-                        // Found the end of the multiline quote
-                        // Remove trailing quote from the last line of multiline content
-                        let lastContentLine = multilineContent.pop();
-                        multilineContent.push(lastContentLine.substring(0, lastContentLine.lastIndexOf("'")));
-                        break;
-                    }
-                    i++;
-                }
-                accumulatedValue = multilineContent.join('\n');
-                entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: endLineNum });
-            }
-        } else {
-            // Normal, unquoted key-value, or value might have spaces but not quoted
-            entries.push({ key, value: valueString.trim(), isCommentOrEmpty: false, isMultilineQuoted: false, originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
-        }
-        i++;
-    }
-    return entries;
-}
-
+// script.js
 document.addEventListener('DOMContentLoaded', () => {
-    const mainConfigEditor = document.getElementById('mainConfigEditor');
-    const saveMainConfigButton = document.getElementById('saveMainConfig');
-    const mainConfigStatus = document.getElementById('mainConfigStatus');
-    const restartServerButton = document.getElementById('restartServer'); // 新增：获取重启按钮
-    const pluginListDiv = document.getElementById('pluginList');
-    const pluginStatus = document.getElementById('pluginStatus');
-    const pluginStatsDisplay = document.getElementById('pluginStatsDisplay'); // 获取顶部栏插件统计元素
- 
-    const API_BASE_URL = '/admin_api'; // 我们将在 server.js 中定义这个基础路径
+    const pluginNavList = document.getElementById('plugin-nav').querySelector('ul');
+    const configDetailsContainer = document.getElementById('config-details-container');
+    const baseConfigForm = document.getElementById('base-config-form');
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const messagePopup = document.getElementById('message-popup');
+    const restartServerButton = document.getElementById('restart-server-button'); // Get restart button
 
-    // --- 主配置处理 ---
-    async function loadMainConfig() {
+    const API_BASE_URL = '/admin_api'; // Corrected API base path
+
+    // --- Utility Functions ---
+    function showLoading(show) {
+        loadingOverlay.classList.toggle('visible', show);
+    }
+
+    function showMessage(message, type = 'info', duration = 3500) {
+        messagePopup.textContent = message;
+        messagePopup.className = 'message-popup';
+        messagePopup.classList.add(type);
+        messagePopup.classList.add('show');
+        setTimeout(() => {
+            messagePopup.classList.remove('show');
+        }, duration);
+    }
+
+    async function apiFetch(url, options = {}) {
+        showLoading(true);
         try {
-            mainConfigStatus.textContent = '正在加载主配置...';
-            mainConfigEditor.innerHTML = ''; // 清空旧内容
-            // Fetch the filtered content for display (sensitive info like AdminPassword should be absent)
-            const response = await fetch(`${API_BASE_URL}/config/main`);
+            const defaultHeaders = {
+                'Content-Type': 'application/json',
+            };
+            options.headers = { ...defaultHeaders, ...options.headers };
+
+            const response = await fetch(url, options); // url is already API_BASE_URL + path
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                let errorData = { error: `HTTP error ${response.status}`, details: response.statusText };
+                try {
+                    const jsonError = await response.json();
+                    errorData = { ...errorData, ...jsonError };
+                } catch (e) { /* Ignore if response is not JSON */ }
+                throw new Error(errorData.message || errorData.error || errorData.details || `HTTP error ${response.status}`);
             }
-            const data = await response.json();
-            const parsedEntries = parseEnvToList(data.content); // Use the new parser
-
-            parsedEntries.forEach((entry, index) => {
-                const lineElement = document.createElement('div');
-                lineElement.classList.add('config-item');
-
-                if (entry.isCommentOrEmpty) {
-                    const commentElement = document.createElement('div');
-                    commentElement.classList.add('config-comment');
-                    commentElement.textContent = entry.value; // entry.value holds the full comment/empty line
-                    lineElement.appendChild(commentElement);
-                    lineElement.dataset.entryType = 'commentOrEmpty';
-                    // For comments/empty lines, store the original content for reconstruction
-                    lineElement.dataset.originalContentForSave = entry.value;
-                } else { // KV pair
-                    const key = entry.key;
-                    const value = entry.value; // This is the pure value, quotes removed, \n are actual newlines
-
-                    const keyLabel = document.createElement('label');
-                    keyLabel.classList.add('config-key');
-                    keyLabel.textContent = key;
-                    const elementId = `config-value-${index}`;
-                    keyLabel.htmlFor = elementId;
-
-                    let valueElement;
-                    // Use textarea if the pure value contains newlines OR if it was originally a multiline quoted string
-                    if (value.includes('\n') || entry.isMultilineQuoted) {
-                        valueElement = document.createElement('textarea');
-                        // Estimate rows: at least 3, or enough for content + a bit more
-                        valueElement.rows = Math.max(3, value.split('\n').length + (entry.isMultilineQuoted ? 1 : 0));
-                        valueElement.value = value; // Textarea handles actual \n correctly
-                    } else {
-                        valueElement = document.createElement('input');
-                        valueElement.type = 'text';
-                        valueElement.value = value;
-                    }
-                    
-                    valueElement.classList.add('config-value');
-                    valueElement.id = elementId;
-                    valueElement.dataset.key = key;
-                    // Store if the original value was multiline quoted to help with saving format
-                    valueElement.dataset.isMultilineQuoted = entry.isMultilineQuoted;
-
-                    lineElement.appendChild(keyLabel);
-                    lineElement.appendChild(valueElement); // Corrected from valueInput to valueElement
-                    lineElement.dataset.entryType = 'kv';
-                    lineElement.dataset.key = key; // Also on lineElement for easier access during save
-                }
-                mainConfigEditor.appendChild(lineElement);
-            });
-            mainConfigStatus.textContent = '主配置已加载';
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                return await response.json();
+            } else {
+                return await response.text();
+            }
         } catch (error) {
-            console.error('加载主配置失败:', error);
-            mainConfigEditor.innerHTML = `<p class="error">加载主配置失败: ${error.message}</p>`;
-            mainConfigStatus.textContent = `加载主配置失败: ${error.message}`;
+            console.error('API Fetch Error:', error.message, error);
+            showMessage(`操作失败: ${error.message}`, 'error');
+            throw error;
+        } finally {
+            showLoading(false);
         }
     }
 
-    async function saveMainConfig() {
-        try {
-            mainConfigStatus.textContent = '正在保存主配置...';
+    // --- .env Parsing and Building (Adapted from user's original script) ---
+    function parseEnvToList(content) {
+        const lines = content.split(/\r?\n/);
+        const entries = [];
+        let i = 0;
+        while (i < lines.length) {
+            const line = lines[i];
+            const trimmedLine = line.trim();
+            const currentLineNum = i;
 
-            // 1. Collect UI values
-            const editedFieldValues = new Map(); // key -> {value: ui_value (with \n), originalIsMultilineQuoted: boolean}
-            const configItems = mainConfigEditor.querySelectorAll('.config-item');
-
-            configItems.forEach(item => {
-                const entryType = item.dataset.entryType;
-                if (entryType === 'kv') {
-                    const key = item.dataset.key;
-                    const valueElement = item.querySelector('input.config-value, textarea.config-value');
-                    if (valueElement) {
-                        // Read the isMultilineQuoted state that was set during load
-                        const isMultilineQuotedFromLoad = valueElement.dataset.isMultilineQuoted === 'true';
-                        editedFieldValues.set(key, {
-                            value: valueElement.value, // value from UI, already has \n if it was a textarea
-                            isMultilineQuoted: isMultilineQuotedFromLoad
-                        });
-                    }
-                }
-                // For 'commentOrEmpty' items, we'll fetch their original content later if needed, or rely on originalParsedEntries
-            });
-
-            // 2. Get original raw content and parse it
-            const originalResponse = await fetch(`${API_BASE_URL}/config/main/raw`);
-            if (!originalResponse.ok) {
-                throw new Error(`获取原始配置失败! status: ${originalResponse.status}`);
-            }
-            const originalData = await originalResponse.json();
-            const originalParsedEntries = parseEnvToList(originalData.content);
-
-            // 3. Merge and construct final content
-            const finalContentLines = [];
-            const sensitiveKeys = ['AdminPassword', 'AdminUsername'];
-
-            originalParsedEntries.forEach(originalEntry => {
-                if (originalEntry.isCommentOrEmpty) {
-                    // For comments or empty lines from the original raw file, push their original content
-                    finalContentLines.push(originalEntry.value);
-                } else { // KV pair from original raw file
-                    const key = originalEntry.key;
-                    let valueToSave;
-                    let saveWithQuotes;
-
-                    if (sensitiveKeys.includes(key)) {
-                        valueToSave = originalEntry.value; // Use original value for sensitive keys
-                        saveWithQuotes = originalEntry.isMultilineQuoted; // And original quoting style
-                    } else if (editedFieldValues.has(key)) {
-                        const editedData = editedFieldValues.get(key);
-                        valueToSave = editedData.value; // UI value, contains \n if textarea
-                        // Decide on quoting: if new value has \n, or if original was multiline quoted (even if new value is single line)
-                        saveWithQuotes = valueToSave.includes('\n') || editedData.isMultilineQuoted;
-                    } else {
-                        // Key was in original but not in UI (e.g., a new key added to original file not yet reflected in UI load after a refresh)
-                        // Or a key that /config/main might have filtered but /config/main/raw has.
-                        // Fallback to original value and quoting.
-                        valueToSave = originalEntry.value;
-                        saveWithQuotes = originalEntry.isMultilineQuoted;
-                    }
-
-                    if (saveWithQuotes) {
-                        // Value already contains \n if it's multiline. Just wrap with single quotes.
-                        finalContentLines.push(`${key}='${valueToSave}'`);
-                    } else {
-                        finalContentLines.push(`${key}=${valueToSave}`);
-                    }
-                }
-            });
-            const finalContent = finalContentLines.join('\n');
-
-            // 4. 发送合并后的内容到后端保存
-            const response = await fetch(`${API_BASE_URL}/config/main`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ content: finalContent }), // 发送完整内容
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
-            }
-            const data = await response.json();
-            mainConfigStatus.textContent = data.message || '主配置已保存。';
-            // 重新加载以显示过滤后的内容
-            await loadMainConfig();
-
-        } catch (error) {
-            console.error('保存主配置失败:', error);
-            mainConfigStatus.textContent = `保存主配置失败: ${error.message}`;
-        }
-    }
-
-    // --- 服务器操作 ---
-    async function restartServer() {
-        try {
-            mainConfigStatus.textContent = '正在发送重启服务器命令...';
-            const response = await fetch(`${API_BASE_URL}/server/restart`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误，服务器可能已关闭或正在重启' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
-            }
-            const data = await response.json();
-            mainConfigStatus.textContent = data.message || '服务器重启命令已发送。请稍后检查服务器状态。';
-        } catch (error) {
-            console.error('重启服务器失败:', error);
-            mainConfigStatus.textContent = `重启服务器失败: ${error.message}`;
-        }
-    }
- 
-    // --- 插件管理 ---
-    async function loadPlugins() {
-        try {
-            pluginStatus.textContent = '正在加载插件列表...';
-            pluginListDiv.innerHTML = ''; // 清空现有列表
-            const response = await fetch(`${API_BASE_URL}/plugins`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const plugins = await response.json();
-            if (plugins.length === 0) {
-                pluginListDiv.innerHTML = '<p>未找到任何插件。</p>';
-                pluginStatus.textContent = '未找到插件。';
-                return;
-            }
-            
-            // 更新顶部栏插件数量
-            if (pluginStatsDisplay) {
-                 pluginStatsDisplay.textContent = `插件: ${plugins.length}`;
+            if (trimmedLine.startsWith('#') || trimmedLine === '') {
+                entries.push({
+                    key: null,
+                    value: line, // For comments/empty, value holds the full line
+                    isCommentOrEmpty: true,
+                    isMultilineQuoted: false,
+                    originalLineNumStart: currentLineNum,
+                    originalLineNumEnd: currentLineNum
+                });
+                i++;
+                continue;
             }
 
-            plugins.forEach(plugin => {
-                const pluginItem = document.createElement('div');
-                pluginItem.classList.add('plugin-item');
-                pluginItem.dataset.pluginName = plugin.name;
+            const eqIndex = line.indexOf('=');
+            if (eqIndex === -1) {
+                entries.push({ key: null, value: line, isCommentOrEmpty: true, note: 'Malformed line (no equals sign)', originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
+                i++;
+                continue;
+            }
 
-                let descriptionHtml = '';
-                if (plugin.manifest && plugin.manifest.description) {
-                    descriptionHtml = `<p><strong>描述:</strong> <span class="description-text">${escapeHtml(plugin.manifest.description)}</span></p>
-                                       <textarea class="description-edit" style="display:none;">${escapeHtml(plugin.manifest.description)}</textarea>`;
+            const key = line.substring(0, eqIndex).trim();
+            let valueString = line.substring(eqIndex + 1);
+
+            if (valueString.trim().startsWith("'")) {
+                let accumulatedValue;
+                let firstLineContent = valueString.substring(valueString.indexOf("'") + 1);
+
+                if (firstLineContent.endsWith("'") && !lines.slice(i + 1).some(l => l.trim().endsWith("'") && !l.trim().startsWith("'") && l.includes("='"))) {
+                    accumulatedValue = firstLineContent.substring(0, firstLineContent.length - 1);
+                    entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: i });
                 } else {
-                    descriptionHtml = `<p><strong>描述:</strong> <span class="description-text">(无描述)</span></p>
-                                       <textarea class="description-edit" style="display:none;"></textarea>`;
+                    let multilineContent = [firstLineContent];
+                    let endLineNum = i;
+                    i++;
+                    while (i < lines.length) {
+                        const nextLine = lines[i];
+                        multilineContent.push(nextLine);
+                        endLineNum = i;
+                        if (nextLine.trim().endsWith("'")) {
+                            let lastContentLine = multilineContent.pop();
+                            multilineContent.push(lastContentLine.substring(0, lastContentLine.lastIndexOf("'")));
+                            break;
+                        }
+                        i++;
+                    }
+                    accumulatedValue = multilineContent.join('\n');
+                    entries.push({ key, value: accumulatedValue, isCommentOrEmpty: false, isMultilineQuoted: true, originalLineNumStart: currentLineNum, originalLineNumEnd: endLineNum });
                 }
-
-
-                pluginItem.innerHTML = `
-                    <h3>${escapeHtml(plugin.manifest.displayName || plugin.name)} (${escapeHtml(plugin.name)})</h3>
-                    ${descriptionHtml}
-                    <p><strong>状态:</strong> <span class="plugin-state">${plugin.enabled ? '已启用' : '已禁用'}</span></p>
-                    <div class="actions">
-                        <button class="toggle-button ${plugin.enabled ? 'enabled' : 'disabled'}">${plugin.enabled ? '禁用插件' : '启用插件'}</button>
-                        <button class="edit-description-button">编辑描述</button>
-                        <button class="save-description-button" style="display:none;">保存描述</button>
-                        <button class="cancel-edit-description-button" style="display:none;">取消编辑</button>
-                    </div>
-                    <h4>插件配置 (config.env)</h4>
-                    <textarea class="plugin-config-content" rows="5" placeholder="此插件没有独立的 config.env 文件，或加载失败。">${plugin.configEnvContent || ''}</textarea>
-                    <div class="plugin-config-controls">
-                        <button class="save-plugin-config-button">保存插件配置</button>
-                        <p class="status plugin-specific-status" id="plugin-config-status-${plugin.name}"></p>
-                    </div>
-                `;
-                
-                // --- 新增：显示和编辑 Invocation Commands ---
-                const commandsSection = document.createElement('div');
-                commandsSection.classList.add('invocation-commands-section');
-                let commandsHtml = '<h4>调用命令 (Invocation Commands)</h4>';
-                
-                if (plugin.manifest && plugin.manifest.capabilities && plugin.manifest.capabilities.invocationCommands && plugin.manifest.capabilities.invocationCommands.length > 0) {
-                    commandsHtml += '<div class="commands-list">';
-                    plugin.manifest.capabilities.invocationCommands.forEach((command, cmdIndex) => {
-                        const commandId = command.commandIdentifier || `cmd-${cmdIndex}`;
-                        commandsHtml += `
-                            <div class="command-item" data-command-identifier="${escapeHtml(commandId)}">
-                                <h5>命令: ${escapeHtml(command.commandIdentifier)}</h5>
-                                <label for="cmd-desc-${plugin.name}-${commandId}">指令描述:</label>
-                                <textarea id="cmd-desc-${plugin.name}-${commandId}" class="command-description-edit" rows="8">${escapeHtml(command.description || '')}</textarea>
-                                <button class="save-command-description-button" data-plugin-name="${plugin.name}" data-command-id="${commandId}">保存此指令描述</button>
-                                <p class="status command-specific-status" id="command-status-${plugin.name}-${commandId}"></p>
-                            </div>
-                        `;
-                    });
-                    commandsHtml += '</div>';
-                } else {
-                    commandsHtml += '<p>此插件没有定义调用命令。</p>';
-                }
-                commandsSection.innerHTML = commandsHtml;
-                pluginItem.appendChild(commandsSection);
-                // --- 结束新增 ---
-
-                pluginListDiv.appendChild(pluginItem);
-            });
-            pluginStatus.textContent = '插件列表已加载。';
-            attachPluginEventListeners();
-        } catch (error) {
-            console.error('加载插件列表失败:', error);
-            pluginListDiv.innerHTML = `<p>加载插件列表失败: ${error.message}</p>`;
-            pluginStatus.textContent = `加载插件列表失败: ${error.message}`;
-            // 加载失败时也更新状态显示
-            if (pluginStatsDisplay) {
-                 pluginStatsDisplay.textContent = `插件: 加载失败`;
+            } else {
+                entries.push({ key, value: valueString.trim(), isCommentOrEmpty: false, isMultilineQuoted: false, originalLineNumStart: currentLineNum, originalLineNumEnd: currentLineNum });
             }
+            i++;
         }
+        return entries;
     }
 
-    function attachPluginEventListeners() {
-        document.querySelectorAll('.plugin-item').forEach(item => {
-            const pluginName = item.dataset.pluginName;
-            const toggleButton = item.querySelector('.toggle-button');
-            const editButton = item.querySelector('.edit-description-button');
-            const saveButton = item.querySelector('.save-description-button');
-            const cancelButton = item.querySelector('.cancel-edit-description-button');
-            const descriptionText = item.querySelector('.description-text');
-            const descriptionEdit = item.querySelector('.description-edit');
-            const savePluginConfigButton = item.querySelector('.save-plugin-config-button');
-            const pluginConfigContent = item.querySelector('.plugin-config-content');
-            // const pluginSpecificStatus = item.querySelector('.plugin-specific-status'); // This might be too generic now
+    function buildEnvString(formElement, originalParsedEntries) {
+        const newEnvLines = [];
+        const editedKeys = new Set();
 
-            // Event listeners for new command description save buttons
-            item.querySelectorAll('.save-command-description-button').forEach(saveCmdDescButton => {
-                saveCmdDescButton.addEventListener('click', async () => {
-                    const cmdPluginName = saveCmdDescButton.dataset.pluginName;
-                    const commandId = saveCmdDescButton.dataset.commandId;
-                    const commandItemElement = saveCmdDescButton.closest('.command-item');
-                    const descriptionTextarea = commandItemElement.querySelector('.command-description-edit');
-                    const newDescription = descriptionTextarea.value;
-                    // Placeholder for the actual save function call
-                    await saveInvocationCommandDescription(cmdPluginName, commandId, newDescription, commandItemElement);
-                });
-            });
+        // Iterate through form elements to get edited values
+        for (let i = 0; i < formElement.elements.length; i++) {
+            const element = formElement.elements[i];
+            if (element.name && element.dataset.originalKey) { // Ensure it's an editable field
+                const key = element.dataset.originalKey;
+                editedKeys.add(key);
+                let value = element.value;
+                const originalEntry = originalParsedEntries.find(entry => entry.key === key);
+                let isMultiline = (originalEntry && originalEntry.isMultilineQuoted) || value.includes('\n');
+                
+                if (element.type === 'checkbox' && element.dataset.expectedType === 'boolean') {
+                     value = element.checked ? 'true' : 'false';
+                     isMultiline = false; // Booleans are not multiline
+                } else if (element.dataset.expectedType === 'integer') {
+                    const intVal = parseInt(value, 10);
+                    value = isNaN(intVal) ? (value === '' ? '' : value) : String(intVal);
+                    isMultiline = false; // Integers are not multiline
+                }
 
-            if (toggleButton) {
-                toggleButton.addEventListener('click', async () => {
-                    const enable = !toggleButton.classList.contains('enabled');
-                    await togglePlugin(pluginName, enable, item);
-                });
+
+                if (isMultiline) {
+                    newEnvLines.push(`${key}='${value}'`);
+                } else {
+                    newEnvLines.push(`${key}=${value}`);
+                }
             }
+        }
+        
+        // Reconstruct with original comments, empty lines, and unedited/newly added custom fields
+        const finalLines = [];
+        const formElementsMap = new Map();
+        Array.from(baseConfigForm.querySelectorAll('[data-original-key], [data-is-comment-or-empty="true"]')).forEach(el => {
+            if (el.dataset.originalKey) formElementsMap.set(el.dataset.originalKey, el);
+            else if (el.dataset.originalContent) formElementsMap.set(`comment-${finalLines.length}`, el); // Unique key for comments
+        });
 
-            if (editButton && descriptionText && descriptionEdit && saveButton && cancelButton) {
-                editButton.addEventListener('click', () => {
-                    descriptionText.style.display = 'none';
-                    descriptionEdit.style.display = 'block';
-                    editButton.style.display = 'none';
-                    saveButton.style.display = 'inline-block';
-                    cancelButton.style.display = 'inline-block';
-                    descriptionEdit.value = descriptionText.textContent === '(无描述)' ? '' : descriptionText.textContent;
-                    descriptionEdit.focus();
-                });
 
-                saveButton.addEventListener('click', async () => {
-                    await savePluginDescription(pluginName, descriptionEdit.value, item);
-                });
+        originalParsedEntries.forEach(entry => {
+            if (entry.isCommentOrEmpty) {
+                finalLines.push(entry.value); // Push original comment or empty line
+            } else {
+                const inputElement = formElementsMap.get(entry.key);
+                if (inputElement && inputElement.closest('form') === baseConfigForm) { // Check if element is part of the current form
+                    let value = inputElement.value;
+                     if (inputElement.type === 'checkbox' && inputElement.dataset.expectedType === 'boolean') {
+                        value = inputElement.checked ? 'true' : 'false';
+                    } else if (inputElement.dataset.expectedType === 'integer') {
+                        const intVal = parseInt(value, 10);
+                        value = isNaN(intVal) ? (value === '' ? '' : value) : String(intVal);
+                    }
 
-                cancelButton.addEventListener('click', () => {
-                    descriptionText.style.display = 'block';
-                    descriptionEdit.style.display = 'none';
-                    editButton.style.display = 'inline-block';
-                    saveButton.style.display = 'none';
-                    cancelButton.style.display = 'none';
-                });
-            }
-            
-            if (savePluginConfigButton && pluginConfigContent) {
-                savePluginConfigButton.addEventListener('click', async () => {
-                    await savePluginConfig(pluginName, pluginConfigContent.value, item);
-                });
+                    const isMultiline = entry.isMultilineQuoted || value.includes('\n');
+                    if (isMultiline) {
+                        finalLines.push(`${entry.key}='${value}'`);
+                    } else {
+                        finalLines.push(`${entry.key}=${value}`);
+                    }
+                } else {
+                    // Key was in original but not in UI (e.g. filtered out, or error)
+                    // Fallback to original representation
+                    if (entry.isMultilineQuoted) {
+                        finalLines.push(`${entry.key}='${entry.value}'`);
+                    } else {
+                        finalLines.push(`${entry.key}=${entry.value}`);
+                    }
+                }
             }
         });
+        
+        // Add any new custom fields from the form that were not in originalParsedEntries
+        // This part is more relevant for plugin configs with "add custom field"
+        // For base config, we generally edit existing or rely on server to add new ones if needed.
+
+        return finalLines.join('\n');
     }
 
-    async function togglePlugin(pluginName, enable, pluginItemElement) {
-        const statusElement = pluginItemElement.querySelector('.plugin-specific-status') || pluginStatus;
+
+    // --- Load Initial Data ---
+    async function loadInitialData() {
         try {
-            statusElement.textContent = `正在${enable ? '启用' : '禁用'}插件 ${pluginName}...`;
-            const response = await fetch(`${API_BASE_URL}/plugins/${pluginName}/toggle`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enable }),
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
+            await loadBaseConfig();
+            await loadPluginList();
+            const firstLink = pluginNavList.querySelector('a');
+            if (firstLink) {
+                navigateTo(firstLink.dataset.target, firstLink.dataset.pluginName);
+                firstLink.classList.add('active'); // Activate the first link
             }
-            const data = await response.json();
-            statusElement.textContent = data.message || `插件 ${pluginName} 已${enable ? '启用' : '禁用'}。`;
-            // 重新加载插件列表以更新状态
-            await loadPlugins();
+        } catch (error) { /* Error already shown by apiFetch */ }
+    }
+
+    // --- Base Configuration ---
+    let originalBaseConfigEntries = []; // Store parsed entries for saving
+
+    async function loadBaseConfig() {
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/config/main`); // Use correct endpoint
+            originalBaseConfigEntries = parseEnvToList(data.content);
+            baseConfigForm.innerHTML = ''; // Clear previous form
+
+            originalBaseConfigEntries.forEach((entry, index) => {
+                let formGroup;
+                if (entry.isCommentOrEmpty) {
+                    formGroup = createCommentOrEmptyElement(entry.value, index);
+                } else {
+                    let inferredType = 'string';
+                    if (typeof entry.value === 'boolean' || /^(true|false)$/i.test(entry.value)) inferredType = 'boolean';
+                    else if (!isNaN(parseFloat(entry.value)) && isFinite(entry.value) && !entry.value.includes('.')) inferredType = 'integer';
+                    
+                    formGroup = createFormGroup(
+                        entry.key,
+                        entry.value,
+                        inferredType,
+                        `根目录 config.env 配置项: ${entry.key}`,
+                        false, // isPluginConfig
+                        null,  // pluginName
+                        false, // isCustomDeletableField
+                        entry.isMultilineQuoted // Pass multiline info
+                    );
+                }
+                baseConfigForm.appendChild(formGroup);
+            });
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'form-actions';
+            const submitButton = document.createElement('button');
+            submitButton.type = 'submit';
+            submitButton.textContent = '保存全局配置';
+            actionsDiv.appendChild(submitButton);
+            baseConfigForm.appendChild(actionsDiv);
         } catch (error) {
-            console.error(`操作插件 ${pluginName} 失败:`, error);
-            statusElement.textContent = `操作插件 ${pluginName} 失败: ${error.message}`;
+            baseConfigForm.innerHTML = `<p class="error-message">加载全局配置失败: ${error.message}</p>`;
+        }
+    }
+
+    baseConfigForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const newConfigString = buildEnvString(baseConfigForm, originalBaseConfigEntries);
+        try {
+            await apiFetch(`${API_BASE_URL}/config/main`, { // Use correct endpoint
+                method: 'POST',
+                body: JSON.stringify({ content: newConfigString })
+            });
+            showMessage('全局配置已保存！部分更改可能需要重启服务生效。', 'success');
+            loadBaseConfig(); // Reload to reflect changes and ensure consistency
+        } catch (error) { /* Error handled by apiFetch */ }
+    });
+
+
+    // --- Plugin Configuration ---
+    let originalPluginConfigs = {}; // Store original parsed entries for each plugin
+
+    async function loadPluginList() {
+        try {
+            const plugins = await apiFetch(`${API_BASE_URL}/plugins`);
+            // Clear existing plugin nav items (except base config)
+            const existingNavItems = pluginNavList.querySelectorAll('li:not(:first-child)');
+            existingNavItems.forEach(item => item.remove());
+            // Clear existing plugin sections
+            const existingPluginSections = configDetailsContainer.querySelectorAll('.config-section:not(#base-config-section)');
+            existingPluginSections.forEach(sec => sec.remove());
+
+            plugins.sort((a, b) => (a.manifest.displayName || a.manifest.name).localeCompare(b.manifest.displayName || b.manifest.name));
+
+            plugins.forEach(plugin => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = plugin.manifest.displayName || plugin.manifest.name;
+                a.dataset.target = `plugin-${plugin.manifest.name}-config`;
+                a.dataset.pluginName = plugin.manifest.name;
+                li.appendChild(a);
+                pluginNavList.appendChild(li);
+
+                const pluginSection = document.createElement('section');
+                pluginSection.id = `plugin-${plugin.manifest.name}-config-section`;
+                pluginSection.className = 'config-section';
+                
+                let descriptionHtml = plugin.manifest.description || '暂无描述';
+                if (plugin.manifest.version) descriptionHtml += ` (版本: ${plugin.manifest.version})`;
+                if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
+
+
+                pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''}</h2>
+                                           <p class="plugin-meta">${descriptionHtml}</p>`;
+                
+                const form = document.createElement('form');
+                form.id = `plugin-${plugin.manifest.name}-config-form`;
+                pluginSection.appendChild(form);
+                configDetailsContainer.appendChild(pluginSection);
+
+                // Store original config if available (for saving later)
+                if (plugin.configEnvContent) {
+                    originalPluginConfigs[plugin.manifest.name] = parseEnvToList(plugin.configEnvContent);
+                } else {
+                    originalPluginConfigs[plugin.manifest.name] = []; // Empty if no config.env
+                }
+            });
+        } catch (error) {
+            pluginNavList.innerHTML += `<li><p class="error-message">加载插件列表失败: ${error.message}</p></li>`;
+        }
+    }
+
+    async function loadPluginConfig(pluginName) {
+        const form = document.getElementById(`plugin-${pluginName}-config-form`);
+        if (!form) {
+            console.error(`Form not found for plugin ${pluginName}`);
+            return;
+        }
+        form.innerHTML = ''; // Clear previous form content
+
+        try {
+            // Fetch fresh plugin details, including manifest and config.env content
+            // The /api/plugins endpoint in server.js already provides this,
+            // but if we need more detailed schema vs custom, we might need a specific endpoint
+            // For now, let's assume we use the initially loaded originalPluginConfigs[pluginName]
+            
+            const pluginData = (await apiFetch(`${API_BASE_URL}/plugins`)).find(p => p.manifest.name === pluginName);
+            if (!pluginData) {
+                throw new Error(`Plugin data for ${pluginName} not found.`);
+            }
+            
+            const manifest = pluginData.manifest;
+            const configEnvContent = pluginData.configEnvContent || "";
+            originalPluginConfigs[pluginName] = parseEnvToList(configEnvContent);
+
+            const schemaFieldsContainer = document.createElement('div');
+            const customFieldsContainer = document.createElement('div');
+            let hasSchemaFields = false;
+            let hasCustomFields = false;
+
+            const configSchema = manifest.configSchema || {};
+            const presentInEnv = new Set(originalPluginConfigs[pluginName].filter(e => !e.isCommentOrEmpty).map(e => e.key));
+
+            // Display schema-defined fields first
+            for (const key in configSchema) {
+                hasSchemaFields = true;
+                const expectedType = configSchema[key];
+                const entry = originalPluginConfigs[pluginName].find(e => e.key === key && !e.isCommentOrEmpty);
+                const value = entry ? entry.value : (manifest.defaults && manifest.defaults[key] !== undefined ? manifest.defaults[key] : '');
+                const isMultiline = entry ? entry.isMultilineQuoted : (String(value).includes('\n'));
+                
+                let descriptionHtml = `Schema 定义: ${key}`;
+                if (manifest.configSchemaDescriptions && manifest.configSchemaDescriptions[key]) {
+                    descriptionHtml = manifest.configSchemaDescriptions[key];
+                }
+                if (entry) {
+                    descriptionHtml += ` <span class="defined-in">(当前在插件 .env 中定义)</span>`;
+                } else if (manifest.defaults && manifest.defaults[key] !== undefined) {
+                    descriptionHtml += ` <span class="defined-in">(使用插件清单默认值)</span>`;
+                } else {
+                     descriptionHtml += ` <span class="defined-in">(未设置，将继承全局或为空)</span>`;
+                }
+
+                const formGroup = createFormGroup(key, value, expectedType, descriptionHtml, true, pluginName, false, isMultiline);
+                schemaFieldsContainer.appendChild(formGroup);
+                presentInEnv.delete(key); // Remove from set as it's handled
+            }
+
+            // Display remaining .env fields (custom or not in schema) and comments/empty lines
+            originalPluginConfigs[pluginName].forEach((entry, index) => {
+                if (entry.isCommentOrEmpty) {
+                    customFieldsContainer.appendChild(createCommentOrEmptyElement(entry.value, `${pluginName}-comment-${index}`));
+                } else if (presentInEnv.has(entry.key)) { // Custom field (was in .env but not in schema)
+                    hasCustomFields = true;
+                    const descriptionHtml = `自定义配置项: ${entry.key} <span class="defined-in">(当前在插件 .env 中定义)</span>`;
+                    const formGroup = createFormGroup(entry.key, entry.value, 'string', descriptionHtml, true, pluginName, true, entry.isMultilineQuoted);
+                    customFieldsContainer.appendChild(formGroup);
+                }
+            });
+
+
+            if (hasSchemaFields) {
+                const schemaTitle = document.createElement('h3');
+                schemaTitle.textContent = 'Schema 定义的配置';
+                form.appendChild(schemaTitle);
+                form.appendChild(schemaFieldsContainer);
+            }
+            if (hasCustomFields || originalPluginConfigs[pluginName].some(e => e.isCommentOrEmpty)) {
+                const customTitle = document.createElement('h3');
+                customTitle.textContent = '自定义 .env 配置项 (及注释/空行)';
+                form.appendChild(customTitle);
+                form.appendChild(customFieldsContainer);
+            }
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'form-actions';
+
+            const addConfigButton = document.createElement('button');
+            addConfigButton.type = 'button';
+            addConfigButton.textContent = '添加自定义配置项';
+            addConfigButton.classList.add('add-config-btn');
+            addConfigButton.addEventListener('click', () => addCustomConfigFieldToPluginForm(form, pluginName, customFieldsContainer, originalPluginConfigs[pluginName]));
+            actionsDiv.appendChild(addConfigButton);
+
+            const submitButton = document.createElement('button');
+            submitButton.type = 'submit';
+            submitButton.textContent = `保存 ${pluginName} 配置`;
+            actionsDiv.appendChild(submitButton);
+            form.appendChild(actionsDiv);
+
+            form.removeEventListener('submit', handlePluginFormSubmit);
+            form.addEventListener('submit', handlePluginFormSubmit);
+
+            // --- Add Invocation Commands Editor ---
+            if (manifest.capabilities && manifest.capabilities.invocationCommands && manifest.capabilities.invocationCommands.length > 0) {
+                const commandsSection = document.createElement('div');
+                commandsSection.className = 'invocation-commands-section';
+                const commandsTitle = document.createElement('h3');
+                commandsTitle.textContent = '调用命令 AI 指令编辑';
+                commandsSection.appendChild(commandsTitle);
+
+                manifest.capabilities.invocationCommands.forEach(cmd => {
+                    const commandIdentifier = cmd.commandIdentifier || cmd.command; // Use commandIdentifier or fallback to command
+                    if (!commandIdentifier) return; // Skip if no identifier
+
+                    const commandItem = document.createElement('div');
+                    commandItem.className = 'command-item';
+                    commandItem.dataset.commandIdentifier = commandIdentifier;
+
+                    const commandHeader = document.createElement('h4');
+                    commandHeader.textContent = `命令: ${commandIdentifier}`;
+                    commandItem.appendChild(commandHeader);
+
+                    const cmdFormGroup = document.createElement('div');
+                    cmdFormGroup.className = 'form-group'; // Reuse form-group styling
+
+                    const descLabel = document.createElement('label');
+                    const descTextareaId = `cmd-desc-${pluginName}-${commandIdentifier.replace(/\s+/g, '_')}`;
+                    descLabel.htmlFor = descTextareaId;
+                    descLabel.textContent = '指令描述 (AI Instructions):';
+                    cmdFormGroup.appendChild(descLabel);
+
+                    const descTextarea = document.createElement('textarea');
+                    descTextarea.id = descTextareaId;
+                    descTextarea.className = 'command-description-edit';
+                    descTextarea.rows = Math.max(5, (cmd.description || '').split('\n').length + 2); // Adjust rows
+                    descTextarea.value = cmd.description || '';
+                    cmdFormGroup.appendChild(descTextarea);
+                    
+                    const cmdActionsDiv = document.createElement('div');
+                    cmdActionsDiv.className = 'form-actions'; // Reuse form-actions styling for consistency
+
+                    const saveCmdDescButton = document.createElement('button');
+                    saveCmdDescButton.type = 'button';
+                    saveCmdDescButton.textContent = '保存此指令描述';
+                    saveCmdDescButton.classList.add('save-command-description-btn'); // Add specific class if needed for styling
+                    
+                    const cmdStatusP = document.createElement('p');
+                    cmdStatusP.className = 'status command-status'; // For feedback
+
+                    saveCmdDescButton.addEventListener('click', async () => {
+                        await saveInvocationCommandDescription(pluginName, commandIdentifier, descTextarea, cmdStatusP);
+                    });
+                    cmdActionsDiv.appendChild(saveCmdDescButton);
+                    cmdFormGroup.appendChild(cmdActionsDiv);
+                    cmdFormGroup.appendChild(cmdStatusP);
+                    commandItem.appendChild(cmdFormGroup);
+                    commandsSection.appendChild(commandItem);
+                });
+                // Append commands section after the main plugin config form's content, but before its actions
+                const pluginFormActions = form.querySelector('.form-actions');
+                if (pluginFormActions) {
+                    form.insertBefore(commandsSection, pluginFormActions);
+                } else {
+                    form.appendChild(commandsSection);
+                }
+            }
+
+        } catch (error) {
+            form.innerHTML = `<p class="error-message">加载插件 ${pluginName} 配置失败: ${error.message}</p>`;
+        }
+    }
+
+    async function saveInvocationCommandDescription(pluginName, commandIdentifier, textareaElement, statusElement) {
+        const newDescription = textareaElement.value;
+        statusElement.textContent = '正在保存描述...';
+        statusElement.className = 'status command-status info'; // Reset and indicate processing
+
+        try {
+            const apiUrl = `${API_BASE_URL}/plugins/${pluginName}/commands/${commandIdentifier}/description`;
+            await apiFetch(apiUrl, {
+                method: 'POST',
+                body: JSON.stringify({ description: newDescription })
+            });
+            showMessage(`指令 "${commandIdentifier}" 的描述已成功保存!`, 'success');
+            statusElement.textContent = '描述已保存!';
+            statusElement.classList.remove('info', 'error');
+            statusElement.classList.add('success');
+
+            // Optionally, update the manifest in memory if needed, or rely on next full load
+            // For now, we assume a full reload/navigation will pick up changes.
+            // Or, update the textarea's original value if we want to track "dirty" state.
+        } catch (error) {
+            // showMessage is already called by apiFetch on error
+            statusElement.textContent = `保存失败: ${error.message}`;
+            statusElement.classList.remove('info', 'success');
+            statusElement.classList.add('error');
         }
     }
     
-    async function savePluginDescription(pluginName, description, pluginItemElement) {
-        const statusElement = pluginItemElement.querySelector('.plugin-specific-status') || pluginStatus;
-        try {
-            statusElement.textContent = `正在保存 ${pluginName} 的描述...`;
-            const response = await fetch(`${API_BASE_URL}/plugins/${pluginName}/description`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ description }),
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
-            }
-            const data = await response.json();
-            statusElement.textContent = data.message || `插件 ${pluginName} 的描述已保存。`;
-            // 更新界面上的描述并切换回显示模式
-            const descriptionText = pluginItemElement.querySelector('.description-text');
-            const descriptionEdit = pluginItemElement.querySelector('.description-edit');
-            const editButton = pluginItemElement.querySelector('.edit-description-button');
-            const saveButton = pluginItemElement.querySelector('.save-description-button');
-            const cancelButton = pluginItemElement.querySelector('.cancel-edit-description-button');
+    function addCustomConfigFieldToPluginForm(form, pluginName, containerToAddTo, currentParsedEntries) {
+        const key = prompt("请输入新自定义配置项的键名 (例如 MY_PLUGIN_VAR):");
+        if (!key || !key.trim()) return;
+        const normalizedKey = key.trim().replace(/\s+/g, '_');
 
-            descriptionText.textContent = description || '(无描述)';
-            descriptionText.style.display = 'block';
-            descriptionEdit.style.display = 'none';
-            editButton.style.display = 'inline-block';
-            saveButton.style.display = 'none';
-            cancelButton.style.display = 'none';
-
-        } catch (error) {
-            console.error(`保存插件 ${pluginName} 描述失败:`, error);
-            statusElement.textContent = `保存插件 ${pluginName} 描述失败: ${error.message}`;
-        }
-    }
-
-    async function savePluginConfig(pluginName, content, pluginItemElement) {
-        const statusElement = pluginItemElement.querySelector('.plugin-specific-status') || pluginStatus;
-        try {
-            statusElement.textContent = `正在保存 ${pluginName} 的配置...`;
-            const response = await fetch(`${API_BASE_URL}/plugins/${pluginName}/config`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content }),
-            });
-             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
-            }
-            const data = await response.json();
-            statusElement.textContent = data.message || `插件 ${pluginName} 的配置已保存。`;
-        } catch (error) {
-            console.error(`保存插件 ${pluginName} 配置失败:`, error);
-            statusElement.textContent = `保存插件 ${pluginName} 配置失败: ${error.message}`;
-        }
-    }
-
-    // 新增：函数用于保存调用命令的描述
-    async function saveInvocationCommandDescription(pluginName, commandIdentifier, description, commandItemElement) {
-        const statusElement = commandItemElement.querySelector('.command-specific-status');
-        if (!statusElement) {
-            console.error("Status element not found for command item:", commandItemElement);
-            pluginStatus.textContent = `保存 ${pluginName} - ${commandIdentifier} 指令描述时发生内部错误。`; // Fallback status
+        if (currentParsedEntries.some(entry => entry.key === normalizedKey) || form.elements[normalizedKey]) {
+            showMessage(`配置项 "${normalizedKey}" 已存在！`, 'error');
             return;
         }
 
-        statusElement.textContent = `正在保存 ${commandIdentifier} 的描述...`;
-        try {
-            const response = await fetch(`${API_BASE_URL}/plugins/${pluginName}/commands/${commandIdentifier}/description`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ description: description }),
-            });
+        const descriptionHtml = `自定义配置项: ${normalizedKey} <span class="defined-in">(新添加)</span>`;
+        const formGroup = createFormGroup(normalizedKey, '', 'string', descriptionHtml, true, pluginName, true, false);
+        
+        // Add to currentParsedEntries so buildEnvString can find it
+        currentParsedEntries.push({ key: normalizedKey, value: '', isCommentOrEmpty: false, isMultilineQuoted: false });
 
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: '未知错误' }));
-                throw new Error(`HTTP error! status: ${response.status} - ${errorData.message}`);
+        let targetContainer = containerToAddTo;
+         if (!targetContainer || !form.contains(targetContainer)) {
+            const customSectionTitle = Array.from(form.querySelectorAll('h3')).find(h => h.textContent.includes('自定义 .env 配置项'));
+            if (customSectionTitle) {
+                targetContainer = customSectionTitle.nextElementSibling; // Assuming div container follows h3
+                if (!targetContainer || targetContainer.classList.contains('form-actions')) { // If no div or it's the actions
+                    targetContainer = form.querySelector('.form-actions') || form;
+                }
+            } else {
+                 targetContainer = form.querySelector('.form-actions') || form;
             }
-            const data = await response.json();
-            statusElement.textContent = data.message || `指令 ${commandIdentifier} 的描述已保存。`;
-            // Optionally, re-disable textarea or give other visual feedback
+        }
+        
+        const actionsDiv = form.querySelector('.form-actions');
+        if (actionsDiv && targetContainer.contains(actionsDiv)) { // Insert before actions if actions are in target
+            targetContainer.insertBefore(formGroup, actionsDiv);
+        } else if (actionsDiv && form.contains(actionsDiv)) { // Insert before actions if actions are in form (but not target)
+             form.insertBefore(formGroup, actionsDiv);
+        } else { // Append to target or form if no actions div
+            targetContainer.appendChild(formGroup);
+        }
+    }
+
+
+    async function handlePluginFormSubmit(event) {
+        event.preventDefault();
+        const form = event.target;
+        const pluginName = form.id.match(/plugin-(.*?)-config-form/)[1];
+        
+        // Rebuild the .env string from the form, preserving comments and order
+        const currentPluginEntries = originalPluginConfigs[pluginName] || [];
+        const newConfigString = buildEnvStringForPlugin(form, currentPluginEntries);
+
+        try {
+            await apiFetch(`${API_BASE_URL}/plugins/${pluginName}/config`, {
+                method: 'POST',
+                body: JSON.stringify({ content: newConfigString })
+            });
+            showMessage(`${pluginName} 配置已保存！更改可能需要重启插件或服务生效。`, 'success');
+            loadPluginConfig(pluginName); // Reload to reflect changes
+        } catch (error) { /* Error handled by apiFetch */ }
+    }
+
+    function buildEnvStringForPlugin(formElement, originalParsedEntries) {
+        const finalLines = [];
+        const editedKeysInForm = new Set();
+
+        // Collect all keys that are actually present as editable fields in the form
+        Array.from(formElement.elements).forEach(el => {
+            if (el.dataset.originalKey) editedKeysInForm.add(el.dataset.originalKey);
+        });
+
+        originalParsedEntries.forEach(entry => {
+            if (entry.isCommentOrEmpty) {
+                finalLines.push(entry.value);
+            } else {
+                const inputElement = formElement.elements[`${pluginName}-${entry.key.replace(/\./g, '_')}`] || formElement.elements[entry.key];
+                if (inputElement && editedKeysInForm.has(entry.key)) {
+                    let value = inputElement.value;
+                    if (inputElement.type === 'checkbox' && inputElement.dataset.expectedType === 'boolean') {
+                        value = inputElement.checked ? 'true' : 'false';
+                    } else if (inputElement.dataset.expectedType === 'integer') {
+                        const intVal = parseInt(value, 10);
+                        value = isNaN(intVal) ? (value === '' ? '' : value) : String(intVal);
+                    }
+                    const isMultiline = entry.isMultilineQuoted || value.includes('\n');
+                    if (isMultiline) {
+                        finalLines.push(`${entry.key}='${value}'`);
+                    } else {
+                        finalLines.push(`${entry.key}=${value}`);
+                    }
+                } else if (!editedKeysInForm.has(entry.key)) { // Key was in original but not in form (e.g. deleted custom field)
+                    // Do not add it back if it was a custom field that got deleted.
+                    // If it was a schema field that somehow disappeared from form, it's an issue.
+                    // For simplicity, if it's not in the form's editable fields, we assume it was intentionally removed or handled.
+                } else { // Fallback for keys that might be missing from form but were in original (should be rare)
+                     if (entry.isMultilineQuoted) {
+                        finalLines.push(`${entry.key}='${entry.value}'`);
+                    } else {
+                        finalLines.push(`${entry.key}=${entry.value}`);
+                    }
+                }
+            }
+        });
+        
+        // Add new custom fields that were added via "Add Custom" button
+        // These would have been added to originalParsedEntries by addCustomConfigFieldToPluginForm
+        // and should be picked up by the loop above if they have corresponding form elements.
+        // If a new field was added and then immediately saved, it should be in formElement.elements.
+        // Let's ensure any new keys in originalPluginConfigs[pluginName] that are also in the form are added
+        const currentPluginEntries = originalPluginConfigs[pluginName] || [];
+        currentPluginEntries.forEach(entry => {
+            if (!entry.isCommentOrEmpty && !finalLines.some(line => line.startsWith(entry.key + "=") || line.startsWith(entry.key + "='"))) {
+                 const inputElement = formElement.elements[`${pluginName}-${entry.key.replace(/\./g, '_')}`] || formElement.elements[entry.key];
+                 if (inputElement) { // It's a new field added to the form
+                    let value = inputElement.value;
+                     if (inputElement.type === 'checkbox' && inputElement.dataset.expectedType === 'boolean') {
+                        value = inputElement.checked ? 'true' : 'false';
+                    }
+                    const isMultiline = value.includes('\n');
+                     if (isMultiline) {
+                        finalLines.push(`${entry.key}='${value}'`);
+                    } else {
+                        finalLines.push(`${entry.key}=${value}`);
+                    }
+                 }
+            }
+        });
+
+
+        return finalLines.join('\n');
+    }
+
+
+    function createCommentOrEmptyElement(lineContent, uniqueId) {
+        const group = document.createElement('div');
+        group.className = 'form-group-comment'; // Different class for styling
+        const commentPre = document.createElement('pre');
+        commentPre.textContent = lineContent;
+        commentPre.dataset.isCommentOrEmpty = "true";
+        commentPre.dataset.originalContent = lineContent; // Store for saving
+        commentPre.id = `comment-${uniqueId}`;
+        group.appendChild(commentPre);
+        return group;
+    }
+
+
+    function createFormGroup(key, value, type, descriptionHtml, isPluginConfig = false, pluginName = null, isCustomDeletableField = false, isMultiline = false) {
+        const group = document.createElement('div');
+        group.className = 'form-group';
+        const elementIdSuffix = key.replace(/\./g, '_');
+        const elementId = `${isPluginConfig && pluginName ? pluginName + '-' : ''}${elementIdSuffix}`;
+
+        const label = document.createElement('label');
+        label.htmlFor = elementId;
+
+        const keySpan = document.createElement('span');
+        keySpan.className = 'key-name';
+        keySpan.textContent = key;
+        label.appendChild(keySpan);
+
+        if (isPluginConfig && isCustomDeletableField) {
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.textContent = '×';
+            deleteButton.title = `删除自定义项 ${key}`;
+            deleteButton.classList.add('delete-config-btn');
+            deleteButton.onclick = (e) => {
+                e.stopPropagation();
+                if (confirm(`确定要删除自定义配置项 "${key}" 吗？更改将在保存后生效。`)) {
+                    group.remove();
+                    // Also remove from originalPluginConfigs[pluginName] to prevent re-adding on save
+                    if (pluginName && originalPluginConfigs[pluginName]) {
+                        originalPluginConfigs[pluginName] = originalPluginConfigs[pluginName].filter(entry => entry.key !== key);
+                    } else if (!pluginName && originalBaseConfigEntries) { // For base config if ever needed
+                        originalBaseConfigEntries = originalBaseConfigEntries.filter(entry => entry.key !== key);
+                    }
+                }
+            };
+            label.appendChild(deleteButton);
+        }
+        
+        group.appendChild(label); // Add label first
+
+        if (descriptionHtml) {
+            const descSpan = document.createElement('span');
+            descSpan.className = 'description';
+            descSpan.innerHTML = descriptionHtml; // Use innerHTML for spans from server
+            group.appendChild(descSpan);
+        }
+
+        let input;
+        if (type === 'boolean') {
+            const switchContainer = document.createElement('div');
+            switchContainer.className = 'switch-container';
+            const switchLabel = document.createElement('label');
+            switchLabel.className = 'switch';
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = String(value).toLowerCase() === 'true';
+            const sliderSpan = document.createElement('span');
+            sliderSpan.className = 'slider';
+            switchLabel.appendChild(input);
+            switchLabel.appendChild(sliderSpan);
+            switchContainer.appendChild(switchLabel);
+            const valueDisplay = document.createElement('span');
+            valueDisplay.textContent = input.checked ? '启用' : '禁用';
+            input.onchange = () => { valueDisplay.textContent = input.checked ? '启用' : '禁用'; };
+            switchContainer.appendChild(valueDisplay);
+            group.appendChild(switchContainer);
+        } else if (type === 'integer') {
+            input = document.createElement('input');
+            input.type = 'number';
+            input.value = value !== null && value !== undefined ? value : '';
+            input.step = '1';
+        } else if (isMultiline || String(value).includes('\n') || (typeof value === 'string' && value.length > 60)) {
+            input = document.createElement('textarea');
+            input.value = value !== null && value !== undefined ? value : '';
+            input.rows = Math.min(10, Math.max(3, String(value).split('\n').length + 1));
+        } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.value = value !== null && value !== undefined ? value : '';
+        }
+
+        input.id = elementId;
+        input.name = elementId; // Use unique name for form submission if needed, but we build string manually
+        input.dataset.originalKey = key; // Store original key for mapping back
+        input.dataset.expectedType = type;
+        if (input.type !== 'checkbox') { // Checkbox already appended inside switchContainer
+            group.appendChild(input);
+        }
+        
+        return group;
+    }
+
+
+    function navigateTo(targetId, pluginName = null) {
+        document.querySelectorAll('.sidebar nav li a').forEach(link => link.classList.remove('active'));
+        document.querySelectorAll('.config-section').forEach(section => section.classList.remove('active-section'));
+
+        const activeLink = pluginNavList.querySelector(`a[data-target="${targetId}"]`);
+        if (activeLink) activeLink.classList.add('active');
+
+        const targetSection = document.getElementById(`${targetId}-section`);
+        if (targetSection) {
+            targetSection.classList.add('active-section');
+            if (pluginName) {
+                loadPluginConfig(pluginName).catch(err => console.error(`Failed to load config for ${pluginName}`, err));
+            } else if (targetId === 'base-config') {
+                // loadBaseConfig(); // Already loaded initially, and on save. Only reload if necessary.
+            }
+        }
+    }
+
+    pluginNavList.addEventListener('click', (event) => {
+        const anchor = event.target.closest('a');
+        if (anchor) {
+            event.preventDefault();
+            const targetId = anchor.dataset.target;
+            const pluginName = anchor.dataset.pluginName;
+            navigateTo(targetId, pluginName);
+        }
+    });
+
+    // --- Server Restart Function ---
+    async function restartServer() {
+        if (!confirm('您确定要重启服务器吗？')) {
+            return;
+        }
+        try {
+            showMessage('正在发送重启服务器命令...', 'info');
+            const response = await apiFetch(`${API_BASE_URL}/server/restart`, { method: 'POST' });
+            // The server typically closes the connection upon successful restart command,
+            // so a successful JSON response might not always come.
+            // We'll rely on the HTTP status or a simple text message if provided.
+            if (typeof response === 'string' && response.includes('重启命令已发送')) {
+                 showMessage(response, 'success', 5000);
+            } else if (response && response.message) {
+                showMessage(response.message, 'success', 5000);
+            }
+            else {
+                showMessage('服务器重启命令已发送。请稍后检查服务器状态。', 'success', 5000);
+            }
         } catch (error) {
-            console.error(`保存指令 ${commandIdentifier} 描述失败:`, error);
-            statusElement.textContent = `保存指令 ${commandIdentifier} 描述失败: ${error.message}`;
+            // Error is already shown by apiFetch, but we can add a specific console log
+            console.error('Restart server failed:', error);
         }
     }
 
-
-    function escapeHtml(unsafe) {
-        if (unsafe === null || typeof unsafe === 'undefined') {
-            return '';
-        }
-        // 确保这里是正确的替换
-        return unsafe
-            .toString()
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;") // 修正：这里使用 &quot;
-            .replace(/'/g, "&#039;"); // 修正：确保有分号，并且实体正确
-    }
-
-    // --- 初始化 ---
-    if (saveMainConfigButton) {
-        saveMainConfigButton.addEventListener('click', saveMainConfig);
-    }
-    if (restartServerButton) { // 新增：为重启按钮添加事件监听器
+    if (restartServerButton) {
         restartServerButton.addEventListener('click', restartServer);
     }
-    
-    loadMainConfig();
-    loadPlugins();
+
+    loadInitialData();
 });

@@ -1,486 +1,524 @@
-/* Top Bar Styles */
-.top-bar {
-    background-color: #2c3e50; /* 深蓝灰色，与h1标题协调 */
-    color: #ecf0f1; /* 浅灰色文字 */
-    padding: 12px 0;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.15);
-    width: 100%;
-    position: sticky; /* 可以考虑粘性定位 */
-    top: 0;
-    z-index: 1000; /* 确保在最上层 */
-}
-
-.top-bar-content {
-    width: 90%; /* 与 .container 宽度一致 */
-    max-width: 1200px; /* 与 .container 最大宽度一致 */
-    margin: 0 auto;
-    display: flex;
-    justify-content: space-between; /* Keep space-between for overall structure */
-    align-items: center;
-}
-
-.server-name {
-    font-size: 1.1em;
-    font-weight: 600;
-    background-color: #5e7c9a; /* 更浅的背景色，例如淡灰色 */
-    padding: 6px 12px;
-    border-radius: 5px;
-    color: #2c3e50; /* 深色文字，与顶部栏背景色形成对比 */
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 更柔和的阴影 */
-}
-
-.plugin-stats {
-    font-size: 0.95em;
-    background-color: #34495e; /* 稍浅一点的背景 */
-    padding: 5px 10px;
-    border-radius: 4px;
-}
-
+/* style.css */
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* 更现代的字体 */
-    margin: 0; /* 确保顶部栏可以接触到页面边缘，如果 sticky 定位 */
-    background-color: #f0f2f5; /* 淡雅的背景色 */
-    color: #333;
-    line-height: 1.6;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding-top: 52px; /* 为固定的 top-bar 留出空间 (预估 52px) */
+    background-color: #1a1a2e; /* 深邃的午夜蓝 */
+    color: #e0e0e0; /* 柔和的浅灰色文字 */
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    min-height: 100vh;
+    overflow-y: auto;
+    font-size: 16px;
 }
 
 .container {
-    width: 90%; /* 更宽一些 */
-    max-width: 1200px; /* 最大宽度 */
-    margin: 30px auto;
-    background: #ffffff;
-    padding: 25px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); /* 更柔和的阴影 */
-    border-radius: 12px; /* 更大的圆角 */
+    display: flex;
+    width: 95%;
+    max-width: 1600px; /* 稍微加宽以容纳更多内容 */
+    min-height: calc(100vh - 52px - 40px); /* 减去 top-bar 高度(52px)和上下 margin(20+20) */
+    margin-top: 20px;
+    margin-bottom: 20px;
+    background-color: #24243b; /* 比body稍亮的深蓝紫色 */
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
 }
 
-h1 {
-    color: #2c3e50; /* 深蓝灰色 */
-    text-align: center;
+.sidebar {
+    width: 280px;
+    flex-shrink: 0; /* 防止侧边栏被压缩 */
+    background-color: #1f1f30; /* 侧边栏更深一度 */
+    padding: 25px;
+    border-right: 1px solid #3a3a52;
+    box-sizing: border-box;
+    overflow-y: auto;
+    max-height: calc(100vh - 52px - 40px); /* 与容器同步，并减去 top-bar 高度(52px) */
+}
+
+.sidebar h1 {
+    font-size: 1.8em;
+    color: #7aa1ff; /* 科技感蓝色 */
+    margin-top: 0;
     margin-bottom: 30px;
+    text-align: center;
+    letter-spacing: 1px;
     font-weight: 600;
 }
 
-h2 {
-    color: #34495e; /* 次级标题颜色 */
-    text-align: left; /* 标题左对齐 */
-    margin-bottom: 20px;
+.sidebar nav ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar nav li a {
+    display: block;
+    color: #b0b0d0;
+    padding: 13px 20px; /* 增加内边距 */
+    text-decoration: none;
+    border-radius: 8px; /* 更圆润的边角 */
+    margin-bottom: 10px;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, transform 0.1s ease;
+    font-size: 0.95em;
     font-weight: 500;
-    border-bottom: 1px solid #ecf0f1; /* 更细的分割线 */
-    padding-bottom: 10px;
 }
 
-.section {
-    margin-bottom: 35px;
-    padding: 25px;
-    background-color: #fff;
-    border: 1px solid #e0e0e0; /* 更浅的边框 */
-    border-radius: 8px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+.sidebar nav li a:hover {
+    background-color: #33334d;
+    color: #ffffff;
+    transform: translateX(3px); /* 轻微悬浮效果 */
+}
+.sidebar nav li a.active {
+    background-color: #4a4a70; /* 激活状态更明显 */
+    color: #ffffff;
+    font-weight: 600;
+    box-shadow: inset 3px 0 0 #7aa1ff; /* 左侧指示条 */
 }
 
-.section h2 { /* section 内的 h2 特殊处理 */
+.content {
+    flex-grow: 1;
+    padding: 30px 40px; /* 增加左右内边距 */
+    box-sizing: border-box;
+    overflow-y: auto;
+    max-height: calc(100vh - 52px - 40px); /* 与容器同步，并减去 top-bar 高度(52px) */
+}
+
+.config-section {
+    display: none;
+    animation: fadeIn 0.5s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.config-section.active-section {
+    display: block;
+}
+
+.config-section h2 {
+    font-size: 1.7em; /* 标题稍大 */
+    color: #7aa1ff;
     margin-top: 0;
+    margin-bottom: 25px;
+    border-bottom: 2px solid #7aa1ff;
+    padding-bottom: 12px;
+    font-weight: 600;
+}
+.config-section h3 { /* 用于插件内部的子标题，例如 "Schema 配置" vs "自定义 .env 配置" */
     font-size: 1.3em;
+    color: #9faeff;
+    margin-top: 30px;
+    margin-bottom: 15px;
+    padding-bottom: 5px;
+    border-bottom: 1px dashed #505070;
 }
 
-textarea,
-.config-editor input[type="text"] { /* 统一文本输入框样式 */
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 22px; /* 表单组间距 */
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px; /* 组内标签和输入框间距 */
+    padding: 18px; /* 增加内边距 */
+    background-color: #2a2a42; /* 表单组背景 */
+    border-radius: 8px;
+    border: 1px solid #383853;
+    transition: box-shadow 0.3s ease;
+}
+.form-group:focus-within { /* 当内部元素获得焦点时 */
+    box-shadow: 0 0 10px rgba(122, 161, 255, 0.3);
+}
+
+
+.form-group label {
+    font-weight: 600; /* 标签加粗 */
+    color: #c8c8e8;
+    font-size: 1em;
+    display: flex; /* 用于对齐删除按钮 */
+    justify-content: space-between;
+    align-items: center;
+}
+.form-group label .key-name {
+    flex-grow: 1;
+}
+.form-group label .description {
+    font-weight: normal;
+    font-size: 0.88em;
+    color: #8a8aad;
+    display: block;
+    margin-top: 5px;
+    line-height: 1.4;
+}
+.form-group label .defined-in {
+    font-style: italic;
+    font-size: 0.8em;
+    color: #6f6fa1;
+    margin-left: 10px;
+    white-space: nowrap; /* 防止换行 */
+}
+
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group input[type="password"],
+.form-group textarea,
+.form-group select {
     width: 100%;
-    padding: 12px;
-    border: 1px solid #d1d5db; /* 浅灰色边框 */
-    border-radius: 6px;
-    margin-bottom: 12px;
-    font-size: 14px;
-    line-height: 1.5;
-    box-sizing: border-box; /* 确保 padding 不会撑大宽度 */
-    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    padding: 12px 15px; /* 增加输入框内边距 */
+    border: 1px solid #4a4a6a;
+    border-radius: 6px; /* 更圆润 */
+    background-color: #1e1e30; /* 输入框背景更暗 */
+    color: #e0e0e0;
+    font-size: 0.95em;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-
-textarea:focus,
-.config-editor input[type="text"]:focus {
-    border-color: #007bff; /* 蓝色高亮 */
-    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+.form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus,
+.form-group input[type="password"]:focus,
+.form-group textarea:focus,
+.form-group select:focus {
     outline: none;
+    border-color: #7aa1ff;
+    box-shadow: 0 0 0 3px rgba(122, 161, 255, 0.25); 
 }
 
-
-/* 主配置编辑器样式 */
-.config-editor {
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
-    padding: 15px;
-    background-color: #f9fafb; /* 轻微的背景色 */
+.form-group textarea {
+    min-height: 100px; /* 文本域更高 */
+    resize: vertical;
 }
 
-.config-item {
+/* 美化 checkbox 为开关样式 */
+.switch-container { /* 包裹开关和旁边的文字标签 */
     display: flex;
     align-items: center;
-    margin-bottom: 10px;
-    padding: 8px 0;
-    border-bottom: 1px dashed #ecf0f1; /* 项目间虚线分隔 */
+    gap: 10px;
 }
-.config-item:last-child {
-    border-bottom: none;
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px; 
+  height: 24px; 
+}
+.switch input { 
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #4a4a6a;
+  transition: .3s;
+  border-radius: 24px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 18px; 
+  width: 18px; 
+  left: 3px; 
+  bottom: 3px; 
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+input:checked + .slider {
+  background-color: #6888ff;
+}
+input:focus + .slider {
+  box-shadow: 0 0 2px #6888ff, 0 0 5px #6888ff; /* 焦点时更明显 */
+}
+input:checked + .slider:before {
+  transform: translateX(24px); /* 滑块移动距离调整 */
 }
 
-.config-key {
-    flex: 0 0 200px; /* 固定标签宽度 */
-    font-weight: 500;
-    color: #34495e;
-    padding-right: 15px;
-    font-size: 14px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+
+.form-actions { /* 包裹保存和添加按钮的容器 */
+    display: flex;
+    gap: 15px;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #3a3a52;
 }
 
-.config-value { /* class for the input field itself */
-    flex-grow: 1;
-    /* Specific styles for input are now combined with textarea */
-}
-
-.config-comment {
-    color: #7f8c8d; /* 注释颜色 */
-    font-style: italic;
-    padding: 5px 0;
-    font-size: 13px;
-    white-space: pre-wrap; /* 保留换行和空格 */
-}
-
-
-button {
-    background-color: #007bff; /* 主题蓝色 */
+button[type="submit"], .add-config-btn {
+    padding: 12px 22px; /* 按钮稍大 */
     color: white;
-    padding: 12px 20px; /* 稍大的 padding */
     border: none;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 15px;
-    font-weight: 500;
-    transition: background-color 0.2s ease, box-shadow 0.2s ease;
-    margin-right: 10px; /* 按钮间距 */
-}
-button:last-child {
-    margin-right: 0;
-}
-
-button:hover {
-    background-color: #0056b3; /* 深一点的蓝色 */
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-button#restartServer { /* 重启按钮特殊颜色 */
-    background-color: #ffc107; /* 警告黄色 */
-    color: #212529;
-}
-button#restartServer:hover {
-    background-color: #e0a800;
-}
-
-
-.status {
-    margin-top: 15px;
-    font-style: normal; /* 不用斜体 */
-    color: #6c757d; /* 柔和的灰色 */
-    font-size: 14px;
-    padding: 8px 12px;
-    background-color: #e9ecef;
-    border-radius: 4px;
-    display: inline-block; /* 让背景适应内容 */
-}
-.status.error { /* 错误状态 */
-    color: #721c24;
-    background-color: #f8d7da;
-    border: 1px solid #f5c6cb;
-}
-
-
-#pluginList .plugin-item {
-    border: 1px solid #e0e0e0;
-    padding: 20px;
-    margin-bottom: 20px;
-    border-radius: 8px;
-    background-color: #fdfdfd; /* 比 section 更浅一点 */
-    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
-}
-
-#pluginList .plugin-item h3 {
-    margin-top: 0;
-    margin-bottom: 12px;
-    color: #2c3e50;
-    font-size: 1.15em;
-}
-
-#pluginList .plugin-item p {
-    margin-bottom: 8px;
-    font-size: 14px;
-}
-
-#pluginList .plugin-item textarea {
-    min-height: 70px;
-    margin-bottom: 10px;
-    font-size: 13px;
-}
-
-#pluginList .plugin-item .actions button {
-    padding: 8px 12px; /* 插件操作按钮小一点 */
-    font-size: 13px;
-    margin-right: 8px;
-}
-
-/* 插件启用/禁用按钮颜色调整 */
-#pluginList .plugin-item .actions .toggle-button.enabled {
-    background-color: #dc3545; /* 禁用按钮 - 红色 */
-}
-#pluginList .plugin-item .actions .toggle-button.enabled:hover {
-    background-color: #c82333;
-}
-
-#pluginList .plugin-item .actions .toggle-button.disabled {
-    background-color: #28a745; /* 启用按钮 - 绿色 */
-}
-#pluginList .plugin-item .actions .toggle-button.disabled:hover {
-    background-color: #218838;
-}
-
-/* 编辑/保存/取消描述按钮 */
-#pluginList .plugin-item .actions .edit-description-button,
-#pluginList .plugin-item .actions .save-description-button,
-#pluginList .plugin-item .actions .cancel-edit-description-button {
-    background-color: #6c757d; /* 中性灰色 */
-}
-#pluginList .plugin-item .actions .edit-description-button:hover,
-#pluginList .plugin-item .actions .save-description-button:hover,
-#pluginList .plugin-item .actions .cancel-edit-description-button:hover {
-    background-color: #5a6268;
-}
-
-/* 插件特定状态消息 */
-.plugin-specific-status {
-    font-size: 13px;
-    margin-top: 8px;
-}
-/* Invocation Commands Section Styles */
-.invocation-commands-section {
-    margin-top: 20px;
-    padding-top: 15px;
-    border-top: 1px solid #e0e0e0; /* Separator from plugin config */
-}
-
-.invocation-commands-section h4 {
-    font-size: 1.1em;
-    color: #34495e;
-    margin-bottom: 15px;
-}
-
-.commands-list .command-item {
-    background-color: #f9fafb; /* Slightly different background for each command block */
-    padding: 15px;
-    border: 1px solid #e7e7e7;
-    border-radius: 6px;
-    margin-bottom: 15px;
-}
-
-.command-item h5 {
     font-size: 1em;
-    color: #2c3e50;
-    margin-top: 0;
-    margin-bottom: 10px;
-    font-weight: 600;
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+button[type="submit"] {
+    background-color: #4CAF50; /* 主保存按钮 */
+}
+button[type="submit"]:hover {
+    background-color: #45a049;
+    transform: translateY(-1px);
+}
+.add-config-btn {
+    background-color: #007bff; 
+}
+.add-config-btn:hover {
+    background-color: #0056b3;
+    transform: translateY(-1px);
+}
+.delete-config-btn {
+    padding: 6px 10px;
+    background-color: #e74c3c; /* 柔和的红色 */
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: background-color 0.2s ease;
+    /* margin-left: auto; /* 尝试推到右边, 但在 flex label 中可能不合适 */
+}
+.delete-config-btn:hover {
+    background-color: #c0392b;
 }
 
-.command-item label {
-    display: block;
+
+/* 加载动画 */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(30, 30, 47, 0.85); 
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.3s ease, visibility 0s linear 0.3s;
+}
+.loading-overlay.visible {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 0.3s ease, visibility 0s linear 0s;
+}
+
+.spinner {
+    border: 5px solid #4a4a6a; 
+    border-top: 5px solid #7aa1ff; 
+    border-radius: 50%;
+    width: 45px;
+    height: 45px;
+    animation: spin 0.8s linear infinite; /* 加快旋转 */
+    margin-bottom: 18px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loading-overlay p {
+    color: #e0e0e0;
+    font-size: 1.1em;
     font-weight: 500;
-    color: #555;
-    margin-bottom: 5px;
+}
+
+/* 消息提示框 */
+.message-popup {
+    position: fixed;
+    bottom: -100px; /* 初始位置在屏幕外 */
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #333;
+    color: white;
+    padding: 16px 28px; /* 增加内边距 */
+    border-radius: 8px;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+    z-index: 1001;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.4s ease, bottom 0.4s cubic-bezier(0.68, -0.55, 0.27, 1.55), visibility 0s linear 0.4s; /* 添加弹性动画 */
+    font-size: 1em;
+    min-width: 250px;
+    text-align: center;
+}
+
+.message-popup.show {
+    opacity: 1;
+    bottom: 40px; /* 最终位置 */
+    visibility: visible;
+    transition: opacity 0.4s ease, bottom 0.4s cubic-bezier(0.68, -0.55, 0.27, 1.55), visibility 0s linear 0s;
+}
+.message-popup.success {
+    background-color: #2ecc71; /* 更鲜亮的绿色 */
+    color: #fff;
+}
+.message-popup.error {
+    background-color: #e74c3c; /* 更鲜亮的红色 */
+    color: #fff;
+}
+/* Top Bar Styles */
+.top-bar {
+    background-color: rgba(31, 31, 48, 0.85); /* 半透明深色背景 */
+    backdrop-filter: blur(8px); /* 磨砂效果 */
+    -webkit-backdrop-filter: blur(8px); /* Safari 兼容 */
+    color: #e0e0e0;
+    padding: 10px 0; /* 上下内边距 */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    width: 100%;
+    position: fixed; /* 改为 fixed 使其完全悬浮 */
+    top: 0;
+    left: 0; /*确保从左边开始 */
+    right: 0; /*确保延展到右边 */
+    z-index: 1050;
+    box-sizing: border-box;
+    height: 52px; /* 明确高度，与 body padding-top 一致 */
+}
+
+.top-bar-content {
+    width: 95%;
+    max-width: 1600px; /* 与主容器一致 */
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 20px; /* 内边距，避免内容贴边 */
+    box-sizing: border-box;
+}
+
+.server-title {
+    font-size: 1.5em; /* 稍大一些的标题 */
+    font-weight: 600;
+    color: #7aa1ff; /* 与侧边栏标题颜色一致的科技感蓝色 */
+    letter-spacing: 0.5px;
+}
+
+.restart-button {
+    padding: 8px 16px;
+    background-color: #e74c3c; /* 醒目的红色 */
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
     font-size: 0.9em;
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.restart-button:hover {
+    background-color: #c0392b; /* 深一点的红色 */
+    transform: translateY(-1px);
+}
+
+.restart-button:active {
+    transform: translateY(0px);
+}
+
+/* Invocation Commands Editor Styles */
+.invocation-commands-section {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #3a3a52; /* Separator from plugin .env config */
+}
+
+.invocation-commands-section h3 {
+    font-size: 1.4em; /* Slightly smaller than main section h2 */
+    color: #9faeff; /* Consistent with other h3 */
+    margin-bottom: 20px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed #505070; /* Consistent with other h3 */
+}
+
+.command-item {
+    background-color: #26263e; /* Slightly different background for each command block */
+    padding: 20px;
+    border: 1px solid #383853; /* Consistent with form-group border */
+    border-radius: 8px; /* Consistent with form-group border-radius */
+    margin-bottom: 20px;
+}
+
+.command-item h4 {
+    font-size: 1.2em;
+    color: #c8c8e8; /* Consistent with form-group label color */
+    margin-top: 0;
+    margin-bottom: 15px;
+    font-weight: 600;
 }
 
 textarea.command-description-edit {
     width: 100%;
-    min-height: 120px; /* Good default height for descriptions */
-    padding: 10px;
-    border: 1px solid #d1d5db;
+    min-height: 100px; 
+    padding: 12px 15px;
+    border: 1px solid #4a4a6a;
     border-radius: 6px;
-    font-size: 14px;
-    line-height: 1.6;
-    margin-bottom: 10px;
+    background-color: #1e1e30;
+    color: #e0e0e0;
+    font-size: 0.95em;
     box-sizing: border-box;
-    resize: vertical; /* Allow vertical resizing */
-    transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    resize: vertical;
+    margin-bottom: 15px; /* Space before save button */
 }
 
 textarea.command-description-edit:focus {
-    border-color: #007bff;
-    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
     outline: none;
+    border-color: #7aa1ff;
+    box-shadow: 0 0 0 3px rgba(122, 161, 255, 0.25);
 }
 
-.command-item .save-command-description-button {
-    background-color: #17a2b8; /* Info blue/teal for command specific save */
+.command-item .form-actions { /* Reusing form-actions for button container */
+    border-top: none; /* No top border needed here */
+    padding-top: 0;
+    margin-top: 0; /* Adjust if needed */
+    justify-content: flex-start; /* Align button to the left */
+}
+
+.save-command-description-btn {
+    padding: 10px 18px; /* Slightly adjusted padding, can match others if preferred */
     color: white;
-    padding: 8px 12px;
-    font-size: 13px;
-    margin-top: 5px;
-}
-
-.command-item .save-command-description-button:hover {
-    background-color: #138496; /* Darker shade for hover */
-}
-/* Top Bar Title Styles */
-.top-bar-title {
-    color: #ecf0f1;
-    font-size: 1.2em; /* 根据需要调整大小 */
-    font-weight: bold;
-    margin: 0 10px; /* Add some margin to prevent touching edges if server-name or plugin-stats are short */
-    flex-grow: 1; /* Allow title to take available space */
-    text-align: center; /* Center the text within the title element */
-    min-width: 0; /* Allow shrinking if needed */
-}
-
-.server-name, .plugin-stats {
-    flex-shrink: 0; /* Prevent server name and plugin stats from shrinking too much */
-}
-
-/* Main Config Actions Styles */
-.main-config-actions {
-    display: flex;
-    align-items: center; /* Vertically align items to the center of the line */
-    gap: 10px;
-    margin-top: 15px;
-}
-
-.main-config-actions button,
-.main-config-actions .status {
-    height: 45px; /* Explicit height */
-    padding: 0 15px; /* Horizontal padding only */
-    font-size: 14px;
-    margin-right: -3px;
-    margin-top: -15px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
+    border: none;
     border-radius: 6px;
-    border: 1px solid transparent; /* Base border for box model consistency */
+    cursor: pointer;
+    font-size: 0.95em; /* Slightly adjusted font size */
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    background-color: #5cb85c; /* Specific green for this save button */
+    /* Ensure it behaves like other buttons on hover/active */
+}
+.save-command-description-btn:hover {
+    background-color: #4cae4c; /* Darker green on hover */
+    transform: translateY(-1px);
+}
+.save-command-description-btn:active {
+    transform: translateY(0px);
 }
 
-.main-config-actions .status {
-    margin-top: 0;
-    background-color: #e9ecef;
-    color: #6c757d;
-    border-color: #ced4da; /* Override with visible border */
-}
-
-/* Ensure specific button styles don't override height and maintain consistent border for box model */
-.main-config-actions button#saveMainConfig {
-    background-color: #007bff;
-    color: white;
-    /* border: 1px solid #007bff; /* Or keep transparent if no visible border desired */
-}
-.main-config-actions button#restartServer {
-     background-color: #ffc107;
-     color: #212529;
-     /* border: 1px solid #ffc107; /* Or keep transparent */
-}
-
-/* Ensure buttons also use box-sizing for consistent height calculation */
-/* General button box-sizing is good, but ensure it doesn't conflict with explicit height */
-button {
-    box-sizing: border-box;
-}
-
-/* Plugin save button area - fix for the small square */
-/* Assuming the "small square" is the status paragraph next to the save button */
-/* We can style the container of the button and status for better alignment */
-#pluginList .plugin-item .actions + h4 + textarea + button + p.plugin-specific-status {
-    margin-left: 10px; /* Add some space if it's too close */
-}
-
-/* If the "小方块" is an unexpected element, we might need to hide it.
-   For example, if it's an empty p tag or a mis-styled element.
-   Let's first try to improve spacing for the existing status element.
-   If the issue is a specific unwanted element, a more targeted CSS rule would be needed.
-   Based on the screenshot, it seems like the status message itself.
-   Let's ensure plugin buttons and their associated status messages are well-aligned.
-*/
-
-#pluginList .plugin-item > button.save-plugin-config-button,
-#pluginList .plugin-item > p.plugin-specific-status {
-    display: inline-block; /* Align them on the same line */
-    vertical-align: middle; /* Vertically align them */
-    margin-top: 10px; /* Add some top margin for spacing */
-}
-
-#pluginList .plugin-item > p.plugin-specific-status {
-    margin-left: 8px; /* Space between button and status */
-    padding: 8px 12px; /* Consistent padding */
-}
-
-/* Adjusting the plugin actions container for better button alignment */
-#pluginList .plugin-item .actions {
-    display: flex;
-    flex-wrap: wrap; /* Allow buttons to wrap if not enough space */
-    align-items: center;
-    gap: 8px; /* Spacing between action buttons */
-    margin-bottom: 15px; /* Space below action buttons */
-}
-
-#pluginList .plugin-item .actions button {
-    margin-right: 0; /* Remove individual margins, use gap */
-}
-
-/* Specific styling for the container of plugin config save button and its status */
-.plugin-config-controls {
-    display: flex;
-    align-items: center; /* Vertically align items to the center of the line */
-    gap: 10px;
+p.command-status {
     margin-top: 10px;
+    font-size: 0.9em;
 }
-
-.plugin-config-controls .save-plugin-config-button,
-.plugin-config-controls .plugin-specific-status {
-    height: 36px; /* Explicit height */
-    padding: 0 12px; /* Horizontal padding */
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    margin-top: -5px;
-    border-radius: 6px;
-    border: 1px solid transparent; /* Base border for box model consistency */
+p.command-status.success {
+    color: #2ecc71;
 }
-
-.plugin-config-controls .save-plugin-config-button {
-    background-color: #007bff;
-    color: white;
-    /* border: 1px solid #007bff; /* Or keep transparent */
+p.command-status.error {
+    color: #e74c3c;
 }
-
-.plugin-config-controls .plugin-specific-status {
-    background-color: #e9ecef;
-    color: #6c757d;
-    border-color: #ced4da; /* Override with visible border */
-    margin-top: 4px;
-    margin-right: 50px;
-    /* If status is empty, it will still take up height. JS might be needed to hide if truly empty. */
+p.command-status.info {
+    color: #7aa1ff;
 }
-
-/* Remove the overly broad rule that might be conflicting */
-/* Commenting out the rule from lines 380-385 if it's causing issues with the new .plugin-config-controls styling */
-/*
-#pluginList .plugin-item > button.save-plugin-config-button,
-#pluginList .plugin-item > p.plugin-specific-status {
-    display: inline-block;
-    vertical-align: middle;
-    margin-top: 10px;
-}
-
-#pluginList .plugin-item > p.plugin-specific-status {
-    margin-left: 8px;
-    padding: 8px 12px;
-}
-*/
