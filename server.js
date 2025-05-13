@@ -1452,6 +1452,183 @@ adminApiRouter.post('/server/restart', async (req, res) => {
 });
  
 
+// --- Daily Notes API ---
+const dailyNoteRootPath = path.join(__dirname, 'dailynote');
+
+// GET all folder names in dailynote directory
+adminApiRouter.get('/dailynotes/folders', async (req, res) => {
+    try {
+        await fs.access(dailyNoteRootPath); // Check if dailynote directory exists
+        const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+        const folders = entries
+            .filter(entry => entry.isDirectory())
+            .map(entry => entry.name);
+        res.json({ folders });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            // If dailynote directory doesn't exist, return empty array or specific message
+            console.warn('[AdminAPI] /dailynotes/folders - dailynote directory not found.');
+            res.json({ folders: [] }); // Or res.status(404).json({ error: 'Dailynote directory not found.' });
+        } else {
+            console.error('[AdminAPI] Error listing daily note folders:', error);
+            res.status(500).json({ error: 'Failed to list daily note folders', details: error.message });
+        }
+    }
+});
+
+// GET all note files in a specific folder with last modified time
+adminApiRouter.get('/dailynotes/folder/:folderName', async (req, res) => {
+    const folderName = req.params.folderName;
+    const specificFolderParentPath = path.join(dailyNoteRootPath, folderName); // Renamed to avoid conflict
+
+    try {
+        await fs.access(specificFolderParentPath); // Check if specific folder exists
+        const files = await fs.readdir(specificFolderParentPath);
+        const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+        const PREVIEW_LENGTH = 100; // Number of characters for preview
+
+        const notes = await Promise.all(txtFiles.map(async (file) => {
+            const filePath = path.join(specificFolderParentPath, file);
+            const stats = await fs.stat(filePath);
+            let preview = '';
+            try {
+                const content = await fs.readFile(filePath, 'utf-8');
+                preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
+            } catch (readError) {
+                console.warn(`[AdminAPI] Error reading file for preview ${filePath}: ${readError.message}`);
+                preview = '[无法加载预览]';
+            }
+            return {
+                name: file,
+                lastModified: stats.mtime.toISOString(),
+                preview: preview
+            };
+        }));
+
+        // Sort notes by name (which usually includes date and time)
+        notes.sort((a, b) => a.name.localeCompare(b.name));
+
+        res.json({ notes });
+
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.warn(`[AdminAPI] /dailynotes/folder/${folderName} - Folder not found.`);
+            res.status(404).json({ error: `Folder '${folderName}' not found.` });
+        } else {
+            console.error(`[AdminAPI] Error listing notes in folder ${folderName}:`, error);
+            res.status(500).json({ error: `Failed to list notes in folder ${folderName}`, details: error.message });
+        }
+    }
+});
+
+// GET content of a specific note file
+adminApiRouter.get('/dailynotes/note/:folderName/:fileName', async (req, res) => {
+    const { folderName, fileName } = req.params;
+    const filePath = path.join(dailyNoteRootPath, folderName, fileName);
+
+    try {
+        await fs.access(filePath); // Check if file exists
+        const content = await fs.readFile(filePath, 'utf-8');
+        res.json({ content });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.warn(`[AdminAPI] /dailynotes/note/${folderName}/${fileName} - File not found.`);
+            res.status(404).json({ error: `Note file '${fileName}' in folder '${folderName}' not found.` });
+        } else {
+            console.error(`[AdminAPI] Error reading note file ${folderName}/${fileName}:`, error);
+            res.status(500).json({ error: `Failed to read note file ${folderName}/${fileName}`, details: error.message });
+        }
+    }
+});
+
+// POST to save/update content of a specific note file
+adminApiRouter.post('/dailynotes/note/:folderName/:fileName', async (req, res) => {
+    const { folderName, fileName } = req.params;
+    const { content } = req.body;
+
+    if (typeof content !== 'string') {
+        return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
+    }
+
+    const targetFolderPath = path.join(dailyNoteRootPath, folderName); // Renamed to avoid conflict
+    const filePath = path.join(targetFolderPath, fileName);
+
+    try {
+        // Ensure the target directory exists
+        await fs.mkdir(targetFolderPath, { recursive: true });
+        
+        await fs.writeFile(filePath, content, 'utf-8');
+        res.json({ message: `Note '${fileName}' in folder '${folderName}' saved successfully.` });
+    } catch (error) {
+        console.error(`[AdminAPI] Error saving note file ${folderName}/${fileName}:`, error);
+        res.status(500).json({ error: `Failed to save note file ${folderName}/${fileName}`, details: error.message });
+    }
+});
+
+// POST to move one or more notes to a different folder
+adminApiRouter.post('/dailynotes/move', async (req, res) => {
+    const { sourceNotes, targetFolder } = req.body;
+
+    if (!Array.isArray(sourceNotes) || sourceNotes.some(n => !n.folder || !n.file) || typeof targetFolder !== 'string') {
+        return res.status(400).json({ error: 'Invalid request body. Expected { sourceNotes: [{folder, file}], targetFolder: string }.' });
+    }
+
+    const results = {
+        moved: [],
+        errors: []
+    };
+
+    const targetFolderPath = path.join(dailyNoteRootPath, targetFolder);
+
+    try {
+        // Ensure the overall target directory exists
+        await fs.mkdir(targetFolderPath, { recursive: true });
+    } catch (mkdirError) {
+        console.error(`[AdminAPI] Error creating target folder ${targetFolder} for move:`, mkdirError);
+        return res.status(500).json({ error: `Failed to create target folder '${targetFolder}'`, details: mkdirError.message });
+    }
+
+    for (const note of sourceNotes) {
+        const sourceFilePath = path.join(dailyNoteRootPath, note.folder, note.file);
+        const destinationFilePath = path.join(targetFolderPath, note.file); // Keep original filename in new folder
+
+        try {
+            // Check if source file exists
+            await fs.access(sourceFilePath);
+
+            // Check if destination file already exists (optional: add overwrite logic if needed)
+            try {
+                await fs.access(destinationFilePath);
+                // File already exists at destination
+                results.errors.push({
+                    note: `${note.folder}/${note.file}`,
+                    error: `File already exists at destination '${targetFolder}/${note.file}'. Move aborted for this file.`
+                });
+                continue; // Skip to next file
+            } catch (destAccessError) {
+                // Destination file does not exist, proceed with move
+            }
+            
+            await fs.rename(sourceFilePath, destinationFilePath);
+            results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
+        } catch (error) {
+            if (error.code === 'ENOENT' && error.path === sourceFilePath) {
+                 results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Source file not found.' });
+            } else {
+                console.error(`[AdminAPI] Error moving note ${note.folder}/${note.file} to ${targetFolder}:`, error);
+                results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
+            }
+        }
+    }
+
+    const message = `Moved ${results.moved.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
+    res.json({ message, moved: results.moved, errors: results.errors });
+});
+
+// Placeholder for delete route
+// adminApiRouter.delete('/dailynotes/note/:folderName/:fileName', async (req, res) => { /* ... */ });
+// --- End Daily Notes API ---
+
 app.use('/admin_api', adminApiRouter);
 // --- End Admin API Router ---
 

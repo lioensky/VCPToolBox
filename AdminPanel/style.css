@@ -522,3 +522,199 @@ p.command-status.error {
 p.command-status.info {
     color: #7aa1ff;
 }
+
+/* Daily Notes Manager Styles */
+.daily-notes-manager {
+    display: flex;
+    gap: 20px;
+    height: calc(100% - 60px); /* Adjust based on h2 margin */
+}
+
+.notes-sidebar {
+    width: 200px;
+    flex-shrink: 0;
+    background-color: #1f1f30; /* Consistent with main sidebar */
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #3a3a52;
+    overflow-y: auto;
+    max-height: 100%;
+}
+
+.notes-sidebar h3 {
+    font-size: 1.2em;
+    color: #9faeff;
+    margin-top: 0;
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed #505070;
+}
+
+#notes-folder-list {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+}
+
+#notes-folder-list li {
+    padding: 10px 12px;
+    color: #b0b0d0;
+    cursor: pointer;
+    border-radius: 6px;
+    margin-bottom: 5px;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    font-size: 0.9em;
+}
+
+#notes-folder-list li:hover {
+    background-color: #33334d;
+    color: #ffffff;
+}
+
+#notes-folder-list li.active {
+    background-color: #4a4a70;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.notes-content-area {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    overflow-y: auto; /* Allow scrolling for notes list */
+    max-height: 100%;
+}
+
+.notes-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px;
+    background-color: #2a2a42;
+    border-radius: 8px;
+    border: 1px solid #383853;
+}
+
+.notes-toolbar button,
+.notes-toolbar select {
+    padding: 8px 12px;
+    font-size: 0.9em;
+    border-radius: 6px;
+    border: 1px solid #4a4a6a;
+    background-color: #1e1e30;
+    color: #e0e0e0;
+    cursor: pointer;
+}
+.notes-toolbar button:disabled,
+.notes-toolbar select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.notes-toolbar button:hover:not(:disabled) {
+    background-color: #33334d;
+}
+
+
+#notes-list-view {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); /* Responsive grid */
+    gap: 15px;
+    padding: 5px; /* Small padding around the grid */
+    overflow-y: auto; /* If content overflows the content area */
+}
+
+.note-card {
+    background-color: #26263e;
+    padding: 15px;
+    border: 1px solid #383853;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+    overflow: hidden; /* To contain content */
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between; /* Push actions to bottom */
+    min-height: 120px; /* Minimum height for cards */
+}
+
+.note-card:hover {
+    box-shadow: 0 0 12px rgba(122, 161, 255, 0.2);
+    transform: translateY(-2px);
+}
+.note-card.selected {
+    border-left: 4px solid #7aa1ff;
+    box-shadow: 0 0 15px rgba(122, 161, 255, 0.3);
+}
+
+
+.note-card-filename {
+    font-weight: 600;
+    color: #c8c8e8;
+    font-size: 0.95em;
+    margin-bottom: 8px;
+    word-break: break-all; /* Prevent long filenames from breaking layout */
+}
+
+.note-card-preview {
+    font-size: 0.85em;
+    color: #a0a0c0;
+    margin-bottom: 10px;
+    flex-grow: 1; /* Allow preview to take available space */
+    max-height: 60px; /* Limit preview height */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3; /* Limit to 3 lines */
+    -webkit-box-orient: vertical;
+}
+.note-card-actions {
+    margin-top: auto; /* Push to bottom */
+    display: flex;
+    justify-content: flex-end; /* Align actions to the right */
+    gap: 8px;
+}
+.note-card-actions button {
+    font-size: 0.8em;
+    padding: 5px 8px;
+    background-color: #4a4a70;
+}
+.note-card-actions button:hover {
+    background-color: #5f5f8a;
+}
+
+
+.note-editor-area {
+    /* Styles for the editor will be similar to other textareas, but can be customized */
+    padding: 20px;
+    background-color: #24243b;
+    border: 1px solid #3a3a52;
+    border-radius: 8px;
+    margin-top: 15px; /* If it's a separate block */
+    /* Assuming it will take full width if not in flex with content-area */
+}
+.note-editor-area h3 {
+    font-size: 1.3em;
+    color: #9faeff;
+    margin-top: 0;
+    margin-bottom: 15px;
+}
+#note-content-editor {
+    width: 100%;
+    min-height: 300px; /* Good height for editing */
+    resize: vertical;
+}
+
+.status-message {
+    font-size: 0.85em;
+    margin-left: 10px;
+}
+.status-message.success {
+    color: #2ecc71;
+}
+.status-message.error {
+    color: #e74c3c;
+}
+.status-message.info {
+    color: #7aa1ff;
+}

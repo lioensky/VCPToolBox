@@ -5,7 +5,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const baseConfigForm = document.getElementById('base-config-form');
     const loadingOverlay = document.getElementById('loading-overlay');
     const messagePopup = document.getElementById('message-popup');
-    const restartServerButton = document.getElementById('restart-server-button'); // Get restart button
+    const restartServerButton = document.getElementById('restart-server-button');
+
+    // Daily Notes Manager Elements
+    const dailyNotesSection = document.getElementById('daily-notes-manager-section'); // The main section for daily notes
+    const notesFolderListUl = document.getElementById('notes-folder-list');
+    const notesListViewDiv = document.getElementById('notes-list-view');
+    const noteEditorAreaDiv = document.getElementById('note-editor-area');
+    const editingNoteFolderInput = document.getElementById('editing-note-folder');
+    const editingNoteFileInput = document.getElementById('editing-note-file');
+    const noteContentEditorTextarea = document.getElementById('note-content-editor');
+    const saveNoteButton = document.getElementById('save-note-content');
+    const cancelEditNoteButton = document.getElementById('cancel-edit-note');
+    const noteEditorStatusSpan = document.getElementById('note-editor-status');
+    const moveSelectedNotesButton = document.getElementById('move-selected-notes');
+    const moveTargetFolderSelect = document.getElementById('move-target-folder');
+    const notesActionStatusSpan = document.getElementById('notes-action-status');
+
 
     const API_BASE_URL = '/admin_api'; // Corrected API base path
 
@@ -210,8 +226,10 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadPluginList();
             const firstLink = pluginNavList.querySelector('a');
             if (firstLink) {
-                navigateTo(firstLink.dataset.target, firstLink.dataset.pluginName);
-                firstLink.classList.add('active'); // Activate the first link
+                // Ensure the correct section ID is used if it's different from data-target
+                const sectionId = firstLink.dataset.target.endsWith('-section') ? firstLink.dataset.target : `${firstLink.dataset.target}-section`;
+                navigateTo(sectionId, firstLink.dataset.pluginName, firstLink.dataset.target);
+                firstLink.classList.add('active');
             }
         } catch (error) { /* Error already shown by apiFetch */ }
     }
@@ -280,17 +298,18 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadPluginList() {
         try {
             const plugins = await apiFetch(`${API_BASE_URL}/plugins`);
-            // Clear existing plugin nav items (except base config)
-            const existingNavItems = pluginNavList.querySelectorAll('li:not(:first-child)');
-            existingNavItems.forEach(item => item.remove());
-            // Clear existing plugin sections
-            const existingPluginSections = configDetailsContainer.querySelectorAll('.config-section:not(#base-config-section)');
-            existingPluginSections.forEach(sec => sec.remove());
+            // Clear existing DYNAMIC plugin nav items
+            const dynamicNavItems = pluginNavList.querySelectorAll('li.dynamic-plugin-nav-item');
+            dynamicNavItems.forEach(item => item.remove());
+            // Clear existing DYNAMIC plugin sections
+            const dynamicPluginSections = configDetailsContainer.querySelectorAll('section.dynamic-plugin-section');
+            dynamicPluginSections.forEach(sec => sec.remove());
 
             plugins.sort((a, b) => (a.manifest.displayName || a.manifest.name).localeCompare(b.manifest.displayName || b.manifest.name));
 
             plugins.forEach(plugin => {
                 const li = document.createElement('li');
+                li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
                 const a = document.createElement('a');
                 a.href = '#';
                 a.textContent = plugin.manifest.displayName || plugin.manifest.name;
@@ -301,7 +320,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const pluginSection = document.createElement('section');
                 pluginSection.id = `plugin-${plugin.manifest.name}-config-section`;
-                pluginSection.className = 'config-section';
+                pluginSection.classList.add('config-section', 'dynamic-plugin-section'); // Add class for dynamic items
                 
                 let descriptionHtml = plugin.manifest.description || '暂无描述';
                 if (plugin.manifest.version) descriptionHtml += ` (版本: ${plugin.manifest.version})`;
@@ -775,21 +794,27 @@ Description Length: ${newDescription.length}`);
     }
 
 
-    function navigateTo(targetId, pluginName = null) {
+    function navigateTo(sectionIdToActivate, pluginName = null, navLinkDataTarget = null) {
         document.querySelectorAll('.sidebar nav li a').forEach(link => link.classList.remove('active'));
         document.querySelectorAll('.config-section').forEach(section => section.classList.remove('active-section'));
 
-        const activeLink = pluginNavList.querySelector(`a[data-target="${targetId}"]`);
+        // If navLinkDataTarget is provided, use it to find the link, otherwise use sectionIdToActivate (assuming it matches data-target)
+        const linkSelector = navLinkDataTarget ? `a[data-target="${navLinkDataTarget}"]` : `a[data-target="${sectionIdToActivate.replace('-section', '')}"]`;
+        const activeLink = pluginNavList.querySelector(linkSelector);
         if (activeLink) activeLink.classList.add('active');
 
-        const targetSection = document.getElementById(`${targetId}-section`);
+        const targetSection = document.getElementById(sectionIdToActivate); // sectionIdToActivate should be the actual ID of the section element
         if (targetSection) {
             targetSection.classList.add('active-section');
             if (pluginName) {
                 loadPluginConfig(pluginName).catch(err => console.error(`Failed to load config for ${pluginName}`, err));
-            } else if (targetId === 'base-config') {
-                // loadBaseConfig(); // Already loaded initially, and on save. Only reload if necessary.
+            } else if (sectionIdToActivate === 'base-config-section') {
+                // Base config already loaded
+            } else if (sectionIdToActivate === 'daily-notes-manager-section') {
+                initializeDailyNotesManager();
             }
+        } else {
+            console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
         }
     }
 
@@ -797,9 +822,10 @@ Description Length: ${newDescription.length}`);
         const anchor = event.target.closest('a');
         if (anchor) {
             event.preventDefault();
-            const targetId = anchor.dataset.target;
-            const pluginName = anchor.dataset.pluginName;
-            navigateTo(targetId, pluginName);
+            const dataTarget = anchor.dataset.target; // This is like "base-config" or "plugin-MyPlugin-config" or "daily-notes-manager"
+            const pluginName = anchor.dataset.pluginName; // Only present for plugin links
+            const sectionIdToActivate = `${dataTarget}-section`; // Construct the section ID
+            navigateTo(sectionIdToActivate, pluginName, dataTarget);
         }
     });
 
@@ -833,4 +859,287 @@ Description Length: ${newDescription.length}`);
     }
 
     loadInitialData();
+
+    // --- Daily Notes Manager Functions ---
+    let currentNotesFolder = null;
+    let selectedNotes = new Set();
+
+    async function initializeDailyNotesManager() {
+        console.log('Initializing Daily Notes Manager...');
+        notesListViewDiv.innerHTML = ''; // Clear previous notes
+        noteEditorAreaDiv.style.display = 'none'; // Hide editor
+        notesActionStatusSpan.textContent = '';
+        moveSelectedNotesButton.disabled = true;
+        await loadNotesFolders();
+        // Optionally, load notes from the first folder automatically or show a placeholder
+    }
+
+    async function loadNotesFolders() {
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/dailynotes/folders`);
+            console.log('[DailyNotes] loadNotesFolders - API response data:', data); // 调试输出
+            console.log('[DailyNotes] loadNotesFolders - typeof data:', typeof data); // 调试输出
+            if (data && typeof data === 'object') { // 调试输出
+                console.log('[DailyNotes] loadNotesFolders - data.folders:', data.folders);
+            }
+            notesFolderListUl.innerHTML = '';
+            moveTargetFolderSelect.innerHTML = '<option value="">选择目标文件夹...</option>';
+
+            if (data.folders && data.folders.length > 0) {
+                data.folders.forEach(folder => {
+                    const li = document.createElement('li');
+                    li.textContent = folder;
+                    li.dataset.folderName = folder;
+                    li.addEventListener('click', () => {
+                        loadNotesForFolder(folder);
+                        // Update active class
+                        notesFolderListUl.querySelectorAll('li').forEach(item => item.classList.remove('active'));
+                        li.classList.add('active');
+                    });
+                    notesFolderListUl.appendChild(li);
+
+                    const option = document.createElement('option');
+                    option.value = folder;
+                    option.textContent = folder;
+                    moveTargetFolderSelect.appendChild(option);
+                });
+                // Automatically select and load the first folder if none is current or if current is no longer valid
+                if (!currentNotesFolder || !data.folders.includes(currentNotesFolder)) {
+                    if (notesFolderListUl.firstChild) {
+                         notesFolderListUl.firstChild.click(); // Simulate click to load notes and set active
+                    }
+                } else {
+                    // Reselect current folder if it still exists
+                     const currentFolderLi = notesFolderListUl.querySelector(`li[data-folder-name="${currentNotesFolder}"]`);
+                     if (currentFolderLi) currentFolderLi.classList.add('active');
+                }
+            } else {
+                notesFolderListUl.innerHTML = '<li>没有找到日记文件夹。</li>';
+                notesListViewDiv.innerHTML = '<p>没有日记可以显示。</p>';
+            }
+        } catch (error) {
+            notesFolderListUl.innerHTML = '<li>加载文件夹列表失败。</li>';
+            showMessage('加载文件夹列表失败: ' + error.message, 'error');
+        }
+    }
+
+    async function loadNotesForFolder(folderName) {
+        currentNotesFolder = folderName;
+        selectedNotes.clear(); // Clear selection when changing folder
+        updateMoveButtonStatus();
+        notesListViewDiv.innerHTML = '<p>正在加载日记...</p>'; // Loading state
+        noteEditorAreaDiv.style.display = 'none'; // Ensure editor is hidden
+
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/dailynotes/folder/${folderName}`);
+            notesListViewDiv.innerHTML = ''; // Clear loading state
+            if (data.notes && data.notes.length > 0) {
+                data.notes.forEach(note => {
+                    const card = renderNoteCard(note, folderName);
+                    notesListViewDiv.appendChild(card);
+                });
+            } else {
+                notesListViewDiv.innerHTML = `<p>文件夹 "${folderName}" 中没有日记。</p>`;
+            }
+        } catch (error) {
+            notesListViewDiv.innerHTML = `<p>加载文件夹 "${folderName}" 中的日记失败。</p>`;
+            showMessage(`加载日记失败: ${error.message}`, 'error');
+        }
+    }
+
+    function renderNoteCard(note, folderName) {
+        const card = document.createElement('div');
+        card.className = 'note-card';
+        card.dataset.fileName = note.name;
+        card.dataset.folderName = folderName;
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'note-select-checkbox';
+        checkbox.addEventListener('change', (e) => {
+            const noteId = `${folderName}/${note.name}`;
+            if (e.target.checked) {
+                selectedNotes.add(noteId);
+                card.classList.add('selected');
+            } else {
+                selectedNotes.delete(noteId);
+                card.classList.remove('selected');
+            }
+            updateMoveButtonStatus();
+        });
+
+        const fileNameP = document.createElement('p');
+        fileNameP.className = 'note-card-filename';
+        fileNameP.textContent = note.name;
+        
+        const previewP = document.createElement('p');
+        previewP.className = 'note-card-preview';
+        // Use the preview from the note object, fallback to lastModified if preview is not available
+        previewP.textContent = note.preview || `修改于: ${new Date(note.lastModified).toLocaleString()}`;
+        
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'note-card-actions';
+        const editButton = document.createElement('button');
+        editButton.textContent = '编辑';
+        editButton.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent card click if button is separate
+            openNoteForEditing(folderName, note.name);
+        });
+
+        actionsDiv.appendChild(editButton);
+        
+        card.appendChild(checkbox);
+        card.appendChild(fileNameP);
+        card.appendChild(previewP);
+        card.appendChild(actionsDiv);
+
+        // Card click also opens for editing (if not clicking checkbox or button)
+        card.addEventListener('click', (e) => {
+            if (e.target !== checkbox && !actionsDiv.contains(e.target)) {
+                 openNoteForEditing(folderName, note.name);
+            }
+        });
+        return card;
+    }
+    
+    function updateMoveButtonStatus() {
+        moveSelectedNotesButton.disabled = selectedNotes.size === 0;
+        moveTargetFolderSelect.disabled = selectedNotes.size === 0;
+    }
+
+    async function openNoteForEditing(folderName, fileName) {
+        notesActionStatusSpan.textContent = '';
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/dailynotes/note/${folderName}/${fileName}`);
+            editingNoteFolderInput.value = folderName;
+            editingNoteFileInput.value = fileName;
+            noteContentEditorTextarea.value = data.content;
+            
+            document.getElementById('notes-list-view').style.display = 'none';
+            document.querySelector('.notes-sidebar').style.display = 'none'; // Hide sidebar too
+            document.querySelector('.notes-toolbar').style.display = 'none';
+            noteEditorAreaDiv.style.display = 'block';
+            noteEditorStatusSpan.textContent = `正在编辑: ${folderName}/${fileName}`;
+        } catch (error) {
+            showMessage(`打开日记 ${fileName} 失败: ${error.message}`, 'error');
+        }
+    }
+
+    async function saveNoteChanges() {
+        const folderName = editingNoteFolderInput.value;
+        const fileName = editingNoteFileInput.value;
+        const content = noteContentEditorTextarea.value;
+
+        if (!folderName || !fileName) {
+            showMessage('无法保存日记，缺少文件信息。', 'error');
+            return;
+        }
+        noteEditorStatusSpan.textContent = '正在保存...';
+        try {
+            await apiFetch(`${API_BASE_URL}/dailynotes/note/${folderName}/${fileName}`, {
+                method: 'POST',
+                body: JSON.stringify({ content })
+            });
+            showMessage(`日记 ${fileName} 已成功保存!`, 'success');
+            closeNoteEditor(); // This will also trigger a refresh of the notes list if current folder matches
+            if (currentNotesFolder === folderName) {
+                loadNotesForFolder(folderName); // Refresh the list
+            }
+        } catch (error) {
+            noteEditorStatusSpan.textContent = `保存失败: ${error.message}`;
+            // showMessage is handled by apiFetch
+        }
+    }
+
+    function closeNoteEditor() {
+        noteEditorAreaDiv.style.display = 'none';
+        editingNoteFolderInput.value = '';
+        editingNoteFileInput.value = '';
+        noteContentEditorTextarea.value = '';
+        noteEditorStatusSpan.textContent = '';
+        
+        document.getElementById('notes-list-view').style.display = 'grid'; // or 'block' if not grid
+        document.querySelector('.notes-sidebar').style.display = 'block'; // Show sidebar again
+        document.querySelector('.notes-toolbar').style.display = 'flex'; // Show toolbar again
+
+        // If a folder was active, re-highlight it (or simply reload folders which reloads notes)
+        // For simplicity, if currentNotesFolder is set, reload its notes.
+        if (currentNotesFolder) {
+            // loadNotesForFolder(currentNotesFolder); // This might be too much if just canceling
+        }
+    }
+    
+    async function moveSelectedNotesHandler() { // Renamed to avoid conflict if any
+        const targetFolder = moveTargetFolderSelect.value;
+        if (!targetFolder) {
+            showMessage('请选择一个目标文件夹。', 'error');
+            return;
+        }
+        if (selectedNotes.size === 0) {
+            showMessage('没有选中的日记。', 'error');
+            return;
+        }
+
+        const notesToMove = Array.from(selectedNotes).map(noteId => {
+            const [folder, file] = noteId.split('/');
+            return { folder, file };
+        });
+
+        notesActionStatusSpan.textContent = '正在移动...';
+        try {
+            const response = await apiFetch(`${API_BASE_URL}/dailynotes/move`, {
+                method: 'POST',
+                body: JSON.stringify({ sourceNotes: notesToMove, targetFolder })
+            });
+            showMessage(response.message || `${notesToMove.length} 个日记已移动。`, response.errors && response.errors.length > 0 ? 'error' : 'success');
+            if (response.errors && response.errors.length > 0) {
+                console.error('移动日记时发生错误:', response.errors);
+                notesActionStatusSpan.textContent = `部分移动失败: ${response.errors.map(e => e.error).join(', ')}`;
+            } else {
+                 notesActionStatusSpan.textContent = '';
+            }
+            
+            // Refresh current folder and folder list (as folders might have changed)
+            const folderToReload = currentNotesFolder; // Store before clearing
+            selectedNotes.clear();
+            updateMoveButtonStatus();
+            await loadNotesFolders(); // This will re-populate target folder select and folder list
+            
+            // Try to reselect the previously active folder, or the target folder if current was source
+            let reselectFolder = folderToReload;
+            if (notesToMove.some(n => n.folder === folderToReload)) { // If we moved from current folder
+                // Check if current folder still exists or if it became empty and should switch
+                // For now, just reload it. loadNotesFolders will handle active state.
+            }
+            
+            // If current folder was one of the source folders, reload it.
+            // If the target folder is now the current folder, also good.
+            // loadNotesFolders will try to re-activate currentNotesFolder if it exists.
+            // If not, it loads the first one.
+            if (folderToReload) {
+                 const currentFolderLi = notesFolderListUl.querySelector(`li[data-folder-name="${folderToReload}"]`);
+                 if (currentFolderLi) {
+                    currentFolderLi.click(); // This will trigger loadNotesForFolder
+                 } else if (notesFolderListUl.firstChild) { // If original folder gone, click first
+                    notesFolderListUl.firstChild.click();
+                 } else {
+                    notesListViewDiv.innerHTML = '<p>请选择一个文件夹。</p>'; // No folders left
+                 }
+            }
+
+
+        } catch (error) {
+            notesActionStatusSpan.textContent = `移动失败: ${error.message}`;
+            // showMessage is handled by apiFetch
+        }
+    }
+
+    // Event Listeners for Daily Notes
+    if (saveNoteButton) saveNoteButton.addEventListener('click', saveNoteChanges);
+    if (cancelEditNoteButton) cancelEditNoteButton.addEventListener('click', closeNoteEditor);
+    if (moveSelectedNotesButton) moveSelectedNotesButton.addEventListener('click', moveSelectedNotesHandler);
+
+
+    // --- End Daily Notes Manager Functions ---
+
 });

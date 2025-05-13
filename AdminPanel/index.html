@@ -19,6 +19,7 @@
             <nav id="plugin-nav">
                 <ul>
                     <li><a href="#" data-target="base-config" class="active">全局基础配置</a></li>
+                    <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
             </nav>
@@ -30,6 +31,41 @@
                     <!-- 基础配置项将动态生成在这里 -->
                     <button type="submit">保存全局配置</button>
                 </form>
+            </section>
+
+            <section id="daily-notes-manager-section" class="config-section">
+                <h2>日记管理</h2>
+                <div class="daily-notes-manager">
+                    <div class="notes-sidebar">
+                        <h3>文件夹</h3>
+                        <ul id="notes-folder-list">
+                            <!-- Folder list will be populated here by script.js -->
+                        </ul>
+                    </div>
+                    <div class="notes-content-area">
+                        <div class="notes-toolbar">
+                            <button id="move-selected-notes" disabled>移动选中项到...</button>
+                            <select id="move-target-folder" disabled>
+                                <!-- Target folders for move op by script.js -->
+                            </select>
+                            <span id="notes-action-status" class="status-message"></span>
+                        </div>
+                        <div id="notes-list-view">
+                            <!-- Notes will be displayed here as cards by script.js -->
+                        </div>
+                    </div>
+                    <div id="note-editor-area" class="note-editor-area" style="display: none;"> <!-- Initially hidden -->
+                        <h3>编辑日记</h3>
+                        <input type="hidden" id="editing-note-folder">
+                        <input type="hidden" id="editing-note-file">
+                        <div class="config-editor-toolbar">
+                             <button id="save-note-content">保存日记</button>
+                             <button id="cancel-edit-note">取消编辑</button>
+                             <span id="note-editor-status" class="status-message"></span>
+                        </div>
+                        <textarea id="note-content-editor" spellcheck="false"></textarea>
+                    </div>
+                </div>
             </section>
             <!-- 插件配置区域将动态生成在这里 -->
         </main>
