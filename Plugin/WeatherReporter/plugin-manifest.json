@@ -23,12 +23,9 @@
     "invocationCommands": [] 
   },
   "configSchema": {
-    "API_URL": "string",
-    "API_Key": "string",
-    "WeatherModel": "string",
-    "WeatherPrompt": "string",
-    "VarCity": "string", 
-    "WeatherModelMaxTokens": "integer"
+    "VarCity": "string",
+    "WeatherKey": "string",
+    "WeatherUrl": "string"
   },
-  "refreshIntervalCron": "0 4 * * *" 
+  "refreshIntervalCron": "0 */2 * * *"
 }
