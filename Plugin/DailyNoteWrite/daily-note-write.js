@@ -35,12 +35,15 @@ async function writeDiary(maidName, dateString, contentText) {
 
     let folderName = maidName;
     let actualMaidName = maidName;
-    const publicPrefix = "[公共]";
+    // Use regex to find [tag]name format
+    const tagMatch = maidName.match(/^\[(.*?)\](.*)$/);
 
-    if (maidName.startsWith(publicPrefix)) {
-        folderName = "公共";
-        actualMaidName = maidName.substring(publicPrefix.length).trim();
-        debugLog(`Public note detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
+    if (tagMatch) {
+        folderName = tagMatch[1].trim(); // Use the captured tag as folder name
+        actualMaidName = tagMatch[2].trim(); // Use the captured name as actual maid name
+        debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
+    } else {
+        debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
     }
 
     const datePart = dateString.replace(/[.-]/g, '.');
