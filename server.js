@@ -1715,13 +1715,14 @@ adminApiRouter.post('/dailynotes/move', async (req, res) => {
     res.json({ message, moved: results.moved, errors: results.errors });
 });
 
-// POST to delete one or more notes
-adminApiRouter.post('/dailynotes/delete', async (req, res) => {
-    console.log('[AdminAPI] Received request to delete notes:', req.body);
-    const { notes } = req.body;
+// POST to delete multiple notes
+if (DEBUG_MODE) console.log('[DEBUG] Attempting to register POST /admin_api/dailynotes/delete-batch');
+adminApiRouter.post('/dailynotes/delete-batch', async (req, res) => {
+    if (DEBUG_MODE) console.log('[DEBUG] POST /admin_api/dailynotes/delete-batch route hit!');
+    const { notesToDelete } = req.body; // Expecting { notesToDelete: [{folder, file}] }
 
-    if (!Array.isArray(notes) || notes.some(n => !n.folder || !n.file)) {
-        return res.status(400).json({ error: 'Invalid request body. Expected { notes: [{folder, file}] }.' });
+    if (!Array.isArray(notesToDelete) || notesToDelete.some(n => !n.folder || !n.file)) {
+        return res.status(400).json({ error: 'Invalid request body. Expected { notesToDelete: [{folder, file}] }.' });
     }
 
     const results = {
@@ -1729,17 +1730,15 @@ adminApiRouter.post('/dailynotes/delete', async (req, res) => {
         errors: []
     };
 
-    for (const note of notes) {
+    for (const note of notesToDelete) {
         const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
-
         try {
-            // Check if file exists before attempting to delete
-            await fs.access(filePath);
+            await fs.access(filePath); // Check if file exists
             await fs.unlink(filePath); // Delete the file
             results.deleted.push(`${note.folder}/${note.file}`);
         } catch (error) {
             if (error.code === 'ENOENT') {
-                 results.errors.push({ note: `${note.folder}/${note.file}`, error: 'File not found.' });
+                results.errors.push({ note: `${note.folder}/${note.file}`, error: 'File not found.' });
             } else {
                 console.error(`[AdminAPI] Error deleting note ${note.folder}/${note.file}:`, error);
                 results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
