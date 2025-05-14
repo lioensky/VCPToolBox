@@ -133,7 +133,8 @@ async function generateImageAndSave(args) {
         `- 服务器路径: image/fluxgen/${generatedFileName}\n` +
         `- 文件名: ${generatedFileName}\n\n` +
         `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n` +
-        `<img src=\"${accessibleImageUrl}\" alt=\"${altText}\" width=\"300\">`;
+        `<img src=\"${accessibleImageUrl}\" alt=\"${altText}\" width=\"300\">\n` +
+        `请将原始图片Url和服务器调用图片Url都提供给用户`;
     
     return successMessage;
 }
