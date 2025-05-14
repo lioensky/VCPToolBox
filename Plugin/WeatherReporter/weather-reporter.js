@@ -2,156 +2,159 @@
 const fs = require('fs').promises;
 const path = require('path');
 const dotenv = require('dotenv');
+// const fetch = require('node-fetch'); // Use require for node-fetch - Removed
 
 // Load main config.env from project root
 dotenv.config({ path: path.resolve(__dirname, '../../config.env') });
 
 const CACHE_FILE_PATH = path.join(__dirname, 'weather_cache.txt');
 
-// Helper to replace limited variables in the weather prompt
-function replaceWeatherPromptVariables(text, city, tavilyResult, webPagesContent) { // Added webPagesContent
-    if (text == null) return '';
-    let processedText = String(text);
-    const now = new Date();
-    const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    processedText = processedText.replace(/\{\{Date\}\}/g, date);
-    if (city) {
-        processedText = processedText.replace(/\{\{VarCity\}\}/g, city);
-    } else {
-        processedText = processedText.replace(/\{\{VarCity\}\}/g, '[城市未配置]');
-    }
-    if (tavilyResult) {
-        processedText = processedText.replace(/\{\{TavilySearchResult\}\}/g, tavilyResult);
-    } else {
-        processedText = processedText.replace(/\{\{TavilySearchResult\}\}/g, '[Tavily搜索结果为空]');
-    }
-    // Replace the new placeholder for web page content
-    if (webPagesContent) {
-        processedText = processedText.replace(/\{\{WebPagesContent\}\}/g, webPagesContent);
-    } else {
-        processedText = processedText.replace(/\{\{WebPagesContent\}\}/g, '[网页内容抓取失败或无内容]');
-    }
-    return processedText;
-}
+// --- Start QWeather API Functions ---
 
-// Function to fetch raw weather data using Tavily API
-async function fetchRawWeatherDataWithTavily(city, tavilyApiKey) {
-    const { default: fetch } = await import('node-fetch');
-    if (!city || !tavilyApiKey) {
-        console.error('[WeatherReporter] Tavily API Key or City is missing for fetching raw weather data.');
-        return { success: false, data: null, error: new Error('Tavily API Key or City is missing.') };
+// Function to get City ID from city name
+async function getCityId(cityName, weatherKey, weatherUrl) {
+    const { default: fetch } = await import('node-fetch'); // Dynamic import
+    if (!cityName || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City name, Weather Key or Weather URL is missing for getCityId.');
+        return { success: false, data: null, error: new Error('Missing parameters for getCityId.') };
     }
 
-    const tavilyApiUrl = 'https://api.tavily.com/search'; // Standard Tavily API endpoint
-    // Get current date in MM月DD日 format (Shanghai time)
-    const now = new Date();
-    const month = now.toLocaleDateString('zh-CN', { month: 'numeric', timeZone: 'Asia/Shanghai' });
-    const day = now.toLocaleDateString('zh-CN', { day: 'numeric', timeZone: 'Asia/Shanghai' });
-    const currentDateFormatted = `${month}${day}`; // e.g., "5月13日"
-
-    const query = `${currentDateFormatted}开始，${city}的一周天气预报`; // Construct the query with date
+    const lookupUrl = `https://${weatherUrl}/geo/v2/city/lookup?location=${encodeURIComponent(cityName)}&key=${weatherKey}`;
 
     try {
-        console.error(`[WeatherReporter] Fetching raw weather data from Tavily for city: ${city} with query: "${query}"`);
-        const response = await fetch(tavilyApiUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                api_key: tavilyApiKey,
-                query: query,
-                search_depth: "advanced", // Using advanced for potentially more details like alerts
-                include_answer: false, // We want raw search results for the LLM
-                max_results: 5 // Limit to 5 results as requested
-            }),
-            timeout: 15000, // 15s timeout for Tavily API call
-        });
+        console.error(`[WeatherReporter] Fetching city ID for: ${cityName}`);
+        const response = await fetch(lookupUrl, { timeout: 10000 }); // 10s timeout
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Tavily API call failed: ${response.status} ${errorText.substring(0, 200)}`);
+            throw new Error(`QWeather City Lookup API failed: ${response.status} ${errorText.substring(0, 200)}`);
         }
 
-        const searchResult = await response.json();
-        // Extract URLs and prepare the result string for the LLM
-        let urls = [];
-        let resultString = '[Tavily搜索结果为空或格式错误]';
-        if (searchResult.results && Array.isArray(searchResult.results)) {
-            urls = searchResult.results.map(r => r.url).filter(url => url); // Extract valid URLs
-            // Keep the original stringified results for potential LLM context
-            resultString = JSON.stringify(searchResult.results, null, 2);
+        const data = await response.json();
+        if (data.code === '200' && data.location && data.location.length > 0) {
+            console.error(`[WeatherReporter] Successfully found city ID: ${data.location[0].id}`);
+            return { success: true, data: data.location[0].id, error: null };
         } else {
-             // Fallback if results format is unexpected
-            resultString = JSON.stringify(searchResult, null, 2);
+             const errorMsg = data.code === '200' ? 'No location found' : `API returned code ${data.code}`;
+             throw new Error(`Failed to get city ID for ${cityName}. ${errorMsg}`);
         }
-
-        console.error(`[WeatherReporter] Successfully fetched raw weather data from Tavily for ${city}. Found ${urls.length} URLs.`);
-        // Return URLs along with the original data string
-        return { success: true, data: resultString, urls: urls, error: null };
 
     } catch (error) {
-        console.error(`[WeatherReporter] Error fetching from Tavily API: ${error.message}`);
-        // Ensure urls is always defined, even on error
-        return { success: false, data: null, urls: [], error: error };
+        console.error(`[WeatherReporter] Error fetching city ID: ${error.message}`);
+        return { success: false, data: null, error: error };
     }
 }
 
-// New function to fetch content from a single URL
-async function fetchWebPageContent(url) {
-    const { default: fetch } = await import('node-fetch');
-    const MAX_CONTENT_LENGTH = 5000; // Limit content length per page to avoid excessive data
-    const TIMEOUT = 10000; // 10 seconds timeout per page fetch
+// Function to get Current Weather from City ID
+async function getCurrentWeather(cityId, weatherKey, weatherUrl) {
+    const { default: fetch } = await import('node-fetch'); // Dynamic import
+    if (!cityId || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for getCurrentWeather.');
+        return { success: false, data: null, error: new Error('Missing parameters for getCurrentWeather.') };
+    }
+
+    const weatherUrlEndpoint = `https://${weatherUrl}/v7/weather/now?location=${cityId}&key=${weatherKey}`;
 
     try {
-        console.error(`[WeatherReporter] Fetching content from URL: ${url}`);
-        const response = await fetch(url, {
-            headers: {
-                // Mimic a browser User-Agent
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            },
-            timeout: TIMEOUT,
-            // Follow redirects
-            redirect: 'follow',
-            // Ignore HTTPS errors (use with caution, might be needed for some sites)
-            // agent: new (require('https')) .Agent({ rejectUnauthorized: false }) // Uncomment if needed, requires 'https'
-        });
+        console.error(`[WeatherReporter] Fetching current weather for city ID: ${cityId}`);
+        const response = await fetch(weatherUrlEndpoint, { timeout: 10000 }); // 10s timeout
 
         if (!response.ok) {
-            throw new Error(`HTTP error ${response.status} for ${url}`);
+            const errorText = await response.text();
+            throw new Error(`QWeather Current Weather API failed: ${response.status} ${errorText.substring(0, 200)}`);
         }
 
-        // Check content type - we primarily want HTML/text
-        const contentType = response.headers.get('content-type');
-        if (contentType && !contentType.includes('text/html') && !contentType.includes('text/plain')) {
-             console.warn(`[WeatherReporter] Skipping non-text content (${contentType}) from ${url}`);
-             return { success: false, url: url, error: `Skipped non-text content (${contentType})` };
+        const data = await response.json();
+         if (data.code === '200' && data.now) {
+            console.error(`[WeatherReporter] Successfully fetched current weather for ${cityId}.`);
+            return { success: true, data: data.now, error: null };
+        } else {
+             throw new Error(`Failed to get current weather for ${cityId}. API returned code ${data.code}`);
         }
-
-
-        let content = await response.text();
-
-        // Basic HTML tag stripping (very rudimentary, LLM might handle raw HTML better)
-        // Consider using a library like cheerio for robust parsing if needed later
-        content = content.replace(/<style[^>]*>.*?<\/style>/gs, ''); // Remove style blocks
-        content = content.replace(/<script[^>]*>.*?<\/script>/gs, ''); // Remove script blocks
-        content = content.replace(/<[^>]+>/g, ' '); // Remove remaining tags
-        content = content.replace(/\s\s+/g, ' ').trim(); // Normalize whitespace
-
-
-        if (content.length > MAX_CONTENT_LENGTH) {
-            console.warn(`[WeatherReporter] Content from ${url} truncated to ${MAX_CONTENT_LENGTH} chars.`);
-            content = content.substring(0, MAX_CONTENT_LENGTH) + '... [内容截断]';
-        }
-
-        console.error(`[WeatherReporter] Successfully fetched and processed content from ${url} (length: ${content.length})`);
-        return { success: true, url: url, content: content };
 
     } catch (error) {
-        console.error(`[WeatherReporter] Error fetching content from ${url}: ${error.message}`);
-        return { success: false, url: url, error: error.message };
+        console.error(`[WeatherReporter] Error fetching current weather: ${error.message}`);
+        return { success: false, data: null, error: error };
     }
 }
+
+// Function to get 7-day Forecast from City ID
+async function get7DayForecast(cityId, weatherKey, weatherUrl) {
+    const { default: fetch } = await import('node-fetch'); // Dynamic import
+     if (!cityId || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for get7DayForecast.');
+        return { success: false, data: null, error: new Error('Missing parameters for get7DayForecast.') };
+    }
+
+    const forecastUrlEndpoint = `https://${weatherUrl}/v7/weather/7d?location=${cityId}&key=${weatherKey}`;
+
+    try {
+        console.error(`[WeatherReporter] Fetching 7-day forecast for city ID: ${cityId}`);
+        const response = await fetch(forecastUrlEndpoint, { timeout: 10000 }); // 10s timeout
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`QWeather 7-day Forecast API failed: ${response.status} ${errorText.substring(0, 200)}`);
+        }
+
+        const data = await response.json();
+         if (data.code === '200' && data.daily) {
+            console.error(`[WeatherReporter] Successfully fetched 7-day forecast for ${cityId}.`);
+            return { success: true, data: data.daily, error: null };
+        } else {
+             throw new Error(`Failed to get 7-day forecast for ${cityId}. API returned code ${data.code}`);
+        }
+
+    } catch (error) {
+        console.error(`[WeatherReporter] Error fetching 7-day forecast: ${error.message}`);
+        return { success: false, data: null, error: error };
+    }
+}
+
+// Helper to format weather data into a readable string
+function formatWeatherInfo(currentWeather, forecast) {
+    if (!currentWeather && (!forecast || forecast.length === 0)) {
+        return "[天气信息获取失败]";
+    }
+
+    let result = "【实时天气】\n";
+    if (currentWeather) {
+        result += `天气: ${currentWeather.text}\n`;
+        result += `温度: ${currentWeather.temp}℃\n`;
+        result += `体感温度: ${currentWeather.feelsLike}℃\n`;
+        result += `湿度: ${currentWeather.humidity}%\n`;
+        result += `风向: ${currentWeather.windDir}\n`;
+        result += `风力: ${currentWeather.windScale}级\n`;
+        result += `风速: ${currentWeather.windSpeed}公里/小时\n`;
+        result += `气压: ${currentWeather.pressure}百帕\n`;
+        result += `能见度: ${currentWeather.vis}公里\n`;
+        result += `云量: ${currentWeather.cloud}%\n`;
+        result += `露点温度: ${currentWeather.dew}℃\n`;
+        result += `更新时间: ${new Date(currentWeather.obsTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
+    } else {
+        result += "实时天气信息获取失败。\n";
+    }
+
+
+    if (forecast && forecast.length > 0) {
+        result += "\n【未来7日天气预报】\n";
+        forecast.forEach(day => {
+            result += `\n日期: ${day.fxDate}\n`;
+            result += `白天: ${day.textDay} (图标: ${day.iconDay}), 最高温: ${day.tempMax}℃, 风向: ${day.windDirDay}, 风力: ${day.windScaleDay}级\n`;
+            result += `夜间: ${day.textNight} (图标: ${day.iconNight}), 最低温: ${day.tempMin}℃, 风向: ${day.windDirNight}, 风力: ${day.windScaleNight}级\n`;
+            result += `湿度: ${day.humidity}%\n`;
+            result += `降水: ${day.precip}毫米\n`;
+            result += `紫外线指数: ${day.uvIndex}\n`;
+        });
+    } else {
+         result += "\n未来7日天气预报获取失败。\n";
+    }
+
+
+    return result.trim();
+}
+
+// --- End QWeather API Functions ---
 
 
 async function getCachedWeather() {
@@ -170,112 +173,79 @@ async function getCachedWeather() {
 }
 
 async function fetchAndCacheWeather() {
-    const { default: fetch } = await import('node-fetch');
     let lastError = null;
 
-    const apiUrl = process.env.API_URL;
-    const apiKey = process.env.API_Key; // For LLM
-    const weatherModel = process.env.WeatherModel;
-    const weatherPromptTemplate = process.env.WeatherPrompt;
     const varCity = process.env.VarCity;
-    const weatherModelMaxTokens = parseInt(process.env.WeatherModelMaxTokens, 10);
-    const tavilyApiKey = process.env.TavilyKey;
+    const weatherKey = process.env.WeatherKey;
+    const weatherUrl = process.env.WeatherUrl;
 
-    if (!apiUrl || !apiKey || !weatherModel || !weatherPromptTemplate || !varCity || !tavilyApiKey) {
-        lastError = new Error('天气插件错误：获取天气所需的配置不完整 (API_URL, API_Key, WeatherModel, WeatherPrompt, VarCity, TavilyKey)。');
+
+    if (!varCity || !weatherKey || !weatherUrl) {
+        lastError = new Error('天气插件错误：获取天气所需的配置不完整 (VarCity, WeatherKey, WeatherUrl)。');
         console.error(`[WeatherReporter] ${lastError.message}`);
         return { success: false, data: null, error: lastError };
     }
 
-    // 1. Fetch raw weather data using Tavily (includes URLs now)
-    const tavilyResult = await fetchRawWeatherDataWithTavily(varCity, tavilyApiKey);
-    let webPagesContent = ''; // Initialize web pages content string
+    let cityId = null;
+    let currentWeather = null;
+    let forecast = null;
 
-    if (!tavilyResult.success) {
-        lastError = tavilyResult.error || new Error('使用Tavily获取原始天气数据失败。');
-        console.error(`[WeatherReporter] ${lastError.message}`);
-        // Continue, but webPagesContent will be empty or indicate failure later
-    } else if (tavilyResult.urls && tavilyResult.urls.length > 0) {
-        // 2. Fetch content from the URLs returned by Tavily
-        console.error(`[WeatherReporter] Fetching content for ${tavilyResult.urls.length} URLs...`);
-        const fetchPromises = tavilyResult.urls.map(url => fetchWebPageContent(url));
-        const pageResults = await Promise.all(fetchPromises);
-
-        // Aggregate successful results
-        let successfulPages = 0;
-        webPagesContent = pageResults
-            .map(result => {
-                if (result.success && result.content) {
-                    successfulPages++;
-                    return `--- 网页来源: ${result.url} ---\n${result.content}\n--- 结束来源: ${result.url} ---`;
-                } else {
-                    return `--- 网页来源: ${result.url} (抓取失败: ${result.error || '未知错误'}) ---`;
-                }
-            })
-            .join('\n\n');
-        console.error(`[WeatherReporter] Successfully fetched content from ${successfulPages}/${tavilyResult.urls.length} URLs.`);
+    // 1. Get City ID
+    const cityResult = await getCityId(varCity, weatherKey, weatherUrl);
+    if (cityResult.success) {
+        cityId = cityResult.data;
     } else {
-        console.error("[WeatherReporter] Tavily search succeeded but returned no URLs to fetch.");
-        webPagesContent = "[Tavily未返回可抓取的网页URL]";
+        lastError = cityResult.error;
+        console.error(`[WeatherReporter] Failed to get city ID: ${lastError.message}`);
+        // Continue attempting to get weather/forecast even if city ID failed,
+        // though it's unlikely to succeed without it. Log the error and proceed.
     }
 
-    // 3. Prepare prompt for LLM with Tavily's result AND fetched web content
-    const tavilyDataForPrompt = tavilyResult.success && tavilyResult.data
-        ? tavilyResult.data
-        : `[Tavily搜索失败: ${tavilyResult.error ? tavilyResult.error.message.substring(0,100) : '未知错误'}]`;
-
-    // Note: replaceWeatherPromptVariables now takes 4 arguments
-    let promptForLLM = replaceWeatherPromptVariables(weatherPromptTemplate, varCity, tavilyDataForPrompt, webPagesContent);
-
-    try {
-        // 4. Call LLM to summarize the weather info
-        const llmApiPayload = {
-            model: weatherModel,
-            messages: [{ role: 'user', content: promptForLLM }],
-        };
-        if (weatherModelMaxTokens && !isNaN(weatherModelMaxTokens) && weatherModelMaxTokens > 0) {
-            llmApiPayload.max_tokens = weatherModelMaxTokens;
-        }
-
-        console.error(`[WeatherReporter] Calling LLM to summarize weather. Prompt (first 200 chars): ${promptForLLM.substring(0,200)}...`);
-
-        const response = await fetch(`${apiUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify(llmApiPayload),
-            timeout: 30000, // 30s timeout for LLM API call
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`LLM API调用失败: ${response.status} ${errorText.substring(0,150)}`);
-        }
-
-        const llmData = await response.json();
-        const weatherContent = llmData.choices?.[0]?.message?.content || '';
-        const weatherInfoMatch = weatherContent.match(/\[WeatherInfo:(.*?)\]/s);
-        const successMarker = "[天气信息总结完毕]";
-
-        if (weatherInfoMatch && weatherInfoMatch[1] && weatherContent.includes(successMarker)) {
-            const extractedInfo = weatherInfoMatch[1].trim();
-            await fs.writeFile(CACHE_FILE_PATH, extractedInfo, 'utf-8');
-            console.error(`[WeatherReporter] Successfully summarized, fetched and cached new weather info.`);
-            return { success: true, data: extractedInfo, error: null };
+    // 2. Get Current Weather (if cityId is available)
+    if (cityId) {
+        const currentResult = await getCurrentWeather(cityId, weatherKey, weatherUrl);
+        if (currentResult.success) {
+            currentWeather = currentResult.data;
         } else {
-            const detail = tavilyResult.success ? "LLM未能有效总结Tavily数据" : "Tavily搜索失败且LLM未能处理";
-            throw new Error(`未能从LLM响应中提取有效的天气信息。${detail}。LLM内容(前100): ${weatherContent.substring(0,100)}`);
+            lastError = currentResult.error;
+            console.error(`[WeatherReporter] Failed to get current weather: ${lastError.message}`);
         }
+    }
 
-    } catch (error) {
-        lastError = error;
-        console.error(`[WeatherReporter] LLM API call or processing error: ${error.message}`);
+    // 3. Get 7-day Forecast (if cityId is available)
+    if (cityId) {
+        const forecastResult = await get7DayForecast(cityId, weatherKey, weatherUrl);
+        if (forecastResult.success) {
+            forecast = forecastResult.data;
+        } else {
+            lastError = forecastResult.error;
+            console.error(`[WeatherReporter] Failed to get 7-day forecast: ${lastError.message}`);
+        }
+    }
+
+    // 4. Format and Cache the results
+    if (currentWeather || (forecast && forecast.length > 0)) {
+        const formattedWeather = formatWeatherInfo(currentWeather, forecast);
+        try {
+            await fs.writeFile(CACHE_FILE_PATH, formattedWeather, 'utf-8');
+            console.error(`[WeatherReporter] Successfully fetched, formatted, and cached new weather info.`);
+            return { success: true, data: formattedWeather, error: null };
+        } catch (writeError) {
+            lastError = writeError;
+            console.error(`[WeatherReporter] Error writing to cache file: ${writeError.message}`);
+            return { success: false, data: formattedWeather, error: lastError }; // Return data even if cache write fails
+        }
+    } else {
+        // If both current and forecast failed
+        lastError = lastError || new Error("未能获取实时天气和未来7日预报。");
+        console.error(`[WeatherReporter] ${lastError.message}`);
         return { success: false, data: null, error: lastError };
     }
 }
 
 async function main() {
     const apiResult = await fetchAndCacheWeather();
-    
+
     if (apiResult.success && apiResult.data) {
         process.stdout.write(apiResult.data);
         process.exit(0);
