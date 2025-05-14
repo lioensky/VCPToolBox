@@ -94,7 +94,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`SunoGen` (`synchronous`)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或继续生成模式。
 *   **`TavilySearch` (`synchronous`)**: 集成 Tavily API 提供网络搜索能力。
 *   **`DailyNoteGet` (`static`)**: 定期读取 `dailynote/` 目录下所有角色的日记，并通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器，以支持 `{{角色名日记本}}` 的解析。
-*   **`DailyNoteWrite` (`synchronous`)**: 接收包含角色名、日期和内容的日记数据（通过 stdin），并将其写入到对应的日记文件中。
+*   **`DailyNoteWrite` (`synchronous`)**: 接收包含[标签]、角色名、日期和内容的日记数据（通过 stdin），并将其写入到对应的日记文件中。
 *   **`EmojiListGenerator` (`static`)**: 扫描项目 `image/` 目录下的表情包文件夹，并在插件自身的 `generated_lists/` 目录下生成对应的 `.txt` 列表文件，供服务器加载和使用。
 *   **`DailyNoteManager` (`synchronous`)**: 强大的知识库整理助手，全自动整理，维护，检查服务器内的知识库，为你的VCP无限永久记忆保驾护航，AI自动快速建立公共知识库。
   
@@ -223,7 +223,7 @@ tool_name:「始」tool「末」
 本客户端已经搭载长期记忆功能，你可以在聊天一段时间后，通过在回复的末尾添加如下结构化内容来创建日记，会被向量化RAG系统记录，要求日记内容尽量简短、精炼。以下是一个调用示例：
 ``` DailyNote
 <<<DailyNoteStart>>>
-Maid: Nova  //使用'[公共]Nova'署名将会使得日记向所有智能体暴露
+Maid: Nova  //使用'[公共]Nova'署名将会使得日记向所有智能体暴露，亦可使用自定义[标签]
 Date: 2025.5.3
 Content:今天和主人聊天超开心，所以要写日记！
 <<<DailyNoteEnd>>>
