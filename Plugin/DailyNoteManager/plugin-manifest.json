@@ -1,0 +1,23 @@
+{
+  "name": "DailyNoteManager",
+  "displayName": "日记管理器",
+  "version": "1.0.0",
+  "description": "接收AI输出的日记内容，并将其保存为独立的txt文件。",
+  "pluginType": "synchronous",
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "entryPoint": {
+    "command": "node daily-note-manager.js"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "DailyNoteManager",
+        "description": "接收并处理AI输出的日记内容，将每条日记保存为独立文件。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」\ncommand: 「始」文件名1.txt\n日记内容1\n文件名2.txt\n日记内容2\n「末」<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
