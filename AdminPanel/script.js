@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const moveTargetFolderSelect = document.getElementById('move-target-folder');
     const notesActionStatusSpan = document.getElementById('notes-action-status');
     const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
+    const deleteSelectedNotesButton = document.getElementById('delete-selected-notes'); // 新增：删除按钮
 
 
     const API_BASE_URL = '/admin_api'; // Corrected API base path
@@ -1048,8 +1049,12 @@ Description Length: ${newDescription.length}`);
     }
     
     function updateMoveButtonStatus() {
-        moveSelectedNotesButton.disabled = selectedNotes.size === 0;
-        moveTargetFolderSelect.disabled = selectedNotes.size === 0;
+        const isDisabled = selectedNotes.size === 0;
+        moveSelectedNotesButton.disabled = isDisabled;
+        moveTargetFolderSelect.disabled = isDisabled;
+        if (deleteSelectedNotesButton) { // Check if the delete button exists
+            deleteSelectedNotesButton.disabled = isDisabled;
+        }
     }
 
     async function openNoteForEditing(folderName, fileName) {
@@ -1184,7 +1189,62 @@ Description Length: ${newDescription.length}`);
     if (cancelEditNoteButton) cancelEditNoteButton.addEventListener('click', closeNoteEditor);
     if (moveSelectedNotesButton) moveSelectedNotesButton.addEventListener('click', moveSelectedNotesHandler);
     if (searchDailyNotesInput) searchDailyNotesInput.addEventListener('input', filterNotesBySearch);
+    if (deleteSelectedNotesButton) deleteSelectedNotesButton.addEventListener('click', deleteSelectedNotesHandler); // 新增：删除按钮事件监听
 
+
+    async function deleteSelectedNotesHandler() { // 新增：批量删除处理函数
+        if (selectedNotes.size === 0) {
+            showMessage('没有选中的日记。', 'error');
+            return;
+        }
+
+        if (!confirm(`确定要删除选中的 ${selectedNotes.size} 个日记吗？此操作不可撤销！`)) {
+            return;
+        }
+
+        const notesToDelete = Array.from(selectedNotes).map(noteId => {
+            const [folder, file] = noteId.split('/');
+            return { folder, file };
+        });
+
+        notesActionStatusSpan.textContent = '正在删除...';
+        try {
+            const response = await apiFetch(`${API_BASE_URL}/dailynotes/delete`, { // 使用新的删除API端点
+                method: 'POST', // 使用POST方法，因为DELETE方法通常不支持请求体
+                body: JSON.stringify({ notes: notesToDelete })
+            });
+
+            showMessage(response.message || `${notesToDelete.length} 个日记已删除。`, response.errors && response.errors.length > 0 ? 'error' : 'success');
+            if (response.errors && response.errors.length > 0) {
+                console.error('删除日记时发生错误:', response.errors);
+                notesActionStatusSpan.textContent = `部分删除失败: ${response.errors.map(e => e.error).join(', ')}`;
+            } else {
+                 notesActionStatusSpan.textContent = '';
+            }
+            
+            // Refresh current folder and folder list (as folders might become empty)
+            const folderToReload = currentNotesFolder; // Store before clearing
+            selectedNotes.clear();
+            updateMoveButtonStatus(); // Update button status
+            await loadNotesFolders(); // This will re-populate folder list
+
+            // Try to reselect the previously active folder
+            if (folderToReload) {
+                 const currentFolderLi = notesFolderListUl.querySelector(`li[data-folder-name="${folderToReload}"]`);
+                 if (currentFolderLi) {
+                    currentFolderLi.click(); // This will trigger loadNotesForFolder
+                 } else if (notesFolderListUl.firstChild) { // If original folder gone, click first
+                    notesFolderListUl.firstChild.click();
+                 } else {
+                    notesListViewDiv.innerHTML = '<p>请选择一个文件夹。</p>'; // No folders left
+                 }
+            }
+
+        } catch (error) {
+            notesActionStatusSpan.textContent = `删除失败: ${error.message}`;
+            // showMessage is handled by apiFetch
+        }
+    }
 
     // --- End Daily Notes Manager Functions ---
 

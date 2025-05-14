@@ -1715,8 +1715,42 @@ adminApiRouter.post('/dailynotes/move', async (req, res) => {
     res.json({ message, moved: results.moved, errors: results.errors });
 });
 
-// Placeholder for delete route
-// adminApiRouter.delete('/dailynotes/note/:folderName/:fileName', async (req, res) => { /* ... */ });
+// POST to delete one or more notes
+adminApiRouter.post('/dailynotes/delete', async (req, res) => {
+    console.log('[AdminAPI] Received request to delete notes:', req.body);
+    const { notes } = req.body;
+
+    if (!Array.isArray(notes) || notes.some(n => !n.folder || !n.file)) {
+        return res.status(400).json({ error: 'Invalid request body. Expected { notes: [{folder, file}] }.' });
+    }
+
+    const results = {
+        deleted: [],
+        errors: []
+    };
+
+    for (const note of notes) {
+        const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
+
+        try {
+            // Check if file exists before attempting to delete
+            await fs.access(filePath);
+            await fs.unlink(filePath); // Delete the file
+            results.deleted.push(`${note.folder}/${note.file}`);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                 results.errors.push({ note: `${note.folder}/${note.file}`, error: 'File not found.' });
+            } else {
+                console.error(`[AdminAPI] Error deleting note ${note.folder}/${note.file}:`, error);
+                results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
+            }
+        }
+    }
+
+    const message = `Deleted ${results.deleted.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
+    res.json({ message, deleted: results.deleted, errors: results.errors });
+});
+
 // --- End Daily Notes API ---
 
 app.use('/admin_api', adminApiRouter);
