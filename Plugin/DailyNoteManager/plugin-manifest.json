@@ -1,6 +1,6 @@
 {
   "name": "DailyNoteManager",
-  "displayName": "日记管理器",
+  "displayName": "日记整理器",
   "version": "1.0.0",
   "description": "接收AI输出的日记内容，并将其保存为独立的txt文件。",
   "pluginType": "synchronous",
