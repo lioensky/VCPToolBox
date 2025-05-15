@@ -2,13 +2,21 @@ import ast
 import operator
 import math
 import statistics
-import sys # 新增：用于 stdin, stdout, stderr
+import sys # 用于 stdin, stdout, stderr
 from typing import Union, Dict, Tuple
-# from mcp.server.fastmcp import FastMCP # 移除MCP
-from sympy import sympify, Symbol, integrate, diff, sin, cos, pi as sympy_pi, atan, asin, acos, sqrt, latex, sinh, cosh, tanh, asinh, acosh, atanh, oo as sympy_inf
+
+import sympy # 导入 sympy 模块本身
+# SymPy imports
+from sympy import (
+    sympify, Symbol, integrate, diff, sin, cos, tan, pi as sympy_pi,
+    atan, asin, acos, sqrt, exp as sympy_exp, log as sympy_log, E as sympy_E,
+    sinh, cosh, tanh, asinh, acosh, atanh, oo as sympy_inf,
+    Integral as SympyIntegral, I as sympy_I, zoo as sympy_zoo, nan as sympy_nan_symbol, # I, zoo, nan for checking
+    latex # 确保 latex 被导入
+)
 from scipy import stats
 from scipy.integrate import quad
-from numpy import inf as numpy_inf
+from numpy import inf as numpy_inf, nan as numpy_nan # For numerical integration with quad
 
 # 支持的操作符 (保持不变)
 allowed_operators = {
@@ -17,7 +25,7 @@ allowed_operators = {
     ast.Pow: operator.pow, ast.USub: operator.neg,
 }
 
-# 支持的数学和统计函数 (保持不变)
+# 支持的数学和统计函数 (保持不变, 这些是用于直接数值计算的)
 math_functions = {
     'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'asin': math.asin,
     'acos': math.acos, 'atan': math.atan, 'arctan': math.atan, 'arcsin': math.asin,
@@ -36,61 +44,146 @@ constants = { 'pi': math.pi, 'e': math.e }
 
 def evaluate(expression: str) -> str:
     """Evaluate a mathematical, statistical, or integral expression with numerical results."""
-    
-    def eval_expr(node) -> Union[float, int, list, dict, tuple]:
+
+    def compute_integral(expr_str: str, lower_limit_in, upper_limit_in) -> Union[float, str]:
+        try:
+            var_symbol = Symbol('x')
+            sympy_locals = {
+                'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan,
+                'asin': sympy.asin, 'acos': sympy.acos, 'atan': sympy.atan,
+                'arctan': sympy.atan, 'arcsin': sympy.asin, 'arccos': sympy.acos,
+                'sqrt': sympy.sqrt, 'exp': sympy_exp, 'log': sympy_log,
+                'pi': sympy_pi, 'e': sympy_E,
+                'sinh': sympy.sinh, 'cosh': sympy.cosh, 'tanh': sympy.tanh,
+                'asinh': sympy.asinh, 'acosh': sympy.acosh, 'atanh': sympy.atanh,
+            }
+            expr = sympify(expr_str, locals=sympy_locals)
+
+            if lower_limit_in is None and upper_limit_in is None:  # Indefinite integral
+                result = integrate(expr, var_symbol)
+                return f"$$ {latex(result)} + C $$"
+            else:  # Definite integral
+                def standardize_limit(lim_val):
+                    if isinstance(lim_val, str):
+                        if lim_val.lower() == 'inf': return sympy_inf
+                        if lim_val.lower() == '-inf': return -sympy_inf
+                        try:
+                            return sympify(lim_val, locals=sympy_locals).evalf()
+                        except Exception as e_sympify_lim:
+                            raise ValueError(f"Invalid string limit value '{lim_val}': {e_sympify_lim}")
+                    elif lim_val == float('inf'): return sympy_inf
+                    elif lim_val == float('-inf'): return -sympy_inf
+                    elif isinstance(lim_val, (int, float)): return lim_val
+                    else:
+                        try:
+                            return sympify(str(lim_val), locals=sympy_locals)
+                        except Exception as e_sympify_lim_other:
+                             raise ValueError(f"Invalid limit type '{type(lim_val).__name__}' for value '{lim_val}': {e_sympify_lim_other}")
+
+                sympy_lower = standardize_limit(lower_limit_in)
+                sympy_upper = standardize_limit(upper_limit_in)
+
+                result = integrate(expr, (var_symbol, sympy_lower, sympy_upper))
+                
+                is_unevaluated_integral = isinstance(result, SympyIntegral)
+                has_problematic_symbols = result.has(sympy_inf, -sympy_inf, sympy_I, sympy_zoo, sympy_nan_symbol)
+                is_not_real_or_complex = (result.is_real is False) or \
+                                         (hasattr(result, 'is_complex') and result.is_complex is True and not result.is_real)
+
+                if is_unevaluated_integral or has_problematic_symbols or is_not_real_or_complex:
+                    def f_for_quad(x_val_np):
+                        try:
+                            substituted = expr.subs(var_symbol, x_val_np)
+                            val_sympy = substituted.evalf(chop=True)
+
+                            if not val_sympy.is_number:
+                                return numpy_nan
+                            if hasattr(val_sympy, 'is_infinite') and val_sympy.is_infinite:
+                                return numpy_inf if val_sympy.is_positive else -numpy_inf
+                            if hasattr(val_sympy, 'is_NaN') and val_sympy.is_NaN:
+                                return numpy_nan
+                            if not val_sympy.is_real:
+                                real_part, imag_part = val_sympy.as_real_imag()
+                                if abs(imag_part.evalf()) < 1e-9:
+                                    return float(real_part.evalf())
+                                else:
+                                    return numpy_nan
+                            return float(val_sympy)
+                        except Exception:
+                            return numpy_nan
+
+                    q_lower_eval = sympy_lower.evalf() if hasattr(sympy_lower, 'evalf') else sympy_lower
+                    q_upper_eval = sympy_upper.evalf() if hasattr(sympy_upper, 'evalf') else sympy_upper
+                    q_lower = -numpy_inf if q_lower_eval == -sympy_inf else (numpy_inf if q_lower_eval == sympy_inf else float(q_lower_eval))
+                    q_upper = -numpy_inf if q_upper_eval == -sympy_inf else (numpy_inf if q_upper_eval == sympy_inf else float(q_upper_eval))
+                    
+                    if q_lower >= q_upper and not (q_lower == numpy_inf and q_upper == numpy_inf) and not (q_lower == -numpy_inf and q_upper == -numpy_inf) :
+                         return f"Numerical integration error: lower limit {q_lower} must be less than upper limit {q_upper}. Symbolic: {latex(result)}"
+
+                    try:
+                        numeric_result_val, num_error = quad(f_for_quad, q_lower, q_upper, limit=100, epsabs=1.49e-06, epsrel=1.49e-06)
+                        if math.isnan(numeric_result_val): # CORRECTED: Use math.isnan for float results from quad
+                             return f"Numerical integration resulted in NaN. Symbolic: {latex(result)}"
+                        if abs(num_error) > 0.01 * abs(numeric_result_val) and abs(num_error) > 1e-4 :
+                            return f"Numerical integral {numeric_result_val:.6g} with potentially large error {num_error:.2g}. Symbolic: {latex(result)}"
+                        return float(numeric_result_val)
+                    except Exception as quad_e:
+                        return f"Symbolic: {latex(result)}. Numerical integration failed: {str(quad_e)}"
+                else: 
+                    numeric_result_sympy = result.evalf(chop=True)
+                    if (hasattr(numeric_result_sympy, 'is_infinite') and numeric_result_sympy.is_infinite) or \
+                       (hasattr(numeric_result_sympy, 'is_real') and not numeric_result_sympy.is_real) or \
+                       (hasattr(numeric_result_sympy, 'is_NaN') and numeric_result_sympy.is_NaN):
+                        return f"Symbolic result {latex(result)} evaluated to non-finite/non-real {latex(numeric_result_sympy)}. Cannot convert to float."
+                    return float(numeric_result_sympy)
+        except ValueError as ve:
+            return f"Error in integral setup: {str(ve)}"
+        except Exception as e:
+            return f"Error in integral computation: {str(e)}"
+
+
+    def eval_expr(node) -> Union[float, int, list, dict, tuple, str]:
         if isinstance(node, ast.Constant):
             return node.value
         elif isinstance(node, ast.Name):
             if node.id in constants: return constants[node.id]
-            if node.id == 'inf': return float('inf')
-            # Sympy symbols like 'x' will be handled by sympify if part of an integral expression string
+            if node.id.lower() == 'inf': return float('inf')
+            if node.id.lower() == '-inf': return float('-inf')
             raise ValueError(f"Unsupported variable or constant: {node.id}")
         elif isinstance(node, ast.BinOp):
             left = eval_expr(node.left)
             right = eval_expr(node.right)
-
-            # If left or right is a string, it indicates an error or an unprocessable symbolic result
-            # from a sub-expression (e.g., an indefinite integral's LaTeX string, or an error message from compute_integral).
-            # We cannot perform further arithmetic operations with such strings.
-            if isinstance(left, str):
-                raise ValueError(f"Left operand for '{type(node.op).__name__}' operation resolved to a non-numeric string: '{left}'")
-            if isinstance(right, str):
-                raise ValueError(f"Right operand for '{type(node.op).__name__}' operation resolved to a non-numeric string: '{right}'")
-
-            # Ensure both operands are numeric at this point.
-            # This check is somewhat redundant if the string checks above are comprehensive,
-            # but provides an additional safeguard.
+            if isinstance(left, str) or isinstance(right, str):
+                raise ValueError(f"Cannot perform arithmetic operation '{type(node.op).__name__}' with non-numeric string operands: '{left}', '{right}'")
             if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
-                raise ValueError(f"Operands for '{type(node.op).__name__}' must be numeric, but got {type(left).__name__} and {type(right).__name__}")
-
+                raise ValueError(f"Operands for '{type(node.op).__name__}' must be numeric, got {type(left).__name__} and {type(right).__name__}")
             if type(node.op) in allowed_operators:
                 return allowed_operators[type(node.op)](left, right)
             raise ValueError(f"Unsupported binary operation: {type(node.op).__name__}")
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return -eval_expr(node.operand)
+            operand_val = eval_expr(node.operand)
+            if isinstance(operand_val, str):
+                 raise ValueError(f"Cannot apply unary minus to non-numeric string operand: '{operand_val}'")
+            return -operand_val
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
+            
+            if func_name == 'integral':
+                if not (1 <= len(node.args) <= 3):
+                     raise ValueError("integral() syntax: integral('expr_str'), or integral('expr_str', lower, upper)")
+                if not (isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+                    raise ValueError("First argument to integral() must be a string expression (e.g., 'sin(x)').")
+                expr_str_arg = node.args[0].value
+                args_processed = [expr_str_arg]
+                for arg_node in node.args[1:]:
+                    args_processed.append(eval_expr(arg_node))
+                if len(args_processed) == 1: return compute_integral(args_processed[0], None, None)
+                if len(args_processed) == 3: return compute_integral(args_processed[0], args_processed[1], args_processed[2])
+                raise ValueError("Internal error: Integral argument processing failed.")
+
             args = [eval_expr(arg) for arg in node.args]
             
-            # Special handling for functions that take string expressions (like integral)
-            if func_name == 'integral':
-                if not (1 <= len(args) <= 3 or len(args) == 5) : # Check for valid arg counts
-                     raise ValueError("integral() syntax: integral('expr_str'), integral('expr_str', lower, upper) or integral('expr_str', var1_lower, var1_upper, var2_lower, var2_upper)")
-                
-                expr_str_arg = args[0]
-                if not isinstance(expr_str_arg, str):
-                    raise ValueError("First argument to integral() must be a string expression (e.g., 'sin(x)').")
-
-                if len(args) == 1: return compute_integral(expr_str_arg, None, None)
-                if len(args) == 3: return compute_integral(expr_str_arg, args[1], args[2])
-                # For 2D integral, we assume args are (expr_str, x_lower, x_upper, y_lower, y_upper)
-                # and compute_integral needs to be adapted or a new function created if 2D is kept.
-                # For now, simplifying to 1D definite/indefinite.
-                # if len(args) == 5: return compute_integral(expr_str_arg, (args[1], args[2]), (args[3], args[4])) 
-                raise ValueError("Integral with 5 arguments (2D) not fully supported in this simplified version yet.")
-
-
-            elif func_name == 'error_propagation':
+            if func_name == 'error_propagation':
                 if len(args) != 2 or not isinstance(args[0], str) or not isinstance(args[1], dict):
                     raise ValueError("error_propagation() requires expr_str, {var: (value, error)}")
                 return compute_error_propagation(args[0], args[1])
@@ -111,177 +204,128 @@ def evaluate(expression: str) -> str:
                 raise ValueError(f"Invalid arguments for {func_name}")
             raise ValueError(f"Unsupported function: {func_name}")
         elif isinstance(node, ast.List): return [eval_expr(elt) for elt in node.elts]
-        elif isinstance(node, ast.Dict): return {eval_expr(k): eval_expr(v) for k, v in zip(node.keys, node.values)}
+        elif isinstance(node, ast.Dict): 
+            keys = [eval_expr(k) for k in node.keys]
+            values = [eval_expr(v) for v in node.values]
+            return dict(zip(keys, values))
         elif isinstance(node, ast.Tuple): return tuple(eval_expr(elt) for elt in node.elts)
         raise ValueError(f"Unsupported AST node: {type(node).__name__}")
 
-    def compute_integral(expr_str: str, lower: Union[float, None], upper: Union[float, None]) -> Union[float, str]: # Allow returning float or error string
-        try:
-            x = Symbol('x')
-            # Ensure common math functions are available to sympify
-            local_dict = {
-                'sin': sin, 'cos': cos, 'tan': atan, 'asin': asin, 'acos': acos, 'atan': atan,
-                'arctan': atan, 'arcsin': asin, 'arccos': acos, 'sqrt': sqrt, 'exp': math.exp, # sympy's exp is different
-                'log': math.log, # sympy's log is different for base
-                'pi': sympy_pi, 'e': math.e,
-                'sinh': sinh, 'cosh': cosh, 'tanh': tanh,
-                'asinh': asinh, 'acosh': acosh, 'atanh': atanh
-            }
-            expr = sympify(expr_str, locals=local_dict)
-            
-            if lower is None and upper is None:  # Indefinite integral
-                result = integrate(expr, x)
-                # For indefinite integral, we can't return a simple float.
-                # This case needs careful handling if it's part of a larger expression.
-                # For now, if it's an indefinite integral, we'll return its LaTeX string representation.
-                # The calling eval_expr will need to handle this if it's not the top-level operation.
-                return f"$$ {latex(result)} + C $$"
-            else:  # Definite integral
-                # Convert string 'inf', '-inf' to sympy infinity
-                if isinstance(lower, str):
-                    if lower.lower() == 'inf': lower = sympy_inf
-                    elif lower.lower() == '-inf': lower = -sympy_inf
-                if isinstance(upper, str):
-                    if upper.lower() == 'inf': upper = sympy_inf
-                    elif upper.lower() == '-inf': upper = -sympy_inf
-
-                result = integrate(expr, (x, lower, upper))
-                if result.has(sympy_inf, -sympy_inf) or not result.is_real: # Check for non-convergence or complex
-                    # Attempt numerical integration as fallback if symbolic result is complex or infinity
-                    def f_for_quad(x_val):
-                        # Substitute and evaluate, ensuring it's float for quad
-                        try: return float(expr.subs(x, x_val).evalf())
-                        except: return float('nan') # Return NaN on evaluation error for robust quad
-
-                    quad_lower = -numpy_inf if lower == -sympy_inf else (numpy_inf if lower == sympy_inf else float(lower))
-                    quad_upper = -numpy_inf if upper == -sympy_inf else (numpy_inf if upper == sympy_inf else float(upper))
-                    
-                    try:
-                        numeric_result, num_error = quad(f_for_quad, quad_lower, quad_upper, limit=100, epsabs=1.49e-05, epsrel=1.49e-05)
-                        if abs(num_error) > 0.1 * abs(numeric_result) and abs(num_error) > 1e-3 : # If error is significant
-                             # Return a string error, or raise an exception
-                             return f"Numerical integral result {numeric_result:.6g} with large error {num_error:.2g}. Symbolic: {latex(result)}"
-                        return float(numeric_result) # Return float for successful numerical integration
-                    except Exception as quad_e:
-                        # Return a string error, or raise an exception
-                        return f"Symbolic: {latex(result)}. Numerical integration failed: {str(quad_e)}"
-                else: # Symbolic result is real and finite
-                    numeric_result = result.evalf()
-                    return float(numeric_result) # Return float
-        except Exception as e:
-            return f"Error in integral: {str(e)}" # Return error string
-
     def compute_error_propagation(expr_str: str, vars_errors: Dict[str, Tuple[float, float]]) -> str:
         try:
-            expr = sympify(expr_str)
-            total_error_sq = 0
-            subs_dict = {Symbol(k): v[0] for k, v in vars_errors.items()}
+            symbols_map = {}
+            subs_dict_val_err = {}
             for var_name, (value, error) in vars_errors.items():
-                s_var = Symbol(var_name)
+                if not isinstance(var_name, str):
+                    return "Error in error_propagation: Variable names must be strings."
+                if not (isinstance(value, (int, float)) and isinstance(error, (int, float))):
+                     return f"Error in error_propagation: Value and error for '{var_name}' must be numeric."
+                symbols_map[var_name] = Symbol(var_name)
+                subs_dict_val_err[symbols_map[var_name]] = (float(value), float(error))
+
+            sympy_locals_prop = {
+                'sin': sympy.sin, 'cos': sympy.cos, 'tan': sympy.tan, 'sqrt': sympy.sqrt,
+                'exp': sympy_exp, 'log': sympy_log, 'pi': sympy_pi, 'e': sympy_E,
+                'asin': sympy.asin, 'acos': sympy.acos, 'atan': sympy.atan,
+                'sinh': sympy.sinh, 'cosh': sympy.cosh, 'tanh': sympy.tanh,
+                'asinh': sympy.asinh, 'acosh': sympy.acosh, 'atanh': sympy.atanh,
+            }
+            sympy_locals_prop.update({k: v for k,v in symbols_map.items()})
+            expr = sympify(expr_str, locals=sympy_locals_prop)
+            total_error_sq = sympy.S.Zero # Using sympy.S.Zero for symbolic zero
+            subs_values_only = {s: val_err[0] for s, val_err in subs_dict_val_err.items()}
+
+            for s_var, (value, error) in subs_dict_val_err.items():
                 partial_derivative = diff(expr, s_var)
-                partial_derivative_val = partial_derivative.subs(subs_dict)
+                partial_derivative_val = partial_derivative.subs(subs_values_only)
+                if not partial_derivative_val.is_number:
+                    return f"Error in error_propagation: Partial derivative for {s_var} is not numeric: {latex(partial_derivative_val)}"
                 total_error_sq += (partial_derivative_val * error)**2
-            final_error = sqrt(total_error_sq).evalf()
-            return f"{float(final_error):.6f}".rstrip('0').rstrip('.')
+            
+            final_error_sympy = sympy.sqrt(total_error_sq)
+            if not final_error_sympy.is_number:
+                 return f"Error in error_propagation: Final error calculation resulted in non-numeric expression: {latex(final_error_sympy)}"
+            final_error_val = final_error_sympy.evalf()
+            expr_val_sympy = expr.subs(subs_values_only)
+            if not expr_val_sympy.is_number:
+                return f"Error in error_propagation: Expression value is not numeric: {latex(expr_val_sympy)}"
+            expr_val = expr_val_sympy.evalf()
+            return f"Value = {float(expr_val):.7g}, Error = {float(final_error_val):.4g}"
         except Exception as e:
             return f"Error in error_propagation: {str(e)}"
 
     def compute_confidence_interval(data: list, confidence_level: float, population_mean: float = None) -> str:
         try:
+            if not isinstance(data, list) or not all(isinstance(x, (int, float)) for x in data):
+                return "Error: Data for confidence_interval must be a list of numbers."
+            if not isinstance(confidence_level, (int, float)) or not (0 < confidence_level < 1):
+                return "Error: Confidence level must be a number between 0 and 1."
             n = len(data)
-            if n < 2: return "Error: Data sample too small for confidence interval."
+            if n < 2: return "Error: Data sample too small for confidence interval (need at least 2 points)."
             sample_mean = statistics.mean(data)
-            sample_std = statistics.stdev(data) if n > 1 else 0
-            
-            # If population_mean is provided, it's more like a z-interval or t-interval around a known mean,
-            # but the typical CI is for an unknown population mean based on sample.
-            # Assuming standard CI for the sample mean:
+            sample_std = statistics.stdev(data)
             alpha = 1 - confidence_level
-            # Use t-distribution for sample standard deviation
             t_critical = stats.t.ppf(1 - alpha / 2, df=n - 1)
             margin_of_error = t_critical * (sample_std / math.sqrt(n))
-            
             lower_bound = sample_mean - margin_of_error
             upper_bound = sample_mean + margin_of_error
-            return f"[{float(lower_bound):.6f}, {float(upper_bound):.6f}]"
+            return f"[{float(lower_bound):.6g}, {float(upper_bound):.6g}] ({(confidence_level*100):.0f}% CI)"
         except Exception as e:
             return f"Error in confidence_interval: {str(e)}"
 
     try:
-        # Ensure expression is a string, as it comes from stdin
-        expression_str = str(expression).strip()
-        if not expression_str:
+        expression_str_input = str(expression).strip()
+        if not expression_str_input:
             raise ValueError("Expression cannot be empty.")
-            
-        # For integral, error_propagation, confidence_interval, the expression itself might contain quotes
-        # The main parsing is for basic math. These functions handle their string sub-expressions internally.
-        # We need to identify if it's a direct call to one of these complex functions first.
-        # This is a simplification; a more robust parser would be better.
+        parsed_expr = ast.parse(expression_str_input, mode='eval')
+        result = eval_expr(parsed_expr.body)
         
-        # Attempt to parse simple function calls or direct evaluations
-        # This simple check might not be robust enough for all cases.
-        # e.g. "integral('sin(x)', 0, pi)" should be handled by eval_expr calling compute_integral.
-        
-        parsed_expr = ast.parse(expression_str, mode='eval')
-        result = eval_expr(parsed_expr.body) # This might be a float or a string (e.g. from indefinite integral)
-        
-        # If the result from eval_expr is already a string (e.g. LaTeX from indefinite integral or an error message), return it as is.
         if isinstance(result, str):
             return result
-        
         if isinstance(result, float):
-            # Format float to a reasonable number of decimal places, remove trailing zeros
-            return f"{result:.10g}".rstrip('0').rstrip('.') if '.' in f"{result:.10g}" else f"{result:.0f}"
-        # For other numerical types like int
+            if math.isinf(result) or math.isnan(result): # math.isnan for regular floats
+                return str(result)
+            formatted_float = f"{result:.10g}"
+            if '.' in formatted_float:
+                formatted_float = formatted_float.rstrip('0').rstrip('.')
+            return formatted_float
         return str(result)
     except SyntaxError as se:
         return f"Syntax Error: Invalid mathematical expression. Details: {str(se)}"
-    except ValueError as ve: # Catch specific ValueErrors from our logic
+    except ValueError as ve:
         return f"Input Error: {str(ve)}"
+    except ZeroDivisionError:
+        return "Error: Division by zero."
+    except OverflowError:
+        return "Error: Numerical result out of range (overflow)."
     except Exception as e:
-        # Generic error for anything else
-        return f"Calculation Error: {str(e)}"
+        return f"Calculation Error: An unexpected error occurred. ({type(e).__name__}: {str(e)})"
 
-import json # 新增：用于输出 JSON
+import json
 
 def main():
     expression_input = sys.stdin.readline().strip()
     output = {}
     if not expression_input:
         output = {"status": "error", "error": "SciCalculator Plugin Error: No expression provided."}
-        print(json.dumps(output), file=sys.stdout) # 输出 JSON 到 stdout
-        sys.exit(1) # 仍然用 exit code 1 表示错误
+        print(json.dumps(output), file=sys.stdout)
+        sys.exit(1)
         return
 
-    result_str = evaluate(expression_input) # evaluate 返回的是字符串
-
-    # evaluate 函数内部已经将错误信息格式化为 "Error: ..." 或 "Syntax Error: ..." 等
-    if result_str.startswith("Error:") or \
-       result_str.startswith("Syntax Error:") or \
-       result_str.startswith("Input Error:") or \
-       result_str.startswith("Calculation Error:"):
+    result_str = evaluate(expression_input)
+    error_prefixes = ("Error:", "Syntax Error:", "Input Error:", "Calculation Error:", "Warning:")
+    if result_str.startswith(error_prefixes):
         output = {"status": "error", "error": result_str}
         print(json.dumps(output), file=sys.stdout)
         sys.exit(1)
     else:
-        # SciCalculator 的 manifest 中定义的 responseFormatToAI 是 "###计算结果：{result}###"
-        # 我们在这里直接应用这个格式，或者让 Plugin.js 来处理
-        # 根据新的架构，插件自身应该完成最终面向AI的文本构建
-        # 注意：原始的 "，请将结果转告用户" 后缀是在 server.js 中添加的，现在也移到这里
         formatted_result_for_ai = f"###计算结果：{result_str}###，请将结果转告用户"
         output = {"status": "success", "result": formatted_result_for_ai}
         print(json.dumps(output), file=sys.stdout)
         sys.exit(0)
 
 if __name__ == "__main__":
-    # Test cases (optional, can be removed for production plugin)
-    # print(f"Test '1+1': {evaluate('1+1')}")
-    # print(f"Test 'sin(pi/2)': {evaluate('sin(pi/2)')}")
-    # print(f"Test 'integral(\"x^2\", 0, 1)': {evaluate('integral(\"x^2\", 0, 1)')}") # Note: string literal for expr
-    # print(f"Test 'integral(\"sin(x)\")': {evaluate('integral(\"sin(x)\")')}")
-    # print(f"Test 'log(100, 10)': {evaluate('log(100,10)')}")
-    # print(f"Test 'mean([1,2,3,4,5])': {evaluate('mean([1,2,3,4,5])')}")
-    # print(f"Test '1/0': {evaluate('1/0')}") # Error test
-    # print(f"Test 'sqrt(-1)': {evaluate('sqrt(-1)')}") # Error test
-    # print(f"Test 'integral(\"1/x\", -1, 1)': {evaluate('integral(\"1/x\", -1, 1)')}") # Error test (divergent)
+    # Test cases
+    # print(f"Test 'integral(\"x^2\", 0, 1)': {evaluate('integral(\"x^2\", 0, 1)')}") # Expected: 0.3333333333
+    # print(f"Test 'integral(\"exp(-x**2)\", \"-inf\", \"inf\")': {evaluate('integral(\"exp(-x**2)\", \"-inf\", \"inf\")')}") # Expected: 1.772453851 (sqrt(pi))
     main()
