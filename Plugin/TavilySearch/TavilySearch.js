@@ -1,88 +1,91 @@
 #!/usr/bin/env node
-import { TavilyClient } from '@tavily/tavily-node'; // Using the official Node.js client
-import { stdin } from 'process';
+const { tavily } = require('@tavily/core'); // Using the official Node.js client
+const stdin = require('process').stdin;
 
 async function main() {
     let inputData = '';
     stdin.setEncoding('utf8');
 
-    for await (const chunk of stdin) {
+    stdin.on('data', function(chunk) {
         inputData += chunk;
-    }
+    });
 
-    let output = {};
+    stdin.on('end', async function() {
+        let output = {};
 
-    try {
-        if (!inputData.trim()) {
-            throw new Error("No input data received from stdin.");
-        }
-
-        const data = JSON.parse(inputData);
-
-        const query = data.query;
-        const topic = data.topic || 'general'; // Default to 'general'
-        const searchDepth = data.search_depth || 'basic'; // Default to 'basic'
-        let maxResults = data.max_results || 5; // Default to 5
-
-        if (!query) {
-            throw new Error("Missing required argument: query");
-        }
-
-        // Validate topic (optional, Tavily API might handle invalid ones)
-        // const validTopics = ['general', 'news', 'finance', 'research', 'code'];
-        // if (!validTopics.includes(topic)) {
-        //     topic = 'general';
-        // }
-
-        // Validate search_depth
-        const validDepths = ['basic', 'advanced'];
-        if (!validDepths.includes(searchDepth)) {
-            searchDepth = 'basic';
-        }
-
-        // Validate max_results
         try {
-            maxResults = parseInt(maxResults, 10);
-            if (isNaN(maxResults) || maxResults < 5 || maxResults > 100) {
-                maxResults = 5; // Default to 5 if invalid or out of range
+            if (!inputData.trim()) {
+                throw new Error("No input data received from stdin.");
             }
+
+            const data = JSON.parse(inputData);
+
+            const query = data.query;
+            const topic = data.topic || 'general'; // Default to 'general'
+            const searchDepth = data.search_depth || 'basic'; // Default to 'basic'
+            let maxResults = data.max_results || 5; // Default to 5
+
+            if (!query) {
+                throw new Error("Missing required argument: query");
+            }
+
+            // Validate topic (optional, Tavily API might handle invalid ones)
+            // const validTopics = ['general', 'news', 'finance', 'research', 'code'];
+            // if (!validTopics.includes(topic)) {
+            //     topic = 'general';
+            // }
+
+            // Validate search_depth
+            const validDepths = ['basic', 'advanced'];
+            if (!validDepths.includes(searchDepth)) {
+                searchDepth = 'basic';
+            }
+
+            // Validate max_results
+            try {
+                maxResults = parseInt(maxResults, 10);
+                if (isNaN(maxResults) || maxResults < 5 || maxResults > 100) {
+                    maxResults = 5; // Default to 5 if invalid or out of range
+                }
+            } catch (e) {
+                maxResults = 5; // Default if parsing fails
+            }
+
+            const apiKey = process.env.TavilyKey; // Use the correct environment variable name
+            if (!apiKey) {
+                throw new Error("TavilyKey environment variable not set.");
+            }
+
+            const tvly = tavily({ apiKey });
+
+            const response = await tvly.search(query, {
+                search_depth: searchDepth,
+                topic: topic,
+                max_results: maxResults,
+                include_answer: false, // Usually just want results for AI processing
+                include_raw_content: false,
+                include_images: false
+            });
+
+            // Tavily Node client returns a JSON-serializable object
+            // Ensure the result is a string for output
+            output = { status: "success", result: JSON.stringify(response, null, 2) };
+
         } catch (e) {
-            maxResults = 5; // Default if parsing fails
+            let errorMessage;
+            if (e instanceof SyntaxError) {
+                errorMessage = "Invalid JSON input.";
+            } else if (e instanceof Error) {
+                errorMessage = e.message;
+            } else {
+                errorMessage = "An unknown error occurred.";
+            }
+            output = { status: "error", error: `Tavily Search Error: ${errorMessage}` };
         }
 
-        const apiKey = process.env.TavilyKey; // Use existing TavilyKey from config.env
-        if (!apiKey) {
-            throw new Error("TavilyKey environment variable not set in config.env.");
-        }
-
-        const client = new TavilyClient({ apiKey });
-
-        const response = await client.search(query, {
-            searchDepth: searchDepth,
-            topic: topic,
-            maxResults: maxResults,
-            includeAnswer: false, // Usually just want results for AI processing
-            includeRawContent: false,
-            includeImages: false
-        });
-
-        // Tavily Node client returns a JSON-serializable object
-        output = { status: "success", result: response };
-
-    } catch (e) {
-        let errorMessage;
-        if (e instanceof SyntaxError) {
-            errorMessage = "Invalid JSON input.";
-        } else if (e instanceof Error) {
-            errorMessage = e.message;
-        } else {
-            errorMessage = "An unknown error occurred.";
-        }
-        output = { status: "error", error: `Tavily Search Error: ${errorMessage}` };
-    }
-
-    // Output JSON to stdout
-    process.stdout.write(JSON.stringify(output));
+        // Output JSON to stdout
+        process.stdout.write(JSON.stringify(output, null, 2));
+    });
 }
 
 main().catch(error => {
