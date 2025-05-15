@@ -16,17 +16,18 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **多种插件类型支持**:
     *   **静态插件 (`static`)**: 提供动态信息（如天气、自定义数据）以替换系统提示词中的占位符，支持定时刷新。
     *   **消息预处理器插件 (`messagePreprocessor`)**: 在用户请求发送给 AI 模型前，对消息内容进行修改或增强（如图像识别与描述）。
-    *   **同步插件 (`synchronous`)**: AI 可以在对话中调用这些插件执行特定任务（如科学计算、图像生成、视频生成），服务器会等待插件执行完毕，并将结果反馈给 AI 进行后续处理。
+    *   **同步插件 (`synchronous`)**: AI 可以在对话中调用这些插件执行特定任务（如科学计算、图像生成、视频生成）。服务器会等待插件执行完毕，并将结果（需遵循特定 JSON 格式）反馈给 AI 进行后续处理。
     *   **服务插件 (`service`)**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口（如图床服务）。
 *   **灵活的配置管理**: 支持全局配置文件 (`config.env`) 以及插件专属的 `.env` 文件，实现配置的层级化和隔离。
 *   **通用变量替换**: 在与 AI 交互的各个阶段（系统提示词、用户消息）自动替换预定义的占位符变量。
 *   **内置实用功能 (部分已插件化)**:
-   *   **日记/记忆库系统**: 通过 `DailyNoteGet` (静态插件) 读取日记内容，并通过 `DailyNoteWrite` (同步插件) 存储 AI 生成的结构化日记。相关内容通过 `{{角色名日记本}}` 和 `{{AllCharacterDiariesData}}` 占位符注入提示词。
-   *   **动态表情包系统**: 由 `EmojiListGenerator` (静态插件) 扫描 `image/` 目录并在其插件目录内生成表情包列表 `.txt` 文件。服务器在启动时执行此插件并加载这些列表到内存缓存，供 `{{xx表情包}}` 占位符使用。
+   *   **日记/记忆库系统**: 通过 `DailyNoteGet` (静态插件) 定期读取日记内容，并通过 `DailyNoteWrite` (同步插件) 存储 AI 生成的结构化日记。相关内容通过 `{{角色名日记本}}` 占位符注入提示词，其数据源由 `DailyNoteGet` 插件通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器内部使用。
+   *   **动态表情包系统**: 由 `EmojiListGenerator` (静态插件) 扫描 `image/` 目录并在其插件目录内生成表情包列表 `.txt` 文件。服务器在启动时执行此插件并加载这些列表到内存缓存，供 `{{xx表情包}}` 和 `{{EmojiList}}` 占位符使用。
    *   **提示词转换**: 支持基于规则的系统提示词和全局上下文文本替换。
-*   **工具调用能力**:
-    *   **非流式模式**: 已实现对 AI 单次响应中包含的**多个**工具调用指令的循环处理和结果反馈。
+*   **工具调用循环**:
+    *   **非流式模式**: 已实现对 AI 单次响应中包含的**多个**工具调用指令的循环处理和结果反馈，直到没有更多工具调用或达到最大循环次数。
     *   **流式模式 (SSE)**: 已实现对 AI 单次响应中包含的**多个**工具调用指令的循环处理和结果反馈。AI 的回复和 VCP 工具的调用结果（如果 `SHOW_VCP_OUTPUT` 环境变量设置为 `true`）将逐步流式传输给客户端，直到没有更多工具调用或达到最大循环次数。
+*   **Web 管理面板**: 提供一个内置的 Web 界面，用于方便地管理服务器配置、插件状态、插件配置、指令描述以及日记文件。
 *   **调试与日志**: 提供调试模式和详细的日志记录，方便开发和问题排查。
 
 ## 系统架构概览
@@ -37,40 +38,54 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     *   调用 `messagePreprocessor` 插件（如 `ImageProcessor`）处理用户消息。
     *   将处理后的请求转发给后端 AI 模型。
 3.  **AI 模型响应**: AI 模型返回响应。
-4.  **`server.js` 处理 AI 响应**:
+4.  **`server.js` 处理 AI 响应并执行工具循环**:
     *   检测 AI 响应中是否包含 VCP 工具调用指令 (`<<<[TOOL_REQUEST]>>>`)。
-    *   如果包含工具调用：
+    *   **如果包含工具调用**:
         *   解析指令，提取工具名称和参数。
-        *   调用 `PluginManager` 执行相应的 `synchronous` 插件。
+        *   **循环执行工具**: 对于每个解析出的工具调用，调用 `PluginManager` 执行相应的 `synchronous` 插件。
+        *   **处理插件结果**: `PluginManager` 执行插件，接收其 JSON 格式的输出。
+        *   **二次 AI 调用**: 将所有工具的执行结果格式化后，作为新的用户消息添加到对话历史中。再次调用后端 AI 模型，将包含插件结果的完整对话历史发送过去。
+        *   重复步骤 4 直到 AI 响应不再包含工具调用指令或达到最大循环次数。
+    *   **如果 AI 响应不包含工具调用**:
+        *   如果启用了 `SHOW_VCP_OUTPUT`，将工具执行过程和结果（如果发生）与 AI 的最终回复一起返回给客户端。
+        *   将 AI 的最终响应流式或非流式地返回给客户端。
+    *   **日记处理**: 如果 AI 响应包含结构化日记块 (`<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>`)，解析内容并调用 `DailyNoteWrite` 插件进行存储。
 5.  **`Plugin.js` (插件管理器)**:
+    *   在服务器启动时加载插件清单，初始化 `static` 和 `service` 插件。
     *   根据工具名称查找已加载的插件。
-    *   为插件准备执行环境和配置。
-    *   通过 `stdio` (或其他协议) 与插件脚本交互，发送输入并接收输出 (例如，`DailyNoteWrite` 插件通过 stdin 接收日记数据，`SciCalculator` 接收计算表达式)。
-    *   将插件的执行结果（通常是 JSON）返回给 `server.js`。
-6.  **`server.js` 二次 AI 调用**:
-    *   将插件的执行结果格式化后，作为新的用户消息添加到对话历史中。
-    *   再次调用后端 AI 模型，将包含插件结果的完整对话历史发送过去。
-    *   将 AI 的最终响应流式或非流式地返回给客户端。
-7.  **静态与服务插件**:
-    *   `static` 插件在服务器启动和/或定时任务中被 `PluginManager` 调用。它们可以：
-        *   直接更新占位符变量，如 `WeatherReporter` (提供天气信息给 `{{VCPWeatherInfo}}`) 或 `DailyNoteGet` (提供所有日记数据给 `{{AllCharacterDiariesData}}`)。
-        *   执行特定任务，如 `EmojiListGenerator`，它在初始化时被调用以生成表情包列表 `.txt` 文件，这些文件随后被服务器加载到内存缓存中。
-    *   `service` 插件（如 `ImageServer`）在服务器启动时由 `PluginManager` 初始化，向 Express 应用注册自己的路由。
+    *   为插件准备执行环境和配置（包括合并全局和插件专属配置）。
+    *   通过 `stdio` (或其他协议) 与插件脚本交互，发送输入（如 JSON 参数）并接收输出（需遵循 `{status, result/error}` JSON 格式）。
+    *   将插件的执行结果返回给 `server.js`。
+6.  **静态与服务插件**:
+    *   `static` 插件在服务器启动和/或定时任务中被 `PluginManager` 调用，用于更新占位符变量（如 `{{VCPWeatherInfo}}`, `{{AllCharacterDiariesData}}`, `{{xx表情包}}` 列表数据）。
+    *   `service` 插件（如 `ImageServer`）在服务器启动时由 `PluginManager` 初始化，向 Express 应用注册自己的路由 (`/pw=.../images/` 等)。
+7.  **Web 管理面板**: 通过独立的 `/admin_api` 端点与 `routes/adminPanelRoutes.js` 定义的后端交互，提供配置、插件和日记管理功能。
 
 ## Web 管理面板
 
-为了方便用户管理服务器配置和插件，项目内置了一个简单的 Web 管理面板。
+为了方便用户管理服务器配置、插件和日记数据，项目内置了一个功能丰富的 Web 管理面板。
 
 **主要功能**:
 
-*   **主配置管理**: 在线预览和编辑项目根目录下的 `config.env` 文件内容。
+*   **主配置管理**:
+    *   在线预览和编辑项目根目录下的 `config.env` 文件内容。
+    *   支持对布尔、整数和多行字符串等不同类型的配置项进行编辑。
     *   **注意**: 出于安全考虑，管理界面在显示主配置时会自动隐藏 `AdminUsername` 和 `AdminPassword` 字段。保存时，系统会合并您修改的内容和服务器上原始的敏感字段值，以确保凭据不丢失。
     *   **重要**: 保存对 `config.env` 的更改后，**通常需要手动重启服务器**才能使所有更改（如端口、API密钥、插件特定配置等）完全生效。服务器当前不会自动重启。
 *   **插件管理**:
-    *   **列表与状态**: 显示 `Plugin/` 目录下所有已发现的插件及其启用/禁用状态。
-    *   **描述编辑**: 直接在界面上编辑各插件 `plugin-manifest.json` 文件中的描述信息。
+    *   **列表与状态**: 显示 `Plugin/` 目录下所有已发现的插件及其启用/禁用状态、版本和描述。
+    *   **描述编辑**: 直接在界面上编辑各插件 `plugin-manifest.json` 文件中的主描述信息。
     *   **启停插件**: 通过界面开关切换插件的启用状态（通过重命名插件的 `plugin-manifest.json` 为 `plugin-manifest.json.block` 或反之实现）。
-    *   **插件配置**: 读取和编辑各个插件目录（如果存在）下的 `config.env` 文件。
+    *   **插件配置**: 读取和编辑各个插件目录（如果存在）下的 `config.env` 文件。支持编辑插件清单中 `configSchema` 定义的配置项，以及自定义的配置项。
+    *   **指令描述编辑**: 对于具有 `invocationCommands` 能力的同步插件，可以直接在界面上编辑每个命令的 AI 指令描述，这些描述会被 `PluginManager` 用于生成 `{{VCPPluginName}}` 占位符内容。
+*   **日记管理**:
+    *   浏览 `dailynote/` 目录下的所有角色文件夹。
+    *   查看每个文件夹下的日记文件列表，包括文件名和修改时间，并显示部分内容预览。
+    *   支持按关键词搜索日记内容，可在所有文件夹或指定文件夹中搜索。
+    *   在线编辑、保存日记文件内容。
+    *   批量移动选中的日记到其他文件夹。
+    *   批量删除选中的日记文件。
+*   **服务器重启**: 提供一个按钮用于发送服务器重启命令（依赖外部进程管理器如 PM2）。
 
 **访问与登录**:
 
@@ -79,7 +94,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     AdminUsername=your_admin_username
     AdminPassword=your_admin_password
     ```
-    **重要**: 如果未设置 `AdminUsername` 或 `AdminPassword`，管理面板及其 API 将无法访问，并会返回 503 Service Unavailable 错误。必须配置这些凭据才能启用管理面板。原始账户admin，密码123456。
+    **重要**: 如果未设置 `AdminUsername` 或 `AdminPassword`，管理面板及其 `/admin_api` 端点将无法访问，并会返回 503 Service Unavailable 错误。必须配置这些凭据才能启用管理面板。原始账户admin，密码123456。
 2.  **访问地址**: 启动服务器后，通过浏览器访问 `http://<您的服务器IP或域名>:<端口>/AdminPanel`。
 3.  **登录**: 浏览器会弹出 HTTP Basic Auth 认证窗口，请输入您在 `config.env` 中设置的 `AdminUsername` 和 `AdminPassword` 进行登录。默认账户admin，密码123456。
 
@@ -168,24 +183,33 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     *   在插件目录中创建 `plugin-manifest.json`。
     *   定义插件的 `name`, `displayName`, `version`, `description`, `pluginType` (`static`, `messagePreprocessor`, `synchronous`, `service`)。
     *   指定 `entryPoint` (例如，执行的脚本命令) 和 `communication` (如 `protocol: "stdio"`).
-    *   在 `configSchema` 中声明插件需要的配置项及其类型。
+    *   在 `configSchema` 中声明插件需要的配置项及其类型，这些配置项将通过 `_getPluginConfig` 方法合并全局和插件专属 `.env` 配置后传递给插件。
     *   在 `capabilities` 中详细描述插件功能：
         *   对于 `static` 插件，定义 `systemPromptPlaceholders`。
-        *   对于 `synchronous` 插件，定义 `invocationCommands`，包括每个命令的 `command` 名称、详细的 `description` (包含参数说明、必需/可选、允许值、**调用格式示例**、**成功/失败返回的JSON格式示例**，以及与用户沟通的重要提示) 和 `example` (备用)。
+        *   对于 `synchronous` 插件，定义 `invocationCommands`。这些命令需要 `command` 名称（用于内部识别）和详细的 `description`（用于生成 AI 指令描述，支持在管理面板编辑）。`description` 应包含参数说明、必需/可选、允许值、**调用格式示例**、**成功/失败返回的 JSON 格式示例**，以及与用户沟通的重要提示。可选地提供 `example`。
 3.  **实现插件逻辑**:
     *   根据 `pluginType` 和 `entryPoint` 实现插件的主逻辑脚本。
     *   **`stdio` 插件**:
         *   从标准输入 (stdin) 读取数据 (对于 `synchronous` 插件，通常是 JSON 字符串形式的参数；对于 `static` 插件，可能无输入)。
-        *   通过标准输出 (stdout) 返回结果 (通常是 JSON 字符串，包含 `status: "success"` 或 `status: "error"`，以及 `result` 或 `error` 字段；对于 `static` 插件，直接输出占位符的值)。
+        *   **通过标准输出 (stdout) 返回结果，必须遵循以下 JSON 格式**：
+            ```json
+            {
+              "status": "success" | "error",
+              "result": "成功时返回的字符串内容", // 仅当 status 为 "success" 时存在
+              "error": "失败时返回的错误信息字符串" // 仅当 status 为 "error" 时存在
+            }
+            ```
+            对于 `static` 插件，如果仅用于更新占位符，可以直接输出占位符的值（非 JSON）。但如果需要更复杂的通信或错误报告，建议也遵循上述 JSON 格式。
         *   可以通过标准错误 (stderr) 输出调试或错误信息。
         *   确保使用 UTF-8 编码进行 I/O。
     *   **`messagePreprocessor` 或 `service` 插件 (Node.js)**:
         *   导出一个符合 `PluginManager` 约定的模块 (例如，包含 `initialize`, `processMessages`, `registerRoutes`, `shutdown` 等方法)。
 4.  **配置与依赖**:
-    *   如果插件有独立的配置项，可以在插件目录下创建 `.env` 文件。
+    *   如果插件有独立的配置项，可以在插件目录下创建 `.env` 文件 (`pluginSpecificEnvConfig`)。这些配置会覆盖全局 `config.env` 中的同名配置。
     *   如果插件有 Python 依赖，创建 `requirements.txt`；有 Node.js 依赖，创建 `package.json`。
+    *   **重要**: 确保插件的依赖已安装。对于 Python 插件，运行 `pip install -r requirements.txt`；对于 Node.js 插件，在其目录下运行 `npm install` 或在项目根目录运行 `npm install`（如果依赖已包含在主 `package.json` 中）。
 5.  **重启 VCP 服务器**: `PluginManager` 会在启动时自动发现并加载新插件。
-6.  **更新系统提示词**: 指导 AI 如何使用你的新插件，利用 `{{VCPMyNewPlugin}}` (由 `PluginManager` 根据 `plugin-manifest.json` 自动生成) 或直接在系统提示词中描述。
+6.  **更新系统提示词**: 指导 AI 如何使用你的新插件，利用 `{{VCPMyNewPlugin}}` (由 `PluginManager` 根据 `plugin-manifest.json` 和指令描述自动生成) 或直接在系统提示词中描述。
 
 ## 支持的通用变量占位符
 
@@ -197,6 +221,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   `{{Festival}}`: 农历日期、生肖、节气。
 *   `{{VCPWeatherInfo}}`: 当前缓存的天气预报文本 (由 `WeatherReporter` 插件提供)。
 *   `{{角色名日记本}}`: 特定角色（如 `小克`）的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
+*   `{{公共日记本}}`: 共享知识库的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
 *   `{{AllCharacterDiariesData}}`: (由 `DailyNoteGet` 插件提供) 一个 JSON 字符串，解析后为包含所有角色日记内容的对象。服务器内部使用此数据来支持 `{{角色名日记本}}` 的解析。
 *   `{{xx表情包}}`: 特定表情包（如 `通用表情包`）的图片文件名列表 (以 `|` 分隔)。数据由 `EmojiListGenerator` 插件生成列表文件，服务器加载到内存缓存后提供。
 *   `{{EmojiList}}`: (环境变量 `EmojiList` 指定，例如 `通用表情包`) 默认表情包的图片文件名列表。其数据来源与 `{{xx表情包}}` 相同。
