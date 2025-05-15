@@ -17,6 +17,6 @@
     "node-schedule": "^2.1.1",
     "basic-auth": "^2.0.1",
     "cors": "^2.8.5",
-    "@tavily/tavily-node": "^1.0.0"
+    "@tavily/core": "^0.5.2"
   }
 }
