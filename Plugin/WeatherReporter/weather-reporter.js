@@ -8,8 +8,41 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.resolve(__dirname, '../../config.env') });
 
 const CACHE_FILE_PATH = path.join(__dirname, 'weather_cache.txt');
+const CITY_CACHE_FILE_PATH = path.join(__dirname, 'city_cache.txt');
 
 // --- Start QWeather API Functions ---
+
+// Function to read city cache
+async function readCityCache() {
+    try {
+        const data = await fs.readFile(CITY_CACHE_FILE_PATH, 'utf-8');
+        const cache = new Map();
+        data.split('\n').forEach(line => {
+            const [cityName, cityId] = line.split(':');
+            if (cityName && cityId) {
+                cache.set(cityName.trim(), cityId.trim());
+            }
+        });
+        console.error(`[WeatherReporter] Successfully read city cache from ${CITY_CACHE_FILE_PATH}`);
+        return cache;
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`[WeatherReporter] Error reading city cache file ${CITY_CACHE_FILE_PATH}:`, error.message);
+        }
+        return new Map(); // Return empty map if file doesn't exist or error occurs
+    }
+}
+
+// Function to write city cache
+async function writeCityCache(cityName, cityId) {
+    try {
+        // Append to the file, creating it if it doesn't exist
+        await fs.appendFile(CITY_CACHE_FILE_PATH, `${cityName}:${cityId}\n`, 'utf-8');
+        console.error(`[WeatherReporter] Successfully wrote city cache for ${cityName}:${cityId} to ${CITY_CACHE_FILE_PATH}`);
+    } catch (error) {
+        console.error(`[WeatherReporter] Error writing city cache file ${CITY_CACHE_FILE_PATH}:`, error.message);
+    }
+}
 
 // Function to get City ID from city name
 async function getCityId(cityName, weatherKey, weatherUrl) {
@@ -17,6 +50,14 @@ async function getCityId(cityName, weatherKey, weatherUrl) {
     if (!cityName || !weatherKey || !weatherUrl) {
         console.error('[WeatherReporter] City name, Weather Key or Weather URL is missing for getCityId.');
         return { success: false, data: null, error: new Error('Missing parameters for getCityId.') };
+    }
+
+    // Check cache first
+    const cityCache = await readCityCache();
+    if (cityCache.has(cityName)) {
+        const cachedCityId = cityCache.get(cityName);
+        console.error(`[WeatherReporter] Using cached city ID for ${cityName}: ${cachedCityId}`);
+        return { success: true, data: cachedCityId, error: null };
     }
 
     const lookupUrl = `https://${weatherUrl}/geo/v2/city/lookup?location=${encodeURIComponent(cityName)}&key=${weatherKey}`;
@@ -32,8 +73,11 @@ async function getCityId(cityName, weatherKey, weatherUrl) {
 
         const data = await response.json();
         if (data.code === '200' && data.location && data.location.length > 0) {
-            console.error(`[WeatherReporter] Successfully found city ID: ${data.location[0].id}`);
-            return { success: true, data: data.location[0].id, error: null };
+            const cityId = data.location[0].id;
+            console.error(`[WeatherReporter] Successfully found city ID: ${cityId}`);
+            // Write to cache
+            await writeCityCache(cityName, cityId);
+            return { success: true, data: cityId, error: null };
         } else {
              const errorMsg = data.code === '200' ? 'No location found' : `API returned code ${data.code}`;
              throw new Error(`Failed to get city ID for ${cityName}. ${errorMsg}`);
