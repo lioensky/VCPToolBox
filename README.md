@@ -96,7 +96,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
     ```
     **重要**: 如果未设置 `AdminUsername` 或 `AdminPassword`，管理面板及其 `/admin_api` 端点将无法访问，并会返回 503 Service Unavailable 错误。必须配置这些凭据才能启用管理面板。原始账户admin，密码123456。
 2.  **访问地址**: 启动服务器后，通过浏览器访问 `http://<您的服务器IP或域名>:<端口>/AdminPanel`。
-3.  **登录**: 浏览器会弹出 HTTP Basic Auth 认证窗口，请输入您在 `config.env` 中设置的 `AdminUsername` 和 `AdminPassword` 进行登录。默认账户admin，密码123456。
+3.  **登录**: 浏览器会弹出 HTTP Basic Auth 认证窗口，请输入您在 `config.env` 中设置的 `AdminUsername` 和 `AdminPassword` 进行登录。
 
 ## 已实现插件示例
 
