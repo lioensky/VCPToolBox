@@ -518,7 +518,7 @@ async processToolCall(toolName, toolArgs) {
             let output = '';
             let errorOutput = ''; // For stderr from the process itself
             let processExited = false;
-            const timeoutDuration = plugin.communication.timeout || 5000;
+            const timeoutDuration = plugin.communication.timeout || 60000; // Increased default timeout for synchronous stdio plugins
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
                     console.error(`[PluginManager executePlugin Internal] Plugin "${pluginName}" timed out after ${timeoutDuration}ms.`); // Keep error

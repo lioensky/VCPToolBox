@@ -9,6 +9,7 @@ const { Writable } = require('stream');
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
 const basicAuth = require('basic-auth');
+const cors = require('cors'); // 引入 cors 模块
 
 dotenv.config({ path: 'config.env' });
 
@@ -72,6 +73,7 @@ if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length
 else console.log('未加载任何全局上下文转换规则。');
 
 const app = express();
+app.use(cors()); // 启用 CORS，允许跨域请求
 const port = process.env.PORT;
 const apiKey = process.env.API_Key;
 const apiUrl = process.env.API_URL;
@@ -565,6 +567,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             // After loop (or if no tools called initially / max recursion hit)
             if (!res.writableEnded) {
                 if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Sending final [DONE].');
+                res.write('\n'); // Add newline before DONE
                 res.write('data: [DONE]\n\n');
                 res.end();
             }
@@ -871,7 +874,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                     if (item.type === 'ai') return item.content;
                     if (item.type === 'vcp' && SHOW_VCP_OUTPUT) return `\n<<<[VCP_RESULT]>>>\n${item.content}\n<<<[END_VCP_RESULT]>>>\n`;
                     return '';
-                }).join('');
+                }).join('') + '\n'; // Add newline at the end
 
             let finalJsonResponse_nonStream;
             try {
