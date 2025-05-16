@@ -939,6 +939,7 @@ Description Length: ${newDescription.length}`);
             const data = await apiFetch(`${API_BASE_URL}/dailynotes/folder/${folderName}`);
             notesListViewDiv.innerHTML = ''; // Clear loading state
             if (data.notes && data.notes.length > 0) {
+                data.notes.reverse(); // Add this line to reverse the order
                 data.notes.forEach(note => {
                     // renderNoteCard now expects note.folderName to be part of the note object for consistency
                     // or pass folderName explicitly if the endpoint doesn't return it per note
@@ -980,6 +981,7 @@ Description Length: ${newDescription.length}`);
             notesListViewDiv.innerHTML = ''; // Clear loading/previous results
 
             if (data.notes && data.notes.length > 0) {
+                data.notes.reverse(); // Add this line to reverse the order
                 data.notes.forEach(note => {
                     // The search API now returns folderName with each note
                     const card = renderNoteCard(note, note.folderName);
