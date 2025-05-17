@@ -156,9 +156,27 @@ app.use((req, res, next) => {
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 
-async function replaceCommonVariables(text) {
+async function replaceCommonVariables(text, model) {
     if (text == null) return '';
     let processedText = String(text);
+    const sarModels = (process.env.SarModel || '').split(',').map(m => m.trim()).filter(m => m.length > 0);
+    const isSarModel = model && sarModels.includes(model);
+
+    // Replace Sar variables if the model matches SarModel list
+    if (isSarModel) {
+        for (const envKey in process.env) {
+            if (envKey.startsWith('Sar') && envKey !== 'SarModel') { // Exclude SarModel itself
+                const placeholder = `{{${envKey}}}`;
+                const value = process.env[envKey];
+                processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+            }
+        }
+    } else {
+        // If not a SarModel, remove any Sar placeholders
+        const sarPlaceholderRegex = /\{\{Sar.+?\}\}/g;
+        processedText = processedText.replaceAll(sarPlaceholderRegex, '');
+    }
+
     const now = new Date();
     const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
     processedText = processedText.replace(/\{\{Date\}\}/g, date);
@@ -324,12 +342,12 @@ app.post('/v1/chat/completions', async (req, res) => {
             originalBody.messages = await Promise.all(originalBody.messages.map(async (msg) => {
                 const newMessage = JSON.parse(JSON.stringify(msg));
                 if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await replaceCommonVariables(newMessage.content);
+                    newMessage.content = await replaceCommonVariables(newMessage.content, originalBody.model);
                 } else if (Array.isArray(newMessage.content)) {
                     newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
                         if (part.type === 'text' && typeof part.text === 'string') {
                             const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await replaceCommonVariables(newPart.text);
+                            newPart.text = await replaceCommonVariables(newPart.text, originalBody.model);
                             return newPart;
                         }
                         return part;
