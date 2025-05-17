@@ -528,6 +528,7 @@ p.command-status.info {
     display: flex;
     gap: 20px;
     height: calc(100% - 60px); /* Adjust based on h2 margin */
+    justify-content: flex-start; /* 使子项靠左对齐 */
 }
 
 .notes-sidebar {
@@ -701,7 +702,9 @@ p.command-status.info {
     border: 1px solid #3a3a52;
     border-radius: 8px;
     margin-top: 15px; /* If it's a separate block */
-    /* Assuming it will take full width if not in flex with content-area */
+    max-width: 1175px; /* 限制最大宽度，根据用户反馈调整 */
+    margin-left: 0; /* 靠左对齐 */
+    margin-right: auto; /* 靠左对齐 */
 }
 .note-editor-area h3 {
     font-size: 1.3em;
@@ -710,9 +713,9 @@ p.command-status.info {
     margin-bottom: 15px;
 }
 #note-content-editor {
-    width: 100%;
+    width: 100%; /* 填充父容器宽度 */
     min-height: 300px; /* Good height for editing */
-    resize: vertical;
+    resize: both; /* 允许水平和垂直拖拽 */
 }
 
 .status-message {

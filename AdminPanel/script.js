@@ -1069,6 +1069,7 @@ Description Length: ${newDescription.length}`);
             document.getElementById('notes-list-view').style.display = 'none';
             document.querySelector('.notes-sidebar').style.display = 'none'; // Hide sidebar too
             document.querySelector('.notes-toolbar').style.display = 'none';
+            document.querySelector('.notes-content-area').style.display = 'none'; // Hide content area
             noteEditorAreaDiv.style.display = 'block';
             noteEditorStatusSpan.textContent = `正在编辑: ${folderName}/${fileName}`;
         } catch (error) {
@@ -1112,6 +1113,7 @@ Description Length: ${newDescription.length}`);
         document.getElementById('notes-list-view').style.display = 'grid'; // or 'block' if not grid
         document.querySelector('.notes-sidebar').style.display = 'block'; // Show sidebar again
         document.querySelector('.notes-toolbar').style.display = 'flex'; // Show toolbar again
+        document.querySelector('.notes-content-area').style.display = 'flex'; // Show content area again, restore its flex display
 
         // If a folder was active, re-highlight it (or simply reload folders which reloads notes)
         // For simplicity, if currentNotesFolder is set, reload its notes.
