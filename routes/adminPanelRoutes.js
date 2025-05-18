@@ -414,6 +414,44 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager) {
     });
      
 
+    // --- Image Cache API ---
+    adminApiRouter.get('/image-cache', async (req, res) => {
+        const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');
+        try {
+            // Note: This file can be very large, so we read it directly.
+            // Consider streaming for extremely large files if memory becomes an issue.
+            const content = await fs.readFile(imageCachePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading image cache file:', error);
+            // If file not found, return empty object, not an error
+            if (error.code === 'ENOENT') {
+                res.json({});
+            } else {
+                res.status(500).json({ error: 'Failed to read image cache file', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/image-cache', async (req, res) => {
+        const { data } = req.body; // Expecting the entire JSON data object
+        const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');
+
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
+        }
+
+        try {
+            // Note: This file can be very large. Writing the entire content.
+            await fs.writeFile(imageCachePath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: '图像缓存文件已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing image cache file:', error);
+            res.status(500).json({ error: 'Failed to write image cache file', details: error.message });
+        }
+    });
+    // --- End Image Cache API ---
+
     // --- Daily Notes API ---
     // dailyNoteRootPath is passed as a parameter
 
