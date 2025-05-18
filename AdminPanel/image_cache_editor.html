@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图像缓存编辑器</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a2e; /* 深邃的午夜蓝 */
+            color: #e0e0e0; /* 柔和的浅灰色文字 */
+            font-size: 16px;
+        }
+        .container {
+            max-width: 1400px; /* 保持宽度 */
+            margin: auto;
+            background-color: #24243b; /* 比body稍亮的深蓝紫色 */
+            padding: 20px;
+            border-radius: 12px; /* 更圆润的边角 */
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); /* 更明显的阴影 */
+            border: 1px solid #3a3a52; /* 添加边框 */
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #3a3a52; /* 匹配主控面板分割线 */
+            display: flex;
+            gap: 15px; /* 增加间距 */
+            align-items: center;
+        }
+        button {
+            padding: 12px 22px; /* 按钮稍大 */
+            border-radius: 6px; /* 更圆润 */
+            border: none; /* 移除边框 */
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            background-color: #4CAF50; /* 主保存按钮颜色 */
+            color: white;
+        }
+        button:hover {
+            background-color: #45a049; /* 悬停颜色 */
+            transform: translateY(-1px); /* 轻微悬浮效果 */
+        }
+        button:active {
+             transform: translateY(0px);
+        }
+        h2 {
+            font-size: 1.7em; /* 标题稍大 */
+            color: #7aa1ff; /* 科技感蓝色 */
+            margin-top: 0;
+            margin-bottom: 25px;
+            border-bottom: 2px solid #7aa1ff; /* 匹配主控面板标题下划线 */
+            padding-bottom: 12px;
+            font-weight: 600;
+        }
+        #imageList {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); /* 响应式网格，每列最小宽度250px */
+            gap: 20px;
+        }
+        .image-entry {
+            position: relative;
+            border: 1px solid #383853; /* 匹配主控面板表单组边框 */
+            padding: 15px;
+            border-radius: 8px; /* 匹配主控面板圆角 */
+            background-color: #2a2a42; /* 匹配主控面板表单组背景 */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex; /* 使用flex布局 */
+            flex-direction: column; /* 垂直排列 */
+        }
+        .image-entry h3 {
+            font-size: 1em; /* 保持字体大小 */
+            color: #c8c8e8; /* 匹配主控面板标签颜色 */
+            margin-top: 0;
+            margin-bottom: 10px;
+            word-wrap: break-word;
+            font-weight: 600; /* 加粗 */
+        }
+        .image-entry img {
+            max-width: 100%;
+            height: auto;
+            max-height: 250px;
+            object-fit: contain;
+            display: block;
+            margin-bottom: 10px;
+            border: 1px solid #4a4a6a; /* 匹配主控面板输入框边框 */
+            border-radius: 6px; /* 匹配主控面板圆角 */
+            cursor: pointer;
+            background-color: #1e1e30; /* 匹配主控面板输入框背景 */
+        }
+        .image-entry label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600; /* 加粗 */
+            font-size: 0.9em;
+            color: #c8c8e8; /* 匹配主控面板标签颜色 */
+        }
+        .image-entry textarea {
+            width: calc(100% - 22px); /* 保持宽度计算 */
+            min-height: 100px; /* 保持最小高度 */
+            padding: 12px 15px; /* 匹配主控面板输入框内边距 */
+            border: 1px solid #4a4a6a; /* 匹配主控面板输入框边框 */
+            border-radius: 6px; /* 匹配主控面板圆角 */
+            margin-bottom: 10px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* 匹配主控面板字体 */
+            font-size: 0.95em; /* 匹配主控面板字体大小 */
+            resize: vertical;
+            background-color: #1e1e30; /* 匹配主控面板输入框背景 */
+            color: #e0e0e0; /* 匹配主控面板文字颜色 */
+            box-sizing: border-box; /* 确保内边距和边框包含在宽度内 */
+        }
+         .image-entry textarea:focus {
+            outline: none;
+            border-color: #7aa1ff; /* 匹配主控面板焦点颜色 */
+            box-shadow: 0 0 0 3px rgba(122, 161, 255, 0.25); /* 匹配主控面板焦点阴影 */
+        }
+        .base64-key {
+            font-size: 0.8em;
+            color: #8a8aad; /* 柔和的灰色 */
+            word-break: break-all;
+            margin-top: auto; /* 推到底部 */
+            background-color: #1f1f30; /* 匹配主控面板侧边栏背景 */
+            padding: 8px; /* 增加内边距 */
+            border-radius: 4px; /* 稍微圆润 */
+            border: 1px dashed #3a3a52; /* 虚线边框 */
+        }
+        p {
+            color: #b0b0d0; /* 匹配主控面板链接颜色 */
+        }
+
+        /* Modal CSS (Adjusted for theme) */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000; /* 确保在最上层 */
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(26, 26, 46, 0.95); /* 更深的半透明背景 */
+            padding-top: 50px;
+        }
+
+        .modal-content {
+            margin: auto;
+            display: block;
+            max-width: 90%; /* 允许更大预览 */
+            max-height: 90vh; /* 允许更高预览 */
+            object-fit: contain;
+            border: 2px solid #7aa1ff; /* 科技感蓝色边框 */
+            box-shadow: 0 0 20px rgba(122, 161, 255, 0.5); /* 蓝色辉光 */
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 20px; /* 调整位置 */
+            right: 40px; /* 调整位置 */
+            color: #7aa1ff; /* 科技感蓝色 */
+            font-size: 50px; /* 稍大 */
+            font-weight: bold;
+            transition: 0.3s;
+            text-shadow: 0 0 5px rgba(122, 161, 255, 0.5); /* 添加辉光 */
+        }
+
+        .modal-close:hover,
+        .modal-close:focus {
+            color: #ffffff; /* 悬停变亮 */
+            text-decoration: none;
+            cursor: pointer;
+            text-shadow: 0 0 8px rgba(255, 255, 255, 0.8); /* 悬停辉光更强 */
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: 10px; /* 调整位置 */
+            right: 10px; /* 调整位置 */
+            background-color: #e74c3c; /* 醒目的红色 */
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px; /* 稍大 */
+            height: 24px; /* 稍大 */
+            font-size: 18px; /* 稍大 */
+            font-weight: bold;
+            line-height: 24px; /* 垂直居中 */
+            text-align: center;
+            cursor: pointer;
+            z-index: 10;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            transition: background-color 0.2s ease, transform 0.1s ease;
+        }
+        .delete-btn:hover {
+            background-color: #c0392b; /* 深红色 */
+            transform: scale(1.1); /* 悬停放大 */
+        }
+         .delete-btn:active {
+            transform: scale(1.0);
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="controls">
+        <button id="saveButton">保存更改到 image_cache.json</button>
+    </div>
+
+    <h2>图像列表</h2>
+    <div id="imageList">
+        <p>正在加载图像缓存数据...</p>
+    </div>
+</div>
+
+<script>
+    let imageCacheData = {};
+    const imageListDiv = document.getElementById('imageList');
+    const saveButton = document.getElementById('saveButton');
+
+    saveButton.addEventListener('click', handleSave);
+
+    function guessMimeType(base64String) {
+        if (base64String.startsWith('/9j/')) return 'image/jpeg';
+        if (base64String.startsWith('iVBOR')) return 'image/png';
+        if (base64String.startsWith('R0lGOD')) return 'image/gif';
+        if (base64String.startsWith('UklGR')) return 'image/webp';
+        return 'image/png'; // 默认
+    }
+
+    async function loadImageCache() {
+        try {
+            const response = await fetch('/admin_api/image-cache');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            imageCacheData = await response.json();
+            renderImageList();
+        } catch (error) {
+            console.error("加载图像缓存失败:", error);
+            imageListDiv.innerHTML = '<p style="color: red;">加载图像缓存失败。</p>';
+        }
+    }
+
+    async function handleSave() {
+        if (Object.keys(imageCacheData).length === 0) {
+            alert('没有数据可保存。');
+            return;
+        }
+
+        // Update imageCacheData with current textarea values
+        const entries = imageListDiv.getElementsByClassName('image-entry');
+        for (let i = 0; i < entries.length; i++) {
+            const entryDiv = entries[i];
+            const base64Key = entryDiv.dataset.base64Key;
+            const textarea = entryDiv.querySelector('textarea');
+            if (imageCacheData[base64Key]) {
+                imageCacheData[base64Key].description = textarea.value;
+            }
+        }
+
+        try {
+            const response = await fetch('/admin_api/image-cache', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ data: imageCacheData }) // Send the data object
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                alert(result.message || '图像缓存文件已成功保存。');
+            } else {
+                alert('保存失败: ' + (result.error || '未知错误'));
+                console.error("保存图像缓存失败:", result);
+            }
+        } catch (error) {
+            alert('保存图像缓存时发生错误: ' + error.message);
+            console.error("保存错误:", error);
+        }
+    }
+
+    function renderImageList() {
+        imageListDiv.innerHTML = ''; // 清空现有列表
+
+        if (Object.keys(imageCacheData).length === 0) {
+            imageListDiv.innerHTML = '<p>缓存文件为空。</p>';
+            return;
+        }
+
+        const imageKeys = Object.keys(imageCacheData).reverse(); // 获取键并反转顺序
+
+        for (const base64Key of imageKeys) {
+            // hasOwnProperty 检查在 Object.keys 之后理论上不是必需的，但保留也无妨
+            if (imageCacheData.hasOwnProperty(base64Key)) {
+                const entry = imageCacheData[base64Key];
+                
+                const entryDiv = document.createElement('div');
+                entryDiv.className = 'image-entry';
+                entryDiv.dataset.base64Key = base64Key; // 存储 key 用于保存
+
+                // 创建删除按钮
+                const deleteBtn = document.createElement('span');
+                deleteBtn.className = 'delete-btn';
+                deleteBtn.innerHTML = '&times;'; // '×' 符号
+                deleteBtn.title = '删除此条目';
+
+                deleteBtn.addEventListener('click', function(event) {
+                    event.stopPropagation(); // 阻止事件冒泡到卡片或图片的其他点击事件
+
+                    if (!confirm(`确定要删除这个图片条目吗？\nKey (部分): ${base64Key.substring(0,20)}...`)) {
+                        return;
+                    }
+
+                    // 1. 从 imageCacheData 中删除
+                    if (imageCacheData.hasOwnProperty(base64Key)) {
+                        delete imageCacheData[base64Key];
+                        console.log(`Deleted ${base64Key} from cache data.`);
+                    }
+
+                    // 2. 从 DOM 中移除卡片
+                    entryDiv.remove();
+                    console.log(`Removed image entry for ${base64Key} from DOM.`);
+
+                    // 可选: 如果列表为空，显示提示信息
+                    if (Object.keys(imageCacheData).length === 0) {
+                        imageListDiv.innerHTML = '<p>缓存文件为空或所有条目已删除。</p>';
+                    }
+                });
+                entryDiv.appendChild(deleteBtn);
+
+                const title = document.createElement('h3');
+                title.textContent = `时间戳: ${entry.timestamp || 'N/A'}`;
+                entryDiv.appendChild(title);
+
+                const img = document.createElement('img');
+                const mimeType = guessMimeType(base64Key);
+                img.src = `data:${mimeType};base64,${base64Key}`;
+                img.alt = '图像预览';
+                img.onerror = function() {
+                    this.alt = '预览失败';
+                    this.style.display = 'none'; // 或者显示一个占位符
+                    const errorMsg = document.createElement('p');
+                    errorMsg.textContent = '图像预览失败，可能是不支持的格式或损坏的数据。';
+                    errorMsg.style.color = 'red';
+                    entryDiv.insertBefore(errorMsg, this.nextSibling);
+                };
+                entryDiv.appendChild(img);
+
+                // 3. 允许图片点击放大预览 - Add click listener to image
+                img.addEventListener('click', function() {
+                    const modal = document.getElementById('imageModal');
+                    const modalImg = document.getElementById('modalImage');
+                    if (modal && modalImg) {
+                        modal.style.display = "block";
+                        modalImg.src = this.src;
+                    }
+                });
+                
+                const descriptionLabel = document.createElement('label');
+                descriptionLabel.textContent = '图像描述 (可编辑):';
+                entryDiv.appendChild(descriptionLabel);
+
+                const descriptionTextarea = document.createElement('textarea');
+                descriptionTextarea.value = entry.description || '';
+                entryDiv.appendChild(descriptionTextarea);
+
+                const keyInfo = document.createElement('div');
+                keyInfo.className = 'base64-key';
+                keyInfo.textContent = `Base64 Key (部分): ${base64Key.substring(0, 30)}...`;
+                entryDiv.appendChild(keyInfo);
+
+                imageListDiv.appendChild(entryDiv);
+            }
+        }
+    }
+
+    // 3. 允许图片点击放大预览 - Modal handling JavaScript
+    window.addEventListener('DOMContentLoaded', () => {
+        const modal = document.getElementById('imageModal');
+        const modalCloseButton = document.getElementById('modalCloseButton');
+
+        if (modal && modalCloseButton) {
+            modalCloseButton.onclick = function() {
+                modal.style.display = "none";
+            }
+
+            // Close modal when clicking on the modal background (outside the image)
+            modal.onclick = function(event) {
+                if (event.target === modal) { // Only close if the click is directly on the modal background
+                    modal.style.display = "none";
+                }
+            }
+
+            // Optional: Close modal with Escape key
+            document.addEventListener('keydown', function(event) {
+                if (event.key === "Escape" && modal.style.display === "block") {
+                    modal.style.display = "none";
+                }
+            });
+        } else {
+            console.error('Modal or modal close button not found on DOMContentLoaded. Check IDs: imageModal, modalCloseButton');
+        }
+
+        // Load data when the page loads
+        loadImageCache();
+    });
+</script>
+
+<!-- 3. 允许图片点击放大预览 - Modal HTML Structure -->
+<div id="imageModal" class="modal">
+    <span class="modal-close" id="modalCloseButton">&times;</span>
+    <img class="modal-content" id="modalImage">
+</div>
+</body>
+</html>
