@@ -69,8 +69,6 @@
             border-radius: 8px; /* 匹配主控面板圆角 */
             background-color: #2a2a42; /* 匹配主控面板表单组背景 */
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            display: flex; /* 使用flex布局 */
-            flex-direction: column; /* 垂直排列 */
         }
         .image-entry h3 {
             font-size: 1em; /* 保持字体大小 */
@@ -173,6 +171,33 @@
             text-decoration: none;
             cursor: pointer;
             text-shadow: 0 0 8px rgba(255, 255, 255, 0.8); /* 悬停辉光更强 */
+        }
+
+        .reidentify-btn {
+            position: absolute;
+            top: 10px; /* 调整位置 */
+            right: 40px; /* 调整位置，给删除按钮留空间 */
+            background-color: #2ecc71; /* 绿色 */
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px; /* 稍大 */
+            height: 24px; /* 稍大 */
+            font-size: 16px; /* 调整字体大小以适应刷新符号 */
+            font-weight: bold;
+            line-height: 24px; /* 垂直居中 */
+            text-align: center;
+            cursor: pointer;
+            z-index: 10;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            transition: background-color 0.2s ease, transform 0.1s ease;
+        }
+        .reidentify-btn:hover {
+            background-color: #27ae60; /* 深绿色 */
+            transform: scale(1.1); /* 悬停放大 */
+        }
+        .reidentify-btn:active {
+            transform: scale(1.0);
         }
 
         .delete-btn {
@@ -284,6 +309,86 @@
         }
     }
 
+    async function handleReidentify(base64Key, entryDiv) {
+        const reidentifyBtn = entryDiv.querySelector('.reidentify-btn');
+        const descriptionTextarea = entryDiv.querySelector('textarea');
+        const timestampElement = entryDiv.querySelector('h3'); // Assuming h3 contains the timestamp
+        const originalBtnText = reidentifyBtn.innerHTML;
+        const originalBtnTitle = reidentifyBtn.title;
+
+        reidentifyBtn.disabled = true;
+        reidentifyBtn.innerHTML = '...'; // Loading indicator
+        reidentifyBtn.title = '正在重新识别...';
+        reidentifyBtn.style.opacity = '0.6'; // Dim the button
+        reidentifyBtn.style.cursor = 'wait';
+
+        // Optional: Add a temporary status message
+        let statusSpan = entryDiv.querySelector('.reidentify-status');
+        if (!statusSpan) {
+            statusSpan = document.createElement('span');
+            statusSpan.className = 'reidentify-status';
+            statusSpan.style.fontSize = '0.8em';
+            statusSpan.style.marginLeft = '10px';
+            statusSpan.style.color = '#7aa1ff'; // Info color
+            descriptionTextarea.parentNode.insertBefore(statusSpan, descriptionTextarea);
+        }
+        statusSpan.textContent = '正在重新识别...';
+        statusSpan.style.color = '#7aa1ff';
+
+        try {
+            // Call the new backend API endpoint
+            const response = await fetch('/admin_api/image-cache/reidentify', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ base64Key: base64Key })
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                // Update description and timestamp
+                descriptionTextarea.value = result.newDescription || '';
+                timestampElement.textContent = `时间戳: ${result.newTimestamp || 'N/A'}`;
+
+                // Update the imageCacheData in memory as well
+                if (imageCacheData[base64Key]) {
+                    imageCacheData[base64Key].description = result.newDescription || '';
+                    imageCacheData[base64Key].timestamp = result.newTimestamp || imageCacheData[base64Key].timestamp; // Keep old timestamp if new one is missing
+                }
+
+
+                statusSpan.textContent = '重新识别成功!';
+                statusSpan.style.color = '#2ecc71'; // Success color
+                console.log(`Reidentified ${base64Key.substring(0, 20)}...:`, result.newDescription);
+
+            } else {
+                statusSpan.textContent = '重新识别失败: ' + (result.error || '未知错误');
+                statusSpan.style.color = '#e74c3c'; // Error color
+                console.error("重新识别失败:", result);
+            }
+        } catch (error) {
+            statusSpan.textContent = '重新识别时发生错误: ' + error.message;
+            statusSpan.style.color = '#e74c3c'; // Error color
+            console.error("重新识别错误:", error);
+        } finally {
+            // Restore button state
+            reidentifyBtn.disabled = false;
+            reidentifyBtn.innerHTML = originalBtnText;
+            reidentifyBtn.title = originalBtnTitle;
+            reidentifyBtn.style.opacity = '1';
+            reidentifyBtn.style.cursor = 'pointer';
+
+            // Remove status message after a delay
+            setTimeout(() => {
+                if (statusSpan && statusSpan.parentNode) {
+                     statusSpan.parentNode.removeChild(statusSpan);
+                }
+            }, 5000); // Remove after 5 seconds
+        }
+    }
+
     function renderImageList() {
         imageListDiv.innerHTML = ''; // 清空现有列表
 
@@ -302,6 +407,18 @@
                 const entryDiv = document.createElement('div');
                 entryDiv.className = 'image-entry';
                 entryDiv.dataset.base64Key = base64Key; // 存储 key 用于保存
+
+                // 创建重新识别按钮
+                const reidentifyBtn = document.createElement('span');
+                reidentifyBtn.className = 'reidentify-btn';
+                reidentifyBtn.innerHTML = '↻'; // 刷新符号
+                reidentifyBtn.title = '重新识别图片描述';
+                // 为刷新按钮添加点击事件监听器
+                reidentifyBtn.addEventListener('click', function(event) {
+                    event.stopPropagation(); // 阻止事件冒泡
+                    handleReidentify(base64Key, entryDiv);
+                });
+                entryDiv.appendChild(reidentifyBtn);
 
                 // 创建删除按钮
                 const deleteBtn = document.createElement('span');
