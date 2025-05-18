@@ -13,7 +13,7 @@ const apiKey = process.env.API_Key;
 const apiUrl = process.env.API_URL;
 const imageModelName = process.env.ImageModel;
 const imagePromptText = process.env.ImagePrompt;
-const imageModelOutputMaxTokens = parseInt(process.env.ImageModelOutput, 10) || 1024; // 新增
+const imageModelOutputMaxTokens = parseInt(process.env.ImageModelOutputMaxTokens, 10) || 1024; // 新增
 const imageModelThinkingBudget = parseInt(process.env.ImageModelThinkingBudget, 10); // 新增
 // const imageModelContentMax = parseInt(process.env.ImageModelContent, 10); // 新增, 暂不直接使用
 
