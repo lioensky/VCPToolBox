@@ -2,6 +2,9 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 
+// 导入 reidentify_image 函数
+const { reidentifyImageByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
+
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
@@ -448,6 +451,27 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager) {
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error writing image cache file:', error);
             res.status(500).json({ error: 'Failed to write image cache file', details: error.message });
+        }
+    });
+
+    // POST to reidentify an image by its Base64 key
+    adminApiRouter.post('/image-cache/reidentify', async (req, res) => {
+        const { base64Key } = req.body;
+
+        if (typeof base64Key !== 'string' || !base64Key) {
+            return res.status(400).json({ error: 'Invalid request body. Expected { base64Key: string }.' });
+        }
+
+        try {
+            const result = await reidentifyImageByBase64Key(base64Key);
+            res.json({
+                message: '图片重新识别成功。',
+                newDescription: result.newDescription,
+                newTimestamp: result.newTimestamp
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reidentifying image:', error);
+            res.status(500).json({ error: 'Failed to reidentify image', details: error.message });
         }
     });
     // --- End Image Cache API ---
