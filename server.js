@@ -296,6 +296,42 @@ async function replaceCommonVariables(text, model) {
     return processedText;
 }
 
+app.get('/v1/models', async (req, res) => {
+    const { default: fetch } = await import('node-fetch');
+    try {
+        const modelsApiUrl = `${apiUrl}/v1/models`;
+        const apiResponse = await fetch(modelsApiUrl, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                'Accept': req.headers['accept'] || 'application/json',
+            },
+        });
+
+        // Forward the status code and headers from the upstream API
+        res.status(apiResponse.status);
+        apiResponse.headers.forEach((value, name) => {
+            // Avoid forwarding hop-by-hop headers
+            if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
+                 res.setHeader(name, value);
+            }
+        });
+
+        // Stream the response body back to the client
+        apiResponse.body.pipe(res);
+
+    } catch (error) {
+        console.error('转发 /v1/models 请求时出错:', error.message, error.stack);
+        if (!res.headersSent) {
+             res.status(500).json({ error: 'Internal Server Error', details: error.message });
+        } else if (!res.writableEnded) {
+             console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
+             res.end();
+        }
+    }
+});
+
 app.post('/v1/chat/completions', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
     try {
