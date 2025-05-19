@@ -42,4 +42,4 @@ jobs:
         context: .
         file: ./Dockerfile
         push: false # 在 PR 检查和 main 分支构建时不推送镜像
-        tags: lioensky/VCPToolBox:latest # 替换为您的 Docker Hub 用户名/组织名和镜像名
+        tags: lioensky/vcptoolbox:latest # 替换为您的 Docker Hub 用户名/组织名和镜像名
