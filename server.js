@@ -585,6 +585,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                 if (DEBUG_MODE) console.log('[VCP Stream Loop] Combined tool results for next AI call (first 200):', combinedToolResultsForAI.substring(0,200));
 
                 // --- Make next AI call (stream: true) ---
+                if (!res.writableEnded) {
+                    res.write('\n'); // 在下一个AI响应开始前，向客户端发送一个换行符
+                }
                 if (DEBUG_MODE) console.log('[VCP Stream Loop] Fetching next AI response.');
                 const nextAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
                     method: 'POST',
@@ -754,9 +757,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 
                     try {
                         const recursionJson = JSON.parse(recursionText);
-                        currentAIContentForLoop = recursionJson.choices?.[0]?.message?.content || '';
+                        currentAIContentForLoop = "\n" + (recursionJson.choices?.[0]?.message?.content || '');
                     } catch (e) {
-                        currentAIContentForLoop = recursionText;
+                        currentAIContentForLoop = "\n" + recursionText;
                     }
                 } else {
                     // No tool calls found in the currentAIContentForLoop, so this is the final AI response.
@@ -907,9 +910,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 
                     try {
                         const recursionJson = JSON.parse(recursionText);
-                        currentAIContentForLoop = recursionJson.choices?.[0]?.message?.content || '';
+                        currentAIContentForLoop = "\n" + (recursionJson.choices?.[0]?.message?.content || '');
                     } catch (e) {
-                        currentAIContentForLoop = recursionText;
+                        currentAIContentForLoop = "\n" + recursionText;
                     }
                     if (DEBUG_MODE) console.log('[VCP NonStream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
 
