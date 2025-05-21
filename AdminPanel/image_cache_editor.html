@@ -475,6 +475,8 @@
                     if (modal && modalImg) {
                         modal.style.display = "block";
                         modalImg.src = this.src;
+                        // When modal opens, hide body scrollbar in iframe
+                        document.body.style.overflow = 'hidden';
                     }
                 });
                 
@@ -504,12 +506,16 @@
         if (modal && modalCloseButton) {
             modalCloseButton.onclick = function() {
                 modal.style.display = "none";
+                // When modal closes, restore body scrollbar in iframe
+                document.body.style.overflow = 'auto';
             }
 
             // Close modal when clicking on the modal background (outside the image)
             modal.onclick = function(event) {
                 if (event.target === modal) { // Only close if the click is directly on the modal background
                     modal.style.display = "none";
+                    // When modal closes, restore body scrollbar in iframe
+                    document.body.style.overflow = 'auto';
                 }
             }
 
