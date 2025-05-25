@@ -523,6 +523,48 @@ p.command-status.info {
     color: #7aa1ff;
 }
 
+/* Plugin Controls Styles */
+.plugin-controls {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #3a3a52;
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+
+.toggle-plugin-button {
+    padding: 10px 18px;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.95em;
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    background-color: #e74c3c; /* Red for Disable */
+}
+
+.toggle-plugin-button:hover:not(:disabled) {
+    background-color: #c0392b; /* Darker red on hover */
+    transform: translateY(-1px);
+}
+
+.toggle-plugin-button.disabled-state {
+    background-color: #2ecc71; /* Green for Enable */
+}
+
+.toggle-plugin-button.disabled-state:hover:not(:disabled) {
+    background-color: #27ae60; /* Darker green on hover */
+    transform: translateY(-1px);
+}
+
+.toggle-plugin-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+
 /* Daily Notes Manager Styles */
 .daily-notes-manager {
     display: flex;
