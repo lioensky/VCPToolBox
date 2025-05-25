@@ -331,7 +331,59 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''}</h2>
                                            <p class="plugin-meta">${descriptionHtml}</p>`;
-                
+
+                // Add a control area for plugin actions like toggle
+                const pluginControlsDiv = document.createElement('div');
+                pluginControlsDiv.className = 'plugin-controls';
+
+                const toggleButton = document.createElement('button');
+                toggleButton.id = `toggle-plugin-${plugin.manifest.name}-button`;
+                toggleButton.textContent = plugin.enabled ? '禁用插件' : '启用插件';
+                toggleButton.classList.add('toggle-plugin-button');
+                if (!plugin.enabled) {
+                    toggleButton.classList.add('disabled-state'); // Add class for styling disabled state
+                }
+
+                toggleButton.addEventListener('click', async () => {
+                    const currentEnabledState = !toggleButton.classList.contains('disabled-state'); // Determine current state from class
+                    const enable = !currentEnabledState; // Target state is the opposite
+
+                    // Optional: Confirm action
+                    if (!confirm(`确定要${enable ? '启用' : '禁用'}插件 "${plugin.manifest.displayName || plugin.manifest.name}" 吗？更改可能需要重启服务才能生效。`)) {
+                        return;
+                    }
+
+                    toggleButton.disabled = true; // Disable button during operation
+                    toggleButton.textContent = enable ? '正在启用...' : '正在禁用...';
+
+                    try {
+                        const result = await apiFetch(`${API_BASE_URL}/plugins/${plugin.manifest.name}/toggle`, {
+                            method: 'POST',
+                            body: JSON.stringify({ enable: enable })
+                        });
+                        showMessage(result.message, 'success');
+
+                        // Refresh the plugin list and the current plugin's config
+                        loadPluginList(); // Refresh sidebar status
+                        loadPluginConfig(plugin.manifest.name); // Refresh current section
+
+                    } catch (error) {
+                         // apiFetch already shows error message
+                         console.error(`Failed to toggle plugin ${plugin.manifest.name}:`, error);
+                         // Restore button state on error
+                         toggleButton.disabled = false;
+                         toggleButton.textContent = currentEnabledState ? '禁用插件' : '启用插件'; // Revert text
+                         if (!currentEnabledState) {
+                             toggleButton.classList.add('disabled-state');
+                         } else {
+                             toggleButton.classList.remove('disabled-state');
+                         }
+                    }
+                });
+
+                pluginControlsDiv.appendChild(toggleButton);
+                pluginSection.appendChild(pluginControlsDiv); // Add controls before the form
+
                 const form = document.createElement('form');
                 form.id = `plugin-${plugin.manifest.name}-config-form`;
                 pluginSection.appendChild(form);
