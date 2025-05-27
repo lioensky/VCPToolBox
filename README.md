@@ -112,6 +112,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`DailyNoteWrite` (`synchronous`)**: 接收包含[标签]、角色名、日期和内容的日记数据（通过 stdin），并将其写入到对应的日记文件中。
 *   **`EmojiListGenerator` (`static`)**: 扫描项目 `image/` 目录下的表情包文件夹，并在插件自身的 `generated_lists/` 目录下生成对应的 `.txt` 列表文件，供服务器加载和使用。
 *   **`DailyNoteManager` (`synchronous`)**: 强大的知识库整理助手，全自动整理，维护，检查服务器内的知识库，为你的VCP无限永久记忆保驾护航，AI自动快速建立公共知识库。
+*   **`DailyNoteEditor` (`synchronous`)**: 智能AI知识库编辑器，允许AI自我修正知识库内容。
   
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
@@ -254,6 +255,8 @@ Date: 2025.5.3
 Content:今天和主人聊天超开心，所以要写日记！
 <<<DailyNoteEnd>>>
 ```
+使用日记编辑器更新当天日记或编辑以前的日记。而非重复写入当天日记。
+{{VCPDailyNoteEditor}}
 
 
 ## 未来展望
