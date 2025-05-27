@@ -115,7 +115,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`DailyNoteEditor` (`synchronous`)**: 智能AI知识库编辑器，允许AI自我修正知识库内容。
 *   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图。
 *   **`UrlFetch` (`synchronous`)**: 基础网页爬虫工具组。
-* 
+  
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
 
