@@ -113,7 +113,9 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`EmojiListGenerator` (`static`)**: 扫描项目 `image/` 目录下的表情包文件夹，并在插件自身的 `generated_lists/` 目录下生成对应的 `.txt` 列表文件，供服务器加载和使用。
 *   **`DailyNoteManager` (`synchronous`)**: 强大的知识库整理助手，全自动整理，维护，检查服务器内的知识库，为你的VCP无限永久记忆保驾护航，AI自动快速建立公共知识库。
 *   **`DailyNoteEditor` (`synchronous`)**: 智能AI知识库编辑器，允许AI自我修正知识库内容。
-  
+*   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图。
+*   **`UrlFetch` (`synchronous`)**: 基础网页爬虫工具组。
+* 
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
 
