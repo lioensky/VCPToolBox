@@ -1,3 +1,6 @@
+![LOGO图片1](VCPLogo.png)
+
+---
 [English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md)
 
 ---
