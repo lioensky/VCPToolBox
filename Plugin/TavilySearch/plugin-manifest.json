@@ -21,7 +21,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "TavilySearch",
-        "description": "调用此工具使用 Tavily API 进行网络搜索。请在您的回复中，使用以下精确格式来请求搜索，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TavilySearch「末」,\nquery:「始」(必需) 搜索的关键词或问题。「末」,\ntopic:「始」(可选, 默认为 'general') 搜索的主题，例如 'news', 'finance', 'research', 'code'。如果AI不确定，可以省略此参数或使用 'general'。「末」,\nsearch_depth:「始」(可选, 默认为 'basic') 搜索深度，可选值：'basic', 'advanced'。「末」,\nmax_results:「始」(可选, 默认为 5) 返回的最大结果数量，范围 5-100。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含搜索结果的JSON对象。请基于这些结果回答用户的问题或完成相关任务。",
+        "description": "调用此工具使用 Tavily API 进行网络搜索。重要提示：请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。请在您的回复中，使用以下精确格式来请求搜索，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TavilySearch「末」,\nquery:「始」(必需) 搜索的关键词或问题。「末」,\ntopic:「始」(可选, 默认为 'general') 搜索的主题，例如 'news', 'finance', 'research', 'code'。如果AI不确定，可以省略此参数或使用 'general'。「末」,\nsearch_depth:「始」(可选, 默认为 'basic') 搜索深度，可选值：'basic', 'advanced'。「末」,\nmax_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含搜索结果的JSON对象。请基于这些结果回答用户的问题或完成相关任务。\n请优先使用中文词作为检索词，并带上即时信息（如当前年份、月份等）进行检索，以获得更准确的结果。",
         "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TavilySearch「末」,\nquery:「始」武汉未来一周的天气怎么样？「末」,\ntopic:「始」general「末」,\nsearch_depth:「始」basic「末」,\nmax_results:「始」7「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
