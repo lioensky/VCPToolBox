@@ -1,0 +1,27 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "UrlFetch",
+  "displayName": "URL 内容获取插件",
+  "version": "0.1.0",
+  "description": "访问指定 URL 的网页内容，返回解析后的文本，并进行简单去广告处理。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node UrlFetch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "UrlFetch",
+        "description": "调用此工具访问指定 URL 的网页内容。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」(必需) 要访问的网页 URL。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含网页文本内容的JSON对象。请基于这些结果回答用户的问题或完成相关任务。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
