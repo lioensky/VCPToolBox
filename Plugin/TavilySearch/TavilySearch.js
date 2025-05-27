@@ -23,7 +23,7 @@ async function main() {
             const query = data.query;
             const topic = data.topic || 'general'; // Default to 'general'
             const searchDepth = data.search_depth || 'basic'; // Default to 'basic'
-            let maxResults = data.max_results || 5; // Default to 5
+            let maxResults = data.max_results || 10; // Default to 10
 
             if (!query) {
                 throw new Error("Missing required argument: query");
@@ -45,10 +45,10 @@ async function main() {
             try {
                 maxResults = parseInt(maxResults, 10);
                 if (isNaN(maxResults) || maxResults < 5 || maxResults > 100) {
-                    maxResults = 5; // Default to 5 if invalid or out of range
+                    maxResults = 10; // Default to 10 if invalid or out of range
                 }
             } catch (e) {
-                maxResults = 5; // Default if parsing fails
+                maxResults = 10; // Default if parsing fails
             }
 
             const apiKey = process.env.TavilyKey; // Use the correct environment variable name
