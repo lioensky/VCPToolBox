@@ -211,7 +211,8 @@ def process_bilibili_url(video_input: str) -> str:
         try:
             subtitle_data = json.loads(subtitle_json_string)
             if isinstance(subtitle_data, dict) and 'body' in subtitle_data and isinstance(subtitle_data['body'], list):
-                lines = [item.get('content', '') for item in subtitle_data['body'] if isinstance(item, dict)]
+                # Extract content with timestamp
+                lines = [f"[{item.get('from', 0):.2f}] {item.get('content', '')}" for item in subtitle_data['body'] if isinstance(item, dict)]
                 processed_text = "\n".join(lines).strip()
                 logging.info(f"Successfully processed subtitle text for BVID {bvid}. Length: {len(processed_text)}")
                 return processed_text
