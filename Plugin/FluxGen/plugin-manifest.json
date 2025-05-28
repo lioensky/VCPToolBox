@@ -8,7 +8,7 @@
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
-    "command": "node FluxGen.js"
+    "command": "node FluxGen.mjs"
   },
   "communication": {
     "protocol": "stdio"
