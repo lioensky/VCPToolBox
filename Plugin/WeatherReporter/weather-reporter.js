@@ -155,31 +155,118 @@ async function get7DayForecast(cityId, weatherKey, weatherUrl) {
     }
 }
 
+// Function to get 24-hour Forecast from City ID
+async function get24HourForecast(cityId, weatherKey, weatherUrl) {
+    const { default: fetch } = await import('node-fetch'); // Dynamic import
+     if (!cityId || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for get24HourForecast.');
+        return { success: false, data: null, error: new Error('Missing parameters for get24HourForecast.') };
+    }
+
+    const forecastUrlEndpoint = `https://${weatherUrl}/v7/weather/24h?location=${cityId}&key=${weatherKey}`;
+
+    try {
+        console.error(`[WeatherReporter] Fetching 24-hour forecast for city ID: ${cityId}`);
+        const response = await fetch(forecastUrlEndpoint, { timeout: 10000 }); // 10s timeout
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`QWeather 24-hour Forecast API failed: ${response.status} ${errorText.substring(0, 200)}`);
+        }
+
+        const data = await response.json();
+         if (data.code === '200' && data.hourly) {
+            console.error(`[WeatherReporter] Successfully fetched 24-hour forecast for ${cityId}.`);
+            return { success: true, data: data.hourly, error: null };
+        } else {
+             throw new Error(`Failed to get 24-hour forecast for ${cityId}. API returned code ${data.code}`);
+        }
+
+    } catch (error) {
+        console.error(`[WeatherReporter] Error fetching 24-hour forecast: ${error.message}`);
+        return { success: false, data: null, error: error };
+    }
+}
+
+// Function to get Weather Warning from City ID
+async function getWeatherWarning(cityId, weatherKey, weatherUrl) {
+    const { default: fetch } = await import('node-fetch'); // Dynamic import
+     if (!cityId || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for getWeatherWarning.');
+        return { success: false, data: null, error: new Error('Missing parameters for getWeatherWarning.') };
+    }
+
+    const warningUrlEndpoint = `https://${weatherUrl}/v7/warning/now?location=${cityId}&key=${weatherKey}`;
+
+    try {
+        console.error(`[WeatherReporter] Fetching weather warning for city ID: ${cityId}`);
+        const response = await fetch(warningUrlEndpoint, { timeout: 10000 }); // 10s timeout
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`QWeather Weather Warning API failed: ${response.status} ${errorText.substring(0, 200)}`);
+        }
+
+        const data = await response.json();
+         if (data.code === '200') {
+            console.error(`[WeatherReporter] Successfully fetched weather warning for ${cityId}.`);
+            // The 'warning' field might be empty if no warnings exist
+            return { success: true, data: data.warning || [], error: null };
+        } else {
+             throw new Error(`Failed to get weather warning for ${cityId}. API returned code ${data.code}`);
+        }
+
+    } catch (error) {
+        console.error(`[WeatherReporter] Error fetching weather warning: ${error.message}`);
+        return { success: false, data: null, error: error };
+    }
+}
+
 // Helper to format weather data into a readable string
-function formatWeatherInfo(currentWeather, forecast) {
-    if (!currentWeather && (!forecast || forecast.length === 0)) {
+function formatWeatherInfo(hourlyForecast, weatherWarning, forecast) {
+    if (!hourlyForecast && (!weatherWarning || weatherWarning.length === 0) && (!forecast || forecast.length === 0)) {
         return "[天气信息获取失败]";
     }
 
-    let result = "【实时天气】\n";
-    if (currentWeather) {
-        result += `天气: ${currentWeather.text}\n`;
-        result += `温度: ${currentWeather.temp}℃\n`;
-        result += `体感温度: ${currentWeather.feelsLike}℃\n`;
-        result += `湿度: ${currentWeather.humidity}%\n`;
-        result += `风向: ${currentWeather.windDir}\n`;
-        result += `风力: ${currentWeather.windScale}级\n`;
-        result += `风速: ${currentWeather.windSpeed}公里/小时\n`;
-        result += `气压: ${currentWeather.pressure}百帕\n`;
-        result += `能见度: ${currentWeather.vis}公里\n`;
-        result += `云量: ${currentWeather.cloud}%\n`;
-        result += `露点温度: ${currentWeather.dew}℃\n`;
-        result += `更新时间: ${new Date(currentWeather.obsTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
+    let result = "";
+
+    // Add Weather Warning section
+    result += "【天气预警】\n";
+    if (weatherWarning && weatherWarning.length > 0) {
+        weatherWarning.forEach(warning => {
+            result += `\n标题: ${warning.title}\n`;
+            result += `发布时间: ${new Date(warning.pubTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
+            result += `级别: ${warning.severityColor || '未知'}\n`;
+            result += `类型: ${warning.typeName}\n`;
+            result += `内容: ${warning.text}\n`;
+        });
     } else {
-        result += "实时天气信息获取失败。\n";
+        result += "当前无天气预警信息。\n";
     }
 
+    // Add 24-hour Forecast section
+    result += "\n【未来24小时天气预报】\n";
+    if (hourlyForecast && hourlyForecast.length > 0) {
+        // Only show the first 8 hours, the 10th hour, and the 12th hour
+        for (let i = 0; i < hourlyForecast.length; i++) {
+            if (i < 8 || i === 9 || i === 11|| i === 16|| i === 20) {
+                const hour = hourlyForecast[i];
+                const time = new Date(hour.fxTime).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' });
+                result += `\n时间: ${time}\n`;
+                result += `天气: ${hour.text}\n`;
+                result += `温度: ${hour.temp}℃\n`;
+                result += `风向: ${hour.windDir}\n`;
+                result += `风力: ${hour.windScale}级\n`;
+                result += `湿度: ${hour.humidity}%\n`;
+                result += `降水概率: ${hour.pop}%\n`;
+                result += `降水量: ${hour.precip}毫米\n`;
+            }
+        }
+    } else {
+        result += "未来24小时天气预报获取失败。\n";
+    }
 
+    // Keep 7-day Forecast section
     if (forecast && forecast.length > 0) {
         result += "\n【未来7日天气预报】\n";
         forecast.forEach(day => {
@@ -231,8 +318,9 @@ async function fetchAndCacheWeather() {
     }
 
     let cityId = null;
-    let currentWeather = null;
-    let forecast = null;
+    let hourlyForecast = null; // New variable for 24-hour forecast
+    let weatherWarning = null; // New variable for weather warning
+    let forecast = null; // Keep 7-day forecast
 
     // 1. Get City ID
     const cityResult = await getCityId(varCity, weatherKey, weatherUrl);
@@ -245,18 +333,30 @@ async function fetchAndCacheWeather() {
         // though it's unlikely to succeed without it. Log the error and proceed.
     }
 
-    // 2. Get Current Weather (if cityId is available)
+    // 2. Get 24-hour Forecast (if cityId is available)
     if (cityId) {
-        const currentResult = await getCurrentWeather(cityId, weatherKey, weatherUrl);
-        if (currentResult.success) {
-            currentWeather = currentResult.data;
+        const hourlyResult = await get24HourForecast(cityId, weatherKey, weatherUrl);
+        if (hourlyResult.success) {
+            hourlyForecast = hourlyResult.data;
         } else {
-            lastError = currentResult.error;
-            console.error(`[WeatherReporter] Failed to get current weather: ${lastError.message}`);
+            lastError = hourlyResult.error;
+            console.error(`[WeatherReporter] Failed to get 24-hour forecast: ${lastError.message}`);
         }
     }
 
-    // 3. Get 7-day Forecast (if cityId is available)
+    // 3. Get Weather Warning (if cityId is available)
+     if (cityId) {
+        const warningResult = await getWeatherWarning(cityId, weatherKey, weatherUrl);
+        if (warningResult.success) {
+            weatherWarning = warningResult.data;
+        } else {
+            lastError = warningResult.error;
+            console.error(`[WeatherReporter] Failed to get weather warning: ${lastError.message}`);
+        }
+    }
+
+
+    // 4. Get 7-day Forecast (if cityId is available) - Keep this
     if (cityId) {
         const forecastResult = await get7DayForecast(cityId, weatherKey, weatherUrl);
         if (forecastResult.success) {
@@ -267,9 +367,11 @@ async function fetchAndCacheWeather() {
         }
     }
 
-    // 4. Format and Cache the results
-    if (currentWeather || (forecast && forecast.length > 0)) {
-        const formattedWeather = formatWeatherInfo(currentWeather, forecast);
+    // 5. Format and Cache the results
+    // Update condition to check for any data
+    if (hourlyForecast || weatherWarning || (forecast && forecast.length > 0)) {
+        // Update function call
+        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast);
         try {
             await fs.writeFile(CACHE_FILE_PATH, formattedWeather, 'utf-8');
             console.error(`[WeatherReporter] Successfully fetched, formatted, and cached new weather info.`);
@@ -280,8 +382,8 @@ async function fetchAndCacheWeather() {
             return { success: false, data: formattedWeather, error: lastError }; // Return data even if cache write fails
         }
     } else {
-        // If both current and forecast failed
-        lastError = lastError || new Error("未能获取实时天气和未来7日预报。");
+        // If all fetches failed
+        lastError = lastError || new Error("未能获取天气信息 (24小时预报, 预警, 7日预报)。");
         console.error(`[WeatherReporter] ${lastError.message}`);
         return { success: false, data: null, error: lastError };
     }
