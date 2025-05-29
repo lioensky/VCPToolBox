@@ -27,5 +27,5 @@
     "WeatherKey": "string",
     "WeatherUrl": "string"
   },
-  "refreshIntervalCron": "0 */2 * * *"
+  "refreshIntervalCron": "0 */8 * * *"
 }
