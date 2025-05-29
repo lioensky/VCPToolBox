@@ -9,7 +9,7 @@
 ## 项目愿景
 
 VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高度兼容、通用、可扩展的工具箱，致力于赋能 AI 模型，使其能够与外部 API、服务和自定义逻辑进行无缝交互。我们的目标是创建一个适用于几乎所有 API 端口和客户端的强大 VCP (Variable & Command Protocol) 系统，极大地扩展 AI 的应用边界。它的核心是VCP-AI-记忆铁三角，允许VCP-VCP，VCP-AI，AI-AI的内部通讯协议，一切基于私有和共有知识库实现，从而实现超乎想象的Agent协同进化。
-[理论架构].(https://github.com/lioensky/VCPToolBox/blob/main/(CHS)%20VCP%20(Variable%20%26%20Command%20Protocol)%20A%20Universal%20Middleware%20for%20Advanced%20AI%20Agent%20Capabilities%2C%20Memory%20Evolution%2C%20and%20Cross-Model%20Synergy.md) 
+[理论架构]((CHS) VCP (Variable & Command Protocol) A Universal Middleware for Advanced AI Agent Capabilities, Memory Evolution, and Cross-Model Synergy.md) 
 
 ### *警告：请勿使用非官方API(例如反代中间商)来调用此工具箱，避免造成不可挽回的信息泄露。*
 
