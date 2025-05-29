@@ -15,8 +15,6 @@
     "timeout": 60000
   },
   "configSchema": {
-    "API_URL": "string",
-    "API_Key": "string",
     "AGENT_ASSISTANT_MAX_HISTORY_ROUNDS": "integer",
     "AGENT_ASSISTANT_CONTEXT_TTL_HOURS": "integer"
   },
