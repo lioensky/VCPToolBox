@@ -120,7 +120,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`DailyNoteEditor` (`synchronous`)**: 智能AI知识库编辑器，允许AI自我修正知识库内容。
 *   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图。
 *   **`UrlFetch` (`synchronous`)**: 基础网页爬虫工具组。
-*   **`AgentAssistant` (`synchronous`)**: 允许Agent之间互相通讯的标准协议插件，基于各自的知识库进行互助式连续交流。
+*   **`AgentAssistant` (`synchronous`)**: 允许Agent之间互相通讯的标准协议插件，基于各自的知识库进行互助式连续交流。允许Agent之间通过服务器自带的Webdav传递文件，分发任务，LoopVCP分发等等，从而实现极端异步工作流。
 
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
@@ -129,6 +129,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 ![示例图片1](示例1.1.jpg)
 ![示例图片2](示例2.1.jpg)
 ![示例图片3](示例3.jpg)
+![示例图片4](女仆通讯器示例.png)
 
 ## 安装与运行
 
