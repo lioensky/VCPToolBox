@@ -32,10 +32,6 @@
 
 ### 3.1 基础配置参数
 这些是 `AgentAssistant` 插件运行所必需或推荐的基础参数：
-* `API_URL="YOUR_OPENAI_COMPATIBLE_API_ENDPOINT"`
-    * **说明**：您使用的 OpenAI 兼容 API 的终端地址 (例如: `https://api.openai.com/v1`)。
-* `API_KEY="YOUR_API_KEY"`
-    * **说明**：用于访问上述 API 的密钥。
 * `AGENT_ASSISTANT_MAX_HISTORY_ROUNDS=5` (可选)
     * **说明**：每个辅助 Agent 保留的对话历史轮数（一轮指一次用户提问和一次助手回答）。
     * **默认值** (如果未在 `config.env` 中设置，以插件代码内定为准，通常是 `7` 或 `5`)。
