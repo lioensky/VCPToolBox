@@ -105,22 +105,22 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 
 ## 已实现插件示例
 
-*   **`WeatherReporter` (`static`)**: 获取并缓存天气信息，供 `{{VCPWeatherInfo}}` 变量使用。
-*   **`ImageProcessor` (`messagePreprocessor`)**: 自动将用户消息中的 Base64 图片转译为文本描述，并进行缓存。
+*   **`WeatherReporter` (`static`)**: 获取并缓存天气信息，包含天气预警，24小时详细气象，7日天气预报。供 `{{VCPWeatherInfo}}` 变量使用。
+*   **`ImageProcessor` (`messagePreprocessor`)**: 自动将用户消息中的 Base64数据转译为文本描述，并进行缓存，提供服务器图床URL标注，以供Agent调用。
 *   **`SciCalculator` (`synchronous`)**: 提供科学计算能力，支持数学函数、统计和微积分。
 *   **`ImageServer` (`service`)**: 提供带密钥认证的静态图床服务。
 *   **`FluxGen` (`synchronous`)**: 集成 SiliconFlow API 实现文生图功能，并将图片保存到本地服务器。
 *   **`Wan2.1VideoGen` (`synchronous`)**: 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频功能。
 *   **`SunoGen` (`synchronous`)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或继续生成模式。
 *   **`TavilySearch` (`synchronous`)**: 集成 Tavily API 提供网络搜索能力。
-*   **`DailyNoteGet` (`static`)**: 定期读取 `dailynote/` 目录下所有角色的日记，并通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器，以支持 `{{角色名日记本}}` 的解析。
+*   **`DailyNoteGet` (`static`)**: 定期读取 `dailynote/` 目录下所有角色的日记，并通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器，以支持 `{{角色名日记本}}` 的解析，支持TAG系统，构建私人和公共Agent知识库。
 *   **`DailyNoteWrite` (`synchronous`)**: 接收包含[标签]、角色名、日期和内容的日记数据（通过 stdin），并将其写入到对应的日记文件中。
 *   **`EmojiListGenerator` (`static`)**: 扫描项目 `image/` 目录下的表情包文件夹，并在插件自身的 `generated_lists/` 目录下生成对应的 `.txt` 列表文件，供服务器加载和使用。
 *   **`DailyNoteManager` (`synchronous`)**: 强大的知识库整理助手，全自动整理，维护，检查服务器内的知识库，为你的VCP无限永久记忆保驾护航，AI自动快速建立公共知识库。
 *   **`DailyNoteEditor` (`synchronous`)**: 智能AI知识库编辑器，允许AI自我修正知识库内容。
-*   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图。
+*   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图，修图。
 *   **`UrlFetch` (`synchronous`)**: 基础网页爬虫工具组。
-*   **`AgentAssistant` (`synchronous`)**: 允许Agent之间互相通讯的标准协议插件，基于各自的知识库进行互助式连续交流。允许Agent之间通过服务器自带的Webdav传递文件，分发任务，LoopVCP分发等等，从而实现极端异步工作流。
+*   **`AgentAssistant` (`synchronous`)**: 允许Agent之间互相通讯的标准协议插件，基于各自的知识库进行互助式连续交流，消息群发等功能。允许Agent之间通过服务器自带的Webdav传递文件，分发任务，LoopVCP分发等等，从而实现极端异步工作流。
 
 ## 加载插件的方式
 *   **直接在系统提示词定义如下字段即可，系统工具列表：{{VCPFluxGen}} {{VCPSciCalculator}}……**
