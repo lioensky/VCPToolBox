@@ -26,3 +26,4 @@ services:
       # env_file 仍然可以用于提供默认环境变量，但 config.env 的卷映射优先级更高
       - config.env
     command: node server.js
+    restart: unless-stopped
