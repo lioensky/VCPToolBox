@@ -270,7 +270,8 @@ graph TD
 *   `{{EmojiList}}`: (环境变量 `EmojiList` 指定，例如 `通用表情包`) 默认表情包的图片文件名列表。其数据来源与 `{{xx表情包}}` 相同。
 *   `{{Port}}`: 服务器运行的端口号。
 *   `{{Image_Key}}`: (由 `ImageServer` 插件配置提供) 图床服务的访问密钥。
-*   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 `config.env` 中定义的以 `Var` 开头的自定义变量。
+*   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Var` 开头的自定义变量。VCP 会按顺序对所有 `Var` 定义进行全局匹配和替换。如果多个 `Var` 定义匹配到同一文本，后定义的 `Var` 会覆盖先定义的 `Var`。因此，建议将较长或更精确的 `Var` 定义放在前面，较短或通用的 `Var` 定义放在后面，以确保预期的替换效果。例如，如果您定义了 `{{VarUser}}` 和 `{{VarUsername}}`，应将 `{{VarUsername}}` 定义在 `{{VarUser}}` 之前，以避免 `{{VarUsername}}` 被错误地替换为 `{{VarUser}}name`。
+*   `{{Sar*}}`: (例如 `{{SarOpenAI}}`) 特殊类型的自定义变量，其定义和行为与 `{{Var*}}` 类似，但其生效与否会根据当前使用的 AI 模型进行判断。这允许为不同的 AI 模型配置特定的变量值。例如，可以为 `gpt-3.5-turbo` 模型设置一个特定的 `{{SarModelInfoForGPT}}`，而为 `claude-2` 模型设置另一个不同的 `{{SarModelInfoForClaude}}`。
 *   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
 
