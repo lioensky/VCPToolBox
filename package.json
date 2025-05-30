@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": ""
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +20,7 @@
     "node-fetch": "^3.3.2",
     "node-schedule": "^2.1.1",
     "jsdom": "^24.0.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "ws": "^8.17.0"
   }
 }
