@@ -1,0 +1,42 @@
+# Git files
+.git
+.gitignore
+
+# Node.js
+node_modules
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Configuration files (to be mounted as volumes)
+config.env
+Plugin/*/config.env
+Plugin/*/.env
+
+# Cache and data directories (to be mounted as volumes or handled by named volumes)
+Plugin/WeatherReporter/city_cache.txt
+Plugin/VCPLog/log/
+Plugin/ImageProcessor/cache/ # 假设插件的缓存目录是这个，如果不是，需要确认
+dailynote/
+image/fluxgen/
+image/小克表情包/
+image/通用表情包/
+image/邵神韵表情包/
+# 其他 image 子目录如果也是动态生成的，也应该考虑加入
+
+# IDE and OS specific files
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Test files if not needed in production
+example.test.js

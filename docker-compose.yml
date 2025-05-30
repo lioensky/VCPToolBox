@@ -6,8 +6,23 @@ services:
     ports:
       - "6005:6005"
     volumes:
-      - .:/usr/src/app
-      - /usr/src/app/node_modules # 避免覆盖容器内的 node_modules
+      # 将本地的 config.env 映射到容器中
+      - ./config.env:/usr/src/app/config.env
+      # 将插件的配置文件和数据目录映射进去
+      # 注意: 如果插件的 config.env 文件不存在于宿主机，Docker 卷映射可能会创建目录而不是文件。
+      # 确保这些文件在启动容器前在宿主机上存在，或者调整为映射整个插件目录（如果插件设计允许）。
+      # 为了简单起见，这里假设目标是映射特定文件和已知数据目录。
+
+      # 插件特定配置和数据示例 (根据 .dockerignore 和已知插件调整)
+      - ./Plugin/WeatherReporter/city_cache.txt:/usr/src/app/Plugin/WeatherReporter/city_cache.txt
+      - ./Plugin/VCPLog/log:/usr/src/app/Plugin/VCPLog/log
+      # - ./Plugin/ImageProcessor/cache:/usr/src/app/Plugin/ImageProcessor/cache # 假设的缓存目录
+      - ./dailynote:/usr/src/app/dailynote
+      - ./image:/usr/src/app/image # 映射整个 image 目录，包括 fluxgen 等子目录
+
+      # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的
+      - /usr/src/app/node_modules
     env_file:
+      # env_file 仍然可以用于提供默认环境变量，但 config.env 的卷映射优先级更高
       - config.env
     command: node server.js
