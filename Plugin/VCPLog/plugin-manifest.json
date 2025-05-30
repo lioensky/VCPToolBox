@@ -1,8 +1,8 @@
 {
   "name": "VCPLog",
   "displayName": "VCP 日志推送插件",
-  "version": "1.0.0",
-  "description": "通过 WebSocket 推送 VCP 调用信息，并记录日志。",
+  "version": "1.2.0",
+  "description": "通过 WebSocket 推送 VCP 调用信息，记录日志，并可选择推送到 Gotify。",
   "pluginType": "service",
   "entryPoint": {
     "script": "VCPLog.js"
@@ -11,7 +11,11 @@
     "protocol": "direct"
   },
   "configSchema": {
-    "VCP_Key": "string"
+    "VCP_Key": "string",
+    "Enable_Gotify_Push": "boolean",
+    "Gotify_Url": "string",
+    "Gotify_App_Token": "string",
+    "Gotify_Priority": "integer"
   },
   "capabilities": {
     "systemPromptPlaceholders": [],

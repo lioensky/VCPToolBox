@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const fs = require('fs').promises;
 const path = require('path');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args)); // 添加 node-fetch
 
 let wss;
 let vcpKey;
@@ -9,6 +10,12 @@ const LOG_FILE_NAME = 'VCPlog.txt';
 let logFilePath;
 let pluginConfigInstance; // 用于存储插件配置
 let serverInstance; // 用于存储 Express app 实例
+
+// Gotify 配置
+let gotifyUrl;
+let gotifyToken;
+let gotifyPriority;
+let enableGotifyPush = false; // Default to false
 
 async function ensureLogDirAndFile(basePath) {
     const pluginLogDirPath = path.join(basePath, LOG_DIR_NAME);
@@ -19,7 +26,7 @@ async function ensureLogDirAndFile(basePath) {
         await fs.access(logFilePath).catch(async () => {
             await fs.writeFile(logFilePath, `Log initialized at ${new Date().toISOString()}\n`, 'utf-8');
         });
-        console.log(`[VCPLog] Log directory and file ensured at: ${logFilePath}`);
+        // console.log(`[VCPLog] Log directory and file ensured at: ${logFilePath}`); // Reduced verbosity
     } catch (error) {
         console.error(`[VCPLog] Error ensuring log directory/file: ${pluginLogDirPath}`, error);
         // 如果日志目录创建失败，后续的日志写入会失败，但服务应继续运行
@@ -28,7 +35,7 @@ async function ensureLogDirAndFile(basePath) {
 
 async function writeToLog(message) {
     if (!logFilePath) {
-        console.error('[VCPLog] Log file path not initialized. Cannot write log.');
+        // console.error('[VCPLog] Log file path not initialized. Cannot write log.'); // Can be noisy
         return;
     }
     const timestamp = new Date().toISOString();
@@ -49,86 +56,168 @@ function broadcastToClients(data) {
             }
         });
         // 同时记录到日志文件
-        writeToLog(`Broadcasted: ${JSON.stringify(data)}`);
+        writeToLog(`Broadcasted to WebSocket: ${JSON.stringify(data)}`);
     }
 }
 
-// 暴露一个函数供 server.js 调用来推送 VCP 信息
+// 新增：发送到 Gotify
+async function sendToGotify(vcpData) {
+    if (!enableGotifyPush) {
+        return;
+    }
+    if (!gotifyUrl || !gotifyToken) {
+        // Initialization logs will cover this if DebugMode is on
+        return;
+    }
+
+    const title = `VCP Log: ${vcpData.tool_name || 'General Event'}`;
+    let messageContent = vcpData.content;
+    if (typeof messageContent === 'object') {
+        messageContent = JSON.stringify(messageContent, null, 2);
+    } else if (messageContent === undefined || messageContent === null) {
+        messageContent = 'N/A';
+    } else {
+        messageContent = String(messageContent);
+    }
+    
+    const message = `Source: ${vcpData.source || 'N/A'}\nStatus: ${vcpData.status || 'N/A'}\nContent: ${messageContent}`;
+    
+    const gotifyPayload = {
+        title: title,
+        message: message,
+        priority: gotifyPriority || 2,
+    };
+
+    try {
+        const response = await fetch(`${gotifyUrl}/message?token=${gotifyToken}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(gotifyPayload),
+        });
+
+        if (response.ok) {
+            if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+                console.log('[VCPLog] Successfully sent notification to Gotify.');
+            }
+            writeToLog(`Successfully sent to Gotify: ${title}`);
+        } else {
+            const errorBody = await response.text();
+            console.error(`[VCPLog] Error sending to Gotify: ${response.status} ${response.statusText}. Body: ${errorBody}`);
+            writeToLog(`Gotify Error: ${response.status} - ${errorBody}`);
+        }
+    } catch (error) {
+        console.error('[VCPLog] Exception sending to Gotify:', error);
+        writeToLog(`Gotify Exception: ${error.message}`);
+    }
+}
+
+
+// 修改 pushVcpLog
 function pushVcpLog(vcpData) {
-    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+    const isDebugMode = pluginConfigInstance && (pluginConfigInstance.DebugMode === true || String(pluginConfigInstance.DebugMode).toLowerCase() === 'true');
+    if (isDebugMode) {
         console.log('[VCPLog] Received VCP data to push:', vcpData);
     }
     broadcastToClients({ type: 'vcp_log', data: vcpData });
+    
+    // 调用 Gotify 推送，不等待完成 (fire-and-forget)
+    sendToGotify(vcpData).catch(err => {
+        // 虽然 sendToGotify 内部有 catch, 但为了确保这里的异步操作未捕获的 Promise rejection 被处理
+        console.error('[VCPLog] Background error from sendToGotify promise:', err); // Keep as error
+        writeToLog(`[VCPLog] Background error from sendToGotify: ${err.message}`);
+    });
 }
 
 
 function initialize(config) {
-    pluginConfigInstance = config; // 存储配置
-    vcpKey = pluginConfigInstance.VCP_Key; // 从配置中获取 VCP_Key
-    if (pluginConfigInstance.DebugMode) {
-        console.log('[VCPLog] Initializing with config:', pluginConfigInstance);
-        if (vcpKey) {
-            console.log('[VCPLog] VCP_Key configured.');
-        } else {
-            console.warn('[VCPLog] VCP_Key is not configured in plugin settings. Authentication will fail.');
-        }
+    const isDebugMode = config && (config.DebugMode === true || String(config.DebugMode).toLowerCase() === 'true');
+    if (isDebugMode) { 
+        console.log('[VCPLog] "initialize" function called with config:', config); // Corrected string literal
     }
+    // pluginConfigInstance = config; // 这行不再是设置 Gotify 变量的主要途径
+    // vcpKey = pluginConfigInstance.VCP_Key; 
+    // Gotify 配置的读取逻辑已移至 registerRoutes
 }
 
 function registerRoutes(app, config, projectBasePath) {
-    serverInstance = app; // 存储 Express app 实例
-    // pluginConfigInstance 已在 initialize 中设置，但也可以在这里再次确认或使用传入的 config
-    if (!pluginConfigInstance) pluginConfigInstance = config;
-    if (!vcpKey) vcpKey = config.VCP_Key;
+    serverInstance = app; 
+    pluginConfigInstance = config; // 使用传入的 config 来设置 pluginConfigInstance
+
+    const isGlobalDebugMode = process.env.DebugMode === 'true'; // Check global debug mode as fallback for initial logs
+
+    if (isGlobalDebugMode || (pluginConfigInstance && pluginConfigInstance.DebugMode)){
+        console.log('[VCPLog] DEBUG: registerRoutes called. Raw config received:', JSON.stringify(config, null, 2));
+    }
+
+    if (pluginConfigInstance) {
+        vcpKey = pluginConfigInstance.VCP_Key;
+        console.log('[VCPLog] DEBUG: Attempting to read VCP_Key from config. Value:', vcpKey);
+
+        enableGotifyPush = (String(pluginConfigInstance.Enable_Gotify_Push).toLowerCase() === 'true');
+        gotifyUrl = pluginConfigInstance.Gotify_Url;
+        gotifyToken = pluginConfigInstance.Gotify_App_Token;
+        gotifyPriority = pluginConfigInstance.Gotify_Priority;
+
+        // Ensure DebugMode is checked safely
+        const isPluginDebugMode = pluginConfigInstance.DebugMode === true || String(pluginConfigInstance.DebugMode).toLowerCase() === 'true';
+
+        if (isPluginDebugMode) {
+            console.log('[VCPLog] Running in DebugMode. Config in registerRoutes:', pluginConfigInstance);
+            if (vcpKey) {
+                console.log('[VCPLog] VCP_Key configured in registerRoutes.');
+            } else {
+                console.warn('[VCPLog] VCP_Key is NOT configured (registerRoutes). WebSocket auth will fail.');
+            }
+            console.log(`[VCPLog] Gotify Push Enabled (registerRoutes): ${enableGotifyPush}`);
+            if (enableGotifyPush) {
+                if (gotifyUrl && gotifyToken) {
+                    console.log(`[VCPLog] Gotify configured (registerRoutes): URL=${gotifyUrl}, Token=****, Priority=${gotifyPriority === undefined ? 'Default (2)' : gotifyPriority}`);
+                } else {
+                    console.warn('[VCPLog] Gotify push enabled, but URL/Token not set (registerRoutes). Push will be skipped.'); 
+                }
+            }
+        } else if (isGlobalDebugMode && !isPluginDebugMode) {
+             // If global debug is on, but plugin debug is off, still give some basic info
+            console.log(`[VCPLog] VCP_Key (registerRoutes): ${vcpKey ? 'Set' : 'NOT SET'}`);
+            console.log(`[VCPLog] Gotify Push Enabled (registerRoutes): ${enableGotifyPush}`);
+        }
+    } else {
+        console.error('[VCPLog] CRITICAL: No config for registerRoutes. VCPLog/Gotify will not function.');
+        vcpKey = undefined;
+        enableGotifyPush = false; 
+    }
 
     const pluginBasePath = path.join(projectBasePath, 'Plugin', 'VCPLog');
-    ensureLogDirAndFile(pluginBasePath); // 初始化日志目录和文件
+    ensureLogDirAndFile(pluginBasePath); 
 
-    // 创建 WebSocket 服务器
-    // 我们需要 HTTP 服务器实例来附加 WebSocket 服务器
-    // 通常 Express app 本身就是一个 HTTP 服务器的回调，但直接附加到 app 可能不行
-    // 需要获取到 app.listen 返回的 server 实例
-    // 这里的实现假设 server.js 会将 http.Server 实例传递过来，或者我们自己创建一个
-    // 但更常见的做法是在 server.js 中创建 WebSocket 服务器并传递给插件，或者插件自己监听一个新端口
-
-    // 简单的做法：在 server.js 中，当 app.listen() 后，将 server 实例传递给插件
-    // 或者，插件自己创建一个新的 HTTP 服务器专门用于 WebSocket
-    // 为了简单起见，我们假设 WebSocket 服务器将与主 Express 服务器共享端口，
-    // 这需要 server.js 的配合来正确设置。
-
-    // 这里的 /VCPlog/:key 路由是用于 WebSocket 连接的升级请求
-    // Express 本身不直接处理 ws:// 请求，但 WebSocket 服务器库 (如 'ws') 可以处理 HTTP Upgrade 请求
-
-    // 注意：直接在插件的 registerRoutes 中创建和管理 WebSocket 服务器可能与主服务器的生命周期管理冲突。
-    // 一个更健壮的方法是在 server.js 中创建 WebSocket 服务器，并让插件通过某种方式注册处理器。
-    // 但根据请求，我们尝试在这里创建。
-
-    // 获取 HTTP server 实例。这通常在 server.js 的 app.listen 之后获得。
-    // 由于我们无法直接从这里访问 server.js 的 server 实例，
-    // 我们将假设 server.js 会在调用 initializeServices 后，
-    // 通过某种方式将 server 实例传递给这个插件，或者我们在这里创建一个新的。
-    // 为了演示，我们将在 server.js 中进行修改以支持此模式。
-
-    // 此处仅定义 WebSocket 服务器的逻辑，实际启动依赖于 server.js 的集成
-    if (pluginConfigInstance.DebugMode) {
-        console.log('[VCPLog] registerRoutes called. Waiting for HTTP server to be available for WebSocket setup.');
+    const finalDebugCheck = pluginConfigInstance && (pluginConfigInstance.DebugMode === true || String(pluginConfigInstance.DebugMode).toLowerCase() === 'true');
+    if (finalDebugCheck) {
+        console.log('[VCPLog] registerRoutes VCPLog part setup complete.');
     }
 }
 
-// 这个函数需要由 server.js 在 HTTP 服务器启动后调用
 function attachWebSocketServer(httpServer) {
+    const isDebugMode = pluginConfigInstance && (pluginConfigInstance.DebugMode === true || String(pluginConfigInstance.DebugMode).toLowerCase() === 'true');
     if (!httpServer) {
         console.error('[VCPLog] Cannot attach WebSocket server without an HTTP server instance.');
         return;
     }
-    if (!vcpKey) {
-        console.warn('[VCPLog] VCP_Key not set. WebSocket connections will not be authenticated.');
+    if (!vcpKey && pluginConfigInstance) { 
+        vcpKey = pluginConfigInstance.VCP_Key;
+        if (isDebugMode) {
+            console.warn('[VCPLog] vcpKey was re-fetched in attachWebSocketServer. Ideally set in registerRoutes. Value:', vcpKey);
+        }
+    }
+    
+    if (!vcpKey) { 
+        console.warn('[VCPLog] VCP_Key not set for WebSocket. Connections will not be authenticated properly.');
     }
 
-    wss = new WebSocket.Server({ noServer: true }); // 我们将手动处理 upgrade 请求
+    wss = new WebSocket.Server({ noServer: true }); 
 
     httpServer.on('upgrade', (request, socket, head) => {
-        // 校验 URL，例如 /VCPlog/VCP_Key=actual_key
         const pathname = request.url;
         const expectedPathPrefix = '/VCPlog/VCP_Key=';
 
@@ -136,43 +225,36 @@ function attachWebSocketServer(httpServer) {
             const providedKey = pathname.substring(expectedPathPrefix.length);
             if (vcpKey && providedKey === vcpKey) {
                 wss.handleUpgrade(request, socket, head, (ws) => {
-                    ws.isAuthenticated = true; // 标记为已认证
+                    ws.isAuthenticated = true; 
                     wss.emit('connection', ws, request);
-                    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+                    if (isDebugMode) {
                         console.log('[VCPLog] WebSocket client authenticated and connected.');
                     }
                     writeToLog(`Client connected with key: ${providedKey}`);
                 });
             } else {
-                if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
-                    console.warn(`[VCPLog] WebSocket authentication failed. Provided key: ${providedKey}`);
+                if (isDebugMode) {
+                    console.warn(`[VCPLog] WebSocket authentication failed. Provided key: ${providedKey}. Expected key: ${vcpKey}`);
                 }
                 writeToLog(`Client connection denied. Invalid key: ${providedKey}`);
                 socket.destroy();
             }
         } else {
-            // 如果路径不匹配，可以选择忽略或销毁 socket
-             if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+            if (isDebugMode) {
                 console.log(`[VCPLog] WebSocket upgrade request for unknown path: ${pathname}. Ignoring.`);
             }
-            // socket.destroy(); // 或者不处理，让其他 upgrade 处理器有机会处理
         }
     });
 
     wss.on('connection', (ws) => {
-        if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
-            // console.log('[VCPLog] New client connected (already logged if authenticated).');
-        }
-
         ws.on('message', (message) => {
-            if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
-                console.log('[VCPLog] Received message from client (should not happen with current design):', message);
+            if (isDebugMode) {
+                console.log('[VCPLog] Received message from client (should not happen):', message);
             }
-            // 当前设计是服务器单向推送，客户端不发送消息
         });
 
         ws.on('close', () => {
-            if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+            if (isDebugMode) {
                 console.log('[VCPLog] Client disconnected.');
             }
             writeToLog('Client disconnected.');
@@ -188,14 +270,15 @@ function attachWebSocketServer(httpServer) {
         }
     });
 
-    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
-        console.log(`[VCPLog] WebSocket server attached to HTTP server. Listening for upgrades on /VCPlog/VCP_Key=...`);
+    if (isDebugMode) {
+        console.log(`[VCPLog] WebSocket server attached. Listening for upgrades on /VCPlog/VCP_Key=...`);
     }
 }
 
 
 async function shutdown() {
-    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+    const isDebugMode = pluginConfigInstance && (pluginConfigInstance.DebugMode === true || String(pluginConfigInstance.DebugMode).toLowerCase() === 'true');
+    if (isDebugMode) {
         console.log('[VCPLog] Shutting down VCPLog plugin...');
     }
     if (wss) {
@@ -203,7 +286,7 @@ async function shutdown() {
             client.close();
         });
         wss.close(() => {
-            if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+            if (isDebugMode) {
                 console.log('[VCPLog] WebSocket server closed.');
             }
         });
@@ -214,7 +297,7 @@ async function shutdown() {
 module.exports = {
     initialize,
     registerRoutes,
-    attachWebSocketServer, // 暴露此函数供 server.js 调用
+    attachWebSocketServer,
     shutdown,
-    pushVcpLog // 暴露给 server.js 或其他插件调用
+    pushVcpLog
 };
