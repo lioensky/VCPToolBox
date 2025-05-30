@@ -122,7 +122,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **`DoubaoGen` (`synchronous`)**: 使用豆包API来生图，修图。
 *   **`UrlFetch` (`synchronous`)**: 基础网页爬虫工具组。
 *   **`AgentAssistant` (`synchronous`)**: 允许Agent之间互相通讯的标准协议插件，基于各自的知识库进行互助式连续交流，消息群发等功能。允许Agent之间通过服务器自带的Webdav传递文件，分发任务，LoopVCP分发等等，从而实现极端异步工作流。
-*   **`VCPLog` (`static`)**: 基于WS/WSS的服务器通知插件，现在服务器将允许信息推送通知。独立于客户端上下文。
+*   **`VCPLog` (`static`)**: 基于WS/WSS的服务器通知插件，现在服务器将允许信息推送通知。独立于客户端上下文。可推送VCP调用信息，Agent工作流结果，AI日程提醒，天气警报等等内容。
 
 
 ## 加载插件的方式
