@@ -22,8 +22,5 @@ services:
 
       # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的
       - /usr/src/app/node_modules
-    env_file:
-      # env_file 仍然可以用于提供默认环境变量，但 config.env 的卷映射优先级更高
-      - config.env
     command: node server.js
     restart: unless-stopped
