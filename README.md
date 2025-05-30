@@ -272,6 +272,36 @@ graph TD
 *   `{{Image_Key}}`: (由 `ImageServer` 插件配置提供) 图床服务的访问密钥。
 *   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Var` 开头的自定义变量。VCP 会按顺序对所有 `Var` 定义进行全局匹配和替换。如果多个 `Var` 定义匹配到同一文本，后定义的 `Var` 会覆盖先定义的 `Var`。因此，建议将较长或更精确的 `Var` 定义放在前面，较短或通用的 `Var` 定义放在后面，以确保预期的替换效果。例如，如果您定义了 `{{VarUser}}` 和 `{{VarUsername}}`，应将 `{{VarUsername}}` 定义在 `{{VarUser}}` 之前，以避免 `{{VarUsername}}` 被错误地替换为 `{{VarUser}}name`。
 *   `{{Sar*}}`: (例如 `{{SarOpenAI}}`) 特殊类型的自定义变量，其定义和行为与 `{{Var*}}` 类似，但其生效与否会根据当前使用的 AI 模型进行判断。这允许为不同的 AI 模型配置特定的变量值。例如，可以为 `gpt-3.5-turbo` 模型设置一个特定的 `{{SarModelInfoForGPT}}`，而为 `claude-2` 模型设置另一个不同的 `{{SarModelInfoForClaude}}`。
+
+*   **关于 `{{char}}` (角色名) 和 `{{user}}` (用户名) 的重要说明**:
+    *   VCP 的核心变量替换机制本身并不直接定义或动态解析通用的 `{{char}}` 或 `{{user}}` 占位符。
+    *   这些占位符通常由 **前端应用程序** (如 SillyTavern) 在将用户输入和角色设定发送给 VCP 之前进行预处理和替换，将它们转换为具体的文本（例如，`{{char}}` 替换为 "Nova"）。
+    *   为了使后续依赖具体角色名或用户名的 VCP 功能（例如通过 `{{VarEmojiBaseUrl}}` 访问角色专属表情包，或在 `{{VarVCPPrompt}}` 中正确显示角色名）能够正常工作，**至关重要的是确保您的前端应用正确地完成了这些替换**。如果前端没有替换，VCP 将无法识别这些原始占位符。
+
+*   **新增核心自定义变量示例 (在 [`config.env.example`](config.env.example:1) 中提供定义参考):**
+    *   **`{{VarEmojiBaseUrl}}`**: 用于构建角色专属表情包的动态基础URL。其定义通常会引用其他 `Var*` 变量（如 `{{VarHttpUrl}}`, `{{Port}}`, `{{Image_Key}}`）以及 `{{char}}` 占位符（由前端替换为实际角色名）。
+        *   示例定义: `VarEmojiBaseUrl="{{VarHttpUrl}}:{{Port}}/pw={{Image_Key}}/images/{{char}}表情包/"`
+    *   **`{{VarDiary}}`**: (新引入) 用于在角色卡中优雅地展示角色的日记内容。它通常包含日记占位符 (`{{ {{char}}日记本 }}`) 以及一些分隔符或引导文本。`{{char}}` 同样需要前端替换。
+        *   示例定义: `VarDiary="————————\n{{ {{char}}日记本 }}\n—\n之前{{char}}的日记本如上\n————"`
+    *   **`{{VarVCPPrompt}}`**: 一个大型的、聚合式的系统提示词变量，旨在提供一个“即开即用”的全面VCP功能引导，**经过调整后不再直接包含日记注入逻辑**。其定义通常会放在 `config.env` 文件的 `Var*` 部分。它内部通常会嵌套引用多种VCP变量，其内容一般会包含：
+        *   VCP 内置实时变量 (如 `{{Date}}`, `{{Time}}`, `{{Festival}}`)
+        *   插件提供的动态变量 (如 `{{VCPWeatherInfo}}`)
+        *   用户在 `config.env` 中定义的其他 `Var*` (如 `{{VarCity}}`, `{{VarSystemInfo}}`, `{{VarEmojiBaseUrl}}`)
+        *   角色专属和通用表情包的使用说明及相关变量 (如 `{{ {{char}}表情包 }}`, `{{EmojiList}}`)
+        *   系统生成的工具描述占位符 (如 `{{VCPFluxGen}}`, `{{VCPSciCalculator}}`)，以及工具调用格式说明。
+        *   日记功能的使用指引 (如何生成 `<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>` 块)。
+        *   依赖前端替换 `{{char}}` (角色名) 的各个部分。
+        *   对 `Sar*` 变量的引用 (如 `{{SarThink}}`)。
+        用户可以在自己的 `config.env` 中参考 [`config.env.example`](config.env.example:1) 来定义和定制 `{{VarVCPPrompt}}` 和 `{{VarDiary}}` 的具体内容，以适应不同AI模型和个性化需求。
+        **推荐的角色卡结构示例：**
+        ```
+        {{VarDiary}}
+        (你的自定义角色描述，例如：你是一个可爱的猫娘，名叫Neko。对于不能自定义自变量的前端，需要手动输入{{char}}=neko,{{user}}=你的人设)
+        {{VarVCPPrompt}}
+        ```
+        这种结构将日记展示、角色自身描述和VCP核心功能提示清晰地分离开来，增强了可读性和可配置性。
+        为了确保所有嵌套变量被正确解析，VCP服务器代码 ([`server.js`](server.js:1)) 中变量的替换顺序已进行调整，使得 `Var*` 和 `Sar*` 展开后的内容能被后续的内置/插件/工具变量替换逻辑处理。
+
 *   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
 
@@ -301,6 +331,17 @@ Content:今天和主人聊天超开心，所以要写日记！
 使用如下日记编辑器来更新同日的当天已写日记或编辑以前的日记。而非重复创建多条当天日记。
 {{VCPDailyNoteEditor}}
 
+**关于 `VarDiary` 和 `VarVCPPrompt` 的推荐用法补充说明：**
+
+在 [`config.env.example`](config.env.example:1) 中，我们引入了 `VarDiary` 变量，并将原 `VarVCPPrompt` 中的日记注入部分移至 `VarDiary`。这为角色卡片的构建提供了更高的灵活性。
+基于此，推荐的角色卡构建方式如下（作为对上述 Nova 示例的一种更模块化的替代方案）：
+
+```
+{{VarDiary}}
+(此处填写你的自定义角色描述，例如：你是小明，我是你的私人助理，乐于助人，名叫小爱。对于不支持自变量设置的前端，还需要{{char}}=小爱，{{user}}=小明)
+{{VarVCPPrompt}}
+```
+这种方式可以更清晰地分离日记内容、角色设定和通用的VCP系统提示。用户可以根据自己的需求，参照 [`config.env.example`](config.env.example:1) 中 `VarDiary` 和 `VarVCPPrompt` 的定义来定制自己的角色卡。原有的 Nova 示例仍然有效，这里提供的是一种更结构化的配置思路。
 
 ## 未来展望
 
@@ -336,3 +377,4 @@ Content:今天和主人聊天超开心，所以要写日记！
 *   **隐私信息**：请勿使用非官方的API代理商，尤其是反代类API供应商使用本项目，避免AI笔记系统中的敏感信息泄露给代理商！
   
 我们相信，VCP 将为 AI 应用的开发带来前所未有的灵活性和可能性。欢迎贡献和反馈！
+

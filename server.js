@@ -177,6 +177,24 @@ async function replaceCommonVariables(text, model) {
         processedText = processedText.replaceAll(sarPlaceholderRegex, '');
     }
 
+    // 2. Var* 变量 (提前处理，以便其内容可以被后续的系统/插件变量替换)
+    // VCP 作者 Lionsky 确认 Var* 之间存在多轮替换机制，可以处理 Var 内部对其他 Var 的引用。
+    // Sar* 变量的替换也应在此阶段或之前完成，因为 VarVCPPrompt 可能引用 Sar*。
+    // (Sar* 的处理已在前面)
+    for (const envKey in process.env) {
+        if (envKey.startsWith('Var')) {
+            const placeholder = `{{${envKey}}}`;
+            const value = process.env[envKey];
+            // 假设VCP的多轮替换能处理 VarX = "{{VarY}}" 且 VarY = "{{VarZ}}" 等情况
+            // 以及 VarPrompt = "Date is {{Date}} and City is {{VarCity}}" 这样的场景，
+            // VarPrompt先展开，然后Date和VarCity再被后续逻辑替换。
+            processedText = processedText.replaceAll(placeholder, value || `[未配置${envKey}]`);
+        }
+    }
+    
+    // --- 现在，对已经展开了 Sar* 和 Var* (可能包括 VarVCPPrompt) 的 processedText 进行后续替换 ---
+
+    // 3. 内置实时变量
     const now = new Date();
     const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
     processedText = processedText.replace(/\{\{Date\}\}/g, date);
@@ -192,10 +210,12 @@ async function replaceCommonVariables(text, model) {
     let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
     if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
     processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-    processedText = processedText.replace(/\{\{VCPWeatherInfo\}\}/g, pluginManager.getPlaceholderValue("{{VCPWeatherInfo}}") || '天气信息不可用');
-    // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
 
-    // Replace individual VCP plugin descriptions
+    // 4. 插件变量 {{VCPWeatherInfo}}
+    processedText = processedText.replace(/\{\{VCPWeatherInfo\}\}/g, pluginManager.getPlaceholderValue("{{VCPWeatherInfo}}") || '天气信息不可用');
+    
+    // 5. 工具描述 {{VCPPluginName}} 系列
+    // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
     const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
     if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
         for (const [placeholderKey, description] of individualPluginDescriptions) {
@@ -203,16 +223,10 @@ async function replaceCommonVariables(text, model) {
             processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
         }
     }
-
+    
+    // 6. 其他特定占位符
     if (process.env.EmojiPrompt) {
         processedText = processedText.replaceAll('{{EmojiPrompt}}', process.env.EmojiPrompt);
-    }
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Var')) {
-            const placeholder = `{{${envKey}}}`;
-            const value = process.env[envKey];
-            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
-        }
     }
     if (process.env.PORT) {
         processedText = processedText.replaceAll('{{Port}}', process.env.PORT);
