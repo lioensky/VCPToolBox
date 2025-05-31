@@ -97,7 +97,7 @@
         }
         return area;
     }
-    
+
     function adjustNotificationAreaPosition() {
         const area = document.getElementById(NOTIFICATION_AREA_ID);
         if (!area) return;
@@ -108,7 +108,7 @@
             area.style.top = `${clockRect.bottom + 10}px`; // 10px below the clock
         } else {
             // Fallback if clock is not found
-            area.style.top = '70px'; 
+            area.style.top = '70px';
             console.warn('VCP Notifier: Clock element not found, using default top position for notifications.');
         }
     }
@@ -142,8 +142,33 @@
                 if (vcpData.tool_name && vcpData.status) {
                     titleText = `${vcpData.tool_name} ${vcpData.status}`;
                     if (typeof vcpData.content !== 'undefined') { // Check if content key exists
-                        mainContent = String(vcpData.content);
-                        contentIsPreformatted = true;
+                        let rawContentString = String(vcpData.content);
+                        mainContent = rawContentString; // Default mainContent to the raw string
+                        contentIsPreformatted = true; // Content from VCP is often structured
+
+                        try {
+                            const parsedInnerContent = JSON.parse(rawContentString);
+                            let titleSuffix = '';
+                            if (parsedInnerContent.MaidName) {
+                                titleSuffix += ` by ${parsedInnerContent.MaidName}`;
+                            }
+                            if (parsedInnerContent.timestamp && typeof parsedInnerContent.timestamp === 'string' && parsedInnerContent.timestamp.length >= 16) {
+                                const timePart = parsedInnerContent.timestamp.substring(11, 16); // Extracts HH:MM
+                                titleSuffix += `${parsedInnerContent.MaidName ? ' ' : ''}@ ${timePart}`; // Add space if MaidName was also added
+                            }
+                            if (titleSuffix) {
+                                titleText += ` (${titleSuffix.trim()})`;
+                            }
+
+                            // Update mainContent if original_plugin_output is present
+                            if (typeof parsedInnerContent.original_plugin_output !== 'undefined') {
+                                mainContent = String(parsedInnerContent.original_plugin_output);
+                            }
+                            // If original_plugin_output is not present, mainContent remains rawContentString.
+                        } catch (e) {
+                            // Parsing failed, mainContent is already set to rawContentString.
+                            console.warn('VCP Notifier: Could not parse vcpData.content as JSON:', e, rawContentString);
+                        }
                     } else {
                         mainContent = '(No content provided)';
                     }
@@ -236,7 +261,7 @@
                 updateNotificationDisplay();
             }, 500); // Match transition time
         };
-        
+
         notificationArea.appendChild(bubble);
         notificationQueue.push(bubble);
 
@@ -257,7 +282,7 @@
         if (!notificationArea) return;
 
         const visibleBubbles = Array.from(notificationArea.children);
-        
+
         // Remove oldest if exceeding max
         while (visibleBubbles.length > MAX_VISIBLE_NOTIFICATIONS) {
             const oldestBubble = visibleBubbles.shift(); // Get the first child (oldest)
@@ -315,7 +340,7 @@
         getNotificationArea(); // Create area and adjust position
         connectWebSocket();
         // Periodically check clock position in case it's added later or moves (e.g. if ST UI re-renders)
-        setInterval(adjustNotificationAreaPosition, 5000); 
+        setInterval(adjustNotificationAreaPosition, 5000);
     }
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
