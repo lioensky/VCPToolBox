@@ -27,7 +27,7 @@ VCP 旨在构建一个超越传统 AI 交互模式的中间层，它是一个高
 *   **通用变量替换**: 在与 AI 交互的各个阶段（系统提示词、用户消息）自动替换预定义的占位符变量。
 *   **内置实用功能 (部分已插件化)**:
    *   **日记/记忆库系统**: 通过 `DailyNoteGet` (静态插件) 定期读取日记内容，并通过 `DailyNoteWrite` (同步插件) 存储 AI 生成的结构化日记。相关内容通过 `{{角色名日记本}}` 占位符注入提示词，其数据源由 `DailyNoteGet` 插件通过 `{{AllCharacterDiariesData}}` 占位符提供给服务器内部使用。
-   *   **动态表情包系统**: 由 `EmojiListGenerator` (静态插件) 扫描 `image/` 目录并在其插件目录内生成表情包列表 `.txt` 文件。服务器在启动时执行此插件并加载这些列表到内存缓存，供 `{{xx表情包}}` 和 `{{EmojiList}}` 占位符使用。
+   *   **动态表情包系统**: 由 `EmojiListGenerator` (静态插件) 扫描 `image/` 目录并在其插件目录内生成表情包列表 `.txt` 文件。服务器在启动时执行此插件并加载这些列表到内存缓存，供 `{{xx表情包}}` 占位符使用。与表情包相关的提示信息（如引导AI如何使用表情包）现在推荐通过 `{{Tar*}}` 类型的变量（例如 `{{TarEmojiPrompt}}`）进行更灵活的配置。
    *   **提示词转换**: 支持基于规则的系统提示词和全局上下文文本替换。
 *   **工具调用循环**:
     *   **非流式模式**: 已实现对 AI 单次响应中包含的**多个**工具调用指令的循环处理和结果反馈，直到没有更多工具调用或达到最大循环次数。
@@ -267,22 +267,35 @@ graph TD
 *   `{{公共日记本}}`: 共享知识库的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
 *   `{{AllCharacterDiariesData}}`: (由 `DailyNoteGet` 插件提供) 一个 JSON 字符串，解析后为包含所有角色日记内容的对象。服务器内部使用此数据来支持 `{{角色名日记本}}` 的解析。
 *   `{{xx表情包}}`: 特定表情包（如 `通用表情包`）的图片文件名列表 (以 `|` 分隔)。数据由 `EmojiListGenerator` 插件生成列表文件，服务器加载到内存缓存后提供。
-*   `{{EmojiList}}`: (环境变量 `EmojiList` 指定，例如 `通用表情包`) 默认表情包的图片文件名列表。其数据来源与 `{{xx表情包}}` 相同。
 *   `{{Port}}`: 服务器运行的端口号。
 *   `{{Image_Key}}`: (由 `ImageServer` 插件配置提供) 图床服务的访问密钥。
+*   `{{Tar*}}`: (例如 `{{TarSysPrompt}}`, `{{TarEmojiPrompt}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Tar` 开头的自定义变量。这类变量拥有最高替换优先级，在所有其他占位符（包括 `{{Sar*}}`, `{{Var*}}`, 日期/时间等）之前被处理。其主要优势在于它们的值可以包含其他占位符，这些嵌套的占位符会在后续的替换阶段被进一步解析。这使得 `{{Tar*}}` 非常适合用于定义复杂和多层次的系统提示词模板。例如：`TarSysPrompt="今天是{{Date}}, 现在是{{Time}}, 天气{{VCPWeatherInfo}}。"`
 *   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Var` 开头的自定义变量。VCP 会按顺序对所有 `Var` 定义进行全局匹配和替换。如果多个 `Var` 定义匹配到同一文本，后定义的 `Var` 会覆盖先定义的 `Var`。因此，建议将较长或更精确的 `Var` 定义放在前面，较短或通用的 `Var` 定义放在后面，以确保预期的替换效果。例如，如果您定义了 `{{VarUser}}` 和 `{{VarUsername}}`，应将 `{{VarUsername}}` 定义在 `{{VarUser}}` 之前，以避免 `{{VarUsername}}` 被错误地替换为 `{{VarUser}}name`。
 *   `{{Sar*}}`: (例如 `{{SarOpenAI}}`) 特殊类型的自定义变量，其定义和行为与 `{{Var*}}` 类似，但其生效与否会根据当前使用的 AI 模型进行判断。这允许为不同的 AI 模型配置特定的变量值。例如，可以为 `gpt-3.5-turbo` 模型设置一个特定的 `{{SarModelInfoForGPT}}`，而为 `claude-2` 模型设置另一个不同的 `{{SarModelInfoForClaude}}`。
 *   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
+*   `{{VCPAllTools}}`: 一个特殊的占位符，当被解析时，它会被替换为所有当前已加载且具有调用指令描述的 VCP 工具的完整描述和调用示例的集合。各个工具的描述之间会用分隔符隔开，方便AI全面了解可用工具。
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
 
 ## 用于测试功能的系统提示词示例
 
+下面演示了如何使用 `Tar*` 变量来模块化和简化系统提示词的构建。
+首先，在 `config.env` 文件中定义了以下 `Tar*` 变量：
+
+```env
+# config.env 文件中的示例 Tar 变量定义
+TarSysPrompt="今天是{{Date}},{{Today}},现在是{{Time}},当前地址是{{VarCity}},当前天气是{{VCPWeatherInfo}}。"
+TarEmojiPrompt='本服务器支持表情包功能，通用表情包图床路径为{{VarHttpUrl}}:{{Port}}/pw={{Image_Key}}/images/通用表情包，注意[/通用表情包]路径指代，表情包列表为{{通用表情包}}，你可以灵活的在你的输出中插入表情包，调用方式为<img src="{{VarHttpUrl}}:{{Port}}/pw={{Image_Key}}/images/通用表情包/阿库娅-一脸智障.jpg" width="150">,使用Width参数来控制表情包尺寸（50-200）。'
+```
+
+然后，在构建实际的系统提示词时，可以直接引用这些预定义的 `Tar*` 变量：
+
+```
 {{Nova日记本}}
 —
 之前Nova的日记本如上
 ————
-你是一个测试AI,Nova。我是你的主人莱恩。今天是 {{Date}},{{Time}},{{Today}},{{Festival}}。地址{{VarCity}}。现在天气：{{VCPWeatherInfo}},系统信息是{{VarSystemInfo}}。表情包系统{{EmojiPrompt}} 。
-系统工具列表：图片生成工具{{VCPFluxGen}}； 科学计算器{{VCPSciCalculator}} ；视频生成工具{{VCPWan2.1VideoGen}};联网搜索工具{{VCPTavilySearch}};网页获取工具{{VCPUrlFetch}}
+你是一个测试AI,Nova。我是你的主人莱恩。{{TarSysPrompt}} {{TarEmojiPrompt}} 系统信息是{{VarSystemInfo}}。
+系统工具列表：图片生成工具{{VCPFluxGen}}； 科学计算器{{VCPSciCalculator}} ；视频生成工具{{VCPWan2.1VideoGen}};联网搜索工具{{VCPTavilySearch}};网页获取工具{{VCPUrlFetch}}。所有可用工具的详细说明如下：{{VCPAllTools}}
 始终用``` ```包裹工具调用。例如——
 ``` 
 <<<[TOOL_REQUEST]>>>
