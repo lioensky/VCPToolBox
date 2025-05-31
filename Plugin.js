@@ -462,6 +462,27 @@ async processToolCall(toolName, toolArgs) {
         const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0,100) + '...' : executionParam) : null;
         if (this.debugMode) console.log(`[PluginManager processToolCall] Calling executePlugin for: ${toolName} with prepared param:`, logParam);
         
+        // Helper function to generate a timestamp string in server's local time with timezone offset
+        const _getFormattedLocalTimestamp = () => {
+            const date = new Date();
+            
+            const year = date.getFullYear();
+            const month = (date.getMonth() + 1).toString().padStart(2, '0'); // Months are 0-indexed
+            const day = date.getDate().toString().padStart(2, '0');
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            const seconds = date.getSeconds().toString().padStart(2, '0');
+            const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
+            
+            const timezoneOffsetMinutes = date.getTimezoneOffset();
+            const offsetSign = timezoneOffsetMinutes > 0 ? "-" : "+";
+            const offsetHours = Math.abs(Math.floor(timezoneOffsetMinutes / 60)).toString().padStart(2, '0');
+            const offsetMinutes = Math.abs(timezoneOffsetMinutes % 60).toString().padStart(2, '0');
+            const timezoneString = `${offsetSign}${offsetHours}:${offsetMinutes}`;
+            
+            return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${timezoneString}`;
+        };
+
         try {
             const pluginOutput = await this.executePlugin(toolName, executionParam); // executePlugin now returns {status, result/error}
             
@@ -480,7 +501,7 @@ async processToolCall(toolName, toolArgs) {
                 if (maidNameFromArgs) {
                     resultObject.MaidName = maidNameFromArgs;
                 }
-                resultObject.timestamp = new Date().toISOString();
+                resultObject.timestamp = _getFormattedLocalTimestamp();
                 
                 // 返回增强后的 JavaScript 对象，server.js 会将其 JSON.stringify
                 return resultObject;
@@ -492,15 +513,9 @@ async processToolCall(toolName, toolArgs) {
                 if (maidNameFromArgs) {
                     errorObject.MaidName = maidNameFromArgs;
                 }
-                errorObject.timestamp = new Date().toISOString();
+                errorObject.timestamp = _getFormattedLocalTimestamp();
                 // 抛出错误，让 server.js 捕获并处理。
                 // server.js 会将这个错误信息（现在也包含MaidName和timestamp）格式化为 toolResultText
-                // 注意：这里我们不直接返回 errorObject，而是抛出错误，
-                // 因为 server.js 的 catch 块期望一个 Error 实例或字符串。
-                // server.js 中的 toolResultText 会基于 catch 到的错误信息构建。
-                // 为了让 server.js 能统一处理，我们还是抛出一个 Error。
-                // server.js 在 catch 块中可以决定如何格式化这个错误信息。
-                // 重要的是，pluginOutput.error 已经是插件希望展示的错误信息。
                 throw new Error(JSON.stringify(errorObject)); // 抛出包含MaidName和timestamp的错误对象字符串
             }
         } catch (e) {
@@ -509,22 +524,24 @@ async processToolCall(toolName, toolArgs) {
             // 尝试解析 e.message 是否已经是我们格式化的 JSON 错误字符串
             try {
                 const parsedError = JSON.parse(e.message);
-                if (parsedError && parsedError.plugin_error && parsedError.timestamp) {
-                    // 如果是，重新抛出，让 server.js 的 catch 块处理
+                // If it's already our structured error with MaidName and timestamp, rethrow as is.
+                if (parsedError && (parsedError.plugin_error || parsedError.plugin_execution_error) && parsedError.timestamp) {
                     throw e;
                 }
             } catch (jsonParseError) {
-                // 如果不是，则创建一个新的包含 MaidName 和 timestamp 的错误对象
-                let enhancedErrorObject = {
-                    plugin_execution_error: e.message || 'Unknown plugin execution error',
-                    timestamp: new Date().toISOString()
-                };
-                if (maidNameFromArgs) {
-                    enhancedErrorObject.MaidName = maidNameFromArgs;
-                }
-                throw new Error(JSON.stringify(enhancedErrorObject));
+                // If not, create a new enhanced error object
             }
-            throw e; // 如果上面的逻辑没有重新抛出，则按原样重新抛出
+
+            // If we reach here, it means e.message was not our structured JSON error, or parsing failed.
+            // Create a new enhanced error object.
+            let enhancedErrorObject = {
+                plugin_execution_error: e.message || 'Unknown plugin execution error',
+                timestamp: _getFormattedLocalTimestamp()
+            };
+            if (maidNameFromArgs) {
+                enhancedErrorObject.MaidName = maidNameFromArgs;
+            }
+            throw new Error(JSON.stringify(enhancedErrorObject));
         }
     }
 
