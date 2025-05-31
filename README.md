@@ -98,8 +98,7 @@ graph TD
     end
 
     subgraph "VCP 服务器 (VCPToolBox)"
-        S[server.js - 核心调度]
-        WSS[WebSocketServer.js - 统一WebSocket服务]
+        S[server.js - 核心调度与通信]
         PM[Plugin.js - 插件管理器]
         CONF[配置系统 - config.env, 插件.env]
         VAR[通用变量替换引擎]
@@ -108,12 +107,12 @@ graph TD
         subgraph "VCP 插件生态"
             P_STATIC["静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator"]
             P_PRE["消息预处理插件 e.g., ImageProcessor"]
-            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, AgentMessage"]
-            P_SVC["服务插件 e.g., ImageServer, VCPLog"]
+            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant"]
+            P_SVC["服务插件 e.g., ImageServer"]
         end
 
         MEM_DB[(持久化记忆存储 - 日记文件系统)]
-        LOG_FS[日志系统 (文件)]
+        LOG[日志系统]
         ADMIN[Web 管理面板]
     end
 
@@ -124,14 +123,6 @@ graph TD
     end
 
     U -- "HTTP请求 (含用户消息, 模型指令)" --> S
-    S -- "HTTP响应 (流式/非流式)" --> U
-    
-    S -- "初始化并传递HTTP Server实例" --> WSS
-    WSS -- "WebSocket连接 (ws/wss)" --> U
-    U -- "WebSocket消息 (未来可用于客户端发起的请求)" --> WSS
-    WSS -- "处理客户端消息 (未来)" --> S
-    S -- "通过WSS广播消息 (e.g., VCPLog, AgentMessage结果)" --> WSS
-
     S -- "预处理 (认证, 变量替换)" --> S
     S -- "调用消息预处理器" --> P_PRE
     P_PRE -- "处理后消息" --> S
@@ -146,7 +137,6 @@ graph TD
     P_SYNC -- "可能与外部API/本地工具交互" --> LOCAL_TOOLS
     P_SYNC -- "执行结果 (JSON)" --> PM
     PM -- "结果汇总" --> S
-    S -- "IF 插件声明WebSocket推送 (e.g. AgentMessage)" --> WSS
     S -- "将工具结果注入对话历史, 再次调用" --> AI_MODEL
     S -- "(重复工具调用循环...)" --> S
 
@@ -160,9 +150,6 @@ graph TD
 
     PM -- "服务插件初始化, 注册路由" --> P_SVC
     P_SVC -- "提供独立HTTP服务" --> U
-    P_SVC -- "部分服务插件(VCPLog)的日志记录" --> LOG_FS
-    S -- "VCP调用日志推送 (通过WSS)" --> WSS
-
 
     MEM -- "DailyNoteGet读取日记" --> MEM_DB
     MEM -- "DailyNoteManager/Editor管理日记 (由AI通过P_SYNC调用)" --> MEM_DB
@@ -172,7 +159,9 @@ graph TD
     ADMIN -- "通过/admin_api管理" --> MEM_DB
     ADMIN -- "控制服务器重启" --> S
 
-    S -- "记录主服务器日志" --> LOG_FS
+    S -- "最终响应 (流式/非流式)" --> U
+    S -- "记录日志" --> LOG
+
 ```
 
 ### 核心交互流程解读
