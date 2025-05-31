@@ -159,6 +159,16 @@ app.use((req, res, next) => {
 async function replaceCommonVariables(text, model) {
     if (text == null) return '';
     let processedText = String(text);
+
+    // 新增 Tarxxx 变量处理逻辑
+    for (const envKey in process.env) {
+        if (envKey.startsWith('Tar')) {
+            const placeholder = `{{${envKey}}}`;
+            const value = process.env[envKey];
+            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+        }
+    }
+
     const sarModels = (process.env.SarModel || '').split(',').map(m => m.trim()).filter(m => m.length > 0);
     const isSarModel = model && sarModels.includes(model);
 
@@ -193,6 +203,24 @@ async function replaceCommonVariables(text, model) {
     if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
     processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
     processedText = processedText.replace(/\{\{VCPWeatherInfo\}\}/g, pluginManager.getPlaceholderValue("{{VCPWeatherInfo}}") || '天气信息不可用');
+// 新增：处理 {{VCPAllTools}} 占位符
+    if (processedText.includes('{{VCPAllTools}}')) {
+        const vcpPlaceholders = [];
+
+        // 从 individualPluginDescriptions 添加 (这些由 pluginManager.getIndividualPluginDescriptions() 提供)
+        // individualPluginDescriptions 变量是在此代码块之前定义的
+        if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+            for (const placeholderKey of individualPluginDescriptions.keys()) {
+                // placeholderKey 的格式是 "VCPPluginName", 我们将其包装成 "{{VCPPluginName}}"
+                vcpPlaceholders.push(`{{${placeholderKey}}}`);
+            }
+        }
+        // 注意: 如果未来有其他直接通过 pluginManager.getPlaceholderValue("{{VCPCustomXXX}}") 处理的占位符,
+        // 并且希望它们也列在 {{VCPAllTools}} 中，需要在此处手动添加逻辑来识别并包含它们。
+
+        const allVcpToolsString = vcpPlaceholders.length > 0 ? vcpPlaceholders.join(', ') : '没有可用的VCP工具占位符';
+        processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
+    }
     // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
 
     // Replace individual VCP plugin descriptions
@@ -204,9 +232,6 @@ async function replaceCommonVariables(text, model) {
         }
     }
 
-    if (process.env.EmojiPrompt) {
-        processedText = processedText.replaceAll('{{EmojiPrompt}}', process.env.EmojiPrompt);
-    }
     for (const envKey in process.env) {
         if (envKey.startsWith('Var')) {
             const placeholder = `{{${envKey}}}`;
@@ -222,17 +247,6 @@ async function replaceCommonVariables(text, model) {
         processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
     } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
         if (DEBUG_MODE) console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
-    }
-    if (processedText.includes('{{EmojiList}}') && process.env.EmojiList) {
-        const emojiListFileName = process.env.EmojiList;
-        const emojiCacheKey = emojiListFileName.replace(/\.txt$/i, '').trim();
-        const specificEmojiListContent = cachedEmojiLists.get(emojiCacheKey);
-        if (specificEmojiListContent !== undefined) {
-            processedText = processedText.replaceAll('{{EmojiList}}', specificEmojiListContent);
-        } else {
-            processedText = processedText.replaceAll('{{EmojiList}}', `[名为 ${emojiCacheKey} 的表情列表不可用 (源: ${emojiListFileName})]`);
-            if (DEBUG_MODE) console.warn(`[EmojiList Variable] 未能从缓存中找到 ${emojiCacheKey} 的列表.`);
-        }
     }
     const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
     let emojiMatch;
