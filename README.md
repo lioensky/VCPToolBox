@@ -18,7 +18,7 @@ VCP 的核心是引领 AI Agent 进入一个能够自主学习、持续进化、
 
 [深入理解 VCP 理论架构与核心洞见](VCP.md)
 
-## **郑重警告**：*请勿使用任何非官方或反向代理的 API (例如各类“镜像站”、“中转API服务商”) 来调用此工具箱，此类行为极易导致您的敏感信息（包括但不限于 AI 交互数据、记忆库内容、API密钥）泄露给不可信的第三方，造成不可挽回的损失。请务必确保您的 AI 模型 API 调用链路纯净、直接、可信。*
+**郑重警告**：请勿使用任何非官方或反向代理的 API (例如各类“镜像站”、“中转API服务商”) 来调用此工具箱，此类行为极易导致您的敏感信息（包括但不限于 AI 交互数据、记忆库内容、API密钥）泄露给不可信的第三方，造成不可挽回的损失。请务必确保您的 AI 模型 API 调用链路纯净、直接、可信。
 
 ## 2. VCP 的“次时代”核心特性与设计哲学
 
@@ -34,6 +34,15 @@ VCP 的每一项特性都根植于其前瞻性的设计哲学，旨在解决当�
 - **设计哲学**: 提供一种对 AI 模型友好、对前端零侵入、且能承载复杂指令的通用工具调用语言。AI 通过在回复中嵌入特定格式的指令 (`<<<[TOOL_REQUEST]>>> ... <<<[END_TOOL_REQUEST]>>>`) 来调用插件，参数使用 `key:「始」value「末」` 格式，支持复杂数据类型和多行文本。
 - **深度解读**: 这种基于文本标记的协议，极大地降低了对特定模型 API 特性（如某些模型专属的 Function Calling 字段）的依赖，实现了真正的模型普适性。独特的 `「始」value「末」` 参数格式，则保证了在复杂参数传递（如代码块、JSON对象、长文本）时的解析鲁棒性。
 
+### 统一的 WebSocket 通信服务
+
+- **设计哲学**: 提供一个集中的 WebSocket 服务 (`WebSocketServer.js`)，用于服务器与客户端之间的双向实时通信。这包括但不限于推送日志、AI 生成的消息、状态更新等。
+- **核心能力**:
+    - **集中管理**: 所有 WebSocket 连接、认证、消息广播由 `WebSocketServer.js` 统一处理。
+    - **插件集成**: 服务类插件（如 `VCPLog`）和同步插件（通过 `webSocketPush` 配置）可以利用此中央服务向客户端推送信息，而无需各自实现 WebSocket 服务器。
+    - **客户端类型**: 支持基于 `clientType` 的消息定向广播，允许不同前端或客户端组件订阅特定类型的消息。
+- **深度解读**: 简化了需要实时推送功能的插件开发，提高了系统的模块化和可维护性。
+
 ### 丰富的插件类型，支撑 AI 全方位能力拓展
 
 - **静态插件 (static)**:
@@ -43,10 +52,10 @@ VCP 的每一项特性都根植于其前瞻性的设计哲学，旨在解决当�
   - **作用**: 在用户请求发送给 AI 模型前，对消息内容进行修改或增强，如图像识别与描述 (`ImageProcessor`)。
   - **次时代意义**: 实现多模态输入的统一处理，让 AI 能够“理解”更丰富的输入信息，是构建多模态智能体的基础。
 - **同步插件 (synchronous)**:
-  - **作用**: AI 在对话中主动调用这些插件执行特定任务，如科学计算、图像生成、视频生成、网络搜索、知识库读写等。服务器会等待插件执行完毕，并将结构化结果反馈给 AI 进行后续处理。
-  - **次时代意义**: 这是 AI “行动能力”的核心体现，使其能够干预外部世界、获取外部信息、创造数字内容。
+  - **作用**: AI 在对话中主动调用这些插件执行特定任务，如科学计算、图像生成、视频生成、网络搜索、知识库读写、发送消息给用户前端 (`AgentMessage`)等。服务器会等待插件执行完毕，并将结构化结果反馈给 AI 进行后续处理。部分插件的结果还可以通过配置，经由统一的 WebSocket 服务推送给客户端。
+  - **次时代意义**: 这是 AI “行动能力”的核心体现，使其能够干预外部世界、获取外部信息、创造数字内容，并与用户进行更丰富的交互。
 - **服务插件 (service)**:
-  - **作用**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口，如图床服务 (`ImageServer`)。
+  - **作用**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口，如图床服务 (`ImageServer`)。部分服务插件（如 `VCPLog`）也可能利用统一 WebSocket 服务进行信息推送。
   - **次时代意义**: 将 VCP 平台本身转变为一个可扩展的服务中心，支持更复杂的应用场景。
 
 ### 灵活的配置管理与通用变量替换系统
@@ -89,7 +98,8 @@ graph TD
     end
 
     subgraph "VCP 服务器 (VCPToolBox)"
-        S[server.js - 核心调度与通信]
+        S[server.js - 核心调度]
+        WSS[WebSocketServer.js - 统一WebSocket服务]
         PM[Plugin.js - 插件管理器]
         CONF[配置系统 - config.env, 插件.env]
         VAR[通用变量替换引擎]
@@ -98,12 +108,12 @@ graph TD
         subgraph "VCP 插件生态"
             P_STATIC["静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator"]
             P_PRE["消息预处理插件 e.g., ImageProcessor"]
-            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant"]
-            P_SVC["服务插件 e.g., ImageServer"]
+            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, AgentMessage"]
+            P_SVC["服务插件 e.g., ImageServer, VCPLog"]
         end
 
         MEM_DB[(持久化记忆存储 - 日记文件系统)]
-        LOG[日志系统]
+        LOG_FS[日志系统 (文件)]
         ADMIN[Web 管理面板]
     end
 
@@ -114,6 +124,14 @@ graph TD
     end
 
     U -- "HTTP请求 (含用户消息, 模型指令)" --> S
+    S -- "HTTP响应 (流式/非流式)" --> U
+    
+    S -- "初始化并传递HTTP Server实例" --> WSS
+    WSS -- "WebSocket连接 (ws/wss)" --> U
+    U -- "WebSocket消息 (未来可用于客户端发起的请求)" --> WSS
+    WSS -- "处理客户端消息 (未来)" --> S
+    S -- "通过WSS广播消息 (e.g., VCPLog, AgentMessage结果)" --> WSS
+
     S -- "预处理 (认证, 变量替换)" --> S
     S -- "调用消息预处理器" --> P_PRE
     P_PRE -- "处理后消息" --> S
@@ -128,6 +146,7 @@ graph TD
     P_SYNC -- "可能与外部API/本地工具交互" --> LOCAL_TOOLS
     P_SYNC -- "执行结果 (JSON)" --> PM
     PM -- "结果汇总" --> S
+    S -- "IF 插件声明WebSocket推送 (e.g. AgentMessage)" --> WSS
     S -- "将工具结果注入对话历史, 再次调用" --> AI_MODEL
     S -- "(重复工具调用循环...)" --> S
 
@@ -141,6 +160,9 @@ graph TD
 
     PM -- "服务插件初始化, 注册路由" --> P_SVC
     P_SVC -- "提供独立HTTP服务" --> U
+    P_SVC -- "部分服务插件(VCPLog)的日志记录" --> LOG_FS
+    S -- "VCP调用日志推送 (通过WSS)" --> WSS
+
 
     MEM -- "DailyNoteGet读取日记" --> MEM_DB
     MEM -- "DailyNoteManager/Editor管理日记 (由AI通过P_SYNC调用)" --> MEM_DB
@@ -150,8 +172,7 @@ graph TD
     ADMIN -- "通过/admin_api管理" --> MEM_DB
     ADMIN -- "控制服务器重启" --> S
 
-    S -- "最终响应 (流式/非流式)" --> U
-    S -- "记录日志" --> LOG
+    S -- "记录主服务器日志" --> LOG_FS
 ```
 
 ### 核心交互流程解读
@@ -163,7 +184,9 @@ graph TD
   - **工具调用**: 若 AI 响应中包含 `<<<[TOOL_REQUEST]>>>` 指令，`PluginManager` 会：
     - 解析工具名和参数。
     - **并行异步执行**：对于多个工具调用，VCP 可并行调度。`PluginManager` 调用相应同步插件，插件可能与外部 API 或本地脚本交互。
-    - **结果整合与二次 AI 调用**: 所有工具的执行结果（JSON 格式）被收集、格式化，并作为新的用户消息添加到对话历史中，再次调用 AI 模型。此循环可持续多次，直至无工具调用或达到上限。
+    - **结果处理与 WebSocket 推送**: 同步插件执行完毕后，`server.js` 会检查该插件的清单 (`plugin-manifest.json`) 中是否配置了 `webSocketPush`。如果配置为启用，并且插件结果符合约定（例如 `usePluginResultAsMessage: true` 且结果为对象），则该结果会通过 `WebSocketServer.js` 推送给指定类型的客户端。
+    - **VCP 调用日志推送**: 无论插件结果是否推送，VCP 工具调用的元信息（成功、失败、内容摘要）会由 `server.js` 通过 `WebSocketServer.js` 推送给订阅了 `'VCPLog'` 客户端类型的客户端。
+    - **二次 AI 调用**: 所有工具的执行结果（JSON 格式）被收集、格式化，并作为新的用户消息添加到对话历史中，再次调用 AI 模型。此循环可持续多次，直至无工具调用或达到上限。
   - **记忆写入**: 若 AI 响应包含 `<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>` 结构化日记块，`PluginManager` 调用 `DailyNoteWrite` 插件将其存入持久化记忆库。
   - **记忆读取与上下文注入**: `DailyNoteGet` 等静态插件定期从记忆库读取内容（如特定角色的所有日记），通过 `{{AllCharacterDiariesData}}` 等内部占位符提供给服务器，服务器再据此解析如 `[角色名日记本内容为空或未从插件获取]` 这样的用户级占位符，实现记忆的上下文注入。
   - **记忆管理与优化**: AI 可通过调用 `DailyNoteManager` 或 `DailyNoteEditor` 等插件，主动整理、优化、共享其知识库。
@@ -252,7 +275,8 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 ### Agent 协同与系统增强
 
 - **AgentAssistant (synchronous)**: Agent 间标准通讯协议插件，支持基于各自知识库的互助式连续交流、消息群发、文件传递（通过服务器 WebDAV）、任务分发等，实现复杂异步工作流。
-- **VCPLog (static)**: 基于 WS/WSS 的服务器推送通知插件，允许服务器向客户端（独立于聊天上下文）推送 VCP 调用信息、Agent 工作流结果、AI 日程提醒、天气警报等。
+- **AgentMessage (synchronous)**: 允许 AI 通过 WebSocket 向用户前端发送格式化消息。AI 提供接收者名称和内容，插件格式化后，`server.js` 根据其清单中的 `webSocketPush` 配置，通过统一的 `WebSocketServer.js` 推送给指定类型的客户端。
+- **VCPLog (service)**: 基于 WS/WSS 的服务器推送通知服务。其核心功能是记录 VCP 工具调用的文件日志。相关的 WebSocket 推送（VCP 调用信息、连接状态等）由 `server.js` 主动发起，通过统一的 `WebSocketServer.js` 定向广播给订阅了 `'VCPLog'` 客户端类型的客户端。
 - **EmojiListGenerator (static)**: 扫描表情包文件夹生成列表，供 `xx表情包列表不可用` 使用。
 - **ImageServer (service)**: 提供带密钥认证的静态图床服务。
 
@@ -326,7 +350,10 @@ graph TD
             MEM_PRI["个体记忆库 (各女仆专属日记)"]
             TOOL_HUB["VCP插件中心 (各类工具)"]
             VCP_COMM["VCP内部通信协议 (AgentAssistant)"]
+            WSS_SVC["统一WebSocket服务 (WebSocketServer.js)"]
         end
+        
+        BA -- "通过WSS_SVC接收AgentMessage" --> WSS_SVC
 
         C <--> MEM_PRI
         D <--> TOOL_HUB
@@ -407,7 +434,7 @@ docker-compose up --build -d
 ## 9. 推荐的前端/后端
 
 - **后端 AI 模型 API**: 推荐使用支持 SSE (Server-Sent Events) 流式输出且 API 格式相对标准化的服务，如 NewAPI, NextChat, OneAPI, LobeChat 服务端, 以及官方的 OpenAI, Google Gemini, Anthropic Claude 等。VCP 的设计使其能够灵活适配多种后端。
-- **前端交互应用**: 推荐使用能够良好渲染 Markdown、支持代码高亮、并且能够自定义或适配 VCP 工具调用指令显示的前端。例如：Chatbox, OpenWebui, Sillytavern, CherryStudio, LobeChat 客户端等。理想的前端还应允许用户方便地配置系统提示词，以便充分利用 VCP 的变量替换和插件指令描述注入功能。
+- **前端交互应用**: 推荐使用能够良好渲染 Markdown、支持代码高亮、并且能够自定义或适配 VCP 工具调用指令显示的前端。例如：Chatbox, OpenWebui, Sillytavern, CherryStudio, LobeChat 客户端等。理想的前端还应允许用户方便地配置系统提示词，以便充分利用 VCP 的变量替换和插件指令描述注入功能。前端还应能连接到 `WebSocketServer.js` 提供的 WebSocket 服务，以接收服务器推送的各类消息（如 VCP 日志、AgentMessage 等）。
 
 ## 10. 开发者指南：创建你的“VCP次时代插件”
 
@@ -429,6 +456,14 @@ VCP 的灵魂在于其插件生态。成为 VCP 插件开发者，意味着你�
         - 成功/失败时返回的 JSON 格式示例 (AI 需要理解插件的输出)。
         - 任何与用户沟通或AI决策相关的重要提示。
       - `example` (可选，提供一个更具体的调用场景示例)。
+  - **WebSocket 推送配置 (`webSocketPush`) (可选, 主要用于 synchronous 插件)**:
+    - 如果你的同步插件执行成功后，希望将其结果通过 WebSocket 推送给客户端，可以在 `plugin-manifest.json` 的顶层添加此对象。
+    - `enabled` (boolean,必需): `true` 表示启用推送。
+    - `usePluginResultAsMessage` (boolean, 可选, 默认 `false`):
+        - 若为 `true`，插件的标准输出结果（通常是一个 JSON 对象）将直接作为 WebSocket 消息体发送。插件应确保其输出的 `result` 字段是一个符合前端期望的完整消息对象（例如包含 `type` 字段以供前端识别）。参考 `AgentMessage` 插件。
+        - 若为 `false` 或未提供，则需要同时提供 `messageType`。
+    - `messageType` (string, 可选): 当 `usePluginResultAsMessage` 为 `false` 时使用。服务器会将插件的 `result` 包装成 `{ type: "yourMessageType", data: pluginResult }` 的形式发送。
+    - `targetClientType` (string, 可选, 默认 `null`): 指定接收此消息的客户端类型。`WebSocketServer.js` 会根据此类型筛选客户端。如果为 `null` 或未提供，则可能广播给所有连接的客户端或特定默认类型的客户端（取决于 `WebSocketServer.js` 的实现）。
 - **实现插件逻辑**:
   - 根据 `pluginType` 和 `entryPoint` 实现主逻辑脚本 (Node.js, Python, Shell 等皆可)。
   - **stdio 插件** (常用于 synchronous 和部分 static):
@@ -437,10 +472,11 @@ VCP 的灵魂在于其插件生态。成为 VCP 插件开发者，意味着你�
       ```json
       {
         "status": "success" | "error",
-        "result": "成功时返回的字符串内容", // status 为 "success" 时存在
+        "result": "成功时返回的字符串内容或JSON对象", // status 为 "success" 时存在
         "error": "失败时返回的错误信息字符串" // status 为 "error" 时存在
       }
       ```
+      如果配置了 `webSocketPush.usePluginResultAsMessage: true`，这里的 `result` 字段（如果是个对象）会被直接用于 WebSocket 推送。
     - 对于主要用于更新占位符的 static 插件，如果逻辑简单，可以直接输出占位符的值（非 JSON）。但推荐使用上述 JSON 格式以支持更复杂的通信或错误报告。
     - 标准错误 (`stderr`) 可用于输出调试信息。
     - 确保 UTF-8 编码。
@@ -546,7 +582,7 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 
 - **增强的插件间协作与插件内工作流**: 实现插件间更高效的数据流转和事件通信，甚至在复杂插件内部构建“微型VCP”来编排子模块，支持更细粒度的自动化任务分解。 (已实现)
 - **深化的 Agent 间自主通信与协同智能**: 建立标准化的 Agent 间通信总线 (ACB) 和协作原语，支持 AI Agent 动态组队、自主协商、角色分配，从“人类指挥-AI执行”演进为“AI自主团队协作”。 (已实现)
-- **赋予 AI Agent 主动交互与实时通知能力**: 构建 VCP 内部事件总线与触发器，允许 AI Agent 在满足特定条件时（如日程提醒、任务完成、外部事件）主动向用户、其他 Agent 或外部系统发起通信或执行动作，从“被动响应者”进化为具有“主动服务意识”的智能伙伴。 (即将实现)
+- **赋予 AI Agent 主动交互与实时通知能力**: 构建 VCP 内部事件总线与触发器，允许 AI Agent 在满足特定条件时（如日程提醒、任务完成、外部事件）主动向用户、其他 Agent 或外部系统发起通信或执行动作，从“被动响应者”进化为具有“主动服务意识”的智能伙伴。 (已实现 `AgentMessage` 和 `WebSocketServer`，为主动通知打下基础)
 - **持续研发与实现“深度情境记忆回溯机制”**: 如 `VCP.md` 中所述，通过“日记条目指纹匹配完整聊天历史”并结合“AI 中间件与信息传播链分析”，实现 AI 对其记忆产生时的完整背景和微妙上下文的“深度回溯”理解。 
 - **构建繁荣的插件生态与开发者社区**: 完善文档、API、工具，积极建设社区，吸引更多开发者共同扩展 VCP 的能力边界。
 - **对 AI 伦理、安全与可控性的不懈追求**: 随着 AI Agent 自主行动能力的增强，我们将持续投入研究更全面的权限管理、行为审计、风险评估和应急干预机制。
