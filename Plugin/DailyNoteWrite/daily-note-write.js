@@ -46,7 +46,7 @@ async function writeDiary(maidName, dateString, contentText) {
         debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
     }
 
-    const datePart = dateString.replace(/[.-]/g, '.');
+    const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
     const minutes = now.getMinutes().toString().padStart(2, '0');
