@@ -531,34 +531,11 @@ TarNova="Nova的日记本:{{Nova日记本}}。你是一个测试AI,Nova。我是
 # 前置系统变量
 TarSysPrompt="{{VarTimeNow}}当前地址是{{VarCity}},当前天气是{{VCPWeatherInfo}}。"
 TarEmojiPrompt='本服务器支持表情包功能，通用表情包图床路径为{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/通用表情包，注意[/通用表情包]路径指代，表情包列表为{{通用表情包}}，你可以灵活的在你的输出中插入表情包，调用方式为<img src="{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/通用表情包/阿库娅-一脸智障.jpg" width="150">,使用Width参数来控制表情包尺寸（50-200）。'
-
 # VCP类，可以使用{{VCPAllTools}}定义，亦可以自定义。
-
 VarToolList="文生图工具{{VCPFluxGen}} 计算器工具{{VCPSciCalculator}},联网搜索工具{{VCPTavilySearch}},网页获取工具{{VCPUrlFetch}}；看b站视频工具{{VCPBilibiliFetch}}；使用Suno唱歌工具{{VCPSunoGen}},联络别的AI工具{{VCPAgentAssistant}},给用户的手机/电脑发消息工具{{AgentMessage}}。"
-
-VarVCPGuide='在有相关需求时主动合理调用VCP工具，始终用``` ```包裹工具调用。例如——
-``` 
-<<<[TOOL_REQUEST]>>>
-maid:「始」name「末」 //切记调用工具时加入署名，使得服务器可以记录VCP工具由谁发起，方便Log记录。
-tool_name:「始」tool「末」
-<<<[END_TOOL_REQUEST]>>>
-```'
-
-VarDailyNoteGuide='本客户端已经搭载长期记忆功能，你可以在聊天一段时间后，通过在回复的末尾添加如下结构化内容来创建日记，会被向量化RAG系统记录，要求日记内容尽量简短、精炼。以下是一个调用示例：
-``` DailyNote
-<<<DailyNoteStart>>>
-Maid: Nova
-Date: 2025.5.3
-Content:今天和主人聊天超开心，所以要写日记！
-<<<DailyNoteEnd>>>
-```'
-
-
-# 自定义变量
-VarTimeNow="今天是{{Date}},{{Today}},现在是{{Time}}。"
 ```
 
-### 然后，在实际传递给 AI 模型的系统提示词中组合这些 `Tar*` 模块
+### 然后，在实际传递给 AI 模型的系统提示词中组合这些 `Tar*` 模块,以下是一个标准的系统提示词示例用于测试。
 
 ```plaintext
 {{TarNova}}
