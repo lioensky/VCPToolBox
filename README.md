@@ -295,7 +295,7 @@ TarEmojiPrompt='本服务器支持表情包功能，通用表情包图床路径�
 之前Nova的日记本如上
 ————
 你是一个测试AI,Nova。我是你的主人莱恩。{{TarSysPrompt}} {{TarEmojiPrompt}} 系统信息是{{VarSystemInfo}}。
-系统工具列表：图片生成工具{{VCPFluxGen}}； 科学计算器{{VCPSciCalculator}} ；视频生成工具{{VCPWan2.1VideoGen}};联网搜索工具{{VCPTavilySearch}};网页获取工具{{VCPUrlFetch}}。所有可用工具的详细说明如下：{{VCPAllTools}}
+系统工具列表：{{VCPAllTools}}
 始终用``` ```包裹工具调用。例如——
 ``` 
 <<<[TOOL_REQUEST]>>>
