@@ -425,46 +425,106 @@ async processToolCall(toolName, toolArgs) {
             throw new Error(`[PluginManager] Plugin "${toolName}" is not a supported synchronous stdio plugin for direct tool call.`);
         }
 
+        const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
+
         let executionParam = null;
         // toolArgs 来自 server.js 的 parsedToolArgs (一个对象)
+        // 从 toolArgs 中移除 maid 字段，因为它已经被提取，不应再传递给插件的 executionParam
+        const pluginSpecificArgs = { ...toolArgs };
+        if (maidNameFromArgs) {
+            delete pluginSpecificArgs.maid;
+        }
+
         if (toolName === "SciCalculator") {
-            if (toolArgs && typeof toolArgs.expression === 'string') {
-                executionParam = toolArgs.expression;
+            if (pluginSpecificArgs && typeof pluginSpecificArgs.expression === 'string') {
+                executionParam = pluginSpecificArgs.expression;
             } else {
                 throw new Error(`[PluginManager] Missing or invalid 'expression' (string) argument for SciCalculator in toolArgs.`);
             }
         } else if (toolName === "FluxGen") {
-            // FluxGen 期望一个 JSON 字符串, toolArgs 应该是包含 prompt 和 resolution 的对象
-            if (toolArgs && typeof toolArgs === 'object' && typeof toolArgs.prompt === 'string' && typeof toolArgs.resolution === 'string') {
-                executionParam = JSON.stringify(toolArgs);
+            if (pluginSpecificArgs && typeof pluginSpecificArgs === 'object' && typeof pluginSpecificArgs.prompt === 'string' && typeof pluginSpecificArgs.resolution === 'string') {
+                executionParam = JSON.stringify(pluginSpecificArgs);
             } else {
-                 throw new Error(`[PluginManager] Invalid or incomplete arguments for FluxGen in toolArgs. Expected an object with string 'prompt' and 'resolution'. Received: ${JSON.stringify(toolArgs)}`);
+                 throw new Error(`[PluginManager] Invalid or incomplete arguments for FluxGen in toolArgs. Expected an object with string 'prompt' and 'resolution'. Received: ${JSON.stringify(pluginSpecificArgs)}`);
             }
         } else {
             // 对于其他插件，如果它们也期望通过 stdin 接收 JSON 字符串化的参数
-            if (toolArgs && typeof toolArgs === 'object' && Object.keys(toolArgs).length > 0) {
-                executionParam = JSON.stringify(toolArgs);
-            } else if (typeof toolArgs === 'string' && toolArgs.trim() !== '') {
+            if (pluginSpecificArgs && typeof pluginSpecificArgs === 'object' && Object.keys(pluginSpecificArgs).length > 0) {
+                executionParam = JSON.stringify(pluginSpecificArgs);
+            } else if (typeof pluginSpecificArgs === 'string' && pluginSpecificArgs.trim() !== '') {
                 // 如果已经是字符串，直接使用 (假设插件能处理)
-                executionParam = toolArgs;
+                // 注意：这种情况可能不常见，因为 server.js 解析后 toolArgs 通常是对象
+                executionParam = pluginSpecificArgs;
             }
-            // 如果 toolArgs 是 null 或 undefined，executionParam 也会是 null，executePlugin 会处理
+            // 如果 pluginSpecificArgs 是空对象或 toolArgs 是 null/undefined，executionParam 可能是 null
         }
+
         const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0,100) + '...' : executionParam) : null;
         if (this.debugMode) console.log(`[PluginManager processToolCall] Calling executePlugin for: ${toolName} with prepared param:`, logParam);
         
         try {
             const pluginOutput = await this.executePlugin(toolName, executionParam); // executePlugin now returns {status, result/error}
+            
             if (pluginOutput.status === "success") {
-                return pluginOutput.result; // Return the formatted result string directly
+                let resultObject = {};
+                try {
+                    // pluginOutput.result 应该是插件返回的JSON字符串
+                    resultObject = JSON.parse(pluginOutput.result);
+                } catch (parseError) {
+                    // 如果插件返回的不是有效的JSON字符串，将其作为原始值处理
+                    if (this.debugMode) console.warn(`[PluginManager processToolCall] Plugin ${toolName} result was not valid JSON. Original: "${pluginOutput.result.substring(0,100)}"`);
+                    resultObject = { original_plugin_output: pluginOutput.result };
+                }
+
+                // 添加 MaidName 和 timestamp
+                if (maidNameFromArgs) {
+                    resultObject.MaidName = maidNameFromArgs;
+                }
+                resultObject.timestamp = new Date().toISOString();
+                
+                // 返回增强后的 JavaScript 对象，server.js 会将其 JSON.stringify
+                return resultObject;
             } else {
-                // If plugin itself reported an error via JSON, throw that.
-                throw new Error(pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`);
+                // 如果插件本身通过其JSON响应报告了错误
+                let errorObject = {
+                    plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`
+                };
+                if (maidNameFromArgs) {
+                    errorObject.MaidName = maidNameFromArgs;
+                }
+                errorObject.timestamp = new Date().toISOString();
+                // 抛出错误，让 server.js 捕获并处理。
+                // server.js 会将这个错误信息（现在也包含MaidName和timestamp）格式化为 toolResultText
+                // 注意：这里我们不直接返回 errorObject，而是抛出错误，
+                // 因为 server.js 的 catch 块期望一个 Error 实例或字符串。
+                // server.js 中的 toolResultText 会基于 catch 到的错误信息构建。
+                // 为了让 server.js 能统一处理，我们还是抛出一个 Error。
+                // server.js 在 catch 块中可以决定如何格式化这个错误信息。
+                // 重要的是，pluginOutput.error 已经是插件希望展示的错误信息。
+                throw new Error(JSON.stringify(errorObject)); // 抛出包含MaidName和timestamp的错误对象字符串
             }
         } catch (e) {
-            // Catch errors from executePlugin (e.g., process spawn error, timeout) or the error thrown above
+            // 捕获来自 executePlugin 的错误（例如，进程生成错误、超时）或上面抛出的错误
             console.error(`[PluginManager processToolCall] Error during execution or processing result for plugin ${toolName}:`, e.message);
-            throw e; // Re-throw to be caught by server.js
+            // 尝试解析 e.message 是否已经是我们格式化的 JSON 错误字符串
+            try {
+                const parsedError = JSON.parse(e.message);
+                if (parsedError && parsedError.plugin_error && parsedError.timestamp) {
+                    // 如果是，重新抛出，让 server.js 的 catch 块处理
+                    throw e;
+                }
+            } catch (jsonParseError) {
+                // 如果不是，则创建一个新的包含 MaidName 和 timestamp 的错误对象
+                let enhancedErrorObject = {
+                    plugin_execution_error: e.message || 'Unknown plugin execution error',
+                    timestamp: new Date().toISOString()
+                };
+                if (maidNameFromArgs) {
+                    enhancedErrorObject.MaidName = maidNameFromArgs;
+                }
+                throw new Error(JSON.stringify(enhancedErrorObject));
+            }
+            throw e; // 如果上面的逻辑没有重新抛出，则按原样重新抛出
         }
     }
 
