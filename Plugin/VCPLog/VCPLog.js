@@ -54,10 +54,35 @@ async function writeToLog(message) {
 // server.js 会负责调用 WebSocketServer.broadcast
 function pushVcpLog(vcpData) {
     if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
-        console.log('[VCPLog] Received VCP data. Logging to file:', vcpData);
+        console.log('[VCPLog] Received VCP data for logging:', vcpData);
     }
-    // 只记录日志，实际的 WebSocket 推送由 server.js 中的 WebSocketServer.broadcast 处理
-    writeToLog(`VCP Event: ${JSON.stringify(vcpData)}`);
+
+    let logPrefix = "";
+    let mainLogContent = `VCP Event: ${JSON.stringify(vcpData)}`;
+
+    if (vcpData && typeof vcpData.content === 'string') {
+        try {
+            const parsedContent = JSON.parse(vcpData.content);
+            if (parsedContent && typeof parsedContent === 'object') {
+                if (parsedContent.MaidName) {
+                    logPrefix += `[Maid: ${parsedContent.MaidName}] `;
+                }
+                if (parsedContent.timestamp) {
+                    logPrefix += `[EventTime: ${parsedContent.timestamp}] `;
+                }
+                // 可选：如果希望主日志内容不重复显示已提取的MaidName和timestamp，
+                // 可以从parsedContent中删除它们再重新stringify，但这会改变原始vcpData的记录。
+                // 目前保持vcpData的完整性，将提取信息作为前缀。
+            }
+        } catch (e) {
+            if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+                console.warn('[VCPLog] Failed to parse vcpData.content for MaidName/timestamp extraction:', e.message);
+            }
+            // 解析失败，则不添加额外前缀，只记录原始vcpData
+        }
+    }
+    
+    writeToLog(logPrefix + mainLogContent);
 }
 
 
