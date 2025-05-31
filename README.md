@@ -305,28 +305,28 @@ VCP 的设计哲学之一是“不受前端交互束缚”，这意味着它可�
 
 ```mermaid
 graph TD
-    A[莱恩主人] -- 复杂指令/宏大愿景 (e.g., "为小爱制作一部出道MV!") --> B(VCP 女仆通讯与任务调度核心)
+    A[莱恩主人] -- "复杂指令/宏大愿景 (e.g., \"为小爱制作一部出道MV!\")" --> B(VCP 女仆通讯与任务调度核心)
 
-    subgraph AI 女仆团 (基于VCP协同进化)
-        B -- 规划与分解任务 --> BA(AI总指挥-小爱)
-        BA -- 歌词创作指令 --> C(女仆A-小诗: Gemini Pro驱动, 擅长文学)
-        BA -- 作曲编曲指令 --> D(女仆B-小曲: Gemini Pro驱动, 调用SunoGen)
-        BA -- 视觉设计与素材生成指令 --> E(女仆C-莱兔云: Gemini Flash驱动, SDXL大师, 调用FluxGen/ComfyUI插件)
-        BA -- 字幕特效与时间轴制作指令 --> F(女仆D-小K: Gemini Flash驱动, 调用LyricAnimator)
-        BA -- 知识库支持与信息检索 --> G(女仆E-小知: Gemini Pro驱动, 调用TavilySearch, DailyNoteManager)
-        BA -- 任务进度汇总与最终剪辑指导 --> H(女仆F-小统: Gemini Pro驱动, 调用视频编辑插件接口)
+    subgraph "AI 女仆团 (基于VCP协同进化)"
+        B -- "规划与分解任务" --> BA(AI总指挥-小爱)
+        BA -- "歌词创作指令" --> C("女仆A-小诗: Gemini Pro驱动, 擅长文学")
+        BA -- "作曲编曲指令" --> D("女仆B-小曲: Gemini Pro驱动, 调用SunoGen")
+        BA -- "视觉设计与素材生成指令" --> E("女仆C-莱兔云: Gemini Flash驱动, SDXL大师, 调用FluxGen/ComfyUI插件")
+        BA -- "字幕特效与时间轴制作指令" --> F("女仆D-小K: Gemini Flash驱动, 调用LyricAnimator")
+        BA -- "知识库支持与信息检索" --> G("女仆E-小知: Gemini Pro驱动, 调用TavilySearch, DailyNoteManager")
+        BA -- "任务进度汇总与最终剪辑指导" --> H("女仆F-小统: Gemini Pro驱动, 调用视频编辑插件接口")
 
-        C -- 原创歌词 --> BA
-        D -- 音乐小样 (多版本) --> BA
-        E -- MV视觉素材 (大量图片/短视频) --> BA
-        F -- 特效字幕序列 --> BA
-        G -- 相关背景资料/用户偏好 --> BA
+        C -- "原创歌词" --> BA
+        D -- "音乐小样 (多版本)" --> BA
+        E -- "MV视觉素材 (大量图片/短视频)" --> BA
+        F -- "特效字幕序列" --> BA
+        G -- "相关背景资料/用户偏好" --> BA
 
-        subgraph VCP 核心服务支撑
-            MEM_PUB[公共知识库 (女仆团共享经验)]
-            MEM_PRI[个体记忆库 (各女仆专属日记)]
-            TOOL_HUB[VCP插件中心 (各类工具)]
-            VCP_COMM[VCP内部通信协议 (AgentAssistant)]
+        subgraph "VCP 核心服务支撑"
+            MEM_PUB["公共知识库 (女仆团共享经验)"]
+            MEM_PRI["个体记忆库 (各女仆专属日记)"]
+            TOOL_HUB["VCP插件中心 (各类工具)"]
+            VCP_COMM["VCP内部通信协议 (AgentAssistant)"]
         end
 
         C <--> MEM_PRI
@@ -338,18 +338,18 @@ graph TD
         G <--> TOOL_HUB
         H <--> TOOL_HUB
 
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> C
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> D
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> E
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> F
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> G
-        BA -- (通过VCP_COMM与其他女仆持续沟通协调) --> H
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> C
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> D
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> E
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> F
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> G
+        BA -- "(通过VCP_COMM与其他女仆持续沟通协调)" --> H
     end
 
-    BA -- 整合各环节成果, 形成MV初步方案 --> B
-    B -- (可能有人类指挥官莱恩的阶段性评审与反馈) --> BA
-    H -- 最终剪辑版MV (或项目文件) --> B
-    B -- 将最终成果呈现给 --> A
+    BA -- "整合各环节成果, 形成MV初步方案" --> B
+    B -- "(可能有人类指挥官莱恩的阶段性评审与反馈)" --> BA
+    H -- "最终剪辑版MV (或项目文件)" --> B
+    B -- "将最终成果呈现给" --> A
 ```
 
 ## 8. 安装与运行
