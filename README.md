@@ -533,7 +533,7 @@ TarDateTimePlace="今天是{{Date}} ({{Today}}), 现在是{{Time}}。你当前�
 TarWeatherInfo="当前天气状况：{{VCPWeatherInfo}}。"
 TarEmojiGuide='本服务器支持表情包。通用表情包列表: {{通用表情包}}。调用示例: <img src="{{VarHttpUrl}}:{{Port}}/pw={{Image_Key}}/images/通用表情包/开心.png" width="100">。'
 TarMemorySystemGuide="你拥有持久记忆能力。可在回复末尾使用特定格式创建或更新日记：\n<<<DailyNoteStart>>>\nMaid: Nova\nDate: 2025/5/31\nContent: 今日学习心得...\n<<<DailyNoteEnd>>>\n使用 `DailyNoteEditor` 指令来编辑过往的日记，而非重复创建。"
-TarToolUsageProtocol="你可调用以下系统工具。工具调用必须严格遵循以下格式，并用```包裹：\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」工具名「末」\n参数1:「始」参数值1「末」\n参数2:「始」参数值2「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+TarToolUsageProtocol="你可调用以下系统工具。工具调用必须严格遵循以下格式，并用```包裹：\n```\n<<<[TOOL_REQUEST]>>>\nmaid:「始」name「末」 //使用署名时，你将可以看到工具调用由谁发起。\ntool_name:「始」工具名「末」\n参数1:「始」参数值1「末」\n参数2:「始」参数值2「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
 TarAllToolsList="你的可用工具集如下：\n[工具列表与调用示例]"
 TarCollaborationGuide="你可以通过 `AgentAssistant` 与其他AI助手协作。例如，向 '小爱' 发送消息：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」\ntarget_agent:「始」小爱「末」\nmessage:「始」你好小爱，关于昨天的项目A，我有一个新想法...「末」\n<<<[END_TOOL_REQUEST]>>>"
 ```
