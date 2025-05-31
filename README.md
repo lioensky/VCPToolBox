@@ -462,17 +462,31 @@ VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调
 
 ### 核心系统变量
 
-- **2025/5/31, 16:44:33, 星期六, 乙巳蛇年五月初五**: 实时日期时间与节日信息。
-- **5890**: 服务器运行端口。
+## 支持的通用变量占位符
+
+(此处可以列出 `README.md` 中已有的变量列表，确保与实际代码一致)
+
+*   `{{Date}}`: 当前日期 (格式: YYYY/M/D)。
+*   `{{Time}}`: 当前时间 (格式: H:MM:SS)。
+*   `{{Today}}`: 当天星期几 (中文)。
+*   `{{Festival}}`: 农历日期、生肖、节气。
+*   `{{VCPWeatherInfo}}`: 当前缓存的天气预报文本 (由 `WeatherReporter` 插件提供)。
+*   `{{角色名日记本}}`: 特定角色（如 `小克`）的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
+*   `{{公共日记本}}`: 共享知识库的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
+*   `{{AllCharacterDiariesData}}`: (由 `DailyNoteGet` 插件提供) 一个 JSON 字符串，解析后为包含所有角色日记内容的对象。服务器内部使用此数据来支持 `{{角色名日记本}}` 的解析。
+*   `{{xx表情包}}`: 特定表情包（如 `通用表情包`）的图片文件名列表 (以 `|` 分隔)。数据由 `EmojiListGenerator` 插件生成列表文件，服务器加载到内存缓存后提供。
+*   `{{Port}}`: 服务器运行的端口号。
+*   `{{Image_Key}}`: (由 `ImageServer` 插件配置提供) 图床服务的访问密钥。
+*   `{{Tar*}}`: (例如 `{{TarSysPrompt}}`, `{{TarEmojiPrompt}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Tar` 开头的自定义变量。这类变量拥有最高替换优先级，在所有其他占位符（包括 `{{Sar*}}`, `{{Var*}}`, 日期/时间等）之前被处理。其主要优势在于它们的值可以包含其他占位符，这些嵌套的占位符会在后续的替换阶段被进一步解析。这使得 `{{Tar*}}` 非常适合用于定义复杂和多层次的系统提示词模板。例如：`TarSysPrompt="今天是{{Date}}, 现在是{{Time}}, 天气{{VCPWeatherInfo}}。"`
+*   `{{Var*}}`: (例如 `{{VarNeko}}`) 用户在 [`config.env`](config.env.example:1) 中定义的以 `Var` 开头的自定义变量。VCP 会按顺序对所有 `Var` 定义进行全局匹配和替换。如果多个 `Var` 定义匹配到同一文本，后定义的 `Var` 会覆盖先定义的 `Var`。因此，建议将较长或更精确的 `Var` 定义放在前面，较短或通用的 `Var` 定义放在后面，以确保预期的替换效果。例如，如果您定义了 `{{VarUser}}` 和 `{{VarUsername}}`，应将 `{{VarUsername}}` 定义在 `{{VarUser}}` 之前，以避免 `{{VarUsername}}` 被错误地替换为 `{{VarUser}}name`。
+*   `{{Sar*}}`: (例如 `{{SarOpenAI}}`) 特殊类型的自定义变量，其定义和行为与 `{{Var*}}` 类似，但其生效与否会根据当前使用的 AI 模型进行判断。这允许为不同的 AI 模型配置特定的变量值。例如，可以为 `gpt-3.5-turbo` 模型设置一个特定的 `{{SarModelInfoForGPT}}`，而为 `claude-2` 模型设置另一个不同的 `{{SarModelInfoForClaude}}`。
+*   `{{VCPPluginName}}`: (例如 `{{VCPWan2.1VideoGen}}`) 由插件清单自动生成的、包含该插件所有命令描述和调用示例的文本块。
+*   `{{VCPAllTools}}`: 一个特殊的占位符，当被解析时，它会被替换为所有当前已加载且具有调用指令描述的 VCP 工具的完整描述和调用示例的集合。各个工具的描述之间会用分隔符隔开，方便AI全面了解可用工具。
+*   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过。
+*   `{{VCPWeaherInfo}}`: 由WeatherReporter提供的占位符，提供完整的天气预警，24小时精准天气，7日天气预报。
+
 
 ### 插件与配置驱动变量
-
-- **天气预警信息**: 天气预报 (由 `WeatherReporter` 提供)。
-- **`[角色名日记本内容为空或未从插件获取]`**: 特定角色或公共的完整日记内容 (数据源于 `DailyNoteGet` 提供的 `{{AllCharacterDiariesData}}`)。
-- **`{{AllCharacterDiariesData}}`**: (内部使用) 包含所有角色日记的 JSON 字符串。
-- **`xx表情包列表不可用`**: 特定表情包列表 (由 `EmojiListGenerator` 生成)。
-- **`777555`**: 图床访问密钥 (由 `ImageServer` 插件配置提供)。
-- **`{{VCPPluginName}}`**: 特定插件所有命令描述和调用示例的文本块 (据 `plugin-manifest.json` 自动生成)。
 
 ### 用户自定义变量 (定义于 `config.env`)
 
