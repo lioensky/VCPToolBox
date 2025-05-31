@@ -96,10 +96,10 @@ graph TD
         MEM[VCP 记忆系统]
 
         subgraph VCP 插件生态
-            P_STATIC[静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator]
-            P_PRE[消息预处理插件 e.g., ImageProcessor]
-            P_SYNC[同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant]
-            P_SVC[服务插件 e.g., ImageServer]
+            P_STATIC["静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator"]
+            P_PRE["消息预处理插件 e.g., ImageProcessor"]
+            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant"]
+            P_SVC["服务插件 e.g., ImageServer"]
         end
 
         MEM_DB[(持久化记忆存储 - 日记文件系统)]
@@ -109,49 +109,49 @@ graph TD
 
     subgraph 外部依赖与服务
         AI_MODEL[后端 AI 大语言模型 API]
-        EXT_API[外部 API/服务 e.g., 天气, 搜索, 专业计算]
-        LOCAL_TOOLS[本地脚本/软件 e.g., ComfyUI, Python脚本]
+        EXT_API["外部 API/服务 e.g., 天气, 搜索, 专业计算"]
+        LOCAL_TOOLS["本地脚本/软件 e.g., ComfyUI, Python脚本"]
     end
 
-    U -- HTTP请求 (含用户消息, 模型指令) --> S
-    S -- 预处理 (认证, 变量替换) --> S
-    S -- 调用消息预处理器 --> P_PRE
-    P_PRE -- 处理后消息 --> S
-    S -- 构造完整请求 (含系统提示, 处理后消息, 历史对话) --> AI_MODEL
+    U -- "HTTP请求 (含用户消息, 模型指令)" --> S
+    S -- "预处理 (认证, 变量替换)" --> S
+    S -- "调用消息预处理器" --> P_PRE
+    P_PRE -- "处理后消息" --> S
+    S -- "构造完整请求 (含系统提示, 处理后消息, 历史对话)" --> AI_MODEL
 
-    AI_MODEL -- AI响应 (可能含VCP工具调用指令/日记写入指令) --> S
+    AI_MODEL -- "AI响应 (可能含VCP工具调用指令/日记写入指令)" --> S
 
-    S -- 解析AI响应 --> S
-    S -- IF VCP工具调用 --> PM
-    PM -- 分发任务给相应同步插件 --> P_SYNC
-    P_SYNC -- 可能与外部API/本地工具交互 --> EXT_API
-    P_SYNC -- 可能与外部API/本地工具交互 --> LOCAL_TOOLS
-    P_SYNC -- 执行结果 (JSON) --> PM
-    PM -- 结果汇总 --> S
-    S -- 将工具结果注入对话历史, 再次调用 --> AI_MODEL
-    S -- (重复工具调用循环...) --> S
+    S -- "解析AI响应" --> S
+    S -- "IF VCP工具调用" --> PM
+    PM -- "分发任务给相应同步插件" --> P_SYNC
+    P_SYNC -- "可能与外部API/本地工具交互" --> EXT_API
+    P_SYNC -- "可能与外部API/本地工具交互" --> LOCAL_TOOLS
+    P_SYNC -- "执行结果 (JSON)" --> PM
+    PM -- "结果汇总" --> S
+    S -- "将工具结果注入对话历史, 再次调用" --> AI_MODEL
+    S -- "(重复工具调用循环...)" --> S
 
-    S -- IF 日记写入指令 --> PM
-    PM -- 调用DailyNoteWrite --> P_SYNC
-    P_SYNC -- 结构化日记数据 --> MEM_DB
+    S -- "IF 日记写入指令" --> PM
+    PM -- "调用DailyNoteWrite" --> P_SYNC
+    P_SYNC -- "结构化日记数据" --> MEM_DB
 
-    PM -- 静态插件初始化/定时执行 --> P_STATIC
-    P_STATIC -- 更新占位符数据 (e.g., 天气, 日记内容) --> VAR
-    VAR -- 在系统提示/用户消息中替换 --> S
+    PM -- "静态插件初始化/定时执行" --> P_STATIC
+    P_STATIC -- "更新占位符数据 (e.g., 天气, 日记内容)" --> VAR
+    VAR -- "在系统提示/用户消息中替换" --> S
 
-    PM -- 服务插件初始化, 注册路由 --> P_SVC
-    P_SVC -- 提供独立HTTP服务 --> U
+    PM -- "服务插件初始化, 注册路由" --> P_SVC
+    P_SVC -- "提供独立HTTP服务" --> U
 
-    MEM -- DailyNoteGet读取日记 --> MEM_DB
-    MEM -- DailyNoteManager/Editor管理日记 (由AI通过P_SYNC调用) --> MEM_DB
+    MEM -- "DailyNoteGet读取日记" --> MEM_DB
+    MEM -- "DailyNoteManager/Editor管理日记 (由AI通过P_SYNC调用)" --> MEM_DB
 
-    ADMIN -- 通过/admin_api管理 --> CONF
-    ADMIN -- 通过/admin_api管理 --> PM
-    ADMIN -- 通过/admin_api管理 --> MEM_DB
-    ADMIN -- 控制服务器重启 --> S
+    ADMIN -- "通过/admin_api管理" --> CONF
+    ADMIN -- "通过/admin_api管理" --> PM
+    ADMIN -- "通过/admin_api管理" --> MEM_DB
+    ADMIN -- "控制服务器重启" --> S
 
-    S -- 最终响应 (流式/非流式) --> U
-    S -- 记录日志 --> LOG
+    S -- "最终响应 (流式/非流式)" --> U
+    S -- "记录日志" --> LOG
 ```
 
 ### 核心交互流程解读
