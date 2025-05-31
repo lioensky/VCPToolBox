@@ -2,18 +2,36 @@
 
 ## 1. 简介
 
-VCPLog 插件通过 WebSocket 提供一个实时的 VCP (Voice Conversion Plugin / Variable Common Placeholder) 调用信息推送服务。它允许客户端连接并接收 VCP 工具调用的相关日志，同时这些日志也会被记录在服务器端的文件中。
+VCPLog 插件通过 WebSocket 提供一个实时的 VCP (Voice Conversion Plugin / Variable Common Placeholder) 调用信息推送服务。它允许客户端连接并接收 VCP 工具调用的相关日志，同时这些日志也会被记录在服务器端的文件中，并且可以选择性地推送到 Gotify 服务器以实现即时通知。
 
 ## 2. 配置
 
-插件的行为依赖于以下配置：
+插件的行为依赖于以下配置项。这些配置项应在插件目录 `Plugin/VCPLog/`下的 `config.env` 文件中设置。你可以复制同目录下的 `config.env.example` 文件并修改。
 
-*   **`VCP_Key`**: 用于 WebSocket 连接认证的密钥。此密钥需要在您的主 `config.env` 文件中设置，或者在插件自己的 `Plugin/VCPLog/config.env` 文件中定义（如果存在）。插件的 `plugin-manifest.json` 通过 `configSchema` 指定了此配置项。
+*   **`VCP_Key`** (字符串, 必需)
+    *   描述: 用于 WebSocket 连接认证的密钥。
+    *   示例: `VCP_Key=your_secret_vcp_key_here`
 
-    示例 (`config.env`):
-    ```env
-    VCP_Key=your_secret_vcp_key_here
-    ```
+*   **`Enable_Gotify_Push`** (布尔值, 可选, 默认为 `false`)
+    *   描述: 是否启用 Gotify 推送功能。设置为 `true` 以启用。
+    *   示例: `Enable_Gotify_Push=true`
+
+*   **`Gotify_Url`** (字符串, 条件性必需)
+    *   描述: 你的 Gotify 服务器的完整 URL。如果 `Enable_Gotify_Push` 设置为 `true`，则此项为必需。
+    *   示例: `Gotify_Url=https://gotify.example.com` 或 `Gotify_Url=http://localhost:8080`
+
+*   **`Gotify_App_Token`** (字符串, 条件性必需)
+    *   描述: 你在 Gotify 中为此插件/应用生成的 App Token。如果 `Enable_Gotify_Push` 设置为 `true`，则此项为必需。
+    *   示例: `Gotify_App_Token=Axxxxxxxxxxxxxx`
+
+*   **`Gotify_Priority`** (整数, 可选)
+    *   描述: 推送到 Gotify 消息的优先级。具体数值请参考 Gotify 文档。如果未设置，插件将使用默认优先级 (例如 2)。
+    *   示例: `Gotify_Priority=5`
+
+*   **`DebugMode`** (布尔值, 可选)
+    *   描述: 此插件会遵循项目根目录 `config.env` 中的全局 `DebugMode` 设置。如果需要在插件级别覆盖此设置（不推荐，除非有特殊需求），可以在此插件的 `config.env` 中设置 `DebugMode=true` 或 `DebugMode=false`。
+
+请参考 `Plugin/VCPLog/config.env.example` 文件获取详细的配置格式和说明。
 
 ## 3. 客户端连接
 
@@ -117,9 +135,35 @@ ws.onerror = function(error) { // 使用 onerror 标准事件处理
 *   `stream_loop_not_found`: 流式响应中工具未找到。
 *   (以及非流式对应的 `non_stream_...` 等)
 
-## 5. 日志文件
+## 5. Gotify 推送 （可选）
 
-所有通过 WebSocket 推送的 VCP 调用信息（以及连接/断开事件）也会被记录在服务器端。
+如果启用了 Gotify 推送功能 (通过在 `config.env` 中设置 `Enable_Gotify_Push=true` 并配置好 `Gotify_Url` 和 `Gotify_App_Token`)，VCP 日志信息也会被发送到指定的 Gotify 服务器。
+
+### 5.1. 消息格式
+
+推送到 Gotify 的消息通常包含以下信息：
+
+*   **标题 (Title)**: 通常格式为 `VCP Log: <Tool_Name_Or_Event>`，例如 `VCP Log: DoubaoGen` 或 `VCP Log: General Event`。
+*   **消息体 (Message)**: 包含更详细的日志信息，通常包括：
+    *   来源 (Source): 如 `stream_loop`, `non_stream_loop_error` 等。
+    *   状态 (Status): 如 `success`, `error`。
+    *   内容 (Content): 实际的日志内容或错误信息。
+
+    示例消息体结构:
+    ```
+    Source: stream_loop
+    Status: success
+    Content: 图片已成功生成！...
+    ```
+*   **优先级 (Priority)**: 根据 `config.env` 中的 `Gotify_Priority` 设置，或使用插件的默认值。
+
+### 5.2. 触发条件
+
+每当 `pushVcpLog` 函数被调用时（即有新的 VCP 日志产生时），并且 Gotify 推送功能已启用且配置正确，相应的日志信息就会被尝试推送到 Gotify。
+
+## 6. 日志文件
+
+所有通过 WebSocket 推送的 VCP 调用信息（以及连接/断开事件，和 Gotify 推送尝试的结果）也会被记录在服务器端。
 *   **日志文件路径**: `Plugin/VCPLog/log/VCPlog.txt` (相对于项目根目录)
 *   **格式**: 每条日志前会带有时间戳。
 
