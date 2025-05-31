@@ -169,6 +169,13 @@ async function replaceCommonVariables(text, model) {
             processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
         }
     }
+    for (const envKey in process.env) {
+        if (envKey.startsWith('Var')) {
+            const placeholder = `{{${envKey}}}`;
+            const value = process.env[envKey];
+            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+        }
+    }
 
     const sarModels = (process.env.SarModel || '').split(',').map(m => m.trim()).filter(m => m.length > 0);
     const isSarModel = model && sarModels.includes(model);
@@ -233,13 +240,6 @@ async function replaceCommonVariables(text, model) {
         processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
     }
 
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Var')) {
-            const placeholder = `{{${envKey}}}`;
-            const value = process.env[envKey];
-            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
-        }
-    }
     if (process.env.PORT) {
         processedText = processedText.replaceAll('{{Port}}', process.env.PORT);
     }
