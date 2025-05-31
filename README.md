@@ -84,18 +84,18 @@ VCP 的系统架构围绕“AI-工具-记忆”铁三角构建，旨在实现三
 
 ```mermaid
 graph TD
-    subgraph 用户/客户端
+    subgraph "用户/客户端"
         U[用户/前端应用]
     end
 
-    subgraph VCP 服务器 (VCPToolBox)
+    subgraph "VCP 服务器 (VCPToolBox)"
         S[server.js - 核心调度与通信]
         PM[Plugin.js - 插件管理器]
         CONF[配置系统 - config.env, 插件.env]
         VAR[通用变量替换引擎]
         MEM[VCP 记忆系统]
 
-        subgraph VCP 插件生态
+        subgraph "VCP 插件生态"
             P_STATIC["静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator"]
             P_PRE["消息预处理插件 e.g., ImageProcessor"]
             P_SYNC["同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant"]
@@ -107,7 +107,7 @@ graph TD
         ADMIN[Web 管理面板]
     end
 
-    subgraph 外部依赖与服务
+    subgraph "外部依赖与服务"
         AI_MODEL[后端 AI 大语言模型 API]
         EXT_API["外部 API/服务 e.g., 天气, 搜索, 专业计算"]
         LOCAL_TOOLS["本地脚本/软件 e.g., ComfyUI, Python脚本"]
