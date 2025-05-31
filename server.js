@@ -216,20 +216,19 @@ async function replaceCommonVariables(text, model) {
 
 // 新增：处理 {{VCPAllTools}} 占位符
     if (processedText.includes('{{VCPAllTools}}')) {
-        const vcpPlaceholders = [];
+        const vcpDescriptionsList = [];
 
         // 从 individualPluginDescriptions 添加 (这些由 pluginManager.getIndividualPluginDescriptions() 提供)
-        // individualPluginDescriptions 变量是在此代码块之前定义的
         if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-            for (const placeholderKey of individualPluginDescriptions.keys()) {
-                // placeholderKey 的格式是 "VCPPluginName", 我们将其包装成 "{{VCPPluginName}}"
-                vcpPlaceholders.push(`{{${placeholderKey}}}`);
+            for (const description of individualPluginDescriptions.values()) {
+                vcpDescriptionsList.push(description);
             }
         }
         // 注意: 如果未来有其他直接通过 pluginManager.getPlaceholderValue("{{VCPCustomXXX}}") 处理的占位符,
         // 并且希望它们也列在 {{VCPAllTools}} 中，需要在此处手动添加逻辑来识别并包含它们。
 
-        const allVcpToolsString = vcpPlaceholders.length > 0 ? vcpPlaceholders.join(', ') : '没有可用的VCP工具占位符';
+        // 使用双换行符和分隔线来分隔各个插件的描述，使其更易读
+        const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
         processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
     }
 
