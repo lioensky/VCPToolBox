@@ -8,6 +8,7 @@ const path = require('path');
 const { Writable } = require('stream');
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
+const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
@@ -568,13 +569,32 @@ app.post('/v1/chat/completions', async (req, res) => {
                     if (pluginManager.getPlugin(toolCall.name)) {
                         try {
                             if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
-                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                            // Push to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client stream)
-                            const vcpLogPluginModuleForSuccess = pluginManager.serviceModules.get("VCPLog")?.module;
-                            if (vcpLogPluginModuleForSuccess && typeof vcpLogPluginModuleForSuccess.pushVcpLog === 'function') {
-                                vcpLogPluginModuleForSuccess.pushVcpLog({ tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop' });
+                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output from the plugin's stdout (parsed if JSON)
+                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                            
+                            // Push to VCPLog via WebSocketServer (for VCP call logging)
+                            webSocketServer.broadcast({
+                                type: 'vcp_log',
+                                data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop' }
+                            }, 'VCPLog');
+
+                            // Check manifest for WebSocket push for this plugin's actual result
+                            const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
+                            if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
+                                let messageToSend = pluginResult; // By default, use the direct plugin result
+                                if (!pluginManifestForStream.webSocketPush.usePluginResultAsMessage && pluginManifestForStream.webSocketPush.messageType) {
+                                    // If not using direct result, and a messageType is specified, wrap it
+                                    messageToSend = { type: pluginManifestForStream.webSocketPush.messageType, data: pluginResult };
+                                }
+                                // Ensure messageToSend is an object for broadcast, as AgentMessage.js produces an object.
+                                if (typeof messageToSend === 'object' && messageToSend !== null) {
+                                   webSocketServer.broadcast(messageToSend, pluginManifestForStream.webSocketPush.targetClientType || null);
+                                   if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
+                                } else if (DEBUG_MODE) {
+                                    console.warn(`[VCP Stream Loop] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
+                                }
                             }
+
                             if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
                                 const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'success', content: toolResultText };
                                 res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
@@ -582,11 +602,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                         } catch (pluginError) {
                              console.error(`[VCP Stream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
                              toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                             // Push error to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client stream)
-                            const vcpLogPluginModuleForError = pluginManager.serviceModules.get("VCPLog")?.module;
-                            if (vcpLogPluginModuleForError && typeof vcpLogPluginModuleForError.pushVcpLog === 'function') {
-                                vcpLogPluginModuleForError.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_error' });
-                            }
+                             // Push error to VCPLog via WebSocketServer
+                            webSocketServer.broadcast({
+                                type: 'vcp_log',
+                                data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_error' }
+                            }, 'VCPLog');
                              if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
                                 const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
                                 res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
@@ -595,11 +615,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                     } else {
                         toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
                         if (DEBUG_MODE) console.warn(`[VCP Stream Loop] ${toolResultText}`);
-                        // Push not found error to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client stream)
-                        const vcpLogPluginModuleForNotFound = pluginManager.serviceModules.get("VCPLog")?.module;
-                        if (vcpLogPluginModuleForNotFound && typeof vcpLogPluginModuleForNotFound.pushVcpLog === 'function') {
-                            vcpLogPluginModuleForNotFound.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_not_found' });
-                        }
+                        // Push not found error to VCPLog via WebSocketServer
+                        webSocketServer.broadcast({
+                            type: 'vcp_log',
+                            data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_not_found' }
+                        }, 'VCPLog');
                         if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
                             const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
                             res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
@@ -739,24 +759,43 @@ app.post('/v1/chat/completions', async (req, res) => {
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
                                 if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
-                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                                // Push to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client display)
-                                const vcpLogPluginModuleForSuccessNonStream = pluginManager.serviceModules.get("VCPLog")?.module;
-                                if (vcpLogPluginModuleForSuccessNonStream && typeof vcpLogPluginModuleForSuccessNonStream.pushVcpLog === 'function') {
-                                    vcpLogPluginModuleForSuccessNonStream.pushVcpLog({ tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' });
+                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output
+                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                                
+                                // Push to VCPLog via WebSocketServer (for VCP call logging)
+                               webSocketServer.broadcast({
+                                   type: 'vcp_log',
+                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' }
+                               }, 'VCPLog');
+
+                                // Check manifest for WebSocket push for this plugin's actual result
+                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
+                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
+                                    let messageToSend = pluginResult; // By default, use the direct plugin result
+                                    if (!pluginManifestNonStream.webSocketPush.usePluginResultAsMessage && pluginManifestNonStream.webSocketPush.messageType) {
+                                        // If not using direct result, and a messageType is specified, wrap it
+                                        messageToSend = { type: pluginManifestNonStream.webSocketPush.messageType, data: pluginResult };
+                                    }
+                                    // Ensure messageToSend is an object for broadcast
+                                    if (typeof messageToSend === 'object' && messageToSend !== null) {
+                                        webSocketServer.broadcast(messageToSend, pluginManifestNonStream.webSocketPush.targetClientType || null);
+                                        if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
+                                    } else if (DEBUG_MODE) {
+                                        console.warn(`[Multi-Tool] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
+                                    }
                                 }
+
                                 if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用结果:\n${toolResultText}` });
                                 }
                             } catch (pluginError) {
                                  console.error(`[Multi-Tool EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
                                  toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                 // Push error to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client display)
-                                const vcpLogPluginModuleForErrorNonStream = pluginManager.serviceModules.get("VCPLog")?.module;
-                                if (vcpLogPluginModuleForErrorNonStream && typeof vcpLogPluginModuleForErrorNonStream.pushVcpLog === 'function') {
-                                    vcpLogPluginModuleForErrorNonStream.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_error' });
-                                }
+                                 // Push error to VCPLog via WebSocketServer
+                                webSocketServer.broadcast({
+                                    type: 'vcp_log',
+                                    data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_error' }
+                                }, 'VCPLog');
                                  if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用错误:\n${toolResultText}` });
                                  }
@@ -764,11 +803,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                         } else {
                             toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
                             if (DEBUG_MODE) console.warn(`[Multi-Tool] ${toolResultText}`);
-                            // Push not found error to VCPLog plugin (regardless of SHOW_VCP_OUTPUT for client display)
-                            const vcpLogPluginModuleForNotFoundNonStream = pluginManager.serviceModules.get("VCPLog")?.module;
-                            if (vcpLogPluginModuleForNotFoundNonStream && typeof vcpLogPluginModuleForNotFoundNonStream.pushVcpLog === 'function') {
-                                vcpLogPluginModuleForNotFoundNonStream.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_not_found' });
-                            }
+                            // Push not found error to VCPLog via WebSocketServer
+                           webSocketServer.broadcast({
+                               type: 'vcp_log',
+                               data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_not_found' }
+                           }, 'VCPLog');
                             if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
                                 conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
                             }
@@ -904,22 +943,43 @@ app.post('/v1/chat/completions', async (req, res) => {
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
                                 if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
-                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? String(pluginResult) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                                const vcpLogPluginModuleSuccessLoop2 = pluginManager.serviceModules.get("VCPLog")?.module;
-                                if (vcpLogPluginModuleSuccessLoop2 && typeof vcpLogPluginModuleSuccessLoop2.pushVcpLog === 'function') {
-                                    vcpLogPluginModuleSuccessLoop2.pushVcpLog({ tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_final_loop' });
+                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output
+                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                                
+                                // Push to VCPLog via WebSocketServer (for VCP call logging)
+                               webSocketServer.broadcast({
+                                   type: 'vcp_log',
+                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_final_loop' }
+                               }, 'VCPLog');
+
+                               // Check manifest for WebSocket push for this plugin's actual result
+                                const pluginManifestNonStreamLoop2 = pluginManager.getPlugin(toolCall.name);
+                                if (pluginManifestNonStreamLoop2 && pluginManifestNonStreamLoop2.webSocketPush && pluginManifestNonStreamLoop2.webSocketPush.enabled) {
+                                    let messageToSend = pluginResult; // By default, use the direct plugin result
+                                    if (!pluginManifestNonStreamLoop2.webSocketPush.usePluginResultAsMessage && pluginManifestNonStreamLoop2.webSocketPush.messageType) {
+                                        // If not using direct result, and a messageType is specified, wrap it
+                                        messageToSend = { type: pluginManifestNonStreamLoop2.webSocketPush.messageType, data: pluginResult };
+                                    }
+                                    // Ensure messageToSend is an object for broadcast
+                                    if (typeof messageToSend === 'object' && messageToSend !== null) {
+                                        webSocketServer.broadcast(messageToSend, pluginManifestNonStreamLoop2.webSocketPush.targetClientType || null);
+                                        if (DEBUG_MODE) console.log(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
+                                    } else if (DEBUG_MODE) {
+                                        console.warn(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
+                                    }
                                 }
+
                                 if (SHOW_VCP_OUTPUT) {
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用结果:\n${toolResultText}` });
                                 }
                             } catch (pluginError) {
                                  console.error(`[VCP NonStream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
                                  toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                const vcpLogPluginModuleErrorLoop2 = pluginManager.serviceModules.get("VCPLog")?.module;
-                                if (vcpLogPluginModuleErrorLoop2 && typeof vcpLogPluginModuleErrorLoop2.pushVcpLog === 'function') {
-                                    vcpLogPluginModuleErrorLoop2.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_error' });
-                                }
+                                // Push error to VCPLog via WebSocketServer
+                               webSocketServer.broadcast({
+                                   type: 'vcp_log',
+                                   data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_error' }
+                               }, 'VCPLog');
                                  if (SHOW_VCP_OUTPUT) {
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用错误:\n${toolResultText}` });
                                  }
@@ -927,10 +987,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                         } else {
                             toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
                             if (DEBUG_MODE) console.warn(`[VCP NonStream Loop] ${toolResultText}`);
-                            const vcpLogPluginModuleNotFoundLoop2 = pluginManager.serviceModules.get("VCPLog")?.module;
-                            if (vcpLogPluginModuleNotFoundLoop2 && typeof vcpLogPluginModuleNotFoundLoop2.pushVcpLog === 'function') {
-                                vcpLogPluginModuleNotFoundLoop2.pushVcpLog({ tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_not_found' });
-                            }
+                            // Push not found error to VCPLog via WebSocketServer
+                           webSocketServer.broadcast({
+                               type: 'vcp_log',
+                               data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_not_found' }
+                           }, 'VCPLog');
                             if (SHOW_VCP_OUTPUT) {
                                 conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
                             }
@@ -1192,18 +1253,28 @@ server = app.listen(port, async () => { // Assign to server variable
     await ensureDebugLogDir();
     await initialize(); // This loads plugins and initializes services
 
-    // Attach WebSocket server for VCPLog plugin
-    const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
-    if (vcpLogPluginModule && typeof vcpLogPluginModule.attachWebSocketServer === 'function') {
-        if (DEBUG_MODE) console.log('[Server] Attaching WebSocket server for VCPLog plugin...');
-        vcpLogPluginModule.attachWebSocketServer(server); // Pass the http.Server instance
-    } else {
-        if (DEBUG_MODE) console.warn('[Server] VCPLog plugin module or attachWebSocketServer function not found.');
-    }
+    // Initialize the new WebSocketServer
+    if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
+    const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
+    webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
+    if (DEBUG_MODE) console.log('[Server] WebSocketServer initialized.');
+
+    // The VCPLog plugin's attachWebSocketServer is no longer needed here as WebSocketServer handles it.
+    // const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
+    // if (vcpLogPluginModule && typeof vcpLogPluginModule.attachWebSocketServer === 'function') {
+    //     if (DEBUG_MODE) console.log('[Server] Attaching WebSocket server for VCPLog plugin...');
+    //     vcpLogPluginModule.attachWebSocketServer(server); // Pass the http.Server instance
+    // } else {
+    //     if (DEBUG_MODE) console.warn('[Server] VCPLog plugin module or attachWebSocketServer function not found.');
+    // }
 });
 
 async function gracefulShutdown() {
     console.log('Initiating graceful shutdown...');
+    if (webSocketServer) { // Shutdown WebSocketServer
+        console.log('[Server] Shutting down WebSocketServer...');
+        webSocketServer.shutdown();
+    }
     if (pluginManager) {
         await pluginManager.shutdownAllPlugins();
     }

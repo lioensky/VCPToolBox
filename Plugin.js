@@ -554,6 +554,11 @@ async processToolCall(toolName, toolArgs) {
                         if (code === 0 && parsedOutput.status === "error") {
                             if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code 0 but reported error in JSON. Trusting JSON.`);
                         }
+
+                        // Add stderr to the resolved object if it exists
+                        if (errorOutput.trim()) {
+                            parsedOutput.pluginStderr = errorOutput.trim();
+                        }
                         resolve(parsedOutput);
                         return;
                     }
@@ -576,7 +581,7 @@ async processToolCall(toolName, toolArgs) {
                     if (errorOutput.trim() && this.debugMode) {
                         console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" (exit code 0) produced stderr: ${errorOutput.trim()}`);
                     }
-                    reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid JSON response. Stdout: ${output.trim().substring(0,200)}`)); // Keep error
+                    reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid JSON response. Stdout: ${output.trim().substring(0,200)}`));
                 }
             });
 
