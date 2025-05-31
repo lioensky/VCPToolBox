@@ -203,6 +203,17 @@ async function replaceCommonVariables(text, model) {
     if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
     processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
     processedText = processedText.replace(/\{\{VCPWeatherInfo\}\}/g, pluginManager.getPlaceholderValue("{{VCPWeatherInfo}}") || '天气信息不可用');
+    // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
+
+    // Replace individual VCP plugin descriptions
+    const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
+    if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+        for (const [placeholderKey, description] of individualPluginDescriptions) {
+            // placeholderKey is already like "VCPPluginName"
+            processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
+        }
+    }
+
 // 新增：处理 {{VCPAllTools}} 占位符
     if (processedText.includes('{{VCPAllTools}}')) {
         const vcpPlaceholders = [];
@@ -220,16 +231,6 @@ async function replaceCommonVariables(text, model) {
 
         const allVcpToolsString = vcpPlaceholders.length > 0 ? vcpPlaceholders.join(', ') : '没有可用的VCP工具占位符';
         processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
-    }
-    // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
-
-    // Replace individual VCP plugin descriptions
-    const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
-    if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-        for (const [placeholderKey, description] of individualPluginDescriptions) {
-            // placeholderKey is already like "VCPPluginName"
-            processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
-        }
     }
 
     for (const envKey in process.env) {
