@@ -263,7 +263,7 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 
 ### Agent 协同与系统增强
 
-- **AgentAssistant (synchronous)**: Agent 间标准通讯协议插件，支持基于各自知识库的互助式连续交流、消息群发、文件传递（通过服务器 WebDAV）、任务分发等，实现复杂异步工作流。
+- **AgentAssistant (synchronous)**: Agent 间标准通讯协议插件，支持基于各自知识库的互助式连续交流、消息群发、文件传递（通过服务器 WebDAV）、任务分发等，实现复杂异步工作流。甚至可以基于全新的`WebSocketServer.js` 向其它VCP服务器的Agent联络。
 - **AgentMessage (synchronous)**: 允许 AI 通过 WebSocket 向用户前端发送格式化消息。AI 提供接收者名称和内容，插件格式化后，`server.js` 根据其清单中的 `webSocketPush` 配置，通过统一的 `WebSocketServer.js` 推送给指定类型的客户端。
 - **VCPLog (service)**: 基于 WS/WSS 的服务器推送通知服务。其核心功能是记录 VCP 工具调用的文件日志。相关的 WebSocket 推送（VCP 调用信息、连接状态等）由 `server.js` 主动发起，通过统一的 `WebSocketServer.js` 定向广播给订阅了 `'VCPLog'` 客户端类型的客户端。
 - **EmojiListGenerator (static)**: 扫描表情包文件夹生成列表，供 `xx表情包列表不可用` 使用。
