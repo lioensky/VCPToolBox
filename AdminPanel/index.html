@@ -22,6 +22,7 @@
                     <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
                     <li><a href="#" data-target="image-cache-editor">图像缓存编辑器</a></li>
                     <li><a href="#" data-target="agent-files-editor">Agent 文件编辑器</a></li>
+                    <li><a href="#" data-target="server-log-viewer">服务器日志</a></li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
             </nav>
@@ -88,6 +89,16 @@
                     <span id="agent-file-status" class="status-message"></span>
                 </div>
                 <textarea id="agent-file-content-editor" spellcheck="false" placeholder="选择一个 Agent 文件以编辑其内容..."></textarea>
+            </section>
+
+            <section id="server-log-viewer-section" class="config-section">
+                <h2>服务器实时日志</h2>
+                <div class="server-log-controls">
+                    <button id="copy-server-log-button">复制日志</button>
+                    <span id="server-log-path-display"></span>
+                    <span id="server-log-status" class="status-message"></span>
+                </div>
+                <pre id="server-log-content" class="log-content-area"></pre>
             </section>
 
             <!-- 插件配置区域将动态生成在这里 -->
