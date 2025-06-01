@@ -527,7 +527,8 @@ VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调
 
 ```plaintext
 # config.env 文件中的示例 Tar 变量定义
-TarNova="Nova的日记本:{{Nova日记本}}。你是一个测试AI,Nova。我是你的主人——{{VarUser}}。{{TarSysPrompt}}系统信息是{{VarSystemInfo}}。系统工具列表：{{VarToolList}}。{{VarDailyNoteGuide}}额外指令:{{SarThink}} "
+# Agent专用配置目录
+AgentNova=Nova.txt
 # 前置系统变量
 TarSysPrompt="{{VarTimeNow}}当前地址是{{VarCity}},当前天气是{{VCPWeatherInfo}}。"
 TarEmojiPrompt='本服务器支持表情包功能，通用表情包图床路径为{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/通用表情包，注意[/通用表情包]路径指代，表情包列表为{{通用表情包}}，你可以灵活的在你的输出中插入表情包，调用方式为<img src="{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/通用表情包/阿库娅-一脸智障.jpg" width="150">,使用Width参数来控制表情包尺寸（50-200）。'
@@ -538,9 +539,7 @@ VarToolList="文生图工具{{VCPFluxGen}} 计算器工具{{VCPSciCalculator}},�
 ### 然后，在实际传递给 AI 模型的系统提示词中组合这些 `Tar*` 模块,以下是一个标准的系统提示词示例用于测试。
 
 ```plaintext
-{{TarNova}}
-表情包系统:{{TarEmojiPrompt}}
-VCP工具系统:{{VarVCPGuide}}
+{{Nova}}
 ```
 
 ### 这种模块化、基于变量的系统提示词工程具有以下优势
