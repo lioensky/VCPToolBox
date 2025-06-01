@@ -177,6 +177,15 @@
                     mainContent = JSON.stringify(vcpData, null, 2); // Show the 'data' part
                     contentIsPreformatted = true;
                 }
+            } else if (dataOrString.type === 'daily_note_created' && dataOrString.data && typeof dataOrString.data === 'object') {
+                const noteData = dataOrString.data;
+                titleText = `日记: ${noteData.maidName || 'N/A'} (${noteData.dateString || 'N/A'})`;
+                if (noteData.status === 'success') {
+                    mainContent = noteData.message || '日记已成功创建。';
+                } else {
+                    mainContent = noteData.message || `日记处理状态: ${noteData.status || '未知'}`;
+                }
+                // contentIsPreformatted = false; // Typically, these messages are single lines or short.
             } else if (dataOrString.type === 'connection_ack' && dataOrString.message) {
                 titleText = 'VCP Info:';
                 mainContent = String(dataOrString.message);
