@@ -1,7 +1,7 @@
 {
     "id": "0a484eb6-aa08-4ab1-b468-aa1f101c241c",
     "scriptName": "优化日记显示1",
-    "findRegex": "``` DailyNote\\n<<<DailyNoteStart>>>",
+    "findRegex": "```\s?DailyNote\n<<<DailyNoteStart>>>",
     "replaceString": ">▪▫▪▫▪▫\n>DailyNote 💌\n``` ",
     "trimStrings": [],
     "placement": [
