@@ -852,3 +852,57 @@ p.command-status.info {
     /* Uses .status-message general styles, specific overrides if needed */
     margin-left: auto; /* Push status to the right if space allows */
 }
+
+/* Server Log Viewer Styles */
+.server-log-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 15px;
+    padding: 10px;
+    background-color: #2a2a42; /* Consistent with other toolbars */
+    border-radius: 8px;
+    border: 1px solid #383853;
+}
+
+#copy-server-log-button {
+    padding: 8px 16px;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    background-color: #007bff; /* Blue for copy/action */
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+#copy-server-log-button:hover {
+    background-color: #0056b3;
+    transform: translateY(-1px);
+}
+
+#server-log-path-display {
+    font-size: 0.85em;
+    color: #a0a0c0;
+    flex-grow: 1; /* Allow it to take space */
+}
+
+#server-log-status {
+    /* Uses .status-message general styles */
+    margin-left: auto; /* Push status to the right */
+}
+
+.log-content-area {
+    background-color: #1e1e30; /* Dark background for logs */
+    color: #d0d0d0; /* Light grey text for logs */
+    padding: 15px;
+    border: 1px solid #383853;
+    border-radius: 6px;
+    height: 60vh; /* Good height for log display */
+    overflow-y: auto; /* Scroll for long logs */
+    white-space: pre-wrap; /* Preserve whitespace and wrap lines */
+    word-break: break-all; /* Break long words/lines */
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* Monospaced font */
+    font-size: 0.9em;
+    line-height: 1.5;
+}

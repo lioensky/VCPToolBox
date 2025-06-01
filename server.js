@@ -3,9 +3,109 @@ const express = require('express');
 const dotenv = require('dotenv');
 const schedule = require('node-schedule');
 const lunarCalendar = require('chinese-lunar-calendar');
-const fs = require('fs').promises;
+const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
+const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
 const { Writable } = require('stream');
+
+const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog'); // Moved DEBUG_LOG_DIR definition higher
+let currentServerLogPath = '';
+let serverLogWriteStream = null;
+
+// 确保 DebugLog 目录存在 (同步版本，因为在启动时需要)
+function ensureDebugLogDirSync() {
+    if (!fsSync.existsSync(DEBUG_LOG_DIR)) {
+        try {
+            fsSync.mkdirSync(DEBUG_LOG_DIR, { recursive: true });
+            // Use originalConsoleLog if available, otherwise console.log (it might not be overridden yet)
+            (typeof originalConsoleLog === 'function' ? originalConsoleLog : console.log)(`[ServerSetup] DebugLog 目录已创建: ${DEBUG_LOG_DIR}`);
+        } catch (error) {
+            (typeof originalConsoleError === 'function' ? originalConsoleError : console.error)(`[ServerSetup] 创建 DebugLog 目录失败: ${DEBUG_LOG_DIR}`, error);
+        }
+    }
+}
+
+// 服务器启动时调用
+function initializeServerLogger() {
+    ensureDebugLogDirSync(); // 确保目录存在
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}_${now.getMilliseconds().toString().padStart(3, '0')}`;
+    currentServerLogPath = path.join(DEBUG_LOG_DIR, `ServerLog-${timestamp}.txt`);
+    
+    try {
+        fsSync.writeFileSync(currentServerLogPath, `[${new Date().toLocaleString()}] Server log started.\n`, 'utf-8');
+        serverLogWriteStream = fsSync.createWriteStream(currentServerLogPath, { flags: 'a' });
+        (typeof originalConsoleLog === 'function' ? originalConsoleLog : console.log)(`[ServerSetup] 服务器日志将记录到: ${currentServerLogPath}`);
+    } catch (error) {
+        (typeof originalConsoleError === 'function' ? originalConsoleError : console.error)(`[ServerSetup] 初始化服务器日志文件失败: ${currentServerLogPath}`, error);
+        serverLogWriteStream = null;
+    }
+}
+
+// 保存原始 console 方法
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const originalConsoleInfo = console.info;
+
+// 在服务器启动的最开始就初始化日志记录器
+initializeServerLogger(); // Call this before console methods are overridden if they log during init
+
+
+function formatLogMessage(level, args) {
+    const timestamp = new Date().toLocaleString();
+    // Handle potential circular structures in objects for JSON.stringify
+    const safeStringify = (obj) => {
+        const cache = new Set();
+        return JSON.stringify(obj, (key, value) => {
+            if (typeof value === 'object' && value !== null) {
+                if (cache.has(value)) {
+                    return '[Circular]';
+                }
+                cache.add(value);
+            }
+            return value;
+        }, 2);
+    };
+    const message = args.map(arg => (typeof arg === 'object' ? safeStringify(arg) : String(arg))).join(' ');
+    return `[${timestamp}] [${level.toUpperCase()}] ${message}\n`;
+}
+
+function writeToLogFile(formattedMessage) {
+    if (serverLogWriteStream) {
+        serverLogWriteStream.write(formattedMessage, (err) => {
+            if (err) {
+                originalConsoleError('[Logger] 写入日志文件失败:', err);
+            }
+        });
+    }
+}
+
+console.log = (...args) => {
+    originalConsoleLog.apply(console, args);
+    const formattedMessage = formatLogMessage('log', args);
+    writeToLogFile(formattedMessage);
+};
+
+console.error = (...args) => {
+    originalConsoleError.apply(console, args);
+    const formattedMessage = formatLogMessage('error', args);
+    writeToLogFile(formattedMessage);
+};
+
+console.warn = (...args) => {
+    originalConsoleWarn.apply(console, args);
+    const formattedMessage = formatLogMessage('warn', args);
+    writeToLogFile(formattedMessage);
+};
+
+console.info = (...args) => {
+    originalConsoleInfo.apply(console, args);
+    const formattedMessage = formatLogMessage('info', args);
+    writeToLogFile(formattedMessage);
+};
+
+
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
@@ -19,29 +119,31 @@ const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
-const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog');
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
 
-async function ensureDebugLogDir() {
+// ensureDebugLogDir is now ensureDebugLogDirSync and called by initializeServerLogger
+// writeDebugLog remains for specific debug purposes, it uses fs.promises.
+async function ensureDebugLogDirAsync() { // Renamed to avoid conflict, used by writeDebugLog
     if (DEBUG_MODE) {
         try {
             await fs.mkdir(DEBUG_LOG_DIR, { recursive: true });
         } catch (error) {
-            console.error(`创建 DebugLog 目录失败: ${DEBUG_LOG_DIR}`, error);
+            // console.error is now overridden, it will log to file too.
+            console.error(`创建 DebugLog 目录失败 (async): ${DEBUG_LOG_DIR}`, error);
         }
     }
 }
 
 async function writeDebugLog(filenamePrefix, data) {
     if (DEBUG_MODE) {
-        await ensureDebugLogDir();
+        await ensureDebugLogDirAsync(); // Use the async version here
         const now = new Date();
         const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}_${now.getMilliseconds().toString().padStart(3, '0')}`;
         const filename = `${filenamePrefix}-${timestamp}.txt`;
         const filePath = path.join(DEBUG_LOG_DIR, filename);
         try {
             await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-            console.log(`[DebugLog] 已记录日志: ${filename}`);
+            console.log(`[DebugLog] 已记录日志: ${filename}`); // This console.log will also go to the main server log
         } catch (error) {
             console.error(`写入调试日志失败: ${filePath}`, error);
         }
@@ -1223,8 +1325,13 @@ async function handleDiaryFromAIResponse(responseText) {
 // and was previously defined within the moved block.
 const dailyNoteRootPath = path.join(__dirname, 'dailynote');
 
-// Import and use the admin panel routes
-const adminPanelRoutes = require('./routes/adminPanelRoutes')(DEBUG_MODE, dailyNoteRootPath, pluginManager);
+// Import and use the admin panel routes, passing the getter for currentServerLogPath
+const adminPanelRoutes = require('./routes/adminPanelRoutes')(
+    DEBUG_MODE,
+    dailyNoteRootPath,
+    pluginManager,
+    () => currentServerLogPath // Getter function for currentServerLogPath
+);
 
 app.use('/admin_api', adminPanelRoutes);
 // --- End Admin API Router ---
@@ -1288,7 +1395,8 @@ let server;
 server = app.listen(port, async () => { // Assign to server variable
     console.log(`中间层服务器正在监听端口 ${port}`);
     console.log(`API 服务器地址: ${apiUrl}`);
-    await ensureDebugLogDir();
+    // ensureDebugLogDir() is effectively handled by initializeServerLogger() synchronously earlier.
+    // If ensureDebugLogDirAsync was meant for other purposes, it can be called where needed.
     await initialize(); // This loads plugins and initializes services
 
     // Initialize the new WebSocketServer
@@ -1308,7 +1416,7 @@ server = app.listen(port, async () => { // Assign to server variable
 });
 
 async function gracefulShutdown() {
-    console.log('Initiating graceful shutdown...');
+    console.log('Initiating graceful shutdown...'); // This will be logged
     if (webSocketServer) { // Shutdown WebSocketServer
         console.log('[Server] Shutting down WebSocketServer...');
         webSocketServer.shutdown();
@@ -1316,9 +1424,35 @@ async function gracefulShutdown() {
     if (pluginManager) {
         await pluginManager.shutdownAllPlugins();
     }
+
+    if (serverLogWriteStream) {
+        console.log('[Server] Closing server log file stream...');
+        const logClosePromise = new Promise((resolve) => {
+            serverLogWriteStream.end(`[${new Date().toLocaleString()}] Server gracefully shut down.\n`, () => {
+                originalConsoleLog('[Server] Server log stream closed.'); // Use original console here as overridden one might rely on the stream
+                resolve();
+            });
+        });
+        await logClosePromise; // Wait for log stream to close
+    }
+
     console.log('Graceful shutdown complete. Exiting.');
     process.exit(0);
 }
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
+// Ensure log stream is flushed on uncaught exceptions or synchronous exit, though less reliable
+process.on('exit', (code) => {
+    originalConsoleLog(`[Server] Exiting with code ${code}.`);
+    if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
+        try {
+            // Attempt a final synchronous write if possible, though not guaranteed
+            fsSync.appendFileSync(currentServerLogPath, `[${new Date().toLocaleString()}] Server exited with code ${code}.\n`);
+            serverLogWriteStream.end(); // Attempt to close if not already
+        } catch (e) {
+            originalConsoleError('[Server] Error during final log write on exit:', e.message);
+        }
+    }
+});

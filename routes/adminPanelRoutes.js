@@ -10,10 +10,32 @@ const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
 const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
-module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager) {
+module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath) {
     const adminApiRouter = express.Router();
 
     // --- Admin API Router 内容 ---
+
+    // --- Server Log API ---
+    adminApiRouter.get('/server-log', async (req, res) => {
+        const logPath = getCurrentServerLogPath();
+        if (!logPath) {
+            return res.status(503).json({ error: 'Server log path not available.', content: '服务器日志路径当前不可用，可能仍在初始化中。' });
+        }
+        try {
+            await fs.access(logPath);
+            const content = await fs.readFile(logPath, 'utf-8');
+            res.json({ content: content, path: logPath });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.warn(`[AdminPanelRoutes API] /server-log - Log file not found at: ${logPath}`);
+                res.status(404).json({ error: 'Log file not found.', content: `日志文件 ${logPath} 未找到。它可能尚未创建或已被删除。`, path: logPath });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error reading server log file ${logPath}:`, error);
+                res.status(500).json({ error: 'Failed to read server log file', details: error.message, content: `读取日志文件 ${logPath} 失败。`, path: logPath });
+            }
+        }
+    });
+    // --- End Server Log API ---
     // GET main config.env content (filtered)
     adminApiRouter.get('/config/main', async (req, res) => {
         try {

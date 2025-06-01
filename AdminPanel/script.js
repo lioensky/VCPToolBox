@@ -30,6 +30,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveAgentFileButton = document.getElementById('save-agent-file-button');
     const agentFileStatusSpan = document.getElementById('agent-file-status');
 
+    // Server Log Viewer Elements
+    const serverLogViewerSection = document.getElementById('server-log-viewer-section');
+    const copyServerLogButton = document.getElementById('copy-server-log-button'); // Changed from refreshServerLogButton
+    const serverLogPathDisplay = document.getElementById('server-log-path-display');
+    const serverLogStatusSpan = document.getElementById('server-log-status');
+    const serverLogContentPre = document.getElementById('server-log-content');
+    let serverLogIntervalId = null; // For server log auto-refresh
+
+
     const API_BASE_URL = '/admin_api'; // Corrected API base path
 
     // --- Utility Functions ---
@@ -854,6 +863,13 @@ Description Length: ${newDescription.length}`);
 
 
     function navigateTo(sectionIdToActivate, pluginName = null, navLinkDataTarget = null) {
+        // If navigating to a section that is NOT the server log viewer,
+        // and an interval is active, clear it.
+        if (sectionIdToActivate !== 'server-log-viewer-section' && serverLogIntervalId) {
+            clearInterval(serverLogIntervalId);
+            serverLogIntervalId = null;
+            console.log('Server log auto-refresh interval cleared due to navigation.');
+        }
         document.querySelectorAll('.sidebar nav li a').forEach(link => link.classList.remove('active'));
         document.querySelectorAll('.config-section').forEach(section => section.classList.remove('active-section'));
 
@@ -873,6 +889,8 @@ Description Length: ${newDescription.length}`);
                 initializeDailyNotesManager();
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
                 initializeAgentFilesEditor();
+            } else if (sectionIdToActivate === 'server-log-viewer-section') {
+                initializeServerLogViewer();
             }
         } else {
             console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
@@ -1413,5 +1431,104 @@ Description Length: ${newDescription.length}`);
     }
 
     // --- End Agent Files Editor Functions ---
+
+    // --- Server Log Viewer Functions ---
+    async function initializeServerLogViewer() {
+        console.log('Initializing Server Log Viewer...');
+        // Clear any existing interval before starting a new one or performing the initial load
+        if (serverLogIntervalId) {
+            clearInterval(serverLogIntervalId);
+            serverLogIntervalId = null;
+            console.log('Cleared existing server log auto-refresh interval during initialization.');
+        }
+
+        if (!serverLogViewerSection) {
+            console.error('Server Log Viewer section not found in DOM.');
+            return;
+        }
+        serverLogPathDisplay.textContent = '';
+        serverLogStatusSpan.textContent = '';
+        serverLogContentPre.textContent = '正在加载日志...'; // Changed placeholder text
+
+        await loadServerLog(); // Perform the initial load
+
+        // Start polling after the initial load
+        if (!serverLogIntervalId) {
+            serverLogIntervalId = setInterval(loadServerLog, 2000); // Poll every 2 seconds
+            console.log('Started server log auto-refresh interval.');
+        }
+    }
+
+    async function loadServerLog() {
+        if (!serverLogContentPre || !serverLogStatusSpan || !serverLogPathDisplay) {
+            console.error('Server log display elements not found.');
+            return;
+        }
+        serverLogStatusSpan.textContent = '正在加载日志...';
+        serverLogStatusSpan.className = 'status-message info';
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/server-log`);
+            serverLogContentPre.textContent = data.content || '日志内容为空或加载失败。';
+            serverLogPathDisplay.textContent = `当前日志文件: ${data.path || '未知'}`;
+            serverLogStatusSpan.textContent = '日志已加载。';
+            serverLogStatusSpan.className = 'status-message success';
+            // Scroll to bottom
+            serverLogContentPre.scrollTop = serverLogContentPre.scrollHeight;
+        } catch (error) {
+            serverLogContentPre.textContent = `加载服务器日志失败: ${error.message}\n\n(可能是因为服务器刚刚重启，日志文件路径已更改，或日志文件为空。)`;
+            serverLogPathDisplay.textContent = `当前日志文件: 未知`;
+            serverLogStatusSpan.textContent = `加载失败: ${error.message}`;
+            serverLogStatusSpan.className = 'status-message error';
+            // showMessage is handled by apiFetch
+        }
+    }
+
+    // Event Listeners for Server Log Viewer
+    if (copyServerLogButton) { // Changed from refreshServerLogButton
+        copyServerLogButton.addEventListener('click', copyServerLogToClipboard);
+    }
+
+    async function copyServerLogToClipboard() {
+        if (!serverLogContentPre) {
+            showMessage('日志内容元素未找到。', 'error');
+            return;
+        }
+        const logContent = serverLogContentPre.textContent;
+        if (!logContent || logContent === '正在加载日志...' || logContent.startsWith('加载服务器日志失败')) {
+            showMessage('没有可复制的日志内容。', 'info');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(logContent);
+            showMessage('日志内容已复制到剪贴板！', 'success');
+            serverLogStatusSpan.textContent = '日志已复制!';
+            serverLogStatusSpan.className = 'status-message success';
+            setTimeout(() => {
+                if (serverLogStatusSpan.textContent === '日志已复制!') {
+                     serverLogStatusSpan.textContent = '日志已加载。'; // Revert after a few seconds
+                }
+            }, 3000);
+        } catch (err) {
+            console.error('无法自动复制日志: ', err);
+            // Fallback: Try to select the text for manual copying
+            try {
+                serverLogContentPre.focus(); // Focus the element
+                const range = document.createRange();
+                range.selectNodeContents(serverLogContentPre);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                showMessage('自动复制失败。日志内容已选中，请按 Ctrl+C (或 Cmd+C) 手动复制。', 'info', 5000);
+                serverLogStatusSpan.textContent = '请手动复制';
+            } catch (selectErr) {
+                console.error('选择文本以便手动复制失败: ', selectErr);
+                showMessage('自动复制失败，也无法选中内容供手动复制。请尝试手动选择并复制。', 'error', 5000);
+                serverLogStatusSpan.textContent = '复制失败';
+            }
+            serverLogStatusSpan.className = 'status-message error'; // Keep error class for status
+        }
+    }
+    // --- End Server Log Viewer Functions ---
 
 });
