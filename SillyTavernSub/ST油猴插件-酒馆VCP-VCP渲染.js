@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         VCPSub Enhanced UI for SillyTavern (Prettifier Only)
+// @name         VCP-ST渲染插件
 // @namespace    http://tampermonkey.net/
 // @version      1.2 // 版本更新，移除了时钟和VCP按钮，仅保留美化功能
 // @description  Prettifies VCP-ToolUse blocks and Maid Diary blocks (hides copy button in VCP blocks) in SillyTavern.
