@@ -50,6 +50,12 @@
                 100% { transform: scale(1); opacity: 0.6; }
             }
 
+            @keyframes vcp-toolname-color-flow-kf {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 150% 50%; } /* Adjusted for smoother flow with 300% background-size */
+                100% { background-position: 0% 50%; }
+            }
+ 
             /* 主气泡样式 - VCP ToolUse */
             .vcp-tool-use-bubble {
                 background: linear-gradient(145deg, #3a7bd5 0%, #00d2ff 100%) !important;
@@ -106,7 +112,8 @@
 
             /* 工具名高亮 - VCP ToolUse */
             .vcp-tool-use-bubble .vcp-tool-name-highlight {
-                background-image: linear-gradient(to right,rgb(255, 200, 0), white,rgb(255, 200, 0)) !important;
+                background: linear-gradient(90deg, #f1c40f, #ffffff, #00d2ff, #f1c40f) !important; /* Enhanced gradient for flow */
+                background-size: 300% 100% !important; /* Increased size for animation */
                 -webkit-background-clip: text !important;
                 background-clip: text !important;
                 -webkit-text-fill-color: transparent !important;
@@ -115,8 +122,9 @@
                 font-weight: bold !important;
                 padding: 2px 5px !important;
                 border-radius: 4px !important;
+                animation: vcp-toolname-color-flow-kf 4s linear infinite; /* Added animation */
             }
-
+ 
             /* 左上角齿轮图标 - VCP ToolUse */
             .vcp-tool-use-bubble::before {
                 content: "⚙️";
