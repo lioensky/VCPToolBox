@@ -773,3 +773,82 @@ p.command-status.info {
 .status-message.info {
     color: #7aa1ff;
 }
+
+/* Agent Files Editor Styles */
+.agent-editor-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 20px;
+    padding: 15px;
+    background-color: #2a2a42; /* Consistent with other control/toolbar areas */
+    border-radius: 8px;
+    border: 1px solid #383853;
+}
+
+.agent-editor-controls label {
+    font-weight: 600;
+    color: #c8c8e8;
+}
+
+#agent-file-select {
+    min-width: 200px; /* Ensure select is not too small */
+    padding: 8px 12px;
+    font-size: 0.9em;
+    border-radius: 6px;
+    border: 1px solid #4a4a6a;
+    background-color: #1e1e30;
+    color: #e0e0e0;
+    cursor: pointer;
+}
+#agent-file-select:focus {
+    outline: none;
+    border-color: #7aa1ff;
+    box-shadow: 0 0 0 3px rgba(122, 161, 255, 0.25);
+}
+
+
+#save-agent-file-button {
+    padding: 8px 16px; /* Consistent with other action buttons */
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    background-color: #4CAF50; /* Green for save */
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+#save-agent-file-button:hover:not(:disabled) {
+    background-color: #45a049;
+    transform: translateY(-1px);
+}
+#save-agent-file-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#agent-file-content-editor {
+    width: 100%;
+    min-height: 400px; /* Good starting height for content */
+    padding: 15px;
+    border: 1px solid #4a4a6a;
+    border-radius: 6px;
+    background-color: #1e1e30;
+    color: #e0e0e0;
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* Monospaced font for code/text files */
+    font-size: 0.95em;
+    box-sizing: border-box;
+    resize: vertical; /* Allow vertical resize */
+}
+
+#agent-file-content-editor:focus {
+    outline: none;
+    border-color: #7aa1ff;
+    box-shadow: 0 0 0 3px rgba(122, 161, 255, 0.25);
+}
+
+#agent-file-status {
+    /* Uses .status-message general styles, specific overrides if needed */
+    margin-left: auto; /* Push status to the right if space allows */
+}

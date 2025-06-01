@@ -8,6 +8,7 @@ const { reidentifyImageByBase64Key } = require('../Plugin/ImageProcessor/reident
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
+const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
 module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager) {
     const adminApiRouter = express.Router();
@@ -756,6 +757,67 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager) {
         res.json({ message, deleted: results.deleted, errors: results.errors });
     });
     // --- End Daily Notes API ---
+
+    // --- Agent Files API ---
+    // GET list of agent .txt files
+    adminApiRouter.get('/agents', async (req, res) => {
+        try {
+            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
+            const files = await fs.readdir(AGENT_FILES_DIR);
+            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+            res.json({ files: txtFiles });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error listing agent files:', error);
+            res.status(500).json({ error: 'Failed to list agent files', details: error.message });
+        }
+    });
+
+    // GET content of a specific agent file
+    adminApiRouter.get('/agents/:fileName', async (req, res) => {
+        const { fileName } = req.params;
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        }
+        const filePath = path.join(AGENT_FILES_DIR, fileName);
+
+        try {
+            await fs.access(filePath);
+            const content = await fs.readFile(filePath, 'utf-8');
+            res.json({ content });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: `Agent file '${fileName}' not found.` });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error reading agent file ${fileName}:`, error);
+                res.status(500).json({ error: `Failed to read agent file ${fileName}`, details: error.message });
+            }
+        }
+    });
+
+    // POST to save content of a specific agent file
+    adminApiRouter.post('/agents/:fileName', async (req, res) => {
+        const { fileName } = req.params;
+        const { content } = req.body;
+
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        }
+        if (typeof content !== 'string') {
+            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
+        }
+
+        const filePath = path.join(AGENT_FILES_DIR, fileName);
+
+        try {
+            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
+            await fs.writeFile(filePath, content, 'utf-8');
+            res.json({ message: `Agent file '${fileName}' saved successfully.` });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes API] Error saving agent file ${fileName}:`, error);
+            res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
+        }
+    });
+    // --- End Agent Files API ---
     
     return adminApiRouter;
 };

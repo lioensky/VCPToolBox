@@ -24,6 +24,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const notesActionStatusSpan = document.getElementById('notes-action-status');
     const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
 
+    // Agent Files Editor Elements
+    const agentFileSelect = document.getElementById('agent-file-select');
+    const agentFileContentEditor = document.getElementById('agent-file-content-editor');
+    const saveAgentFileButton = document.getElementById('save-agent-file-button');
+    const agentFileStatusSpan = document.getElementById('agent-file-status');
 
     const API_BASE_URL = '/admin_api'; // Corrected API base path
 
@@ -866,6 +871,8 @@ Description Length: ${newDescription.length}`);
                 // Base config already loaded
             } else if (sectionIdToActivate === 'daily-notes-manager-section') {
                 initializeDailyNotesManager();
+            } else if (sectionIdToActivate === 'agent-files-editor-section') {
+                initializeAgentFilesEditor();
             }
         } else {
             console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
@@ -1310,4 +1317,101 @@ Description Length: ${newDescription.length}`);
         }
     }
     // --- End New Function ---
+
+    // --- Agent Files Editor Functions ---
+    let currentEditingAgentFile = null;
+
+    async function initializeAgentFilesEditor() {
+        console.log('Initializing Agent Files Editor...');
+        agentFileContentEditor.value = '';
+        agentFileStatusSpan.textContent = '';
+        saveAgentFileButton.disabled = true;
+        currentEditingAgentFile = null;
+        await loadAgentFilesList();
+    }
+
+    async function loadAgentFilesList() {
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/agents`);
+            agentFileSelect.innerHTML = '<option value="">请选择一个文件...</option>'; // Reset
+            if (data.files && data.files.length > 0) {
+                data.files.sort((a, b) => a.localeCompare(b)); // Sort alphabetically
+                data.files.forEach(fileName => {
+                    const option = document.createElement('option');
+                    option.value = fileName;
+                    option.textContent = fileName;
+                    agentFileSelect.appendChild(option);
+                });
+            } else {
+                agentFileSelect.innerHTML = '<option value="">没有找到 Agent 文件</option>';
+                agentFileContentEditor.placeholder = '没有 Agent 文件可供编辑。';
+            }
+        } catch (error) {
+            agentFileSelect.innerHTML = '<option value="">加载 Agent 文件列表失败</option>';
+            showMessage('加载 Agent 文件列表失败: ' + error.message, 'error');
+            agentFileContentEditor.placeholder = '加载 Agent 文件列表失败。';
+        }
+    }
+
+    async function loadAgentFileContent(fileName) {
+        if (!fileName) {
+            agentFileContentEditor.value = '';
+            agentFileStatusSpan.textContent = '请选择一个文件。';
+            saveAgentFileButton.disabled = true;
+            currentEditingAgentFile = null;
+            agentFileContentEditor.placeholder = '选择一个 Agent 文件以编辑其内容...';
+            return;
+        }
+        agentFileStatusSpan.textContent = `正在加载 ${fileName}...`;
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/agents/${fileName}`);
+            agentFileContentEditor.value = data.content;
+            agentFileStatusSpan.textContent = `当前编辑: ${fileName}`;
+            saveAgentFileButton.disabled = false;
+            currentEditingAgentFile = fileName;
+        } catch (error) {
+            agentFileStatusSpan.textContent = `加载文件 ${fileName} 失败。`;
+            showMessage(`加载文件 ${fileName} 失败: ${error.message}`, 'error');
+            agentFileContentEditor.value = `无法加载文件: ${fileName}\n\n错误: ${error.message}`;
+            saveAgentFileButton.disabled = true;
+            currentEditingAgentFile = null;
+        }
+    }
+
+    async function saveAgentFileContent() {
+        if (!currentEditingAgentFile) {
+            showMessage('没有选择要保存的文件。', 'error');
+            return;
+        }
+        const content = agentFileContentEditor.value;
+        agentFileStatusSpan.textContent = `正在保存 ${currentEditingAgentFile}...`;
+        saveAgentFileButton.disabled = true;
+
+        try {
+            await apiFetch(`${API_BASE_URL}/agents/${currentEditingAgentFile}`, {
+                method: 'POST',
+                body: JSON.stringify({ content })
+            });
+            showMessage(`Agent 文件 '${currentEditingAgentFile}' 已成功保存!`, 'success');
+            agentFileStatusSpan.textContent = `Agent 文件 '${currentEditingAgentFile}' 已保存。`;
+        } catch (error) {
+            agentFileStatusSpan.textContent = `保存文件 ${currentEditingAgentFile} 失败。`;
+            // showMessage is handled by apiFetch
+        } finally {
+            saveAgentFileButton.disabled = false;
+        }
+    }
+
+    // Event Listeners for Agent Files Editor
+    if (agentFileSelect) {
+        agentFileSelect.addEventListener('change', (event) => {
+            loadAgentFileContent(event.target.value);
+        });
+    }
+    if (saveAgentFileButton) {
+        saveAgentFileButton.addEventListener('click', saveAgentFileContent);
+    }
+
+    // --- End Agent Files Editor Functions ---
+
 });
