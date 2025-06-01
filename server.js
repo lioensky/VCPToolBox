@@ -6,6 +6,7 @@ const lunarCalendar = require('chinese-lunar-calendar');
 const fs = require('fs').promises;
 const path = require('path');
 const { Writable } = require('stream');
+const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
@@ -160,6 +161,43 @@ app.use((req, res, next) => {
 async function replaceCommonVariables(text, model) {
     if (text == null) return '';
     let processedText = String(text);
+
+    // START: Agent placeholder processing
+    const agentConfigs = {};
+    for (const envKey in process.env) {
+        if (envKey.startsWith('Agent')) { // e.g., AgentNova
+            const agentName = envKey.substring(5); // e.g., Nova
+            if (agentName) { // Make sure it's not just "Agent"
+                agentConfigs[agentName] = process.env[envKey]; // agentConfigs["Nova"] = "Nova.txt"
+            }
+        }
+    }
+
+    for (const agentName in agentConfigs) {
+        const placeholder = `{{${agentName}}}`; // e.g., {{Nova}}
+        if (processedText.includes(placeholder)) {
+            const agentFileName = agentConfigs[agentName]; // e.g., Nova.txt
+            const agentFilePath = path.join(AGENT_DIR, agentFileName);
+            try {
+                let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
+                // Recursively call replaceCommonVariables for the agent's content
+                // This ensures placeholders within the agent file are resolved.
+                let resolvedAgentContent = await replaceCommonVariables(agentFileContent, model);
+                processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
+            } catch (error) {
+                let errorMsg;
+                if (error.code === 'ENOENT') {
+                    errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
+                    console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
+                } else {
+                    errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
+                    console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
+                }
+                processedText = processedText.replaceAll(placeholder, errorMsg);
+            }
+        }
+    }
+    // END: Agent placeholder processing
 
     // 新增 Tarxxx 变量处理逻辑
     for (const envKey in process.env) {
