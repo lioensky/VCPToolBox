@@ -1303,14 +1303,46 @@ async function handleDiaryFromAIResponse(responseText) {
                     // The third argument to executePlugin in Plugin.js is inputData, which can be a string or object.
                     // For stdio, it's better to stringify here.
                     const pluginResult = await pluginManager.executePlugin("DailyNoteWrite", JSON.stringify(diaryPayload));
+                    // pluginResult is the direct parsed JSON object from the DailyNoteWrite plugin's stdout.
+                    // Example success: { status: "success", message: "Diary saved to /path/to/your/file.txt" }
+                    // Example error:   { status: "error", message: "Error details" }
 
-                    if (pluginResult && pluginResult.status === "success") {
-                        if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${pluginResult.result?.message || pluginResult.message}`);
+                    if (pluginResult && pluginResult.status === "success" && pluginResult.message) {
+                        const dailyNoteWriteResponse = pluginResult; // Use pluginResult directly
+
+                        if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${dailyNoteWriteResponse.message}`);
+                        
+                        let filePath = '';
+                        const successMessage = dailyNoteWriteResponse.message; // e.g., "Diary saved to /path/to/file.txt"
+                        const pathMatchMsg = /Diary saved to (.*)/;
+                        const matchedPath = successMessage.match(pathMatchMsg);
+                        if (matchedPath && matchedPath[1]) {
+                            filePath = matchedPath[1];
+                        }
+
+                        const notification = {
+                            type: 'daily_note_created',
+                            data: {
+                                maidName: diaryPayload.maidName,
+                                dateString: diaryPayload.dateString,
+                                filePath: filePath,
+                                status: 'success',
+                                message: `日记 '${filePath || '未知路径'}' 已为 '${diaryPayload.maidName}' (${diaryPayload.dateString}) 创建成功。`
+                            }
+                        };
+                        webSocketServer.broadcast(notification, 'VCPLog');
+                        if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Broadcasted daily_note_created notification:', notification);
+
+                    } else if (pluginResult && pluginResult.status === "error") {
+                        // Handle errors reported by the plugin's JSON response
+                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported an error:`, pluginResult.message || pluginResult);
                     } else {
-                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported error or unexpected response:`, pluginResult?.error || pluginResult?.message || pluginResult); // Keep as error
+                        // Handle cases where pluginResult is null, or status is not "success"/"error", or message is missing on success.
+                        console.error(`[handleDiaryFromAIResponse] DailyNoteWrite plugin returned an unexpected response structure or failed:`, pluginResult);
                     }
                 } catch (pluginError) {
-                    console.error('[handleDiaryFromAIResponse] Error calling DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
+                    // This catches errors from pluginManager.executePlugin itself (e.g., process spawn error, timeout)
+                    console.error('[handleDiaryFromAIResponse] Error executing DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
                 }
             } else {
                 console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0,50) });
