@@ -442,8 +442,13 @@ async function selectAgent(agentId, agentName) {
  
     console.log(`选择 Agent: ${agentName} (ID: ${agentId})`);
     currentAgentId = agentId;
-    currentTopicId = null;
+    currentTopicId = null; // Reset current topic ID
     currentChatHistory = [];
+
+    // Remove glowing effect from any previously active topic
+    document.querySelectorAll('.topic-list .topic-item.active-topic-glowing').forEach(item => {
+        item.classList.remove('active-topic-glowing');
+    });
 
     if (window.messageRenderer) {
         window.messageRenderer.setCurrentAgentId(currentAgentId);
@@ -475,13 +480,13 @@ async function selectAgent(agentId, agentName) {
                 window.messageRenderer.setCurrentTopicId(currentTopicId);
             }
             console.log(`Agent ${agentId} - 选择话题: ${currentTopicId}`);
-            await loadChatHistory(currentAgentId, currentTopicId);
+            await loadChatHistory(currentAgentId, currentTopicId); // This will handle adding the glow
         } else if (topics.error) {
             console.error(`加载Agent ${agentId} 的话题列表失败:`, topics.error);
             chatMessagesDiv.innerHTML = `<div class="message-item system"><div class="sender-name">系统</div><div>加载话题列表失败: ${topics.error}</div></div>`;
         } else {
             console.warn(`Agent ${agentId} 没有找到话题。将尝试加载一个空的聊天记录。`);
-            await loadChatHistory(currentAgentId, null);
+            await loadChatHistory(currentAgentId, null); // This will handle adding the glow (or not, if no topic)
         }
     } catch (e) {
         console.error(`选择 Agent ${agentId} 时发生错误: `, e);
@@ -498,12 +503,27 @@ function highlightActiveAgent(agentId) {
     document.querySelectorAll('.agent-list li').forEach(item => {
         item.classList.toggle('active', item.dataset.agentId === agentId);
     });
+    // When an agent is selected, if no specific topic is active yet,
+    // remove glowing from all topic items as a precaution.
+    // The actual glowing topic will be set when a topic is loaded.
+    if (!currentTopicId) {
+        document.querySelectorAll('.topic-list .topic-item.active-topic-glowing').forEach(item => {
+            item.classList.remove('active-topic-glowing');
+        });
+    }
 }
 
 // --- Chat Functionality ---
 async function loadChatHistory(agentId, topicId) {
     chatMessagesDiv.innerHTML = '';
     currentChatHistory = [];
+
+    // Highlight the active topic and apply glowing effect
+    document.querySelectorAll('.topic-list .topic-item').forEach(item => {
+        const isCurrent = item.dataset.topicId === topicId && item.dataset.agentId === agentId;
+        item.classList.toggle('active', isCurrent); // Keep standard 'active' class
+        item.classList.toggle('active-topic-glowing', isCurrent); // Add new glowing class
+    });
 
     if (window.messageRenderer) {
         window.messageRenderer.setCurrentTopicId(topicId);
@@ -1061,7 +1081,9 @@ async function loadTopicList() {
             li.classList.add('topic-item');
             li.dataset.agentId = currentAgentId;
             li.dataset.topicId = topic.id;
-            li.classList.toggle('active', topic.id === currentTopicId);
+            const isCurrentActiveTopic = topic.id === currentTopicId;
+            li.classList.toggle('active', isCurrentActiveTopic);
+            li.classList.toggle('active-topic-glowing', isCurrentActiveTopic);
 
             const avatarImg = document.createElement('img');
             avatarImg.classList.add('avatar');
@@ -1104,9 +1126,11 @@ async function loadTopicList() {
                     // They should be defined globally or at a higher scope and called from DOMContentLoaded.
                     
                     document.querySelectorAll('#topicList .topic-item').forEach(item => { // Use #topicList
-                        item.classList.toggle('active', item.dataset.topicId === currentTopicId);
+                        const isClickedItem = item.dataset.topicId === currentTopicId && item.dataset.agentId === currentAgentId;
+                        item.classList.toggle('active', isClickedItem);
+                        item.classList.toggle('active-topic-glowing', isClickedItem);
                     });
-                    await loadChatHistory(currentAgentId, currentTopicId);
+                    await loadChatHistory(currentAgentId, currentTopicId); // loadChatHistory will also re-apply active classes
                     localStorage.setItem(`lastActiveTopic_${currentAgentId}`, currentTopicId);
                 }
             });
@@ -1723,6 +1747,11 @@ async function deleteCurrentAgent() {
                 sendMessageBtn.disabled = true;
                 attachFileBtn.disabled = true;
                 await displayTopicTimestampBubble(null, null); // Hide bubble as no agent/topic selected
+                // Remove glowing effect from any topic item as no agent is selected
+                document.querySelectorAll('.topic-list .topic-item.active-topic-glowing').forEach(item => {
+                    item.classList.remove('active-topic-glowing');
+                    item.classList.remove('active'); // Also remove standard active class
+                });
             }
             
             await loadAgentList(); // Refresh agent list
@@ -1772,8 +1801,14 @@ async function createNewContextFromCurrentAgent() {
             localStorage.setItem(`lastActiveTopic_${currentAgentId}`, currentTopicId);
             
             if (document.getElementById('tabContentTopics').classList.contains('active')) {
-                loadTopicList();
+                await loadTopicList(); // Ensure this re-highlights correctly
             }
+             // After loading history and potentially new topic list, ensure the new topic is glowing
+            document.querySelectorAll('.topic-list .topic-item').forEach(item => {
+                const isNewActiveTopic = item.dataset.topicId === currentTopicId && item.dataset.agentId === currentAgentId;
+                item.classList.toggle('active', isNewActiveTopic);
+                item.classList.toggle('active-topic-glowing', isNewActiveTopic);
+            });
             await displayTopicTimestampBubble(currentAgentId, currentTopicId); // Display for new topic
             console.log(`已为助手 "${agentName}" 创建并切换到新话题: "${result.topicName}" (ID: ${result.topicId})`);
             messageInput.focus();

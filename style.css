@@ -658,7 +658,10 @@ body.light-theme .message-item.assistant {
 
 
 .chat-input-area {
-    padding: 12px 15px;
+    padding-top: 8px; /* Reduced top padding for the entire input area */
+    padding-right: 15px;
+    padding-bottom: 12px; /* Kept bottom padding same */
+    padding-left: 15px;
     background-color: var(--secondary-bg);
     border-top: 1px solid var(--border-color);
     display: flex;
@@ -688,7 +691,10 @@ body.light-theme .message-item.assistant {
 
 #messageInput {
     flex-grow: 1;
-    padding: 10px 12px;
+    padding-top: 8px; /* Reduced top padding */
+    padding-right: 12px;
+    padding-bottom: 10px;
+    padding-left: 12px;
     border: 1px solid var(--border-color);
     border-radius: 20px; /* 统一圆角，使其更圆润 */
     background-color: var(--input-bg);
@@ -1529,3 +1535,51 @@ body.light-theme .notification-item {
     color: var(--quoted-text);
     /* font-style: italic; */ /* 可选：如果需要斜体 */
 }
+/* --- Active Topic Glow Effect --- */
+@keyframes st-colon-blink { /* This seems unrelated to the ripple, but was provided. Keeping it. */
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+}
+
+@keyframes st-soft-circular-ripple-effect {
+    0% {
+        transform: translate(-50%, -50%) scale(0);
+        opacity: 0.7; /* Start a bit more visible to see the initial soft color */
+    }
+    80% { /* Ripple expands and fades, hold opacity a bit longer before full fade */
+        transform: translate(-50%, -50%) scale(18); /* Slightly larger scale for a wider soft ripple */
+        opacity: 0;
+    }
+    100% {
+        transform: translate(-50%, -50%) scale(0); /* Reset for next loop */
+        opacity: 0;
+    }
+}
+
+.topic-item.active-topic-glowing {
+    position: relative; /* Ensure positioning context for the pseudo-element */
+    overflow: hidden;   /* Contain the ripple effect */
+}
+
+.topic-item.active-topic-glowing::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 10px; /* Initial size of the ripple's source */
+    height: 10px;
+    /* Using a radial gradient for a soft edge */
+    background-image: radial-gradient(
+        circle,
+        rgba(190, 210, 240, 0.45) 0%, /* Center color - slightly more opaque */
+        rgba(190, 210, 240, 0.3) 40%, /* Mid color */
+        rgba(190, 210, 240, 0) 70%   /* Edge color - fully transparent */
+    );
+    border-radius: 50%;
+    transform: translate(-50%, -50%) scale(0); /* Initial state: centered and scaled down */
+    opacity: 0; /* Start transparent, animation will handle fade-in */
+    animation: st-soft-circular-ripple-effect 3.8s ease-out infinite; /* Slightly adjusted timing */
+    z-index: 0; /* Behind the content */
+    pointer-events: none; /* So it doesn't interfere with clicks */
+}
+/* --- End Active Topic Glow Effect --- */
