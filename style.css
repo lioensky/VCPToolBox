@@ -305,7 +305,9 @@ body {
     max-height: 100vh; /* Adjust if sidebar has a more constrained max height. */
     transform: translateY(0);
     overflow-y: auto;
+    overflow-x: hidden; /* 防止内容溢出影响侧边栏拖动 */
     pointer-events: auto;
+    min-width: 0; /* 新增：允许 flex item 收缩，以防止其内容撑开父级 .sidebar */
 }
 /* End Sidebar Tabs */
 
@@ -1581,5 +1583,14 @@ body.light-theme .notification-item {
     animation: st-soft-circular-ripple-effect 3.8s ease-out infinite; /* Slightly adjusted timing */
     z-index: 0; /* Behind the content */
     pointer-events: none; /* So it doesn't interfere with clicks */
+}
+/* --- Active Topic Glow Effect (Light Theme Override) --- */
+body.light-theme .topic-item.active-topic-glowing::before {
+    background-image: radial-gradient(
+        circle,
+        rgba(65, 144, 213, 0.041) 0%,  /* Center color - deeper blue, increased opacity */
+        rgba(56, 131, 196, 0.358) 40%, /* Mid color - deeper blue */
+        rgba(14, 78, 134, 0) 70%   /* Edge color - fully transparent */
+    ) !important;
 }
 /* --- End Active Topic Glow Effect --- */
