@@ -227,11 +227,39 @@
             transform: scale(1.0);
         }
     </style>
+    <script>
+        // 监听来自父窗口的主题变化消息
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'themeChange') {
+                const theme = event.data.theme;
+                document.documentElement.setAttribute('data-theme', theme);
+                // 可以选择将主题保存到 localStorage，以便在独立打开时保持一致
+                // localStorage.setItem('theme', theme);
+            }
+        });
+
+        // 页面加载时，向父窗口请求当前主题
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.parent && window.parent !== window) {
+                 window.parent.postMessage({ type: 'requestTheme' }, '*');
+            } else {
+                // 如果是独立打开，则应用本地存储的主题或默认主题
+                const storedTheme = localStorage.getItem('theme');
+                const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+                if (storedTheme) {
+                    document.documentElement.setAttribute('data-theme', storedTheme);
+                } else {
+                    document.documentElement.setAttribute('data-theme', prefersDarkScheme.matches ? 'dark' : 'light');
+                }
+            }
+        });
+    </script>
 </head>
 <body>
 <div class="container">
     <div class="controls">
         <button id="saveButton">保存更改到 image_cache.json</button>
+        <!--  按钮暂时不加入主题切换，因为iframe内切换可能与外部不同步，由外部统一控制 -->
     </div>
 
     <h2>图像列表</h2>

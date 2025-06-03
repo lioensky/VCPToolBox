@@ -11,6 +11,7 @@
         <div class="top-bar-content">
             <span class="server-title">VCPToolBox</span>
             <button id="restart-server-button" class="restart-button">重启服务器</button>
+            <button id="theme-toggle-button" class="theme-button">切换主题</button>
         </div>
     </header>
     <div class="container">
@@ -111,5 +112,55 @@
     <div id="message-popup" class="message-popup"></div>
 
     <script src="script.js"></script>
+    <script>
+        const themeToggleButton = document.getElementById('theme-toggle-button');
+        const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
+        const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                localStorage.setItem('theme', 'dark');
+                if(themeToggleButton) themeToggleButton.textContent = '切换亮色';
+            } else {
+                document.documentElement.setAttribute('data-theme', 'light');
+                localStorage.setItem('theme', 'light');
+                if(themeToggleButton) themeToggleButton.textContent = '切换暗色';
+            }
+            // 通知 iframe 主题变化
+            const iframe = document.querySelector('iframe[src="image_cache_editor.html"]');
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.postMessage({ type: 'themeChange', theme: theme }, '*');
+            }
+        }
+
+        if (currentTheme) {
+            applyTheme(currentTheme);
+        } else {
+            if (prefersDarkScheme.matches) {
+                applyTheme('dark');
+            } else {
+                applyTheme('light');
+            }
+        }
+
+        if (themeToggleButton) {
+            themeToggleButton.addEventListener('click', () => {
+                let newTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+                applyTheme(newTheme);
+            });
+        }
+
+        // 监听来自 iframe 的主题请求
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'requestTheme') {
+                const currentAppliedTheme = document.documentElement.getAttribute('data-theme') || (prefersDarkScheme.matches ? 'dark' : 'light');
+                const iframe = document.querySelector('iframe[src="image_cache_editor.html"]');
+                if (iframe && iframe.contentWindow) {
+                     iframe.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
+                }
+            }
+        });
+    </script>
 </body>
 </html>
