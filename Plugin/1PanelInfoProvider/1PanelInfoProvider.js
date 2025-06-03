@@ -32,9 +32,11 @@ async function fetchDashboardInfo() {
             return { error: 'Invalid API response structure for dashboard info', details: response };
         }
     } catch (error) {
-        FORCE_LOG('[1PanelInfoProvider] Error fetching dashboard info:', error.toString());
-        if (error instanceof PanelError) {
-            FORCE_LOG(`  PanelError Details: Code - ${error.code}, Details - ${error.details}`);
+        if (debugMode) {
+            FORCE_LOG('[1PanelInfoProvider] Error fetching dashboard info:', error.toString());
+            if (error instanceof PanelError) {
+                FORCE_LOG(`  PanelError Details: Code - ${error.code}, Details - ${error.details}`);
+            }
         }
         return { error: error.toString(), details: error }; // Return error object
     }
@@ -49,13 +51,17 @@ async function fetchSystemInfo() {
         if (response && typeof response.data === 'object') {
             return response;
         } else {
-            FORCE_LOG('[1PanelInfoProvider] System Info API did not return expected structure (missing or invalid .data field in response):', response);
+            if (debugMode) { // Log only in debug mode
+                FORCE_LOG('[1PanelInfoProvider] System Info API did not return expected structure (missing or invalid .data field in response):', response);
+            }
             return { error: 'Invalid API response structure for system info', details: response };
         }
     } catch (error) {
-        FORCE_LOG('[1PanelInfoProvider] Error fetching system info:', error.toString());
-        if (error instanceof PanelError) {
-            FORCE_LOG(`  PanelError Details: Code - ${error.code}, Details - ${error.details}`);
+        if (debugMode) {
+            FORCE_LOG('[1PanelInfoProvider] Error fetching system info:', error.toString());
+            if (error instanceof PanelError) {
+                FORCE_LOG(`  PanelError Details: Code - ${error.code}, Details - ${error.details}`);
+            }
         }
         return { error: error.toString(), details: error }; // Return error object
     }
@@ -97,20 +103,28 @@ async function main() {
             await fs.writeFile(DASHBOARD_CACHE_FILE, JSON.stringify(finalDashboardPayload), 'utf-8');
             if (debugMode) FORCE_LOG(`[1PanelInfoProvider] Wrote Dashboard data to cache: ${DASHBOARD_CACHE_FILE}`);
         } catch (cacheWriteError) {
-            FORCE_LOG(`[1PanelInfoProvider] Error writing Dashboard data to cache: ${cacheWriteError.toString()}`);
+            if (debugMode) {
+                FORCE_LOG(`[1PanelInfoProvider] Error writing Dashboard data to cache: ${cacheWriteError.toString()}`);
+            }
         }
     } else {
         const apiErrorMsg = apiDashboardResponse && apiDashboardResponse.error ? apiDashboardResponse.error : 'Unknown API error for dashboard';
-        dashboardErrorForOutput = `API Error: ${apiErrorMsg.substring(0,100)}`;
-        if (debugMode) FORCE_LOG(`[1PanelInfoProvider] Dashboard API error or invalid data: "${apiErrorMsg}". Attempting to read from cache: ${DASHBOARD_CACHE_FILE}`);
+        dashboardErrorForOutput = `API Error: ${apiErrorMsg.substring(0,100)}`; // Used for debug output or if cache fails
+        if (debugMode) {
+            FORCE_LOG(`[1PanelInfoProvider] Dashboard API error or invalid data: "${apiErrorMsg}". Attempting to read from cache: ${DASHBOARD_CACHE_FILE}`);
+        }
         try {
             const cachedData = await fs.readFile(DASHBOARD_CACHE_FILE, 'utf-8');
             finalDashboardPayload = JSON.parse(cachedData);
-            if (debugMode) FORCE_LOG('[1PanelInfoProvider] Successfully read Dashboard data from cache.');
+            if (debugMode) {
+                FORCE_LOG('[1PanelInfoProvider] Successfully read Dashboard data from cache.');
+            }
             dashboardErrorForOutput = null; // Clear error if cache is good
         } catch (cacheReadError) {
             dashboardErrorForOutput = `API/Cache Error for Dashboard: ${apiErrorMsg.substring(0,50)} / ${cacheReadError.message.substring(0,50)}`;
-            FORCE_LOG(`[1PanelInfoProvider] Error reading Dashboard data from cache: ${cacheReadError.toString()}. Original API error: ${apiErrorMsg}`);
+            if (debugMode) {
+                FORCE_LOG(`[1PanelInfoProvider] Error reading Dashboard data from cache: ${cacheReadError.toString()}. Original API error: ${apiErrorMsg}`);
+            }
         }
     }
 
@@ -124,39 +138,65 @@ async function main() {
             await fs.writeFile(SYSTEM_INFO_CACHE_FILE, JSON.stringify(finalSystemPayload), 'utf-8');
             if (debugMode) FORCE_LOG(`[1PanelInfoProvider] Wrote System Info data to cache: ${SYSTEM_INFO_CACHE_FILE}`);
         } catch (cacheWriteError) {
-            FORCE_LOG(`[1PanelInfoProvider] Error writing System Info data to cache: ${cacheWriteError.toString()}`);
+            if (debugMode) {
+                FORCE_LOG(`[1PanelInfoProvider] Error writing System Info data to cache: ${cacheWriteError.toString()}`);
+            }
         }
     } else {
         const apiErrorMsg = apiSystemInfoResponse && apiSystemInfoResponse.error ? apiSystemInfoResponse.error : 'Unknown API error for system info';
-        systemInfoErrorForOutput = `API Error: ${apiErrorMsg.substring(0,100)}`;
-        if (debugMode) FORCE_LOG(`[1PanelInfoProvider] System Info API error or invalid data: "${apiErrorMsg}". Attempting to read from cache: ${SYSTEM_INFO_CACHE_FILE}`);
+        systemInfoErrorForOutput = `API Error: ${apiErrorMsg.substring(0,100)}`; // Used for debug output or if cache fails
+        if (debugMode) {
+            FORCE_LOG(`[1PanelInfoProvider] System Info API error or invalid data: "${apiErrorMsg}". Attempting to read from cache: ${SYSTEM_INFO_CACHE_FILE}`);
+        }
         try {
             const cachedData = await fs.readFile(SYSTEM_INFO_CACHE_FILE, 'utf-8');
             finalSystemPayload = JSON.parse(cachedData);
-            if (debugMode) FORCE_LOG('[1PanelInfoProvider] Successfully read System Info data from cache.');
+            if (debugMode) {
+                FORCE_LOG('[1PanelInfoProvider] Successfully read System Info data from cache.');
+            }
             systemInfoErrorForOutput = null; // Clear error if cache is good
         } catch (cacheReadError) {
             systemInfoErrorForOutput = `API/Cache Error for System Info: ${apiErrorMsg.substring(0,50)} / ${cacheReadError.message.substring(0,50)}`;
-            FORCE_LOG(`[1PanelInfoProvider] Error reading System Info data from cache: ${cacheReadError.toString()}. Original API error: ${apiErrorMsg}`);
+            if (debugMode) {
+                FORCE_LOG(`[1PanelInfoProvider] Error reading System Info data from cache: ${cacheReadError.toString()}. Original API error: ${apiErrorMsg}`);
+            }
         }
     }
 
     const outputData = {};
-    let overallExitCode = 0;
+    let overallExitCode = 0; // Default to 0 (success)
 
+    let dashboardDataAvailable = false;
     if (finalDashboardPayload) {
         outputData["1PanelDashboard"] = finalDashboardPayload;
+        dashboardDataAvailable = true;
     } else {
-        outputData["1PanelDashboard"] = dashboardErrorForOutput || '[Error: Dashboard data unavailable]';
-        overallExitCode = 1;
+        if (debugMode) {
+            outputData["1PanelDashboard"] = dashboardErrorForOutput || '[Debug Error: Dashboard data unavailable]';
+        } else {
+            outputData["1PanelDashboard"] = "[1Panel Dashboard: Data unavailable]";
+        }
     }
 
+    let systemDataAvailable = false;
     if (finalSystemPayload) {
         outputData["1PanelOsInfo"] = finalSystemPayload;
+        systemDataAvailable = true;
     } else {
-        outputData["1PanelOsInfo"] = systemInfoErrorForOutput || '[Error: System info data unavailable]';
-        overallExitCode = 1;
+        if (debugMode) {
+            outputData["1PanelOsInfo"] = systemInfoErrorForOutput || '[Debug Error: System info data unavailable]';
+        } else {
+            outputData["1PanelOsInfo"] = "[1Panel OS Info: Data unavailable]";
+        }
     }
+    
+    if (debugMode) {
+        if (!dashboardDataAvailable || !systemDataAvailable) {
+            overallExitCode = 1;
+        }
+        // No need for 'else overallExitCode = 0;' as it's initialized to 0
+    } 
+    // If not debugMode, overallExitCode remains 0 regardless of data availability
     
     if (overallExitCode === 1 && debugMode) {
         outputData.debug_dashboard_api_response = apiDashboardResponse; // Include raw API responses for debugging if things failed
