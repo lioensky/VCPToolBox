@@ -252,8 +252,9 @@ body {
     flex-direction: column;
     border-right: 1px solid var(--border-color);
     transition: width 0.2s ease-in-out;
+    overflow-x: hidden; /* 禁止侧边栏本身的横向滚动条 */
 }
-
+ 
 /* Sidebar Tabs */
 .sidebar-tabs {
     display: flex;
@@ -305,9 +306,8 @@ body {
     max-height: 100vh; /* Adjust if sidebar has a more constrained max height. */
     transform: translateY(0);
     overflow-y: auto;
-    overflow-x: hidden; /* 防止内容溢出影响侧边栏拖动 */
     pointer-events: auto;
-    min-width: 0; /* 新增：允许 flex item 收缩，以防止其内容撑开父级 .sidebar */
+    overflow-x: hidden;
 }
 /* End Sidebar Tabs */
 
@@ -352,9 +352,10 @@ body {
     padding: 0;
     margin: 0;
     overflow-y: auto;
+    overflow-x: hidden; /* 禁止列表本身的横向滚动条 */
     flex-grow: 1;
 }
-
+ 
 .agent-list li, .topic-list .topic-item {
     padding: 10px 12px;
     margin-bottom: 6px;
@@ -1280,7 +1281,6 @@ body.light-theme #agentSettingsForm .form-actions .danger-button:hover {
 
 .notification-item pre { /* For JSON data or preformatted content in notifications */
     background-color: rgba(0,0,0,0.2); /* Consistent with existing pre style */
-    color: #000000; /* 确保代码块文字颜色在亮色主题下为纯黑色 */
     padding: 6px;
     border-radius: 4px;
     font-size: 0.85em;
