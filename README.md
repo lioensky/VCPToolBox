@@ -246,6 +246,11 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 - **TavilySearch (synchronous)**: 集成 Tavily API，赋予 AI 网络搜索能力。
 - **UrlFetch (synchronous)**: 基础网页内容抓取工具组。
 
+### 学术文献获取
+
+- **ArxivDailyPapers (static)**: 从 Arxiv API 获取每日最新研究论文，涵盖物理学、数学、计算机科学等领域。通过占位符 `{{ArxivDailyPapersData}}` 提供论文数据。
+- **CrossRefDailyPapers (static)**: 从 CrossRef API 获取每日最新研究论文，提供已发表学术文献的元数据。通过占位符 `{{CrossRefDailyPapersData}}` 提供论文数据。
+
 ### 多模态处理与内容生成
 
 - **ImageProcessor (messagePreprocessor)**: 自动将用户消息中的图像数据（如 Base64）转译为文本描述或多模态输入部件，支持缓存和图床 URL 标注。
@@ -508,6 +513,8 @@ VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调
 *   `{{VCPAllTools}}`: 一个特殊的占位符，当被解析时，它会被替换为所有当前已加载且具有调用指令描述的 VCP 工具的完整描述和调用示例的集合。各个工具的描述之间会用分隔符隔开，方便AI全面了解可用工具。
 *   `{{ShowBase64}}`: 当此占位符出现在用户消息或系统提示词中时，`ImageProcessor` 插件将被跳过，Base64数据将直接发送给Model。
 *   `{{VCPWeaherInfo}}`: 由WeatherReporter提供的占位符，提供完整的天气预警，24小时精准天气，7日天气预报。
+*   `{{ArxivDailyPapersData}}`: (由 `ArxivDailyPapers` 插件提供) 一个 JSON 字符串，包含从 Arxiv 获取的最新研究论文列表。
+*   `{{CrossRefDailyPapersData}}`: (由 `CrossRefDailyPapers` 插件提供) 一个 JSON 字符串，包含从 CrossRef 获取的最新研究论文列表。
 
 
 ### 插件与配置驱动变量
