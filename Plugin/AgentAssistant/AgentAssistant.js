@@ -24,12 +24,12 @@ if (fs.existsSync(pluginConfigEnvPath)) {
     try {
         const fileContent = fs.readFileSync(pluginConfigEnvPath, { encoding: 'utf8' });
         pluginLocalEnvConfig = dotenv.parse(fileContent);
-        if (DEBUG_MODE) console.log(`[AgentAssistant] Successfully parsed plugin's local config.env: ${pluginConfigEnvPath}`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Successfully parsed plugin's local config.env: ${pluginConfigEnvPath}`); // MODIFIED
     } catch (e) {
         console.error(`[AgentAssistant] Error parsing plugin's local config.env (${pluginConfigEnvPath}): ${e.message}. No agents will be loaded from it.`);
     }
 } else {
-    if (DEBUG_MODE) console.warn(`[AgentAssistant] Plugin's local config.env not found at: ${pluginConfigEnvPath}. No agents will be loaded.`);
+    if (DEBUG_MODE) console.error(`[AgentAssistant] Plugin's local config.env not found at: ${pluginConfigEnvPath}. No agents will be loaded.`); // MODIFIED (was warn)
 }
 
 const agentBaseNames = new Set();
@@ -44,7 +44,7 @@ for (const key in pluginLocalEnvConfig) {
 }
 
 if (DEBUG_MODE) {
-    console.log(`[AgentAssistant] Identified agent base names from plugin's local config: ${[...agentBaseNames].join(', ') || 'None'}`);
+    console.error(`[AgentAssistant] Identified agent base names from plugin's local config: ${[...agentBaseNames].join(', ') || 'None'}`); // MODIFIED
 }
 
 // Second pass: Load full agent configuration using base name from plugin's local config (pluginLocalEnvConfig)
@@ -53,11 +53,11 @@ for (const baseName of agentBaseNames) {
     const chineseName = pluginLocalEnvConfig[`AGENT_${baseName}_CHINESE_NAME`]; // Or any display name
 
     if (!modelId) {
-        if (DEBUG_MODE) console.warn(`[AgentAssistant] Skipping agent ${baseName} from local config: Missing AGENT_${baseName}_MODEL_ID.`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Skipping agent ${baseName} from local config: Missing AGENT_${baseName}_MODEL_ID.`); // MODIFIED (was warn)
         continue;
     }
     if (!chineseName) {
-        if (DEBUG_MODE) console.warn(`[AgentAssistant] Skipping agent ${baseName} from local config: Missing AGENT_${baseName}_CHINESE_NAME.`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Skipping agent ${baseName} from local config: Missing AGENT_${baseName}_CHINESE_NAME.`); // MODIFIED (was warn)
         continue;
     }
 
@@ -78,13 +78,13 @@ for (const baseName of agentBaseNames) {
         description: description,
     };
     if (DEBUG_MODE) {
-        console.log(`[AgentAssistant] Loaded agent from local config: '${agentKeyForInvocation}' (Base: ${baseName}, ModelID: ${modelId})`);
+        console.error(`[AgentAssistant] Loaded agent from local config: '${agentKeyForInvocation}' (Base: ${baseName}, ModelID: ${modelId})`); // MODIFIED
     }
 }
 // --- End of Agent 加载逻辑 ---
 
 if (Object.keys(AGENTS).length === 0 && DEBUG_MODE) {
-    console.warn("[AgentAssistant] Warning: No agents were loaded. Check plugin's local config.env for AGENT_BASENAME_MODEL_ID and AGENT_BASENAME_CHINESE_NAME definitions.");
+    console.error("[AgentAssistant] Warning: No agents were loaded. Check plugin's local config.env for AGENT_BASENAME_MODEL_ID and AGENT_BASENAME_CHINESE_NAME definitions."); // MODIFIED (was warn)
 }
 
 const agentContexts = new Map(); // 上下文管理逻辑保持不变
@@ -121,12 +121,12 @@ function isContextExpired(timestamp) {
 }
 
 setInterval(() => {
-    if (DEBUG_MODE && Object.keys(agentContexts).length > 0) console.log(`[AgentAssistant] Running periodic context cleanup...`);
+    if (DEBUG_MODE && Object.keys(agentContexts).length > 0) console.error(`[AgentAssistant] Running periodic context cleanup...`); // MODIFIED
     for (const [agentName, sessions] of agentContexts) {
         for (const [sessionId, sessionData] of sessions) {
             if (isContextExpired(sessionData.timestamp)) {
                 sessions.delete(sessionId);
-                if (DEBUG_MODE) console.log(`[AgentAssistant] Cleared expired context for agent ${agentName}, session ${sessionId}`);
+                if (DEBUG_MODE) console.error(`[AgentAssistant] Cleared expired context for agent ${agentName}, session ${sessionId}`); // MODIFIED
             }
         }
         if (sessions.size === 0) {
@@ -148,7 +148,7 @@ async function replacePlaceholdersInUserPrompt(text, agentConfig) {
 async function handleRequest(input) {
     if (!VCP_SERVER_PORT || !VCP_SERVER_ACCESS_KEY) {
         const errorMsg = "AgentAssistant Critical Error: VCP Server PORT or Access Key is not available in the plugin's environment. Cannot make self-calls to VCP server.";
-        if (DEBUG_MODE) console.error(`[AgentAssistant] ${errorMsg}`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] ${errorMsg}`); // This was already console.error
         return { status: "error", error: errorMsg };
     }
     const VCP_API_TARGET_URL = `http://localhost:${VCP_SERVER_PORT}/v1`;
@@ -175,7 +175,7 @@ async function handleRequest(input) {
             errorMessage += ` 当前插件本地 config.env 中没有加载任何 Agent。请检查 Plugin/AgentAssistant/config.env 文件，确保 AGENT_BASENAME_MODEL_ID 和 AGENT_BASENAME_CHINESE_NAME 定义正确无误。`;
         }
         errorMessage += " 请确认您请求的 Agent 名称是否准确。";
-        if (DEBUG_MODE) console.error(`[AgentAssistant] Failed to find agent: '${agent_name}'. Loaded from local: ${availableAgentNames.join(', ') || 'None'}`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Failed to find agent: '${agent_name}'. Loaded from local: ${availableAgentNames.join(', ') || 'None'}`); // This was already console.error
         return { status: "error", error: errorMessage };
     }
 
@@ -198,8 +198,8 @@ async function handleRequest(input) {
         };
         
         if (DEBUG_MODE) {
-            console.log(`[AgentAssistant] Sending request to VCP Server (${VCP_API_TARGET_URL}/chat/completions) for agent ${agent_name} (Base: ${agentConfig.baseName})`);
-            // console.log(`[AgentAssistant] Payload for VCP:`, JSON.stringify(payloadForVCP, null, 2)); // Can be very verbose
+            console.error(`[AgentAssistant] Sending request to VCP Server (${VCP_API_TARGET_URL}/chat/completions) for agent ${agent_name} (Base: ${agentConfig.baseName})`); // MODIFIED
+            // console.error(`[AgentAssistant] Payload for VCP:`, JSON.stringify(payloadForVCP, null, 2)); // MODIFIED (if uncommented)
         }
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
@@ -212,7 +212,7 @@ async function handleRequest(input) {
         
         const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
         if (typeof assistantResponseContent !== 'string') {
-            if (DEBUG_MODE) console.error("[AgentAssistant] Response from VCP Server did not contain valid assistant content for agent " + agent_name, responseFromVCP.data);
+            if (DEBUG_MODE) console.error("[AgentAssistant] Response from VCP Server did not contain valid assistant content for agent " + agent_name, responseFromVCP.data); // This was already console.error
             return { status: "error", error: `Agent '${agent_name}' 从VCP服务器获取的响应无效或缺失内容。` };
         }
 
@@ -238,7 +238,7 @@ async function handleRequest(input) {
         } else if (error instanceof Error) {
             errorMessage += ` ${error.message}`;
         }
-        if (DEBUG_MODE) console.error(`[AgentAssistant] Error in handleRequest for ${agent_name}: ${errorMessage}`, error.stack ? error.stack.substring(0, 500) : '');
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Error in handleRequest for ${agent_name}: ${errorMessage}`, error.stack ? error.stack.substring(0, 500) : ''); // This was already console.error
         return { status: "error", error: errorMessage };
     }
 }
@@ -254,12 +254,12 @@ process.stdin.on('end', async () => {
             process.stdout.write(JSON.stringify(output));
         } catch (e) {
             const criticalErrorMsg = `AgentAssistant plugin encountered a critical internal error: ${e.message}`;
-            if (DEBUG_MODE) console.error(`[AgentAssistant] ${criticalErrorMsg}`);
+            if (DEBUG_MODE) console.error(`[AgentAssistant] ${criticalErrorMsg}`); // This was already console.error
             process.stdout.write(JSON.stringify({ status: "error", error: criticalErrorMsg }));
         }
     } else {
         const noInputMsg = "AgentAssistant received no input.";
-        if (DEBUG_MODE) console.warn(`[AgentAssistant] ${noInputMsg}`);
+        if (DEBUG_MODE) console.error(`[AgentAssistant] ${noInputMsg}`); // MODIFIED (was warn)
         process.stdout.write(JSON.stringify({ status: "error", error: noInputMsg }));
     }
     if (DEBUG_MODE) { setTimeout(() => process.exit(0), 100); } 
@@ -267,18 +267,18 @@ process.stdin.on('end', async () => {
 });
 
 if (DEBUG_MODE) {
-    console.log(`[AgentAssistant] Plugin starting (Layered Config Mode). VCP PORT: ${VCP_SERVER_PORT || 'NOT FOUND IN ENV'}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND IN ENV'}.`);
-    console.log(`[AgentAssistant] History rounds from env: ${MAX_HISTORY_ROUNDS}, Context TTL from env: ${CONTEXT_TTL_HOURS}h.`);
-    console.log(`[AgentAssistant] Attempting to load agent definitions from plugin's local config.env: ${pluginConfigEnvPath}`);
+    console.error(`[AgentAssistant] Plugin starting (Layered Config Mode). VCP PORT: ${VCP_SERVER_PORT || 'NOT FOUND IN ENV'}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND IN ENV'}.`); // MODIFIED
+    console.error(`[AgentAssistant] History rounds from env: ${MAX_HISTORY_ROUNDS}, Context TTL from env: ${CONTEXT_TTL_HOURS}h.`); // MODIFIED
+    console.error(`[AgentAssistant] Attempting to load agent definitions from plugin's local config.env: ${pluginConfigEnvPath}`); // MODIFIED
     setTimeout(() => {
         const loadedAgentNames = Object.keys(AGENTS);
         if (loadedAgentNames.length > 0) {
-            console.log(`[AgentAssistant] Agents loaded from local config: ${loadedAgentNames.join(', ')}`);
+            console.error(`[AgentAssistant] Agents loaded from local config: ${loadedAgentNames.join(', ')}`); // MODIFIED
         } else {
-            console.warn(`[AgentAssistant] No agents loaded from local config. Check ${pluginConfigEnvPath} and its AGENT_BASENAME_MODEL_ID / AGENT_BASENAME_CHINESE_NAME definitions.`);
+            console.error(`[AgentAssistant] No agents loaded from local config. Check ${pluginConfigEnvPath} and its AGENT_BASENAME_MODEL_ID / AGENT_BASENAME_CHINESE_NAME definitions.`); // MODIFIED (was warn)
         }
         if (!VCP_SERVER_PORT || !VCP_SERVER_ACCESS_KEY) {
-            console.error(`[AgentAssistant] CRITICAL: Plugin may not function correctly for VCP self-calls without VCP_SERVER_PORT and VCP_SERVER_ACCESS_KEY from its environment.`);
+            console.error(`[AgentAssistant] CRITICAL: Plugin may not function correctly for VCP self-calls without VCP_SERVER_PORT and VCP_SERVER_ACCESS_KEY from its environment.`); // This was already console.error
         }
     }, 150);
 }
