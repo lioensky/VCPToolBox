@@ -1,0 +1,36 @@
+{
+  "name": "novelaigen",
+  "version": "1.0.0",
+  "description": "NovelAI image generation plugin for VCP",
+  "main": "NovelAIGen.js",
+  "type": "module",
+  "scripts": {
+    "test": "node NovelAIGen.js",
+    "start": "node NovelAIGen.js"
+  },
+  "keywords": [
+    "novelai",
+    "image-generation",
+    "ai",
+    "vcp",
+    "plugin",
+    "anime",
+    "diffusion"
+  ],
+  "author": "VCP-Assistant",
+  "license": "MIT",
+  "dependencies": {
+    "yauzl": "^2.10.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lioensky/VCPToolBox"
+  },
+  "bugs": {
+    "url": "https://github.com/lioensky/VCPToolBox/issues"
+  },
+  "homepage": "https://github.com/lioensky/VCPToolBox#readme"
+} 
