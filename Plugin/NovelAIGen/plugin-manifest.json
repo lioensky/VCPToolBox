@@ -1,0 +1,39 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "NovelAIGen",
+  "displayName": "NovelAI 图片生成器",
+  "version": "1.0.0",
+  "description": "通过 NovelAI API 使用 NovelAI Diffusion 模型生成高质量的动漫风格图片。支持多种模型和参数调节。",
+  "author": "VCP-Assistant",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node NovelAIGen.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "NOVELAI_API_KEY": {
+      "type": "string",
+      "description": "您的NovelAI API密钥 (从 https://novelai.net/ 获取)",
+      "default": "",
+      "required": true
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "description": "是否为此插件启用详细的调试日志输出到stderr。",
+      "default": false,
+      "required": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "NovelAIGenerateImage",
+        "description": "调用此工具通过 NovelAI API 使用 NAI Diffusion 4.5 Full 模型生成高质量的动漫风格图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NovelAIGen「末」,\nprompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,\nresolution:「始」(必需) 图片分辨率，可选值：「512x768」、「768x512」、「640x640」、「832x1216」、「1216x832」、「1024x1024」、「1024x1536」、「1536x1024」、「1472x1472」、「1088x1920」、「1920x1088」。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n**NovelAI官方分辨率选项**：\n• **SMALL**: 512x768(竖版), 768x512(横版), 640x640(方形)\n• **NORMAL**: 832x1216(竖版), 1216x832(横版), 1024x1024(方形)\n• **LARGE**: 1024x1536(竖版), 1536x1024(横版), 1472x1472(方形)\n• **WALLPAPER**: 1088x1920(竖版), 1920x1088(横版)\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含以下信息的结果：\n1. 生成图片的公开访问URL。\n2. 图片在服务器上的存储相对路径 (例如：image/novelaigen/图片名.png)。\n3. 图片的文件名。\n请在您的最终回复中，使用返回的【图片URL】为用户生成一个HTML的 `<img>` 标签来直接展示图片，例如：`<img src=\"[此处填写图片URL]\" alt=\"[此处可填写部分prompt作为描述]\" width=\"300\">`。请确保替换占位符，并可调整 `width` 属性（建议200-500像素）。同时，也可以附带图片的直接URL链接。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NovelAIGen「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, standing on a neon-lit city rooftop at night, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+} 
