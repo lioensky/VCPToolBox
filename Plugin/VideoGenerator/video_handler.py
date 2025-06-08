@@ -329,8 +329,12 @@ def main():
                                                          callback_base_url=callback_base_url_env, 
                                                          plugin_name_for_callback=PLUGIN_NAME_FOR_CALLBACK,
                                                          debug_mode_for_polling=debug_mode)
-                ai_msg = f"文生视频任务已提交 (ID: {req_id_submit})。插件将尝试在后台轮询并在完成后回调。请告知用户任务已开始，最终结果将通过通知推送。"
-                print_json_output("success", result={"message": "Task submitted, polling initiated by plugin.", "requestId": req_id_submit}, ai_message=ai_msg)
+                result_string_for_ai = (
+                    f"文生视频任务 (ID: {req_id_submit}) 已成功提交。\n"
+                    f"这是一个动态上下文占位符，当任务完成时，它会被自动替换为实际结果。\n"
+                    f"请在你的回复中包含以下占位符原文：{{{{VCP_ASYNC_RESULT::Wan2.1VideoGen::{req_id_submit}}}}}"
+                )
+                print_json_output(status="success", result=result_string_for_ai)
 
             elif mode == "i2v":
                 if not i2v_model:
@@ -343,8 +347,12 @@ def main():
                                                          callback_base_url=callback_base_url_env,
                                                          plugin_name_for_callback=PLUGIN_NAME_FOR_CALLBACK,
                                                          debug_mode_for_polling=debug_mode)
-                ai_msg = f"图生视频任务已提交 (ID: {req_id_submit})。插件将尝试在后台轮询并在完成后回调。请告知用户任务已开始，最终结果将通过通知推送。"
-                print_json_output("success", result={"message": "Task submitted, polling initiated by plugin.", "requestId": req_id_submit}, ai_message=ai_msg)
+                result_string_for_ai = (
+                    f"图生视频任务 (ID: {req_id_submit}) 已成功提交。\n"
+                    f"这是一个动态上下文占位符，当任务完成时，它会被自动替换为实际结果。\n"
+                    f"请在你的回复中包含以下占位符原文：{{{{VCP_ASYNC_RESULT::Wan2.1VideoGen::{req_id_submit}}}}}"
+                )
+                print_json_output(status="success", result=result_string_for_ai)
             else:
                 raise ValueError(f"无效的 'mode' 参数: {mode}。必须是 't2v' 或 'i2v'。")
 
