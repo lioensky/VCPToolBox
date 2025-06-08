@@ -3,19 +3,20 @@
   "displayName": "视频生成器 (Wan2.1)",
   "version": "0.1.0",
   "description": "使用 Wan2.1 API 进行文本到视频或图像到视频的生成。",
-  "pluginType": "synchronous",
+  "pluginType": "asynchronous",
   "entryPoint": {
     "command": "python video_handler.py"
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 180000 
+    "timeout": 1800000
   },
   "configSchema": {
     "SILICONFLOW_API_KEY": "string",
     "Text2VideoModelName": "string",
     "Image2VideoModelName": "string",
-    "DebugMode": "boolean"
+    "DebugMode": "boolean",
+    "CALLBACK_BASE_URL": "string"
   },
   "capabilities": {
     "invocationCommands": [
@@ -30,5 +31,11 @@
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」Wan2.1VideoGen「末」,\ncommand:「始」query「末」,\nrequest_id:「始」your_request_id_here「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
+  },
+  "webSocketPush": {
+    "enabled": true,
+    "messageType": "video_generation_status",
+    "usePluginResultAsMessage": true,
+    "targetClientType": "VCPLog"
   }
 }
