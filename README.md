@@ -45,6 +45,8 @@ VCP 的每一项特性都根植于其前瞻性的设计哲学，旨在解决当�
 
 ### 丰富的插件类型，支撑 AI 全方位能力拓展
 
+VCP 支持多种插件类型，以满足不同的 AI 能力扩展需求。核心的交互型插件主要分为同步阻塞型和异步回调型。
+
 - **静态插件 (static)**:
   - **作用**: 为 AI 提供动态的、实时的“世界知识”，如天气、自定义数据、角色日记等，通过替换系统提示词中的占位符注入。支持定时刷新。
   - **次时代意义**: 克服 LLM 知识截止日期限制，赋予 AI 实时感知能力，是构建“情境感知型 AI”的关键。
@@ -52,8 +54,18 @@ VCP 的每一项特性都根植于其前瞻性的设计哲学，旨在解决当�
   - **作用**: 在用户请求发送给 AI 模型前，对消息内容进行修改或增强，如图像识别与描述 (`ImageProcessor`)。
   - **次时代意义**: 实现多模态输入的统一处理，让 AI 能够“理解”更丰富的输入信息，是构建多模态智能体的基础。
 - **同步插件 (synchronous)**:
-  - **作用**: AI 在对话中主动调用这些插件执行特定任务，如科学计算、图像生成、视频生成、网络搜索、知识库读写、发送消息给用户前端 (`AgentMessage`)等。服务器会等待插件执行完毕，并将结构化结果反馈给 AI 进行后续处理。部分插件的结果还可以通过配置，经由统一的 WebSocket 服务推送给客户端。
-  - **次时代意义**: 这是 AI “行动能力”的核心体现，使其能够干预外部世界、获取外部信息、创造数字内容，并与用户进行更丰富的交互。
+  - **模式**: 这是传统的阻塞式调用。AI 发起调用后，VCP 服务器会启动插件进程，并**等待该插件进程完全执行完毕**后，收集其标准输出作为结果，然后将此结果反馈给 AI 进行后续处理。
+  - **适用场景**: 适用于执行时间较短、能够快速返回结果的任务，如科学计算 (`SciCalculator`)、简单的信息查询等。
+  - **WebSocket 推送**: 部分同步插件的最终结果也可以通过在其 `plugin-manifest.json` 中配置 `webSocketPush`，经由统一的 WebSocket 服务推送给客户端。
+  - **次时代意义**: 这是 AI “行动能力”的基础体现，使其能够干预外部世界、获取外部信息。
+- **异步插件 (asynchronous)**:
+  - **模式**: 这是为耗时任务设计的非阻塞式调用。AI 发起调用后，VCP 服务器启动插件进程。插件进程被设计为：
+    1.  **立即返回初始响应**: 插件首先向标准输出打印一个 JSON 对象，表明任务已成功接收或正在处理中（例如，包含一个任务 ID）。`Plugin.js` 会捕获这个初始响应并立即返回给 AI，使 AI 无需等待耗时操作完成。
+    2.  **后台执行**: 插件进程的非守护线程（或其他后台机制）继续在后台执行主要任务（如视频生成、复杂分析等）。
+    3.  **任务完成回调**: 当后台任务完成后，插件通过向 VCP 服务器预定义的 HTTP 回调端点 (`/plugin-callback/:pluginName/:taskId`) 发送一个 POST 请求，将最终结果或状态更新通知给服务器。
+    4.  **WebSocket 推送最终结果**: VCP 服务器接收到回调后，会根据插件清单中的 `webSocketPush` 配置，将回调数据通过统一的 `WebSocketServer.js` 推送给指定的客户端。
+  - **适用场景**: 非常适合执行时间较长的任务，如视频生成 (`Wan2.1VideoGen`)、大型数据处理、需要轮询外部API状态等。它避免了 AI 长时间等待，提高了交互的流畅性，并通过 WebSocket 主动通知用户最终结果。
+  - **次时代意义**: 赋予 AI 执行复杂、耗时任务而自身不被阻塞的能力，结合主动通知机制，极大地提升了用户体验和 AI Agent 的自主性。
 - **服务插件 (service)**:
   - **作用**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口，如图床服务 (`ImageServer`)。部分服务插件（如 `VCPLog`）也可能利用统一 WebSocket 服务进行信息推送。
   - **次时代意义**: 将 VCP 平台本身转变为一个可扩展的服务中心，支持更复杂的应用场景。
@@ -172,10 +184,17 @@ graph TD
   - `server.js` 解析 AI 响应。
   - **工具调用**: 若 AI 响应中包含 `<<<[TOOL_REQUEST]>>>` 指令，`PluginManager` 会：
     - 解析工具名和参数。
-    - **并行异步执行**：对于多个工具调用，VCP 可并行调度。`PluginManager` 调用相应同步插件，插件可能与外部 API 或本地脚本交互。
-    - **结果处理与 WebSocket 推送**: 同步插件执行完毕后，`server.js` 会检查该插件的清单 (`plugin-manifest.json`) 中是否配置了 `webSocketPush`。如果配置为启用，并且插件结果符合约定（例如 `usePluginResultAsMessage: true` 且结果为对象），则该结果会通过 `WebSocketServer.js` 推送给指定类型的客户端。
-    - **VCP 调用日志推送**: 无论插件结果是否推送，VCP 工具调用的元信息（成功、失败、内容摘要）会由 `server.js` 通过 `WebSocketServer.js` 推送给订阅了 `'VCPLog'` 客户端类型的客户端。
-    - **二次 AI 调用**: 所有工具的执行结果（JSON 格式）被收集、格式化，并作为新的用户消息添加到对话历史中，再次调用 AI 模型。此循环可持续多次，直至无工具调用或达到上限。
+    - **并行异步执行**: 对于多个工具调用，VCP 可并行调度。`PluginManager` 调用相应插件。
+    - **根据插件类型处理**:
+      - **对于同步插件 (synchronous)**: `PluginManager` 等待插件进程执行完毕，获取其完整输出。
+        - **结果处理与 WebSocket 推送 (同步插件)**: 如果同步插件配置了 `webSocketPush`，其最终结果会通过 `WebSocketServer.js` 推送。
+      - **对于异步插件 (asynchronous)**:
+        - `PluginManager` 捕获插件打印的**初始JSON响应**（例如，包含任务ID和“已提交”状态）并立即将其返回给 `server.js`。这使得AI可以快速得到初步反馈。
+        - 插件的非守护线程在后台继续执行耗时操作。
+        - **插件回调**: 插件完成后台任务后，向服务器的 `/plugin-callback/:pluginName/:taskId` 端点发送HTTP POST请求，携带最终结果。
+        - **服务器处理回调与 WebSocket 推送 (异步插件)**: `server.js` 接收到回调数据后，根据该异步插件清单中的 `webSocketPush` 配置，将回调中的结果数据通过 `WebSocketServer.js` 推送给客户端。
+    - **VCP 调用日志推送**: 无论插件类型或结果是否通过特定配置推送，VCP 工具调用的元信息（如发起调用、成功、失败、内容摘要）通常会由 `server.js` 通过 `WebSocketServer.js` 推送给订阅了 `'VCPLog'` 客户端类型的客户端。
+    - **二次 AI 调用**: 所有**同步插件**的执行结果，或**异步插件的初始响应**（如果AI需要基于此进行下一步决策），会被收集、格式化，并作为新的用户消息添加到对话历史中，再次调用 AI 模型。此循环可持续多次，直至无工具调用或达到上限。异步插件的最终结果通常不直接参与这个AI循环，而是通过WebSocket直接通知用户。
   - **记忆写入**: 若 AI 响应包含 `<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>` 结构化日记块，`PluginManager` 调用 `DailyNoteWrite` 插件将其存入持久化记忆库。
   - **记忆读取与上下文注入**: `DailyNoteGet` 等静态插件定期从记忆库读取内容（如特定角色的所有日记），通过 `{{AllCharacterDiariesData}}` 等内部占位符提供给服务器，服务器再据此解析如 `[角色名日记本内容为空或未从插件获取]` 这样的用户级占位符，实现记忆的上下文注入。
   - **记忆管理与优化**: AI 可通过调用 `DailyNoteManager` 或 `DailyNoteEditor` 等插件，主动整理、优化、共享其知识库。
@@ -255,7 +274,7 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 
 - **ImageProcessor (messagePreprocessor)**: 自动将用户消息中的图像数据（如 Base64）转译为文本描述或多模态输入部件，支持缓存和图床 URL 标注。
 - **FluxGen (synchronous)**: 集成 SiliconFlow API 实现高质量文生图，图片保存至本地。
-- **Wan2.1VideoGen (synchronous)**: 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频。
+- **Wan2.1VideoGen (asynchronous)**: (异步插件) 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频。AI提交任务后会立即收到任务ID，视频在后台生成，完成后通过WebSocket通知用户结果（如视频URL或失败信息）。
 - **SunoGen (synchronous)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或续写。
 - **DoubaoGen (synchronous)**: 使用豆包 API 进行图像生成与编辑。
 
@@ -437,45 +456,75 @@ VCP 的灵魂在于其插件生态。成为 VCP 插件开发者，意味着你�
 
 - **创建插件目录**: 在 `Plugin/` 目录下新建文件夹，如 `Plugin/MySuperPlugin/`。
 - **编写插件清单 (`plugin-manifest.json`)**: 这是插件的“身份证”和“说明书”。
-  - **核心字段**: `name`, `displayName`, `version`, `description`, `pluginType` (static, messagePreprocessor, synchronous, service)。
-  - **执行入口**: `entryPoint` (如执行脚本的命令) 和 `communication` (如 `protocol: "stdio"`).
+  - **核心字段**: `name`, `displayName`, `version`, `description`, `pluginType` (值可以是: `static`, `messagePreprocessor`, `synchronous`, `asynchronous`, `service`)。
+  - **执行入口**: `entryPoint` (如执行脚本的命令 `python script.py` 或 `node script.js`) 和 `communication` (如 `protocol: "stdio"` 表示通过标准输入输出通信)。
   - **配置蓝图 (`configSchema`)**: 声明插件所需的配置项及其类型、默认值、描述。这些配置将通过 `_getPluginConfig` 方法合并全局和插件专属 `.env` 配置后传递给插件。
   - **能力声明 (`capabilities`)**:
     - **static 插件**: 定义 `systemPromptPlaceholders` (插件提供的占位符，如 `{{MyWeatherData}}`)。
-    - **synchronous 插件**: 定义 `invocationCommands`。每个命令包含:
-      - `command` (内部识别名)。
+    - **synchronous` 或 `asynchronous` 插件**: 定义 `invocationCommands`。每个命令包含:
+      - `command` (内部识别名，例如 "submit", "query")。
       - `description` (至关重要: 给 AI 看的指令描述，支持在管理面板编辑)。应包含：
         - 清晰的功能说明。
         - 详细的参数列表（名称、类型、是否必需、可选值范围）。
         - 明确的 VCP 调用格式示例 (AI 将模仿此格式)。
-        - 成功/失败时返回的 JSON 格式示例 (AI 需要理解插件的输出)。
-        - 任何与用户沟通或AI决策相关的重要提示。
+        - **对于 `synchronous` 插件**: 成功/失败时返回的 JSON 格式示例 (AI 需要理解插件的直接输出)。
+        - **对于 `asynchronous` 插件**: 插件**初始响应**的 JSON 格式示例（例如，包含任务ID），以及通过 WebSocket 推送的**最终结果**的格式示例。
+        - 任何与用户沟通或AI决策相关的重要提示（例如，对于异步插件，提示用户任务已提交，结果将稍后通知）。
       - `example` (可选，提供一个更具体的调用场景示例)。
-  - **WebSocket 推送配置 (`webSocketPush`) (可选, 主要用于 synchronous 插件)**:
-    - 如果你的同步插件执行成功后，希望将其结果通过 WebSocket 推送给客户端，可以在 `plugin-manifest.json` 的顶层添加此对象。
+  - **WebSocket 推送配置 (`webSocketPush`) (可选, 主要用于 `asynchronous` 插件的回调结果推送，也可用于 `synchronous` 插件的直接结果推送)**:
+    - 如果你的插件执行成功后，希望将其结果通过 WebSocket 推送给客户端，可以在 `plugin-manifest.json` 的顶层添加此对象。
     - `enabled` (boolean,必需): `true` 表示启用推送。
     - `usePluginResultAsMessage` (boolean, 可选, 默认 `false`):
-        - 若为 `true`，插件的标准输出结果（通常是一个 JSON 对象）将直接作为 WebSocket 消息体发送。插件应确保其输出的 `result` 字段是一个符合前端期望的完整消息对象（例如包含 `type` 字段以供前端识别）。参考 `AgentMessage` 插件。
+        - 若为 `true`:
+            - 对于 `synchronous` 插件：插件的直接标准输出结果（通常是一个 JSON 对象）的 `result` 字段（如果该字段是对象）将直接作为 WebSocket 消息体发送。插件应确保其 `result` 字段是一个符合前端期望的完整消息对象。
+            - 对于 `asynchronous` 插件：通过 `/plugin-callback` 发送的 JSON 数据本身将直接作为 WebSocket 消息体发送。插件回调时应确保发送的数据是一个符合前端期望的完整消息对象。
         - 若为 `false` 或未提供，则需要同时提供 `messageType`。
-    - `messageType` (string, 可选): 当 `usePluginResultAsMessage` 为 `false` 时使用。服务器会将插件的 `result` 包装成 `{ type: "yourMessageType", data: pluginResult }` 的形式发送。
-    - `targetClientType` (string, 可选, 默认 `null`): 指定接收此消息的客户端类型。`WebSocketServer.js` 会根据此类型筛选客户端。如果为 `null` 或未提供，则可能广播给所有连接的客户端或特定默认类型的客户端（取决于 `WebSocketServer.js` 的实现）。
+    - `messageType` (string, 可选): 当 `usePluginResultAsMessage` 为 `false` 时使用。
+        - 对于 `synchronous` 插件：服务器会将插件标准输出的 `result` 字段包装成 `{ type: "yourMessageType", data: pluginResult.result }` 的形式发送。
+        - 对于 `asynchronous` 插件：服务器会将通过回调接收到的 JSON 数据包装成 `{ type: "yourMessageType", data: callbackData }` 的形式发送。
+    - `targetClientType` (string, 可选, 默认 `null`): 指定接收此消息的客户端类型。`WebSocketServer.js` 会根据此类型筛选客户端。如果为 `null` 或未提供，则可能广播给所有连接的客户端或特定默认类型的客户端（取决于 `WebSocketServer.js` 的实现）。例如，`VCPLog` 用于向日志查看器推送。
 - **实现插件逻辑**:
   - 根据 `pluginType` 和 `entryPoint` 实现主逻辑脚本 (Node.js, Python, Shell 等皆可)。
-  - **stdio 插件** (常用于 synchronous 和部分 static):
+  - **stdio 插件** (常用于 `synchronous`, `asynchronous` 和部分 `static`):
     - 从标准输入 (`stdin`) 读取数据 (通常是 JSON 字符串形式的参数)。
-    - 通过标准输出 (`stdout`) 返回结果，必须遵循以下 JSON 格式:
+    - **对于 `synchronous` 插件**: 通过标准输出 (`stdout`) 返回最终结果，必须遵循以下 JSON 格式:
       ```json
       {
         "status": "success" | "error",
         "result": "成功时返回的字符串内容或JSON对象", // status 为 "success" 时存在
-        "error": "失败时返回的错误信息字符串" // status 为 "error" 时存在
+        "error": "失败时返回的错误信息字符串", // status 为 "error" 时存在
+        "messageForAI": "可选，给AI的额外提示信息" // 例如，AgentMessage插件用此字段传递希望AI告知用户的文本
       }
       ```
       如果配置了 `webSocketPush.usePluginResultAsMessage: true`，这里的 `result` 字段（如果是个对象）会被直接用于 WebSocket 推送。
-    - 对于主要用于更新占位符的 static 插件，如果逻辑简单，可以直接输出占位符的值（非 JSON）。但推荐使用上述 JSON 格式以支持更复杂的通信或错误报告。
-    - 标准错误 (`stderr`) 可用于输出调试信息。
-    - 确保 UTF-8 编码。
-  - **Node.js 类型插件** (如 messagePreprocessor, service, 或复杂的 static/synchronous):
+    - **对于 `asynchronous` 插件**:
+      1.  **初始响应**: 插件脚本在收到任务后，**必须立即**向标准输出 (`stdout`) 打印一个符合上述 JSON 格式的初始响应。例如：
+          ```json
+          {
+            "status": "success",
+            "result": { "requestId": "unique_task_id_123", "message": "任务已提交，正在后台处理中。" },
+            "messageForAI": "视频生成任务已提交，ID为 unique_task_id_123。请告知用户耐心等待，结果将通过通知推送。"
+          }
+          ```
+          `Plugin.js` 会捕获这个初始响应并返回给AI。
+      2.  **后台处理**: 插件脚本随后启动其耗时的后台任务（例如，使用非守护线程）。
+      3.  **回调服务器**: 后台任务完成后，插件脚本通过向 VCP 服务器的 `/plugin-callback/:pluginName/:taskId` (其中 `:pluginName` 是插件名，`:taskId` 是初始响应中返回的 `requestId`) 发送 HTTP POST 请求。请求体应为一个 JSON 对象，包含任务的最终结果。例如：
+          ```json
+          // 回调时发送给服务器的JSON数据示例
+          {
+            "requestId": "unique_task_id_123",
+            "status": "Succeed", // 或 "Failed"
+            "pluginName": "MyAsyncPlugin", // 插件名，用于服务器确认
+            "videoUrl": "http://example.com/video.mp4", // 任务成功时的结果字段
+            "reason": "如果失败，这里是原因",
+            "message": "视频 (ID: unique_task_id_123) 生成成功！" // 给用户的消息
+          }
+          ```
+          服务器接收到这个回调后，会根据插件清单中的 `webSocketPush` 配置，将这个回调的JSON数据（或其一部分）推送给客户端。
+    - 对于主要用于更新占位符的 `static` 插件，如果逻辑简单，可以直接输出占位符的值（非 JSON）。但推荐使用上述 JSON 格式以支持更复杂的通信或错误报告。
+    - 标准错误 (`stderr`) 可用于输出调试信息，这些信息不会被 `Plugin.js` 作为主要结果捕获。
+    - 确保所有标准输出和标准输入的文本都使用 UTF-8 编码。
+  - **Node.js 类型插件** (如 `messagePreprocessor`, `service`, 或复杂的 `static`/`synchronous`/`asynchronous` 且 `communication.protocol` 为 `direct`):
     - 导出一个符合 `PluginManager` 约定的模块 (例如，包含 `initialize`, `processMessages`, `registerRoutes`, `execute`, `getStaticData` 等方法)。参考现有插件实现。
 - **配置与依赖**:
   - **插件专属配置**: 在插件目录下创建 `.env` 文件。
