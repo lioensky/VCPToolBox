@@ -250,6 +250,11 @@ app.use((req, res, next) => {
         return next();
     }
 
+    // Skip bearer token check for plugin callbacks
+    if (req.path.startsWith('/plugin-callback')) {
+        return next();
+    }
+
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
         return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
@@ -749,12 +754,13 @@ app.post('/v1/chat/completions', async (req, res) => {
                                     messageToSend = { type: pluginManifestForStream.webSocketPush.messageType, data: pluginResult };
                                 }
                                 // Ensure messageToSend is an object for broadcast, as AgentMessage.js produces an object.
-                                if (typeof messageToSend === 'object' && messageToSend !== null) {
-                                   webSocketServer.broadcast(messageToSend, pluginManifestForStream.webSocketPush.targetClientType || null);
-                                   if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
-                                } else if (DEBUG_MODE) {
-                                    console.warn(`[VCP Stream Loop] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
-                                }
+                                // pluginResult is the raw output from processToolCall
+                                const wsPushMessageStream = {
+                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
+                                    data: pluginResult // pluginResult is the object from processToolCall
+                                };
+                                webSocketServer.broadcast(wsPushMessageStream, pluginManifestForStream.webSocketPush.targetClientType || null);
+                                if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageStream, null, 2).substring(0,500));
                             }
 
                             if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
@@ -939,12 +945,13 @@ app.post('/v1/chat/completions', async (req, res) => {
                                         messageToSend = { type: pluginManifestNonStream.webSocketPush.messageType, data: pluginResult };
                                     }
                                     // Ensure messageToSend is an object for broadcast
-                                    if (typeof messageToSend === 'object' && messageToSend !== null) {
-                                        webSocketServer.broadcast(messageToSend, pluginManifestNonStream.webSocketPush.targetClientType || null);
-                                        if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
-                                    } else if (DEBUG_MODE) {
-                                        console.warn(`[Multi-Tool] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
-                                    }
+                                    // pluginResult is the raw output from processToolCall
+                                    const wsPushMessageNonStream = {
+                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
+                                        data: pluginResult // pluginResult is the object from processToolCall
+                                    };
+                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
+                                    if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageNonStream, null, 2).substring(0,500));
                                 }
 
                                 if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
@@ -1123,12 +1130,13 @@ app.post('/v1/chat/completions', async (req, res) => {
                                         messageToSend = { type: pluginManifestNonStreamLoop2.webSocketPush.messageType, data: pluginResult };
                                     }
                                     // Ensure messageToSend is an object for broadcast
-                                    if (typeof messageToSend === 'object' && messageToSend !== null) {
-                                        webSocketServer.broadcast(messageToSend, pluginManifestNonStreamLoop2.webSocketPush.targetClientType || null);
-                                        if (DEBUG_MODE) console.log(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} (success) processed based on manifest. Message:`, messageToSend);
-                                    } else if (DEBUG_MODE) {
-                                        console.warn(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} skipped: pluginResult is not an object or usePluginResultAsMessage was false without a proper messageType wrapper being formed.`);
-                                    }
+                                    // pluginResult is the raw output from processToolCall
+                                     const wsPushMessageNonStreamLoop = {
+                                        type: pluginManifestNonStreamLoop2.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
+                                        data: pluginResult // pluginResult is the object from processToolCall
+                                    };
+                                    webSocketServer.broadcast(wsPushMessageNonStreamLoop, pluginManifestNonStreamLoop2.webSocketPush.targetClientType || null);
+                                    if (DEBUG_MODE) console.log(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageNonStreamLoop, null, 2).substring(0,500));
                                 }
 
                                 if (SHOW_VCP_OUTPUT) {
@@ -1389,6 +1397,47 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
 
 app.use('/admin_api', adminPanelRoutes);
 // --- End Admin API Router ---
+
+// 新增：异步插件回调路由
+app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
+    const { pluginName, taskId } = req.params;
+    const callbackData = req.body; // 这是插件回调时发送的 JSON 数据
+
+    if (DEBUG_MODE) {
+        console.log(`[Server] Received callback for plugin: ${pluginName}, taskId: ${taskId}`);
+        console.log(`[Server] Callback data:`, JSON.stringify(callbackData, null, 2));
+    }
+
+    const pluginManifest = pluginManager.getPlugin(pluginName);
+
+    if (!pluginManifest) {
+        console.error(`[Server Callback] Plugin manifest not found for: ${pluginName}`);
+        return res.status(404).json({ status: "error", message: "Plugin not found" });
+    }
+
+    // 检查 webSocketPush 配置
+    if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
+        const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
+        // callbackData from video_handler.py is now a flat object like:
+        // { requestId: "...", status: "Succeed", pluginName: "...", videoUrl: "...", message: "..." }
+        // We need to wrap it if VCPLog expects a specific structure like { type: "...", data: ... }
+        
+        const wsMessage = {
+            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification', // e.g., "video_generation_status"
+            data: callbackData // The entire callbackData becomes the 'data' field of the WebSocket message
+        };
+
+        webSocketServer.broadcast(wsMessage, targetClientType);
+        if (DEBUG_MODE) {
+            console.log(`[Server Callback] WebSocket push for ${pluginName} (taskId: ${taskId}) processed. Message:`, JSON.stringify(wsMessage, null, 2));
+        }
+        
+    } else if (DEBUG_MODE) {
+        console.log(`[Server Callback] WebSocket push not configured or disabled for plugin: ${pluginName}`);
+    }
+
+    res.status(200).json({ status: "success", message: "Callback received" });
+});
 
 
 async function initialize() {
