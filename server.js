@@ -678,23 +678,51 @@ app.post('/v1/chat/completions', async (req, res) => {
                     aiResponse.body.on('data', (chunk) => {
                         const chunkString = chunk.toString('utf-8');
                         rawResponseDataThisTurn += chunkString;
+
+                        let isChunkAnEndOfStreamSignal = false;
+                        if (chunkString.includes("data: [DONE]")) {
+                            isChunkAnEndOfStreamSignal = true;
+                        } else {
+                            const linesInChunk = chunkString.split('\n');
+                            for (const line of linesInChunk) {
+                                if (line.startsWith('data: ')) {
+                                    const jsonData = line.substring(5).trim();
+                                    if (jsonData === '[DONE]') { // Should be caught by the outer check, but good to be safe
+                                        isChunkAnEndOfStreamSignal = true;
+                                        break;
+                                    }
+                                    if (jsonData && !jsonData.startsWith("[")) { // Avoid trying to parse "[DONE]" as JSON
+                                        try {
+                                            const parsedData = JSON.parse(jsonData);
+                                            if (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].finish_reason) {
+                                                isChunkAnEndOfStreamSignal = true;
+                                                break;
+                                            }
+                                        } catch(e) { /* ignore parse errors, not a relevant JSON structure */ }
+                                    }
+                                }
+                            }
+                        }
+
                         if (!res.writableEnded) {
-                             // Forward chunk to client, except for the final [DONE] if it's not the true end
-                            if (chunkString.includes("data: [DONE]")) {
-                                // Don't forward AI's own [DONE] if we are in a loop
+                            if (isChunkAnEndOfStreamSignal) {
+                                // If the chunk is or contains an end-of-stream signal (DONE or finish_reason),
+                                // do not forward it directly. The final [DONE] will be sent by the server's main loop.
+                                // Its content will still be collected by the sseBuffer logic below.
                             } else {
                                 res.write(chunkString);
                             }
                         }
                         
+                        // SSE parsing for content collection
                         sseBuffer += chunkString;
                         let lines = sseBuffer.split('\n');
-                        sseBuffer = lines.pop(); // Keep incomplete line
+                        sseBuffer = lines.pop(); // Keep incomplete line for the next 'data' event or 'end'
 
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
                                 const jsonData = line.substring(5).trim();
-                                if (jsonData !== '[DONE]') {
+                                if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
                                     try {
                                         const parsedData = JSON.parse(jsonData);
                                         collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
@@ -705,14 +733,20 @@ app.post('/v1/chat/completions', async (req, res) => {
                     });
 
                     aiResponse.body.on('end', () => {
-                        // Process remaining buffer for content
-                        if (sseBuffer.startsWith('data: ')) {
-                            const jsonData = sseBuffer.substring(5).trim();
-                            if (jsonData !== '[DONE]') {
-                                try {
-                                    const parsedData = JSON.parse(jsonData);
-                                    collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
-                                } catch (e) { /* ignore */ }
+                        // Process remaining sseBuffer for content
+                        if (sseBuffer.trim().length > 0) {
+                            const finalLines = sseBuffer.split('\n');
+                            for (const line of finalLines) {
+                                const trimmedLine = line.trim();
+                                if (trimmedLine.startsWith('data: ')) {
+                                    const jsonData = trimmedLine.substring(5).trim();
+                                    if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
+                                        try {
+                                            const parsedData = JSON.parse(jsonData);
+                                            collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
+                                        } catch (e) { /* ignore */ }
+                                    }
+                                }
                             }
                         }
                         resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
@@ -896,9 +930,62 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             // After loop (or if no tools called initially / max recursion hit)
             if (!res.writableEnded) {
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Sending final [DONE].');
-                res.write('\n'); // Add newline before DONE
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Preparing to send final signals.');
+
+                let finalFinishReasonToSend = null;
+                let lastValidChunkFromAIForMetadata = null;
+
+                // Attempt to parse the last valid data chunk from the AI's raw output
+                // to extract finish_reason and other metadata for the final signal.
+                if (currentAIRawDataForDiary) { // currentAIRawDataForDiary holds the last AI response's raw data
+                    const lines = currentAIRawDataForDiary.trim().split('\n');
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                        const line = lines[i];
+                        if (line.startsWith('data: ')) {
+                            const jsonData = line.substring(5).trim();
+                            if (jsonData && jsonData !== '[DONE]' && !jsonData.startsWith("[")) { // Avoid parsing "[DONE]" or non-JSON
+                                try {
+                                    const parsed = JSON.parse(jsonData);
+                                    lastValidChunkFromAIForMetadata = parsed; // Store the last successfully parsed chunk for metadata
+                                    if (parsed.choices && parsed.choices[0] && parsed.choices[0].finish_reason) {
+                                        finalFinishReasonToSend = parsed.choices[0].finish_reason;
+                                    }
+                                    break; // Processed the last relevant data line from AI
+                                } catch (e) { /* ignore parse error, try previous line if any */ }
+                            }
+                        }
+                    }
+                }
+
+                // Determine the finish_reason to send if not extracted from AI's last message
+                if (!finalFinishReasonToSend) {
+                    if (recursionDepth >= maxRecursion) {
+                        finalFinishReasonToSend = 'length';
+                    } else {
+                        // If loop broke because no tools were called (toolCallsInThisAIResponse.length === 0),
+                        // it's considered a natural stop.
+                        finalFinishReasonToSend = 'stop';
+                    }
+                }
+                
+                // Construct and send the final chunk with finish_reason
+                const finalChunkPayload = {
+                    id: lastValidChunkFromAIForMetadata?.id || `chatcmpl-VCP-final-${Date.now()}`,
+                    object: lastValidChunkFromAIForMetadata?.object || "chat.completion.chunk",
+                    created: lastValidChunkFromAIForMetadata?.created || Math.floor(Date.now() / 1000),
+                    model: lastValidChunkFromAIForMetadata?.model || originalBody.model || "unknown-model", // Use model from original request as fallback
+                    choices: [{
+                        index: 0,
+                        delta: {}, // Delta is typically empty for the chunk that only carries finish_reason
+                        finish_reason: finalFinishReasonToSend
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final chunk with finish_reason:', finalFinishReasonToSend, 'Payload:', JSON.stringify(finalChunkPayload));
+
+                // Always send [DONE] as well, for clients that rely on it
                 res.write('data: [DONE]\n\n');
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final [DONE].');
                 res.end();
             }
 
