@@ -475,6 +475,62 @@ async function replaceCommonVariables(text, model) {
             processedText = processedText.replaceAll(rule.detector, rule.output);
         }
     }
+
+    // START: VCP_ASYNC_RESULT Placeholder Processing
+    const asyncResultPlaceholderRegex = /\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}/g;
+    let asyncMatch;
+    // We need to handle multiple occurrences, and since replacement changes string length,
+    // we collect all matches first, then replace. Or, more simply, loop until no more matches.
+    // For simplicity in this step, let's assume a loop that re-evaluates.
+    // A more robust way would be to collect all placeholders and their values first.
+
+    // Create a new string for replacements to avoid issues with changing string length during regex exec
+    let tempAsyncProcessedText = processedText;
+    const promises = [];
+
+    while ((asyncMatch = asyncResultPlaceholderRegex.exec(processedText)) !== null) {
+        const placeholder = asyncMatch[0]; // Full placeholder e.g., {{VCP_ASYNC_RESULT::Wan2.1VideoGen::xyz123}}
+        const pluginName = asyncMatch[1];
+        const requestId = asyncMatch[2];
+        
+        promises.push(
+            (async () => {
+                const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${requestId}.json`);
+                try {
+                    const fileContent = await fs.readFile(resultFilePath, 'utf-8');
+                    const callbackData = JSON.parse(fileContent);
+                    // You suggested replacing with the 'message' from the callback data.
+                    // Or, we could use the whole callbackData string, or a formatted summary.
+                    // Let's use callbackData.message if available, otherwise a generic success.
+                    let replacementText = `[任务 ${pluginName} (ID: ${requestId}) 已完成]`;
+                    if (callbackData && callbackData.message) {
+                        replacementText = callbackData.message;
+                    } else if (callbackData && callbackData.status === 'Succeed') {
+                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
+                    } else if (callbackData && callbackData.status === 'Failed') {
+                        replacementText = `任务 ${pluginName} (ID: ${requestId}) 处理失败。原因: ${callbackData.reason || JSON.stringify(callbackData.data || callbackData.error || callbackData)}`;
+                    }
+                     // Replace only the first occurrence in each iteration to handle multiple identical placeholders correctly if needed,
+                     // though typically each requestId would be unique.
+                    tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, replacementText);
+                } catch (error) {
+                    if (error.code === 'ENOENT') {
+                        // File not found, means task is pending or callback hasn't happened/saved
+                        tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[任务 ${pluginName} (ID: ${requestId}) 结果待更新...]`);
+                    } else {
+                        // Other errors (e.g., JSON parse error from file)
+                        console.error(`[replaceCommonVariables] Error processing async placeholder ${placeholder}:`, error);
+                        tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[获取任务 ${pluginName} (ID: ${requestId}) 结果时出错]`);
+                    }
+                }
+            })()
+        );
+    }
+    
+    await Promise.all(promises);
+    processedText = tempAsyncProcessedText;
+    // END: VCP_ASYNC_RESULT Placeholder Processing
+
     return processedText;
 }
 
@@ -1399,6 +1455,16 @@ app.use('/admin_api', adminPanelRoutes);
 // --- End Admin API Router ---
 
 // 新增：异步插件回调路由
+const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, 'VCPAsyncResults');
+
+async function ensureAsyncResultsDir() {
+    try {
+        await fs.mkdir(VCP_ASYNC_RESULTS_DIR, { recursive: true });
+    } catch (error) {
+        console.error(`[ServerSetup] 创建 VCPAsyncResults 目录失败: ${VCP_ASYNC_RESULTS_DIR}`, error);
+    }
+}
+
 app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
     const { pluginName, taskId } = req.params;
     const callbackData = req.body; // 这是插件回调时发送的 JSON 数据
@@ -1408,35 +1474,41 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
         console.log(`[Server] Callback data:`, JSON.stringify(callbackData, null, 2));
     }
 
+    // 1. Save callback data to a file
+    await ensureAsyncResultsDir();
+    const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${taskId}.json`);
+    try {
+        await fs.writeFile(resultFilePath, JSON.stringify(callbackData, null, 2), 'utf-8');
+        if (DEBUG_MODE) console.log(`[Server Callback] Saved async result for ${pluginName}-${taskId} to ${resultFilePath}`);
+    } catch (fileError) {
+        console.error(`[Server Callback] Error saving async result file for ${pluginName}-${taskId}:`, fileError);
+        // Continue with WebSocket push even if file saving fails for now
+    }
+
     const pluginManifest = pluginManager.getPlugin(pluginName);
 
     if (!pluginManifest) {
         console.error(`[Server Callback] Plugin manifest not found for: ${pluginName}`);
-        return res.status(404).json({ status: "error", message: "Plugin not found" });
+        // Still attempt to acknowledge the callback if possible, but log error
+        return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
     }
 
-    // 检查 webSocketPush 配置
+    // 2. WebSocket push (existing logic)
     if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
         const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
-        // callbackData from video_handler.py is now a flat object like:
-        // { requestId: "...", status: "Succeed", pluginName: "...", videoUrl: "...", message: "..." }
-        // We need to wrap it if VCPLog expects a specific structure like { type: "...", data: ... }
-        
         const wsMessage = {
-            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification', // e.g., "video_generation_status"
-            data: callbackData // The entire callbackData becomes the 'data' field of the WebSocket message
+            type: pluginManifest.webSocketPush.messageType || 'plugin_callback_notification',
+            data: callbackData
         };
-
         webSocketServer.broadcast(wsMessage, targetClientType);
         if (DEBUG_MODE) {
             console.log(`[Server Callback] WebSocket push for ${pluginName} (taskId: ${taskId}) processed. Message:`, JSON.stringify(wsMessage, null, 2));
         }
-        
     } else if (DEBUG_MODE) {
         console.log(`[Server Callback] WebSocket push not configured or disabled for plugin: ${pluginName}`);
     }
 
-    res.status(200).json({ status: "success", message: "Callback received" });
+    res.status(200).json({ status: "success", message: "Callback received and processed" });
 });
 
 
