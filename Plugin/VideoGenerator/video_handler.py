@@ -5,28 +5,28 @@ import requests
 import base64
 import time
 import random
+import threading
 from io import BytesIO
 from PIL import Image
 from dotenv import load_dotenv
 from datetime import datetime
+import traceback
 
 # --- 配置和常量 ---
 LOG_FILE = "VideoGenHistory.log"
-# 支持的分辨率 (用于图片处理)
 SUPPORTED_RESOLUTIONS_MAP = {
     "1280x720": (1280, 720),
     "720x1280": (720, 1280),
     "960x960": (960, 960)
 }
 SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1"
+PLUGIN_NAME_FOR_CALLBACK = "Wan2.1VideoGen"
 
 # --- 日志记录 ---
 def log_event(level, message, data=None):
-    """记录事件到日志文件"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     log_entry = f"[{timestamp}] [{level.upper()}] {message}"
     if data:
-        # 避免记录过长的 base64 字符串
         if isinstance(data, dict):
             log_data = {k: (v[:50] + '...' if isinstance(v, str) and len(v) > 100 and k == 'image' else v) for k, v in data.items()}
         else:
@@ -34,34 +34,29 @@ def log_event(level, message, data=None):
         try:
             log_entry += f" | Data: {json.dumps(log_data, ensure_ascii=False)}"
         except Exception:
-            log_entry += f" | Data: [Unserializable Data]" # Fallback
+            log_entry += f" | Data: [Unserializable Data]"
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(log_entry + "\n")
     except Exception as e:
-        print(f"Error writing to log file: {e}", file=sys.stderr) # Log error to stderr
+        print(f"Error writing to log file: {e}", file=sys.stderr)
 
 # --- 结果输出 ---
 def print_json_output(status, result=None, error=None, ai_message=None):
-    """将结果格式化为 JSON 并输出到 stdout"""
     output = {"status": status}
     if status == "success":
         if result is not None:
             output["result"] = result
         if ai_message:
-            output["messageForAI"] = ai_message # Add message for AI
+            output["messageForAI"] = ai_message
     elif status == "error":
         if error is not None:
             output["error"] = error
-        # Optionally add ai_message for errors too if needed
-        # if ai_message:
-        #    output["messageForAI"] = ai_message
     print(json.dumps(output, ensure_ascii=False))
     log_event("debug", "Output sent to stdout", output)
 
-# --- 图片处理 (复用 wan2.1post.py 逻辑) ---
+# --- 图片处理 ---
 def get_closest_allowed_resolution(width, height):
-    """计算最接近的 *允许* 分辨率 (返回字符串键)"""
     aspect_ratio = width / height
     allowed_ratios = {
         "1280x720": 1280/720,
@@ -72,21 +67,15 @@ def get_closest_allowed_resolution(width, height):
     return closest_ratio_key
 
 def resize_and_crop_image(img, target_resolution_tuple):
-    """调整图片大小并裁切到目标分辨率"""
     original_width, original_height = img.size
     target_width, target_height = target_resolution_tuple
-
-    # 先按比例缩放，使短边匹配目标分辨率
     if original_width / original_height > target_width / target_height:
         new_height = target_height
         new_width = int(original_width * (new_height / original_height))
     else:
         new_width = target_width
         new_height = int(original_height * (new_width / original_width))
-
     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-    # 居中裁切
     left = (new_width - target_width) // 2
     top = (new_height - target_height) // 2
     right = left + target_width
@@ -95,33 +84,27 @@ def resize_and_crop_image(img, target_resolution_tuple):
     return img
 
 def image_to_webp_base64(img):
-    """将图片转换为 webp 格式并编码为 base64"""
     buffer = BytesIO()
-    img.save(buffer, format="WEBP", quality=90) # 调整 quality 以平衡大小和质量
+    img.save(buffer, format="WEBP", quality=90)
     img_bytes = buffer.getvalue()
     base64_encoded = base64.b64encode(img_bytes).decode('utf-8')
     return f"data:image/webp;base64,{base64_encoded}"
 
 def process_image_from_url(image_url):
-    """下载、处理图片并返回 base64 编码和目标分辨率字符串"""
     try:
         log_event("info", f"Downloading image from URL: {image_url}")
         response = requests.get(image_url, stream=True, timeout=30)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-
+        response.raise_for_status()
         img = Image.open(response.raw)
-        img = img.convert("RGB") # 确保是 RGB 格式
-
+        img = img.convert("RGB")
         width, height = img.size
         target_resolution_key = get_closest_allowed_resolution(width, height)
         target_resolution_tuple = SUPPORTED_RESOLUTIONS_MAP[target_resolution_key]
         log_event("info", f"Original size: {width}x{height}. Target resolution: {target_resolution_key}")
-
         processed_img = resize_and_crop_image(img, target_resolution_tuple)
         base64_image = image_to_webp_base64(processed_img)
         log_event("info", f"Image processed and encoded to base64 (length: {len(base64_image)})")
         return base64_image, target_resolution_key
-
     except requests.exceptions.RequestException as e:
         log_event("error", f"Failed to download image URL: {image_url}", {"error": str(e)})
         raise ValueError(f"图片下载失败: {e}")
@@ -129,10 +112,96 @@ def process_image_from_url(image_url):
         log_event("error", f"Failed to process image from URL: {image_url}", {"error": str(e)})
         raise ValueError(f"图片处理失败: {e}")
 
+# --- 后台轮询与回调 ---
+def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug_mode):
+    log_event("info", f"[{request_id}] Entering poll_and_callback function.", {
+        "request_id": request_id,
+        "callback_base_url": callback_base_url,
+        "plugin_name": plugin_name,
+        "debug_mode": debug_mode
+    })
+    log_event("info", f"[{request_id}] Starting background polling.", {"callback_url_base": callback_base_url, "plugin_name": plugin_name})
+    
+    initial_poll_delay = 30
+    poll_interval = 10
+    max_poll_attempts = 600
+    
+    log_event("debug", f"[{request_id}] Initial poll delay: {initial_poll_delay}s. Max poll attempts: {max_poll_attempts}.")
+    log_event("debug", f"[{request_id}] About to sleep for initial_poll_delay.")
+    time.sleep(initial_poll_delay)
+    log_event("debug", f"[{request_id}] Woke up after initial_poll_delay.")
+    
+    log_event("debug", f"[{request_id}] Starting polling loop. max_poll_attempts = {max_poll_attempts}")
+    for attempt in range(max_poll_attempts):
+        try:
+            log_event("debug", f"[{request_id}] Polling loop iteration: attempt {attempt + 1}/{max_poll_attempts}")
+            status_data = query_video_status_api(api_key, request_id)
+            current_status = status_data.get("status")
+
+            if current_status in ["Succeed", "Failed"]:
+                log_event("info", f"[{request_id}] Final status '{current_status}' received. Attempting callback.")
+                callback_url = f"{callback_base_url}/{plugin_name}/{request_id}"
+                
+                ws_notification_data = {
+                    "requestId": request_id,
+                    "status": current_status,
+                    "pluginName": plugin_name
+                }
+                if current_status == "Succeed":
+                    video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
+                    ws_notification_data["videoUrl"] = video_url
+                    ws_notification_data["message"] = f"视频 (ID: {request_id}) 生成成功！URL: {video_url}"
+                else: # Failed
+                    reason = status_data.get("reason", "未知原因")
+                    ws_notification_data["reason"] = reason
+                    ws_notification_data["message"] = f"视频 (ID: {request_id}) 生成失败。原因: {reason}"
+
+                try:
+                    callback_payload = ws_notification_data 
+
+                    callback_response = requests.post(callback_url, json=callback_payload, timeout=30)
+                    callback_response.raise_for_status()
+                    log_event("success", f"[{request_id}] Callback to {callback_url} successful with simplified data.", {"status_code": callback_response.status_code})
+                except requests.exceptions.RequestException as cb_e:
+                    log_event("error", f"[{request_id}] Callback to {callback_url} failed.", {"error": str(cb_e), "response_text": getattr(cb_e.response, 'text', None)})
+                except Exception as cb_gen_e:
+                    log_event("error", f"[{request_id}] Unexpected error during callback to {callback_url}.", {"error": str(cb_gen_e)})
+                return 
+            
+            elif current_status == "InProgress":
+                log_event("info", f"[{request_id}] Status is 'InProgress'. Continuing to poll.")
+            else: 
+                log_event("warning", f"[{request_id}] Unknown status '{current_status}' received. Continuing to poll.", {"response_data": status_data})
+
+        except ConnectionError as e: 
+            log_event("error", f"[{request_id}] API connection error during polling attempt {attempt + 1}.", {"error": str(e)})
+        except ValueError as e: 
+            log_event("error", f"[{request_id}] API value error during polling attempt {attempt + 1}.", {"error": str(e)})
+        except Exception as e:
+            log_event("critical", f"[{request_id}] Unexpected error during polling attempt {attempt + 1}.", {"error": str(e), "traceback": traceback.format_exc()})
+
+        if attempt < max_poll_attempts - 1: 
+            log_event("debug", f"[{request_id}] Waiting {poll_interval} seconds before next poll.")
+            time.sleep(poll_interval)
+        else:
+            log_event("warning", f"[{request_id}] Max poll attempts reached. Stopping polling.")
+            try:
+                timeout_notification_data = {
+                    "requestId": request_id,
+                    "status": "PollingTimeout",
+                    "pluginName": plugin_name,
+                    "reason": f"Max poll attempts ({max_poll_attempts}) reached.",
+                    "message": f"视频 (ID: {request_id}) 轮询超时。"
+                }
+                callback_url = f"{callback_base_url}/{plugin_name}/{request_id}"
+                requests.post(callback_url, json=timeout_notification_data, timeout=10)
+                log_event("info", f"[{request_id}] Sent PollingTimeout callback to {callback_url} with simplified data.")
+            except Exception as cb_timeout_e:
+                log_event("error", f"[{request_id}] Failed to send PollingTimeout callback.", {"error": str(cb_timeout_e)})
 
 # --- API 调用 ---
-def submit_video_request_api(api_key, model, prompt, negative_prompt, image_size, image_base64=None):
-    """调用 SiliconFlow 提交任务 API"""
+def submit_video_request_api(api_key, model, prompt, negative_prompt, image_size, image_base64=None, 
+                             callback_base_url=None, plugin_name_for_callback=None, debug_mode_for_polling=False):
     url = f"{SILICONFLOW_API_BASE}/video/submit"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -141,9 +210,9 @@ def submit_video_request_api(api_key, model, prompt, negative_prompt, image_size
     payload = {
         "model": model,
         "prompt": prompt,
-        "negative_prompt": negative_prompt or "", # API 可能需要空字符串而不是 null
+        "negative_prompt": negative_prompt or "",
         "image_size": image_size,
-        "seed": random.randint(0, 2**32 - 1) # 内部生成随机种子
+        "seed": random.randint(0, 2**32 - 1)
     }
     if image_base64:
         payload["image"] = image_base64
@@ -156,7 +225,21 @@ def submit_video_request_api(api_key, model, prompt, negative_prompt, image_size
         request_id = response_data.get("requestId")
         if not request_id:
             raise ValueError("API response missing requestId")
-        log_event("success", "Video request submitted successfully", {"requestId": request_id})
+        log_event("success", "Video request submitted successfully to API", {"requestId": request_id})
+
+        if callback_base_url and plugin_name_for_callback:
+            polling_thread = threading.Thread(target=poll_and_callback, args=(
+                api_key, request_id, callback_base_url, plugin_name_for_callback, debug_mode_for_polling
+            ))
+            # polling_thread.daemon = True # Threads are non-daemon by default
+            polling_thread.start()
+            log_event("info", f"[{request_id}] Background polling thread (non-daemon) started.")
+            print(f"DEBUG: Polling thread started log_event CALLED for {request_id}", file=sys.stderr) # DEBUG
+        else:
+            print(f"DEBUG: Condition (callback_base_url and plugin_name_for_callback) is FALSE for {request_id}", file=sys.stderr) # DEBUG
+            log_event("warning", f"[{request_id}] Callback URL or plugin name not provided. Background polling will not be started by the plugin.")
+            print(f"DEBUG: Callback URL not provided log_event CALLED for {request_id}", file=sys.stderr) # DEBUG
+
         return request_id
     except requests.exceptions.RequestException as e:
         log_event("error", "API request failed (submit)", {"status_code": getattr(e.response, 'status_code', None), "response_text": getattr(e.response, 'text', None), "error": str(e)})
@@ -166,21 +249,19 @@ def submit_video_request_api(api_key, model, prompt, negative_prompt, image_size
         raise ValueError(f"处理 API 响应时出错: {e}")
 
 def query_video_status_api(api_key, request_id):
-    """调用 SiliconFlow 查询状态 API"""
     url = f"{SILICONFLOW_API_BASE}/video/status"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {"requestId": request_id}
-
-    log_event("info", "Querying video status from API", {"url": url, "requestId": request_id})
+    log_event("info", f"Querying video status from API for {request_id}", {"url": url})
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         response_data = response.json()
         log_event("success", "Video status queried successfully", {"requestId": request_id, "status": response_data.get("status")})
-        return response_data # 返回整个响应体，包含 status, results, reason 等
+        return response_data
     except requests.exceptions.RequestException as e:
         log_event("error", "API request failed (query)", {"requestId": request_id, "status_code": getattr(e.response, 'status_code', None), "response_text": getattr(e.response, 'text', None), "error": str(e)})
         raise ConnectionError(f"API 请求失败: {e}")
@@ -190,32 +271,30 @@ def query_video_status_api(api_key, request_id):
 
 # --- 主逻辑 ---
 def main():
-    # 加载环境变量 (显式指定 config.env)
     dotenv_path = os.path.join(os.path.dirname(__file__), 'config.env')
     load_dotenv(dotenv_path=dotenv_path)
-    # Use the new environment variable name for the API key
+    
     api_key = os.getenv("SILICONFLOW_API_KEY")
     t2v_model = os.getenv("Text2VideoModelName")
     i2v_model = os.getenv("Image2VideoModelName")
     debug_mode = os.getenv("DebugMode", "False").lower() == "true"
+    # 确保从环境变量中读取时使用大写键名
+    callback_base_url_env = os.getenv("CALLBACK_BASE_URL") 
 
     if not api_key:
-        print_json_output("error", error="API_Key not found in environment variables.")
+        print_json_output("error", error="SILICONFLOW_API_KEY not found in environment variables.")
         sys.exit(1)
     if not t2v_model:
         log_event("warning", "Text2VideoModelName not found in environment variables.")
-        # 允许继续，但 T2V 会失败
     if not i2v_model:
         log_event("warning", "Image2VideoModelName not found in environment variables.")
-        # 允许继续，但 I2V 会失败
+    if not callback_base_url_env: 
+        log_event("warning", "CALLBACK_BASE_URL not found in environment variables. Plugin-initiated polling and callback will be disabled.")
 
-    # 读取 stdin 输入
     try:
         input_str = sys.stdin.read()
-        # Log the raw input string received
         log_event("debug", "[Input Debug] Raw string received from stdin", {"raw_input": input_str})
         input_data = json.loads(input_str)
-        # Log the dictionary after JSON parsing
         log_event("debug", "[Input Debug] Parsed input data (dictionary)", {"parsed_data": input_data})
     except json.JSONDecodeError:
         log_event("error", "Failed to decode JSON input from stdin", {"raw_input": input_str})
@@ -227,16 +306,17 @@ def main():
         sys.exit(1)
 
     command = input_data.get("command")
-    mode = input_data.get("mode") # 仅在 submit 时相关
-    request_id = input_data.get("request_id") # 仅在 query 时相关
+    mode = input_data.get("mode")
+    request_id_query = input_data.get("request_id") 
     prompt = input_data.get("prompt")
     negative_prompt = input_data.get("negative_prompt")
-    resolution = input_data.get("resolution") # 仅在 submit + t2v 时相关
-    image_url = input_data.get("image_url") # 仅在 submit + i2v 时相关
+    resolution = input_data.get("resolution")
+    image_url = input_data.get("image_url")
 
     try:
         if command == "submit":
             log_event("info", f"Processing 'submit' command, mode: {mode}")
+            req_id_submit = None 
             if mode == "t2v":
                 if not t2v_model:
                     raise ValueError("Text2VideoModelName 未配置，无法执行文生视频。")
@@ -244,11 +324,13 @@ def main():
                     raise ValueError("缺少必需的 'prompt' 参数。")
                 if resolution not in SUPPORTED_RESOLUTIONS_MAP:
                     raise ValueError(f"无效的 'resolution' 参数: {resolution}。允许的值: {', '.join(SUPPORTED_RESOLUTIONS_MAP.keys())}")
-
-                req_id = submit_video_request_api(api_key, t2v_model, prompt, negative_prompt, resolution)
-                # Add message for AI on successful submission
-                ai_msg = f"任务已成功提交，ID 为 {req_id}。请告知用户视频生成需要较长时间，请耐心等待，并稍后使用 query 命令查询结果。"
-                print_json_output("success", result={"requestId": req_id}, ai_message=ai_msg)
+                
+                req_id_submit = submit_video_request_api(api_key, t2v_model, prompt, negative_prompt, resolution,
+                                                         callback_base_url=callback_base_url_env, 
+                                                         plugin_name_for_callback=PLUGIN_NAME_FOR_CALLBACK,
+                                                         debug_mode_for_polling=debug_mode)
+                ai_msg = f"文生视频任务已提交 (ID: {req_id_submit})。插件将尝试在后台轮询并在完成后回调。请告知用户任务已开始，最终结果将通过通知推送。"
+                print_json_output("success", result={"message": "Task submitted, polling initiated by plugin.", "requestId": req_id_submit}, ai_message=ai_msg)
 
             elif mode == "i2v":
                 if not i2v_model:
@@ -257,48 +339,43 @@ def main():
                     raise ValueError("缺少必需的 'image_url' 参数。")
 
                 base64_image, target_res_key = process_image_from_url(image_url)
-                req_id = submit_video_request_api(api_key, i2v_model, prompt or "", negative_prompt, target_res_key, image_base64=base64_image)
-                # Add message for AI on successful submission
-                ai_msg = f"任务已成功提交，ID 为 {req_id}。请告知用户视频生成需要较长时间，请耐心等待，并稍后使用 query 命令查询结果。"
-                print_json_output("success", result={"requestId": req_id}, ai_message=ai_msg)
-
+                req_id_submit = submit_video_request_api(api_key, i2v_model, prompt or "", negative_prompt, target_res_key, image_base64=base64_image,
+                                                         callback_base_url=callback_base_url_env,
+                                                         plugin_name_for_callback=PLUGIN_NAME_FOR_CALLBACK,
+                                                         debug_mode_for_polling=debug_mode)
+                ai_msg = f"图生视频任务已提交 (ID: {req_id_submit})。插件将尝试在后台轮询并在完成后回调。请告知用户任务已开始，最终结果将通过通知推送。"
+                print_json_output("success", result={"message": "Task submitted, polling initiated by plugin.", "requestId": req_id_submit}, ai_message=ai_msg)
             else:
                 raise ValueError(f"无效的 'mode' 参数: {mode}。必须是 't2v' 或 'i2v'。")
 
         elif command == "query":
-            log_event("info", f"Processing 'query' command, requestId: {request_id}")
-            if not request_id:
+            log_event("info", f"Processing 'query' command, requestId: {request_id_query}")
+            if not request_id_query:
                 raise ValueError("缺少必需的 'request_id' 参数。")
-
-            status_data = query_video_status_api(api_key, request_id)
-            # 根据状态添加不同的 AI 提示信息
+            
+            status_data = query_video_status_api(api_key, request_id_query)
             current_status = status_data.get("status")
             ai_msg = None
             if current_status == "InProgress":
-                ai_msg = f"请求 {request_id} 的状态是 'InProgress'。请告知用户视频仍在生成中，需要继续等待。"
+                ai_msg = f"请求 {request_id_query} 的状态是 'InProgress'。请告知用户视频仍在生成中，需要继续等待。"
             elif current_status == "Succeed":
                 video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
-                ai_msg = f"请求 {request_id} 已成功生成！请将视频 URL '{video_url}' 提供给用户。"
+                ai_msg = f"请求 {request_id_query} 已成功生成！请将视频 URL '{video_url}' 提供给用户。"
             elif current_status == "Failed":
                 reason = status_data.get("reason", "未知原因")
-                ai_msg = f"请求 {request_id} 生成失败。原因: {reason}。请告知用户此结果。"
-            # 直接将 API 返回的状态信息作为 result 返回给 PluginManager，并附带 AI 提示
+                ai_msg = f"请求 {request_id_query} 生成失败。原因: {reason}。请告知用户此结果。"
             print_json_output("success", result=status_data, ai_message=ai_msg)
-
         else:
             raise ValueError(f"无效的 'command' 参数: {command}。必须是 'submit' 或 'query'。")
 
     except (ValueError, ConnectionError, FileNotFoundError) as e:
         log_event("error", f"Command processing failed: {command}", {"error": str(e)})
         print_json_output("error", error=str(e))
-        sys.exit(1)
+        sys.exit(1) 
     except Exception as e:
-        # 捕获其他意外错误
         log_event("critical", "Unexpected error during command processing", {"command": command, "error": str(e), "traceback": traceback.format_exc()})
         print_json_output("error", error=f"发生意外错误: {e}")
-        sys.exit(1)
+        sys.exit(2) 
 
 if __name__ == "__main__":
-    # 添加 traceback 导入以防意外错误
-    import traceback
     main()
