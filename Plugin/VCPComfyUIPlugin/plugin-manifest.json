@@ -1,0 +1,69 @@
+{
+  "name": "VCPComfyUIPlugin",
+  "displayName": "VCP ComfyUI Connector",
+  "version": "0.1.0",
+  "description": "Allows AI to generate images using a local ComfyUI instance via VCP.",
+  "author": "Your Name / AI Assistant",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "python ./main.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 300000
+  },
+  "configSchema": [
+    {
+      "name": "COMFYUI_BASE_URL",
+      "type": "string",
+      "description": "Base URL of the ComfyUI server (e.g., http://127.0.0.1:8001).",
+      "required": true,
+      "default": "http://127.0.0.1:8001"
+    },
+    {
+      "name": "COMFYUI_WORKFLOWS_PATH",
+      "type": "string",
+      "description": "Relative path to the directory containing ComfyUI API workflow JSON files (e.g., ./workflows).",
+      "required": false,
+      "default": "workflows" 
+    },
+    {
+      "name": "COMFYUI_OUTPUT_IMAGE_TYPE",
+      "type": "string", 
+      "description": "Type of image data to return: 'url' (direct URL from ComfyUI) or 'base64' (base64 encoded image data).",
+      "required": false,
+      "default": "url"
+    },
+    {
+      "name": "COMFYUI_REQUEST_TIMEOUT_SECONDS",
+      "type": "number",
+      "description": "Timeout in seconds for individual requests to ComfyUI server (e.g., polling history).",
+      "required": false,
+      "default": 120 
+    }
+  ],
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "generate_image",
+        "description": "Generates an image using ComfyUI. Provide either 'workflow_id' to use a pre-existing workflow file or 'workflow_json' to use a dynamically generated one. Optional parameters: prompt, negative_prompt, model_name, seed, steps, cfg, custom_params.",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」VCPComfyUIPlugin「末」,\\nworkflow_id:「始」basic_txt2img.json「末」,\\nprompt:「始」a beautiful landscape painting「末」,\\nseed:「始」12345「末」\\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "list_workflows",
+        "description": "Lists all available ComfyUI workflow files found in the plugin's configured workflows directory.",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」VCPComfyUIPlugin「末」,\\ncommand:「始」list_workflows「末」\\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "discover_environment",
+        "description": "Discovers all available resources from the ComfyUI instance, including nodes, models, samplers, etc. Useful for dynamically building a workflow.",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」VCPComfyUIPlugin「末」,\\ncommand:「始」discover_environment「末」\\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "generate_workflow",
+        "description": "Generates a ComfyUI workflow JSON from an AI-provided abstract description. Parameters: ai_workflow_description (string, required).",
+        "example": "<<<[TOOL_REQUEST]>>>\\ntool_name:「始」VCPComfyUIPlugin「末」,\\ncommand:「始」generate_workflow「末」,\\nai_workflow_description:「始」{\\\"nodes\\\":[{\\\"ai_node_id\\\":\\\"loader\\\",\\\"class_type\\\":\\\"CheckpointLoaderSimple\\\",\\\"inputs\\\":{\\\"ckpt_name\\\":\\\"v1-5-pruned-emaonly.safetensors\\\"}}]}「末」\\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+} 
