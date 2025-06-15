@@ -38,7 +38,7 @@ COPY . .
 # 使用 --no-cache-dir 避免缓存，可以减小镜像体积
 # 使用 --break-system-packages 解决 "externally-managed-environment" 错误
 # 注：docker的环境中，在系统级安装，是可以接受的
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # 暴露应用程序使用的端口 (从 config.env 获取)
 EXPOSE 6005
