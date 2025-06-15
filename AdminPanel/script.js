@@ -328,7 +328,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
                 const a = document.createElement('a');
                 a.href = '#';
-                a.textContent = plugin.manifest.displayName || plugin.manifest.name;
+                let displayName = plugin.manifest.displayName || plugin.manifest.name;
+                if (plugin.isDistributed) {
+                    displayName += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
+                }
+                a.innerHTML = displayName; // Use innerHTML to render the span
                 a.dataset.target = `plugin-${plugin.manifest.name}-config`;
                 a.dataset.pluginName = plugin.manifest.name;
                 li.appendChild(a);
@@ -340,10 +344,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 let descriptionHtml = plugin.manifest.description || '暂无描述';
                 if (plugin.manifest.version) descriptionHtml += ` (版本: ${plugin.manifest.version})`;
+                if (plugin.isDistributed) descriptionHtml += ` (来自节点: ${plugin.serverId || '未知'})`;
                 if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
 
 
-                pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''}</h2>
+                pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''} ${plugin.isDistributed ? '<span class="plugin-type-icon" title="分布式插件">☁️</span>' : ''}</h2>
                                            <p class="plugin-meta">${descriptionHtml}</p>`;
 
                 // Add a control area for plugin actions like toggle
@@ -355,7 +360,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 toggleButton.textContent = plugin.enabled ? '禁用插件' : '启用插件';
                 toggleButton.classList.add('toggle-plugin-button');
                 if (!plugin.enabled) {
-                    toggleButton.classList.add('disabled-state'); // Add class for styling disabled state
+                    toggleButton.classList.add('disabled-state');
+                }
+
+                // 禁用分布式插件的管理功能
+                if (plugin.isDistributed) {
+                    toggleButton.disabled = true;
+                    toggleButton.title = '分布式插件的状态由其所在的节点管理，无法在此处直接启停。';
                 }
 
                 toggleButton.addEventListener('click', async () => {

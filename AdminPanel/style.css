@@ -199,6 +199,15 @@ html[data-theme='light'] .sidebar nav li a.active {
     color: var(--primary-text-light); /* 确保在浅色激活背景下文字清晰 */
 }
 
+.sidebar nav li a .plugin-type-icon {
+    margin-left: 8px;
+    font-size: 0.8em;
+    color: var(--highlight-text);
+    background-color: var(--accent-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
 
 .content {
     flex-grow: 1;
