@@ -116,6 +116,7 @@ VCP 支持多种插件类型，以满足不同的 AI 能力扩展需求。核心
 
 VCP 的分布式架构将原有的单体应用升级为一个由“主服务器”和多个“分布式节点”组成的星型网络，极大地扩展了系统的算力、功能边界和部署灵活性。
 
+
 ```mermaid
 graph TD
     subgraph "用户/客户端"
@@ -138,7 +139,8 @@ graph TD
 
     subgraph "VCP 分布式节点 1 (e.g., GPU服务器)"
         DS1[VCPDistributedServer.js]
-        PM1[Plugin.js (节点本地)]
+        PM1[NodePMOne]
+
         subgraph "节点1的插件"
             P_GPU["GPU密集型插件 (e.g., 视频生成)"]
         end
@@ -146,7 +148,8 @@ graph TD
 
     subgraph "VCP 分布式节点 2 (e.g., 内网文件服务器)"
         DS2[VCPDistributedServer.js]
-        PM2[Plugin.js (节点本地)]
+        PM2[NodePMTwo]
+
         subgraph "节点2的插件"
             P_FILE["内网文件搜索/读取插件"]
         end
