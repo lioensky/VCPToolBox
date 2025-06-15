@@ -41,7 +41,7 @@ VCP 的每一项特性都根植于其前瞻性的设计哲学，旨在解决当�
     - **集中管理**: 所有 WebSocket 连接、认证、消息广播由 `WebSocketServer.js` 统一处理。
     - **插件集成**: 服务类插件（如 `VCPLog`）和同步插件（通过 `webSocketPush` 配置）可以利用此中央服务向客户端推送信息，而无需各自实现 WebSocket 服务器。
     - **客户端类型**: 支持基于 `clientType` 的消息定向广播，允许不同前端或客户端组件订阅特定类型的消息。
-- **深度解读**: 简化了需要实时推送功能的插件开发，提高了系统的模块化和可维护性。
+- **深度解读**: 简化了需要实时推送功能的插件开发，提高了系统的模块化和可维护性。它也是 VCP 分布式网络的核心通信骨架。
 
 ### 丰富的插件类型，支撑 AI 全方位能力拓展
 
@@ -79,6 +79,9 @@ VCP 支持多种插件类型，以满足不同的 AI 能力扩展需求。核心
 - **服务插件 (service)**:
   - **作用**: 允许插件向主应用注册独立的 HTTP 路由，提供额外的服务接口，如图床服务 (`ImageServer`)。部分服务插件（如 `VCPLog`）也可能利用统一 WebSocket 服务进行信息推送。
   - **次时代意义**: 将 VCP 平台本身转变为一个可扩展的服务中心，支持更复杂的应用场景。
+- **分布式节点 (Distributed Node)**:
+- **作用**: 允许将 VCP 的算力扩展到多台机器。一个独立的 `VCPDistributedServer` 节点可以运行在任何地方，加载其本地的插件，并通过 WebSocket 连接到主服务器。
+- **次时代意义**: 这是 VCP 实现“无限算力”和“群体智能”的物理基础。通过分布式网络，可以将需要大量计算资源（如 GPU 密集型任务）或需要访问特定网络/硬件（如内网文件服务器、特殊硬件）的插件部署在最合适的机器上，而主服务器则作为统一的调度中心，对 AI 透明地调用这些远程资源。
 
 ### 灵活的配置管理与通用变量替换系统
 
@@ -109,9 +112,9 @@ VCP 支持多种插件类型，以满足不同的 AI 能力扩展需求。核心
 - 提供便捷的服务器配置、插件状态、插件配置、指令描述以及日记文件管理界面。
 - **调试与日志**: 提供调试模式和详细日志，方便开发和排错。
 
-## 3. 系统架构：AI-工具-记忆的协同进化引擎
+## 3. VCP 分布式网络架构：从“单体”到“星辰”
 
-VCP 的系统架构围绕“AI-工具-记忆”铁三角构建，旨在实现三者之间的高效协同与正反馈循环。
+VCP 的分布式架构将原有的单体应用升级为一个由“主服务器”和多个“分布式节点”组成的星型网络，极大地扩展了系统的算力、功能边界和部署灵活性。
 
 ```mermaid
 graph TD
@@ -119,98 +122,92 @@ graph TD
         U[用户/前端应用]
     end
 
-    subgraph "VCP 服务器 (VCPToolBox)"
+    subgraph "VCP 主服务器 (VCPToolBox - 核心调度)"
         S[server.js - 核心调度与通信]
         PM[Plugin.js - 插件管理器]
-        CONF[配置系统 - config.env, 插件.env]
+        WSS[WebSocketServer.js - 通信骨架]
+        CONF[配置系统]
         VAR[通用变量替换引擎]
         MEM[VCP 记忆系统]
-
-        subgraph "VCP 插件生态"
-            P_STATIC["静态插件 e.g., WeatherReporter, DailyNoteGet, EmojiListGenerator"]
-            P_PRE["消息预处理插件 e.g., ImageProcessor"]
-            P_SYNC["同步插件 e.g., SciCalculator, FluxGen, SunoGen, DailyNoteWrite, DailyNoteManager, AgentAssistant"]
-            P_SVC["服务插件 e.g., ImageServer"]
-        end
-
-        MEM_DB[(持久化记忆存储 - 日记文件系统)]
-        LOG[日志系统]
         ADMIN[Web 管理面板]
+        
+        subgraph "本地插件生态"
+            P_LOCAL["本地插件 (静态/预处理/服务等)"]
+        end
     end
 
-    subgraph "外部依赖与服务"
+    subgraph "VCP 分布式节点 1 (e.g., GPU服务器)"
+        DS1[VCPDistributedServer.js]
+        PM1[Plugin.js (节点本地)]
+        subgraph "节点1的插件"
+            P_GPU["GPU密集型插件 (e.g., 视频生成)"]
+        end
+    end
+
+    subgraph "VCP 分布式节点 2 (e.g., 内网文件服务器)"
+        DS2[VCPDistributedServer.js]
+        PM2[Plugin.js (节点本地)]
+        subgraph "节点2的插件"
+            P_FILE["内网文件搜索/读取插件"]
+        end
+    end
+    
+    subgraph "外部依赖"
         AI_MODEL[后端 AI 大语言模型 API]
-        EXT_API["外部 API/服务 e.g., 天气, 搜索, 专业计算"]
-        LOCAL_TOOLS["本地脚本/软件 e.g., ComfyUI, Python脚本"]
     end
 
-    U -- "HTTP请求 (含用户消息, 模型指令)" --> S
-    S -- "预处理 (认证, 变量替换)" --> S
-    S -- "调用消息预处理器" --> P_PRE
-    P_PRE -- "处理后消息" --> S
-    S -- "构造完整请求 (含系统提示, 处理后消息, 历史对话)" --> AI_MODEL
+    U -- "HTTP请求" --> S
+    S -- "HTTP响应" --> U
+    S -- "WebSocket消息" <--> U
 
-    AI_MODEL -- "AI响应 (可能含VCP工具调用指令/日记写入指令)" --> S
+    S -- "构造完整请求" --> AI_MODEL
+    AI_MODEL -- "AI响应 (含VCP指令)" --> S
 
-    S -- "解析AI响应" --> S
-    S -- "IF VCP工具调用" --> PM
-    PM -- "分发任务给相应同步插件" --> P_SYNC
-    P_SYNC -- "可能与外部API/本地工具交互" --> EXT_API
-    P_SYNC -- "可能与外部API/本地工具交互" --> LOCAL_TOOLS
-    P_SYNC -- "执行结果 (JSON)" --> PM
-    PM -- "结果汇总" --> S
-    S -- "将工具结果注入对话历史, 再次调用" --> AI_MODEL
-    S -- "(重复工具调用循环...)" --> S
+    S -- "WebSocket连接" <--> WSS
+    DS1 -- "WebSocket连接" --> WSS
+    DS2 -- "WebSocket连接" --> WSS
 
-    S -- "IF 日记写入指令" --> PM
-    PM -- "调用DailyNoteWrite" --> P_SYNC
-    P_SYNC -- "结构化日记数据" --> MEM_DB
-
-    PM -- "静态插件初始化/定时执行" --> P_STATIC
-    P_STATIC -- "更新占位符数据 (e.g., 天气, 日记内容)" --> VAR
-    VAR -- "在系统提示/用户消息中替换" --> S
-
-    PM -- "服务插件初始化, 注册路由" --> P_SVC
-    P_SVC -- "提供独立HTTP服务" --> U
-
-    MEM -- "DailyNoteGet读取日记" --> MEM_DB
-    MEM -- "DailyNoteManager/Editor管理日记 (由AI通过P_SYNC调用)" --> MEM_DB
-
-    ADMIN -- "通过/admin_api管理" --> CONF
-    ADMIN -- "通过/admin_api管理" --> PM
-    ADMIN -- "通过/admin_api管理" --> MEM_DB
-    ADMIN -- "控制服务器重启" --> S
-
-    S -- "最终响应 (流式/非流式)" --> U
-    S -- "记录日志" --> LOG
-
+    WSS -- "注册/注销云端插件" --> PM
+    PM -- "请求执行云端工具" --> WSS
+    WSS -- "转发工具调用指令" --> DS1
+    DS1 -- "调用本地插件" --> P_GPU
+    P_GPU -- "执行结果" --> DS1
+    DS1 -- "通过WebSocket返回结果" --> WSS
+    WSS -- "将结果返回给PM" --> PM
+    PM -- "将结果注入AI对话" --> S
 ```
 
 ### 核心交互流程解读
 
-- **请求与预处理**: 客户端请求到达 `server.js`，经过认证、变量替换（此时 `{{Tar*}}`, `{{Var*}}`, 日期时间等占位符被替换，天气预警信息等由静态插件提供的数据也被注入）、消息预处理（如 `ImageProcessor`）。
-- **首次 AI 调用**: 预处理后的请求发送给后端 AI 模型。
-- **AI 响应与 VCP 核心循环**:
-  - `server.js` 解析 AI 响应。
-  - **工具调用**: 若 AI 响应中包含 `<<<[TOOL_REQUEST]>>>` 指令，`PluginManager` 会：
-    - 解析工具名和参数。
-    - **并行异步执行**: 对于多个工具调用，VCP 可并行调度。`PluginManager` 调用相应插件。
-    - **根据插件类型处理**:
-      - **对于同步插件 (synchronous)**: `PluginManager` 等待插件进程执行完毕，获取其完整输出。
-        - **结果处理与 WebSocket 推送 (同步插件)**: 如果同步插件配置了 `webSocketPush`，其最终结果会通过 `WebSocketServer.js` 推送。
-      - **对于异步插件 (asynchronous)**:
-        - `PluginManager` 捕获插件打印的**初始JSON响应**（例如，包含任务ID和“已提交”状态）并立即将其返回给 `server.js`。这使得AI可以快速得到初步反馈。
-        - 插件的非守护线程在后台继续执行耗时操作。
-        - **插件回调**: 插件完成后台任务后，向服务器的 `/plugin-callback/:pluginName/:taskId` 端点发送HTTP POST请求，携带最终结果。
-        - **服务器处理回调与 WebSocket 推送 (异步插件)**: `server.js` 接收到回调数据后，根据该异步插件清单中的 `webSocketPush` 配置，将回调中的结果数据通过 `WebSocketServer.js` 推送给客户端。
-    - **VCP 调用日志推送**: 无论插件类型或结果是否通过特定配置推送，VCP 工具调用的元信息（如发起调用、成功、失败、内容摘要）通常会由 `server.js` 通过 `WebSocketServer.js` 推送给订阅了 `'VCPLog'` 客户端类型的客户端。
-    - **二次 AI 调用**: 所有**同步插件**的执行结果，或**异步插件的初始响应**（如果AI需要基于此进行下一步决策），会被收集、格式化，并作为新的用户消息添加到对话历史中，再次调用 AI 模型。此循环可持续多次，直至无工具调用或达到上限。异步插件的最终结果通常不直接参与这个AI循环，而是通过WebSocket直接通知用户。
-  - **记忆写入**: 若 AI 响应包含 `<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>` 结构化日记块，`PluginManager` 调用 `DailyNoteWrite` 插件将其存入持久化记忆库。
-  - **记忆读取与上下文注入**: `DailyNoteGet` 等静态插件定期从记忆库读取内容（如特定角色的所有日记），通过 `{{AllCharacterDiariesData}}` 等内部占位符提供给服务器，服务器再据此解析如 `[角色名日记本内容为空或未从插件获取]` 这样的用户级占位符，实现记忆的上下文注入。
-  - **记忆管理与优化**: AI 可通过调用 `DailyNoteManager` 或 `DailyNoteEditor` 等插件，主动整理、优化、共享其知识库。
-  - **最终响应**: 无更多工具调用后，AI 的最终回复（可能包含 `SHOW_VCP_OUTPUT=true` 时的工具执行过程）返回给客户端。
+分布式架构下的核心交互流程在原有基础上进行了扩展：
 
-VCP 的架构精髓在于其闭环的“感知-思考-行动-记忆-学习”能力，以及对 AI 主体性的充分尊重和赋能。
+1.  **启动与注册**:
+    - 主服务器 (`server.js`) 启动，初始化 `PluginManager` 和 `WebSocketServer`。
+    - 各个分布式节点 (`VCPDistributedServer.js`) 启动，加载其本地的插件。
+    - 分布式节点通过 WebSocket 连接到主服务器的 `WebSocketServer`，并发送一个包含其所有本地插件清单的 `register_tools` 消息。
+    - 主服务器的 `PluginManager` 收到清单后，将这些“云端插件”动态注册到系统中，其显示名称会自动添加 `[云端]` 前缀。
+
+2.  **AI 调用工具**:
+    - 流程与之前类似，AI 在响应中嵌入 `<<<[TOOL_REQUEST]>>>` 指令。
+    - 主服务器的 `PluginManager` 在 `processToolCall` 方法中接收到调用请求。
+    - **智能路由**: `PluginManager` 检查被调用的工具清单。
+      - 如果是**本地插件**，则按原有方式直接在主服务器上执行。
+      - 如果是**云端插件** (带有 `isDistributed: true` 标记)，`PluginManager` 不会直接执行，而是调用 `WebSocketServer.js` 的 `executeDistributedTool` 方法，并将工具名、参数以及该插件所属的 `serverId` 传递过去。
+
+3.  **远程执行与结果返回**:
+    - `WebSocketServer` 通过对应的 WebSocket 连接，向目标分布式节点发送一个包含任务ID、工具名和参数的 `execute_tool` 消息。
+    - 目标分布式节点收到消息后，其本地的 `PluginManager` 会调用并执行相应的插件。
+    - 插件执行完毕后，分布式节点将结果（包含成功/失败状态和数据）连同任务ID一起，通过 WebSocket 发回给主服务器。
+    - 主服务器的 `WebSocketServer` 收到结果后，根据任务ID找到并唤醒之前挂起的调用请求，将最终结果返回给 `PluginManager`。
+
+4.  **后续处理**:
+    - `PluginManager` 拿到（无论是本地还是远程的）执行结果后，将其注入到 AI 的对话历史中，再次调用 AI 模型，完成闭环。
+
+5.  **断开连接与注销**:
+    - 如果一个分布式节点与主服务器的 WebSocket 连接断开，`WebSocketServer` 会通知 `PluginManager`。
+    - `PluginManager` 会自动注销掉所有属于该断开节点提供的云端插件，确保系统的工具列表始终保持最新和可用。
+
+通过这套机制，VCP 实现了对分布式资源的无缝集成和透明调用，极大地增强了系统的可扩展性和能力上限。
 
 ## 4. Web 管理面板：VCP 系统的可视化控制中心
 
@@ -401,7 +398,7 @@ graph TD
     B -- "将最终成果呈现给" --> A
 ```
 
-## 8. 安装与运行
+## 8. 安装与运行 (主服务器)
 
 ### 克隆项目
 
@@ -454,13 +451,36 @@ docker-compose up --build -d
 - **查看日志**: `docker-compose logs -f`
 - **停止服务**: `docker-compose down`
 
-## 9. 推荐的前端/后端
+## 9. 部署 VCP 分布式节点
+
+我们提供了一个开箱即用的分布式服务器项目 `VCPDistributedServer`，让您可以轻松地将任何一台机器变成 VCP 网络中的一个算力节点。
+
+### 步骤
+
+1.  **复制项目**: 将主项目根目录下的 `VCPDistributedServer` 文件夹完整地复制到您想部署节点的任何机器上。
+2.  **安装依赖**: 在 `VCPDistributedServer` 目录下，运行 `npm install`。
+3.  **配置节点**:
+    - 打开 `VCPDistributedServer/config.env` 文件。
+    - `Main_Server_URL`: 填入您的**主服务器**的 WebSocket 地址 (例如 `ws://<主服务器IP>:8088`)。
+    - `VCP_Key`: 填入与您主服务器 `config.env` 中完全一致的 `VCP_Key`。
+    - `ServerName`: 为这个节点起一个易于识别的名字。
+4.  **添加插件**:
+    - 在 `VCPDistributedServer` 目录下创建一个名为 `Plugin` 的文件夹。
+    - 将您想在这个节点上运行的 VCP 插件（例如 `SciCalculator`, `FluxGen` 等）完整地从主项目复制到这个新的 `Plugin` 文件夹中。
+    - **注意**: 目前分布式节点仅支持 `synchronous` (同步) 类型的 `stdio` 插件。
+5.  **启动节点**:
+    ```bash
+    node VCPDistributedServer.js
+    ```
+    启动后，该节点会自动连接到主服务器并注册其插件。您将在主服务器的控制台看到相关日志。
+
+## 10. 推荐的前端/后端
 
 - **后端 AI 模型 API**: 推荐使用支持 SSE (Server-Sent Events) 流式输出且 API 格式相对标准化的服务，如 NewAPI, VoAPI 服务端, 以及官方的 OpenAI, Google Gemini, Anthropic Claude 等。VCP 的设计使其能够灵活适配多种后端。
 - **前端交互应用**: 推荐使用能够良好渲染 Markdown、支持代码高亮、并且能够自定义或适配 VCP 工具调用指令显示的前端。例如：VCPChat(官方项目，首选！), Sillytavern, CherryStudio客户端等。理想的前端还应允许用户方便地配置系统提示词，以便充分利用 VCP 的变量替换和插件指令描述注入功能。前端还应能连接到 `WebSocketServer.js` 提供的 WebSocket 服务，以接收服务器推送的各类消息（如 VCP 日志、AgentMessage 等）。
 - **官方前端·VCPChat项目地址**：https://github.com/lioensky/VCPChat 
 
-## 10. 开发者指南：创建你的“VCP次时代插件”
+## 11. 开发者指南：创建你的“VCP次时代插件”
 
 VCP 的灵魂在于其插件生态。成为 VCP 插件开发者，意味着你将直接为 AI Agent 创造新的“感官”、“肢体”和“智慧模块”。
 
@@ -545,7 +565,7 @@ VCP 的灵魂在于其插件生态。成为 VCP 插件开发者，意味着你�
   - 或者，在系统提示词中更详细、更具引导性地描述如何以及何时使用你的新插件。
 - **思考**: 如何设计插件的 AI 指令描述，才能让 AI 最容易理解、最不容易误用？这是插件开发的关键一环。
 
-## 11. VCP 通用变量占位符：动态上下文注入的艺术
+## 12. VCP 通用变量占位符：动态上下文注入的艺术
 
 VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调控的基石。
 
@@ -588,7 +608,7 @@ VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调
 - **`{{Var*}}`**: 通用自定义变量，按定义顺序进行全局匹配和替换。
 - **`{{Sar*}}`**: 特殊自定义变量，其生效与否会根据当前使用的 AI 模型进行判断，允许为不同模型配置特定值。
 
-## 12. 系统提示词工程：VCP 环境下的 AI 指挥艺术
+## 13. 系统提示词工程：VCP 环境下的 AI 指挥艺术
 
 在 VCP 环境下，系统提示词 (System Prompt) 不再仅仅是简单的角色扮演指令，它成为了指挥 AI Agent 如何感知世界、思考问题、运用工具、管理记忆、以及与其他 Agent 协作的“总纲领”和“行为逻辑注入器”。
 
@@ -623,7 +643,7 @@ VarToolList="文生图工具{{VCPFluxGen}} 计算器工具{{VCPSciCalculator}},�
 
 精通 VCP 环境下的系统提示词工程，是释放 AI Agent 全部潜能、实现“AI 指挥艺术”的关键。
 
-## 13. 未来展望：通往更高级 AI Agent 的路径
+## 14. 未来展望：通往更高级 AI Agent 的路径
 
 VCP 的征程远未结束，我们对未来充满期待，并已规划了更激动人心的发展方向：
 
@@ -636,7 +656,7 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 
 我们坚信，VCP 所代表的设计哲学和技术路径，正引领着一条通往更智能、更自主、更具适应性和协作性的高级 AI Agent 未来的光明大道。VCP 不仅是一个技术框架，更是一个旨在释放 AI 无限潜能、并最终为人类社会发展做出独特贡献的孵化器。
 
-## 14. 许可证 (License)
+## 15. 许可证 (License)
 
 本项目采用 **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)** 许可证。
 
@@ -653,7 +673,7 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 
 详情请参阅 `LICENSE` 文件。
 
-## 15. 免责声明与使用限制
+## 16. 免责声明与使用限制
 
 - **开发阶段**: 本 VCP 工具箱项目目前仍处于积极开发阶段，可能存在未知错误、缺陷或不完整功能。
 - **按原样提供**: 本项目按“原样”和“可用”状态提供，不附带任何形式的明示或暗示保证。

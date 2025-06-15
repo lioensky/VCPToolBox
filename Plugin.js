@@ -10,7 +10,7 @@ const manifestFileName = 'plugin-manifest.json';
 
 class PluginManager {
     constructor() {
-        this.plugins = new Map();
+        this.plugins = new Map(); // 存储所有插件（本地和分布式）
         this.staticPlaceholderValues = new Map();
         this.scheduledJobs = new Map();
         this.messagePreprocessors = new Map();
@@ -18,6 +18,12 @@ class PluginManager {
         this.projectBasePath = null;
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
         this.debugMode = (process.env.DebugMode || "False").toLowerCase() === "true";
+        this.webSocketServer = null; // 为 WebSocketServer 实例占位
+    }
+
+    setWebSocketServer(wss) {
+        this.webSocketServer = wss;
+        if (this.debugMode) console.log('[PluginManager] WebSocketServer instance has been set.');
     }
 
     setProjectBasePath(basePath) {
@@ -262,7 +268,16 @@ class PluginManager {
 
     async loadPlugins() {
         console.log('[PluginManager] Starting plugin discovery...'); // Keep
-        this.plugins.clear();
+        // 只清除本地插件，保留可能已注册的分布式插件
+        // 在实践中，启动时应该都是空的，但这样更健壮
+        const localPlugins = new Map();
+        for (const [name, manifest] of this.plugins.entries()) {
+            if (!manifest.isDistributed) {
+                localPlugins.set(name, manifest);
+            }
+        }
+        this.plugins = localPlugins; // 仅保留非分布式插件
+        
         this.messagePreprocessors.clear();
         this.staticPlaceholderValues.clear();
         this.serviceModules.clear();
@@ -413,135 +428,100 @@ class PluginManager {
         return this.plugins.get(name);
     }
 
-async processToolCall(toolName, toolArgs) {
+    async processToolCall(toolName, toolArgs) {
         const plugin = this.plugins.get(toolName);
         if (!plugin) {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
         }
 
-        // 根据插件类型和约定准备执行参数
-        // 现在支持 synchronous 和 asynchronous 类型的 stdio 插件
-        if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
-            throw new Error(`[PluginManager] Plugin "${toolName}" (type: ${plugin.pluginType}, protocol: ${plugin.communication?.protocol}) is not a supported stdio plugin for direct tool call. Expected synchronous or asynchronous stdio plugin.`);
-        }
-
-        const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
-
-        let executionParam = null;
-        // toolArgs 来自 server.js 的 parsedToolArgs (一个对象)
-        // 从 toolArgs 中移除 maid 字段，因为它已经被提取，不应再传递给插件的 executionParam
-        const pluginSpecificArgs = { ...toolArgs };
-        if (maidNameFromArgs) {
-            delete pluginSpecificArgs.maid;
-        }
-
-        if (toolName === "SciCalculator") {
-            if (pluginSpecificArgs && typeof pluginSpecificArgs.expression === 'string') {
-                executionParam = pluginSpecificArgs.expression;
-            } else {
-                throw new Error(`[PluginManager] Missing or invalid 'expression' (string) argument for SciCalculator in toolArgs.`);
-            }
-        } else if (toolName === "FluxGen") {
-            if (pluginSpecificArgs && typeof pluginSpecificArgs === 'object' && typeof pluginSpecificArgs.prompt === 'string' && typeof pluginSpecificArgs.resolution === 'string') {
-                executionParam = JSON.stringify(pluginSpecificArgs);
-            } else {
-                 throw new Error(`[PluginManager] Invalid or incomplete arguments for FluxGen in toolArgs. Expected an object with string 'prompt' and 'resolution'. Received: ${JSON.stringify(pluginSpecificArgs)}`);
-            }
-        } else {
-            // 对于其他插件，如果它们也期望通过 stdin 接收 JSON 字符串化的参数
-            if (pluginSpecificArgs && typeof pluginSpecificArgs === 'object' && Object.keys(pluginSpecificArgs).length > 0) {
-                executionParam = JSON.stringify(pluginSpecificArgs);
-            } else if (typeof pluginSpecificArgs === 'string' && pluginSpecificArgs.trim() !== '') {
-                // 如果已经是字符串，直接使用 (假设插件能处理)
-                // 注意：这种情况可能不常见，因为 server.js 解析后 toolArgs 通常是对象
-                executionParam = pluginSpecificArgs;
-            }
-            // 如果 pluginSpecificArgs 是空对象或 toolArgs 是 null/undefined，executionParam 可能是 null
-        }
-
-        const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0,100) + '...' : executionParam) : null;
-        if (this.debugMode) console.log(`[PluginManager processToolCall] Calling executePlugin for: ${toolName} with prepared param:`, logParam);
-        
-        // Helper function to generate a timestamp string in server's local time with timezone offset
+        // Helper function to generate a timestamp string
         const _getFormattedLocalTimestamp = () => {
             const date = new Date();
-            
             const year = date.getFullYear();
-            const month = (date.getMonth() + 1).toString().padStart(2, '0'); // Months are 0-indexed
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
             const day = date.getDate().toString().padStart(2, '0');
             const hours = date.getHours().toString().padStart(2, '0');
             const minutes = date.getMinutes().toString().padStart(2, '0');
             const seconds = date.getSeconds().toString().padStart(2, '0');
             const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
-            
             const timezoneOffsetMinutes = date.getTimezoneOffset();
             const offsetSign = timezoneOffsetMinutes > 0 ? "-" : "+";
             const offsetHours = Math.abs(Math.floor(timezoneOffsetMinutes / 60)).toString().padStart(2, '0');
             const offsetMinutes = Math.abs(timezoneOffsetMinutes % 60).toString().padStart(2, '0');
             const timezoneString = `${offsetSign}${offsetHours}:${offsetMinutes}`;
-            
             return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${timezoneString}`;
         };
 
+        const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
+        const pluginSpecificArgs = { ...toolArgs };
+        if (maidNameFromArgs) {
+            delete pluginSpecificArgs.maid;
+        }
+
         try {
-            const pluginOutput = await this.executePlugin(toolName, executionParam); // executePlugin now returns {status, result/error}
-            
-            if (pluginOutput.status === "success") {
-                let resultObject = {};
-                try {
-                    // pluginOutput.result 应该是插件返回的JSON字符串
-                    resultObject = JSON.parse(pluginOutput.result);
-                } catch (parseError) {
-                    // 如果插件返回的不是有效的JSON字符串，将其作为原始值处理
-                    if (this.debugMode) console.warn(`[PluginManager processToolCall] Plugin ${toolName} result was not valid JSON. Original: "${pluginOutput.result.substring(0,100)}"`);
-                    resultObject = { original_plugin_output: pluginOutput.result };
+            let resultFromPlugin;
+            if (plugin.isDistributed) {
+                // --- 分布式插件调用逻辑 ---
+                if (!this.webSocketServer) {
+                    throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call distributed tool.');
                 }
-
-                // 添加 MaidName 和 timestamp
-                if (maidNameFromArgs) {
-                    resultObject.MaidName = maidNameFromArgs;
-                }
-                resultObject.timestamp = _getFormattedLocalTimestamp();
-                
-                // 返回增强后的 JavaScript 对象，server.js 会将其 JSON.stringify
-                return resultObject;
+                if (this.debugMode) console.log(`[PluginManager] Processing distributed tool call for: ${toolName} on server ${plugin.serverId}`);
+                resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs);
+                // 分布式工具的返回结果应该已经是JS对象了
             } else {
-                // 如果插件本身通过其JSON响应报告了错误
-                let errorObject = {
-                    plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`
-                };
-                if (maidNameFromArgs) {
-                    errorObject.MaidName = maidNameFromArgs;
+                // --- 本地插件调用逻辑 (现有逻辑) ---
+                if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
+                    throw new Error(`[PluginManager] Local plugin "${toolName}" is not a supported stdio plugin for direct tool call.`);
                 }
-                errorObject.timestamp = _getFormattedLocalTimestamp();
-                // 抛出错误，让 server.js 捕获并处理。
-                // server.js 会将这个错误信息（现在也包含MaidName和timestamp）格式化为 toolResultText
-                throw new Error(JSON.stringify(errorObject)); // 抛出包含MaidName和timestamp的错误对象字符串
-            }
-        } catch (e) {
-            // 捕获来自 executePlugin 的错误（例如，进程生成错误、超时）或上面抛出的错误
-            console.error(`[PluginManager processToolCall] Error during execution or processing result for plugin ${toolName}:`, e.message);
-            // 尝试解析 e.message 是否已经是我们格式化的 JSON 错误字符串
-            try {
-                const parsedError = JSON.parse(e.message);
-                // If it's already our structured error with MaidName and timestamp, rethrow as is.
-                if (parsedError && (parsedError.plugin_error || parsedError.plugin_execution_error) && parsedError.timestamp) {
-                    throw e;
+                
+                let executionParam = null;
+                if (Object.keys(pluginSpecificArgs).length > 0) {
+                    executionParam = JSON.stringify(pluginSpecificArgs);
                 }
-            } catch (jsonParseError) {
-                // If not, create a new enhanced error object
+                
+                const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0, 100) + '...' : executionParam) : null;
+                if (this.debugMode) console.log(`[PluginManager] Calling local executePlugin for: ${toolName} with prepared param:`, logParam);
+
+                const pluginOutput = await this.executePlugin(toolName, executionParam); // Returns {status, result/error}
+
+                if (pluginOutput.status === "success") {
+                    try {
+                        resultFromPlugin = JSON.parse(pluginOutput.result);
+                    } catch (parseError) {
+                        if (this.debugMode) console.warn(`[PluginManager] Local plugin ${toolName} result was not valid JSON. Original: "${pluginOutput.result.substring(0, 100)}"`);
+                        resultFromPlugin = { original_plugin_output: pluginOutput.result };
+                    }
+                } else {
+                    throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
+                }
             }
 
-            // If we reach here, it means e.message was not our structured JSON error, or parsing failed.
-            // Create a new enhanced error object.
-            let enhancedErrorObject = {
-                plugin_execution_error: e.message || 'Unknown plugin execution error',
-                timestamp: _getFormattedLocalTimestamp()
-            };
+            // --- 通用结果处理 ---
+            let finalResultObject = (typeof resultFromPlugin === 'object' && resultFromPlugin !== null) ? resultFromPlugin : { original_plugin_output: resultFromPlugin };
+
             if (maidNameFromArgs) {
-                enhancedErrorObject.MaidName = maidNameFromArgs;
+                finalResultObject.MaidName = maidNameFromArgs;
             }
-            throw new Error(JSON.stringify(enhancedErrorObject));
+            finalResultObject.timestamp = _getFormattedLocalTimestamp();
+            
+            return finalResultObject;
+
+        } catch (e) {
+            console.error(`[PluginManager processToolCall] Error during execution for plugin ${toolName}:`, e.message);
+            let errorObject;
+            try {
+                errorObject = JSON.parse(e.message);
+            } catch (jsonParseError) {
+                errorObject = { plugin_execution_error: e.message || 'Unknown plugin execution error' };
+            }
+            
+            if (maidNameFromArgs && !errorObject.MaidName) {
+                errorObject.MaidName = maidNameFromArgs;
+            }
+            if (!errorObject.timestamp) {
+                errorObject.timestamp = _getFormattedLocalTimestamp();
+            }
+            throw new Error(JSON.stringify(errorObject));
         }
     }
 
@@ -777,6 +757,49 @@ async processToolCall(toolName, toolArgs) {
             }
         }
         console.log('[PluginManager] Service plugins initialized.'); // Keep
+    }
+    // --- 新增分布式插件管理方法 ---
+    registerDistributedTools(serverId, tools) {
+        if (this.debugMode) console.log(`[PluginManager] Registering ${tools.length} tools from distributed server: ${serverId}`);
+        for (const toolManifest of tools) {
+            if (!toolManifest.name || !toolManifest.pluginType || !toolManifest.entryPoint) {
+                if (this.debugMode) console.warn(`[PluginManager] Invalid manifest from ${serverId} for tool '${toolManifest.name}'. Skipping.`);
+                continue;
+            }
+            if (this.plugins.has(toolManifest.name)) {
+                if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing tool. Skipping.`);
+                continue;
+            }
+            
+            // 标记为分布式插件并存储其来源服务器ID
+            toolManifest.isDistributed = true;
+            toolManifest.serverId = serverId;
+            
+            // 在显示名称前加上[云端]前缀
+            toolManifest.displayName = `[云端] ${toolManifest.displayName || toolManifest.name}`;
+
+            this.plugins.set(toolManifest.name, toolManifest);
+            console.log(`[PluginManager] Registered distributed tool: ${toolManifest.displayName} (${toolManifest.name}) from ${serverId}`);
+        }
+        // 注册后重建描述，以包含新插件
+        this.buildVCPDescription();
+    }
+
+    unregisterAllDistributedTools(serverId) {
+        if (this.debugMode) console.log(`[PluginManager] Unregistering all tools from distributed server: ${serverId}`);
+        let unregisteredCount = 0;
+        for (const [name, manifest] of this.plugins.entries()) {
+            if (manifest.isDistributed && manifest.serverId === serverId) {
+                this.plugins.delete(name);
+                unregisteredCount++;
+                if (this.debugMode) console.log(`  - Unregistered: ${name}`);
+            }
+        }
+        if (unregisteredCount > 0) {
+            console.log(`[PluginManager] Unregistered ${unregisteredCount} tools from server ${serverId}.`);
+            // 注销后重建描述
+            this.buildVCPDescription();
+        }
     }
 }
 
