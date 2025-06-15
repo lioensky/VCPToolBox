@@ -1665,7 +1665,12 @@ server = app.listen(port, async () => { // Assign to server variable
     if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
     const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
     webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
-    if (DEBUG_MODE) console.log('[Server] WebSocketServer initialized.');
+    
+    // --- 注入依赖 ---
+    pluginManager.setWebSocketServer(webSocketServer);
+    webSocketServer.setPluginManager(pluginManager);
+    
+    if (DEBUG_MODE) console.log('[Server] WebSocketServer and PluginManager have been interconnected.');
 
     // The VCPLog plugin's attachWebSocketServer is no longer needed here as WebSocketServer handles it.
     // const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
