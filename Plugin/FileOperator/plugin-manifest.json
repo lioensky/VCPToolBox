@@ -1,0 +1,90 @@
+{
+  "name": "FileOperator",
+  "displayName": "文件操作器",
+  "pluginType": "synchronous",
+  "version": "1.0.1",
+  "description": "一个强大的文件系统操作插件，允许AI对受限目录进行读、写、列出、移动、复制、删除等多种文件和目录操作。",
+  "author": "VCPToolBox",
+  "license": "MIT",
+  "entryPoint": {
+    "command": "node FileOperator.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "ALLOWED_DIRECTORIES": {
+      "type": "string",
+      "description": "逗号分隔的允许进行文件操作的目录绝对路径列表。留空表示允许所有。",
+      "default": ""
+    },
+    "MAX_FILE_SIZE": {
+      "type": "integer",
+      "description": "允许操作的最大文件大小（字节）。",
+      "default": 10485760
+    },
+    "MAX_DIRECTORY_ITEMS": {
+      "type": "integer",
+      "description": "目录列表返回的最大项目数。",
+      "default": 1000
+    },
+    "MAX_SEARCH_RESULTS": {
+      "type": "integer",
+      "description": "文件搜索返回的最大结果数。",
+      "default": 100
+    },
+    "DEBUG_MODE": {
+      "type": "boolean",
+      "description": "是否开启此插件的调试日志。",
+      "default": true
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "ListAllowedDirectories",
+        "description": "功能: 列出此插件被授权访问的所有根目录及其第一层子目录和文件。这是探索可用文件系统的安全入口点。\n参数: 无。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ListAllowedDirectories「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "ReadFile",
+        "description": "功能: 读取指定绝对路径下文件的内容。\n参数:\n- filePath (字符串, 必需): 要读取的文件的绝对路径。\n- encoding (字符串, 可选, 默认'utf8'): 文件编码格式 (例如: 'utf8', 'ascii', 'base64')。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ReadFile「末」,\nfilePath:「始」/path/to/your/file.txt「末」,\nencoding:「始」utf8「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "WriteFile",
+        "description": "功能: 将内容写入指定文件。如果文件已存在，其内容将被完全覆盖。\n参数:\n- filePath (字符串, 必需): 要写入的文件的绝对路径。\n- content (字符串, 必需): 要写入文件的内容，支持多行。\n- encoding (字符串, 可选, 默认'utf8'): 写入时使用的文件编码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WriteFile「末」,\nfilePath:「始」/path/to/your/file.txt「末」,\ncontent:「始」这是要写入的新内容。\n这是第二行。\n「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "AppendFile",
+        "description": "功能: 将内容追加到指定文件的末尾。如果文件不存在，则会创建新文件。\n参数:\n- filePath (字符串, 必需): 要追加内容的文件的绝对路径。\n- content (字符串, 必需): 要追加的内容。\n- encoding (字符串, 可选, 默认'utf8'): 追加时使用的文件编码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」AppendFile「末」,\nfilePath:「始」/path/to/your/log.txt「末」,\ncontent:「始」\n--- 新的日志条目 ---\n「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "ListDirectory",
+        "description": "功能: 列出指定目录的内容，返回文件和子目录列表。\n参数:\n- directoryPath (字符串, 必需): 要列出内容的目录的绝对路径。\n- showHidden (布尔值, 可选, 默认false): 是否显示隐藏文件 (以.开头的文件)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」ListDirectory「末」,\ndirectoryPath:「始」/path/to/directory「末」,\nshowHidden:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "FileInfo",
+        "description": "功能: 获取指定文件或目录的详细信息（如大小、创建时间、修改时间、是否是目录等）。\n参数:\n- filePath (字符串, 必需): 要获取信息的文件或目录的绝对路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」FileInfo「末」,\nfilePath:「始」/path/to/your/file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "CopyFile",
+        "description": "功能: 将一个文件从源路径复制到目标路径。\n参数:\n- sourcePath (字符串, 必需): 源文件的绝对路径。\n- destinationPath (字符串, 必需): 目标文件的绝对路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」CopyFile「末」,\nsourcePath:「始」/path/to/source.txt「末」,\ndestinationPath:「始」/path/to/destination.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "MoveFile",
+        "description": "功能: 移动或重命名一个文件。\n参数:\n- sourcePath (字符串, 必需): 源文件的绝对路径。\n- destinationPath (字符串, 必需): 目标路径或新的文件名的绝对路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」MoveFile「末」,\nsourcePath:「始」/path/to/old_name.txt「末」,\ndestinationPath:「始」/path/to/new_name.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "DeleteFile",
+        "description": "功能: 删除一个文件或一个空目录。对于非空目录，请谨慎使用。\n参数:\n- filePath (字符串, 必需): 要删除的文件或目录的绝对路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」DeleteFile「末」,\nfilePath:「始」/path/to/deletable_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "CreateDirectory",
+        "description": "功能: 创建一个新目录。如果父目录不存在，会一并创建。\n参数:\n- directoryPath (字符串, 必需): 要创建的新目录的绝对路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」CreateDirectory「末」,\ndirectoryPath:「始」/path/to/new_folder/sub_folder「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "SearchFiles",
+        "description": "功能: 在指定目录中递归搜索匹配特定模式的文件或目录。\n参数:\n- searchPath (字符串, 必需): 要搜索的起始目录的绝对路径。\n- pattern (字符串, 必需): 要搜索的文件模式，支持通配符 (例如: '*.txt', 'image_*.png')。\n- options (JSON字符串, 可选): 包含搜索选项的JSON对象字符串。支持的键包括:\n  - \"caseSensitive\" (布尔值, 默认false): 搜索是否区分大小写。\n  - \"includeHidden\" (布尔值, 默认false): 是否在搜索中包含隐藏文件。\n  - \"fileType\" (字符串, 默认'all'): 搜索的项目类型，可选值为 'file', 'directory', 'all'。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」SearchFiles「末」,\nsearchPath:「始」/path/to/search「末」,\npattern:「始」*.log「末」,\noptions:「始」{\"caseSensitive\": false, \"fileType\": \"file\"}「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
