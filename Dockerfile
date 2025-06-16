@@ -8,8 +8,8 @@ WORKDIR /usr/src/app
 # 复制 package.json 和 package-lock.json
 COPY package*.json ./
 
-# 安装项目依赖
-RUN npm install
+# 安装项目依赖和pm2，让docker部署的VCPToolBox功能更加健全
+RUN npm install && npm install -g pm2
 
 # 安装 Python、pip、时区数据以及 Python 依赖所需的系统构建依赖
 # tzdata 用于时区设置
