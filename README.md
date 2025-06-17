@@ -179,6 +179,8 @@ graph TD
     WSS -- "将结果返回给PM" --> PM
     PM -- "将结果注入AI对话" --> S
 ```
+分布式服务器项目地址:https://github.com/lioensky/VCPDistributedServer 
+
 
 ### 核心交互流程解读
 
