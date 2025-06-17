@@ -79,31 +79,13 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // GET plugin list with manifest, status, and config.env content
     adminApiRouter.get('/plugins', async (req, res) => {
         try {
-            const allPlugins = Array.from(pluginManager.plugins.values());
-            const pluginDataList = await Promise.all(allPlugins.map(async (p) => {
+            const pluginDataMap = new Map();
+            const PLUGIN_DIR = path.join(__dirname, '..', 'Plugin');
+
+            // 1. 从 pluginManager 获取所有已加载的插件（包括云端和启用的本地插件）
+            const loadedPlugins = Array.from(pluginManager.plugins.values());
+            for (const p of loadedPlugins) {
                 let configEnvContent = null;
-                let isEnabled = pluginManager.getPlugin(p.name) ? true : false; // A more reliable check
-
-                // For local plugins, check the actual file system for .block extension to determine UI state
-                if (!p.isDistributed && p.basePath) {
-                    const manifestPath = path.join(p.basePath, manifestFileName);
-                    const blockedManifestPath = manifestPath + blockedManifestExtension;
-                    try {
-                        await fs.access(manifestPath);
-                        isEnabled = true;
-                    } catch (e) {
-                        try {
-                           await fs.access(blockedManifestPath);
-                           isEnabled = false;
-                        } catch (e2) {
-                           isEnabled = false; // Cannot determine, assume disabled
-                        }
-                    }
-                } else if (p.isDistributed) {
-                    isEnabled = true; // Distributed plugins are always "enabled" from the main server's perspective
-                }
-
-
                 if (!p.isDistributed && p.basePath) {
                     try {
                         const pluginConfigPath = path.join(p.basePath, 'config.env');
@@ -114,18 +96,65 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                         }
                     }
                 }
-
-                return {
+                pluginDataMap.set(p.name, {
                     name: p.name,
                     manifest: p,
-                    enabled: isEnabled,
+                    enabled: true, // 从 manager 加载的都是启用的
                     configEnvContent: configEnvContent,
                     isDistributed: p.isDistributed || false,
                     serverId: p.serverId || null
-                };
-            }));
+                });
+            }
+
+            // 2. 扫描本地 Plugin 目录，补充被禁用的插件
+            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
+            for (const folder of pluginFolders) {
+                if (folder.isDirectory()) {
+                    const pluginPath = path.join(PLUGIN_DIR, folder.name);
+                    const manifestPath = path.join(pluginPath, manifestFileName);
+                    const blockedManifestPath = manifestPath + blockedManifestExtension;
+
+                    try {
+                        // 检查是否存在被禁用的 manifest
+                        const manifestContent = await fs.readFile(blockedManifestPath, 'utf-8');
+                        const manifest = JSON.parse(manifestContent);
+
+                        // 如果这个插件还没被 manager 加载，就说明它是被禁用的
+                        if (!pluginDataMap.has(manifest.name)) {
+                            let configEnvContent = null;
+                            try {
+                                const pluginConfigPath = path.join(pluginPath, 'config.env');
+                                configEnvContent = await fs.readFile(pluginConfigPath, 'utf-8');
+                            } catch (envError) {
+                                if (envError.code !== 'ENOENT') {
+                                    console.warn(`[AdminPanelRoutes] Error reading config.env for disabled plugin ${manifest.name}:`, envError);
+                                }
+                            }
+                            
+                            // 为 manifest 添加 basePath，以便前端和后续操作使用
+                            manifest.basePath = pluginPath;
+
+                            pluginDataMap.set(manifest.name, {
+                                name: manifest.name,
+                                manifest: manifest,
+                                enabled: false, // 明确标记为禁用
+                                configEnvContent: configEnvContent,
+                                isDistributed: false, // 本地扫描到的肯定是本地插件
+                                serverId: null
+                            });
+                        }
+                    } catch (error) {
+                        // 如果读取 .block 文件失败（例如文件不存在），则忽略
+                        if (error.code !== 'ENOENT') {
+                            console.warn(`[AdminPanelRoutes] Error processing potential disabled plugin in ${folder.name}:`, error);
+                        }
+                    }
+                }
+            }
             
+            const pluginDataList = Array.from(pluginDataMap.values());
             res.json(pluginDataList);
+
         } catch (error) {
             console.error('[AdminPanelRoutes] Error listing plugins:', error);
             res.status(500).json({ error: 'Failed to list plugins', details: error.message });
