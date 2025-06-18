@@ -143,3 +143,6 @@ Plugin/ImageProcessor/image_cache.json
 Plugin/WeatherReporter/weather_cache.txt
 DebugLog/
 dailynote/
+
+# Ignore .history directory
+.history/
