@@ -1,0 +1,2 @@
+Log initialized at 2025-06-18T10:20:34.926Z
+2025-06-18T10:36:14.024Z - VCPLog plugin shutdown.

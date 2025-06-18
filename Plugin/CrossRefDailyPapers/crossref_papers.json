@@ -1,0 +1,112 @@
+[
+  {
+    "doi": "10.1099/mic.0.001571",
+    "title": "Culturomics from field-grown crop plants using dilution to extinction, two-step library preparation and amplicon sequencing",
+    "authors": "Eglantina Lopez-Echartea; Nicholas Dusek; Mallory Misialek; Mohammad Al Mahmud-Un-Nabi; Riley Williamson; Komal Marathe; Barney A. Geddes",
+    "issuedDate": "2025-6-18",
+    "abstract": "Culturomics approaches have advanced microbial research by enabling the high-throughput isolation and characterization of a broader range of bacterial taxa, including some previously considered unculturable. Here, we present the testing and optimization of a protocol for isolating and identifying hundreds of cultivable microbes from field-grown plants. This protocol was tested and optimized using the root microbiomes of field-grown corn and pea plants under varying environmental conditions in ND, USA. By employing dilution-to-extinction culturing and a two-step barcoding PCR strategy targeting the V4 region of the 16S rRNA gene, we identified over 200 unique bacterial isolates. The optimized bioinformatic pipeline, built around the DADA2 package, ensured accurate amplicon sequence variant detection and taxonomy assignment. The resulting bacterial isolates span diverse phylogenetic groups, including plant-associated taxa known for promoting plant growth and mitigating stress. Our findings highlight the value of culturomics in generating microbial collections for synthetic community design and advancing plant–microbe interaction research. The protocol’s scalability, cost-effectiveness and robust performance demonstrate its potential for widespread application in agricultural microbiome studies.",
+    "publisher": "Microbiology Society",
+    "type": "journal-article",
+    "journal": "Microbiology"
+  },
+  {
+    "doi": "10.31579/2690-4861/843",
+    "title": "Endoluminal Stenting for Long Term Management of Crohn’s Ileoanal Pouch Stricture",
+    "authors": "John J. Park",
+    "issuedDate": "2025-6-18",
+    "abstract": "Fibrostenotic strictures are a challenging complication of Crohn’s disease, particularly when involving the ileal pouch-anal anastomosis (IPAA) in patients with misdiagnosed ulcerative colitis. We present a rare case of a 70-year-old male with Crohn’s disease-related afferent limb strictures following IPAA, successfully managed with endoscopic self-expanding metal stents over more than a decade. Initially treated with a fully covered stent, subsequent replacements with partially covered stents improved stability and reduced complications. Long-term follow-up demonstrated effective symptom control, preserved pouch function, and avoidance of permanent ileostomy. While early management required frequent interventions, the current stent has remained functional for nearly five years. Complications such as bleeding, migration, and mucosal ulceration were managed non-surgically. This case highlights the potential for endoscopic stenting to serve as a durable, organ-preserving alternative to surgery in complex Crohn’s presentations and represents the longest reported use of stenting in this context, warranting further investigation.",
+    "publisher": "Auctores Publishing LLC",
+    "type": "journal-article",
+    "journal": "International Journal of Clinical Case Reports and Reviews"
+  },
+  {
+    "doi": "10.1088/1674-1056/ade59e",
+    "title": "Dual-band switchable mid-infrared emitter based on In<sub>3</sub>SbTe<sub>2</sub> for gas detection application",
+    "authors": "Biyuan Wu; Xiqiao Huang; Xiaohu Wu",
+    "issuedDate": "2025-6-18",
+    "abstract": "Abstract\n               As a highly energy-efficient and sensitive radiation source, narrowband thermal emitters provide an ideal solution for non-contact gas detection, enabling the widespread application of mid-infrared \"molecular fingerprint\" technology. However, most narrowband thermal emitters lack reconfigurability, limiting their adaptability in practical applications. In this study, we propose a novel dual-band switchable narrowband thermal emitter in the mid-infrared region. The emitter consists of an aperiodic Ge/SiO2/Ge/SiO2 (GSGS) structure and a phase change material In3SbTe2 (IST). When IST is in the crystalline state, the emitter achieves narrowband emission peaks at wavelengths of 3.79 µm and 6.12 µm, corresponding to the \"on\" state. However, when IST transitions to the amorphous state, the dual-band high emission disappears and it features angle- and polarization-independent behavior, representing the \"off\" state. Furthermore, we verify the physical mechanism behind the high emission through phase and amplitude calculations as well as electric field distribution analysis. Notably, the introduction of the IST provides an additional degree of freedom for tunability. Furthermore, by adjusting the thickness of the spacer layer, the emitter can be precisely tuned to match the characteristic absorption peaks of various mid-infrared gases, such as CH4, CO2, CO, and NO, enabling multi-gas detection in mixed gas environments. The proposed thermal emitter serves as an effective and low-cost alternative for dualband narrowband mid-infrared light sources, contributing to the advancement of multigas detection strategies.",
+    "publisher": "IOP Publishing",
+    "type": "journal-article",
+    "journal": "Chinese Physics B"
+  },
+  {
+    "doi": "10.1631/jzus.b2400388",
+    "title": "Pig meniscus single-cell sequencing reveals highly active red zone chondrocyte populations involved in stemness maintenance and vascularization development, 猪半月板单细胞测序揭示了参与干性维持和血管化的高活性红区软骨细胞群",
+    "authors": "Monika Mankowska; Monika Stefanska; Anna Maria Mleczko; Katarzyna Sarad; Witold Kot; Lukasz Krych; Julia Anna Semba; Eric Lars-Helge Lindberg; Jakub Dalibor Rybka",
+    "issuedDate": "2025-6-18",
+    "abstract": "Abstract\n          Meniscus injuries are widespread and the available treatments do not offer enough healing potential. Here, we provide critical support for using pigs as a biological model for meniscal degeneration and the development of cutting-edge therapies in orthopedics. We present a single-cell transcriptome atlas of the meniscus, consisting of cell clusters corresponding to four major cell types: chondrocytes, endothelial cells, smooth muscle cells, and immune cells. Five distinct chondrocyte subclusters (CH0–CH4) were annotated, of which only one was widespread in both the red and white zones, indicating a major difference in the cellular makeup of the zones. Subclusters distinct to the white zone appear responsible for cartilage-specific matrix deposition and protection against adverse microenvironmental factors, while those in the red zone exhibit characteristics of mesenchymal stem cells and are more likely to proliferate and migrate. Additionally, they induce remodeling actions in other chondrocyte subclusters and promote the proliferation and maturation of endothelial cells, inducing healing and vascularization processes. Considering that they have substantial remodeling capabilities, these subclusters should be of great interest for tissue engineering studies. We also show that the cellular makeup of the pig meniscus is comparable to that of humans, which supports the use of pigs as a model in orthopedic therapy development.",
+    "publisher": "Zhejiang University Press",
+    "type": "journal-article",
+    "journal": "Journal of Zhejiang University-SCIENCE B"
+  },
+  {
+    "doi": "10.13105/wjma.v13.i2.107997",
+    "title": "Liquid biopsy in hepatobiliary and pancreatic cancers: A paradigm shift in early detection, prognostic stratification, and perioperative monitoring",
+    "authors": "Himanshu Agrawal; Binita Goswami; Nikhil Gupta; Nilanjana Singh",
+    "issuedDate": "2025-6-18",
+    "abstract": "BACKGROUND\n          Hepatobiliary and pancreatic cancers are among the most lethal malignancies due to late-stage diagnosis and limited treatment options. Liquid biopsy has emerged as a minimally invasive tool for early cancer detection, prognosis, and therapeutic monitoring.\n          AIM\n          To concise the available data on liquid biopsy and establish its role in hepatobiliary surgeries.\n          METHODS\n          This systematic review was conducted following Preferred Reporting Items for Systematic Reviews and Meta-Analyses 2009 guidelines. A comprehensive literature search was performed using PubMed, Scopus, Web of Science, and EMBASE for studies published up to March 2025. Studies assessing the role of circulating tumor DNA, circulating tumor cells, exosomes, and other liquid biopsy markers in hepatobiliary and pancreatic cancers were included. The risk of bias was evaluated using the Newcastle-Ottawa Scale for observational studies and the Cochrane Risk of Bias Tool for clinical trials.\n          RESULTS\n          Liquid biopsy demonstrated significant potential for early cancer detection, perioperative risk stratification, intraoperative surgical decision-making, and postoperative monitoring of minimal residual disease. However, challenges remain regarding standardization, sensitivity, and clinical validation.\n          CONCLUSION\n          Liquid biopsy represents a paradigm shift in hepatobiliary and pancreatic cancer management. Advancements in next-generation sequencing and artificial intelligence may enhance its clinical utility. Further large-scale studies are needed to establish standardized protocols for routine implementation.",
+    "publisher": "Baishideng Publishing Group Inc.",
+    "type": "journal-article",
+    "journal": "World Journal of Meta-Analysis"
+  },
+  {
+    "doi": "10.5312/wjo.v16.i6.103875",
+    "title": "Clinical comparison of arthroscopic double-row rotator cuff repair with or without long head of biceps tendon transposition",
+    "authors": "Yu-Jun Zhou; Bei-Bei Wang; Hua-Wei Wen; Liang Xu; Jing Feng; Fu-Sheng Xu",
+    "issuedDate": "2025-6-18",
+    "abstract": "BACKGROUND\n          Long head of biceps tendon (LHBT) transposition is a novel technique based on the double-row suture bridge method, utilizing autologous reconstruction to treat massive rotator cuff tears.\n          AIM\n          To evaluate the mid-to-long-term clinical outcomes following the double-row repair method for massive rotator cuff tears.\n          METHODS\n          This retrospective analysis included data from 53 patients with massive rotator cuff tears treated at our hospital between 2020 and 2021. The patients were divided into the double-row repair group (conventional group) and the double-row repair combined with the LHBT transposition group (transposition group). Postoperative pain was assessed using the visual analogue scale at one week, one year, and the final follow-up. Shoulder function was evaluated using the American Shoulder and Elbow Surgeons and Constant-Murley scores at one year and the final follow-up. Rotator cuff healing was assessed postoperatively for one year using the Sugaya classification, which categorizes tendon integrity based on magnetic resonance imaging findings.\n          RESULTS\n          No perioperative complications were observed in any of the patients at any time. There were no significant differences between the groups regarding operative time and intraoperative blood loss. The transposition group had significantly lower visual analogue scale scores than the conventional group at one week postoperatively; however, there were no significant differences between the groups at one year or the final follow-up. At one year postoperatively, the transposition group showed significantly higher American Shoulder and Elbow Surgeons and Constant-Murley scores than the conventional group; no significant differences were observed at the final follow-up. There were no significant differences in rotator cuff healing between the groups at one year postoperatively.\n          CONCLUSION\n          Compared to double-row repair alone, double-row repair combined with LHBT transposition for treating massive rotator cuff tears more effectively alleviates short-term postoperative pain and improves shoulder function within the first year.",
+    "publisher": "Baishideng Publishing Group Inc.",
+    "type": "journal-article",
+    "journal": "World Journal of Orthopedics"
+  },
+  {
+    "doi": "10.1007/s11468-025-02990-w",
+    "title": "Highly Sensitive Surface Plasmon Resonance Sensor Utilizing Black Phosphorus and Iron Sesquioxide for Real-Time Biomolecule Detection",
+    "authors": "Yellanki Ooha; Yesudasu Vasimalla; Mokkapati Ravikumar; Balaji Ramachandran; Santosh Kumar",
+    "issuedDate": "2025-6-18",
+    "abstract": "N/A",
+    "publisher": "Springer Science and Business Media LLC",
+    "type": "journal-article",
+    "journal": "Plasmonics"
+  },
+  {
+    "doi": "10.31234/osf.io/p37zj_v3",
+    "title": "How and why to read (and write and publish) academic research",
+    "authors": "Patrick E. Savage",
+    "issuedDate": "2025-6-18",
+    "abstract": "This article is designed to concisely teach undergraduate and new graduate students lessons in reading and writing I have learned in my past two decades as a university student, teacher, and researcher (including through publishing, retracting, correcting, and republishing articles in outlets with varying levels of “impact” and publication fees). Don’t just start at the beginning of an academic article/book and try to read straight to the end! Instead, I recommend starting by reading the title(s)/author(s) and abstract(s), then the figures, reading the Discussion section, and skimming/spot-checking the references, peer reviews, and data (e.g., spreadsheets, audiovisual stimuli, surveys), if available. Only once you have done this and evaluated whether it seems worth your time do I recommend deciding whether to read every word of some/all sections/chapters (and any accompanying supplementary material) or digging deeper into reanalysing/replicating the data. I recommend writing accordingly so that most of your key information will be conveyed even if your reader only gets through your title, abstract, and figures. I discuss various strategies to improve your own academic reading/writing and the broader culture of academia, from practical (e.g., formatting and tracking references and citations using Zotero and Google Scholar, asking constructive questions rather than self-promoting comments, publishing using Peer Community In Registered Reports, using the “sandwich thesis” model for PhD dissertations) to philosophical (e.g., ethical issues in authorship, citation, AI, publishing, and funding). I explain the intended goals of academic research (to create and distribute valuable new knowledge) and perverse incentives that lead us astray from these goals (e.g., chasing prestige and funding). I conclude by contemplating if and how we should dismantle the current extortionary academic-industrial complex and re-design it to align with its intended goals.",
+    "publisher": "Center for Open Science",
+    "type": "posted-content",
+    "journal": "N/A"
+  },
+  {
+    "doi": "10.5500/wjt.v15.i2.98228",
+    "title": "Effect of frailty as measured by functional impairment on long-term outcomes in liver transplantation in the United States",
+    "authors": "Julius Balogh; Talha Mubashir; Yuan Li; Biai D Digbeu; Nikita Hegde; Fatemeh Movaghari Pour; Mohsen Rezapour; Hong-Yin Lai; Kelly West; Rabail A Chaudhry; George W Williams; Vahed Maroufy",
+    "issuedDate": "2025-6-18",
+    "abstract": "BACKGROUND\n          In patients with chronic liver disease or hepatic dysfunction with sarcopenia, there is an increased risk of frailty as measured by functional impairment, making frailty a vital predictor of post-transplant mortality.\n          AIM\n          To investigate the effects of frailty on mortality after liver transplantation.\n          METHODS\n          A retrospective review of post-transplant outcomes in liver transplant recipients assessed frailty using Karnofsky Performance Score. Data from the Scientific Registry of Transplant Recipients database for 37427 liver transplant recipients was used.\n          RESULTS\n          Of 82.7% frail patients, 42.7% were severely frail and 40% were moderately frail (P  &lt; 0.001) at the time of transplantation. Compared with non-frail patients, post-transplant mortality in frail patients was significantly higher at 12 months [odds ratio (OR) = 1.94, P  = 0.02)]. Secondary analysis of the data revealed that liver grafts from donation after circulatory death (DCD) were more likely to be associated with frail patients at transplant (OR = 1.86, P  &lt; 0.001). Furthermore, a donor history of hypertension was associated with a lower likelihood of frailty in the recipient at the time of transplant (OR = 0.65, P  = 0.03).\n          CONCLUSION\n          Recipient frailty is associated with increased mortality at 12 months following liver transplantation, and liver transplants from donors with DCD are associated with increased frailty of the liver transplant recipient.",
+    "publisher": "Baishideng Publishing Group Inc.",
+    "type": "journal-article",
+    "journal": "World Journal of Transplantation"
+  },
+  {
+    "doi": "10.1515/jib-2024-0057",
+    "title": "Integrating AI and genomics: predictive CNN models for schizophrenia phenotypes",
+    "authors": "Guilherme Henriques; Maryam Abbasi; Daniel Martins; Joel P. Arrais",
+    "issuedDate": "2025-6-18",
+    "abstract": "Abstract\n               This study explores the use of deep learning to analyze genetic data and predict phenotypic traits associated with schizophrenia, a complex psychiatric disorder with a strong hereditary component yet incomplete genetic characterization. We applied Convolutional Neural Networks models to a large-scale case-control exome sequencing dataset from the Swedish population to identify genetic patterns linked to schizophrenia. To enhance model performance and reduce overfitting, we employed advanced optimization techniques, including dropout layers, learning rate scheduling, batch normalization, and early stopping. Following systematic refinements in data preprocessing, model architecture, and hyperparameter tuning, the final model achieved an accuracy of 80 %. These results demonstrate the potential of deep learning approaches to uncover intricate genotype-phenotype relationships and support their future integration into precision medicine and genetic diagnostics for psychiatric disorders such as schizophrenia.",
+    "publisher": "Walter de Gruyter GmbH",
+    "type": "journal-article",
+    "journal": "Journal of Integrative Bioinformatics"
+  },
+  {
+    "doi": "10.1515/nanoph-2025-0059",
+    "title": "Achieving long-term water stability and strong exciton–photon coupling in CsPbBr<sub>3</sub> quantum dots via MOF encapsulation",
+    "authors": "Chiao-Chih Lin; Shih-Cheng Wan; Cheng-Hui Shen; Zheng-Lin Liao; Yen Liu; Zong Yu Wu; Sheng-Chan Wu; Chia-Kai Lin; Chung-Wei Kung; Hsu-Cheng Hsu; Yu-Hsun Chou",
+    "issuedDate": "2025-6-18",
+    "abstract": "Abstract\n               CsPbBr3 perovskite quantum dots (QDs) are renowned for their exceptional optical properties, including high quantum efficiency, strong exciton binding energy, and tunable emission wavelengths. However, their practical application is hindered by their inherent susceptibility to environmental degradation. In this study, we introduce a CsPbBr3@UiO-66 composite material, where CsPbBr3 QDs self-assemble within the microporous framework of UiO-66, a robust metal-organic framework (MOF). This encapsulation strategy significantly enhances the environmental stability of CsPbBr3 QDs, maintaining luminescence for over 30 months under ambient conditions and several hours underwater. Temperature-dependent and time resolved photoluminescence (TRPL) measurements further revealed the exciton–phonon interaction within the CsPbBr3@UiO-66 material. We distributed CsPbBr3@UiO-66 into a hybrid microcavity (MC) and observed strong exciton–polariton coupling, showcasing the remarkable light–matter interaction capabilities of the composite. These findings highlight the potential of CsPbBr3@UiO-66 as a robust platform for advanced polaritonic applications, paving the way for next-generation optoelectronic devices and quantum technologies.",
+    "publisher": "Walter de Gruyter GmbH",
+    "type": "journal-article",
+    "journal": "Nanophotonics"
+  }
+]

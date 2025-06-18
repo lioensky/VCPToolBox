@@ -29,7 +29,7 @@ RUN npm install --registry=https://registry.npmmirror.com
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
-RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -r requirements.txt
 
 # 复制所有源代码
 COPY . .
