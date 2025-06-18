@@ -44,6 +44,12 @@
       "description": "是否为此插件启用详细的调试日志输出到stderr。",
       "default": false,
       "required": false
+    },
+    "Enabled": {
+      "type": "boolean",
+      "description": "是否启用此1Panel信息提供器插件。如果禁用，插件将不会尝试获取1Panel数据。",
+      "default": true,
+      "required": false
     }
   }
-} 
+}
