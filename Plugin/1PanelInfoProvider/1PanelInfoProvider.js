@@ -13,6 +13,7 @@ const SYSTEM_INFO_CACHE_FILE = path.join(__dirname, '1panel_system_info_cache.js
 const panelBaseUrl = process.env.PanelBaseUrl;
 const panelApiKey = process.env.PanelApiKey;
 const debugMode = (process.env.DebugMode || "false").toLowerCase() === "true";
+const enabled = (process.env.Enabled || "true").toLowerCase() === "true"; // 新增：读取 Enabled 配置
 
 function FORCE_LOG(...args) {
     console.error(...args); // 强制日志输出到 stderr
@@ -66,15 +67,25 @@ async function fetchSystemInfo() {
         return { error: error.toString(), details: error }; // Return error object
     }
 }
-
+ 
 async function main() {
+    if (!enabled) {
+        if (debugMode) FORCE_LOG('[1PanelInfoProvider] Plugin is disabled by configuration.');
+        process.stdout.write(JSON.stringify({
+            "1PanelDashboard": "[1PanelInfoProvider: Disabled]",
+            "1PanelOsInfo": "[1PanelInfoProvider: Disabled]"
+        }));
+        process.exit(0);
+        return;
+    }
+
     if (!panelBaseUrl || !panelApiKey) {
         const errorMsg = '[1PanelInfoProvider] Error: PanelBaseUrl or PanelApiKey is not configured.';
         FORCE_LOG(errorMsg);
-        const errorOutput = JSON.stringify({ 
-            "1PanelDashboard": errorMsg, 
-            "1PanelOsInfo": errorMsg, 
-            error: errorMsg 
+        const errorOutput = JSON.stringify({
+            "1PanelDashboard": errorMsg,
+            "1PanelOsInfo": errorMsg,
+            error: errorMsg
         });
         process.stdout.write(errorOutput);
         process.exit(1);
