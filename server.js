@@ -176,6 +176,13 @@ for (const key in process.env) {
 if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length} 条全局上下文转换规则。`);
 else console.log('未加载任何全局上下文转换规则。');
 
+const WHITELIST_MODELS = (process.env.WhitelistModel || '').split(',').map(m => m.trim()).filter(Boolean);
+if (WHITELIST_MODELS.length > 0) {
+    console.log(`共加载了 ${WHITELIST_MODELS.length} 个白名单穿透模型: ${WHITELIST_MODELS.join(', ')}`);
+} else {
+    console.log('未加载任何白名单穿透模型。');
+}
+
 const app = express();
 app.use(cors()); // 启用 CORS，允许跨域请求
 const port = process.env.PORT;
@@ -322,23 +329,42 @@ async function replaceCommonVariables(text, model) {
         }
     }
 
-    const sarModels = (process.env.SarModel || '').split(',').map(m => m.trim()).filter(m => m.length > 0);
-    const isSarModel = model && sarModels.includes(model);
+    // START: New SarModelX/SarPromptX logic
+    let sarPromptToInject = null;
 
-    // Replace Sar variables if the model matches SarModel list
-    if (isSarModel) {
-        for (const envKey in process.env) {
-            if (envKey.startsWith('Sar') && envKey !== 'SarModel') { // Exclude SarModel itself
-                const placeholder = `{{${envKey}}}`;
-                const value = process.env[envKey];
-                processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+    // Create a map from a model name to its specific prompt.
+    const modelToPromptMap = new Map();
+    for (const envKey in process.env) {
+        if (/^SarModel\d+$/.test(envKey)) {
+            const index = envKey.substring(8);
+            const promptKey = `SarPrompt${index}`;
+            const promptValue = process.env[promptKey];
+            const models = process.env[envKey];
+
+            if (promptValue && models) {
+                const modelList = models.split(',').map(m => m.trim()).filter(m => m);
+                for (const m of modelList) {
+                    modelToPromptMap.set(m, promptValue);
+                }
             }
         }
+    }
+
+    // Check if the current request's model has a specific prompt.
+    if (model && modelToPromptMap.has(model)) {
+        sarPromptToInject = modelToPromptMap.get(model);
+    }
+
+    // Replace all {{Sar...}} placeholders.
+    const sarPlaceholderRegex = /\{\{Sar[a-zA-Z0-9_]+\}\}/g;
+    if (sarPromptToInject !== null) {
+        // If a specific prompt is found, replace all Sar placeholders with it.
+        processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
     } else {
-        // If not a SarModel, remove any Sar placeholders
-        const sarPlaceholderRegex = /\{\{Sar.+?\}\}/g;
+        // If no specific prompt is found for the model, remove all Sar placeholders.
         processedText = processedText.replaceAll(sarPlaceholderRegex, '');
     }
+    // END: New SarModelX/SarPromptX logic
 
     const now = new Date();
     const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -571,6 +597,44 @@ app.get('/v1/models', async (req, res) => {
 });
 
 app.post('/v1/chat/completions', async (req, res) => {
+    const requestedModel = req.body.model;
+    if (requestedModel && WHITELIST_MODELS.includes(requestedModel)) {
+        if (DEBUG_MODE) {
+            console.log(`[Whitelist] 模型 "${requestedModel}" 在白名单中，执行穿透转发。`);
+        }
+        const { default: fetch } = await import('node-fetch');
+        try {
+            const apiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                    ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                    'Accept': req.headers['accept'] || 'application/json',
+                },
+                body: JSON.stringify(req.body),
+            });
+
+            res.status(apiResponse.status);
+            apiResponse.headers.forEach((value, name) => {
+                if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
+                    res.setHeader(name, value);
+                }
+            });
+
+            apiResponse.body.pipe(res);
+
+        } catch (error) {
+            console.error(`[Whitelist] 转发白名单模型 "${requestedModel}" 请求时出错:`, error.message, error.stack);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Internal Server Error during whitelist proxy', details: error.message });
+            } else if (!res.writableEnded) {
+                res.end();
+            }
+        }
+        return; // 终止后续处理
+    }
+
     const { default: fetch } = await import('node-fetch');
     try {
         let originalBody = req.body;
