@@ -176,24 +176,23 @@ for (const key in process.env) {
 if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length} 条全局上下文转换规则。`);
 else console.log('未加载任何全局上下文转换规则。');
 
-const WHITELIST_MODELS = (process.env.WhitelistModel || '').split(',').map(m => m.trim()).filter(Boolean);
-if (WHITELIST_MODELS.length > 0) {
-    console.log(`共加载了 ${WHITELIST_MODELS.length} 个白名单穿透模型: ${WHITELIST_MODELS.join(', ')}`);
-} else {
-    console.log('未加载任何白名单穿透模型。');
-}
-
 const app = express();
 app.use(cors()); // 启用 CORS，允许跨域请求
+
+// 在路由决策之前解析请求体，以便 req.body 可用
+app.use(express.json({ limit: '300mb' }));
+app.use(express.urlencoded({ limit: '300mb', extended: true }));
+
+// 引入并使用特殊模型路由
+const specialModelRouter = require('./routes/specialModelRouter');
+app.use(specialModelRouter); // 这个将处理所有白名单模型的请求
+
 const port = process.env.PORT;
 const apiKey = process.env.API_Key;
 const apiUrl = process.env.API_URL;
 const serverKey = process.env.Key;
 
 const cachedEmojiLists = new Map();
-
-app.use(express.json({ limit: '300mb' }));
-app.use(express.urlencoded({ limit: '300mb', extended: true }));
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
@@ -238,12 +237,6 @@ app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
 
 // Image server logic is now handled by the ImageServer plugin.
 
-app.use((req, res, next) => {
-    if (DEBUG_MODE) {
-        console.log(`[${new Date().toLocaleString()}] Received ${req.method} request for ${req.url} from ${req.ip}`);
-    }
-    next();
-});
 
 // General API authentication (Bearer token) - This was the original one, now adminAuth handles its paths
 app.use((req, res, next) => {
@@ -596,45 +589,8 @@ app.get('/v1/models', async (req, res) => {
     }
 });
 
+
 app.post('/v1/chat/completions', async (req, res) => {
-    const requestedModel = req.body.model;
-    if (requestedModel && WHITELIST_MODELS.includes(requestedModel)) {
-        if (DEBUG_MODE) {
-            console.log(`[Whitelist] 模型 "${requestedModel}" 在白名单中，执行穿透转发。`);
-        }
-        const { default: fetch } = await import('node-fetch');
-        try {
-            const apiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`,
-                    ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                    'Accept': req.headers['accept'] || 'application/json',
-                },
-                body: JSON.stringify(req.body),
-            });
-
-            res.status(apiResponse.status);
-            apiResponse.headers.forEach((value, name) => {
-                if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                    res.setHeader(name, value);
-                }
-            });
-
-            apiResponse.body.pipe(res);
-
-        } catch (error) {
-            console.error(`[Whitelist] 转发白名单模型 "${requestedModel}" 请求时出错:`, error.message, error.stack);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Internal Server Error during whitelist proxy', details: error.message });
-            } else if (!res.writableEnded) {
-                res.end();
-            }
-        }
-        return; // 终止后续处理
-    }
-
     const { default: fetch } = await import('node-fetch');
     try {
         let originalBody = req.body;
@@ -1457,6 +1413,17 @@ app.post('/v1/chat/completions', async (req, res) => {
              res.end();
         }
     }
+});
+
+// 由于向量化请求现在由 specialModelRouter 处理，
+// 我们需要确保主服务器也能响应 /v1/embeddings 端点，以便路由能正确匹配。
+// 对于非白名单的向量化请求，我们可以返回一个错误或一个空实现。
+app.post('/v1/embeddings', (req, res) => {
+    // 这个处理器只会在模型不在白名单中时被调用
+    res.status(404).json({
+        error: 'Not Found',
+        message: '此模型不用于向量化，或未在向量化白名单中配置。'
+    });
 });
 
 async function handleDiaryFromAIResponse(responseText) {
