@@ -420,6 +420,16 @@ import json
 def main():
     # (main function unchanged from previous version)
     expression_input = sys.stdin.readline().strip()
+
+    try:
+        # Attempt to parse the input as JSON, in case the expression is wrapped in a JSON object.
+        data = json.loads(expression_input)
+        if isinstance(data, dict) and 'expression' in data:
+            expression_input = data['expression']
+    except (json.JSONDecodeError, TypeError):
+        # If it's not valid JSON or not a dict, assume it's a raw expression string.
+        pass
+
     output = {}
     if not expression_input:
         output = {"status": "error", "error": "SciCalculator Plugin Error: No expression provided."}
