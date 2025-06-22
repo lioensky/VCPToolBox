@@ -492,7 +492,7 @@ docker-compose up --build -d
 
 ## 10. 推荐的前端/后端
 
-- **后端 AI 模型 API**: 推荐使用支持 SSE (Server-Sent Events) 流式输出且 API 格式相对标准化的服务，如 NewAPI, VoAPI 服务端, 以及官方的 OpenAI, Google Gemini, Anthropic Claude 等。VCP 的设计使其能够灵活适配多种后端。
+- **后端 AI 模型 API**: 推荐使用支持 SSE (Server-Sent Events) 流式输出且 API 格式相对标准化的服务，且本服务器对API高并发，API多模型封装有硬性要求。尤其推荐如 NewAPI, VoAPI 这样的聚合服务端,其次是类似OpenRouter这样的API聚合商, 以及官方的 OpenAI, Google Gemini, Anthropic Claude 等API服务商。VCP 的设计使其能够灵活适配多种后端。
 - **前端交互应用**: 推荐使用能够良好渲染 Markdown、支持代码高亮、并且能够自定义或适配 VCP 工具调用指令显示的前端。例如：VCPChat(官方项目，首选！), Sillytavern, CherryStudio客户端等。理想的前端还应允许用户方便地配置系统提示词，以便充分利用 VCP 的变量替换和插件指令描述注入功能。前端还应能连接到 `WebSocketServer.js` 提供的 WebSocket 服务，以接收服务器推送的各类消息（如 VCP 日志、AgentMessage 等）。
 - **官方前端·VCPChat项目地址**：https://github.com/lioensky/VCPChat 
 
