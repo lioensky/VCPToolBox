@@ -26,7 +26,9 @@ services:
       #0- ./image:/usr/src/app/image # 映射整个 image 目录，包括 fluxgen 等子目录
 
       - .:/usr/src/app
-      # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的
+      # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的。添加pydeps兼容科学计算器依赖。
+      - /usr/src/app/pydeps
       - /usr/src/app/node_modules
+      
     command: node server.js
     restart: unless-stopped
