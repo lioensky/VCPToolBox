@@ -112,6 +112,38 @@ def process_image_from_url(image_url):
         log_event("error", f"Failed to process image from URL: {image_url}", {"error": str(e)})
         raise ValueError(f"图片处理失败: {e}")
 
+# --- 视频文件持久化 ---
+def download_video(video_url, request_id):
+    try:
+        # 获取当前脚本的目录
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # 定义相对于项目根目录的目标目录
+        video_dir = os.path.join(script_dir, '..', '..', 'file', 'video')
+
+        # 确保目录存在
+        os.makedirs(video_dir, exist_ok=True)
+
+        # 定义文件名和文件路径
+        filename = f"{request_id}.mp4"
+        filepath = os.path.join(video_dir, filename)
+
+        # 下载文件
+        log_event("info", f"[{request_id}] Downloading video from {video_url} to {filepath}")
+        response = requests.get(video_url, stream=True, timeout=180) # 为视频下载增加超时
+        response.raise_for_status()
+
+        # 保存文件
+        with open(filepath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        log_event("success", f"[{request_id}] Video downloaded and saved successfully to {filepath}")
+        return filepath
+
+    except Exception as e:
+        log_event("error", f"[{request_id}] Failed to download or save video.", {"error": str(e)})
+        return None
+
 # --- 后台轮询与回调 ---
 def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug_mode):
     log_event("info", f"[{request_id}] Entering poll_and_callback function.", {
@@ -150,7 +182,19 @@ def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug
                 if current_status == "Succeed":
                     video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
                     ws_notification_data["videoUrl"] = video_url
-                    ws_notification_data["message"] = f"视频 (ID: {request_id}) 生成成功！URL: {video_url}"
+                    
+                    # 下载视频文件
+                    saved_filepath = download_video(video_url, request_id)
+                    
+                    message = f"视频 (ID: {request_id}) 生成成功！URL: {video_url}"
+                    if saved_filepath:
+                        # 为消息创建相对路径
+                        script_dir = os.path.dirname(os.path.abspath(__file__))
+                        project_root = os.path.join(script_dir, '..', '..')
+                        relative_path = os.path.relpath(saved_filepath, project_root)
+                        message += f"\n文件已保存至: {relative_path.replace(os.sep, '/')}"
+
+                    ws_notification_data["message"] = message
                 else: # Failed
                     reason = status_data.get("reason", "未知原因")
                     ws_notification_data["reason"] = reason
@@ -368,7 +412,16 @@ def main():
                 ai_msg = f"请求 {request_id_query} 的状态是 'InProgress'。请告知用户视频仍在生成中，需要继续等待。"
             elif current_status == "Succeed":
                 video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
-                ai_msg = f"请求 {request_id_query} 已成功生成！请将视频 URL '{video_url}' 提供给用户。"
+                
+                # 下载视频文件
+                saved_filepath = download_video(video_url, request_id_query)
+                
+                ai_msg = f"请求 {request_id_query} 已成功生成！视频 URL: '{video_url}'。"
+                if saved_filepath:
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.join(script_dir, '..', '..')
+                    relative_path = os.path.relpath(saved_filepath, project_root)
+                    ai_msg += f" 文件已保存至本地: {relative_path.replace(os.sep, '/')}"
             elif current_status == "Failed":
                 reason = status_data.get("reason", "未知原因")
                 ai_msg = f"请求 {request_id_query} 生成失败。原因: {reason}。请告知用户此结果。"
