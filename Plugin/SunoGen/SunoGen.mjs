@@ -3,6 +3,7 @@ import axios from "axios";
 import dotenv from "dotenv";
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { promises as fsp } from 'fs';
 
 // Helper to get __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -53,6 +54,40 @@ function isValidSunoMusicRequestArgs(args) {
         return true;
     }
     return false; // Neither valid mode's required params are met
+}
+
+
+// --- File Persistence ---
+async function downloadAudio(url, title, taskId) {
+    try {
+        // Define the target directory relative to the project root
+        const musicDir = path.resolve(__dirname, '..', '..', 'file', 'music');
+
+        // Ensure the directory exists
+        await fsp.mkdir(musicDir, { recursive: true });
+
+        // Sanitize title to create a valid filename. Fallback to task_id if title is missing.
+        const safeTitle = (title || `suno_song_${taskId}`).replace(/[^a-z0-9\u4e00-\u9fa5\-_.]/gi, '_').replace(/ /g, '_');
+        const filename = `${safeTitle}.mp3`;
+        const filepath = path.join(musicDir, filename);
+
+        // Download the file using axios
+        const response = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'arraybuffer'
+        });
+
+        // Save the file
+        await fsp.writeFile(filepath, response.data);
+
+        // Return the absolute path of the saved file
+        return filepath;
+    } catch (error) {
+        // Log error to stderr so it can be captured by the calling process without polluting stdout JSON
+        console.error(`[SunoGen] Failed to download audio file for task ${taskId}: ${error.message}`);
+        return null; // Indicate failure gracefully
+    }
 }
 
 
@@ -147,7 +182,17 @@ async function handleGenerateMusicSunoApiCall(args) {
             if (taskDetails.status === "COMPLETE" || (taskDetails.status === "IN_PROGRESS" && taskDetails.data && taskDetails.data.length > 0 && taskDetails.data[0].audio_url)) {
                 if (taskDetails.data && taskDetails.data.length > 0 && taskDetails.data[0].audio_url) {
                     const audioData = taskDetails.data[0];
+
+                    // Download the audio file
+                    const savedFilePath = await downloadAudio(audioData.audio_url, audioData.title, taskId);
+
                     let messageForUser = `Song generated! You can listen to it here: ${audioData.audio_url || 'N/A'}`;
+                    
+                    if (savedFilePath) {
+                        const relativePath = path.relative(path.resolve(__dirname, '..', '..'), savedFilePath);
+                        messageForUser += `\nFile saved locally at: ${relativePath.replace(/\\/g, '/')}`;
+                    }
+
                     if (audioData.title) messageForUser += `\nTitle: ${audioData.title || 'N/A'}`;
                     
                     if (audioData.metadata?.tags) {
