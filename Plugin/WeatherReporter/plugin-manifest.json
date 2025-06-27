@@ -25,7 +25,12 @@
   "configSchema": {
     "VarCity": "string",
     "WeatherKey": "string",
-    "WeatherUrl": "string"
+    "WeatherUrl": "string",
+    "forecastDays": {
+      "type": "integer",
+      "default": 7,
+      "description": "获取未来天气预报的天数 (范围: 1-30)。"
+    }
   },
   "refreshIntervalCron": "0 */8 * * *"
 }
