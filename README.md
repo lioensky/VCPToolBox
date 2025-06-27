@@ -709,3 +709,5 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 - **隐私信息**: 再次强调，请勿使用非官方的 API 代理商或反代类 API 供应商运行本项目，以防 AI 笔记系统中的敏感信息泄露！
 
 我们相信， VCP 将为 AI 应用的开发带来前所未有的灵活性和可能性。欢迎一切形式的贡献、反馈与交流，让我们共同探索 AI 的未来！
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lioensky/VCPToolBox)
