@@ -789,7 +789,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
             currentAIContentForLoop = initialAIResponseData.content;
             currentAIRawDataForDiary = initialAIResponseData.raw;
-            await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+            handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error('[VCP Stream Loop] Error in initial diary handling:', e));
             if (DEBUG_MODE) console.log('[VCP Stream Loop] Initial AI content (first 200):', currentAIContentForLoop.substring(0,200));
 
             // --- VCP Loop ---
@@ -834,7 +834,24 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
 
                 if (toolCallsInThisAIResponse.length === 0) {
-                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Exiting loop.');
+                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Sending final signals and exiting loop.');
+                    if (!res.writableEnded) {
+                        // Construct and send the final chunk with finish_reason 'stop'
+                        const finalChunkPayload = {
+                            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
+                            object: "chat.completion.chunk",
+                            created: Math.floor(Date.now() / 1000),
+                            model: originalBody.model,
+                            choices: [{
+                                index: 0,
+                                delta: {},
+                                finish_reason: 'stop'
+                            }]
+                        };
+                        res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                        res.write('data: [DONE]\n\n');
+                        res.end();
+                    }
                     break;
                 }
                 if (DEBUG_MODE) console.log(`[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
@@ -941,70 +958,29 @@ app.post('/v1/chat/completions', async (req, res) => {
                 let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
                 currentAIContentForLoop = nextAIResponseData.content;
                 currentAIRawDataForDiary = nextAIResponseData.raw;
-                await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+                handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error(`[VCP Stream Loop] Error in diary handling for depth ${recursionDepth}:`, e));
                 if (DEBUG_MODE) console.log('[VCP Stream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
                 
                 recursionDepth++;
             }
 
-            // After loop (or if no tools called initially / max recursion hit)
-            if (!res.writableEnded) {
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Preparing to send final signals.');
-
-                let finalFinishReasonToSend = null;
-                let lastValidChunkFromAIForMetadata = null;
-
-                // Attempt to parse the last valid data chunk from the AI's raw output
-                // to extract finish_reason and other metadata for the final signal.
-                if (currentAIRawDataForDiary) { // currentAIRawDataForDiary holds the last AI response's raw data
-                    const lines = currentAIRawDataForDiary.trim().split('\n');
-                    for (let i = lines.length - 1; i >= 0; i--) {
-                        const line = lines[i];
-                        if (line.startsWith('data: ')) {
-                            const jsonData = line.substring(5).trim();
-                            if (jsonData && jsonData !== '[DONE]' && !jsonData.startsWith("[")) { // Avoid parsing "[DONE]" or non-JSON
-                                try {
-                                    const parsed = JSON.parse(jsonData);
-                                    lastValidChunkFromAIForMetadata = parsed; // Store the last successfully parsed chunk for metadata
-                                    if (parsed.choices && parsed.choices[0] && parsed.choices[0].finish_reason) {
-                                        finalFinishReasonToSend = parsed.choices[0].finish_reason;
-                                    }
-                                    break; // Processed the last relevant data line from AI
-                                } catch (e) { /* ignore parse error, try previous line if any */ }
-                            }
-                        }
-                    }
-                }
-
-                // Determine the finish_reason to send if not extracted from AI's last message
-                if (!finalFinishReasonToSend) {
-                    if (recursionDepth >= maxRecursion) {
-                        finalFinishReasonToSend = 'length';
-                    } else {
-                        // If loop broke because no tools were called (toolCallsInThisAIResponse.length === 0),
-                        // it's considered a natural stop.
-                        finalFinishReasonToSend = 'stop';
-                    }
-                }
-                
-                // Construct and send the final chunk with finish_reason
+            // After loop, check if max recursion was hit and response is still open
+            if (recursionDepth >= maxRecursion && !res.writableEnded) {
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Max recursion reached. Sending final signals.');
+                // Construct and send the final chunk with finish_reason 'length'
                 const finalChunkPayload = {
-                    id: lastValidChunkFromAIForMetadata?.id || `chatcmpl-VCP-final-${Date.now()}`,
-                    object: lastValidChunkFromAIForMetadata?.object || "chat.completion.chunk",
-                    created: lastValidChunkFromAIForMetadata?.created || Math.floor(Date.now() / 1000),
-                    model: lastValidChunkFromAIForMetadata?.model || originalBody.model || "unknown-model", // Use model from original request as fallback
+                    id: `chatcmpl-VCP-final-length-${Date.now()}`,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: originalBody.model,
                     choices: [{
                         index: 0,
-                        delta: {}, // Delta is typically empty for the chunk that only carries finish_reason
-                        finish_reason: finalFinishReasonToSend
+                        delta: {},
+                        finish_reason: 'length'
                     }]
                 };
                 res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final chunk with finish_reason:', finalFinishReasonToSend, 'Payload:', JSON.stringify(finalChunkPayload));
-
-                // Always send [DONE] as well, for clients that rely on it
                 res.write('data: [DONE]\n\n');
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final [DONE].');
                 res.end();
             }
 
