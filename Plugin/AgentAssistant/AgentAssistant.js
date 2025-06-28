@@ -14,6 +14,8 @@ const VCP_SERVER_ACCESS_KEY = process.env.Key; // Assuming 'Key' is the env var 
 const MAX_HISTORY_ROUNDS = parseInt(process.env.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS || '7', 10);
 const CONTEXT_TTL_HOURS = parseInt(process.env.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10);
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
+const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || path.join(__dirname, '../..');
+const TIMED_CONTACTS_DIR = path.join(PROJECT_BASE_PATH, 'VCPTimedContacts');
 
 // --- Agent 定义 (从插件自身的 config.env 加载) ---
 const AGENTS = {};
@@ -31,6 +33,8 @@ if (fs.existsSync(pluginConfigEnvPath)) {
 } else {
     if (DEBUG_MODE) console.error(`[AgentAssistant] Plugin's local config.env not found at: ${pluginConfigEnvPath}. No agents will be loaded.`);
 }
+
+const AGENT_ALL_SYSTEM_PROMPT = pluginLocalEnvConfig.AGENT_ALL_SYSTEM_PROMPT || ""; // 从插件本地配置读取
 
 const agentBaseNames = new Set();
 // First pass: Identify base names from the plugin's local config (pluginLocalEnvConfig)
@@ -63,7 +67,13 @@ for (const baseName of agentBaseNames) {
 
     const agentKeyForInvocation = chineseName;
     const systemPromptTemplate = pluginLocalEnvConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are a helpful AI assistant named {{MaidName}}.`;
-    const finalSystemPrompt = systemPromptTemplate.replace(/\{\{MaidName\}\}/g, chineseName);
+    let finalSystemPrompt = systemPromptTemplate.replace(/\{\{MaidName\}\}/g, chineseName);
+    
+    // 将公共 prompt 追加到末尾
+    if (AGENT_ALL_SYSTEM_PROMPT) {
+        finalSystemPrompt += `\n\n${AGENT_ALL_SYSTEM_PROMPT}`;
+    }
+
     const maxOutputTokens = parseInt(pluginLocalEnvConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10);
     const temperature = parseFloat(pluginLocalEnvConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7');
     const description = pluginLocalEnvConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${agentKeyForInvocation}.`;
@@ -145,6 +155,30 @@ async function replacePlaceholdersInUserPrompt(text, agentConfig) {
     return processedText;
 }
 
+function parseAndValidateDate(dateString) {
+    if (!dateString) return null;
+    // 鲁棒化处理，替换多种分隔符为标准格式
+    const standardizedString = dateString.replace(/[/\.]/g, '-');
+    const regex = /^(\d{4})-(\d{1,2})-(\d{1,2})-(\d{1,2}):(\d{1,2})$/;
+    const match = standardizedString.match(regex);
+
+    if (!match) return null;
+
+    const [, year, month, day, hour, minute] = match.map(Number);
+    const date = new Date(year, month - 1, day, hour, minute);
+
+    // 检查日期是否有效（例如，不会创建 2 月 30 日）
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        return null;
+    }
+    // 检查时间是否在过去
+    if (date.getTime() <= Date.now()) {
+        return 'past';
+    }
+
+    return date;
+}
+
 async function handleRequest(input) {
     if (!VCP_SERVER_PORT || !VCP_SERVER_ACCESS_KEY) {
         const errorMsg = "AgentAssistant Critical Error: VCP Server PORT or Access Key is not available in the plugin's environment. Cannot make self-calls to VCP server.";
@@ -160,7 +194,7 @@ async function handleRequest(input) {
         return { status: "error", error: "Invalid JSON input to AgentAssistant." };
     }
 
-    const { agent_name, prompt } = requestData;
+    const { agent_name, prompt, timely_contact } = requestData;
     if (!agent_name || !prompt) {
         return { status: "error", error: "Missing 'agent_name' or 'prompt' in request." };
     }
@@ -179,6 +213,54 @@ async function handleRequest(input) {
         return { status: "error", error: errorMessage };
     }
 
+    // 处理未来电话
+    if (timely_contact) {
+        const targetDate = parseAndValidateDate(timely_contact);
+        if (!targetDate) {
+            return { status: "error", error: `无效的 'timely_contact' 时间格式: '${timely_contact}'。请使用 YYYY-MM-DD-HH:mm 格式。` };
+        }
+        if (targetDate === 'past') {
+            return { status: "error", error: `无效的 'timely_contact' 时间: '${timely_contact}'。不能设置为过去的时间。` };
+        }
+
+        try {
+            if (!fs.existsSync(TIMED_CONTACTS_DIR)) {
+                fs.mkdirSync(TIMED_CONTACTS_DIR, { recursive: true });
+            }
+            const taskId = `${targetDate.getTime()}-${uuidv4()}`;
+            const taskFilePath = path.join(TIMED_CONTACTS_DIR, `${taskId}.json`);
+
+            // 格式化为人类可读的本地时间字符串 YYYY-MM-DDTHH:mm:ss
+            const formatForStorage = (date) => {
+                const year = date.getFullYear();
+                const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                const day = date.getDate().toString().padStart(2, '0');
+                const hours = date.getHours().toString().padStart(2, '0');
+                const minutes = date.getMinutes().toString().padStart(2, '0');
+                const seconds = date.getSeconds().toString().padStart(2, '0');
+                return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+            };
+
+            const taskData = {
+                taskId,
+                targetAgent: agent_name,
+                prompt,
+                scheduledLocalTime: formatForStorage(targetDate), // 存储人类可读的本地时间
+                requestor: "Unknown", // 未来可以扩展
+            };
+            fs.writeFileSync(taskFilePath, JSON.stringify(taskData, null, 2));
+            if (DEBUG_MODE) console.error(`[AgentAssistant] Scheduled contact saved to: ${taskFilePath}`);
+            
+            const formattedDate = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月${targetDate.getDate()}日 ${targetDate.getHours().toString().padStart(2, '0')}:${targetDate.getMinutes().toString().padStart(2, '0')}`;
+            return { status: "success", result: `您决定于 ${formattedDate} 发给 ${agent_name} 的通讯已被系统记录，届时会自动发送给对方。` };
+
+        } catch (error) {
+            if (DEBUG_MODE) console.error(`[AgentAssistant] Error saving scheduled contact:`, error);
+            return { status: "error", error: "保存定时通讯任务时发生内部错误。" };
+        }
+    }
+
+    // 处理即时通讯
     const userSessionId = requestData.session_id || `agent_${agentConfig.baseName}_default_user_session`;
 
     try {
@@ -203,9 +285,9 @@ async function handleRequest(input) {
         }
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
-            headers: { 
-                'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 
-                'Content-Type': 'application/json' 
+            headers: {
+                'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`,
+                'Content-Type': 'application/json'
             },
             timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
         });
