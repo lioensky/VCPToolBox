@@ -183,16 +183,13 @@ async function handleGenerateMusicSunoApiCall(args) {
                 if (taskDetails.data && taskDetails.data.length > 0 && taskDetails.data[0].audio_url) {
                     const audioData = taskDetails.data[0];
 
-                    // Download the audio file
-                    const savedFilePath = await downloadAudio(audioData.audio_url, audioData.title, taskId);
+                    // Start the download in the background ("fire and forget").
+                    // The downloadAudio function will handle its own errors and logging.
+                    downloadAudio(audioData.audio_url, audioData.title, taskId);
 
+                    // Immediately build and return the message for the user, without waiting for the download.
                     let messageForUser = `Song generated! You can listen to it here: ${audioData.audio_url || 'N/A'}`;
                     
-                    if (savedFilePath) {
-                        const relativePath = path.relative(path.resolve(__dirname, '..', '..'), savedFilePath);
-                        messageForUser += `\nFile saved locally at: ${relativePath.replace(/\\/g, '/')}`;
-                    }
-
                     if (audioData.title) messageForUser += `\nTitle: ${audioData.title || 'N/A'}`;
                     
                     if (audioData.metadata?.tags) {
@@ -200,8 +197,6 @@ async function handleGenerateMusicSunoApiCall(args) {
                         if (Array.isArray(tagsDisplay)) {
                             tagsDisplay = tagsDisplay.join(', ');
                         } else if (typeof tagsDisplay !== 'string') {
-                            // Fallback for other types, hoping String() does something reasonable
-                            // or API ensures tags is string/array.
                             tagsDisplay = String(tagsDisplay);
                         }
                         messageForUser += `\nStyle: ${tagsDisplay}`;
@@ -209,6 +204,8 @@ async function handleGenerateMusicSunoApiCall(args) {
                     
                     if (audioData.image_url) messageForUser += `\nImage: ${audioData.image_url || 'N/A'}`;
                     
+                    messageForUser += `\nFile is being downloaded in the background.`;
+
                     // Directly return the fully formatted messageForUser string
                     return messageForUser;
                 } else if (taskDetails.status === "COMPLETE") { // Only throw if COMPLETE and no audio_url
