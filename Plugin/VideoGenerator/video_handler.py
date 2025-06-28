@@ -183,17 +183,11 @@ def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, debug
                     video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
                     ws_notification_data["videoUrl"] = video_url
                     
-                    # 下载视频文件
-                    saved_filepath = download_video(video_url, request_id)
+                    # 在后台线程中开始下载视频，不阻塞回调
+                    download_thread = threading.Thread(target=download_video, args=(video_url, request_id))
+                    download_thread.start()
                     
-                    message = f"视频 (ID: {request_id}) 生成成功！URL: {video_url}"
-                    if saved_filepath:
-                        # 为消息创建相对路径
-                        script_dir = os.path.dirname(os.path.abspath(__file__))
-                        project_root = os.path.join(script_dir, '..', '..')
-                        relative_path = os.path.relpath(saved_filepath, project_root)
-                        message += f"\n文件已保存至: {relative_path.replace(os.sep, '/')}"
-
+                    message = f"视频 (ID: {request_id}) 生成成功！URL: {video_url}\n文件正在后台下载中。"
                     ws_notification_data["message"] = message
                 else: # Failed
                     reason = status_data.get("reason", "未知原因")
@@ -413,15 +407,11 @@ def main():
             elif current_status == "Succeed":
                 video_url = status_data.get("results", {}).get("videos", [{}])[0].get("url")
                 
-                # 下载视频文件
-                saved_filepath = download_video(video_url, request_id_query)
+                # 在后台线程中开始下载视频，不阻塞响应
+                download_thread = threading.Thread(target=download_video, args=(video_url, request_id_query))
+                download_thread.start()
                 
-                ai_msg = f"请求 {request_id_query} 已成功生成！视频 URL: '{video_url}'。"
-                if saved_filepath:
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    project_root = os.path.join(script_dir, '..', '..')
-                    relative_path = os.path.relpath(saved_filepath, project_root)
-                    ai_msg += f" 文件已保存至本地: {relative_path.replace(os.sep, '/')}"
+                ai_msg = f"请求 {request_id_query} 已成功生成！视频 URL: '{video_url}'。\n文件正在后台下载中。"
             elif current_status == "Failed":
                 reason = status_data.get("reason", "未知原因")
                 ai_msg = f"请求 {request_id_query} 生成失败。原因: {reason}。请告知用户此结果。"
