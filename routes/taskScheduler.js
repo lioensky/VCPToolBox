@@ -89,7 +89,7 @@ async function scheduleTaskFromFile(filePath) {
             return;
         }
 
-        if (timedContactJobs.has(task.taskId)) {
+        if (scheduledJobs.has(task.taskId)) {
             if (DEBUG_MODE) console.log(`[TaskScheduler] 任务 ${task.taskId} 已被调度，跳过重复调度。`);
             return;
         }
