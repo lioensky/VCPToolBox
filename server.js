@@ -591,6 +591,25 @@ app.get('/v1/models', async (req, res) => {
 // 新增：标准化任务创建API端点
 const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, 'VCPTimedContacts');
 
+// 辅助函数：将 Date 对象格式化为包含时区偏移的本地时间字符串 (e.g., 2025-06-29T15:00:00+08:00)
+function formatToLocalDateTimeWithOffset(date) {
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+
+    const tzOffset = -date.getTimezoneOffset();
+    const offsetHours = pad(Math.floor(Math.abs(tzOffset) / 60));
+    const offsetMinutes = pad(Math.abs(tzOffset) % 60);
+    const offsetSign = tzOffset >= 0 ? '+' : '-';
+
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${offsetSign}${offsetHours}:${offsetMinutes}`;
+}
+
 app.post('/v1/schedule_task', async (req, res) => {
     // 这是一个内部端点，由插件调用以创建定时任务。
     // 它依赖于全局的 Bearer token 认证。
@@ -613,10 +632,12 @@ app.post('/v1/schedule_task', async (req, res) => {
         await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
         
         const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
+        
+        const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
 
         const taskData = {
             taskId: task_id,
-            scheduledLocalTime: targetDate.toISOString(), // 使用 ISO 格式存储
+            scheduledLocalTime: scheduledTimeWithOffset, // 使用带时区偏移的本地时间格式
             tool_call: tool_call, // 存储完整的 VCP Tool Call
             requestor: `Plugin: ${tool_call.tool_name}`,
         };
@@ -626,11 +647,11 @@ app.post('/v1/schedule_task', async (req, res) => {
         
         // 返回成功的响应，插件可以基于此生成最终的用户回执
         res.status(200).json({ 
-            status: "success", 
+            status: "success",
             message: "任务已成功调度。",
             details: {
                 taskId: task_id,
-                scheduledTime: targetDate.toISOString()
+                scheduledTime: scheduledTimeWithOffset
             }
         });
 
