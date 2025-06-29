@@ -15,7 +15,8 @@ const MAX_HISTORY_ROUNDS = parseInt(process.env.AGENT_ASSISTANT_MAX_HISTORY_ROUN
 const CONTEXT_TTL_HOURS = parseInt(process.env.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10);
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || path.join(__dirname, '../..');
-const TIMED_CONTACTS_DIR = path.join(PROJECT_BASE_PATH, 'VCPTimedContacts');
+// 定时联系目录现在由主服务器的 taskScheduler 模块管理，插件不再需要直接访问。
+// const TIMED_CONTACTS_DIR = path.join(PROJECT_BASE_PATH, 'VCPTimedContacts');
 
 // --- Agent 定义 (从插件自身的 config.env 加载) ---
 const AGENTS = {};
@@ -223,40 +224,59 @@ async function handleRequest(input) {
             return { status: "error", error: `无效的 'timely_contact' 时间: '${timely_contact}'。不能设置为过去的时间。` };
         }
 
+        // --- 标准化任务创建最终版 ---
         try {
-            if (!fs.existsSync(TIMED_CONTACTS_DIR)) {
-                fs.mkdirSync(TIMED_CONTACTS_DIR, { recursive: true });
+            // 1. 构建 VCP Tool Call 对象
+            const vcpToolCall = {
+                tool_name: "AgentAssistant",
+                arguments: {
+                    agent_name: agent_name,
+                    prompt: prompt,
+                }
+            };
+
+            // 2. 构建对 /v1/schedule_task API 的请求体
+            const schedulerPayload = {
+                schedule_time: targetDate.toISOString(),
+                task_id: `task-${targetDate.getTime()}-${uuidv4()}`,
+                tool_call: vcpToolCall
+            };
+
+            if (DEBUG_MODE) console.error(`[AgentAssistant] Calling server's /v1/schedule_task endpoint with payload:`, JSON.stringify(schedulerPayload, null, 2));
+
+            // 3. 调用主服务器的标准化任务创建API
+            const response = await axios.post(`${VCP_API_TARGET_URL}/schedule_task`, schedulerPayload, {
+                headers: {
+                    'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 15000
+            });
+
+            // 4. 处理来自服务器的响应并生成对AI友好的即时回执
+            if (response.data && response.data.status === "success") {
+                if (DEBUG_MODE) console.error(`[AgentAssistant] Successfully scheduled task via API. Server response:`, response.data);
+                
+                // 生成格式化的日期字符串用于回执
+                const formattedDate = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月${targetDate.getDate()}日 ${targetDate.getHours().toString().padStart(2, '0')}:${targetDate.getMinutes().toString().padStart(2, '0')}`;
+                const friendlyReceipt = `您预定于 ${formattedDate} 发给 ${agent_name} 的未来通讯已经被系统记录，届时会自动发送。`;
+
+                return { status: "success", result: friendlyReceipt };
+            } else {
+                const errorMessage = `调度任务失败: ${response.data?.error || '服务器返回未知错误'}`;
+                if (DEBUG_MODE) console.error(`[AgentAssistant] ${errorMessage}`, response.data);
+                return { status: "error", error: errorMessage };
             }
-            const taskId = `${targetDate.getTime()}-${uuidv4()}`;
-            const taskFilePath = path.join(TIMED_CONTACTS_DIR, `${taskId}.json`);
-
-            // 格式化为人类可读的本地时间字符串 YYYY-MM-DDTHH:mm:ss
-            const formatForStorage = (date) => {
-                const year = date.getFullYear();
-                const month = (date.getMonth() + 1).toString().padStart(2, '0');
-                const day = date.getDate().toString().padStart(2, '0');
-                const hours = date.getHours().toString().padStart(2, '0');
-                const minutes = date.getMinutes().toString().padStart(2, '0');
-                const seconds = date.getSeconds().toString().padStart(2, '0');
-                return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
-            };
-
-            const taskData = {
-                taskId,
-                targetAgent: agent_name,
-                prompt,
-                scheduledLocalTime: formatForStorage(targetDate), // 存储人类可读的本地时间
-                requestor: "Unknown", // 未来可以扩展
-            };
-            fs.writeFileSync(taskFilePath, JSON.stringify(taskData, null, 2));
-            if (DEBUG_MODE) console.error(`[AgentAssistant] Scheduled contact saved to: ${taskFilePath}`);
-            
-            const formattedDate = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月${targetDate.getDate()}日 ${targetDate.getHours().toString().padStart(2, '0')}:${targetDate.getMinutes().toString().padStart(2, '0')}`;
-            return { status: "success", result: `您决定于 ${formattedDate} 发给 ${agent_name} 的通讯已被系统记录，届时会自动发送给对方。` };
 
         } catch (error) {
-            if (DEBUG_MODE) console.error(`[AgentAssistant] Error saving scheduled contact:`, error);
-            return { status: "error", error: "保存定时通讯任务时发生内部错误。" };
+            let errorMessage = "调用任务调度API时发生网络或内部错误。";
+            if (axios.isAxiosError(error)) {
+                errorMessage += ` API Status: ${error.response?.status}. Message: ${error.response?.data?.error || error.message}`;
+            } else {
+                errorMessage += ` ${error.message}`;
+            }
+            if (DEBUG_MODE) console.error(`[AgentAssistant] Error calling /v1/schedule_task:`, errorMessage, error.stack);
+            return { status: "error", error: errorMessage };
         }
     }
 
