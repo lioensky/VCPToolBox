@@ -291,6 +291,23 @@ VCPToolBox 的诞生本身就是一个极致案例：一个复杂的 AI 中间�
 
 VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实现的插件，它们共同构成了 VCP AI Agent 的核心能力：
 
+### 浏览器交互与控制
+
+- **ChromeObserver (service & static)**:
+  - **作用**: 这是一个核心的服务插件，它与一个配套的Chrome浏览器扩展程序协同工作，赋予AI“视觉”，使其能够实时“看到”并理解当前浏览的网页内容。
+  - **核心能力**:
+      - 将网页DOM结构实时转换为对AI友好的Markdown格式。
+      - 通过WebSocket将页面信息流式传输到VCP服务器，并通过占位符 `{{VCPChromeObserver}}` 注入到AI的上下文中。
+      - 是实现AI自主浏览、信息提取和网页内容理解的基础。
+  - **安装注意**: 此插件需要用户在Chrome或兼容的浏览器中手动安装其配套的扩展程序。扩展程序的源代码位于 `Plugin/ChromeObserver/extension/` 目录下。用户需要开启浏览器的“开发者模式”，然后选择“加载已解压的扩展程序”来安装。
+
+- **ChromeControl (synchronous)**:
+  - **作用**: 赋予AI“双手”，使其能够对通过 `ChromeObserver` “看到”的网页元素执行具体操作。
+  - **核心能力**:
+      - 支持 `click` (点击链接、按钮等) 和 `type` (在输入框中输入文本) 等操作。
+      - AI通过分析 `ChromeObserver` 提供的带有 `vcp-id` 的Markdown文本，可以精确地指定要操作的目标元素。
+  - **协同工作**: `ChromeObserver` 和 `ChromeControl` 紧密配合，共同构成了AI与浏览器进行深度、自主交互的完整闭环。
+
 ### 环境感知与信息获取
 
 - **WeatherReporter (static)**: 提供实时天气信息，含预警、小时详情、多日预报。注入天气预警信息。
