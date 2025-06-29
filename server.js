@@ -109,6 +109,7 @@ console.info = (...args) => {
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
+const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
@@ -585,6 +586,57 @@ app.get('/v1/models', async (req, res) => {
              console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
              res.end();
         }
+    }
+});
+// 新增：标准化任务创建API端点
+const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, 'VCPTimedContacts');
+
+app.post('/v1/schedule_task', async (req, res) => {
+    // 这是一个内部端点，由插件调用以创建定时任务。
+    // 它依赖于全局的 Bearer token 认证。
+    const { schedule_time, task_id, tool_call } = req.body;
+
+    if (!schedule_time || !task_id || !tool_call || !tool_call.tool_name || !tool_call.arguments) {
+        return res.status(400).json({ status: "error", error: "请求无效，缺少 'schedule_time', 'task_id', 或有效的 'tool_call' 对象。" });
+    }
+
+    const targetDate = new Date(schedule_time);
+    if (isNaN(targetDate.getTime())) {
+        return res.status(400).json({ status: "error", error: "无效的 'schedule_time' 时间格式。" });
+    }
+    if (targetDate.getTime() <= Date.now()) {
+        return res.status(400).json({ status: "error", error: "schedule_time 不能是过去的时间。" });
+    }
+
+    try {
+        // 确保目录存在
+        await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
+        
+        const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
+
+        const taskData = {
+            taskId: task_id,
+            scheduledLocalTime: targetDate.toISOString(), // 使用 ISO 格式存储
+            tool_call: tool_call, // 存储完整的 VCP Tool Call
+            requestor: `Plugin: ${tool_call.tool_name}`,
+        };
+
+        await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
+        if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
+        
+        // 返回成功的响应，插件可以基于此生成最终的用户回执
+        res.status(200).json({ 
+            status: "success", 
+            message: "任务已成功调度。",
+            details: {
+                taskId: task_id,
+                scheduledTime: targetDate.toISOString()
+            }
+        });
+
+    } catch (error) {
+        console.error(`[Server] 通过API创建定时任务文件时出错:`, error);
+        res.status(500).json({ status: "error", error: "在服务器上保存定时任务时发生内部错误。" });
     }
 });
 
@@ -1467,10 +1519,8 @@ async function initialize() {
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
     
-    console.log('开始调度未来通讯任务...');
-    await scheduleTimedContacts();
-    startTimedContactWatcher();
-    console.log('未来通讯任务调度完成。');
+    // 初始化通用任务调度器
+    taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
 }
 
 // Store the server instance globally so it can be accessed by gracefulShutdown
@@ -1504,169 +1554,12 @@ server = app.listen(port, async () => { // Assign to server variable
     // }
 });
 
-const TIMED_CONTACTS_DIR = path.join(__dirname, 'VCPTimedContacts');
-const timedContactJobs = new Map(); // 用于存储 setTimeout 的 timerId 实例
-
-async function scheduleTaskFromFile(filePath) {
-    try {
-        const content = await fs.readFile(filePath, 'utf-8');
-        const task = JSON.parse(content);
-        if (!task.scheduledLocalTime || !task.taskId) {
-            console.error(`[TimedContacts] 任务文件 ${path.basename(filePath)} 格式错误，缺少 scheduledLocalTime 或 taskId。正在跳过...`);
-            return;
-        }
-
-        if (timedContactJobs.has(task.taskId)) {
-            if (DEBUG_MODE) console.log(`[TimedContacts] 任务 ${task.taskId} 已被调度，跳过重复调度。`);
-            return;
-        }
-
-        const scheduledTime = new Date(task.scheduledLocalTime);
-
-        if (scheduledTime.getTime() <= Date.now()) {
-            console.warn(`[TimedContacts] 任务 ${task.taskId} (${path.basename(filePath)}) 已过期，立即执行...`);
-            // 立即执行不需要存储 job 引用
-            executeTimedContact(task, filePath);
-        } else {
-            const now = Date.now();
-            const delay = scheduledTime.getTime() - now;
-
-            const timerId = setTimeout(() => {
-                console.log(`[TimedContacts] 执行定时通讯任务: ${task.taskId}`);
-                executeTimedContact(task, filePath);
-                timedContactJobs.delete(task.taskId); // 任务执行后从 Map 中移除
-            }, delay);
-            
-            // 存储 timerId 引用以在关闭时清除
-            timedContactJobs.set(task.taskId, timerId);
-            console.log(`[TimedContacts] 已调度任务 ${task.taskId} 在 ${scheduledTime.toLocaleString()} 执行。`);
-        }
-    } catch (e) {
-        if (e.code !== 'ENOENT') { // 忽略文件在读取前被删除的错误
-            console.error(`[TimedContacts] 处理任务文件 ${filePath} 失败:`, e);
-        }
-    }
-}
-
-function startTimedContactWatcher() {
-    console.log(`[TimedContacts] 启动目录监视: ${TIMED_CONTACTS_DIR}`);
-    try {
-        fsSync.watch(TIMED_CONTACTS_DIR, (eventType, filename) => {
-            if (filename && filename.endsWith('.json')) {
-                const filePath = path.join(TIMED_CONTACTS_DIR, filename);
-                const taskId = filename.replace('.json', '');
-
-                // 使用 fs.promises.access 检查文件是否存在
-                fs.access(filePath, fs.constants.F_OK)
-                  .then(() => {
-                      // 文件存在，说明是新增或修改
-                      if (DEBUG_MODE) console.log(`[TimedContacts] 监视器发现文件新增/变更: ${filename}。尝试调度...`);
-                      scheduleTaskFromFile(filePath);
-                  })
-                  .catch(() => {
-                      // 文件不存在，说明是删除
-                      if (timedContactJobs.has(taskId)) {
-                          console.log(`[TimedContacts] 监视器发现文件删除: ${filename}。取消已调度的任务。`);
-                          clearTimeout(timedContactJobs.get(taskId));
-                          timedContactJobs.delete(taskId);
-                      }
-                  });
-            }
-        });
-    } catch (error) {
-        console.error(`[TimedContacts] 启动目录监视失败 ${TIMED_CONTACTS_DIR}:`, error);
-    }
-}
-
-async function scheduleTimedContacts() {
-    try {
-        await fs.mkdir(TIMED_CONTACTS_DIR, { recursive: true });
-        const files = await fs.readdir(TIMED_CONTACTS_DIR);
-        const jsonFiles = files.filter(f => f.endsWith('.json'));
-        
-        if (jsonFiles.length > 0) {
-            console.log(`[TimedContacts] 发现 ${jsonFiles.length} 个待处理的定时通讯任务，开始调度...`);
-            for (const file of jsonFiles) {
-                const filePath = path.join(TIMED_CONTACTS_DIR, file);
-                await scheduleTaskFromFile(filePath);
-            }
-        } else {
-            console.log(`[TimedContacts] 未发现待处理的定时通讯任务。调度器将保持待命。`);
-        }
-    } catch (error) {
-        console.error('[TimedContacts] 初始化定时通讯任务调度器失败:', error);
-    }
-}
-
-async function executeTimedContact(task, filePath) {
-    try {
-        const scheduledTime = new Date(task.scheduledLocalTime);
-        const formattedTime = `${scheduledTime.getFullYear()}-${(scheduledTime.getMonth() + 1).toString().padStart(2, '0')}-${scheduledTime.getDate().toString().padStart(2, '0')} ${scheduledTime.getHours().toString().padStart(2, '0')}:${scheduledTime.getMinutes().toString().padStart(2, '0')}:${scheduledTime.getSeconds().toString().padStart(2, '0')}`;
-        
-        const toolArgs = {
-            agent_name: task.targetAgent,
-            prompt: `[未来电话: ${formattedTime}] ${task.prompt}`
-        };
-        
-        console.log(`[TimedContacts] 正在为任务 ${task.taskId} 调用 AgentAssistant 插件...`);
-        const result = await pluginManager.processToolCall('AgentAssistant', toolArgs);
-        
-        console.log(`[TimedContacts] 任务 ${task.taskId} 的 Agent (${task.targetAgent}) 已响应。`);
-        
-        let agentReply = `[无法从插件获取明确的回复内容]`;
-        if (result && typeof result.result === 'string') {
-            agentReply = result.result;
-        } else if (result && result.original_plugin_output) {
-            // 专门处理 AgentAssistant 返回的特殊错误格式
-            agentReply = result.original_plugin_output;
-        } else if (result) {
-            agentReply = `[Agent返回了非预期的格式，原始数据: ${JSON.stringify(result)}]`;
-            console.warn(`[TimedContacts] 任务 ${task.taskId} 的 Agent 返回了非预期的格式:`, result);
-        }
-
-        webSocketServer.broadcast({
-            type: 'vcp_log',
-            data: {
-                tool_name: 'AgentAssistant (Timed)',
-                status: 'success',
-                content: `定时任务 ${task.taskId} 已成功执行。\nAgent ${task.targetAgent} 回复: ${agentReply}`,
-                source: 'timed_contact_executor'
-            }
-        }, 'VCPLog');
-
-    } catch (error) {
-        console.error(`[TimedContacts] 执行任务 ${task.taskId} 失败:`, error);
-        webSocketServer.broadcast({
-            type: 'vcp_log',
-            data: {
-                tool_name: 'AgentAssistant (Timed)',
-                status: 'error',
-                content: `执行定时任务 ${task.taskId} 失败: ${error.message || '未知错误'}`,
-                details: error.stack || JSON.stringify(error),
-                source: 'timed_contact_executor_error'
-            }
-        }, 'VCPLog');
-    } finally {
-        try {
-            await fs.unlink(filePath);
-            console.log(`[TimedContacts] 已删除任务文件: ${filePath}`);
-        } catch (unlinkError) {
-            console.error(`[TimedContacts] 删除任务文件 ${filePath} 失败:`, unlinkError);
-        }
-    }
-}
 
 async function gracefulShutdown() {
     console.log('Initiating graceful shutdown...');
     
-    // 取消所有待定的定时通讯任务
-    if (timedContactJobs.size > 0) {
-        console.log(`[Server] Clearing ${timedContactJobs.size} scheduled timed contacts...`);
-        for (const [taskId, timerId] of timedContactJobs.entries()) {
-            clearTimeout(timerId);
-            console.log(`  - Cleared timer for task: ${taskId}`);
-        }
-        timedContactJobs.clear();
+    if (taskScheduler) {
+        taskScheduler.shutdown();
     }
 
     if (webSocketServer) {
