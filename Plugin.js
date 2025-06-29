@@ -342,6 +342,13 @@ class PluginManager {
                                 try {
                                     const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
                                     const serviceModule = require(scriptPath);
+                                    const initialConfig = this._getPluginConfig(manifest);
+
+                                    if (serviceModule && typeof serviceModule.initialize === 'function') {
+                                        await serviceModule.initialize(initialConfig);
+                                        if (this.debugMode) console.log(`[PluginManager] Initialized service plugin: ${manifest.name}`);
+                                    }
+
                                     if (serviceModule && typeof serviceModule.registerRoutes === 'function') {
                                         this.serviceModules.set(manifest.name, { manifest, module: serviceModule });
                                         if (this.debugMode) console.log(`[PluginManager] Loaded service module: ${manifest.name}`);
@@ -349,7 +356,7 @@ class PluginManager {
                                         if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
                                     }
                                 } catch (e) {
-                                    console.error(`[PluginManager] Error requiring service plugin ${manifest.name}:`, e); // Keep error
+                                    console.error(`[PluginManager] Error requiring or initializing service plugin ${manifest.name}:`, e); // Keep error
                                 }
                             } else {
                                 if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
@@ -428,6 +435,10 @@ class PluginManager {
         return this.plugins.get(name);
     }
 
+    getServiceModule(name) {
+        return this.serviceModules.get(name)?.module;
+    }
+
     async processToolCall(toolName, toolArgs) {
         const plugin = this.plugins.get(toolName);
         if (!plugin) {
@@ -468,6 +479,16 @@ class PluginManager {
                 if (this.debugMode) console.log(`[PluginManager] Processing distributed tool call for: ${toolName} on server ${plugin.serverId}`);
                 resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs);
                 // 分布式工具的返回结果应该已经是JS对象了
+            } else if (toolName === 'ChromeControl' && plugin.communication?.protocol === 'direct') {
+               // --- ChromeControl 特殊处理逻辑 ---
+               if (!this.webSocketServer) {
+                   throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call ChromeControl tool.');
+               }
+               if (this.debugMode) console.log(`[PluginManager] Processing direct WebSocket tool call for: ${toolName}`);
+               const command = pluginSpecificArgs.command;
+               delete pluginSpecificArgs.command;
+               resultFromPlugin = await this.webSocketServer.forwardCommandToChrome(command, pluginSpecificArgs);
+
             } else {
                 // --- 本地插件调用逻辑 (现有逻辑) ---
                 if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
