@@ -2,13 +2,14 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const schedule = require('node-schedule');
 
 let pluginManager;
 let webSocketServer;
 let DEBUG_MODE = false;
 
 const TIMED_CONTACTS_DIR = path.join(__dirname, '..', 'VCPTimedContacts');
-const timedContactJobs = new Map();
+const scheduledJobs = new Map(); // 重命名以反映其存储的是 Job 对象
 
 async function executeTimedContact(task, filePath) {
     // 核心逻辑变更：现在执行一个通用的 tool_call
@@ -99,14 +100,13 @@ async function scheduleTaskFromFile(filePath) {
             console.warn(`[TaskScheduler] 任务 ${task.taskId} (${path.basename(filePath)}) 已过期，立即执行...`);
             executeTimedContact(task, filePath);
         } else {
-            const delay = scheduledTime.getTime() - Date.now();
-            const timerId = setTimeout(() => {
+            const job = schedule.scheduleJob(scheduledTime, () => {
                 console.log(`[TaskScheduler] 正在执行定时任务: ${task.taskId}`);
                 executeTimedContact(task, filePath);
-                timedContactJobs.delete(task.taskId);
-            }, delay);
+                scheduledJobs.delete(task.taskId); // 任务执行后从 Map 中移除
+            });
             
-            timedContactJobs.set(task.taskId, timerId);
+            scheduledJobs.set(task.taskId, job);
             console.log(`[TaskScheduler] 已调度任务 ${task.taskId} 在 ${scheduledTime.toLocaleString()} 执行。`);
         }
     } catch (e) {
@@ -130,10 +130,13 @@ function startTimedContactWatcher() {
                       scheduleTaskFromFile(filePath);
                   })
                   .catch(() => {
-                      if (timedContactJobs.has(taskId)) {
+                      if (scheduledJobs.has(taskId)) {
                           console.log(`[TaskScheduler] 监视器发现文件删除: ${filename}。取消已调度的任务。`);
-                          clearTimeout(timedContactJobs.get(taskId));
-                          timedContactJobs.delete(taskId);
+                          const job = scheduledJobs.get(taskId);
+                          if (job) {
+                              job.cancel();
+                          }
+                          scheduledJobs.delete(taskId);
                       }
                   });
             }
@@ -175,13 +178,15 @@ function initialize(_pluginManager, _webSocketServer, _debugMode) {
 }
 
 function shutdown() {
-    if (timedContactJobs.size > 0) {
-        console.log(`[TaskScheduler] 正在清除 ${timedContactJobs.size} 个已调度的任务...`);
-        for (const [taskId, timerId] of timedContactJobs.entries()) {
-            clearTimeout(timerId);
-            console.log(`  - 已清除任务ID: ${taskId} 的计时器`);
+    if (scheduledJobs.size > 0) {
+        console.log(`[TaskScheduler] 正在清除 ${scheduledJobs.size} 个已调度的任务...`);
+        for (const [taskId, job] of scheduledJobs.entries()) {
+            if (job) {
+                job.cancel();
+                console.log(`  - 已取消任务ID: ${taskId}`);
+            }
         }
-        timedContactJobs.clear();
+        scheduledJobs.clear();
     }
 }
 
