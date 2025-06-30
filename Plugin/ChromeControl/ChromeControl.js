@@ -68,7 +68,8 @@ async function main() {
                     clearTimeout(timeout);
                     if (msg.type === 'command_result') {
                         if (msg.data.status === 'success') {
-                            resolve({ status: 'success', result: msg.data.result });
+                            // 接受 result 或 message 字段作为成功信息
+                            resolve({ status: 'success', result: msg.data.result || msg.data.message });
                         } else {
                             reject(new Error(msg.data.error || 'Chrome端执行命令失败。'));
                         }
