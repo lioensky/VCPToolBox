@@ -30,9 +30,28 @@ function connect() {
             console.log('Message from server:', event.data);
             const message = JSON.parse(event.data);
             
-            // 将服务器的指令转发给内容脚本
+            // 处理来自服务器的指令
             if (message.type === 'command') {
-                forwardCommandToContentScript(message.data);
+                const commandData = message.data;
+                // 检查是否是 open_url 指令
+                if (commandData.command === 'open_url' && commandData.url) {
+                    chrome.tabs.create({ url: commandData.url }, (tab) => {
+                        // 向遥控插件发送成功回执
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'command_result',
+                                data: {
+                                    requestId: commandData.requestId,
+                                    status: 'success',
+                                    message: `成功打开URL: ${commandData.url}`
+                                }
+                            }));
+                        }
+                    });
+                } else {
+                    // 其他指令照常转发给内容脚本
+                    forwardCommandToContentScript(commandData);
+                }
             }
         };
 
