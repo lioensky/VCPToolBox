@@ -1,16 +1,66 @@
-
 let lastPageContent = '';
 let vcpIdCounter = 0;
 
+function isInteractive(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+        return false;
+    }
+    // 如果元素不可见，则它不是可交互的
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || style.height === '0' || style.width === '0') {
+        return false;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    const role = node.getAttribute('role');
+
+    // 1. 标准的可交互元素
+    if (['a', 'button', 'input', 'textarea', 'select', 'option'].includes(tagName)) {
+        return true;
+    }
+
+    // 2. 常见的可交互ARIA角色
+    if (role && ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab', 'switch', 'option', 'treeitem', 'searchbox', 'textbox', 'combobox'].includes(role)) {
+        return true;
+    }
+
+    // 3. 通过JS属性明确可点击
+    if (node.hasAttribute('onclick')) {
+        return true;
+    }
+
+    // 4. 可聚焦的元素（非禁用）
+    if (node.hasAttribute('tabindex') && node.getAttribute('tabindex') !== '-1') {
+        return true;
+    }
+    
+    // 5. 样式上被设计为可交互的元素
+    if (style.cursor === 'pointer') {
+        // 避免标记body或仅用于包裹的巨大容器
+        if (tagName === 'body' || tagName === 'html') return false;
+        // 如果一个元素没有文本内容但有子元素，它可能只是一个包装器
+        if ((node.innerText || '').trim().length === 0 && node.children.length > 0) {
+             // 但如果这个包装器有role属性，它可能是一个自定义组件
+             if (!role) return false;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+
 function pageToMarkdown() {
     try {
-        vcpIdCounter = 0; // Reset counter for each new scrape
+        // 为确保每次都是全新的抓取，先移除所有旧的vcp-id
+        document.querySelectorAll('[vcp-id]').forEach(el => el.removeAttribute('vcp-id'));
+        vcpIdCounter = 0; // 重置计数器
         const body = document.body;
         if (!body) {
             return '';
         }
 
-        let markdown = `# ${document.title}\n\n`;
+        let markdown = `# ${document.title}\nURL: ${document.URL}\n\n`;
 
         function processNode(node) {
             try {
@@ -26,6 +76,16 @@ function pageToMarkdown() {
                         return '';
                     }
                 }
+                
+                if (isInteractive(node)) {
+                    // 避免嵌套标记，如果父元素已经被标记为可交互，则跳过子元素
+                    if (!node.parentElement.closest('[vcp-id]')) {
+                        const interactiveMd = formatInteractiveElement(node);
+                        if (interactiveMd) {
+                            return interactiveMd + '\n'; // 成功格式化后，停止对该分支的进一步递归
+                        }
+                    }
+                }
 
                 if (node.nodeType === Node.TEXT_NODE) {
                     const cleanedText = node.textContent.trim().replace(/\s+/g, ' ');
@@ -33,21 +93,14 @@ function pageToMarkdown() {
                         textContent += cleanedText + ' ';
                     }
                 } else if (node.nodeType === Node.ELEMENT_NODE) {
-                    const tagName = node.tagName.toLowerCase();
                     let childText = '';
-
-                    if (['a', 'button', 'input', 'textarea', 'select'].includes(tagName) || node.hasAttribute('role')) {
-                        const interactiveMd = formatInteractiveElement(node);
-                        if (interactiveMd) {
-                            return interactiveMd + '\n';
-                        }
-                    }
 
                     node.childNodes.forEach(child => {
                         childText += processNode(child);
                     });
 
                     if (childText.trim()) {
+                        const tagName = node.tagName.toLowerCase();
                         if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
                             const level = parseInt(tagName.charAt(1));
                             textContent += `${'#'.repeat(level)} ${childText.trim()}\n\n`;
@@ -60,8 +113,7 @@ function pageToMarkdown() {
                 }
                 return textContent;
             } catch (e) {
-                // In production, we might want to silently fail or log minimally
-                return `[Error processing node: ${e.message}]`;
+                return `[处理节点时出错: ${e.message}]`;
             }
         }
 
@@ -69,35 +121,60 @@ function pageToMarkdown() {
         markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n').trim();
         return markdown;
     } catch (e) {
-        return `# ${document.title}\n\n[Error processing page: ${e.message}]`;
+        return `# ${document.title}\n\n[处理页面时出错: ${e.message}]`;
     }
 }
 
 
 function formatInteractiveElement(el) {
+    // 避免重复标记同一个元素
+    if (el.hasAttribute('vcp-id')) {
+        return '';
+    }
+
     vcpIdCounter++;
     const vcpId = `vcp-id-${vcpIdCounter}`;
     el.setAttribute('vcp-id', vcpId);
 
     let text = (el.innerText || el.value || el.placeholder || el.ariaLabel || el.title || '').trim().replace(/\s+/g, ' ');
     const tagName = el.tagName.toLowerCase();
+    const role = el.getAttribute('role');
 
-    if (tagName === 'a' && text && el.href) {
-        return `[链接: ${text}](${vcpId})`;
-    } else if (tagName === 'button' || el.getAttribute('role') === 'button' || (tagName === 'input' && ['button', 'submit'].includes(el.type))) {
-        if (!text) text = "无标题按钮";
-        return `[按钮: ${text}](${vcpId})`;
-    } else if (tagName === 'input' || tagName === 'textarea') {
+    if (role === 'combobox' || role === 'searchbox') {
         const label = findLabelForInput(el);
-        if (!text && label) text = label;
-        if (!text) text = el.name || el.id || '无标题输入框';
-        return `[输入框: ${text}](${vcpId})`;
-    } else if (tagName === 'select') {
-        const label = findLabelForInput(el);
-        if (!text && label) text = label;
-        if (!text) text = el.name || el.id || '无标题下拉框';
-        return `[下拉选择: ${text}](${vcpId})`;
+        return `[输入框: ${label || text || el.name || el.id || '无标题输入框'}](${vcpId})`;
     }
+
+    if (tagName === 'a' && el.href) {
+        return `[链接: ${text || '无标题链接'}](${vcpId})`;
+    }
+
+    if (tagName === 'button' || role === 'button' || (tagName === 'input' && ['button', 'submit', 'reset'].includes(el.type))) {
+        return `[按钮: ${text || '无标题按钮'}](${vcpId})`;
+    }
+
+    if (tagName === 'input' && !['button', 'submit', 'reset', 'hidden'].includes(el.type)) {
+        const label = findLabelForInput(el);
+        return `[输入框: ${label || text || el.name || el.id || '无标题输入框'}](${vcpId})`;
+    }
+
+    if (tagName === 'textarea') {
+        const label = findLabelForInput(el);
+        return `[文本区域: ${label || text || el.name || el.id || '无标题文本区域'}](${vcpId})`;
+    }
+
+    if (tagName === 'select') {
+        const label = findLabelForInput(el);
+        return `[下拉选择: ${label || text || el.name || el.id || '无标题下拉框'}](${vcpId})`;
+    }
+
+    // 为其他可交互元素（如可点击的div，带角色的span等）提供通用处理
+    if (text) {
+        return `[可交互元素: ${text}](${vcpId})`;
+    }
+
+    // 如果到这里，说明这是一个我们无法很好描述的可交互元素
+    // 回退计数器并移除属性，因为它没有被使用
     vcpIdCounter--;
     el.removeAttribute('vcp-id');
     return null;
@@ -159,7 +236,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     throw new Error(`ID为 '${target}' 的元素不是一个输入框。`);
                 }
             } else if (command === 'click') {
-                element.click();
+                // 模拟真实用户点击，这对于处理使用现代前端框架（如React, Vue）构建的页面至关重要
+                element.focus(); // 首先聚焦元素
+                const clickEvent = new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                });
+                element.dispatchEvent(clickEvent);
                 result = { status: 'success', message: `成功点击了ID为 '${target}' 的元素。` };
             } else {
                 throw new Error(`不支持的命令: ${command}`);
