@@ -35,17 +35,37 @@ function connect() {
                 const commandData = message.data;
                 // 检查是否是 open_url 指令
                 if (commandData.command === 'open_url' && commandData.url) {
-                    chrome.tabs.create({ url: commandData.url }, (tab) => {
-                        // 向遥控插件发送成功回执
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({
-                                type: 'command_result',
-                                data: {
-                                    requestId: commandData.requestId,
-                                    status: 'success',
-                                    message: `成功打开URL: ${commandData.url}`
-                                }
-                            }));
+                    let fullUrl = commandData.url;
+                    if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+                        fullUrl = 'https://' + fullUrl;
+                    }
+                    chrome.tabs.create({ url: fullUrl }, (tab) => {
+                        if (chrome.runtime.lastError) {
+                            // 如果创建失败，发送错误回执
+                            const errorMessage = `创建标签页失败: ${chrome.runtime.lastError.message}`;
+                            console.error(errorMessage);
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'command_result',
+                                    data: {
+                                        requestId: commandData.requestId,
+                                        status: 'error',
+                                        error: errorMessage
+                                    }
+                                }));
+                            }
+                        } else {
+                            // 向遥控插件发送成功回执
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(JSON.stringify({
+                                    type: 'command_result',
+                                    data: {
+                                        requestId: commandData.requestId,
+                                        status: 'success',
+                                        message: `成功打开URL: ${commandData.url}`
+                                    }
+                                }));
+                            }
                         }
                     });
                 } else {
