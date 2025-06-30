@@ -65,7 +65,7 @@ function pageToMarkdown() {
         function processNode(node) {
             try {
                 let textContent = '';
-                const ignoredTags = ['SCRIPT', 'STYLE', 'NAV', 'FOOTER', 'ASIDE', 'FORM', 'IFRAME'];
+                const ignoredTags = ['SCRIPT', 'STYLE', 'NAV', 'FOOTER', 'ASIDE', 'IFRAME'];
                 if (node.nodeType === Node.ELEMENT_NODE && ignoredTags.includes(node.tagName)) {
                     return '';
                 }
