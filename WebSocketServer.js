@@ -161,8 +161,8 @@ function initialize(httpServer, config) {
                             }
                         };
                         if (parsedMessage.data.status === 'success') {
-                            // ChromeControl.js 期望一个 `result` 对象
-                            resultForClient.data.result = { message: parsedMessage.data.message };
+                            // 直接透传 message 字段，保持与 content_script 的一致性
+                            resultForClient.data.message = parsedMessage.data.message;
                         } else {
                             resultForClient.data.error = parsedMessage.data.error;
                         }
