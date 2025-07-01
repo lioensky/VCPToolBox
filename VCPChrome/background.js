@@ -1,3 +1,4 @@
+console.log('VCPChrome background.js loaded.');
 let ws = null;
 let isConnected = false;
 const defaultServerUrl = 'ws://localhost:8088'; // 默认服务器地址
@@ -33,17 +34,19 @@ function connect() {
             // 处理来自服务器的指令
             if (message.type === 'command') {
                 const commandData = message.data;
+                console.log('Received commandData:', commandData);
                 // 检查是否是 open_url 指令
                 if (commandData.command === 'open_url' && commandData.url) {
+                    console.log('Handling open_url command. URL:', commandData.url);
                     let fullUrl = commandData.url;
                     if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
                         fullUrl = 'https://' + fullUrl;
                     }
+                    console.log('Attempting to create tab with URL:', fullUrl);
                     chrome.tabs.create({ url: fullUrl }, (tab) => {
                         if (chrome.runtime.lastError) {
-                            // 如果创建失败，发送错误回执
                             const errorMessage = `创建标签页失败: ${chrome.runtime.lastError.message}`;
-                            console.error(errorMessage);
+                            console.error('Error creating tab:', errorMessage);
                             if (ws && ws.readyState === WebSocket.OPEN) {
                                 ws.send(JSON.stringify({
                                     type: 'command_result',
@@ -55,12 +58,13 @@ function connect() {
                                 }));
                             }
                         } else {
-                            // 向遥控插件发送成功回执
+                            console.log('Tab created successfully. Tab ID:', tab.id, 'URL:', tab.url);
                             if (ws && ws.readyState === WebSocket.OPEN) {
                                 ws.send(JSON.stringify({
                                     type: 'command_result',
                                     data: {
                                         requestId: commandData.requestId,
+                                        sourceClientId: commandData.sourceClientId, // 确保返回 sourceClientId
                                         status: 'success',
                                         message: `成功打开URL: ${commandData.url}`
                                     }
@@ -69,7 +73,7 @@ function connect() {
                         }
                     });
                 } else {
-                    // 其他指令照常转发给内容脚本
+                    console.log('Forwarding command to content script:', commandData);
                     forwardCommandToContentScript(commandData);
                 }
             }
