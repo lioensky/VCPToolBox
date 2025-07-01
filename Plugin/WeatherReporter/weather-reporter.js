@@ -4,7 +4,10 @@ const path = require('path');
 const dotenv = require('dotenv');
 // const fetch = require('node-fetch'); // Use require for node-fetch - Removed
 
-// Load main config.env from project root
+// Load plugin-specific config.env first to give it priority
+dotenv.config({ path: path.join(__dirname, 'config.env') });
+
+// Load main config.env from project root (it will not override existing vars)
 dotenv.config({ path: path.resolve(__dirname, '../../config.env') });
 
 const CACHE_FILE_PATH = path.join(__dirname, 'weather_cache.txt');
@@ -233,7 +236,7 @@ async function getWeatherWarning(cityId, weatherKey, weatherUrl) {
 }
 
 // Helper to format weather data into a readable string
-function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, days) {
+function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, days, hourlyInterval, hourlyCount) {
     if (!hourlyForecast && (!weatherWarning || weatherWarning.length === 0) && (!forecast || forecast.length === 0)) {
         return "[天气信息获取失败]";
     }
@@ -257,20 +260,19 @@ function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, days) {
     // Add 24-hour Forecast section
     result += "\n【未来24小时天气预报】\n";
     if (hourlyForecast && hourlyForecast.length > 0) {
-        // Only show the first 8 hours, the 10th hour, and the 12th hour
-        for (let i = 0; i < hourlyForecast.length; i++) {
-            if (i < 8 || i === 9 || i === 11|| i === 16|| i === 20) {
-                const hour = hourlyForecast[i];
-                const time = new Date(hour.fxTime).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' });
-                result += `\n时间: ${time}\n`;
-                result += `天气: ${hour.text}\n`;
-                result += `温度: ${hour.temp}℃\n`;
-                result += `风向: ${hour.windDir}\n`;
-                result += `风力: ${hour.windScale}级\n`;
-                result += `湿度: ${hour.humidity}%\n`;
-                result += `降水概率: ${hour.pop}%\n`;
-                result += `降水量: ${hour.precip}毫米\n`;
-            }
+        let displayedCount = 0;
+        for (let i = 0; i < hourlyForecast.length && displayedCount < hourlyCount; i += hourlyInterval) {
+            const hour = hourlyForecast[i];
+            const time = new Date(hour.fxTime).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' });
+            result += `\n时间: ${time}\n`;
+            result += `天气: ${hour.text}\n`;
+            result += `温度: ${hour.temp}℃\n`;
+            result += `风向: ${hour.windDir}\n`;
+            result += `风力: ${hour.windScale}级\n`;
+            result += `湿度: ${hour.humidity}%\n`;
+            result += `降水概率: ${hour.pop}%\n`;
+            result += `降水量: ${hour.precip}毫米\n`;
+            displayedCount++;
         }
     } else {
         result += "未来24小时天气预报获取失败。\n";
@@ -320,11 +322,25 @@ async function fetchAndCacheWeather() {
     const weatherKey = process.env.WeatherKey;
     const weatherUrl = process.env.WeatherUrl;
     let forecastDays = parseInt(process.env.forecastDays, 10);
+    let hourlyInterval = parseInt(process.env.hourlyForecastInterval, 10);
+    let hourlyCount = parseInt(process.env.hourlyForecastCount, 10);
 
     // Validate forecastDays
     if (isNaN(forecastDays) || forecastDays < 1 || forecastDays > 30) {
         console.warn(`[WeatherReporter] Invalid or missing 'forecastDays' in config. Defaulting to 7. Value was: ${process.env.forecastDays}`);
         forecastDays = 7;
+    }
+    
+    // Validate hourlyInterval
+    if (isNaN(hourlyInterval) || hourlyInterval < 1) {
+        console.warn(`[WeatherReporter] Invalid or missing 'hourlyForecastInterval' in config. Defaulting to 3. Value was: ${process.env.hourlyForecastInterval}`);
+        hourlyInterval = 3;
+    }
+
+    // Validate hourlyCount
+    if (isNaN(hourlyCount) || hourlyCount < 1) {
+        console.warn(`[WeatherReporter] Invalid or missing 'hourlyForecastCount' in config. Defaulting to 4. Value was: ${process.env.hourlyForecastCount}`);
+        hourlyCount = 4;
     }
 
 
@@ -388,7 +404,7 @@ async function fetchAndCacheWeather() {
     // Update condition to check for any data
     if (hourlyForecast || weatherWarning || (forecast && forecast.length > 0)) {
         // Update function call
-        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, forecastDays);
+        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, forecastDays, hourlyInterval, hourlyCount);
         try {
             await fs.writeFile(CACHE_FILE_PATH, formattedWeather, 'utf-8');
             console.error(`[WeatherReporter] Successfully fetched, formatted, and cached new weather info.`);
