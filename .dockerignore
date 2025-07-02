@@ -40,3 +40,4 @@ logs/
 
 # Test files if not needed in production
 example.test.js
+VCPChrome/

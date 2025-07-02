@@ -30,6 +30,18 @@
       "type": "integer",
       "default": 7,
       "description": "获取未来天气预报的天数 (范围: 1-30)。"
+    },
+    "hourlyForecastInterval": {
+      "type": "number",
+      "description": "24小时天气预报的显示间隔（小时）",
+      "default": 2,
+      "min": 1
+    },
+    "hourlyForecastCount": {
+      "type": "number",
+      "description": "24小时天气预报总共显示的条目数。",
+      "default": 12,
+      "min": 1
     }
   },
   "refreshIntervalCron": "0 */8 * * *"
