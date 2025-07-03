@@ -40,6 +40,7 @@ Vchat主题文件示例:
     --placeholder-text: #6a6a6e; /* 输入框占位文字 */
     --quoted-text: #FFB74D;     /* 引用文本颜色 - 柔和橙色 */
     --user-text: #e0e0e0;       /* 用户气泡文字 - 浅灰 (与 primary-text 相同) */
+    --agent-text: #e0e0e0;      /* Agent气泡文字 - 浅灰 */
 
     /* --- Bubble Colors (Frosted Glass Ready) --- */
     --user-bubble-bg: rgba(56, 120, 173, 0.15); /* 用户气泡 - 柔和蓝 (点缀色) - 半透明 */
@@ -114,6 +115,7 @@ body.light-theme {
     --placeholder-text: #a0aab3; /* 占位文字 */
     --quoted-text: #007bff;     /* 引用文字 - 蓝色 */
     --user-text: #2c3e50;       /* 用户气泡文字 - 深灰蓝 (与 primary-text 相同) */
+    --agent-text: #2c3e50;      /* Agent气泡文字 - 深灰蓝 */
 
     /* --- Bubble Colors --- */
     --user-bubble-bg: rgba(52, 152, 219, 0.08);     /* 用户气泡 - 清爽蓝 - 半透明 */
