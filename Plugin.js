@@ -466,7 +466,8 @@ class PluginManager {
         const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
         const pluginSpecificArgs = { ...toolArgs };
         if (maidNameFromArgs) {
-            delete pluginSpecificArgs.maid;
+            // The 'maid' parameter is intentionally passed through for plugins like DeepMemo.
+            // delete pluginSpecificArgs.maid;
         }
 
         try {
