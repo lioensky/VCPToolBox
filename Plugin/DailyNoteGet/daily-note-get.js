@@ -29,12 +29,15 @@ async function getAllCharacterDiaries() {
 
                 try {
                     const files = await fs.readdir(characterDirPath);
-                    const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt')).sort();
-                    debugLog(`Found ${txtFiles.length} .txt files for ${characterName}`);
+                    const relevantFiles = files.filter(file => {
+                        const lowerCaseFile = file.toLowerCase();
+                        return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
+                    }).sort();
+                    debugLog(`Found ${relevantFiles.length} relevant files (.txt, .md) for ${characterName}`);
 
-                    if (txtFiles.length > 0) {
+                    if (relevantFiles.length > 0) {
                         const fileContents = await Promise.all(
-                            txtFiles.map(async (file) => {
+                            relevantFiles.map(async (file) => {
                                 const filePath = path.join(characterDirPath, file);
                                 try {
                                     const content = await fs.readFile(filePath, 'utf-8');
@@ -50,7 +53,7 @@ async function getAllCharacterDiaries() {
                         characterDiaryContent = fileContents.join('\n\n---\n\n');
                     } else {
                          characterDiaryContent = `[${characterName}日记本内容为空]`; // Explicitly state if empty
-                         debugLog(`No .txt files found for ${characterName}, setting content to empty marker.`);
+                         debugLog(`No .txt or .md files found for ${characterName}, setting content to empty marker.`);
                     }
                 } catch (charDirError) {
                      console.error(`[DailyNoteGet] Error reading character directory ${characterDirPath}:`, charDirError.message);
