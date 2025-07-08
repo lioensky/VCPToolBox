@@ -26,6 +26,11 @@
       "type": "string",
       "description": "Path to the poker deck JSON data file.",
       "default": "Plugin/Randomness/data/poker_deck.json"
+    },
+    "TAROT_SPREADS_PATH": {
+      "type": "string",
+      "description": "Path to the tarot spreads JSON data file.",
+      "default": "Plugin/Randomness/data/tarot_spreads.json"
     }
   },
   "capabilities": {
@@ -151,35 +156,44 @@
       },
       {
         "command": "rollDice",
-        "description": "掷一个或多个多面骰子。",
+        "description": "掷一个或多个骰子，支持复杂的自定义骰子组合和 '3d6' 格式的字符串。可以同时掷不同面数和数量的骰子。",
         "parameters": [
+          {
+            "name": "dice",
+            "type": "any",
+            "description": "一个描述骰子组合的数组或字符串。数组格式: [{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]。字符串格式: '3d6'。",
+            "optional": true
+          },
           {
             "name": "count",
             "type": "integer",
-            "description": "要掷的骰子数量。",
-            "optional": true,
-            "default": 1
+            "description": "[兼容旧版] 要掷的骰子数量。",
+            "optional": true
           },
           {
             "name": "sides",
             "type": "integer",
-            "description": "每个骰子的面数。",
-            "optional": true,
-            "default": 6
+            "description": "[兼容旧版] 每个骰子的面数。",
+            "optional": true
           }
         ],
-        "usage_example": "VCP>Randomness.rollDice count=2 sides=20"
+        "usage_example": "VCP>Randomness.rollDice dice=[{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]"
       },
       {
         "command": "drawTarot",
-        "description": "[无状态] 从牌库中抽取指定数量的塔罗牌。这是一个为方便使用而设计的无状态快捷方式。",
+        "description": "[无状态] 从塔罗牌库中抽牌，支持多种预设牌阵。可用牌阵: 'single_card', 'three_card', 'celtic_cross', 'horseshoe', 'five_card', 'love', 'decision', 'star', 'timeline', 'self_exploration'。",
         "parameters": [
+          {
+            "name": "spread",
+            "type": "string",
+            "description": "要使用的牌阵名称。",
+            "optional": true
+          },
           {
             "name": "count",
             "type": "integer",
-            "description": "要抽取的塔罗牌数量。",
-            "optional": true,
-            "default": 3
+            "description": "[兼容旧版] 要抽取的塔罗牌数量。",
+            "optional": true
           },
           {
             "name": "allow_reversed",
@@ -189,7 +203,7 @@
             "default": true
           }
         ],
-        "usage_example": "VCP>Randomness.drawTarot count=3"
+        "usage_example": "VCP>Randomness.drawTarot spread=celtic_cross"
       },
       {
         "command": "castRunes",

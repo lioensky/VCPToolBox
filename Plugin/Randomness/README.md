@@ -103,26 +103,29 @@
 #### 2. 抽取塔罗牌 (Draw Tarot)
 
 -   **命令**: `drawTarot`
--   **描述**: [无状态] 快捷抽取塔罗牌。
+-   **描述**: [无状态] 快捷抽取塔罗牌，支持多种预设的牌阵。
 -   **调用示例**:
     ```
-    VCP>Randomness.drawTarot count=3 allow_reversed=true
+    VCP>Randomness.drawTarot spread=celtic_cross
     ```
 -   **参数**:
-    -   `count` (整数, 可选, 默认 3): 抽牌数量。
+    -   `spread` (字符串, 可选): 要使用的牌阵名称。可用选项: `'single_card'`, `'three_card'`, `'celtic_cross'`, `'horseshoe'`, `'five_card'`, `'love'`, `'decision'`, `'star'`, `'timeline'`, `'self_exploration'`。
+    -   `count` (整数, 可选): [兼容旧版] 抽牌数量。
     -   `allow_reversed` (布尔值, 可选, 默认 `true`): 是否允许逆位。
 
 #### 3. 掷骰子 (Roll Dice)
 
 -   **命令**: `rollDice`
--   **描述**: [无状态] 模拟掷骰子。
+-   **描述**: [无状态] 模拟掷骰子，支持复杂的自定义骰子组合和 '3d6' 格式的字符串。
 -   **调用示例**:
     ```
-    VCP>Randomness.rollDice count=2 sides=20
+    VCP>Randomness.rollDice dice=[{"sides": 6, "count": 2}, {"sides": 20, "count": 1}]
+    VCP>Randomness.rollDice dice="3d6"
     ```
 -   **参数**:
-    -   `count` (整数, 可选, 默认 1): 骰子数量。
-    -   `sides` (整数, 可选, 默认 6): 骰子面数。
+    -   `dice` (数组或字符串, 可选): 一个描述骰子组合的数组或字符串。
+    -   `count` (整数, 可选): [兼容旧版] 骰子数量。
+    -   `sides` (整数, 可选): [兼容旧版] 骰子面数。
 
 #### 4. 抽取卢恩符文 (Rune Cast)
 
@@ -142,5 +145,6 @@
 -   `TAROT_DECK_PATH`: 塔罗牌数据文件的路径。
 -   `RUNE_SET_PATH`: 卢恩符文数据文件的路径。
 -   `POKER_DECK_PATH`: 扑克牌数据文件的路径。
+-   `TAROT_SPREADS_PATH`: 塔罗牌牌阵数据文件的路径。
 
 请确保这些路径相对于项目根目录 (`/opt/VCPToolBox`) 是正确的。
