@@ -49,6 +49,7 @@ try:
     TAROT_DECK = load_data_from_env('TAROT_DECK_PATH', 'Plugin/Randomness/data/tarot_deck.json')
     RUNE_SET = load_data_from_env('RUNE_SET_PATH', 'Plugin/Randomness/data/rune_set.json')
     POKER_DECK = load_data_from_env('POKER_DECK_PATH', 'Plugin/Randomness/data/poker_deck.json')
+    TAROT_SPREADS = load_data_from_env('TAROT_SPREADS_PATH', 'Plugin/Randomness/data/tarot_spreads.json')
     
     AVAILABLE_DECKS = {
         "poker": POKER_DECK,
@@ -236,40 +237,88 @@ def get_cards(params):
     return {"cards": drawn_cards}
 
 def drawTarot(params):
-    count = params.get('count', 3)
+    """从塔罗牌库中抽牌，支持预设的牌阵。"""
+    spread = params.get('spread')
+    allow_reversed = params.get('allow_reversed', True)
+
+    if spread and spread not in TAROT_SPREADS:
+        raise ValueError(f"无效的牌阵名称: '{spread}'。可用牌阵: {list(TAROT_SPREADS.keys())}")
+
+    if spread:
+        spread_info = TAROT_SPREADS[spread]
+        count = len(spread_info)
+    else:
+        # 兼容旧版或无牌阵的抽取
+        count = params.get('count', 3)
+        spread_info = [{"position": f"Card {i+1}", "description": ""} for i in range(count)]
+
     try:
         count = int(count)
     except (ValueError, TypeError):
-        raise ValueError(f"'count' 参数 ('{count}') 必须是一个可以转换为整数的值。")
-    
-    allow_reversed = params.get('allow_reversed', True)
+        raise ValueError(f"'count' 参数 ('{count}') 必须是整数。")
+
     if count > len(TAROT_DECK):
         raise ValueError(f"抽牌数量 ({count}) 不能超过牌库总数 ({len(TAROT_DECK)})。")
+
     deck_copy = TAROT_DECK[:]
     random.shuffle(deck_copy)
+    
     drawn_cards = []
-    for _ in range(count):
+    for i in range(count):
         card_name = deck_copy.pop()
         is_upright = random.choice([True, False]) if allow_reversed else True
-        drawn_cards.append({"name": card_name, "upright": is_upright})
-    return {"type": "tarot_draw", "cards": drawn_cards}
+        card_info = {
+            "name": card_name,
+            "upright": is_upright,
+            "position": spread_info[i]["position"],
+            "description": spread_info[i]["description"]
+        }
+        drawn_cards.append(card_info)
+        
+    return {"type": "tarot_draw", "spread_name": spread or "custom", "cards": drawn_cards}
 
 def rollDice(params):
-    count = params.get('count', 1)
-    sides = params.get('sides', 6)
+    """掷一个或多个骰子，支持自定义骰子组合和 '3d6' 格式的字符串。"""
+    dice_param = params.get('dice')
+    
+    dice_sets = []
+    if isinstance(dice_param, str):
+        # 解析 "3d6" 格式的字符串
+        match = re.match(r'(\d+)d(\d+)', dice_param)
+        if match:
+            count, sides = map(int, match.groups())
+            dice_sets.append({"sides": sides, "count": count})
+        else:
+            raise ValueError("无效的骰子字符串格式。请使用 'XdY' 格式，例如 '3d6'。")
+    elif isinstance(dice_param, list):
+        dice_sets = dice_param
+    else:
+        # 兼容旧版
+        count = params.get('count', 1)
+        sides = params.get('sides', 6)
+        dice_sets = [{"sides": sides, "count": count}]
 
-    try:
-        count = int(count)
-        sides = int(sides)
-    except (ValueError, TypeError):
-        raise ValueError(f"参数 'count' ('{count}') 和 'sides' ('{sides}') 必须是可以转换为整数的值。")
+    all_rolls = []
+    total_sum = 0
 
-    if count <= 0:
-        raise ValueError(f"骰子数量 ({count}) 必须是一个正整数。")
-    if sides <= 0:
-        raise ValueError(f"骰子面数 ({sides}) 必须是一个正整数。")
-    rolls = [random.randint(1, sides) for _ in range(count)]
-    return {"type": "dice_roll", "rolls": rolls, "total": sum(rolls)}
+    for dice_set in dice_sets:
+        count = dice_set.get('count', 1)
+        sides = dice_set.get('sides', 6)
+        
+        try:
+            count = int(count)
+            sides = int(sides)
+        except (ValueError, TypeError):
+            raise ValueError(f"骰子定义中的 'count' ('{count}') 和 'sides' ('{sides}') 必须是整数。")
+
+        if count <= 0 or sides <= 0:
+            raise ValueError("骰子的数量和面数都必须是正整数。")
+            
+        rolls = [random.randint(1, sides) for _ in range(count)]
+        all_rolls.append({"dice": f"{count}d{sides}", "rolls": rolls, "subtotal": sum(rolls)})
+        total_sum += sum(rolls)
+
+    return {"type": "dice_roll", "results": all_rolls, "total": total_sum}
 
 def castRunes(params):
     count = params.get('count', 1)
@@ -312,17 +361,22 @@ def format_query_deck_results(data):
     return f"牌堆 `{data['deck_id']}` 状态查询:\n- 剩余牌数: {data['remaining_cards']}\n- 已抽牌数: {data['drawn_cards_count']}\n- 总牌数: {data['total_cards']}"
 
 def format_dice_results(data, params):
-    count = params.get('count', 1)
-    sides = params.get('sides', 6)
-    rolls_str = ', '.join(map(str, data['rolls']))
-    return f"为您掷出了 {count} 个 {sides} 面的骰子，结果为：{rolls_str}。总点数为：{data['total']}。"
+    results_strs = []
+    for result in data.get('results', []):
+        rolls_str = ', '.join(map(str, result['rolls']))
+        results_strs.append(f"- {result['dice']}: {rolls_str} (小计: {result['subtotal']})")
+    
+    return f"为您掷骰子的结果如下：\n" + "\n".join(results_strs) + f"\n\n**总点数**: {data['total']}"
 
 def format_tarot_results(data):
+    spread_name = data.get('spread_name', 'custom')
     cards_strs = []
-    for card in data['cards']:
-        status = "正位" if card['upright'] else "逆位"
-        cards_strs.append(f"「{card['name']}」({status})")
-    return "为您抽到的塔罗牌是：\n" + "\n".join(cards_strs)
+    for card in data.get('cards', []):
+        status = "正位" if card.get('upright') else "逆位"
+        position_info = f"**{card.get('position')}**: " if card.get('position') else ""
+        cards_strs.append(f"- {position_info}「{card.get('name')}」({status})")
+    
+    return f"为您使用 **{spread_name}** 牌阵抽到的塔罗牌是：\n" + "\n".join(cards_strs)
 
 def format_rune_results(data):
     runes_str = ", ".join(data['runes'])
