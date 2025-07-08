@@ -1,0 +1,117 @@
+{
+  "name": "Randomness",
+  "displayName": "随机事件生成器",
+  "version": "1.0.0",
+  "description": "一个多功能后端插件，用于生成各种可信的随机事件，如掷骰、抽塔罗牌、发扑克牌、抽卢恩符文等。",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python main.py"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "TAROT_DECK_PATH": {
+      "type": "string",
+      "description": "Path to the tarot deck JSON data file.",
+      "default": "Plugin/Randomness/data/tarot_deck.json"
+    },
+    "RUNE_SET_PATH": {
+      "type": "string",
+      "description": "Path to the rune set JSON data file.",
+      "default": "Plugin/Randomness/data/rune_set.json"
+    },
+    "POKER_DECK_PATH": {
+      "type": "string",
+      "description": "Path to the poker deck JSON data file.",
+      "default": "Plugin/Randomness/data/poker_deck.json"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "rollDice",
+        "description": "掷一个或多个多面骰子。",
+        "parameters": [
+          {
+            "name": "count",
+            "type": "integer",
+            "description": "要掷的骰子数量。",
+            "optional": true,
+            "default": 1
+          },
+          {
+            "name": "sides",
+            "type": "integer",
+            "description": "每个骰子的面数。",
+            "optional": true,
+            "default": 6
+          }
+        ],
+        "usage_example": "VCP>Randomness.rollDice count=2 sides=20"
+      },
+      {
+        "command": "drawTarot",
+        "description": "从牌库中抽取指定数量的塔罗牌。",
+        "parameters": [
+          {
+            "name": "count",
+            "type": "integer",
+            "description": "要抽取的塔罗牌数量。",
+            "optional": true,
+            "default": 3
+          },
+          {
+            "name": "allow_reversed",
+            "type": "boolean",
+            "description": "是否允许出现逆位牌。",
+            "optional": true,
+            "default": true
+          }
+        ],
+        "usage_example": "VCP>Randomness.drawTarot count=3 allow_reversed=true"
+      },
+      {
+        "command": "dealPoker",
+        "description": "模拟发扑克牌给一个或多个玩家。",
+        "parameters": [
+          {
+            "name": "players",
+            "type": "integer",
+            "description": "玩家数量。",
+            "optional": true,
+            "default": 1
+          },
+          {
+            "name": "cards_per_player",
+            "type": "integer",
+            "description": "每个玩家的手牌数量。",
+            "optional": true,
+            "default": 2
+          }
+        ],
+        "usage_example": "VCP>Randomness.dealPoker players=3 cards_per_player=17"
+      },
+      {
+        "command": "castRunes",
+        "description": "从符文集中抽取指定数量的卢恩符文。",
+        "parameters": [
+          {
+            "name": "count",
+            "type": "integer",
+            "description": "要抽取的卢恩符文数量。",
+            "optional": true,
+            "default": 1
+          }
+        ],
+        "usage_example": "VCP>Randomness.castRunes count=1"
+      }
+    ]
+  },
+  "webSocketPush": {
+    "enabled": true,
+    "usePluginResultAsMessage": true,
+    "messageType": "RandomEventResult"
+  }
+}
