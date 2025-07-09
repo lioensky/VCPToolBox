@@ -56,9 +56,10 @@ def _parse_and_roll(expression_str):
     pattern = re.compile(
         r"(\d+)d(\d+)"      # 1, 2: 主要骰子部分 (e.g., 4d6)
         r"(k[hl]\d+)?"      # 3: 保留最高/最低 (e.g., kh3)
-        r"([<>]=?\d+)?"     # 4: 成功检定或骰池 (e.g., <=75, >6)
-        r"([+-]\d+)?"       # 5: 算术修正 (e.g., +5)
-        r"(bp\d*|pb\d*)?"   # 6: COC 奖励/惩罚骰
+        r"(s)?"             # 4: 排序标志 (e.g., s)
+        r"([<>]=?\d+)?"     # 5: 成功检定或骰池 (e.g., <=75, >6)
+        r"([+-]\d+)?"       # 6: 算术修正 (e.g., +5)
+        r"(bp\d*|pb\d*)?"   # 7: COC 奖励/惩罚骰
     )
     match = pattern.match(expression)
 
@@ -76,10 +77,10 @@ def _parse_and_roll(expression_str):
     count = int(groups[0])
     sides = int(groups[1])
     keep_mod = groups[2]
-    # 成功检定和骰池现在共享一个捕获组
-    check_or_pool_mod = groups[3]
-    arith_mod = groups[4]
-    coc_mod = groups[5]
+    sort_flag = groups[3]
+    check_or_pool_mod = groups[4]
+    arith_mod = groups[5]
+    coc_mod = groups[6]
 
     # 判断是骰池还是成功检定
     is_pool = False
@@ -102,6 +103,12 @@ def _parse_and_roll(expression_str):
     calculation_steps = [f"掷骰 ({count}d{sides}): {rolls}"]
 
     # --- 处理修饰符 ---
+
+    # 排序 (Sort)
+    if sort_flag:
+        result_rolls.sort()
+        calculation_steps.append(f"排序: {result_rolls}")
+        detailed_rolls["after_sort"] = result_rolls[:]
 
     # 保留最高/最低 (Keep Highest/Lowest)
     if keep_mod:
@@ -165,6 +172,16 @@ def _parse_and_roll(expression_str):
         "calculation_steps": calculation_steps,
     }
 
+    # 暴击/大失败判断 (Crit/Fumble Check)
+    if count == 1 and sides == 20 and not keep_mod and not is_pool:
+        initial_roll = detailed_rolls["initial"][0]
+        if initial_roll == 20:
+            final_result["crit_status"] = "critical_success"
+            calculation_steps.append("暴击!")
+        elif initial_roll == 1:
+            final_result["crit_status"] = "critical_failure"
+            calculation_steps.append("大失败!")
+
     # 成功检定或骰池 (Success Check or Dice Pool)
     if check_or_pool_mod:
         op_match = re.match(r"([<>]=?)(\d+)", check_or_pool_mod)
@@ -227,6 +244,7 @@ def format_single_roll(data):
     
     success_check = data.get('success_check')
     dice_pool = data.get('dice_pool')
+    crit_status = data.get('crit_status')
 
     if success_check:
         op = success_check['operator']
@@ -238,6 +256,11 @@ def format_single_roll(data):
         target = dice_pool['target']
         successes = dice_pool['successes']
         result_line = f"掷骰: **{expression}** = **{successes}** 个成功"
+    
+    if crit_status == "critical_success":
+        result_line += " **(暴击!)**"
+    elif crit_status == "critical_failure":
+        result_line += " **(大失败!)**"
         
     details = "计算过程: " + " -> ".join(steps)
     
