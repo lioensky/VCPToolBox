@@ -1,5 +1,9 @@
 import sys
 import json
+import io
+
+# 确保stdout使用UTF-8编码，并启用行缓冲
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 import random
 import os
 import re
@@ -31,6 +35,57 @@ def convert_keys(data, converter):
 keys_to_snake_case = lambda data: convert_keys(data, camel_to_snake)
 keys_to_camel_case = lambda data: convert_keys(data, snake_to_camel)
 
+
+# --- [新增] 参数处理辅助函数 (Hardening Helpers) ---
+
+def _get_param(params, keys, default=None):
+    """按顺序从多个可能的键中获取参数值。"""
+    if isinstance(keys, str):
+        keys = [keys]
+    for key in keys:
+        if key in params:
+            return params[key]
+    return default
+
+def _get_int_param(params, keys, default):
+    """健壮地获取一个整数参数。"""
+    val = _get_param(params, keys, default)
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        key_str = keys[0] if isinstance(keys, list) else keys
+        raise ValueError(f"参数 '{key_str}' 的值 ('{val}') 必须是一个有效的整数。")
+
+def _get_bool_param(params, keys, default):
+    """健壮地获取一个布尔参数。"""
+    val = _get_param(params, keys, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ['true', '1', 't', 'y', 'yes']
+    return bool(val)
+
+def _get_list_param(params, keys):
+    """健壮地获取一个列表参数，支持JSON字符串。"""
+    val = _get_param(params, keys)
+    key_str = keys[0] if isinstance(keys, list) else keys
+    
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed_list = json.loads(val)
+            if isinstance(parsed_list, list):
+                return parsed_list
+            else:
+                raise ValueError(f"参数 '{key_str}' 的字符串内容应为一个JSON数组，但解析后类型为 {type(parsed_list).__name__}。")
+        except json.JSONDecodeError:
+            raise ValueError(f"参数 '{key_str}' 如果是字符串，则必须是有效的JSON格式的列表字符串。")
+    
+    # 如果参数不存在或类型不正确，返回None或空列表，由调用函数决定如何处理
+    return None
+
+
 # --- 数据加载 ---
 def load_data_from_env(env_var, default_path):
     base_path = os.getenv('PROJECT_BASE_PATH', '.')
@@ -54,10 +109,12 @@ except ValueError as e:
 
 # --- 有状态的牌堆管理函数 ---
 def create_deck(params):
-    deck_name = params.get('deck_name')
-    deck_count = params.get('deck_count', 1)
+    deck_name = _get_param(params, ['deck_name', 'deck_type'])
+    deck_count = _get_int_param(params, ['deck_count', 'decks_count'], default=1)
+    
     if not deck_name or deck_name not in AVAILABLE_DECKS:
         raise ValueError(f"无效的牌堆名称: '{deck_name}'。可用牌堆: {list(AVAILABLE_DECKS.keys())}")
+    if deck_count <= 0: raise ValueError("'deck_count' 必须是正整数。")
     
     initial_cards = AVAILABLE_DECKS[deck_name] * deck_count
     random.shuffle(initial_cards)
@@ -69,10 +126,10 @@ def create_deck(params):
     return {"deck_id": deck_id, "deck_name": deck_name, "total_cards": len(initial_cards), "remaining_cards": len(initial_cards)}
 
 def create_custom_deck(params):
-    cards = params.get('cards', [])
-    if not isinstance(cards, list): raise ValueError("'cards' 参数必须是一个列表。")
+    cards = _get_list_param(params, 'cards')
+    if cards is None: raise ValueError("必需的 'cards' 参数缺失或格式不正确。")
     
-    deck_name = params.get('deck_name', 'custom')
+    deck_name = _get_param(params, 'deck_name', 'custom')
     initial_cards = cards[:]
     random.shuffle(initial_cards)
     deck_id = secrets.token_hex(16)
@@ -83,8 +140,9 @@ def create_custom_deck(params):
     return {"deck_id": deck_id, "deck_name": deck_name, "total_cards": len(initial_cards), "remaining_cards": len(initial_cards)}
 
 def draw_from_deck(params):
-    deck_id = params.get('deck_id')
-    count = int(params.get('count', 1))
+    deck_id = _get_param(params, 'deck_id')
+    count = _get_int_param(params, ['count', 'num_cards'], default=1)
+    
     if not deck_id or deck_id not in ACTIVE_DECKS: raise ValueError(f"无效的 'deck_id': {deck_id}。")
     
     ACTIVE_DECKS[deck_id]['last_accessed'] = time.time()
@@ -96,7 +154,7 @@ def draw_from_deck(params):
     return {"deck_id": deck_id, "drawn_cards": drawn_cards, "remaining_cards": len(deck)}
 
 def reset_deck(params):
-    deck_id = params.get('deck_id')
+    deck_id = _get_param(params, 'deck_id')
     if not deck_id or deck_id not in ACTIVE_DECKS: raise ValueError(f"无效的 'deck_id': {deck_id}。")
     
     deck_info = ACTIVE_DECKS[deck_id]
@@ -108,28 +166,24 @@ def reset_deck(params):
     return {"deck_id": deck_id, "status": "reset_success", "remaining_cards": len(new_cards)}
 
 def destroy_deck(params):
-    deck_id = params.get('deck_id')
+    deck_id = _get_param(params, 'deck_id')
     if deck_id in ACTIVE_DECKS:
         del ACTIVE_DECKS[deck_id]
         return {"deck_id": deck_id, "status": "destroyed"}
     return {"deck_id": deck_id, "status": "not_found_or_already_destroyed"}
 
 def query_deck(params):
-    deck_id = params.get('deck_id')
+    deck_id = _get_param(params, 'deck_id')
     if not deck_id or deck_id not in ACTIVE_DECKS: raise ValueError(f"无效的 'deck_id': {deck_id}。")
     
     deck_info = ACTIVE_DECKS[deck_id]
     deck_info['last_accessed'] = time.time()
-    return {
-        "deck_id": deck_id, "remaining_cards": len(deck_info["cards"]),
-        "drawn_cards_count": len(deck_info["drawn_cards"]),
-        "total_cards": len(deck_info["initial_cards"])
-    }
+    return {"deck_id": deck_id, "remaining_cards": len(deck_info["cards"]), "drawn_cards_count": len(deck_info["drawn_cards"]), "total_cards": len(deck_info["initial_cards"])}
 
 # --- 无状态的随机函数 ---
 def get_cards(params):
-    deck_name = params.get('deck_name')
-    count = int(params.get('count', 1))
+    deck_name = _get_param(params, ['deck_name', 'deck_type'])
+    count = _get_int_param(params, ['count', 'number'], default=1)
     if not deck_name or deck_name not in AVAILABLE_DECKS:
         raise ValueError(f"无效的牌堆名称: '{deck_name}'。")
     if count <= 0: raise ValueError("'count' 参数必须是正整数。")
@@ -141,42 +195,40 @@ def get_cards(params):
     return {"cards": [deck.pop() for _ in range(count)]}
 
 def draw_tarot(params):
-    spread = params.get('spread')
-    allow_reversed = params.get('allow_reversed', True)
+    spread = _get_param(params, 'spread')
+    allow_reversed = _get_bool_param(params, ['allow_reversed', 'reversed'], default=True)
 
     if spread and spread not in TAROT_SPREADS:
         raise ValueError(f"无效的牌阵名称: '{spread}'。可用牌阵: {list(TAROT_SPREADS.keys())}")
 
-    count = len(TAROT_SPREADS[spread]) if spread else int(params.get('count', 3))
+    count = len(TAROT_SPREADS[spread]) if spread else _get_int_param(params, 'count', default=3)
     spread_info = TAROT_SPREADS.get(spread, [{"position": f"Card {i+1}", "description": ""} for i in range(count)])
     
     deck_copy = TAROT_DECK[:]
+    if len(deck_copy) < count: raise ValueError(f"抽牌数量 ({count}) 超过塔罗牌总数 ({len(TAROT_DECK)})。")
     random.shuffle(deck_copy)
     
     drawn_cards = []
     for i in range(count):
         card_name = deck_copy.pop()
         is_upright = random.choice([True, False]) if allow_reversed else True
-        drawn_cards.append({
-            "name": card_name, "upright": is_upright,
-            "position": spread_info[i]["position"], "description": spread_info[i]["description"]
-        })
+        drawn_cards.append({"name": card_name, "upright": is_upright, "position": spread_info[i]["position"], "description": spread_info[i]["description"]})
     return {"type": "tarot_draw", "spread_name": spread or "custom", "cards": drawn_cards}
 
 def cast_runes(params):
-    count = int(params.get('count', 1))
-    if count <= 0 or count > len(RUNE_SET):
-        raise ValueError(f"抽取的卢恩符文数量 ({count}) 无效。")
+    count = _get_int_param(params, 'count', default=1)
+    if count <= 0 or count > len(RUNE_SET): raise ValueError(f"抽取的卢恩符文数量 ({count}) 无效。")
     set_copy = RUNE_SET[:]
     random.shuffle(set_copy)
     return {"type": "rune_cast", "runes": [set_copy.pop() for _ in range(count)]}
 
 def select_from_list(params):
-    items = params.get('items', [])
-    count = int(params.get('count', 1))
-    with_replacement = params.get('with_replacement', False)
+    items = _get_list_param(params, 'items')
+    if items is None or not items: raise ValueError("参数 'items' 必须是一个非空列表。")
     
-    if not isinstance(items, list) or not items: raise ValueError("'items' 参数必须是一个非空列表。")
+    count = _get_int_param(params, 'count', default=1)
+    with_replacement = _get_bool_param(params, 'with_replacement', default=False)
+    
     if count <= 0: raise ValueError("'count' 参数必须是正整数。")
 
     if with_replacement:
@@ -184,22 +236,18 @@ def select_from_list(params):
     else:
         if count > len(items): raise ValueError(f"选择数量 ({count}) 不能超过列表项目总数 ({len(items)})。")
         result = random.sample(items, k=count)
+        
     return {"selection": result}
 
 def get_random_date_time(params):
-    start_str = params.get('start')
-    end_str = params.get('end')
-    format_str = params.get('format', '%Y-%m-%d %H:%M:%S')
+    start_str = _get_param(params, 'start')
+    end_str = _get_param(params, 'end')
+    format_str = _get_param(params, 'format', '%Y-%m-%d %H:%M:%S')
 
-    start_dt = datetime.fromisoformat(start_str) if start_str else datetime(1970, 1, 1, tzinfo=timezone.utc)
-    end_dt = datetime.fromisoformat(end_str) if end_str else datetime.now(timezone.utc)
+    start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00')) if start_str else datetime(1970, 1, 1, tzinfo=timezone.utc)
+    end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00')) if end_str else datetime.now(timezone.utc)
     
-    if start_dt.tzinfo is None: start_dt = start_dt.astimezone()
-    if end_dt.tzinfo is None: end_dt = end_dt.astimezone()
-    
-    start_ts = start_dt.timestamp()
-    end_ts = end_dt.timestamp()
-    
+    start_ts, end_ts = start_dt.timestamp(), end_dt.timestamp()
     if start_ts > end_ts: raise ValueError("起始时间不能晚于结束时间。")
     
     random_ts = random.uniform(start_ts, end_ts)
@@ -242,20 +290,17 @@ def cleanup_old_decks():
 def main():
     command = None
     try:
-        # 加载并清理旧牌堆
         if os.path.exists(ACTIVE_DECKS_FILE):
             with open(ACTIVE_DECKS_FILE, 'r', encoding='utf-8') as f:
                 content = f.read()
                 if content: ACTIVE_DECKS.update(json.loads(content))
         cleanup_old_decks()
 
-        # 处理输入
         input_json = sys.stdin.read()
         args = keys_to_snake_case(json.loads(input_json)) if input_json else {}
         command = args.get("command")
         if not command: raise ValueError("缺少必需的 'command' 字段。")
 
-        # 映射和执行命令
         command_map = {
             "getCards": get_cards, "rollDice": roll_dice, "drawTarot": draw_tarot, "castRunes": cast_runes,
             "createDeck": create_deck, "createCustomDeck": create_custom_deck,
@@ -269,7 +314,6 @@ def main():
         
         result_data = command_map[command](args)
         
-        # 格式化结果
         formatter_map = {
             "getCards": format_get_cards_results, "rollDice": lambda d, p=args: format_dice_results(d, p),
             "drawTarot": format_tarot_results, "castRunes": format_rune_results,
@@ -282,7 +326,6 @@ def main():
         formatter = formatter_map.get(command)
         message = formatter(result_data) if formatter else f"已成功执行命令 '{command}'。"
         
-        # 构造最终响应
         response = {"status": "success", "result": result_data, "message_for_ai": message}
     
     except Exception as e:
@@ -291,16 +334,16 @@ def main():
         response = {"status": "error", "error": str(e), "message_for_ai": error_message}
         
     finally:
-        # 始终尝试保存状态
         try:
             with open(ACTIVE_DECKS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(ACTIVE_DECKS, f, ensure_ascii=False, indent=4)
         except Exception:
-            pass # 保存失败不应覆盖原始响应
+            pass
 
-    # VCPToolbox 要求输出包装，并且是驼峰命名法
-    final_output = f"<<<RandomnessStart>>>\n{json.dumps(keys_to_camel_case(response), ensure_ascii=False)}\n<<<RandomnessEnd>>>"
+    final_output = json.dumps(keys_to_camel_case(response), ensure_ascii=False)
     sys.stdout.write(final_output)
+    
+    sys.stdout.flush()
 
 if __name__ == "__main__":
     main()

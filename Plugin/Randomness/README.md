@@ -186,9 +186,10 @@
 
 以下是计划为骰子系统添加的功能，按优先级和技术难度排序。
 
--   [ ] **复杂数学表达式**:
+-   [x] **复杂数学表达式**:
     -   格式: `(表达式)`
     -   示例: `(2d6+5)*2`, `(4d6kh3)/2`
+    -   **说明**: 已实现。现在 `rollDice` 指令可以处理包含括号和 `+ - * /` 运算符的完整数学表达式。
 -   [ ] **COC 专用指令**:
     -   `sc`: SAN 检定，需要更复杂的逻辑来处理成功/失败的不同结果。
     -   `en`: 技能成长检定。
@@ -204,3 +205,102 @@
 -   `RUNE_SET_PATH`: 卢恩符文数据文件的路径。
 -   `POKER_DECK_PATH`: 扑克牌数据文件的路径。
 -   `TAROT_SPREADS_PATH`: 塔罗牌牌阵数据文件的路径。
+
+---
+
+## Agent 指令与回复示例
+
+本章节提供所有指令的调用示例以及 Agent 可能收到的回复，以便于测试和理解插件的行为。
+
+### 1. `rollDice`
+
+-   **VarUser**: `我的角色要进行一次攻击检定，加值是5，请帮我投一个2d6，然后将结果乘以2作为最终伤害。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.rollDice diceString="(2d6+5)*2"
+    ```
+-   **预期回复**:
+    > 掷骰: **(2d6+5)*2** = **24**
+    > `计算过程: 计算 '2d6': 掷骰 (2d6): [4, 6] -> 排序: [4, 6] -> 结果 10 -> 最终计算: (10+5)*2 = 30`
+    > *(注意：由于随机性，您的总点数和计算过程会有所不同)*
+
+### 2. `selectFromList`
+
+-   **VarUser**: `我晚饭不知道吃什么，帮我在“红烧牛肉”、“麻婆豆腐”和“宫保鸡丁”里随便选一个。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.selectFromList items=["红烧牛肉", "麻婆豆腐", "宫保鸡丁"] count=1
+    ```
+-   **预期回复**:
+    > 从列表中随机选择的结果是：**麻婆豆腐**
+
+### 3. `getCards`
+
+-   **VarUser**: `我们来玩德州扑克吧，给我发两张手牌。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.getCards deckName=poker count=2
+    ```
+-   **预期回复**:
+    > 为您从牌堆中抽到了: AS, KH.
+
+### 4. `drawTarot`
+
+-   **VarUser**: `我想算一下我最近的运势，帮我用三牌阵抽一下塔罗牌。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.drawTarot spread=three_card
+    ```
+-   **预期回复**:
+    > 为您使用 **three_card** 牌阵抽到的塔罗牌是：
+    > - **过去**: 「魔术师」(正位)
+    > - **现在**: 「世界」(逆位)
+    > - **未来**: 「愚者」(正位)
+
+### 5. `castRunes`
+
+-   **VarUser**: `请为我抽取3个卢恩符文，看看有什么神谕。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.castRunes count=3
+    ```
+-   **预期回复**:
+    > 为您抽取的卢恩符文是：Fehu, Uruz, Ansuz.
+
+### 6. `getRandomDateTime`
+
+-   **VarUser**: `我想写一个发生在2025年的故事，帮我随机选一个日期，格式是XXXX年XX月XX日。`
+-   **Agent 调用**:
+    ```
+    VCP>Randomness.getRandomDateTime start="2025-01-01T00:00:00Z" end="2025-12-31T23:59:59Z" format="%Y年%m月%d日"
+    ```
+-   **预期回复**:
+    > 在指定范围内生成的随机时间是：**2025年08月23日**
+
+### 7. 有状态的牌堆操作 (完整流程)
+
+-   **VarUser (步骤1)**: `我们来玩21点，先创建一个标准的扑克牌堆。`
+-   **Agent 调用 (步骤1: 创建)**:
+    ```
+    VCP>Randomness.createDeck deckName=poker
+    ```
+-   **预期回复 (步骤1)**:
+    > 已成功创建牌堆 'poker' (共 52 张)。
+    > 请使用此ID进行后续操作: `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4`
+
+-   **VarUser (步骤2)**: `好了，现在给我发两张牌。`
+-   **Agent 调用 (步骤2: 抽牌)**:
+    ```
+    VCP>Randomness.drawFromDeck deckId=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 count=2
+    ```
+-   **预期回复 (步骤2)**:
+    > 从牌堆 `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4` 中抽到了: QC, 10H.
+    > 剩余牌数: 50。
+
+-   **VarUser (步骤3)**: `好的，这局结束了，把牌堆销毁吧。`
+-   **Agent 调用 (步骤3: 销毁)**:
+    ```
+    VCP>Randomness.destroyDeck deckId=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+    ```
+-   **预期回复 (步骤3)**:
+    > 牌堆 `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4` 已销毁。
