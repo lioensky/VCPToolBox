@@ -55,11 +55,12 @@ def _parse_and_roll(expression_str):
     # 正则表达式，用于捕获所有部分
     pattern = re.compile(
         r"(\d+)d(\d+)"      # 1, 2: 主要骰子部分 (e.g., 4d6)
-        r"(k[hl]\d+)?"      # 3: 保留最高/最低 (e.g., kh3)
-        r"(s)?"             # 4: 排序标志 (e.g., s)
-        r"([<>]=?\d+)?"     # 5: 成功检定或骰池 (e.g., <=75, >6)
-        r"([+-]\d+)?"       # 6: 算术修正 (e.g., +5)
-        r"(bp\d*|pb\d*)?"   # 7: COC 奖励/惩罚骰
+        r"(adv|dis)?"       # 3: D&D 优势/劣势
+        r"(k[hl]\d+)?"      # 4: 保留最高/最低 (e.g., kh3)
+        r"(s)?"             # 5: 排序标志 (e.g., s)
+        r"([<>]=?\d+)?"     # 6: 成功检定或骰池 (e.g., <=75, >6)
+        r"([+-]\d+)?"       # 7: 算术修正 (e.g., +5)
+        r"(bp\d*|pb\d*)?"   # 8: COC 奖励/惩罚骰
     )
     match = pattern.match(expression)
 
@@ -76,11 +77,22 @@ def _parse_and_roll(expression_str):
     
     count = int(groups[0])
     sides = int(groups[1])
-    keep_mod = groups[2]
-    sort_flag = groups[3]
-    check_or_pool_mod = groups[4]
-    arith_mod = groups[5]
-    coc_mod = groups[6]
+    adv_mod = groups[2]
+    keep_mod = groups[3]
+    sort_flag = groups[4]
+    check_or_pool_mod = groups[5]
+    arith_mod = groups[6]
+    coc_mod = groups[7]
+
+    # 处理 adv/dis 语法糖
+    if adv_mod:
+        if count != 1 or sides != 20:
+            raise ValueError("优势/劣势 (adv/dis) 仅适用于 1d20。")
+        count = 2 # 掷两个d20
+        keep_mod = "kh1" if adv_mod == "adv" else "kl1"
+        calculation_steps = [f"掷骰 ({adv_mod}) -> 2d20"]
+    else:
+        calculation_steps = [f"掷骰 ({count}d{sides}): {rolls}"]
 
     # 判断是骰池还是成功检定
     is_pool = False
@@ -100,7 +112,8 @@ def _parse_and_roll(expression_str):
     rolls = [random.randint(1, sides) for _ in range(count)]
     detailed_rolls = {"initial": rolls[:]}
     result_rolls = rolls[:]
-    calculation_steps = [f"掷骰 ({count}d{sides}): {rolls}"]
+    if not adv_mod:
+        calculation_steps = [f"掷骰 ({count}d{sides}): {rolls}"]
 
     # --- 处理修饰符 ---
 
