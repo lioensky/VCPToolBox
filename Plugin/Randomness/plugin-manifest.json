@@ -1,7 +1,7 @@
 {
   "name": "Randomness",
   "displayName": "随机事件生成器",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "一个多功能后端插件，用于生成各种可信的随机事件。支持无状态的单次随机事件（如抽牌、掷骰）和有状态的、可持久化的牌堆管理（创建、抽取、重置、销毁），适用于需要连续操作的场景。",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -12,212 +12,99 @@
     "protocol": "stdio"
   },
   "configSchema": {
-    "TAROT_DECK_PATH": {
-      "type": "string",
-      "description": "Path to the tarot deck JSON data file.",
-      "default": "Plugin/Randomness/data/tarot_deck.json"
-    },
-    "RUNE_SET_PATH": {
-      "type": "string",
-      "description": "Path to the rune set JSON data file.",
-      "default": "Plugin/Randomness/data/rune_set.json"
-    },
-    "POKER_DECK_PATH": {
-      "type": "string",
-      "description": "Path to the poker deck JSON data file.",
-      "default": "Plugin/Randomness/data/poker_deck.json"
-    },
-    "TAROT_SPREADS_PATH": {
-      "type": "string",
-      "description": "Path to the tarot spreads JSON data file.",
-      "default": "Plugin/Randomness/data/tarot_spreads.json"
-    }
+    "TAROT_DECK_PATH": { "type": "string", "description": "Path to the tarot deck JSON data file.", "default": "Plugin/Randomness/data/tarot_deck.json" },
+    "RUNE_SET_PATH": { "type": "string", "description": "Path to the rune set JSON data file.", "default": "Plugin/Randomness/data/rune_set.json" },
+    "POKER_DECK_PATH": { "type": "string", "description": "Path to the poker deck JSON data file.", "default": "Plugin/Randomness/data/poker_deck.json" },
+    "TAROT_SPREADS_PATH": { "type": "string", "description": "Path to the tarot spreads JSON data file.", "default": "Plugin/Randomness/data/tarot_spreads.json" }
   },
   "capabilities": {
     "invocationCommands": [
       {
         "command": "createDeck",
-        "description": "创建一个新的、有状态的牌堆实例，并返回其唯一ID。可以指定牌堆类型和使用的牌堆数量。创建后，牌堆会一直存在于内存中，直到被销毁。",
+        "description": "创建一个新的、有状态的牌堆实例。\n- **调用示例**: `VCP>Randomness.createDeck deckName=poker deckCount=2`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"deckName\": \"poker\", \"totalCards\": 104, \"remainingCards\": 104}`",
         "parameters": [
-          {
-            "name": "deckName",
-            "type": "string",
-            "description": "要使用的牌堆名称。可用选项: 'poker' (使用国际缩写, 如 S13 代表黑桃K), 'tarot'。",
-            "optional": false
-          },
-          {
-            "name": "deckCount",
-            "type": "integer",
-            "description": "要混合在一起的牌堆数量。例如，使用两副扑克牌进行游戏。",
-            "optional": true,
-            "default": 1
-          }
-        ],
-        "usage_example": "VCP>Randomness.createDeck deckName=poker deckCount=2"
+          { "name": "deckName", "type": "string", "description": "要使用的牌堆名称。可用选项: 'poker', 'tarot'。", "optional": false },
+          { "name": "deckCount", "type": "integer", "description": "要混合在一起的牌堆数量。", "optional": true, "default": 1 }
+        ]
       },
       {
         "command": "createCustomDeck",
-        "description": "根据用户提供的任意卡牌列表创建一个新的、有状态的牌堆实例。这对于需要特定牌组的场景非常有用，例如只使用大阿卡纳牌进行塔罗占卜、进行多副牌的斗地主游戏，或使用任何自定义的卡牌（如“猫”、“狗”、“猪”、“羊”）。",
+        "description": "根据用户提供的任意卡牌列表创建一个新的、有状态的牌堆实例。\n- **调用示例**: `VCP>Randomness.createCustomDeck cards=[\"A\", \"B\"] deckName=MyDeck`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"deckName\": \"MyDeck\", \"totalCards\": 2, \"remainingCards\": 2}`",
         "parameters": [
-          {
-            "name": "cards",
-            "type": "array",
-            "description": "一个包含卡牌的数组。数组中的每个元素都代表一张牌（可以是字符串或对象）。",
-            "optional": false
-          },
-          {
-            "name": "deckName",
-            "type": "string",
-            "description": "为这个自定义牌堆指定一个名称。",
-            "optional": true,
-            "default": "custom"
-          }
-        ],
-        "usage_example": "VCP>Randomness.createCustomDeck cards=[\"牌1\", \"牌2\", \"牌3\"] deckName=我的牌堆"
+          { "name": "cards", "type": "array", "description": "一个包含卡牌的数组。", "optional": false },
+          { "name": "deckName", "type": "string", "description": "为这个自定义牌堆指定一个名称。", "optional": true, "default": "custom" }
+        ]
       },
       {
         "command": "drawFromDeck",
-        "description": "从一个已创建的、有状态的牌堆实例中抽取指定数量的牌。这是一个有状态的操作，抽出的牌将从牌堆中移除。",
+        "description": "从一个已创建的、有状态的牌堆实例中抽取指定数量的牌。\n- **调用示例**: `VCP>Randomness.drawFromDeck deckId=... count=2`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"drawnCards\": [\"KS\", \"AH\"], \"remainingCards\": 50}`",
         "parameters": [
-          {
-            "name": "deckId",
-            "type": "string",
-            "description": "由 createDeck 命令返回的牌堆唯一ID。",
-            "optional": false
-          },
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "要抽取的牌的数量。",
-            "optional": true,
-            "default": 1
-          }
-        ],
-        "usage_example": "VCP>Randomness.drawFromDeck deckId=a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6 count=5"
+          { "name": "deckId", "type": "string", "description": "由 createDeck 命令返回的牌堆唯一ID。", "optional": false },
+          { "name": "count", "type": "integer", "description": "要抽取的牌的数量。", "optional": true, "default": 1 }
+        ]
       },
       {
         "command": "resetDeck",
-        "description": "重置一个指定的牌堆实例。所有已抽出的牌将被放回牌堆，并重新洗牌。",
-        "parameters": [
-          {
-            "name": "deckId",
-            "type": "string",
-            "description": "要重置的牌堆的唯一ID。",
-            "optional": false
-          }
-        ],
-        "usage_example": "VCP>Randomness.resetDeck deckId=a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        "description": "重置一个指定的牌堆实例，将所有已抽出的牌放回牌堆并重新洗牌。\n- **调用示例**: `VCP>Randomness.resetDeck deckId=...`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"status\": \"reset_success\", \"remainingCards\": 52}`",
+        "parameters": [ { "name": "deckId", "type": "string", "description": "要重置的牌堆的唯一ID。", "optional": false } ]
       },
       {
         "command": "destroyDeck",
-        "description": "销毁一个指定的牌堆实例，将其从内存中移除。这是一个重要的清理步骤。",
-        "parameters": [
-          {
-            "name": "deckId",
-            "type": "string",
-            "description": "要销毁的牌堆的唯一ID。",
-            "optional": false
-          }
-        ],
-        "usage_example": "VCP>Randomness.destroyDeck deckId=a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        "description": "销毁一个指定的牌堆实例，将其从内存中移除。\n- **调用示例**: `VCP>Randomness.destroyDeck deckId=...`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"status\": \"destroyed\"}`",
+        "parameters": [ { "name": "deckId", "type": "string", "description": "要销毁的牌堆的唯一ID。", "optional": false } ]
       },
       {
         "command": "queryDeck",
-        "description": "查询一个指定的牌堆实例的状态，例如剩余牌数、已抽牌数等。",
-        "parameters": [
-          {
-            "name": "deckId",
-            "type": "string",
-            "description": "要查询的牌堆的唯一ID。",
-            "optional": false
-          }
-        ],
-        "usage_example": "VCP>Randomness.queryDeck deckId=a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6"
+        "description": "查询一个指定的牌堆实例的状态。\n- **调用示例**: `VCP>Randomness.queryDeck deckId=...`\n- **返回结果 (`result`) 示例**: `{\"deckId\": \"...\", \"remainingCards\": 50, \"drawnCardsCount\": 2, \"totalCards\": 52}`",
+        "parameters": [ { "name": "deckId", "type": "string", "description": "要查询的牌堆的唯一ID。", "optional": false } ]
       },
       {
         "command": "getCards",
-        "description": "[无状态] 从一个指定类型的完整牌堆中，进行一次性的洗牌并抽取指定数量的牌。这是一个完全无状态的操作。",
+        "description": "[无状态] 从一个指定类型的完整牌堆中，进行一次性的洗牌并抽取指定数量的牌。\n- **调用示例**: `VCP>Randomness.getCards deckName=poker count=2`\n- **返回结果 (`result`) 示例**: `{\"cards\": [\"QC\", \"10H\"]}`",
         "parameters": [
-          {
-            "name": "deckName",
-            "type": "string",
-            "description": "要使用的牌堆名称。可用选项: 'poker' (使用国际缩写, 如 S13 代表黑桃K), 'tarot'。",
-            "optional": false
-          },
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "要抽取的牌的数量。",
-            "optional": true,
-            "default": 1
-          }
-        ],
-        "usage_example": "VCP>Randomness.getCards deckName=poker count=2"
+          { "name": "deckName", "type": "string", "description": "要使用的牌堆名称。可用选项: 'poker', 'tarot'。", "optional": false },
+          { "name": "count", "type": "integer", "description": "要抽取的牌的数量。", "optional": true, "default": 1 }
+        ]
       },
       {
         "command": "rollDice",
-        "description": "掷一个或多个骰子，支持复杂的自定义骰子组合和 '3d6' 格式的字符串。可以同时掷不同面数和数量的骰子。",
+        "description": "执行一个复杂的TRPG风格的掷骰表达式，支持括号和数学运算。\n- **简单调用示例**: `VCP>Randomness.rollDice diceString=\"2d6+5\"`\n- **复杂调用示例**: `VCP>Randomness.rollDice diceString=\"(4d6kh3+5)*2\"`\n- **返回结果 (`result`) 示例**: `{\"expression\": \"(4d6kh3+5)*2\", \"total\": 38, \"calculation_steps\": [...]}`",
         "parameters": [
-          {
-            "name": "dice",
-            "type": "any",
-            "description": "一个描述骰子组合的数组或字符串。数组格式: [{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]。字符串格式: '3d6'。",
-            "optional": true
-          },
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "[兼容旧版] 要掷的骰子数量。",
-            "optional": true
-          },
-          {
-            "name": "sides",
-            "type": "integer",
-            "description": "[兼容旧版] 每个骰子的面数。",
-            "optional": true
-          }
-        ],
-        "usage_example": "VCP>Randomness.rollDice dice=[{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]"
+          { "name": "diceString", "type": "string", "description": "要执行的掷骰表达式。", "optional": false },
+          { "name": "format", "type": "string", "description": "输出格式。'text' (默认) 或 'ascii'。", "optional": true, "default": "text" }
+        ]
       },
       {
         "command": "drawTarot",
-        "description": "[无状态] 从塔罗牌库中抽牌，支持多种预设牌阵。可用牌阵: 'single_card', 'three_card', 'celtic_cross', 'horseshoe', 'five_card', 'love', 'decision', 'star', 'timeline', 'self_exploration'。",
+        "description": "[无状态] 从塔罗牌库中抽牌，支持多种预设牌阵。\n- **调用示例**: `VCP>Randomness.drawTarot spread=three_card`\n- **返回结果 (`result`) 示例**: `{\"type\": \"tarot_draw\", \"spreadName\": \"three_card\", \"cards\": [{\"name\": \"The Fool\", ...}, ...]}`",
         "parameters": [
-          {
-            "name": "spread",
-            "type": "string",
-            "description": "要使用的牌阵名称。",
-            "optional": true
-          },
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "[兼容旧版] 要抽取的塔罗牌数量。",
-            "optional": true
-          },
-          {
-            "name": "allow_reversed",
-            "type": "boolean",
-            "description": "是否允许出现逆位牌。",
-            "optional": true,
-            "default": true
-          }
-        ],
-        "usage_example": "VCP>Randomness.drawTarot spread=celtic_cross"
+          { "name": "spread", "type": "string", "description": "要使用的牌阵名称。", "optional": true },
+          { "name": "count", "type": "integer", "description": "[兼容旧版] 抽牌数量。", "optional": true },
+          { "name": "allowReversed", "type": "boolean", "description": "是否允许出现逆位牌。", "optional": true, "default": true }
+        ]
       },
       {
         "command": "castRunes",
-        "description": "[无状态] 从符文集中抽取指定数量的卢恩符文。",
+        "description": "[无状态] 从符文集中抽取指定数量的卢恩符文。\n- **调用示例**: `VCP>Randomness.castRunes count=3`\n- **返回结果 (`result`) 示例**: `{\"type\": \"rune_cast\", \"runes\": [\"Fehu\", \"Uruz\", \"Ansuz\"]}`",
+        "parameters": [ { "name": "count", "type": "integer", "description": "要抽取的卢恩符文数量。", "optional": true, "default": 1 } ]
+      },
+      {
+        "command": "selectFromList",
+        "description": "[无状态] 从一个给定的任意列表中随机抽取一个或多个项目。\n- **调用示例**: `VCP>Randomness.selectFromList items=[\"A\", \"B\"] count=1`\n- **返回结果 (`result`) 示例**: `{\"selection\": [\"B\"]}`",
         "parameters": [
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "要抽取的卢恩符文数量。",
-            "optional": true,
-            "default": 1
-          }
-        ],
-        "usage_example": "VCP>Randomness.castRunes count=1"
+          { "name": "items", "type": "array", "description": "从中进行选择的项目的数组。", "optional": false },
+          { "name": "count", "type": "integer", "description": "要选择的项目的数量。", "optional": true, "default": 1 },
+          { "name": "withReplacement", "type": "boolean", "description": "是否允许重复抽取。", "optional": true, "default": false }
+        ]
+      },
+      {
+        "command": "getRandomDateTime",
+        "description": "[无状态] 在一个指定的开始和结束日期/时间范围内，生成一个随机的时间点。\n- **调用示例**: `VCP>Randomness.getRandomDateTime end=\"2025-12-31T23:59:59Z\"`\n- **返回结果 (`result`) 示例**: `{\"datetimeStr\": \"2025-07-22 10:30:59\"}`",
+        "parameters": [
+          { "name": "start", "type": "string", "description": "ISO 8601 格式的起始时间。", "optional": true },
+          { "name": "end", "type": "string", "description": "ISO 8601 格式的结束时间。", "optional": true },
+          { "name": "format", "type": "string", "description": "输出的日期时间格式。", "optional": true }
+        ]
       }
     ]
   },
