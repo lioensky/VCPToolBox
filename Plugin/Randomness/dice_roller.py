@@ -54,7 +54,32 @@ def _parse_and_roll(expression_str):
     expression = expression_str.lower().strip()
     # 正则表达式，用于捕获所有部分
     # --- 解析表达式 ---
-    # 首先检查自定义骰面格式
+    # 首先检查 Fate/Fudge 骰子格式
+    fate_match = re.match(r"(\d+)df", expression)
+    if fate_match:
+        count = int(fate_match.group(1))
+        if count > 100: raise ValueError("骰子数量不能超过100。")
+        
+        fate_sides = [-1, -1, 0, 0, 1, 1]
+        rolls_values = [random.choice(fate_sides) for _ in range(count)]
+        
+        # 将数值转换为符号
+        def to_symbol(val):
+            if val == 1: return '+'
+            if val == -1: return '-'
+            return ' ' # 空白
+            
+        rolls_symbols = [to_symbol(v) for v in rolls_values]
+        total = sum(rolls_values)
+        
+        return {
+            "expression": expression_str,
+            "total": total,
+            "rolls": {"initial": rolls_symbols},
+            "calculation_steps": [f"掷 Fate 骰: {rolls_symbols} -> 合计 {total}"],
+        }
+
+    # 接着检查自定义骰面格式
     custom_sides_match = re.match(r"(\d+)d\{(.+)\}", expression)
     if custom_sides_match:
         count = int(custom_sides_match.group(1))
