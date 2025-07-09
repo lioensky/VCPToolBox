@@ -6,6 +6,7 @@ import re
 
 import secrets
 import time
+from dice_roller import roll_dice, format_dice_results
 
 # --- 全局状态 ---
 # 用于存储所有活动牌堆的实例
@@ -277,48 +278,8 @@ def drawTarot(params):
         
     return {"type": "tarot_draw", "spread_name": spread or "custom", "cards": drawn_cards}
 
-def rollDice(params):
-    """掷一个或多个骰子，支持自定义骰子组合和 '3d6' 格式的字符串。"""
-    dice_param = params.get('dice')
-    
-    dice_sets = []
-    if isinstance(dice_param, str):
-        # 解析 "3d6" 格式的字符串
-        match = re.match(r'(\d+)d(\d+)', dice_param)
-        if match:
-            count, sides = map(int, match.groups())
-            dice_sets.append({"sides": sides, "count": count})
-        else:
-            raise ValueError("无效的骰子字符串格式。请使用 'XdY' 格式，例如 '3d6'。")
-    elif isinstance(dice_param, list):
-        dice_sets = dice_param
-    else:
-        # 兼容旧版
-        count = params.get('count', 1)
-        sides = params.get('sides', 6)
-        dice_sets = [{"sides": sides, "count": count}]
-
-    all_rolls = []
-    total_sum = 0
-
-    for dice_set in dice_sets:
-        count = dice_set.get('count', 1)
-        sides = dice_set.get('sides', 6)
-        
-        try:
-            count = int(count)
-            sides = int(sides)
-        except (ValueError, TypeError):
-            raise ValueError(f"骰子定义中的 'count' ('{count}') 和 'sides' ('{sides}') 必须是整数。")
-
-        if count <= 0 or sides <= 0:
-            raise ValueError("骰子的数量和面数都必须是正整数。")
-            
-        rolls = [random.randint(1, sides) for _ in range(count)]
-        all_rolls.append({"dice": f"{count}d{sides}", "rolls": rolls, "subtotal": sum(rolls)})
-        total_sum += sum(rolls)
-
-    return {"type": "dice_roll", "results": all_rolls, "total": total_sum}
+# This space is intentionally left blank.
+# The rollDice function has been moved to dice_roller.py
 
 def castRunes(params):
     count = params.get('count', 1)
@@ -360,13 +321,8 @@ def format_destroy_deck_results(data):
 def format_query_deck_results(data):
     return f"牌堆 `{data['deck_id']}` 状态查询:\n- 剩余牌数: {data['remaining_cards']}\n- 已抽牌数: {data['drawn_cards_count']}\n- 总牌数: {data['total_cards']}"
 
-def format_dice_results(data, params):
-    results_strs = []
-    for result in data.get('results', []):
-        rolls_str = ', '.join(map(str, result['rolls']))
-        results_strs.append(f"- {result['dice']}: {rolls_str} (小计: {result['subtotal']})")
-    
-    return f"为您掷骰子的结果如下：\n" + "\n".join(results_strs) + f"\n\n**总点数**: {data['total']}"
+# This space is intentionally left blank.
+# The format_dice_results function has been moved to dice_roller.py
 
 def format_tarot_results(data):
     spread_name = data.get('spread_name', 'custom')
@@ -420,7 +376,7 @@ def main():
 
         command_map = {
             "getCards": get_cards,
-            "rollDice": rollDice,
+            "rollDice": roll_dice,
             "drawTarot": drawTarot,
             "castRunes": castRunes,
             # 有状态命令
@@ -437,7 +393,7 @@ def main():
             
             formatter_map = {
                 "getCards": format_get_cards_results,
-                "rollDice": lambda d: format_dice_results(d, args),
+                "rollDice": lambda d, p=args: format_dice_results(d, p),
                 "drawTarot": format_tarot_results,
                 "castRunes": format_rune_results,
                 # 有状态命令格式化
