@@ -53,6 +53,26 @@ def _parse_and_roll(expression_str):
     """内部函数，处理单个掷骰表达式的解析和计算。"""
     expression = expression_str.lower().strip()
     # 正则表达式，用于捕获所有部分
+    # --- 解析表达式 ---
+    # 首先检查自定义骰面格式
+    custom_sides_match = re.match(r"(\d+)d\{(.+)\}", expression)
+    if custom_sides_match:
+        count = int(custom_sides_match.group(1))
+        sides_str = custom_sides_match.group(2)
+        custom_sides = [s.strip() for s in sides_str.split(',')]
+        
+        if count > 100: raise ValueError("骰子数量不能超过100。")
+
+        rolls = [random.choice(custom_sides) for _ in range(count)]
+        
+        return {
+            "expression": expression_str,
+            "total": ", ".join(rolls), # 对于自定义骰面，总和就是结果的拼接
+            "rolls": {"initial": rolls},
+            "calculation_steps": [f"掷自定义骰: {rolls}"],
+        }
+
+    # 标准数字骰子格式
     pattern = re.compile(
         r"(\d+)d(\d+)"      # 1, 2: 主要骰子部分 (e.g., 4d6)
         r"(adv|dis)?"       # 3: D&D 优势/劣势
