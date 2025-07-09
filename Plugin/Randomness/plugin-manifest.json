@@ -68,7 +68,7 @@
       },
       {
         "command": "rollDice",
-        "description": "执行一个复杂的TRPG风格的掷骰表达式。\n- **调用示例**: `VCP>Randomness.rollDice diceString=\"2d6+5\"`\n- **返回结果 (`result`) 示例**: `{\"expression\": \"2d6+5\", \"total\": 12, \"rolls\": {\"initial\": [4, 3]}, ...}`",
+        "description": "执行一个复杂的TRPG风格的掷骰表达式，支持括号和数学运算。\n- **简单调用示例**: `VCP>Randomness.rollDice diceString=\"2d6+5\"`\n- **复杂调用示例**: `VCP>Randomness.rollDice diceString=\"(4d6kh3+5)*2\"`\n- **返回结果 (`result`) 示例**: `{\"expression\": \"(4d6kh3+5)*2\", \"total\": 38, \"calculation_steps\": [...]}`",
         "parameters": [
           { "name": "diceString", "type": "string", "description": "要执行的掷骰表达式。", "optional": false },
           { "name": "format", "type": "string", "description": "输出格式。'text' (默认) 或 'ascii'。", "optional": true, "default": "text" }
