@@ -156,28 +156,16 @@
       },
       {
         "command": "rollDice",
-        "description": "掷一个或多个骰子，支持复杂的自定义骰子组合和 '3d6' 格式的字符串。可以同时掷不同面数和数量的骰子。",
+        "description": "执行一个复杂的TRPG风格的掷骰表达式。支持重复掷骰、骰池、取高/低、加减修正、成功检定和COC奖惩骰等多种指令。",
         "parameters": [
           {
-            "name": "dice",
-            "type": "any",
-            "description": "一个描述骰子组合的数组或字符串。数组格式: [{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]。字符串格式: '3d6'。",
-            "optional": true
-          },
-          {
-            "name": "count",
-            "type": "integer",
-            "description": "[兼容旧版] 要掷的骰子数量。",
-            "optional": true
-          },
-          {
-            "name": "sides",
-            "type": "integer",
-            "description": "[兼容旧版] 每个骰子的面数。",
-            "optional": true
+            "name": "diceString",
+            "type": "string",
+            "description": "要执行的掷骰表达式。例如: '3r(2d6+5)', '10d10>6', '4d6kh3'。",
+            "optional": false
           }
         ],
-        "usage_example": "VCP>Randomness.rollDice dice=[{\"sides\": 6, \"count\": 2}, {\"sides\": 20, \"count\": 1}]"
+        "usage_example": "VCP>Randomness.rollDice diceString=\"3r(2d6+5)\""
       },
       {
         "command": "drawTarot",
