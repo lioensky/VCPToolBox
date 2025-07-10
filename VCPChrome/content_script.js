@@ -61,64 +61,74 @@ function pageToMarkdown() {
         }
 
         let markdown = `# ${document.title}\nURL: ${document.URL}\n\n`;
+        const ignoredTags = ['SCRIPT', 'STYLE', 'NAV', 'FOOTER', 'ASIDE', 'IFRAME', 'NOSCRIPT'];
+        const processedNodes = new WeakSet(); // 记录已处理过的节点，防止重复
 
         function processNode(node) {
-            try {
-                let textContent = '';
-                const ignoredTags = ['SCRIPT', 'STYLE', 'NAV', 'FOOTER', 'ASIDE', 'IFRAME'];
-                if (node.nodeType === Node.ELEMENT_NODE && ignoredTags.includes(node.tagName)) {
+            // 1. 基本过滤条件
+            if (!node || processedNodes.has(node)) return '';
+
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const style = window.getComputedStyle(node);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
                     return '';
                 }
-
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    const style = window.getComputedStyle(node);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-                        return '';
-                    }
+                if (ignoredTags.includes(node.tagName)) {
+                    return '';
                 }
-                
-                if (isInteractive(node)) {
-                    // 避免嵌套标记，如果父元素已经被标记为可交互，则跳过子元素
-                    if (!node.parentElement.closest('[vcp-id]')) {
-                        const interactiveMd = formatInteractiveElement(node);
-                        if (interactiveMd) {
-                            return interactiveMd + '\n'; // 成功格式化后，停止对该分支的进一步递归
-                        }
-                    }
-                }
-
-                if (node.nodeType === Node.TEXT_NODE) {
-                    const cleanedText = node.textContent.trim().replace(/\s+/g, ' ');
-                    if (cleanedText) {
-                        textContent += cleanedText + ' ';
-                    }
-                } else if (node.nodeType === Node.ELEMENT_NODE) {
-                    let childText = '';
-
-                    node.childNodes.forEach(child => {
-                        childText += processNode(child);
-                    });
-
-                    if (childText.trim()) {
-                        const tagName = node.tagName.toLowerCase();
-                        if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
-                            const level = parseInt(tagName.charAt(1));
-                            textContent += `${'#'.repeat(level)} ${childText.trim()}\n\n`;
-                        } else if (tagName === 'p' || tagName === 'div' || tagName === 'span' || tagName === 'li') {
-                            textContent += childText.trim() + '\n';
-                        } else {
-                            textContent += childText;
-                        }
-                    }
-                }
-                return textContent;
-            } catch (e) {
-                return `[处理节点时出错: ${e.message}]`;
             }
+
+            // 如果父元素已经被标记为可交互元素并处理过，则跳过此节点
+            if (node.parentElement && node.parentElement.closest('[vcp-id]')) {
+                return '';
+            }
+
+            // 2. 优先处理可交互元素
+            if (isInteractive(node)) {
+                const interactiveMd = formatInteractiveElement(node);
+                if (interactiveMd) {
+                    // 标记此节点及其所有子孙节点为已处理
+                    processedNodes.add(node);
+                    node.querySelectorAll('*').forEach(child => processedNodes.add(child));
+                    return interactiveMd + '\n';
+                }
+            }
+
+            // 3. 处理文本节点
+            if (node.nodeType === Node.TEXT_NODE) {
+                // 用正则表达式替换多个空白为一个空格
+                return node.textContent.replace(/\s+/g, ' ').trim() + ' ';
+            }
+
+            // 4. 递归处理子节点 (包括 Shadow DOM)
+            let childContent = '';
+            if (node.shadowRoot) {
+                childContent += processNode(node.shadowRoot);
+            }
+            
+            node.childNodes.forEach(child => {
+                childContent += processNode(child);
+            });
+
+            // 5. 为块级元素添加换行以保持结构
+            if (node.nodeType === Node.ELEMENT_NODE && childContent.trim()) {
+                const style = window.getComputedStyle(node);
+                if (style.display === 'block' || style.display === 'flex' || style.display === 'grid') {
+                    return '\n' + childContent.trim() + '\n';
+                }
+            }
+
+            return childContent;
         }
 
         markdown += processNode(body);
-        markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n').trim();
+        
+        // 清理最终的Markdown文本
+        markdown = markdown.replace(/[ \t]+/g, ' '); // 合并多余空格
+        markdown = markdown.replace(/ (\n)/g, '\n'); // 清理行尾空格
+        markdown = markdown.replace(/(\n\s*){3,}/g, '\n\n'); // 合并多余空行
+        markdown = markdown.trim();
+        
         return markdown;
     } catch (e) {
         return `# ${document.title}\n\n[处理页面时出错: ${e.message}]`;
@@ -168,16 +178,15 @@ function formatInteractiveElement(el) {
         return `[下拉选择: ${label || text || el.name || el.id || '无标题下拉框'}](${vcpId})`;
     }
 
-    // 为其他可交互元素（如可点击的div，带角色的span等）提供通用处理
+    // 为其他所有可交互元素（如可点击的div，带角色的span等）提供通用处理
     if (text) {
         return `[可交互元素: ${text}](${vcpId})`;
     }
 
-    // 如果到这里，说明这是一个我们无法很好描述的可交互元素
-    // 回退计数器并移除属性，因为它没有被使用
-    vcpIdCounter--;
-    el.removeAttribute('vcp-id');
-    return null;
+    // 如果元素没有文本但仍然是可交互的（例如，一个图标按钮），我们仍然需要标记它
+    // 但我们不回退ID，而是将其标记为一个没有文本的元素
+    const type = el.type || role || tagName;
+    return `[可交互元素: 无文本 (${type})](${vcpId})`;
 }
 
 function findLabelForInput(inputElement) {
@@ -197,6 +206,11 @@ function sendPageInfoUpdate() {
         chrome.runtime.sendMessage({
             type: 'PAGE_INFO_UPDATE',
             data: { markdown: currentPageContent }
+        }, () => {
+            // 检查 chrome.runtime.lastError 以优雅地处理上下文失效的错误
+            if (chrome.runtime.lastError) {
+                // console.log("Page info update failed, context likely invalidated.");
+            }
         });
     }
 }
@@ -264,7 +278,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-const debouncedSendPageInfoUpdate = debounce(sendPageInfoUpdate, 1000);
+const debouncedSendPageInfoUpdate = debounce(sendPageInfoUpdate, 500); // 降低延迟，提高响应速度
 
 const observer = new MutationObserver((mutations) => {
     debouncedSendPageInfoUpdate();
@@ -278,6 +292,7 @@ observer.observe(document.body, {
 
 document.addEventListener('click', debouncedSendPageInfoUpdate);
 document.addEventListener('focusin', debouncedSendPageInfoUpdate);
+document.addEventListener('scroll', debouncedSendPageInfoUpdate, true); // 监听滚动事件
 
 window.addEventListener('load', sendPageInfoUpdate);
 document.addEventListener('visibilitychange', () => {
