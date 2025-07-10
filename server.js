@@ -726,9 +726,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         
         let firstAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
+            headers: { 
+                'Content-Type': 'application/json', 
+                'Authorization': `Bearer ${apiKey}`, 
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                 'Accept': originalBody.stream ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
             },
@@ -761,7 +761,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             let currentAIRawDataForDiary = '';
 
             // Helper function to process an AI response stream
-            async function processAIResponseStreamHelper(aiResponse, isInitialCall, modelName) {
+            async function processAIResponseStreamHelper(aiResponse, isInitialCall) {
                 return new Promise((resolve, reject) => {
                     let sseBuffer = ""; // Buffer for incomplete SSE lines
                     let collectedContentThisTurn = ""; // Collects textual content from delta
@@ -817,17 +817,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                                 if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
                                     try {
                                         const parsedData = JSON.parse(jsonData);
-                                        if (modelName && modelName.toLowerCase().includes('grok-4')) {
-                                            // Gracefully handle and ignore Grok-4's new "thinking" chunks
-                                            if (parsedData.choices && parsedData.choices[0] && (parsedData.choices[0].delta?.content || parsedData.choices[0].delta?.tool_calls)) {
-                                               collectedContentThisTurn += parsedData.choices[0].delta.content || '';
-                                            } else if (DEBUG_MODE) {
-                                               console.log('[SSE Parser] Ignoring non-content chunk for grok-4:', JSON.stringify(parsedData));
-                                            }
-                                        } else {
-                                            // Original logic for all other models
-                                            collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
-                                        }
+                                        collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
                                     } catch (e) { /* ignore parse error for intermediate chunks */ }
                                 }
                             }
@@ -869,7 +859,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             // --- Initial AI Call ---
             if (DEBUG_MODE) console.log('[VCP Stream Loop] Processing initial AI call.');
-            let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true, originalBody.model);
+            let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
             currentAIContentForLoop = initialAIResponseData.content;
             currentAIRawDataForDiary = initialAIResponseData.raw;
             handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error('[VCP Stream Loop] Error in initial diary handling:', e));
@@ -1038,7 +1028,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
                 
                 // Process the stream from the next AI call
-                let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false, originalBody.model);
+                let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
                 currentAIContentForLoop = nextAIResponseData.content;
                 currentAIRawDataForDiary = nextAIResponseData.raw;
                 handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error(`[VCP Stream Loop] Error in diary handling for depth ${recursionDepth}:`, e));
@@ -1077,19 +1067,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             let fullContentFromAI = ''; // This will be populated by the non-streaming logic
             try {
                 const parsedJson = JSON.parse(aiResponseText);
-                const modelName = originalBody.model;
-                if (modelName && modelName.toLowerCase().includes('grok-4')) {
-                    // Gracefully handle and ignore Grok-4's new "thinking" responses in non-streaming mode
-                    if (parsedJson.choices && parsedJson.choices[0] && parsedJson.choices[0].message) {
-                        fullContentFromAI = parsedJson.choices[0].message.content || '';
-                    } else {
-                        fullContentFromAI = ''; // Treat as empty response if it's a thinking chunk
-                        if (DEBUG_MODE) console.warn('[PluginCall] Non-stream response for grok-4 was likely a thinking chunk. Treating as empty. Raw:', aiResponseText.substring(0, 200));
-                    }
-                } else {
-                    // Original logic for all other models
-                    fullContentFromAI = parsedJson.choices?.[0]?.message?.content || '';
-                }
+                fullContentFromAI = parsedJson.choices?.[0]?.message?.content || '';
             } catch (e) {
                 if (DEBUG_MODE) console.warn('[PluginCall] First AI response (non-stream) not valid JSON. Raw:', aiResponseText.substring(0, 200));
                 fullContentFromAI = aiResponseText; // Use raw text if not JSON
