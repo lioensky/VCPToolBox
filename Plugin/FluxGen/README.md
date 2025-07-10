@@ -54,23 +54,6 @@ SILICONFLOW_API_KEY=您的API密钥
 
 > **注意**：您需要自备SiliconFlow的API密钥才能使用此服务。
 
-### MCP服务器配置
-
-在您的MCP配置文件中添加以下内容：
-
-```json
-{
-  "mcpServers": {
-    "siliconflow-flux-mcp": {
-      "command": "node",
-      "args": ["路径/到/siliconflow-flux-mcp-server/build/index.js"],
-      "env": {
-        "SILICONFLOW_API_KEY": "您的API密钥"
-      }
-    }
-  }
-}
-```
 
 ## 使用方法
 
