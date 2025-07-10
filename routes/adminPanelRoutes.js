@@ -860,5 +860,70 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
     // --- End Agent Files API ---
     
+    // --- Helper function to create variable routes ---
+    function createVariableRoutes(router, variablePrefix) {
+        const configPath = path.join(__dirname, '..', 'config.env');
+
+        // GET all config content, frontend will filter
+        router.get(`/config/${variablePrefix}-variables`, async (req, res) => {
+            try {
+                const content = await fs.readFile(configPath, 'utf-8');
+                res.json({ content });
+            } catch (error) {
+                console.error(`Error reading config for ${variablePrefix} variables:`, error);
+                if (error.code === 'ENOENT') {
+                    return res.json({ content: '' }); // Return empty content if file doesn't exist
+                }
+                res.status(500).json({ error: `Failed to read config file for ${variablePrefix}`, details: error.message });
+            }
+        });
+
+        // POST to save/update variables by prefix
+        router.post(`/config/${variablePrefix}-variables`, async (req, res) => {
+            const { content } = req.body;
+            if (typeof content !== 'string') {
+                return res.status(400).json({ error: 'Invalid content format. String expected.' });
+            }
+
+            try {
+                let fullContent = '';
+                try {
+                    fullContent = await fs.readFile(configPath, 'utf-8');
+                } catch (readError) {
+                    if (readError.code !== 'ENOENT') throw readError;
+                    // If file doesn't exist, we start with empty content.
+                }
+                
+                const lines = fullContent.split('\n');
+                
+                // Filter out old variables with the given prefix.
+                const linesToKeep = lines.filter(line => !line.trim().startsWith(variablePrefix));
+                
+                // Add the new content from the request body.
+                const newContentLines = content.split('\n');
+
+                // Combine the two
+                const finalLines = [...linesToKeep, ...newContentLines];
+                
+                // Clean up potential multiple empty lines to keep the file tidy
+                const cleanedContent = finalLines.filter((line, index) => {
+                    return line.trim() !== '' || (index < finalLines.length - 1 && finalLines[index + 1].trim() !== '');
+                }).join('\n');
+
+
+                await fs.writeFile(configPath, cleanedContent, 'utf-8');
+                res.json({ message: `${variablePrefix.charAt(0).toUpperCase() + variablePrefix.slice(1)} variables saved successfully. A restart may be required for changes to take effect.` });
+            } catch (error) {
+                console.error(`Error writing config for ${variablePrefix} variables:`, error);
+                res.status(500).json({ error: `Failed to write config file for ${variablePrefix}`, details: error.message });
+            }
+        });
+    }
+
+    // Create routes for Tar, Var, and Sar
+    createVariableRoutes(adminApiRouter, 'Tar');
+    createVariableRoutes(adminApiRouter, 'Var');
+    createVariableRoutes(adminApiRouter, 'Sar');
+    
     return adminApiRouter;
 };

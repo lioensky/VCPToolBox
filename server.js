@@ -263,6 +263,81 @@ app.use((req, res, next) => {
     next();
 });
 
+// Helper function to read and parse the .env file, filtering by prefix
+async function readEnvFile(prefix) {
+    const envPath = path.join(__dirname, 'config.env');
+    try {
+        const data = await fs.readFile(envPath, 'utf8');
+        const lines = data.split('\n');
+        const variables = {};
+        for (const line of lines) {
+            if (line.startsWith(prefix)) {
+                const parts = line.split('=');
+                if (parts.length >= 2) {
+                    const key = parts[0].trim();
+                    const value = parts.slice(1).join('=').trim();
+                    variables[key] = value;
+                }
+            }
+        }
+        return variables;
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.error(`[AdminAPI] config.env file not found at ${envPath}`);
+            return {}; // Return empty object if file doesn't exist
+        }
+        console.error(`[AdminAPI] Error reading config.env file:`, error);
+        throw error; // Rethrow other errors
+    }
+}
+
+// Helper function to write variables back to the .env file
+async function writeEnvFile(prefix, newValues) {
+    const envPath = path.join(__dirname, 'config.env');
+    try {
+        const data = await fs.readFile(envPath, 'utf8');
+        let lines = data.split('\n');
+        
+        const updatedKeys = new Set(Object.keys(newValues));
+        
+        // Update existing lines and remove old ones with the same prefix
+        const newLines = [];
+        for (const line of lines) {
+            if (line.startsWith(prefix)) {
+                const key = line.split('=')[0].trim();
+                if (newValues.hasOwnProperty(key)) {
+                    // This key is being updated, so we'll add the new value later.
+                    // Do nothing here to effectively remove the old line.
+                } else {
+                    // This key with the prefix is not in the new values, so keep it
+                     newLines.push(line);
+                }
+            } else {
+                newLines.push(line);
+            }
+        }
+
+        // Add all new values, ensuring they are fresh
+        for (const key in newValues) {
+            if (Object.hasOwnProperty.call(newValues, key)) {
+                 newLines.push(`${key}=${newValues[key]}`);
+            }
+        }
+
+        await fs.writeFile(envPath, newLines.join('\n'), 'utf8');
+        
+        // Reload dotenv to apply changes to the running process
+        const envConfig = dotenv.parse(await fs.readFile(envPath));
+        for (const k in envConfig) {
+            process.env[k] = envConfig[k];
+        }
+
+    } catch (error) {
+        console.error(`[AdminAPI] Error writing to config.env file:`, error);
+        throw error;
+    }
+}
+
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 

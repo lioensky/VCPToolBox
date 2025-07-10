@@ -898,16 +898,167 @@ Description Length: ${newDescription.length}`);
                 // Base config already loaded
             } else if (sectionIdToActivate === 'daily-notes-manager-section') {
                 initializeDailyNotesManager();
+            } else if (sectionIdToActivate === 'image-cache-editor-section') {
+                // image_cache_editor.html is loaded via iframe, no JS initialization needed
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
                 initializeAgentFilesEditor();
             } else if (sectionIdToActivate === 'server-log-viewer-section') {
                 initializeServerLogViewer();
+            } else if (sectionIdToActivate === 'tar-variables-editor-section') {
+                loadTarVariables();
+            } else if (sectionIdToActivate === 'var-variables-editor-section') {
+                loadVarVariables();
+            } else if (sectionIdToActivate === 'sar-variables-editor-section') {
+                loadSarVariables();
             }
         } else {
             console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
         }
     }
 
+    // --- Tar/Var/Sar Variable Sections ---
+    let originalTarVariablesEntries = [];
+    let originalVarVariablesEntries = [];
+    let originalSarVariablesEntries = [];
+
+    /**
+     * Builds a string content only from the elements currently in a given form.
+     * This is used to send only a specific block of variables (e.g., only 'Tar' variables) to the backend.
+     * @param {HTMLFormElement} formElement The form to build the string from.
+     * @returns {string} The resulting .env-formatted string for that block.
+     */
+    function buildPrefixedEnvString(formElement) {
+        const lines = [];
+        // Use querySelectorAll to ensure order and target the right elements
+        formElement.querySelectorAll('[data-original-key], [data-is-comment-or-empty="true"]').forEach(element => {
+            if (element.dataset.originalKey) {
+                const key = element.dataset.originalKey;
+                let value = element.value;
+                if (element.type === 'checkbox') {
+                    value = element.checked ? 'true' : 'false';
+                }
+                // Check if the original entry was multiline quoted, or if the new value contains newlines
+                const isMultiline = (element.tagName.toLowerCase() === 'textarea' && element.dataset.isMultiline === 'true') || value.includes('\n');
+                if (isMultiline) {
+                    lines.push(`${key}='${value}'`);
+                } else {
+                    lines.push(`${key}=${value}`);
+                }
+            } else if (element.dataset.isCommentOrEmpty === 'true' && element.dataset.originalContent) {
+                lines.push(element.dataset.originalContent);
+            }
+        });
+        return lines.join('\n');
+    }
+
+    /**
+     * Generic loader for variables based on a prefix.
+     * Fetches the *entire* config, then filters it on the client-side to display the relevant section.
+     * This preserves comments and structure when saving.
+     */
+    async function loadPrefixedVariables(prefix, formId, storageVar) {
+        const form = document.getElementById(formId);
+        form.innerHTML = ''; // Clear previous form
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/config/${prefix.toLowerCase()}-variables`);
+            const allEntries = parseEnvToList(data.content);
+            
+            // Store the full parsed list in the specific variable for this section
+            window[storageVar] = allEntries;
+
+            const filteredEntries = allEntries.filter(entry => {
+                return entry.isCommentOrEmpty || (entry.key && entry.key.startsWith(prefix));
+            });
+
+            if (filteredEntries.every(e => e.isCommentOrEmpty && e.value.trim() === '')) {
+                 form.innerHTML = '<p>没有找到相关的变量配置。请在主配置中添加。</p>';
+            } else {
+                filteredEntries.forEach((entry, index) => {
+                    let formGroup;
+                    if (entry.isCommentOrEmpty) {
+                        formGroup = createCommentOrEmptyElement(entry.value, `${prefix}-comment-${index}`);
+                    } else {
+                        let inferredType = 'string';
+                        if (/^(true|false)$/i.test(entry.value)) inferredType = 'boolean';
+                        else if (!isNaN(parseInt(entry.value)) && String(parseInt(entry.value)) === entry.value) inferredType = 'integer';
+                        
+                        formGroup = createFormGroup(
+                            entry.key,
+                            entry.value,
+                            inferredType,
+                            `前缀为 ${prefix} 的变量: ${entry.key}`,
+                            false, null, false, entry.isMultilineQuoted
+                        );
+                    }
+                    form.appendChild(formGroup);
+                });
+            }
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'form-actions';
+            const submitButton = document.createElement('button');
+            submitButton.type = 'submit';
+            submitButton.textContent = `保存 ${prefix} 变量设置`;
+            actionsDiv.appendChild(submitButton);
+            form.appendChild(actionsDiv);
+
+        } catch (error) {
+            form.innerHTML = `<p class="error-message">加载 ${prefix} 变量失败: ${error.message}</p>`;
+        }
+    }
+
+    async function loadTarVariables() {
+        await loadPrefixedVariables('Tar', 'tar-variables-form', 'originalTarVariablesEntries');
+    }
+
+    async function loadVarVariables() {
+        await loadPrefixedVariables('Var', 'var-variables-form', 'originalVarVariablesEntries');
+    }
+
+    async function loadSarVariables() {
+        await loadPrefixedVariables('Sar', 'sar-variables-form', 'originalSarVariablesEntries');
+    }
+
+    // --- Event Listeners for Tar/Var/Sar Forms ---
+    document.getElementById('tar-variables-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const newConfigString = buildPrefixedEnvString(event.target);
+        try {
+            await apiFetch(`${API_BASE_URL}/config/tar-variables`, {
+                method: 'POST',
+                body: JSON.stringify({ content: newConfigString })
+            });
+            showMessage('Tar 变量已保存！部分更改可能需要重启生效。', 'success');
+            await loadTarVariables(); // Reload to confirm changes
+        } catch (error) { /* Handled by apiFetch */ }
+    });
+
+    document.getElementById('var-variables-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const newConfigString = buildPrefixedEnvString(event.target);
+        try {
+            await apiFetch(`${API_BASE_URL}/config/var-variables`, {
+                method: 'POST',
+                body: JSON.stringify({ content: newConfigString })
+            });
+            showMessage('Var 变量已保存！部分更改可能需要重启生效。', 'success');
+            await loadVarVariables(); // Reload
+        } catch (error) { /* Handled by apiFetch */ }
+    });
+
+    document.getElementById('sar-variables-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const newConfigString = buildPrefixedEnvString(event.target);
+        try {
+            await apiFetch(`${API_BASE_URL}/config/sar-variables`, {
+                method: 'POST',
+                body: JSON.stringify({ content: newConfigString })
+            });
+            showMessage('Sar 变量已保存！部分更改可能需要重启生效。', 'success');
+            await loadSarVariables(); // Reload
+        } catch (error) { /* Handled by apiFetch */ }
+    });
+    
     pluginNavList.addEventListener('click', (event) => {
         const anchor = event.target.closest('a');
         if (anchor) {
