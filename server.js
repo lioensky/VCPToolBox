@@ -668,6 +668,19 @@ app.post('/v1/chat/completions', async (req, res) => {
         let originalBody = req.body;
         await writeDebugLog('LogInput', originalBody);
 
+        // Create a mutable copy for modifications that will be sent to the upstream API
+        let apiRequestBody = JSON.parse(JSON.stringify(originalBody));
+
+        const model = apiRequestBody.model;
+        // Grok-4 and later models from xAI do not support certain parameters.
+        if (model && typeof model === 'string' && model.toLowerCase().includes('grok-4')) {
+            if (DEBUG_MODE) console.log(`[RequestFilter] Detected grok-4 model variant. Filtering unsupported parameters: reasoning_effort, presence_penalty, frequency_penalty, stop`);
+            delete apiRequestBody.reasoning_effort;
+            delete apiRequestBody.presence_penalty;
+            delete apiRequestBody.frequency_penalty;
+            delete apiRequestBody.stop;
+        }
+
         let shouldProcessImages = true;
         if (originalBody.messages && Array.isArray(originalBody.messages)) {
             for (const msg of originalBody.messages) {
@@ -732,7 +745,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                 'Accept': originalBody.stream ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
             },
-            body: JSON.stringify(originalBody),
+            body: JSON.stringify(apiRequestBody),
         });
 
         const isOriginalResponseStreaming = originalBody.stream === true && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
@@ -1013,7 +1026,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                         ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                         'Accept': 'text/event-stream', // Ensure streaming for subsequent calls
                     },
-                    body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
+                    body: JSON.stringify({ ...apiRequestBody, messages: currentMessagesForLoop, stream: true }),
                 });
 
                 if (!nextAiAPIResponse.ok) {
@@ -1211,7 +1224,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                             ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                             'Accept': 'application/json',
                         },
-                        body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
+                        body: JSON.stringify({ ...apiRequestBody, messages: currentMessagesForNonStreamLoop, stream: false }),
                     });
                     const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
                     const recursionBuffer = Buffer.from(recursionArrayBuffer);
