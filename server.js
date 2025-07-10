@@ -553,6 +553,52 @@ async function replaceCommonVariables(text, model) {
     return processedText;
 }
 
+// 新增：Grok-4兼容性函数，用于过滤掉特殊的"reasoning_content"数据块
+function filterGrokReasoningStream(chunkString, model, debugMode) {
+    // 如果不是grok模型，直接返回原始数据块
+    if (!model || !model.includes('grok')) {
+        return chunkString;
+    }
+
+    const lines = chunkString.split('\n');
+    const filteredLines = [];
+    let didFilter = false;
+
+    for (const line of lines) {
+        // SSE协议要求保留空行作为消息分隔符
+        if (line.trim() === '') {
+            filteredLines.push(line);
+            continue;
+        }
+
+        if (line.startsWith('data: ')) {
+            const jsonData = line.substring(5).trim();
+            // 确保JSON数据存在且不是流结束标志
+            if (jsonData && jsonData !== '[DONE]') {
+                try {
+                    const parsedData = JSON.parse(jsonData);
+                    // 核心逻辑：检查是否存在 reasoning_content 字段
+                    if (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].delta && parsedData.choices[0].delta.hasOwnProperty('reasoning_content')) {
+                        didFilter = true;
+                        continue; // 如果存在，则跳过此行，不将其添加到结果中
+                    }
+                } catch (e) {
+                    // 如果解析失败，则不是我们关心的JSON结构，直接通过
+                }
+            }
+        }
+        // 将未被过滤的行添加到结果数组
+        filteredLines.push(line);
+    }
+
+    // 如果在调试模式下且确实执行了过滤，则打印日志
+    if (didFilter && debugMode) {
+        console.log(`[GrokCompat] Filtered out 'reasoning_content' chunk from stream.`);
+    }
+
+    return filteredLines.join('\n');
+}
+
 app.get('/v1/models', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
     try {
@@ -802,7 +848,12 @@ app.post('/v1/chat/completions', async (req, res) => {
                                 // do not forward it directly. The final [DONE] will be sent by the server's main loop.
                                 // Its content will still be collected by the sseBuffer logic below.
                             } else {
-                                res.write(chunkString);
+                                // 使用新的过滤函数处理grok模型的特殊字段
+                                const filteredChunk = filterGrokReasoningStream(chunkString, originalBody.model, DEBUG_MODE);
+                                // 只有在过滤后仍有内容时才发送，避免发送空的数据块
+                                if (filteredChunk) {
+                                    res.write(filteredChunk);
+                                }
                             }
                         }
                         
