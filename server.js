@@ -737,15 +737,18 @@ app.post('/v1/chat/completions', async (req, res) => {
             delete apiRequestBody.stop;
         }
 
+        // Separate base parameters from messages for robust loop handling
+        const { messages, ...baseApiParams } = apiRequestBody;
+
         let firstAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
             method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json', 
-                'Authorization': `Bearer ${apiKey}`, 
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                'Accept': originalBody.stream ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
+                'Accept': baseApiParams.stream ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
             },
-            body: JSON.stringify(apiRequestBody),
+            body: JSON.stringify({ ...baseApiParams, messages }), // Send the full initial request
         });
 
         const isOriginalResponseStreaming = originalBody.stream === true && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
@@ -1026,7 +1029,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                         ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                         'Accept': 'text/event-stream', // Ensure streaming for subsequent calls
                     },
-                    body: JSON.stringify({ ...apiRequestBody, messages: currentMessagesForLoop, stream: true }),
+                    body: JSON.stringify({ ...baseApiParams, messages: currentMessagesForLoop, stream: true }),
                 });
 
                 if (!nextAiAPIResponse.ok) {
@@ -1224,7 +1227,7 @@ app.post('/v1/chat/completions', async (req, res) => {
                             ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                             'Accept': 'application/json',
                         },
-                        body: JSON.stringify({ ...apiRequestBody, messages: currentMessagesForNonStreamLoop, stream: false }),
+                        body: JSON.stringify({ ...baseApiParams, messages: currentMessagesForNonStreamLoop, stream: false }),
                     });
                     const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
                     const recursionBuffer = Buffer.from(recursionArrayBuffer);
