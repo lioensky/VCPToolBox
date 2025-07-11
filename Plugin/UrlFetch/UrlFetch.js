@@ -1,60 +1,70 @@
 #!/usr/bin/env node
-const axios = require('axios');
-const { JSDOM } = require('jsdom');
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const stdin = require('process').stdin;
+
+puppeteer.use(StealthPlugin());
 
 // 简单的去广告选择器列表
 const AD_SELECTORS = [
-    'script', // 移除所有脚本
-    'style', // 移除所有样式
-    'iframe', // 移除 iframe
-    'ins', // 通常用于广告
-    '.ads',
-    '[class*="ads"]',
-    '[id*="ads"]',
-    '.advertisement',
-    '[class*="advertisement"]',
-    '[id*="advertisement"]',
-    '.banner',
-    '[class*="banner"]',
-    '[id*="banner"]',
-    '.popup',
-    '[class*="popup"]',
-    '[id*="popup"]',
-    'nav', // 移除导航栏
-    'aside', // 移除侧边栏
-    'footer', // 移除页脚
-    '[aria-hidden="true"]' // 移除ARIA隐藏元素
+    'script', 'style', 'iframe', 'ins', '.ads', '[class*="ads"]',
+    '[id*="ads"]', '.advertisement', '[class*="advertisement"]',
+    '[id*="advertisement"]', '.banner', '[class*="banner"]', '[id*="banner"]',
+    '.popup', '[class*="popup"]', '[id*="popup"]', 'nav', 'aside', 'footer',
+    '[aria-hidden="true"]'
 ];
 
-function cleanHtml(html) {
-    const dom = new JSDOM(html);
-    const document = dom.window.document;
+async function fetchWithPuppeteer(url, proxyPort = null) {
+    let browser;
+    try {
+        const launchOptions = {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        };
 
-    // 移除广告相关元素
-    AD_SELECTORS.forEach(selector => {
-        document.querySelectorAll(selector).forEach(el => el.remove());
-    });
+        if (proxyPort) {
+            launchOptions.args.push(`--proxy-server=http://127.0.0.1:${proxyPort}`);
+        }
 
-    // 提取主要文本内容
-    // 尝试从常见的文章/内容容器中提取，如果不存在则从 body 提取
-    const articleSelectors = ['article', '.content', '.main', '.post-content', 'main'];
-    let mainContent = null;
-    for (const selector of articleSelectors) {
-        mainContent = document.querySelector(selector);
-        if (mainContent) break;
+        browser = await puppeteer.launch(launchOptions);
+        const page = await browser.newPage();
+
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        await page.setViewport({ width: 1280, height: 800 });
+
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // 移除广告和不需要的元素
+        await page.evaluate((selectors) => {
+            selectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(el => el.remove());
+            });
+        }, AD_SELECTORS);
+
+        // 提取主要文本内容
+        const textContent = await page.evaluate(() => {
+            const articleSelectors = ['article', '.content', '.main', '.post-content', 'main'];
+            let mainContent = null;
+            for (const selector of articleSelectors) {
+                mainContent = document.querySelector(selector);
+                if (mainContent) break;
+            }
+            if (!mainContent) {
+                mainContent = document.body;
+            }
+            let text = mainContent.innerText || "";
+            text = text.replace(/\s\s+/g, ' ').trim();
+            return text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
+        });
+
+        return textContent;
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
     }
-
-    if (!mainContent) {
-        mainContent = document.body;
-    }
-    
-    // 进一步清理，移除空标签和不必要的空白
-    let text = mainContent.textContent || "";
-    text = text.replace(/\s\s+/g, ' ').trim(); // 替换多个空格为一个，并去除首尾空格
-    text = text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n'); // 清理空行
-
-    return text;
 }
 
 async function main() {
@@ -79,28 +89,27 @@ async function main() {
                 throw new Error("缺少必需的参数: url");
             }
 
-            // 验证 URL 格式 (简单验证)
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 throw new Error("无效的 URL 格式。URL 必须以 http:// 或 https:// 开头。");
             }
-            
-            const response = await axios.get(url, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 RooAIUrlFetchPlugin/0.1.0'
-                },
-                timeout: 15000 // 15 秒超时
-            });
 
-            if (response.status !== 200) {
-                throw new Error(`请求失败，状态码: ${response.status}`);
+            let cleanedText;
+            try {
+                cleanedText = await fetchWithPuppeteer(url);
+            } catch (e) {
+                const proxyPort = process.env.FETCH_PROXY_PORT;
+                if (proxyPort) {
+                    // 第一次失败，尝试使用代理
+                    try {
+                        cleanedText = await fetchWithPuppeteer(url, proxyPort);
+                    } catch (proxyError) {
+                        throw new Error(`直接访问和通过代理端口 ${proxyPort} 访问均失败。原始错误: ${e.message}, 代理错误: ${proxyError.message}`);
+                    }
+                } else {
+                    // 没有配置代理，直接抛出原始错误
+                    throw e;
+                }
             }
-
-            const contentType = response.headers['content-type'];
-            if (!contentType || !contentType.includes('text/html')) {
-                throw new Error(`不支持的内容类型: ${contentType}. 只支持 text/html。`);
-            }
-
-            const cleanedText = cleanHtml(response.data);
             
             if (!cleanedText.trim()) {
                 output = { status: "success", result: "成功获取网页，但提取到的文本内容为空或只包含空白字符。" };
@@ -110,11 +119,7 @@ async function main() {
 
         } catch (e) {
             let errorMessage;
-            if (e.response) { // Axios 错误
-                errorMessage = `请求错误: ${e.message} (状态码: ${e.response.status})`;
-            } else if (e.request) { // 请求已发出但没有收到响应
-                errorMessage = `请求错误: 未收到响应 (${e.message})`;
-            } else if (e instanceof SyntaxError) {
+            if (e instanceof SyntaxError) {
                 errorMessage = "无效的 JSON 输入。";
             } else if (e instanceof Error) {
                 errorMessage = e.message;
