@@ -185,28 +185,42 @@ class PluginManager {
     }
 
     async initializeStaticPlugins() {
-        console.log('[PluginManager] Initializing static plugins...'); // Keep
+        console.log('[PluginManager] Initializing static plugins...');
         for (const plugin of this.plugins.values()) {
             if (plugin.pluginType === 'static') {
-                await this._updateStaticPluginValue(plugin);
+                // Immediately set a "loading" state for the placeholder.
+                if (plugin.capabilities && plugin.capabilities.systemPromptPlaceholders) {
+                    plugin.capabilities.systemPromptPlaceholders.forEach(ph => {
+                        this.staticPlaceholderValues.set(ph.placeholder, `[${plugin.displayName} a-zheng-zai-jia-zai-zhong... ]`);
+                    });
+                }
+
+                // Trigger the first update in the background (fire and forget).
+                this._updateStaticPluginValue(plugin).catch(err => {
+                    console.error(`[PluginManager] Initial background update for ${plugin.name} failed: ${err.message}`);
+                });
+
+                // Set up the scheduled recurring updates.
                 if (plugin.refreshIntervalCron) {
                     if (this.scheduledJobs.has(plugin.name)) {
                         this.scheduledJobs.get(plugin.name).cancel();
                     }
                     try {
-                        const job = schedule.scheduleJob(plugin.refreshIntervalCron, async () => {
+                        const job = schedule.scheduleJob(plugin.refreshIntervalCron, () => {
                             if (this.debugMode) console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
-                            await this._updateStaticPluginValue(plugin);
+                            this._updateStaticPluginValue(plugin).catch(err => {
+                                 console.error(`[PluginManager] Scheduled background update for ${plugin.name} failed: ${err.message}`);
+                            });
                         });
                         this.scheduledJobs.set(plugin.name, job);
                         if (this.debugMode) console.log(`[PluginManager] Scheduled ${plugin.name} with cron: ${plugin.refreshIntervalCron}`);
                     } catch (e) {
-                        console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${e.message}`); // Keep error
+                        console.error(`[PluginManager] Invalid cron string for ${plugin.name}: ${plugin.refreshIntervalCron}. Error: ${e.message}`);
                     }
                 }
             }
         }
-        console.log('[PluginManager] Static plugins initialized.'); // Keep
+        console.log('[PluginManager] Static plugins initialization process has been started (updates will run in the background).');
     }
     
     getPlaceholderValue(placeholder) {

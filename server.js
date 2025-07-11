@@ -375,28 +375,16 @@ async function replaceCommonVariables(text, model) {
     let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
     if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
     processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-    processedText = processedText.replace(/\{\{VCPWeatherInfo\}\}/g, pluginManager.getPlaceholderValue("{{VCPWeatherInfo}}") || '天气信息不可用'); // 恢复对VCPWeatherInfo的特定处理
-
-    // START: 通用静态插件占位符处理
-    // 直接从 pluginManager.staticPlaceholderValues 获取所有已注册的静态占位符的键（即占位符名称）
-    const staticPlaceholderKeys = pluginManager.staticPlaceholderValues ? pluginManager.staticPlaceholderValues.keys() : [];
-    if (staticPlaceholderKeys) { // .keys() returns an iterator
-        for (const placeholderFullName of staticPlaceholderKeys) { // 例如 "{{MyPlaceholder}}"
-            // 确保不重复处理已特殊处理的 VCPWeatherInfo
-            if (placeholderFullName === "{{VCPWeatherInfo}}") {
-                continue;
-            }
-            if (typeof placeholderFullName === 'string' && placeholderFullName.startsWith("{{") && placeholderFullName.endsWith("}}")) {
-                // 从占位符全名中提取占位符的实际名称，例如从 "{{MyPlaceholder}}" 提取 "MyPlaceholder"
-                const placeholderKey = placeholderFullName.substring(2, placeholderFullName.length - 2);
-                // 构建正则表达式以安全地匹配占位符，例如 /\{\{MyPlaceholder\}\}/g
-                const placeholderRegex = new RegExp(`\\{\\{${placeholderKey.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\}\}`, 'g');
-                const placeholderValue = pluginManager.getPlaceholderValue(placeholderFullName) || `[${placeholderKey} 信息不可用]`;
-                processedText = processedText.replace(placeholderRegex, placeholderValue);
-            }
+    // START: 统一处理所有静态插件占位符 (VCP...)
+    const staticPlaceholderValues = pluginManager.staticPlaceholderValues;
+    if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
+        for (const [placeholder, value] of staticPlaceholderValues.entries()) {
+            // placeholder is already like "{{VCPPluginName}}"
+            const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
+            processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
         }
     }
-    // END: 通用静态插件占位符处理
+    // END: 统一处理所有静态插件占位符
     
 
     // Replace individual VCP plugin descriptions
