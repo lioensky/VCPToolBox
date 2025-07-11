@@ -4,7 +4,7 @@
   "displayName": "URL 内容获取插件",
   "version": "0.1.0",
   "description": "访问指定 URL 的网页内容，返回解析后的文本，并进行简单去广告处理。",
-  "author": "Roo",
+  "author": "Lionsky",
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
