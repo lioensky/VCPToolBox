@@ -1,0 +1,224 @@
+/* image_cache_editor.css */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: var(--primary-bg);
+    color: var(--primary-text);
+    font-size: 16px;
+}
+.container {
+    display: block; /* Override display:flex from style.css */
+    max-width: 1400px;
+    margin: auto;
+    background-color: var(--secondary-bg);
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+}
+.controls {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+button#saveButton {
+    padding: 12px 22px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 1em;
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    background-color: #4CAF50; /* Specific green for save action */
+    color: white;
+}
+button#saveButton:hover {
+    background-color: #45a049;
+    transform: translateY(-1px);
+}
+button#saveButton:active {
+     transform: translateY(0px);
+}
+
+h2 {
+    font-size: 1.7em;
+    color: var(--highlight-text);
+    margin-top: 0;
+    margin-bottom: 25px;
+    border-bottom: 2px solid var(--highlight-text);
+    padding-bottom: 12px;
+    font-weight: 600;
+}
+#imageList {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 20px;
+}
+.image-entry {
+    position: relative;
+    border: 1px solid var(--border-color);
+    padding: 15px;
+    border-radius: 8px;
+    background-color: var(--tertiary-bg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.image-entry h3 {
+    font-size: 1em;
+    color: var(--secondary-text);
+    margin-top: 0;
+    margin-bottom: 10px;
+    word-wrap: break-word;
+    font-weight: 600;
+}
+.image-entry img {
+    max-width: 100%;
+    height: auto;
+    max-height: 250px;
+    object-fit: contain;
+    display: block;
+    margin-bottom: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    background-color: var(--input-bg);
+}
+.image-entry label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    font-size: 0.9em;
+    color: var(--secondary-text);
+}
+.image-entry textarea {
+    width: calc(100% - 22px);
+    min-height: 100px;
+    padding: 12px 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin-bottom: 10px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 0.95em;
+    resize: vertical;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
+    box-sizing: border-box;
+}
+ .image-entry textarea:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
+}
+.base64-key {
+    font-size: 0.8em;
+    color: var(--secondary-text);
+    word-break: break-all;
+    margin-top: auto;
+    background-color: var(--tertiary-bg);
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px dashed var(--border-color);
+}
+p {
+    color: var(--secondary-text);
+}
+
+/* Modal CSS (Adjusted for theme) */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 2000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: color-mix(in srgb, var(--primary-bg) 95%, transparent);
+    padding-top: 50px;
+}
+
+.modal-content {
+    margin: auto;
+    display: block;
+    max-width: 90%;
+    max-height: 90vh;
+    object-fit: contain;
+    border: 2px solid var(--highlight-text);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--highlight-text) 50%, transparent);
+}
+
+.modal-close {
+    position: absolute;
+    top: 20px;
+    right: 40px;
+    color: var(--highlight-text);
+    font-size: 50px;
+    font-weight: bold;
+    transition: 0.3s;
+    text-shadow: 0 0 5px color-mix(in srgb, var(--highlight-text) 50%, transparent);
+}
+
+.modal-close:hover,
+.modal-close:focus {
+    color: var(--primary-text);
+    text-decoration: none;
+    cursor: pointer;
+    text-shadow: 0 0 8px color-mix(in srgb, var(--primary-text) 80%, transparent);
+}
+
+.reidentify-btn {
+    position: absolute;
+    top: 10px;
+    right: 40px;
+    background-color: #2ecc71; /* Green - specific action color */
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    font-size: 16px;
+    font-weight: bold;
+    line-height: 24px;
+    text-align: center;
+    cursor: pointer;
+    z-index: 10;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+.reidentify-btn:hover {
+    background-color: #27ae60;
+    transform: scale(1.1);
+}
+.reidentify-btn:active {
+    transform: scale(1.0);
+}
+
+.delete-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background-color: var(--danger-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    font-size: 18px;
+    font-weight: bold;
+    line-height: 24px;
+    text-align: center;
+    cursor: pointer;
+    z-index: 10;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+.delete-btn:hover {
+    background-color: var(--danger-hover-bg);
+    transform: scale(1.1);
+}
+ .delete-btn:active {
+    transform: scale(1.0);
+}

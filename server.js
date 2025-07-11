@@ -109,6 +109,7 @@ console.info = (...args) => {
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
+const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
@@ -178,15 +179,21 @@ else console.log('未加载任何全局上下文转换规则。');
 
 const app = express();
 app.use(cors()); // 启用 CORS，允许跨域请求
+
+// 在路由决策之前解析请求体，以便 req.body 可用
+app.use(express.json({ limit: '300mb' }));
+app.use(express.urlencoded({ limit: '300mb', extended: true }));
+
+// 引入并使用特殊模型路由
+const specialModelRouter = require('./routes/specialModelRouter');
+app.use(specialModelRouter); // 这个将处理所有白名单模型的请求
+
 const port = process.env.PORT;
 const apiKey = process.env.API_Key;
 const apiUrl = process.env.API_URL;
 const serverKey = process.env.Key;
 
 const cachedEmojiLists = new Map();
-
-app.use(express.json({ limit: '300mb' }));
-app.use(express.urlencoded({ limit: '300mb', extended: true }));
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
@@ -231,12 +238,6 @@ app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
 
 // Image server logic is now handled by the ImageServer plugin.
 
-app.use((req, res, next) => {
-    if (DEBUG_MODE) {
-        console.log(`[${new Date().toLocaleString()}] Received ${req.method} request for ${req.url} from ${req.ip}`);
-    }
-    next();
-});
 
 // General API authentication (Bearer token) - This was the original one, now adminAuth handles its paths
 app.use((req, res, next) => {
@@ -322,23 +323,42 @@ async function replaceCommonVariables(text, model) {
         }
     }
 
-    const sarModels = (process.env.SarModel || '').split(',').map(m => m.trim()).filter(m => m.length > 0);
-    const isSarModel = model && sarModels.includes(model);
+    // START: New SarModelX/SarPromptX logic
+    let sarPromptToInject = null;
 
-    // Replace Sar variables if the model matches SarModel list
-    if (isSarModel) {
-        for (const envKey in process.env) {
-            if (envKey.startsWith('Sar') && envKey !== 'SarModel') { // Exclude SarModel itself
-                const placeholder = `{{${envKey}}}`;
-                const value = process.env[envKey];
-                processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+    // Create a map from a model name to its specific prompt.
+    const modelToPromptMap = new Map();
+    for (const envKey in process.env) {
+        if (/^SarModel\d+$/.test(envKey)) {
+            const index = envKey.substring(8);
+            const promptKey = `SarPrompt${index}`;
+            const promptValue = process.env[promptKey];
+            const models = process.env[envKey];
+
+            if (promptValue && models) {
+                const modelList = models.split(',').map(m => m.trim()).filter(m => m);
+                for (const m of modelList) {
+                    modelToPromptMap.set(m, promptValue);
+                }
             }
         }
+    }
+
+    // Check if the current request's model has a specific prompt.
+    if (model && modelToPromptMap.has(model)) {
+        sarPromptToInject = modelToPromptMap.get(model);
+    }
+
+    // Replace all {{Sar...}} placeholders.
+    const sarPlaceholderRegex = /\{\{Sar[a-zA-Z0-9_]+\}\}/g;
+    if (sarPromptToInject !== null) {
+        // If a specific prompt is found, replace all Sar placeholders with it.
+        processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
     } else {
-        // If not a SarModel, remove any Sar placeholders
-        const sarPlaceholderRegex = /\{\{Sar.+?\}\}/g;
+        // If no specific prompt is found for the model, remove all Sar placeholders.
         processedText = processedText.replaceAll(sarPlaceholderRegex, '');
     }
+    // END: New SarModelX/SarPromptX logic
 
     const now = new Date();
     const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
@@ -378,7 +398,6 @@ async function replaceCommonVariables(text, model) {
     }
     // END: 通用静态插件占位符处理
     
-    // processedText = processedText.replace(/\{\{VCPDescription\}\}/g, pluginManager.getVCPDescription() || '插件描述信息不可用'); // Deprecated
 
     // Replace individual VCP plugin descriptions
     const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
@@ -534,6 +553,52 @@ async function replaceCommonVariables(text, model) {
     return processedText;
 }
 
+// 新增：Grok-4兼容性函数，用于过滤掉特殊的"reasoning_content"数据块
+function filterGrokReasoningStream(chunkString, model, debugMode) {
+    // 如果不是grok模型，直接返回原始数据块
+    if (!model || !model.includes('grok')) {
+        return chunkString;
+    }
+
+    const lines = chunkString.split('\n');
+    const filteredLines = [];
+    let didFilter = false;
+
+    for (const line of lines) {
+        // SSE协议要求保留空行作为消息分隔符
+        if (line.trim() === '') {
+            filteredLines.push(line);
+            continue;
+        }
+
+        if (line.startsWith('data: ')) {
+            const jsonData = line.substring(5).trim();
+            // 确保JSON数据存在且不是流结束标志
+            if (jsonData && jsonData !== '[DONE]') {
+                try {
+                    const parsedData = JSON.parse(jsonData);
+                    // 核心逻辑：检查是否存在 reasoning_content 字段
+                    if (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].delta && parsedData.choices[0].delta.hasOwnProperty('reasoning_content')) {
+                        didFilter = true;
+                        continue; // 如果存在，则跳过此行，不将其添加到结果中
+                    }
+                } catch (e) {
+                    // 如果解析失败，则不是我们关心的JSON结构，直接通过
+                }
+            }
+        }
+        // 将未被过滤的行添加到结果数组
+        filteredLines.push(line);
+    }
+
+    // 如果在调试模式下且确实执行了过滤，则打印日志
+    if (didFilter && debugMode) {
+        console.log(`[GrokCompat] Filtered out 'reasoning_content' chunk from stream.`);
+    }
+
+    return filteredLines.join('\n');
+}
+
 app.get('/v1/models', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
     try {
@@ -569,6 +634,79 @@ app.get('/v1/models', async (req, res) => {
         }
     }
 });
+// 新增：标准化任务创建API端点
+const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, 'VCPTimedContacts');
+
+// 辅助函数：将 Date 对象格式化为包含时区偏移的本地时间字符串 (e.g., 2025-06-29T15:00:00+08:00)
+function formatToLocalDateTimeWithOffset(date) {
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+
+    const tzOffset = -date.getTimezoneOffset();
+    const offsetHours = pad(Math.floor(Math.abs(tzOffset) / 60));
+    const offsetMinutes = pad(Math.abs(tzOffset) % 60);
+    const offsetSign = tzOffset >= 0 ? '+' : '-';
+
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${offsetSign}${offsetHours}:${offsetMinutes}`;
+}
+
+app.post('/v1/schedule_task', async (req, res) => {
+    // 这是一个内部端点，由插件调用以创建定时任务。
+    // 它依赖于全局的 Bearer token 认证。
+    const { schedule_time, task_id, tool_call } = req.body;
+
+    if (!schedule_time || !task_id || !tool_call || !tool_call.tool_name || !tool_call.arguments) {
+        return res.status(400).json({ status: "error", error: "请求无效，缺少 'schedule_time', 'task_id', 或有效的 'tool_call' 对象。" });
+    }
+
+    const targetDate = new Date(schedule_time);
+    if (isNaN(targetDate.getTime())) {
+        return res.status(400).json({ status: "error", error: "无效的 'schedule_time' 时间格式。" });
+    }
+    if (targetDate.getTime() <= Date.now()) {
+        return res.status(400).json({ status: "error", error: "schedule_time 不能是过去的时间。" });
+    }
+
+    try {
+        // 确保目录存在
+        await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
+        
+        const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
+        
+        const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
+
+        const taskData = {
+            taskId: task_id,
+            scheduledLocalTime: scheduledTimeWithOffset, // 使用带时区偏移的本地时间格式
+            tool_call: tool_call, // 存储完整的 VCP Tool Call
+            requestor: `Plugin: ${tool_call.tool_name}`,
+        };
+
+        await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
+        if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
+        
+        // 返回成功的响应，插件可以基于此生成最终的用户回执
+        res.status(200).json({ 
+            status: "success",
+            message: "任务已成功调度。",
+            details: {
+                taskId: task_id,
+                scheduledTime: scheduledTimeWithOffset
+            }
+        });
+
+    } catch (error) {
+        console.error(`[Server] 通过API创建定时任务文件时出错:`, error);
+        res.status(500).json({ status: "error", error: "在服务器上保存定时任务时发生内部错误。" });
+    }
+});
+
 
 app.post('/v1/chat/completions', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
@@ -710,7 +848,12 @@ app.post('/v1/chat/completions', async (req, res) => {
                                 // do not forward it directly. The final [DONE] will be sent by the server's main loop.
                                 // Its content will still be collected by the sseBuffer logic below.
                             } else {
-                                res.write(chunkString);
+                                // 使用新的过滤函数处理grok模型的特殊字段
+                                const filteredChunk = filterGrokReasoningStream(chunkString, originalBody.model, DEBUG_MODE);
+                                // 只有在过滤后仍有内容时才发送，避免发送空的数据块
+                                if (filteredChunk) {
+                                    res.write(filteredChunk);
+                                }
                             }
                         }
                         
@@ -770,7 +913,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
             currentAIContentForLoop = initialAIResponseData.content;
             currentAIRawDataForDiary = initialAIResponseData.raw;
-            await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+            handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error('[VCP Stream Loop] Error in initial diary handling:', e));
             if (DEBUG_MODE) console.log('[VCP Stream Loop] Initial AI content (first 200):', currentAIContentForLoop.substring(0,200));
 
             // --- VCP Loop ---
@@ -815,7 +958,24 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
 
                 if (toolCallsInThisAIResponse.length === 0) {
-                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Exiting loop.');
+                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Sending final signals and exiting loop.');
+                    if (!res.writableEnded) {
+                        // Construct and send the final chunk with finish_reason 'stop'
+                        const finalChunkPayload = {
+                            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
+                            object: "chat.completion.chunk",
+                            created: Math.floor(Date.now() / 1000),
+                            model: originalBody.model,
+                            choices: [{
+                                index: 0,
+                                delta: {},
+                                finish_reason: 'stop'
+                            }]
+                        };
+                        res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                        res.write('data: [DONE]\n\n');
+                        res.end();
+                    }
                     break;
                 }
                 if (DEBUG_MODE) console.log(`[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
@@ -922,70 +1082,29 @@ app.post('/v1/chat/completions', async (req, res) => {
                 let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
                 currentAIContentForLoop = nextAIResponseData.content;
                 currentAIRawDataForDiary = nextAIResponseData.raw;
-                await handleDiaryFromAIResponse(currentAIRawDataForDiary);
+                handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error(`[VCP Stream Loop] Error in diary handling for depth ${recursionDepth}:`, e));
                 if (DEBUG_MODE) console.log('[VCP Stream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
                 
                 recursionDepth++;
             }
 
-            // After loop (or if no tools called initially / max recursion hit)
-            if (!res.writableEnded) {
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Loop finished. Preparing to send final signals.');
-
-                let finalFinishReasonToSend = null;
-                let lastValidChunkFromAIForMetadata = null;
-
-                // Attempt to parse the last valid data chunk from the AI's raw output
-                // to extract finish_reason and other metadata for the final signal.
-                if (currentAIRawDataForDiary) { // currentAIRawDataForDiary holds the last AI response's raw data
-                    const lines = currentAIRawDataForDiary.trim().split('\n');
-                    for (let i = lines.length - 1; i >= 0; i--) {
-                        const line = lines[i];
-                        if (line.startsWith('data: ')) {
-                            const jsonData = line.substring(5).trim();
-                            if (jsonData && jsonData !== '[DONE]' && !jsonData.startsWith("[")) { // Avoid parsing "[DONE]" or non-JSON
-                                try {
-                                    const parsed = JSON.parse(jsonData);
-                                    lastValidChunkFromAIForMetadata = parsed; // Store the last successfully parsed chunk for metadata
-                                    if (parsed.choices && parsed.choices[0] && parsed.choices[0].finish_reason) {
-                                        finalFinishReasonToSend = parsed.choices[0].finish_reason;
-                                    }
-                                    break; // Processed the last relevant data line from AI
-                                } catch (e) { /* ignore parse error, try previous line if any */ }
-                            }
-                        }
-                    }
-                }
-
-                // Determine the finish_reason to send if not extracted from AI's last message
-                if (!finalFinishReasonToSend) {
-                    if (recursionDepth >= maxRecursion) {
-                        finalFinishReasonToSend = 'length';
-                    } else {
-                        // If loop broke because no tools were called (toolCallsInThisAIResponse.length === 0),
-                        // it's considered a natural stop.
-                        finalFinishReasonToSend = 'stop';
-                    }
-                }
-                
-                // Construct and send the final chunk with finish_reason
+            // After loop, check if max recursion was hit and response is still open
+            if (recursionDepth >= maxRecursion && !res.writableEnded) {
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Max recursion reached. Sending final signals.');
+                // Construct and send the final chunk with finish_reason 'length'
                 const finalChunkPayload = {
-                    id: lastValidChunkFromAIForMetadata?.id || `chatcmpl-VCP-final-${Date.now()}`,
-                    object: lastValidChunkFromAIForMetadata?.object || "chat.completion.chunk",
-                    created: lastValidChunkFromAIForMetadata?.created || Math.floor(Date.now() / 1000),
-                    model: lastValidChunkFromAIForMetadata?.model || originalBody.model || "unknown-model", // Use model from original request as fallback
+                    id: `chatcmpl-VCP-final-length-${Date.now()}`,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: originalBody.model,
                     choices: [{
                         index: 0,
-                        delta: {}, // Delta is typically empty for the chunk that only carries finish_reason
-                        finish_reason: finalFinishReasonToSend
+                        delta: {},
+                        finish_reason: 'length'
                     }]
                 };
                 res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final chunk with finish_reason:', finalFinishReasonToSend, 'Payload:', JSON.stringify(finalChunkPayload));
-
-                // Always send [DONE] as well, for clients that rely on it
                 res.write('data: [DONE]\n\n');
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Sent final [DONE].');
                 res.end();
             }
 
@@ -1204,185 +1323,6 @@ app.post('/v1/chat/completions', async (req, res) => {
             }
             // Handle diary for the *first* AI response in non-streaming mode
             await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary);
-
-            // Loop for subsequent tool calls and AI responses in non-streaming mode
-            do {
-                let anyToolProcessedInCurrentIteration = false;
-                conversationHistoryForClient.push({ type: 'ai', content: currentAIContentForLoop });
-
-                const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
-                const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
-                let toolCallsInThisAIResponse = [];
-                let searchOffset = 0;
-
-                while (searchOffset < currentAIContentForLoop.length) {
-                    const startIndex = currentAIContentForLoop.indexOf(toolRequestStartMarker, searchOffset);
-                    if (startIndex === -1) break;
-                    const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
-                    if (endIndex === -1) {
-                        if (DEBUG_MODE) console.warn("[VCP NonStream Loop] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
-                        searchOffset = startIndex + toolRequestStartMarker.length;
-                        continue;
-                    }
-                    const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
-                    let parsedToolArgs = {};
-                    let requestedToolName = null;
-                    const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
-                    let regexMatch;
-                    while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
-                        const key = regexMatch[1];
-                        const value = regexMatch[2].trim();
-                        if (key === "tool_name") requestedToolName = value;
-                        else parsedToolArgs[key] = value;
-                    }
-                    if (requestedToolName) {
-                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
-                        if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs);
-                    } else {
-                         if (DEBUG_MODE) console.warn("[VCP NonStream Loop] Parsed a tool request block but no tool_name found:", requestBlockContent.substring(0,100));
-                    }
-                    searchOffset = endIndex + toolRequestEndMarker.length;
-                }
-
-                if (toolCallsInThisAIResponse.length > 0) {
-                    anyToolProcessedInCurrentIteration = true;
-                    if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
-                    currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
-                    
-                    let allToolResultsContentForAI = [];
-                    const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
-                        let toolResultText;
-                        if (pluginManager.getPlugin(toolCall.name)) {
-                            try {
-                                if (DEBUG_MODE) console.log(`[VCP NonStream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output
-                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                                
-                                // Push to VCPLog via WebSocketServer (for VCP call logging)
-                               webSocketServer.broadcast({
-                                   type: 'vcp_log',
-                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_final_loop' }
-                               }, 'VCPLog');
-
-                               // Check manifest for WebSocket push for this plugin's actual result
-                                const pluginManifestNonStreamLoop2 = pluginManager.getPlugin(toolCall.name);
-                                if (pluginManifestNonStreamLoop2 && pluginManifestNonStreamLoop2.webSocketPush && pluginManifestNonStreamLoop2.webSocketPush.enabled) {
-                                    let messageToSend = pluginResult; // By default, use the direct plugin result
-                                    if (!pluginManifestNonStreamLoop2.webSocketPush.usePluginResultAsMessage && pluginManifestNonStreamLoop2.webSocketPush.messageType) {
-                                        // If not using direct result, and a messageType is specified, wrap it
-                                        messageToSend = { type: pluginManifestNonStreamLoop2.webSocketPush.messageType, data: pluginResult };
-                                    }
-                                    // Ensure messageToSend is an object for broadcast
-                                    // pluginResult is the raw output from processToolCall
-                                     const wsPushMessageNonStreamLoop = {
-                                        type: pluginManifestNonStreamLoop2.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
-                                        data: pluginResult // pluginResult is the object from processToolCall
-                                    };
-                                    webSocketServer.broadcast(wsPushMessageNonStreamLoop, pluginManifestNonStreamLoop2.webSocketPush.targetClientType || null);
-                                    if (DEBUG_MODE) console.log(`[VCP NonStream Loop] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageNonStreamLoop, null, 2).substring(0,500));
-                                }
-
-                                if (SHOW_VCP_OUTPUT) {
-                                    conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用结果:\n${toolResultText}` });
-                                }
-                            } catch (pluginError) {
-                                 console.error(`[VCP NonStream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
-                                 toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                // Push error to VCPLog via WebSocketServer
-                               webSocketServer.broadcast({
-                                   type: 'vcp_log',
-                                   data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_error' }
-                               }, 'VCPLog');
-                                 if (SHOW_VCP_OUTPUT) {
-                                    conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用错误:\n${toolResultText}` });
-                                 }
-                            }
-                        } else {
-                            toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
-                            if (DEBUG_MODE) console.warn(`[VCP NonStream Loop] ${toolResultText}`);
-                            // Push not found error to VCPLog via WebSocketServer
-                           webSocketServer.broadcast({
-                               type: 'vcp_log',
-                               data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_final_loop_not_found' }
-                           }, 'VCPLog');
-                            if (SHOW_VCP_OUTPUT) {
-                                conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
-                            }
-                        }
-                        return `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}`;
-                    });
-
-                    allToolResultsContentForAI = await Promise.all(toolExecutionPromises);
-                    const combinedToolResultsForAI = allToolResultsContentForAI.join("\n\n---\n\n");
-                    currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
-                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] Combined tool results for next AI call (first 200):', combinedToolResultsForAI.substring(0,200));
-
-                    if (DEBUG_MODE) console.log("[VCP NonStream Loop] Fetching next AI response after processing tools.");
-                    const recursionAiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${apiKey}`,
-                            ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                            'Accept': 'application/json', // Non-streaming for subsequent calls in this loop
-                        },
-                        body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
-                    });
-
-                    const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
-                    const recursionBuffer = Buffer.from(recursionArrayBuffer);
-                    const recursionText = recursionBuffer.toString('utf-8');
-                    
-                    // Handle diary for this AI response
-                    await handleDiaryFromAIResponse(recursionText);
-                    accumulatedRawResponseDataForDiary += "\n\n--- Next AI Turn (Non-Stream) ---\n\n" + recursionText;
-
-
-                    try {
-                        const recursionJson = JSON.parse(recursionText);
-                        currentAIContentForLoop = "\n" + (recursionJson.choices?.[0]?.message?.content || '');
-                    } catch (e) {
-                        currentAIContentForLoop = "\n" + recursionText;
-                    }
-                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
-
-                } else {
-                    if (DEBUG_MODE) console.log('[VCP NonStream Loop] No tool calls found in AI response. Exiting loop.');
-                    anyToolProcessedInCurrentIteration = false;
-                }
-                
-                if (!anyToolProcessedInCurrentIteration) break;
-                recursionDepth++;
-            } while (recursionDepth < maxRecursion);
-
-            // Rename variables to avoid redeclaration errors
-            const finalContentForClient_nonStream = conversationHistoryForClient
-                .map(item => {
-                    if (item.type === 'ai') return item.content;
-                    if (item.type === 'vcp' && SHOW_VCP_OUTPUT) return `\n<<<[VCP_RESULT]>>>\n${item.content}\n<<<[END_VCP_RESULT]>>>\n`;
-                    return '';
-                }).join('') + '\n'; // Add newline at the end
-
-            let finalJsonResponse_nonStream;
-            try {
-                finalJsonResponse_nonStream = JSON.parse(firstResponseRawDataForClientAndDiary); // Try to use structure of first response
-                 if (!finalJsonResponse_nonStream.choices || !Array.isArray(finalJsonResponse_nonStream.choices) || finalJsonResponse_nonStream.choices.length === 0) {
-                    finalJsonResponse_nonStream.choices = [{ message: {} }];
-                }
-                if (!finalJsonResponse_nonStream.choices[0].message) {
-                    finalJsonResponse_nonStream.choices[0].message = {};
-                }
-                finalJsonResponse_nonStream.choices[0].message.content = finalContentForClient_nonStream; // Use renamed variable
-                finalJsonResponse_nonStream.choices[0].finish_reason = (recursionDepth >= maxRecursion && toolCallsInThisAIResponse.length > 0) ? 'length' : 'stop';
-            } catch (e) {
-                 // Use renamed variables
-                finalJsonResponse_nonStream = { choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient_nonStream }, finish_reason: (recursionDepth >= maxRecursion && toolCallsInThisAIResponse.length > 0 ? 'length' : 'stop') }] };
-            }
-
-            if (!res.writableEnded) {
-                 res.send(Buffer.from(JSON.stringify(finalJsonResponse_nonStream))); // Use renamed variable
-            }
-            // Diary for all turns in non-streaming already handled inside the loop for subsequent, and outside for first.
         }
     } catch (error) {
         console.error('处理请求或转发时出错:', error.message, error.stack);
@@ -1394,6 +1334,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
     }
 });
+
 
 async function handleDiaryFromAIResponse(responseText) {
     let fullAiResponseTextForDiary = '';
@@ -1603,10 +1544,10 @@ async function initialize() {
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
-    pluginManager.setProjectBasePath(__dirname); 
+    pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');
-    await pluginManager.initializeServices(app, __dirname); 
+    await pluginManager.initializeServices(app, __dirname);
     console.log('服务类插件初始化完成。');
 
     console.log('开始初始化静态插件...');
@@ -1649,6 +1590,9 @@ async function initialize() {
          }
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
+    
+    // 初始化通用任务调度器
+    taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
 }
 
 // Store the server instance globally so it can be accessed by gracefulShutdown
@@ -1665,7 +1609,12 @@ server = app.listen(port, async () => { // Assign to server variable
     if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
     const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
     webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
-    if (DEBUG_MODE) console.log('[Server] WebSocketServer initialized.');
+    
+    // --- 注入依赖 ---
+    pluginManager.setWebSocketServer(webSocketServer);
+    webSocketServer.setPluginManager(pluginManager);
+    
+    if (DEBUG_MODE) console.log('[Server] WebSocketServer and PluginManager have been interconnected.');
 
     // The VCPLog plugin's attachWebSocketServer is no longer needed here as WebSocketServer handles it.
     // const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
@@ -1677,9 +1626,15 @@ server = app.listen(port, async () => { // Assign to server variable
     // }
 });
 
+
 async function gracefulShutdown() {
-    console.log('Initiating graceful shutdown...'); // This will be logged
-    if (webSocketServer) { // Shutdown WebSocketServer
+    console.log('Initiating graceful shutdown...');
+    
+    if (taskScheduler) {
+        taskScheduler.shutdown();
+    }
+
+    if (webSocketServer) {
         console.log('[Server] Shutting down WebSocketServer...');
         webSocketServer.shutdown();
     }

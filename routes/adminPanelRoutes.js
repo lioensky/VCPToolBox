@@ -78,69 +78,83 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
     // GET plugin list with manifest, status, and config.env content
     adminApiRouter.get('/plugins', async (req, res) => {
-        const PLUGIN_DIR = path.join(__dirname, '..', 'Plugin');
-
         try {
-            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
-            const pluginDataList = [];
+            const pluginDataMap = new Map();
+            const PLUGIN_DIR = path.join(__dirname, '..', 'Plugin');
 
+            // 1. 从 pluginManager 获取所有已加载的插件（包括云端和启用的本地插件）
+            const loadedPlugins = Array.from(pluginManager.plugins.values());
+            for (const p of loadedPlugins) {
+                let configEnvContent = null;
+                if (!p.isDistributed && p.basePath) {
+                    try {
+                        const pluginConfigPath = path.join(p.basePath, 'config.env');
+                        configEnvContent = await fs.readFile(pluginConfigPath, 'utf-8');
+                    } catch (envError) {
+                        if (envError.code !== 'ENOENT') {
+                            console.warn(`[AdminPanelRoutes] Error reading config.env for ${p.name}:`, envError);
+                        }
+                    }
+                }
+                pluginDataMap.set(p.name, {
+                    name: p.name,
+                    manifest: p,
+                    enabled: true, // 从 manager 加载的都是启用的
+                    configEnvContent: configEnvContent,
+                    isDistributed: p.isDistributed || false,
+                    serverId: p.serverId || null
+                });
+            }
+
+            // 2. 扫描本地 Plugin 目录，补充被禁用的插件
+            const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
             for (const folder of pluginFolders) {
                 if (folder.isDirectory()) {
                     const pluginPath = path.join(PLUGIN_DIR, folder.name);
                     const manifestPath = path.join(pluginPath, manifestFileName);
                     const blockedManifestPath = manifestPath + blockedManifestExtension;
-                    let manifest = null;
-                    let isEnabled = false;
-                    let configEnvContent = null;
 
                     try {
-                        await fs.access(manifestPath);
-                        const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-                        manifest = JSON.parse(manifestContent);
-                        isEnabled = true;
-                    } catch (error) {
-                        if (error.code === 'ENOENT') {
+                        // 检查是否存在被禁用的 manifest
+                        const manifestContent = await fs.readFile(blockedManifestPath, 'utf-8');
+                        const manifest = JSON.parse(manifestContent);
+
+                        // 如果这个插件还没被 manager 加载，就说明它是被禁用的
+                        if (!pluginDataMap.has(manifest.name)) {
+                            let configEnvContent = null;
                             try {
-                                await fs.access(blockedManifestPath);
-                                const manifestContent = await fs.readFile(blockedManifestPath, 'utf-8');
-                                manifest = JSON.parse(manifestContent);
-                                isEnabled = false; 
-                            } catch (blockedError) {
-                                if (blockedError.code !== 'ENOENT') {
-                                    console.warn(`[AdminPanelRoutes] Error reading blocked manifest for ${folder.name}:`, blockedError);
+                                const pluginConfigPath = path.join(pluginPath, 'config.env');
+                                configEnvContent = await fs.readFile(pluginConfigPath, 'utf-8');
+                            } catch (envError) {
+                                if (envError.code !== 'ENOENT') {
+                                    console.warn(`[AdminPanelRoutes] Error reading config.env for disabled plugin ${manifest.name}:`, envError);
                                 }
-                                continue;
                             }
-                        } else if (error instanceof SyntaxError) {
-                             console.warn(`[AdminPanelRoutes] Invalid JSON in manifest for ${folder.name}: ${manifestPath}`);
-                             continue; 
-                        } else {
-                            console.warn(`[AdminPanelRoutes] Error accessing manifest for ${folder.name}:`, error);
-                            continue; 
-                        }
-                    }
-                    
-                    try {
-                        const pluginConfigPath = path.join(pluginPath, 'config.env');
-                        await fs.access(pluginConfigPath);
-                        configEnvContent = await fs.readFile(pluginConfigPath, 'utf-8');
-                    } catch (envError) {
-                         if (envError.code !== 'ENOENT') {
-                             console.warn(`[AdminPanelRoutes] Error reading config.env for ${folder.name}:`, envError);
-                         }
-                    }
+                            
+                            // 为 manifest 添加 basePath，以便前端和后续操作使用
+                            manifest.basePath = pluginPath;
 
-                    if (manifest && manifest.name) { 
-                        pluginDataList.push({
-                            name: manifest.name,
-                            manifest: manifest,
-                            enabled: isEnabled,
-                            configEnvContent: configEnvContent
-                        });
+                            pluginDataMap.set(manifest.name, {
+                                name: manifest.name,
+                                manifest: manifest,
+                                enabled: false, // 明确标记为禁用
+                                configEnvContent: configEnvContent,
+                                isDistributed: false, // 本地扫描到的肯定是本地插件
+                                serverId: null
+                            });
+                        }
+                    } catch (error) {
+                        // 如果读取 .block 文件失败（例如文件不存在），则忽略
+                        if (error.code !== 'ENOENT') {
+                            console.warn(`[AdminPanelRoutes] Error processing potential disabled plugin in ${folder.name}:`, error);
+                        }
                     }
                 }
             }
+            
+            const pluginDataList = Array.from(pluginDataMap.values());
             res.json(pluginDataList);
+
         } catch (error) {
             console.error('[AdminPanelRoutes] Error listing plugins:', error);
             res.status(500).json({ error: 'Failed to list plugins', details: error.message });
@@ -202,16 +216,18 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             if (enable) {
                 try {
                     await fs.rename(blockedManifestPathToUse, manifestPathToUse);
-                    res.json({ message: `插件 ${pluginName} 已启用。请注意，更改可能需要重启服务才能完全生效。` });
+                    await fs.rename(blockedManifestPathToUse, manifestPathToUse);
+                    await pluginManager.loadPlugins(); // 重新加载插件以更新内存状态
+                    res.json({ message: `插件 ${pluginName} 已启用。` });
                 } catch (error) {
-                    if (error.code === 'ENOENT') { // .block file didn't exist
+                    if (error.code === 'ENOENT') {
                          try {
-                             await fs.access(manifestPathToUse); // Check if .json (enabled) already exists
+                             await fs.access(manifestPathToUse);
                              res.json({ message: `插件 ${pluginName} 已经是启用状态。` });
-                         } catch (accessError) { // Neither .block nor .json exists
+                         } catch (accessError) {
                              res.status(500).json({ error: `无法启用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
                          }
-                    } else { // Other error during rename
+                    } else {
                         console.error(`[AdminPanelRoutes] Error enabling plugin ${pluginName}:`, error);
                         res.status(500).json({ error: `启用插件 ${pluginName} 时出错`, details: error.message });
                     }
@@ -219,16 +235,17 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             } else { // Disable
                 try {
                     await fs.rename(manifestPathToUse, blockedManifestPathToUse);
-                    res.json({ message: `插件 ${pluginName} 已禁用。请注意，更改可能需要重启服务才能完全生效。` });
+                    await pluginManager.loadPlugins(); // 重新加载插件以更新内存状态
+                    res.json({ message: `插件 ${pluginName} 已禁用。` });
                 } catch (error) {
-                    if (error.code === 'ENOENT') { // .json file didn't exist
+                    if (error.code === 'ENOENT') {
                         try {
-                             await fs.access(blockedManifestPathToUse); // Check if .block (disabled) already exists
+                             await fs.access(blockedManifestPathToUse);
                              res.json({ message: `插件 ${pluginName} 已经是禁用状态。` });
-                         } catch (accessError) { // Neither .json nor .block exists
+                         } catch (accessError) {
                              res.status(500).json({ error: `无法禁用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
                          }
-                    } else { // Other error during rename
+                    } else {
                         console.error(`[AdminPanelRoutes] Error disabling plugin ${pluginName}:`, error);
                         res.status(500).json({ error: `禁用插件 ${pluginName} 时出错`, details: error.message });
                     }
@@ -292,6 +309,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             manifest.description = description;
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+            await pluginManager.loadPlugins(); // 重新加载以更新指令
             res.json({ message: `插件 ${pluginName} 的描述已更新。` });
 
         } catch (error) {
@@ -421,6 +439,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             }
 
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+            await pluginManager.loadPlugins(); // 重新加载以更新指令
             res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新。` });
 
         } catch (error) {
