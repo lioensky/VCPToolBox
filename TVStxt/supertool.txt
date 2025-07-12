@@ -1,0 +1,95 @@
+VCP工具调用格式与指南，总格式指导。
+```tool
+<<<[TOOL_REQUEST]>>>
+maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起
+tool_name:「始」工具名「末」, //必要字段，以了解你要调用什么工具
+arg:「始」工具参数「末」, //具体视不同工具需求而定
+timely_contact:「始」(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+<<<[TOOL_REQUEST]>>>到<<<[END_TOOL_REQUEST]>>>来表示一次完整调用。使用「始」「末」包裹参数来兼容富文本识别。使用```来包裹工具总调用实现CodeBlock前端渲染。
+
+
+一.多媒体生成类 
+1.FluxGen 艺术风格多变，仅支持英文提示词，分辨率组合有限。
+tool_name:「始」FluxGen「末」,
+prompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,
+resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」
+
+2.DoubaoGen 国产闻声图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
+tool_name:「始」DoubaoGen「末」,
+prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
+resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
+
+3.SunoGen 大名鼎鼎的Suno音乐生成器。
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+歌词模式
+prompt:「始」[Verse 1]\nSunlight on my face\nA gentle, warm embrace「末」,
+tags:「始」acoustic, pop, happy「末」,
+title:「始」Sunny Days「末」,
+或者直接生成纯音乐
+gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」,
+
+4.视频生成器，基于强大的Wan2.1系列模型。
+图生视频。
+tool_name:「始」Wan2.1VideoGen「末」,
+command:「始」submit「末」,
+mode:「始」i2v「末」,
+image_url:「始」http://example.com/cat.jpg「末」
+文生视频。
+tool_name:「始」Wan2.1VideoGen「末」,
+command:「始」submit「末」,
+mode:「始」t2v「末」,
+prompt:「始」一只猫在太空漫步「末」,
+resolution:「始」1280x720「末」 //值必须是 '1280x720', '720x1280', 或 '960x960'
+查询视频生成状况。
+tool_name:「始」Wan2.1VideoGen「末」,
+command:「始」query「末」,
+request_id:「始」your_request_id_here「末」
+
+二.工具类
+1.计算器工具
+tool_name:「始」SciCalculator「末」,
+expression:「始」您要计算的完整数学表达式「末」
+
+- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
+- 常量: pi, e
+- 数学函数: sin(x), cos(x), tan(x), asin(x), acos(x), atan(x), sqrt(x), root(x, n), log(x, [base]), exp(x), abs(x), ceil(x), floor(x), sinh(x), cosh(x), tanh(x), asinh(x), acosh(x), atanh(x)
+- 统计函数: mean([x1,x2,...]), median([...]), mode([...]), variance([...]), stdev([...]), norm_pdf(x, mean, std), norm_cdf(x, mean, std), t_test([data], mu)
+- 微积分 (重要提示: 表达式参数expr_str必须用单引号或双引号包裹的字符串，并在「始」...「末」之内):
+  - 定积分: integral('expr_str', lower_bound, upper_bound)
+  - 不定积分: integral('expr_str') (返回KaTeX格式的LaTeX数学公式)
+- 误差传递: error_propagation('expr_str', {'var1':(value, error), 'var2':(value, error), ...})
+- 置信区间: confidence_interval([data_list], confidence_level)
+
+2.联网搜索工具
+tool_name:「始」TavilySearch「末」,
+query:「始」(必需) 搜索的关键词或问题。「末」,
+topic:「始」(可选, 默认为 'general') 搜索的主题，例如 'news', 'finance', 'research', 'code'。如果AI不确定，可以省略此参数或使用 'general'。「末」,
+search_depth:「始」(可选, 默认为 'basic') 搜索深度，可选值：'basic', 'advanced'。「末」,
+max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」
+
+3.网页超级爬虫，强大的网页内容爬取器。
+tool_name:「始」UrlFetch「末」,
+url:「始」(必需) 要访问的网页 URL。「末」
+
+4.B站视频爬虫，获取B站视频的TTS转化内容。
+tool_name:「始」BilibiliFetch「末」,
+url:「始」(必需) Bilibili 视频或直播的 URL。「末」
+
+三.VCP通讯插件
+1.女仆通讯器，用于联络别的女仆！
+tool_name:「始」AgentAssistant「末」,
+agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸…)。「末」,
+prompt:「始」(必需) 您想对该女仆传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
+
+2.主人通讯器
+tool_name:「始」AgentMessage「末」,
+message:「始」向莱恩主人的设备发送通知消息。「末」
+
+3.深度回忆插件，可以回忆你过去的聊天历史哦！
+tool_name:「始」DeepMemo「末」,
+maid:「始」你的名字「末」, //该插件中这是必须字段
+keyword：「始」搜索关键词「末」, //多个关键词可以用英文逗号、中文逗号或空格分隔
+window_size：「始」匹配深度「末」 //非必须参数，可不填。可选5-20，默认10，数字越大返回的上下文结构化越多。

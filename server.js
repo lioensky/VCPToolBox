@@ -107,6 +107,7 @@ console.info = (...args) => {
 
 
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
+const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
@@ -307,19 +308,36 @@ async function replaceCommonVariables(text, model) {
     }
     // END: Agent placeholder processing
 
-    // 新增 Tarxxx 变量处理逻辑
+    // 新增 Tar/Var 变量处理逻辑 (支持 .txt 文件)
     for (const envKey in process.env) {
-        if (envKey.startsWith('Tar')) {
+        if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
             const placeholder = `{{${envKey}}}`;
-            const value = process.env[envKey];
-            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
-        }
-    }
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Var')) {
-            const placeholder = `{{${envKey}}}`;
-            const value = process.env[envKey];
-            processedText = processedText.replaceAll(placeholder, value || `未配置${envKey}`);
+            if (processedText.includes(placeholder)) {
+                const value = process.env[envKey];
+                if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
+                    // 值是 .txt 文件，从 TVStxt 目录读取
+                    const txtFilePath = path.join(TVS_DIR, value);
+                    try {
+                        const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                        // 递归解析文件内容中的变量
+                        const resolvedContent = await replaceCommonVariables(fileContent, model);
+                        processedText = processedText.replaceAll(placeholder, resolvedContent);
+                    } catch (error) {
+                        let errorMsg;
+                        if (error.code === 'ENOENT') {
+                            errorMsg = `[变量 ${envKey} 的文件 (${value}) 未找到]`;
+                            console.warn(`[变量加载] 文件未找到: ${txtFilePath} (占位符: ${placeholder})`);
+                        } else {
+                            errorMsg = `[处理变量 ${envKey} 的文件 (${value}) 时出错]`;
+                            console.error(`[变量加载] 读取文件失败 ${txtFilePath} (占位符: ${placeholder}):`, error.message);
+                        }
+                        processedText = processedText.replaceAll(placeholder, errorMsg);
+                    }
+                } else {
+                    // 值是直接的字符串
+                    processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
+                }
+            }
         }
     }
 
@@ -332,10 +350,28 @@ async function replaceCommonVariables(text, model) {
         if (/^SarModel\d+$/.test(envKey)) {
             const index = envKey.substring(8);
             const promptKey = `SarPrompt${index}`;
-            const promptValue = process.env[promptKey];
+            let promptValue = process.env[promptKey];
             const models = process.env[envKey];
 
             if (promptValue && models) {
+                if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
+                    const txtFilePath = path.join(TVS_DIR, promptValue);
+                    try {
+                        const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                        // 递归解析文件内容中的变量, 依赖用户配置来避免无限递归
+                        promptValue = await replaceCommonVariables(fileContent, model);
+                    } catch (error) {
+                        let errorMsg;
+                        if (error.code === 'ENOENT') {
+                            errorMsg = `[SarPrompt 文件 (${promptValue}) 未找到]`;
+                            console.warn(`[Sar加载] 文件未找到: ${txtFilePath}`);
+                        } else {
+                            errorMsg = `[处理 SarPrompt 文件 (${promptValue}) 时出错]`;
+                            console.error(`[Sar加载] 读取文件失败 ${txtFilePath}:`, error.message);
+                        }
+                        promptValue = errorMsg;
+                    }
+                }
                 const modelList = models.split(',').map(m => m.trim()).filter(m => m);
                 for (const m of modelList) {
                     modelToPromptMap.set(m, promptValue);

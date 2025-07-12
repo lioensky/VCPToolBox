@@ -859,6 +859,69 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
     // --- End Agent Files API ---
+
+    // --- TVS Variable Files API ---
+    const TVS_FILES_DIR = path.join(__dirname, '..', 'TVStxt'); // 定义 TVS 文件目录
+
+    // GET list of TVS .txt files
+    adminApiRouter.get('/tvsvars', async (req, res) => {
+        try {
+            await fs.mkdir(TVS_FILES_DIR, { recursive: true }); // Ensure directory exists
+            const files = await fs.readdir(TVS_FILES_DIR);
+            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+            res.json({ files: txtFiles });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error listing TVS files:', error);
+            res.status(500).json({ error: 'Failed to list TVS files', details: error.message });
+        }
+    });
+
+    // GET content of a specific TVS file
+    adminApiRouter.get('/tvsvars/:fileName', async (req, res) => {
+        const { fileName } = req.params;
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        }
+        const filePath = path.join(TVS_FILES_DIR, fileName);
+
+        try {
+            await fs.access(filePath);
+            const content = await fs.readFile(filePath, 'utf-8');
+            res.json({ content });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: `TVS file '${fileName}' not found.` });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error reading TVS file ${fileName}:`, error);
+                res.status(500).json({ error: `Failed to read TVS file ${fileName}`, details: error.message });
+            }
+        }
+    });
+
+    // POST to save content of a specific TVS file
+    adminApiRouter.post('/tvsvars/:fileName', async (req, res) => {
+        const { fileName } = req.params;
+        const { content } = req.body;
+
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        }
+        if (typeof content !== 'string') {
+            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
+        }
+
+        const filePath = path.join(TVS_FILES_DIR, fileName);
+
+        try {
+            await fs.mkdir(TVS_FILES_DIR, { recursive: true }); // Ensure directory exists
+            await fs.writeFile(filePath, content, 'utf-8');
+            res.json({ message: `TVS file '${fileName}' saved successfully.` });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes API] Error saving TVS file ${fileName}:`, error);
+            res.status(500).json({ error: `Failed to save TVS file ${fileName}`, details: error.message });
+        }
+    });
+    // --- End TVS Variable Files API ---
     
     return adminApiRouter;
 };

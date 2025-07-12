@@ -1075,7 +1075,8 @@ html[data-theme='light'] .status-message.info {
 
 
 /* Agent Files Editor Styles */
-.agent-editor-controls {
+.agent-editor-controls,
+.tvs-editor-controls {
     display: flex;
     gap: 15px;
     align-items: center;
@@ -1086,13 +1087,15 @@ html[data-theme='light'] .status-message.info {
     border: 1px solid var(--border-color);
 }
 
-.agent-editor-controls label {
+.agent-editor-controls label,
+.tvs-editor-controls label {
     font-weight: 600;
     color: var(--primary-text);
 }
 
-#agent-file-select {
-    min-width: 200px; 
+#agent-file-select,
+#tvs-file-select {
+    min-width: 200px;
     padding: 8px 12px;
     font-size: 0.9em;
     border-radius: 6px;
@@ -1101,20 +1104,23 @@ html[data-theme='light'] .status-message.info {
     color: var(--primary-text);
     cursor: pointer;
 }
-#agent-file-select:focus {
+#agent-file-select:focus,
+#tvs-file-select:focus {
     outline: none;
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
 }
-html[data-theme='light'] #agent-file-select:focus {
+html[data-theme='light'] #agent-file-select:focus,
+html[data-theme='light'] #tvs-file-select:focus {
     box-shadow: 0 0 0 3px var(--highlight-text-light);
 }
 
 
 
-#save-agent-file-button {
-    padding: 8px 16px; 
-    color: white; 
+#save-agent-file-button,
+#save-tvs-file-button {
+    padding: 8px 16px;
+    color: white;
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -1123,26 +1129,31 @@ html[data-theme='light'] #agent-file-select:focus {
     background-color: var(--button-bg); 
     transition: background-color 0.2s ease, transform 0.1s ease;
 }
-#save-agent-file-button:hover:not(:disabled) {
+#save-agent-file-button:hover:not(:disabled),
+#save-tvs-file-button:hover:not(:disabled) {
     background-color: var(--button-hover-bg);
     transform: translateY(-1px);
 }
-html[data-theme='light'] #save-agent-file-button {
+html[data-theme='light'] #save-agent-file-button,
+html[data-theme='light'] #save-tvs-file-button {
     background-color: var(--button-bg-light);
     color: var(--primary-text-light);
 }
-html[data-theme='light'] #save-agent-file-button:hover:not(:disabled) {
+html[data-theme='light'] #save-agent-file-button:hover:not(:disabled),
+html[data-theme='light'] #save-tvs-file-button:hover:not(:disabled) {
     background-color: var(--button-hover-bg-light);
 }
 
-#save-agent-file-button:disabled {
+#save-agent-file-button:disabled,
+#save-tvs-file-button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
 
-#agent-file-content-editor {
+#agent-file-content-editor,
+#tvs-file-content-editor {
     width: 100%;
-    min-height: 400px; 
+    min-height: 400px;
     padding: 15px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -1154,18 +1165,21 @@ html[data-theme='light'] #save-agent-file-button:hover:not(:disabled) {
     resize: vertical; 
 }
 
-#agent-file-content-editor:focus {
+#agent-file-content-editor:focus,
+#tvs-file-content-editor:focus {
     outline: none;
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
 }
-html[data-theme='light'] #agent-file-content-editor:focus {
+html[data-theme='light'] #agent-file-content-editor:focus,
+html[data-theme='light'] #tvs-file-content-editor:focus {
     box-shadow: 0 0 0 3px var(--highlight-text-light);
 }
 
 
-#agent-file-status {
-    margin-left: auto; 
+#agent-file-status,
+#tvs-file-status {
+    margin-left: auto;
 }
 
 /* Server Log Viewer Styles */
