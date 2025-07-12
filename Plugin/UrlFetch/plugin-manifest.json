@@ -3,7 +3,7 @@
   "name": "UrlFetch",
   "displayName": "URL 内容获取插件",
   "version": "0.1.0",
-  "description": "访问指定 URL 的网页内容，返回解析后的文本，并进行简单去广告处理。",
+  "description": "访问指定 URL 的网页内容。支持两种模式：1. 'text' (默认): 返回解析后的文本或链接列表。 2. 'snapshot': 返回网页的完整长截图。",
   "author": "Lionsky",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -19,8 +19,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "UrlFetch",
-        "description": "调用此工具访问指定 URL 的网页内容。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」(必需) 要访问的网页 URL。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含网页文本内容的JSON对象。请基于这些结果回答用户的问题或完成相关任务。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "调用此工具访问指定 URL 的网页内容。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」(必需) 要访问的网页 URL。「末」,\nmode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n- 'text' 模式: 您将收到包含网页文本内容或链接列表的JSON对象。\n- 'snapshot' 模式: 您将收到包含网页长截图的 Base64 图片数据，请直接展示给用户。",
+        "example": "获取文本内容:\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n获取网页快照:\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」,\nmode:「始」snapshot「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }
