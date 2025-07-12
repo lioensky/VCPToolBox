@@ -521,11 +521,18 @@ class PluginManager {
                 const pluginOutput = await this.executePlugin(toolName, executionParam); // Returns {status, result/error}
 
                 if (pluginOutput.status === "success") {
-                    try {
-                        resultFromPlugin = JSON.parse(pluginOutput.result);
-                    } catch (parseError) {
-                        if (this.debugMode) console.warn(`[PluginManager] Local plugin ${toolName} result was not valid JSON. Original: "${pluginOutput.result.substring(0, 100)}"`);
-                        resultFromPlugin = { original_plugin_output: pluginOutput.result };
+                    if (typeof pluginOutput.result === 'string') {
+                        try {
+                            // If the result is a string, try to parse it as JSON.
+                            resultFromPlugin = JSON.parse(pluginOutput.result);
+                        } catch (parseError) {
+                            // If parsing fails, wrap it. This is for plugins that return plain text.
+                            if (this.debugMode) console.warn(`[PluginManager] Local plugin ${toolName} result string was not valid JSON. Original: "${pluginOutput.result.substring(0, 100)}"`);
+                            resultFromPlugin = { original_plugin_output: pluginOutput.result };
+                        }
+                    } else {
+                        // If the result is already an object (as with our new image plugins), use it directly.
+                        resultFromPlugin = pluginOutput.result;
                     }
                 } else {
                     throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
