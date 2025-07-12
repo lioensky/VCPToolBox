@@ -72,7 +72,8 @@ max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围
 
 3.网页超级爬虫，强大的网页内容爬取器。
 tool_name:「始」UrlFetch「末」,
-url:「始」(必需) 要访问的网页 URL。「末」
+url:「始」(必需) 要访问的网页 URL。「末」,
+mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」
 
 4.B站视频爬虫，获取B站视频的TTS转化内容。
 tool_name:「始」BilibiliFetch「末」,
