@@ -1025,20 +1025,23 @@ app.post('/v1/chat/completions', async (req, res) => {
                                 if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
                                     richContentPayload = pluginResult.data.content;
                                 }
-                                // Structure from distributed FileOperator plugin
+                                // Structure from distributed FileOperator plugin or new image gen plugins
                                 else if (Array.isArray(pluginResult.content)) {
                                     richContentPayload = pluginResult.content;
                                 }
                             }
 
                             if (richContentPayload) {
-                                // 如果是，直接使用这个 content 数组作为给AI的内容
+                                // If it's rich content, use it for the AI
                                 toolResultContentForAI = richContentPayload;
-                                // Also update toolResultText for logging to be more informative
-                                toolResultText = `[Rich Content] ${richContentPayload.map(p => p.type).join(', ')}`;
+                                
+                                // For logging, find the text part to make it human-readable
+                                const textPart = richContentPayload.find(p => p.type === 'text');
+                                toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
                             } else {
-                                // 否则，维持原来的文本格式
+                                // If not rich content, use the original text representation for both AI and logging
                                 toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                                // toolResultText is already set correctly in this case from the initial assignment
                             }
 
                             // Push to VCPLog via WebSocketServer (for VCP call logging)
