@@ -17,9 +17,9 @@ const SILICONFLOW_API_CONFIG = {
     ENDPOINTS: {
         IMAGE_GENERATION: '/v1/images/generations'
     },
-    MODEL_ID: "black-forest-labs/FLUX.1-schnell",
+    MODEL_ID: "black-forest-labs/FLUX.1-dev",
     DEFAULT_PARAMS: {
-        num_inference_steps: 20,
+        num_inference_steps: 24,
         guidance_scale: 7.5, // May not be used by Flux, but API might accept
         batch_size: 1
     }
@@ -124,19 +124,44 @@ async function generateImageAndSave(args) {
     const relativeServerPathForUrl = path.join('fluxgen', generatedFileName).replace(/\\/g, '/');
     const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
 
-    // Construct a message that strongly guides the AI to use an HTML img tag
     const altText = args.prompt ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "") : (generatedFileName || "生成的图片");
-    const successMessage =
-        `图片已成功生成！\n\n` +
+    const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="300">`;
+    const successMessage = `图片已成功生成！`;
+    const aiInstructions = `图片已成功生成！\n\n` +
         `详细信息：\n` +
         `- 图片URL: ${accessibleImageUrl}\n` +
         `- 服务器路径: image/fluxgen/${generatedFileName}\n` +
         `- 文件名: ${generatedFileName}\n\n` +
         `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n` +
-        `<img src=\"${accessibleImageUrl}\" alt=\"${altText}\" width=\"300\">\n` +
-        `请将原始图片Url和服务器调用图片Url都提供给用户`;
-    
-    return successMessage;
+        `${imageHtml}\n`;
+
+    const imageBuffer = imageResponse.data;
+    const base64Image = Buffer.from(imageBuffer).toString('base64');
+    const imageMimeType = `image/${imageExtension}`;
+
+    const responseSeed = response.data?.seed;
+    const payloadSeed = payload.seed;
+    const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
+
+    const result = {
+        message: successMessage,
+        ai_instructions: aiInstructions,
+        imageUrl: accessibleImageUrl,
+        imageHtml: imageHtml,
+        imageData: {
+            base64: base64Image,
+            type: imageMimeType
+        },
+        details: {
+            serverPath: `image/fluxgen/${generatedFileName}`,
+            fileName: generatedFileName,
+            prompt: args.prompt,
+            resolution: args.resolution,
+            seed: finalSeed
+        }
+    };
+
+    return result;
 }
 
 async function main() {
@@ -157,8 +182,9 @@ async function main() {
             return;
         }
         parsedArgs = JSON.parse(inputData);
-        const formattedResultString = await generateImageAndSave(parsedArgs);
-        console.log(JSON.stringify({ status: "success", result: formattedResultString })); // Output success as JSON
+        const resultObject = await generateImageAndSave(parsedArgs);
+        const resultString = JSON.stringify(resultObject);
+        console.log(JSON.stringify({ status: "success", result: resultString })); // Output success as JSON
     } catch (e) {
         // Output error as JSON to stdout
         // Ensure error message is somewhat consistent with what might have been thrown by generateImageAndSave or parsing
