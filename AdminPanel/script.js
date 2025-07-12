@@ -30,6 +30,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveAgentFileButton = document.getElementById('save-agent-file-button');
     const agentFileStatusSpan = document.getElementById('agent-file-status');
 
+    // TVS Files Editor Elements
+    const tvsFileSelect = document.getElementById('tvs-file-select');
+    const tvsFileContentEditor = document.getElementById('tvs-file-content-editor');
+    const saveTvsFileButton = document.getElementById('save-tvs-file-button');
+    const tvsFileStatusSpan = document.getElementById('tvs-file-status');
+
     // Server Log Viewer Elements
     const serverLogViewerSection = document.getElementById('server-log-viewer-section');
     const copyServerLogButton = document.getElementById('copy-server-log-button'); // Changed from refreshServerLogButton
@@ -900,6 +906,8 @@ Description Length: ${newDescription.length}`);
                 initializeDailyNotesManager();
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
                 initializeAgentFilesEditor();
+            } else if (sectionIdToActivate === 'tvs-files-editor-section') {
+                initializeTvsFilesEditor();
             } else if (sectionIdToActivate === 'server-log-viewer-section') {
                 initializeServerLogViewer();
             }
@@ -1442,6 +1450,102 @@ Description Length: ${newDescription.length}`);
     }
 
     // --- End Agent Files Editor Functions ---
+
+    // --- TVS Files Editor Functions ---
+    let currentEditingTvsFile = null;
+
+    async function initializeTvsFilesEditor() {
+        console.log('Initializing TVS Files Editor...');
+        tvsFileContentEditor.value = '';
+        tvsFileStatusSpan.textContent = '';
+        saveTvsFileButton.disabled = true;
+        currentEditingTvsFile = null;
+        await loadTvsFilesList();
+    }
+
+    async function loadTvsFilesList() {
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/tvsvars`);
+            tvsFileSelect.innerHTML = '<option value="">请选择一个文件...</option>'; // Reset
+            if (data.files && data.files.length > 0) {
+                data.files.sort((a, b) => a.localeCompare(b)); // Sort alphabetically
+                data.files.forEach(fileName => {
+                    const option = document.createElement('option');
+                    option.value = fileName;
+                    option.textContent = fileName;
+                    tvsFileSelect.appendChild(option);
+                });
+            } else {
+                tvsFileSelect.innerHTML = '<option value="">没有找到变量文件</option>';
+                tvsFileContentEditor.placeholder = '没有变量文件可供编辑。';
+            }
+        } catch (error) {
+            tvsFileSelect.innerHTML = '<option value="">加载变量文件列表失败</option>';
+            showMessage('加载变量文件列表失败: ' + error.message, 'error');
+            tvsFileContentEditor.placeholder = '加载变量文件列表失败。';
+        }
+    }
+
+    async function loadTvsFileContent(fileName) {
+        if (!fileName) {
+            tvsFileContentEditor.value = '';
+            tvsFileStatusSpan.textContent = '请选择一个文件。';
+            saveTvsFileButton.disabled = true;
+            currentEditingTvsFile = null;
+            tvsFileContentEditor.placeholder = '选择一个变量文件以编辑其内容...';
+            return;
+        }
+        tvsFileStatusSpan.textContent = `正在加载 ${fileName}...`;
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/tvsvars/${fileName}`);
+            tvsFileContentEditor.value = data.content;
+            tvsFileStatusSpan.textContent = `当前编辑: ${fileName}`;
+            saveTvsFileButton.disabled = false;
+            currentEditingTvsFile = fileName;
+        } catch (error) {
+            tvsFileStatusSpan.textContent = `加载文件 ${fileName} 失败。`;
+            showMessage(`加载文件 ${fileName} 失败: ${error.message}`, 'error');
+            tvsFileContentEditor.value = `无法加载文件: ${fileName}\n\n错误: ${error.message}`;
+            saveTvsFileButton.disabled = true;
+            currentEditingTvsFile = null;
+        }
+    }
+
+    async function saveTvsFileContent() {
+        if (!currentEditingTvsFile) {
+            showMessage('没有选择要保存的文件。', 'error');
+            return;
+        }
+        const content = tvsFileContentEditor.value;
+        tvsFileStatusSpan.textContent = `正在保存 ${currentEditingTvsFile}...`;
+        saveTvsFileButton.disabled = true;
+
+        try {
+            await apiFetch(`${API_BASE_URL}/tvsvars/${currentEditingTvsFile}`, {
+                method: 'POST',
+                body: JSON.stringify({ content })
+            });
+            showMessage(`变量文件 '${currentEditingTvsFile}' 已成功保存!`, 'success');
+            tvsFileStatusSpan.textContent = `变量文件 '${currentEditingTvsFile}' 已保存。`;
+        } catch (error) {
+            tvsFileStatusSpan.textContent = `保存文件 ${currentEditingTvsFile} 失败。`;
+            // showMessage is handled by apiFetch
+        } finally {
+            saveTvsFileButton.disabled = false;
+        }
+    }
+
+    // Event Listeners for TVS Files Editor
+    if (tvsFileSelect) {
+        tvsFileSelect.addEventListener('change', (event) => {
+            loadTvsFileContent(event.target.value);
+        });
+    }
+    if (saveTvsFileButton) {
+        saveTvsFileButton.addEventListener('click', saveTvsFileContent);
+    }
+
+    // --- End TVS Files Editor Functions ---
 
     // --- Server Log Viewer Functions ---
     async function initializeServerLogViewer() {

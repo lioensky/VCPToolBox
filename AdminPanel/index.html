@@ -23,6 +23,7 @@
                     <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
                     <li><a href="#" data-target="image-cache-editor">图像缓存编辑器</a></li>
                     <li><a href="#" data-target="agent-files-editor">Agent 文件编辑器</a></li>
+                    <li><a href="#" data-target="tvs-files-editor">高级变量编辑器</a></li>
                     <li><a href="#" data-target="server-log-viewer">服务器日志</a></li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
@@ -90,6 +91,19 @@
                     <span id="agent-file-status" class="status-message"></span>
                 </div>
                 <textarea id="agent-file-content-editor" spellcheck="false" placeholder="选择一个 Agent 文件以编辑其内容..."></textarea>
+            </section>
+
+            <section id="tvs-files-editor-section" class="config-section">
+                <h2>高级变量编辑器 (.txt)</h2>
+                <div class="tvs-editor-controls">
+                    <label for="tvs-file-select">选择变量文件:</label>
+                    <select id="tvs-file-select">
+                        <option value="">请选择一个文件...</option>
+                    </select>
+                    <button id="save-tvs-file-button" disabled>保存变量文件</button>
+                    <span id="tvs-file-status" class="status-message"></span>
+                </div>
+                <textarea id="tvs-file-content-editor" spellcheck="false" placeholder="选择一个变量文件以编辑其内容..."></textarea>
             </section>
 
             <section id="server-log-viewer-section" class="config-section">
