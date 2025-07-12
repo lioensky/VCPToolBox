@@ -3,6 +3,7 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, 'config.env') });
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const AnonymizeUAPlugin = require('puppeteer-extra-plugin-anonymize-ua');
 const stdin = require('process').stdin;
 const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
@@ -14,6 +15,7 @@ const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
 
 puppeteer.use(StealthPlugin());
+puppeteer.use(AnonymizeUAPlugin());
 
 const AD_SELECTORS = [
     'script', 'style', 'iframe', 'ins', '.ads', '[class*="ads"]',
@@ -63,7 +65,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         browser = await puppeteer.launch(launchOptions);
         const page = await browser.newPage();
 
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        // We no longer need to set UserAgent manually, AnonymizeUAPlugin handles it.
         await page.setViewport({ width: 1280, height: 800 });
 
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
