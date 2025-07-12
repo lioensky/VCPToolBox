@@ -1006,74 +1006,96 @@ app.post('/v1/chat/completions', async (req, res) => {
 
                 let allToolResultsContentForAI = [];
                 const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
-                    let toolResultText;
+                    let toolResultText; // For logs and simple text display
+                    let toolResultContentForAI; // For the next AI call (can be rich content)
+
                     if (pluginManager.getPlugin(toolCall.name)) {
                         try {
                             if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output from the plugin's stdout (parsed if JSON)
-                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                            await writeDebugLog(`VCP-Stream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                             
+                            // Always create a text version for logging/VCP output
+                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+
+                            // Check for rich content to pass to the AI
+                            let richContentPayload = null;
+                            if (typeof pluginResult === 'object' && pluginResult) {
+                                // Standard local plugin structure
+                                if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
+                                    richContentPayload = pluginResult.data.content;
+                                }
+                                // Structure from distributed FileOperator plugin
+                                else if (Array.isArray(pluginResult.content)) {
+                                    richContentPayload = pluginResult.content;
+                                }
+                            }
+
+                            if (richContentPayload) {
+                                // 如果是，直接使用这个 content 数组作为给AI的内容
+                                toolResultContentForAI = richContentPayload;
+                                // Also update toolResultText for logging to be more informative
+                                toolResultText = `[Rich Content] ${richContentPayload.map(p => p.type).join(', ')}`;
+                            } else {
+                                // 否则，维持原来的文本格式
+                                toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                            }
+
                             // Push to VCPLog via WebSocketServer (for VCP call logging)
                             webSocketServer.broadcast({
                                 type: 'vcp_log',
                                 data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop' }
                             }, 'VCPLog');
 
-                            // Check manifest for WebSocket push for this plugin's actual result
+                            // WebSocket push for the plugin's actual result
                             const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
                             if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
-                                let messageToSend = pluginResult; // By default, use the direct plugin result
-                                if (!pluginManifestForStream.webSocketPush.usePluginResultAsMessage && pluginManifestForStream.webSocketPush.messageType) {
-                                    // If not using direct result, and a messageType is specified, wrap it
-                                    messageToSend = { type: pluginManifestForStream.webSocketPush.messageType, data: pluginResult };
-                                }
-                                // Ensure messageToSend is an object for broadcast, as AgentMessage.js produces an object.
-                                // pluginResult is the raw output from processToolCall
                                 const wsPushMessageStream = {
-                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
-                                    data: pluginResult // pluginResult is the object from processToolCall
+                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                                    data: pluginResult
                                 };
                                 webSocketServer.broadcast(wsPushMessageStream, pluginManifestForStream.webSocketPush.targetClientType || null);
-                                if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageStream, null, 2).substring(0,500));
+                                if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed.`);
                             }
 
-                            if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
+                            if (SHOW_VCP_OUTPUT && !res.writableEnded) {
                                 const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'success', content: toolResultText };
                                 res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
                             }
                         } catch (pluginError) {
                              console.error(`[VCP Stream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
                              toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                             // Push error to VCPLog via WebSocketServer
-                            webSocketServer.broadcast({
+                             toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                             webSocketServer.broadcast({
                                 type: 'vcp_log',
                                 data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_error' }
                             }, 'VCPLog');
-                             if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
+                             if (SHOW_VCP_OUTPUT && !res.writableEnded) {
                                 const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
                                 res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
                              }
                         }
                     } else {
                         toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
+                        toolResultContentForAI = [{ type: 'text', text: toolResultText }];
                         if (DEBUG_MODE) console.warn(`[VCP Stream Loop] ${toolResultText}`);
-                        // Push not found error to VCPLog via WebSocketServer
                         webSocketServer.broadcast({
                             type: 'vcp_log',
                             data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_not_found' }
                         }, 'VCPLog');
-                        if (SHOW_VCP_OUTPUT && !res.writableEnded) { // Still respect SHOW_VCP_OUTPUT for the main client stream
+                        if (SHOW_VCP_OUTPUT && !res.writableEnded) {
                             const vcpClientPayload = { type: 'vcp_stream_result', tool_name: toolCall.name, status: 'error', content: toolResultText };
                             res.write(`data: ${JSON.stringify(vcpClientPayload)}\n\n`);
                         }
                     }
-                    return `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}`;
+                    return toolResultContentForAI;
                 });
 
-                allToolResultsContentForAI = await Promise.all(toolExecutionPromises);
-                const combinedToolResultsForAI = allToolResultsContentForAI.join("\n\n---\n\n");
+                const toolResults = await Promise.all(toolExecutionPromises);
+                const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
+                await writeDebugLog('LogToolResultForAI-Stream', { role: 'user', content: combinedToolResultsForAI });
                 currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Combined tool results for next AI call (first 200):', combinedToolResultsForAI.substring(0,200));
+                if (DEBUG_MODE) console.log('[VCP Stream Loop] Combined tool results for next AI call (first 200):', JSON.stringify(combinedToolResultsForAI).substring(0,200));
 
                 // --- Make next AI call (stream: true) ---
                 if (!res.writableEnded) {
@@ -1209,71 +1231,93 @@ app.post('/v1/chat/completions', async (req, res) => {
                     // Use Promise.all to execute tool calls potentially in parallel, though JS is single-threaded
                     // The main benefit here is cleaner async/await handling for multiple calls.
                     const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
-                        let toolResultText;
+                        let toolResultText; // For logs and simple text display
+                        let toolResultContentForAI; // For the next AI call (can be rich content)
+
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
                                 if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args); // pluginResult is the direct output
-                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                                await writeDebugLog(`VCP-NonStream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                                 
-                                // Push to VCPLog via WebSocketServer (for VCP call logging)
-                               webSocketServer.broadcast({
-                                   type: 'vcp_log',
-                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' }
-                               }, 'VCPLog');
+                                // Always create a text version for logging/VCP output
+                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
 
-                                // Check manifest for WebSocket push for this plugin's actual result
-                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
-                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
-                                    let messageToSend = pluginResult; // By default, use the direct plugin result
-                                    if (!pluginManifestNonStream.webSocketPush.usePluginResultAsMessage && pluginManifestNonStream.webSocketPush.messageType) {
-                                        // If not using direct result, and a messageType is specified, wrap it
-                                        messageToSend = { type: pluginManifestNonStream.webSocketPush.messageType, data: pluginResult };
+                                // Check for rich content to pass to the AI
+                                let richContentPayload = null;
+                                if (typeof pluginResult === 'object' && pluginResult) {
+                                    // Standard local plugin structure
+                                    if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
+                                        richContentPayload = pluginResult.data.content;
                                     }
-                                    // Ensure messageToSend is an object for broadcast
-                                    // pluginResult is the raw output from processToolCall
-                                    const wsPushMessageNonStream = {
-                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`, // Use type from manifest
-                                        data: pluginResult // pluginResult is the object from processToolCall
-                                    };
-                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
-                                    if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed. Message:`, JSON.stringify(wsPushMessageNonStream, null, 2).substring(0,500));
+                                    // Structure from distributed FileOperator plugin
+                                    else if (Array.isArray(pluginResult.content)) {
+                                        richContentPayload = pluginResult.content;
+                                    }
                                 }
 
-                                if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
+                                if (richContentPayload) {
+                                    // 如果是，直接使用这个 content 数组作为给AI的内容
+                                    toolResultContentForAI = richContentPayload;
+                                    // Also update toolResultText for logging to be more informative
+                                    toolResultText = `[Rich Content] ${richContentPayload.map(p => p.type).join(', ')}`;
+                                } else {
+                                    // 否则，维持原来的文本格式
+                                    toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                                }
+
+                                // Push to VCPLog via WebSocketServer (for VCP call logging)
+                                webSocketServer.broadcast({
+                                   type: 'vcp_log',
+                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' }
+                                }, 'VCPLog');
+
+                                // WebSocket push for the plugin's actual result
+                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
+                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
+                                    const wsPushMessageNonStream = {
+                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                                        data: pluginResult
+                                    };
+                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
+                                    if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed.`);
+                                }
+
+                                if (SHOW_VCP_OUTPUT) {
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用结果:\n${toolResultText}` });
                                 }
                             } catch (pluginError) {
                                  console.error(`[Multi-Tool EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
                                  toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                 // Push error to VCPLog via WebSocketServer
-                                webSocketServer.broadcast({
+                                 toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                                 webSocketServer.broadcast({
                                     type: 'vcp_log',
                                     data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_error' }
                                 }, 'VCPLog');
-                                 if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
+                                 if (SHOW_VCP_OUTPUT) {
                                     conversationHistoryForClient.push({ type: 'vcp', content: `工具 ${toolCall.name} 调用错误:\n${toolResultText}` });
                                  }
                             }
                         } else {
                             toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
+                            toolResultContentForAI = [{ type: 'text', text: toolResultText }];
                             if (DEBUG_MODE) console.warn(`[Multi-Tool] ${toolResultText}`);
-                            // Push not found error to VCPLog via WebSocketServer
                            webSocketServer.broadcast({
                                type: 'vcp_log',
                                data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_not_found' }
                            }, 'VCPLog');
-                            if (SHOW_VCP_OUTPUT) { // Still respect SHOW_VCP_OUTPUT for adding to client's direct response
+                            if (SHOW_VCP_OUTPUT) {
                                 conversationHistoryForClient.push({ type: 'vcp', content: toolResultText });
                             }
                         }
-                        return `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}`;
+                        return toolResultContentForAI;
                     });
 
                     // Wait for all tool executions to complete
-                    allToolResultsContentForAI = await Promise.all(toolExecutionPromises);
+                    const toolResults = await Promise.all(toolExecutionPromises);
 
-                    const combinedToolResultsForAI = allToolResultsContentForAI.join("\n\n---\n\n");
+                    const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
+                    await writeDebugLog('LogToolResultForAI-NonStream', { role: 'user', content: combinedToolResultsForAI });
                     currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
 
                     // Fetch the next AI response
