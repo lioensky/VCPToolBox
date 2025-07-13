@@ -328,6 +328,7 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 
 - **WeatherReporter (static)**: 提供实时天气信息，含预警、小时详情、多日预报。注入天气预警信息。
 - **TavilySearch (synchronous)**: 集成 Tavily API，赋予 AI 网络搜索能力。
+- **V日报 (static)**: 通过 `{{VCPDailyHot}}` 占位符提供全球热点新闻。它会从全球100个热门门户网站各抓取20条热点，提供总计约2000条全球热点摘要及原文URL。建议构建专门的“记者”或“新闻官”Agent来管理此信息流，并通过 `AgentAssistant` 插件封装，以便其他Agent可以向其查询最新动态。
 - **UrlFetch (synchronous)**: 基础网页内容抓取工具组。
 
 ### 学术文献获取
@@ -639,6 +640,7 @@ VCP 的变量替换系统是其实现动态上下文注入和 AI 行为精细调
 *   `{{Today}}`: 当天星期几 (中文)。
 *   `{{Festival}}`: 农历日期、生肖、节气。
 *   `{{VCPWeatherInfo}}`: 当前缓存的天气预报文本 (由 `WeatherReporter` 插件提供)。
+*   `{{VCPDailyHot}}`: (由 V日报 插件提供) 提供全球热点新闻。包含从全球上百个门户网站聚合的热点摘要与URL链接。
 *   `{{角色名日记本}}`: 特定角色（如 `小克`）的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
 *   `{{公共日记本}}`: 共享知识库的完整日记内容。数据来源于 `DailyNoteGet` 插件提供的 `{{AllCharacterDiariesData}}`。
 *   `{{AllCharacterDiariesData}}`: (由 `DailyNoteGet` 插件提供) 一个 JSON 字符串，解析后为包含所有角色日记内容的对象。服务器内部使用此数据来支持 `{{角色名日记本}}` 的解析。
