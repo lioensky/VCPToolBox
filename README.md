@@ -329,7 +329,11 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 - **WeatherReporter (static)**: 提供实时天气信息，含预警、小时详情、多日预报。注入天气预警信息。
 - **TavilySearch (synchronous)**: 集成 Tavily API，赋予 AI 网络搜索能力。
 - **V日报 (static)**: 通过 `{{VCPDailyHot}}` 占位符提供全球热点新闻。它会从全球100个热门门户网站各抓取20条热点，提供总计约2000条全球热点摘要及原文URL。建议构建专门的“记者”或“新闻官”Agent来管理此信息流，并通过 `AgentAssistant` 插件封装，以便其他Agent可以向其查询最新动态。
-- **UrlFetch (synchronous)**: 基础网页内容抓取工具组。
+- **UrlFetch (synchronous)**: 经过重构的强大网页抓取工具，支持多种抓取模式以应对不同场景。核心能力包括：
+  - **直接抓取 (direct)**: 适用于简单、静态的网页内容获取。
+  - **Puppeteer 模式 (puppeteer)**: 在独立的浏览器环境中执行抓取，内置了反爬虫和反验证码机制，能有效应对动态加载和需要复杂交互的网站。
+  - **真实浏览器模式 (chrome)**: 通过与 `ChromeObserver` 插件联动，直接利用用户当前打开的真实浏览器标签页进行内容抓取，能完美复现用户登录状态和浏览器环境。
+  - **网页快照**: 支持在抓取内容的同时，对页面进行截图并以 Base64 格式返回，为 AI 提供了“所见即所得”的视觉上下文。
 
 ### 学术文献获取
 
@@ -339,10 +343,10 @@ VCP 的强大之处在于其不断丰富的插件生态，以下是一些已实�
 ### 多模态处理与内容生成
 
 - **ImageProcessor (messagePreprocessor)**: 自动将用户消息中的图像数据（如 Base64）转译为文本描述或多模态输入部件，支持缓存和图床 URL 标注。
-- **FluxGen (synchronous)**: 集成 SiliconFlow API 实现高质量文生图，图片保存至本地。
-- **Wan2.1VideoGen (asynchronous)**: (异步插件) 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频。AI提交任务后会立即收到任务ID，视频在后台生成，完成后通过WebSocket通知用户结果（如视频URL或失败信息）。
-- **SunoGen (synchronous)**: 集成 Suno API 生成原创歌曲，支持自定义歌词/风格、灵感描述或续写。
-- **DoubaoGen (synchronous)**: 使用豆包 API 进行图像生成与编辑。
+- **FluxGen (synchronous)**: 集成 SiliconFlow API 实现高质量文生图。图片除保存至本地外，其 Base64 数据也可直接返回给 AI，使其能“看到”自己生成的作品。
+- **Wan2.1VideoGen (asynchronous)**: (异步插件) 集成 SiliconFlow Wan2.1 API 实现文生视频和图生视频。AI提交任务后会立即收到任务ID，视频在后台生成，完成后通过WebSocket通知用户结果。返回结果中可包含视频文件的 Base64 数据，让 AI 能直接“审阅”视频内容。
+- **SunoGen (synchronous)**: 集成 Suno API 生成原创歌曲。生成的音频文件同样可以 Base64 形式返回，供 AI 直接“聆听”和评估。
+- **DoubaoGen (synchronous)**: 使用豆包 API 进行图像生成与编辑。生成的图片结果也能以 Base64 格式返回给 AI。
 
 ### 核心记忆与知识管理
 
