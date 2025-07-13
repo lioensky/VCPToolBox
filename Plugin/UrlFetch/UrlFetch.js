@@ -131,60 +131,51 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }, AD_SELECTORS);
 
             const extractedData = await page.evaluate(() => {
-                const contentSelectors = ['article', '.content', '.main', '.post-content', 'main', 'body'];
+                // 1. 精准提取正文
+                const contentSelectors = ['[data-testid="article"]', 'article', '.content', '.main', '.post-content', 'main'];
                 let mainContent = null;
                 for (const selector of contentSelectors) {
                     mainContent = document.querySelector(selector);
                     if (mainContent) break;
                 }
-                
-                if (!mainContent) return [];
+                // 如果找不到特定正文容器，就退回到body，但主要为了短内容页面
+                if (!mainContent) mainContent = document.body;
 
-                // 策略1: 查找所有可见的 <a> 标签
-                let links = Array.from(mainContent.querySelectorAll('a'));
-                let results = links.map(link => {
+                let text = mainContent.innerText || "";
+                text = text.replace(/\s\s+/g, ' ').trim();
+                const potentialText = text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
+
+                // 2. 全面提取链接 (从整个body)
+                let allLinks = Array.from(document.body.querySelectorAll('a'));
+                let links = allLinks.map(link => {
                     const text = (link.innerText || "").trim();
                     const url = link.href;
-                    if (text && url && url.startsWith('http') && link.offsetParent !== null) { // 确保链接可见
+                    if (text && url && url.startsWith('http') && link.offsetParent !== null) { // 确保链接可见、有文本、是有效链接
                         return { text, url };
                     }
                     return null;
                 }).filter(item => item !== null);
+                
+                // 去重
+                const uniqueLinks = Array.from(new Map(links.map(item => [item.url, item])).values());
 
-                // 策略2: 如果<a>标签策略效果不好，尝试查找列表项，并从内部提取链接
-                if (results.length < 5) { // 如果链接少于5个，可能主内容不是链接列表，尝试更通用的方法
-                    const itemSelectors = 'div[class*="item"], li[class*="item"], div[class*="card"], li, .post, .entry';
-                    const items = Array.from(mainContent.querySelectorAll(itemSelectors));
-                    if (items.length > results.length) {
-                        const itemResults = items.map(item => {
-                            const linkElement = item.querySelector('a');
-                            if (linkElement) {
-                                const text = (item.innerText || "").trim();
-                                const url = linkElement.href;
-                                 if (text && url && url.startsWith('http')) {
-                                    return { text, url };
-                                }
-                            }
-                            return null;
-                        }).filter(item => item !== null);
-                        
-                        // 合并和去重
-                        const combined = [...results, ...itemResults];
-                        const uniqueResults = Array.from(new Map(combined.map(item => [item.url, item])).values());
-                        if(uniqueResults.length > results.length) {
-                            results = uniqueResults;
-                        }
+                // 3. 智能组合输出
+                // 如果是文章页 (文本长)
+                if (potentialText.length > 200) {
+                    let combinedResult = potentialText;
+                    if (uniqueLinks.length > 0) {
+                        const linkText = uniqueLinks.map(l => `- ${l.text}: ${l.url}`).join('\n');
+                        combinedResult += '\n\n--- 页面包含的链接 ---\n' + linkText;
                     }
+                    return combinedResult;
                 }
-
-                if (results.length > 0) {
-                    return results;
+                // 如果是列表页 (文本短)
+                else {
+                    if (uniqueLinks.length > 0) {
+                        return uniqueLinks; // 主要返回链接
+                    }
+                    return potentialText; // 如果没链接，返回短文本
                 }
-
-                // 回退策略: 提取纯文本
-                let text = mainContent.innerText || "";
-                text = text.replace(/\s\s+/g, ' ').trim();
-                return text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
             });
 
             return extractedData;
