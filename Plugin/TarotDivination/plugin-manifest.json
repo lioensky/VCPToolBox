@@ -1,0 +1,36 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TarotDivination",
+  "displayName": "塔罗占卜",
+  "version": "1.0.0",
+  "description": "一个提供塔罗牌抽卡功能的插件，支持多种牌阵。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node tarot_divination.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 20000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "draw_single_card",
+        "description": "从78张塔罗牌中随机抽取一张牌。返回牌名、是否逆位以及图片信息。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "draw_three_card_spread",
+        "description": "执行一个三牌阵占卜，分别代表“过去”、“现在”和“未来”。返回三张牌的牌名、是否逆位以及图片信息。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "draw_celtic_cross",
+        "description": "执行一个凯尔特十字牌阵占卜，共抽取10张牌，每张牌都有特定的位置含义。返回10张牌的牌名、是否逆位以及图片信息。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

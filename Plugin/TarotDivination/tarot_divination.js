@@ -1,0 +1,425 @@
+#!/usr/bin/env node
+
+const fs = require('fs').promises;
+const path = require('path');
+const lunarCalendar = require('chinese-lunar-calendar');
+
+// --- Configuration (from environment variables set by Plugin.js) ---
+const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
+const SERVER_PORT = process.env.PORT; // Corrected from SERVER_PORT to PORT
+const IMAGESERVER_IMAGE_KEY = process.env.Image_Key; // Corrected to match the key from ImageServer plugin
+const VAR_HTTP_URL = process.env.VarHttpUrl;
+
+// --- Helper Functions ---
+
+/**
+ * Creates a seeded pseudo-random number generator (PRNG) using the Mulberry32 algorithm.
+ * This ensures that for the same seed, the sequence of numbers will be identical.
+ * @param {string} seed The seed string to initialize the PRNG.
+ * @returns {function(): number} A function that returns a pseudo-random float between 0 and 1.
+ */
+function createSeededRandom(seed) {
+    let h = 1779033703 ^ seed.length;
+    for (let i = 0; i < seed.length; i++) {
+        h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+        h = h << 13 | h >>> 19;
+    }
+
+    return function() {
+        h = Math.imul(h ^ h >>> 16, 2246822507);
+        h = Math.imul(h ^ h >>> 13, 3266489909);
+        return ((h ^= h >>> 16) >>> 0) / 4294967296;
+    }
+}
+
+
+/**
+ * Gathers various environmental and temporal factors to create a unique seed for divination.
+ * @returns {Promise<object>} A promise that resolves to an object containing the random generator, a summary of factors, and the factors themselves.
+ */
+async function getDivinationFactors() {
+    const weatherCachePath = path.join(PROJECT_BASE_PATH, 'Plugin', 'WeatherReporter', 'weather_cache.json');
+    let weatherData = {};
+    let factorsSummary = "占卜因素：\n";
+    const now = new Date();
+
+    // --- Time Factors ---
+    const timeFactors = {
+        year: now.getFullYear(),
+        month: now.getMonth() + 1,
+        day: now.getDate(),
+        hour: now.getHours(),
+        minute: now.getMinutes(),
+        second: now.getSeconds(),
+        millisecond: now.getMilliseconds()
+    };
+    factorsSummary += `- 时间: ${now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })} (中国标准时间)\n`;
+
+    // --- Lunar Factors ---
+    const lunarDate = lunarCalendar.getLunar(timeFactors.year, timeFactors.month, timeFactors.day);
+    const lunarFactors = {
+        lunarMonth: lunarDate.lunarMonth,
+        lunarDay: lunarDate.lunarDay,
+        zodiac: lunarDate.zodiac,
+        solarTerm: lunarDate.solarTerm || '无',
+        isFestive: (lunarDate.lunarFestival || lunarDate.solarFestival) ? 1 : 0,
+        // Safely access ganzhi properties
+        ganzhiYear: lunarDate.ganzhi ? lunarDate.ganzhi.year : '',
+        ganzhiMonth: lunarDate.ganzhi ? lunarDate.ganzhi.month : '',
+        ganzhiDay: lunarDate.ganzhi ? lunarDate.ganzhi.day : ''
+    };
+    const ganzhiYearText = lunarFactors.ganzhiYear ? `（${lunarFactors.ganzhiYear}）` : '';
+    let festivalInfo = `${lunarDate.lunarYear}年${ganzhiYearText}${lunarFactors.zodiac}年 ${lunarDate.lunarMonthName}${lunarDate.lunarDayName}`;
+    if (lunarDate.solarTerm) festivalInfo += ` | 节气: ${lunarDate.solarTerm}`;
+    if (lunarDate.lunarFestival) festivalInfo += ` | 传统节日: ${lunarDate.lunarFestival}`;
+    factorsSummary += `- 农历: ${festivalInfo}\n`;
+
+    // --- Weather & Moon Factors ---
+    let weatherFactors = { temp: 25, humidity: 60, windSpeed: 10, cloud: 50, moonIllumination: 50, isRainOrSnow: 0 };
+    try {
+        const weatherContent = await fs.readFile(weatherCachePath, 'utf-8');
+        weatherData = JSON.parse(weatherContent);
+        const hourlyWeather = weatherData.hourly?.find(h => new Date(h.fxTime) > now);
+        const moonPhase = weatherData.moon?.moonPhase?.filter(p => new Date(p.fxTime) <= now).pop();
+        
+        if(hourlyWeather) {
+            weatherFactors.temp = parseFloat(hourlyWeather.temp) || 25;
+            weatherFactors.humidity = parseFloat(hourlyWeather.humidity) || 60;
+            weatherFactors.windSpeed = parseFloat(hourlyWeather.windSpeed) || 10;
+            weatherFactors.cloud = parseFloat(hourlyWeather.cloud) || 50;
+            // Check if weather text indicates rain or snow
+            if (hourlyWeather.text && (hourlyWeather.text.includes('雨') || hourlyWeather.text.includes('雪'))) {
+                weatherFactors.isRainOrSnow = 1;
+            }
+        }
+        if(moonPhase) {
+            weatherFactors.moonIllumination = parseFloat(moonPhase.illumination) || 50;
+        }
+        
+        factorsSummary += `- 天气: ${hourlyWeather?.text || '标准'} (最近预报), 气温: ${weatherFactors.temp}°C, 湿度: ${weatherFactors.humidity}%\n`;
+        factorsSummary += `- 月相: ${moonPhase?.name || '标准'} (光照: ${weatherFactors.moonIllumination}%)\n`;
+
+    } catch (e) {
+        factorsSummary += "- 天气数据不可用，使用标准环境参数。\n";
+    }
+
+    const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors };
+    const seedString = JSON.stringify(allFactors);
+    const seededRandom = createSeededRandom(seedString);
+
+    return {
+        random: seededRandom,
+        summary: factorsSummary,
+        factors: allFactors
+    };
+}
+
+
+/**
+ * Defines the inherent affinities of certain cards to environmental factors.
+ * 'pos' means positive affinity (more likely), 'neg' means negative.
+ */
+function getCardAffinities() {
+    return {
+        'The Sun': { time: 'day', weather: 'good' },
+        'The Moon': { time: 'night' },
+        'The Star': { time: 'night' },
+        'The High Priestess': { moon: 'full' },
+        'The Hermit': { time: 'night' },
+        'The Tower': { weather: 'bad' },
+        'Death': { weather: 'bad' },
+        'The Devil': { weather: 'bad' },
+        'Ten of Swords': { weather: 'bad' },
+        'The Lovers': { festive: 'pos' },
+        'Four of Wands': { festive: 'pos' },
+        'The World': { festive: 'pos' }
+    };
+}
+
+/**
+ * Calculates drawing weights for each card based on affinities and factors.
+ * @param {Array} deck The full deck of cards.
+ * @param {object} factors The environmental factors.
+ * @returns {Array} An array of cards, each with a calculated 'weight'.
+ */
+function calculateCardWeights(deck, factors) {
+    const affinities = getCardAffinities();
+    return deck.map(card => {
+        let weight = 100; // Base weight
+        const cardAffinities = affinities[card.name];
+
+        if (cardAffinities) {
+            if (cardAffinities.time === 'day' && factors.hour > 6 && factors.hour < 18) weight += 50;
+            if (cardAffinities.time === 'night' && (factors.hour >= 18 || factors.hour <= 6)) weight += 50;
+            if (cardAffinities.weather === 'good' && !factors.isRainOrSnow) weight += 40;
+            if (cardAffinities.weather === 'bad' && factors.isRainOrSnow) weight += 60;
+            if (cardAffinities.moon === 'full' && factors.moonIllumination > 95) weight += 50;
+            if (cardAffinities.festive === 'pos' && factors.isFestive) weight += 70;
+        }
+        
+        // Ensure weight is at least a small number
+        card.weight = Math.max(10, weight);
+        return card;
+    });
+}
+
+/**
+ * Draws a specified number of cards from a deck using weighted random sampling without replacement.
+ * @param {Array} weightedDeck The deck of cards, each with a 'weight' property.
+ * @param {number} numToDraw The number of cards to draw.
+ * @param {function(): number} random The seeded random number generator.
+ * @returns {Array} An array of the drawn cards.
+ */
+function drawWeightedCards(weightedDeck, numToDraw, random) {
+    const drawnCards = [];
+    let deckCopy = [...weightedDeck];
+
+    for (let i = 0; i < numToDraw; i++) {
+        if (deckCopy.length === 0) break;
+
+        const totalWeight = deckCopy.reduce((sum, card) => sum + card.weight, 0);
+        let randomWeight = random() * totalWeight;
+        
+        let selectedCard = null;
+        for (let j = 0; j < deckCopy.length; j++) {
+            randomWeight -= deckCopy[j].weight;
+            if (randomWeight <= 0) {
+                selectedCard = deckCopy[j];
+                deckCopy.splice(j, 1); // Remove the card from the pool
+                break;
+            }
+        }
+        
+        // Fallback in case of floating point inaccuracies
+        if (!selectedCard) {
+            selectedCard = deckCopy.pop();
+        }
+
+        drawnCards.push(selectedCard);
+    }
+    return drawnCards;
+}
+
+/**
+ * Calculates the dynamic probability of a card being reversed based on various factors.
+ * @param {object} card The card object.
+ * @param {object} factors The collected environmental and temporal factors.
+ * @returns {number} A probability between 0.05 and 0.95.
+ */
+function calculateReversalProbability(card, factors) {
+    let probability = 0.25; // Base probability of 25%
+
+    // --- Factor Adjustments ---
+    // Moon: New moon (0% illumination) increases chance, full moon (100%) decreases it.
+    probability += (100 - factors.moonIllumination) / 100 * 0.15; // Max +15%
+
+    // Weather: Rain/snow and high humidity increase chance
+    probability += factors.isRainOrSnow * 0.10; // +10% if raining/snowing
+    if (factors.humidity > 85) probability += 0.05; // +5% for high humidity
+
+    // Time: Late night hours increase chance
+    if (factors.hour >= 22 || factors.hour <= 4) {
+        probability += 0.10; // +10% for late night
+    }
+
+    // Card-specific adjustments based on name hash (for subtle variety)
+    let nameHash = 0;
+    for (let i = 0; i < card.name.length; i++) {
+        nameHash = (nameHash << 5) - nameHash + card.name.charCodeAt(i);
+        nameHash |= 0; // Convert to 32bit integer
+    }
+    probability += (nameHash % 100) / 1000; // Add a small, consistent +/- 5% based on card name
+
+    // Clamp the probability to be between 5% and 95%
+    return Math.max(0.05, Math.min(0.95, probability));
+}
+
+
+/**
+ * Loads the tarot deck data from the JSON file.
+ * @returns {Promise<Array>} A promise that resolves to an array of all 78 card objects.
+ */
+async function loadDeck() {
+    const deckPath = path.join(__dirname, 'tarot_deck.json');
+    const deckContent = await fs.readFile(deckPath, 'utf-8');
+    const deckData = JSON.parse(deckContent);
+    const fullDeck = [
+        ...deckData.major_arcana,
+        ...deckData.minor_arcana.wands,
+        ...deckData.minor_arcana.cups,
+        ...deckData.minor_arcana.swords,
+        ...deckData.minor_arcana.pentacles
+    ];
+    return fullDeck;
+}
+
+/**
+ * Processes a single drawn card to get its details, including image data.
+ * @param {object} card The card object from the deck.
+ * @param {function(): number} random The random number generator function.
+ * @param {object} divinationFactors The object containing all environmental factors.
+ * @returns {Promise<object>} A promise that resolves to the processed card details.
+ */
+async function processDrawnCard(card, random, divinationFactors) {
+    const reversalProbability = calculateReversalProbability(card, divinationFactors);
+    const isReversed = random() < reversalProbability;
+    const imageName = isReversed ? `逆位${card.image}` : card.image;
+    const imagePath = path.join(PROJECT_BASE_PATH, 'image', 'tarotcards', imageName);
+
+    let imageBase64 = '';
+    let error = null;
+    try {
+        const imageBuffer = await fs.readFile(imagePath);
+        imageBase64 = imageBuffer.toString('base64');
+    } catch (e) {
+        error = `Could not read image file: ${imageName}. Error: ${e.message}`;
+        // Try to read the non-reversed image as a fallback
+        try {
+            const fallbackImagePath = path.join(PROJECT_BASE_PATH, 'image', 'tarotcards', card.image);
+            const imageBuffer = await fs.readFile(fallbackImagePath);
+            imageBase64 = imageBuffer.toString('base64');
+            error += ` | Successfully used fallback image: ${card.image}`;
+        } catch (fallbackError) {
+             error += ` | Fallback image also failed: ${fallbackError.message}`;
+        }
+    }
+    
+    const relativeServerPathForUrl = path.join('tarotcards', imageName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+    const imageMimeType = `image/${path.extname(card.image).substring(1)}`;
+
+    return {
+        name: card.name,
+        name_cn: card.name_cn,
+        reversed: isReversed,
+        reversal_probability: reversalProbability, // Include for transparency
+        image_url: accessibleImageUrl,
+        image_base64: imageBase64,
+        mime_type: imageMimeType,
+        error: error
+    };
+}
+
+
+// --- Main Logic ---
+
+async function handleRequest(args) {
+    if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
+        throw new Error("One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl) are not set.");
+    }
+
+    const { command } = args;
+
+    // 1. Determine the number of cards to draw based on the command
+    let cardsToDraw = 0;
+    let spreadName = "";
+    let positions = [];
+
+    switch (command) {
+        case 'draw_single_card':
+            cardsToDraw = 1;
+            spreadName = "单牌占卜";
+            positions = ["结果"];
+            break;
+        case 'draw_three_card_spread':
+            cardsToDraw = 3;
+            spreadName = "三牌阵";
+            positions = ["过去", "现在", "未来"];
+            break;
+        case 'draw_celtic_cross':
+            cardsToDraw = 10;
+            spreadName = "凯尔特十字牌阵";
+            positions = [
+                "1. 现状", "2. 阻碍", "3. 目标", "4. 根基",
+                "5. 过去", "6. 未来", "7. 自我认知", "8. 环境影响",
+                "9. 希望与恐惧", "10. 最终结果"
+            ];
+            break;
+        default:
+            throw new Error(`Unknown command: ${command}`);
+    }
+
+    // 2. Get divination factors and the seeded random generator
+    const { random, summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors();
+
+    // 3. Load the deck and calculate weights
+    const deck = await loadDeck();
+    if (deck.length < cardsToDraw) {
+        throw new Error("Not enough cards in the deck to perform this spread.");
+    }
+    const weightedDeck = calculateCardWeights(deck, divinationFactors);
+
+    // 4. Draw cards using the weighted sampling algorithm
+    const drawnCardsRaw = drawWeightedCards(weightedDeck, cardsToDraw, random);
+
+    // 5. Process each drawn card (determine reversal, get image, etc.)
+    const processedCardsPromises = drawnCardsRaw.map(card => processDrawnCard(card, random, divinationFactors));
+    const processedCards = await Promise.all(processedCardsPromises);
+
+    // 6. Build the final response content
+    let summaryText = `**${spreadName} - 占卜结果**\n\n`;
+    summaryText += `${factorsSummary}\n---\n\n`;
+    const contentForAI = [];
+    const imageContents = [];
+
+    processedCards.forEach((pCard, index) => {
+        const position = positions[index] || `卡牌 ${index + 1}`;
+        const probPercent = (pCard.reversal_probability * 100).toFixed(0);
+        const reversedText = pCard.reversed ? ` (逆位, 倾向 ${probPercent}%)` : ` (正位, 逆位倾向 ${probPercent}%)`;
+        summaryText += `**${position}: ${pCard.name_cn}${reversedText}**\n`;
+
+        if (pCard.image_base64) {
+            imageContents.push({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${pCard.mime_type};base64,${pCard.image_base64}`
+                }
+            });
+            summaryText += `图片链接: ${pCard.image_url}\n`;
+        }
+        if (pCard.error) {
+            summaryText += `图片加载错误: ${pCard.error}\n`;
+        }
+        summaryText += '\n';
+    });
+
+    contentForAI.push({ type: 'text', text: summaryText.trim() });
+    contentForAI.push(...imageContents);
+
+    return {
+        status: "success",
+        result: {
+            content: contentForAI,
+            details: processedCards.map((pCard, index) => ({
+                position: positions[index] || `Card ${index + 1}`,
+                ...pCard
+            }))
+        }
+    };
+}
+
+
+async function main() {
+    let inputChunks = [];
+    process.stdin.setEncoding('utf8');
+
+    for await (const chunk of process.stdin) {
+        inputChunks.push(chunk);
+    }
+    const inputData = inputChunks.join('');
+    let parsedArgs;
+
+    try {
+        if (!inputData.trim()) {
+            throw new Error("No input data received from stdin.");
+        }
+        parsedArgs = JSON.parse(inputData);
+        const resultObject = await handleRequest(parsedArgs);
+        console.log(JSON.stringify(resultObject));
+    } catch (e) {
+        console.log(JSON.stringify({ status: "error", error: `TarotDivination Plugin Error: ${e.message}` }));
+        process.exit(1);
+    }
+}
+
+main();
