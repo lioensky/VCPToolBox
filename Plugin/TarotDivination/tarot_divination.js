@@ -37,11 +37,16 @@ function createSeededRandom(seed) {
  * Gathers various environmental and temporal factors to create a unique seed for divination.
  * @returns {Promise<object>} A promise that resolves to an object containing the random generator, a summary of factors, and the factors themselves.
  */
-async function getDivinationFactors() {
+async function getDivinationFactors(fateCheckNumber = null) {
     const weatherCachePath = path.join(PROJECT_BASE_PATH, 'Plugin', 'WeatherReporter', 'weather_cache.json');
     let weatherData = {};
     let factorsSummary = "占卜因素：\n";
     const now = new Date();
+
+    // --- Fate Check Number ---
+    if (fateCheckNumber !== null && !isNaN(parseInt(fateCheckNumber))) {
+        factorsSummary += `- 命运检定数: ${fateCheckNumber}\n`;
+    }
 
     // --- Time Factors ---
     const timeFactors = {
@@ -104,7 +109,10 @@ async function getDivinationFactors() {
     }
 
     const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors };
-    const seedString = JSON.stringify(allFactors);
+    let seedString = JSON.stringify(allFactors);
+    if (fateCheckNumber !== null && !isNaN(parseInt(fateCheckNumber))) {
+        seedString += `::FATE_CHECK::${fateCheckNumber}`;
+    }
     const seededRandom = createSeededRandom(seedString);
 
     return {
@@ -308,7 +316,7 @@ async function handleRequest(args) {
         throw new Error("One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl) are not set.");
     }
 
-    const { command } = args;
+    const { command, fate_check_number = null } = args;
 
     // 1. Determine the number of cards to draw based on the command
     let cardsToDraw = 0;
@@ -340,7 +348,7 @@ async function handleRequest(args) {
     }
 
     // 2. Get divination factors and the seeded random generator
-    const { random, summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors();
+    const { random, summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors(fate_check_number);
 
     // 3. Load the deck and calculate weights
     const deck = await loadDeck();
