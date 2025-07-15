@@ -73,7 +73,7 @@ async function getDivinationFactors(fateCheckNumber = null) {
         ganzhiDay: lunarDate.ganzhi ? lunarDate.ganzhi.day : ''
     };
     const ganzhiYearText = lunarFactors.ganzhiYear ? `（${lunarFactors.ganzhiYear}）` : '';
-    let festivalInfo = `${lunarDate.lunarYear}年${ganzhiYearText}${lunarFactors.zodiac}年${lunarDate.lunarMonthName && lunarDate.lunarDayName ? ` ${lunarDate.lunarMonthName}${lunarDate.lunarDayName}` : ''}`;
+    let festivalInfo = `${lunarDate.lunarYear}${lunarFactors.zodiac}年${lunarDate.lunarMonthName && lunarDate.lunarDayName ? ` ${lunarDate.lunarMonthName}${lunarDate.lunarDayName}` : ''}`;
     if (lunarDate.solarTerm) festivalInfo += ` | 节气: ${lunarDate.solarTerm}`;
     if (lunarDate.lunarFestival) festivalInfo += ` | 传统节日: ${lunarDate.lunarFestival}`;
     factorsSummary += `- 农历: ${festivalInfo}\n`;
