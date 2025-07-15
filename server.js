@@ -267,252 +267,256 @@ app.use((req, res, next) => {
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 
-async function replaceCommonVariables(text, model) {
+async function replaceCommonVariables(text, model, role) {
     if (text == null) return '';
     let processedText = String(text);
 
-    // START: Agent placeholder processing
-    const agentConfigs = {};
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Agent')) { // e.g., AgentNova
-            const agentName = envKey.substring(5); // e.g., Nova
-            if (agentName) { // Make sure it's not just "Agent"
-                agentConfigs[agentName] = process.env[envKey]; // agentConfigs["Nova"] = "Nova.txt"
-            }
-        }
-    }
-
-    for (const agentName in agentConfigs) {
-        const placeholder = `{{${agentName}}}`; // e.g., {{Nova}}
-        if (processedText.includes(placeholder)) {
-            const agentFileName = agentConfigs[agentName]; // e.g., Nova.txt
-            const agentFilePath = path.join(AGENT_DIR, agentFileName);
-            try {
-                let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
-                // Recursively call replaceCommonVariables for the agent's content
-                // This ensures placeholders within the agent file are resolved.
-                let resolvedAgentContent = await replaceCommonVariables(agentFileContent, model);
-                processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
-            } catch (error) {
-                let errorMsg;
-                if (error.code === 'ENOENT') {
-                    errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
-                    console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
-                } else {
-                    errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
-                    console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
+    // 仅在 system role 中执行大多数占位符替换
+    if (role === 'system') {
+        // START: Agent placeholder processing
+        const agentConfigs = {};
+        for (const envKey in process.env) {
+            if (envKey.startsWith('Agent')) { // e.g., AgentNova
+                const agentName = envKey.substring(5); // e.g., Nova
+                if (agentName) { // Make sure it's not just "Agent"
+                    agentConfigs[agentName] = process.env[envKey]; // agentConfigs["Nova"] = "Nova.txt"
                 }
-                processedText = processedText.replaceAll(placeholder, errorMsg);
             }
         }
-    }
-    // END: Agent placeholder processing
 
-    // 新增 Tar/Var 变量处理逻辑 (支持 .txt 文件)
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
-            const placeholder = `{{${envKey}}}`;
+        for (const agentName in agentConfigs) {
+            const placeholder = `{{${agentName}}}`; // e.g., {{Nova}}
             if (processedText.includes(placeholder)) {
-                const value = process.env[envKey];
-                if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
-                    // 值是 .txt 文件，从 TVStxt 目录读取
-                    const txtFilePath = path.join(TVS_DIR, value);
-                    try {
-                        const fileContent = await fs.readFile(txtFilePath, 'utf-8');
-                        // 递归解析文件内容中的变量
-                        const resolvedContent = await replaceCommonVariables(fileContent, model);
-                        processedText = processedText.replaceAll(placeholder, resolvedContent);
-                    } catch (error) {
-                        let errorMsg;
-                        if (error.code === 'ENOENT') {
-                            errorMsg = `[变量 ${envKey} 的文件 (${value}) 未找到]`;
-                            console.warn(`[变量加载] 文件未找到: ${txtFilePath} (占位符: ${placeholder})`);
-                        } else {
-                            errorMsg = `[处理变量 ${envKey} 的文件 (${value}) 时出错]`;
-                            console.error(`[变量加载] 读取文件失败 ${txtFilePath} (占位符: ${placeholder}):`, error.message);
-                        }
-                        processedText = processedText.replaceAll(placeholder, errorMsg);
+                const agentFileName = agentConfigs[agentName]; // e.g., Nova.txt
+                const agentFilePath = path.join(AGENT_DIR, agentFileName);
+                try {
+                    let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
+                    // Recursively call replaceCommonVariables for the agent's content
+                    // This ensures placeholders within the agent file are resolved.
+                    let resolvedAgentContent = await replaceCommonVariables(agentFileContent, model, role);
+                    processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
+                } catch (error) {
+                    let errorMsg;
+                    if (error.code === 'ENOENT') {
+                        errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
+                        console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
+                    } else {
+                        errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
+                        console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
                     }
-                } else {
-                    // 值是直接的字符串
-                    processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
+                    processedText = processedText.replaceAll(placeholder, errorMsg);
                 }
             }
         }
-    }
+        // END: Agent placeholder processing
 
-    // START: New SarModelX/SarPromptX logic
-    let sarPromptToInject = null;
-
-    // Create a map from a model name to its specific prompt.
-    const modelToPromptMap = new Map();
-    for (const envKey in process.env) {
-        if (/^SarModel\d+$/.test(envKey)) {
-            const index = envKey.substring(8);
-            const promptKey = `SarPrompt${index}`;
-            let promptValue = process.env[promptKey];
-            const models = process.env[envKey];
-
-            if (promptValue && models) {
-                if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
-                    const txtFilePath = path.join(TVS_DIR, promptValue);
-                    try {
-                        const fileContent = await fs.readFile(txtFilePath, 'utf-8');
-                        // 递归解析文件内容中的变量, 依赖用户配置来避免无限递归
-                        promptValue = await replaceCommonVariables(fileContent, model);
-                    } catch (error) {
-                        let errorMsg;
-                        if (error.code === 'ENOENT') {
-                            errorMsg = `[SarPrompt 文件 (${promptValue}) 未找到]`;
-                            console.warn(`[Sar加载] 文件未找到: ${txtFilePath}`);
-                        } else {
-                            errorMsg = `[处理 SarPrompt 文件 (${promptValue}) 时出错]`;
-                            console.error(`[Sar加载] 读取文件失败 ${txtFilePath}:`, error.message);
+        // 新增 Tar/Var 变量处理逻辑 (支持 .txt 文件)
+        for (const envKey in process.env) {
+            if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
+                const placeholder = `{{${envKey}}}`;
+                if (processedText.includes(placeholder)) {
+                    const value = process.env[envKey];
+                    if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
+                        // 值是 .txt 文件，从 TVStxt 目录读取
+                        const txtFilePath = path.join(TVS_DIR, value);
+                        try {
+                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                            // 递归解析文件内容中的变量
+                            const resolvedContent = await replaceCommonVariables(fileContent, model, role);
+                            processedText = processedText.replaceAll(placeholder, resolvedContent);
+                        } catch (error) {
+                            let errorMsg;
+                            if (error.code === 'ENOENT') {
+                                errorMsg = `[变量 ${envKey} 的文件 (${value}) 未找到]`;
+                                console.warn(`[变量加载] 文件未找到: ${txtFilePath} (占位符: ${placeholder})`);
+                            } else {
+                                errorMsg = `[处理变量 ${envKey} 的文件 (${value}) 时出错]`;
+                                console.error(`[变量加载] 读取文件失败 ${txtFilePath} (占位符: ${placeholder}):`, error.message);
+                            }
+                            processedText = processedText.replaceAll(placeholder, errorMsg);
                         }
-                        promptValue = errorMsg;
+                    } else {
+                        // 值是直接的字符串
+                        processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
                     }
                 }
-                const modelList = models.split(',').map(m => m.trim()).filter(m => m);
-                for (const m of modelList) {
-                    modelToPromptMap.set(m, promptValue);
+            }
+        }
+
+        // START: New SarModelX/SarPromptX logic
+        let sarPromptToInject = null;
+
+        // Create a map from a model name to its specific prompt.
+        const modelToPromptMap = new Map();
+        for (const envKey in process.env) {
+            if (/^SarModel\d+$/.test(envKey)) {
+                const index = envKey.substring(8);
+                const promptKey = `SarPrompt${index}`;
+                let promptValue = process.env[promptKey];
+                const models = process.env[envKey];
+
+                if (promptValue && models) {
+                    if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
+                        const txtFilePath = path.join(TVS_DIR, promptValue);
+                        try {
+                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                            // 递归解析文件内容中的变量, 依赖用户配置来避免无限递归
+                            promptValue = await replaceCommonVariables(fileContent, model, role);
+                        } catch (error) {
+                            let errorMsg;
+                            if (error.code === 'ENOENT') {
+                                errorMsg = `[SarPrompt 文件 (${promptValue}) 未找到]`;
+                                console.warn(`[Sar加载] 文件未找到: ${txtFilePath}`);
+                            } else {
+                                errorMsg = `[处理 SarPrompt 文件 (${promptValue}) 时出错]`;
+                                console.error(`[Sar加载] 读取文件失败 ${txtFilePath}:`, error.message);
+                            }
+                            promptValue = errorMsg;
+                        }
+                    }
+                    const modelList = models.split(',').map(m => m.trim()).filter(m => m);
+                    for (const m of modelList) {
+                        modelToPromptMap.set(m, promptValue);
+                    }
                 }
             }
         }
-    }
 
-    // Check if the current request's model has a specific prompt.
-    if (model && modelToPromptMap.has(model)) {
-        sarPromptToInject = modelToPromptMap.get(model);
-    }
-
-    // Replace all {{Sar...}} placeholders.
-    const sarPlaceholderRegex = /\{\{Sar[a-zA-Z0-9_]+\}\}/g;
-    if (sarPromptToInject !== null) {
-        // If a specific prompt is found, replace all Sar placeholders with it.
-        processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
-    } else {
-        // If no specific prompt is found for the model, remove all Sar placeholders.
-        processedText = processedText.replaceAll(sarPlaceholderRegex, '');
-    }
-    // END: New SarModelX/SarPromptX logic
-
-    const now = new Date();
-    const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    processedText = processedText.replace(/\{\{Date\}\}/g, date);
-    const time = now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    processedText = processedText.replace(/\{\{Time\}\}/g, time);
-    const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: 'Asia/Shanghai' });
-    processedText = processedText.replace(/\{\{Today\}\}/g, today);
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    const day = now.getDate();
-    const lunarDate = lunarCalendar.getLunar(year, month, day);
-    let yearName = lunarDate.lunarYear.replace('年', '');
-    let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
-    if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
-    processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-    // START: 统一处理所有静态插件占位符 (VCP...)
-    const staticPlaceholderValues = pluginManager.staticPlaceholderValues;
-    if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
-        for (const [placeholder, value] of staticPlaceholderValues.entries()) {
-            // placeholder is already like "{{VCPPluginName}}"
-            const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
-            processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
+        // Check if the current request's model has a specific prompt.
+        if (model && modelToPromptMap.has(model)) {
+            sarPromptToInject = modelToPromptMap.get(model);
         }
-    }
-    // END: 统一处理所有静态插件占位符
-    
 
-    // Replace individual VCP plugin descriptions
-    const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
-    if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-        for (const [placeholderKey, description] of individualPluginDescriptions) {
-            // placeholderKey is already like "VCPPluginName"
-            processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
-        }
-    }
-
-// 新增：处理 {{VCPAllTools}} 占位符
-    if (processedText.includes('{{VCPAllTools}}')) {
-        const vcpDescriptionsList = [];
-
-        // 从 individualPluginDescriptions 添加 (这些由 pluginManager.getIndividualPluginDescriptions() 提供)
-        if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-            for (const description of individualPluginDescriptions.values()) {
-                vcpDescriptionsList.push(description);
-            }
-        }
-        // 注意: 如果未来有其他直接通过 pluginManager.getPlaceholderValue("{{VCPCustomXXX}}") 处理的占位符,
-        // 并且希望它们也列在 {{VCPAllTools}} 中，需要在此处手动添加逻辑来识别并包含它们。
-
-        // 使用双换行符和分隔线来分隔各个插件的描述，使其更易读
-        const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
-        processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
-    }
-
-    if (process.env.PORT) {
-        processedText = processedText.replaceAll('{{Port}}', process.env.PORT);
-    }
-    const effectiveImageKey = pluginManager.getResolvedPluginConfigValue('ImageServer', 'Image_Key');
-    if (processedText && typeof processedText === 'string' && effectiveImageKey) {
-        processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
-    } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
-        if (DEBUG_MODE) console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
-    }
-    const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
-    let emojiMatch;
-    while ((emojiMatch = emojiPlaceholderRegex.exec(processedText)) !== null) {
-        const placeholder = emojiMatch[0];
-        const emojiName = emojiMatch[1];
-        const emojiList = cachedEmojiLists.get(emojiName);
-        processedText = processedText.replaceAll(placeholder, emojiList || `${emojiName}列表不可用`);
-    }
-    const diaryPlaceholderRegex = /\{\{(.+?)日记本\}\}/g;
-    let tempProcessedText = processedText; // Work on a temporary copy
-
-    // Attempt to get and parse the AllCharacterDiariesData placeholder from PluginManager
-    let allDiariesData = {};
-    const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
-
-    if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
-        try {
-            allDiariesData = JSON.parse(allDiariesDataString);
-        } catch (e) {
-            console.error(`[replaceCommonVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
-            // Keep allDiariesData as an empty object, so individual lookups will fail gracefully
-        }
-    } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
-         if (DEBUG_MODE) console.warn(`[replaceCommonVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
-    }
-
-
-    // Use a loop that allows for async operations if needed, though simple string replacement is sync here
-    // We need to re-evaluate regex on each replacement as the string length changes
-    let match;
-    while ((match = diaryPlaceholderRegex.exec(tempProcessedText)) !== null) {
-        const placeholder = match[0]; // e.g., "{{小明同学日记本}}"
-        const characterName = match[1]; // e.g., "小明同学"
-        
-        let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`; // Default message
-
-        if (allDiariesData.hasOwnProperty(characterName)) {
-            diaryContent = allDiariesData[characterName];
+        // Replace all {{Sar...}} placeholders.
+        const sarPlaceholderRegex = /\{\{Sar[a-zA-Z0-9_]+\}\}/g;
+        if (sarPromptToInject !== null) {
+            // If a specific prompt is found, replace all Sar placeholders with it.
+            processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
         } else {
-            // console.warn(`[replaceCommonVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
-            // No need to log for every miss, default message is sufficient
+            // If no specific prompt is found for the model, remove all Sar placeholders.
+            processedText = processedText.replaceAll(sarPlaceholderRegex, '');
         }
+        // END: New SarModelX/SarPromptX logic
+
+        const now = new Date();
+        const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        processedText = processedText.replace(/\{\{Date\}\}/g, date);
+        const time = now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        processedText = processedText.replace(/\{\{Time\}\}/g, time);
+        const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: 'Asia/Shanghai' });
+        processedText = processedText.replace(/\{\{Today\}\}/g, today);
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+        const day = now.getDate();
+        const lunarDate = lunarCalendar.getLunar(year, month, day);
+        let yearName = lunarDate.lunarYear.replace('年', '');
+        let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
+        if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
+        processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
+        // START: 统一处理所有静态插件占位符 (VCP...)
+        const staticPlaceholderValues = pluginManager.staticPlaceholderValues;
+        if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
+            for (const [placeholder, value] of staticPlaceholderValues.entries()) {
+                // placeholder is already like "{{VCPPluginName}}"
+                const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
+                processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
+            }
+        }
+        // END: 统一处理所有静态插件占位符
         
-        // ReplaceAll is important if the same character's diary is mentioned multiple times
-        tempProcessedText = tempProcessedText.replaceAll(placeholder, diaryContent);
-        // Reset regex lastIndex because the string has changed, to re-scan from the beginning
-        diaryPlaceholderRegex.lastIndex = 0;
-    }
-    processedText = tempProcessedText; // Assign the fully processed text back
-    for (const rule of detectors) {
-        if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-            processedText = processedText.replaceAll(rule.detector, rule.output);
+
+        // Replace individual VCP plugin descriptions
+        const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
+        if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+            for (const [placeholderKey, description] of individualPluginDescriptions) {
+                // placeholderKey is already like "VCPPluginName"
+                processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
+            }
+        }
+
+    // 新增：处理 {{VCPAllTools}} 占位符
+        if (processedText.includes('{{VCPAllTools}}')) {
+            const vcpDescriptionsList = [];
+
+            // 从 individualPluginDescriptions 添加 (这些由 pluginManager.getIndividualPluginDescriptions() 提供)
+            if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+                for (const description of individualPluginDescriptions.values()) {
+                    vcpDescriptionsList.push(description);
+                }
+            }
+            // 注意: 如果未来有其他直接通过 pluginManager.getPlaceholderValue("{{VCPCustomXXX}}") 处理的占位符,
+            // 并且希望它们也列在 {{VCPAllTools}} 中，需要在此处手动添加逻辑来识别并包含它们。
+
+            // 使用双换行符和分隔线来分隔各个插件的描述，使其更易读
+            const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
+            processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
+        }
+
+        if (process.env.PORT) {
+            processedText = processedText.replaceAll('{{Port}}', process.env.PORT);
+        }
+        const effectiveImageKey = pluginManager.getResolvedPluginConfigValue('ImageServer', 'Image_Key');
+        if (processedText && typeof processedText === 'string' && effectiveImageKey) {
+            processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
+        } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
+            if (DEBUG_MODE) console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
+        }
+        const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
+        let emojiMatch;
+        while ((emojiMatch = emojiPlaceholderRegex.exec(processedText)) !== null) {
+            const placeholder = emojiMatch[0];
+            const emojiName = emojiMatch[1];
+            const emojiList = cachedEmojiLists.get(emojiName);
+            processedText = processedText.replaceAll(placeholder, emojiList || `${emojiName}列表不可用`);
+        }
+        const diaryPlaceholderRegex = /\{\{(.+?)日记本\}\}/g;
+        let tempProcessedText = processedText; // Work on a temporary copy
+
+        // Attempt to get and parse the AllCharacterDiariesData placeholder from PluginManager
+        let allDiariesData = {};
+        const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
+
+        if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
+            try {
+                allDiariesData = JSON.parse(allDiariesDataString);
+            } catch (e) {
+                console.error(`[replaceCommonVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
+                // Keep allDiariesData as an empty object, so individual lookups will fail gracefully
+            }
+        } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
+             if (DEBUG_MODE) console.warn(`[replaceCommonVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
+        }
+
+
+        // Use a loop that allows for async operations if needed, though simple string replacement is sync here
+        // We need to re-evaluate regex on each replacement as the string length changes
+        let match;
+        while ((match = diaryPlaceholderRegex.exec(tempProcessedText)) !== null) {
+            const placeholder = match[0]; // e.g., "{{小明同学日记本}}"
+            const characterName = match[1]; // e.g., "小明同学"
+            
+            let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`; // Default message
+
+            if (allDiariesData.hasOwnProperty(characterName)) {
+                diaryContent = allDiariesData[characterName];
+            } else {
+                // console.warn(`[replaceCommonVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
+                // No need to log for every miss, default message is sufficient
+            }
+            
+            // ReplaceAll is important if the same character's diary is mentioned multiple times
+            tempProcessedText = tempProcessedText.replaceAll(placeholder, diaryContent);
+            // Reset regex lastIndex because the string has changed, to re-scan from the beginning
+            diaryPlaceholderRegex.lastIndex = 0;
+        }
+        processedText = tempProcessedText; // Assign the fully processed text back
+        for (const rule of detectors) {
+            if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
+                processedText = processedText.replaceAll(rule.detector, rule.output);
+            }
         }
     }
+    // SuperDetectors 和 VCP_ASYNC_RESULT 应用于所有角色的消息
     for (const rule of superDetectors) {
         if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
             processedText = processedText.replaceAll(rule.detector, rule.output);
@@ -778,12 +782,12 @@ app.post('/v1/chat/completions', async (req, res) => {
             originalBody.messages = await Promise.all(originalBody.messages.map(async (msg) => {
                 const newMessage = JSON.parse(JSON.stringify(msg));
                 if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await replaceCommonVariables(newMessage.content, originalBody.model);
+                    newMessage.content = await replaceCommonVariables(newMessage.content, originalBody.model, msg.role);
                 } else if (Array.isArray(newMessage.content)) {
                     newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
                         if (part.type === 'text' && typeof part.text === 'string') {
                             const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await replaceCommonVariables(newPart.text, originalBody.model);
+                            newPart.text = await replaceCommonVariables(newPart.text, originalBody.model, msg.role);
                             return newPart;
                         }
                         return part;
@@ -1253,20 +1257,23 @@ app.post('/v1/chat/completions', async (req, res) => {
                                     if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
                                         richContentPayload = pluginResult.data.content;
                                     }
-                                    // Structure from distributed FileOperator plugin
+                                    // Structure from distributed FileOperator plugin or new image gen plugins
                                     else if (Array.isArray(pluginResult.content)) {
                                         richContentPayload = pluginResult.content;
                                     }
                                 }
 
                                 if (richContentPayload) {
-                                    // 如果是，直接使用这个 content 数组作为给AI的内容
+                                    // If it's rich content, use it for the AI
                                     toolResultContentForAI = richContentPayload;
-                                    // Also update toolResultText for logging to be more informative
-                                    toolResultText = `[Rich Content] ${richContentPayload.map(p => p.type).join(', ')}`;
+                                    
+                                    // For logging, find the text part to make it human-readable
+                                    const textPart = richContentPayload.find(p => p.type === 'text');
+                                    toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
                                 } else {
-                                    // 否则，维持原来的文本格式
+                                    // If not rich content, use the original text representation for both AI and logging
                                     toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
+                                    // toolResultText is already set correctly in this case from the initial assignment
                                 }
 
                                 // Push to VCPLog via WebSocketServer (for VCP call logging)
