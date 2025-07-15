@@ -68,7 +68,6 @@ async function getDivinationFactors(fateCheckNumber = null) {
         zodiac: lunarDate.zodiac,
         solarTerm: lunarDate.solarTerm || '无',
         isFestive: (lunarDate.lunarFestival || lunarDate.solarFestival) ? 1 : 0,
-        // Safely access ganzhi properties
         ganzhiYear: lunarDate.ganzhi ? lunarDate.ganzhi.year : '',
         ganzhiMonth: lunarDate.ganzhi ? lunarDate.ganzhi.month : '',
         ganzhiDay: lunarDate.ganzhi ? lunarDate.ganzhi.day : ''
@@ -79,33 +78,55 @@ async function getDivinationFactors(fateCheckNumber = null) {
     if (lunarDate.lunarFestival) festivalInfo += ` | 传统节日: ${lunarDate.lunarFestival}`;
     factorsSummary += `- 农历: ${festivalInfo}\n`;
 
-    // --- Weather & Moon Factors ---
-    let weatherFactors = { temp: 25, humidity: 60, windSpeed: 10, cloud: 50, moonIllumination: 50, isRainOrSnow: 0 };
+    // --- Weather, Air, Sun, Moon Factors ---
+    let weatherFactors = {
+        temp: 25, humidity: 60, windSpeed: 10, windDir: '南风', pop: 0,
+        cloud: 50, moonIllumination: 50, isRainOrSnow: 0,
+        aqi: 50, solarElevation: 0, hasWarning: 0
+    };
+
     try {
         const weatherContent = await fs.readFile(weatherCachePath, 'utf-8');
         weatherData = JSON.parse(weatherContent);
         const hourlyWeather = weatherData.hourly?.find(h => new Date(h.fxTime) > now);
         const moonPhase = weatherData.moon?.moonPhase?.filter(p => new Date(p.fxTime) <= now).pop();
-        
-        if(hourlyWeather) {
+        const airQuality = weatherData.airQuality;
+        const solarAngle = weatherData.solarAngle;
+        const warnings = weatherData.warning?.filter(w => w.status === 'active');
+
+        if (hourlyWeather) {
             weatherFactors.temp = parseFloat(hourlyWeather.temp) || 25;
             weatherFactors.humidity = parseFloat(hourlyWeather.humidity) || 60;
             weatherFactors.windSpeed = parseFloat(hourlyWeather.windSpeed) || 10;
+            weatherFactors.windDir = hourlyWeather.windDir || '未知';
+            weatherFactors.pop = parseFloat(hourlyWeather.pop) || 0;
             weatherFactors.cloud = parseFloat(hourlyWeather.cloud) || 50;
-            // Check if weather text indicates rain or snow
             if (hourlyWeather.text && (hourlyWeather.text.includes('雨') || hourlyWeather.text.includes('雪'))) {
                 weatherFactors.isRainOrSnow = 1;
             }
+            factorsSummary += `- 天气: ${hourlyWeather.text}, 气温: ${weatherFactors.temp}°C, 湿度: ${weatherFactors.humidity}%, 降水概率: ${weatherFactors.pop}%\n`;
+            factorsSummary += `- 风: ${weatherFactors.windDir} ${hourlyWeather.windScale}级 (风速 ${weatherFactors.windSpeed} km/h)\n`;
         }
-        if(moonPhase) {
+        if (moonPhase) {
             weatherFactors.moonIllumination = parseFloat(moonPhase.illumination) || 50;
+            factorsSummary += `- 月相: ${moonPhase.name} (光照: ${weatherFactors.moonIllumination}%)\n`;
         }
-        
-        factorsSummary += `- 天气: ${hourlyWeather?.text || '标准'} (最近预报), 气温: ${weatherFactors.temp}°C, 湿度: ${weatherFactors.humidity}%\n`;
-        factorsSummary += `- 月相: ${moonPhase?.name || '标准'} (光照: ${weatherFactors.moonIllumination}%)\n`;
+        if (airQuality) {
+            weatherFactors.aqi = parseFloat(airQuality.aqi) || 50;
+            factorsSummary += `- 空气质量: ${airQuality.category} (AQI: ${weatherFactors.aqi})\n`;
+        }
+        if (solarAngle) {
+            weatherFactors.solarElevation = parseFloat(solarAngle.solarElevationAngle) || 0;
+            factorsSummary += `- 太阳角度: 高度角 ${weatherFactors.solarElevation.toFixed(2)}°, 方位角 ${solarAngle.solarAzimuthAngle}°\n`;
+        }
+        if (warnings && warnings.length > 0) {
+            weatherFactors.hasWarning = 1;
+            const warningTitles = warnings.map(w => `${w.typeName}${w.level}预警`).join(', ');
+            factorsSummary += `- 气象预警: ${warningTitles}\n`;
+        }
 
     } catch (e) {
-        factorsSummary += "- 天气数据不可用，使用标准环境参数。\n";
+        factorsSummary += "- 天气/环境数据不可用，使用标准参数。\n";
     }
 
     const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors };
@@ -217,17 +238,34 @@ function drawWeightedCards(weightedDeck, numToDraw, random) {
 function calculateReversalProbability(card, factors) {
     let probability = 0.25; // Base probability of 25%
 
-    // --- Factor Adjustments ---
-    // Moon: New moon (0% illumination) increases chance, full moon (100%) decreases it.
-    probability += (100 - factors.moonIllumination) / 100 * 0.15; // Max +15%
+    // --- Environmental Factor Adjustments ---
 
-    // Weather: Rain/snow and high humidity increase chance
+    // Weather Warning: A major sign of instability.
+    probability += factors.hasWarning * 0.20; // +20% if there's an active warning
+
+    // Moon: New moon (0% illumination) increases chance, full moon (100%) decreases it.
+    probability += (100 - factors.moonIllumination) / 100 * 0.10; // Max +10%
+
+    // Sun Position: Sun below the horizon increases uncertainty.
+    if (factors.solarElevation < 0) {
+        probability += (Math.abs(factors.solarElevation) / 90) * 0.10; // Max +10% for sun being far below horizon
+    }
+
+    // Weather: Rain/snow, high humidity, and high wind increase chance
     probability += factors.isRainOrSnow * 0.10; // +10% if raining/snowing
     if (factors.humidity > 85) probability += 0.05; // +5% for high humidity
+    if (factors.windSpeed > 30) probability += 0.05; // +5% for high wind speed (e.g., > 30 km/h)
+    
+    // Air Quality: Poor air quality adds to the negativity.
+    if (factors.aqi > 150) { // "Unhealthy" or worse
+        probability += 0.10;
+    } else if (factors.aqi > 100) { // "Unhealthy for Sensitive Groups"
+        probability += 0.05;
+    }
 
     // Time: Late night hours increase chance
-    if (factors.hour >= 22 || factors.hour <= 4) {
-        probability += 0.10; // +10% for late night
+    if (factors.hour >= 23 || factors.hour <= 3) {
+        probability += 0.10; // +10% for deep night
     }
 
     // Card-specific adjustments based on name hash (for subtle variety)
@@ -236,7 +274,7 @@ function calculateReversalProbability(card, factors) {
         nameHash = (nameHash << 5) - nameHash + card.name.charCodeAt(i);
         nameHash |= 0; // Convert to 32bit integer
     }
-    probability += (nameHash % 100) / 1000; // Add a small, consistent +/- 5% based on card name
+    probability += (nameHash % 100) / 2000; // Add a smaller, consistent +/- 2.5% based on card name
 
     // Clamp the probability to be between 5% and 95%
     return Math.max(0.05, Math.min(0.95, probability));
