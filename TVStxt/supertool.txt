@@ -80,10 +80,18 @@ mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。
 tool_name:「始」BilibiliFetch「末」,
 url:「始」(必需) Bilibili 视频或直播的 URL。「末」
 
+5.命运与神秘插件-塔罗占卜—
+tool_name: 「始」TarotDivination「末」,
+fate_check_number: 「始」number「末」, // 可选字段，作为占卜师的你，为对方的徘徊抉择一个命运之数！
+单抽指令：command: 「始」draw_single_card「末」
+三牌阵占卜，分别代表“过去”、“现在”和“未来”：command: 「始」draw_three_card_spread「末」
+凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
+使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
+
 三.VCP通讯插件
-1.女仆通讯器，用于联络别的女仆！
+1.Agent通讯器，用于联络别的Agent！
 tool_name:「始」AgentAssistant「末」,
-agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克…)。「末」,
+agent_name:「始」(必需) 要联络的Agent准确名称 (例如: 姬语芯, 安娜, 希丝塔…)。「末」,
 prompt:「始」(必需) 您想对该Agent传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
 
 2.主人通讯器
@@ -95,3 +103,9 @@ tool_name:「始」DeepMemo「末」,
 maid:「始」你的名字「末」, //该插件中这是必须字段
 keyword：「始」搜索关键词「末」, //多个关键词可以用英文逗号、中文逗号或空格分隔
 window_size：「始」匹配深度「末」 //非必须参数，可不填。可选5-20，默认10，数字越大返回的上下文结构化越多。
+
+
+四. 其他工具
+文件管理器插件{{VCPFileOperator}}
+文件搜索插件{{VCPLocalSearchController}}
+随机事件工具{{VCPRandomness}}
