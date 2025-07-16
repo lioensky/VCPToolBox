@@ -147,3 +147,15 @@ dailynote/
 # WeatherReporter cache files
 Plugin/WeatherReporter/city_cache.txt
 Plugin/WeatherReporter/weather_cache.txt
+
+
+# 忽略通用表情包目录下的所有内容...
+image/通用表情包/*
+
+# ...除了这两个文件
+!image/通用表情包/阿库娅-一脸智障.jpg
+!image/通用表情包/阿库娅-智慧的眼神.jpg
+
+
+# 忽略 FluxGen 生成的图片
+image/fluxgen/
