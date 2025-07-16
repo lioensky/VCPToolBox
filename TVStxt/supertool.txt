@@ -17,7 +17,7 @@ tool_name:「始」FluxGen「末」,
 prompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,
 resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」
 
-2.DoubaoGen 国产闻声图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
+2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
 tool_name:「始」DoubaoGen「末」,
 prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
 resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
@@ -91,7 +91,7 @@ fate_check_number: 「始」number「末」, // 可选字段，作为占卜师�
 三.VCP通讯插件
 1.Agent通讯器，用于联络别的Agent！
 tool_name:「始」AgentAssistant「末」,
-agent_name:「始」(必需) 要联络的Agent准确名称 (例如: 姬语芯, 安娜, 希丝塔…)。「末」,
+agent_name:「始」(必需) 要联络的Agent准确名称 (例如: Nova,可可…)。「末」,
 prompt:「始」(必需) 您想对该Agent传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
 
 2.主人通讯器
@@ -124,13 +124,22 @@ query:「始」Everything语法的搜索查询「末」, // 必需
 maxResults:「始」50「末」 // 可选, 返回的最大结果数，默认50
 
 3. 随机事件生成器 (Randomness)
-一个多功能的随机事件生成器。可用命令分为无状态（一次性）和有状态（持久化）。
-无状态命令: getCards, rollDice, drawTarot, castRunes, selectFromList, getRandomDateTime
-有状态命令: createDeck, createCustomDeck, drawFromDeck, resetDeck, destroyDeck, queryDeck
+一个多功能的随机事件生成器，用于掷骰、抽牌等。
+// 掷骰子
 tool_name:「始」Randomness「末」,
-command:「始」命令名「末」, // 必需, 例如: rollDice, createDeck
-diceString:「始」TRPG风格的掷骰表达式「末」, // 可选, rollDice时使用, 例如 (4d6kh3+5)*2
-deckName:「始」poker「末」, // 可选, getCards/createDeck时使用, 可选值: 'poker', 'tarot'
-count:「始」要抽取的数量, 例如 5「末」, // 可选, 抽牌/选择项目时使用
-items:「始」["A", "B", "C"]「末」, // 可选, selectFromList时使用, 必须是JSON格式的列表字符串
-deckId:「始」由createDeck返回的ID「末」, // 可选, 操作已创建的牌堆时使用
+command:「始」rollDice「末」,
+diceString:「始」2d6+5「末」, // 必需, TRPG风格的掷骰表达式
+// 从列表中选择
+tool_name:「始」Randomness「末」,
+command:「始」selectFromList「末」,
+items:「始」["苹果", "香蕉"]「末」, // 必需, 数组字符串
+count:「始」1「末」, // 可选
+// 创建牌堆 (有状态)
+tool_name:「始」Randomness「末」,
+command:「始」createDeck「末」,
+deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
+// 从已创建的牌堆抽牌 (有状态)
+tool_name:「始」Randomness「末」,
+command:「始」drawFromDeck「末」,
+deckId:「始」由createDeck返回的ID「末」, // 必需
+count:「始」2「末」 // 可选
