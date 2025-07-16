@@ -7,6 +7,9 @@ const dotenv = require('dotenv');
 // Load main config.env from project root
 dotenv.config({ path: path.resolve(__dirname, '../../config.env') });
 
+// Load plugin-specific config.env
+dotenv.config({ path: path.join(__dirname, 'config.env') });
+
 const CACHE_FILE_PATH = path.join(__dirname, 'weather_cache.txt');
 const JSON_CACHE_FILE_PATH = path.join(__dirname, 'weather_cache.json');
 const CITY_CACHE_FILE_PATH = path.join(__dirname, 'city_cache.txt');
@@ -67,10 +70,16 @@ async function getCityInfo(cityName, weatherKey, weatherUrl) {
     // Check cache first
     const cityCache = await readCityCache();
     if (cityCache.has(cityName)) {
-        const cachedCityInfo = cityCache.get(cityName);
-        console.error(`[WeatherReporter] Using cached city info for ${cityName}`);
-        return { success: true, data: cachedCityInfo, error: null };
-    }
+       const cachedCityInfo = cityCache.get(cityName);
+       // Add validation for the cached data
+       if (typeof cachedCityInfo === 'object' && cachedCityInfo !== null && cachedCityInfo.id && cachedCityInfo.lat && cachedCityInfo.lon && cachedCityInfo.utcOffset) {
+           console.error(`[WeatherReporter] Using valid cached city info for ${cityName}`);
+           return { success: true, data: cachedCityInfo, error: null };
+       } else {
+           console.error(`[WeatherReporter] Invalid or incomplete cached city info for ${cityName}. Refetching...`);
+           // If cache is invalid, proceed to fetch from API as if cache didn't exist.
+       }
+   }
 
     const lookupUrl = `https://${weatherUrl}/geo/v2/city/lookup?location=${encodeURIComponent(cityName)}&key=${weatherKey}`;
 
@@ -134,18 +143,34 @@ async function getCurrentWeather(cityId, weatherKey, weatherUrl) {
     }
 }
 
-// Function to get 7-day Forecast from City ID
-async function get7DayForecast(cityId, weatherKey, weatherUrl) {
+// Function to get N-day Forecast from City ID
+async function getNDayForecast(cityId, weatherKey, weatherUrl, days = 7) {
     const { default: fetch } = await import('node-fetch'); // Dynamic import
-     if (!cityId || !weatherKey || !weatherUrl) {
-        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for get7DayForecast.');
-        return { success: false, data: null, error: new Error('Missing parameters for get7DayForecast.') };
+    if (!cityId || !weatherKey || !weatherUrl) {
+        console.error('[WeatherReporter] City ID, Weather Key or Weather URL is missing for getNDayForecast.');
+        return { success: false, data: null, error: new Error('Missing parameters for getNDayForecast.') };
     }
 
-    const forecastUrlEndpoint = `https://${weatherUrl}/v7/weather/7d?location=${cityId}&key=${weatherKey}`;
+    // Determine the correct API endpoint based on the number of days
+    let endpoint;
+    if (days <= 3) {
+        endpoint = '3d';
+    } else if (days <= 7) {
+        endpoint = '7d';
+    } else if (days <= 10) {
+        endpoint = '10d';
+    } else if (days <= 15) {
+        endpoint = '15d';
+    } else {
+        // Fallback to 7 days if the requested number is out of a reasonable range
+        console.warn(`[WeatherReporter] Requested forecast days (${days}) is out of typical range, falling back to 7 days.`);
+        endpoint = '7d';
+    }
+
+    const forecastUrlEndpoint = `https://${weatherUrl}/v7/weather/${endpoint}?location=${cityId}&key=${weatherKey}`;
 
     try {
-        console.error(`[WeatherReporter] Fetching 7-day forecast for city ID: ${cityId}`);
+        console.error(`[WeatherReporter] Fetching ${days}-day forecast for city ID: ${cityId}`);
         const response = await fetch(forecastUrlEndpoint, { timeout: 10000 }); // 10s timeout
 
         if (!response.ok) {
@@ -154,15 +179,15 @@ async function get7DayForecast(cityId, weatherKey, weatherUrl) {
         }
 
         const data = await response.json();
-         if (data.code === '200' && data.daily) {
-            console.error(`[WeatherReporter] Successfully fetched 7-day forecast for ${cityId}.`);
+        if (data.code === '200' && data.daily) {
+            console.error(`[WeatherReporter] Successfully fetched ${days}-day forecast for ${cityId}.`);
             return { success: true, data: data.daily, error: null };
         } else {
-             throw new Error(`Failed to get 7-day forecast for ${cityId}. API returned code ${data.code}`);
+            throw new Error(`Failed to get ${days}-day forecast for ${cityId}. API returned code ${data.code}`);
         }
 
     } catch (error) {
-        console.error(`[WeatherReporter] Error fetching 7-day forecast: ${error.message}`);
+        console.error(`[WeatherReporter] Error fetching ${days}-day forecast: ${error.message}`);
         return { success: false, data: null, error: error };
     }
 }
@@ -337,7 +362,7 @@ async function getSolarElevationAngle(latitude, longitude, altitude, date, time,
 }
 
 // Helper to format weather data into a readable string
-function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle) {
+function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount) {
     if (!hourlyForecast && (!weatherWarning || weatherWarning.length === 0) && (!forecast || forecast.length === 0) && !moonPhase && !airQuality && !solarAngle) {
         return "[天气信息获取失败]";
     }
@@ -372,9 +397,9 @@ function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, 
     // Add 24-hour Forecast section
     result += "\n【未来24小时天气预报】\n";
     if (hourlyForecast && hourlyForecast.length > 0) {
-        // Only show the first 8 hours, the 10th hour, and the 12th hour
-        for (let i = 0; i < hourlyForecast.length; i++) {
-            if (i < 8 || i === 9 || i === 11|| i === 16|| i === 20) {
+        // Use interval and count from config
+        for (let i = 0; i < hourlyForecast.length && i < hourlyForecastCount * hourlyForecastInterval; i += hourlyForecastInterval) {
+            if (hourlyForecast[i]) {
                 const hour = hourlyForecast[i];
                 const time = new Date(hour.fxTime).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' });
                 result += `\n时间: ${time}\n`;
@@ -454,6 +479,9 @@ async function fetchAndCacheWeather() {
     const varCity = process.env.VarCity;
     const weatherKey = process.env.WeatherKey;
     const weatherUrl = process.env.WeatherUrl;
+    const forecastDays = parseInt(process.env.forecastDays, 10) || 7;
+    const hourlyForecastInterval = parseInt(process.env.hourlyForecastInterval, 10) || 2;
+    const hourlyForecastCount = parseInt(process.env.hourlyForecastCount, 10) || 12;
 
 
     if (!varCity || !weatherKey || !weatherUrl) {
@@ -527,13 +555,13 @@ async function fetchAndCacheWeather() {
         console.error(`[WeatherReporter] Failed to get weather warning: ${lastError.message}`);
     }
 
-    // 6. Get 7-day Forecast (using cityId)
-    const forecastResult = await get7DayForecast(cityId, weatherKey, weatherUrl);
+    // 6. Get N-day Forecast (using cityId)
+    const forecastResult = await getNDayForecast(cityId, weatherKey, weatherUrl, forecastDays);
     if (forecastResult.success) {
         forecast = forecastResult.data;
     } else {
         lastError = forecastResult.error;
-        console.error(`[WeatherReporter] Failed to get 7-day forecast: ${lastError.message}`);
+        console.error(`[WeatherReporter] Failed to get ${forecastDays}-day forecast: ${lastError.message}`);
     }
 
     // 7. Get Moon Phase (using cityId)
@@ -550,7 +578,7 @@ async function fetchAndCacheWeather() {
     // Update condition to check for any data
     if (hourlyForecast || weatherWarning || (forecast && forecast.length > 0) || moonPhase || airQuality || solarAngle) {
         // Update function call
-        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle);
+        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount);
 
         // --- New JSON Cache Logic ---
         const rawWeatherData = {
