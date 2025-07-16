@@ -106,6 +106,31 @@ window_size：「始」匹配深度「末」 //非必须参数，可不填。可
 
 
 四. 其他工具
-文件管理器插件{{VCPFileOperator}}
-文件搜索插件{{VCPLocalSearchController}}
-随机事件工具{{VCPRandomness}}
+1. 文件管理器 (FileOperator)
+一个强大的文件管理工具。可用命令: ListAllowedDirectories, ReadFile, WriteFile, AppendFile, EditFile, ListDirectory, FileInfo, CopyFile, MoveFile, RenameFile, DeleteFile, CreateDirectory, ApplyDiff。支持通过`command1`, `filePath1`, `command2`, `filePath2`...的形式执行批量任务。
+tool_name:「始」FileOperator「末」,
+command:「始」命令名「末」, // 必需, 例如: ReadFile, WriteFile
+filePath:「始」目标文件路径「末」, // 可选, 大多数命令需要
+content:「始」要写入或追加的内容「末」, // 可选, WriteFile/AppendFile/EditFile时使用
+sourcePath:「始」源文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
+destinationPath:「始」目标文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
+directoryPath:「始」目标目录路径「末」, // 可选, ListDirectory/CreateDirectory时使用
+
+2. 文件搜索 (LocalSearchController)
+一个基于 Everything 模块的强大文件搜索工具，支持高级语法和多标签混合搜索。
+tool_name:「始」LocalSearchController「末」,
+command:「始」search「末」,
+query:「始」Everything语法的搜索查询「末」, // 必需
+maxResults:「始」50「末」 // 可选, 返回的最大结果数，默认50
+
+3. 随机事件生成器 (Randomness)
+一个多功能的随机事件生成器。可用命令分为无状态（一次性）和有状态（持久化）。
+无状态命令: getCards, rollDice, drawTarot, castRunes, selectFromList, getRandomDateTime
+有状态命令: createDeck, createCustomDeck, drawFromDeck, resetDeck, destroyDeck, queryDeck
+tool_name:「始」Randomness「末」,
+command:「始」命令名「末」, // 必需, 例如: rollDice, createDeck
+diceString:「始」TRPG风格的掷骰表达式「末」, // 可选, rollDice时使用, 例如 (4d6kh3+5)*2
+deckName:「始」poker「末」, // 可选, getCards/createDeck时使用, 可选值: 'poker', 'tarot'
+count:「始」要抽取的数量, 例如 5「末」, // 可选, 抽牌/选择项目时使用
+items:「始」["A", "B", "C"]「末」, // 可选, selectFromList时使用, 必须是JSON格式的列表字符串
+deckId:「始」由createDeck返回的ID「末」, // 可选, 操作已创建的牌堆时使用
