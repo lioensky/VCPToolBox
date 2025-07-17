@@ -1,0 +1,47 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "FlashDeepSearch",
+  "version": "1.0.0",
+  "displayName": "闪电深度研究插件",
+  "description": "一个强大的深度研究插件，能够围绕一个主题进行多维度、跨领域的关键词扩展，并综合搜索结果生成研究报告。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node FlashDeepSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 600000
+  },
+  "configSchema": {
+    "DeepSearchKey": {
+      "type": "string",
+      "description": "用于访问大模型服务的API Key。"
+    },
+    "DeepSearchUrl": {
+      "type": "string",
+      "description": "大模型服务的API端点URL。"
+    },
+    "DeepSearchModel": {
+      "type": "string",
+      "description": "用于生成研究关键词和最终报告的主模型名称。"
+    },
+    "GoogleSearchModel": {
+      "type": "string",
+      "description": "用于执行联网搜索的辅助模型名称。"
+    },
+    "MaxSearchList": {
+      "type": "integer",
+      "description": "并发执行搜索任务的队列上限。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "StartResearch",
+        "description": "调用此工具对一个指定主题进行深度研究。\n参数:\n- SearchContent (字符串, 必需): 需要进行深度研究的自然语言主题描述。\n- SearchBroadness (整数, 必需, 范围5-20): 定义研究的广度，即需要生成的探索性关键词数量。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FlashDeepSearch「末」,\nSearchContent:「始」探讨人工智能在气候变化建模中的应用及其伦理影响。「末」,\nSearchBroadness:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
