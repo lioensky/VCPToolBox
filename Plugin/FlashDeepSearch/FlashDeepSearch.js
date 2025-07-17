@@ -25,9 +25,19 @@ const FILE_SAVE_PATH = path.resolve(__dirname, '../../file/document');
 
 // --- 2. 辅助函数 ---
 
+const logFilePath = path.join(__dirname, `log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
+const logStream = require('fs').createWriteStream(logFilePath, { flags: 'a' });
+
 const log = (message) => {
-    console.error(`[FlashDeepSearch] ${new Date().toISOString()}: ${message}`);
+    const logMessage = `[FlashDeepSearch] ${new Date().toISOString()}: ${message}`;
+    console.error(logMessage); // 保留控制台错误输出，以便主进程通信
+    logStream.write(`${logMessage}\n`);
 };
+
+// 确保在进程退出时优雅地关闭日志流
+process.on('exit', () => {
+    logStream.end();
+});
 
 const sendResponse = (data) => {
     console.log(JSON.stringify(data));
@@ -84,9 +94,19 @@ async function generateKeywords(topic, broadness) {
     const userMessage = `Agent请求内容字段(${topic})，请求【搜索广度】(SearchBroadness)为:${broadness}`;
     
     const responseText = await callLanguageModel(DeepSearchModel, [{ role: 'user', content: userMessage }], systemPrompt, DEEP_SEARCH_MAX_TOKENS);
+    log(`DeepSearchModel 原始响应: ${responseText}`);
     
-    const keywordRegex = /\[KeyWord\d*?:\s*\]([^\[\]]+)(?=\s*\[KeyWord\d*?:\]|$)/g;
-    const keywords = [...responseText.matchAll(keywordRegex)].map(match => match[1].trim());
+    // 兼容两种关键词格式: [keyword:] 或 [KeyWord1:] keyword
+    let keywords;
+    const newRegex = /\[([^\]:]+):\]/g; // 格式: [keyword:]
+    const newMatches = [...responseText.matchAll(newRegex)];
+
+    if (newMatches.length > 0) {
+        keywords = newMatches.map(match => match[1].trim());
+    } else {
+        const oldRegex = /\[KeyWord\d*?:\s*\]([^\[\]]+)(?=\s*\[KeyWord\d*?:\]|$)/g; // 格式: [KeyWord1:] keyword
+        keywords = [...responseText.matchAll(oldRegex)].map(match => match[1].trim());
+    }
 
     if (keywords.length === 0) {
         throw new Error("未能从DeepSearchModel的响应中提取任何关键词。");
