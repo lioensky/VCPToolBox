@@ -80,10 +80,18 @@ mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。
 tool_name:「始」BilibiliFetch「末」,
 url:「始」(必需) Bilibili 视频或直播的 URL。「末」
 
+5.命运与神秘插件-塔罗占卜—
+tool_name: 「始」TarotDivination「末」,
+fate_check_number: 「始」number「末」, // 可选字段，作为占卜师的你，为对方的徘徊抉择一个命运之数！
+单抽指令：command: 「始」draw_single_card「末」
+三牌阵占卜，分别代表“过去”、“现在”和“未来”：command: 「始」draw_three_card_spread「末」
+凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
+使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
+
 三.VCP通讯插件
-1.女仆通讯器，用于联络别的女仆！
+1.Agent通讯器，用于联络别的Agent！
 tool_name:「始」AgentAssistant「末」,
-agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克…)。「末」,
+agent_name:「始」(必需) 要联络的Agent准确名称 (例如: Nova,可可…)。「末」,
 prompt:「始」(必需) 您想对该Agent传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
 
 2.主人通讯器
@@ -95,3 +103,87 @@ tool_name:「始」DeepMemo「末」,
 maid:「始」你的名字「末」, //该插件中这是必须字段
 keyword：「始」搜索关键词「末」, //多个关键词可以用英文逗号、中文逗号或空格分隔
 window_size：「始」匹配深度「末」 //非必须参数，可不填。可选5-20，默认10，数字越大返回的上下文结构化越多。
+
+
+四. 其他工具
+1. 文件管理器 (FileOperator)
+一个强大的文件管理工具。可用命令: ListAllowedDirectories, ReadFile, WriteFile, AppendFile, EditFile, ListDirectory, FileInfo, CopyFile, MoveFile, RenameFile, DeleteFile, CreateDirectory, ApplyDiff。支持通过`command1`, `filePath1`, `command2`, `filePath2`...的形式执行批量任务。
+tool_name:「始」FileOperator「末」,
+command:「始」命令名「末」, // 必需, 例如: ReadFile, WriteFile
+filePath:「始」目标文件路径「末」, // 可选, 大多数命令需要
+content:「始」要写入或追加的内容「末」, // 可选, WriteFile/AppendFile/EditFile时使用
+sourcePath:「始」源文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
+destinationPath:「始」目标文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
+directoryPath:「始」目标目录路径「末」, // 可选, ListDirectory/CreateDirectory时使用
+
+2. 文件搜索 (LocalSearchController)
+一个基于 Everything 模块的强大文件搜索工具，支持高级语法和多标签混合搜索。
+tool_name:「始」LocalSearchController「末」,
+command:「始」search「末」,
+query:「始」Everything语法的搜索查询「末」, // 必需
+maxResults:「始」50「末」 // 可选, 返回的最大结果数，默认50
+
+3. 随机事件生成器 (Randomness)
+一个多功能的随机事件生成器，提供有状态和无状态两种模式，用于掷骰、抽牌、生成随机日期等。
+
+// --- 无状态指令 (一次性操作) ---
+// 掷骰子 (TRPG)
+tool_name:「始」Randomness「末」,
+command:「始」rollDice「末」,
+diceString:「始」2d6+5「末」, // 必需, TRPG风格的掷骰表达式
+format:「始」ascii「末」, // 可选, 使用'ascii'可为6面骰生成视觉化结果
+
+// 从列表中选择
+tool_name:「始」Randomness「末」,
+command:「始」selectFromList「末」,
+items:「始」["苹果", "香蕉", "橙子"]「末」, // 必需, 包含选项的数组
+count:「始」1「末」, // 可选, 抽取数量
+withReplacement:「始」false「末」, // 可选, true为可重复抽取
+
+// 快速抽牌 (扑克/塔罗)
+tool_name:「始」Randomness「末」,
+command:「始」getCards「末」,
+deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
+count:「始」2「末」, // 可选
+
+// 快速抽塔罗牌 (支持牌阵)
+tool_name:「始」Randomness「末」,
+command:「始」drawTarot「末」,
+spread:「始」three_card「末」, // 可选, 牌阵名称, 如 'single_card', 'celtic_cross'
+allowReversed:「始」true「末」, // 可选, 是否允许逆位
+
+// 抽卢恩符文
+tool_name:「始」Randomness「末」,
+command:「始」castRunes「末」,
+count:「始」3「末」, // 可选
+
+// 生成随机日期时间
+tool_name:「始」Randomness「末」,
+command:「始」getRandomDateTime「末」,
+start:「始」2025-01-01「末」, // 可选, 起始时间
+end:「始」2025-12-31「末」, // 可选, 结束时间
+format:「始」%Y年%m月%d日「末」, // 可选, 返回格式
+
+// --- 有状态指令 (需要管理生命周期) ---
+// 1. 创建标准牌堆
+tool_name:「始」Randomness「末」,
+command:「始」createDeck「末」,
+deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
+deckCount:「始」1「末」, // 可选, 使用几副牌
+
+// 2. 创建自定义牌堆
+tool_name:「始」Randomness「末」,
+command:「始」createCustomDeck「末」,
+cards:「始」["牌1", "牌2", "牌3"]「末」, // 必需, 自定义卡牌列表
+deckName:「始」我的牌堆「末」, // 可选
+
+// 3. 从已创建的牌堆抽牌
+tool_name:「始」Randomness「末」,
+command:「始」drawFromDeck「末」,
+deckId:「始」由createDeck返回的ID「末」, // 必需
+count:「始」2「末」, // 可选
+
+// 4. 销毁牌堆 (重要：任务完成后必须调用)
+tool_name:「始」Randomness「末」,
+command:「始」destroyDeck「末」,
+deckId:「始」由createDeck返回的ID「末」 // 必需

@@ -298,8 +298,10 @@ def main():
 
         input_json = sys.stdin.read()
         args = keys_to_snake_case(json.loads(input_json)) if input_json else {}
-        command = args.get("command")
-        if not command: raise ValueError("缺少必需的 'command' 字段。")
+        
+        # 为了兼容新旧manifest，同时接受 command 和 commandIdentifier
+        command = _get_param(args, ["command", "command_identifier"])
+        if not command: raise ValueError("缺少必需的 'command' 或 'commandIdentifier' 字段。")
 
         command_map = {
             "getCards": get_cards, "rollDice": roll_dice, "drawTarot": draw_tarot, "castRunes": cast_runes,
@@ -326,12 +328,16 @@ def main():
         formatter = formatter_map.get(command)
         message = formatter(result_data) if formatter else f"已成功执行命令 '{command}'。"
         
-        response = {"status": "success", "result": result_data, "message_for_ai": message}
+        # 按照新规范，将格式化文本作为 'text' 字段添加到 result 对象中
+        if isinstance(result_data, dict):
+            result_data['text'] = message
+        
+        response = {"status": "success", "result": result_data}
     
     except Exception as e:
         error_cmd_str = f" '{command}'" if command else ""
         error_message = f"执行命令{error_cmd_str}时发生错误: {str(e)}"
-        response = {"status": "error", "error": str(e), "message_for_ai": error_message}
+        response = {"status": "error", "error": error_message}
         
     finally:
         try:

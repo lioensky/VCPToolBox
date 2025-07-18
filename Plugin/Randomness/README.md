@@ -1,6 +1,6 @@
 # Randomness (随机事件生成器) 插件
 
-**版本:** 5.1.0
+**版本:** 5.2.0
 
 ## 概述
 
@@ -12,6 +12,12 @@
 无论是用于复杂的游戏、占卜、数据模拟还是其他任何需要随机性的场景，本插件都能提供强大的支持。
 
 ## 更新日志 (Changelog)
+
+### 版本 5.2.0 (2025-07-16)
+
+✨ **符合最新开发手册**:
+-   更新 `plugin-manifest.json` 以符合 `v1.0.0` 规范，重写了所有指令的 `description` 以便AI更好地理解和调用。
+-   调整了 `main.py` 的返回数据结构，使其更加标准化。
 
 ### 版本 5.1.0 (2025-07-09)
 
@@ -50,7 +56,12 @@
 -   **描述**: 创建一个新的、有状态的牌堆实例。
 -   **调用示例**:
     ```
-    VCP>Randomness.createDeck deckName=poker deckCount=2
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」createDeck「末」,
+    deckName:「始」poker「末」,
+    deckCount:「始」2「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `deckName` (字符串, **必需**): 要使用的牌堆名称。可用选项: `'poker'`, `'tarot'`。
@@ -61,7 +72,12 @@
 -   **描述**: 根据用户提供的任意卡牌列表创建一个新的、有状态的牌堆实例。
 -   **调用示例**:
     ```
-    VCP>Randomness.createCustomDeck cards=["牌1", "牌2", "牌3"] deckName=我的牌堆
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」createCustomDeck「末」,
+    cards:「始」["牌1", "牌2", "牌3"]「末」,
+    deckName:「始」我的牌堆「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `cards` (数组, **必需**): 一个包含卡牌的数组。
@@ -72,7 +88,12 @@
 -   **描述**: 从指定的牌堆实例中抽牌。
 -   **调用示例**:
     ```
-    VCP>Randomness.drawFromDeck deckId=a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6 count=5
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」drawFromDeck「末」,
+    deckId:「始」a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6「末」,
+    count:「始」5「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `deckId` (字符串, **必需**): 由 `createDeck` 返回的牌堆唯一ID。
@@ -99,7 +120,11 @@
 -   **调用示例**:
     ```
     // 决定今晚吃什么
-    VCP>Randomness.selectFromList items=["披萨", "寿司", "牛排"]
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」selectFromList「末」,
+    items:「始」["披萨", "寿司", "牛排"]「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `items` (数组, **必需**): 从中进行选择的项目的数组。
@@ -111,7 +136,12 @@
 -   **描述**: [无状态] 进行一次性的洗牌并抽取指定数量的标准卡牌。
 -   **调用示例**:
     ```
-    VCP>Randomness.getCards deckName=poker count=2
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」getCards「末」,
+    deckName:「始」poker「末」,
+    count:「始」2「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `deckName` (字符串, **必需**): 牌堆名称 (`'poker'`, `'tarot'`)。
@@ -122,7 +152,11 @@
 -   **描述**: [无状态] 快捷抽取塔罗牌，支持多种预设的牌阵。
 -   **调用示例**:
     ```
-    VCP>Randomness.drawTarot spread=celtic_cross
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」drawTarot「末」,
+    spread:「始」celtic_cross「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `spread` (字符串, 可选): 要使用的牌阵名称。可用选项: `'single_card'`, `'three_card'`, `'celtic_cross'`, ...
@@ -134,7 +168,11 @@
 -   **描述**: [无状态] 抽取卢恩符文。
 -   **调用示例**:
     ```
-    VCP>Randomness.castRunes count=1
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」castRunes「末」,
+    count:「始」1「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `count` (整数, 可选, 默认 1): 抽取的符文数量。
@@ -145,10 +183,19 @@
 -   **调用示例**:
     ```
     // D&D 优势检定
-    VCP>Randomness.rollDice diceString="1d20adv+5"
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」rollDice「末」,
+    diceString:「始」1d20adv+5「末」
+    <<<[END_TOOL_REQUEST]>>>
 
     // ASCII 艺术画输出
-    VCP>Randomness.rollDice diceString="2d6" format="ascii"
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」rollDice「末」,
+    diceString:「始」2d6「末」,
+    format:「始」ascii「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `diceString` (字符串, **必需**): 要执行的掷骰表达式。
@@ -173,7 +220,13 @@
 -   **调用示例**:
     ```
     // 在2025年内随机选择一天
-    VCP>Randomness.getRandomDateTime start="2025-01-01" end="2025-12-31" format="YYYY-MM-DD"
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」getRandomDateTime「末」,
+    start:「始」2025-01-01「末」,
+    end:「始」2025-12-31「末」,
+    format:「始」YYYY-MM-DD「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **参数**:
     -   `start` (字符串, 可选): ISO 8601 格式的起始时间。
@@ -217,7 +270,11 @@
 -   **VarUser**: `我的角色要进行一次攻击检定，加值是5，请帮我投一个2d6，然后将结果乘以2作为最终伤害。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.rollDice diceString="(2d6+5)*2"
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」rollDice「末」,
+    diceString:「始」(2d6+5)*2「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 掷骰: **(2d6+5)*2** = **24**
@@ -229,7 +286,12 @@
 -   **VarUser**: `我晚饭不知道吃什么，帮我在“红烧牛肉”、“麻婆豆腐”和“宫保鸡丁”里随便选一个。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.selectFromList items=["红烧牛肉", "麻婆豆腐", "宫保鸡丁"] count=1
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」selectFromList「末」,
+    items:「始」["红烧牛肉", "麻婆豆腐", "宫保鸡丁"]「末」,
+    count:「始」1「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 从列表中随机选择的结果是：**麻婆豆腐**
@@ -239,7 +301,12 @@
 -   **VarUser**: `我们来玩德州扑克吧，给我发两张手牌。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.getCards deckName=poker count=2
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」getCards「末」,
+    deckName:「始」poker「末」,
+    count:「始」2「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 为您从牌堆中抽到了: AS, KH.
@@ -249,7 +316,11 @@
 -   **VarUser**: `我想算一下我最近的运势，帮我用三牌阵抽一下塔罗牌。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.drawTarot spread=three_card
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」drawTarot「末」,
+    spread:「始」three_card「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 为您使用 **three_card** 牌阵抽到的塔罗牌是：
@@ -262,7 +333,11 @@
 -   **VarUser**: `请为我抽取3个卢恩符文，看看有什么神谕。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.castRunes count=3
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」castRunes「末」,
+    count:「始」3「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 为您抽取的卢恩符文是：Fehu, Uruz, Ansuz.
@@ -272,7 +347,13 @@
 -   **VarUser**: `我想写一个发生在2025年的故事，帮我随机选一个日期，格式是XXXX年XX月XX日。`
 -   **Agent 调用**:
     ```
-    VCP>Randomness.getRandomDateTime start="2025-01-01T00:00:00Z" end="2025-12-31T23:59:59Z" format="%Y年%m月%d日"
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」getRandomDateTime「末」,
+    start:「始」2025-01-01T00:00:00Z「末」,
+    end:「始」2025-12-31T23:59:59Z「末」,
+    format:「始」%Y年%m月%d日「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复**:
     > 在指定范围内生成的随机时间是：**2025年08月23日**
@@ -282,7 +363,11 @@
 -   **VarUser (步骤1)**: `我们来玩21点，先创建一个标准的扑克牌堆。`
 -   **Agent 调用 (步骤1: 创建)**:
     ```
-    VCP>Randomness.createDeck deckName=poker
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」createDeck「末」,
+    deckName:「始」poker「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复 (步骤1)**:
     > 已成功创建牌堆 'poker' (共 52 张)。
@@ -291,7 +376,12 @@
 -   **VarUser (步骤2)**: `好了，现在给我发两张牌。`
 -   **Agent 调用 (步骤2: 抽牌)**:
     ```
-    VCP>Randomness.drawFromDeck deckId=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 count=2
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」drawFromDeck「末」,
+    deckId:「始」a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4「末」,
+    count:「始」2「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复 (步骤2)**:
     > 从牌堆 `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4` 中抽到了: QC, 10H.
@@ -300,7 +390,31 @@
 -   **VarUser (步骤3)**: `好的，这局结束了，把牌堆销毁吧。`
 -   **Agent 调用 (步骤3: 销毁)**:
     ```
-    VCP>Randomness.destroyDeck deckId=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」Randomness「末」,
+    command:「始」destroyDeck「末」,
+    deckId:「始」a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4「末」
+    <<<[END_TOOL_REQUEST]>>>
     ```
 -   **预期回复 (步骤3)**:
     > 牌堆 `a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4` 已销毁。
+
+---
+
+## 插件对比: Randomness vs. TarotDivination
+
+本项目中同时存在 `Randomness` 和 `TarotDivination` 两个提供塔罗牌功能的插件，但它们的设计哲学和应用场景完全不同。
+
+-   **`Randomness` (本插件)**:
+    -   **定位**: 通用的、无UI的后端随机性服务。
+    -   **核心**: 提供公平、不可预测的随机结果，适合游戏、模拟等需要可靠随机源的场景。
+    -   **功能**: 一个功能全面的“随机性工具箱”，除塔罗牌外，还支持扑克牌、掷骰、列表选择等。
+    -   **状态**: 支持有状态的牌堆管理，可用于连续抽卡。
+
+-   **`TarotDivination`**:
+    -   **定位**: 专用的、注重前端体验的占卜应用。
+    -   **核心**: 使用基于环境因素（天气、时间等）的算法，旨在创造一种充满仪式感的占卜体验。
+    -   **功能**: 专注于塔罗牌占卜的深度体验，并深度绑定前端视觉效果。
+    -   **状态**: 无状态，每次调用都是一次独立的占卜。
+
+**结论**: `Randomness` 是一个功能强大的后端随机性引擎，而 `TarotDivination` 则是一个体验驱动的前端占卜应用。两者互为补充，而非竞争关系。
