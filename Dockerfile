@@ -25,7 +25,14 @@ RUN apk add --no-cache \
 
 # 复制 Node.js 依赖定义文件并安装依赖 (包含 pm2)
 COPY package*.json ./
-RUN npm install --registry=https://registry.npmmirror.com
+# 如果遇到 npm install 速度过慢的问题，可以尝试更换下面的镜像源。
+# 国内常用镜像:
+# --registry=https://registry.npm.taobao.org (淘宝旧版)
+# --registry=https://registry.npmmirror.com (淘宝新版)
+# --registry=https://mirrors.huaweicloud.com/repository/npm/ (华为云)
+# 国际通用 (如果服务器在海外):
+# (默认，无需指定)
+RUN npm install --registry=https://registry.npm.taobao.org
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
