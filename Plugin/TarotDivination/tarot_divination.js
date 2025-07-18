@@ -129,7 +129,67 @@ async function getDivinationFactors(fateCheckNumber = null) {
         factorsSummary += "- 天气/环境数据不可用，使用标准参数。\n";
     }
 
-    const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors };
+    // --- Celestial Factors (Astrological Influences) ---
+    const celestialDBPath = path.join(__dirname, 'celestial_database.json');
+    let celestialFactors = {};
+    try {
+        const celestialDBContent = await fs.readFile(celestialDBPath, 'utf-8');
+        const celestialDatabase = JSON.parse(celestialDBContent);
+        const nowUTC = new Date();
+
+        let closestTimestampKey = null;
+        let smallestDiff = Infinity;
+
+        // Find the closest timestamp key from the database.
+        for (const timestampKey in celestialDatabase) {
+            const timestamp = new Date(timestampKey);
+            const diff = Math.abs(nowUTC - timestamp);
+            if (diff < smallestDiff) {
+                smallestDiff = diff;
+                closestTimestampKey = timestampKey;
+            }
+        }
+
+        // The user mentioned a 2-hour interval, so we should be reasonably close.
+        // Let's use a 3-hour threshold to be safe.
+        if (closestTimestampKey && smallestDiff < 3 * 60 * 60 * 1000) {
+            const celestialData = celestialDatabase[closestTimestampKey];
+            celestialFactors = celestialData; // Store the raw data
+            
+            const dataTime = new Date(closestTimestampKey);
+            factorsSummary += `- 天体位置 (数据采样于 ${dataTime.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}):\n`;
+            
+            const planetTranslations = {
+                mercury: '水星', venus: '金星', earth: '地球', mars: '火星',
+                jupiter: '木星', saturn: '土星', uranus: '天王星', neptune: '海王星'
+            };
+
+            let celestialDetails = [];
+            for (const [planet, coords] of Object.entries(celestialData)) {
+                // Describe position in a more "mystical" way
+                // These are heliocentric ecliptic coordinates.
+                // x/y are on the ecliptic plane, z is above/below.
+                let x_desc = coords.x_au > 0 ? '太阳的“前方”' : '太阳的“后方”'; // Simplified direction relative to a zero-point
+                let y_desc = coords.y_au > 0 ? '黄道的“左侧”' : '黄道的“右侧”'; // Simplified direction
+                let z_desc = Math.abs(coords.z_au) < 0.05 ? '贴近黄道面' : (coords.z_au > 0 ? '升于黄道之上' : '潜于黄道之下');
+                celestialDetails.push(`    - ${planetTranslations[planet] || planet}: ${z_desc}，位于${x_desc}与${y_desc}的象限`);
+            }
+            factorsSummary += celestialDetails.join('\n') + '\n';
+
+        } else {
+            factorsSummary += "- 天体位置数据不可用或与当前时间差距过大。\n";
+        }
+
+    } catch (e) {
+        // If the file doesn't exist, it's not a critical error.
+        if (e.code === 'ENOENT') {
+            factorsSummary += "- 未找到天体数据库 (celestial_database.json)。\n";
+        } else {
+            factorsSummary += `- 读取天体数据库时出错: ${e.message}\n`;
+        }
+    }
+
+    const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors, ...celestialFactors };
     let seedString = JSON.stringify(allFactors);
     if (fateCheckNumber !== null && !isNaN(parseInt(fateCheckNumber))) {
         seedString += `::FATE_CHECK::${fateCheckNumber}`;
@@ -149,19 +209,24 @@ async function getDivinationFactors(fateCheckNumber = null) {
  * 'pos' means positive affinity (more likely), 'neg' means negative.
  */
 function getCardAffinities() {
+    // Added planetary affinities. The value is the planet's key in the celestial data.
     return {
         'The Sun': { time: 'day', weather: 'good' },
-        'The Moon': { time: 'night' },
-        'The Star': { time: 'night' },
+        'The Moon': { time: 'night', planet: 'neptune' }, // Neptune for illusion/dreams
+        'The Star': { time: 'night', planet: 'uranus' }, // Uranus for innovation/revelation
         'The High Priestess': { moon: 'full' },
-        'The Hermit': { time: 'night' },
-        'The Tower': { weather: 'bad' },
+        'The Hermit': { time: 'night', planet: 'saturn' }, // Saturn for solitude/discipline
+        'The Tower': { weather: 'bad', planet: 'mars' }, // Mars for conflict
         'Death': { weather: 'bad' },
         'The Devil': { weather: 'bad' },
         'Ten of Swords': { weather: 'bad' },
-        'The Lovers': { festive: 'pos' },
+        'The Lovers': { festive: 'pos', planet: 'venus' }, // Venus for love/harmony
         'Four of Wands': { festive: 'pos' },
-        'The World': { festive: 'pos' }
+        'The World': { festive: 'pos' },
+        'The Magician': { planet: 'mercury' }, // Mercury for communication/skill
+        'The Chariot': { planet: 'mars' }, // Mars for drive/ambition
+        'Wheel of Fortune': { planet: 'jupiter' }, // Jupiter for luck/expansion
+        'The Emperor': { planet: 'jupiter' } // Jupiter for authority/leadership
     };
 }
 
@@ -178,12 +243,25 @@ function calculateCardWeights(deck, factors) {
         const cardAffinities = affinities[card.name];
 
         if (cardAffinities) {
+            // --- Standard Affinities ---
             if (cardAffinities.time === 'day' && factors.hour > 6 && factors.hour < 18) weight += 50;
             if (cardAffinities.time === 'night' && (factors.hour >= 18 || factors.hour <= 6)) weight += 50;
             if (cardAffinities.weather === 'good' && !factors.isRainOrSnow) weight += 40;
             if (cardAffinities.weather === 'bad' && factors.isRainOrSnow) weight += 60;
             if (cardAffinities.moon === 'full' && factors.moonIllumination > 95) weight += 50;
             if (cardAffinities.festive === 'pos' && factors.isFestive) weight += 70;
+
+            // --- Celestial Affinities ---
+            if (cardAffinities.planet && factors[cardAffinities.planet]) {
+                const planetData = factors[cardAffinities.planet];
+                // A planet's influence is stronger when it's further from the ecliptic plane (z_au).
+                // This signifies it's in a more "pronounced" or "active" state.
+                const z_influence = Math.abs(planetData.z_au || 0);
+                // We give a bonus based on this deviation. The multiplier is arbitrary but creates effect.
+                // e.g., z_au of 0.5 gives a 25 point bonus. z_au of 2.0 gives a 100 point bonus.
+                const celestialBonus = z_influence * 50;
+                weight += celestialBonus;
+            }
         }
         
         // Ensure weight is at least a small number
@@ -237,6 +315,24 @@ function drawWeightedCards(weightedDeck, numToDraw, random) {
  */
 function calculateReversalProbability(card, factors) {
     let probability = 0.25; // Base probability of 25%
+
+    // --- Celestial Instability Factor ---
+    // Calculate a score based on how "out of alignment" the planets are.
+    // We sum the absolute z_au values. A higher value means more planets are far
+    // from the ecliptic plane, suggesting cosmic "tension" or "instability".
+    let celestialInstabilityScore = 0;
+    const planetKeys = ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
+    for (const planetKey of planetKeys) {
+        if (factors[planetKey]) {
+            celestialInstabilityScore += Math.abs(factors[planetKey].z_au || 0);
+        }
+    }
+    // Normalize this score into a probability adjustment.
+    // The sum can vary. A typical sum might be around 2-5. A high sum could be 10+.
+    // Let's say every point in the score adds 1.5% to the reversal probability.
+    // This makes celestial influence significant but not overwhelming.
+    probability += (celestialInstabilityScore * 0.015);
+
 
     // --- Environmental Factor Adjustments ---
 
@@ -356,7 +452,49 @@ async function handleRequest(args) {
 
     const { command, fate_check_number = null } = args;
 
-    // 1. Determine the number of cards to draw based on the command
+    // --- Command: Get Celestial Data ---
+    if (command === 'get_celestial_data') {
+        const { summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors();
+        
+        let rawDataText = "### 原始天文及环境数据 ###\n";
+        rawDataText += "#### 时间与农历 ####\n";
+        rawDataText += `- 公历时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
+        rawDataText += `- 农历: ${divinationFactors.ganzhiYear} ${divinationFactors.lunarMonthName}${divinationFactors.lunarDayName}\n`;
+        rawDataText += `- 节气: ${divinationFactors.solarTerm}\n\n`;
+
+        rawDataText += "#### 天文数据 ####\n";
+        rawDataText += `- 太阳高度角: ${divinationFactors.solarElevation?.toFixed(4) || 'N/A'}\n`;
+        rawDataText += `- 月相光照度: ${divinationFactors.moonIllumination?.toFixed(2) || 'N/A'}%\n`;
+        
+        const planetKeys = ['mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
+        rawDataText += "行星日心黄道坐标 (AU):\n";
+        for (const pKey of planetKeys) {
+            if (divinationFactors[pKey]) {
+                const pData = divinationFactors[pKey];
+                rawDataText += `- ${pKey.padEnd(8)}: X=${pData.x_au.toFixed(6)}, Y=${pData.y_au.toFixed(6)}, Z=${pData.z_au.toFixed(6)}\n`;
+            }
+        }
+        rawDataText += "\n";
+
+        rawDataText += "#### 环境数据 ####\n";
+        rawDataText += `- 天气: ${divinationFactors.text || 'N/A'}, 温度: ${divinationFactors.temp}°C, 湿度: ${divinationFactors.humidity}%\n`;
+        rawDataText += `- 风速: ${divinationFactors.windSpeed} km/h, 风向: ${divinationFactors.windDir}\n`;
+        rawDataText += `- 空气质量指数 (AQI): ${divinationFactors.aqi}\n`;
+        rawDataText += `- 气象预警: ${divinationFactors.hasWarning ? '是' : '否'}\n`;
+
+        const fullReport = `**天相解读:**\n${factorsSummary}\n---\n\n**原始数据分析:**\n${rawDataText}`;
+
+        return {
+            status: "success",
+            result: {
+                // For pure text results, we can just return a string.
+                content: fullReport
+            }
+        };
+    }
+
+
+    // --- Command: Draw Cards ---
     let cardsToDraw = 0;
     let spreadName = "";
     let positions = [];

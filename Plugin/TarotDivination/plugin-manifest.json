@@ -30,6 +30,11 @@
         "commandIdentifier": "draw_celtic_cross",
         "description": "执行一个凯尔特十字牌阵占卜，共抽取10张牌，每张牌都有特定的位置含义。返回10张牌的牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的“命运检定数”，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "get_celestial_data",
+        "description": "获取当前详细的天文和环境数据。返回一份包含两部分的报告：一部分是充满神秘学色彩的天相解读，另一部分是供AI分析的原始数据，包括太阳、月亮和各大行星的精确坐标及状态。\n\n**参数:**\n- 无需参数。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
