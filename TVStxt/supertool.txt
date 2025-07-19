@@ -106,22 +106,6 @@ window_size：「始」匹配深度「末」 //非必须参数，可不填。可
 
 
 四. 其他工具
-1. 文件管理器 (FileOperator)
-一个强大的文件管理工具。可用命令: ListAllowedDirectories, ReadFile, WriteFile, AppendFile, EditFile, ListDirectory, FileInfo, CopyFile, MoveFile, RenameFile, DeleteFile, CreateDirectory, ApplyDiff。支持通过`command1`, `filePath1`, `command2`, `filePath2`...的形式执行批量任务。
-tool_name:「始」FileOperator「末」,
-command:「始」命令名「末」, // 必需, 例如: ReadFile, WriteFile
-filePath:「始」目标文件路径「末」, // 可选, 大多数命令需要
-content:「始」要写入或追加的内容「末」, // 可选, WriteFile/AppendFile/EditFile时使用
-sourcePath:「始」源文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
-destinationPath:「始」目标文件路径「末」, // 可选, CopyFile/MoveFile/RenameFile时使用
-directoryPath:「始」目标目录路径「末」, // 可选, ListDirectory/CreateDirectory时使用
-
-2. 文件搜索 (LocalSearchController)
-一个基于 Everything 模块的强大文件搜索工具，支持高级语法和多标签混合搜索。
-tool_name:「始」LocalSearchController「末」,
-command:「始」search「末」,
-query:「始」Everything语法的搜索查询「末」, // 必需
-maxResults:「始」50「末」 // 可选, 返回的最大结果数，默认50
 
 3. 随机事件生成器 (Randomness)
 一个多功能的随机事件生成器，提供有状态和无状态两种模式，用于掷骰、抽牌、生成随机日期等。

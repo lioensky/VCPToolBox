@@ -26,7 +26,7 @@ def generate_celestial_database():
     """
     Main function to calculate and save the planetary positions.
     """
-    print("莱恩先生，正在为您启动星历推演程序...")
+    print("{{VarUser}}，正在为您启动星历推演程序...")
     print("正在校准时间，加载JPL星历（如果本地没有，将自动从太空总署下载，请稍候）...")
 
     # --- Configuration ---
