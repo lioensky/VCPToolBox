@@ -314,7 +314,7 @@ function drawWeightedCards(weightedDeck, numToDraw, random) {
  * @returns {number} A probability between 0.05 and 0.95.
  */
 function calculateReversalProbability(card, factors) {
-    let probability = 0.25; // Base probability of 25%
+    let probability = 0.22; // Base probability of 22%
 
     // --- Celestial Instability Factor ---
     // Calculate a score based on how "out of alignment" the planets are.
@@ -331,37 +331,37 @@ function calculateReversalProbability(card, factors) {
     // The sum can vary. A typical sum might be around 2-5. A high sum could be 10+.
     // Let's say every point in the score adds 1.5% to the reversal probability.
     // This makes celestial influence significant but not overwhelming.
-    probability += (celestialInstabilityScore * 0.015);
+    probability += (celestialInstabilityScore * 0.01);
 
 
     // --- Environmental Factor Adjustments ---
 
     // Weather Warning: A major sign of instability.
-    probability += factors.hasWarning * 0.20; // +20% if there's an active warning
+    probability += factors.hasWarning * 0.12; // +12% if there's an active warning
 
     // Moon: New moon (0% illumination) increases chance, full moon (100%) decreases it.
     probability += (100 - factors.moonIllumination) / 100 * 0.10; // Max +10%
 
     // Sun Position: Sun below the horizon increases uncertainty.
     if (factors.solarElevation < 0) {
-        probability += (Math.abs(factors.solarElevation) / 90) * 0.10; // Max +10% for sun being far below horizon
+        probability += (Math.abs(factors.solarElevation) / 90) * 0.05; // Max +5% for sun being far below horizon
     }
 
     // Weather: Rain/snow, high humidity, and high wind increase chance
-    probability += factors.isRainOrSnow * 0.10; // +10% if raining/snowing
+    probability += factors.isRainOrSnow * 0.05; // +5% if raining/snowing
     if (factors.humidity > 85) probability += 0.05; // +5% for high humidity
     if (factors.windSpeed > 30) probability += 0.05; // +5% for high wind speed (e.g., > 30 km/h)
     
     // Air Quality: Poor air quality adds to the negativity.
     if (factors.aqi > 150) { // "Unhealthy" or worse
-        probability += 0.10;
-    } else if (factors.aqi > 100) { // "Unhealthy for Sensitive Groups"
         probability += 0.05;
+    } else if (factors.aqi > 100) { // "Unhealthy for Sensitive Groups"
+        probability += 0.03;
     }
 
     // Time: Late night hours increase chance
     if (factors.hour >= 23 || factors.hour <= 3) {
-        probability += 0.10; // +10% for deep night
+        probability += 0.03; // +3% for deep night
     }
 
     // Card-specific adjustments based on name hash (for subtle variety)
@@ -570,6 +570,11 @@ async function handleRequest(args) {
     contentForAI.push({ type: 'text', text: summaryText.trim() });
     contentForAI.push(...imageContents);
 
+// Add card back URL for AI
+    const cardBackImageName = '牌背.jpeg';
+    const cardBackRelativePath = 'tarotcards/' + encodeURIComponent(cardBackImageName);
+    const cardBackUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${cardBackRelativePath}`;
+    contentForAI.push({ type: 'text', text: `牌背图片URL: ${cardBackUrl}` });
     return {
         status: "success",
         result: {
