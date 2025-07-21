@@ -252,6 +252,12 @@ app.use((req, res, next) => {
         return next();
     }
 
+    // Add a similar check for the FileServer plugin path
+    const fileServicePathRegex = /^\/pw=[^/]+\/files\//;
+    if (fileServicePathRegex.test(req.path)) {
+        return next();
+    }
+
     // Skip bearer token check for plugin callbacks
     if (req.path.startsWith('/plugin-callback')) {
         return next();
@@ -1342,6 +1348,17 @@ app.post('/v1/chat/completions', async (req, res) => {
                         },
                         body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
                     });
+
+                    if (!recursionAiResponse.ok) {
+                        const errorBodyText = await recursionAiResponse.text();
+                        console.error(`[Multi-Tool] AI call in loop failed (${recursionAiResponse.status}): ${errorBodyText}`);
+                        if (SHOW_VCP_OUTPUT) {
+                            conversationHistoryForClient.push({ type: 'vcp', content: `AI call failed with status ${recursionAiResponse.status}: ${errorBodyText}` });
+                        }
+                        // Break the loop on AI error
+                        break;
+                    }
+
                     const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
                     const recursionBuffer = Buffer.from(recursionArrayBuffer);
                     const recursionText = recursionBuffer.toString('utf-8');
