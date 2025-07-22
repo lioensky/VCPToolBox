@@ -832,8 +832,17 @@ class PluginManager {
                 const pluginConfig = this._getPluginConfig(serviceData.manifest);
                 const effectiveDebugMode = typeof pluginConfig.DebugMode === 'boolean' ? pluginConfig.DebugMode : 'N/A'; // Use resolved debug mode for this log
                 if (this.debugMode) console.log(`[PluginManager] Registering routes for service plugin: ${name}. Plugin DebugMode: ${effectiveDebugMode}`);
-                // 将 app 和 adminApiRouter 都传递下去，以便插件根据需要使用
-                serviceData.module.registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath);
+                // 智能判断 registerRoutes 函数的参数数量，以兼容新旧插件
+                const registerRoutesFunc = serviceData.module.registerRoutes;
+                if (registerRoutesFunc.length >= 4) {
+                    // 新式插件，需要 adminApiRouter
+                    if (this.debugMode) console.log(`[PluginManager] Calling new-style registerRoutes for ${name} (4+ args).`);
+                    registerRoutesFunc(app, adminApiRouter, pluginConfig, projectBasePath);
+                } else {
+                    // 旧式插件，只期望 app, config, basePath
+                    if (this.debugMode) console.log(`[PluginManager] Calling legacy-style registerRoutes for ${name} (3 args).`);
+                    registerRoutesFunc(app, pluginConfig, projectBasePath);
+                }
             } catch (e) {
                 console.error(`[PluginManager] Error initializing service plugin ${name}:`, e); // Keep error
             }
