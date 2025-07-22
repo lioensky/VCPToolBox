@@ -375,6 +375,40 @@ class PluginManager {
                             } else {
                                 if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
                             }
+                        } else if (manifest.pluginType === 'hybridservice') {
+                            if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
+                                try {
+                                    const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
+                                    const hybridModule = require(scriptPath);
+                                    const initialConfig = this._getPluginConfig(manifest);
+
+                                    // Initialize the module once
+                                    if (hybridModule && typeof hybridModule.initialize === 'function') {
+                                        await hybridModule.initialize(initialConfig);
+                                        if (this.debugMode) console.log(`[PluginManager] Initialized hybrid-service plugin: ${manifest.name}`);
+                                    }
+
+                                    // Register as a message preprocessor
+                                    if (hybridModule && typeof hybridModule.processMessages === 'function') {
+                                        this.messagePreprocessors.set(manifest.name, hybridModule);
+                                        if (this.debugMode) console.log(`[PluginManager] Loaded hybrid-service '${manifest.name}' as a message preprocessor.`);
+                                    } else {
+                                        if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} does not export a 'processMessages' function.`);
+                                    }
+
+                                    // Register as a service with routes
+                                    if (hybridModule && typeof hybridModule.registerRoutes === 'function') {
+                                        this.serviceModules.set(manifest.name, { manifest, module: hybridModule });
+                                        if (this.debugMode) console.log(`[PluginManager] Loaded hybrid-service '${manifest.name}' as a service.`);
+                                    } else {
+                                        if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
+                                    }
+                                } catch (e) {
+                                    console.error(`[PluginManager] Error requiring or initializing hybrid-service plugin ${manifest.name}:`, e);
+                                }
+                            } else {
+                                if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
+                            }
                         }
                     } catch (error) {
                         if (error.code === 'ENOENT') {
@@ -779,9 +813,13 @@ class PluginManager {
         });
     }
 
-    initializeServices(app, projectBasePath) {
+    initializeServices(app, adminApiRouter, projectBasePath) {
         if (!app) {
             console.error('[PluginManager] Cannot initialize services without Express app instance.');
+            return;
+        }
+        if (!adminApiRouter) {
+            console.error('[PluginManager] Cannot initialize services without adminApiRouter instance.');
             return;
         }
         if (!projectBasePath) {
@@ -794,7 +832,8 @@ class PluginManager {
                 const pluginConfig = this._getPluginConfig(serviceData.manifest);
                 const effectiveDebugMode = typeof pluginConfig.DebugMode === 'boolean' ? pluginConfig.DebugMode : 'N/A'; // Use resolved debug mode for this log
                 if (this.debugMode) console.log(`[PluginManager] Registering routes for service plugin: ${name}. Plugin DebugMode: ${effectiveDebugMode}`);
-                serviceData.module.registerRoutes(app, pluginConfig, projectBasePath);
+                // 将 app 和 adminApiRouter 都传递下去，以便插件根据需要使用
+                serviceData.module.registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath);
             } catch (e) {
                 console.error(`[PluginManager] Error initializing service plugin ${name}:`, e); // Keep error
             }

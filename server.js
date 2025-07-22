@@ -179,7 +179,7 @@ if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length
 else console.log('未加载任何全局上下文转换规则。');
 
 const app = express();
-app.use(cors()); // 启用 CORS，允许跨域请求
+app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请求，方便本地文件调试
 
 // 在路由决策之前解析请求体，以便 req.body 可用
 app.use(express.json({ limit: '300mb' }));
@@ -773,16 +773,35 @@ app.post('/v1/chat/completions', async (req, res) => {
             }
         }
 
+        // --- Start Message Preprocessing Chain ---
+        let processedMessages = originalBody.messages;
+
+        // 1. Handle ImageProcessor specifically due to the shouldProcessImages flag
         if (shouldProcessImages) {
-            if (DEBUG_MODE) console.log('[Server] Image processing enabled, calling ImageProcessor plugin...');
-            if (DEBUG_MODE) console.log('[Server Pre-ImageProcessor] Messages:', JSON.stringify(originalBody.messages, null, 2).substring(0, 500) + "..."); // Log before call
-            try {
-                originalBody.messages = await pluginManager.executeMessagePreprocessor("ImageProcessor", originalBody.messages);
-                if (DEBUG_MODE) console.log('[Server Post-ImageProcessor] Messages:', JSON.stringify(originalBody.messages, null, 2).substring(0, 500) + "..."); // Log after call
-            } catch (pluginError) {
-                console.error('[Server] Error executing ImageProcessor plugin:', pluginError);
+            if (pluginManager.messagePreprocessors.has("ImageProcessor")) {
+                if (DEBUG_MODE) console.log('[Server] Image processing enabled, calling ImageProcessor plugin...');
+                try {
+                    processedMessages = await pluginManager.executeMessagePreprocessor("ImageProcessor", processedMessages);
+                } catch (pluginError) {
+                    console.error('[Server] Error executing ImageProcessor plugin:', pluginError);
+                }
             }
         }
+
+        // 2. Loop through all other message preprocessors (like VCPTavern)
+        for (const name of pluginManager.messagePreprocessors.keys()) {
+            if (name === "ImageProcessor") continue; // Skip, as it was handled above
+
+            if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
+            try {
+                processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
+            } catch (pluginError) {
+                console.error(`[Server] Error executing message preprocessor plugin ${name}:`, pluginError);
+                // Continue with the next preprocessor even if one fails
+            }
+        }
+        originalBody.messages = processedMessages;
+        // --- End Message Preprocessing Chain ---
         
         if (originalBody.messages && Array.isArray(originalBody.messages)) {
             originalBody.messages = await Promise.all(originalBody.messages.map(async (msg) => {
@@ -1574,7 +1593,6 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     () => currentServerLogPath // Getter function for currentServerLogPath
 );
 
-app.use('/admin_api', adminPanelRoutes);
 // --- End Admin API Router ---
 
 // 新增：异步插件回调路由
@@ -1642,8 +1660,10 @@ async function initialize() {
     pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');
-    await pluginManager.initializeServices(app, __dirname);
-    console.log('服务类插件初始化完成。');
+    await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
+    // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
+    app.use('/admin_api', adminPanelRoutes);
+    console.log('服务类插件初始化完成，管理面板 API 路由已挂载。');
 
     console.log('开始初始化静态插件...');
     await pluginManager.initializeStaticPlugins();
