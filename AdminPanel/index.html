@@ -22,6 +22,7 @@
                     <li><a href="#" data-target="base-config" class="active">全局基础配置</a></li>
                     <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
                     <li><a href="#" data-target="image-cache-editor">图像缓存编辑器</a></li>
+                    <li><a href="#" data-target="vcptavern-editor">VCP 上下文注入器</a></li>
                     <li><a href="#" data-target="agent-files-editor">Agent 文件编辑器</a></li>
                     <li><a href="#" data-target="tvs-files-editor">高级变量编辑器</a></li>
                     <li><a href="#" data-target="server-log-viewer">服务器日志</a></li>
@@ -78,6 +79,11 @@
             <section id="image-cache-editor-section" class="config-section">
                 <h2>图像缓存编辑器</h2>
                 <iframe src="image_cache_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
+            </section>
+
+            <section id="vcptavern-editor-section" class="config-section">
+                <h2>VCP 上下文注入器</h2>
+                <iframe src="vcptavern_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
             </section>
 
             <section id="agent-files-editor-section" class="config-section">
@@ -141,11 +147,13 @@
                 localStorage.setItem('theme', 'light');
                 if(themeToggleButton) themeToggleButton.textContent = '切换暗色';
             }
-            // 通知 iframe 主题变化
-            const iframe = document.querySelector('iframe[src="image_cache_editor.html"]');
-            if (iframe && iframe.contentWindow) {
-                iframe.contentWindow.postMessage({ type: 'themeChange', theme: theme }, '*');
-            }
+            // 通知所有 iframe 主题变化
+            const iframes = document.querySelectorAll('iframe');
+            iframes.forEach(iframe => {
+                if (iframe.contentWindow) {
+                    iframe.contentWindow.postMessage({ type: 'themeChange', theme: theme }, '*');
+                }
+            });
         }
 
         if (currentTheme) {
@@ -169,9 +177,12 @@
         window.addEventListener('message', (event) => {
             if (event.data && event.data.type === 'requestTheme') {
                 const currentAppliedTheme = document.documentElement.getAttribute('data-theme') || (prefersDarkScheme.matches ? 'dark' : 'light');
-                const iframe = document.querySelector('iframe[src="image_cache_editor.html"]');
-                if (iframe && iframe.contentWindow) {
-                     iframe.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
+                // 根据请求来源的 iframe 回复主题
+                const sourceFrame = Array.from(document.querySelectorAll('iframe')).find(
+                    iframe => iframe.contentWindow === event.source
+                );
+                if (sourceFrame && sourceFrame.contentWindow) {
+                     sourceFrame.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
                 }
             }
         });
