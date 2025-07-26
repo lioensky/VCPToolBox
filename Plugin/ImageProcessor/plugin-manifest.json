@@ -1,29 +1,29 @@
 {
   "manifestVersion": "1.0.0",
   "name": "ImageProcessor",
-  "version": "1.0.0",
-  "displayName": "图像信息提取器",
-  "description": "处理用户消息中的图像数据，调用多模态模型提取图像信息，并将其替换或附加到消息文本中。同时管理图像描述的缓存。",
+  "version": "1.1.0",
+  "displayName": "多模态数据提取器",
+  "description": "处理用户消息中的多模态数据（图像、音频、视频），调用多模态模型提取信息，并将其替换或附加到消息文本中。同时管理多模态数据的描述缓存。",
   "author": "System",
   "pluginType": "messagePreprocessor",
   "entryPoint": {
     "type": "nodejs",
-    "script": "image-processor.js" 
+    "script": "image-processor.js"
   },
   "communication": {
-    "protocol": "direct" 
+    "protocol": "direct"
   },
-  "capabilities": {}, 
+  "capabilities": {},
   "configSchema": {
     "API_URL": "string",
     "API_Key": "string",
-    "ImageModel": "string",
-    "ImagePrompt": "string",
-    "ImageModelOutputMaxTokens": "integer",
-    "ImageModelThinkingBudget": "integer",
-    "ImageModelAsynchronousLimit": "integer",
-    "ImageInsertPrompt": "string",
-    "DebugMode": "boolean" 
+    "MultiModalModel": "string",
+    "MultiModalPrompt": "string",
+    "MultiModalModelOutputMaxTokens": "integer",
+    "MultiModalModelThinkingBudget": "integer",
+    "MultiModalModelAsynchronousLimit": "integer",
+    "MediaInsertPrompt": "string",
+    "DebugMode": "boolean"
   },
   "lifecycle": {
     "loadCache": "initialize", 
