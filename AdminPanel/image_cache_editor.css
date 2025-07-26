@@ -53,20 +53,22 @@ h2 {
     padding-bottom: 12px;
     font-weight: 600;
 }
-#imageList {
+#mediaList {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
     gap: 20px;
 }
-.image-entry {
+.media-entry {
     position: relative;
     border: 1px solid var(--border-color);
     padding: 15px;
     border-radius: 8px;
     background-color: var(--tertiary-bg);
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    display: flex;
+    flex-direction: column;
 }
-.image-entry h3 {
+.media-entry h3 {
     font-size: 1em;
     color: var(--secondary-text);
     margin-top: 0;
@@ -74,7 +76,8 @@ h2 {
     word-wrap: break-word;
     font-weight: 600;
 }
-.image-entry img {
+.media-entry img,
+.media-entry video {
     max-width: 100%;
     height: auto;
     max-height: 250px;
@@ -86,15 +89,19 @@ h2 {
     cursor: pointer;
     background-color: var(--input-bg);
 }
-.image-entry label {
+.media-entry audio {
+    width: 100%;
+    margin-bottom: 10px;
+}
+.media-entry label {
     display: block;
     margin-bottom: 5px;
     font-weight: 600;
     font-size: 0.9em;
     color: var(--secondary-text);
 }
-.image-entry textarea {
-    width: calc(100% - 22px);
+.media-entry textarea {
+    width: 100%;
     min-height: 100px;
     padding: 12px 15px;
     border: 1px solid var(--border-color);
@@ -107,7 +114,7 @@ h2 {
     color: var(--primary-text);
     box-sizing: border-box;
 }
- .image-entry textarea:focus {
+ .media-entry textarea:focus {
     outline: none;
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
@@ -142,9 +149,17 @@ p {
 
 .modal-content {
     margin: auto;
-    display: block;
-    max-width: 90%;
-    max-height: 90vh;
+    display: flex; /* Use flex to center content */
+    justify-content: center;
+    align-items: center;
+    width: 90%;
+    height: 90%;
+}
+
+.modal-content img,
+.modal-content video {
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
     border: 2px solid var(--highlight-text);
     box-shadow: 0 0 20px color-mix(in srgb, var(--highlight-text) 50%, transparent);
