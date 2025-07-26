@@ -6,9 +6,6 @@ FROM node:20-alpine AS build
 # 设置工作目录
 WORKDIR /usr/src/app
 
-# 更换为国内镜像源以加速
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
-
 # 安装所有运行时和编译时依赖
 RUN apk add --no-cache \
     tzdata \
@@ -32,11 +29,11 @@ COPY package*.json ./
 # --registry=https://mirrors.huaweicloud.com/repository/npm/ (华为云)
 # 国际通用 (如果服务器在海外):
 # (默认，无需指定)
-RUN npm install --registry=https://registry.npm.taobao.org
+RUN npm install
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
-RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -r requirements.txt
 
 # 复制所有源代码
 COPY . .
@@ -50,8 +47,7 @@ FROM node:20-alpine
 WORKDIR /usr/src/app
 
 # 仅安装运行时的系统依赖
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk add --no-cache \
+RUN apk add --no-cache \
     tzdata \
     python3 \
     openblas \
@@ -66,8 +62,14 @@ ENV PYTHONPATH=/usr/src/app/pydeps
 RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone
 
-# 从构建阶段复制整个应用目录
-COPY --from=build /usr/src/app .
+# 从构建阶段复制应用代码和 node_modules
+COPY --from=build /usr/src/app/node_modules ./node_modules
+COPY --from=build /usr/src/app/package*.json ./
+COPY --from=build /usr/src/app/pydeps ./pydeps
+COPY --from=build /usr/src/app/*.js ./
+COPY --from=build /usr/src/app/Plugin ./Plugin
+COPY --from=build /usr/src/app/Agent ./Agent
+COPY --from=build /usr/src/app/requirements.txt ./
 
 
 # --- 安全性说明：关于以 root 用户运行 ---
