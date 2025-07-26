@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>图像缓存编辑器</title>
+    <title>多媒体缓存编辑器</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="image_cache_editor.css">
     <script>
@@ -37,19 +37,19 @@
 <body>
 <div class="container">
     <div class="controls">
-        <button id="saveButton">保存更改到 image_cache.json</button>
+        <button id="saveButton">保存更改到 multimodal_cache.json</button>
         <!--  按钮暂时不加入主题切换，因为iframe内切换可能与外部不同步，由外部统一控制 -->
     </div>
 
-    <h2>图像列表</h2>
-    <div id="imageList">
-        <p>正在加载图像缓存数据...</p>
+    <h2>多媒体缓存列表</h2>
+    <div id="mediaList">
+        <p>正在加载多媒体缓存数据...</p>
     </div>
 </div>
 
 <script>
-    let imageCacheData = {};
-    const imageListDiv = document.getElementById('imageList');
+    let mediaCacheData = {};
+    const mediaListDiv = document.getElementById('mediaList');
     const saveButton = document.getElementById('saveButton');
 
     saveButton.addEventListener('click', handleSave);
@@ -59,59 +59,60 @@
         if (base64String.startsWith('iVBOR')) return 'image/png';
         if (base64String.startsWith('R0lGOD')) return 'image/gif';
         if (base64String.startsWith('UklGR')) return 'image/webp';
-        return 'image/png'; // 默认
+        // Add basic audio/video guesses if needed, though relying on entry.mimeType is better
+        return 'application/octet-stream'; // Default for unknown
     }
 
-    async function loadImageCache() {
+    async function loadMediaCache() {
         try {
-            const response = await fetch('/admin_api/image-cache');
+            const response = await fetch('/admin_api/multimodal-cache'); // UPDATED API ENDPOINT
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-            imageCacheData = await response.json();
-            renderImageList();
+            mediaCacheData = await response.json();
+            renderMediaList();
         } catch (error) {
-            console.error("加载图像缓存失败:", error);
-            imageListDiv.innerHTML = '<p style="color: red;">加载图像缓存失败。</p>';
+            console.error("加载多媒体缓存失败:", error);
+            mediaListDiv.innerHTML = '<p style="color: red;">加载多媒体缓存失败。</p>';
         }
     }
 
     async function handleSave() {
-        if (Object.keys(imageCacheData).length === 0) {
+        if (Object.keys(mediaCacheData).length === 0) {
             alert('没有数据可保存。');
             return;
         }
 
-        // Update imageCacheData with current textarea values
-        const entries = imageListDiv.getElementsByClassName('image-entry');
+        // Update mediaCacheData with current textarea values
+        const entries = mediaListDiv.getElementsByClassName('media-entry');
         for (let i = 0; i < entries.length; i++) {
             const entryDiv = entries[i];
             const base64Key = entryDiv.dataset.base64Key;
             const textarea = entryDiv.querySelector('textarea');
-            if (imageCacheData[base64Key]) {
-                imageCacheData[base64Key].description = textarea.value;
+            if (mediaCacheData[base64Key]) {
+                mediaCacheData[base64Key].description = textarea.value;
             }
         }
 
         try {
-            const response = await fetch('/admin_api/image-cache', {
+            const response = await fetch('/admin_api/multimodal-cache', { // UPDATED API ENDPOINT
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ data: imageCacheData }) // Send the data object
+                body: JSON.stringify({ data: mediaCacheData }) // Send the data object
             });
 
             const result = await response.json();
 
             if (response.ok) {
-                alert(result.message || '图像缓存文件已成功保存。');
+                alert(result.message || '多媒体缓存文件已成功保存。');
             } else {
                 alert('保存失败: ' + (result.error || '未知错误'));
-                console.error("保存图像缓存失败:", result);
+                console.error("保存多媒体缓存失败:", result);
             }
         } catch (error) {
-            alert('保存图像缓存时发生错误: ' + error.message);
+            alert('保存多媒体缓存时发生错误: ' + error.message);
             console.error("保存错误:", error);
         }
     }
@@ -144,7 +145,7 @@
 
         try {
             // Call the new backend API endpoint
-            const response = await fetch('/admin_api/image-cache/reidentify', {
+            const response = await fetch('/admin_api/multimodal-cache/reidentify', { // UPDATED API ENDPOINT
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -159,10 +160,10 @@
                 descriptionTextarea.value = result.newDescription || '';
                 timestampElement.textContent = `时间戳: ${result.newTimestamp || 'N/A'}`;
 
-                // Update the imageCacheData in memory as well
-                if (imageCacheData[base64Key]) {
-                    imageCacheData[base64Key].description = result.newDescription || '';
-                    imageCacheData[base64Key].timestamp = result.newTimestamp || imageCacheData[base64Key].timestamp; // Keep old timestamp if new one is missing
+                // Update the mediaCacheData in memory as well
+                if (mediaCacheData[base64Key]) {
+                    mediaCacheData[base64Key].description = result.newDescription || '';
+                    mediaCacheData[base64Key].timestamp = result.newTimestamp || mediaCacheData[base64Key].timestamp; // Keep old timestamp if new one is missing
                 }
 
 
@@ -196,63 +197,49 @@
         }
     }
 
-    function renderImageList() {
-        imageListDiv.innerHTML = ''; // 清空现有列表
+    function renderMediaList() {
+        mediaListDiv.innerHTML = ''; // 清空现有列表
 
-        if (Object.keys(imageCacheData).length === 0) {
-            imageListDiv.innerHTML = '<p>缓存文件为空。</p>';
+        if (Object.keys(mediaCacheData).length === 0) {
+            mediaListDiv.innerHTML = '<p>缓存文件为空。</p>';
             return;
         }
 
-        const imageKeys = Object.keys(imageCacheData).reverse(); // 获取键并反转顺序
+        const mediaKeys = Object.keys(mediaCacheData).reverse(); // 获取键并反转顺序
 
-        for (const base64Key of imageKeys) {
-            // hasOwnProperty 检查在 Object.keys 之后理论上不是必需的，但保留也无妨
-            if (imageCacheData.hasOwnProperty(base64Key)) {
-                const entry = imageCacheData[base64Key];
+        for (const base64Key of mediaKeys) {
+            if (mediaCacheData.hasOwnProperty(base64Key)) {
+                const entry = mediaCacheData[base64Key];
                 
                 const entryDiv = document.createElement('div');
-                entryDiv.className = 'image-entry';
+                entryDiv.className = 'media-entry'; // Use a more generic class name
                 entryDiv.dataset.base64Key = base64Key; // 存储 key 用于保存
 
-                // 创建重新识别按钮
                 const reidentifyBtn = document.createElement('span');
                 reidentifyBtn.className = 'reidentify-btn';
-                reidentifyBtn.innerHTML = '↻'; // 刷新符号
-                reidentifyBtn.title = '重新识别图片描述';
-                // 为刷新按钮添加点击事件监听器
+                reidentifyBtn.innerHTML = '↻';
+                reidentifyBtn.title = '重新识别媒体描述';
                 reidentifyBtn.addEventListener('click', function(event) {
-                    event.stopPropagation(); // 阻止事件冒泡
+                    event.stopPropagation();
                     handleReidentify(base64Key, entryDiv);
                 });
                 entryDiv.appendChild(reidentifyBtn);
 
-                // 创建删除按钮
                 const deleteBtn = document.createElement('span');
                 deleteBtn.className = 'delete-btn';
-                deleteBtn.innerHTML = '&times;'; // '×' 符号
+                deleteBtn.innerHTML = '&times;';
                 deleteBtn.title = '删除此条目';
-
                 deleteBtn.addEventListener('click', function(event) {
-                    event.stopPropagation(); // 阻止事件冒泡到卡片或图片的其他点击事件
-
-                    if (!confirm(`确定要删除这个图片条目吗？\nKey (部分): ${base64Key.substring(0,20)}...`)) {
+                    event.stopPropagation();
+                    if (!confirm(`确定要删除这个媒体条目吗？\nKey (部分): ${base64Key.substring(0,20)}...`)) {
                         return;
                     }
-
-                    // 1. 从 imageCacheData 中删除
-                    if (imageCacheData.hasOwnProperty(base64Key)) {
-                        delete imageCacheData[base64Key];
-                        console.log(`Deleted ${base64Key} from cache data.`);
+                    if (mediaCacheData.hasOwnProperty(base64Key)) {
+                        delete mediaCacheData[base64Key];
                     }
-
-                    // 2. 从 DOM 中移除卡片
                     entryDiv.remove();
-                    console.log(`Removed image entry for ${base64Key} from DOM.`);
-
-                    // 可选: 如果列表为空，显示提示信息
-                    if (Object.keys(imageCacheData).length === 0) {
-                        imageListDiv.innerHTML = '<p>缓存文件为空或所有条目已删除。</p>';
+                    if (Object.keys(mediaCacheData).length === 0) {
+                        mediaListDiv.innerHTML = '<p>缓存文件为空或所有条目已删除。</p>';
                     }
                 });
                 entryDiv.appendChild(deleteBtn);
@@ -261,34 +248,54 @@
                 title.textContent = `时间戳: ${entry.timestamp || 'N/A'}`;
                 entryDiv.appendChild(title);
 
-                const img = document.createElement('img');
-                const mimeType = guessMimeType(base64Key);
-                img.src = `data:${mimeType};base64,${base64Key}`;
-                img.alt = '图像预览';
-                img.onerror = function() {
+                // --- DYNAMIC MEDIA ELEMENT CREATION ---
+                const mimeType = entry.mimeType || guessMimeType(base64Key);
+                let mediaElement;
+
+                if (mimeType.includes('image/')) {
+                    mediaElement = document.createElement('img');
+                    mediaElement.alt = '图像预览';
+                    mediaElement.addEventListener('click', function() {
+                        const modal = document.getElementById('mediaModal');
+                        const modalContent = document.getElementById('modalContent');
+                        if (modal && modalContent) {
+                            modalContent.innerHTML = ''; // Clear previous content
+                            const clone = this.cloneNode();
+                            clone.style.maxWidth = '90%';
+                            clone.style.maxHeight = '90vh';
+                            modalContent.appendChild(clone);
+                            modal.style.display = "block";
+                            document.body.style.overflow = 'hidden';
+                        }
+                    });
+                } else if (mimeType.includes('audio/')) {
+                    mediaElement = document.createElement('audio');
+                    mediaElement.controls = true;
+                } else if (mimeType.includes('video/')) {
+                    mediaElement = document.createElement('video');
+                    mediaElement.controls = true;
+                } else {
+                    mediaElement = document.createElement('div');
+                    mediaElement.className = 'unsupported-media';
+                    mediaElement.innerHTML = `<p>不支持的媒体类型</p><span>${mimeType}</span>`;
+                }
+                
+                if (mediaElement.tagName !== 'DIV') {
+                    mediaElement.src = `${mimeType}base64,${base64Key}`;
+                }
+
+                mediaElement.onerror = function() {
                     this.alt = '预览失败';
-                    this.style.display = 'none'; // 或者显示一个占位符
+                    this.style.display = 'none';
                     const errorMsg = document.createElement('p');
-                    errorMsg.textContent = '图像预览失败，可能是不支持的格式或损坏的数据。';
+                    errorMsg.textContent = '媒体预览失败，可能是不支持的格式或损坏的数据。';
                     errorMsg.style.color = 'red';
                     entryDiv.insertBefore(errorMsg, this.nextSibling);
                 };
-                entryDiv.appendChild(img);
-
-                // 3. 允许图片点击放大预览 - Add click listener to image
-                img.addEventListener('click', function() {
-                    const modal = document.getElementById('imageModal');
-                    const modalImg = document.getElementById('modalImage');
-                    if (modal && modalImg) {
-                        modal.style.display = "block";
-                        modalImg.src = this.src;
-                        // When modal opens, hide body scrollbar in iframe
-                        document.body.style.overflow = 'hidden';
-                    }
-                });
+                entryDiv.appendChild(mediaElement);
                 
                 const descriptionLabel = document.createElement('label');
-                descriptionLabel.textContent = '图像描述 (可编辑):';
+                descriptionLabel.textContent = '媒体描述 (可编辑):';
                 entryDiv.appendChild(descriptionLabel);
 
                 const descriptionTextarea = document.createElement('textarea');
@@ -300,51 +307,54 @@
                 keyInfo.textContent = `Base64 Key (部分): ${base64Key.substring(0, 30)}...`;
                 entryDiv.appendChild(keyInfo);
 
-                imageListDiv.appendChild(entryDiv);
+                mediaListDiv.appendChild(entryDiv);
             }
         }
     }
 
     // 3. 允许图片点击放大预览 - Modal handling JavaScript
     window.addEventListener('DOMContentLoaded', () => {
-        const modal = document.getElementById('imageModal');
+        const modal = document.getElementById('mediaModal');
         const modalCloseButton = document.getElementById('modalCloseButton');
 
-        if (modal && modalCloseButton) {
-            modalCloseButton.onclick = function() {
-                modal.style.display = "none";
-                // When modal closes, restore body scrollbar in iframe
-                document.body.style.overflow = 'auto';
+        function closeModal() {
+            modal.style.display = "none";
+            document.body.style.overflow = 'auto';
+            // Stop any playing media
+            const mediaContent = modal.querySelector('video, audio');
+            if (mediaContent) {
+                mediaContent.pause();
+                mediaContent.src = ''; // Detach source
             }
+        }
 
-            // Close modal when clicking on the modal background (outside the image)
+        if (modal && modalCloseButton) {
+            modalCloseButton.onclick = closeModal;
+
             modal.onclick = function(event) {
-                if (event.target === modal) { // Only close if the click is directly on the modal background
-                    modal.style.display = "none";
-                    // When modal closes, restore body scrollbar in iframe
-                    document.body.style.overflow = 'auto';
+                if (event.target === modal) {
+                    closeModal();
                 }
             }
 
-            // Optional: Close modal with Escape key
             document.addEventListener('keydown', function(event) {
                 if (event.key === "Escape" && modal.style.display === "block") {
-                    modal.style.display = "none";
+                    closeModal();
                 }
             });
         } else {
-            console.error('Modal or modal close button not found on DOMContentLoaded. Check IDs: imageModal, modalCloseButton');
+            console.error('Modal or modal close button not found on DOMContentLoaded. Check IDs: mediaModal, modalCloseButton');
         }
 
         // Load data when the page loads
-        loadImageCache();
+        loadMediaCache();
     });
 </script>
 
-<!-- 3. 允许图片点击放大预览 - Modal HTML Structure -->
-<div id="imageModal" class="modal">
+<!-- Modal for Media Preview -->
+<div id="mediaModal" class="modal">
     <span class="modal-close" id="modalCloseButton">&times;</span>
-    <img class="modal-content" id="modalImage">
+    <div class="modal-content" id="modalContent"></div>
 </div>
 </body>
 </html>

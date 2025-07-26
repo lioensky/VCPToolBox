@@ -748,7 +748,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         let originalBody = req.body;
         await writeDebugLog('LogInput', originalBody);
 
-        let shouldProcessImages = true;
+        let shouldProcessMedia = true;
         if (originalBody.messages && Array.isArray(originalBody.messages)) {
             for (const msg of originalBody.messages) {
                 let foundPlaceholderInMsg = false;
@@ -766,8 +766,8 @@ app.post('/v1/chat/completions', async (req, res) => {
                     }
                 }
                 if (foundPlaceholderInMsg) {
-                    shouldProcessImages = false;
-                    if (DEBUG_MODE) console.log('[Server] Image processing disabled by {{ShowBase64}} placeholder.');
+                    shouldProcessMedia = false;
+                    if (DEBUG_MODE) console.log('[Server] Media processing disabled by {{ShowBase64}} placeholder.');
                     break;
                 }
             }
@@ -776,21 +776,23 @@ app.post('/v1/chat/completions', async (req, res) => {
         // --- Start Message Preprocessing Chain ---
         let processedMessages = originalBody.messages;
 
-        // 1. Handle ImageProcessor specifically due to the shouldProcessImages flag
-        if (shouldProcessImages) {
-            if (pluginManager.messagePreprocessors.has("ImageProcessor")) {
-                if (DEBUG_MODE) console.log('[Server] Image processing enabled, calling ImageProcessor plugin...');
+        // 1. Handle MultiModalProcessor specifically due to the shouldProcessMedia flag
+        if (shouldProcessMedia) {
+            // Check for the new plugin name, but also handle the old one for backward compatibility during transition
+            const processorName = pluginManager.messagePreprocessors.has("MultiModalProcessor") ? "MultiModalProcessor" : "ImageProcessor";
+            if (pluginManager.messagePreprocessors.has(processorName)) {
+                if (DEBUG_MODE) console.log(`[Server] Media processing enabled, calling ${processorName} plugin...`);
                 try {
-                    processedMessages = await pluginManager.executeMessagePreprocessor("ImageProcessor", processedMessages);
+                    processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
                 } catch (pluginError) {
-                    console.error('[Server] Error executing ImageProcessor plugin:', pluginError);
+                    console.error(`[Server] Error executing ${processorName} plugin:`, pluginError);
                 }
             }
         }
 
         // 2. Loop through all other message preprocessors (like VCPTavern)
         for (const name of pluginManager.messagePreprocessors.keys()) {
-            if (name === "ImageProcessor") continue; // Skip, as it was handled above
+            if (name === "ImageProcessor" || name === "MultiModalProcessor") continue; // Skip, as it was handled above
 
             if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
             try {
