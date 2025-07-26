@@ -2,8 +2,8 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 
-// 导入 reidentify_image 函数
-const { reidentifyImageByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
+// 导入 reidentify_image 函数 (现在是 reidentify_media)
+const { reidentifyMediaByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
 
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
@@ -459,17 +459,64 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
      
 
-    // --- Image Cache API ---
+    // --- MultiModal Cache API (New) ---
+    adminApiRouter.get('/multimodal-cache', async (req, res) => {
+        const cachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'multimodal_cache.json');
+        try {
+            const content = await fs.readFile(cachePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading multimodal cache file:', error);
+            if (error.code === 'ENOENT') {
+                res.json({});
+            } else {
+                res.status(500).json({ error: 'Failed to read multimodal cache file', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/multimodal-cache', async (req, res) => {
+        const { data } = req.body;
+        const cachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'multimodal_cache.json');
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
+        }
+        try {
+            await fs.writeFile(cachePath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: '多媒体缓存文件已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing multimodal cache file:', error);
+            res.status(500).json({ error: 'Failed to write multimodal cache file', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/multimodal-cache/reidentify', async (req, res) => {
+        const { base64Key } = req.body;
+        if (typeof base64Key !== 'string' || !base64Key) {
+            return res.status(400).json({ error: 'Invalid request body. Expected { base64Key: string }.' });
+        }
+        try {
+            const result = await reidentifyMediaByBase64Key(base64Key);
+            res.json({
+                message: '媒体重新识别成功。',
+                newDescription: result.newDescription,
+                newTimestamp: result.newTimestamp
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reidentifying media:', error);
+            res.status(500).json({ error: 'Failed to reidentify media', details: error.message });
+        }
+    });
+    // --- End MultiModal Cache API ---
+
+    // --- Image Cache API (Legacy, for backward compatibility) ---
     adminApiRouter.get('/image-cache', async (req, res) => {
         const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');
         try {
-            // Note: This file can be very large, so we read it directly.
-            // Consider streaming for extremely large files if memory becomes an issue.
             const content = await fs.readFile(imageCachePath, 'utf-8');
             res.json(JSON.parse(content));
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error reading image cache file:', error);
-            // If file not found, return empty object, not an error
             if (error.code === 'ENOENT') {
                 res.json({});
             } else {
@@ -479,15 +526,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
 
     adminApiRouter.post('/image-cache', async (req, res) => {
-        const { data } = req.body; // Expecting the entire JSON data object
+        const { data } = req.body;
         const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');
-
         if (typeof data !== 'object' || data === null) {
              return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
         }
-
         try {
-            // Note: This file can be very large. Writing the entire content.
             await fs.writeFile(imageCachePath, JSON.stringify(data, null, 2), 'utf-8');
             res.json({ message: '图像缓存文件已成功保存。' });
         } catch (error) {
@@ -496,16 +540,14 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
-    // POST to reidentify an image by its Base64 key
     adminApiRouter.post('/image-cache/reidentify', async (req, res) => {
         const { base64Key } = req.body;
-
         if (typeof base64Key !== 'string' || !base64Key) {
             return res.status(400).json({ error: 'Invalid request body. Expected { base64Key: string }.' });
         }
-
         try {
-            const result = await reidentifyImageByBase64Key(base64Key);
+            // Note: This still calls the new function, which should handle old cache formats gracefully.
+            const result = await reidentifyMediaByBase64Key(base64Key);
             res.json({
                 message: '图片重新识别成功。',
                 newDescription: result.newDescription,
