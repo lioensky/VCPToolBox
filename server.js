@@ -116,6 +116,8 @@ const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信�
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
+const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
+
 dotenv.config({ path: 'config.env' });
 
 const ADMIN_USERNAME = process.env.AdminUsername;
@@ -742,10 +744,36 @@ app.post('/v1/schedule_task', async (req, res) => {
     }
 });
 
+// 新增：紧急停止路由
+app.post('/v1/interrupt', (req, res) => {
+    const id = req.body.requestId || req.body.messageId; // 兼容 requestId 和 messageId
+    if (!id) {
+        return res.status(400).json({ error: 'requestId or messageId is required.' });
+    }
+
+    const context = activeRequests.get(id);
+    if (context) {
+        console.log(`[Interrupt] Received stop signal for ID: ${id}`);
+        context.abortController.abort(); // 触发中止
+        // The actual response handling is done in the handleChatCompletion's error handler
+        res.status(200).json({ status: 'success', message: `Interrupt signal sent for request ${id}.` });
+    } else {
+        console.log(`[Interrupt] Received stop signal for non-existent or completed ID: ${id}`);
+        res.status(404).json({ status: 'error', message: `Request ${id} not found or already completed.` });
+    }
+});
+
 
 async function handleChatCompletion(req, res, forceShowVCP = false) {
     const { default: fetch } = await import('node-fetch');
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP; // Combine env var and route-specific flag
+    
+    const id = req.body.requestId || req.body.messageId; // 兼容 requestId 和 messageId
+    const abortController = new AbortController();
+
+    if (id) {
+        activeRequests.set(id, { req, res, abortController });
+    }
 
     try {
         let originalBody = req.body;
@@ -842,6 +870,7 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
             },
             // Force stream to be true if we are showing VCP info.
             body: JSON.stringify({ ...originalBody, stream: willStreamResponse }),
+            signal: abortController.signal, // 传递中止信号
         });
 
         const isUpstreamStreaming = willStreamResponse && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
@@ -1150,6 +1179,7 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                         'Accept': 'text/event-stream', // Ensure streaming for subsequent calls
                     },
                     body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
+                    signal: abortController.signal, // 传递中止信号
                 });
 
                 if (!nextAiAPIResponse.ok) {
@@ -1377,6 +1407,7 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                             'Accept': 'application/json',
                         },
                         body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
+                        signal: abortController.signal, // 传递中止信号
                     });
 
                     if (!recursionAiResponse.ok) {
@@ -1445,11 +1476,36 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
         }
     } catch (error) {
         console.error('处理请求或转发时出错:', error.message, error.stack);
+        // 新增：处理 AbortError
+        if (error.name === 'AbortError') {
+            console.log(`[Abort] Request ${id} was aborted by the user.`);
+            if (!res.headersSent) {
+                // 非流式请求被中止
+                res.status(200).json({
+                    choices: [{
+                        index: 0,
+                        message: { role: 'assistant', content: '请求已中止' },
+                        finish_reason: 'stop'
+                    }]
+                });
+            } else if (!res.writableEnded) {
+                // 流式请求被中止，优雅地结束它
+                res.write('data: [DONE]\n\n');
+                res.end();
+            }
+            return; // 确保在中止后不再执行其他错误处理
+        }
+
         if (!res.headersSent) {
              res.status(500).json({ error: 'Internal Server Error', details: error.message });
         } else if (!res.writableEnded) {
              console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
              res.end();
+        }
+    } finally {
+        // 确保在请求结束时从池中移除
+        if (id) {
+            activeRequests.delete(id);
         }
     }
 }
