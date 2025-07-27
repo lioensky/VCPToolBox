@@ -102,7 +102,7 @@ class PluginManager {
 
 
             const [command, ...args] = plugin.entryPoint.command.split(' ');
-            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: envForProcess });
+            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: envForProcess, windowsHide: true });
             let output = '';
             let errorOutput = '';
             let processExited = false;
@@ -663,7 +663,7 @@ class PluginManager {
             const [command, ...args] = plugin.entryPoint.command.split(' ');
             if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Attempting to spawn command: "${command}" with args: [${args.join(', ')}] in cwd: ${plugin.basePath}`);
 
-            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv });
+            const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv, windowsHide: true });
             let outputBuffer = ''; // Buffer to accumulate data chunks
             let errorOutput = '';
             let processExited = false;
