@@ -104,9 +104,18 @@ class VCPTavern {
 
         // 深度注入
         for (const rule of depthRules) {
-            if (rule.depth > 0 && rule.depth < newMessages.length) {
-                const injectionIndex = newMessages.length - rule.depth;
-                newMessages.splice(injectionIndex, 0, rule.content);
+            if (rule.depth > 0) {
+                // 如果消息长度足以支持深度注入，则按深度注入
+                if (rule.depth < newMessages.length) {
+                    const injectionIndex = newMessages.length - rule.depth;
+                    newMessages.splice(injectionIndex, 0, rule.content);
+                } else {
+                    // 否则，作为兜底，注入到 system prompt 之后
+                    const systemIndex = newMessages.findIndex(m => m.role === 'system');
+                    if (systemIndex !== -1) {
+                        newMessages.splice(systemIndex + 1, 0, rule.content);
+                    }
+                }
             }
         }
         
