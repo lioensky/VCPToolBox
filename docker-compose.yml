@@ -5,7 +5,7 @@ services:
     ports:
       - "6005:6005"
     environment:
-      TZ: Asia/Shanghai        # 环境变量
+      TZ: Asia/Shanghai
     volumes:
       #1 将本地的 config.env 映射到容器中
       #1- ./config.env:/usr/src/app/config.env
@@ -29,6 +29,6 @@ services:
       # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的。添加pydeps兼容科学计算器依赖。
       - /usr/src/app/pydeps
       - /usr/src/app/node_modules
-      
-    command: node server.js
+    
+    # The command is defined in the Dockerfile's CMD instruction.
     restart: unless-stopped
