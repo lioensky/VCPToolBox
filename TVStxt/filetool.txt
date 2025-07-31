@@ -70,3 +70,7 @@ filePath3:「始」/path/to/existing_file.txt「末」,
 content3:「始」这是覆盖后的新内容。「末」
 <<<[END_TOOL_REQUEST]>>>
 通过这种方式可以构建多组指令。
+
+3. 文件列表生成器 (FileListGenerator)
+tool_name:「始」FileListGenerator「末」,
+command:「始」generate「末」
