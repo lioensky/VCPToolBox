@@ -11,17 +11,25 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # 安装所有运行时和编译时依赖
 RUN apk add --no-cache \
-    tzdata \
-    python3 \
-    py3-pip \
-    build-base \
-    gfortran \
-    musl-dev \
-    lapack-dev \
-    openblas-dev \
-    jpeg-dev \
-    zlib-dev \
-    freetype-dev
+  tzdata \
+  python3 \
+  py3-pip \
+  build-base \
+  gfortran \
+  musl-dev \
+  lapack-dev \
+  openblas-dev \
+  jpeg-dev \
+  zlib-dev \
+  freetype-dev \
+  python3-dev \
+  linux-headers \
+  libffi-dev \
+  openssl-dev
+
+# 在 npm install 之前设置环境变量，跳过 puppeteer 的 chromium 下载
+ARG PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_DOWNLOAD=${PUPPETEER_SKIP_DOWNLOAD}
 
 # 复制 Node.js 依赖定义文件并安装依赖 (包含 pm2)
 COPY package*.json ./
@@ -32,7 +40,7 @@ COPY package*.json ./
 # --registry=https://mirrors.huaweicloud.com/repository/npm/ (华为云)
 # 国际通用 (如果服务器在海外):
 # (默认，无需指定)
-RUN npm install --registry=https://registry.npm.taobao.org
+RUN npm cache clean --force && npm install --registry=https://registry.npmmirror.com
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
@@ -50,21 +58,29 @@ FROM node:20-alpine
 WORKDIR /usr/src/app
 
 # 仅安装运行时的系统依赖
+# 添加 chromium 及其所需依赖，以供 UrlFetch (Puppeteer) 工具使用
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk add --no-cache \
-    tzdata \
-    python3 \
-    openblas \
-    jpeg-dev \
-    zlib-dev \
-    freetype-dev
+  apk add --no-cache \
+  chromium \
+  nss \
+  freetype \
+  harfbuzz \
+  ttf-freefont \
+  tzdata \
+  python3 \
+  openblas \
+  jpeg-dev \
+  zlib-dev \
+  freetype-dev \
+  libffi
 
 # 设置 PYTHONPATH 环境变量，让 Python 能找到我们安装的依赖
 ENV PYTHONPATH=/usr/src/app/pydeps
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # 设置时区
 RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone
+  echo "Asia/Shanghai" > /etc/timezone
 
 # 从构建阶段复制应用代码和 node_modules
 COPY --from=build /usr/src/app/node_modules ./node_modules
@@ -73,6 +89,7 @@ COPY --from=build /usr/src/app/pydeps ./pydeps
 COPY --from=build /usr/src/app/*.js ./
 COPY --from=build /usr/src/app/Plugin ./Plugin
 COPY --from=build /usr/src/app/Agent ./Agent
+COPY --from=build /usr/src/app/routes ./routes
 COPY --from=build /usr/src/app/requirements.txt ./
 
 
