@@ -187,6 +187,7 @@ app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请�
 // 在路由决策之前解析请求体，以便 req.body 可用
 app.use(express.json({ limit: '300mb' }));
 app.use(express.urlencoded({ limit: '300mb', extended: true }));
+app.use(express.text({ limit: '300mb', type: 'text/plain' })); // 新增：用于处理纯文本请求体
 
 // 引入并使用特殊模型路由
 const specialModelRouter = require('./routes/specialModelRouter');
@@ -1518,6 +1519,70 @@ app.post('/v1/chat/completions', (req, res) => {
 // Route to force VCP info to be shown, regardless of the .env config.
 app.post('/v1/chatvcp/completions', (req, res) => {
     handleChatCompletion(req, res, true);
+});
+
+// 新增：人类直接调用工具的端点
+app.post('/v1/human/tool', async (req, res) => {
+    try {
+        const requestBody = req.body;
+        if (typeof requestBody !== 'string' || !requestBody.trim()) {
+            return res.status(400).json({ error: 'Request body must be a non-empty plain text.' });
+        }
+
+        const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
+        const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
+
+        const startIndex = requestBody.indexOf(toolRequestStartMarker);
+        const endIndex = requestBody.indexOf(toolRequestEndMarker, startIndex);
+
+        if (startIndex === -1 || endIndex === -1) {
+            return res.status(400).json({ error: 'Malformed request: Missing TOOL_REQUEST markers.' });
+        }
+
+        const requestBlockContent = requestBody.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
+
+        let parsedToolArgs = {};
+        let requestedToolName = null;
+        const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
+        let regexMatch;
+
+        while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
+            const key = regexMatch[1];
+            const value = regexMatch[2].trim();
+            if (key === "tool_name") {
+                requestedToolName = value;
+            } else {
+                parsedToolArgs[key] = value;
+            }
+        }
+
+        if (!requestedToolName) {
+            return res.status(400).json({ error: 'Malformed request: tool_name not found within the request block.' });
+        }
+
+        if (DEBUG_MODE) {
+            console.log(`[Human Tool Exec] Received tool call for: ${requestedToolName}`, parsedToolArgs);
+        }
+
+        // 直接调用插件管理器
+        const result = await pluginManager.processToolCall(requestedToolName, parsedToolArgs);
+
+        // processToolCall 的结果已经是正确的对象格式
+        res.status(200).json(result);
+
+    } catch (error) {
+        console.error('[Human Tool Exec] Error processing direct tool call:', error.message);
+        
+        let errorObject;
+        try {
+            // processToolCall 抛出的错误是一个字符串化的JSON
+            errorObject = JSON.parse(error.message);
+        } catch (parseError) {
+            errorObject = { error: 'Internal Server Error', details: error.message };
+        }
+        
+        res.status(500).json(errorObject);
+    }
 });
 
 
