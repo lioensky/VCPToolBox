@@ -33,21 +33,20 @@ title:「始」Sunny Days「末」,
 gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」,
 
 4.视频生成器，基于强大的Wan2.1系列模型。
-图生视频。
-tool_name:「始」VideoGenerator「末」,
+基于强大的Wan2.1系列模型。视频生成耗时很长，请先提交任务，再用返回的ID查询结果。
+*提交任务:*
+tool_name:「始」Wan2.1VideoGen「末」,
 command:「始」submit「末」,
-mode:「始」i2v「末」,
-image_url:「始」http://example.com/cat.jpg「末」
-文生视频。
-tool_name:「始」VideoGenerator「末」,
-command:「始」submit「末」,
-mode:「始」t2v「末」,
+mode:「始」(必需) 't2v' (文生视频) 或 'i2v' (图生视频)。「末」,
+// t2v 模式:
 prompt:「始」一只猫在太空漫步「末」,
-resolution:「始」1280x720「末」 //值必须是 '1280x720', '720x1280', 或 '960x960'
-查询视频生成状况。
-tool_name:「始」VideoGenerator「末」,
+resolution:「始」(必需) '1280x720', '720x1280', 或 '960x960'。「末」,
+// i2v 模式:
+image_url:「始」http://example.com/cat.jpg「末」
+*查询任务:*
+tool_name:「始」Wan2.1VideoGen「末」,
 command:「始」query「末」,
-request_id:「始」your_request_id_here「末」
+request_id:「始」(必需) submit命令返回的任务ID。「末」
 
 二.工具类
 1.计算器工具
@@ -170,4 +169,5 @@ count:「始」2「末」, // 可选
 // 4. 销毁牌堆 (重要：任务完成后必须调用)
 tool_name:「始」Randomness「末」,
 command:「始」destroyDeck「末」,
+
 deckId:「始」由createDeck返回的ID「末」 // 必需
