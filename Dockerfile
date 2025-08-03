@@ -92,6 +92,18 @@ COPY --from=build /usr/src/app/Agent ./Agent
 COPY --from=build /usr/src/app/routes ./routes
 COPY --from=build /usr/src/app/requirements.txt ./
 
+# 创建所有应用可能需要写入的持久化目录，以增强镜像的健壮性
+# 这样即使用户的宿主机目录不完整，容器也能正常启动。
+# 卷挂载会覆盖这些空目录。
+RUN mkdir -p /usr/src/app/VCPTimedContacts \
+             /usr/src/app/dailynote \
+             /usr/src/app/image \
+             /usr/src/app/file \
+             /usr/src/app/TVStxt \
+             /usr/src/app/VCPAsyncResults \
+             /usr/src/app/Plugin/VCPLog/log \
+             /usr/src/app/Plugin/EmojiListGenerator/generated_lists
+
 
 # --- 安全性说明：关于以 root 用户运行 ---
 #
