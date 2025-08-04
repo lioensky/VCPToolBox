@@ -1,0 +1,522 @@
+{
+  "3": {
+    "inputs": {
+      "seed": "{{SEED}}",
+      "steps": "{{STEPS}}",
+      "cfg": "{{CFG}}",
+      "sampler_name": "{{SAMPLER}}",
+      "scheduler": "{{SCHEDULER}}",
+      "denoise": "{{DENOISE}}",
+      "model": [
+        "42",
+        0
+      ],
+      "positive": [
+        "125",
+        2
+      ],
+      "negative": [
+        "125",
+        3
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "修改节点"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "batch_size": "{{BATCH_SIZE}}"
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "30": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "107",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "41": {
+    "inputs": {
+      "method": "from cond",
+      "model": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "Support empty uncond",
+    "_meta": {
+      "title": "Support empty uncond"
+    }
+  },
+  "42": {
+    "inputs": {
+      "object_to_patch": "diffusion_model",
+      "residual_diff_threshold": 0.20000000000000004,
+      "start": 0.20000000000000004,
+      "end": 0.8000000000000002,
+      "max_consecutive_cache_hits": 5,
+      "model": [
+        "125",
+        1
+      ]
+    },
+    "class_type": "ApplyFBCacheOnModel",
+    "_meta": {
+      "title": "Apply First Block Cache"
+    }
+  },
+  "43": {
+    "inputs": {
+      "start": 0,
+      "end": 0.7000000000000002,
+      "conditioning": [
+        "75",
+        2
+      ]
+    },
+    "class_type": "ConditioningSetTimestepRange",
+    "_meta": {
+      "title": "设置条件时间"
+    }
+  },
+  "48": {
+    "inputs": {
+      "upscale_factor": 1.5,
+      "steps": [
+        "73",
+        0
+      ],
+      "temp_prefix": "",
+      "step_mode": "simple",
+      "samples": [
+        "3",
+        0
+      ],
+      "upscaler": [
+        "49",
+        0
+      ]
+    },
+    "class_type": "IterativeLatentUpscale",
+    "_meta": {
+      "title": "Latent迭代缩放"
+    }
+  },
+  "49": {
+    "inputs": {
+      "scale_method": "lanczos",
+      "seed": 755568881668215,
+      "steps": [
+        "72",
+        0
+      ],
+      "cfg": 7,
+      "sampler_name": "res_multistep",
+      "scheduler": "kl_optimal",
+      "denoise": 0.30000000000000004,
+      "use_tiled_vae": false,
+      "tile_size": 1024,
+      "model": [
+        "74",
+        0
+      ],
+      "vae": [
+        "127",
+        5
+      ],
+      "positive": [
+        "127",
+        2
+      ],
+      "negative": [
+        "127",
+        3
+      ],
+      "upscale_model_opt": [
+        "131",
+        0
+      ]
+    },
+    "class_type": "PixelKSampleUpscalerProvider",
+    "_meta": {
+      "title": "非修改节点"
+    }
+  },
+  "55": {
+    "inputs": {
+      "pipe": [
+        "91",
+        0
+      ]
+    },
+    "class_type": "easy pipeOut",
+    "_meta": {
+      "title": "节点束输出"
+    }
+  },
+  "72": {
+    "inputs": {
+      "value": 30
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "整数"
+    }
+  },
+  "73": {
+    "inputs": {
+      "value": 1
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "整数"
+    }
+  },
+  "74": {
+    "inputs": {
+      "object_to_patch": "diffusion_model",
+      "residual_diff_threshold": 0.20000000000000004,
+      "start": 0,
+      "end": 1,
+      "max_consecutive_cache_hits": 5,
+      "model": [
+        "127",
+        1
+      ]
+    },
+    "class_type": "ApplyFBCacheOnModel",
+    "_meta": {
+      "title": "Apply First Block Cache"
+    }
+  },
+  "75": {
+    "inputs": {
+      "positive": [
+        "76",
+        0
+      ],
+      "negative": [
+        "76",
+        1
+      ],
+      "打开可视化PromptUI": "",
+      "model": [
+        "55",
+        1
+      ],
+      "clip": [
+        "55",
+        6
+      ]
+    },
+    "class_type": "WeiLinComfyUIPromptToLoras",
+    "_meta": {
+      "title": "别动 Lora和提示词加载"
+    }
+  },
+  "76": {
+    "inputs": {
+      "positive": "{{POSITIVE_PROMPT}}",
+      "negative": "{{NEGATIVE_PROMPT}}",
+      "打开可视化PromptUI": ""
+    },
+    "class_type": "WeiLinPromptToString",
+    "_meta": {
+      "title": "替换"
+    }
+  },
+  "91": {
+    "inputs": {
+      "ckpt_name": "{{MODEL}}",
+      "vae_name": "Baked VAE",
+      "clip_skip": -2,
+      "lora_name": "None",
+      "lora_model_strength": 0.7000000000000002,
+      "lora_clip_strength": 1.0000000000000002,
+      "resolution": "1024 x 1024",
+      "empty_latent_width": 512,
+      "empty_latent_height": 512,
+      "positive": [
+        "92",
+        0
+      ],
+      "negative": [
+        "92",
+        0
+      ],
+      "batch_size": 1
+    },
+    "class_type": "easy comfyLoader",
+    "_meta": {
+      "title": "简易加载器（Comfy）"
+    }
+  },
+  "92": {
+    "inputs": {
+      "value": "{{PROMPT_INPUT}}"
+    },
+    "class_type": "PrimitiveString",
+    "_meta": {
+      "title": "别动 伪提示词"
+    }
+  },
+  "102": {
+    "inputs": {
+      "signal": [
+        "48",
+        0
+      ],
+      "any_input": [
+        "48",
+        0
+      ]
+    },
+    "class_type": "ImpactIfNone",
+    "_meta": {
+      "title": "ImpactIfNone"
+    }
+  },
+  "104": {
+    "inputs": {
+      "boolean": [
+        "102",
+        1
+      ],
+      "on_true": [
+        "102",
+        0
+      ],
+      "on_false": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "easy ifElse",
+    "_meta": {
+      "title": "是否判断"
+    }
+  },
+  "106": {
+    "inputs": {
+      "samples": [
+        "104",
+        0
+      ],
+      "vae": [
+        "128",
+        5
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "107": {
+    "inputs": {
+      "guide_size": 1024,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 252655756393357,
+      "steps": 30,
+      "cfg": 7,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 0.20000000000000004,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5000000000000001,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.9300000000000002,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7000000000000002,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": [
+        "106",
+        0
+      ],
+      "model": [
+        "108",
+        0
+      ],
+      "clip": [
+        "128",
+        6
+      ],
+      "vae": [
+        "128",
+        5
+      ],
+      "positive": [
+        "128",
+        2
+      ],
+      "negative": [
+        "128",
+        3
+      ],
+      "bbox_detector": [
+        "109",
+        0
+      ],
+      "sam_model_opt": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "面部细化"
+    }
+  },
+  "108": {
+    "inputs": {
+      "object_to_patch": "diffusion_model",
+      "residual_diff_threshold": 0.20000000000000004,
+      "start": 0,
+      "end": 1,
+      "max_consecutive_cache_hits": 5,
+      "model": [
+        "128",
+        1
+      ]
+    },
+    "class_type": "ApplyFBCacheOnModel",
+    "_meta": {
+      "title": "Apply First Block Cache"
+    }
+  },
+  "109": {
+    "inputs": {
+      "model_name": "bbox/face_yolov8n_v2.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "检测加载器"
+    }
+  },
+  "110": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "AUTO"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAM加载器"
+    }
+  },
+  "122": {
+    "inputs": {
+      "pipe": [
+        "55",
+        0
+      ],
+      "model": [
+        "41",
+        0
+      ],
+      "pos": [
+        "75",
+        1
+      ],
+      "neg": [
+        "43",
+        0
+      ],
+      "latent": [
+        "55",
+        4
+      ],
+      "vae": [
+        "55",
+        5
+      ],
+      "clip": [
+        "55",
+        6
+      ],
+      "image": [
+        "55",
+        7
+      ]
+    },
+    "class_type": "easy pipeIn",
+    "_meta": {
+      "title": "节点束输入"
+    }
+  },
+  "125": {
+    "inputs": {
+      "pipe": [
+        "122",
+        0
+      ]
+    },
+    "class_type": "easy pipeOut",
+    "_meta": {
+      "title": "节点束输出"
+    }
+  },
+  "127": {
+    "inputs": {
+      "pipe": [
+        "122",
+        0
+      ]
+    },
+    "class_type": "easy pipeOut",
+    "_meta": {
+      "title": "节点束输出"
+    }
+  },
+  "128": {
+    "inputs": {
+      "pipe": [
+        "122",
+        0
+      ]
+    },
+    "class_type": "easy pipeOut",
+    "_meta": {
+      "title": "节点束输出"
+    }
+  },
+  "131": {
+    "inputs": {
+      "model_name": "4xUltrasharp_4xUltrasharpV10.pt"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "加载放大模型"
+    }
+  }
+}
