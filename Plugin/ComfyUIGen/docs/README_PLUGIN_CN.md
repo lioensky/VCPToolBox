@@ -93,6 +93,12 @@
 - 处理器会扫描节点结构与 `class_type` 和 `inputs` 字段，对“已知可替换键”进行替换
 - 不会替换节点 ID、连线引用（如 ["4", 1] 这种指针）
 - 对未知键采取“白名单”策略：只有在内置或扩展的替换映射中出现的键才会替换
+- 下述场景将“不会被替换/强制保留”（详见实现 [@/VCPToolBox/Plugin/ComfyUIGen/WorkflowTemplateProcessor.js](../WorkflowTemplateProcessor.js:1)）：
+  1) 标题/名称含“不替换”语义关键字（多语言）：如 "no"、"not"、"none"、"skip"、"hold"、"keep"、"别动"、"不替换"、"保持"、"跳过"、"保留"（命中即跳过替换）。
+  2) 罕见/未知 `class_type`（不在可替换白名单映射内）：默认保留，避免误改第三方/自定义节点。
+  3) 显式保留的节点类型：如 `VAEDecode`、`SaveImage`、`UpscaleModelLoader`、`UltralyticsDetectorProvider`、`SAMLoader`、`FaceDetailer`。
+  4) 特殊判定：`WeiLinPromptToString` 等承担 LoRA 处理的节点在特定标题语义下将保留原样（避免破坏 LoRA 管线）。
+  5) 结构性字段：任何连线引用数组（如 `["4", 1]`）一律不替换，仅替换纯字符串/数值目标字段。
 
 如何扩展替换规则（示意步骤）：
 1) 在 WorkflowTemplateProcessor 中扩展“可替换映射”（如将某 class_type 的某 input 键关联到一个占位符）
@@ -136,32 +142,99 @@ ComfyUI 常见接口（不同版本可能略有差异）：
 
 ## 六、测试与 PR 验证清单
 
-1) 配置文件直连（无前端）
-- 修改 `comfyui-settings.json` 的 `workflow`、`defaultModel`、尺寸、Steps/CFG、负面词
-- 读取模板并执行一次生成，确认参数生效
-- 切换到另一工作流模板，重复验证
+以下清单用于提交 PR 前的自检，覆盖端到端流程与替换逻辑。建议在本插件目录执行并保留最小验证素材。
 
-2) 占位符替换覆盖用例
-- 基础替换：MODEL/WIDTH/HEIGHT/POSITIVE/NEGATIVE/SEED/STEPS/CFG/SAMPLER/SCHEDULER/DENOISE
-- LoRA：启用/禁用多个 LoRA，强度变化是否体现在替换结果里
-- 不替换区域：节点连线（["id", index]）必须保持原样
-- 未知键：在未列入映射时不应替换
+A. 端到端（E2E）最小路径
+- 配置直连（无前端）
+  1. 修改 `comfyui-settings.json` 的以下关键字段并保存：
+     - `workflow`、`defaultModel`、`defaultWidth`/`defaultHeight`、`defaultSteps`、`defaultCfg`
+     - `defaultSampler`、`defaultScheduler`、`defaultSeed`（设为 -1 验证随机种子）、
+       `defaultBatchSize`、`defaultDenoise`、`negativePrompt`
+  2. 从 `workflows/WORKFLOW_NAME.json` 读取模板，执行一次生成，确认参数已生效。
+  3. 切换到另一工作流模板，重复验证。
 
-3) 导入转换
-- 准备多份 ComfyUI API JSON（含不同节点组合）
-- 导入 → 生成模板 → 读取模板执行 → 产出结果对比
+B. 占位符替换覆盖用例
+- 基础替换项
+  - MODEL / WIDTH / HEIGHT / POSITIVE_PROMPT / NEGATIVE_PROMPT
+  - SEED / STEPS / CFG / SAMPLER / SCHEDULER / DENOISE
+  - 可选：BATCH_SIZE（如模板中存在）
+- LoRA 行为
+  - 启用/禁用多个 LoRA；调整 strength/clipStrength 后应在结果提示词或节点参数中体现。
+- 不应被替换的区域
+  - 节点连线引用（例如 `["4", 1]`）必须保持原样。
+- 未知键策略
+  - 未在白名单映射中的键不应被替换。
 
-4) 可靠性/性能
-- 在不同目录布局（含容器/便携/用户目录回退）下读取与写入是否正常
-- 大模板或多 LoRA 叠加时替换耗时是否可接受
+C. 导入与模板转换
+- 准备多份 ComfyUI “Save (API Format)” JSON，覆盖不同节点组合。
+- 经由模板处理器转换为模板 → 写入 `workflows/NAME.json` → 执行生成 → 对比产出。
+- 验证转换时的元数据（如果存在 `_template_metadata`）不会污染最终模板保存。
 
-5) 回归与兼容
-- 低版本 ComfyUI 的接口字段兼容性（如采样器别名、调度器枚举不同）
-- 插件目录无写权限时的报错与降级处理（例如回退到用户目录）
+D. 可靠性与性能
+- 不同目录布局（容器/便携/用户目录回退）下可正确发现并读写：
+  - `comfyui-settings.json`、`workflows/`、`output/`
+- 大模板、批量 LoRA 叠加时的替换耗时与内存占用可接受。
+
+E. 回归与兼容
+- 低版本 ComfyUI 的字段兼容性（采样器与调度器枚举差异）。
+- 插件目录无写权限时的降级策略与报错可读性（回退至用户目录）。
+
+F. PR 规范检查
+- 仅提交必要的源码与文档变更；不包含依赖升级与生成产物。
+- 分支命名与提交信息清晰，引用本 README 的章节用于说明验证范围。
 
 --------------------------------
 
-## 七、常见问题（FAQ）
+## 七、模板替换行为说明（命名可选项、强替换/不替换场景）
+
+节点命名来源（用于定位与判定，按优先级）：
+1) class_type（首选，稳定且与 ComfyUI 节点实现对齐）
+2) 节点内部 ID/键（API JSON 的对象键，例如 "3"、"4"）
+3) _meta.title/显示名（可选，用于歧义消解与“不替换”语义指示）
+
+强替换定义：
+- 仅对白名单占位符（如 `{{MODEL}}`、`{{WIDTH}}`、`{{HEIGHT}}`、`{{SEED}}`、`{{STEPS}}`、`{{CFG}}`、`{{SAMPLER}}`、`{{SCHEDULER}}`、`{{DENOISE}}`、`{{POSITIVE_PROMPT}}`、`{{NEGATIVE_PROMPT}}`、`{{BATCH_SIZE}}`）出现的已知输入键执行直接覆盖。
+- 执行覆盖前进行类型/结构合理性检查；不匹配时拒绝替换并记录原因。
+
+不会被替换（扩展版）：
+- 标题/名称命中“不替换”关键字：见上文“自动识别与不替换规则”第 1 点。
+- 未知/不常见类型：class_type 不在白名单映射中时默认保留。
+- 被明确列入保留列表的节点类型：如 `SaveImage` 等。
+- 连线/指针结构：如 `["4", 1]` 等始终不替换。
+- 未在映射中的键：非白名单键不替换，避免误改。
+- LoRA 处理专用节点：在特定标题标记（如包含 “lora”）下保留原样。
+
+预编译与 mtime 缓存（即将引入/或已实现）：
+- 处理器在首次加载模板时分析 JSON，记录占位符出现的确定性路径（如 nodes[i].inputs[key]）。
+- 以“文件路径 + mtimeMs”为键缓存分析结果；mtime 变化时自动失效重建。
+- 运行时仅按预编译路径直达替换，避免全量遍历，降低复杂度与耗时。
+- 提供清缓存钩子（例如 `clearCache()`）以便测试。
+
+示例：KSampler 与尺寸/模型替换路径请参考下文“术语与参数枚举统一”与“最小模板片段”。
+
+## 八、术语与参数枚举统一（Sampler/Scheduler/Denoise）
+
+为避免歧义，以下术语与取值与 ComfyUI 节点输入保持一致，尤其是 KSampler 节点的 inputs：
+- Sampler（对应模板中的 `{{SAMPLER}}` → KSampler.inputs.sampler_name）
+  - 常见值示例：`euler`、`euler_ancestral`、`dpmpp_2m`、`dpmpp_sde` 等
+  - 枚举来源：ComfyUI `/object_info` 中 `KSampler`/相关节点的 `sampler_name` 输入候选
+- Scheduler（对应模板中的 `{{SCHEDULER}}` → KSampler.inputs.scheduler）
+  - 常见值示例：`normal`、`karras`、`exponential`、`simple`
+  - 枚举来源：ComfyUI `/object_info` 中相应字段
+- Denoise（对应模板中的 `{{DENOISE}}` → KSampler.inputs.denoise）
+  - 取值范围：0.0–1.0（浮点，依工作流具体含义可能不同）
+- Seed（对应模板中的 `{{SEED}}` → KSampler.inputs.seed）
+  - 当配置中 `defaultSeed` 为 -1 时，运行时由后端生成非负随机种子（32-bit 无符号）
+  - 参考实现：[@/VCPToolBox/Plugin/ComfyUIGen/ComfyUIGen.js](../ComfyUIGen.js:1)
+
+建议实践
+- 优先通过 `/object_info` 实时拉取可用枚举，避免硬编码。
+- 若用户在 `comfyui-settings.json` 中填入不兼容的取值，执行前做一次映射校验或回退到默认值，并在日志中提示。
+- 在模板中仅使用上述占位符，保持“替换白名单策略”，避免破坏节点连接指针。
+
+--------------------------------
+
+## 九、常见问题（FAQ）
 
 - Q：不使用前端是否会缺失功能？
   - A：不会。前端只是图形界面。任何上层应用仅通过 `comfyui-settings.json` 与工作流模板即可完成完整的参数化生成。
@@ -174,7 +247,7 @@ ComfyUI 常见接口（不同版本可能略有差异）：
 
 --------------------------------
 
-## 八、示例：最小工作流模板片段（占位符）
+## 十、示例：最小工作流模板片段（占位符）
 
 ```json
 {

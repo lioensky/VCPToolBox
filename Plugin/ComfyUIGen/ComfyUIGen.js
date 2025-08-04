@@ -80,22 +80,23 @@ async function loadWorkflowTemplate(templateName = 'text2img_basic') {
 }
 
 
-// 生成合法随机种子（0..2^32-1）
+const { randomBytes } = require('crypto');
+
+// 生成合法随机种子（0..2^32-1）使用加密学安全源，避免 Math.random 偏差
 function generateRandomSeed() {
-    // 使用 32 位无符号范围；Math.random 足够此处用途
-    return Math.floor(Math.random() * 0x100000000); // 0..4294967295
+   return randomBytes(4).readUInt32BE(0); // 0..4294967295
 }
 
-// 解析与规范化种子：-1/无效 => 随机；超界裁剪；小数取整
+// 解析与规范化种子：当 seedCandidate === -1 或非法时 => 运行时随机；其余进行范围裁剪
 function resolveSeed(seedCandidate) {
-    let s = Number(seedCandidate);
-    if (!Number.isFinite(s) || !Number.isInteger(s) || s < 0) {
-        s = generateRandomSeed();
-    }
-    // 裁剪到 0..0xFFFFFFFF
-    if (s < 0) s = 0;
-    if (s > 0xFFFFFFFF) s = 0xFFFFFFFF;
-    return s;
+   let s = Number(seedCandidate);
+   if (!Number.isFinite(s) || !Number.isInteger(s) || s === -1) {
+       s = generateRandomSeed();
+   }
+   // 裁剪到 0..0xFFFFFFFF
+   if (s < 0) s = 0;
+   if (s > 0xFFFFFFFF) s = 0xFFFFFFFF;
+   return s;
 }
 
 // 纯粹的数据替换 - 直接替换占位符为具体值（含种子自动处理）
@@ -113,7 +114,7 @@ function fillWorkflowParameters(workflow, userPrompt, config) {
     ].filter(part => part && String(part).trim());
     const positivePrompt = positivePromptParts.join(', ');
     
-    // 先解析种子：当配置默认种子为 -1 或非法时，运行时自动改为随机合法值
+    // 先解析种子：当配置默认种子为 -1 或非法时，运行时自动改为随机合法值（不透传 -1）
     const resolvedSeed = resolveSeed(settings.defaultSeed);
     
     // 构建替换映射
