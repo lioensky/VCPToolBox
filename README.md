@@ -182,6 +182,26 @@ VCP 支持多种插件类型，以满足不同的 AI 能力扩展需求。核心
     - **明确的非流式中断**: 对于非流式请求，服务器会返回一个内容为“请求已中止”的 JSON 响应，清晰地告知任务状态。
 - **深度解读**: 该机制是 VCP 安全与可控性设计的重要一环。它通过标准的 `AbortController` 实现，确保了中断操作的可靠性，并为构建负责任、可信赖的 AI Agent 系统提供了关键的基础设施。
 
+### 人类直接工具调用端点 (Human-Facing Tool Endpoint)
+
+- **设计哲学**: 将 VCP 强大的插件系统能力直接开放给人类用户或外部脚本，实现无 AI 参与的、纯粹的工具自动化调用。
+- **核心能力**:
+    - **专用 API 端点**: 新增 `POST /v1/human/tool` 路由。
+    - **标准认证**: 与其他 API 一样，使用 `Authorization: Bearer <Your_Key>` 进行认证。
+    - **纯文本指令**: 接收 `Content-Type: text/plain` 类型的请求体，其内容格式与 AI 使用的 VCP 指令完全一致。
+    - **直接结果返回**: 服务器会直接调用指定的插件，并将插件执行的原始 JSON 结果返回给调用方。
+- **使用示例 (使用 curl)**:
+  ```bash
+  curl -X POST http://localhost:5890/v1/human/tool \
+  -H "Authorization: Bearer your_server_key_here" \
+  -H "Content-Type: text/plain" \
+  -d '<<<[TOOL_REQUEST]>>>
+  tool_name:「始」SciCalculator「末」,
+  expression:「始」2 * (3 + 4)「末」
+  <<<[END_TOOL_REQUEST]>>>'
+  ```
+- **深度解读**: 该功能极大地扩展了 VCP 的应用场景。它不仅是 AI 的能力增强层，更可以作为一个通用的、可通过 API 驱动的自动化任务执行引擎，方便与其他系统或脚本进行集成。
+
 ### Web 管理面板
 
 - 提供便捷的服务器配置、插件状态、插件配置、指令描述以及日记文件管理界面。
