@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "A4FImageGen",
+  "displayName": "A4F 多模型图片生成",
+  "version": "0.1.0",
+  "description": "通过 A4F 网站提供的 API (如 Qwen-Image, Imagen-4) 生成图片。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node A4FImageGen.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "a4furl": "string",
+    "a4fkey": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QwenGen",
+        "description": "调用此工具通过 A4F (固定使用 Qwen-Image 模型) 生成图片。提示词使用标准的tag语法，支持中英文混合tag。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」A4FImageGen「末」,\ncommand:「始」QwenGen「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，例如 '超清, 4K, 电影级构图, 一个可爱的海獭'。「末」,\nresolution:「始」(必需) 图片分辨率，必须是以下之一: \"1328x1328\" (1:1), \"1664x928\" (16:9), \"928x1664\" (9:16), \"1472x1140\" (4:3), \"1140x1472\" (3:4)。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：当此工具执行完毕后，您将收到包含图片URL的结果。请使用返回的URL为用户生成一个HTML的 `<img>` 标签来直接展示图片。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」A4FImageGen「末」,\ncommand:「始」QwenGen「末」,\nprompt:「始」一只可爱的海獭宝宝, 杰作, 高品质, 4k「末」,\nresolution:「始」1328x1328「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "Imagen4Gen",
+        "description": "调用此工具通过 A4F (固定使用 Imagen-4 模型) 生成图片。提示词支持自然语言描述，中英文均可。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」A4FImageGen「末」,\ncommand:「始」Imagen4Gen「末」,\nprompt:「始」(必需) 用于图片生成的自然语言描述。「末」,\nresolution:「始」(必需) 图片分辨率，必须是以下之一: \"1024x1024\" (1:1), \"896x1280\" (3:4), \"1280x896\" (4:3), \"768x1408\" (9:16), \"1408x768\" (16:9)。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：当此工具执行完毕后，您将收到包含图片URL的结果。请使用返回的URL为用户生成一个HTML的 `<img>` 标签来直接展示图片。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」A4FImageGen「末」,\ncommand:「始」Imagen4Gen「末」,\nprompt:「始」一只可爱的海獭宝宝在海里游泳「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
