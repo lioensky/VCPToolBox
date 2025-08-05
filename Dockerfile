@@ -130,7 +130,7 @@ RUN mkdir -p /usr/src/app/VCPTimedContacts \
 
 
 # 暴露端口
-EXPOSE 6005
+EXPOSE 6006
 
 # 定义容器启动命令
 CMD [ "node_modules/.bin/pm2-runtime", "start", "server.js" ]
