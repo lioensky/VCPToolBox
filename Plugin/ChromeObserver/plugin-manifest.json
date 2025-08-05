@@ -1,0 +1,28 @@
+{
+    "name": "ChromeObserver",
+    "displayName": "Chrome 浏览器观察者",
+    "version": "1.0.0",
+    "description": "一个允许AI实时观察Chrome当前页面内容的插件。它通过WebSocket连接到浏览器中的一个配套扩展，并持续更新页面信息。",
+    "pluginType": "service",
+    "entryPoint": {
+        "script": "ChromeObserver.js"
+    },
+    "communication": {
+        "protocol": "direct"
+    },
+    "capabilities": {
+        "systemPromptPlaceholders": [
+            {
+                "placeholder": "{{VCPChromePageInfo}}",
+                "description": "提供当前Chrome浏览器活动标签页的实时、简化版内容，以Markdown格式呈现，包含可交互的元素。",
+                "isDynamic": true
+            }
+        ],
+        "invocationCommands": []
+    },
+    "webSocketPush": {
+        "enabled": true,
+        "targetClientType": "ChromeObserver",
+        "messageType": "chrome_command"
+    }
+}

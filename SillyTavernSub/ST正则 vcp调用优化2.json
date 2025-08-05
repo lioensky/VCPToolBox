@@ -1,0 +1,17 @@
+{
+    "id": "a03392a4-5f7e-4ed7-a32e-fc78a6c01686",
+    "scriptName": "VCP调用优化2",
+    "findRegex": "/「末」[\\s\\S]*?<<<\\[END_TOOL_REQUEST\\]>>>/g",
+    "replaceString": "]",
+    "trimStrings": [],
+    "placement": [
+        2
+    ],
+    "disabled": false,
+    "markdownOnly": true,
+    "promptOnly": false,
+    "runOnEdit": true,
+    "substituteRegex": 0,
+    "minDepth": null,
+    "maxDepth": null
+}

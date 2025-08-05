@@ -1,0 +1,33 @@
+{
+    "name": "ChromeControl",
+    "displayName": "Chrome 浏览器控制器",
+    "version": "1.0.0",
+    "description": "一个用于方便AI向Chrome浏览器发送操作指令（如点击、输入）的同步插件。",
+    "pluginType": "synchronous",
+    "entryPoint": {
+        "command": "node ChromeControl.js"
+    },
+    "communication": {
+        "protocol": "stdio",
+        "timeout": 15000
+    },
+    "capabilities": {
+        "invocationCommands": [
+            {
+                "command": "type",
+                "description": "在指定的输入框中输入文本。\n- `command`: 固定为 `type`。\n- `target`: 输入框的标题或标识符 (例如, '搜索框', 'username')。\n- `text`: 要输入的文本内容。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」type「末」,\ntarget: 「始」搜索框「末」,\ntext: 「始」VCP Agent是什么「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」type「末」,\ntarget: 「始」搜索框「末」,\ntext: 「始」VCP Agent是什么「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "click",
+                "description": "点击指定的按钮或链接。\n- `command`: 固定为 `click`。\n- `target`: 按钮或链接的标题或URL (例如, '登录', 'https://example.com/next')。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」click「末」,\ntarget: 「始」登录「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」click「末」,\ntarget: 「始」登录「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "open_url",
+                "description": "在新的标签页中打开指定的URL。\n- `command`: 固定为 `open_url`。\n- `url`: 要打开的完整URL地址。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeControl「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>"
+            }
+        ]
+    }
+}

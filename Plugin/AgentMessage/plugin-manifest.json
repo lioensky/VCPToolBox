@@ -1,0 +1,32 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AgentMessage",
+  "displayName": "代理消息推送插件",
+  "version": "1.0.0",
+  "description": "允许AI通过WebSocket向用户前端发送格式化消息。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node AgentMessage.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "configSchema": {},
+  "webSocketPush": {
+    "enabled": true,
+    "usePluginResultAsMessage": true,
+    "targetClientType": "UserNotification"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "AgentMessage",
+        "description": "调用此工具向用户的前端发送一条消息。AI需要提供消息内容，并可选择提供发送者（Maid）的名称。插件会将这些信息格式化并通过WebSocket发送。请在您的回复中，使用以下精确格式来请求发送消息，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nMaid:「始」(可选) 消息发送者的名称。如果省略，则为匿名消息。「末」,\nmessage:「始」(必需) 要发送的消息内容。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n如果提供Maid，其署名就是你的名字（发件人）。message是要发出的信息。当此工具执行完毕后，表示消息已尝试通过WebSocket发送。您通常不需要等待用户的直接回复，除非任务本身要求。",
+        "example": "```text\n发送署名消息:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nMaid:「始」小克「末」,\nmessage:「始」主人，您的咖啡已经准备好了，请到餐厅享用哦～ ❤️「末」\n<<<[END_TOOL_REQUEST]>>>\n\n发送匿名消息:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentMessage「末」,\nmessage:「始」一条重要的匿名通知。「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

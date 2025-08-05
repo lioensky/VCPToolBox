@@ -1,0 +1,22 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "EmojiListGenerator",
+  "version": "1.0.0",
+  "displayName": "表情包列表文件生成器",
+  "description": "扫描项目 image/ 目录下的表情包文件夹，并在插件自己的 generated_lists/ 目录下生成对应的 .txt 列表文件。",
+  "author": "System",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node emoji-list-generator.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000 
+  },
+  "capabilities": {}, 
+  "configSchema": {
+    "DebugMode": "boolean"
+  },
+  "lifecycle": {}
+}

@@ -1,0 +1,42 @@
+{
+  "name": "omgflux-mcp-server",
+  "version": "0.1.0",
+  "description": "A Model Context Protocol server with OhMyGPT Flux that generates images.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/exa-labs/omgflux-mcp-server.git"
+  },
+  "bin": {
+    "omgflux-mcp-server": "./build/FluxGen.js"
+  },
+  "files": [
+    "build"
+  ],
+  "keywords": [
+    "mcp",
+    "exa",
+    "search",
+    "claude",
+    "ai"
+  ],
+  "author": "Exa Labs",
+  "scripts": {
+    "build": "node -e \"const fs = require('fs'); const path = require('path'); const buildDir = './build'; const srcFile = './FluxGen.js'; const targetFile = path.join(buildDir, 'FluxGen.js'); if (!fs.existsSync(buildDir)){ fs.mkdirSync(buildDir, { recursive: true }); } fs.copyFileSync(srcFile, targetFile); try { fs.chmodSync(targetFile, '755'); console.log('FluxGen build: FluxGen.js copied to build directory and chmodded.'); } catch(e) { console.warn('FluxGen build: chmod failed, possibly on Windows. File copied.'); }\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/FluxGen.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.7.8",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.24",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

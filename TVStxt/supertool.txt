@@ -1,0 +1,175 @@
+VCP工具调用格式与指南，总格式指导。
+
+<<<[TOOL_REQUEST]>>>
+maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起
+tool_name:「始」工具名「末」, //必要字段，以了解你要调用什么工具
+arg:「始」工具参数「末」, //具体视不同工具需求而定
+timely_contact:「始」(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」
+<<<[END_TOOL_REQUEST]>>>
+
+<<<[TOOL_REQUEST]>>>到<<<[END_TOOL_REQUEST]>>>来表示一次完整调用。使用「始」「末」包裹参数来兼容富文本识别。
+主动判断当前需求，灵活使用各类工具调用，服务器支持一次调用多个工具和连续调用。
+【系统警示】：不要在“真正返回工具请求前”编造工具调用返回结果。
+
+一.多媒体生成类 
+1.FluxGen 艺术风格多变，仅支持英文提示词，分辨率组合有限。
+tool_name:「始」FluxGen「末」,
+prompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,
+resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」
+
+2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
+tool_name:「始」DoubaoGen「末」,
+prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
+resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
+
+3.SunoGen 大名鼎鼎的Suno音乐生成器。
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+歌词模式
+prompt:「始」[Verse 1]\nSunlight on my face\nA gentle, warm embrace「末」,
+tags:「始」acoustic, pop, happy「末」,
+title:「始」Sunny Days「末」,
+或者直接生成纯音乐
+gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」,
+
+4.视频生成器，基于强大的Wan2.1系列模型。
+图生视频。
+7. 视频生成器 (Wan2.1VideoGen)
+基于强大的Wan2.1系列模型。视频生成耗时很长，请先提交任务，再用返回的ID查询结果。
+*提交任务:*
+tool_name:「始」Wan2.1VideoGen「末」,
+command:「始」submit「末」,
+mode:「始」(必需) 't2v' (文生视频) 或 'i2v' (图生视频)。「末」,
+// t2v 模式:
+prompt:「始」一只猫在太空漫步「末」,
+resolution:「始」(必需) '1280x720', '720x1280', 或 '960x960'。「末」,
+// i2v 模式:
+image_url:「始」http://example.com/cat.jpg「末」
+*查询任务:*
+tool_name:「始」Wan2.1VideoGen「末」,
+command:「始」query「末」,
+request_id:「始」(必需) submit命令返回的任务ID。「末」
+
+二.工具类
+1.计算器工具
+tool_name:「始」SciCalculator「末」,
+expression:「始」您要计算的完整数学表达式「末」
+
+- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
+- 常量: pi, e
+- 数学函数: sin(x), cos(x), tan(x), asin(x), acos(x), atan(x), sqrt(x), root(x, n), log(x, [base]), exp(x), abs(x), ceil(x), floor(x), sinh(x), cosh(x), tanh(x), asinh(x), acosh(x), atanh(x)
+- 统计函数: mean([x1,x2,...]), median([...]), mode([...]), variance([...]), stdev([...]), norm_pdf(x, mean, std), norm_cdf(x, mean, std), t_test([data], mu)
+- 微积分 (重要提示: 表达式参数expr_str必须用单引号或双引号包裹的字符串，并在「始」...「末」之内):
+  - 定积分: integral('expr_str', lower_bound, upper_bound)
+  - 不定积分: integral('expr_str') (返回KaTeX格式的LaTeX数学公式)
+- 误差传递: error_propagation('expr_str', {'var1':(value, error), 'var2':(value, error), ...})
+- 置信区间: confidence_interval([data_list], confidence_level)
+
+2.联网搜索工具
+tool_name:「始」TavilySearch「末」,
+query:「始」(必需) 搜索的关键词或问题。「末」,
+topic:「始」(可选, 默认为 'general') 搜索的主题，例如 'news', 'finance', 'research', 'code'。如果AI不确定，可以省略此参数或使用 'general'。「末」,
+search_depth:「始」(可选, 默认为 'basic') 搜索深度，可选值：'basic', 'advanced'。「末」,
+max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」
+
+3.网页超级爬虫，强大的网页内容爬取器。
+tool_name:「始」UrlFetch「末」,
+url:「始」(必需) 要访问的网页 URL。「末」,
+mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」
+
+4.B站视频爬虫，获取B站视频的TTS转化内容。
+tool_name:「始」BilibiliFetch「末」,
+url:「始」(必需) Bilibili 视频或直播的 URL。「末」
+
+5.命运与神秘插件-塔罗占卜—
+tool_name: 「始」TarotDivination「末」,
+fate_check_number: 「始」number「末」, // 可选字段，作为占卜师的你，为对方的徘徊抉择一个命运之数！
+单抽指令：command: 「始」draw_single_card「末」
+三牌阵占卜，分别代表“过去”、“现在”和“未来”：command: 「始」draw_three_card_spread「末」
+凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
+使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
+
+三.VCP通讯插件
+1.Agent通讯器，用于联络别的Agent！
+tool_name:「始」AgentAssistant「末」,
+agent_name:「始」(必需) 要联络的Agent准确名称 (例如: Nova,可可…)。「末」,
+prompt:「始」(必需) 您想对该Agent传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
+
+2.主人通讯器
+tool_name:「始」AgentMessage「末」,
+message:「始」向用户的设备发送通知消息。「末」
+
+3.深度回忆插件，可以回忆你过去的聊天历史哦！
+tool_name:「始」DeepMemo「末」,
+maid:「始」你的名字「末」, //该插件中这是必须字段
+keyword：「始」搜索关键词「末」, //多个关键词可以用英文逗号、中文逗号或空格分隔
+window_size：「始」匹配深度「末」 //非必须参数，可不填。可选5-20，默认10，数字越大返回的上下文结构化越多。
+
+
+四. 其他工具
+
+3. 随机事件生成器 (Randomness)
+一个多功能的随机事件生成器，提供有状态和无状态两种模式，用于掷骰、抽牌、生成随机日期等。
+
+// --- 无状态指令 (一次性操作) ---
+// 掷骰子 (TRPG)
+tool_name:「始」Randomness「末」,
+command:「始」rollDice「末」,
+diceString:「始」2d6+5「末」, // 必需, TRPG风格的掷骰表达式
+format:「始」ascii「末」, // 可选, 使用'ascii'可为6面骰生成视觉化结果
+
+// 从列表中选择
+tool_name:「始」Randomness「末」,
+command:「始」selectFromList「末」,
+items:「始」["苹果", "香蕉", "橙子"]「末」, // 必需, 包含选项的数组
+count:「始」1「末」, // 可选, 抽取数量
+withReplacement:「始」false「末」, // 可选, true为可重复抽取
+
+// 快速抽牌 (扑克/塔罗)
+tool_name:「始」Randomness「末」,
+command:「始」getCards「末」,
+deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
+count:「始」2「末」, // 可选
+
+// 快速抽塔罗牌 (支持牌阵)
+tool_name:「始」Randomness「末」,
+command:「始」drawTarot「末」,
+spread:「始」three_card「末」, // 可选, 牌阵名称, 如 'single_card', 'celtic_cross'
+allowReversed:「始」true「末」, // 可选, 是否允许逆位
+
+// 抽卢恩符文
+tool_name:「始」Randomness「末」,
+command:「始」castRunes「末」,
+count:「始」3「末」, // 可选
+
+// 生成随机日期时间
+tool_name:「始」Randomness「末」,
+command:「始」getRandomDateTime「末」,
+start:「始」2025-01-01「末」, // 可选, 起始时间
+end:「始」2025-12-31「末」, // 可选, 结束时间
+format:「始」%Y年%m月%d日「末」, // 可选, 返回格式
+
+// --- 有状态指令 (需要管理生命周期) ---
+// 1. 创建标准牌堆
+tool_name:「始」Randomness「末」,
+command:「始」createDeck「末」,
+deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
+deckCount:「始」1「末」, // 可选, 使用几副牌
+
+// 2. 创建自定义牌堆
+tool_name:「始」Randomness「末」,
+command:「始」createCustomDeck「末」,
+cards:「始」["牌1", "牌2", "牌3"]「末」, // 必需, 自定义卡牌列表
+deckName:「始」我的牌堆「末」, // 可选
+
+// 3. 从已创建的牌堆抽牌
+tool_name:「始」Randomness「末」,
+command:「始」drawFromDeck「末」,
+deckId:「始」由createDeck返回的ID「末」, // 必需
+count:「始」2「末」, // 可选
+
+// 4. 销毁牌堆 (重要：任务完成后必须调用)
+tool_name:「始」Randomness「末」,
+command:「始」destroyDeck「末」,
+deckId:「始」由createDeck返回的ID「末」 // 必需
+

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCP ToolBox 配置中心</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <div class="top-bar-content">
+            <span class="server-title">VCPToolBox</span>
+            <button id="restart-server-button" class="restart-button">重启服务器</button>
+            <button id="theme-toggle-button" class="theme-button">切换主题</button>
+        </div>
+    </header>
+    <div class="container">
+        <aside class="sidebar">
+            <h1>配置中心</h1>
+            <nav id="plugin-nav">
+                <ul>
+                    <li><a href="#" data-target="base-config" class="active">全局基础配置</a></li>
+                    <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
+                    <li><a href="#" data-target="image-cache-editor">多媒体缓存编辑器</a></li>
+                    <li><a href="#" data-target="vcptavern-editor">VCPTarven预设编辑</a></li>
+                    <li><a href="#" data-target="agent-files-editor">Agent 文件编辑器</a></li>
+                    <li><a href="#" data-target="tvs-files-editor">高级变量编辑器</a></li>
+                    <li><a href="#" data-target="server-log-viewer">服务器日志</a></li>
+                    <!-- 插件列表将动态生成在这里 -->
+                </ul>
+            </nav>
+        </aside>
+        <main class="content" id="config-details-container">
+            <section id="base-config-section" class="config-section active-section">
+                <h2>全局基础配置 (config.env)</h2>
+                <form id="base-config-form">
+                    <!-- 基础配置项将动态生成在这里 -->
+                    <button type="submit">保存全局配置</button>
+                </form>
+            </section>
+
+            <section id="daily-notes-manager-section" class="config-section">
+                <h2>日记管理</h2>
+                <div class="daily-notes-manager">
+                    <div class="notes-sidebar">
+                        <h3>文件夹</h3>
+                        <ul id="notes-folder-list">
+                            <!-- Folder list will be populated here by script.js -->
+                        </ul>
+                    </div>
+                    <div class="notes-content-area">
+                        <div class="notes-toolbar">
+                            <input type="search" id="search-daily-notes" placeholder="搜索日记..." aria-label="搜索日记">
+                            <button id="move-selected-notes" disabled>移动选中项到...</button>
+                            <select id="move-target-folder" disabled>
+                                <!-- Target folders for move op by script.js -->
+                            </select>
+                            <button id="delete-selected-notes-button" disabled>批量删除选中项</button>
+                            <span id="notes-action-status" class="status-message"></span>
+                        </div>
+                        <div id="notes-list-view">
+                            <!-- Notes will be displayed here as cards by script.js -->
+                        </div>
+                    </div>
+                    <div id="note-editor-area" class="note-editor-area" style="display: none;"> <!-- Initially hidden -->
+                        <h3>编辑日记</h3>
+                        <input type="hidden" id="editing-note-folder">
+                        <input type="hidden" id="editing-note-file">
+                        <div class="config-editor-toolbar">
+                             <button id="save-note-content">保存日记</button>
+                             <button id="cancel-edit-note">取消编辑</button>
+                             <span id="note-editor-status" class="status-message"></span>
+                        </div>
+                        <textarea id="note-content-editor" spellcheck="false"></textarea>
+                    </div>
+                </div>
+            </section>
+
+            <section id="image-cache-editor-section" class="config-section">
+                <h2>图像缓存编辑器</h2>
+                <iframe src="image_cache_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
+            </section>
+
+            <section id="vcptavern-editor-section" class="config-section">
+                <h2>VCPTarven预设编辑</h2>
+                <iframe src="vcptavern_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
+            </section>
+
+            <section id="agent-files-editor-section" class="config-section">
+                <h2>Agent 文件编辑器 (.txt)</h2>
+                <div class="agent-editor-controls">
+                    <label for="agent-file-select">选择 Agent 文件:</label>
+                    <select id="agent-file-select">
+                        <option value="">请选择一个文件...</option>
+                    </select>
+                    <button id="save-agent-file-button" disabled>保存 Agent 文件</button>
+                    <span id="agent-file-status" class="status-message"></span>
+                </div>
+                <textarea id="agent-file-content-editor" spellcheck="false" placeholder="选择一个 Agent 文件以编辑其内容..."></textarea>
+            </section>
+
+            <section id="tvs-files-editor-section" class="config-section">
+                <h2>高级变量编辑器 (.txt)</h2>
+                <div class="tvs-editor-controls">
+                    <label for="tvs-file-select">选择变量文件:</label>
+                    <select id="tvs-file-select">
+                        <option value="">请选择一个文件...</option>
+                    </select>
+                    <button id="save-tvs-file-button" disabled>保存变量文件</button>
+                    <span id="tvs-file-status" class="status-message"></span>
+                </div>
+                <textarea id="tvs-file-content-editor" spellcheck="false" placeholder="选择一个变量文件以编辑其内容..."></textarea>
+            </section>
+
+            <section id="server-log-viewer-section" class="config-section">
+                <h2>服务器实时日志</h2>
+                <div class="server-log-controls">
+                    <button id="copy-server-log-button">复制日志</button>
+                    <span id="server-log-path-display"></span>
+                    <span id="server-log-status" class="status-message"></span>
+                </div>
+                <pre id="server-log-content" class="log-content-area"></pre>
+            </section>
+
+            <!-- 插件配置区域将动态生成在这里 -->
+        </main>
+    </div>
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>正在加载...</p>
+    </div>
+    <div id="message-popup" class="message-popup"></div>
+
+    <script src="script.js"></script>
+    <script>
+        const themeToggleButton = document.getElementById('theme-toggle-button');
+        const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
+        const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                localStorage.setItem('theme', 'dark');
+                if(themeToggleButton) themeToggleButton.textContent = '切换亮色';
+            } else {
+                document.documentElement.setAttribute('data-theme', 'light');
+                localStorage.setItem('theme', 'light');
+                if(themeToggleButton) themeToggleButton.textContent = '切换暗色';
+            }
+            // 通知所有 iframe 主题变化
+            const iframes = document.querySelectorAll('iframe');
+            iframes.forEach(iframe => {
+                if (iframe.contentWindow) {
+                    iframe.contentWindow.postMessage({ type: 'themeChange', theme: theme }, '*');
+                }
+            });
+        }
+
+        if (currentTheme) {
+            applyTheme(currentTheme);
+        } else {
+            if (prefersDarkScheme.matches) {
+                applyTheme('dark');
+            } else {
+                applyTheme('light');
+            }
+        }
+
+        if (themeToggleButton) {
+            themeToggleButton.addEventListener('click', () => {
+                let newTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+                applyTheme(newTheme);
+            });
+        }
+
+        // 监听来自 iframe 的主题请求
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'requestTheme') {
+                const currentAppliedTheme = document.documentElement.getAttribute('data-theme') || (prefersDarkScheme.matches ? 'dark' : 'light');
+                // 根据请求来源的 iframe 回复主题
+                const sourceFrame = Array.from(document.querySelectorAll('iframe')).find(
+                    iframe => iframe.contentWindow === event.source
+                );
+                if (sourceFrame && sourceFrame.contentWindow) {
+                     sourceFrame.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
+                }
+            }
+        });
+    </script>
+</body>
+</html>

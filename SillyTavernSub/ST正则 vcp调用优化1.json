@@ -1,0 +1,17 @@
+{
+    "id": "4f33caa3-4c45-48a6-8a51-13dfbd7c380a",
+    "scriptName": "VCP调用优化1",
+    "findRegex": "/<<<\\[TOOL_REQUEST\\]>>>[\\s\\S]*?「始」/g",
+    "replaceString": "VCP-ToolUse:[",
+    "trimStrings": [],
+    "placement": [
+        2
+    ],
+    "disabled": false,
+    "markdownOnly": true,
+    "promptOnly": false,
+    "runOnEdit": true,
+    "substituteRegex": 0,
+    "minDepth": null,
+    "maxDepth": null
+}

@@ -1,0 +1,41 @@
+{
+    "name": "示例预设",
+    "description": "这是一个用于演示的预设。",
+    "rules": [
+        {
+            "id": "rule-1",
+            "name": "前置系统提示",
+            "enabled": true,
+            "type": "relative",
+            "position": "before",
+            "target": "system",
+            "content": {
+                "role": "system",
+                "content": "这是在原始系统提示词之前注入的内容。"
+            }
+        },
+        {
+            "id": "rule-2",
+            "name": "后置用户提示",
+            "enabled": true,
+            "type": "relative",
+            "position": "after",
+            "target": "last_user",
+            "content": {
+                "role": "user",
+                "content": "这是在最后一个用户消息之后注入的内容。"
+            }
+        },
+        {
+            "id": "rule-3",
+            "name": "深度注入",
+            "enabled": true,
+            "type": "depth",
+            "depth": 4,
+            "content": {
+                "role": "system",
+                "content": "这是一个深度为4的注入，会插入到倒数第4条消息之前。"
+            }
+        }
+    ]
+}
