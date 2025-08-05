@@ -1,0 +1,43 @@
+{
+  "name": "a4f-image-gen-mcp-server",
+  "version": "0.1.0",
+  "description": "A Model Context Protocol server with A4F that generates images.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bin": {
+    "a4f-image-gen-mcp-server": "./build/A4FImageGen.js"
+  },
+  "files": [
+    "build"
+  ],
+  "keywords": [
+    "mcp",
+    "a4f",
+    "qwen",
+    "imagen",
+    "images",
+    "ai"
+  ],
+  "author": "Kilo Code",
+  "scripts": {
+    "build": "node -e \"const fs = require('fs'); const path = require('path'); const buildDir = './build'; const srcFile = './A4FImageGen.js'; const targetFile = path.join(buildDir, 'A4FImageGen.js'); if (!fs.existsSync(buildDir)){ fs.mkdirSync(buildDir, { recursive: true }); } fs.copyFileSync(srcFile, targetFile); try { fs.chmodSync(targetFile, '755'); console.log('A4FImageGen build: A4FImageGen.js copied to build directory and chmodded.'); } catch(e) { console.warn('A4FImageGen build: chmod failed, possibly on Windows. File copied.'); }\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/A4FImageGen.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.7.8",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.24",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
