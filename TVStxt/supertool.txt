@@ -20,9 +20,15 @@ resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「
 2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
 tool_name:「始」DoubaoGen「末」,
 prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
-resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
+resolution:「始」(必需) 图片分辨率，格式为"宽x高"。理论上支持2048以内内任意分辨率组合。「末」
 
-3.SunoGen 大名鼎鼎的Suno音乐生成器。
+3.ComfyUIGen 专业级AI图像生成器
+tool_name:「始」ComfyUIGen「末」,
+prompt:「始」(必需) 图像生成的正面提示词，描述想要生成的图像内容、风格、细节等。「末」,
+
+
+
+4.SunoGen 大名鼎鼎的Suno音乐生成器。
 tool_name:「始」SunoGen「末」,
 command:「始」generate_song「末」,
 歌词模式
