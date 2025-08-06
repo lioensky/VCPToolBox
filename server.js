@@ -9,6 +9,121 @@ const path = require('path');
 const { Writable } = require('stream');
 
 const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog'); // Moved DEBUG_LOG_DIR definition higher
+
+/**
+ * 将多模态消息转换为纯文本格式并重试请求
+ * 保留完整对话历史，遵循OpenAI消息标准
+ * @param {Object} originalBody - 原始请求体
+ * @param {string} apiUrl - API URL
+ * @param {string} apiKey - API密钥
+ * @param {Object} headers - 请求头
+ * @param {string} LOG_DIR - 日志目录
+ * @param {boolean} DEBUG_MODE - 调试模式
+ * @returns {Promise<Object>} - 包含响应、文本和缓冲区的对象
+ */
+async function convertMultimodalAndRetryRequest(originalBody, apiUrl, apiKey, headers, LOG_DIR, DEBUG_MODE) {
+    if (DEBUG_MODE) console.log('[convertMultimodalAndRetry] 开始转换多模态消息并重试请求');
+    try {
+        // 深度复制原始请求体
+        const newBody = JSON.parse(JSON.stringify(originalBody));
+        // 转换每条消息，保留完整对话历史
+        newBody.messages = await Promise.all(newBody.messages.map(async (msg) => {
+            const newMsg = JSON.parse(JSON.stringify(msg)); // 复制消息
+            // 只处理多模态内容（数组格式）
+            if (Array.isArray(msg.content)) {
+                let textContent = "";
+                // 遍历内容数组，提取各种媒体类型
+                for (const part of msg.content) {
+                    if (part.type === 'text' && part.text) {
+                        // 添加文本内容
+                        textContent += part.text;
+                    } else if (part.type === 'image_url' && part.image_url && part.image_url.url) {
+                        // 添加图片引用
+                        textContent += `\n[图片: ${part.image_url.url}]`;
+                    } else if (part.type === 'image_data' && part.image_data && part.image_data.data) {
+                        // 处理base64编码的图片数据
+                        const mimeType = part.image_data.mimeType || 'image/jpeg';
+                        // 只显示base64数据的前50个字符，避免日志过长
+                        const dataPreview = part.image_data.data.length > 50 
+                            ? `${part.image_data.data.substring(0, 50)}...` 
+                            : part.image_data.data;
+                        textContent += `\n[图片: base64:${mimeType},${dataPreview}]`;
+                    } else if (part.type === 'file_url' && part.file_url && part.file_url.url) {
+                        // 处理文件引用
+                        const fileName = part.file_url.url.split('/').pop() || '未知文件';
+                        textContent += `\n[文件: ${fileName}]`;
+                    } else if (part.type === 'audio_url' && part.audio_url && part.audio_url.url) {
+                        // 处理音频引用
+                        textContent += `\n[音频: ${part.audio_url.url}]`;
+                    } else if (part.type === 'video_url' && part.video_url && part.video_url.url) {
+                        // 处理视频引用
+                        textContent += `\n[视频: ${part.video_url.url}]`;
+                    } else {
+                        // 处理未知类型，避免信息丢失
+                        textContent += `\n[未知媒体类型: ${JSON.stringify(part)}]`;
+                    }
+                }
+                // 更新消息内容为纯文本
+                newMsg.content = textContent.trim();
+            }
+            return newMsg;
+        }));
+        // 记录转换后的请求
+        if (DEBUG_MODE) console.log('[convertMultimodalAndRetry] 转换后的请求体:', JSON.stringify(newBody, null, 2));
+        if (LOG_DIR) {
+            try {
+                // 确保LOG_DIR存在
+                const fs = require('fs').promises;
+                const path = require('path');
+                await fs.mkdir(LOG_DIR, { recursive: true });
+                // 记录转换后的请求
+                const now = new Date();
+                const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}`;
+                const logFilePath = path.join(LOG_DIR, `convertMultimodal-${timestamp}.log`);
+                const logContent = `[${now.toLocaleString()}] 转换后发送给Web LLM的请求\n${JSON.stringify(newBody, null, 2)}\n\n`;
+                await fs.appendFile(logFilePath, logContent, 'utf8');
+            } catch (logError) {
+                console.error('[convertMultimodalAndRetry] 写入日志失败:', logError);
+            }
+        }
+        // 重试请求
+        const { default: fetch } = await import('node-fetch');
+        const retryResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json', 
+                'Authorization': `Bearer ${apiKey}`,
+                ...(headers['user-agent'] && { 'User-Agent': headers['user-agent'] }),
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify(newBody)
+        });
+        const retryArrayBuffer = await retryResponse.arrayBuffer();
+        const retryBuffer = Buffer.from(retryArrayBuffer);
+        const retryText = retryBuffer.toString('utf-8');
+        // 记录重试响应
+        if (LOG_DIR) {
+            try {
+                const now = new Date();
+                const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}`;
+                const logFilePath = path.join(LOG_DIR, `convertMultimodal-${timestamp}.log`);
+                const logContent = `[${now.toLocaleString()}] Web LLM返回的重试响应\n${retryText}\n\n`;
+                await fs.appendFile(logFilePath, logContent, 'utf8');
+            } catch (logError) {
+                console.error('[convertMultimodalAndRetry] 写入日志失败:', logError);
+            }
+        }
+        if (DEBUG_MODE) console.log('[convertMultimodalAndRetry] 重试请求完成');
+        return {
+            response: retryResponse,
+            text: retryText,
+            buffer: retryBuffer
+        };
+    } catch (error) {
+        if (DEBUG_MODE) console.error('[convertMultimodalAndRetry] 转换多模态消息和重试过程中出错:', error);
+        throw error;
+    }
+}
 let currentServerLogPath = '';
 let serverLogWriteStream = null;
 
@@ -888,18 +1003,40 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
         // If VCP info needs to be shown, the response MUST be streamed to the client.
         const willStreamResponse = isOriginalRequestStreaming; // Only stream if the original request was a stream.
 
-        let firstAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-                ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                'Accept': willStreamResponse ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
-            },
-            // Force stream to be true if we are showing VCP info.
-            body: JSON.stringify({ ...originalBody, stream: willStreamResponse }),
-            signal: abortController.signal, // 传递中止信号
-        });
+        // 尝试发送请求到API
+        let firstAiAPIResponse;
+        try {
+            firstAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                    ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                    'Accept': willStreamResponse ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
+                },
+                // Force stream to be true if we are showing VCP info.
+                body: JSON.stringify({ ...originalBody, stream: willStreamResponse }),
+                signal: abortController.signal, // 传递中止信号
+            });
+            
+            // 检查是否返回422错误（Unprocessable Entity），通常表示请求格式问题
+            if (firstAiAPIResponse.status === 422) {
+                if (DEBUG_MODE) console.log('[Server] 收到422错误，尝试将多模态消息转换为纯文本格式后重试');
+                // 调用转换函数处理多模态消息并重试
+                const retryResult = await convertMultimodalAndRetryRequest(
+                    originalBody, 
+                    apiUrl, 
+                    apiKey, 
+                    req.headers, 
+                    DEBUG_LOG_DIR, 
+                    DEBUG_MODE
+                );
+                firstAiAPIResponse = retryResult.response;
+            }
+        } catch (error) {
+            console.error('[Server] 发送请求到API时出错:', error);
+            throw error; // 重新抛出错误，让外层catch处理
+        }
 
         const isUpstreamStreaming = willStreamResponse && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
         
