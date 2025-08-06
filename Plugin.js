@@ -4,6 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const schedule = require('node-schedule');
 const dotenv = require('dotenv'); // Ensures dotenv is available
+const FileFetcherServer = require('./FileFetcherServer.js');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -487,7 +488,7 @@ class PluginManager {
         return this.serviceModules.get(name)?.module;
     }
 
-    async processToolCall(toolName, toolArgs) {
+    async processToolCall(toolName, toolArgs, requestIp = null) {
         const plugin = this.plugins.get(toolName);
         if (!plugin) {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
@@ -552,7 +553,7 @@ class PluginManager {
                 const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0, 100) + '...' : executionParam) : null;
                 if (this.debugMode) console.log(`[PluginManager] Calling local executePlugin for: ${toolName} with prepared param:`, logParam);
 
-                const pluginOutput = await this.executePlugin(toolName, executionParam); // Returns {status, result/error}
+                const pluginOutput = await this.executePlugin(toolName, executionParam, requestIp); // Returns {status, result/error}
 
                 if (pluginOutput.status === "success") {
                     if (typeof pluginOutput.result === 'string') {
@@ -569,7 +570,34 @@ class PluginManager {
                         resultFromPlugin = pluginOutput.result;
                     }
                 } else {
-                    throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
+                    // 检查是否是文件未找到的特定错误
+                    if (pluginOutput.code === 'FILE_NOT_FOUND_LOCALLY' && pluginOutput.fileUrl && requestIp) {
+                        if (this.debugMode) console.log(`[PluginManager] Plugin '${toolName}' reported local file not found. Attempting to fetch via FileFetcherServer...`);
+                        
+                        try {
+                            const { buffer, mimeType } = await FileFetcherServer.fetchFile(pluginOutput.fileUrl, requestIp);
+                            const base64Data = buffer.toString('base64');
+                            const dataUri = `data:${mimeType};base64,${base64Data}`;
+                            
+                            if (this.debugMode) console.log(`[PluginManager] Successfully fetched file as data URI. Retrying plugin call...`);
+                            
+                            // 修改参数并重试
+                            const newToolArgs = { ...toolArgs };
+                            delete newToolArgs.image_url;
+                            newToolArgs.image_base64 = dataUri;
+                            
+                            // 直接返回重试调用的结果
+                            return await this.processToolCall(toolName, newToolArgs, requestIp);
+
+                        } catch (fetchError) {
+                            throw new Error(JSON.stringify({
+                                plugin_error: `Plugin reported local file not found, but remote fetch failed: ${fetchError.message}`,
+                                original_plugin_error: pluginOutput.error
+                            }));
+                        }
+                    } else {
+                        throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
+                    }
                 }
             }
 
@@ -602,7 +630,7 @@ class PluginManager {
         }
     }
 
-    async executePlugin(pluginName, inputData) {
+    async executePlugin(pluginName, inputData, requestIp = null) {
         const plugin = this.plugins.get(pluginName);
         if (!plugin) {
             // This case should ideally be caught by processToolCall before calling executePlugin
@@ -630,6 +658,10 @@ class PluginManager {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
         } else {
             if (this.debugMode) console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
+        }
+        // 将 requestIp 添加到环境变量
+        if (requestIp) {
+            additionalEnv.VCP_REQUEST_IP = requestIp;
         }
         if (process.env.PORT) {
             additionalEnv.SERVER_PORT = process.env.PORT;
