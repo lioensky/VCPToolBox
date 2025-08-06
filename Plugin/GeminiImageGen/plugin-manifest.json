@@ -1,0 +1,35 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "GeminiImageGen",
+  "displayName": "Gemini 图像生成与编辑",
+  "version": "1.0.0",
+  "description": "使用 Google Gemini Flash Preview 模型进行高级的图像生成和编辑。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node GeminiImageGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "GeminiImageKey": "string",
+    "GeminiImageProxy": "string",
+    "DIST_IMAGE_SERVERS": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GeminiGenerateImage",
+        "description": "调用此工具通过 GeminiImage 模型生成一张全新的图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GeminiImageGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」(必需) 请生成图片，用于图片生成的详细英文提示词。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GeminiImageGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」A 3d rendered image of a pig with wings and a top hat flying over a happy futuristic scifi city with lots of greenery「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "GeminiEditImage",
+        "description": "调用此工具通过 GeminiImage 模型编辑一张现有的图片。请在您的回复中，使用以下精确格式来请求图片编辑，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GeminiImageGen「末」,\ncommand:「始」edit「末」,\nprompt:「始」(必需) 请编辑图片，用于描述如何编辑图片的详细英文指令。「末」,\nimage_url:「始」(必需) 要编辑的图片的URL。可以是 http/https, 也可以是本地文件的URL类似file://C: 「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GeminiImageGen「末」,\ncommand:「始」edit「末」,\nprompt:「始」This is a picture of me. Can you add a llama next to me?「末」,\nimage_url:「始」https://example.com/my-photo.png「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
