@@ -112,6 +112,7 @@ const crypto = require('crypto');
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
+const FileFetcherServer = require('./FileFetcherServer.js'); // 引入新的 FileFetcherServer 模块
 const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信息处理器
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
@@ -188,6 +189,26 @@ app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请�
 app.use(express.json({ limit: '300mb' }));
 app.use(express.urlencoded({ limit: '300mb', extended: true }));
 app.use(express.text({ limit: '300mb', type: 'text/plain' })); // 新增：用于处理纯文本请求体
+
+// 新增：IP追踪中间件
+app.use((req, res, next) => {
+    if (req.method === 'POST') {
+        let clientIp = req.ip;
+        // 标准化IPv6映射的IPv4地址 (e.g., from '::ffff:127.0.0.1' to '127.0.0.1')
+        if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+            clientIp = clientIp.substr(7);
+        }
+        
+        // 始终记录收到的POST请求IP
+        console.log(`[IP Tracker] Received POST request from IP: ${clientIp}`);
+
+        const serverName = webSocketServer.findServerByIp(clientIp);
+        if (serverName) {
+            console.log(`[IP Tracker] SUCCESS: Post request is from known Distributed Server: '${serverName}' (IP: ${clientIp})`);
+        }
+    }
+    next();
+});
 
 // 引入并使用特殊模型路由
 const specialModelRouter = require('./routes/specialModelRouter');
@@ -769,6 +790,12 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
     const { default: fetch } = await import('node-fetch');
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP; // Combine env var and route-specific flag
     
+    // 标准化客户端IP地址
+    let clientIp = req.ip;
+    if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+        clientIp = clientIp.substr(7);
+    }
+
     const id = req.body.requestId || req.body.messageId; // 兼容 requestId 和 messageId
     const abortController = new AbortController();
 
@@ -1081,7 +1108,7 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                     if (pluginManager.getPlugin(toolCall.name)) {
                         try {
                             if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
                             await writeDebugLog(`VCP-Stream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                             
                             // Always create a text version for logging/VCP output
@@ -1308,7 +1335,8 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
                                 if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args);
+                                // 将标准化的 clientIp 传递给 processToolCall
+                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
                                 await writeDebugLog(`VCP-NonStream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                                 
                                 // Always create a text version for logging/VCP output
@@ -1865,7 +1893,10 @@ server = app.listen(port, async () => { // Assign to server variable
     pluginManager.setWebSocketServer(webSocketServer);
     webSocketServer.setPluginManager(pluginManager);
     
-    if (DEBUG_MODE) console.log('[Server] WebSocketServer and PluginManager have been interconnected.');
+    // 初始化 FileFetcherServer
+    FileFetcherServer.initialize(webSocketServer);
+
+    if (DEBUG_MODE) console.log('[Server] WebSocketServer, PluginManager, and FileFetcherServer have been interconnected.');
 
     // The VCPLog plugin's attachWebSocketServer is no longer needed here as WebSocketServer handles it.
     // const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
