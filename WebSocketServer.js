@@ -15,6 +15,7 @@ const distributedServers = new Map(); // 分布式服务器客户端
 const chromeControlClients = new Map(); // ChromeControl 客户端
 const chromeObserverClients = new Map(); // 新增：ChromeObserver 客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
+const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 
 function generateClientId() {
     // 用于生成客户端ID和请求ID
@@ -99,7 +100,7 @@ function initialize(httpServer, config) {
                 if (clientType === 'DistributedServer') {
                     const serverId = `dist-${clientId}`;
                     ws.serverId = serverId;
-                    distributedServers.set(serverId, { ws, tools: [] });
+                    distributedServers.set(serverId, { ws, tools: [], ips: {} }); // 初始化ips字段
                     writeLog(`Distributed Server ${serverId} authenticated and connected.`);
                 } else if (clientType === 'ChromeObserver') {
                     console.log(`[WebSocketServer FORCE LOG] A client with type 'ChromeObserver' (ID: ${clientId}) has connected.`); // 强制日志
@@ -161,8 +162,8 @@ function initialize(httpServer, config) {
                             }
                         };
                         if (parsedMessage.data.status === 'success') {
-                            // ChromeControl.js 期望一个 `result` 对象
-                            resultForClient.data.result = { message: parsedMessage.data.message };
+                            // 直接透传 message 字段，保持与 content_script 的一致性
+                            resultForClient.data.message = parsedMessage.data.message;
                         } else {
                             resultForClient.data.error = parsedMessage.data.error;
                         }
@@ -205,12 +206,11 @@ function initialize(httpServer, config) {
         ws.on('close', () => {
             if (ws.clientType === 'DistributedServer') {
                 if (pluginManager) {
-                    if (pluginManager) {
-                        pluginManager.unregisterAllDistributedTools(ws.serverId);
-                    }
+                    pluginManager.unregisterAllDistributedTools(ws.serverId);
                 }
                 distributedServers.delete(ws.serverId);
-                writeLog(`Distributed Server ${ws.serverId} disconnected. Its tools have been unregistered.`);
+                distributedServerIPs.delete(ws.serverId); // 新增：移除IP信息
+                writeLog(`Distributed Server ${ws.serverId} disconnected. Its tools and IP info have been unregistered.`);
             } else if (ws.clientType === 'ChromeObserver') {
               chromeObserverClients.delete(ws.clientId);
               writeLog(`ChromeObserver client ${ws.clientId} disconnected and removed.`);
@@ -309,12 +309,32 @@ function handleDistributedServerMessage(serverId, message) {
         case 'register_tools':
             const serverEntry = distributedServers.get(serverId);
             if (serverEntry && message.data && Array.isArray(message.data.tools)) {
-                pluginManager.registerDistributedTools(serverId, message.data.tools);
-                serverEntry.tools = message.data.tools.map(t => t.name);
+                // 过滤掉内部工具，不让它们显示在插件列表中
+                const externalTools = message.data.tools.filter(t => t.name !== 'internal_request_file');
+                pluginManager.registerDistributedTools(serverId, externalTools);
+                serverEntry.tools = externalTools.map(t => t.name);
                 distributedServers.set(serverId, serverEntry);
-                writeLog(`Registered ${message.data.tools.length} tools from server ${serverId}.`);
+                writeLog(`Registered ${externalTools.length} external tools from server ${serverId}.`);
             }
             break;
+       case 'report_ip':
+           const serverInfo = distributedServers.get(serverId);
+           if (serverInfo && message.data) {
+               const ipData = {
+                   localIPs: message.data.localIPs || [],
+                   publicIP: message.data.publicIP || null,
+                   serverName: message.data.serverName || serverId
+               };
+               distributedServerIPs.set(serverId, ipData);
+               
+               // 将 serverName 也存储在主连接对象中，以便通过名字查找
+               serverInfo.serverName = ipData.serverName;
+               distributedServers.set(serverId, serverInfo);
+
+               // 强制日志记录，无论debug模式如何
+               console.log(`[IP Tracker] Received IP report from Distributed Server '${ipData.serverName}': Local IPs: [${ipData.localIPs.join(', ')}], Public IP: [${ipData.publicIP || 'N/A'}]`);
+           }
+           break;
         case 'tool_result':
             const pending = pendingToolRequests.get(message.data.requestId);
             if (pending) {
@@ -332,10 +352,21 @@ function handleDistributedServerMessage(serverId, message) {
     }
 }
 
-async function executeDistributedTool(serverId, toolName, toolArgs, timeout = 60000) {
-    const server = distributedServers.get(serverId);
+async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout = 60000) {
+    let server = distributedServers.get(serverIdOrName); // 优先尝试通过 ID 查找
+
+    // 如果通过 ID 找不到，则遍历并尝试通过 name 查找
+    if (!server) {
+        for (const srv of distributedServers.values()) {
+            if (srv.serverName === serverIdOrName) {
+                server = srv;
+                break;
+            }
+        }
+    }
+
     if (!server || server.ws.readyState !== WebSocket.OPEN) {
-        throw new Error(`Distributed server ${serverId} is not connected or ready.`);
+        throw new Error(`Distributed server ${serverIdOrName} is not connected or ready.`);
     }
 
     const requestId = generateClientId();
@@ -351,16 +382,24 @@ async function executeDistributedTool(serverId, toolName, toolArgs, timeout = 60
     return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
             pendingToolRequests.delete(requestId);
-            reject(new Error(`Request to distributed tool ${toolName} on server ${serverId} timed out after ${timeout / 1000}s.`));
+            reject(new Error(`Request to distributed tool ${toolName} on server ${serverIdOrName} timed out after ${timeout / 1000}s.`));
         }, timeout);
 
         pendingToolRequests.set(requestId, { resolve, reject, timeout: timeoutId });
 
         server.ws.send(JSON.stringify(payload));
-        writeLog(`Sent tool execution request ${requestId} for ${toolName} to server ${serverId}.`);
+        writeLog(`Sent tool execution request ${requestId} for ${toolName} to server ${serverIdOrName}.`);
     });
 }
 
+function findServerByIp(ip) {
+   for (const [serverId, ipInfo] of distributedServerIPs.entries()) {
+       if (ipInfo.publicIP === ip || (ipInfo.localIPs && ipInfo.localIPs.includes(ip))) {
+           return ipInfo.serverName || serverId;
+       }
+   }
+   return null;
+}
 
 module.exports = {
     initialize,
@@ -368,5 +407,6 @@ module.exports = {
     broadcast,
     sendMessageToClient,
     executeDistributedTool,
+    findServerByIp,
     shutdown
 };
