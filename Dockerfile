@@ -49,6 +49,27 @@ RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/py
 # 复制所有源代码
 COPY . .
 
+# 查找所有插件目录下的 requirements.txt 并安装依赖
+# 使用 find 命令查找所有名为 requirements.txt 的文件
+# 然后使用 for 循环遍历这些文件并用 pip 安装
+RUN find Plugin -name requirements.txt -exec sh -c ' \
+    for req_file do \
+        echo ">>> Installing Python dependencies from $req_file"; \
+        pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r "$req_file" || \
+            { echo "!!! Failed to install Python dependencies from $req_file"; exit 1; }; \
+    done' sh {} +
+
+# 查找所有插件目录下的 package.json 并安装 npm 依赖
+# 使用 find 命令查找所有名为 package.json 的文件
+# 然后使用 for 循环遍历这些文件，并在其所在目录运行 npm install
+RUN find Plugin -name package.json -exec sh -c ' \
+    for pkg_file do \
+        plugin_dir=$(dirname "$pkg_file"); \
+        echo ">>> Installing Node.js dependencies in $plugin_dir"; \
+        (cd "$plugin_dir" && npm install --registry=https://registry.npmmirror.com --legacy-peer-deps) || \
+            { echo "!!! Failed to install Node.js dependencies in $plugin_dir"; exit 1; }; \
+    done' sh {} +
+
 # =================================================================
 # Stage 2: Production Stage - 最终的轻量运行环境
 # =================================================================
