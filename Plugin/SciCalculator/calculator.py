@@ -63,8 +63,8 @@ def preprocess_expression_string(expr_str: str) -> str:
     expr_str = expr_str.replace('^', '**')
     return expr_str
 
-def compute_integral(original_expr_str: str, var_name_str: str, 
-                     lower_limit_in: Any, upper_limit_in: Any) -> str:
+def compute_integral(original_expr_str: str, var_name_str: str,
+                     lower_limit_in: Any, upper_limit_in: Any) -> Any:
     try:
         var_symbol = Symbol(var_name_str)
         sympy_integration_locals = base_sympy_locals.copy()
@@ -183,22 +183,23 @@ def compute_integral(original_expr_str: str, var_name_str: str,
                     numeric_val, num_error = quad(f_for_quad, q_lower, q_upper, limit=150, epsabs=1.49e-07, epsrel=1.49e-07)
                     if math.isnan(numeric_val):
                         return f"{numerical_attempt_message_prefix}Numerical integration resulted in NaN."
-                    if abs(num_error) > 0.01 * abs(numeric_val) and abs(num_error) > 1e-4 : 
+                    if abs(num_error) > 0.01 * abs(numeric_val) and abs(num_error) > 1e-4:
+                        # Return the number, but also include a warning string.
+                        # The calling function will need to handle this tuple.
+                        # For now, let's just return the formatted string to avoid breaking things.
                         return f"{numerical_attempt_message_prefix}Numerical result: {numeric_val:.7g} (Warning: Potentially large error: {num_error:.2g})"
-                    return f"{numeric_val:.10g}"
+                    return float(numeric_val)
                 except Exception as quad_e:
                     return f"{numerical_attempt_message_prefix}Numerical integration failed: {type(quad_e).__name__} - {str(quad_e)}"
-            else: 
-                if evaluated_sympy_result.is_extended_real: # Use is_extended_real for Sympy numbers
-                    # Ensure it's finite before converting to float
-                    if not evaluated_sympy_result.is_finite: # Should have been caught by is_eval_problematic
-                         return f"Symbolic result: $${latex(result_sympy)}$$ evaluated to non-finite $${latex(evaluated_sympy_result)}$$"
-                    return f"{float(evaluated_sympy_result):.10g}" 
-                elif evaluated_sympy_result.is_complex:
-                     # Check if it's finite complex
-                    if not evaluated_sympy_result.is_finite:  # Should have been caught by is_eval_problematic
-                         return f"Symbolic result: $${latex(result_sympy)}$$ evaluated to non-finite complex $${latex(evaluated_sympy_result)}$$"
-                    return f"$${latex(evaluated_sympy_result)}$$" 
+            else:
+                if evaluated_sympy_result.is_extended_real and evaluated_sympy_result.is_finite:
+                    return float(evaluated_sympy_result)
+                elif evaluated_sympy_result.is_extended_real: # Non-finite real
+                    return f"Symbolic result: $${latex(result_sympy)}$$ evaluated to non-finite $${latex(evaluated_sympy_result)}$$"
+                elif evaluated_sympy_result.is_complex and evaluated_sympy_result.is_finite:
+                    return f"$${latex(evaluated_sympy_result)}$$" # Return complex as string
+                elif evaluated_sympy_result.is_complex: # Non-finite complex
+                    return f"Symbolic result: $${latex(result_sympy)}$$ evaluated to non-finite complex $${latex(evaluated_sympy_result)}$$"
                 else:
                     return f"Symbolic result: $${latex(result_sympy)}$$ (evaluated to $${latex(evaluated_sympy_result)}$$, but type is unexpected)"
 
