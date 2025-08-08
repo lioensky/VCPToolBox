@@ -15,6 +15,7 @@
   },
   "configSchema": {
     "Image_Key": "string",
+    "File_Key": "string",
     "DebugMode": "boolean"
   },
   "capabilities": {
@@ -22,6 +23,10 @@
     {
       "serviceName": "ProtectedImageHosting",
       "description": "通过 /pw=[Image_Key]/images/... 路径提供图片服务。"
+    },
+    {
+      "serviceName": "ProtectedFileHosting",
+      "description": "通过 /pw=[File_Key]/files/... 路径提供文件服务。"
     }
   ]
 }
