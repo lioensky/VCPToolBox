@@ -172,8 +172,8 @@ config.local.env
 *.local.env
 
 # 本地Docker配置文件 (避免合并冲突)
-# Dockerfile
-# docker-compose.yml
+Dockerfile
+docker-compose.yml
 
 # IDE/Editor history files
 .history
