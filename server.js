@@ -612,51 +612,6 @@ async function replaceCommonVariables(text, model, role) {
     return processedText;
 }
 
-// 新增：Grok-4兼容性函数，用于过滤掉特殊的"reasoning_content"数据块
-function filterGrokReasoningStream(chunkString, model, debugMode) {
-    // 如果不是grok模型，直接返回原始数据块
-    if (!model || !model.includes('grok')) {
-        return chunkString;
-    }
-
-    const lines = chunkString.split('\n');
-    const filteredLines = [];
-    let didFilter = false;
-
-    for (const line of lines) {
-        // SSE协议要求保留空行作为消息分隔符
-        if (line.trim() === '') {
-            filteredLines.push(line);
-            continue;
-        }
-
-        if (line.startsWith('data: ')) {
-            const jsonData = line.substring(5).trim();
-            // 确保JSON数据存在且不是流结束标志
-            if (jsonData && jsonData !== '[DONE]') {
-                try {
-                    const parsedData = JSON.parse(jsonData);
-                    // 核心逻辑：检查是否存在 reasoning_content 字段
-                    if (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].delta && parsedData.choices[0].delta.hasOwnProperty('reasoning_content')) {
-                        didFilter = true;
-                        continue; // 如果存在，则跳过此行，不将其添加到结果中
-                    }
-                } catch (e) {
-                    // 如果解析失败，则不是我们关心的JSON结构，直接通过
-                }
-            }
-        }
-        // 将未被过滤的行添加到结果数组
-        filteredLines.push(line);
-    }
-
-    // 如果在调试模式下且确实执行了过滤，则打印日志
-    if (didFilter && debugMode) {
-        console.log(`[GrokCompat] Filtered out 'reasoning_content' chunk from stream.`);
-    }
-
-    return filteredLines.join('\n');
-}
 
 app.get('/v1/models', async (req, res) => {
     const { default: fetch } = await import('node-fetch');
@@ -933,10 +888,62 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                     let collectedContentThisTurn = ""; // Collects textual content from delta
                     let rawResponseDataThisTurn = ""; // Collects all raw chunks for diary
 
+                    const isGpt5Mini = originalBody.model === 'GPT-5-mini';
+                    const thinkingRegex = /^Thinking\.\.\.( \(\d+s elapsed\))?$/;
+                    let sseLineBuffer = ""; // Buffer for incomplete SSE lines
+
                     aiResponse.body.on('data', (chunk) => {
                         const chunkString = chunk.toString('utf-8');
                         rawResponseDataThisTurn += chunkString;
+                        sseLineBuffer += chunkString;
 
+                        let lines = sseLineBuffer.split('\n');
+                        // Keep the last part in buffer if it's not a complete line
+                        sseLineBuffer = lines.pop();
+
+                        const filteredLines = [];
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const jsonData = line.substring(5).trim();
+                                if (jsonData && jsonData !== '[DONE]') {
+                                    try {
+                                        const parsedData = JSON.parse(jsonData);
+                                        const content = parsedData.choices?.[0]?.delta?.content;
+                                        // Core filtering logic
+                                        if (isGpt5Mini && content && thinkingRegex.test(content)) {
+                                            if (DEBUG_MODE) {
+                                                console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk: ${content}`);
+                                            }
+                                            continue; // Skip this line
+                                        }
+                                    } catch (e) {
+                                        // Not a JSON we care about, pass through
+                                    }
+                                }
+                            }
+                            filteredLines.push(line);
+                        }
+                        
+                        if (filteredLines.length > 0) {
+                            const filteredChunkString = filteredLines.join('\n') + '\n'; // Re-add newline for valid SSE stream
+                            const modifiedChunk = Buffer.from(filteredChunkString, 'utf-8');
+                            processChunk(modifiedChunk);
+                        }
+                    });
+
+                    // Process any remaining data in the buffer on stream end
+                    aiResponse.body.on('end', () => {
+                        if (sseLineBuffer.trim()) {
+                             const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
+                             processChunk(modifiedChunk);
+                        }
+                        // Signal end of processing for this stream helper
+                        finalizeStream();
+                    });
+
+
+                    function processChunk(chunk) {
+                        const chunkString = chunk.toString('utf-8');
                         let isChunkAnEndOfStreamSignal = false;
                         if (chunkString.includes("data: [DONE]")) {
                             isChunkAnEndOfStreamSignal = true;
@@ -968,11 +975,10 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                                 // do not forward it directly. The final [DONE] will be sent by the server's main loop.
                                 // Its content will still be collected by the sseBuffer logic below.
                             } else {
-                                // 使用新的过滤函数处理grok模型的特殊字段
-                                const filteredChunk = filterGrokReasoningStream(chunkString, originalBody.model, DEBUG_MODE);
+                                // (原 filterGrokReasoningStream 调用已移除)
                                 // 只有在过滤后仍有内容时才发送，避免发送空的数据块
-                                if (filteredChunk) {
-                                    res.write(filteredChunk);
+                                if (chunkString) {
+                                    res.write(chunkString);
                                 }
                             }
                         }
@@ -993,9 +999,9 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                                 }
                             }
                         }
-                    });
+                    }
 
-                    aiResponse.body.on('end', () => {
+                    function finalizeStream() {
                         // Process remaining sseBuffer for content
                         if (sseBuffer.trim().length > 0) {
                             const finalLines = sseBuffer.split('\n');
@@ -1013,7 +1019,7 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                             }
                         }
                         resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
-                    });
+                    }
                     aiResponse.body.on('error', (streamError) => {
                         console.error("Error reading AI response stream in loop:", streamError);
                         if (!res.writableEnded) {

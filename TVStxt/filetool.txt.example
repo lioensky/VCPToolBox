@@ -56,7 +56,13 @@ command:「始」ApplyDiff「末」,
 filePath:「始」/path/to/your/file.txt「末」,
 searchString:「始」旧内容「末」,
 replaceString:「始」新内容「末」
-14.构建批量指令——FileOperator支持批量指令例如：
+14.阅读网络文件
+command:「始」WebReadFile「末」,
+url:「始」https://example.com/sample.jpg「末」
+15.下载文件
+command:「始」DownloadFile「末」,
+url:「始」http://example.com/archive.zip「末」
+16.构建批量指令——FileOperator支持批量指令例如：
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」FileOperator「末」,
 command1:「始」RenameFile「末」,
@@ -70,3 +76,9 @@ filePath3:「始」/path/to/existing_file.txt「末」,
 content3:「始」这是覆盖后的新内容。「末」
 <<<[END_TOOL_REQUEST]>>>
 通过这种方式可以构建多组指令。
+
+17.创建Canvas协同编辑器
+command:「始」CreateCanvas「末」,
+fileName:「始」new_canvas.js「末」,
+content:「始」console.log('Hello, Canvas!');「末」
+这是一个非常强大的指令，它将创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合向用户展示代码或者大型文案，并且邀请用户一同编辑它。
