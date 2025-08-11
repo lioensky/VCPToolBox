@@ -4,7 +4,8 @@
       "Bash(git rm:*)",
       "Bash(git checkout:*)",
       "Bash(git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch -r .history/\" --prune-empty --tag-name-filter cat -- --all)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }
