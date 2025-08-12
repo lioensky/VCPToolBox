@@ -22,23 +22,14 @@ async function main() {
 
             const query = data.query;
             const topic = data.topic || 'general'; // Default to 'general'
-            const searchDepth = data.search_depth || 'basic'; // Default to 'basic'
+            const searchDepth = 'advanced'; // Default to 'advanced'
             let maxResults = data.max_results || 10; // Default to 10
+            const includeRawContent = data.include_raw_content;
+            const startDate = data.start_date;
+            const endDate = data.end_date;
 
             if (!query) {
                 throw new Error("Missing required argument: query");
-            }
-
-            // Validate topic (optional, Tavily API might handle invalid ones)
-            // const validTopics = ['general', 'news', 'finance', 'research', 'code'];
-            // if (!validTopics.includes(topic)) {
-            //     topic = 'general';
-            // }
-
-            // Validate search_depth
-            const validDepths = ['basic', 'advanced'];
-            if (!validDepths.includes(searchDepth)) {
-                searchDepth = 'basic';
             }
 
             // Validate max_results
@@ -58,14 +49,28 @@ async function main() {
 
             const tvly = tavily({ apiKey });
 
-            const response = await tvly.search(query, {
+            const searchOptions = {
                 search_depth: searchDepth,
                 topic: topic,
                 max_results: maxResults,
                 include_answer: false, // Usually just want results for AI processing
-                include_raw_content: false,
-                include_images: false
-            });
+                include_images: true,
+                include_image_descriptions: true,
+            };
+
+            if (includeRawContent === "text" || includeRawContent === "markdown") {
+                searchOptions.include_raw_content = includeRawContent;
+            }
+
+            if (startDate) {
+                searchOptions.start_date = startDate;
+            }
+
+            if (endDate) {
+                searchOptions.end_date = endDate;
+            }
+
+            const response = await tvly.search(query, searchOptions);
 
             // Tavily Node client returns a JSON-serializable object
             // Ensure the result is a string for output
