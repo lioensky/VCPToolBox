@@ -3,12 +3,12 @@ services:
     build: .
     container_name: vcptoolbox
     ports:
-      - "6006:6006"
+      - "6005:6005"
     environment:
       TZ: Asia/Shanghai
     volumes:
       #1 将本地的 config.env 映射到容器中
-      - ./config.docker.env:/usr/src/app/config.env
+      #1- ./config.env:/usr/src/app/config.env
       # 将插件的配置文件和数据目录映射进去
       # 注意: 如果插件的 config.env 文件不存在于宿主机，Docker 卷映射可能会创建目录而不是文件。
       # 确保这些文件在启动容器前在宿主机上存在，或者调整为映射整个插件目录（如果插件设计允许）。

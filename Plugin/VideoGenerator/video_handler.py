@@ -11,6 +11,14 @@ from PIL import Image
 from dotenv import load_dotenv
 from datetime import datetime
 import traceback
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+# --- 自定义异常 ---
+class LocalFileNotFoundError(Exception):
+    def __init__(self, message, file_url):
+        super().__init__(message)
+        self.file_url = file_url
 
 # --- 配置和常量 ---
 LOG_FILE = "VideoGenHistory.log"
@@ -90,12 +98,66 @@ def image_to_webp_base64(img):
     base64_encoded = base64.b64encode(img_bytes).decode('utf-8')
     return f"data:image/webp;base64,{base64_encoded}"
 
+def process_image_from_base64(base64_str):
+    try:
+        log_event("info", f"Processing image from base64 string (length: {len(base64_str)})")
+        # Expecting data URI format: data:image/jpeg;base64,....
+        header, encoded = base64_str.split(',', 1)
+        img_data = base64.b64decode(encoded)
+        img = Image.open(BytesIO(img_data))
+        
+        img = img.convert("RGB")
+        width, height = img.size
+        target_resolution_key = get_closest_allowed_resolution(width, height)
+        target_resolution_tuple = SUPPORTED_RESOLUTIONS_MAP[target_resolution_key]
+        log_event("info", f"Original size from base64: {width}x{height}. Target resolution: {target_resolution_key}")
+        
+        processed_img = resize_and_crop_image(img, target_resolution_tuple)
+        final_base64_image = image_to_webp_base64(processed_img)
+        
+        log_event("info", f"Image from base64 processed and re-encoded to base64 (length: {len(final_base64_image)})")
+        return final_base64_image, target_resolution_key
+    except Exception as e:
+        log_event("error", "Failed to process image from base64 string", {"error": str(e)})
+        raise ValueError(f"处理 base64 图片失败: {e}")
+
 def process_image_from_url(image_url):
     try:
-        log_event("info", f"Downloading image from URL: {image_url}")
-        response = requests.get(image_url, stream=True, timeout=30)
-        response.raise_for_status()
-        img = Image.open(response.raw)
+        parsed_url = urlparse(image_url)
+        img = None
+        if parsed_url.scheme == 'file':
+            log_event("info", f"Processing local file URL: {image_url}")
+            
+            # Correctly convert file URL to path, handling Windows drive letters
+            file_path = url2pathname(parsed_url.path)
+            if os.name == 'nt' and parsed_url.path.startswith('/'):
+                # Strips leading '/' from '/C:/...' to get 'C:/...'
+                file_path = url2pathname(parsed_url.path[1:])
+
+            try:
+                # Open the file in binary read mode and pass the file object to Pillow
+                # This is safer and avoids potential issues with path string formats
+                with open(file_path, 'rb') as f:
+                    img = Image.open(f)
+                    # img.load() copies the image data into a core memory block,
+                    # allowing us to close the file handle.
+                    img.load()
+                log_event("info", f"Successfully opened and loaded local file: {file_path}")
+            except FileNotFoundError:
+                log_event("error", f"Local file not found: {file_path}. Signaling for remote fetch.")
+                raise LocalFileNotFoundError("本地文件未找到，需要远程获取。", image_url)
+        elif parsed_url.scheme in ['http', 'https']:
+            log_event("info", f"Downloading image from URL: {image_url}")
+            response = requests.get(image_url, stream=True, timeout=30)
+            response.raise_for_status()
+            img = Image.open(response.raw)
+        else:
+            raise ValueError(f"不支持的 URL 协议: {parsed_url.scheme}。请使用 http, https, 或 file://。")
+
+        # Common image processing part
+        if img is None:
+            raise ValueError("未能加载图片。")
+            
         img = img.convert("RGB")
         width, height = img.size
         target_resolution_key = get_closest_allowed_resolution(width, height)
@@ -108,8 +170,12 @@ def process_image_from_url(image_url):
     except requests.exceptions.RequestException as e:
         log_event("error", f"Failed to download image URL: {image_url}", {"error": str(e)})
         raise ValueError(f"图片下载失败: {e}")
+    except LocalFileNotFoundError:
+        # Re-raise to be caught by the main handler
+        raise
     except Exception as e:
-        log_event("error", f"Failed to process image from URL: {image_url}", {"error": str(e)})
+        # Catch other potential errors like PIL errors, etc.
+        log_event("error", f"Failed to process image from URL: {image_url}", {"error": str(e), "traceback": traceback.format_exc()})
         raise ValueError(f"图片处理失败: {e}")
 
 # --- 视频文件持久化 ---
@@ -350,6 +416,7 @@ def main():
     negative_prompt = input_data.get("negative_prompt")
     resolution = input_data.get("resolution")
     image_url = input_data.get("image_url")
+    image_base64_input = input_data.get("image_base64")
 
     try:
         if command == "submit":
@@ -377,10 +444,17 @@ def main():
             elif mode == "i2v":
                 if not i2v_model:
                     raise ValueError("Image2VideoModelName 未配置，无法执行图生视频。")
-                if not image_url:
-                    raise ValueError("缺少必需的 'image_url' 参数。")
+                if not image_url and not image_base64_input:
+                    raise ValueError("缺少必需的 'image_url' 或 'image_base64' 参数。")
 
-                base64_image, target_res_key = process_image_from_url(image_url)
+                base64_image = None
+                target_res_key = None
+
+                if image_base64_input:
+                    base64_image, target_res_key = process_image_from_base64(image_base64_input)
+                elif image_url:
+                    base64_image, target_res_key = process_image_from_url(image_url)
+
                 req_id_submit = submit_video_request_api(api_key, i2v_model, prompt or "", negative_prompt, target_res_key, image_base64=base64_image,
                                                          callback_base_url=callback_base_url_env,
                                                          plugin_name_for_callback=PLUGIN_NAME_FOR_CALLBACK,
@@ -419,10 +493,22 @@ def main():
         else:
             raise ValueError(f"无效的 'command' 参数: {command}。必须是 'submit' 或 'query'。")
 
+    except LocalFileNotFoundError as e:
+        log_event("error", "Local file not found, signaling for remote fetch.", {"file_url": e.file_url})
+        # Manually construct and print the JSON to match the exact format expected by the server's generic handler.
+        # This format is based on the GeminiImageGen plugin's implementation.
+        error_payload = {
+            "status": "error",
+            "code": "FILE_NOT_FOUND_LOCALLY",
+            "error": str(e), # Use "error" key for the message string, matching JS version
+            "fileUrl": e.file_url
+        }
+        print(json.dumps(error_payload, ensure_ascii=False))
+        sys.exit(0) # 正常退出，因为这是一个预期的信令，而不是一个硬性错误
     except (ValueError, ConnectionError, FileNotFoundError) as e:
         log_event("error", f"Command processing failed: {command}", {"error": str(e)})
         print_json_output("error", error=str(e))
-        sys.exit(1) 
+        sys.exit(1)
     except Exception as e:
         log_event("critical", "Unexpected error during command processing", {"command": command, "error": str(e), "traceback": traceback.format_exc()})
         print_json_output("error", error=f"发生意外错误: {e}")
