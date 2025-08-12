@@ -181,3 +181,6 @@ docker-compose.yml
 # Claude configuration and cache files
 .claude/
 .crush/
+
+# Git rewrite temporary directory
+.git-rewrite/
