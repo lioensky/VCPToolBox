@@ -5,7 +5,11 @@
       "Bash(git checkout:*)",
       "Bash(git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch -r .history/\" --prune-empty --tag-name-filter cat -- --all)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker-compose up:*)"
     ],
     "deny": []
   }
