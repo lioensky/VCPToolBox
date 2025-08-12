@@ -177,3 +177,7 @@ docker-compose.yml
 
 # IDE/Editor history files
 .history
+
+# Claude configuration and cache files
+.claude/
+.crush/
