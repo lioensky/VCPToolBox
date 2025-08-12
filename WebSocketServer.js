@@ -352,7 +352,12 @@ function handleDistributedServerMessage(serverId, message) {
     }
 }
 
-async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout = 60000) {
+async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout) {
+    // 优先从插件 manifest 获取超时设置
+    const plugin = pluginManager.getPlugin(toolName);
+    const defaultTimeout = plugin?.communication?.timeout || 60000;
+    const effectiveTimeout = timeout ?? defaultTimeout;
+
     let server = distributedServers.get(serverIdOrName); // 优先尝试通过 ID 查找
 
     // 如果通过 ID 找不到，则遍历并尝试通过 name 查找
@@ -382,8 +387,8 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
     return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
             pendingToolRequests.delete(requestId);
-            reject(new Error(`Request to distributed tool ${toolName} on server ${serverIdOrName} timed out after ${timeout / 1000}s.`));
-        }, timeout);
+            reject(new Error(`Request to distributed tool ${toolName} on server ${serverIdOrName} timed out after ${effectiveTimeout / 1000}s.`));
+        }, effectiveTimeout);
 
         pendingToolRequests.set(requestId, { resolve, reject, timeout: timeoutId });
 
