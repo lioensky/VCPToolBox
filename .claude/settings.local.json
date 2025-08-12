@@ -9,7 +9,10 @@
       "Bash(git remote add:*)",
       "Bash(git push:*)",
       "Bash(docker-compose build:*)",
-      "Bash(docker-compose up:*)"
+      "Bash(docker-compose up:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
+      "Bash(git pull:*)"
     ],
     "deny": []
   }

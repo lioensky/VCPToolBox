@@ -138,6 +138,7 @@ dist
 # Custom VCPToolBox ignores
 config.env
 config.env.local
+config.docker.env
 Plugin/EmojiListGenerator/generated_lists/
 Plugin/ImageProcessor/image_cache.json
 Plugin/WeatherReporter/weather_cache.txt
@@ -159,3 +160,20 @@ image/通用表情包/*
 
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
+
+# VCPLog 运行时日志
+Plugin/VCPLog/log/
+
+# WeatherReporter 缓存文件
+Plugin/WeatherReporter/weather_cache.json
+
+# 本地开发配置文件 (包含敏感信息，不应提交)
+config.local.env
+*.local.env
+
+# 本地Docker配置文件 (避免合并冲突)
+Dockerfile
+docker-compose.yml
+
+# IDE/Editor history files
+.history
