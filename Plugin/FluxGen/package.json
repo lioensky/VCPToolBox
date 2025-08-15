@@ -22,7 +22,7 @@
   ],
   "author": "Exa Labs",
   "scripts": {
-"build": "node -e \"const fs = require('fs'); const path = require('path'); const buildDir = './build'; const srcFile = './FluxGen.mjs'; const targetFile = path.join(buildDir, 'FluxGen.js'); if (!fs.existsSync(buildDir)){ fs.mkdirSync(buildDir, { recursive: true }); } fs.copyFileSync(srcFile, targetFile); try { fs.chmodSync(targetFile, '755'); console.log('FluxGen build: FluxGen.mjs copied to build directory and renamed to FluxGen.js'); } catch(e) { if (e.code === 'ENOENT') { console.error('Source file not found:', srcFile); process.exit(1); } else { console.warn('FluxGen build:', e.message); } }\"",
+    "build": "node -e \"const fs = require('fs'); const path = require('path'); const buildDir = './build'; const srcFile = './FluxGen.mjs'; const targetFile = path.join(buildDir, 'FluxGen.js'); if (!fs.existsSync(buildDir)){ fs.mkdirSync(buildDir, { recursive: true }); } fs.copyFileSync(srcFile, targetFile); try { fs.chmodSync(targetFile, '755'); console.log('FluxGen build: FluxGen.mjs copied to build directory and renamed to FluxGen.js'); } catch(e) { if (e.code === 'ENOENT') { console.error('Source file not found:', srcFile); process.exit(1); } else { console.warn('FluxGen build:', e.message); } }\"",
     "prepare": "npm run build",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/FluxGen.js",
