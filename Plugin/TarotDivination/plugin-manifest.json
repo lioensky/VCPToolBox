@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "TarotDivination",
   "displayName": "塔罗占卜",
-  "version": "1.0.0",
-  "description": "一个提供塔罗牌抽卡功能的插件，支持多种牌阵。",
+  "version": "2.0.0",
+  "description": "一个融合天文、环境与内在起源的塔罗牌占卜插件，支持多种牌阵与起源选择。",
   "author": "Kilo Code",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -18,24 +18,28 @@
     "invocationCommands": [
       {
         "commandIdentifier": "draw_single_card",
-        "description": "从78张塔罗牌中随机抽取一张牌。返回牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的“命运检定数”，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」,\nfate_check_number: 「始」123「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」,\nfate_check_number: 「始」123「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "从78张塔罗牌中根据起源倾向抽取一张牌。返回牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的命运检定数，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n- `origin` (可选, 字符串): 用户的内在起源选择，代表其内心深处的渴求与倾向。可选值：\n  - `日`/`Sun`/`sun`: 太阳起源 - 意志与行动的显现，偏好权杖与火元素\n  - `月`/`Moon`/`moon`: 月亮起源 - 直觉与潜意识的涌动，偏好圣杯与水元素\n  - `星`/`Star`/`star`: 星辰起源 - 希望与平衡的光芒，偏好宝剑与风元素\n  - 注意：有3.33%概率进入虚(Void)状态，带来混沌与不可预测的命运\n\n**AI询问用户起源的建议话术:**\n在开始占卜前，请选择您内心的起源倾向：\n☉ 日 - 如果您寻求清晰的行动指引\n☽ 月 - 如果您想探索内心的情感真相\n✦ 星 - 如果您渴望宇宙的智慧与平衡\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」,\nfate_check_number: 「始」123「末」,\norigin: 「始」月「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_single_card「末」,\nfate_check_number: 「始」123「末」,\norigin: 「始」月「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "draw_three_card_spread",
-        "description": "执行一个三牌阵占卜，分别代表“过去”、“现在”和“未来”。返回三张牌的牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的“命运检定数”，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」,\nfate_check_number: 「始」456「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」,\nfate_check_number: 「始」456「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "执行一个三牌阵占卜，分别代表过去、现在和未来。返回三张牌的牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的命运检定数，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n- `origin` (可选, 字符串): 用户的内在起源选择，代表其内心深处的渴求与倾向。可选值：\n  - `日`/`Sun`/`sun`: 太阳起源 - 意志与行动的显现，偏好权杖与火元素\n  - `月`/`Moon`/`moon`: 月亮起源 - 直觉与潜意识的涌动，偏好圣杯与水元素\n  - `星`/`Star`/`star`: 星辰起源 - 希望与平衡的光芒，偏好宝剑与风元素\n  - 注意：有3.33%概率进入虚(Void)状态，带来混沌与不可预测的命运\n\n**起源对三牌阵的特殊影响:**\n- 日起源：过去牌倾向展示行动，现在牌强调决断，未来牌预示成就\n- 月起源：过去牌揭示情感根源，现在牌反映内心状态，未来牌暗示潜意识走向\n- 星起源：三张牌呈现平衡的智慧链条，展示因果与宇宙法则\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」,\nfate_check_number: 「始」456「末」,\norigin: 「始」Star「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_three_card_spread「末」,\nfate_check_number: 「始」456「末」,\norigin: 「始」Star「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "draw_celtic_cross",
-        "description": "执行一个凯尔特十字牌阵占卜，共抽取10张牌，每张牌都有特定的位置含义。返回10张牌的牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的“命运检定数”，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "执行一个凯尔特十字牌阵占卜，共抽取10张牌，每张牌都有特定的位置含义。返回10张牌的牌名、是否逆位以及图片信息。\n\n**参数:**\n- `fate_check_number` (可选, 数字): 占卜师输入的命运检定数，会影响占卜的随机过程。可以是任意数字，没有范围限制。\n- `origin` (可选, 字符串): 用户的内在起源选择，代表其内心深处的渴求与倾向。可选值：\n  - `日`/`Sun`/`sun`: 太阳起源 - 意志与行动的显现，偏好权杖与火元素\n  - `月`/`Moon`/`moon`: 月亮起源 - 直觉与潜意识的涌动，偏好圣杯与水元素\n  - `星`/`Star`/`star`: 星辰起源 - 希望与平衡的光芒，偏好宝剑与风元素\n  - 注意：有3.33%概率进入虚(Void)状态，带来混沌与不可预测的命运\n\n**起源对凯尔特十字的深层影响:**\n- 日起源：强化位置3(目标)、7(自我认知)、10(最终结果)的显化力量\n- 月起源：深化位置2(阻碍)、5(过去)、9(希望与恐惧)的情感洞察\n- 星起源：平衡所有10个位置，揭示宇宙的完整图景\n- 虚起源：打破常规解读，带来颠覆性的启示\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」,\norigin: 「始」sun「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」draw_celtic_cross「末」,\nfate_check_number: 「始」789「末」,\norigin: 「始」sun「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "get_celestial_data",
-        "description": "获取当前详细的天文和环境数据。返回一份包含两部分的报告：一部分是充满神秘学色彩的天相解读，另一部分是供AI分析的原始数据，包括太阳、月亮和各大行星的精确坐标及状态。\n\n**参数:**\n- 无需参数。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "获取当前详细的天文和环境数据。返回一份包含两部分的报告：一部分是充满神秘学色彩的天相解读，另一部分是供AI分析的原始数据，包括太阳、月亮和各大行星的精确坐标及状态。\n\n**参数:**\n- `origin` (可选, 字符串): 选择观察天象的视角起源。不同起源会影响对行星力量的解读权重：\n  - `日`/`Sun`/`sun`: 从太阳意识角度解读，火星和木星影响增强\n  - `月`/`Moon`/`moon`: 从月亮潜意识角度解读，海王星和金星影响增强\n  - `星`/`Star`/`star`: 从星辰宇宙角度解读，外行星影响增强\n\n**返回内容说明:**\n- 起源状态与符号显示\n- 各行星根据起源的影响系数\n- 天文坐标的神秘学解读\n- 环境因素与起源的共鸣分析\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」,\norigin: 「始」星「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TarotDivination「末」,\ncommand: 「始」get_celestial_data「末」,\norigin: 「始」星「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
-    ]
+    ],
+    "specialNotes": {
+      "originSystem": "**起源系统说明:**\n起源(Origin)代表用户内心真正的渴求与无法言表的选择倾向。每个起源都会微妙而有力地影响占卜结果：\n\n1. **日起源** ☉ - 适合需要明确指引、行动方案的问题\n2. **月起源** ☽ - 适合探索情感、关系、潜意识的问题\n3. **星起源** ✦ - 适合寻求智慧、平衡、长远视角的问题\n4. **虚起源** ◯ - 极小概率自动触发，带来意外的启示\n\n**AI使用建议:**\n- 首次占卜时询问用户选择起源\n- 可以根据用户问题性质推荐合适的起源\n- 解读结果时考虑起源对牌意的影响\n- 虚起源出现时要特别说明其稀有性和特殊含义",
+      "fateCheckNumber": "**命运检定数说明:**\n这是一个可选的数字参数，代表命运的微调因子。用户可以：\n- 使用幸运数字\n- 使用当前心情的数值化(1-100)\n- 使用重要日期的数字组合\n- 或完全随机选择\n\n数字本身没有好坏，只是为每次占卜创造独特的命运线索。"
+    }
   }
 }
