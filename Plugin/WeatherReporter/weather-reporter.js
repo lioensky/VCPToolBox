@@ -362,7 +362,7 @@ async function getSolarElevationAngle(latitude, longitude, altitude, date, time,
 }
 
 // Helper to format weather data into a readable string
-function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount) {
+function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount, forecastDays) {
     if (!hourlyForecast && (!weatherWarning || weatherWarning.length === 0) && (!forecast || forecast.length === 0) && !moonPhase && !airQuality && !solarAngle) {
         return "[天气信息获取失败]";
     }
@@ -416,8 +416,8 @@ function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, 
         result += "未来24小时天气预报获取失败。\n";
     }
 
-    // Keep 7-day Forecast section
-    result += "\n【未来7日天气预报】\n";
+    // Keep N-day Forecast section
+    result += `\n【未来${forecastDays}日天气预报】\n`;
     if (forecast && forecast.length > 0) {
         forecast.forEach(day => {
             result += `\n日期: ${day.fxDate}\n`;
@@ -428,7 +428,7 @@ function formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, 
             result += `紫外线指数: ${day.uvIndex}\n`;
         });
     } else {
-         result += "\n未来7日天气预报获取失败。\n";
+         result += `\n未来${forecastDays}日天气预报获取失败。\n`;
     }
 
     // Add Moon Phase section
@@ -578,7 +578,7 @@ async function fetchAndCacheWeather() {
     // Update condition to check for any data
     if (hourlyForecast || weatherWarning || (forecast && forecast.length > 0) || moonPhase || airQuality || solarAngle) {
         // Update function call
-        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount);
+        const formattedWeather = formatWeatherInfo(hourlyForecast, weatherWarning, forecast, moonPhase, airQuality, solarAngle, hourlyForecastInterval, hourlyForecastCount, forecastDays);
 
         // --- New JSON Cache Logic ---
         const rawWeatherData = {
