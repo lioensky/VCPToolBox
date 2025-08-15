@@ -6,8 +6,8 @@ const lunarCalendar = require('chinese-lunar-calendar');
 
 // --- Configuration (from environment variables set by Plugin.js) ---
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
-const SERVER_PORT = process.env.PORT; // Corrected from SERVER_PORT to PORT
-const IMAGESERVER_IMAGE_KEY = process.env.Image_Key; // Corrected to match the key from ImageServer plugin
+const SERVER_PORT = process.env.PORT;
+const IMAGESERVER_IMAGE_KEY = process.env.Image_Key;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
 
 // --- Helper Functions ---
@@ -32,16 +32,156 @@ function createSeededRandom(seed) {
     }
 }
 
+/**
+ * Determines the Origin based on user input, with a small chance of Void manifestation.
+ * @param {string} inputOrigin The user-provided origin string
+ * @param {function} random The random generator
+ * @returns {object} Origin object with type and description
+ */
+function determineOrigin(inputOrigin, random) {
+    const VOID_PROBABILITY = 0.0333; // 3.33% chance - a mystical number
+    
+    // Check for Void manifestation first
+    if (random() < VOID_PROBABILITY) {
+        return {
+            type: 'void',
+            name: '虚',
+            description: '起源进入了虚无状态，天体的光踪隐入未知，命运的织线变得混沌而不可预测',
+            symbol: '◯'
+        };
+    }
+    
+    // Normalize input
+    const normalizedInput = inputOrigin ? inputOrigin.toLowerCase().trim() : '';
+    
+    const originMap = {
+        '日': 'sun', 'sun': 'sun', '太阳': 'sun',
+        '月': 'moon', 'moon': 'moon', '月亮': 'moon',
+        '星': 'star', 'star': 'star', '星辰': 'star'
+    };
+    
+    const originType = originMap[normalizedInput] || 'star'; // Default to star if unrecognized
+    
+    const origins = {
+        'sun': {
+            type: 'sun',
+            name: '日',
+            description: '太阳起源 - 意志与行动的显现，白昼的主宰',
+            symbol: '☉'
+        },
+        'moon': {
+            type: 'moon',
+            name: '月',
+            description: '月亮起源 - 直觉与潜意识的涌动，夜晚的守护',
+            symbol: '☽'
+        },
+        'star': {
+            type: 'star',
+            name: '星',
+            description: '星辰起源 - 希望与指引的光芒，宇宙的平衡',
+            symbol: '✦'
+        }
+    };
+    
+    return origins[originType];
+}
+
+/**
+ * Calculates origin-specific modifiers for celestial influences.
+ * @param {string} originType The type of origin
+ * @param {object} celestialFactors The celestial position data
+ * @returns {object} Modified weights for different influences
+ */
+function calculateOriginCelestialModifiers(originType, celestialFactors) {
+    const modifiers = {
+        planetaryInfluence: {},
+        generalMultiplier: 1.0,
+        reversalAdjustment: 0
+    };
+    
+    switch(originType) {
+        case 'sun':
+            // Sun origin: Mars and Jupiter amplified, Neptune and Moon dampened
+            modifiers.planetaryInfluence = {
+                mars: 2.5,      // Action and courage magnified
+                jupiter: 2.0,    // Expansion and leadership enhanced
+                mercury: 1.5,    // Communication clarified
+                venus: 1.2,      // Harmony appreciated
+                saturn: 0.8,     // Restrictions lessened
+                neptune: 0.3,    // Illusions dispersed
+                uranus: 1.0      // Innovation neutral
+            };
+            modifiers.generalMultiplier = 1.3;
+            modifiers.reversalAdjustment = -0.15; // Less likely to reverse in solar clarity
+            break;
+            
+        case 'moon':
+            // Moon origin: Neptune and inner planets amplified
+            modifiers.planetaryInfluence = {
+                neptune: 3.0,    // Dreams and intuition maximized
+                venus: 2.0,      // Emotions intensified
+                mercury: 0.7,    // Logic clouded
+                mars: 0.5,       // Action subdued
+                jupiter: 1.2,    // Wisdom through feeling
+                saturn: 1.5,     // Deep introspection
+                uranus: 1.8      // Sudden insights
+            };
+            modifiers.generalMultiplier = 1.5;
+            modifiers.reversalAdjustment = 0.25; // More likely to see shadows
+            break;
+            
+        case 'star':
+            // Star origin: Outer planets and balance emphasized
+            modifiers.planetaryInfluence = {
+                uranus: 2.5,     // Revolutionary insight
+                neptune: 2.0,    // Spiritual connection
+                jupiter: 1.8,    // Cosmic wisdom
+                saturn: 1.5,     // Karmic lessons
+                mars: 1.0,       // Balanced action
+                venus: 1.0,      // Balanced emotion
+                mercury: 1.3     // Higher communication
+            };
+            modifiers.generalMultiplier = 1.4;
+            modifiers.reversalAdjustment = 0; // Perfect balance
+            break;
+            
+        case 'void':
+            // Void origin: Chaotic and inverted influences
+            const voidRandom = Math.sin(Date.now()) * 10000;
+            const voidFactor = (voidRandom - Math.floor(voidRandom));
+            modifiers.planetaryInfluence = {
+                mars: 0.1 + voidFactor * 4,      // Wildly variable
+                jupiter: 3 - voidFactor * 2.5,    // Inverted luck
+                mercury: voidFactor < 0.5 ? 0.1 : 5.0, // Binary extremes
+                venus: 2 * Math.sin(voidFactor * Math.PI), // Oscillating
+                saturn: voidFactor * voidFactor * 4, // Exponential
+                neptune: 1 / (voidFactor + 0.1),  // Inverse proportion
+                uranus: Math.abs(Math.cos(voidFactor * Math.PI * 2)) * 3 // Pulsing
+            };
+            modifiers.generalMultiplier = 0.5 + voidFactor * 2; // 0.5 to 2.5
+            modifiers.reversalAdjustment = voidFactor - 0.5; // -0.5 to +0.5
+            break;
+    }
+    
+    return modifiers;
+}
 
 /**
  * Gathers various environmental and temporal factors to create a unique seed for divination.
  * @returns {Promise<object>} A promise that resolves to an object containing the random generator, a summary of factors, and the factors themselves.
  */
-async function getDivinationFactors(fateCheckNumber = null) {
+async function getDivinationFactors(fateCheckNumber = null, originInput = null) {
     const weatherCachePath = path.join(PROJECT_BASE_PATH, 'Plugin', 'WeatherReporter', 'weather_cache.json');
     let weatherData = {};
     let factorsSummary = "占卜因素：\n";
     const now = new Date();
+    
+    // Create initial random for origin determination
+    const preliminaryRandom = createSeededRandom(now.toISOString());
+    
+    // --- Origin Determination ---
+    const origin = determineOrigin(originInput, preliminaryRandom);
+    factorsSummary += `- 起源: ${origin.symbol} ${origin.name} - ${origin.description}\n`;
 
     // --- Fate Check Number ---
     if (fateCheckNumber !== null && !isNaN(parseInt(fateCheckNumber))) {
@@ -140,7 +280,6 @@ async function getDivinationFactors(fateCheckNumber = null) {
         let closestTimestampKey = null;
         let smallestDiff = Infinity;
 
-        // Find the closest timestamp key from the database.
         for (const timestampKey in celestialDatabase) {
             const timestamp = new Date(timestampKey);
             const diff = Math.abs(nowUTC - timestamp);
@@ -150,11 +289,9 @@ async function getDivinationFactors(fateCheckNumber = null) {
             }
         }
 
-        // The user mentioned a 2-hour interval, so we should be reasonably close.
-        // Let's use a 3-hour threshold to be safe.
         if (closestTimestampKey && smallestDiff < 3 * 60 * 60 * 1000) {
             const celestialData = celestialDatabase[closestTimestampKey];
-            celestialFactors = celestialData; // Store the raw data
+            celestialFactors = celestialData;
             
             const dataTime = new Date(closestTimestampKey);
             factorsSummary += `- 天体位置 (数据采样于 ${dataTime.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' })}):\n`;
@@ -164,15 +301,18 @@ async function getDivinationFactors(fateCheckNumber = null) {
                 jupiter: '木星', saturn: '土星', uranus: '天王星', neptune: '海王星'
             };
 
+            // Apply origin-specific descriptions
             let celestialDetails = [];
+            const originModifiers = calculateOriginCelestialModifiers(origin.type, celestialFactors);
+            
             for (const [planet, coords] of Object.entries(celestialData)) {
-                // Describe position in a more "mystical" way
-                // These are heliocentric ecliptic coordinates.
-                // x/y are on the ecliptic plane, z is above/below.
-                let x_desc = coords.x_au > 0 ? '太阳的“前方”' : '太阳的“后方”'; // Simplified direction relative to a zero-point
-                let y_desc = coords.y_au > 0 ? '黄道的“左侧”' : '黄道的“右侧”'; // Simplified direction
+                const influence = originModifiers.planetaryInfluence[planet] || 1.0;
+                const influenceDesc = influence > 1.5 ? ' [强化影响]' : influence < 0.7 ? ' [减弱影响]' : '';
+                
+                let x_desc = coords.x_au > 0 ? '太阳的"前方"' : '太阳的"后方"';
+                let y_desc = coords.y_au > 0 ? '黄道的"左侧"' : '黄道的"右侧"';
                 let z_desc = Math.abs(coords.z_au) < 0.05 ? '贴近黄道面' : (coords.z_au > 0 ? '升于黄道之上' : '潜于黄道之下');
-                celestialDetails.push(`    - ${planetTranslations[planet] || planet}: ${z_desc}，位于${x_desc}与${y_desc}的象限`);
+                celestialDetails.push(`    - ${planetTranslations[planet] || planet}: ${z_desc}，位于${x_desc}与${y_desc}的象限${influenceDesc}`);
             }
             factorsSummary += celestialDetails.join('\n') + '\n';
 
@@ -181,7 +321,6 @@ async function getDivinationFactors(fateCheckNumber = null) {
         }
 
     } catch (e) {
-        // If the file doesn't exist, it's not a critical error.
         if (e.code === 'ENOENT') {
             factorsSummary += "- 未找到天体数据库 (celestial_database.json)。\n";
         } else {
@@ -189,93 +328,256 @@ async function getDivinationFactors(fateCheckNumber = null) {
         }
     }
 
-    const allFactors = { ...timeFactors, ...lunarFactors, ...weatherFactors, ...celestialFactors };
+    const allFactors = { 
+        ...timeFactors, 
+        ...lunarFactors, 
+        ...weatherFactors, 
+        ...celestialFactors,
+        origin: origin.type
+    };
+    
     let seedString = JSON.stringify(allFactors);
     if (fateCheckNumber !== null && !isNaN(parseInt(fateCheckNumber))) {
         seedString += `::FATE_CHECK::${fateCheckNumber}`;
     }
+    seedString += `::ORIGIN::${origin.type}`;
+    
     const seededRandom = createSeededRandom(seedString);
 
     return {
         random: seededRandom,
         summary: factorsSummary,
-        factors: allFactors
+        factors: allFactors,
+        origin: origin
     };
 }
 
-
 /**
- * Defines the inherent affinities of certain cards to environmental factors.
- * 'pos' means positive affinity (more likely), 'neg' means negative.
+ * Defines the inherent affinities of certain cards to environmental factors and origins.
  */
 function getCardAffinities() {
-    // Added planetary affinities. The value is the planet's key in the celestial data.
     return {
-        'The Sun': { time: 'day', weather: 'good' },
-        'The Moon': { time: 'night', planet: 'neptune' }, // Neptune for illusion/dreams
-        'The Star': { time: 'night', planet: 'uranus' }, // Uranus for innovation/revelation
-        'The High Priestess': { moon: 'full' },
-        'The Hermit': { time: 'night', planet: 'saturn' }, // Saturn for solitude/discipline
-        'The Tower': { weather: 'bad', planet: 'mars' }, // Mars for conflict
-        'Death': { weather: 'bad' },
-        'The Devil': { weather: 'bad' },
-        'Ten of Swords': { weather: 'bad' },
-        'The Lovers': { festive: 'pos', planet: 'venus' }, // Venus for love/harmony
-        'Four of Wands': { festive: 'pos' },
-        'The World': { festive: 'pos' },
-        'The Magician': { planet: 'mercury' }, // Mercury for communication/skill
-        'The Chariot': { planet: 'mars' }, // Mars for drive/ambition
-        'Wheel of Fortune': { planet: 'jupiter' }, // Jupiter for luck/expansion
-        'The Emperor': { planet: 'jupiter' } // Jupiter for authority/leadership
+        // Major Arcana
+        'The Sun': { 
+            time: 'day', weather: 'good', origin: 'sun',
+            elements: ['fire'], planet: 'sun'
+        },
+        'The Moon': { 
+            time: 'night', moon: 'full', origin: 'moon',
+            elements: ['water'], planet: 'neptune'
+        },
+        'The Star': { 
+            time: 'night', origin: 'star',
+            elements: ['air'], planet: 'uranus'
+        },
+        'The High Priestess': { 
+            moon: 'full', origin: 'moon',
+            elements: ['water'], planet: 'moon'
+        },
+        'The Hermit': { 
+            time: 'night', origin: 'star',
+            elements: ['earth'], planet: 'saturn'
+        },
+        'The Tower': { 
+            weather: 'bad', origin: 'void',
+            elements: ['fire'], planet: 'mars'
+        },
+        'Death': { 
+            weather: 'bad', origin: 'void',
+            elements: ['water'], planet: 'pluto'
+        },
+        'The Devil': { 
+            weather: 'bad', origin: 'void',
+            elements: ['earth'], planet: 'saturn'
+        },
+        'The Fool': {
+            origin: 'void',
+            elements: ['air'], planet: 'uranus'
+        },
+        'The Magician': { 
+            origin: 'sun',
+            elements: ['air', 'fire'], planet: 'mercury'
+        },
+        'The Empress': {
+            origin: 'moon',
+            elements: ['earth'], planet: 'venus'
+        },
+        'The Emperor': {
+            origin: 'sun',
+            elements: ['fire'], planet: 'mars'
+        },
+        'The Chariot': { 
+            origin: 'sun',
+            elements: ['water'], planet: 'mars'
+        },
+        'Wheel of Fortune': { 
+            origin: 'star',
+            elements: ['fire'], planet: 'jupiter'
+        },
+        'Justice': {
+            origin: 'star',
+            elements: ['air'], planet: 'venus'
+        },
+        'Temperance': {
+            origin: 'star',
+            elements: ['fire'], planet: 'jupiter'
+        },
+        'The World': { 
+            festive: 'pos', origin: 'star',
+            elements: ['earth'], planet: 'saturn'
+        },
+        'The Lovers': { 
+            festive: 'pos', origin: 'moon',
+            elements: ['air'], planet: 'venus'
+        },
+        'Strength': {
+            origin: 'sun',
+            elements: ['fire'], planet: 'sun'
+        },
+        'The Hanged Man': {
+            origin: 'void',
+            elements: ['water'], planet: 'neptune'
+        },
+        'Judgement': {
+            origin: 'star',
+            elements: ['fire'], planet: 'pluto'
+        },
+        
+        // Minor Arcana special cards
+        'Ten of Swords': { 
+            weather: 'bad', origin: 'void',
+            elements: ['air']
+        },
+        'Four of Wands': { 
+            festive: 'pos', origin: 'sun',
+            elements: ['fire']
+        },
+        'Three of Swords': {
+            weather: 'bad', origin: 'moon',
+            elements: ['air']
+        },
+        'Nine of Cups': {
+            festive: 'pos', origin: 'sun',
+            elements: ['water']
+        },
+        'Five of Pentacles': {
+            weather: 'bad', origin: 'void',
+            elements: ['earth']
+        }
     };
 }
 
 /**
- * Calculates drawing weights for each card based on affinities and factors.
- * @param {Array} deck The full deck of cards.
- * @param {object} factors The environmental factors.
- * @returns {Array} An array of cards, each with a calculated 'weight'.
+ * Calculates drawing weights for each card based on affinities, factors, and origin.
  */
-function calculateCardWeights(deck, factors) {
+function calculateCardWeights(deck, factors, origin) {
     const affinities = getCardAffinities();
+    const originModifiers = calculateOriginCelestialModifiers(origin.type, factors);
+    
     return deck.map(card => {
         let weight = 100; // Base weight
         const cardAffinities = affinities[card.name];
+        
+        // --- Origin-specific base weight adjustments ---
+        switch(origin.type) {
+            case 'sun':
+                // Sun origin favors Wands and day-associated cards
+                if (card.suit === 'wands') weight += 40;
+                if (card.suit === 'swords') weight += 20;
+                if (card.suit === 'cups') weight -= 20;
+                break;
+            case 'moon':
+                // Moon origin favors Cups and night-associated cards
+                if (card.suit === 'cups') weight += 40;
+                if (card.suit === 'pentacles') weight += 20;
+                if (card.suit === 'wands') weight -= 20;
+                break;
+            case 'star':
+                // Star origin favors Swords and balanced distribution
+                if (card.suit === 'swords') weight += 30;
+                if (card.suit === 'major') weight += 25; // Major arcana more likely
+                break;
+            case 'void':
+                // Void origin creates chaos
+                const voidHash = card.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+                weight = 50 + (voidHash % 200); // Random range 50-250
+                break;
+        }
 
         if (cardAffinities) {
-            // --- Standard Affinities ---
-            if (cardAffinities.time === 'day' && factors.hour > 6 && factors.hour < 18) weight += 50;
-            if (cardAffinities.time === 'night' && (factors.hour >= 18 || factors.hour <= 6)) weight += 50;
-            if (cardAffinities.weather === 'good' && !factors.isRainOrSnow) weight += 40;
-            if (cardAffinities.weather === 'bad' && factors.isRainOrSnow) weight += 60;
-            if (cardAffinities.moon === 'full' && factors.moonIllumination > 95) weight += 50;
-            if (cardAffinities.festive === 'pos' && factors.isFestive) weight += 70;
+            // --- Origin affinity ---
+            if (cardAffinities.origin === origin.type) {
+                weight += 100; // Strong affinity to matching origin
+            } else if (cardAffinities.origin === 'void' && origin.type !== 'void') {
+                weight -= 30; // Void cards less likely in ordered origins
+            }
+            
+            // --- Standard Affinities (modified by origin) ---
+            if (cardAffinities.time === 'day' && factors.hour > 6 && factors.hour < 18) {
+                const modifier = origin.type === 'sun' ? 2.0 : origin.type === 'moon' ? 0.5 : 1.0;
+                weight += 50 * modifier;
+            }
+            if (cardAffinities.time === 'night' && (factors.hour >= 18 || factors.hour <= 6)) {
+                const modifier = origin.type === 'moon' ? 2.0 : origin.type === 'sun' ? 0.5 : 1.0;
+                weight += 50 * modifier;
+            }
+            
+            if (cardAffinities.weather === 'good' && !factors.isRainOrSnow) {
+                const modifier = origin.type === 'sun' ? 1.5 : 1.0;
+                weight += 40 * modifier;
+            }
+            if (cardAffinities.weather === 'bad' && factors.isRainOrSnow) {
+                const modifier = origin.type === 'void' ? 2.0 : origin.type === 'moon' ? 1.5 : 1.0;
+                weight += 60 * modifier;
+            }
+            
+            if (cardAffinities.moon === 'full' && factors.moonIllumination > 95) {
+                const modifier = origin.type === 'moon' ? 3.0 : 1.0;
+                weight += 50 * modifier;
+            }
+            
+            if (cardAffinities.festive === 'pos' && factors.isFestive) {
+                const modifier = origin.type === 'sun' ? 1.5 : 1.0;
+                weight += 70 * modifier;
+            }
 
-            // --- Celestial Affinities ---
+            // --- Celestial Affinities (modified by origin) ---
             if (cardAffinities.planet && factors[cardAffinities.planet]) {
                 const planetData = factors[cardAffinities.planet];
-                // A planet's influence is stronger when it's further from the ecliptic plane (z_au).
-                // This signifies it's in a more "pronounced" or "active" state.
                 const z_influence = Math.abs(planetData.z_au || 0);
-                // We give a bonus based on this deviation. The multiplier is arbitrary but creates effect.
-                // e.g., z_au of 0.5 gives a 25 point bonus. z_au of 2.0 gives a 100 point bonus.
-                const celestialBonus = z_influence * 50;
+                const planetModifier = originModifiers.planetaryInfluence[cardAffinities.planet] || 1.0;
+                const celestialBonus = z_influence * 50 * planetModifier;
                 weight += celestialBonus;
+            }
+            
+            // --- Elemental affinities based on origin ---
+            if (cardAffinities.elements) {
+                const elementWeights = {
+                    'sun': { fire: 2.0, air: 1.5, water: 0.7, earth: 1.0 },
+                    'moon': { water: 2.0, earth: 1.5, fire: 0.7, air: 1.0 },
+                    'star': { air: 2.0, fire: 1.3, water: 1.3, earth: 1.0 },
+                    'void': { fire: Math.random() * 2, water: Math.random() * 2, 
+                             air: Math.random() * 2, earth: Math.random() * 2 }
+                };
+                
+                const originElements = elementWeights[origin.type];
+                cardAffinities.elements.forEach(element => {
+                    weight *= (originElements[element] || 1.0);
+                });
             }
         }
         
+        // Apply general origin multiplier
+        weight *= originModifiers.generalMultiplier;
+        
         // Ensure weight is at least a small number
-        card.weight = Math.max(10, weight);
+        card.weight = Math.max(10, Math.floor(weight));
         return card;
     });
 }
 
 /**
  * Draws a specified number of cards from a deck using weighted random sampling without replacement.
- * @param {Array} weightedDeck The deck of cards, each with a 'weight' property.
- * @param {number} numToDraw The number of cards to draw.
- * @param {function(): number} random The seeded random number generator.
- * @returns {Array} An array of the drawn cards.
  */
 function drawWeightedCards(weightedDeck, numToDraw, random) {
     const drawnCards = [];
@@ -292,12 +594,11 @@ function drawWeightedCards(weightedDeck, numToDraw, random) {
             randomWeight -= deckCopy[j].weight;
             if (randomWeight <= 0) {
                 selectedCard = deckCopy[j];
-                deckCopy.splice(j, 1); // Remove the card from the pool
+                deckCopy.splice(j, 1);
                 break;
             }
         }
         
-        // Fallback in case of floating point inaccuracies
         if (!selectedCard) {
             selectedCard = deckCopy.pop();
         }
@@ -308,102 +609,157 @@ function drawWeightedCards(weightedDeck, numToDraw, random) {
 }
 
 /**
- * Calculates the dynamic probability of a card being reversed based on various factors.
- * @param {object} card The card object.
- * @param {object} factors The collected environmental and temporal factors.
- * @returns {number} A probability between 0.05 and 0.95.
+ * Calculates the dynamic probability of a card being reversed based on various factors and origin.
  */
-function calculateReversalProbability(card, factors) {
+function calculateReversalProbability(card, factors, origin) {
     let probability = 0.22; // Base probability of 22%
+    
+    // Apply origin reversal adjustment
+    const originModifiers = calculateOriginCelestialModifiers(origin.type, factors);
+    probability += originModifiers.reversalAdjustment;
+
+    // --- Origin-specific reversal patterns ---
+    switch(origin.type) {
+        case 'sun':
+            // 太阳起源：逆位率与太阳高度角相关。
+            // solarElevation > 0 (白天), < 0 (夜晚)
+            if (factors.solarElevation > 0) {
+                // 白天：太阳越高，逆位率越低
+                // 太阳在最高点 (90度) 时，减少量最大
+                let reduction = (factors.solarElevation / 90) * 0.20; // Max reduction of 0.20
+                probability -= reduction;
+                 // 正午时分 (角度 > 45)，额外显著降低
+                if (factors.solarElevation > 45) {
+                    probability -= 0.10;
+                }
+            } else {
+                // 夜晚：选择太阳，逆位率上升
+                // 太阳在最低点 (-90度) 时，增加量最大
+                let increase = (Math.abs(factors.solarElevation) / 90) * 0.15; // Max increase of 0.15
+                probability += increase;
+            }
+            // 晴朗天气进一步降低逆位率
+            if (!factors.isRainOrSnow && factors.cloud < 30) {
+                probability -= 0.05;
+            }
+            break;
+            
+        case 'moon':
+            // 月亮起源：夜晚逆位率下降，白天上升；月相影响巨大
+            // 日夜影响
+            if (factors.solarElevation < 0) { // Night
+                probability -= 0.05; // 夜晚略微下降
+            } else { // Day
+                probability += 0.05; // 白天略微上升
+            }
+
+            // 月相影响: 满月大幅下降，新月小幅下降
+            // moonIllumination: 100 for full, 0 for new
+            const moonPhaseModifier = -0.05 - (factors.moonIllumination / 100) * 0.15; // -0.05 (new) to -0.20 (full)
+            probability += moonPhaseModifier;
+
+            // 情绪化的天气（如下雨）会增加逆位率
+            if (factors.isRainOrSnow) {
+                probability += 0.08;
+            }
+            break;
+            
+        case 'star':
+            // 星辰起源：与晨昏线相关
+            // solarElevation 在 -18 到 0 度之间为晨昏蒙影时段
+            if (factors.solarElevation > -18 && factors.solarElevation < 0) {
+                if (factors.hour > 12) { // 傍晚 (Dusk)
+                    probability -= 0.10; // 星星出现，逆位率下降
+                } else { // 黎明 (Dawn)
+                    probability += 0.10; // 星星隐退，逆位率上升
+                }
+            }
+            
+            // 保留原有的天体不稳定性和节气影响
+            let outerPlanetInstability = 0;
+            ['uranus', 'neptune', 'saturn'].forEach(planet => {
+                if (factors[planet]) {
+                    outerPlanetInstability += Math.abs(factors[planet].z_au || 0);
+                }
+            });
+            probability += outerPlanetInstability * 0.03;
+            if (factors.solarTerm && factors.solarTerm !== '无') {
+                probability += 0.05;
+            }
+            break;
+            
+        case 'void':
+            // Void creates extreme and unpredictable reversals
+            const voidSeed = card.name.length * factors.hour * factors.minute;
+            const voidChaos = Math.sin(voidSeed) * Math.cos(voidSeed * 0.7);
+            probability = 0.5 + voidChaos * 0.45; // Range: 0.05 to 0.95
+            break;
+    }
 
     // --- Celestial Instability Factor ---
-    // Calculate a score based on how "out of alignment" the planets are.
-    // We sum the absolute z_au values. A higher value means more planets are far
-    // from the ecliptic plane, suggesting cosmic "tension" or "instability".
     let celestialInstabilityScore = 0;
     const planetKeys = ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
     for (const planetKey of planetKeys) {
         if (factors[planetKey]) {
-            celestialInstabilityScore += Math.abs(factors[planetKey].z_au || 0);
+            const planetModifier = originModifiers.planetaryInfluence[planetKey] || 1.0;
+            celestialInstabilityScore += Math.abs(factors[planetKey].z_au || 0) * planetModifier;
         }
     }
-    // Normalize this score into a probability adjustment.
-    // The sum can vary. A typical sum might be around 2-5. A high sum could be 10+.
-    // Let's say every point in the score adds 1.5% to the reversal probability.
-    // This makes celestial influence significant but not overwhelming.
     probability += (celestialInstabilityScore * 0.01);
 
-
     // --- Environmental Factor Adjustments ---
-
-    // Weather Warning: A major sign of instability.
-    probability += factors.hasWarning * 0.12; // +12% if there's an active warning
-
-    // Moon: New moon (0% illumination) increases chance, full moon (100%) decreases it.
-    probability += (100 - factors.moonIllumination) / 100 * 0.10; // Max +10%
-
-    // Sun Position: Sun below the horizon increases uncertainty.
-    if (factors.solarElevation < 0) {
-        probability += (Math.abs(factors.solarElevation) / 90) * 0.05; // Max +5% for sun being far below horizon
-    }
-
-    // Weather: Rain/snow, high humidity, and high wind increase chance
-    probability += factors.isRainOrSnow * 0.05; // +5% if raining/snowing
-    if (factors.humidity > 85) probability += 0.05; // +5% for high humidity
-    if (factors.windSpeed > 30) probability += 0.05; // +5% for high wind speed (e.g., > 30 km/h)
+    probability += factors.hasWarning * 0.12;
     
-    // Air Quality: Poor air quality adds to the negativity.
-    if (factors.aqi > 150) { // "Unhealthy" or worse
+    probability += factors.isRainOrSnow * 0.05;
+    if (factors.humidity > 85) probability += 0.05;
+    if (factors.windSpeed > 30) probability += 0.05;
+    
+    if (factors.aqi > 150) {
         probability += 0.05;
-    } else if (factors.aqi > 100) { // "Unhealthy for Sensitive Groups"
+    } else if (factors.aqi > 100) {
+        probability += 0.03;
+    }
+    
+    if (factors.hour >= 23 || factors.hour <= 3) {
         probability += 0.03;
     }
 
-    // Time: Late night hours increase chance
-    if (factors.hour >= 23 || factors.hour <= 3) {
-        probability += 0.03; // +3% for deep night
-    }
-
-    // Card-specific adjustments based on name hash (for subtle variety)
+    // Card-specific adjustments
     let nameHash = 0;
     for (let i = 0; i < card.name.length; i++) {
         nameHash = (nameHash << 5) - nameHash + card.name.charCodeAt(i);
-        nameHash |= 0; // Convert to 32bit integer
+        nameHash |= 0;
     }
-    probability += (nameHash % 100) / 2000; // Add a smaller, consistent +/- 2.5% based on card name
+    probability += (nameHash % 100) / 2000;
 
-    // Clamp the probability to be between 5% and 95%
+    // Clamp probability
     return Math.max(0.05, Math.min(0.95, probability));
 }
 
-
 /**
  * Loads the tarot deck data from the JSON file.
- * @returns {Promise<Array>} A promise that resolves to an array of all 78 card objects.
  */
 async function loadDeck() {
     const deckPath = path.join(__dirname, 'tarot_deck.json');
     const deckContent = await fs.readFile(deckPath, 'utf-8');
     const deckData = JSON.parse(deckContent);
+    
+    // Add suit information to each card
     const fullDeck = [
-        ...deckData.major_arcana,
-        ...deckData.minor_arcana.wands,
-        ...deckData.minor_arcana.cups,
-        ...deckData.minor_arcana.swords,
-        ...deckData.minor_arcana.pentacles
+        ...deckData.major_arcana.map(card => ({ ...card, suit: 'major' })),
+        ...deckData.minor_arcana.wands.map(card => ({ ...card, suit: 'wands' })),
+        ...deckData.minor_arcana.cups.map(card => ({ ...card, suit: 'cups' })),
+        ...deckData.minor_arcana.swords.map(card => ({ ...card, suit: 'swords' })),
+        ...deckData.minor_arcana.pentacles.map(card => ({ ...card, suit: 'pentacles' }))
     ];
     return fullDeck;
 }
 
 /**
  * Processes a single drawn card to get its details, including image data.
- * @param {object} card The card object from the deck.
- * @param {function(): number} random The random number generator function.
- * @param {object} divinationFactors The object containing all environmental factors.
- * @returns {Promise<object>} A promise that resolves to the processed card details.
  */
-async function processDrawnCard(card, random, divinationFactors) {
-    const reversalProbability = calculateReversalProbability(card, divinationFactors);
+async function processDrawnCard(card, random, divinationFactors, origin) {
+    const reversalProbability = calculateReversalProbability(card, divinationFactors, origin);
     const isReversed = random() < reversalProbability;
     const imageName = isReversed ? `逆位${card.image}` : card.image;
     const imagePath = path.join(PROJECT_BASE_PATH, 'image', 'tarotcards', imageName);
@@ -415,7 +771,6 @@ async function processDrawnCard(card, random, divinationFactors) {
         imageBase64 = imageBuffer.toString('base64');
     } catch (e) {
         error = `Could not read image file: ${imageName}. Error: ${e.message}`;
-        // Try to read the non-reversed image as a fallback
         try {
             const fallbackImagePath = path.join(PROJECT_BASE_PATH, 'image', 'tarotcards', card.image);
             const imageBuffer = await fs.readFile(fallbackImagePath);
@@ -433,15 +788,15 @@ async function processDrawnCard(card, random, divinationFactors) {
     return {
         name: card.name,
         name_cn: card.name_cn,
+        suit: card.suit,
         reversed: isReversed,
-        reversal_probability: reversalProbability, // Include for transparency
+        reversal_probability: reversalProbability,
         image_url: accessibleImageUrl,
         image_base64: imageBase64,
         mime_type: imageMimeType,
         error: error
     };
 }
-
 
 // --- Main Logic ---
 
@@ -450,13 +805,16 @@ async function handleRequest(args) {
         throw new Error("One or more required environment variables (PROJECT_BASE_PATH, PORT, Image_Key, VarHttpUrl) are not set.");
     }
 
-    const { command, fate_check_number = null } = args;
+    const { command, fate_check_number = null, origin = null } = args;
 
     // --- Command: Get Celestial Data ---
     if (command === 'get_celestial_data') {
-        const { summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors();
+        const { summary: factorsSummary, factors: divinationFactors, origin: originData } = await getDivinationFactors(null, origin);
         
         let rawDataText = "### 原始天文及环境数据 ###\n";
+        rawDataText += `\n#### 起源状态 ####\n`;
+        rawDataText += `- ${originData.symbol} ${originData.name}: ${originData.description}\n\n`;
+        
         rawDataText += "#### 时间与农历 ####\n";
         rawDataText += `- 公历时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n`;
         rawDataText += `- 农历: ${divinationFactors.ganzhiYear} ${divinationFactors.lunarMonthName}${divinationFactors.lunarDayName}\n`;
@@ -467,11 +825,14 @@ async function handleRequest(args) {
         rawDataText += `- 月相光照度: ${divinationFactors.moonIllumination?.toFixed(2) || 'N/A'}%\n`;
         
         const planetKeys = ['mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
-        rawDataText += "行星日心黄道坐标 (AU):\n";
+        const originModifiers = calculateOriginCelestialModifiers(originData.type, divinationFactors);
+        
+        rawDataText += "行星日心黄道坐标 (AU) [起源影响系数]:\n";
         for (const pKey of planetKeys) {
             if (divinationFactors[pKey]) {
                 const pData = divinationFactors[pKey];
-                rawDataText += `- ${pKey.padEnd(8)}: X=${pData.x_au.toFixed(6)}, Y=${pData.y_au.toFixed(6)}, Z=${pData.z_au.toFixed(6)}\n`;
+                const modifier = originModifiers.planetaryInfluence[pKey] || 1.0;
+                rawDataText += `- ${pKey.padEnd(8)}: X=${pData.x_au.toFixed(6)}, Y=${pData.y_au.toFixed(6)}, Z=${pData.z_au.toFixed(6)} [×${modifier.toFixed(2)}]\n`;
             }
         }
         rawDataText += "\n";
@@ -487,12 +848,10 @@ async function handleRequest(args) {
         return {
             status: "success",
             result: {
-                // For pure text results, we can just return a string.
                 content: fullReport
             }
         };
     }
-
 
     // --- Command: Draw Cards ---
     let cardsToDraw = 0;
@@ -523,25 +882,29 @@ async function handleRequest(args) {
             throw new Error(`Unknown command: ${command}`);
     }
 
-    // 2. Get divination factors and the seeded random generator
-    const { random, summary: factorsSummary, factors: divinationFactors } = await getDivinationFactors(fate_check_number);
+    // Get divination factors and the seeded random generator
+    const { random, summary: factorsSummary, factors: divinationFactors, origin: originData } = 
+        await getDivinationFactors(fate_check_number, origin);
 
-    // 3. Load the deck and calculate weights
+    // Load the deck and calculate weights
     const deck = await loadDeck();
     if (deck.length < cardsToDraw) {
         throw new Error("Not enough cards in the deck to perform this spread.");
     }
-    const weightedDeck = calculateCardWeights(deck, divinationFactors);
+    const weightedDeck = calculateCardWeights(deck, divinationFactors, originData);
 
-    // 4. Draw cards using the weighted sampling algorithm
+    // Draw cards using the weighted sampling algorithm
     const drawnCardsRaw = drawWeightedCards(weightedDeck, cardsToDraw, random);
 
-    // 5. Process each drawn card (determine reversal, get image, etc.)
-    const processedCardsPromises = drawnCardsRaw.map(card => processDrawnCard(card, random, divinationFactors));
+    // Process each drawn card
+    const processedCardsPromises = drawnCardsRaw.map(card => 
+        processDrawnCard(card, random, divinationFactors, originData)
+    );
     const processedCards = await Promise.all(processedCardsPromises);
 
-    // 6. Build the final response content
-    let summaryText = `**${spreadName} - 占卜结果**\n\n`;
+    // Build the final response content
+    let summaryText = `**${spreadName} - 占卜结果**\n`;
+    summaryText += `**起源: ${originData.symbol} ${originData.name}**\n\n`;
     summaryText += `${factorsSummary}\n---\n\n`;
     const contentForAI = [];
     const imageContents = [];
@@ -550,7 +913,8 @@ async function handleRequest(args) {
         const position = positions[index] || `卡牌 ${index + 1}`;
         const probPercent = (pCard.reversal_probability * 100).toFixed(0);
         const reversedText = pCard.reversed ? ` (逆位, 倾向 ${probPercent}%)` : ` (正位, 逆位倾向 ${probPercent}%)`;
-        summaryText += `**${position}: ${pCard.name_cn}${reversedText}**\n`;
+        const suitText = pCard.suit === 'major' ? ' [大阿卡纳]' : ` [${pCard.suit}]`;
+        summaryText += `**${position}: ${pCard.name_cn}${reversedText}${suitText}**\n`;
 
         if (pCard.image_base64) {
             imageContents.push({
@@ -570,11 +934,12 @@ async function handleRequest(args) {
     contentForAI.push({ type: 'text', text: summaryText.trim() });
     contentForAI.push(...imageContents);
 
-// Add card back URL for AI
+    // Add card back URL for AI
     const cardBackImageName = '牌背.jpeg';
     const cardBackRelativePath = 'tarotcards/' + encodeURIComponent(cardBackImageName);
     const cardBackUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${cardBackRelativePath}`;
     contentForAI.push({ type: 'text', text: `牌背图片URL: ${cardBackUrl}` });
+    
     return {
         status: "success",
         result: {
@@ -586,7 +951,6 @@ async function handleRequest(args) {
         }
     };
 }
-
 
 async function main() {
     let inputChunks = [];
