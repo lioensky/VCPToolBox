@@ -69,7 +69,9 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             const configPath = path.join(__dirname, '..', 'config.env');
             await fs.writeFile(configPath, content, 'utf-8');
-            res.json({ message: '主配置已成功保存。更改可能需要重启服务才能完全生效。' });
+            // Reload all plugins to apply changes from the main config.env
+            await pluginManager.loadPlugins();
+            res.json({ message: '主配置已成功保存并已重新加载。' });
         } catch (error) {
             console.error('Error writing main config for admin panel:', error);
             res.status(500).json({ error: 'Failed to write main config file', details: error.message });
@@ -310,7 +312,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             manifest.description = description;
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
             await pluginManager.loadPlugins(); // 重新加载以更新指令
-            res.json({ message: `插件 ${pluginName} 的描述已更新。` });
+            res.json({ message: `插件 ${pluginName} 的描述已更新并重新加载。` });
 
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating description for plugin ${pluginName}:`, error);
@@ -362,8 +364,9 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             const configPath = path.join(targetPluginPath, 'config.env');
             await fs.writeFile(configPath, content, 'utf-8');
-            
-            res.json({ message: `插件 ${pluginName} 的配置已保存。更改可能需要重启插件或服务才能生效。` });
+            // Reload all plugins to apply the configuration changes immediately.
+            await pluginManager.loadPlugins();
+            res.json({ message: `插件 ${pluginName} 的配置已保存并已重新加载。` });
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error writing config.env for plugin ${pluginName}:`, error);
             res.status(500).json({ error: `保存插件 ${pluginName} 配置时出错`, details: error.message });
@@ -440,7 +443,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             await fs.writeFile(targetManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
             await pluginManager.loadPlugins(); // 重新加载以更新指令
-            res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新。` });
+            res.json({ message: `指令 '${commandIdentifier}' 在插件 '${pluginName}' 中的描述已更新并重新加载。` });
 
         } catch (error) {
             console.error(`[AdminPanelRoutes] Error updating command description for plugin ${pluginName}, command ${commandIdentifier}:`, error);

@@ -19,8 +19,14 @@
       {
         "commandIdentifier": "EditDailyNote",
         "tool_name": "DailyNoteEditor",
-        "description": "用于编辑指定角色的日记内容。AI需要提供要查找并替换的旧内容（target）和新的内容（replace）。\n\n安全性检查：\n1. target字段长度不能少于15字符。\n2. 一次调用只能修改一个日记文件中的匹配内容。\n\n请在您的回复中，使用以下精确格式来请求日记编辑，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteEditor「末」,\ntarget:「始」(必需) 日记中需要被查找和替换的旧内容。必须至少包含15个字符。「末」,\nreplace:「始」(必需) 用于替换target的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "“日记编辑器工具”:该工具用于编辑指定的日记内容。AI需要提供要查找并替换的旧内容（target）和新的内容（replace）。也可选定“maid”来指定编辑对象。即可用于编辑已有日记，也可用于更新已创建的同日日记。\n\n安全性检查：\n1. target字段长度不能少于15字符。\n2. 一次调用只能修改一个日记文件中的匹配内容。\n\n请在您的回复中，使用以下精确格式来请求日记编辑，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteEditor「末」,\nmaid:「始」(可选) 指定要编辑哪个角色的日记本，例如“小克”。如果未提供，则会在所有日记本中搜索。「末」,\ntarget:「始」(必需) 日记中需要被查找和替换的旧内容。必须至少包含15个字符。「末」,\nreplace:「始」(必需) 用于替换target的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
+          {
+            "name": "maid",
+            "description": "指定要编辑哪个角色的日记本。如果未提供，则会在所有日记本中搜索。",
+            "required": false,
+            "type": "string"
+          },
           {
             "name": "target",
             "description": "日记中需要被查找和替换的旧内容。必须至少包含15个字符。",
@@ -34,7 +40,7 @@
             "type": "string"
           }
         ],
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteEditor「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteEditor「末」,\nmaid:「始」小克「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   },
