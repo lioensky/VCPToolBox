@@ -1065,18 +1065,20 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                     const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
                     let parsedToolArgs = {};
                     let requestedToolName = null;
+                    let isArchery = false;
                     const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
                     let regexMatch;
                     while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
                         const key = regexMatch[1];
                         const value = regexMatch[2].trim();
                         if (key === "tool_name") requestedToolName = value;
+                        else if (key === "archery") isArchery = (value === 'true' || value === 'no_reply');
                         else parsedToolArgs[key] = value;
                     }
 
                     if (requestedToolName) {
-                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
-                         if (DEBUG_MODE) console.log(`[VCP Stream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs);
+                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs, archery: isArchery });
+                         if (DEBUG_MODE) console.log(`[VCP Stream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs, `Archery: ${isArchery}`);
                     } else {
                         if (DEBUG_MODE) console.warn("[VCP Stream Loop] Parsed a tool request block but no tool_name found:", requestBlockContent.substring(0,100));
                     }
@@ -1106,8 +1108,66 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                 }
                 if (DEBUG_MODE) console.log(`[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
 
-                let allToolResultsContentForAI = [];
-                const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
+                const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
+                const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
+
+                // Execute archery calls without waiting for results to be sent back to the AI
+                archeryCalls.forEach(toolCall => {
+                    if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`, toolCall.args);
+                    // Fire-and-forget execution, but handle logging and notifications in then/catch
+                    pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp)
+                        .then(async (pluginResult) => {
+                            await writeDebugLog(`VCP-Stream-Archery-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
+                            const toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                            webSocketServer.broadcast({
+                                type: 'vcp_log',
+                                data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop_archery' }
+                            }, 'VCPLog');
+                            const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
+                            if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
+                                const wsPushMessageStream = {
+                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                                    data: pluginResult
+                                };
+                                webSocketServer.broadcast(wsPushMessageStream, pluginManifestForStream.webSocketPush.targetClientType || null);
+                            }
+                            if (shouldShowVCP && !res.writableEnded) {
+                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'success', pluginResult);
+                            }
+                        })
+                        .catch(pluginError => {
+                            console.error(`[VCP Stream Loop ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
+                            const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
+                            webSocketServer.broadcast({
+                                type: 'vcp_log',
+                                data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_archery_error' }
+                            }, 'VCPLog');
+                            if (shouldShowVCP && !res.writableEnded) {
+                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', toolResultText);
+                            }
+                        });
+                });
+
+                // If there are no normal calls to wait for, the AI's turn is over.
+                if (normalCalls.length === 0) {
+                    if (DEBUG_MODE) console.log('[VCP Stream Loop] Only archery calls were found. Sending final signals and exiting loop.');
+                    if (!res.writableEnded) {
+                        const finalChunkPayload = {
+                            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
+                            object: "chat.completion.chunk",
+                            created: Math.floor(Date.now() / 1000),
+                            model: originalBody.model,
+                            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                        };
+                        res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                        res.write('data: [DONE]\n\n');
+                        res.end();
+                    }
+                    break; // Exit the VCP loop
+                }
+
+                // Process normal (non-archery) calls and wait for their results to send back to the AI
+                const toolExecutionPromises = normalCalls.map(async (toolCall) => {
                     let toolResultText; // For logs and simple text display
                     let toolResultContentForAI; // For the next AI call (can be rich content)
 
@@ -1117,42 +1177,31 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                             const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
                             await writeDebugLog(`VCP-Stream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                             
-                            // Always create a text version for logging/VCP output
                             toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
 
-                            // Check for rich content to pass to the AI
                             let richContentPayload = null;
                             if (typeof pluginResult === 'object' && pluginResult) {
-                                // Standard local plugin structure
                                 if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
                                     richContentPayload = pluginResult.data.content;
                                 }
-                                // Structure from distributed FileOperator plugin or new image gen plugins
                                 else if (Array.isArray(pluginResult.content)) {
                                     richContentPayload = pluginResult.content;
                                 }
                             }
 
                             if (richContentPayload) {
-                                // If it's rich content, use it for the AI
                                 toolResultContentForAI = richContentPayload;
-                                
-                                // For logging, find the text part to make it human-readable
                                 const textPart = richContentPayload.find(p => p.type === 'text');
                                 toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
                             } else {
-                                // If not rich content, use the original text representation for both AI and logging
                                 toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                                // toolResultText is already set correctly in this case from the initial assignment
                             }
 
-                            // Push to VCPLog via WebSocketServer (for VCP call logging)
                             webSocketServer.broadcast({
                                 type: 'vcp_log',
                                 data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop' }
                             }, 'VCPLog');
 
-                            // WebSocket push for the plugin's actual result
                             const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
                             if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
                                 const wsPushMessageStream = {
@@ -1308,17 +1357,19 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                     const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
                     let parsedToolArgs = {};
                     let requestedToolName = null;
+                    let isArchery = false;
                     const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
                     let regexMatch;
                     while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
                         const key = regexMatch[1];
                         const value = regexMatch[2].trim();
                         if (key === "tool_name") requestedToolName = value;
+                        else if (key === "archery") isArchery = (value === 'true' || value === 'no_reply');
                         else parsedToolArgs[key] = value;
                     }
 
                     if (requestedToolName) {
-                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs });
+                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs, archery: isArchery });
                     } else {
                         if (DEBUG_MODE) console.warn("[Multi-Tool] Parsed a tool request block but no tool_name found:", requestBlockContent);
                     }
@@ -1327,60 +1378,93 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
 
                 if (toolCallsInThisAIResponse.length > 0) {
                     anyToolProcessedInCurrentIteration = true; // At least one tool request was found in the AI's response
-                    let allToolResultsContentForAI = [];
+                    const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
+                    const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
+
+                    // Execute archery calls without waiting for results to be sent back to the AI
+                    archeryCalls.forEach(toolCall => {
+                        if (DEBUG_MODE) console.log(`[Multi-Tool] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`, toolCall.args);
+                        // Fire-and-forget execution, but handle logging and notifications in then/catch
+                        pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp)
+                            .then(async (pluginResult) => {
+                                await writeDebugLog(`VCP-NonStream-Archery-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
+                                const toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
+                                webSocketServer.broadcast({
+                                    type: 'vcp_log',
+                                    data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop_archery' }
+                                }, 'VCPLog');
+                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
+                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
+                                    const wsPushMessageNonStream = {
+                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                                        data: pluginResult
+                                    };
+                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
+                                }
+                                if (shouldShowVCP) {
+                                    const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'success', pluginResult);
+                                    if (vcpText) conversationHistoryForClient.push(vcpText);
+                                }
+                            })
+                            .catch(pluginError => {
+                                console.error(`[Multi-Tool ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
+                                const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
+                                webSocketServer.broadcast({
+                                    type: 'vcp_log',
+                                    data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_archery_error' }
+                                }, 'VCPLog');
+                                if (shouldShowVCP) {
+                                    const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'error', toolResultText);
+                                    if (vcpText) conversationHistoryForClient.push(vcpText);
+                                }
+                            });
+                    });
+
+                    // If there are no normal calls to wait for, the AI's turn is over.
+                    if (normalCalls.length === 0) {
+                        if (DEBUG_MODE) console.log("[Multi-Tool] Only archery calls were found. Exiting loop.");
+                        break; // Exit the do-while loop
+                    }
 
                     // Add the AI's full response (that contained the tool requests) to the messages for the next AI call
                     currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
 
-                    // Use Promise.all to execute tool calls potentially in parallel, though JS is single-threaded
-                    // The main benefit here is cleaner async/await handling for multiple calls.
-                    const toolExecutionPromises = toolCallsInThisAIResponse.map(async (toolCall) => {
-                        let toolResultText; // For logs and simple text display
-                        let toolResultContentForAI; // For the next AI call (can be rich content)
+                    // Process normal (non-archery) calls and wait for their results to send back to the AI
+                    const toolExecutionPromises = normalCalls.map(async (toolCall) => {
+                        let toolResultText;
+                        let toolResultContentForAI;
 
                         if (pluginManager.getPlugin(toolCall.name)) {
                             try {
                                 if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                // 将标准化的 clientIp 传递给 processToolCall
                                 const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
                                 await writeDebugLog(`VCP-NonStream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
                                 
-                                // Always create a text version for logging/VCP output
                                 toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
 
-                                // Check for rich content to pass to the AI
                                 let richContentPayload = null;
                                 if (typeof pluginResult === 'object' && pluginResult) {
-                                    // Standard local plugin structure
                                     if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
                                         richContentPayload = pluginResult.data.content;
                                     }
-                                    // Structure from distributed FileOperator plugin or new image gen plugins
                                     else if (Array.isArray(pluginResult.content)) {
                                         richContentPayload = pluginResult.content;
                                     }
                                 }
 
                                 if (richContentPayload) {
-                                    // If it's rich content, use it for the AI
                                     toolResultContentForAI = richContentPayload;
-                                    
-                                    // For logging, find the text part to make it human-readable
                                     const textPart = richContentPayload.find(p => p.type === 'text');
                                     toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
                                 } else {
-                                    // If not rich content, use the original text representation for both AI and logging
                                     toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                                    // toolResultText is already set correctly in this case from the initial assignment
                                 }
 
-                                // Push to VCPLog via WebSocketServer (for VCP call logging)
                                 webSocketServer.broadcast({
                                    type: 'vcp_log',
                                    data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' }
                                 }, 'VCPLog');
 
-                                // WebSocket push for the plugin's actual result
                                 const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
                                 if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
                                     const wsPushMessageNonStream = {

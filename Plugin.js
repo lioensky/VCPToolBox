@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const schedule = require('node-schedule');
 const dotenv = require('dotenv'); // Ensures dotenv is available
 const FileFetcherServer = require('./FileFetcherServer.js');
+const express = require('express'); // For plugin API routing
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -862,19 +863,32 @@ class PluginManager {
         for (const [name, serviceData] of this.serviceModules) {
             try {
                 const pluginConfig = this._getPluginConfig(serviceData.manifest);
-                const effectiveDebugMode = typeof pluginConfig.DebugMode === 'boolean' ? pluginConfig.DebugMode : 'N/A'; // Use resolved debug mode for this log
-                if (this.debugMode) console.log(`[PluginManager] Registering routes for service plugin: ${name}. Plugin DebugMode: ${effectiveDebugMode}`);
-                // 智能判断 registerRoutes 函数的参数数量，以兼容新旧插件
-                const registerRoutesFunc = serviceData.module.registerRoutes;
-                if (registerRoutesFunc.length >= 4) {
-                    // 新式插件，需要 adminApiRouter
-                    if (this.debugMode) console.log(`[PluginManager] Calling new-style registerRoutes for ${name} (4+ args).`);
-                    registerRoutesFunc(app, adminApiRouter, pluginConfig, projectBasePath);
-                } else {
-                    // 旧式插件，只期望 app, config, basePath
-                    if (this.debugMode) console.log(`[PluginManager] Calling legacy-style registerRoutes for ${name} (3 args).`);
-                    registerRoutesFunc(app, pluginConfig, projectBasePath);
+                const manifest = serviceData.manifest;
+                const module = serviceData.module;
+
+                // 新的、带命名空间的API路由注册机制
+                if (manifest.hasApiRoutes && typeof module.registerApiRoutes === 'function') {
+                    if (this.debugMode) console.log(`[PluginManager] Registering namespaced API routes for service plugin: ${name}`);
+                    const pluginRouter = express.Router();
+                    // 将 router 和其他上下文传递给插件
+                    module.registerApiRoutes(pluginRouter, pluginConfig, projectBasePath, this.webSocketServer);
+                    // 统一挂载到带命名空间的前缀下
+                    app.use(`/api/plugins/${name}`, pluginRouter);
+                    if (this.debugMode) console.log(`[PluginManager] Mounted API routes for ${name} at /api/plugins/${name}`);
                 }
+
+                // 兼容旧的、直接在 app 上注册的 service 插件
+                if (typeof module.registerRoutes === 'function') {
+                    if (this.debugMode) console.log(`[PluginManager] Registering legacy routes for service plugin: ${name}`);
+                    if (module.registerRoutes.length >= 4) {
+                        if (this.debugMode) console.log(`[PluginManager] Calling new-style legacy registerRoutes for ${name} (4+ args).`);
+                        module.registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath);
+                    } else {
+                        if (this.debugMode) console.log(`[PluginManager] Calling legacy-style registerRoutes for ${name} (3 args).`);
+                        module.registerRoutes(app, pluginConfig, projectBasePath);
+                    }
+                }
+
             } catch (e) {
                 console.error(`[PluginManager] Error initializing service plugin ${name}:`, e); // Keep error
             }

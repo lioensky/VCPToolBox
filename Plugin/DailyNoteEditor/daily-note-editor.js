@@ -29,8 +29,7 @@ async function processEditRequest(inputData) {
     }
 
     // 2. 验证输入参数
-    const target = args.target;
-    const replace = args.replace;
+    const { target, replace, maid } = args;
 
     if (typeof target !== 'string' || typeof replace !== 'string') {
         return { status: "error", error: "Invalid arguments: 'target' and 'replace' must be strings." };
@@ -41,82 +40,88 @@ async function processEditRequest(inputData) {
         return { status: "error", error: `Security check failed: 'target' must be at least 15 characters long. Provided length: ${target.length}` };
     }
 
-    debugLog(`Validated input. Target length: ${target.length}`);
+    debugLog(`Validated input. Target length: ${target.length}. Maid: ${maid || 'Not specified'}`);
 
     // 3. 扫描日记文件夹并查找/替换内容
     try {
-        const characterDirs = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
         let modificationDone = false;
         let modifiedFilePath = null;
+        const directoriesToScan = [];
 
-        for (const dirEntry of characterDirs) {
-            if (dirEntry.isDirectory()) {
-                const characterName = dirEntry.name;
-                const characterDirPath = path.join(dailyNoteRootPath, characterName);
-                debugLog(`Scanning directory for character: ${characterName}`);
-
-                try {
-                    const files = await fs.readdir(characterDirPath);
-                    // 过滤出 .txt 文件并按名称排序，以便按某种可预测的顺序处理
-                    const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt')).sort();
-                    debugLog(`Found ${txtFiles.length} .txt files for ${characterName}`);
-
-                    for (const file of txtFiles) {
-                        if (modificationDone) break; // 安全性检查 2: 一次只能修改一个日记内容
-
-                        const filePath = path.join(characterDirPath, file);
-                        debugLog(`Reading file: ${filePath}`);
-
-                        let content;
-                        try {
-                            content = await fs.readFile(filePath, 'utf-8');
-                        } catch (readErr) {
-                            console.error(`[DailyNoteEditor] Error reading diary file ${filePath}:`, readErr.message);
-                            // 继续处理下一个文件
-                            continue;
-                        }
-
-                        // 使用 indexOf 查找 target 字符串
-                        const index = content.indexOf(target);
-
-                        if (index !== -1) {
-                            debugLog(`Found target in file: ${filePath}`);
-
-                            // 执行替换
-                            const newContent = content.substring(0, index) + replace + content.substring(index + target.length);
-
-                            // 写入修改后的内容
-                            try {
-                                await fs.writeFile(filePath, newContent, 'utf-8');
-                                modificationDone = true;
-                                modifiedFilePath = filePath;
-                                debugLog(`Successfully modified file: ${filePath}`);
-                                // 安全性检查 2: 找到并修改第一个匹配项后立即停止
-                                break;
-                            } catch (writeErr) {
-                                console.error(`[DailyNoteEditor] Error writing to diary file ${filePath}:`, writeErr.message);
-                                // 如果写入失败，记录错误，但继续查找下一个可能的匹配项（虽然要求只修改一个，但为了健壮性，这里不立即退出）
-                                // 实际应用中，如果要求严格“一次只能修改一个”，这里应该直接返回错误并退出。
-                                // 考虑到AI可能发出多个匹配，我们只修改第一个找到的，所以这里break是正确的。
-                                break; // 写入失败也算处理了这个文件，退出内层循环
-                            }
-                        } else {
-                             debugLog(`Target not found in file: ${filePath}`);
-                        }
-                    }
-                } catch (charDirError) {
-                    console.error(`[DailyNoteEditor] Error reading character directory ${characterDirPath}:`, charDirError.message);
-                    // 继续处理下一个角色目录
-                    continue;
+        if (maid) {
+            // 如果指定了 maid，只扫描该角色的目录
+            debugLog(`Maid specified: '${maid}'. Targeting specific directory.`);
+            const maidDirPath = path.join(dailyNoteRootPath, maid);
+            try {
+                await fs.access(maidDirPath); // 验证目录是否存在
+                directoriesToScan.push({ name: maid, path: maidDirPath });
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    return { status: "error", error: `Diary folder for maid '${maid}' not found.` };
+                }
+                throw e; // 重新抛出其他错误
+            }
+        } else {
+            // 如果未指定 maid，扫描所有目录 (原始行为)
+            debugLog("No maid specified. Scanning all directories.");
+            const characterDirs = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            for (const dirEntry of characterDirs) {
+                if (dirEntry.isDirectory()) {
+                    directoriesToScan.push({ name: dirEntry.name, path: path.join(dailyNoteRootPath, dirEntry.name) });
                 }
             }
-            if (modificationDone) break; // 安全性检查 2: 找到并修改第一个匹配项后立即停止
+        }
+
+        for (const dir of directoriesToScan) {
+            debugLog(`Scanning directory: ${dir.path}`);
+            try {
+                const files = await fs.readdir(dir.path);
+                const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt')).sort();
+                debugLog(`Found ${txtFiles.length} .txt files for ${dir.name}`);
+
+                for (const file of txtFiles) {
+                    if (modificationDone) break;
+
+                    const filePath = path.join(dir.path, file);
+                    debugLog(`Reading file: ${filePath}`);
+                    let content;
+                    try {
+                        content = await fs.readFile(filePath, 'utf-8');
+                    } catch (readErr) {
+                        console.error(`[DailyNoteEditor] Error reading diary file ${filePath}:`, readErr.message);
+                        continue;
+                    }
+
+                    const index = content.indexOf(target);
+                    if (index !== -1) {
+                        debugLog(`Found target in file: ${filePath}`);
+                        const newContent = content.substring(0, index) + replace + content.substring(index + target.length);
+                        try {
+                            await fs.writeFile(filePath, newContent, 'utf-8');
+                            modificationDone = true;
+                            modifiedFilePath = filePath;
+                            debugLog(`Successfully modified file: ${filePath}`);
+                            break;
+                        } catch (writeErr) {
+                            console.error(`[DailyNoteEditor] Error writing to diary file ${filePath}:`, writeErr.message);
+                            break;
+                        }
+                    } else {
+                        debugLog(`Target not found in file: ${filePath}`);
+                    }
+                }
+            } catch (charDirError) {
+                console.error(`[DailyNoteEditor] Error reading character directory ${dir.path}:`, charDirError.message);
+                continue;
+            }
+            if (modificationDone) break;
         }
 
         if (modificationDone) {
             return { status: "success", result: `Successfully edited diary file: ${modifiedFilePath}` };
         } else {
-            return { status: "error", error: "Target content not found in any diary files." };
+            const errorMessage = maid ? `Target content not found in any diary files for maid '${maid}'.` : "Target content not found in any diary files.";
+            return { status: "error", error: errorMessage };
         }
 
     } catch (error) {
