@@ -109,6 +109,7 @@ console.info = (...args) => {
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
+const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
@@ -181,6 +182,8 @@ for (const key in process.env) {
 }
 if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length} 条全局上下文转换规则。`);
 else console.log('未加载任何全局上下文转换规则。');
+
+const vectorDBManager = new VectorDBManager(); // 新增：创建 VectorDBManager 实例
 
 const app = express();
 app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请求，方便本地文件调试
@@ -298,49 +301,60 @@ app.use((req, res, next) => {
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 
-async function replaceCommonVariables(text, model, role) {
+async function replaceAgentVariables(text, model, role) {
+    if (text == null) return '';
+    let processedText = String(text);
+
+    // This function specifically handles agent placeholders, which should only be in system messages.
+    if (role !== 'system') {
+        return processedText;
+    }
+
+    const agentConfigs = {};
+    for (const envKey in process.env) {
+        if (envKey.startsWith('Agent')) {
+            const agentName = envKey.substring(5);
+            if (agentName) {
+                agentConfigs[agentName] = process.env[envKey];
+            }
+        }
+    }
+
+    // A single pass should be enough if we resolve them recursively, but a loop handles multiple different agents.
+    for (const agentName in agentConfigs) {
+        const placeholder = `{{${agentName}}}`;
+        if (processedText.includes(placeholder)) {
+            const agentFileName = agentConfigs[agentName];
+            const agentFilePath = path.join(AGENT_DIR, agentFileName);
+            try {
+                let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
+                // Recursively resolve agent placeholders within the loaded agent file.
+                // This handles nested agents like {{AgentA}} containing {{AgentB}}.
+                let resolvedAgentContent = await replaceAgentVariables(agentFileContent, model, role);
+                processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
+            } catch (error) {
+                let errorMsg;
+                if (error.code === 'ENOENT') {
+                    errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
+                    console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
+                } else {
+                    errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
+                    console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
+                }
+                processedText = processedText.replaceAll(placeholder, errorMsg);
+            }
+        }
+    }
+    return processedText;
+}
+
+
+async function replaceOtherVariables(text, model, role) {
     if (text == null) return '';
     let processedText = String(text);
 
     // 仅在 system role 中执行大多数占位符替换
     if (role === 'system') {
-        // START: Agent placeholder processing
-        const agentConfigs = {};
-        for (const envKey in process.env) {
-            if (envKey.startsWith('Agent')) { // e.g., AgentNova
-                const agentName = envKey.substring(5); // e.g., Nova
-                if (agentName) { // Make sure it's not just "Agent"
-                    agentConfigs[agentName] = process.env[envKey]; // agentConfigs["Nova"] = "Nova.txt"
-                }
-            }
-        }
-
-        for (const agentName in agentConfigs) {
-            const placeholder = `{{${agentName}}}`; // e.g., {{Nova}}
-            if (processedText.includes(placeholder)) {
-                const agentFileName = agentConfigs[agentName]; // e.g., Nova.txt
-                const agentFilePath = path.join(AGENT_DIR, agentFileName);
-                try {
-                    let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
-                    // Recursively call replaceCommonVariables for the agent's content
-                    // This ensures placeholders within the agent file are resolved.
-                    let resolvedAgentContent = await replaceCommonVariables(agentFileContent, model, role);
-                    processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
-                } catch (error) {
-                    let errorMsg;
-                    if (error.code === 'ENOENT') {
-                        errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
-                        console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
-                    } else {
-                        errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
-                        console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
-                    }
-                    processedText = processedText.replaceAll(placeholder, errorMsg);
-                }
-            }
-        }
-        // END: Agent placeholder processing
-
         // 新增 Tar/Var 变量处理逻辑 (支持 .txt 文件)
         for (const envKey in process.env) {
             if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
@@ -353,7 +367,7 @@ async function replaceCommonVariables(text, model, role) {
                         try {
                             const fileContent = await fs.readFile(txtFilePath, 'utf-8');
                             // 递归解析文件内容中的变量
-                            const resolvedContent = await replaceCommonVariables(fileContent, model, role);
+                            const resolvedContent = await replaceOtherVariables(fileContent, model, role);
                             processedText = processedText.replaceAll(placeholder, resolvedContent);
                         } catch (error) {
                             let errorMsg;
@@ -392,7 +406,7 @@ async function replaceCommonVariables(text, model, role) {
                         try {
                             const fileContent = await fs.readFile(txtFilePath, 'utf-8');
                             // 递归解析文件内容中的变量, 依赖用户配置来避免无限递归
-                            promptValue = await replaceCommonVariables(fileContent, model, role);
+                            promptValue = await replaceOtherVariables(fileContent, model, role);
                         } catch (error) {
                             let errorMsg;
                             if (error.code === 'ENOENT') {
@@ -490,7 +504,7 @@ async function replaceCommonVariables(text, model, role) {
         if (processedText && typeof processedText === 'string' && effectiveImageKey) {
             processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
         } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
-            if (DEBUG_MODE) console.warn('[replaceCommonVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
+            if (DEBUG_MODE) console.warn('[replaceOtherVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
         }
         const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
         let emojiMatch;
@@ -511,11 +525,11 @@ async function replaceCommonVariables(text, model, role) {
             try {
                 allDiariesData = JSON.parse(allDiariesDataString);
             } catch (e) {
-                console.error(`[replaceCommonVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
+                console.error(`[replaceOtherVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
                 // Keep allDiariesData as an empty object, so individual lookups will fail gracefully
             }
         } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
-             if (DEBUG_MODE) console.warn(`[replaceCommonVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
+             if (DEBUG_MODE) console.warn(`[replaceOtherVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
         }
 
 
@@ -531,7 +545,7 @@ async function replaceCommonVariables(text, model, role) {
             if (allDiariesData.hasOwnProperty(characterName)) {
                 diaryContent = allDiariesData[characterName];
             } else {
-                // console.warn(`[replaceCommonVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
+                // console.warn(`[replaceOtherVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
                 // No need to log for every miss, default message is sufficient
             }
             
@@ -597,7 +611,7 @@ async function replaceCommonVariables(text, model, role) {
                         tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[任务 ${pluginName} (ID: ${requestId}) 结果待更新...]`);
                     } else {
                         // Other errors (e.g., JSON parse error from file)
-                        console.error(`[replaceCommonVariables] Error processing async placeholder ${placeholder}:`, error);
+                        console.error(`[replaceOtherVariables] Error processing async placeholder ${placeholder}:`, error);
                         tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[获取任务 ${pluginName} (ID: ${requestId}) 结果时出错]`);
                     }
                 }
@@ -787,56 +801,74 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
             }
         }
 
-        // --- Start Message Preprocessing Chain ---
-        let processedMessages = originalBody.messages;
+        // --- New Staged Processing Logic ---
 
-        // 1. Handle MultiModalProcessor specifically due to the shouldProcessMedia flag
+        // Stage 1: Expand Agent placeholders first to reveal potential RAG markers.
+        let agentExpandedMessages = await Promise.all(originalBody.messages.map(async (msg) => {
+            const newMessage = JSON.parse(JSON.stringify(msg));
+            if (newMessage.content && typeof newMessage.content === 'string') {
+                newMessage.content = await replaceAgentVariables(newMessage.content, originalBody.model, msg.role);
+            } else if (Array.isArray(newMessage.content)) {
+                newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
+                    if (part.type === 'text' && typeof part.text === 'string') {
+                        const newPart = JSON.parse(JSON.stringify(part));
+                        newPart.text = await replaceAgentVariables(newPart.text, originalBody.model, msg.role);
+                        return newPart;
+                    }
+                    return part;
+                }));
+            }
+            return newMessage;
+        }));
+        if (DEBUG_MODE) await writeDebugLog('LogAfterAgentExpansion', agentExpandedMessages);
+
+        // Stage 2: Run all message preprocessors (including RAG, Tavern, etc.)
+        let processedMessages = agentExpandedMessages;
+        
+        // 2a. Handle MultiModalProcessor specifically due to the shouldProcessMedia flag
         if (shouldProcessMedia) {
-            // Check for the new plugin name, but also handle the old one for backward compatibility during transition
             const processorName = pluginManager.messagePreprocessors.has("MultiModalProcessor") ? "MultiModalProcessor" : "ImageProcessor";
             if (pluginManager.messagePreprocessors.has(processorName)) {
-                if (DEBUG_MODE) console.log(`[Server] Media processing enabled, calling ${processorName} plugin...`);
+                if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
                 try {
                     processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
                 } catch (pluginError) {
-                    console.error(`[Server] Error executing ${processorName} plugin:`, pluginError);
+                    console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
                 }
             }
         }
-
-        // 2. Loop through all other message preprocessors (like VCPTavern)
+        
+        // 2b. Loop through all other message preprocessors
         for (const name of pluginManager.messagePreprocessors.keys()) {
-            if (name === "ImageProcessor" || name === "MultiModalProcessor") continue; // Skip, as it was handled above
-
+            if (name === "ImageProcessor" || name === "MultiModalProcessor") continue; // Skip, handled above
             if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
             try {
                 processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
             } catch (pluginError) {
-                console.error(`[Server] Error executing message preprocessor plugin ${name}:`, pluginError);
-                // Continue with the next preprocessor even if one fails
+                console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
             }
         }
-        originalBody.messages = processedMessages;
-        // --- End Message Preprocessing Chain ---
-        
-        if (originalBody.messages && Array.isArray(originalBody.messages)) {
-            originalBody.messages = await Promise.all(originalBody.messages.map(async (msg) => {
-                const newMessage = JSON.parse(JSON.stringify(msg));
-                if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await replaceCommonVariables(newMessage.content, originalBody.model, msg.role);
-                } else if (Array.isArray(newMessage.content)) {
-                    newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
-                        if (part.type === 'text' && typeof part.text === 'string') {
-                            const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await replaceCommonVariables(newPart.text, originalBody.model, msg.role);
-                            return newPart;
-                        }
-                        return part;
-                    }));
-                }
-                return newMessage;
-            }));
-        }
+        if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
+
+        // Stage 3: Replace all other placeholders on the pre-processed messages.
+        let finalMessages = await Promise.all(processedMessages.map(async (msg) => {
+            const newMessage = JSON.parse(JSON.stringify(msg));
+            if (newMessage.content && typeof newMessage.content === 'string') {
+                newMessage.content = await replaceOtherVariables(newMessage.content, originalBody.model, msg.role);
+            } else if (Array.isArray(newMessage.content)) {
+                newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
+                    if (part.type === 'text' && typeof part.text === 'string') {
+                        const newPart = JSON.parse(JSON.stringify(part));
+                        newPart.text = await replaceOtherVariables(newPart.text, originalBody.model, msg.role);
+                        return newPart;
+                    }
+                    return part;
+                }));
+            }
+            return newMessage;
+        }));
+
+        originalBody.messages = finalMessages;
         await writeDebugLog('LogOutputAfterProcessing', originalBody);
         
         const isOriginalRequestStreaming = originalBody.stream === true;
@@ -909,12 +941,22 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                                     try {
                                         const parsedData = JSON.parse(jsonData);
                                         const content = parsedData.choices?.[0]?.delta?.content;
-                                        // Core filtering logic
+                                        const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
+
+                                        // Core filtering logic for thinking content (GPT-5-mini)
                                         if (isGpt5Mini && content && thinkingRegex.test(content)) {
                                             if (DEBUG_MODE) {
                                                 console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk: ${content}`);
                                             }
                                             continue; // Skip this line
+                                        }
+
+                                        // Filter out reasoning_content from all models (o1, etc.)
+                                        if (reasoningContent !== undefined) {
+                                            if (DEBUG_MODE) {
+                                                console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk from model ${originalBody.model}: ${reasoningContent}`);
+                                            }
+                                            continue; // Skip this line entirely
                                         }
                                     } catch (e) {
                                         // Not a JSON we care about, pass through
@@ -1012,7 +1054,27 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
                                     if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
                                         try {
                                             const parsedData = JSON.parse(jsonData);
-                                            collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
+                                            const content = parsedData.choices?.[0]?.delta?.content;
+                                            const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
+
+                                            // Apply the same filtering logic as in the main processing
+                                            if (isGpt5Mini && content && thinkingRegex.test(content)) {
+                                                if (DEBUG_MODE) {
+                                                    console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk in finalize: ${content}`);
+                                                }
+                                                continue; // Skip this line
+                                            }
+
+                                            // Filter out reasoning_content from all models (o1, etc.)
+                                            if (reasoningContent !== undefined) {
+                                                if (DEBUG_MODE) {
+                                                    console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk in finalize from model ${originalBody.model}: ${reasoningContent}`);
+                                                }
+                                                continue; // Skip this line entirely
+                                            }
+
+                                            // Only collect content if it passed all filters
+                                            collectedContentThisTurn += content || '';
                                         } catch (e) { /* ignore */ }
                                     }
                                 }
@@ -1908,9 +1970,27 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 
 async function initialize() {
+    console.log('开始初始化向量数据库...');
+    await vectorDBManager.initialize(); // 在加载插件之前启动，确保服务就绪
+    console.log('向量数据库初始化完成。');
+
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
+
+    // --- 新增：为 RAG 插件注入依赖 ---
+    try {
+        const ragPlugin = pluginManager.messagePreprocessors.get('RAGDiaryPlugin');
+        if (ragPlugin && typeof ragPlugin.setDependencies === 'function') {
+            ragPlugin.setDependencies({ vectorDBManager });
+        } else if (ragPlugin) {
+            console.warn('[Server] RAGDiaryPlugin 已加载，但未能找到 setDependencies 方法进行依赖注入。');
+        }
+    } catch (e) {
+        console.error('[Server] 注入 RAGDiaryPlugin 依赖时出错:', e);
+    }
+    // --- 依赖注入结束 ---
+
     pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');

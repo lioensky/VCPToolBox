@@ -1,0 +1,96 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MCPO",
+  "version": "1.0.0",
+  "displayName": "MCPO 工具桥接器",
+  "description": "基于 mcpo 的 MCP 工具桥接插件，能够自动发现、缓存和调用 MCP 工具，支持多种 MCP 服务器类型。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python mcpo_plugin.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "MCPO_PORT": {
+      "type": "integer",
+      "description": "MCPO 服务器端口号",
+      "default": 8000
+    },
+    "MCPO_API_KEY": {
+      "type": "string",
+      "description": "MCPO 服务器 API 密钥",
+      "default": "vcp-mcpo-secret"
+    },
+    "MCPO_AUTO_START": {
+      "type": "boolean",
+      "description": "是否自动启动 MCPO 服务器",
+      "default": true
+    },
+    "PYTHON_EXECUTABLE": {
+      "type": "string",
+      "description": "Python 解释器路径",
+      "default": "python"
+    },
+    "MCP_CONFIG_PATH": {
+      "type": "string",
+      "description": "MCP 配置文件路径（如果指定了MCPO_CONFIG_NAME则此项将被忽略）",
+      "default": "./mcp-config.json"
+    },
+    "MCPO_CONFIG_NAME": {
+      "type": "string",
+      "description": "自定义MCP配置文件名称（不含路径），将在插件目录下查找。例如：'example' 将查找 'example-config.json'。留空则使用VCP根目录下的 mcp-config.json",
+      "default": ""
+    },
+    "MCPO_HOT_RELOAD": {
+      "type": "boolean",
+      "description": "启用热重载模式，当配置文件修改时自动重新加载MCP服务",
+      "default": true
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "list_tools",
+        "description": "列出所有可用的 MCP 工具\n\n**功能**: 获取当前 MCPO 服务器中注册的所有 MCP 工具列表\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」list_tools「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 包含所有工具名称、描述和参数信息的 JSON 数据",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」list_tools「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "call_tool",
+        "description": "调用指定的 MCP 工具\n\n**功能**: 通过 MCPO 代理调用具体的 MCP 工具\n\n**参数**:\n- **tool_name_param** (字符串, 必需): 要调用的工具名称，格式为 `服务器名_工具名`\n- **arguments** (JSON对象, 可选): 工具参数，格式为 JSON 字符串\n\n**可用工具类型**:\n\n**时间服务工具**:\n- `time_get_current_time`: 获取当前时间\n  - timezone (必需): IANA时区名称，如 'Asia/Shanghai'\n- `time_convert_time`: 时区转换\n  - source_timezone (必需): 源时区\n  - time (必需): 时间格式 HH:MM\n  - target_timezone (必需): 目标时区\n\n**文档服务工具**:\n- `context7_resolve-library-id`: 解析库ID\n  - libraryName (必需): 要搜索的库名称\n- `context7_get-library-docs`: 获取库文档\n  - context7CompatibleLibraryID (必需): 库ID如 '/godotengine/godot'\n  - topic (可选): 文档主题\n  - tokens (可选): 返回文档的最大令牌数\n\n**文件系统工具**:\n- `filesystem_read_file`: 读取文件 (path参数)\n- `filesystem_write_file`: 写入文件 (path, content参数)\n- `filesystem_list_directory`: 列出目录 (path参数)\n- `filesystem_search_files`: 搜索文件 (path, pattern参数)\n - query (必需): 搜索查询词\n  - count (可选): 结果数量1-20，默认10\n  - offset (可选): 分页偏移量\n\n**内存系统工具**:\n- `memory_create_entities`: 创建实体\n  - entities (必需): 实体数组，每个包含name, entityType, observations\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」call_tool「末」,\ntool_name_param:「始」工具名称「末」,\narguments:「始」{\"param1\": \"value1\", \"param2\": \"value2\"}「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 工具执行结果的 JSON 数据",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」call_tool「末」,\ntool_name_param:「始」get_current_time「末」,\narguments:「始」{\"timezone\": \"Asia/Shanghai\"}「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "get_tool_info",
+        "description": "获取指定工具的详细信息\n\n**功能**: 获取特定 MCP 工具的完整信息，包括参数说明、使用示例等\n\n**参数**:\n- **tool_name** (字符串, 必需): 要查询的工具名称\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」get_tool_info「末」,\ntool_name_param:「始」工具名称「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 工具的详细信息和使用说明",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」get_tool_info「末」,\ntool_name_param:「始」get_current_time「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "manage_server",
+        "description": "管理 MCPO 服务器\n\n**功能**: 启动、停止、重启 MCPO 服务器或重新加载配置\n\n**参数**:\n- **operation** (字符串, 必需): 操作类型，可选值: start, stop, restart, status, reload_config\n  - **start**: 启动 MCPO 服务器\n  - **stop**: 停止 MCPO 服务器\n  - **restart**: 重启 MCPO 服务器\n  - **status**: 查看服务器状态和配置信息\n  - **reload_config**: 重新加载配置文件（利用mcpo的热重载功能）\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」manage_server「末」,\noperation:「始」操作类型「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 服务器操作结果和状态信息",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」manage_server「末」,\noperation:「始」status「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "discover_tools",
+        "description": "重新发现和同步 MCP 工具\n\n**功能**: 强制重新扫描和同步所有 MCP 服务器中的工具\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」discover_tools「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 工具发现和同步结果",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」discover_tools「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "list_configs",
+        "description": "列出所有可用的 MCP 配置文件\n\n**功能**: 获取当前系统中所有可用的 MCP 配置文件列表，包括默认配置和自定义配置\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」list_configs「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 包含所有可用配置文件信息的 JSON 数据，包括名称、路径、类型和是否是当前配置",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」list_configs「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "health_check",
+        "description": "检查 MCPO 服务器和 MCP 工具健康状态\n\n**功能**: 检查 MCPO 服务器连接状态和各个 MCP 服务器的健康状况\n\n**调用格式**:\n```\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」health_check「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n**返回**: 系统健康状态报告",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」MCPO「末」,\naction:「始」health_check「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "webSocketPush": {
+    "enabled": false
+  }
+}
