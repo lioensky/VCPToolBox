@@ -8,6 +8,12 @@ const TurndownService = require('turndown');
 const net = require('net');
 const tls = require('tls');
 const { createImapTunnelSocket } = require('./proxy/ImapHttpTunnel');
+const { runPostScripts } = require('./post_run');
+
+// --- Constants ---
+const APP_ROOT = path.resolve(__dirname);
+const STORAGE_PATH = path.resolve(APP_ROOT, process.env.STORAGE_PATH || 'mail_store');
+// --- End Constants ---
 
 const imapConfig = {
     user: process.env.IMAP_USER,
@@ -23,10 +29,10 @@ const imapConfig = {
     }
 };
 
-const uidIndexPath = path.join(process.env.STORAGE_PATH || 'mail_store', 'uid.index');
+const uidIndexPath = path.join(STORAGE_PATH, 'uid.index');
 
 async function rebuildUidIndex() {
-    const storagePath = process.env.STORAGE_PATH || 'mail_store';
+    const storagePath = STORAGE_PATH;
     
     try {
         await fsp.mkdir(storagePath, { recursive: true });
@@ -95,7 +101,7 @@ async function deleteLocalFilesByUids(uidsToDelete) {
         return;
     }
     process.stderr.write(`Starting deletion of ${uidsToDelete.size} emails...\n`);
-    const storagePath = process.env.STORAGE_PATH || 'mail_store';
+    const storagePath = STORAGE_PATH;
 
     async function findAndDelete(dirPath) {
         try {
@@ -354,7 +360,7 @@ async function fetchAndSave() {
         });
 
         function saveEmail({ uid, body }) {
-            const storagePath = process.env.STORAGE_PATH || 'mail_store';
+            const storagePath = STORAGE_PATH;
             const header = Imap.parseHeader(body);
             let sender = 'unknown';
             if (header.from && header.from.length > 0) {
@@ -402,7 +408,7 @@ async function findMdFiles(dirPath) {
 }
 
 async function getIndex() {
-    const storagePath = process.env.STORAGE_PATH || 'mail_store';
+    const storagePath = STORAGE_PATH;
     const allMdFiles = await findMdFiles(storagePath);
 
     if (allMdFiles.length === 0) {
@@ -439,7 +445,7 @@ async function main() {
         process.stderr.write('Step 2: Syncing emails with IMAP server...\n');
         await fetchAndSave();
         
-        const storagePath = process.env.STORAGE_PATH || 'mail_store';
+        const storagePath = STORAGE_PATH;
         process.stderr.write('Step 3: Converting EML files to Markdown...\n');
         await findAndConvert(storagePath);
 
@@ -453,6 +459,9 @@ async function main() {
         await fsp.writeFile(cacheFilePath, indexContent);
 
         process.stderr.write('--- IMAPIndex Plugin Execution Finished Successfully ---\n');
+
+        // Run any post-execution scripts if defined
+        await runPostScripts();
 
     } catch (error) {
         const errorMessage = `Failed during IMAPIndex execution: ${error.message}`;

@@ -61,6 +61,12 @@ IMAP_PROXY_ENABLED=false
 IMAP_PROXY_URL=
 IMAP_PROXY_TIMEOUT_MS=10000
 IMAP_PROXY_TLS_REJECT_UNAUTHORIZED=true
+
+# Optional: Post-execution scripts
+# A '|' separated list of scripts to run after the main process.
+# Use '@/' for the project root.
+# Example: POST_RUN_SCRIPTS=@/storkapp_dailynote/extract_stork_links.js
+POST_RUN_SCRIPTS=
 ```
 
 Notes:
@@ -68,6 +74,7 @@ Notes:
 - TIME_LIMIT_DAYS controls SINCE date for searches
 - WHITELIST empty: skip fetch to avoid dumping the entire mailbox
 - Proxy affects IMAP only. Other modules do not use the proxy
+- POST_RUN_SCRIPTS triggers other workflows, like the Stork dailynote pipeline.
 
 ## Run Locally (standalone)
 
@@ -173,6 +180,12 @@ IMAP_PROXY_ENABLED=false
 IMAP_PROXY_URL=
 IMAP_PROXY_TIMEOUT_MS=10000
 IMAP_PROXY_TLS_REJECT_UNAUTHORIZED=true
+
+# 可选: 后置执行脚本
+# 主流程成功后要顺序执行的脚本列表，用 '|' 分隔
+# 使用 '@/' 代表项目根目录
+# 示例: POST_RUN_SCRIPTS=@/storkapp_dailynote/extract_stork_links.js
+POST_RUN_SCRIPTS=
 ```
 
 说明：
@@ -180,6 +193,7 @@ IMAP_PROXY_TLS_REJECT_UNAUTHORIZED=true
 - TIME_LIMIT_DAYS 控制搜索的起始日期（SINCE）
 - WHITELIST 为空将跳过抓取，避免全量
 - 代理仅作用于 IMAP 链路
+- POST_RUN_SCRIPTS 可用于触发其他工作流，例如 Stork 子流程
 
 ## 本地运行（独立）
 
