@@ -166,17 +166,34 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512
     };
     
-    // 执行字符串替换
-    let workflowString = JSON.stringify(workflow);
-    for (const [placeholder, value] of Object.entries(replacements)) {
-        const regex = new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g');
-        workflowString = workflowString.replace(regex, String(value));
+    // 安全的JSON替换 - 先解析为对象，然后递归替换
+    function replaceInObject(obj, replacements) {
+        if (typeof obj === 'string') {
+            // 对字符串值进行占位符替换
+            let result = obj;
+            for (const [placeholder, value] of Object.entries(replacements)) {
+                if (result.includes(placeholder)) {
+                    result = result.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), String(value));
+                }
+            }
+            return result;
+        } else if (Array.isArray(obj)) {
+            return obj.map(item => replaceInObject(item, replacements));
+        } else if (obj !== null && typeof obj === 'object') {
+            const newObj = {};
+            for (const [key, value] of Object.entries(obj)) {
+                newObj[key] = replaceInObject(value, replacements);
+            }
+            return newObj;
+        }
+        return obj;
     }
     
     // 在 DEBUG 模式下输出最终使用的种子，便于回溯
     debugLog('Resolved seed used for this request:', replacements['{{SEED}}']);
     
-    return JSON.parse(workflowString);
+    // 使用安全的对象替换方法
+    return replaceInObject(workflow, replacements);
 }
 
 // 构建LoRA字符串

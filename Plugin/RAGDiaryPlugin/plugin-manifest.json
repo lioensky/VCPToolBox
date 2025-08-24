@@ -1,0 +1,17 @@
+{
+    "name": "RAGDiaryPlugin",
+    "displayName": "RAG日记本检索器",
+    "version": "1.0.0",
+    "description": "通过向量检索动态地将日记内容注入到系统提示词中，以实现高效、低消耗的长期记忆。",
+    "author": "Ryan & Gemini",
+    "pluginType": "hybridservice",
+    "entryPoint": {
+        "script": "RAGDiaryPlugin.js"
+    },
+    "communication": {
+        "protocol": "direct"
+    },
+    "webSocketPush": {
+        "enabled": false
+    }
+}
