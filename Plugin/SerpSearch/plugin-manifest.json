@@ -1,0 +1,43 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SerpSearch",
+  "version": "1.0.0",
+  "displayName": "Serp API 搜索引擎",
+  "description": "一个使用SerpApi提供多种搜索引擎（如Bing, DuckDuckGo, Google Scholar）的插件。",
+  "author": "Your Name",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SerpSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "configSchema": {
+    "SerpApi": {
+      "type": "string",
+      "description": "SerpApi的API密钥，多个密钥请用逗号隔开。",
+      "default": ""
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "bing_search",
+        "description": "使用Bing搜索引擎进行网页搜索。\n参数:\n- q/query/text (字符串, 必需): 需要搜索的关键词。\n- cc/location (字符串, 可选): 指定搜索的国家代码 (例如: US, CN)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」bing_search「末」,\nq:「始」今天的热点新闻「末」,\ncc:「始」US「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」bing_search「末」,\nq:「始」最新的AI技术进展「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "duckduckgo_search",
+        "description": "使用DuckDuckGo搜索引擎进行网页搜索。\n参数:\n- q/query/text (字符串, 必需): 需要搜索的关键词。\n- kl (字符串, 可选): 指定搜索的区域和语言 (例如: us-en)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」duckduckgo_search「末」,\nq:「始」Apple「末」,\nkl:「始」us-en「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」duckduckgo_search「末」,\nq:「始」Privacy focused search engines「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "google_scholar_search",
+        "description": "使用Google Scholar进行学术搜索。\n参数:\n- q/query/text (字符串): 搜索查询。\n- cites (字符串, 可选): 文章的唯一ID，用于查找引用该文章的文献。\n- as_ylo (数字, 可选): 起始年份。\n- as_yhi (数字, 可选): 结束年份。\n- scisbd (数字, 可选): 按日期排序 (1=仅摘要, 2=所有)。\n- cluster (字符串, 可选): 文章的唯一ID，用于查找所有版本。\n- hl (字符串, 可选): 界面语言 (例如: en, es, fr)。\n- lr (字符串, 可选): 限制搜索的语言 (例如: lang_fr|lang_de)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」google_scholar_search「末」,\nq:「始」biology「末」,\nas_ylo:「始」2020「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SerpSearch「末」,\ncommand:「始」google_scholar_search「末」,\nq:「始」artificial intelligence in medicine「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

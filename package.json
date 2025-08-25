@@ -34,14 +34,11 @@
     "puppeteer-extra-plugin-anonymize-ua": "^2.4.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rss-parser": "^3.13.0",
+    "serpapi": "^2.2.1",
     "undici": "^7.13.0",
     "user-agents": "^1.1.597",
     "uuid": "^9.0.0",
     "winston": "^3.17.0",
-    "ws": "^8.17.0",
-    "mailparser": "^3.7.4",
-    "node-imap": "^0.9.6",
-    "turndown": "^7.2.1"
+    "ws": "^8.17.0"
   }
 }
-
