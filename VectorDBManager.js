@@ -283,9 +283,22 @@ class VectorDBManager {
         const chunkMap = this.chunkMaps.get(diaryName);
         if (!index || !chunkMap) return [];
         
-        const result = index.searchKnn(queryVector, k);
-        
-        return result.neighbors.map(neighborId => chunkMap[neighborId]).filter(Boolean);
+        try {
+            // 新增：在搜索前设置本次查询的搜索范围
+            const efSearch = 150; // (推荐范围 50-200, 必须 > k)
+            
+            // 修正：使用正确的方法名 setEf
+            if (typeof index.setEf === 'function') {
+                index.setEf(efSearch);
+            }
+            
+            const result = index.searchKnn(queryVector, k);
+            
+            return result.neighbors.map(neighborId => chunkMap[neighborId]).filter(Boolean);
+        } catch (error) {
+            console.error(`[VectorDB] Search error for ${diaryName}:`, error);
+            return [];
+        }
     }
 }
 
@@ -375,8 +388,13 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
     }
 
     const dimensions = vectors[0].length;
+    const M = 32; // 每个节点的最大连接数 (推荐范围 16-48)
+    const efConstruction = 400; // 构建图时的搜索范围 (推荐范围 200-500)
     const index = new HierarchicalNSW('l2', dimensions);
-    index.initIndex(allChunks.length);
+
+    // 使用更详细的参数来初始化索引
+    index.initIndex(allChunks.length, M, efConstruction);
+
     vectors.forEach((vector, i) => index.addPoint(vector, i));
 
     const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
