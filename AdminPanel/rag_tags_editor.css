@@ -1,0 +1,190 @@
+/* rag_tags_editor.css */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: var(--primary-bg);
+    color: var(--primary-text);
+    font-size: 16px;
+}
+.container {
+    display: block;
+    max-width: 1400px;
+    margin: auto;
+    background-color: var(--secondary-bg);
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+}
+.controls {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+.controls button {
+    padding: 12px 22px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 1em;
+    font-weight: 500;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    color: white;
+}
+
+#saveButton {
+    background-color: #4CAF50; /* Specific green for save action */
+}
+#saveButton:hover {
+    background-color: #45a049;
+    transform: translateY(-1px);
+}
+#addKnowledgeBaseButton {
+    background-color: var(--button-bg);
+}
+#addKnowledgeBaseButton:hover {
+     background-color: var(--button-hover-bg);
+     transform: translateY(-1px);
+}
+
+
+h2 {
+    font-size: 1.7em;
+    color: var(--highlight-text);
+    margin-top: 0;
+    margin-bottom: 25px;
+    border-bottom: 2px solid var(--highlight-text);
+    padding-bottom: 12px;
+    font-weight: 600;
+}
+
+#ragTagsList {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.kb-entry {
+    border: 1px solid var(--border-color);
+    padding: 20px;
+    border-radius: 8px;
+    background-color: var(--tertiary-bg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.kb-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.kb-entry h3 {
+    font-size: 1.3em;
+    color: var(--primary-text);
+    margin: 0;
+    font-weight: 600;
+}
+
+.delete-kb-btn {
+    background-color: var(--danger-color);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.delete-kb-btn:hover {
+    background-color: var(--danger-hover-bg);
+}
+
+.tags-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.tag-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: var(--accent-bg);
+    padding: 5px 8px;
+    border-radius: 6px;
+}
+
+.tag-item input {
+    background-color: transparent;
+    border: none;
+    color: var(--primary-text);
+    font-size: 0.9em;
+    outline: none;
+    padding: 2px 5px;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
+}
+
+.tag-item input:focus {
+    border-bottom-color: var(--highlight-text);
+}
+
+.delete-tag-btn {
+    background: var(--danger-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    font-size: 14px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+.delete-tag-btn:hover {
+    background: var(--danger-hover-bg);
+}
+
+.add-tag-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 10px;
+}
+
+/* This class is no longer used, but kept for potential future use */
+.add-tag-input:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
+}
+
+.add-tag-btn {
+    padding: 8px 15px;
+    border: none;
+    border-radius: 6px;
+    background-color: var(--button-bg);
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+html[data-theme='light'] .add-tag-btn,
+html[data-theme='light'] #addKnowledgeBaseButton {
+    color: var(--primary-text-light);
+}
+
+.add-tag-btn:hover {
+    background-color: var(--button-hover-bg);
+}
+
+p {
+    color: var(--secondary-text);
+}

@@ -967,6 +967,38 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
     // --- End TVS Variable Files API ---
+
+    // --- RAG Tags API ---
+    adminApiRouter.get('/rag-tags', async (req, res) => {
+        const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
+        try {
+            const content = await fs.readFile(ragTagsPath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading rag_tags.json:', error);
+            if (error.code === 'ENOENT') {
+                res.json({}); // Return empty object if file doesn't exist
+            } else {
+                res.status(500).json({ error: 'Failed to read rag_tags.json', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/rag-tags', async (req, res) => {
+        const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
+        const data = req.body;
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            await fs.writeFile(ragTagsPath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: 'RAG Tags 文件已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing rag_tags.json:', error);
+            res.status(500).json({ error: 'Failed to write rag_tags.json', details: error.message });
+        }
+    });
+    // --- End RAG Tags API ---
     
     return adminApiRouter;
 };
