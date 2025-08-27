@@ -1,0 +1,325 @@
+#!/usr/bin/env node
+
+import axios from 'axios';
+import https from 'https';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import fs from 'fs/promises';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+
+// --- 1. 配置加载与初始化 ---
+
+const {
+    OPENROUTER_API_KEYS,
+    PROXY_AGENT,
+    DIST_IMAGE_SERVERS,
+    PROJECT_BASE_PATH,
+    SERVER_PORT,
+    IMAGESERVER_IMAGE_KEY,
+    VAR_HTTP_URL
+} = (() => {
+    const keys = (process.env.OpenRouterKeyImage || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (keys.length === 0) {
+        console.error("[NanoBananaGenOR] 警告: config.env 中未配置 OpenRouterKeyImage。API 调用将会失败。");
+    }
+
+    const proxyUrl = process.env.OpenRouterProxy;
+    const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+    if (agent) {
+        console.error(`[NanoBananaGenOR] 使用代理: ${proxyUrl}`);
+    }
+
+    const distServers = (process.env.DIST_IMAGE_SERVERS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+    return {
+        OPENROUTER_API_KEYS: keys,
+        PROXY_AGENT: agent,
+        DIST_IMAGE_SERVERS: distServers,
+        PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH,
+        SERVER_PORT: process.env.SERVER_PORT,
+        IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY,
+        VAR_HTTP_URL: process.env.VarHttpUrl
+    };
+})();
+
+const API_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const MODEL_NAME = 'google/gemini-2.5-flash-image-preview:free';
+
+function getRandomApiKey() {
+    if (OPENROUTER_API_KEYS.length === 0) {
+        throw new Error("OpenRouter API 密钥未配置。");
+    }
+    const randomIndex = Math.floor(Math.random() * OPENROUTER_API_KEYS.length);
+    return OPENROUTER_API_KEYS[randomIndex];
+}
+
+// --- 2. 核心功能函数 ---
+
+/**
+ * 从 URL (http/https/data) 获取图像数据
+ * @param {string} url - 图像的 URL
+ * @returns {Promise<{buffer: Buffer, mimeType: string}>}
+ */
+async function getImageDataFromUrl(url) {
+    if (url.startsWith('data:')) {
+        const match = url.match(/^data:(image\/\w+);base64,(.*)$/);
+        if (!match) throw new Error('无效的 data URI 格式。');
+        return { buffer: Buffer.from(match[2], 'base64'), mimeType: match[1] };
+    }
+
+    if (url.startsWith('http')) {
+        const response = await axios.get(url, { responseType: 'arraybuffer', httpsAgent: PROXY_AGENT });
+        return { buffer: response.data, mimeType: response.headers['content-type'] || 'image/jpeg' };
+    }
+
+    if (url.startsWith('file://')) {
+        const { fileURLToPath } = await import('url');
+        const { default: mime } = await import('mime-types');
+        const filePath = fileURLToPath(url);
+
+        try {
+            const buffer = await fs.readFile(filePath);
+            const mimeType = mime.lookup(filePath) || 'application/octet-stream';
+            console.error(`[NanoBananaGenOR] 成功直接读取本地文件: ${filePath}`);
+            return { buffer, mimeType };
+        } catch (e) {
+            if (e.code === 'ENOENT') {
+                // 文件在本地未找到。抛出一个特定结构的错误，让主服务器处理。
+                const structuredError = new Error("本地文件未找到，需要远程获取。");
+                structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
+                structuredError.fileUrl = url;
+                throw structuredError;
+            } else {
+                // 对于其他错误（如权限问题），正常抛出。
+                throw new Error(`读取本地文件时发生意外错误: ${e.message}`);
+            }
+        }
+    }
+
+    throw new Error('不支持的 URL 协议。请使用 http, https, data URI, 或 file://。');
+}
+
+/**
+ * 调用 OpenRouter API 并返回响应
+ * @param {object} payload - 发送给 API 的请求体
+ * @returns {Promise<object>} - API 响应数据
+ */
+async function callOpenRouterApi(payload) {
+    const apiKey = getRandomApiKey();
+
+    const response = await axios.post(API_BASE_URL, payload, {
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+        },
+        httpsAgent: PROXY_AGENT,
+        timeout: 300000, // 5分钟超时
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity
+    });
+    
+    const message = response.data?.choices?.[0]?.message;
+    if (!message) {
+        const detailedError = `从 OpenRouter API 响应中未能提取到消息内容。收到的响应: ${JSON.stringify(response.data, null, 2)}`;
+        throw new Error(detailedError);
+    }
+    
+    return message;
+}
+
+/**
+ * 处理API响应，保存图像并格式化最终结果
+ * @param {object} message - 来自 OpenRouter API 的消息对象
+ * @param {object} originalArgs - 原始的工具调用参数
+ * @returns {Promise<object>} - 格式化后的成功结果对象
+ */
+async function processApiResponseAndSaveImage(message, originalArgs) {
+    // OpenRouter 返回结构：message.content 是字符串，图像在 message.images 数组中
+    const textContent = message.content || '';
+    
+    if (!message.images || !Array.isArray(message.images) || message.images.length === 0) {
+        throw new Error(`API 未能生成图片，返回信息: ${textContent}`);
+    }
+
+    const imageData = message.images[0];
+    if (!imageData || !imageData.image_url || !imageData.image_url.url) {
+        throw new Error('API 返回的图像数据格式无效。');
+    }
+
+    // 处理图像数据
+    const imageUrl = imageData.image_url.url;
+    let imageBuffer, mimeType;
+
+    if (imageUrl.startsWith('data:')) {
+        const match = imageUrl.match(/^data:(image\/\w+);base64,(.*)$/);
+        if (!match) throw new Error('API 返回的图像数据格式无效。');
+        imageBuffer = Buffer.from(match[2], 'base64');
+        mimeType = match[1];
+    } else {
+        // 如果是 URL，需要下载
+        const response = await axios.get(imageUrl, { responseType: 'arraybuffer', httpsAgent: PROXY_AGENT });
+        imageBuffer = response.data;
+        mimeType = response.headers['content-type'] || 'image/png';
+    }
+    
+    const extension = mimeType.split('/')[1] || 'png';
+    const generatedFileName = `${uuidv4()}.${extension}`;
+    const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'nanobananagen');
+    const localImagePath = path.join(imageDir, generatedFileName);
+
+    await fs.mkdir(imageDir, { recursive: true });
+    await fs.writeFile(localImagePath, imageBuffer);
+
+    const relativePathForUrl = path.join('nanobananagen', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+
+    // 优先使用 API 返回的文本，如果没有则使用默认文本
+    const modelResponseText = textContent || "图片已成功处理！";
+    const finalResponseText = `${modelResponseText}\n\n**图片详情:**\n- 提示词: ${originalArgs.prompt}\n- 可访问URL: ${accessibleImageUrl}\n\n请利用可访问url将图片转发给用户`;
+
+    const base64Image = imageBuffer.toString('base64');
+
+    return {
+        content: [
+            {
+                type: 'text',
+                text: finalResponseText
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${mimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: {
+            serverPath: `image/nanobananagen/${generatedFileName}`,
+            fileName: generatedFileName,
+            ...originalArgs,
+            imageUrl: accessibleImageUrl,
+            modelResponseText: textContent || null
+        }
+    };
+}
+
+// --- 3. 命令处理函数 ---
+
+async function generateImage(args) {
+    if (!args.prompt || typeof args.prompt !== 'string') {
+        throw new Error("参数错误: 'prompt' 是必需的字符串。");
+    }
+
+    // 按照 OpenRouter 的格式构建请求
+    const payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": args.prompt
+                    }
+                ]
+            }
+        ]
+    };
+
+    const message = await callOpenRouterApi(payload);
+    return await processApiResponseAndSaveImage(message, args);
+}
+
+async function editImage(args) {
+    if (!args.prompt || typeof args.prompt !== 'string') {
+        throw new Error("参数错误: 'prompt' 是必需的字符串。");
+    }
+    if (!args.image_url && !args.image_base64) {
+        throw new Error("参数错误: 必须提供 'image_url' 或 'image_base64'。");
+    }
+
+    // 获取图像数据
+    let imageUrl;
+    if (args.image_base64) {
+        imageUrl = args.image_base64;
+    } else {
+        const { buffer, mimeType } = await getImageDataFromUrl(args.image_url);
+        const base64Data = buffer.toString('base64');
+        imageUrl = `data:${mimeType};base64,${base64Data}`;
+    }
+
+    // 按照 OpenRouter 的格式构建请求
+    const payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": args.prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": imageUrl
+                        }
+                    }
+                ]
+            }
+        ]
+    };
+
+    const message = await callOpenRouterApi(payload);
+    return await processApiResponseAndSaveImage(message, args);
+}
+
+// --- 4. 主入口函数 ---
+
+async function main() {
+    let inputData = '';
+    try {
+        for await (const chunk of process.stdin) {
+            inputData += chunk;
+        }
+
+        if (!inputData.trim()) {
+            throw new Error("未从 stdin 接收到任何输入数据。");
+        }
+        const parsedArgs = JSON.parse(inputData);
+
+        let resultObject;
+        switch (parsedArgs.command) {
+            case 'generate':
+                resultObject = await generateImage(parsedArgs);
+                break;
+            case 'edit':
+                resultObject = await editImage(parsedArgs);
+                break;
+            default:
+                throw new Error(`未知的命令: '${parsedArgs.command}'。请使用 'generate' 或 'edit'。`);
+        }
+        
+        console.log(JSON.stringify({ status: "success", result: resultObject }));
+
+    } catch (e) {
+        // 如果是我们自定义的结构化错误，就按特定格式输出
+        if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+            console.log(JSON.stringify({
+                status: "error",
+                code: e.code,
+                error: e.message,
+                fileUrl: e.fileUrl
+            }));
+        } else {
+            let detailedError = e.message || "未知的插件错误";
+            if (e.response && e.response.data) {
+                detailedError += ` - API 响应: ${JSON.stringify(e.response.data)}`;
+            }
+            const finalErrorMessage = `NanoBananaGenOR 插件错误: ${detailedError}`;
+            console.log(JSON.stringify({ status: "error", error: finalErrorMessage }));
+        }
+        process.exit(1);
+    }
+}
+
+main();
