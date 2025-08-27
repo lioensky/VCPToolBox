@@ -273,6 +273,90 @@ async function editImage(args) {
     return await processApiResponseAndSaveImage(message, args);
 }
 
+async function composeImage(args) {
+    if (!args.prompt || typeof args.prompt !== 'string') {
+        throw new Error("参数错误: 'prompt' 是必需的字符串。");
+    }
+    
+    // 添加调试信息
+    console.error(`[NanoBananaGenOR] 调试信息 - args.image_urls 类型: ${typeof args.image_urls}`);
+    console.error(`[NanoBananaGenOR] 调试信息 - args.image_urls 值: ${JSON.stringify(args.image_urls)}`);
+    
+    // 如果 image_urls 是字符串，尝试解析为 JSON
+    let imageUrls = args.image_urls;
+    if (typeof imageUrls === 'string') {
+        try {
+            imageUrls = JSON.parse(imageUrls);
+            console.error(`[NanoBananaGenOR] 成功解析 JSON 字符串为数组`);
+        } catch (e) {
+            throw new Error(`参数错误: 'image_urls' 字符串无法解析为 JSON 数组: ${e.message}`);
+        }
+    }
+    
+    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+        throw new Error("参数错误: 'image_urls' 必须是包含至少一个URL的数组。");
+    }
+
+    // 构建内容数组，先添加文本提示
+    const contentArray = [
+        {
+            "type": "text",
+            "text": args.prompt
+        }
+    ];
+
+    // 处理每个图片URL并添加到内容数组
+    for (let i = 0; i < imageUrls.length; i++) {
+        const imageUrl = imageUrls[i];
+        let processedImageUrl;
+
+        if (imageUrl.startsWith('data:')) {
+            // 如果已经是base64格式，直接使用
+            processedImageUrl = imageUrl;
+        } else {
+            try {
+                // 获取图像数据并转换为base64
+                const { buffer, mimeType } = await getImageDataFromUrl(imageUrl);
+                const base64Data = buffer.toString('base64');
+                processedImageUrl = `data:${mimeType};base64,${base64Data}`;
+            } catch (e) {
+                // 如果是 file:// URL 本地未找到的错误，直接向上抛出让主服务器处理
+                if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+                    // 为多图片场景添加更详细的错误信息
+                    const enhancedError = new Error(`多图片合成中第 ${i + 1} 张图片本地未找到，需要远程获取。`);
+                    enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
+                    enhancedError.fileUrl = e.fileUrl;
+                    enhancedError.imageIndex = i;
+                    throw enhancedError;
+                }
+                // 对于其他错误，正常抛出
+                throw new Error(`处理第 ${i + 1} 张图片时发生错误: ${e.message}`);
+            }
+        }
+
+        contentArray.push({
+            "type": "image_url",
+            "image_url": {
+                "url": processedImageUrl
+            }
+        });
+    }
+
+    // 按照 OpenRouter 的格式构建请求
+    const payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": contentArray
+            }
+        ]
+    };
+
+    const message = await callOpenRouterApi(payload);
+    return await processApiResponseAndSaveImage(message, args);
+}
+
 // --- 4. 主入口函数 ---
 
 async function main() {
@@ -295,8 +379,11 @@ async function main() {
             case 'edit':
                 resultObject = await editImage(parsedArgs);
                 break;
+            case 'compose':
+                resultObject = await composeImage(parsedArgs);
+                break;
             default:
-                throw new Error(`未知的命令: '${parsedArgs.command}'。请使用 'generate' 或 'edit'。`);
+                throw new Error(`未知的命令: '${parsedArgs.command}'。请使用 'generate'、'edit' 或 'compose'。`);
         }
         
         console.log(JSON.stringify({ status: "success", result: resultObject }));
