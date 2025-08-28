@@ -128,6 +128,10 @@ const ADMIN_PASSWORD = process.env.AdminPassword;
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
 
+// 新增：模型重定向功能
+const ModelRedirectHandler = require('./modelRedirectHandler.js');
+const modelRedirectHandler = new ModelRedirectHandler();
+
 // ensureDebugLogDir is now ensureDebugLogDirSync and called by initializeServerLogger
 // writeDebugLog remains for specific debug purposes, it uses fs.promises.
 async function ensureDebugLogDirAsync() { // Renamed to avoid conflict, used by writeDebugLog
@@ -640,7 +644,46 @@ app.get('/v1/models', async (req, res) => {
             },
         });
 
-        // Forward the status code and headers from the upstream API
+        // 新增：如果启用了模型重定向，需要处理模型列表响应
+        if (modelRedirectHandler.isEnabled() && apiResponse.ok) {
+            const responseText = await apiResponse.text();
+            try {
+                const modelsData = JSON.parse(responseText);
+                
+                // 替换模型列表中的内部模型名为公开模型名
+                if (modelsData.data && Array.isArray(modelsData.data)) {
+                    modelsData.data = modelsData.data.map(model => {
+                        if (model.id) {
+                            const publicModelName = modelRedirectHandler.redirectModelForClient(model.id);
+                            if (publicModelName !== model.id) {
+                                if (DEBUG_MODE) {
+                                    console.log(`[ModelRedirect] 模型列表重定向: ${model.id} -> ${publicModelName}`);
+                                }
+                                return { ...model, id: publicModelName };
+                            }
+                        }
+                        return model;
+                    });
+                }
+                
+                // 设置响应头
+                res.status(apiResponse.status);
+                apiResponse.headers.forEach((value, name) => {
+                    if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
+                        res.setHeader(name, value);
+                    }
+                });
+                
+                // 发送修改后的响应
+                res.json(modelsData);
+                return;
+            } catch (parseError) {
+                console.warn('[ModelRedirect] 解析模型列表响应失败，使用原始响应:', parseError.message);
+                // 如果解析失败，回退到原始流式转发
+            }
+        }
+
+        // 原始的流式转发逻辑（当模型重定向未启用或解析失败时使用）
         res.status(apiResponse.status);
         apiResponse.headers.forEach((value, name) => {
             // Avoid forwarding hop-by-hop headers
@@ -774,6 +817,17 @@ async function handleChatCompletion(req, res, forceShowVCP = false) {
 
     try {
         let originalBody = req.body;
+        
+        // 新增：执行模型重定向（客户端请求 -> 后端）
+        if (originalBody.model) {
+            const originalModel = originalBody.model;
+            const redirectedModel = modelRedirectHandler.redirectModelForBackend(originalModel);
+            if (redirectedModel !== originalModel) {
+                originalBody = { ...originalBody, model: redirectedModel };
+                console.log(`[ModelRedirect] 客户端请求模型 '${originalModel}' 已重定向为后端模型 '${redirectedModel}'`);
+            }
+        }
+        
         await writeDebugLog('LogInput', originalBody);
 
         let shouldProcessMedia = true;
@@ -2050,6 +2104,13 @@ let server;
 server = app.listen(port, async () => { // Assign to server variable
     console.log(`中间层服务器正在监听端口 ${port}`);
     console.log(`API 服务器地址: ${apiUrl}`);
+    
+    // 新增：加载模型重定向配置
+    console.log('正在加载模型重定向配置...');
+    modelRedirectHandler.setDebugMode(DEBUG_MODE);
+    await modelRedirectHandler.loadModelRedirectConfig(path.join(__dirname, 'ModelRedirect.json'));
+    console.log('模型重定向配置加载完成。');
+    
     // ensureDebugLogDir() is effectively handled by initializeServerLogger() synchronously earlier.
     // If ensureDebugLogDirAsync was meant for other purposes, it can be called where needed.
     await initialize(); // This loads plugins and initializes services
