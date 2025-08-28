@@ -12,7 +12,8 @@ function executeCommand(command, args) {
         const process = spawn(command, args, {
             stdio: 'inherit', // Show script output in the main console
             shell: true,
-            cwd: path.resolve(__dirname) // Ensure consistent working directory
+            cwd: path.resolve(__dirname), // Ensure consistent working directory
+            windowsHide: true // Prevent terminal popup on Windows
         });
 
         process.on('close', (code) => {
