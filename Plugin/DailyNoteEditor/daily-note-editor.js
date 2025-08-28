@@ -49,17 +49,16 @@ async function processEditRequest(inputData) {
         const directoriesToScan = [];
 
         if (maid) {
-            // 如果指定了 maid，只扫描该角色的目录
-            debugLog(`Maid specified: '${maid}'. Targeting specific directory.`);
-            const maidDirPath = path.join(dailyNoteRootPath, maid);
-            try {
-                await fs.access(maidDirPath); // 验证目录是否存在
-                directoriesToScan.push({ name: maid, path: maidDirPath });
-            } catch (e) {
-                if (e.code === 'ENOENT') {
-                    return { status: "error", error: `Diary folder for maid '${maid}' not found.` };
+            // 如果指定了 maid，扫描所有以 maid 名字开头的目录
+            debugLog(`Maid specified: '${maid}'. Targeting directories starting with this name.`);
+            const allDirs = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            for (const dirEntry of allDirs) {
+                if (dirEntry.isDirectory() && dirEntry.name.startsWith(maid)) {
+                    directoriesToScan.push({ name: dirEntry.name, path: path.join(dailyNoteRootPath, dirEntry.name) });
                 }
-                throw e; // 重新抛出其他错误
+            }
+            if (directoriesToScan.length === 0) {
+                return { status: "error", error: `No diary folders found for maid '${maid}'.` };
             }
         } else {
             // 如果未指定 maid，扫描所有目录 (原始行为)

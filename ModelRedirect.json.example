@@ -1,0 +1,13 @@
+{
+  "//": "这是一个模型重定向配置文件示例。",
+  "//": "文件格式为 JSON，其中键（key）是客户端请求时使用的“公开模型名称”，值（value）是服务器转发到后端 API 时实际使用的“内部模型名称”。",
+  "//": "当客户端请求 /v1/chat/completions 并指定模型为 'gpt-4-vision-preview' 时，服务器会自动将其替换为 'GPT-4-Vision' 再发送给后端。",
+  "//": "同时，当客户端请求 /v1/models 获取模型列表时，服务器会查找所有内部名为 'GPT-4-Vision' 的模型，并将其ID替换为 'gpt-4-vision-preview' 再返回给客户端。",
+  
+  "gpt-4-vision-preview": "GPT-4-Vision",
+  "claude-3-opus": "claude-3-opus-20240229",
+  "gemini-pro-vision": "gemini-1.5-pro-vision-latest",
+  
+  "//": "你可以根据需要添加任意数量的重定向规则。",
+  "my-custom-model-name": "specific-backend-model-id-12345"
+}
