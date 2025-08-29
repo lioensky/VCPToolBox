@@ -1,6 +1,12 @@
 // TextChunker.js
+require('dotenv').config();
 const { get_encoding } = require("@dqbd/tiktoken"); // 假设您已安装 tiktoken 用于精确计算
 const encoding = get_encoding("cl100k_base"); // gpt-4, gpt-3.5, embedding models 常用
+
+// 从 .env 文件读取最大 token 数，并应用85%的安全边界
+const embeddingMaxToken = parseInt(process.env.WhitelistEmbeddingModelMaxToken, 10) || 500;
+const safeMaxTokens = Math.floor(embeddingMaxToken * 0.85);
+const defaultOverlapTokens = Math.floor(safeMaxTokens * 0.1); // 重叠部分为最大值的10%
 
 /**
  * 智能文本切分器
@@ -9,7 +15,7 @@ const encoding = get_encoding("cl100k_base"); // gpt-4, gpt-3.5, embedding model
  * @param {number} overlapTokens - 切片间的重叠token数，以保证上下文连续性
  * @returns {string[]} 切分后的文本块数组
  */
-function chunkText(text, maxTokens = 500, overlapTokens = 50) {
+function chunkText(text, maxTokens = safeMaxTokens, overlapTokens = defaultOverlapTokens) {
     if (!text) return [];
 
     const sentences = text.split(/(?<=[。？！.!?\n])/g); // 按句子和换行符分割，保留分隔符

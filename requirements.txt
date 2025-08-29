@@ -11,3 +11,9 @@ Pillow==10.3.0
 # MCP-O
 psutil>=5.9.0
 mcpo
+
+# 天体位置计算和天文学
+skyfield
+
+# Windows通知
+win10toast
