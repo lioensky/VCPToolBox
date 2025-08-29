@@ -11,39 +11,43 @@ const { processSingleDiaryBookInWorker } = require('./VectorDBManager.js');
 async function run() {
     if (!parentPort) return;
 
-    // Receive diaryName and API config from the main thread
-    const { diaryName, config } = workerData;
-    if (!diaryName || !config) {
-        if (parentPort) {
-             parentPort.postMessage({ status: 'error', diaryName: diaryName || 'Unknown', error: 'Worker started without required diaryName or config.' });
-        }
-        return;
-    }
-
-    console.log(`[VectorDB][Worker] Starting background vectorization for: ${diaryName}`);
+    const { task, diaryName, config, chunksToAdd } = workerData;
 
     try {
-        // Use the stateless function to process the diary book.
-        // This avoids creating a new VectorDBManager instance and its associated overhead.
-        const fileHashes = await processSingleDiaryBookInWorker(diaryName, config);
+        switch (task) {
+            case 'fullRebuild':
+                if (!diaryName || !config) throw new Error('Worker (fullRebuild) started without required diaryName or config.');
+                console.log(`[VectorDB][Worker] Starting full rebuild for: ${diaryName}`);
+                const newManifestEntry = await processSingleDiaryBookInWorker(diaryName, config);
+                if (newManifestEntry) {
+                    parentPort.postMessage({ status: 'success', task: 'fullRebuild', diaryName, newManifestEntry });
+                } else {
+                    throw new Error('Full rebuild processing returned null or undefined manifest entry.');
+                }
+                break;
 
-        if (fileHashes) {
-            parentPort.postMessage({
-                status: 'success',
-                diaryName: diaryName,
-                fileHashes: fileHashes
-            });
-        } else {
-             throw new Error('Processing returned null or undefined file hashes.');
+            case 'incrementalUpdate':
+                if (!diaryName || !config || !chunksToAdd) throw new Error('Worker (incrementalUpdate) started without required data.');
+                console.log(`[VectorDB][Worker] Starting incremental update for ${diaryName}: ${chunksToAdd.length} chunks to add.`);
+                const newVectorsData = await processIncrementalUpdateInWorker(chunksToAdd, config);
+                if (newVectorsData) {
+                    parentPort.postMessage({ status: 'success', task: 'incrementalUpdate', diaryName, newVectorsData });
+                } else {
+                    throw new Error('Incremental update processing returned null data.');
+                }
+                break;
+
+            default:
+                throw new Error(`Unknown task type received: ${task}`);
         }
-
     } catch (error) {
-        console.error(`[VectorDB][Worker] Unhandled error processing "${diaryName}":`, error);
+        console.error(`[VectorDB][Worker] Error during task "${task}" for "${diaryName}":`, error);
         parentPort.postMessage({
             status: 'error',
+            task: task,
             diaryName: diaryName,
             error: error.message,
-            stack: error.stack // Include stack for better debugging
+            stack: error.stack
         });
     }
 }
