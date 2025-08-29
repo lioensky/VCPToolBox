@@ -181,7 +181,3 @@ docker-compose.yml
 # Claude configuration and cache files
 .claude/
 .crush/
-
-# Git rewrite temporary directory
-.git-rewrite/\"Plugin/WeatherReporter/weather_cache.json\" 
-\"config.docker.env\"
