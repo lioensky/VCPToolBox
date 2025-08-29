@@ -1,0 +1,18 @@
+# 🔧 MCPO 服务状态监控报告（实时检测）
+
+## 📊 服务器状态概览
+
+**服务器状态**: 🔴 连接失败
+**检测模式**: 🔄 实时检测 (*/10 * * * * *)
+**最后检查**: 2025/8/29 16:16:40
+
+## 🏥 健康检查详情
+
+**OpenAPI文档**: 🔴 异常
+  - 详情: request to http://0.0.0.0:9000/openapi.json failed, reason: connect ECONNREFUSED 0.0.0.0:9000
+**Swagger UI**: 🔴 异常
+  - 详情: request to http://0.0.0.0:9000/docs failed, reason: connect ECONNREFUSED 0.0.0.0:9000
+
+## ❌ 工具信息获取失败
+
+错误信息: 无法获取主OpenAPI规范: request to http://0.0.0.0:9000/openapi.json failed, reason: connect ECONNREFUSED 0.0.0.0:9000

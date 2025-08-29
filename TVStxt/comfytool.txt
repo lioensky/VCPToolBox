@@ -1,0 +1,30 @@
+Comfy Research Tool Pack (system-injected; follow the TOOL_REQUEST format defined in supertool)
+
+使用说明（关键原则）：
+- 工具调用格式与参数名以系统单一真源为准：supertool + 各插件注入说明（例如 {{VCPComfyUIGen}}、{{VCPArtistMatcher}}）。
+- 本工具包仅做“专业聚焦与顺序引导”，不另造字段或样例，避免与真源产生漂移。
+- 当需要让模型直视图片时，在自然语言中包含占位符 {{ShowBase64}}（由系统机制处理），而非写死任何调用格式。
+
+核心工具（Comfy/SDXL工作流聚焦）：
+1) ComfyUIGen（ComfyUI 图像生成，LoRA/工作流模板/质量词）
+   {{VCPComfyUIGen}}
+
+2) ArtistMatcher（风格/画师建议，可直接拼接到正向提示词）
+   {{VCPArtistMatcher}}
+
+3) ImageProcessor（多模态预处理，必要时用于识别/转写）
+   {{VCPImageProcessor}}
+
+4) FileOperator（在允许范围内的文件读/写/列目录等操作）
+   {{VCPFileOperator}}
+
+5) GeminiImageGen（Google Gemini Flash Preview 图像生成/编辑）
+   {{VCPGeminiImageGen}}
+   说明：当需要快速T2I/I2I迭代或轻量编辑（如局部修复/风格微调）时优先考虑；复杂可控工作流（LoRA/模板/多节点管线）仍以 ComfyUIGen 为主。严格遵循注入说明中的命令（GeminiGenerateImage / GeminiEditImage）与字段。
+全局调用规范与系统指引：
+- VCP Tool System：{{VarVCPGuide}}
+- 系统工具清单（如需扩展，请在 config.env 中替换为更聚焦的工具变量）
+- 注意避免使用部署中不存在的 LoRA/Checkpoint/模型名；不确定即不引用或先降权验证。
+6) NanoBananaGenOR（Gemini 2.5 NanoBanana via OpenRouter：生成/编辑/多图合成）
+   {{VCPNanoBananaGenOR}}
+   说明：当需要通过 OpenRouter 路由 Gemini 2.5 Flash Image Preview，或进行多图合成（compose）任务时可选；轻量编辑/快速T2I也可使用。严格遵循注入说明中的命令（NanoBananaGenerateImage / NanoBananaEditImage / NanoBananaComposeImage）与字段；复杂可控工作流（LoRA/模板/多节点）仍以 ComfyUIGen 为主。

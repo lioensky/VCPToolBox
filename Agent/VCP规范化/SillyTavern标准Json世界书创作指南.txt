@@ -1,0 +1,223 @@
+### SillyTavern World Info (Character Book) Creation Guide
+
+* [Go to English Version (For English native speakers and LLMs)](#english-version-st-world-info)
+* [跳转至中文版 (适用于中文母语者)](#chinese-version-st-world-info)
+
+---
+<a name="english-version-st-world-info"></a>
+### **English Version**
+---
+
+**A Creator's Guide to World Info & Character Books in SillyTavern**
+
+**Document Purpose:**
+This guide provides technical specifications and best practices for creating effective World Info (also known as Lorebooks, Memory Books, or `character_book`), a powerful tool for dynamically inserting context into your chat to guide AI replies in SillyTavern.
+
+---
+### **Part 1: Introduction & Core Concepts**
+
+World Info (WI) is a dynamic dictionary. It inserts relevant information from its entries only when associated keywords are present in the recent chat history. This allows you to build deep, consistent narrative worlds without overloading the context window.
+
+**Key Principles:**
+*   **The "English-Only Content" Rule:** For maximum effectiveness, it is **strongly recommended** that the `content` of all worldbook entries be written in **English**. This allows the AI model to leverage its core training data most effectively, regardless of the character's primary dialogue language.
+*   **Standalone Entries:** Activation keywords, titles, and other metadata are not inserted into the context. Each entry's `content` should be a comprehensive, standalone description.
+*   **Conciseness is Key:** To conserve prompt tokens, keep entry contents concise and focused on a single topic.
+
+---
+### **Part 2: Strategic Choices & Character Lore**
+
+**1. Placement of Your Worldbook:**
+*   **For Simple Lore -> Embed in `description`**: If your world is small, embed your lore directly in the character card's `description` field. This guarantees context but costs more tokens.
+*   **For Complex Lore -> Use the `character_book` Object**: If your world is vast, use the structured `character_book` object. This is token-efficient and is the focus of this guide.
+
+**2. Character-Specific Lore:**
+You can assign one World Info file to a character as a dedicated lore source.
+*   **To Assign:** Navigate to the Character Management panel, click the globe icon (🌐), select a World Info file, and click "Ok".
+*   **To Unbind/Change:** Shift-click the globe icon. On mobile, use "More..." -> "Link World Info".
+
+**3. Character Lore Insertion Strategy:**
+When both global and character-specific WI are active, their entries are combined based on a chosen strategy:
+*   **Sorted Evenly (Default):** All entries are sorted by their `order` as if they were in one large file.
+*   **Character Lore First:** Character WI entries are inserted first (respecting their `order`), followed by global WI entries.
+*   **Global Lore First:** Global WI entries are inserted first, followed by character WI entries.
+
+---
+### **Part 3: World Info Entry Breakdown**
+
+This table provides a comprehensive breakdown of all fields available for a World Info entry.
+
+| Field | Explanation & Recommendation |
+| :--- | :--- |
+| `uid` | **Unique Identifier**: A unique number for each entry. Managed automatically by the UI. |
+| `keys` | **Primary Keys**: A list of keywords that trigger the entry. Case-insensitive by default. Can be plain text or **JavaScript-style Regex** (e.g., `/(?:is talking about|notices) the weather/i`). |
+| `secondary_keys` | **Secondary Keys**: (Optional Filter) A comma-separated list of additional keywords used with logic (`selectiveLogic`): `AND ANY`, `AND ALL`, `NOT ANY`, `NOT ALL`. |
+| `content` | **Content**: The information to be injected into the context. **MUST be written in English.** Keep it concise and focused. |
+| `comment` | **Comment/Memo**: Notes for the creator. The AI does not read this. Use it to label your entries for easy management. |
+| `constant` | **Constant Insertion**: `true` injects the entry constantly, without needing a keyword. Ideal for fundamental world rules. Represented by a 🔵 (Blue Circle) in the UI. |
+| `vectorized` | **Vectorized Search**: `true` enables semantic (vector) search via the Vector Storage extension. Triggers if dialogue is *about* the topic, even without the exact keyword. Represented by a 🔗 (Chain Link). |
+| `order` | **Insertion Order**: The insertion priority. **Lower numbers are inserted higher in the prompt**, making them more influential. (e.g., `10` for critical lore, `100` for minor details). |
+| `position` | **Insertion Position**: Where in the prompt to insert content. `4` (After Char Defs) is default. Others: `0` (Before Char Defs), `1` (After Char Defs), `2` (Before Examples), `3` (After Examples), `Top/Bottom of AN`, `@ D` (specific depth). |
+| `disable` | **Disable Entry**: `true` disables the entry, preventing it from triggering. Useful for temporarily turning off certain lore. |
+| `probability` | **Trigger Probability**: A percentage (0-100) chance for the entry to be inserted when activated. `100` means it always inserts. Requires `useProbability` to be `true`. |
+| `useProbability` | **Use Probability**: `true` enables the `probability` setting. |
+| `selective` | **Selective Trigger**: `true` means the entry only triggers on keyword or vector match. |
+| `selectiveLogic` | **Keyword Logic**: `0` for AND (all keys must match), `1` for OR (any key can match). Applies to `secondary_keys`. |
+| `group` | **Inclusion Group**: Assigns the entry to a group. If multiple triggered entries share a group, only one is inserted. |
+| `groupOverride`, `groupWeight`, `useGroupScoring` | **Group Priority Controls**: `groupWeight` adjusts random selection chance within a group. `useGroupScoring` selects the entry with the most key matches. `groupOverride` is a legacy setting. |
+| `excludeRecursion` | **Exclude From Recursion**: `true` means this entry cannot be activated by other entries. |
+| `preventRecursion` | **Prevent Further Recursion**: `true` means this entry, when activated, will not trigger any other entries. |
+| `delayUntilRecursion` | **Delay Until Recursion**: `true` means this entry will only be activated during recursive checks, not the initial pass. |
+| `scanDepth` | **Context Scan Depth**: Overrides the global setting. Defines how many recent messages are scanned for keys. |
+| `caseSensitive` | **Case-Sensitive Keys**: `true` makes key matching case-sensitive. |
+| `matchWholeWords` | **Match Whole Words**: `true` ensures keys only match whole words (e.g., "king" won't match "liking"). |
+| `automationId` | **Automation ID**: Links the entry to STscript extensions for automated actions. |
+| `role` | **Role Association**: `0` (System), `1` (User), `2` (AI/Assistant). Associates the entry with a specific role. |
+| `timed_effects` (`sticky`, `cooldown`, `delay`) | **Timed Effects**: `sticky` keeps the entry active for N messages. `cooldown` prevents re-activation for N messages. `delay` prevents activation until N messages are in chat. |
+| `displayIndex` | **Display Index**: Controls the display order of entries in the SillyTavern UI. |
+
+---
+### **Part 4: Activation & Context Management**
+
+These settings are found in the collapsible menu at the top of the World Info screen.
+
+*   **Scan Depth:** How many recent messages are scanned for keys. `0` disables keyword scanning (only recursion/constants work), `1` scans the last message, etc.
+*   **Context % / Budget:** The maximum number of tokens WI entries can use, defined as a percentage of your total context or a fixed token amount.
+*   **Recursive Scanning:** Allows entries to be activated by the content of other activated entries. This enables creating complex, interlinked lore.
+*   **Vector Storage Matching:** An alternative to keyword matching that uses semantic similarity. Requires the Vector Storage extension to be enabled and configured.
+
+---
+### **Part 5: High-Quality English Entry Examples (Middle-earth)**
+
+**Example 1: Constant, Foundational Lore**
+```json
+{
+    "keys": [],
+    "content": "The setting is Middle-earth, in the waning years of the Third Age. The shadow of Sauron of Mordor is stretching across the land. The One Ring, forged by Sauron, has been found. The free peoples—Men, Elves, and Dwarves—are anxious, and a great war feels imminent.",
+    "comment": "Core world state. Always on.",
+    "constant": true,
+    "order": 1
+}
+```
+
+**Example 2: Keyword-based, Specific Lore**
+```json
+{
+    "keys": [
+        "Rivendell",
+        "Imladris"
+    ],
+    "content": "Rivendell, known as Imladris in Sindarin, is an Elven outpost in Middle-earth. It was founded and is ruled by Elrond, and is protected by his ring, Vilya. It serves as a hidden refuge for the Elves and their allies.",
+    "comment": "Describes the location of Rivendell.",
+    "constant": false,
+    "order": 50
+}
+```
+
+---
+<a name="chinese-version-st-world-info"></a>
+### **中文版**
+---
+
+**SillyTavern 世界信息（角色书）创作者指南**
+
+**文档目的:**
+本指南提供了在 SillyTavern 中创建高效的“世界信息”（World Info，也称为“知识库”、“记忆书”或 `character_book`）的技术规格和最佳实践。这是一个强大的工具，用于动态地将上下文插入到您的聊天中，以引导 AI 的回复。
+
+---
+### **第一部分：引言与核心概念**
+
+世界信息（简称 WI）是一个动态词典。它仅在最近的聊天记录中出现关联的关键词时，才会从其条目中插入相关信息。这使您能够构建深度、一致的叙事世界，而不会使上下文窗口过载。
+
+**核心原则:**
+*   **“仅限英文内容”规则:** 为了达到最佳效果，**强烈建议**所有世界书条目的 `content` 字段都用**英文**书写。这使得 AI 模型能够最有效地利用其核心训练数据，无论角色的主要对话语言是什么。
+*   **独立的条目:** 激活关键词、标题和其他元数据不会被插入到上下文中。每个条目的 `content` 都应该是一个全面、独立的描述。
+*   **简洁是关键:** 为了节省 prompt token，请保持条目内容简洁，并专注于单个主题。
+
+---
+### **第二部分：战略选择与角色知识库**
+
+**1. 您的世界书的存放位置:**
+*   **对于简单的背景知识 -> 嵌入 `description`**: 如果您的世界观较小，请将背景知识直接嵌入角色卡的 `description` 字段中。这能保证上下文，但会消耗更多 token。
+*   **对于复杂的背景知识 -> 使用 `character_book` 对象**: 如果您的世界观很宏大，请使用结构化的 `character_book` 对象。这在 token 效率上更高，也是本指南的重点。
+
+**2. 角色专属知识库:**
+您可以为一个角色分配一个世界信息文件，作为其专用的知识来源。
+*   **如何分配:** 导航到角色管理面板，点击地球图标（🌐），选择一个世界信息文件，然后点击“确定”。
+*   **如何解绑/更改:** 按住 Shift 键并单击地球图标。在移动设备上，使用“更多...” -> “链接世界信息”。
+
+**3. 角色知识库插入策略:**
+当全局和角色专属的 WI 都处于活动状态时，它们的条目会根据所选策略进行组合：
+*   **均匀排序 (默认):** 所有条目都按照它们的 `order` 进行排序，就像它们在一个大文件中一样。
+*   **角色知识库优先:** 角色 WI 条目会先被插入（遵循其 `order`），然后是全局 WI 条目。
+*   **全局知识库优先:** 全局 WI 条目会先被插入，然后是角色 WI 条目。
+
+---
+### **第三部分：世界信息条目详解**
+
+本表全面解析了世界信息条目中所有可用的字段。
+
+| 字段 | 解释与建议 |
+| :--- | :--- |
+| `uid` | **唯一标识符**: 每个条目的唯一编号。由用户界面自动管理。 |
+| `keys` | **主关键词**: 触发条目的关键词列表。默认不区分大小写。可以是纯文本或 **JavaScript 风格的正则表达式** (例如, `/(?:正在谈论|注意到)天气/i`)。 |
+| `secondary_keys` | **辅助关键词**: (可选过滤器) 一个逗号分隔的附加关键词列表，与逻辑运算符 (`selectiveLogic`) 一起使用：`AND ANY` (与任意一个匹配), `AND ALL` (与全部匹配), `NOT ANY` (不与任意一个匹配), `NOT ALL` (不与全部匹配)。 |
+| `content` | **内容**: 将被注入到上下文中的信息。**必须用英文书写。** 保持其简洁并专注于一个主题。 |
+| `comment` | **注释/备忘录**: 给创作者的注释。AI 不会读取此内容。用它来标记您的条目，便于管理。 |
+| `constant` | **恒定插入**: `true` 表示无需关键词，持续注入条目。适用于基本的世界规则。在 UI 中由 🔵 (蓝色圆圈) 表示。 |
+| `vectorized` | **向量搜索**: `true` 通过 Vector Storage 扩展启用语义（向量）搜索。如果对话与该主题*相关*，即使没有确切的关键词，也可以触发。在 UI 中由 🔗 (链环) 表示。 |
+| `order` | **插入顺序**: 插入优先级。**数字越小，在 prompt 中插入的位置就越靠前**，因此影响力更大。（例如，`10` 用于关键知识，`100` 用于次要细节）。 |
+| `position` | **插入位置**: 在 prompt 中插入内容的位置。`4` (在角色定义之后) 是默认值。其他：`0` (角色定义前), `1` (角色定义后), `2` (示例消息前), `3` (示例消息后), `作者笔记顶部/底部`, `@ D` (特定深度)。 |
+| `disable` | **禁用条目**: `true` 禁用该条目，使其无法触发。适用于临时关闭某些背景信息。 |
+| `probability` | **触发概率**: 一个百分比（0-100），表示条目在被激活时插入的几率。`100` 意味着总是插入。需要将 `useProbability` 设为 `true`。 |
+| `useProbability` | **启用概率**: `true` 启用 `probability` 设置。 |
+| `selective` | **选择性触发**: `true` 表示条目仅在关键词或向量匹配时触发。 |
+| `selectiveLogic` | **关键词逻辑**: `0` 表示 AND (所有关键词必须匹配)，`1` 表示 OR (任意关键词即可匹配)。适用于 `secondary_keys`。 |
+| `group` | **纳入组**: 将条目分配到一个组。如果多个被触发的条目共享一个组，则只会插入其中一个。 |
+| `groupOverride`, `groupWeight`, `useGroupScoring` | **组优先级控制**: `groupWeight` 调整组内随机选择的权重。`useGroupScoring` 选择匹配关键词最多的条目。`groupOverride` 是一个遗留设置。 |
+| `excludeRecursion` | **排除递归**: `true` 表示此条目不能被其他条目激活。 |
+| `preventRecursion` | **阻止进一步递归**: `true` 表示此条目被激活后，不会触发任何其他条目。 |
+| `delayUntilRecursion` | **延迟至递归**: `true` 表示此条目只会在递归检查期间被激活，而不是在初始扫描时。 |
+| `scanDepth` | **上下文扫描深度**: 覆盖全局设置。定义扫描多少条最近的消息以查找关键词。 |
+| `caseSensitive` | **区分大小写**: `true` 使关键词匹配区分大小写。 |
+| `matchWholeWords` | **匹配整个单词**: `true` 确保关键词只匹配完整的单词（例如，“king”不会匹配“liking”）。 |
+| `automationId` | **自动化ID**: 将条目与 STscript 扩展链接，以执行自动化操作。 |
+| `role` | **角色关联**: `0` (系统), `1` (用户), `2` (AI/助手)。将条目与特定角色关联。 |
+| `timed_effects` (`sticky`, `cooldown`, `delay`) | **定时效果**: `sticky` 使条目在激活后持续 N 条消息。`cooldown` 在 N 条消息内阻止再次激活。`delay` 在聊天达到 N 条消息前阻止激活。 |
+| `displayIndex` | **显示索引**: 控制条目在 SillyTavern 用户界面中的显示顺序。 |
+
+---
+### **第四部分：激活与上下文管理**
+
+这些设置位于世界信息屏幕顶部的可折叠菜单中。
+
+*   **扫描深度 (Scan Depth):** 扫描多少条最近的消息以查找关键词。`0` 禁用关键词扫描（只有递归/常量条目有效），`1` 扫描最后一条消息，以此类推。
+*   **上下文百分比/预算 (Context % / Budget):** WI 条目可以使用的最大 token 数量，定义为总上下文的百分比或固定的 token 数量。
+*   **递归扫描 (Recursive Scanning):** 允许条目被其他已激活条目的内容激活。这使得创建复杂的、相互关联的知识库成为可能。
+*   **向量存储匹配 (Vector Storage Matching):** 一种替代关键词匹配的方法，它使用语义相似性。需要启用并配置 Vector Storage 扩展。
+
+---
+### **第五部分：高质量英文条目范例（中土世界）**
+
+**范例 1: 恒定注入的基础知识**
+```json
+{
+    "keys": [],
+    "content": "The setting is Middle-earth, in the waning years of the Third Age. The shadow of Sauron of Mordor is stretching across the land. The One Ring, forged by Sauron, has been found. The free peoples—Men, Elves, and Dwarves—are anxious, and a great war feels imminent.",
+    "comment": "核心世界状态。始终开启。",
+    "constant": true,
+    "order": 1
+}
+```
+
+**范例 2: 基于关键词的特定知识**
+```json
+{
+    "keys": [
+        "Rivendell",
+        "Imladris"
+    ],
+    "content": "Rivendell, known as Imladris in Sindarin, is an Elven outpost in Middle-earth. It was founded and is ruled by Elrond, and is protected by his ring, Vilya. It serves as a hidden refuge for the Elves and their allies.",
+    "comment": "描述瑞文戴尔这个地点。",
+    "constant": false,
+    "order": 50
+}

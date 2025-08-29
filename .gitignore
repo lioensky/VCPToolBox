@@ -185,7 +185,3 @@ docker-compose.yml
 # Git rewrite temporary directory
 .git-rewrite/\"Plugin/WeatherReporter/weather_cache.json\" 
 \"config.docker.env\"
-
-# 临时忽略PM2相关文件修改，避免与原作者合并冲突
-Plugin/IMAPIndex/post_run.js
-start_vcp_pm2.bat
