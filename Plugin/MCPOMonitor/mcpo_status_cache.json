@@ -1,0 +1,32 @@
+{
+  "timestamp": "2025-08-29T08:16:40.976Z",
+  "health": {
+    "serverRunning": false,
+    "serverVersion": null,
+    "healthChecks": {
+      "OpenAPI文档": {
+        "status": "🔴 异常",
+        "details": "request to http://0.0.0.0:9000/openapi.json failed, reason: connect ECONNREFUSED 0.0.0.0:9000"
+      },
+      "Swagger UI": {
+        "status": "🔴 异常",
+        "details": "request to http://0.0.0.0:9000/docs failed, reason: connect ECONNREFUSED 0.0.0.0:9000"
+      }
+    },
+    "availableServices": [],
+    "lastChecked": "2025-08-29T08:16:40.869Z"
+  },
+  "tools": {
+    "success": false,
+    "error": "无法获取主OpenAPI规范: request to http://0.0.0.0:9000/openapi.json failed, reason: connect ECONNREFUSED 0.0.0.0:9000"
+  },
+  "config": {
+    "host": "http://0.0.0.0:9000",
+    "cacheEnabled": true,
+    "cacheTTL": 2,
+    "refreshInterval": "*/10 * * * * *"
+  },
+  "isRealTime": true,
+  "checkInterval": "实时检测 (*/10 * * * * *)",
+  "lastUpdate": "2025/8/29 16:16:40"
+}

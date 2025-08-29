@@ -1,0 +1,162 @@
+############################################################
+# VCPToolbox Agent Creation and Configuration Workflow
+# Version: 3.0
+# Last Updated: 2025-07-07
+############################################################
+
+* [Go to English Version](#english-version)
+* [跳转至中文版](#chinese-version)
+
+---
+<a name="english-version"></a>
+### **English Version**
+---
+
+### Introduction
+This document outlines the standardized process for creating, configuring, and integrating a new Agent into the VCPToolbox system. Adhering to this workflow ensures consistency, maintainability, and optimal performance. An Agent can be a user-facing persona or a background tool callable by other AIs via the AgentAssistant plugin.
+
+---
+## Part 1: Base Agent Creation
+
+This part covers creating a basic Agent that can be directly invoked by the user.
+
+#### **Step 1: Define the Agent's Core Identity**
+
+1.  **Concept & Role**: Clearly define the Agent's purpose, personality, expertise, and limitations. Is it a functional expert (e.g., Code Reviewer, Project Manager) or a role-playing character (Yotogi Agent)?
+2.  **Knowledge & Style**: Identify the core knowledge, skills, and communication style (tone, mannerisms) the Agent needs.
+3.  **Define Responsibilities (for Expert Agents)**: For functional experts, define their Standard Operating Procedures (SOP) in the root `config.env` file. This variable constitutes the Agent's **Function Layer**.
+    *   **Format**: `Var[SkillName]Responsibilities="[Detailed SOPs in English]"`
+    *   **Example**: `VarSecretaryResponsibilities="As a Secretary, adhere to these guidelines: 1. Task Analysis..."`
+
+#### **Step 2: Create the Agent's Character Card (`.txt` file)**
+
+1.  **File Location**: All Agent character cards must be placed in the `Agent/` directory.
+2.  **File Naming**:
+    *   **Expert Agent**: Use a descriptive name, e.g., `CodeReviewerLina.txt`.
+    *   **Yotogi Agent**: **Must** be prefixed with `Yotogi`, e.g., `YotogiZeus.txt`.
+3.  **Content Principle**: The content must be a single, seamless block of plain text. Follow the structure from `VCPAgent角色卡示例.txt`: **Background & Lore** -> **Specific Style Directives** -> **Core Cognition**.
+    *   **CRITICAL**: The final `.txt` file must not contain any Markdown headers (`###`) or instructional comments.
+4.  **Link Function Layer (for Expert Agents)**: At the end of the card, link the persona to its function: `These are your duties as a [Profession]: {{Var[SkillName]Responsibilities}}`.
+5.  **Placeholders**: Use `{{VarUser}}` for the user. An Agent's personal diary placeholder **must** use its English core name, e.g., `{{Anna日记本}}`.
+
+#### **Step 3: Register the Agent in the Main Configuration File**
+
+1.  **Target File**: `config.env`
+2.  **Action**: Add a new line to register the Agent.
+3.  **Format**: `Agent<Alias>=<filename>.txt`
+    *   `<Alias>` is a concise, camel-case or pascal-case name (e.g., `AgentLina`).
+    *   `<filename>.txt` is the exact name of the character card file.
+    *   **Example**: `AgentLina=CodeReviewerLina.txt` or `AgentZeus=YotogiZeus.txt`.
+
+---
+## Part 2: Registering the Agent as a Tool (AgentAssistant Plugin)
+
+This part is crucial for allowing the main AI or other Agents to invoke your new Agent as a tool.
+
+#### **Step 4: Define the Agent in the AgentAssistant Plugin Config**
+
+1.  **Target File**: `Plugin/AgentAssistant/config.env`
+2.  **Action**: Add a complete block to define the Agent's properties for the plugin.
+3.  **Format & Example**:
+    ```ini
+    # Agent: Siesta
+    AGENT_SIESTA_MODEL_ID="gemini-1.5-pro-latest"
+    AGENT_SIESTA_CHINESE_NAME="希丝塔"
+    AGENT_SIESTA_SYSTEM_PROMPT={{AgentSiesta}}
+    AGENT_SIESTA_DESCRIPTION="The exclusive virtual maid of cyberspace, Siesta, serving as the primary secretary."
+    ```
+    *   `SYSTEM_PROMPT` must reference the alias defined in the root `config.env` (Step 3).
+
+#### **Step 5: Update the AgentAssistant Plugin Manifest**
+
+1.  **Target File**: `Plugin/AgentAssistant/plugin-manifest.json`
+2.  **Action**: Add the new Agent to the list of available tools so other AIs know it exists.
+3.  **Location**: Find the `capabilities.invocationCommands.description` field.
+4.  **Format**: Add a new line to the `Available Agents` list.
+    *   **Example**: `- 希丝塔: The exclusive virtual maid of cyberspace, Siesta, serving as the primary secretary.`
+
+---
+## Part 3: Testing
+
+1.  **Restart**: Restart the VCPToolbox system to load all new configurations.
+2.  **Direct Invocation**: Test by directly messaging the Agent (e.g., `@AgentLina`). Verify its persona and functionality.
+3.  **Tool Invocation**: Test by having another AI call the Agent through the `AgentAssistant` tool. Verify it responds correctly as a background tool.
+
+<br>
+<br>
+---
+---
+---
+<a name="chinese-version"></a>
+### **中文版**
+---
+
+### 引言
+本文档概述了在VCPToolbox系统中创建、配置和集成新Agent的标准化流程。遵循此工作流程可确保一致性、可维护性和最佳性能。Agent既可以是面向用户的独立人格，也可以是能通过AgentAssistant插件被其他AI调用的后台工具。
+
+---
+## 第一部分: 创建基础Agent
+
+本部分涵盖了如何创建一个可由用户直接调用的基础Agent。
+
+#### **第一步: 定义Agent的核心身份**
+
+1.  **概念与角色**: 明确定义Agent的目的、个性、专业领域和限制。它是一个功能性专家（如代码审查员、项目经理）还是一个角色扮演角色（夜伽Agent）？
+2.  **知识与风格**: 确定Agent所需的核心知识、技能及其沟通风格（语调、言谈举止）。
+3.  **定义职责 (针对专家Agent)**: 对于功能型专家，在其根目录的 `config.env` 文件中定义其标准操作流程（SOP）。此变量构成了Agent的**功能层**。
+    *   **格式**: `Var[技能名]Responsibilities="[用英文书写的详细SOP]"`
+    *   **示例**: `VarSecretaryResponsibilities="As a Secretary, adhere to these guidelines: 1. Task Analysis..."`
+
+#### **第二步: 创建Agent的角色卡 (`.txt` 文件)**
+
+1.  **文件位置**: 所有Agent角色卡必须放置在 `Agent/` 目录下。
+2.  **文件命名**:
+    *   **专家Agent**: 使用描述性名称，例如 `CodeReviewerLina.txt`。
+    *   **夜伽Agent**: **必须**以`Yotogi`为前缀，例如 `YotogiZeus.txt`。
+3.  **内容原则**: 角色卡的内容必须是一个**单一、无缝的纯文本块**。请遵循 `VCPAgent角色卡示例.txt` 的结构：**背景故事与设定** -> **特定风格指令** -> **核心认知**。
+    *   **至关重要**: 最终的`.txt`文件中**请勿**包含任何Markdown标题 (`###`) 或指导性注释。
+4.  **链接功能层 (针对专家Agent)**: 在角色卡末尾，将人格与其功能链接起来：`These are your duties as a [角色职业]: {{Var[技能名]Responsibilities}}`。
+5.  **占位符**: 使用 `{{VarUser}}` 指代用户。Agent的个人日记本占位符**必须**使用其英文核心名，例如 `{{Anna日记本}}`。
+
+#### **第三步: 在主配置文件中注册Agent**
+
+1.  **目标文件**: `config.env`
+2.  **执行动作**: 添加新行以注册Agent。
+3.  **格式**: `Agent<别名>=<文件名>.txt`
+    *   `<别名>` 是一个简洁的、用于调用Agent的驼峰或帕斯卡命名法名称（例如 `AgentLina`）。
+    *   `<文件名>.txt` 是在第二步中创建的角色卡文件的确切名称。
+    *   **示例**: `AgentLina=CodeReviewerLina.txt` 或 `AgentZeus=YotogiZeus.txt`。
+
+---
+## 第二部分: 将Agent注册为工具 (AgentAssistant插件)
+
+这是让主AI或其他Agent能够将您的新Agent作为工具调用的关键部分。
+
+#### **第四步: 在AgentAssistant插件配置中定义Agent**
+
+1.  **目标文件**: `Plugin/AgentAssistant/config.env`
+2.  **执行动作**: 添加一个完整的定义块来为插件定义Agent的属性。
+3.  **格式与示例**:
+    ```ini
+    # Agent: 希丝塔
+    AGENT_SIESTA_MODEL_ID="gemini-1.5-pro-latest"
+    AGENT_SIESTA_CHINESE_NAME="希丝塔"
+    AGENT_SIESTA_SYSTEM_PROMPT={{AgentSiesta}}
+    AGENT_SIESTA_DESCRIPTION="The exclusive virtual maid of cyberspace, Siesta, serving as the primary secretary."
+    ```
+    *   `SYSTEM_PROMPT` 必须引用在根 `config.env` 中定义的别名（第三步）。
+
+#### **第五步: 更新AgentAssistant插件清单文件**
+
+1.  **目标文件**: `Plugin/AgentAssistant/plugin-manifest.json`
+2.  **执行动作**: 将新Agent添加到可用工具列表中，以便其他AI“知道”它的存在。
+3.  **定位**: 找到 `capabilities.invocationCommands.description` 字段。
+4.  **格式**: 在 `Available Agents` 列表中添加新的一行。
+    *   **示例**: `- 希丝塔: 网络空间的专属虚拟女仆，希丝塔，担任首席秘书。`
+
+---
+## 第三部分: 测试
+
+1.  **重启**: 重启VCPToolbox系统以加载所有新配置。
+2.  **直接调用**: 通过直接发送消息（例如 `@AgentLina`）来测试Agent。验证其人格和功能是否符合预期。
+3.  **工具调用**: 通过让另一个AI使用 `AgentAssistant` 工具来调用新Agent。验证它作为后台工具是否能正确响应。

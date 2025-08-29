@@ -1,0 +1,267 @@
+### VCPToolbox 更新与配置管理流程
+
+*   [跳转至中文版 (适用于中文母语者)](#chinese-version-update-workflow)
+*   [Go to English Version (For English native speakers and LLMs)](#english-version-update-workflow)
+
+---
+<a name="chinese-version-update-workflow"></a>
+### **中文版**
+---
+
+**文档目的：**
+本文档为安全、高效地更新 VCPToolbox 项目提供了一套标准操作流程（SOP）。该流程基于 `git pull --rebase`，旨在保持清晰的提交历史，并与上游项目保持同步，是向上游贡献代码（PR）的最佳实践。
+
+---
+### **第一部分：Git 仓库设置 (前置要求)**
+
+为了方便开发和更新，建议按以下方式配置您的 Git 远程仓库。
+
+**远程仓库配置示例:**
+```bash
+# origin 指向您自己的 fork 仓库
+origin    git@github.com:VincentHDLee/VCPToolBox.git (fetch)
+origin    git@github.com:VincentHDLee/VCPToolBox.git (push)
+
+# upstream 指向官方的源头仓库
+upstream  git@github.com:lioensky/VCPToolBox.git (fetch)
+upstream  git@github.com:lioensky/VCPToolBox.git (push)
+```
+
+**仓库角色说明:**
+*   **`upstream`**: 项目的官方源头仓库 (`lioensky/VCPToolBox`)。您应该始终从这里拉取最新的官方更新。
+*   **`origin`**: 您在 GitHub 上 fork 的个人仓库 (`VincentHDLee/VCPToolBox`)。您自己的修改、新功能开发等，都应该推送到这里。
+
+---
+### **第二部分：标准更新流程**
+
+当您得知项目有新的更新后，请严格按照以下步骤操作。
+
+#### **步骤 1：获取远程更新**
+打开您项目目录 (`/opt/VCPToolBox`) 的终端，执行命令拉取 `upstream` 的最新变更。此步骤仅下载数据，尚未修改您的工作文件。
+```bash
+git fetch upstream
+```
+
+#### **步骤 2：检查本地状态并暂存修改**
+在合并前，务必保证工作区是干净的。
+```bash
+# 1. 检查当前是否有未提交的修改
+git status
+```
+*   **如果工作区是干净的**，您可以直接跳到步骤 3。
+*   **如果您有 "Changes not staged for commit" 或 "Untracked files"**，您必须将它们保存到一个临时的“储藏区”（stash）。这是保证更新顺利进行的关键一步。
+```bash
+# 2. 将所有已追踪的修改和未追踪的文件(-u)都存入储藏区，并附带一条描述性信息
+git stash save -u "更新前的本地修改"
+#
+# 重要提示：-u 参数会一并将您本地的、未加入版本控制的配置文件（如 config.env）、
+# 插件配置、测试角色等全部暂存。这是为了在更新时保护它们不被意外删除或覆盖。
+```
+**安全检查 (可选):** 您可以使用 `git stash show -p` 来预览暂存了哪些内容，确保没有遗漏。
+
+#### **步骤 3：拉取并变基 (核心步骤)**
+这是最关键的一步。我们将使用 `rebase` 模式来拉取 `upstream` 的更新。这会自动将您的本地提交“移动”到 `upstream` 最新提交的“顶端”，从而形成一条干净的、线性的提交历史。
+```bash
+git pull --rebase upstream main
+```
+*   **如果成功**：Git 会提示 "Successfully rebased and updated refs/heads/main."。
+*   **如果出现冲突**：Git 会暂停并提示您手动解决冲突。这是正常现象。您需要：
+    1.  打开提示有冲突的文件。
+    2.  手动编辑文件，解决 `<<<<<<<`, `=======`, `>>>>>>>` 标记的冲突内容。
+    3.  使用 `git add <已解决冲突的文件>` 将其标记为已解决。
+    4.  运行 `git rebase --continue` 继续变基过程。
+    5.  如果遇到困难，可以使用 `git rebase --abort` 来取消整个变基操作，返回到变基之前的状态。
+    
+    **处理配置文件冲突的技巧：** 如果冲突发生在 `config.env` 或插件的 `plugin-manifest.json` 等配置文件中，通常意味着上游增加了新的配置项。解决冲突时，请务必保留您自己的配置值，然后将上游模板中新增的配置项手动复制到您的文件中。
+
+#### **步骤 4：恢复暂存的修改**
+在恢复之前，建议再次检查当前工作区的状态，确保 `rebase` 过程顺利完成，没有遗留任何未处理的文件。
+```bash
+# (推荐) 再次检查工作区状态，确保是干净的
+git status
+```
+确认无误后，将您在步骤 2 中暂存的修改重新应用回来。
+```bash
+git stash pop
+# 或者使用 git stash apply，这会保留 stash 记录
+```
+此时恢复暂存，您的本地修改将被重新应用。**请注意，这一步仍有可能发生冲突**，特别是当上游的更新和您本地的修改触及了相同的代码行时。如果发生冲突，请像处理 `rebase` 冲突一样，手动解决后使用 `git add` 标记文件为已解决。
+
+#### **步骤 5：检查新配置项与变更**
+*   **分析日志**：运行 `git log upstream/main --since="X days"` 查看最近的提交，了解更新了哪些插件或功能。
+*   **对比配置文件**：仔细检查 `config.env.example` 与您的 `config.env`，将任何新增的配置项复制到您的 `config.env` 中并填入合适的值。
+*   **更新说明文档**：如果新增了插件，根据其 `plugin-manifest.json` 和代码逻辑，在 `TVStxt/` 目录下的相关文件中为其补充工具说明。
+
+#### **步骤 6：提交并推送到您的 Fork**
+在合并和修复完成后，将所有更改推送到您自己的 `origin` 仓库。
+```bash
+# 1. 添加更改到暂存区
+# ======================================================================
+# !! 严重警告：在任何时候都严禁使用 `git add .` !!
+# ======================================================================
+#
+# `git add .` 命令会将当前目录下所有未被 `.gitignore` 忽略的文件（包括您自己的
+# 配置文件、测试角色、日志、图片等）全部添加到暂存区。这极易导致将个人敏感
+# 信息或不应由版本控制追踪的私有文件，错误地提交到代码库中，引发安全风险。
+#
+# 正确操作：
+# 请始终根据 `git status` 的输出，明确、逐一地添加您希望提交的文件。
+#
+# 示例:
+# git add Docs/VCPToolbox更新与配置管理流程.txt
+# git add Plugin/NewPlugin/NewPlugin.js
+#
+# 如果您修改了大量已追踪的文件，可以使用 `git add -u` 来暂存所有已追踪文件的变更。
+git add <您需要提交的文件路径>
+
+# 2. 提交更改
+git commit -m "Sync with upstream and apply local fixes"
+
+# 3. 推送到 origin
+git push origin main
+```
+**注意**：如果在推送前，您的 `origin` 仓库也有了新的提交（例如，您在另一台设备上操作过），`push` 可能会被拒绝。此时，需要先与 `origin` 同步：
+```bash
+git pull --rebase origin main
+# 解决可能出现的冲突后，再重新 git push origin main
+```
+
+#### **步骤 7：重新构建并启动服务**
+最后，重新构建 Docker 镜像并启动服务，以应用所有代码和配置的更新。
+```bash
+docker-compose up --build -d
+```
+
+---
+<a name="english-version-update-workflow"></a>
+### **English Version**
+---
+
+**Document Purpose:**
+This document provides a Standard Operating Procedure (SOP) for safely and efficiently updating the VCPToolbox project. This workflow is based on `git pull --rebase`, which maintains a clean, linear commit history, aligns with the upstream project, and is the best practice for contributing Pull Requests (PRs).
+
+---
+### **Part 1: Git Repository Setup (Prerequisite)**
+
+To facilitate development and updates, your Git remote repositories should be configured as follows.
+
+**Example Remote Configuration:**
+```bash
+# 'origin' points to your personal fork
+origin    git@github.com:VincentHDLee/VCPToolBox.git (fetch)
+origin    git@github.com:VincentHDLee/VCPToolBox.git (push)
+
+# 'upstream' points to the official source repository
+upstream  git@github.com:lioensky/VCPToolBox.git (fetch)
+upstream  git@github.com:lioensky/VCPToolBox.git (push)
+```
+
+**Repository Roles Explained:**
+*   **`upstream`**: The project's official source repository (`lioensky/VCPToolBox`). You should always pull the latest official updates from here.
+*   **`origin`**: Your personal fork of the repository on GitHub (`VincentHDLee/VCPToolBox`). Your own modifications and new feature development should be pushed here.
+
+---
+### **Part 2: The Standard Update Workflow**
+
+When you are notified of a new project update, please follow these steps precisely.
+
+#### **Step 1: Fetch Remote Updates**
+Open a terminal in your project directory (`/opt/VCPToolBox`) and execute the command to fetch the latest changes from `upstream`. This downloads the data but does not yet modify your working files.
+```bash
+git fetch upstream
+```
+
+#### **Step 2: Check Local Status and Stash Changes**
+Before merging, it is crucial to ensure your working directory is clean.
+```bash
+# 1. Check for any uncommitted changes
+git status
+```
+*   **If the working tree is clean**, you can proceed to Step 3.
+*   **If you have "Changes not staged for commit" or "Untracked files"**, you must save them to a temporary "stash". This is a critical step for a smooth update.
+```bash
+# 2. Stash all tracked changes and untracked files (-u) with a descriptive message
+git stash save -u "Before updating - local modifications"
+#
+# Important Note: The -u flag also stashes untracked files, including your local
+# configurations (e.g., config.env), plugin settings, and test characters.
+# This is intended to protect them from being accidentally deleted or overwritten
+# during the update.
+```
+**Safety Check (Optional):** You can use `git stash show -p` to preview what has been stashed to ensure nothing is missed.
+
+#### **Step 3: Pull and Rebase (Core Step)**
+This is the most critical step. We will use the `rebase` strategy to pull updates from `upstream`. This automatically "moves" your local commits to the "top" of `upstream`'s latest commits, resulting in a clean, linear history.
+```bash
+git pull --rebase upstream main
+```
+*   **On Success**: Git will output "Successfully rebased and updated refs/heads/main.".
+*   **On Conflict**: Git will pause and ask you to resolve conflicts manually. This is normal. You need to:
+    1.  Open the files marked with conflicts.
+    2.  Manually edit the files to resolve the `<<<<<<<`, `=======`, `>>>>>>>` markers.
+    3.  Mark the file as resolved using `git add <resolved_file>`.
+    4.  Run `git rebase --continue` to proceed with the rebase.
+    5.  If you get stuck, you can always use `git rebase --abort` to cancel the entire rebase operation and return to the state before it began.
+
+    **Tip for Resolving Config File Conflicts:** If a conflict occurs in a configuration file like `config.env` or a plugin's `plugin-manifest.json`, it usually means upstream has added new settings. When resolving, ensure you keep your own existing values while manually copying the new settings from the upstream template into your file.
+
+#### **Step 4: Re-apply Your Stashed Changes**
+Before re-applying, it's recommended to check the status of your working directory again to ensure the `rebase` process completed cleanly with no leftover files.
+```bash
+# (Recommended) Check the working directory status again to ensure it's clean
+git status
+```
+Once confirmed, apply the changes you stashed in Step 2.
+```bash
+git stash pop
+# Alternatively, use `git stash apply` to keep the stash record
+```
+Your local changes will be re-applied. **Be aware that conflicts can still occur at this stage**, especially if upstream changes and your stashed changes affect the same lines of code. If conflicts arise, resolve them manually and use `git add` to mark the files as resolved, just as you would during a rebase.
+
+#### **Step 5: Check for New Configurations and Changes**
+*   **Analyze Logs**: Run `git log upstream/main --since="X days"` to review recent commits and understand what new plugins or features have been added.
+*   **Compare Config Files**: Carefully compare `config.env.example` with your `config.env`. Copy any new configuration variables into your `config.env` and provide appropriate values.
+*   **Update Tool Documentation**: If new plugins were added, update the relevant tool description files in the `TVStxt/` directory based on the plugin's `plugin-manifest.json` and its code logic.
+
+#### **Step 6: Commit and Push to Your Fork**
+After merging and making fixes, push all changes to your own `origin` repository.
+```bash
+# 1. Add changes to the staging area
+# =================================================================
+# !! CRITICAL WARNING: NEVER USE `git add .` AT ANY TIME !!
+# =================================================================
+#
+# The `git add .` command will add ALL files in the current directory that are
+# not ignored by `.gitignore`. This includes your personal configuration files,
+# test characters, logs, images, etc. Using it will very likely lead to
+# accidentally committing private, sensitive data or other untracked files
+# to the repository, causing a security risk.
+#
+# The Correct Procedure:
+# Always check the output of `git status` first, then explicitly add only
+# the specific files you intend to commit.
+#
+# Example:
+# git add Docs/VCPToolbox更新与配置管理流程.txt
+# git add Plugin/NewPlugin/NewPlugin.js
+#
+# If you have modified many already-tracked files, you can use `git add -u`
+# to stage all changes to tracked files.
+git add <path/to/your/file>
+
+# 2. Commit the changes
+git commit -m "Sync with upstream and apply local fixes"
+
+# 3. Push to origin
+git push origin main
+```
+**Note**: If your `origin` repository has new commits since your last pull (e.g., you worked on another machine), the `push` might be rejected. In this case, you need to sync with `origin` first:
+```bash
+git pull --rebase origin main
+# Resolve any potential conflicts, then try `git push origin main` again.
+```
+
+#### **Step 7: Rebuild & Restart Services**
+Finally, rebuild the Docker images and restart the services to apply all code and configuration updates.
+```bash
+docker-compose up --build -d
