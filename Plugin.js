@@ -582,9 +582,11 @@ class PluginManager {
                             
                             if (this.debugMode) console.log(`[PluginManager] Successfully fetched file as data URI. Retrying plugin call...`);
                             
-                            // 修改参数并重试
+                            // 恢复到原始逻辑：修改参数并重试
                             const newToolArgs = { ...toolArgs };
                             delete newToolArgs.image_url;
+                            
+                            // 系统的原始设计是传递一个完整的 Data URI。这是最稳定且向后兼容的方案。
                             newToolArgs.image_base64 = dataUri;
                             
                             // 直接返回重试调用的结果
