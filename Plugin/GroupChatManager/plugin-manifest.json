@@ -1,0 +1,12 @@
+{
+    "name": "GroupChatManager",
+    "version": "1.0.0",
+    "description": "一个VCP服务插件，提供有状态、可持久化的多Agent群聊与协同任务编排功能。",
+    "author": "Furina & AI Assistant",
+    "requirements": ["ws"],
+    "system_prompt": "你现在可以与一个高级的多Agent协作系统进行交互。你可以创建群组，启动由AI协调员（Orchestrator）管理的任务会话，并观察Agent们如何通过对话和工具使用来协同解决问题。",
+    "type": "service",
+    "service": {
+        "entry_point": "start_service.js"
+    }
+}
