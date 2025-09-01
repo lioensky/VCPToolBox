@@ -1,56 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+
 :root {
     /* --- 默认暗色主题 (墨色系) --- */
-    --primary-bg-dark: #1c1c1e;      /* 深墨灰 - 近黑 */
-    --secondary-bg-dark: #28282c;    /* 略浅的墨灰 */
-    --tertiary-bg-dark: #121212;     /* 聊天区背景 - 纯黑に近い */
-    --accent-bg-dark: #3a3a3e;       /* 悬停/选中背景 - 中墨灰 */
-    --primary-text-dark: #e0e0e0;    /* 主要文字 - 浅灰 */
-    --secondary-text-dark: #a0a0a0;  /* 次要/标题文字 - 中灰 */
-    --highlight-text-dark: #6fa8dc;  /* 高亮文字 - 柔和蓝 (点缀色) */
-    --border-color-dark: #3a3a3e;    /* 边框颜色 */
-    --user-bubble-bg-dark: rgba(56, 120, 173, 0.75);  /* 用户气泡 - 柔和蓝 (点缀色) - 带透明度 */
-    --assistant-bubble-bg-dark: rgba(47, 47, 51, 0.75);/* AI气泡 - 深墨灰 - 带透明度 */
-    --button-bg-dark: #48484c;       /* 普通按钮背景 - 中墨灰 */
-    --button-hover-bg-dark: #58585e; /* 按钮悬停 - 略亮的墨灰 */
-    --danger-color-dark: #e57373;    /* 危险操作 - 柔和红 */
-    --danger-hover-bg-dark: #ef5350; /* 危险操作悬停 - 略深的柔和红 */
-    --input-bg-dark: #222225;        /* 输入框背景 */
-    --tool-bubble-bg-dark: #3a3a3e;   /* VCP工具调用气泡背景 */
-    --tool-bubble-border-dark: #58585e;
-    --notification-bg-dark: #2f2f33;
-    --notification-header-bg-dark: #3a3a3e;
-    --notification-border-dark: #48484c;
+    --primary-bg-dark: #1a1b1e;
+    --secondary-bg-dark: #2a2c30;
+    --tertiary-bg-dark: #202124;
+    --accent-bg-dark: #3a3a3e;
+    --primary-text-dark: #e8eaed;
+    --secondary-text-dark: #9aa0a6;
+    --highlight-text-dark: #8ab4f8;
+    --border-color-dark: #3c4043;
+    --button-bg-dark: #303134;
+    --button-hover-bg-dark: #3c4043;
+    --danger-color-dark: #f28b82;
+    --danger-hover-bg-dark: #ea6b66;
+    --input-bg-dark: #202124;
     --scrollbar-track-dark: rgba(40, 40, 40, 0.5);
     --scrollbar-thumb-dark: rgba(100, 100, 100, 0.6);
     --scrollbar-thumb-hover-dark: rgba(120, 120, 120, 0.8);
-    --quoted-text-dark: #FFB74D; /* 深色模式引用文本 - 柔和橙色 */
+    --cpu-color-dark: #8ab4f8;
+    --memory-color-dark: #81c995;
 
     /* --- 亮色主题 --- */
-    --primary-bg-light: #f4f6f8;      /* 非常浅的灰蓝色 */
-    --secondary-bg-light: #ffffff;    /* 白色 */
-    --tertiary-bg-light: #e9edf0;     /* 聊天区背景，浅灰 */
-    --accent-bg-light: #e0e6eb;       /* 悬停/选中背景 */
-    --primary-text-light: #2c3e50;    /* 主要文字 - 深灰蓝 */
-    --secondary-text-light: #5a6f80;  /* 次要/标题文字 - 中灰蓝 */
-    --highlight-text-light: #3498db;  /* 高亮文字 - 清爽蓝 */
-    --border-color-light: #e0e6eb;    /* 边框颜色 - 调整为更浅的颜色，与 accent-bg-light 相似 */
-    --user-bubble-bg-light: rgba(52, 152, 219, 0.7);  /* 用户气泡 - 清爽蓝 - 带透明度 */
-    --assistant-bubble-bg-light: rgba(232, 244, 248, 0.7);/* AI气泡 - 非常浅的蓝 - 带透明度 */
-    --button-bg-light: #3498db;       /* 普通按钮背景 - 清爽蓝 */
-    --button-hover-bg-light: #2980b9; /* 按钮悬停 - 深一点的蓝 */
-    --danger-color-light: #e74c3c;    /* 危险操作 - 红色 */
-    --danger-hover-bg-light: #c0392b; /* 危险操作悬停 - 深红 */
-    --input-bg-light: #ffffff;        /* 输入框背景 - 白色 */
-    --tool-bubble-bg-light: #e0e6eb;   /* VCP工具调用气泡背景 - 浅灰 */
-    --tool-bubble-border-light: #b8c0c8;
-    --notification-bg-light: #e8f4f8;
-    --notification-header-bg-light: #d0d8e0;
-    --notification-border-light: #3498db;
+    --primary-bg-light: #f8f9fa;
+    --secondary-bg-light: #ffffff;
+    --tertiary-bg-light: #f1f3f4;
+    --accent-bg-light: #e8eaed;
+    --primary-text-light: #202124;
+    --secondary-text-light: #5f6368;
+    --highlight-text-light: #1a73e8;
+    --border-color-light: #dadce0;
+    --button-bg-light: #e8eaed;
+    --button-hover-bg-light: #dfe1e5;
+    --danger-color-light: #d93025;
+    --danger-hover-bg-light: #c5221f;
+    --input-bg-light: #ffffff;
     --scrollbar-track-light: rgba(200, 200, 200, 0.5);
     --scrollbar-thumb-light: rgba(150, 150, 150, 0.6);
     --scrollbar-thumb-hover-light: rgba(120, 120, 120, 0.8);
-    --quoted-text-light: #007bff; /* 浅色模式引用文本 - 蓝色 */
+    --cpu-color-light: #1a73e8;
+    --memory-color-light: #1e8e3e;
 }
+
 
 html[data-theme='dark'] {
     --primary-bg: var(--primary-bg-dark);
@@ -61,22 +52,17 @@ html[data-theme='dark'] {
     --secondary-text: var(--secondary-text-dark);
     --highlight-text: var(--highlight-text-dark);
     --border-color: var(--border-color-dark);
-    --user-bubble-bg: var(--user-bubble-bg-dark);
-    --assistant-bubble-bg: var(--assistant-bubble-bg-dark);
     --button-bg: var(--button-bg-dark);
     --button-hover-bg: var(--button-hover-bg-dark);
     --danger-color: var(--danger-color-dark);
     --danger-hover-bg: var(--danger-hover-bg-dark);
     --input-bg: var(--input-bg-dark);
-    --tool-bubble-bg: var(--tool-bubble-bg-dark);
-    --tool-bubble-border: var(--tool-bubble-border-dark);
-    --notification-bg: var(--notification-bg-dark);
-    --notification-header-bg: var(--notification-header-bg-dark);
-    --notification-border: var(--notification-border-dark);
     --scrollbar-track: var(--scrollbar-track-dark);
     --scrollbar-thumb: var(--scrollbar-thumb-dark);
     --scrollbar-thumb-hover: var(--scrollbar-thumb-hover-dark);
-    --quoted-text: var(--quoted-text-dark);
+    --cpu-color: var(--cpu-color-dark);
+    --memory-color: var(--memory-color-dark);
+    color-scheme: dark;
 }
 
 html[data-theme='light'] {
@@ -88,80 +74,77 @@ html[data-theme='light'] {
     --secondary-text: var(--secondary-text-light);
     --highlight-text: var(--highlight-text-light);
     --border-color: var(--border-color-light);
-    --user-bubble-bg: var(--user-bubble-bg-light);
-    --assistant-bubble-bg: var(--assistant-bubble-bg-light);
     --button-bg: var(--button-bg-light);
     --button-hover-bg: var(--button-hover-bg-light);
     --danger-color: var(--danger-color-light);
     --danger-hover-bg: var(--danger-hover-bg-light);
     --input-bg: var(--input-bg-light);
-    --tool-bubble-bg: var(--tool-bubble-bg-light);
-    --tool-bubble-border: var(--tool-bubble-border-light);
-    --notification-bg: var(--notification-bg-light);
-    --notification-header-bg: var(--notification-header-bg-light);
-    --notification-border: var(--notification-border-light);
     --scrollbar-track: var(--scrollbar-track-light);
     --scrollbar-thumb: var(--scrollbar-thumb-light);
     --scrollbar-thumb-hover: var(--scrollbar-thumb-hover-light);
-    --quoted-text: var(--quoted-text-light);
-}
-
-/* 默认主题设置为暗色 */
-html:not([data-theme]), html[data-theme='dark'] {
-    color-scheme: dark;
-}
-
-/* 亮色主题设置 */
-html[data-theme='light'] {
+    --cpu-color: var(--cpu-color-light);
+    --memory-color: var(--memory-color-light);
     color-scheme: light;
 }
-/* style.css */
+
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Segoe UI', 'Roboto', sans-serif;
     margin: 0;
-    padding-top: 52px; /* 为固定的 top-bar 留出空间 (预估 52px) */
+    padding-top: 60px;
     background-color: var(--primary-bg);
     color: var(--primary-text);
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    min-height: 100vh;
-    overflow-y: auto;
     font-size: 16px;
+    line-height: 1.6;
 }
 
 .container {
     display: flex;
-    width: 95%;
-    max-width: 1600px; /* 稍微加宽以容纳更多内容 */
-    min-height: calc(100vh - 52px - 40px); /* 减去 top-bar 高度(52px)和上下 margin(20+20) */
-    margin-top: 20px;
-    margin-bottom: 20px;
-    background-color: var(--secondary-bg);
-    border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-    overflow: hidden;
+    height: calc(100vh - 60px);
 }
 
 .sidebar {
     width: 280px;
-    flex-shrink: 0; /* 防止侧边栏被压缩 */
-    background-color: var(--tertiary-bg);
-    padding: 25px;
+    flex-shrink: 0;
+    background-color: var(--secondary-bg);
     border-right: 1px solid var(--border-color);
-    box-sizing: border-box;
-    overflow-y: auto;
-    max-height: calc(100vh - 52px - 40px); /* 与容器同步，并减去 top-bar 高度(52px) */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
-.sidebar h1 {
-    font-size: 1.8em;
-    color: var(--highlight-text);
-    margin-top: 0;
-    margin-bottom: 30px;
-    text-align: center;
-    letter-spacing: 1px;
+.sidebar-header {
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-header h1 {
+    font-size: 1.5em;
+    color: var(--primary-text);
+    margin: 0 0 15px 0;
     font-weight: 600;
+}
+
+#sidebar-search {
+    width: 100%;
+    padding: 10px 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
+    font-size: 0.9em;
+    box-sizing: border-box;
+}
+
+#sidebar-search:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 2px var(--highlight-text);
+}
+
+.sidebar nav {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 15px;
 }
 
 .sidebar nav ul {
@@ -171,13 +154,15 @@ body {
 }
 
 .sidebar nav li a {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 15px;
     color: var(--secondary-text);
-    padding: 13px 20px; /* 增加内边距 */
+    padding: 12px 15px;
     text-decoration: none;
-    border-radius: 8px; /* 更圆润的边角 */
-    margin-bottom: 10px;
-    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, transform 0.1s ease;
+    border-radius: 8px;
+    margin-bottom: 5px;
+    transition: background-color 0.2s ease, color 0.2s ease;
     font-size: 0.95em;
     font-weight: 500;
 }
@@ -185,36 +170,32 @@ body {
 .sidebar nav li a:hover {
     background-color: var(--accent-bg);
     color: var(--primary-text);
-    transform: translateX(3px); /* 轻微悬浮效果 */
 }
+
 .sidebar nav li a.active {
-    background-color: var(--accent-bg-dark); /* 暗色主题下的激活状态可以更深一些 */
-    color: var(--primary-text-dark); /* 确保在深色激活背景下文字清晰 */
+    background-color: var(--highlight-text);
+    color: white;
     font-weight: 600;
-    box-shadow: inset 3px 0 0 var(--highlight-text); /* 左侧指示条 */
 }
 
-html[data-theme='light'] .sidebar nav li a.active {
-    background-color: var(--accent-bg-light); /* 亮色主题下的激活状态 */
-    color: var(--primary-text-light); /* 确保在浅色激活背景下文字清晰 */
-}
-
-.sidebar nav li a .plugin-type-icon {
-    margin-left: 8px;
+.sidebar nav li.nav-category {
+    padding: 15px 15px 5px;
     font-size: 0.8em;
-    color: var(--highlight-text);
-    background-color: var(--accent-bg);
-    padding: 2px 6px;
-    border-radius: 4px;
+    color: var(--secondary-text);
+    text-transform: uppercase;
     font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.sidebar .material-symbols-outlined {
+    font-size: 22px;
 }
 
 .content {
     flex-grow: 1;
-    padding: 30px 40px; /* 增加左右内边距 */
+    padding: 30px 40px;
     box-sizing: border-box;
     overflow-y: auto;
-    max-height: calc(100vh - 52px - 40px); /* 与容器同步，并减去 top-bar 高度(52px) */
 }
 
 .config-section {
@@ -232,1013 +213,390 @@ html[data-theme='light'] .sidebar nav li a.active {
 }
 
 .config-section h2 {
-    font-size: 1.7em; /* 标题稍大 */
-    color: var(--highlight-text);
+    font-size: 2em;
+    color: var(--primary-text);
     margin-top: 0;
-    margin-bottom: 25px;
-    border-bottom: 2px solid var(--highlight-text);
-    padding-bottom: 12px;
+    margin-bottom: 30px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 15px;
     font-weight: 600;
 }
-.config-section h3 { /* 用于插件内部的子标题，例如 "Schema 配置" vs "自定义 .env 配置" */
-    font-size: 1.3em;
-    color: var(--highlight-text); /* 可以考虑用 secondary-text 或调整后的高亮 */
-    margin-top: 30px;
-    margin-bottom: 15px;
-    padding-bottom: 5px;
-    border-bottom: 1px dashed var(--border-color);
-}
-
-
-form {
-    display: flex;
-    flex-direction: column;
-    gap: 22px; /* 表单组间距 */
-}
-
-.form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 10px; /* 组内标签和输入框间距 */
-    padding: 18px; /* 增加内边距 */
-    background-color: var(--tertiary-bg); /* 表单组背景 */
-    border-radius: 8px;
+ 
+/* VCP Animation Styles */
+.vcp-animation-container {
+    position: relative;
+    width: 100%;
+    height: 250px;
+    margin-bottom: 30px;
+    border-radius: 12px;
+    overflow: hidden;
+    background-color: var(--secondary-bg);
     border: 1px solid var(--border-color);
-    transition: box-shadow 0.3s ease;
 }
-.form-group:focus-within { /* 当内部元素获得焦点时 */
-    box-shadow: 0 0 10px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
+
+#vcp-animation-canvas {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
 }
-html[data-theme='light'] .form-group:focus-within {
-    box-shadow: 0 0 10px var(--highlight-text-light);
+
+.vcp-logo-container {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 2;
+    text-align: center;
+}
+
+.vcp-logo {
+    max-width: 800px;
+    max-height: 80%;
+    height: auto;
+    animation: laser-outline-orbit 4s infinite linear;
+}
+
+@keyframes laser-outline-orbit {
+    0% {
+        filter: drop-shadow(0 -7px 4px var(--highlight-text));
+    }
+    25% {
+        filter: drop-shadow(7px 0 4px var(--highlight-text));
+    }
+    50% {
+        filter: drop-shadow(0 7px 4px var(--highlight-text));
+    }
+    75% {
+        filter: drop-shadow(-7px 0 4px var(--highlight-text));
+    }
+    100% {
+        filter: drop-shadow(0 -7px 4px var(--highlight-text));
+    }
 }
 
 
-.form-group label {
-    font-weight: 600; /* 标签加粗 */
+ /* Dashboard Styles */
+ .dashboard-grid {
+     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 25px;
+}
+
+.status-card {
+    background-color: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 25px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+html[data-theme='dark'] .status-card {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.status-card h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.1em;
     color: var(--primary-text);
-    font-size: 1em;
-    display: flex; /* 用于对齐删除按钮 */
-    justify-content: space-between;
+    font-weight: 600;
+}
+
+.status-card-content {
+    display: flex;
     align-items: center;
+    gap: 20px;
 }
-.form-group label .key-name {
-    flex-grow: 1;
+
+.progress-circle {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    flex-shrink: 0;
 }
-.form-group label .description {
-    font-weight: normal;
-    font-size: 0.88em;
+
+.progress-circle svg {
+    transform: rotate(-90deg);
+}
+
+.progress-circle .progress-bg {
+    fill: none;
+    stroke: var(--tertiary-bg);
+    stroke-width: 10;
+}
+
+.progress-circle .progress-bar {
+    fill: none;
+    stroke: var(--highlight-text);
+    stroke-width: 10;
+    stroke-linecap: round;
+    stroke-dasharray: 339.292; /* 2 * PI * 54 */
+    stroke-dashoffset: 339.292;
+    transition: stroke-dashoffset 0.5s ease-out;
+}
+
+.cpu-card .progress-bar { stroke: var(--cpu-color); }
+.memory-card .progress-bar { stroke: var(--memory-color); }
+
+.progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.5em;
+    font-weight: 700;
+    color: var(--primary-text);
+}
+
+#cpu-info-text, #mem-info-text {
+    font-size: 0.9em;
     color: var(--secondary-text);
-    display: block;
-    margin-top: 5px;
     line-height: 1.4;
 }
-.form-group label .defined-in {
-    font-style: italic;
-    font-size: 0.8em;
-    color: var(--secondary-text); /* 可以调整为更柔和的颜色 */
-    margin-left: 10px;
-    white-space: nowrap; /* 防止换行 */
-}
 
-
-.form-group input[type="text"],
-.form-group input[type="number"],
-.form-group input[type="password"],
-.form-group textarea,
-.form-group select {
+#pm2-process-list, #node-info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     width: 100%;
-    padding: 12px 15px; /* 增加输入框内边距 */
-    border: 1px solid var(--border-color);
-    border-radius: 6px; /* 更圆润 */
-    background-color: var(--input-bg);
-    color: var(--primary-text);
-    font-size: 0.95em;
-    box-sizing: border-box;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-.form-group input[type="text"]:focus,
-.form-group input[type="number"]:focus,
-.form-group input[type="password"]:focus,
-.form-group textarea:focus,
-.form-group select:focus {
-    outline: none;
-    border-color: var(--highlight-text);
-    box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-}
-html[data-theme='light'] .form-group input[type="text"]:focus,
-html[data-theme='light'] .form-group input[type="number"]:focus,
-html[data-theme='light'] .form-group input[type="password"]:focus,
-html[data-theme='light'] .form-group textarea:focus,
-html[data-theme='light'] .form-group select:focus {
-    box-shadow: 0 0 0 3px var(--highlight-text-light);
 }
 
-
-.form-group textarea {
-    min-height: 100px; /* 文本域更高 */
-    resize: vertical;
+.process-item, .node-info-item {
+    font-size: 0.9em;
 }
 
-/* 美化 checkbox 为开关样式 */
-.switch-container { /* 包裹开关和旁边的文字标签 */
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.switch {
-  position: relative;
-  display: inline-block;
-  width: 48px; 
-  height: 24px; 
-}
-.switch input { 
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--accent-bg); /* 开关背景 */
-  transition: .3s;
-  border-radius: 24px;
-}
-.slider:before {
-  position: absolute;
-  content: "";
-  height: 18px; 
-  width: 18px; 
-  left: 3px; 
-  bottom: 3px; 
-  background-color: white; /* 滑块颜色，通常为白色 */
-  transition: .3s;
-  border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-}
-input:checked + .slider {
-  background-color: var(--highlight-text); /* 选中时的背景色 */
-}
-input:focus + .slider {
-  box-shadow: 0 0 2px var(--highlight-text), 0 0 5px var(--highlight-text); /* 焦点时更明显 */
-}
-input:checked + .slider:before {
-  transform: translateX(24px); /* 滑块移动距离调整 */
-}
-
-
-.form-actions { /* 包裹保存和添加按钮的容器 */
-    display: flex;
-    gap: 15px;
-    margin-top: 20px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border-color);
-}
-
-button[type="submit"], .add-config-btn {
-    padding: 12px 22px; /* 按钮稍大 */
-    color: white; /* 按钮文字颜色，亮色主题下可能需要调整 */
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 1em;
-    font-weight: 500;
-    transition: background-color 0.2s ease, transform 0.1s ease;
-}
-button[type="submit"] {
-    background-color: var(--button-bg); /* 主保存按钮 */
-}
-button[type="submit"]:hover {
-    background-color: var(--button-hover-bg);
-    transform: translateY(-1px);
-}
-.add-config-btn {
-    background-color: var(--button-bg); /* 可以为添加按钮设置不同颜色 */
-}
-.add-config-btn:hover {
-    background-color: var(--button-hover-bg);
-    transform: translateY(-1px);
-}
-
-html[data-theme='light'] button[type="submit"], 
-html[data-theme='light'] .add-config-btn {
-    color: var(--primary-text-light); /* 亮色主题下按钮文字颜色 */
-}
-html[data-theme='light'] button[type="submit"] {
-    background-color: var(--button-bg-light);
-}
-html[data-theme='light'] button[type="submit"]:hover {
-    background-color: var(--button-hover-bg-light);
-}
-html[data-theme='light'] .add-config-btn {
-    background-color: var(--button-bg-light); 
-}
-html[data-theme='light'] .add-config-btn:hover {
-    background-color: var(--button-hover-bg-light);
-}
-
-
-.delete-config-btn {
-    padding: 6px 10px;
-    background-color: var(--danger-color);
-    color: white; /* 删除按钮文字通常为白色 */
-    border: none;
+.process-item .status {
+    padding: 3px 8px;
     border-radius: 5px;
-    cursor: pointer;
-    font-size: 0.85em;
-    transition: background-color 0.2s ease;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: white;
 }
-.delete-config-btn:hover {
-    background-color: var(--danger-hover-bg);
-}
-html[data-theme='light'] .delete-config-btn {
-    background-color: var(--danger-color-light);
-}
-html[data-theme='light'] .delete-config-btn:hover {
-    background-color: var(--danger-hover-bg-light);
+.process-item .status.online { background-color: #1e8e3e; }
+.process-item .status.stopped, .process-item .status.errored { background-color: #d93025; }
+.process-item .status.launching { background-color: #f9ab00; }
+
+.node-info-item strong {
+    color: var(--primary-text);
 }
 
 
-/* 加载动画 */
-.loading-overlay {
+/* Top Bar */
+.top-bar {
+    background-color: var(--secondary-bg);
+    color: var(--primary-text);
+    padding: 0 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    width: 100%;
     position: fixed;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.85); /* 暗色遮罩 */
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
     z-index: 1000;
-    visibility: hidden;
-    opacity: 0;
-    transition: opacity 0.3s ease, visibility 0s linear 0.3s;
-}
-html[data-theme='light'] .loading-overlay {
-    background-color: rgba(244, 246, 248, 0.85); /* 亮色遮罩 */
-}
-
-.loading-overlay.visible {
-    visibility: visible;
-    opacity: 1;
-    transition: opacity 0.3s ease, visibility 0s linear 0s;
-}
-
-.spinner {
-    border: 5px solid var(--accent-bg); 
-    border-top: 5px solid var(--highlight-text); 
-    border-radius: 50%;
-    width: 45px;
-    height: 45px;
-    animation: spin 0.8s linear infinite; /* 加快旋转 */
-    margin-bottom: 18px;
-}
-
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-.loading-overlay p {
-    color: var(--primary-text);
-    font-size: 1.1em;
-    font-weight: 500;
-}
-
-/* 消息提示框 */
-.message-popup {
-    position: fixed;
-    bottom: -100px; /* 初始位置在屏幕外 */
-    left: 50%;
-    transform: translateX(-50%);
-    background-color: var(--notification-bg);
-    color: var(--primary-text);
-    padding: 16px 28px; /* 增加内边距 */
-    border-radius: 8px;
-    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
-    z-index: 1001;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 0.4s ease, bottom 0.4s cubic-bezier(0.68, -0.55, 0.27, 1.55), visibility 0s linear 0.4s; /* 添加弹性动画 */
-    font-size: 1em;
-    min-width: 250px;
-    text-align: center;
-    border: 1px solid var(--notification-border);
-}
-
-.message-popup.show {
-    opacity: 1;
-    bottom: 40px; /* 最终位置 */
-    visibility: visible;
-    transition: opacity 0.4s ease, bottom 0.4s cubic-bezier(0.68, -0.55, 0.27, 1.55), visibility 0s linear 0s;
-}
-.message-popup.success {
-    background-color: var(--button-bg); /* 使用按钮背景色或特定成功色 */
-    color: white; /* 确保文字清晰 */
-    border-color: var(--button-bg);
-}
-.message-popup.error {
-    background-color: var(--danger-color);
-    color: white; /* 确保文字清晰 */
-    border-color: var(--danger-color);
-}
-html[data-theme='light'] .message-popup.success {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-    border-color: var(--button-bg-light);
-}
-html[data-theme='light'] .message-popup.error {
-    background-color: var(--danger-color-light);
-    color: var(--primary-text-light);
-    border-color: var(--danger-color-light);
-}
-
-
-/* Top Bar Styles */
-.top-bar {
-    background-color: var(--secondary-bg); /* 使用半透明效果可能更好 */
-    backdrop-filter: blur(8px); 
-    -webkit-backdrop-filter: blur(8px); 
-    color: var(--primary-text);
-    padding: 10px 0; /* 上下内边距 */
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); /* 调整阴影 */
-    width: 100%;
-    position: fixed; /* 改为 fixed 使其完全悬浮 */
-    top: 0;
-    left: 0; 
-    right: 0; 
-    z-index: 1050;
     box-sizing: border-box;
-    height: 52px; /* 明确高度，与 body padding-top 一致 */
+    height: 60px;
     border-bottom: 1px solid var(--border-color);
 }
-html[data-theme='dark'] .top-bar {
-     background-color: rgba(28, 28, 30, 0.85); /* 深色主题下的半透明背景 */
-}
-html[data-theme='light'] .top-bar {
-     background-color: rgba(244, 246, 248, 0.85); /* 浅色主题下的半透明背景 */
-}
-
-
 .top-bar-content {
-    width: 95%;
-    max-width: 1600px; /* 与主容器一致 */
-    margin: 0 auto;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0 20px; /* 内边距，避免内容贴边 */
-    box-sizing: border-box;
-    gap: 10px; /* 为按钮之间添加一些间距 */
+    height: 100%;
 }
-
 .server-title {
-    font-size: 1.5em; /* 稍大一些的标题 */
+    font-size: 1.5em;
     font-weight: 600;
-    color: var(--highlight-text);
-    letter-spacing: 0.5px;
+    color: var(--primary-text);
 }
-
-.top-bar-content > .server-title {
-    margin-right: auto; /* 将标题推向左边，让按钮组靠右 */
+.header-actions {
+    display: flex;
+    gap: 15px;
 }
 
 .restart-button,
-.theme-button { /* 为主题按钮添加统一样式 */
+.theme-button {
     padding: 8px 16px;
-    border: none;
-    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
     cursor: pointer;
     font-size: 0.9em;
     font-weight: 500;
-    transition: background-color 0.2s ease, transform 0.1s ease;
+    transition: background-color 0.2s ease;
+    background-color: var(--button-bg);
+    color: var(--primary-text);
 }
-
 .restart-button {
     background-color: var(--danger-color);
+    border-color: var(--danger-color);
     color: white;
 }
-
 .restart-button:hover {
     background-color: var(--danger-hover-bg);
-    transform: translateY(-1px);
+    border-color: var(--danger-hover-bg);
 }
-
-.theme-button {
-    background-color: var(--button-bg); /* 使用通用按钮颜色 */
+html[data-theme='light'] .restart-button {
     color: white;
 }
-
 .theme-button:hover {
     background-color: var(--button-hover-bg);
-    transform: translateY(-1px);
 }
 
-html[data-theme='light'] .restart-button {
-    background-color: var(--danger-color-light);
-    color: var(--primary-text-light);
+/* Other sections... */
+form { display: flex; flex-direction: column; gap: 22px; }
+.form-group { display: flex; flex-direction: column; gap: 10px; padding: 18px; background-color: var(--secondary-bg); border-radius: 8px; border: 1px solid var(--border-color); }
+.form-group:focus-within { box-shadow: 0 0 0 2px var(--highlight-text); }
+.form-group label { font-weight: 600; font-size: 1em; }
+.form-group .description { font-weight: normal; font-size: 0.88em; color: var(--secondary-text); }
+.form-group input[type="text"], .form-group input[type="number"], .form-group textarea, .form-group select {
+    width: 100%; padding: 12px 15px; border: 1px solid var(--border-color); border-radius: 6px;
+    background-color: var(--input-bg); color: var(--primary-text); font-size: 0.95em; box-sizing: border-box;
 }
-html[data-theme='light'] .restart-button:hover {
-    background-color: var(--danger-hover-bg-light);
+.form-group input:focus, .form-group textarea:focus { outline: none; border-color: var(--highlight-text); }
+.form-actions { display: flex; gap: 15px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-color); }
+button, input[type="submit"] {
+    padding: 12px 22px; border: none; border-radius: 6px; cursor: pointer; font-size: 1em;
+    font-weight: 500; background-color: var(--button-bg); color: var(--primary-text);
+}
+button:hover { background-color: var(--button-hover-bg); }
+button[type="submit"] { background-color: var(--highlight-text); color: white; }
+button[type="submit"]:hover { background-color: var(--highlight-text); filter: brightness(1.1); }
+
+
+/* Daily Notes Manager, etc. */
+.daily-notes-manager { display: flex; gap: 20px; height: calc(100% - 60px); }
+.notes-sidebar { width: 200px; flex-shrink: 0; background-color: var(--tertiary-bg); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; }
+.notes-sidebar h3 { font-size: 1.2em; color: var(--highlight-text); margin-top: 0; margin-bottom: 15px; }
+#notes-folder-list { list-style-type: none; padding: 0; margin: 0; }
+#notes-folder-list li { padding: 10px 12px; cursor: pointer; border-radius: 6px; margin-bottom: 5px; }
+#notes-folder-list li:hover { background-color: var(--accent-bg); }
+#notes-folder-list li.active { background-color: var(--highlight-text); color: white; }
+.notes-content-area { flex-grow: 1; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+.notes-toolbar { display: flex; gap: 10px; align-items: center; padding: 10px; background-color: var(--secondary-bg); border-radius: 8px; border: 1px solid var(--border-color); }
+#notes-list-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
+.note-card { background-color: var(--tertiary-bg); padding: 15px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; }
+.note-card:hover { box-shadow: 0 0 8px var(--highlight-text); }
+.note-editor-area { display: none; }
+#note-content-editor { width: 100%; min-height: 300px; }
+
+
+/* Loading and Message Popup */
+.loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1001; visibility: hidden; opacity: 0; transition: opacity 0.3s ease; }
+.loading-overlay.visible { visibility: visible; opacity: 1; }
+.spinner { border: 5px solid var(--accent-bg); border-top: 5px solid var(--highlight-text); border-radius: 50%; width: 45px; height: 45px; animation: spin 0.8s linear infinite; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.message-popup { position: fixed; bottom: -100px; left: 50%; transform: translateX(-50%); background-color: var(--secondary-bg); color: var(--primary-text); padding: 16px 28px; border-radius: 8px; box-shadow: 0 5px 20px rgba(0,0,0,0.3); z-index: 1002; opacity: 0; transition: all 0.4s ease; }
+.message-popup.show { bottom: 40px; opacity: 1; }
+.message-popup.success { background-color: var(--memory-color); color: white; }
+.message-popup.error { background-color: var(--danger-color); color: white; }
+
+/* Styles for Agent and TVS file editors to ensure textarea fills space */
+#agent-files-editor-section.active-section, #tvs-files-editor-section.active-section {
+    display: flex;
+    flex-direction: column;
+    height: 100%; /* Make section take full height */
 }
 
-html[data-theme='light'] .theme-button {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] .theme-button:hover {
-    background-color: var(--button-hover-bg-light);
-}
-
-
-.restart-button:active,
-.theme-button:active {
-    transform: translateY(0px);
-}
-
-/* Invocation Commands Editor Styles */
-.invocation-commands-section {
-    margin-top: 30px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border-color); /* Separator from plugin .env config */
-}
-
-.invocation-commands-section h3 {
-    font-size: 1.4em; /* Slightly smaller than main section h2 */
-    color: var(--highlight-text); /* Consistent with other h3 */
-    margin-bottom: 20px;
-    padding-bottom: 8px;
-    border-bottom: 1px dashed var(--border-color); /* Consistent with other h3 */
-}
-
-.command-item {
-    background-color: var(--tertiary-bg); /* Slightly different background for each command block */
-    padding: 20px;
-    border: 1px solid var(--border-color); /* Consistent with form-group border */
-    border-radius: 8px; /* Consistent with form-group border-radius */
-    margin-bottom: 20px;
-}
-
-.command-item h4 {
-    font-size: 1.2em;
-    color: var(--primary-text); /* Consistent with form-group label color */
-    margin-top: 0;
+.agent-editor-controls, .tvs-editor-controls {
+    flex-shrink: 0; /* Prevent controls from shrinking */
     margin-bottom: 15px;
-    font-weight: 600;
 }
 
-textarea.command-description-edit {
+#agent-file-content-editor, #tvs-file-content-editor {
+    flex-grow: 1; /* Allow textarea to grow and fill available space */
     width: 100%;
-    min-height: 100px; 
-    padding: 12px 15px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background-color: var(--input-bg);
-    color: var(--primary-text);
-    font-size: 0.95em;
-    box-sizing: border-box;
+    min-height: 400px; /* Set a reasonable minimum height */
     resize: vertical;
-    margin-bottom: 15px; /* Space before save button */
+    font-family: 'Courier New', Courier, monospace;
 }
-
-textarea.command-description-edit:focus {
-    outline: none;
-    border-color: var(--highlight-text);
-    box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-}
-html[data-theme='light'] textarea.command-description-edit:focus {
-    box-shadow: 0 0 0 3px var(--highlight-text-light);
-}
-
-
-.command-item .form-actions { /* Reusing form-actions for button container */
-    border-top: none; /* No top border needed here */
-    padding-top: 0;
-    margin-top: 0; /* Adjust if needed */
-    justify-content: flex-start; /* Align button to the left */
-}
-
-.save-command-description-btn {
-    padding: 10px 18px; /* Slightly adjusted padding, can match others if preferred */
-    color: white; /* 按钮文字颜色 */
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.95em; /* Slightly adjusted font size */
-    font-weight: 500;
-    transition: background-color 0.2s ease, transform 0.1s ease;
-    background-color: var(--button-bg); /* Specific green for this save button */
-}
-.save-command-description-btn:hover {
-    background-color: var(--button-hover-bg); 
-    transform: translateY(-1px);
-}
-html[data-theme='light'] .save-command-description-btn {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] .save-command-description-btn:hover {
-    background-color: var(--button-hover-bg-light);
-}
-
-.save-command-description-btn:active {
-    transform: translateY(0px);
-}
-
-p.command-status {
-    margin-top: 10px;
-    font-size: 0.9em;
-}
-p.command-status.success {
-    color: var(--button-bg); /* 使用按钮相关颜色或特定成功色 */
-}
-p.command-status.error {
-    color: var(--danger-color);
-}
-p.command-status.info {
-    color: var(--highlight-text);
-}
-html[data-theme='light'] p.command-status.success {
-    color: var(--button-bg-light);
-}
-html[data-theme='light'] p.command-status.error {
-    color: var(--danger-color-light);
-}
-html[data-theme='light'] p.command-status.info {
-    color: var(--highlight-text-light);
-}
-
-
-/* Plugin Controls Styles */
-.plugin-controls {
-    margin-bottom: 20px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border-color);
+/* Style for the input and button wrapper */
+.input-with-toggle {
+    position: relative;
     display: flex;
-    gap: 15px;
     align-items: center;
 }
 
-.toggle-plugin-button {
-    padding: 10px 18px;
-    color: white; /* 文字颜色 */
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.95em;
-    font-weight: 500;
-    transition: background-color 0.2s ease, transform 0.1s ease;
-    background-color: var(--danger-color); /* Red for Disable */
+.input-with-toggle input {
+    padding-right: 60px; /* Make space for the button */
+    width: 100%;
+    box-sizing: border-box;
 }
 
-.toggle-plugin-button:hover:not(:disabled) {
-    background-color: var(--danger-hover-bg); /* Darker red on hover */
-    transform: translateY(-1px);
-}
-
-.toggle-plugin-button.disabled-state {
-    background-color: var(--button-bg); /* Green for Enable */
-}
-
-.toggle-plugin-button.disabled-state:hover:not(:disabled) {
-    background-color: var(--button-hover-bg); /* Darker green on hover */
-    transform: translateY(-1px);
-}
-
-html[data-theme='light'] .toggle-plugin-button {
-    background-color: var(--danger-color-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] .toggle-plugin-button:hover:not(:disabled) {
-    background-color: var(--danger-hover-bg-light);
-}
-html[data-theme='light'] .toggle-plugin-button.disabled-state {
-    background-color: var(--button-bg-light);
-}
-html[data-theme='light'] .toggle-plugin-button.disabled-state:hover:not(:disabled) {
-    background-color: var(--button-hover-bg-light);
-}
-
-
-.toggle-plugin-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-
-/* Daily Notes Manager Styles */
-.daily-notes-manager {
-    display: flex;
-    gap: 20px;
-    height: calc(100% - 60px); /* Adjust based on h2 margin */
-    justify-content: flex-start; /* 使子项靠左对齐 */
-}
-
-.notes-sidebar {
-    width: 200px;
-    flex-shrink: 0;
-    background-color: var(--tertiary-bg); /* Consistent with main sidebar */
-    padding: 15px;
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-    overflow-y: auto;
-    max-height: 100%;
-}
-
-.notes-sidebar h3 {
-    font-size: 1.2em;
-    color: var(--highlight-text);
-    margin-top: 0;
-    margin-bottom: 15px;
-    padding-bottom: 8px;
-    border-bottom: 1px dashed var(--border-color);
-}
-
-#notes-folder-list {
-    list-style-type: none;
-    padding: 0;
-    margin: 0;
-}
-
-#notes-folder-list li {
-    padding: 10px 12px;
-    color: var(--secondary-text);
-    cursor: pointer;
-    border-radius: 6px;
-    margin-bottom: 5px;
-    transition: background-color 0.2s ease, color 0.2s ease;
-    font-size: 0.9em;
-}
-
-#notes-folder-list li:hover {
-    background-color: var(--accent-bg);
-    color: var(--primary-text);
-}
-
-#notes-folder-list li.active {
-    background-color: var(--accent-bg-dark); /* 深色主题激活 */
-    color: var(--primary-text-dark);
-    font-weight: 600;
-}
-html[data-theme='light'] #notes-folder-list li.active {
-    background-color: var(--accent-bg-light); /* 浅色主题激活 */
-    color: var(--primary-text-light);
-}
-
-
-.notes-content-area {
-    flex-grow: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    overflow-y: auto; /* Allow scrolling for notes list */
-    max-height: 100%;
-}
-
-.notes-toolbar {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    padding: 10px;
-    background-color: var(--secondary-bg);
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-}
-
-.notes-toolbar button,
-.notes-toolbar select,
-.notes-toolbar input[type="search"] {
-    padding: 8px 12px;
-    font-size: 0.9em;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-    background-color: var(--input-bg);
-    color: var(--primary-text);
-    cursor: pointer;
-}
-.notes-toolbar input[type="search"] {
-    flex-grow: 1; /* 让搜索框占据更多空间 */
-    max-width: 300px; /* 但不要无限宽 */
-}
-.notes-toolbar button:disabled,
-.notes-toolbar select:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-.notes-toolbar button:hover:not(:disabled) {
-    background-color: var(--accent-bg);
-}
-
-
-#notes-list-view {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); /* Responsive grid */
-    gap: 15px;
-    padding: 5px; /* Small padding around the grid */
-    overflow-y: auto; /* If content overflows the content area */
-}
-
-.note-card {
-    background-color: var(--tertiary-bg);
-    padding: 15px;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    cursor: pointer;
-    transition: box-shadow 0.2s ease, transform 0.2s ease;
-    overflow: hidden; /* To contain content */
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between; /* Push actions to bottom */
-    min-height: 120px; /* Minimum height for cards */
-}
-
-.note-card:hover {
-    box-shadow: 0 0 12px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-    transform: translateY(-2px);
-}
-html[data-theme='light'] .note-card:hover {
-    box-shadow: 0 0 12px var(--highlight-text-light);
-}
-
-.note-card.selected {
-    border-left: 4px solid var(--highlight-text);
-    box-shadow: 0 0 15px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-}
-html[data-theme='light'] .note-card.selected {
-    box-shadow: 0 0 15px var(--highlight-text-light);
-}
-
-
-
-.note-card-filename {
-    font-weight: 600;
-    color: var(--primary-text);
-    font-size: 0.95em;
-    margin-bottom: 8px;
-    word-break: break-all; /* Prevent long filenames from breaking layout */
-}
-
-.note-card-preview {
-    font-size: 0.85em;
-    color: var(--secondary-text);
-    margin-bottom: 10px;
-    flex-grow: 1; /* Allow preview to take available space */
-    max-height: 60px; /* Limit preview height */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 3; /* Limit to 3 lines */
-    -webkit-box-orient: vertical;
-}
-.note-card-actions {
-    margin-top: auto; /* Push to bottom */
-    display: flex;
-    justify-content: flex-end; /* Align actions to the right */
-    gap: 8px;
-}
-.note-card-actions button {
-    font-size: 0.8em;
+/* Style for the show/hide button */
+.toggle-visibility-btn {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
     padding: 5px 8px;
+    font-size: 0.8em;
+    cursor: pointer;
     background-color: var(--button-bg);
-    border-radius: 6px; 
-    border: none; 
-    color: white; 
-    cursor: pointer; 
-    transition: background-color 0.2s ease; 
+    color: var(--primary-text);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    z-index: 2;
 }
-.note-card-actions button:hover {
+
+.toggle-visibility-btn:hover {
     background-color: var(--button-hover-bg);
 }
-html[data-theme='light'] .note-card-actions button {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] .note-card-actions button:hover {
-    background-color: var(--button-hover-bg-light);
-}
 
-
-
-.note-editor-area {
-    padding: 20px;
-    background-color: var(--secondary-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    margin-top: 15px; 
-    max-width: 1175px; 
-    margin-left: 0; 
-    margin-right: auto; 
-}
-.note-editor-area h3 {
-    font-size: 1.3em;
-    color: var(--highlight-text);
-    margin-top: 0;
-    margin-bottom: 15px;
-}
-#note-content-editor {
-    width: 100%; 
-    min-height: 300px; 
-    resize: both; 
-    background-color: var(--input-bg);
-    color: var(--primary-text);
-    border: 1px solid var(--border-color);
-}
-
-.status-message {
-    font-size: 0.85em;
-    margin-left: 10px;
-}
-.status-message.success {
-    color: var(--button-bg); /* 或特定成功色 */
-}
-.status-message.error {
-    color: var(--danger-color);
-}
-.status-message.info {
-    color: var(--highlight-text);
-}
-html[data-theme='light'] .status-message.success {
-    color: var(--button-bg-light);
-}
-html[data-theme='light'] .status-message.error {
-    color: var(--danger-color-light);
-}
-html[data-theme='light'] .status-message.info {
-    color: var(--highlight-text-light);
-}
-
-
-/* Agent Files Editor Styles */
-.agent-editor-controls,
-.tvs-editor-controls {
-    display: flex;
-    gap: 15px;
-    align-items: center;
-    margin-bottom: 20px;
-    padding: 15px;
-    background-color: var(--secondary-bg); 
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-}
-
-.agent-editor-controls label,
-.tvs-editor-controls label {
-    font-weight: 600;
-    color: var(--primary-text);
-}
-
-#agent-file-select,
-#tvs-file-select {
-    min-width: 200px;
-    padding: 8px 12px;
-    font-size: 0.9em;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-    background-color: var(--input-bg);
-    color: var(--primary-text);
-    cursor: pointer;
-}
-#agent-file-select:focus,
-#tvs-file-select:focus {
-    outline: none;
-    border-color: var(--highlight-text);
-    box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-}
-html[data-theme='light'] #agent-file-select:focus,
-html[data-theme='light'] #tvs-file-select:focus {
-    box-shadow: 0 0 0 3px var(--highlight-text-light);
-}
-
-
-
-#save-agent-file-button,
-#save-tvs-file-button {
-    padding: 8px 16px;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.9em;
-    font-weight: 500;
-    background-color: var(--button-bg); 
-    transition: background-color 0.2s ease, transform 0.1s ease;
-}
-#save-agent-file-button:hover:not(:disabled),
-#save-tvs-file-button:hover:not(:disabled) {
-    background-color: var(--button-hover-bg);
-    transform: translateY(-1px);
-}
-html[data-theme='light'] #save-agent-file-button,
-html[data-theme='light'] #save-tvs-file-button {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] #save-agent-file-button:hover:not(:disabled),
-html[data-theme='light'] #save-tvs-file-button:hover:not(:disabled) {
-    background-color: var(--button-hover-bg-light);
-}
-
-#save-agent-file-button:disabled,
-#save-tvs-file-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
+/* --- Styles for Main Editor Textareas --- */
+#note-content-editor,
 #agent-file-content-editor,
 #tvs-file-content-editor {
-    width: 100%;
-    min-height: 400px;
-    padding: 15px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
     background-color: var(--input-bg);
     color: var(--primary-text);
-    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; 
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 15px;
     font-size: 0.95em;
-    box-sizing: border-box;
-    resize: vertical; 
+    line-height: 1.6;
+    font-family: 'Courier New', Courier, monospace;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+#note-content-editor:focus,
 #agent-file-content-editor:focus,
 #tvs-file-content-editor:focus {
     outline: none;
     border-color: var(--highlight-text);
-    box-shadow: 0 0 0 3px var(--highlight-text-dark); /* 使用高亮色的阴影，根据主题调整透明度 */
-}
-html[data-theme='light'] #agent-file-content-editor:focus,
-html[data-theme='light'] #tvs-file-content-editor:focus {
-    box-shadow: 0 0 0 3px var(--highlight-text-light);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
 }
 
 
-#agent-file-status,
-#tvs-file-status {
-    margin-left: auto;
-}
-
-/* Server Log Viewer Styles */
-.server-log-controls {
-    display: flex;
-    gap: 15px;
-    align-items: center;
-    margin-bottom: 15px;
-    padding: 10px;
-    background-color: var(--secondary-bg); 
-    border-radius: 8px;
+/* --- Styles for Toolbar Inputs and Selects --- */
+.notes-toolbar input[type="search"],
+.notes-toolbar select,
+.agent-editor-controls select,
+.tvs-editor-controls select {
+    padding: 8px 12px;
     border: 1px solid var(--border-color);
-}
-
-#copy-server-log-button {
-    padding: 8px 16px;
-    color: white; 
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
+    border-radius: 8px;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
     font-size: 0.9em;
     font-weight: 500;
-    background-color: var(--button-bg); 
-    transition: background-color 0.2s ease, transform 0.1s ease;
-}
-#copy-server-log-button:hover {
-    background-color: var(--button-hover-bg);
-    transform: translateY(-1px);
-}
-html[data-theme='light'] #copy-server-log-button {
-    background-color: var(--button-bg-light);
-    color: var(--primary-text-light);
-}
-html[data-theme='light'] #copy-server-log-button:hover {
-    background-color: var(--button-hover-bg-light);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    height: 42px; /* Match button height */
+    box-sizing: border-box;
 }
 
-
-#server-log-path-display {
-    font-size: 0.85em;
-    color: var(--secondary-text);
-    flex-grow: 1; 
+.notes-toolbar button,
+.agent-editor-controls button,
+.tvs-editor-controls button {
+    height: 42px;
+    box-sizing: border-box;
 }
 
-#server-log-status {
-    margin-left: auto; 
-}
-
-.log-content-area {
-    background-color: var(--input-bg); 
-    color: var(--primary-text); 
-    padding: 15px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    height: 60vh; 
-    overflow-y: auto; 
-    white-space: pre-wrap; 
-    word-break: break-all; 
-    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; 
-    font-size: 0.9em;
-    line-height: 1.5;
+.notes-toolbar input[type="search"]:focus,
+.notes-toolbar select:focus,
+.agent-editor-controls select:focus,
+.tvs-editor-controls select:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }

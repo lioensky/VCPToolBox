@@ -251,16 +251,22 @@ async function editImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
-    if (!args.image_url && !args.image_base64) {
+    
+    // 优先使用 image_base64, 其次是 image_url
+    let imageUrlInput = args.image_base64 || args.image_url;
+
+    if (!imageUrlInput) {
         throw new Error("参数错误: 必须提供 'image_url' 或 'image_base64'。");
     }
 
     // 获取图像数据
     let imageUrl;
-    if (args.image_base64) {
-        imageUrl = args.image_base64;
+    if (imageUrlInput.startsWith('data:')) {
+        // 如果已经是 base64 URI, 直接使用
+        imageUrl = imageUrlInput;
     } else {
-        const { buffer, mimeType } = await getImageDataFromUrl(args.image_url);
+        // 否则, 视作 URL 处理
+        const { buffer, mimeType } = await getImageDataFromUrl(imageUrlInput);
         const base64Data = buffer.toString('base64');
         imageUrl = `data:${mimeType};base64,${base64Data}`;
     }
@@ -313,68 +319,74 @@ async function composeImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
-    
-    // 添加调试信息
-    console.error(`[NanoBananaGenOR] 调试信息 - args.image_urls 类型: ${typeof args.image_urls}`);
-    console.error(`[NanoBananaGenOR] 调试信息 - args.image_urls 值: ${JSON.stringify(args.image_urls)}`);
-    
-    // 如果 image_urls 是字符串，尝试解析为 JSON
-    let imageUrls = args.image_urls;
-    if (typeof imageUrls === 'string') {
-        try {
-            imageUrls = JSON.parse(imageUrls);
-            console.error(`[NanoBananaGenOR] 成功解析 JSON 字符串为数组`);
-        } catch (e) {
-            throw new Error(`参数错误: 'image_urls' 字符串无法解析为 JSON 数组: ${e.message}`);
+
+    // --- 向后兼容逻辑 ---
+    // 如果存在旧的 'image_url' 或 'image_base64'，并且不存在新的 'image_url_1'，则自动转换
+    const effectiveArgs = { ...args };
+    if (!args.image_url_1 && !args.image_base64_1) {
+        if (args.image_url) {
+            effectiveArgs.image_url_1 = args.image_url;
+        }
+        if (args.image_base64) {
+            effectiveArgs.image_base64_1 = args.image_base64;
         }
     }
+    // --- 兼容逻辑结束 ---
+
+    // 1. 找出有多少个图片参数 (使用处理过的 effectiveArgs)
+    const imageKeys = Object.keys(effectiveArgs).filter(k => k.startsWith('image_url') || k.startsWith('image_base64'));
     
-    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
-        throw new Error("参数错误: 'image_urls' 必须是包含至少一个URL的数组。");
+    // 提取所有索引并找到最大值
+    const indices = imageKeys.map(k => {
+        const num = k.split('_').pop();
+        return isNaN(num) ? 0 : parseInt(num, 10);
+    }).filter(n => n > 0);
+
+    if (indices.length === 0) {
+        throw new Error("参数错误: 未找到有效的 'image_url_N' 或 'image_base64_N' (N>0) 参数，也未找到可兼容的 'image_url' 参数。");
     }
+    const maxIndex = Math.max(...indices);
 
-    // 构建内容数组，先添加文本提示
-    const contentArray = [
-        {
-            "type": "text",
-            "text": args.prompt
-        }
-    ];
+    const contentArray = [{ "type": "text", "text": args.prompt }];
 
-    // 处理每个图片URL并添加到内容数组
-    for (let i = 0; i < imageUrls.length; i++) {
-        const imageUrl = imageUrls[i];
+    // 2. 按顺序处理 1 到 maxIndex 的所有图片
+    for (let i = 1; i <= maxIndex; i++) {
+        const base64Key = `image_base64_${i}`;
+        const urlKey = `image_url_${i}`;
+        
         let processedImageUrl;
 
-        if (imageUrl.startsWith('data:')) {
-            // 如果已经是base64格式，直接使用
-            processedImageUrl = imageUrl;
-        } else {
-            try {
-                // 获取图像数据并转换为base64
-                const { buffer, mimeType } = await getImageDataFromUrl(imageUrl);
-                const base64Data = buffer.toString('base64');
-                processedImageUrl = `data:${mimeType};base64,${base64Data}`;
-            } catch (e) {
-                // 如果是 file:// URL 本地未找到的错误，直接向上抛出让主服务器处理
-                if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
-                    // 为多图片场景添加更详细的错误信息
-                    const enhancedError = new Error(`多图片合成中第 ${i + 1} 张图片本地未找到，需要远程获取。`);
-                    enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
-                    enhancedError.fileUrl = e.fileUrl;
-                    enhancedError.imageIndex = i;
-                    throw enhancedError;
+        if (effectiveArgs[base64Key]) {
+            // 优先使用 base64 数据
+            processedImageUrl = effectiveArgs[base64Key];
+        } else if (effectiveArgs[urlKey]) {
+            const imageUrl = effectiveArgs[urlKey];
+            if (imageUrl.startsWith('data:')) {
+                processedImageUrl = imageUrl;
+            } else {
+                try {
+                    const { buffer, mimeType } = await getImageDataFromUrl(imageUrl);
+                    const base64Data = buffer.toString('base64');
+                    processedImageUrl = `data:${mimeType};base64,${base64Data}`;
+                } catch (e) {
+                    if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+                        const enhancedError = new Error(`多图片合成中第 ${i} 张图片 (参数: ${urlKey}) 本地未找到，需要远程获取。`);
+                        enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
+                        enhancedError.fileUrl = e.fileUrl;
+                        enhancedError.failedParameter = urlKey; // 关键：报告正确的失败参数
+                        throw enhancedError;
+                    }
+                    throw new Error(`处理第 ${i} 张图片时发生错误: ${e.message}`);
                 }
-                // 对于其他错误，正常抛出
-                throw new Error(`处理第 ${i + 1} 张图片时发生错误: ${e.message}`);
             }
+        } else {
+            // 如果索引不连续，报错
+            throw new Error(`参数不连续: 缺少第 ${i} 张图片的 'image_url_${i}' 或 'image_base64_${i}'。`);
         }
 
         contentArray.push({
             "type": "image_url",
-            "image_url": {
-                "url": processedImageUrl
-            }
+            "image_url": { "url": processedImageUrl }
         });
     }
 
@@ -445,12 +457,17 @@ async function main() {
     } catch (e) {
         // 如果是我们自定义的结构化错误，就按特定格式输出
         if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
-            console.log(JSON.stringify({
+            const errorPayload = {
                 status: "error",
                 code: e.code,
                 error: e.message,
                 fileUrl: e.fileUrl
-            }));
+            };
+            // 关键修复：将 failedParameter 传递给主控，以便它知道要替换哪个参数
+            if (e.failedParameter) {
+                errorPayload.failedParameter = e.failedParameter;
+            }
+            console.log(JSON.stringify(errorPayload));
         } else {
             let detailedError = e.message || "未知的插件错误";
             if (e.response && e.response.data) {

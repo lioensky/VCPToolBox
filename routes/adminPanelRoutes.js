@@ -14,7 +14,78 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     const adminApiRouter = express.Router();
 
     // --- Admin API Router 内容 ---
+    
+    // --- System Monitor Routes (Merged) ---
+    const { exec } = require('child_process');
+    const util = require('util');
+    const execAsync = util.promisify(exec);
+    const pm2 = require('pm2');
+    
+    // 获取PM2进程列表和资源使用情况 (Using PM2 API to avoid pop-ups)
+    adminApiRouter.get('/system-monitor/pm2/processes', (req, res) => {
+        pm2.list((err, list) => {
+            if (err) {
+                console.error('[SystemMonitor] PM2 API Error:', err);
+                return res.status(500).json({ success: false, error: 'Failed to get PM2 processes via API', details: err.message });
+            }
+            
+            const processInfo = list.map(proc => ({
+                name: proc.name,
+                pid: proc.pid,
+                status: proc.pm2_env.status,
+                cpu: proc.monit.cpu,
+                memory: proc.monit.memory,
+                uptime: proc.pm2_env.pm_uptime,
+                restarts: proc.pm2_env.restart_time
+            }));
+            
+            res.json({ success: true, processes: processInfo });
+        });
+    });
 
+    // 获取系统整体资源使用情况
+    adminApiRouter.get('/system-monitor/system/resources', async (req, res) => {
+         try {
+            const systemInfo = {};
+            const execOptions = { windowsHide: true }; // Option to prevent window pop-up
+
+            if (process.platform === 'win32') {
+                const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
+                const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
+                    const [key, value] = line.split('=');
+                    return [key.trim(), parseInt(value.trim()) * 1024];
+                }));
+                systemInfo.memory = {
+                    total: memData.TotalVisibleMemorySize || 0,
+                    free: memData.FreePhysicalMemory || 0,
+                    used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
+                };
+                const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
+                const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
+                systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
+            } else { // Linux/Unix
+                const { stdout: memInfo } = await execAsync('free -b', execOptions);
+                const memLine = memInfo.split('\n')[1].split(/\s+/);
+                systemInfo.memory = { total: parseInt(memLine[1]), used: parseInt(memLine[2]), free: parseInt(memLine[3]) };
+                const { stdout: cpuInfo } = await execAsync("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", execOptions);
+                systemInfo.cpu = { usage: parseFloat(cpuInfo.trim()) || 0 };
+            }
+            systemInfo.nodeProcess = {
+                pid: process.pid,
+                memory: process.memoryUsage(),
+                uptime: process.uptime(),
+                version: process.version,
+                platform: process.platform,
+                arch: process.arch
+            };
+            res.json({ success: true, system: systemInfo });
+        } catch (error) {
+            console.error('[SystemMonitor] Error getting system resources:', error);
+            res.status(500).json({ success: false, error: 'Failed to get system resources', details: error.message });
+        }
+    });
+    // --- End System Monitor Routes ---
+ 
     // --- Server Log API ---
     adminApiRouter.get('/server-log', async (req, res) => {
         const logPath = getCurrentServerLogPath();
@@ -457,8 +528,17 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         
         setTimeout(() => {
             console.log('[AdminPanelRoutes] Received restart command. Shutting down...');
-            process.exit(1); 
-        }, 1000); 
+            
+            // 强制清除Node.js模块缓存，特别是TextChunker.js
+            const moduleKeys = Object.keys(require.cache);
+            moduleKeys.forEach(key => {
+                if (key.includes('TextChunker.js') || key.includes('VectorDBManager.js')) {
+                    delete require.cache[key];
+                }
+            });
+            
+            process.exit(1);
+        }, 1000);
     });
      
 
@@ -615,9 +695,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 };
             }));
 
-            notes.sort((a, b) => a.name.localeCompare(b.name));
+            // Sort by lastModified time, newest first
+            notes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
             res.json({ notes });
-
+ 
         } catch (error) {
             if (error.code === 'ENOENT') {
                 console.warn(`[AdminPanelRoutes API] /dailynotes/folder/${folderName} - Folder not found.`);
@@ -693,12 +774,9 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 }
             }
 
-            matchedNotes.sort((a, b) => {
-                const folderCompare = a.folderName.localeCompare(b.folderName);
-                if (folderCompare !== 0) return folderCompare;
-                return a.name.localeCompare(b.name);
-            });
-
+            // Sort by lastModified time, newest first
+            matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+ 
             res.json({ notes: matchedNotes });
 
         } catch (error) {
@@ -999,6 +1077,11 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
     // --- End RAG Tags API ---
+
+    // --- VCPTavern API ---
+    // This section is now handled by the VCPTavern plugin's own registerRoutes method.
+    // The conflicting routes have been removed from here to allow the plugin to manage them.
+    // --- End VCPTavern API ---
     
     return adminApiRouter;
 };

@@ -32,8 +32,8 @@
       },
       {
         "commandIdentifier": "NanoBananaComposeImage",
-        "description": "调用此工具通过 Gemini 2.5 NanoBanana 模型合成多张图片，例如参考图1的背景，图2的角色等。请在您的回复中，使用以下精确格式来请求多图片合成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」(必需) 请合成图片，用于描述如何合成多张图片的详细英文指令，例如：使用第一张图的背景，第二张图的角色，创建一个新的场景。「末」,\nimage_urls:「始」[\"图片1的URL\", \"图片2的URL\", \"图片3的URL\"]「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」Use the background from the first image and the character from the second image to create a fantasy scene where the character is standing in that landscape「末」,\nimage_urls:「始」[\"https://example.com/background.jpg\", \"https://example.com/character.png\"]「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "调用此工具通过 Gemini 2.5 NanoBanana 模型合成多张图片，例如参考图1的背景，图2的角色等。请在您的回复中，使用以下精确格式来请求多图片合成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」(必需) 请合成图片，用于描述如何合成多张图片的详细英文指令，例如：使用第一张图的背景，第二张图的角色，创建一个新的场景。「末」,\nimage_url_1:「始」(必需) 第一张图片的URL。「末」,\nimage_url_2:「始」(可选) 第二张图片的URL。「末」,\nimage_url_3:「始」(可选) 第三张图片的URL... 以此类推。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」Use the background from the first image and the character from the second image to create a fantasy scene where the character is standing in that landscape「末」,\nimage_url_1:「始」https://example.com/background.jpg「末」,\nimage_url_2:「始」https://example.com/character.png「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }

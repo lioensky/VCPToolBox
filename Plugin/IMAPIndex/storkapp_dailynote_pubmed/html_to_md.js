@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * 新版 html_to_md（支持批次 CLI 列表，并在转换成功后立即删除 HTML）：
+ * 新版 html_to_md（支持批次 CLI 列表）：
  * - 若以 argv 传入 doi_key 列表，仅处理这些 key，且不清空整个 MD 目录（并发安全）
  * - 否则：扫描 fetched_webpages/ 下的 *.html，文件名即 doi_key.html，然后重建 MD 目录做全量转换
- * - 转换成功后：立即删除对应的 HTML（保持原有验证日志不变）
  * - 输出：converted_md/{doi_key}.md
- * - 链接：成功列表使用 doi_key 作为参数传给 md_to_txt.js（MD 的删除仍由 md_to_txt 负责）
+ * - 链接：成功列表使用 doi_key 作为参数传给 md_to_txt.js
  */
 
 const fs = require('fs').promises;
@@ -139,7 +138,7 @@ function preprocessHtml(htmlContent) {
 }
 
 /**
- * 将单个 HTML 文件转换为 MD（成功后立即删除 HTML）
+ * 将单个 HTML 文件转换为 MD
  * @param {string} doiKey
  */
 async function convertOne(doiKey) {
@@ -151,16 +150,6 @@ async function convertOne(doiKey) {
     const markdown = turndownService.turndown(cleanedHtml);
     await fs.writeFile(mdFilePath, markdown);
     console.log(`  - 成功转换: ${path.basename(htmlFilePath)} -> ${path.basename(mdFilePath)}`);
-
-    // 转换成功后立即删除 HTML（保持日志用于验证）
-    try {
-      await fs.unlink(htmlFilePath);
-      console.log(`  - 已删除 HTML: ${path.basename(htmlFilePath)}`);
-    } catch (delErr) {
-      console.warn(`  - 删除 HTML 失败: ${path.basename(htmlFilePath)} (${delErr.message})`);
-      // 不影响后续流程
-    }
-
     return true;
   } catch (error) {
     console.error(`  - 转换失败: ${path.basename(htmlFilePath)} (${error.message})`);

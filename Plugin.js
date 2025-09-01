@@ -582,12 +582,30 @@ class PluginManager {
                             
                             if (this.debugMode) console.log(`[PluginManager] Successfully fetched file as data URI. Retrying plugin call...`);
                             
-                            // 恢复到原始逻辑：修改参数并重试
+                            // 新的重试逻辑：精确替换失败的参数
                             const newToolArgs = { ...toolArgs };
-                            delete newToolArgs.image_url;
-                            
-                            // 系统的原始设计是传递一个完整的 Data URI。这是最稳定且向后兼容的方案。
-                            newToolArgs.image_base64 = dataUri;
+                            const failedParam = pluginOutput.failedParameter; // e.g., "image_url1"
+
+                            if (failedParam && newToolArgs[failedParam]) {
+                                // 删除旧的 file:// url 参数
+                                delete newToolArgs[failedParam];
+                                
+                                // 添加新的 base64 参数。我们使用一个新的键来避免命名冲突，
+                                // 并且让插件知道这是一个已经处理过的 base64 数据。
+                                // e.g., "image_base64_1"
+                               // 关键修复：确保正确地从 "image_url_1" 提取出 "1"
+                               const paramIndex = failedParam.replace('image_url_', '');
+                               const newParamKey = `image_base64_${paramIndex}`;
+                               newToolArgs[newParamKey] = dataUri;
+                               
+                               if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
+
+                            } else {
+                                // 旧的后备逻辑，用于兼容单个 image_url 的情况
+                                delete newToolArgs.image_url;
+                                newToolArgs.image_base64 = dataUri;
+                                if (this.debugMode) console.log(`[PluginManager] 'failedParameter' not specified. Falling back to replacing 'image_url' with 'image_base64'.`);
+                            }
                             
                             // 直接返回重试调用的结果
                             return await this.processToolCall(toolName, newToolArgs, requestIp);

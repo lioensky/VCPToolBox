@@ -235,3 +235,30 @@ node IMAPIndex.js
   - 适当增大 IMAP_PROXY_TIMEOUT_MS
 - 证书错误：
   - 仅在可接受风险时将 IMAP_PROXY_TLS_REJECT_UNAUTHORIZED=false
+
+## Stork 日记（PubMed 版）TXT 输出（手动硬编码）
+
+为了方便手工控制 TXT 输出位置，当前实现采用在脚本中硬编码日记目录名的方式。若需修改输出目录，请按下面步骤操作：
+
+1) 编辑文件：[`storkapp_dailynote_pubmed/md_to_txt.js:1`](storkapp_dailynote_pubmed/md_to_txt.js:1)
+
+2) 在文件开头找到可修改的常量：OUTPUT_SUBDIR_NAME，示例：
+
+   const OUTPUT_SUBDIR_NAME = '文献鸟';
+
+   将 '文献鸟' 修改为你希望的目录名（请勿包含斜杠或路径分隔符）。
+
+3) 确保项目根目录下存在名为 dailynote 的文件夹（脚本会在 dailynote/OUTPUT_SUBDIR_NAME 下写入 TXT）。例如：
+
+   mkdir -p dailynote/文献鸟
+
+4) 运行流程：
+
+   node storkapp_dailynote_pubmed/fetch_stork_pages.js
+
+   脚本将在转换后把 TXT 写入 dailynote/OUTPUT_SUBDIR_NAME 下，并在写入完成后覆盖更新：
+   [`storkapp_dailynote_pubmed/paper_doi.index.txt:1`](storkapp_dailynote_pubmed/paper_doi.index.txt:1)
+
+备注：
+- 脚本会在创建目录前验证父目录名必须为 dailynote 且存在，否则会以 FATAL 失败防止误写入；
+- 如需恢复 env 驱动（STORK_DAILYN_NOTE_DIR），请手动还原脚本改动或联系我们协助；

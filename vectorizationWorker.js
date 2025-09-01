@@ -1,5 +1,12 @@
 // vectorizationWorker.js
 const { parentPort, workerData } = require('worker_threads');
+
+// 强制清除TextChunker模块缓存，确保使用最新版本
+const textChunkerPath = require.resolve('./TextChunker.js');
+if (require.cache[textChunkerPath]) {
+    delete require.cache[textChunkerPath];
+}
+
 // We only import the processing function, not the whole class.
 const { processSingleDiaryBookInWorker } = require('./VectorDBManager.js');
 

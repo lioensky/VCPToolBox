@@ -140,13 +140,18 @@ h2 {
     color: white;
     border: none;
     border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    font-size: 14px;
-    line-height: 20px;
-    text-align: center;
+    width: 22px;
+    height: 22px;
+    font-size: 16px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
     transition: background-color 0.2s ease;
+    line-height: 1;
+    flex-shrink: 0; /* Prevent stretching in flex container */
+    padding: 0; /* Override global button padding */
 }
 .delete-tag-btn:hover {
     background: var(--danger-hover-bg);
