@@ -7,6 +7,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const messagePopup = document.getElementById('message-popup');
     const restartServerButton = document.getElementById('restart-server-button');
 
+    // Dashboard Elements
+    const dashboardSection = document.getElementById('dashboard-section');
+    const cpuProgress = document.getElementById('cpu-progress');
+    const cpuUsageText = document.getElementById('cpu-usage-text');
+    const cpuInfoText = document.getElementById('cpu-info-text');
+    const memProgress = document.getElementById('mem-progress');
+    const memUsageText = document.getElementById('mem-usage-text');
+    const memInfoText = document.getElementById('mem-info-text');
+    const pm2ProcessList = document.getElementById('pm2-process-list');
+    const nodeInfoList = document.getElementById('node-info-list');
+    let monitorIntervalId = null; // For dashboard auto-refresh
+
     // Daily Notes Manager Elements
     const dailyNotesSection = document.getElementById('daily-notes-manager-section'); // The main section for daily notes
     const notesFolderListUl = document.getElementById('notes-folder-list');
@@ -43,9 +55,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const serverLogStatusSpan = document.getElementById('server-log-status');
     const serverLogContentPre = document.getElementById('server-log-content');
     let serverLogIntervalId = null; // For server log auto-refresh
+    
+    // Sidebar Search
+    const sidebarSearchInput = document.getElementById('sidebar-search');
 
 
     const API_BASE_URL = '/admin_api'; // Corrected API base path
+    const MONITOR_API_BASE_URL = '/admin_api/system-monitor'; // New API base for monitoring, corrected path
 
     // --- Utility Functions ---
     function showLoading(show) {
@@ -62,8 +78,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }, duration);
     }
 
-    async function apiFetch(url, options = {}) {
-        showLoading(true);
+    async function apiFetch(url, options = {}, showLoader = true) {
+        if (showLoader) showLoading(true);
         try {
             const defaultHeaders = {
                 'Content-Type': 'application/json',
@@ -90,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showMessage(`操作失败: ${error.message}`, 'error');
             throw error;
         } finally {
-            showLoading(false);
+            if (showLoader) showLoading(false);
         }
     }
 
@@ -250,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (firstLink) {
                 // Ensure the correct section ID is used if it's different from data-target
                 const sectionId = firstLink.dataset.target.endsWith('-section') ? firstLink.dataset.target : `${firstLink.dataset.target}-section`;
-                navigateTo(sectionId, firstLink.dataset.pluginName, firstLink.dataset.target);
+                navigateTo(firstLink.dataset.target);
                 firstLink.classList.add('active');
             }
         } catch (error) { /* Error already shown by apiFetch */ }
@@ -871,37 +887,71 @@ Description Length: ${newDescription.length}`);
         input.name = elementId; // Use unique name for form submission if needed, but we build string manually
         input.dataset.originalKey = key; // Store original key for mapping back
         input.dataset.expectedType = type;
-        if (input.type !== 'checkbox') { // Checkbox already appended inside switchContainer
-            group.appendChild(input);
+        if (input.type !== 'checkbox') {
+            if (/key|api/i.test(key) && input.tagName.toLowerCase() === 'input') {
+                input.type = 'password';
+                const wrapper = document.createElement('div');
+                wrapper.className = 'input-with-toggle';
+                
+                const toggleBtn = document.createElement('button');
+                toggleBtn.type = 'button';
+                toggleBtn.textContent = '显示';
+                toggleBtn.className = 'toggle-visibility-btn';
+                
+                toggleBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (input.type === 'password') {
+                        input.type = 'text';
+                        toggleBtn.textContent = '隐藏';
+                    } else {
+                        input.type = 'password';
+                        toggleBtn.textContent = '显示';
+                    }
+                });
+                
+                wrapper.appendChild(input);
+                wrapper.appendChild(toggleBtn);
+                group.appendChild(wrapper);
+            } else {
+                group.appendChild(input);
+            }
         }
         
         return group;
     }
 
 
-    function navigateTo(sectionIdToActivate, pluginName = null, navLinkDataTarget = null) {
-        // If navigating to a section that is NOT the server log viewer,
-        // and an interval is active, clear it.
+    function navigateTo(dataTarget) {
+        const sectionIdToActivate = `${dataTarget}-section`;
+        const pluginName = document.querySelector(`a[data-target="${dataTarget}"]`)?.dataset.pluginName;
+
+        // Clear intervals when navigating away from their respective sections
         if (sectionIdToActivate !== 'server-log-viewer-section' && serverLogIntervalId) {
             clearInterval(serverLogIntervalId);
             serverLogIntervalId = null;
-            console.log('Server log auto-refresh interval cleared due to navigation.');
+            console.log('Server log auto-refresh stopped.');
         }
+        if (sectionIdToActivate !== 'dashboard-section' && monitorIntervalId) {
+            clearInterval(monitorIntervalId);
+            monitorIntervalId = null;
+            console.log('Dashboard monitoring stopped.');
+        }
+
         document.querySelectorAll('.sidebar nav li a').forEach(link => link.classList.remove('active'));
         document.querySelectorAll('.config-section').forEach(section => section.classList.remove('active-section'));
 
-        // If navLinkDataTarget is provided, use it to find the link, otherwise use sectionIdToActivate (assuming it matches data-target)
-        const linkSelector = navLinkDataTarget ? `a[data-target="${navLinkDataTarget}"]` : `a[data-target="${sectionIdToActivate.replace('-section', '')}"]`;
-        const activeLink = pluginNavList.querySelector(linkSelector);
+        const activeLink = document.querySelector(`a[data-target="${dataTarget}"]`);
         if (activeLink) activeLink.classList.add('active');
 
-        const targetSection = document.getElementById(sectionIdToActivate); // sectionIdToActivate should be the actual ID of the section element
+        const targetSection = document.getElementById(sectionIdToActivate);
         if (targetSection) {
             targetSection.classList.add('active-section');
+            
+            // Initialize the relevant section
             if (pluginName) {
                 loadPluginConfig(pluginName).catch(err => console.error(`Failed to load config for ${pluginName}`, err));
-            } else if (sectionIdToActivate === 'base-config-section') {
-                // Base config already loaded
+            } else if (sectionIdToActivate === 'dashboard-section') {
+                initializeDashboard();
             } else if (sectionIdToActivate === 'daily-notes-manager-section') {
                 initializeDailyNotesManager();
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
@@ -910,7 +960,12 @@ Description Length: ${newDescription.length}`);
                 initializeTvsFilesEditor();
             } else if (sectionIdToActivate === 'server-log-viewer-section') {
                 initializeServerLogViewer();
-            }
+            } else if (sectionIdToActivate === 'vcptavern-editor-section') {
+               const iframe = targetSection.querySelector('iframe');
+               if (iframe) {
+                   iframe.src = iframe.src; // Force reload
+               }
+           }
         } else {
             console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
         }
@@ -920,10 +975,8 @@ Description Length: ${newDescription.length}`);
         const anchor = event.target.closest('a');
         if (anchor) {
             event.preventDefault();
-            const dataTarget = anchor.dataset.target; // This is like "base-config" or "plugin-MyPlugin-config" or "daily-notes-manager"
-            const pluginName = anchor.dataset.pluginName; // Only present for plugin links
-            const sectionIdToActivate = `${dataTarget}-section`; // Construct the section ID
-            navigateTo(sectionIdToActivate, pluginName, dataTarget);
+            const dataTarget = anchor.dataset.target;
+            navigateTo(dataTarget);
         }
     });
 
@@ -958,6 +1011,113 @@ Description Length: ${newDescription.length}`);
 
     loadInitialData();
 
+    // --- Sidebar Search Functionality ---
+    sidebarSearchInput.addEventListener('input', (event) => {
+        const searchTerm = event.target.value.toLowerCase().trim();
+        const navLinks = document.querySelectorAll('#plugin-nav li a');
+        const categories = document.querySelectorAll('#plugin-nav li.nav-category');
+
+        navLinks.forEach(link => {
+            const linkText = link.textContent.toLowerCase();
+            const parentLi = link.parentElement;
+            if (linkText.includes(searchTerm)) {
+                parentLi.style.display = '';
+            } else {
+                parentLi.style.display = 'none';
+            }
+        });
+
+        // Hide categories if all items within them are hidden
+        categories.forEach(category => {
+            let nextElement = category.nextElementSibling;
+            let allHidden = true;
+            while(nextElement && !nextElement.classList.contains('nav-category')) {
+                if(nextElement.style.display !== 'none') {
+                    allHidden = false;
+                    break;
+                }
+                nextElement = nextElement.nextElementSibling;
+            }
+            category.style.display = allHidden ? 'none' : '';
+        });
+    });
+
+    // --- Dashboard Functions ---
+    function initializeDashboard() {
+        console.log('Initializing Dashboard...');
+        if (monitorIntervalId) {
+            clearInterval(monitorIntervalId);
+        }
+        updateDashboardData(); // Initial load
+        monitorIntervalId = setInterval(updateDashboardData, 5000); // Refresh every 5 seconds
+    }
+
+    async function updateDashboardData() {
+        try {
+            const [resources, processes] = await Promise.all([
+                apiFetch(`${MONITOR_API_BASE_URL}/system/resources`, {}, false), // Pass false to hide loader
+                apiFetch(`${MONITOR_API_BASE_URL}/pm2/processes`, {}, false)   // Pass false to hide loader
+            ]);
+            
+            // Update CPU
+            const cpuUsage = resources.system.cpu.usage.toFixed(1);
+            updateProgressCircle(cpuProgress, cpuUsageText, cpuUsage);
+            cpuInfoText.innerHTML = `平台: ${resources.system.nodeProcess.platform} <br> 架构: ${resources.system.nodeProcess.arch}`;
+
+            // Update Memory
+            const memUsed = resources.system.memory.used;
+            const memTotal = resources.system.memory.total;
+            const memUsage = memTotal > 0 ? ((memUsed / memTotal) * 100).toFixed(1) : 0;
+            updateProgressCircle(memProgress, memUsageText, memUsage);
+            memInfoText.innerHTML = `已用: ${(memUsed / 1024 / 1024 / 1024).toFixed(2)} GB <br> 总共: ${(memTotal / 1024 / 1024 / 1024).toFixed(2)} GB`;
+            
+            // Update PM2 Processes
+            pm2ProcessList.innerHTML = ''; // Clear previous
+            if (processes.success && processes.processes.length > 0) {
+                processes.processes.forEach(proc => {
+                    const procEl = document.createElement('div');
+                    procEl.className = 'process-item';
+                    procEl.innerHTML = `
+                        <strong>${proc.name}</strong> (PID: ${proc.pid})
+                        <span class="status ${proc.status}">${proc.status}</span> <br>
+                        CPU: ${proc.cpu}% | RAM: ${(proc.memory / 1024 / 1024).toFixed(1)} MB
+                    `;
+                    pm2ProcessList.appendChild(procEl);
+                });
+            } else {
+                pm2ProcessList.innerHTML = '<p>没有正在运行的 PM2 进程。</p>';
+            }
+
+            // Update Node.js Info
+            const nodeInfo = resources.system.nodeProcess;
+            const uptimeSeconds = nodeInfo.uptime;
+            const uptimeHours = Math.floor(uptimeSeconds / 3600);
+            const uptimeMinutes = Math.floor((uptimeSeconds % 3600) / 60);
+            nodeInfoList.innerHTML = `
+                <div class="node-info-item"><strong>PID:</strong> ${nodeInfo.pid}</div>
+                <div class="node-info-item"><strong>Node.js 版本:</strong> ${nodeInfo.version}</div>
+                <div class="node-info-item"><strong>内存占用:</strong> ${(nodeInfo.memory.rss / 1024 / 1024).toFixed(2)} MB</div>
+                <div class="node-info-item"><strong>运行时间:</strong> ${uptimeHours}h ${uptimeMinutes}m</div>
+            `;
+
+        } catch (error) {
+            console.error('Failed to update dashboard data:', error);
+            pm2ProcessList.innerHTML = `<p class="error-message">加载 PM2 数据失败: ${error.message}</p>`;
+            nodeInfoList.innerHTML = `<p class="error-message">加载系统数据失败: ${error.message}</p>`;
+        }
+    }
+
+    function updateProgressCircle(circleElement, textElement, percentage) {
+        const radius = 54;
+        const circumference = 2 * Math.PI * radius;
+        const offset = circumference - (percentage / 100) * circumference;
+        
+        const progressBar = circleElement.querySelector('.progress-bar');
+        progressBar.style.strokeDashoffset = offset;
+        textElement.textContent = `${percentage}%`;
+    }
+    // --- End Dashboard Functions ---
+ 
     // --- Daily Notes Manager Functions ---
     let currentNotesFolder = null;
     let selectedNotes = new Set();
@@ -1035,7 +1195,6 @@ Description Length: ${newDescription.length}`);
             const data = await apiFetch(`${API_BASE_URL}/dailynotes/folder/${folderName}`);
             notesListViewDiv.innerHTML = ''; // Clear loading state
             if (data.notes && data.notes.length > 0) {
-                data.notes.reverse(); // Add this line to reverse the order
                 data.notes.forEach(note => {
                     // renderNoteCard now expects note.folderName to be part of the note object for consistency
                     // or pass folderName explicitly if the endpoint doesn't return it per note
@@ -1077,7 +1236,6 @@ Description Length: ${newDescription.length}`);
             notesListViewDiv.innerHTML = ''; // Clear loading/previous results
 
             if (data.notes && data.notes.length > 0) {
-                data.notes.reverse(); // Add this line to reverse the order
                 data.notes.forEach(note => {
                     // The search API now returns folderName with each note
                     const card = renderNoteCard(note, note.folderName);

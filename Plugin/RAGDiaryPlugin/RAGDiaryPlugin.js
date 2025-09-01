@@ -188,6 +188,41 @@ class RAGDiaryPlugin {
         return characterDiaryContent;
     }
 
+    _calculateDynamicK(userText, aiText = null) {
+        // 1. 根据用户输入的长度计算 k_user
+        const userLen = userText ? userText.length : 0;
+        let k_user = 3;
+        if (userLen > 100) {
+            k_user = 7;
+        } else if (userLen > 30) {
+            k_user = 5;
+        }
+
+        // 如果没有 aiText (通常是首轮对话)，直接返回 k_user
+        if (!aiText) {
+            console.log(`[RAGDiaryPlugin] User-only turn. User query length (${userLen}), setting k=${k_user}.`);
+            return k_user;
+        }
+
+        // 2. 根据 AI 回复的不重复【词元】数计算 k_ai，以更准确地衡量信息密度
+        //    这个正则表达式会匹配连续的英文单词/数字，或单个汉字/符号，能同时兼容中英文。
+        const tokens = aiText.match(/[a-zA-Z0-9]+|[^\s\x00-\xff]/g) || [];
+        const uniqueTokens = new Set(tokens).size;
+        
+        let k_ai = 3;
+        if (uniqueTokens > 100) {      // 阈值: 高信息密度 (>100个不同词元)
+            k_ai = 7;
+        } else if (uniqueTokens > 40) { // 阈值: 中等信息密度 (>40个不同词元)
+            k_ai = 5;
+        }
+
+        // 3. 计算平均 k 值，并四舍五入
+        const finalK = Math.round((k_user + k_ai) / 2);
+        
+        console.log(`[RAGDiaryPlugin] User len (${userLen})->k_user=${k_user}. AI unique tokens (${uniqueTokens})->k_ai=${k_ai}. Final averaged k=${finalK}.`);
+        return finalK;
+    }
+
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         const systemMessage = messages.find(m => m.role === 'system');
@@ -195,52 +230,62 @@ class RAGDiaryPlugin {
             return messages;
         }
 
-        const ragDeclarations = [...systemMessage.content.matchAll(/\[\[(.*?)日记本\]\]/g)];
+        const ragDeclarations = [...systemMessage.content.matchAll(/\[\[(.*?)日记本(?::(\d+\.?\d*))?\]\]/g)];
         const fullTextDeclarations = [...systemMessage.content.matchAll(/<<(.*?)日记本>>/g)];
 
         if (ragDeclarations.length === 0 && fullTextDeclarations.length === 0) {
             return messages; // 没有发现RAG声明，直接返回
         }
         
-        // --- V2.0 优化：构建更丰富的查询 ---
-        let queryText = '';
+        // --- [最终修复] 统一准备 userContent 和 aiContent ---
         const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
+        let userContent = '';
+        let aiContent = null;
 
         if (lastUserMessageIndex > -1) {
             const lastUserMessage = messages[lastUserMessageIndex];
-            const userContent = typeof lastUserMessage.content === 'string'
+            // 健壮地提取 userContent, 兼容 string 和 array 格式
+            userContent = typeof lastUserMessage.content === 'string'
                 ? lastUserMessage.content
-                : lastUserMessage.content.find(p => p.type === 'text')?.text || '';
-            
-            queryText = userContent;
+                : (Array.isArray(lastUserMessage.content) ? lastUserMessage.content.find(p => p.type === 'text')?.text : '') || '';
 
-            // 检查前一条消息是否是AI的回复
-            if (lastUserMessageIndex > 0 && messages[lastUserMessageIndex - 1].role === 'assistant') {
-                const lastAiMessage = messages[lastUserMessageIndex - 1];
-                const aiContent = typeof lastAiMessage.content === 'string' ? lastAiMessage.content : '';
-                if (aiContent) {
-                    // 拼接AI和用户的最后对话
-                    queryText = `${aiContent}\n${userContent}`;
+            // 向前搜索并正确解析最近的 'assistant' 消息
+            for (let i = lastUserMessageIndex - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.role === 'assistant') {
+                    if (typeof msg.content === 'string') {
+                        aiContent = msg.content;
+                    } else if (Array.isArray(msg.content)) {
+                        aiContent = msg.content.find(p => p.type === 'text')?.text || null;
+                    }
+                    break; // 找到最近的一条就停止
                 }
             }
         }
 
+        // --- V2.0 优化：基于准备好的上下文构建查询 ---
+        let queryText = userContent;
+        if (aiContent) {
+            queryText = `${aiContent}\n${userContent}`;
+            console.log('[RAGDiaryPlugin] Found and spliced the latest AI message for query vectorization.');
+        } else {
+            console.log('[RAGDiaryPlugin] No preceding AI message found in history. Using user message only for query vectorization.');
+        }
+
         if (!queryText) {
             console.log('[RAGDiaryPlugin] 未能构建有效的查询文本，跳过处理。');
-            // 如果没有查询文本，则直接移除所有占位符
-             let contentWithoutPlaceholders = systemMessage.content;
+            let contentWithoutPlaceholders = systemMessage.content;
             ragDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
             fullTextDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
             messages.find(m => m.role === 'system').content = contentWithoutPlaceholders;
             return messages;
         }
 
-        console.log(`[RAGDiaryPlugin] 发现RAG声明，构建的组合查询文本: "${queryText.substring(0, 80)}..."`);
-        
+        console.log(`[RAGDiaryPlugin] Final combined query text for vectorization: "${queryText.substring(0, 120)}..."`);
+
         const queryVector = await this.getSingleEmbedding(queryText);
         if (!queryVector) {
             console.error('[RAGDiaryPlugin] 查询向量化失败，跳过RAG处理。');
-            // 安全起见，直接移除占位符
             let contentWithoutPlaceholders = systemMessage.content;
             ragDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
             fullTextDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
@@ -251,13 +296,21 @@ class RAGDiaryPlugin {
         let processedSystemContent = systemMessage.content;
 
         // --- 处理 [[...]] RAG 片段检索 ---
+        const dynamicK = this._calculateDynamicK(userContent, aiContent);
+
         for (const match of ragDeclarations) {
-            const placeholder = match[0]; // 例如 [[公共日记本]]
-            const dbName = match[1];      // 例如 "公共"
+            const placeholder = match[0];      // 例如 [[小克日记本:1.5]]
+            const dbName = match[1];           // 例如 "小克"
+            const kMultiplier = match[2] ? parseFloat(match[2]) : 1.0; // 获取K值乘数
             const displayName = dbName + '日记本';
 
+            const finalK = Math.max(1, Math.round(dynamicK * kMultiplier)); // 计算最终K值, 确保至少为1
+
             console.log(`[RAGDiaryPlugin] 正在为 "${displayName}" 检索相关信息 (数据库键: ${dbName})...`);
-            const searchResults = await this.vectorDBManager.search(dbName, queryVector, 3);
+            if (kMultiplier !== 1.0) {
+                console.log(`[RAGDiaryPlugin] 应用K值乘数: ${kMultiplier}. (基础K: ${dynamicK} -> 最终K: ${finalK})`);
+            }
+            const searchResults = await this.vectorDBManager.search(dbName, queryVector, finalK); // <--- 使用最终 k 值
 
             let retrievedContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
             if (searchResults && searchResults.length > 0) {

@@ -3,39 +3,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VCP ToolBox 配置中心</title>
+    <title>VCP ToolBox 控制中心</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="woff.css">
 </head>
 <body>
     <header class="top-bar">
         <div class="top-bar-content">
             <span class="server-title">VCPToolBox</span>
-            <button id="restart-server-button" class="restart-button">重启服务器</button>
-            <button id="theme-toggle-button" class="theme-button">切换主题</button>
+            <div class="header-actions">
+                <button id="restart-server-button" class="restart-button">重启服务器</button>
+                <button id="theme-toggle-button" class="theme-button">切换主题</button>
+            </div>
         </div>
     </header>
+
     <div class="container">
         <aside class="sidebar">
-            <h1>配置中心</h1>
+            <div class="sidebar-header">
+                <h1>控制中心</h1>
+                <input type="search" id="sidebar-search" placeholder="搜索功能页面...">
+            </div>
             <nav id="plugin-nav">
                 <ul>
-                    <li><a href="#" data-target="base-config" class="active">全局基础配置</a></li>
-                    <li><a href="#" data-target="daily-notes-manager">日记管理</a></li>
-                    <li><a href="#" data-target="image-cache-editor">多媒体缓存编辑器</a></li>
-                    <li><a href="#" data-target="rag-tags-editor">知识库RAG-Tags编辑器</a></li>
-                    <li><a href="#" data-target="vcptavern-editor">VCPTarven预设编辑</a></li>
-                    <li><a href="#" data-target="agent-files-editor">Agent 文件编辑器</a></li>
-                    <li><a href="#" data-target="tvs-files-editor">高级变量编辑器</a></li>
-                    <li><a href="#" data-target="server-log-viewer">服务器日志</a></li>
+                    <li><a href="#" data-target="dashboard" class="active"><span class="material-symbols-outlined">dashboard</span>仪表盘</a></li>
+                    <li class="nav-category">核心功能</li>
+                    <li><a href="#" data-target="base-config"><span class="material-symbols-outlined">settings</span>全局基础配置</a></li>
+                    <li><a href="#" data-target="daily-notes-manager"><span class="material-symbols-outlined">description</span>日记知识库管理</a></li>
+                    <li><a href="#" data-target="image-cache-editor"><span class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
+                    <li><a href="#" data-target="rag-tags-editor"><span class="material-symbols-outlined">label</span>知识库RAG-Tags编辑器</a></li>
+                    <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
+                    <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent 文件编辑器</a></li>
+                    <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
+                    <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
+                    <li class="nav-category" id="plugins-category">插件管理</li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
             </nav>
         </aside>
+
         <main class="content" id="config-details-container">
-            <section id="base-config-section" class="config-section active-section">
+            <!-- Section: Dashboard -->
+            <section id="dashboard-section" class="config-section active-section">
+                <h2>仪表盘</h2>
+                <div class="vcp-animation-container">
+                    <div class="vcp-logo-container">
+                        <img src="VCPLogo2.png" alt="VCP Logo" class="vcp-logo">
+                    </div>
+                    <canvas id="vcp-animation-canvas"></canvas>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="status-card cpu-card">
+                        <h3>CPU 使用率</h3>
+                        <div class="status-card-content">
+                            <div class="progress-circle" id="cpu-progress" data-progress="0">
+                                <svg width="120" height="120" viewBox="0 0 120 120">
+                                    <circle class="progress-bg" cx="60" cy="60" r="54"></circle>
+                                    <circle class="progress-bar" cx="60" cy="60" r="54"></circle>
+                                </svg>
+                                <span class="progress-text" id="cpu-usage-text">0%</span>
+                            </div>
+                            <p id="cpu-info-text">加载中...</p>
+                        </div>
+                    </div>
+                    <div class="status-card memory-card">
+                        <h3>内存使用情况</h3>
+                        <div class="status-card-content">
+                             <div class="progress-circle" id="mem-progress" data-progress="0">
+                                <svg width="120" height="120" viewBox="0 0 120 120">
+                                    <circle class="progress-bg" cx="60" cy="60" r="54"></circle>
+                                    <circle class="progress-bar" cx="60" cy="60" r="54"></circle>
+                                </svg>
+                                <span class="progress-text" id="mem-usage-text">0%</span>
+                            </div>
+                            <p id="mem-info-text">加载中...</p>
+                        </div>
+                    </div>
+                    <div class="status-card process-card">
+                        <h3>PM2 进程状态</h3>
+                        <div class="status-card-content" id="pm2-process-list">
+                            <p>加载中...</p>
+                        </div>
+                    </div>
+                    <div class="status-card node-card">
+                        <h3>Node.js 进程信息</h3>
+                        <div class="status-card-content" id="node-info-list">
+                           <p>加载中...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <section id="base-config-section" class="config-section">
                 <h2>全局基础配置 (config.env)</h2>
                 <form id="base-config-form">
-                    <!-- 基础配置项将动态生成在这里 -->
                     <button type="submit">保存全局配置</button>
                 </form>
             </section>
@@ -45,25 +106,19 @@
                 <div class="daily-notes-manager">
                     <div class="notes-sidebar">
                         <h3>文件夹</h3>
-                        <ul id="notes-folder-list">
-                            <!-- Folder list will be populated here by script.js -->
-                        </ul>
+                        <ul id="notes-folder-list"></ul>
                     </div>
                     <div class="notes-content-area">
                         <div class="notes-toolbar">
                             <input type="search" id="search-daily-notes" placeholder="搜索日记..." aria-label="搜索日记">
                             <button id="move-selected-notes" disabled>移动选中项到...</button>
-                            <select id="move-target-folder" disabled>
-                                <!-- Target folders for move op by script.js -->
-                            </select>
+                            <select id="move-target-folder" disabled></select>
                             <button id="delete-selected-notes-button" disabled>批量删除选中项</button>
                             <span id="notes-action-status" class="status-message"></span>
                         </div>
-                        <div id="notes-list-view">
-                            <!-- Notes will be displayed here as cards by script.js -->
-                        </div>
+                        <div id="notes-list-view"></div>
                     </div>
-                    <div id="note-editor-area" class="note-editor-area" style="display: none;"> <!-- Initially hidden -->
+                    <div id="note-editor-area" class="note-editor-area" style="display: none;">
                         <h3>编辑日记</h3>
                         <input type="hidden" id="editing-note-folder">
                         <input type="hidden" id="editing-note-file">
@@ -127,10 +182,9 @@
                 </div>
                 <pre id="server-log-content" class="log-content-area"></pre>
             </section>
-
-            <!-- 插件配置区域将动态生成在这里 -->
         </main>
     </div>
+
     <div id="loading-overlay" class="loading-overlay">
         <div class="spinner"></div>
         <p>正在加载...</p>
@@ -139,6 +193,137 @@
 
     <script src="script.js"></script>
     <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('vcp-animation-canvas');
+            if(canvas) {
+                const ctx = canvas.getContext('2d');
+                let width = canvas.offsetWidth;
+                let height = canvas.offsetHeight;
+                canvas.width = width;
+                canvas.height = height;
+
+                class Particle {
+                    constructor() {
+                        this.x = Math.random() * width;
+                        this.y = Math.random() * height;
+                        this.vx = Math.random() * 1 - 0.5;
+                        this.vy = Math.random() * 1 - 0.5;
+                        this.radius = Math.random() * 1.5 + 1;
+                        this.opacity = Math.random() * 0.5 + 0.2;
+                    }
+
+                    draw() {
+                        const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+                        const particleColor = theme === 'dark' ? '#8ab4f8' : '#1a73e8';
+                        
+                        // Helper to convert hex to rgba for opacity
+                        const hexToRgb = (hex) => {
+                            let r = 0, g = 0, b = 0;
+                            if (hex.length == 4) {
+                                r = "0x" + hex[1] + hex[1];
+                                g = "0x" + hex[2] + hex[2];
+                                b = "0x" + hex[3] + hex[3];
+                            } else if (hex.length == 7) {
+                                r = "0x" + hex[1] + hex[2];
+                                g = "0x" + hex[3] + hex[4];
+                                b = "0x" + hex[5] + hex[6];
+                            }
+                            return `rgba(${+r},${+g},${+b},${this.opacity})`;
+                        }
+
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                        ctx.fillStyle = hexToRgb(particleColor);
+                        ctx.fill();
+                    }
+
+                    update() {
+                        this.x += this.vx;
+                        this.y += this.vy;
+
+                        if (this.x < 0 || this.x > width) this.vx *= -1;
+                        if (this.y < 0 || this.y > height) this.vy *= -1;
+                    }
+                }
+                
+                let particles = [];
+                function init() {
+                    width = canvas.offsetWidth;
+                    height = canvas.offsetHeight;
+                    canvas.width = width;
+                    canvas.height = height;
+                    particles = [];
+                    for (let i = 0; i < 100; i++) {
+                        particles.push(new Particle());
+                    }
+                }
+
+                function animate() {
+                    ctx.clearRect(0, 0, width, height);
+                    particles.forEach(p => {
+                        p.update();
+                        p.draw();
+                    });
+
+                    for (let i = 0; i < particles.length; i++) {
+                        for (let j = i + 1; j < particles.length; j++) {
+                            const dx = particles[i].x - particles[j].x;
+                            const dy = particles[i].y - particles[j].y;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+
+                            if (distance < 100) {
+                                const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+                                const lineColor = theme === 'dark' ? '#8ab4f8' : '#1a73e8';
+                                const hexToRgbA = (hex, alpha) => {
+                                    let r = 0, g = 0, b = 0;
+                                    if (hex.length == 4) {
+                                        r = "0x" + hex[1] + hex[1];
+                                        g = "0x" + hex[2] + hex[2];
+                                        b = "0x" + hex[3] + hex[3];
+                                    } else if (hex.length == 7) {
+                                        r = "0x" + hex[1] + hex[2];
+                                        g = "0x" + hex[3] + hex[4];
+                                        b = "0x" + hex[5] + hex[6];
+                                    }
+                                    return `rgba(${+r},${+g},${+b},${alpha})`;
+                                }
+
+                                ctx.beginPath();
+                                ctx.moveTo(particles[i].x, particles[i].y);
+                                ctx.lineTo(particles[j].x, particles[j].y);
+                                ctx.strokeStyle = hexToRgbA(lineColor, (100 - distance) / 100 * 0.5);
+                                ctx.lineWidth = 0.5;
+                                ctx.stroke();
+                            }
+                        }
+                    }
+
+                    requestAnimationFrame(animate);
+                }
+                
+                // Debounce resize
+                let resizeTimeout;
+                window.addEventListener('resize', () => {
+                    clearTimeout(resizeTimeout);
+                    resizeTimeout = setTimeout(init, 250);
+                });
+                
+                // Re-init on theme change
+                const observer = new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        if (mutation.attributeName === "data-theme") {
+                           init();
+                        }
+                    });
+                });
+
+                observer.observe(document.documentElement, { attributes: true });
+
+                init();
+                animate();
+            }
+        });
+        // 主题切换逻辑保持不变
         const themeToggleButton = document.getElementById('theme-toggle-button');
         const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
         const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -153,7 +338,6 @@
                 localStorage.setItem('theme', 'light');
                 if(themeToggleButton) themeToggleButton.textContent = '切换暗色';
             }
-            // 通知所有 iframe 主题变化
             const iframes = document.querySelectorAll('iframe');
             iframes.forEach(iframe => {
                 if (iframe.contentWindow) {
@@ -179,11 +363,9 @@
             });
         }
 
-        // 监听来自 iframe 的主题请求
         window.addEventListener('message', (event) => {
             if (event.data && event.data.type === 'requestTheme') {
                 const currentAppliedTheme = document.documentElement.getAttribute('data-theme') || (prefersDarkScheme.matches ? 'dark' : 'light');
-                // 根据请求来源的 iframe 回复主题
                 const sourceFrame = Array.from(document.querySelectorAll('iframe')).find(
                     iframe => iframe.contentWindow === event.source
                 );

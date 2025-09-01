@@ -19,7 +19,7 @@ const PUBMED_PAGE_BASE = 'https://www.storkapp.me/pubpaper/';
 const HTML_TO_MD_SCRIPT_PATH = path.join(WORK_DIR, 'html_to_md.js');
 const PERMANENT_INDEX_FILE = path.join(WORK_DIR, 'paper_doi.index.txt');
 
-const FETCH_INTERVAL_MS = parseInt(process.env.STORK_FETCH_INTERVAL_MS || '2000', 10);
+const FETCH_INTERVAL_MS = parseInt(process.env.STORK_FETCH_INTERVAL_MS || '1000', 10);
 // 新增：批次大小（成功抓取到 N 个 HTML 即触发后续流程；默认 50）
 const HTML_BATCH_SIZE = parseInt(process.env.HTML_BATCH_SIZE || '50', 10);
 

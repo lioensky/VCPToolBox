@@ -1,0 +1,33 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DoubaoGen",
+  "displayName": "Doubao 风格图片生成器",
+  "version": "0.1.0",
+  "description": "通过 DMXAPI 使用其提供的模型（如 seedream-3.0）生成图片。",
+  "author": "B3000Kcn",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node DoubaoGen.js"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "VOLCENGINE_API_KEY": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "DoubaoGenerateImage",
+        "description": "【文生图】调用此工具通过 DMXAPI (使用 seedream-3.0 模型) 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoGenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词。「末」,\nresolution:「始」(必需) 图片分辨率，格式为“宽x高”，例如“1024x1024”。宽高像素值要求介于 [512, 2048] 之间。推荐可选的宽高：「1024x1024」(1:1)、「864x1152」(3:4)、「1152x864」(4:3)、「1280x720」(16:9)、「720x1280」(9:16)。「末」,\n(可选参数：seed:「始」整数种子「末」 - 通常省略以使用随机种子)\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoGenerateImage「末」,\nprompt:「始」科技感的店铺门口，店铺名称是DMXAPI「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      },
+      {
+        "commandIdentifier": "DoubaoEditImage",
+        "description": "【图生图/修图】调用此工具通过 DMXAPI (使用 seededit-3.0 模型) 修改现有图片。请在您的回复中，使用以下精确格式来请求图片修改，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoEditImage「末」,\nprompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,\nimage:「始」(必需) 用于图生图的图片来源，可以是公网可访问的 https URL，或者是分布式服务器的本地文件路径 (格式为 file:///...)。「末」,\nresolution:「始」(必需) 图片分辨率，格式为“宽x高”，可设为“adaptive”以自适应原图尺寸。「末」,\n(可选参数):\nseed:「始」整数种子「末」 - 通常省略以使用随机种子。\nguidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」DoubaoEditImage「末」,\nprompt:「始」给这个女孩戴上墨镜「末」,\nimage:「始」https://www.dmxapi.cn/images/i2i_demo.png「末」,\nresolution:「始」adaptive「末」,\nguidance_scale:「始」5.5「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

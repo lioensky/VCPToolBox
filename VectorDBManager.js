@@ -30,7 +30,7 @@ class VectorDBManager {
         
         // State for incremental updates
         // State for incremental updates. Now stores more details.
-        this.manifest = {}; // { diaryName: { fileName: { fileHash, chunkHashes: [] } } }
+        this.manifest = {}; // Back to simple format: { diaryName: { fileName: fileHash } }
     }
 
     /**
@@ -77,14 +77,7 @@ class VectorDBManager {
         }
     }
 
-    /**
-     * Calculates the SHA256 hash for each text chunk.
-     * @param {string[]} chunks - An array of text chunks.
-     * @returns {string[]} - An array of SHA256 hashes.
-     */
-    _getChunkHashes(chunks) {
-        return chunks.map(chunk => crypto.createHash('sha256').update(chunk).digest('hex'));
-    }
+    // _getChunkHashes is no longer needed at the class level.
 
     /**
      * Scans all diary books and synchronizes their vector indices.
@@ -123,21 +116,14 @@ class VectorDBManager {
         const files = await fs.readdir(diaryPath);
         const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
 
-        // Quick check for file count mismatch
         if (Object.keys(diaryManifest).length !== relevantFiles.length) {
-            return true;
+            return true; // File count mismatch
         }
 
         for (const file of relevantFiles) {
-            const fileManifest = diaryManifest[file];
-            if (!fileManifest) {
-                return true; // New file found
-            }
-            
-            // In new format, manifest stores an object, not just a hash
-            const oldFileHash = typeof fileManifest === 'string' ? fileManifest : fileManifest.fileHash;
+            const oldFileHash = diaryManifest[file];
             if (!oldFileHash) {
-                 return true; // Malformed manifest entry, needs rebuild
+                return true; // New file found
             }
 
             const filePath = path.join(diaryPath, file);
@@ -153,83 +139,66 @@ class VectorDBManager {
     }
     
     /**
-     * Calculates the detailed changes (added/deleted chunks) for a diary book.
-     * @param {string} diaryName - The name of the diary book.
-     * @returns {Promise<object>} - A changeset object detailing files and chunks to add or delete.
+     * Calculates changes for a diary book using a more robust diffing strategy.
+     * @param {string} diaryName The name of the diary book.
+     * @returns {Promise<object>} A changeset object.
      */
     async calculateChanges(diaryName) {
         const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
-        const oldDiaryManifest = this.manifest[diaryName] || {};
-        const newDiaryManifest = {};
-        
-        const changeset = {
-            diaryName: diaryName,
-            chunksToAdd: [],    // { text, chunkHash, sourceFile }
-            labelsToDelete: [], // [label_integer]
-            newManifest: {}     // The final manifest state for this diary book
-        };
+        const newFileHashes = {};
 
+        // 1. Load old state from the chunk map
+        const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+        const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
+        let oldChunkMap = {};
+        try {
+            oldChunkMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'));
+        } catch (e) { /* Map doesn't exist, treat as empty */ }
+        
+        const oldChunkHashToLabel = new Map(Object.entries(oldChunkMap).map(([label, data]) => [data.chunkHash, Number(label)]));
+
+        // 2. Build current state from disk
+        const currentChunkData = new Map(); // hash -> { text, sourceFile }
         const files = await fs.readdir(diaryPath);
         const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
-        
-        const oldFiles = new Set(Object.keys(oldDiaryManifest));
-        
+
         for (const file of relevantFiles) {
             const filePath = path.join(diaryPath, file);
             const content = await fs.readFile(filePath, 'utf-8');
-            const newFileHash = crypto.createHash('md5').update(content).digest('hex');
-            
-            const oldFileManifest = oldDiaryManifest[file];
-            const oldFileHash = oldFileManifest ? oldFileManifest.fileHash : null;
-
-            if (newFileHash === oldFileHash) {
-                // File is unchanged, carry over the old manifest.
-                newDiaryManifest[file] = oldFileManifest;
-            } else {
-                // File is new or modified.
-                const newChunks = chunkText(content);
-                const newChunkHashes = this._getChunkHashes(newChunks);
-                newDiaryManifest[file] = { fileHash: newFileHash, chunkHashes: newChunkHashes };
-
-                const oldChunkHashes = new Set(oldFileManifest ? oldFileManifest.chunkHashes : []);
-                const newChunkHashesSet = new Set(newChunkHashes);
-
-                // Find chunks to delete from this file
-                if (oldFileManifest) {
-                    for (const oldHash of oldFileManifest.chunkHashes) {
-                        if (!newChunkHashesSet.has(oldHash)) {
-                            changeset.labelsToDelete.push(parseInt(oldHash.substring(0, 15), 16));
-                        }
-                    }
-                }
-
-                // Find chunks to add from this file
-                for (let i = 0; i < newChunks.length; i++) {
-                    const newHash = newChunkHashes[i];
-                    if (!oldChunkHashes.has(newHash)) {
-                        changeset.chunksToAdd.push({
-                            text: newChunks[i],
-                            chunkHash: newHash,
-                            sourceFile: file
-                        });
-                    }
-                }
-            }
-            oldFiles.delete(file); // Mark this file as processed.
-        }
-
-        // Any files left in oldFiles have been deleted from disk.
-        for (const deletedFile of oldFiles) {
-            const deletedFileManifest = oldDiaryManifest[deletedFile];
-            if (deletedFileManifest && deletedFileManifest.chunkHashes) {
-                for (const oldHash of deletedFileManifest.chunkHashes) {
-                    changeset.labelsToDelete.push(parseInt(oldHash.substring(0, 15), 16));
+            newFileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
+            const chunks = chunkText(content);
+            for (const chunk of chunks) {
+                const chunkHash = crypto.createHash('sha256').update(chunk).digest('hex');
+                if (!currentChunkData.has(chunkHash)) {
+                    currentChunkData.set(chunkHash, { text: chunk, sourceFile: file });
                 }
             }
         }
-        
-        changeset.newManifest = newDiaryManifest;
-        return changeset;
+
+        const currentChunkHashes = new Set(currentChunkData.keys());
+
+        // 3. Compare old and new states to build the changeset
+        const chunksToAdd = [];
+        for (const currentHash of currentChunkHashes) {
+            if (!oldChunkHashToLabel.has(currentHash)) {
+                const data = currentChunkData.get(currentHash);
+                chunksToAdd.push({ ...data, chunkHash: currentHash });
+            }
+        }
+
+        const labelsToDelete = [];
+        for (const [oldHash, oldLabel] of oldChunkHashToLabel.entries()) {
+            if (!currentChunkHashes.has(oldHash)) {
+                labelsToDelete.push(oldLabel);
+            }
+        }
+
+        return {
+            diaryName,
+            chunksToAdd,
+            labelsToDelete,
+            newFileHashes
+        };
     }
 
     /**
@@ -267,20 +236,26 @@ class VectorDBManager {
 
         this.activeWorkers.add(diaryName);
         try {
+            // First, get the size of the old index to calculate the change ratio correctly.
+            const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+            const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
+            let totalOldChunks = 0;
+            try {
+                const oldChunkMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'));
+                totalOldChunks = Object.keys(oldChunkMap).length;
+            } catch (e) { /* Map doesn't exist, so count is 0 */ }
+
             console.log(`[VectorDB] Calculating changes for "${diaryName}"...`);
             const changeset = await this.calculateChanges(diaryName);
             const { chunksToAdd, labelsToDelete } = changeset;
-
-            const totalChunksInManifest = Object.values(this.manifest[diaryName] || {})
-                .reduce((acc, file) => acc + (file.chunkHashes ? file.chunkHashes.length : 0), 0);
-
+            
             const changeThreshold = 0.5; // 50% change threshold to trigger full rebuild
-            const changeRatio = totalChunksInManifest > 0
-                ? (chunksToAdd.length + labelsToDelete.length) / totalChunksInManifest
-                : 1.0;
+            const changeRatio = totalOldChunks > 0
+                ? (chunksToAdd.length + labelsToDelete.length) / totalOldChunks
+                : 1.0; // If there were 0 chunks before, any addition is a 100% change.
 
             // Decision Logic: When to do a full rebuild vs. incremental update.
-            if (!this.manifest[diaryName] || changeRatio > changeThreshold) {
+            if (totalOldChunks === 0 || changeRatio > changeThreshold) {
                 console.log(`[VectorDB] Major changes detected (${(changeRatio * 100).toFixed(1)}%). Scheduling a full rebuild for "${diaryName}".`);
                 this.runFullRebuildWorker(diaryName);
             } else if (chunksToAdd.length > 0 || labelsToDelete.length > 0) {
@@ -312,6 +287,7 @@ class VectorDBManager {
 
         worker.on('message', (message) => {
             if (message.status === 'success' && message.task === 'fullRebuild') {
+                // The worker now returns the simple fileHashes manifest
                 this.manifest[message.diaryName] = message.newManifestEntry;
                 this.saveManifest();
                 console.log(`[VectorDB] Worker successfully completed full rebuild for "${message.diaryName}".`);
@@ -397,76 +373,92 @@ class VectorDBManager {
     }
 
     /**
-     * Applies a changeset to the in-memory and on-disk index.
-     * @param {object} changeset - The changeset from calculateChanges.
+     * Applies a changeset using auto-increment IDs.
+     * @param {object} changeset The changeset from calculateChanges.
      */
     async applyChangeset(changeset) {
-        const { diaryName, chunksToAdd, labelsToDelete, newManifest } = changeset;
+        const { diaryName, chunksToAdd, labelsToDelete, newFileHashes } = changeset;
 
-        // Ensure index is loaded before modification.
-        // We need to determine dimensions to create an index if it's new.
-        let dimensions = this.indices.has(diaryName) ? this.indices.get(diaryName).getNumDimensions() : null;
-        if (!dimensions && chunksToAdd.length > 0) {
-            // Infer dimensions from the first chunk to be added.
-            const tempVector = await this.getEmbeddings([chunksToAdd[0].text]);
-            if (tempVector && tempVector.length > 0) {
-                dimensions = tempVector[0].length;
-            }
-        }
+        // 1. Ensure index is loaded
+        await this.loadIndexForSearch(diaryName);
+        let index = this.indices.get(diaryName);
+        let chunkMap = this.chunkMaps.get(diaryName);
 
-        if (!this.indices.has(diaryName)) {
-            if (dimensions) {
-                console.log(`[VectorDB] Creating new in-memory index for ${diaryName} with ${dimensions} dimensions.`);
-                const index = new HierarchicalNSW('l2', dimensions);
-                index.initIndex(0); // init empty
+        // If index doesn't exist, create it.
+        if (!index) {
+            if (chunksToAdd.length > 0) {
+                const tempVector = await this.getEmbeddings([chunksToAdd[0].text]);
+                const dimensions = tempVector[0].length;
+                index = new HierarchicalNSW('l2', dimensions);
+                index.initIndex(0);
                 this.indices.set(diaryName, index);
-                this.chunkMaps.set(diaryName, {});
+                chunkMap = {};
+                this.chunkMaps.set(diaryName, chunkMap);
             } else {
-                 console.log(`[VectorDB] No changes and no dimensions for ${diaryName}. Nothing to do.`);
-                 // If there's nothing to add or delete, and no index exists, we just ensure manifest is up-to-date.
-                 this.manifest[diaryName] = newManifest;
+                 console.log(`[VectorDB] No index and nothing to add for "${diaryName}". Skipping.`);
+                 this.manifest[diaryName] = newFileHashes;
                  await this.saveManifest();
                  return;
             }
         }
 
-        const index = this.indices.get(diaryName);
-        const chunkMap = this.chunkMaps.get(diaryName);
-
-        // 1. Delete vectors
+        // 2. Delete vectors
         if (labelsToDelete.length > 0) {
-            console.log(`[VectorDB] Deleting ${labelsToDelete.length} vectors from "${diaryName}" index.`);
-            for (const label of labelsToDelete) {
+            // --- Diagnostic Logging ---
+            // To make logs less confusing, check if deletions are from files that no longer exist.
+            try {
+                const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
+                const files = await fs.readdir(diaryPath);
+                const currentFiles = new Set(files);
+                const deletedFilesSources = new Set();
+                
+                labelsToDelete.forEach(label => {
+                    const chunkData = chunkMap[label]; // Check original chunkMap before deletion
+                    if (chunkData && !currentFiles.has(chunkData.sourceFile)) {
+                        deletedFilesSources.add(chunkData.sourceFile);
+                    }
+                });
+
+                if (deletedFilesSources.size > 0) {
+                    console.log(`[VectorDB] Note: Deleting vectors from file(s) that no longer exist: ${[...deletedFilesSources].join(', ')}`);
+                }
+            } catch (e) {
+                console.warn("[VectorDB] Could not perform diagnostic check for deleted files.", e.message);
+            }
+            // --- End Diagnostic Logging ---
+
+            console.log(`[VectorDB] Deleting ${labelsToDelete.length} vectors from "${diaryName}".`);
+            labelsToDelete.forEach(label => {
                 try {
-                    // markDelete might throw if label doesn't exist, which is fine.
                     index.markDelete(label);
                     delete chunkMap[label];
-                } catch (e) {
-                    console.warn(`[VectorDB] Label ${label} not found for deletion in ${diaryName}. Might have been already deleted.`);
-                }
-            }
+                } catch (e) { /* Ignore errors for already deleted labels */ }
+            });
         }
 
-        // 2. Add new vectors
+        // 3. Add new vectors
         if (chunksToAdd.length > 0) {
+            console.log(`[VectorDB] Adding ${chunksToAdd.length} new vectors to "${diaryName}".`);
             const texts = chunksToAdd.map(c => c.text);
             const vectors = await this.getEmbeddings(texts);
             
-            console.log(`[VectorDB] Adding ${vectors.length} new vectors to "${diaryName}" index.`);
-            if (index.getMaxElements() < index.getCurrentCount() + vectors.length) {
-                 index.resizeIndex(index.getCurrentCount() + vectors.length);
-            }
+            let maxLabel = Object.keys(chunkMap).reduce((max, label) => Math.max(max, Number(label)), -1);
             
+            index.resizeIndex(index.getMaxElements() + vectors.length);
+
             for (let i = 0; i < vectors.length; i++) {
-                const vector = vectors[i];
+                const newLabel = ++maxLabel;
                 const chunk = chunksToAdd[i];
-                const label = parseInt(chunk.chunkHash.substring(0, 15), 16);
-                index.addPoint(vector, label);
-                chunkMap[label] = { text: chunk.text, sourceFile: chunk.sourceFile };
+                index.addPoint(vectors[i], newLabel);
+                chunkMap[newLabel] = {
+                    text: chunk.text,
+                    sourceFile: chunk.sourceFile,
+                    chunkHash: chunk.chunkHash
+                };
             }
         }
-        
-        // 3. Save the updated index and map to disk
+
+        // 4. Save everything
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
         const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
@@ -474,11 +466,10 @@ class VectorDBManager {
         await index.writeIndex(indexPath);
         await fs.writeFile(mapPath, JSON.stringify(chunkMap, null, 2));
 
-        // 4. Update and save the manifest
-        this.manifest[diaryName] = newManifest;
+        this.manifest[diaryName] = newFileHashes;
         await this.saveManifest();
 
-        console.log(`[VectorDB] Incremental update for "${diaryName}" completed successfully.`);
+        console.log(`[VectorDB] Incremental update for "${diaryName}" completed.`);
     }
 
     /**
@@ -488,31 +479,44 @@ class VectorDBManager {
      * @param {number} [k=3] - The number of nearest neighbors to return.
      * @returns {Promise<object[]>} - An array of the most relevant chunk objects.
      */
-    async search(diaryName, queryVector, k = 3) {
+    async search(diaryName, queryVector, k = 3) { 
+        console.log(`[VectorDB][Search] Received search request for "${diaryName}".`);
         const isLoaded = await this.loadIndexForSearch(diaryName, queryVector.length);
         if (!isLoaded) {
+            console.error(`[VectorDB][Search] Index for "${diaryName}" could not be loaded. Returning empty result.`);
             return [];
         }
         
         const index = this.indices.get(diaryName);
         const chunkMap = this.chunkMaps.get(diaryName);
-        if (!index || !chunkMap) return [];
+        if (!index || !chunkMap) {
+            console.error(`[VectorDB][Search] Index or chunkMap for "${diaryName}" not found in memory after load. Returning empty result.`);
+            return [];
+        }
         
         try {
-            // 新增：在搜索前设置本次查询的搜索范围
-            const efSearch = 150; // (推荐范围 50-200, 必须 > k)
-            
-            // 修正：使用正确的方法名 setEf
+            const efSearch = 150;
             if (typeof index.setEf === 'function') {
                 index.setEf(efSearch);
             }
             
+            console.log(`[VectorDB][Search] Performing k-NN search in "${diaryName}" with k=${k}.`);
             const result = index.searchKnn(queryVector, k);
+            console.log(`[VectorDB][Search] Raw search result labels from HNSW:`, result.neighbors);
+
+            if (!result.neighbors || result.neighbors.length === 0) {
+                console.log(`[VectorDB][Search] k-NN search returned no neighbors.`);
+                return [];
+            }
             
-            // The labels are now chunkHash-derived integers
-            return result.neighbors.map(label => chunkMap[label]).filter(Boolean);
+            // With auto-incrementing integer IDs, the label is the key. JSON keys are strings.
+            const searchResults = result.neighbors.map(label => chunkMap[label]).filter(Boolean);
+
+            console.log(`[VectorDB][Search] Found ${searchResults.length} matching chunks in chunkMap.`);
+            return searchResults;
+
         } catch (error) {
-            console.error(`[VectorDB] Search error for ${diaryName}:`, error);
+            console.error(`[VectorDB][Search] An error occurred during k-NN search for "${diaryName}":`, error);
             return [];
         }
     }
@@ -532,6 +536,8 @@ async function getEmbeddingsInWorker(chunks, config) {
     const allVectors = [];
     // Reading from process.env here as a fallback in worker context
     const batchSize = parseInt(process.env.WhitelistEmbeddingModelList) || 5;
+    
+    console.log(`[VectorDB][Worker] 批量处理配置: batchSize=${batchSize}, 总文本块数=${chunks.length}`);
 
     for (let i = 0; i < chunks.length; i += batchSize) {
         const batch = chunks.slice(i, i + batchSize);
@@ -578,33 +584,36 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
     const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
 
     let allChunks = [];
-    let chunkMetadata = [];
-    const newManifestEntry = {};
+    const fileHashes = {}; // This will be our new, simplified manifest entry
+    const chunkMap = {};
+    let labelCounter = 0;
 
     for (const file of relevantFiles) {
         const filePath = path.join(diaryPath, file);
         const content = await fs.readFile(filePath, 'utf-8');
-        const fileHash = crypto.createHash('md5').update(content).digest('hex');
-        const chunks = chunkText(content);
-        const chunkHashes = chunks.map(chunk => crypto.createHash('sha256').update(chunk).digest('hex'));
+        fileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
         
-        newManifestEntry[file] = { fileHash, chunkHashes };
-
+        const chunks = chunkText(content);
         allChunks.push(...chunks);
-        chunks.forEach((chunk, index) => {
-            const chunkHash = chunkHashes[index];
-            // The ID for HNSW will be the chunkHash itself
-            chunkMetadata.push({
-                sourceFile: file,
+
+        chunks.forEach(chunk => {
+            const chunkHash = crypto.createHash('sha256').update(chunk).digest('hex');
+            chunkMap[labelCounter] = {
                 text: chunk,
-                chunkHash: chunkHash
-            });
+                sourceFile: file,
+                chunkHash: chunkHash // Keep hash for future diffing
+            };
+            labelCounter++;
         });
     }
 
     if (allChunks.length === 0) {
         console.log(`[VectorDB][Worker] Diary book "${diaryName}" is empty. Skipping.`);
-        return newManifestEntry;
+        // Return the simple fileHashes manifest. The map will be empty.
+        const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+        const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
+        await fs.writeFile(mapPath, JSON.stringify({}));
+        return fileHashes;
     }
 
     console.log(`[VectorDB][Worker] "${diaryName}" has ${allChunks.length} text chunks for full rebuild. Fetching embeddings...`);
@@ -619,15 +628,8 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
     const index = new HierarchicalNSW('l2', dimensions);
     index.initIndex(allChunks.length);
     
-    const chunkMap = {};
-    
-    // We now use chunkHash as the unique label in the index
     for (let i = 0; i < vectors.length; i++) {
-        const vector = vectors[i];
-        const meta = chunkMetadata[i];
-        const label = parseInt(meta.chunkHash.substring(0, 15), 16); // HNSW requires an integer label
-        index.addPoint(vector, label);
-        chunkMap[label] = { text: meta.text, sourceFile: meta.sourceFile };
+        index.addPoint(vectors[i], i); // The label is now the simple index 'i'
     }
 
     const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
@@ -635,11 +637,11 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
     const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
 
     await index.writeIndex(indexPath);
+    // Note: chunkMap keys are numbers, but JSON.stringify will convert them to strings. This is expected.
     await fs.writeFile(mapPath, JSON.stringify(chunkMap, null, 2));
 
     console.log(`[VectorDB][Worker] Index for "${diaryName}" created and saved successfully.`);
-    // Return the new manifest structure for the main thread to save.
-    return newManifestEntry;
+    return fileHashes; // Return the simple file hash manifest
 }
 
 
