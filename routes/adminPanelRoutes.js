@@ -50,19 +50,39 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             const execOptions = { windowsHide: true }; // Option to prevent window pop-up
 
             if (process.platform === 'win32') {
-                const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
-                const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
-                    const [key, value] = line.split('=');
-                    return [key.trim(), parseInt(value.trim()) * 1024];
-                }));
-                systemInfo.memory = {
-                    total: memData.TotalVisibleMemorySize || 0,
-                    free: memData.FreePhysicalMemory || 0,
-                    used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
-                };
-                const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
-                const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
-                systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
+                // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
+                try {
+                    const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
+                    const memData = JSON.parse(memInfo);
+                    systemInfo.memory = {
+                        total: (memData.TotalVisibleMemorySize || 0) * 1024,
+                        free: (memData.FreePhysicalMemory || 0) * 1024,
+                        used: ((memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)) * 1024
+                    };
+                } catch (powershellError) {
+                    // 回退到 wmic 命令
+                    const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
+                    const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
+                        const [key, value] = line.split('=');
+                        return [key.trim(), parseInt(value.trim()) * 1024];
+                    }));
+                    systemInfo.memory = {
+                        total: memData.TotalVisibleMemorySize || 0,
+                        free: memData.FreePhysicalMemory || 0,
+                        used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
+                    };
+                }
+                
+                try {
+                    const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
+                    const cpuData = JSON.parse(cpuInfo);
+                    systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
+                } catch (powershellError) {
+                    // 回退到 wmic 命令
+                    const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
+                    const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
+                    systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
+                }
             } else { // Linux/Unix
                 const { stdout: memInfo } = await execAsync('free -b', execOptions);
                 const memLine = memInfo.split('\n')[1].split(/\s+/);
