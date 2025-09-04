@@ -449,7 +449,7 @@ form { display: flex; flex-direction: column; gap: 22px; }
 .form-group:focus-within { box-shadow: 0 0 0 2px var(--highlight-text); }
 .form-group label { font-weight: 600; font-size: 1em; }
 .form-group .description { font-weight: normal; font-size: 0.88em; color: var(--secondary-text); }
-.form-group input[type="text"], .form-group input[type="number"], .form-group textarea, .form-group select {
+.form-group input[type="text"], .form-group input[type="password"], .form-group input[type="number"], .form-group textarea, .form-group select {
     width: 100%; padding: 12px 15px; border: 1px solid var(--border-color); border-radius: 6px;
     background-color: var(--input-bg); color: var(--primary-text); font-size: 0.95em; box-sizing: border-box;
 }
@@ -599,4 +599,33 @@ button[type="submit"]:hover { background-color: var(--highlight-text); filter: b
     outline: none;
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--highlight-text) 20%, transparent);
+}
+
+
+/* Server Activity Chart Styles */
+.activity-chart-container {
+    margin-top: 30px;
+    padding: 25px;
+    background-color: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+html[data-theme='dark'] .activity-chart-container {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.activity-chart-container h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.1em;
+    color: var(--primary-text);
+    font-weight: 600;
+}
+
+#activity-chart-canvas {
+    width: 100%;
+    height: 150px; /* Adjust height as needed */
+    display: block;
 }
