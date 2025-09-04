@@ -86,6 +86,11 @@ async function getImageData(imageUrl, imageBase64) {
         return null;
     }
 
+    // Handle Data URI
+    if (imageUrl.startsWith('data:image/')) {
+        return imageUrl;
+    }
+
     // Handle public https URL
     if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
         return imageUrl;

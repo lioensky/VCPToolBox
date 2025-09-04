@@ -17,7 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const memInfoText = document.getElementById('mem-info-text');
     const pm2ProcessList = document.getElementById('pm2-process-list');
     const nodeInfoList = document.getElementById('node-info-list');
+    const activityChartCanvas = document.getElementById('activity-chart-canvas'); // New canvas element
     let monitorIntervalId = null; // For dashboard auto-refresh
+    let activityDataPoints = new Array(60).fill(0); // Holds the last 60 data points for the chart
+    let lastLogCheckTime = null; // Initialize to null, will be set to the latest log timestamp on first run
 
     // Daily Notes Manager Elements
     const dailyNotesSection = document.getElementById('daily-notes-manager-section'); // The main section for daily notes
@@ -1042,6 +1045,123 @@ Description Length: ${newDescription.length}`);
         });
     });
 
+    // --- New Server Activity Chart Functions ---
+    async function updateActivityChart() {
+        if (!activityChartCanvas) return;
+
+        try {
+            const logData = await apiFetch(`${API_BASE_URL}/server-log`, {}, false);
+            const logLines = logData.content.split('\n');
+            
+            let newLogsCount = 0;
+            let latestTimeInThisBatch = null;
+
+            const regex = /\[(\d{4}\/\d{1,2}\/\d{1,2}\s\d{1,2}:\d{2}:\d{2})\]/;
+            for (const line of logLines) {
+                const match = line.match(regex);
+                if (match && match[1]) {
+                    const timestamp = new Date(match[1]);
+                    if (isNaN(timestamp.getTime())) {
+                        continue; // Skip invalid dates
+                    }
+
+                    // On the very first run, lastLogCheckTime will be null.
+                    // We just want to find the latest timestamp to set a baseline.
+                    // On subsequent runs, we count logs newer than our last known time.
+                    if (lastLogCheckTime && timestamp > lastLogCheckTime) {
+                        newLogsCount++;
+                    }
+
+                    // Track the most recent timestamp seen in this fetched log content
+                    if (!latestTimeInThisBatch || timestamp > latestTimeInThisBatch) {
+                        latestTimeInThisBatch = timestamp;
+                    }
+                }
+            }
+            
+            // Update our reference time to the latest timestamp we found in the logs.
+            // This makes the check independent of client-side clock and corrects for skew.
+            if (latestTimeInThisBatch) {
+                lastLogCheckTime = latestTimeInThisBatch;
+            }
+            
+            // Push new data and remove the oldest
+            activityDataPoints.push(newLogsCount);
+            if (activityDataPoints.length > 60) {
+                activityDataPoints.shift();
+            }
+
+        } catch (error) {
+            console.error('Failed to update activity chart data:', error);
+            // On error, just push a 0 to keep the chart moving
+            activityDataPoints.push(0);
+            if (activityDataPoints.length > 60) {
+                activityDataPoints.shift();
+            }
+        }
+    }
+
+    function drawActivityChart() {
+        if (!activityChartCanvas) return;
+        const canvas = activityChartCanvas;
+        const ctx = canvas.getContext('2d');
+        const width = canvas.offsetWidth;
+        const height = canvas.offsetHeight;
+        canvas.width = width;
+        canvas.height = height;
+
+        const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+        const lineColor = theme === 'dark' ? 'rgba(138, 180, 248, 0.8)' : 'rgba(26, 115, 232, 0.8)';
+        const fillColor = theme === 'dark' ? 'rgba(138, 180, 248, 0.15)' : 'rgba(26, 115, 232, 0.15)';
+        const gridColor = theme === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+        
+        const maxCount = Math.max(5, ...activityDataPoints); // Set a minimum max height for better visuals
+        const padding = 10;
+
+        ctx.clearRect(0, 0, width, height);
+
+        // Draw grid lines
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 0.5;
+        for (let i = 0; i < 5; i++) {
+            const y = height / 5 * i + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(width, y);
+            ctx.stroke();
+        }
+
+        // Draw the line and area fill
+        ctx.beginPath();
+        
+        const points = activityDataPoints.map((d, i) => {
+            const x = (i / (activityDataPoints.length - 1)) * (width - padding * 2) + padding;
+            const y = height - (d / maxCount) * (height - padding * 2) - padding;
+            return { x, y };
+        });
+
+        if (points.length > 0) {
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x, points[i].y);
+            }
+        }
+        
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Area fill
+        if (points.length > 1) {
+            ctx.lineTo(points[points.length - 1].x, height - padding);
+            ctx.lineTo(points[0].x, height - padding);
+            ctx.closePath();
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+        }
+    }
+    // --- End Server Activity Chart Functions ---
+
     // --- Dashboard Functions ---
     function initializeDashboard() {
         console.log('Initializing Dashboard...');
@@ -1049,7 +1169,18 @@ Description Length: ${newDescription.length}`);
             clearInterval(monitorIntervalId);
         }
         updateDashboardData(); // Initial load
-        monitorIntervalId = setInterval(updateDashboardData, 5000); // Refresh every 5 seconds
+        
+        // Initial chart population
+        updateActivityChart().then(() => {
+            drawActivityChart();
+        });
+
+        monitorIntervalId = setInterval(() => {
+            updateDashboardData();
+            updateActivityChart().then(() => {
+                 drawActivityChart();
+            });
+        }, 5000); // Refresh every 5 seconds
     }
 
     async function updateDashboardData() {
