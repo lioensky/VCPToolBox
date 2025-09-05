@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "DoubaoGen",
+  "name": "DMXDoubaoGen",
   "displayName": "Doubao 风格图片生成器",
   "version": "0.1.0",
   "description": "通过 DMXAPI 使用其提供的模型（如 seedream-3.0）生成图片。",
@@ -30,4 +30,5 @@
       }
     ]
   }
+
 }
