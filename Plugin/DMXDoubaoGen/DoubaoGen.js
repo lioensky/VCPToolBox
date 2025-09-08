@@ -48,7 +48,10 @@ function isValidDoubaoGenArgs(args) {
     } else if (args.command === 'DoubaoEditImage') {
         if (typeof args.image !== 'string' || !args.image.trim()) return false;
         if (typeof args.resolution !== 'string') return false; // Can be "adaptive" or "WxH"
-        if (args.guidance_scale !== undefined && (typeof args.guidance_scale !== 'number' || args.guidance_scale < 0 || args.guidance_scale > 10)) return false;
+        if (args.guidance_scale !== undefined) {
+            const scale = parseFloat(args.guidance_scale);
+            if (isNaN(scale) || scale < 0 || scale > 10) return false;
+        }
     
     } else {
         return false; // Unknown command
