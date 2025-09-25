@@ -9,6 +9,7 @@ const express = require('express'); // For plugin API routing
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
+const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
 
 class PluginManager {
     constructor() {
@@ -16,6 +17,7 @@ class PluginManager {
         this.staticPlaceholderValues = new Map();
         this.scheduledJobs = new Map();
         this.messagePreprocessors = new Map();
+        this.preprocessorOrder = []; // 新增：用于存储预处理器的最终加载顺序
         this.serviceModules = new Map();
         this.projectBasePath = null;
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
@@ -283,20 +285,19 @@ class PluginManager {
     }
 
     async loadPlugins() {
-        console.log('[PluginManager] Starting plugin discovery...'); // Keep
-        // 只清除本地插件，保留可能已注册的分布式插件
-        // 在实践中，启动时应该都是空的，但这样更健壮
+        console.log('[PluginManager] Starting plugin discovery...');
         const localPlugins = new Map();
         for (const [name, manifest] of this.plugins.entries()) {
             if (!manifest.isDistributed) {
                 localPlugins.set(name, manifest);
             }
         }
-        this.plugins = localPlugins; // 仅保留非分布式插件
-        
+        this.plugins = localPlugins;
         this.messagePreprocessors.clear();
         this.staticPlaceholderValues.clear();
         this.serviceModules.clear();
+
+        const discoveredPreprocessors = new Map();
 
         try {
             const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
@@ -307,131 +308,104 @@ class PluginManager {
                     try {
                         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
                         const manifest = JSON.parse(manifestContent);
-                        if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) {
-                            if (this.debugMode) console.warn(`[PluginManager] Invalid manifest in ${folder.name}: Missing fields.`);
-                            continue;
-                        }
-                        if (this.plugins.has(manifest.name)) {
-                            if (this.debugMode) console.warn(`[PluginManager] Duplicate plugin name '${manifest.name}' in ${folder.name}. Skipping.`);
-                            continue;
-                        }
+                        if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) continue;
+                        if (this.plugins.has(manifest.name)) continue;
+                        
                         manifest.basePath = pluginPath;
-
                         manifest.pluginSpecificEnvConfig = {};
                         try {
-                            await fs.access(path.join(pluginPath, 'config.env'));
                             const pluginEnvContent = await fs.readFile(path.join(pluginPath, 'config.env'), 'utf-8');
                             manifest.pluginSpecificEnvConfig = dotenv.parse(pluginEnvContent);
-                            if (this.debugMode) console.log(`[PluginManager] Loaded specific config.env for plugin: ${manifest.name}`);
                         } catch (envError) {
-                            if (envError.code !== 'ENOENT') {
-                                if (this.debugMode) console.warn(`[PluginManager] Error reading or parsing config.env for plugin ${manifest.name}:`, envError.message);
-                            }
+                            if (envError.code !== 'ENOENT') console.warn(`[PluginManager] Error reading config.env for ${manifest.name}:`, envError.message);
                         }
-                        
+
                         this.plugins.set(manifest.name, manifest);
-                        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`); // Keep important load log
-                        
-                        if (manifest.pluginType === 'messagePreprocessor') {
-                            if (manifest.entryPoint.script) {
-                                try {
-                                    const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
-                                    if (manifest.communication?.protocol === 'direct') {
-                                        const pluginModule = require(scriptPath);
-                                        const initialConfig = this._getPluginConfig(manifest);
-                                        if (pluginModule && typeof pluginModule.initialize === 'function') {
-                                            await pluginModule.initialize(initialConfig);
-                                            if (this.debugMode) console.log(`[PluginManager] Initialized messagePreprocessor: ${manifest.name}`);
-                                        }
-                                        this.messagePreprocessors.set(manifest.name, pluginModule);
-                                    } else {
-                                         if (this.debugMode) console.warn(`[PluginManager] messagePreprocessor ${manifest.name} has non-direct communication, not yet fully supported for this type.`);
-                                    }
-                                } catch (e) {
-                                    console.error(`[PluginManager] Error requiring/initializing messagePreprocessor ${manifest.name}:`, e); // Keep error
-                                }
-                            } else {
-                                if (this.debugMode) console.warn(`[PluginManager] messagePreprocessor ${manifest.name} missing entryPoint.script.`);
-                            }
-                        } else if (manifest.pluginType === 'service') {
+                        console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`);
+
+                        const isPreprocessor = manifest.pluginType === 'messagePreprocessor' || manifest.pluginType === 'hybridservice';
+                        const isService = manifest.pluginType === 'service' || manifest.pluginType === 'hybridservice';
+
+                        if (isPreprocessor || isService) {
                             if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
                                 try {
                                     const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
-                                    const serviceModule = require(scriptPath);
+                                    const module = require(scriptPath);
                                     const initialConfig = this._getPluginConfig(manifest);
-
-                                    if (serviceModule && typeof serviceModule.initialize === 'function') {
-                                        await serviceModule.initialize(initialConfig);
-                                        if (this.debugMode) console.log(`[PluginManager] Initialized service plugin: ${manifest.name}`);
+                                    if (typeof module.initialize === 'function') {
+                                        await module.initialize(initialConfig);
                                     }
-
-                                    if (serviceModule && typeof serviceModule.registerRoutes === 'function') {
-                                        this.serviceModules.set(manifest.name, { manifest, module: serviceModule });
-                                        if (this.debugMode) console.log(`[PluginManager] Loaded service module: ${manifest.name}`);
-                                    } else {
-                                        if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
+                                    if (isPreprocessor && typeof module.processMessages === 'function') {
+                                        discoveredPreprocessors.set(manifest.name, module);
+                                    }
+                                    if (isService && typeof module.registerRoutes === 'function') {
+                                        this.serviceModules.set(manifest.name, { manifest, module });
                                     }
                                 } catch (e) {
-                                    console.error(`[PluginManager] Error requiring or initializing service plugin ${manifest.name}:`, e); // Keep error
+                                    console.error(`[PluginManager] Error loading module for ${manifest.name}:`, e);
                                 }
-                            } else {
-                                if (this.debugMode) console.warn(`[PluginManager] Service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
-                            }
-                        } else if (manifest.pluginType === 'hybridservice') {
-                            if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
-                                try {
-                                    const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
-                                    const hybridModule = require(scriptPath);
-                                    const initialConfig = this._getPluginConfig(manifest);
-
-                                    // Initialize the module once
-                                    if (hybridModule && typeof hybridModule.initialize === 'function') {
-                                        await hybridModule.initialize(initialConfig);
-                                        if (this.debugMode) console.log(`[PluginManager] Initialized hybrid-service plugin: ${manifest.name}`);
-                                    }
-
-                                    // Register as a message preprocessor
-                                    if (hybridModule && typeof hybridModule.processMessages === 'function') {
-                                        this.messagePreprocessors.set(manifest.name, hybridModule);
-                                        if (this.debugMode) console.log(`[PluginManager] Loaded hybrid-service '${manifest.name}' as a message preprocessor.`);
-                                    } else {
-                                        if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} does not export a 'processMessages' function.`);
-                                    }
-
-                                    // Register as a service with routes
-                                    if (hybridModule && typeof hybridModule.registerRoutes === 'function') {
-                                        this.serviceModules.set(manifest.name, { manifest, module: hybridModule });
-                                        if (this.debugMode) console.log(`[PluginManager] Loaded hybrid-service '${manifest.name}' as a service.`);
-                                    } else {
-                                        if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} does not export a 'registerRoutes' function.`);
-                                    }
-                                } catch (e) {
-                                    console.error(`[PluginManager] Error requiring or initializing hybrid-service plugin ${manifest.name}:`, e);
-                                }
-                            } else {
-                                if (this.debugMode) console.warn(`[PluginManager] Hybrid-service plugin ${manifest.name} is missing a script path or has non-direct communication.`);
                             }
                         }
                     } catch (error) {
-                        if (error.code === 'ENOENT') {
-                            // Manifest not found, common, no need to log unless debugging
-                            if (this.debugMode) console.warn(`[PluginManager] Manifest file not found for plugin in ${folder.name}. Skipping.`);
-                        } else if (error instanceof SyntaxError) {
-                            console.warn(`[PluginManager] Invalid JSON in ${manifestPath}. Skipping ${folder.name}.`); // Keep as warning
-                        } else {
-                            console.error(`[PluginManager] Error loading plugin from ${folder.name}:`, error); // Keep error
+                        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+                            console.error(`[PluginManager] Error loading plugin from ${folder.name}:`, error);
                         }
                     }
                 }
             }
-            this.buildVCPDescription();
-            console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`); // Keep
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.error(`[PluginManager] Plugin directory ${PLUGIN_DIR} not found.`);
-            } else {
-                console.error('[PluginManager] Error reading plugin directory:', error);
+
+            // --- 新的排序和注册逻辑 ---
+            const availablePlugins = new Set(discoveredPreprocessors.keys());
+            let finalOrder = [];
+            let orderFileExists = false;
+            try {
+                await fs.access(PREPROCESSOR_ORDER_FILE);
+                orderFileExists = true;
+            } catch (error) {
+                // File does not exist, which is fine.
             }
+
+            if (orderFileExists) {
+                try {
+                    const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
+                    const savedOrder = JSON.parse(orderContent);
+                    if (Array.isArray(savedOrder)) {
+                        for (const pluginName of savedOrder) {
+                            if (availablePlugins.has(pluginName)) {
+                                finalOrder.push(pluginName);
+                                availablePlugins.delete(pluginName);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
+                }
+            }
+            
+            finalOrder.push(...Array.from(availablePlugins).sort()); // 将新发现的插件按字母顺序追加
+            
+            // 如果文件最初不存在，并且我们确定了最终顺序，则创建它
+            if (!orderFileExists && finalOrder.length > 0) {
+                try {
+                    await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(finalOrder, null, 2), 'utf-8');
+                    console.log(`[PluginManager] Initialized ${PREPROCESSOR_ORDER_FILE} with default order.`);
+                } catch (writeError) {
+                    console.error(`[PluginManager] Failed to create initial ${PREPROCESSOR_ORDER_FILE}:`, writeError);
+                }
+            }
+
+            for (const pluginName of finalOrder) {
+                this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
+            }
+            this.preprocessorOrder = finalOrder;
+            if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
+            // --- 排序逻辑结束 ---
+
+            this.buildVCPDescription();
+            console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`);
+        } catch (error) {
+            if (error.code === 'ENOENT') console.error(`[PluginManager] Plugin directory ${PLUGIN_DIR} not found.`);
+            else console.error('[PluginManager] Error reading plugin directory:', error);
         }
     }
 
@@ -957,6 +931,76 @@ class PluginManager {
             // 注销后重建描述
             this.buildVCPDescription();
         }
+        
+        // 新增：清理分布式静态占位符
+        this.clearDistributedStaticPlaceholders(serverId);
+    }
+
+    // 新增：更新分布式静态占位符
+    updateDistributedStaticPlaceholders(serverId, serverName, placeholders) {
+        if (this.debugMode) {
+            console.log(`[PluginManager] Updating static placeholders from distributed server ${serverName} (${serverId})`);
+        }
+        
+        for (const [placeholder, value] of Object.entries(placeholders)) {
+            // 为分布式占位符添加服务器来源标识
+            const distributedKey = `${placeholder}@@${serverId}`;
+            this.staticPlaceholderValues.set(placeholder, value);
+            
+            if (this.debugMode) {
+                console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${value.substring(0, 100)}${value.length > 100 ? '...' : ''}`);
+            }
+        }
+        
+        // 强制日志记录分布式静态占位符更新
+        console.log(`[PluginManager] Updated ${Object.keys(placeholders).length} static placeholders from distributed server ${serverName}.`);
+    }
+
+    // 新增：清理分布式静态占位符
+    clearDistributedStaticPlaceholders(serverId) {
+        const placeholdersToRemove = [];
+        
+        for (const [placeholder, value] of this.staticPlaceholderValues.entries()) {
+            // 查找属于该服务器的占位符（基于某种标识）
+            // 由于我们没有直接的映射关系，这里我们可以选择保守策略
+            // 仅在明确知道是分布式占位符时才删除
+            const distributedKey = `${placeholder}@@${serverId}`;
+            if (this.staticPlaceholderValues.has(distributedKey)) {
+                placeholdersToRemove.push(placeholder);
+            }
+        }
+        
+        for (const placeholder of placeholdersToRemove) {
+            this.staticPlaceholderValues.delete(placeholder);
+            if (this.debugMode) {
+                console.log(`[PluginManager] Removed distributed placeholder ${placeholder} from disconnected server ${serverId}`);
+            }
+        }
+        
+        if (placeholdersToRemove.length > 0) {
+            console.log(`[PluginManager] Cleared ${placeholdersToRemove.length} static placeholders from disconnected server ${serverId}.`);
+        }
+    }
+
+    // --- 新增方法 ---
+    async hotReloadPluginsAndOrder() {
+        console.log('[PluginManager] Hot reloading plugins and preprocessor order...');
+        // 重新加载所有插件，这将自动应用新的顺序
+        await this.loadPlugins();
+        console.log('[PluginManager] Hot reload complete.');
+        return this.getPreprocessorOrder();
+    }
+
+    getPreprocessorOrder() {
+        // 返回所有已发现、已排序的预处理器信息
+        return this.preprocessorOrder.map(name => {
+            const manifest = this.plugins.get(name);
+            return {
+                name: name,
+                displayName: manifest ? manifest.displayName : name,
+                description: manifest ? manifest.description : 'N/A'
+            };
+        });
     }
 }
 

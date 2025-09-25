@@ -215,6 +215,8 @@ def process_bilibili_url(video_input: str) -> str:
                 lines = [f"[{item.get('from', 0):.2f}] {item.get('content', '')}" for item in subtitle_data['body'] if isinstance(item, dict)]
                 processed_text = "\n".join(lines).strip()
                 logging.info(f"Successfully processed subtitle text for BVID {bvid}. Length: {len(processed_text)}")
+                if processed_text:
+                    processed_text += "\n\n——以上内容来自VCP-STT语音识别转文本，可能存在谐音错别字内容，请自行甄别"
                 return processed_text
             else:
                 logging.warning(f"Subtitle JSON for BVID {bvid} has unexpected structure or is missing 'body'. Raw: {subtitle_json_string[:100]}...")

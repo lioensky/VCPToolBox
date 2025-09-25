@@ -43,7 +43,7 @@ const {
 })();
 
 const API_BASE_URL = 'https://generativelanguage.googleapis.com';
-const API_ENDPOINT_GENERATE = '/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent';
+const API_ENDPOINT_GENERATE = '/v1beta/models/gemini-2.5-flash-image-preview:generateContent'; // 使用 flash 预览模型
 
 function getRandomApiKey() {
     if (GEMINI_API_KEYS.length === 0) {
@@ -121,6 +121,7 @@ async function getImageDataFromUrl(url) {
 
 /**
  * 调用 Gemini API 并返回所有响应部分
+ * @param {string} endpoint - API 端点
  * @param {object} payload - 发送给 API 的请求体
  * @returns {Promise<Array<object>>} - 包含 text 和 inline_data 的 parts 数组
  */
@@ -234,29 +235,60 @@ async function editImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
-    if (!args.image_url || typeof args.image_url !== 'string') {
-        throw new Error("参数错误: 'image_url' 是必需的字符串。");
+
+    let imageUrls = [];
+
+    // Unico的修改点1: 兼容旧的 'image_url' 单个字符串参数
+    if (typeof args.image_url === 'string' && args.image_url.length > 0) {
+        imageUrls.push(args.image_url);
     }
 
-    const { buffer: imageBuffer, mimeType } = await getImageDataFromUrl(args.image_url);
-    const imageBase64 = imageBuffer.toString('base64');
+    // Unico的修改点2: 检查并收集多个独立的 'image_url_N' 参数
+    // 允许最多3个额外的图片URL，因为Gemini模型最佳处理是3张图
+    for (let i = 1; i <= 3; i++) {
+        const paramName = `image_url_${i}`;
+        if (typeof args[paramName] === 'string' && args[paramName].length > 0) {
+            imageUrls.push(args[paramName]);
+        }
+    }
 
-    // 严格按照官方SDK示例，构建包含完整对话历史的 contents 数组
+    if (imageUrls.length === 0) {
+        throw new Error("参数错误: 至少需要提供一个图片 URL (通过 'image_url' 参数，或 'image_url_1'/'image_url_2'/'image_url_3' 等参数)。");
+    }
+
+    // 后续处理逻辑与之前保持一致
+    const imageParts = [];
+    for (const url of imageUrls) {
+        try {
+            const { buffer: imgBuffer, mimeType: imgMimeType } = await getImageDataFromUrl(url);
+            imageParts.push({
+                "inlineData": { "mimeType": imgMimeType, "data": imgBuffer.toString('base64') }
+            });
+        } catch (error) {
+            console.error(`[GeminiImageGen] 警告: 无法处理图片 URL ${url}，跳过。错误: ${error.message}`);
+            // 如果某个图片处理失败，选择跳过它，而不是立即报错中断整个任务。
+            // 您可以根据需要调整此行为。
+        }
+    }
+
+    if (imageParts.length === 0) {
+        throw new Error("参数错误: 提供的所有图片 URL 都无法处理，无法进行编辑。");
+    }
+
+    // 构建 payload，将所有图片部分放在文本提示词之前，符合Gemini文档示例
     const payload = {
         "contents": [
             {
                 "role": "user",
                 "parts": [
-                    { "text": args.prompt },
-                    { "inlineData": { "mimeType": mimeType, "data": imageBase64 } }
+                    ...imageParts, // 展开所有处理好的图片部分
+                    { "text": args.prompt } // 最后是文本提示词
                 ]
             }
         ],
         "generationConfig": { "responseModalities": ["TEXT", "IMAGE"] }
     };
 
-    // 注意：图像编辑可能使用与生成不同的端点或需要不同的结构。
-    // 这里我们暂时复用 generateContent 端点，如果不行，则需要专门的编辑端点。
     const parts = await callGeminiApi(API_ENDPOINT_GENERATE, payload);
     return await processApiResponseAndSaveImage(parts, args);
 }

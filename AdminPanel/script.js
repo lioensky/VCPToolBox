@@ -62,7 +62,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Sidebar Search
     const sidebarSearchInput = document.getElementById('sidebar-search');
 
-
     const API_BASE_URL = '/admin_api'; // Corrected API base path
     const MONITOR_API_BASE_URL = '/admin_api/system-monitor'; // New API base for monitoring, corrected path
 
@@ -968,7 +967,11 @@ Description Length: ${newDescription.length}`);
                if (iframe) {
                    iframe.src = iframe.src; // Force reload
                }
-           }
+           } else if (sectionIdToActivate === 'preprocessor-order-manager-section') {
+                initializePreprocessorOrderManager();
+          } else if (sectionIdToActivate === 'semantic-groups-editor-section') {
+               initializeSemanticGroupsEditor();
+          }
         } else {
             console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
         }
@@ -1935,4 +1938,355 @@ Description Length: ${newDescription.length}`);
     }
     // --- End Server Log Viewer Functions ---
 
-});
+    // --- Preprocessor Order Manager Functions ---
+    async function initializePreprocessorOrderManager() {
+        const preprocessorListUl = document.getElementById('preprocessor-list');
+        const preprocessorOrderStatusSpan = document.getElementById('preprocessor-order-status');
+
+        if (!preprocessorListUl || !preprocessorOrderStatusSpan) {
+            console.error('Preprocessor manager elements not found in the DOM.');
+            return;
+        }
+        
+        console.log('Initializing Preprocessor Order Manager...');
+        preprocessorListUl.innerHTML = '<li>Loading...</li>';
+        preprocessorOrderStatusSpan.textContent = '';
+        try {
+            const data = await apiFetch(`${API_BASE_URL}/preprocessors/order`);
+            renderPreprocessorList(data.order, preprocessorListUl);
+        } catch (error) {
+            preprocessorListUl.innerHTML = `<li class="error-message">Failed to load preprocessor order: ${error.message}</li>`;
+            showMessage(`Failed to load preprocessor order: ${error.message}`, 'error');
+        }
+    }
+
+    function renderPreprocessorList(order, preprocessorListUl) {
+        preprocessorListUl.innerHTML = '';
+        if (order && order.length > 0) {
+            order.forEach(plugin => {
+                const li = document.createElement('li');
+                li.draggable = true;
+                li.dataset.pluginName = plugin.name;
+
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'plugin-info';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'plugin-name';
+                nameSpan.textContent = plugin.displayName;
+                infoDiv.appendChild(nameSpan);
+                
+                const descSpan = document.createElement('span');
+                descSpan.className = 'plugin-description';
+                descSpan.textContent = plugin.description;
+                infoDiv.appendChild(descSpan);
+
+                li.appendChild(infoDiv);
+
+                // Drag and Drop Event Listeners
+                li.addEventListener('dragstart', () => {
+                    setTimeout(() => li.classList.add('dragging'), 0);
+                });
+                li.addEventListener('dragend', () => {
+                    li.classList.remove('dragging');
+                });
+
+                preprocessorListUl.appendChild(li);
+            });
+        } else {
+            preprocessorListUl.innerHTML = '<li>No message preprocessor plugins found.</li>';
+        }
+    }
+    
+    // Moved event listeners to be attached once and checked for existence of elements
+    const preprocessorListContainer = document.getElementById('preprocessor-list');
+    if (preprocessorListContainer) {
+        preprocessorListContainer.addEventListener('dragover', e => {
+            e.preventDefault();
+            const afterElement = getDragAfterElement(preprocessorListContainer, e.clientY);
+            const dragging = document.querySelector('.dragging');
+            if (dragging) {
+                if (afterElement == null) {
+                    preprocessorListContainer.appendChild(dragging);
+                } else {
+                    preprocessorListContainer.insertBefore(dragging, afterElement);
+                }
+            }
+        });
+    }
+
+    function getDragAfterElement(container, y) {
+        const draggableElements = [...container.querySelectorAll('li:not(.dragging)')];
+        return draggableElements.reduce((closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+                return { offset: offset, element: child };
+            } else {
+                return closest;
+            }
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
+    }
+    
+    const savePreprocessorOrderButton = document.getElementById('save-preprocessor-order-button');
+    if (savePreprocessorOrderButton) {
+        savePreprocessorOrderButton.addEventListener('click', async () => {
+            const preprocessorListUl = document.getElementById('preprocessor-list');
+            const preprocessorOrderStatusSpan = document.getElementById('preprocessor-order-status');
+            if (!preprocessorListUl || !preprocessorOrderStatusSpan) return;
+
+            const newOrder = [...preprocessorListUl.querySelectorAll('li')].map(li => li.dataset.pluginName);
+            preprocessorOrderStatusSpan.textContent = 'Saving...';
+            preprocessorOrderStatusSpan.className = 'status-message info';
+
+            try {
+                const response = await apiFetch(`${API_BASE_URL}/preprocessors/order`, {
+                    method: 'POST',
+                    body: JSON.stringify({ order: newOrder })
+                });
+                showMessage(response.message, 'success');
+                
+                // Reload the latest order from server to ensure UI reflects the saved state
+                const latestData = await apiFetch(`${API_BASE_URL}/preprocessors/order`);
+                preprocessorOrderStatusSpan.textContent = 'Order saved and reloaded!';
+                preprocessorOrderStatusSpan.className = 'status-message success';
+                renderPreprocessorList(latestData.order, preprocessorListUl);
+            } catch (error) {
+                preprocessorOrderStatusSpan.textContent = `Error: ${error.message}`;
+                preprocessorOrderStatusSpan.className = 'status-message error';
+                // showMessage is handled by apiFetch
+            }
+        });
+    }
+
+
+    // --- Semantic Groups Editor Functions ---
+    let semanticGroupsData = {}; // To hold the current state of groups data
+
+    async function initializeSemanticGroupsEditor() {
+        console.log('Initializing Semantic Groups Editor...');
+        const container = document.getElementById('semantic-groups-container');
+        const statusSpan = document.getElementById('semantic-groups-status');
+        if (!container || !statusSpan) return;
+
+        container.innerHTML = '<p>正在加载语义组...</p>';
+        statusSpan.textContent = '';
+        try {
+            semanticGroupsData = await apiFetch(`${API_BASE_URL}/semantic-groups`);
+            renderSemanticGroups(semanticGroupsData, container);
+        } catch (error) {
+            container.innerHTML = `<p class="error-message">加载语义组失败: ${error.message}</p>`;
+        }
+    }
+
+    function renderSemanticGroups(data, container) {
+        container.innerHTML = '';
+        const groups = data.groups || {};
+        if (Object.keys(groups).length === 0) {
+            container.innerHTML = '<p>没有找到任何语义组。请点击“添加新组”来创建一个。</p>';
+            return;
+        }
+
+        for (const groupName in groups) {
+            const groupData = groups[groupName];
+            const groupElement = createGroupElement(groupName, groupData);
+            container.appendChild(groupElement);
+        }
+    }
+
+    function createGroupElement(groupName, groupData) {
+        const details = document.createElement('details');
+        details.className = 'group-details';
+        details.open = true;
+        details.dataset.groupName = groupName;
+
+        const summary = document.createElement('summary');
+        summary.className = 'group-summary';
+        
+        const groupNameSpan = document.createElement('span');
+        groupNameSpan.className = 'group-name-display';
+        groupNameSpan.textContent = groupName;
+        summary.appendChild(groupNameSpan);
+
+        const deleteGroupBtn = document.createElement('button');
+        deleteGroupBtn.textContent = '删除该组';
+        deleteGroupBtn.className = 'delete-group-btn';
+        deleteGroupBtn.onclick = (e) => {
+            e.preventDefault();
+            if (confirm(`确定要删除语义组 "${groupName}" 吗？`)) {
+                details.remove();
+                // The actual deletion from data happens on save
+            }
+        };
+        summary.appendChild(deleteGroupBtn);
+        details.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'group-content';
+
+        // Weight editor
+        const weightGroup = document.createElement('div');
+        weightGroup.className = 'form-group';
+        const weightLabel = document.createElement('label');
+        weightLabel.textContent = '权重 (Weight):';
+        const weightInput = document.createElement('input');
+        weightInput.type = 'number';
+        weightInput.step = '0.1';
+        weightInput.className = 'group-weight-input';
+        weightInput.value = groupData.weight || 1.0;
+        weightGroup.appendChild(weightLabel);
+        weightGroup.appendChild(weightInput);
+        content.appendChild(weightGroup);
+
+        // Words editor
+        const wordsGroup = document.createElement('div');
+        wordsGroup.className = 'form-group';
+        const wordsLabel = document.createElement('label');
+        wordsLabel.textContent = '关键词 (Words):';
+        const wordsContainer = document.createElement('div');
+        wordsContainer.className = 'words-container';
+        
+        const allWords = [...(groupData.words || []), ...(groupData.auto_learned || [])];
+        allWords.forEach(word => {
+            const wordTag = createWordTag(word, (groupData.auto_learned || []).includes(word));
+            wordsContainer.appendChild(wordTag);
+        });
+
+        const addWordInput = document.createElement('input');
+        addWordInput.type = 'text';
+        addWordInput.placeholder = '添加新关键词...';
+        addWordInput.className = 'add-word-input';
+        addWordInput.onkeydown = (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                const newWord = addWordInput.value.trim();
+                if (newWord && !allWords.includes(newWord)) {
+                    const newWordTag = createWordTag(newWord, false);
+                    wordsContainer.insertBefore(newWordTag, addWordInput);
+                    addWordInput.value = '';
+                    allWords.push(newWord); // Update local list to prevent duplicates in same session
+                }
+            }
+        };
+        wordsContainer.appendChild(addWordInput);
+        wordsGroup.appendChild(wordsLabel);
+        wordsGroup.appendChild(wordsContainer);
+        content.appendChild(wordsGroup);
+
+        details.appendChild(content);
+        return details;
+    }
+
+    function createWordTag(word, isAutoLearned) {
+        const tag = document.createElement('span');
+        tag.className = 'word-tag';
+        tag.textContent = word;
+        tag.dataset.word = word;
+        if (isAutoLearned) {
+            tag.classList.add('auto-learned');
+            tag.title = '此词由 AI 自动学习';
+        }
+
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = '×';
+        removeBtn.className = 'remove-word-btn';
+        removeBtn.onclick = () => tag.remove();
+        tag.appendChild(removeBtn);
+        return tag;
+    }
+
+    async function saveSemanticGroups() {
+        const container = document.getElementById('semantic-groups-container');
+        const statusSpan = document.getElementById('semantic-groups-status');
+        if (!container || !statusSpan) return;
+
+        const newGroups = {};
+        const groupElements = container.querySelectorAll('.group-details');
+
+        groupElements.forEach(el => {
+            const groupName = el.dataset.groupName;
+            const weight = parseFloat(el.querySelector('.group-weight-input').value) || 1.0;
+            const words = [];
+            const auto_learned = [];
+
+            el.querySelectorAll('.word-tag').forEach(tag => {
+                if (tag.classList.contains('auto-learned')) {
+                    auto_learned.push(tag.dataset.word);
+                } else {
+                    words.push(tag.dataset.word);
+                }
+            });
+            
+            // Find original data to preserve stats
+            const originalGroup = semanticGroupsData.groups[groupName] || {};
+
+            newGroups[groupName] = {
+                words,
+                auto_learned,
+                weight,
+                vector: null, // Vector will be recalculated on the server
+                last_activated: originalGroup.last_activated || null,
+                activation_count: originalGroup.activation_count || 0,
+                vector_id: originalGroup.vector_id || null // 关键修复：保留 vector_id
+            };
+        });
+
+        const dataToSave = {
+            config: semanticGroupsData.config || {},
+            groups: newGroups
+        };
+
+        statusSpan.textContent = '正在保存...';
+        statusSpan.className = 'status-message info';
+        try {
+            const response = await apiFetch(`${API_BASE_URL}/semantic-groups`, {
+                method: 'POST',
+                body: JSON.stringify(dataToSave)
+            });
+            showMessage(response.message || '语义组已成功保存!', 'success');
+            statusSpan.textContent = '保存成功!';
+            statusSpan.className = 'status-message success';
+            // Reload to get fresh data from server (e.g., recalculated vectors info)
+            initializeSemanticGroupsEditor();
+        } catch (error) {
+            statusSpan.textContent = `保存失败: ${error.message}`;
+            statusSpan.className = 'status-message error';
+        }
+    }
+
+    function addNewSemanticGroup() {
+        const groupName = prompt('请输入新语义组的名称:');
+        if (!groupName || !groupName.trim()) return;
+
+        const normalizedGroupName = groupName.trim();
+        const container = document.getElementById('semantic-groups-container');
+        if (!container) return;
+
+        if (container.querySelector(`[data-group-name="${normalizedGroupName}"]`)) {
+            showMessage(`语义组 "${normalizedGroupName}" 已存在!`, 'error');
+            return;
+        }
+        
+        // If it's the first group, clear the placeholder text
+        if (!container.querySelector('.group-details')) {
+            container.innerHTML = '';
+        }
+
+        const newGroupData = { words: [], auto_learned: [], weight: 1.0 };
+        const newGroupElement = createGroupElement(normalizedGroupName, newGroupData);
+        container.appendChild(newGroupElement);
+        newGroupElement.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // Event Listeners for Semantic Groups Editor
+    const saveSemanticGroupsButton = document.getElementById('save-semantic-groups-button');
+    const addSemanticGroupButton = document.getElementById('add-semantic-group-button');
+
+    if (saveSemanticGroupsButton) {
+        saveSemanticGroupsButton.addEventListener('click', saveSemanticGroups);
+    }
+    if (addSemanticGroupButton) {
+        addSemanticGroupButton.addEventListener('click', addNewSemanticGroup);
+    }
+    // --- End Semantic Groups Editor Functions ---
+    });

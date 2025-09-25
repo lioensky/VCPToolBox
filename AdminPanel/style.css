@@ -629,3 +629,118 @@ html[data-theme='dark'] .activity-chart-container {
     height: 150px; /* Adjust height as needed */
     display: block;
 }
+
+/* --- Semantic Groups Editor Styles --- */
+.semantic-groups-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 25px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#semantic-groups-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.group-details {
+    background-color: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.group-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    cursor: pointer;
+    background-color: var(--tertiary-bg);
+    font-weight: 600;
+    font-size: 1.1em;
+}
+
+.group-summary:hover {
+    background-color: var(--accent-bg);
+}
+
+.group-name-display {
+    color: var(--highlight-text);
+}
+
+.delete-group-btn {
+    background-color: var(--danger-color);
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    font-size: 0.8em;
+    border-radius: 5px;
+}
+html[data-theme='light'] .delete-group-btn {
+    color: white;
+}
+.delete-group-btn:hover {
+    background-color: var(--danger-hover-bg);
+}
+
+.group-content {
+    padding: 20px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.words-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px;
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.word-tag {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--highlight-text);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 15px;
+    font-size: 0.9em;
+    font-weight: 500;
+}
+
+.word-tag.auto-learned {
+    background-color: var(--memory-color); /* A different color for AI learned tags */
+}
+
+.remove-word-btn {
+    margin-left: 8px;
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    font-size: 1.2em;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.add-word-input {
+    flex-grow: 1;
+    min-width: 150px;
+    border: none;
+    background: transparent;
+    color: var(--primary-text);
+    padding: 5px;
+    font-size: 0.9em;
+}
+
+.add-word-input:focus {
+    outline: none;
+}

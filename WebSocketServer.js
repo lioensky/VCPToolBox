@@ -335,6 +335,20 @@ function handleDistributedServerMessage(serverId, message) {
                console.log(`[IP Tracker] Received IP report from Distributed Server '${ipData.serverName}': Local IPs: [${ipData.localIPs.join(', ')}], Public IP: [${ipData.publicIP || 'N/A'}]`);
            }
            break;
+        case 'update_static_placeholders':
+            // 新增：处理分布式服务器发送的静态占位符更新
+            if (message.data && message.data.placeholders) {
+                const serverName = message.data.serverName || serverId;
+                const placeholders = message.data.placeholders;
+                
+                if (serverConfig.debugMode) {
+                    console.log(`[WebSocketServer] Received static placeholder update from ${serverName} with ${Object.keys(placeholders).length} placeholders.`);
+                }
+                
+                // 将分布式服务器的静态占位符更新推送到主服务器的插件管理器
+                pluginManager.updateDistributedStaticPlaceholders(serverId, serverName, placeholders);
+            }
+            break;
         case 'tool_result':
             const pending = pendingToolRequests.get(message.data.requestId);
             if (pending) {

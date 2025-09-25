@@ -1,0 +1,25 @@
+{
+  "config": {
+    "min_cooccurrence_to_learn": 2,
+    "min_cluster_size_for_new_group": 3,
+    "auto_save_on_learn": true
+  },
+  "groups": {
+    "编程学习": {
+      "words": ["Python", "算法", "数据结构", "编程", "代码", "debug", "函数", "JavaScript", "Node.js"],
+      "auto_learned": [],
+      "weight": 1.0,
+      "vector_id": null,
+      "last_activated": null,
+      "activation_count": 0
+    },
+    "克莱恩·莫雷蒂": {
+      "words": ["愚者", "克莱恩", "世界", "格尔曼", "道恩", "侦探", "塔罗会", "源堡", "灰雾"],
+      "auto_learned": [],
+      "weight": 1.2,
+      "vector_id": null,
+      "last_activated": null,
+      "activation_count": 0
+    }
+  }
+}
