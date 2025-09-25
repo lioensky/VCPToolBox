@@ -3,112 +3,20 @@ const express = require('express');
 const dotenv = require('dotenv');
 const schedule = require('node-schedule');
 const lunarCalendar = require('chinese-lunar-calendar');
-const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
 const { Writable } = require('stream');
+const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 
-const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog'); // Moved DEBUG_LOG_DIR definition higher
-let currentServerLogPath = '';
-let serverLogWriteStream = null;
-
-// 确保 DebugLog 目录存在 (同步版本，因为在启动时需要)
-function ensureDebugLogDirSync() {
-    if (!fsSync.existsSync(DEBUG_LOG_DIR)) {
-        try {
-            fsSync.mkdirSync(DEBUG_LOG_DIR, { recursive: true });
-            // Use originalConsoleLog if available, otherwise console.log (it might not be overridden yet)
-            (typeof originalConsoleLog === 'function' ? originalConsoleLog : console.log)(`[ServerSetup] DebugLog 目录已创建: ${DEBUG_LOG_DIR}`);
-        } catch (error) {
-            (typeof originalConsoleError === 'function' ? originalConsoleError : console.error)(`[ServerSetup] 创建 DebugLog 目录失败: ${DEBUG_LOG_DIR}`, error);
-        }
-    }
-}
-
-// 服务器启动时调用
-function initializeServerLogger() {
-    ensureDebugLogDirSync(); // 确保目录存在
-    const now = new Date();
-    const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}_${now.getMilliseconds().toString().padStart(3, '0')}`;
-    currentServerLogPath = path.join(DEBUG_LOG_DIR, `ServerLog-${timestamp}.txt`);
-    
-    try {
-        fsSync.writeFileSync(currentServerLogPath, `[${new Date().toLocaleString()}] Server log started.\n`, 'utf-8');
-        serverLogWriteStream = fsSync.createWriteStream(currentServerLogPath, { flags: 'a' });
-        (typeof originalConsoleLog === 'function' ? originalConsoleLog : console.log)(`[ServerSetup] 服务器日志将记录到: ${currentServerLogPath}`);
-    } catch (error) {
-        (typeof originalConsoleError === 'function' ? originalConsoleError : console.error)(`[ServerSetup] 初始化服务器日志文件失败: ${currentServerLogPath}`, error);
-        serverLogWriteStream = null;
-    }
-}
-
-// 保存原始 console 方法
-const originalConsoleLog = console.log;
-const originalConsoleError = console.error;
-const originalConsoleWarn = console.warn;
-const originalConsoleInfo = console.info;
-
-// 在服务器启动的最开始就初始化日志记录器
-initializeServerLogger(); // Call this before console methods are overridden if they log during init
-
-
-function formatLogMessage(level, args) {
-    const timestamp = new Date().toLocaleString();
-    // Handle potential circular structures in objects for JSON.stringify
-    const safeStringify = (obj) => {
-        const cache = new Set();
-        return JSON.stringify(obj, (key, value) => {
-            if (typeof value === 'object' && value !== null) {
-                if (cache.has(value)) {
-                    return '[Circular]';
-                }
-                cache.add(value);
-            }
-            return value;
-        }, 2);
-    };
-    const message = args.map(arg => (typeof arg === 'object' ? safeStringify(arg) : String(arg))).join(' ');
-    return `[${timestamp}] [${level.toUpperCase()}] ${message}\n`;
-}
-
-function writeToLogFile(formattedMessage) {
-    if (serverLogWriteStream) {
-        serverLogWriteStream.write(formattedMessage, (err) => {
-            if (err) {
-                originalConsoleError('[Logger] 写入日志文件失败:', err);
-            }
-        });
-    }
-}
-
-console.log = (...args) => {
-    originalConsoleLog.apply(console, args);
-    const formattedMessage = formatLogMessage('log', args);
-    writeToLogFile(formattedMessage);
-};
-
-console.error = (...args) => {
-    originalConsoleError.apply(console, args);
-    const formattedMessage = formatLogMessage('error', args);
-    writeToLogFile(formattedMessage);
-};
-
-console.warn = (...args) => {
-    originalConsoleWarn.apply(console, args);
-    const formattedMessage = formatLogMessage('warn', args);
-    writeToLogFile(formattedMessage);
-};
-
-console.info = (...args) => {
-    originalConsoleInfo.apply(console, args);
-    const formattedMessage = formatLogMessage('info', args);
-    writeToLogFile(formattedMessage);
-};
-
+// 初始化日志记录器
+const logger = require('./modules/logger.js');
+logger.initializeServerLogger();
+logger.overrideConsole();
 
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
+const messageProcessor = require('./modules/messageProcessor.js');
 const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
@@ -118,7 +26,24 @@ const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信�
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
+const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
+
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
+
+// 新增：定时清理 activeRequests 防止内存泄漏
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, context] of activeRequests.entries()) {
+        // 30分钟超时
+        if (now - (context.timestamp || 0) > 30 * 60 * 1000) {
+            console.log(`[Request Cleanup] Aborting and removing timed-out request: ${id}`);
+            if (context.abortController) {
+                context.abortController.abort();
+            }
+            activeRequests.delete(id);
+        }
+    }
+}, 60 * 1000); // 每分钟检查一次
 
 dotenv.config({ path: 'config.env' });
 
@@ -134,27 +59,21 @@ const modelRedirectHandler = new ModelRedirectHandler();
 
 // ensureDebugLogDir is now ensureDebugLogDirSync and called by initializeServerLogger
 // writeDebugLog remains for specific debug purposes, it uses fs.promises.
-async function ensureDebugLogDirAsync() { // Renamed to avoid conflict, used by writeDebugLog
+async function writeDebugLog(filenamePrefix, data) {
     if (DEBUG_MODE) {
+        const DEBUG_LOG_DIR = path.join(__dirname, 'DebugLog');
         try {
             await fs.mkdir(DEBUG_LOG_DIR, { recursive: true });
         } catch (error) {
-            // console.error is now overridden, it will log to file too.
             console.error(`创建 DebugLog 目录失败 (async): ${DEBUG_LOG_DIR}`, error);
         }
-    }
-}
-
-async function writeDebugLog(filenamePrefix, data) {
-    if (DEBUG_MODE) {
-        await ensureDebugLogDirAsync(); // Use the async version here
         const now = new Date();
         const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}_${now.getMilliseconds().toString().padStart(3, '0')}`;
         const filename = `${filenamePrefix}-${timestamp}.txt`;
         const filePath = path.join(DEBUG_LOG_DIR, filename);
         try {
             await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-            console.log(`[DebugLog] 已记录日志: ${filename}`); // This console.log will also go to the main server log
+            console.log(`[DebugLog] 已记录日志: ${filename}`);
         } catch (error) {
             console.error(`写入调试日志失败: ${filePath}`, error);
         }
@@ -230,9 +149,10 @@ const cachedEmojiLists = new Map();
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
-    const isAdminPath = req.path.startsWith('/AdminPanel') || req.path.startsWith('/admin_api');
+    // This middleware now ONLY protects the API endpoint. Static files are served before this.
+    const isAdminApiPath = req.path.startsWith('/admin_api');
 
-    if (isAdminPath) {
+    if (isAdminApiPath) {
         // Check if admin credentials are configured
         if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
             console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
@@ -263,10 +183,10 @@ const adminAuth = (req, res, next) => {
     // Not an admin path, proceed
     return next();
 };
-app.use(adminAuth); // Apply admin authentication globally (it will only act on /AdminPanel and /admin_api paths)
-
-// Serve Admin Panel static files (will only be reached if adminAuth passes for /AdminPanel paths)
+// Serve Admin Panel static files FIRST, before any authentication.
 app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+
+app.use(adminAuth); // Apply admin authentication to subsequent routes, primarily /admin_api.
 
 
 // Image server logic is now handled by the ImageServer plugin.
@@ -305,330 +225,6 @@ app.use((req, res, next) => {
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
 
-async function replaceAgentVariables(text, model, role) {
-    if (text == null) return '';
-    let processedText = String(text);
-
-    // This function specifically handles agent placeholders, which should only be in system messages.
-    if (role !== 'system') {
-        return processedText;
-    }
-
-    const agentConfigs = {};
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Agent')) {
-            const agentName = envKey.substring(5);
-            if (agentName) {
-                agentConfigs[agentName] = process.env[envKey];
-            }
-        }
-    }
-
-    // A single pass should be enough if we resolve them recursively, but a loop handles multiple different agents.
-    for (const agentName in agentConfigs) {
-        const placeholder = `{{${agentName}}}`;
-        if (processedText.includes(placeholder)) {
-            const agentFileName = agentConfigs[agentName];
-            const agentFilePath = path.join(AGENT_DIR, agentFileName);
-            try {
-                let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
-                // Recursively resolve agent placeholders within the loaded agent file.
-                // This handles nested agents like {{AgentA}} containing {{AgentB}}.
-                let resolvedAgentContent = await replaceAgentVariables(agentFileContent, model, role);
-                processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
-            } catch (error) {
-                let errorMsg;
-                if (error.code === 'ENOENT') {
-                    errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
-                    console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
-                } else {
-                    errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
-                    console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
-                }
-                processedText = processedText.replaceAll(placeholder, errorMsg);
-            }
-        }
-    }
-    return processedText;
-}
-
-
-async function replaceOtherVariables(text, model, role) {
-    if (text == null) return '';
-    let processedText = String(text);
-
-    // 仅在 system role 中执行大多数占位符替换
-    if (role === 'system') {
-        // 新增 Tar/Var 变量处理逻辑 (支持 .txt 文件)
-        for (const envKey in process.env) {
-            if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
-                const placeholder = `{{${envKey}}}`;
-                if (processedText.includes(placeholder)) {
-                    const value = process.env[envKey];
-                    if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
-                        // 值是 .txt 文件，从 TVStxt 目录读取
-                        const txtFilePath = path.join(TVS_DIR, value);
-                        try {
-                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
-                            // 递归解析文件内容中的变量
-                            const resolvedContent = await replaceOtherVariables(fileContent, model, role);
-                            processedText = processedText.replaceAll(placeholder, resolvedContent);
-                        } catch (error) {
-                            let errorMsg;
-                            if (error.code === 'ENOENT') {
-                                errorMsg = `[变量 ${envKey} 的文件 (${value}) 未找到]`;
-                                console.warn(`[变量加载] 文件未找到: ${txtFilePath} (占位符: ${placeholder})`);
-                            } else {
-                                errorMsg = `[处理变量 ${envKey} 的文件 (${value}) 时出错]`;
-                                console.error(`[变量加载] 读取文件失败 ${txtFilePath} (占位符: ${placeholder}):`, error.message);
-                            }
-                            processedText = processedText.replaceAll(placeholder, errorMsg);
-                        }
-                    } else {
-                        // 值是直接的字符串
-                        processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
-                    }
-                }
-            }
-        }
-
-        // START: New SarModelX/SarPromptX logic
-        let sarPromptToInject = null;
-
-        // Create a map from a model name to its specific prompt.
-        const modelToPromptMap = new Map();
-        for (const envKey in process.env) {
-            if (/^SarModel\d+$/.test(envKey)) {
-                const index = envKey.substring(8);
-                const promptKey = `SarPrompt${index}`;
-                let promptValue = process.env[promptKey];
-                const models = process.env[envKey];
-
-                if (promptValue && models) {
-                    if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
-                        const txtFilePath = path.join(TVS_DIR, promptValue);
-                        try {
-                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
-                            // 递归解析文件内容中的变量, 依赖用户配置来避免无限递归
-                            promptValue = await replaceOtherVariables(fileContent, model, role);
-                        } catch (error) {
-                            let errorMsg;
-                            if (error.code === 'ENOENT') {
-                                errorMsg = `[SarPrompt 文件 (${promptValue}) 未找到]`;
-                                console.warn(`[Sar加载] 文件未找到: ${txtFilePath}`);
-                            } else {
-                                errorMsg = `[处理 SarPrompt 文件 (${promptValue}) 时出错]`;
-                                console.error(`[Sar加载] 读取文件失败 ${txtFilePath}:`, error.message);
-                            }
-                            promptValue = errorMsg;
-                        }
-                    }
-                    const modelList = models.split(',').map(m => m.trim()).filter(m => m);
-                    for (const m of modelList) {
-                        modelToPromptMap.set(m, promptValue);
-                    }
-                }
-            }
-        }
-
-        // Check if the current request's model has a specific prompt.
-        if (model && modelToPromptMap.has(model)) {
-            sarPromptToInject = modelToPromptMap.get(model);
-        }
-
-        // Replace all {{Sar...}} placeholders.
-        const sarPlaceholderRegex = /\{\{Sar[a-zA-Z0-9_]+\}\}/g;
-        if (sarPromptToInject !== null) {
-            // If a specific prompt is found, replace all Sar placeholders with it.
-            processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
-        } else {
-            // If no specific prompt is found for the model, remove all Sar placeholders.
-            processedText = processedText.replaceAll(sarPlaceholderRegex, '');
-        }
-        // END: New SarModelX/SarPromptX logic
-
-        const now = new Date();
-        const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
-        processedText = processedText.replace(/\{\{Date\}\}/g, date);
-        const time = now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
-        processedText = processedText.replace(/\{\{Time\}\}/g, time);
-        const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: 'Asia/Shanghai' });
-        processedText = processedText.replace(/\{\{Today\}\}/g, today);
-        const year = now.getFullYear();
-        const month = now.getMonth() + 1;
-        const day = now.getDate();
-        const lunarDate = lunarCalendar.getLunar(year, month, day);
-        let yearName = lunarDate.lunarYear.replace('年', '');
-        let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
-        if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
-        processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-        // START: 统一处理所有静态插件占位符 (VCP...)
-        const staticPlaceholderValues = pluginManager.staticPlaceholderValues;
-        if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
-            for (const [placeholder, value] of staticPlaceholderValues.entries()) {
-                // placeholder is already like "{{VCPPluginName}}"
-                const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
-                processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
-            }
-        }
-        // END: 统一处理所有静态插件占位符
-        
-
-        // Replace individual VCP plugin descriptions
-        const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
-        if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-            for (const [placeholderKey, description] of individualPluginDescriptions) {
-                // placeholderKey is already like "VCPPluginName"
-                processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);
-            }
-        }
-
-    // 新增：处理 {{VCPAllTools}} 占位符
-        if (processedText.includes('{{VCPAllTools}}')) {
-            const vcpDescriptionsList = [];
-
-            // 从 individualPluginDescriptions 添加 (这些由 pluginManager.getIndividualPluginDescriptions() 提供)
-            if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
-                for (const description of individualPluginDescriptions.values()) {
-                    vcpDescriptionsList.push(description);
-                }
-            }
-            // 注意: 如果未来有其他直接通过 pluginManager.getPlaceholderValue("{{VCPCustomXXX}}") 处理的占位符,
-            // 并且希望它们也列在 {{VCPAllTools}} 中，需要在此处手动添加逻辑来识别并包含它们。
-
-            // 使用双换行符和分隔线来分隔各个插件的描述，使其更易读
-            const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
-            processedText = processedText.replaceAll('{{VCPAllTools}}', allVcpToolsString);
-        }
-
-        if (process.env.PORT) {
-            processedText = processedText.replaceAll('{{Port}}', process.env.PORT);
-        }
-        const effectiveImageKey = pluginManager.getResolvedPluginConfigValue('ImageServer', 'Image_Key');
-        if (processedText && typeof processedText === 'string' && effectiveImageKey) {
-            processedText = processedText.replaceAll('{{Image_Key}}', effectiveImageKey);
-        } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
-            if (DEBUG_MODE) console.warn('[replaceOtherVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
-        }
-        const emojiPlaceholderRegex = /\{\{(.+?表情包)\}\}/g;
-        let emojiMatch;
-        while ((emojiMatch = emojiPlaceholderRegex.exec(processedText)) !== null) {
-            const placeholder = emojiMatch[0];
-            const emojiName = emojiMatch[1];
-            const emojiList = cachedEmojiLists.get(emojiName);
-            processedText = processedText.replaceAll(placeholder, emojiList || `${emojiName}列表不可用`);
-        }
-        const diaryPlaceholderRegex = /\{\{(.+?)日记本\}\}/g;
-        let tempProcessedText = processedText; // Work on a temporary copy
-
-        // Attempt to get and parse the AllCharacterDiariesData placeholder from PluginManager
-        let allDiariesData = {};
-        const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
-
-        if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
-            try {
-                allDiariesData = JSON.parse(allDiariesDataString);
-            } catch (e) {
-                console.error(`[replaceOtherVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0,100)}...`); // Keep as error
-                // Keep allDiariesData as an empty object, so individual lookups will fail gracefully
-            }
-        } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
-             if (DEBUG_MODE) console.warn(`[replaceOtherVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated by DailyNoteGet plugin. Value: ${allDiariesDataString}`);
-        }
-
-
-        // Use a loop that allows for async operations if needed, though simple string replacement is sync here
-        // We need to re-evaluate regex on each replacement as the string length changes
-        let match;
-        while ((match = diaryPlaceholderRegex.exec(tempProcessedText)) !== null) {
-            const placeholder = match[0]; // e.g., "{{小明同学日记本}}"
-            const characterName = match[1]; // e.g., "小明同学"
-            
-            let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`; // Default message
-
-            if (allDiariesData.hasOwnProperty(characterName)) {
-                diaryContent = allDiariesData[characterName];
-            } else {
-                // console.warn(`[replaceOtherVariables] Diary for character "${characterName}" not found in AllCharacterDiariesData.`);
-                // No need to log for every miss, default message is sufficient
-            }
-            
-            // ReplaceAll is important if the same character's diary is mentioned multiple times
-            tempProcessedText = tempProcessedText.replaceAll(placeholder, diaryContent);
-            // Reset regex lastIndex because the string has changed, to re-scan from the beginning
-            diaryPlaceholderRegex.lastIndex = 0;
-        }
-        processedText = tempProcessedText; // Assign the fully processed text back
-        for (const rule of detectors) {
-            if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-                processedText = processedText.replaceAll(rule.detector, rule.output);
-            }
-        }
-    }
-    // SuperDetectors 和 VCP_ASYNC_RESULT 应用于所有角色的消息
-    for (const rule of superDetectors) {
-        if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-            processedText = processedText.replaceAll(rule.detector, rule.output);
-        }
-    }
-
-    // START: VCP_ASYNC_RESULT Placeholder Processing
-    const asyncResultPlaceholderRegex = /\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}/g;
-    let asyncMatch;
-    // We need to handle multiple occurrences, and since replacement changes string length,
-    // we collect all matches first, then replace. Or, more simply, loop until no more matches.
-    // For simplicity in this step, let's assume a loop that re-evaluates.
-    // A more robust way would be to collect all placeholders and their values first.
-
-    // Create a new string for replacements to avoid issues with changing string length during regex exec
-    let tempAsyncProcessedText = processedText;
-    const promises = [];
-
-    while ((asyncMatch = asyncResultPlaceholderRegex.exec(processedText)) !== null) {
-        const placeholder = asyncMatch[0]; // Full placeholder e.g., {{VCP_ASYNC_RESULT::Wan2.1VideoGen::xyz123}}
-        const pluginName = asyncMatch[1];
-        const requestId = asyncMatch[2];
-        
-        promises.push(
-            (async () => {
-                const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${requestId}.json`);
-                try {
-                    const fileContent = await fs.readFile(resultFilePath, 'utf-8');
-                    const callbackData = JSON.parse(fileContent);
-                    // You suggested replacing with the 'message' from the callback data.
-                    // Or, we could use the whole callbackData string, or a formatted summary.
-                    // Let's use callbackData.message if available, otherwise a generic success.
-                    let replacementText = `[任务 ${pluginName} (ID: ${requestId}) 已完成]`;
-                    if (callbackData && callbackData.message) {
-                        replacementText = callbackData.message;
-                    } else if (callbackData && callbackData.status === 'Succeed') {
-                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
-                    } else if (callbackData && callbackData.status === 'Failed') {
-                        replacementText = `任务 ${pluginName} (ID: ${requestId}) 处理失败。原因: ${callbackData.reason || JSON.stringify(callbackData.data || callbackData.error || callbackData)}`;
-                    }
-                     // Replace only the first occurrence in each iteration to handle multiple identical placeholders correctly if needed,
-                     // though typically each requestId would be unique.
-                    tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, replacementText);
-                } catch (error) {
-                    if (error.code === 'ENOENT') {
-                        // File not found, means task is pending or callback hasn't happened/saved
-                        tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[任务 ${pluginName} (ID: ${requestId}) 结果待更新...]`);
-                    } else {
-                        // Other errors (e.g., JSON parse error from file)
-                        console.error(`[replaceOtherVariables] Error processing async placeholder ${placeholder}:`, error);
-                        tempAsyncProcessedText = tempAsyncProcessedText.replace(placeholder, `[获取任务 ${pluginName} (ID: ${requestId}) 结果时出错]`);
-                    }
-                }
-            })()
-        );
-    }
-    
-    await Promise.all(promises);
-    processedText = tempAsyncProcessedText;
-    // END: VCP_ASYNC_RESULT Placeholder Processing
-
-    return processedText;
-}
 
 
 app.get('/v1/models', async (req, res) => {
@@ -798,961 +394,35 @@ app.post('/v1/interrupt', (req, res) => {
 });
 
 
-async function handleChatCompletion(req, res, forceShowVCP = false) {
-    const { default: fetch } = await import('node-fetch');
-    const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP; // Combine env var and route-specific flag
-    
-    // 标准化客户端IP地址
-    let clientIp = req.ip;
-    if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
-        clientIp = clientIp.substr(7);
-    }
 
-    const id = req.body.requestId || req.body.messageId; // 兼容 requestId 和 messageId
-    const abortController = new AbortController();
-
-    if (id) {
-        activeRequests.set(id, { req, res, abortController });
-    }
-
-    try {
-        let originalBody = req.body;
-        
-        // 新增：执行模型重定向（客户端请求 -> 后端）
-        if (originalBody.model) {
-            const originalModel = originalBody.model;
-            const redirectedModel = modelRedirectHandler.redirectModelForBackend(originalModel);
-            if (redirectedModel !== originalModel) {
-                originalBody = { ...originalBody, model: redirectedModel };
-                console.log(`[ModelRedirect] 客户端请求模型 '${originalModel}' 已重定向为后端模型 '${redirectedModel}'`);
-            }
-        }
-        
-        await writeDebugLog('LogInput', originalBody);
-
-        let shouldProcessMedia = true;
-        if (originalBody.messages && Array.isArray(originalBody.messages)) {
-            for (const msg of originalBody.messages) {
-                let foundPlaceholderInMsg = false;
-                if (msg.role === 'user' || msg.role === 'system') {
-                    if (typeof msg.content === 'string' && msg.content.includes('{{ShowBase64}}')) {
-                        foundPlaceholderInMsg = true;
-                        msg.content = msg.content.replace(/\{\{ShowBase64\}\}/g, '');
-                    } else if (Array.isArray(msg.content)) {
-                        for (const part of msg.content) {
-                            if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{ShowBase64}}')) {
-                                foundPlaceholderInMsg = true;
-                                part.text = part.text.replace(/\{\{ShowBase64\}\}/g, '');
-                            }
-                        }
-                    }
-                }
-                if (foundPlaceholderInMsg) {
-                    shouldProcessMedia = false;
-                    if (DEBUG_MODE) console.log('[Server] Media processing disabled by {{ShowBase64}} placeholder.');
-                    break;
-                }
-            }
-        }
-
-        // --- New Staged Processing Logic ---
-
-        // Stage 1: Expand Agent placeholders first to reveal potential RAG markers.
-        let agentExpandedMessages = await Promise.all(originalBody.messages.map(async (msg) => {
-            const newMessage = JSON.parse(JSON.stringify(msg));
-            if (newMessage.content && typeof newMessage.content === 'string') {
-                newMessage.content = await replaceAgentVariables(newMessage.content, originalBody.model, msg.role);
-            } else if (Array.isArray(newMessage.content)) {
-                newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
-                    if (part.type === 'text' && typeof part.text === 'string') {
-                        const newPart = JSON.parse(JSON.stringify(part));
-                        newPart.text = await replaceAgentVariables(newPart.text, originalBody.model, msg.role);
-                        return newPart;
-                    }
-                    return part;
-                }));
-            }
-            return newMessage;
-        }));
-        if (DEBUG_MODE) await writeDebugLog('LogAfterAgentExpansion', agentExpandedMessages);
-
-        // Stage 2: Run all message preprocessors (including RAG, Tavern, etc.)
-        let processedMessages = agentExpandedMessages;
-        
-        // 2a. Handle MultiModalProcessor specifically due to the shouldProcessMedia flag
-        if (shouldProcessMedia) {
-            const processorName = pluginManager.messagePreprocessors.has("MultiModalProcessor") ? "MultiModalProcessor" : "ImageProcessor";
-            if (pluginManager.messagePreprocessors.has(processorName)) {
-                if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
-                try {
-                    processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
-                } catch (pluginError) {
-                    console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
-                }
-            }
-        }
-        
-        // 2b. Loop through all other message preprocessors
-        for (const name of pluginManager.messagePreprocessors.keys()) {
-            if (name === "ImageProcessor" || name === "MultiModalProcessor") continue; // Skip, handled above
-            if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
-            try {
-                processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
-            } catch (pluginError) {
-                console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
-            }
-        }
-        if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
-
-        // Stage 3: Replace all other placeholders on the pre-processed messages.
-        let finalMessages = await Promise.all(processedMessages.map(async (msg) => {
-            const newMessage = JSON.parse(JSON.stringify(msg));
-            if (newMessage.content && typeof newMessage.content === 'string') {
-                newMessage.content = await replaceOtherVariables(newMessage.content, originalBody.model, msg.role);
-            } else if (Array.isArray(newMessage.content)) {
-                newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
-                    if (part.type === 'text' && typeof part.text === 'string') {
-                        const newPart = JSON.parse(JSON.stringify(part));
-                        newPart.text = await replaceOtherVariables(newPart.text, originalBody.model, msg.role);
-                        return newPart;
-                    }
-                    return part;
-                }));
-            }
-            return newMessage;
-        }));
-
-        originalBody.messages = finalMessages;
-        await writeDebugLog('LogOutputAfterProcessing', originalBody);
-        
-        const isOriginalRequestStreaming = originalBody.stream === true;
-        // If VCP info needs to be shown, the response MUST be streamed to the client.
-        const willStreamResponse = isOriginalRequestStreaming; // Only stream if the original request was a stream.
-
-        let firstAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-                ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                'Accept': willStreamResponse ? 'text/event-stream' : (req.headers['accept'] || 'application/json'),
-            },
-            // Force stream to be true if we are showing VCP info.
-            body: JSON.stringify({ ...originalBody, stream: willStreamResponse }),
-            signal: abortController.signal, // 传递中止信号
-        });
-
-        const isUpstreamStreaming = willStreamResponse && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
-        
-        if (!res.headersSent) {
-            res.status(firstAiAPIResponse.status);
-            firstAiAPIResponse.headers.forEach((value, name) => {
-                if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                     res.setHeader(name, value);
-                }
-            });
-            if (isOriginalRequestStreaming && !res.getHeader('Content-Type')?.includes('text/event-stream')) {
-                res.setHeader('Content-Type', 'text/event-stream');
-                if (!res.getHeader('Cache-Control')) res.setHeader('Cache-Control', 'no-cache');
-                if (!res.getHeader('Connection')) res.setHeader('Connection', 'keep-alive');
-            }
-        }
-
-        let firstResponseRawDataForClientAndDiary = ""; // Used for non-streaming and initial diary
-
-        if (isUpstreamStreaming) {
-            let currentMessagesForLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
-            let recursionDepth = 0;
-            const maxRecursion = parseInt(process.env.MaxVCPLoopStream) || 5;
-            let currentAIContentForLoop = '';
-            let currentAIRawDataForDiary = '';
-
-            // Helper function to process an AI response stream
-            async function processAIResponseStreamHelper(aiResponse, isInitialCall) {
-                return new Promise((resolve, reject) => {
-                    let sseBuffer = ""; // Buffer for incomplete SSE lines
-                    let collectedContentThisTurn = ""; // Collects textual content from delta
-                    let rawResponseDataThisTurn = ""; // Collects all raw chunks for diary
-
-                    const isGpt5Mini = originalBody.model === 'GPT-5-mini';
-                    const thinkingRegex = /^Thinking\.\.\.( \(\d+s elapsed\))?$/;
-                    let sseLineBuffer = ""; // Buffer for incomplete SSE lines
-
-                    aiResponse.body.on('data', (chunk) => {
-                        const chunkString = chunk.toString('utf-8');
-                        rawResponseDataThisTurn += chunkString;
-                        sseLineBuffer += chunkString;
-
-                        let lines = sseLineBuffer.split('\n');
-                        // Keep the last part in buffer if it's not a complete line
-                        sseLineBuffer = lines.pop();
-
-                        const filteredLines = [];
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                const jsonData = line.substring(5).trim();
-                                if (jsonData && jsonData !== '[DONE]') {
-                                    try {
-                                        const parsedData = JSON.parse(jsonData);
-                                        const content = parsedData.choices?.[0]?.delta?.content;
-                                        const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
-
-                                        // Core filtering logic for thinking content (GPT-5-mini)
-                                        if (isGpt5Mini && content && thinkingRegex.test(content)) {
-                                            if (DEBUG_MODE) {
-                                                console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk: ${content}`);
-                                            }
-                                            continue; // Skip this line
-                                        }
-
-                                        // Filter out reasoning_content from all models (o1, etc.)
-                                        if (reasoningContent !== undefined) {
-                                            if (DEBUG_MODE) {
-                                                console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk from model ${originalBody.model}: ${reasoningContent}`);
-                                            }
-                                            continue; // Skip this line entirely
-                                        }
-                                    } catch (e) {
-                                        // Not a JSON we care about, pass through
-                                    }
-                                }
-                            }
-                            filteredLines.push(line);
-                        }
-                        
-                        if (filteredLines.length > 0) {
-                            const filteredChunkString = filteredLines.join('\n') + '\n'; // Re-add newline for valid SSE stream
-                            const modifiedChunk = Buffer.from(filteredChunkString, 'utf-8');
-                            processChunk(modifiedChunk);
-                        }
-                    });
-
-                    // Process any remaining data in the buffer on stream end
-                    aiResponse.body.on('end', () => {
-                        if (sseLineBuffer.trim()) {
-                             const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
-                             processChunk(modifiedChunk);
-                        }
-                        // Signal end of processing for this stream helper
-                        finalizeStream();
-                    });
-
-
-                    function processChunk(chunk) {
-                        const chunkString = chunk.toString('utf-8');
-                        let isChunkAnEndOfStreamSignal = false;
-                        if (chunkString.includes("data: [DONE]")) {
-                            isChunkAnEndOfStreamSignal = true;
-                        } else {
-                            const linesInChunk = chunkString.split('\n');
-                            for (const line of linesInChunk) {
-                                if (line.startsWith('data: ')) {
-                                    const jsonData = line.substring(5).trim();
-                                    if (jsonData === '[DONE]') { // Should be caught by the outer check, but good to be safe
-                                        isChunkAnEndOfStreamSignal = true;
-                                        break;
-                                    }
-                                    if (jsonData && !jsonData.startsWith("[")) { // Avoid trying to parse "[DONE]" as JSON
-                                        try {
-                                            const parsedData = JSON.parse(jsonData);
-                                            if (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].finish_reason) {
-                                                isChunkAnEndOfStreamSignal = true;
-                                                break;
-                                            }
-                                        } catch(e) { /* ignore parse errors, not a relevant JSON structure */ }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (!res.writableEnded) {
-                            if (isChunkAnEndOfStreamSignal) {
-                                // If the chunk is or contains an end-of-stream signal (DONE or finish_reason),
-                                // do not forward it directly. The final [DONE] will be sent by the server's main loop.
-                                // Its content will still be collected by the sseBuffer logic below.
-                            } else {
-                                // (原 filterGrokReasoningStream 调用已移除)
-                                // 只有在过滤后仍有内容时才发送，避免发送空的数据块
-                                if (chunkString) {
-                                    res.write(chunkString);
-                                }
-                            }
-                        }
-                        
-                        // SSE parsing for content collection
-                        sseBuffer += chunkString;
-                        let lines = sseBuffer.split('\n');
-                        sseBuffer = lines.pop(); // Keep incomplete line for the next 'data' event or 'end'
-
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                const jsonData = line.substring(5).trim();
-                                if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
-                                    try {
-                                        const parsedData = JSON.parse(jsonData);
-                                        collectedContentThisTurn += parsedData.choices?.[0]?.delta?.content || '';
-                                    } catch (e) { /* ignore parse error for intermediate chunks */ }
-                                }
-                            }
-                        }
-                    }
-
-                    function finalizeStream() {
-                        // Process remaining sseBuffer for content
-                        if (sseBuffer.trim().length > 0) {
-                            const finalLines = sseBuffer.split('\n');
-                            for (const line of finalLines) {
-                                const trimmedLine = line.trim();
-                                if (trimmedLine.startsWith('data: ')) {
-                                    const jsonData = trimmedLine.substring(5).trim();
-                                    if (jsonData !== '[DONE]' && jsonData) { // Ensure jsonData is not empty and not "[DONE]"
-                                        try {
-                                            const parsedData = JSON.parse(jsonData);
-                                            const content = parsedData.choices?.[0]?.delta?.content;
-                                            const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
-
-                                            // Apply the same filtering logic as in the main processing
-                                            if (isGpt5Mini && content && thinkingRegex.test(content)) {
-                                                if (DEBUG_MODE) {
-                                                    console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk in finalize: ${content}`);
-                                                }
-                                                continue; // Skip this line
-                                            }
-
-                                            // Filter out reasoning_content from all models (o1, etc.)
-                                            if (reasoningContent !== undefined) {
-                                                if (DEBUG_MODE) {
-                                                    console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk in finalize from model ${originalBody.model}: ${reasoningContent}`);
-                                                }
-                                                continue; // Skip this line entirely
-                                            }
-
-                                            // Only collect content if it passed all filters
-                                            collectedContentThisTurn += content || '';
-                                        } catch (e) { /* ignore */ }
-                                    }
-                                }
-                            }
-                        }
-                        resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
-                    }
-                    aiResponse.body.on('error', (streamError) => {
-                        console.error("Error reading AI response stream in loop:", streamError);
-                        if (!res.writableEnded) {
-                            // Try to send an error message before closing if possible
-                            try {
-                                res.write(`data: ${JSON.stringify({error: "STREAM_READ_ERROR", message: streamError.message})}\n\n`);
-                            } catch (e) { /* ignore if write fails */ }
-                            res.end();
-                        }
-                        reject(streamError);
-                    });
-                });
-            }
-
-            // --- Initial AI Call ---
-            if (DEBUG_MODE) console.log('[VCP Stream Loop] Processing initial AI call.');
-            let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
-            currentAIContentForLoop = initialAIResponseData.content;
-            currentAIRawDataForDiary = initialAIResponseData.raw;
-            handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error('[VCP Stream Loop] Error in initial diary handling:', e));
-            if (DEBUG_MODE) console.log('[VCP Stream Loop] Initial AI content (first 200):', currentAIContentForLoop.substring(0,200));
-
-            // --- VCP Loop ---
-            while (recursionDepth < maxRecursion) {
-                currentMessagesForLoop.push({ role: 'assistant', content: currentAIContentForLoop });
-
-                const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
-                const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
-                let toolCallsInThisAIResponse = [];
-                let searchOffset = 0;
-
-                while (searchOffset < currentAIContentForLoop.length) {
-                    const startIndex = currentAIContentForLoop.indexOf(toolRequestStartMarker, searchOffset);
-                    if (startIndex === -1) break;
-
-                    const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
-                    if (endIndex === -1) {
-                        if (DEBUG_MODE) console.warn("[VCP Stream Loop] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
-                        searchOffset = startIndex + toolRequestStartMarker.length;
-                        continue;
-                    }
-
-                    const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
-                    let parsedToolArgs = {};
-                    let requestedToolName = null;
-                    let isArchery = false;
-                    const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
-                    let regexMatch;
-                    while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
-                        const key = regexMatch[1];
-                        const value = regexMatch[2].trim();
-                        if (key === "tool_name") requestedToolName = value;
-                        else if (key === "archery") isArchery = (value === 'true' || value === 'no_reply');
-                        else parsedToolArgs[key] = value;
-                    }
-
-                    if (requestedToolName) {
-                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs, archery: isArchery });
-                         if (DEBUG_MODE) console.log(`[VCP Stream Loop] Parsed tool request: ${requestedToolName}`, parsedToolArgs, `Archery: ${isArchery}`);
-                    } else {
-                        if (DEBUG_MODE) console.warn("[VCP Stream Loop] Parsed a tool request block but no tool_name found:", requestBlockContent.substring(0,100));
-                    }
-                    searchOffset = endIndex + toolRequestEndMarker.length;
-                }
-
-                if (toolCallsInThisAIResponse.length === 0) {
-                    if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found in AI response. Sending final signals and exiting loop.');
-                    if (!res.writableEnded) {
-                        // Construct and send the final chunk with finish_reason 'stop'
-                        const finalChunkPayload = {
-                            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
-                            object: "chat.completion.chunk",
-                            created: Math.floor(Date.now() / 1000),
-                            model: originalBody.model,
-                            choices: [{
-                                index: 0,
-                                delta: {},
-                                finish_reason: 'stop'
-                            }]
-                        };
-                        res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-                        res.write('data: [DONE]\n\n');
-                        res.end();
-                    }
-                    break;
-                }
-                if (DEBUG_MODE) console.log(`[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1}.`);
-
-                const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
-                const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
-
-                // Execute archery calls without waiting for results to be sent back to the AI
-                archeryCalls.forEach(toolCall => {
-                    if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`, toolCall.args);
-                    // Fire-and-forget execution, but handle logging and notifications in then/catch
-                    pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp)
-                        .then(async (pluginResult) => {
-                            await writeDebugLog(`VCP-Stream-Archery-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
-                            const toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                            webSocketServer.broadcast({
-                                type: 'vcp_log',
-                                data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop_archery' }
-                            }, 'VCPLog');
-                            const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
-                            if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
-                                const wsPushMessageStream = {
-                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                                    data: pluginResult
-                                };
-                                webSocketServer.broadcast(wsPushMessageStream, pluginManifestForStream.webSocketPush.targetClientType || null);
-                            }
-                            if (shouldShowVCP && !res.writableEnded) {
-                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'success', pluginResult);
-                            }
-                        })
-                        .catch(pluginError => {
-                            console.error(`[VCP Stream Loop ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
-                            const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                            webSocketServer.broadcast({
-                                type: 'vcp_log',
-                                data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_archery_error' }
-                            }, 'VCPLog');
-                            if (shouldShowVCP && !res.writableEnded) {
-                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', toolResultText);
-                            }
-                        });
-                });
-
-                // If there are no normal calls to wait for, the AI's turn is over.
-                if (normalCalls.length === 0) {
-                    if (DEBUG_MODE) console.log('[VCP Stream Loop] Only archery calls were found. Sending final signals and exiting loop.');
-                    if (!res.writableEnded) {
-                        const finalChunkPayload = {
-                            id: `chatcmpl-VCP-final-stop-${Date.now()}`,
-                            object: "chat.completion.chunk",
-                            created: Math.floor(Date.now() / 1000),
-                            model: originalBody.model,
-                            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
-                        };
-                        res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-                        res.write('data: [DONE]\n\n');
-                        res.end();
-                    }
-                    break; // Exit the VCP loop
-                }
-
-                // Process normal (non-archery) calls and wait for their results to send back to the AI
-                const toolExecutionPromises = normalCalls.map(async (toolCall) => {
-                    let toolResultText; // For logs and simple text display
-                    let toolResultContentForAI; // For the next AI call (can be rich content)
-
-                    if (pluginManager.getPlugin(toolCall.name)) {
-                        try {
-                            if (DEBUG_MODE) console.log(`[VCP Stream Loop] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                            const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
-                            await writeDebugLog(`VCP-Stream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
-                            
-                            toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-
-                            let richContentPayload = null;
-                            if (typeof pluginResult === 'object' && pluginResult) {
-                                if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
-                                    richContentPayload = pluginResult.data.content;
-                                }
-                                else if (Array.isArray(pluginResult.content)) {
-                                    richContentPayload = pluginResult.content;
-                                }
-                            }
-
-                            if (richContentPayload) {
-                                toolResultContentForAI = richContentPayload;
-                                const textPart = richContentPayload.find(p => p.type === 'text');
-                                toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
-                            } else {
-                                toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                            }
-
-                            webSocketServer.broadcast({
-                                type: 'vcp_log',
-                                data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'stream_loop' }
-                            }, 'VCPLog');
-
-                            const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
-                            if (pluginManifestForStream && pluginManifestForStream.webSocketPush && pluginManifestForStream.webSocketPush.enabled) {
-                                const wsPushMessageStream = {
-                                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                                    data: pluginResult
-                                };
-                                webSocketServer.broadcast(wsPushMessageStream, pluginManifestForStream.webSocketPush.targetClientType || null);
-                                if (DEBUG_MODE) console.log(`[VCP Stream Loop] WebSocket push for ${toolCall.name} (success) processed.`);
-                            }
-
-                            if (shouldShowVCP && !res.writableEnded) {
-                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'success', pluginResult);
-                            }
-                        } catch (pluginError) {
-                             console.error(`[VCP Stream Loop EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
-                             toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                             toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                             webSocketServer.broadcast({
-                                type: 'vcp_log',
-                                data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_error' }
-                            }, 'VCPLog');
-                             if (shouldShowVCP && !res.writableEnded) {
-                                vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', toolResultText);
-                             }
-                        }
-                    } else {
-                        toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
-                        toolResultContentForAI = [{ type: 'text', text: toolResultText }];
-                        if (DEBUG_MODE) console.warn(`[VCP Stream Loop] ${toolResultText}`);
-                        webSocketServer.broadcast({
-                            type: 'vcp_log',
-                            data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'stream_loop_not_found' }
-                        }, 'VCPLog');
-                        if (shouldShowVCP && !res.writableEnded) {
-                            vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', toolResultText);
-                        }
-                    }
-                    return toolResultContentForAI;
-                });
-
-                const toolResults = await Promise.all(toolExecutionPromises);
-                const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
-                await writeDebugLog('LogToolResultForAI-Stream', { role: 'user', content: combinedToolResultsForAI });
-                currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Combined tool results for next AI call (first 200):', JSON.stringify(combinedToolResultsForAI).substring(0,200));
-
-                // --- Make next AI call (stream: true) ---
-                if (!res.writableEnded) {
-                    res.write('\n'); // 在下一个AI响应开始前，向客户端发送一个换行符
-                }
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Fetching next AI response.');
-                const nextAiAPIResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`,
-                        ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                        'Accept': 'text/event-stream', // Ensure streaming for subsequent calls
-                    },
-                    body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
-                    signal: abortController.signal, // 传递中止信号
-                });
-
-                if (!nextAiAPIResponse.ok) {
-                    const errorBodyText = await nextAiAPIResponse.text();
-                    console.error(`[VCP Stream Loop] AI call in loop failed (${nextAiAPIResponse.status}): ${errorBodyText}`);
-                    if (!res.writableEnded) {
-                        try {
-                            res.write(`data: ${JSON.stringify({error: "AI_CALL_FAILED_IN_LOOP", status: nextAiAPIResponse.status, message: errorBodyText})}\n\n`);
-                        } catch (e) { /* ignore */ }
-                    }
-                    break;
-                }
-                
-                // Process the stream from the next AI call
-                let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
-                currentAIContentForLoop = nextAIResponseData.content;
-                currentAIRawDataForDiary = nextAIResponseData.raw;
-                handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e => console.error(`[VCP Stream Loop] Error in diary handling for depth ${recursionDepth}:`, e));
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Next AI content (first 200):', currentAIContentForLoop.substring(0,200));
-                
-                recursionDepth++;
-            }
-
-            // After loop, check if max recursion was hit and response is still open
-            if (recursionDepth >= maxRecursion && !res.writableEnded) {
-                if (DEBUG_MODE) console.log('[VCP Stream Loop] Max recursion reached. Sending final signals.');
-                // Construct and send the final chunk with finish_reason 'length'
-                const finalChunkPayload = {
-                    id: `chatcmpl-VCP-final-length-${Date.now()}`,
-                    object: "chat.completion.chunk",
-                    created: Math.floor(Date.now() / 1000),
-                    model: originalBody.model,
-                    choices: [{
-                        index: 0,
-                        delta: {},
-                        finish_reason: 'length'
-                    }]
-                };
-                res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-                res.write('data: [DONE]\n\n');
-                res.end();
-            }
-
-        } else { // Non-streaming (originalBody.stream === false)
-            const firstArrayBuffer = await firstAiAPIResponse.arrayBuffer();
-            const responseBuffer = Buffer.from(firstArrayBuffer);
-            const aiResponseText = responseBuffer.toString('utf-8');
-            // firstResponseRawDataForClientAndDiary is used by the non-streaming logic later
-            firstResponseRawDataForClientAndDiary = aiResponseText;
-
-            let fullContentFromAI = ''; // This will be populated by the non-streaming logic
-            try {
-                const parsedJson = JSON.parse(aiResponseText);
-                fullContentFromAI = parsedJson.choices?.[0]?.message?.content || '';
-            } catch (e) {
-                if (DEBUG_MODE) console.warn('[PluginCall] First AI response (non-stream) not valid JSON. Raw:', aiResponseText.substring(0, 200));
-                fullContentFromAI = aiResponseText; // Use raw text if not JSON
-            }
-            
-            // --- Non-streaming VCP Loop ---
-            let recursionDepth = 0;
-            const maxRecursion = parseInt(process.env.MaxVCPLoopNonStream) || 5;
-            let conversationHistoryForClient = []; // To build the final response for client
-            let currentAIContentForLoop = fullContentFromAI; // Start with the first AI's response content
-            let currentMessagesForNonStreamLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
-            // `firstResponseRawDataForClientAndDiary` holds the raw first AI response for diary purposes.
-            // Subsequent raw AI responses in the non-stream loop will also need diary handling.
-            let accumulatedRawResponseDataForDiary = firstResponseRawDataForClientAndDiary;
-
-            do {
-                let anyToolProcessedInCurrentIteration = false; // Reset for each iteration of the outer AI-Tool-AI loop
-                // Add the *current* AI content to the client history *before* processing it for tools
-                // Add the *current* AI content to the client history *before* processing it for tools
-                conversationHistoryForClient.push(currentAIContentForLoop);
-
-                const toolRequestStartMarker = "<<<[TOOL_REQUEST]>>>";
-                const toolRequestEndMarker = "<<<[END_TOOL_REQUEST]>>>";
-                let toolCallsInThisAIResponse = []; // Stores {name, args} for each tool call found in currentAIContentForLoop
-                
-                let searchOffset = 0;
-                while (searchOffset < currentAIContentForLoop.length) {
-                    const startIndex = currentAIContentForLoop.indexOf(toolRequestStartMarker, searchOffset);
-                    if (startIndex === -1) break; // No more start markers
-
-                    const endIndex = currentAIContentForLoop.indexOf(toolRequestEndMarker, startIndex + toolRequestStartMarker.length);
-                    if (endIndex === -1) {
-                        if (DEBUG_MODE) console.warn("[Multi-Tool] Found TOOL_REQUEST_START but no END marker after offset", searchOffset);
-                        searchOffset = startIndex + toolRequestStartMarker.length; // Skip malformed start
-                        continue;
-                    }
-
-                    const requestBlockContent = currentAIContentForLoop.substring(startIndex + toolRequestStartMarker.length, endIndex).trim();
-                    let parsedToolArgs = {};
-                    let requestedToolName = null;
-                    let isArchery = false;
-                    const paramRegex = /([\w_]+)\s*:\s*「始」([\s\S]*?)「末」\s*(?:,)?/g;
-                    let regexMatch;
-                    while ((regexMatch = paramRegex.exec(requestBlockContent)) !== null) {
-                        const key = regexMatch[1];
-                        const value = regexMatch[2].trim();
-                        if (key === "tool_name") requestedToolName = value;
-                        else if (key === "archery") isArchery = (value === 'true' || value === 'no_reply');
-                        else parsedToolArgs[key] = value;
-                    }
-
-                    if (requestedToolName) {
-                        toolCallsInThisAIResponse.push({ name: requestedToolName, args: parsedToolArgs, archery: isArchery });
-                    } else {
-                        if (DEBUG_MODE) console.warn("[Multi-Tool] Parsed a tool request block but no tool_name found:", requestBlockContent);
-                    }
-                    searchOffset = endIndex + toolRequestEndMarker.length; // Move past the processed block
-                }
-
-                if (toolCallsInThisAIResponse.length > 0) {
-                    anyToolProcessedInCurrentIteration = true; // At least one tool request was found in the AI's response
-                    const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
-                    const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
-
-                    // Execute archery calls without waiting for results to be sent back to the AI
-                    archeryCalls.forEach(toolCall => {
-                        if (DEBUG_MODE) console.log(`[Multi-Tool] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`, toolCall.args);
-                        // Fire-and-forget execution, but handle logging and notifications in then/catch
-                        pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp)
-                            .then(async (pluginResult) => {
-                                await writeDebugLog(`VCP-NonStream-Archery-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
-                                const toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                                webSocketServer.broadcast({
-                                    type: 'vcp_log',
-                                    data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop_archery' }
-                                }, 'VCPLog');
-                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
-                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
-                                    const wsPushMessageNonStream = {
-                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                                        data: pluginResult
-                                    };
-                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
-                                }
-                                if (shouldShowVCP) {
-                                    const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'success', pluginResult);
-                                    if (vcpText) conversationHistoryForClient.push(vcpText);
-                                }
-                            })
-                            .catch(pluginError => {
-                                console.error(`[Multi-Tool ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
-                                const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                webSocketServer.broadcast({
-                                    type: 'vcp_log',
-                                    data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_archery_error' }
-                                }, 'VCPLog');
-                                if (shouldShowVCP) {
-                                    const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'error', toolResultText);
-                                    if (vcpText) conversationHistoryForClient.push(vcpText);
-                                }
-                            });
-                    });
-
-                    // If there are no normal calls to wait for, the AI's turn is over.
-                    if (normalCalls.length === 0) {
-                        if (DEBUG_MODE) console.log("[Multi-Tool] Only archery calls were found. Exiting loop.");
-                        break; // Exit the do-while loop
-                    }
-
-                    // Add the AI's full response (that contained the tool requests) to the messages for the next AI call
-                    currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
-
-                    // Process normal (non-archery) calls and wait for their results to send back to the AI
-                    const toolExecutionPromises = normalCalls.map(async (toolCall) => {
-                        let toolResultText;
-                        let toolResultContentForAI;
-
-                        if (pluginManager.getPlugin(toolCall.name)) {
-                            try {
-                                if (DEBUG_MODE) console.log(`[Multi-Tool] Executing tool: ${toolCall.name} with args:`, toolCall.args);
-                                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
-                                await writeDebugLog(`VCP-NonStream-Result-${toolCall.name}`, { args: toolCall.args, result: pluginResult });
-                                
-                                toolResultText = (pluginResult !== undefined && pluginResult !== null) ? (typeof pluginResult === 'object' ? JSON.stringify(pluginResult, null, 2) : String(pluginResult)) : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-
-                                let richContentPayload = null;
-                                if (typeof pluginResult === 'object' && pluginResult) {
-                                    if (pluginResult.data && Array.isArray(pluginResult.data.content)) {
-                                        richContentPayload = pluginResult.data.content;
-                                    }
-                                    else if (Array.isArray(pluginResult.content)) {
-                                        richContentPayload = pluginResult.content;
-                                    }
-                                }
-
-                                if (richContentPayload) {
-                                    toolResultContentForAI = richContentPayload;
-                                    const textPart = richContentPayload.find(p => p.type === 'text');
-                                    toolResultText = textPart ? textPart.text : `[Rich Content with types: ${richContentPayload.map(p => p.type).join(', ')}]`;
-                                } else {
-                                    toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                                }
-
-                                webSocketServer.broadcast({
-                                   type: 'vcp_log',
-                                   data: { tool_name: toolCall.name, status: 'success', content: toolResultText, source: 'non_stream_loop' }
-                                }, 'VCPLog');
-
-                                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
-                                if (pluginManifestNonStream && pluginManifestNonStream.webSocketPush && pluginManifestNonStream.webSocketPush.enabled) {
-                                    const wsPushMessageNonStream = {
-                                        type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                                        data: pluginResult
-                                    };
-                                    webSocketServer.broadcast(wsPushMessageNonStream, pluginManifestNonStream.webSocketPush.targetClientType || null);
-                                    if (DEBUG_MODE) console.log(`[Multi-Tool] WebSocket push for ${toolCall.name} (success) processed.`);
-                                }
-
-                                if (shouldShowVCP) {
-                                    const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'success', pluginResult);
-                                    if (vcpText) conversationHistoryForClient.push(vcpText);
-                                }
-                            } catch (pluginError) {
-                                 console.error(`[Multi-Tool EXECUTION ERROR] Error executing plugin ${toolCall.name}:`, pluginError.message);
-                                 toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                                 toolResultContentForAI = [{ type: 'text', text: `来自工具 "${toolCall.name}" 的结果:\n${toolResultText}` }];
-                                 webSocketServer.broadcast({
-                                    type: 'vcp_log',
-                                    data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_error' }
-                                }, 'VCPLog');
-                                 if (shouldShowVCP) {
-                                     const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'error', toolResultText);
-                                     if (vcpText) conversationHistoryForClient.push(vcpText);
-                                 }
-                            }
-                        } else {
-                            toolResultText = `错误：未找到名为 "${toolCall.name}" 的插件。`;
-                            toolResultContentForAI = [{ type: 'text', text: toolResultText }];
-                            if (DEBUG_MODE) console.warn(`[Multi-Tool] ${toolResultText}`);
-                           webSocketServer.broadcast({
-                               type: 'vcp_log',
-                               data: { tool_name: toolCall.name, status: 'error', content: toolResultText, source: 'non_stream_loop_not_found' }
-                           }, 'VCPLog');
-                            if (shouldShowVCP) {
-                                const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'error', toolResultText);
-                                if (vcpText) conversationHistoryForClient.push(vcpText);
-                            }
-                        }
-                        return toolResultContentForAI;
-                    });
-
-                    // Wait for all tool executions to complete
-                    const toolResults = await Promise.all(toolExecutionPromises);
-
-                    const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
-                    await writeDebugLog('LogToolResultForAI-NonStream', { role: 'user', content: combinedToolResultsForAI });
-                    currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
-
-                    // Fetch the next AI response
-                    if (DEBUG_MODE) console.log("[Multi-Tool] Fetching next AI response after processing tools.");
-                    const recursionAiResponse = await fetch(`${apiUrl}/v1/chat/completions`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${apiKey}`,
-                            ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-                            'Accept': 'application/json',
-                        },
-                        body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
-                        signal: abortController.signal, // 传递中止信号
-                    });
-
-                    if (!recursionAiResponse.ok) {
-                        const errorBodyText = await recursionAiResponse.text();
-                        console.error(`[Multi-Tool] AI call in loop failed (${recursionAiResponse.status}): ${errorBodyText}`);
-                        if (SHOW_VCP_OUTPUT) {
-                            conversationHistoryForClient.push({ type: 'vcp', content: `AI call failed with status ${recursionAiResponse.status}: ${errorBodyText}` });
-                        }
-                        // Break the loop on AI error
-                        break;
-                    }
-
-                    const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
-                    const recursionBuffer = Buffer.from(recursionArrayBuffer);
-                    const recursionText = recursionBuffer.toString('utf-8');
-                    // Consider appending recursionText to rawResponseDataForDiary if needed for multi-tool turn
-
-                    try {
-                        const recursionJson = JSON.parse(recursionText);
-                        currentAIContentForLoop = "\n" + (recursionJson.choices?.[0]?.message?.content || '');
-                    } catch (e) {
-                        currentAIContentForLoop = "\n" + recursionText;
-                    }
-                } else {
-                    // No tool calls found in the currentAIContentForLoop, so this is the final AI response.
-                    anyToolProcessedInCurrentIteration = false;
-                }
-                
-                // Exit the outer loop if no tools were processed in this iteration
-                if (!anyToolProcessedInCurrentIteration) break;
-                recursionDepth++;
-            } while (recursionDepth < maxRecursion);
-
-            // --- Finalize Non-Streaming Response ---
-            const finalContentForClient = conversationHistoryForClient.join('');
-
-            let finalJsonResponse;
-            try {
-                // Try to reuse the structure of the *first* AI response
-                finalJsonResponse = JSON.parse(aiResponseText);
-                 if (!finalJsonResponse.choices || !Array.isArray(finalJsonResponse.choices) || finalJsonResponse.choices.length === 0) {
-                    finalJsonResponse.choices = [{ message: {} }];
-                }
-                if (!finalJsonResponse.choices[0].message) {
-                    finalJsonResponse.choices[0].message = {};
-                }
-                // Overwrite the content with the full conversation history
-                finalJsonResponse.choices[0].message.content = finalContentForClient;
-                // Optionally update finish_reason if needed, e.g., if maxRecursion was hit
-                if (recursionDepth >= maxRecursion) {
-                     finalJsonResponse.choices[0].finish_reason = 'length'; // Or 'tool_calls' if appropriate
-                } else {
-                     finalJsonResponse.choices[0].finish_reason = 'stop'; // Assume normal stop if loop finished early
-                }
-
-            } catch (e) {
-                // Fallback if the first response wasn't valid JSON
-                finalJsonResponse = { choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient }, finish_reason: (recursionDepth >= maxRecursion ? 'length' : 'stop') }] };
-            }
-
-            if (!res.writableEnded) {
-                 res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
-            }
-            // Handle diary for the *first* AI response in non-streaming mode
-            await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary);
-        }
-    } catch (error) {
-        console.error('处理请求或转发时出错:', error.message, error.stack);
-        // 新增：处理 AbortError
-        if (error.name === 'AbortError') {
-            console.log(`[Abort] Request ${id} was aborted by the user.`);
-            if (!res.headersSent) {
-                // 非流式请求被中止
-                res.status(200).json({
-                    choices: [{
-                        index: 0,
-                        message: { role: 'assistant', content: '请求已中止' },
-                        finish_reason: 'stop'
-                    }]
-                });
-            } else if (!res.writableEnded) {
-                // 流式请求被中止，优雅地结束它
-                res.write('data: [DONE]\n\n');
-                res.end();
-            }
-            return; // 确保在中止后不再执行其他错误处理
-        }
-
-        if (!res.headersSent) {
-             res.status(500).json({ error: 'Internal Server Error', details: error.message });
-        } else if (!res.writableEnded) {
-             console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
-             res.end();
-        }
-    } finally {
-        // 确保在请求结束时从池中移除
-        if (id) {
-            activeRequests.delete(id);
-        }
-    }
-}
+const chatCompletionHandler = new ChatCompletionHandler({
+    apiUrl,
+    apiKey,
+    modelRedirectHandler,
+    pluginManager,
+    activeRequests,
+    writeDebugLog,
+    handleDiaryFromAIResponse,
+    webSocketServer,
+    DEBUG_MODE,
+    SHOW_VCP_OUTPUT,
+    maxVCPLoopStream: parseInt(process.env.MaxVCPLoopStream),
+    maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
+    apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数
+    apiRetryDelay: parseInt(process.env.ApiRetryDelay) || 1000, // 新增：API重试延迟
+    cachedEmojiLists,
+    detectors,
+    superDetectors
+});
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
 app.post('/v1/chat/completions', (req, res) => {
-    handleChatCompletion(req, res, false);
+    chatCompletionHandler.handle(req, res, false);
 });
 
 // Route to force VCP info to be shown, regardless of the .env config.
 app.post('/v1/chatvcp/completions', (req, res) => {
-    handleChatCompletion(req, res, true);
+    chatCompletionHandler.handle(req, res, true);
 });
 
 // 新增：人类直接调用工具的端点
@@ -1960,7 +630,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     DEBUG_MODE,
     dailyNoteRootPath,
     pluginManager,
-    () => currentServerLogPath // Getter function for currentServerLogPath
+    logger.getServerLogPath, // Pass the getter function
+    vectorDBManager // Pass the vectorDBManager instance
 );
 
 // --- End Admin API Router ---
@@ -2155,15 +826,16 @@ async function gracefulShutdown() {
         await pluginManager.shutdownAllPlugins();
     }
 
+    const serverLogWriteStream = logger.getLogWriteStream();
     if (serverLogWriteStream) {
-        console.log('[Server] Closing server log file stream...');
+        logger.originalConsoleLog('[Server] Closing server log file stream...');
         const logClosePromise = new Promise((resolve) => {
             serverLogWriteStream.end(`[${new Date().toLocaleString()}] Server gracefully shut down.\n`, () => {
-                originalConsoleLog('[Server] Server log stream closed.'); // Use original console here as overridden one might rely on the stream
+                logger.originalConsoleLog('[Server] Server log stream closed.');
                 resolve();
             });
         });
-        await logClosePromise; // Wait for log stream to close
+        await logClosePromise;
     }
 
     console.log('Graceful shutdown complete. Exiting.');
@@ -2175,14 +847,15 @@ process.on('SIGTERM', gracefulShutdown);
 
 // Ensure log stream is flushed on uncaught exceptions or synchronous exit, though less reliable
 process.on('exit', (code) => {
-    originalConsoleLog(`[Server] Exiting with code ${code}.`);
+    logger.originalConsoleLog(`[Server] Exiting with code ${code}.`);
+    const serverLogWriteStream = logger.getLogWriteStream();
+    const currentServerLogPath = logger.getServerLogPath();
     if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
         try {
-            // Attempt a final synchronous write if possible, though not guaranteed
             fsSync.appendFileSync(currentServerLogPath, `[${new Date().toLocaleString()}] Server exited with code ${code}.\n`);
-            serverLogWriteStream.end(); // Attempt to close if not already
+            serverLogWriteStream.end();
         } catch (e) {
-            originalConsoleError('[Server] Error during final log write on exit:', e.message);
+            logger.originalConsoleError('[Server] Error during final log write on exit:', e.message);
         }
     }
 });

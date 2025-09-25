@@ -6,6 +6,49 @@
     <title>VCP ToolBox 控制中心</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="woff.css">
+   <style>
+       .draggable-list {
+           list-style: none;
+           padding: 0;
+           margin-top: 1rem;
+       }
+       .draggable-list li {
+           background-color: var(--background-color-light);
+           padding: 15px 20px;
+           margin-bottom: 10px;
+           border-radius: 8px;
+           cursor: grab;
+           display: flex;
+           align-items: center;
+           border: 1px solid var(--border-color);
+           transition: background-color 0.2s, box-shadow 0.2s;
+           user-select: none;
+       }
+       .draggable-list li.dragging {
+           opacity: 0.6;
+           background-color: var(--primary-color-translucent);
+           box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+       }
+       .draggable-list li .plugin-info {
+           display: flex;
+           flex-direction: column;
+       }
+       .draggable-list li .plugin-name {
+           font-weight: bold;
+           color: var(--text-color-primary);
+       }
+       .draggable-list li .plugin-description {
+           font-size: 0.9em;
+           color: var(--text-color-secondary);
+           margin-top: 4px;
+       }
+       .preprocessor-order-controls {
+           display: flex;
+           gap: 15px;
+           align-items: center;
+           margin-bottom: 1rem;
+       }
+   </style>
 </head>
 <body>
     <header class="top-bar">
@@ -32,9 +75,11 @@
                     <li><a href="#" data-target="daily-notes-manager"><span class="material-symbols-outlined">description</span>日记知识库管理</a></li>
                     <li><a href="#" data-target="image-cache-editor"><span class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
                     <li><a href="#" data-target="rag-tags-editor"><span class="material-symbols-outlined">label</span>知识库RAG-Tags编辑器</a></li>
+                    <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
                     <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
                     <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent 文件编辑器</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
+                    <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li class="nav-category" id="plugins-category">插件管理</li>
                     <!-- 插件列表将动态生成在这里 -->
@@ -146,6 +191,19 @@
                 <iframe src="rag_tags_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
             </section>
 
+            <section id="semantic-groups-editor-section" class="config-section">
+                <h2>语义组编辑器</h2>
+                <p class="description">管理 RAGDiaryPlugin 使用的语义组。语义组通过关键词激活，将相关的向量注入查询，以提高检索的准确性。</p>
+                <div class="semantic-groups-controls">
+                    <button id="save-semantic-groups-button">保存所有更改</button>
+                    <button id="add-semantic-group-button">添加新组</button>
+                    <span id="semantic-groups-status" class="status-message"></span>
+                </div>
+                <div id="semantic-groups-container">
+                    <!-- Semantic groups will be dynamically loaded here -->
+                </div>
+            </section>
+
             <section id="vcptavern-editor-section" class="config-section">
                 <h2>VCPTarven预设编辑</h2>
                 <iframe src="vcptavern_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
@@ -186,6 +244,19 @@
                 </div>
                 <pre id="server-log-content" class="log-content-area"></pre>
             </section>
+
+           <!-- Section: Preprocessor Order Manager -->
+           <section id="preprocessor-order-manager-section" class="config-section">
+               <h2>预处理器顺序管理</h2>
+               <p class="description">在这里，您可以拖动消息预处理器插件来调整它们的执行顺序。顺序越靠上，执行越优先。系统会自动处理新插件的添加和旧插件的移除。</p>
+               <div class="preprocessor-order-controls">
+                   <button id="save-preprocessor-order-button">保存顺序并热重载</button>
+                   <span id="preprocessor-order-status" class="status-message"></span>
+               </div>
+               <ul id="preprocessor-list" class="draggable-list">
+                   <!-- 插件将动态加载到这里 -->
+               </ul>
+           </section>
         </main>
     </div>
 

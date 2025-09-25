@@ -11,45 +11,152 @@ const { chunkText } = require('./TextChunker.js');
 const DIARY_ROOT_PATH = path.join(__dirname, 'dailynote'); // Your diary root directory
 const VECTOR_STORE_PATH = path.join(__dirname, 'VectorStore'); // Directory to store vector indices
 const MANIFEST_PATH = path.join(VECTOR_STORE_PATH, 'manifest.json'); // Path for the manifest file
+const USAGE_STATS_PATH = path.join(VECTOR_STORE_PATH, 'usage_stats.json'); // Usage statistics
+
+/**
+ * LRU Cache with TTL for search results
+ */
+class SearchCache {
+    constructor(maxSize = 100, ttl = 60000) { // 1-minute TTL
+        this.cache = new Map();
+        this.maxSize = maxSize;
+        this.ttl = ttl;
+        this.hits = 0;
+        this.misses = 0;
+    }
+
+    getCacheKey(diaryName, queryVector, k) {
+        const vectorHash = crypto.createHash('md5')
+            .update(Buffer.from(queryVector))
+            .digest('hex');
+        return `${diaryName}-${vectorHash}-${k}`;
+    }
+
+    get(diaryName, queryVector, k) {
+        const key = this.getCacheKey(diaryName, queryVector, k);
+        const entry = this.cache.get(key);
+        
+        if (entry && Date.now() - entry.timestamp < this.ttl) {
+            this.hits++;
+            return entry.result;
+        }
+        
+        this.cache.delete(key);
+        this.misses++;
+        return null;
+    }
+
+    set(diaryName, queryVector, k, result) {
+        const key = this.getCacheKey(diaryName, queryVector, k);
+        
+        if (this.cache.size >= this.maxSize) {
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+        }
+        
+        this.cache.set(key, {
+            result,
+            timestamp: Date.now()
+        });
+    }
+
+    getStats() {
+        const total = this.hits + this.misses;
+        return {
+            hits: this.hits,
+            misses: this.misses,
+            hitRate: total > 0 ? (this.hits / total * 100).toFixed(2) + '%' : '0%',
+            size: this.cache.size,
+            maxSize: this.maxSize
+        };
+    }
+}
 
 /**
  * Manages the creation, synchronization, and searching of vector databases for diaries.
- * Implements an incremental update mechanism using a manifest file to avoid re-processing unchanged files on restart.
  */
 class VectorDBManager {
-    constructor() {
-        // API Configuration
+    constructor(config = {}) {
+        this.config = {
+            changeThreshold: parseFloat(process.env.VECTORDB_CHANGE_THRESHOLD) || 0.5,
+            maxMemoryUsage: (parseInt(process.env.VECTORDB_MAX_MEMORY_MB) || 500) * 1024 * 1024,
+            cacheSize: parseInt(process.env.VECTORDB_CACHE_SIZE) || 100,
+            cacheTTL: parseInt(process.env.VECTORDB_CACHE_TTL_MS) || 60000,
+            retryAttempts: parseInt(process.env.VECTORDB_RETRY_ATTEMPTS) || 3,
+            retryBaseDelay: parseInt(process.env.VECTORDB_RETRY_BASE_DELAY_MS) || 1000,
+            retryMaxDelay: parseInt(process.env.VECTORDB_RETRY_MAX_DELAY_MS) || 10000,
+            preWarmCount: parseInt(process.env.VECTORDB_PREWARM_COUNT) || 5,
+            efSearch: parseInt(process.env.VECTORDB_EF_SEARCH) || 150,
+        };
+
         this.apiKey = process.env.API_Key;
         this.apiUrl = process.env.API_URL;
         this.embeddingModel = process.env.WhitelistEmbeddingModel;
 
-        // In-memory cache for performance
-        this.indices = new Map(); // { diaryName: hnswIndex }
-        this.chunkMaps = new Map(); // { diaryName: {id: chunkData} }
-        this.activeWorkers = new Set(); // Tracks diary books currently being processed
-        
-        // State for incremental updates
-        // State for incremental updates. Now stores more details.
-        this.manifest = {}; // Back to simple format: { diaryName: { fileName: fileHash } }
+        this.indices = new Map();
+        this.chunkMaps = new Map();
+        this.activeWorkers = new Set();
+        this.lruCache = new Map();
+        this.manifest = {};
+        this.searchCache = new SearchCache(this.config.cacheSize, this.config.cacheTTL);
+
+        this.stats = {
+            totalIndices: 0,
+            totalChunks: 0,
+            totalSearches: 0,
+            avgSearchTime: 0,
+            lastUpdateTime: null,
+        };
+
+        console.log('[VectorDB] Initialized with config:', {
+            changeThreshold: this.config.changeThreshold,
+            maxMemoryMB: this.config.maxMemoryUsage / 1024 / 1024,
+            cacheSize: this.config.cacheSize,
+            cacheTTL: this.config.cacheTTL,
+            retryAttempts: this.config.retryAttempts,
+        });
     }
 
     /**
-     * Initializes the vector database manager.
-     * This is the main entry point to be called from server.js.
+     * 记录性能指标
      */
+    recordMetric(type, duration) {
+        if (type === 'search_success') {
+            this.stats.totalSearches++;
+            this.stats.avgSearchTime =
+                (this.stats.avgSearchTime * (this.stats.totalSearches - 1) + duration)
+                / this.stats.totalSearches;
+        }
+    }
+
+    getHealthStatus() {
+        const totalChunks = Array.from(this.chunkMaps.values()).reduce((sum, map) => sum + Object.keys(map).length, 0);
+        return {
+            status: 'healthy',
+            stats: {
+                ...this.stats,
+                totalIndices: this.indices.size,
+                totalChunks: totalChunks,
+                workerQueueLength: this.activeWorkers.size,
+                memoryUsage: process.memoryUsage().heapUsed,
+            },
+            activeWorkers: Array.from(this.activeWorkers),
+            loadedIndices: Array.from(this.indices.keys()),
+            manifestVersion: Object.keys(this.manifest).length,
+            cacheStats: this.searchCache.getStats(),
+        };
+    }
+
     async initialize() {
         console.log('[VectorDB] Initializing Vector Database Manager...');
         await fs.mkdir(VECTOR_STORE_PATH, { recursive: true });
         await this.loadManifest();
         await this.scanAndSyncAll();
+        await this.preWarmIndices();
         this.watchDiaries();
         console.log('[VectorDB] Initialization complete. Now monitoring diary files for changes.');
     }
 
-    /**
-     * Loads the manifest file from disk into memory.
-     * If the file doesn't exist, it initializes an empty manifest.
-     */
     async loadManifest() {
         try {
             const data = await fs.readFile(MANIFEST_PATH, 'utf-8');
@@ -60,15 +167,12 @@ class VectorDBManager {
                 console.log('[VectorDB] Manifest file not found. A new one will be created.');
                 this.manifest = {};
             } else {
-                console.error('[VectorDB] Failed to load manifest file, will proceed with a blank one:', error);
+                console.error('[VectorDB] Failed to load manifest file:', error);
                 this.manifest = {};
             }
         }
     }
 
-    /**
-     * Saves the current in-memory manifest to the disk.
-     */
     async saveManifest() {
         try {
             await fs.writeFile(MANIFEST_PATH, JSON.stringify(this.manifest, null, 2));
@@ -77,12 +181,6 @@ class VectorDBManager {
         }
     }
 
-    // _getChunkHashes is no longer needed at the class level.
-
-    /**
-     * Scans all diary books and synchronizes their vector indices.
-     * It intelligently skips books that have not changed since the last run.
-     */
     async scanAndSyncAll() {
         const diaryBooks = await fs.readdir(DIARY_ROOT_PATH, { withFileTypes: true });
         for (const dirent of diaryBooks) {
@@ -95,70 +193,44 @@ class VectorDBManager {
                     console.log(`[VectorDB] Changes detected in "${diaryName}", scheduling background update.`);
                     this.scheduleDiaryBookProcessing(diaryName);
                 } else {
-                    console.log(`[VectorDB] "${diaryName}" is up-to-date. Pre-loading index into memory.`);
-                    // Pre-warm the cache by loading the index if it's not already loaded.
-                    this.loadIndexForSearch(diaryName).catch(err => {
-                        console.error(`[VectorDB] Failed to pre-load index for ${diaryName}:`, err.message);
-                    });
+                    console.log(`[VectorDB] "${diaryName}" is up-to-date. Index will be loaded on demand.`);
                 }
             }
         }
     }
 
-    /**
-     * Checks a diary book against the manifest to see if an update is required.
-     * @param {string} diaryName - The name of the diary book.
-     * @param {string} diaryPath - The full path to the diary book directory.
-     * @returns {Promise<boolean>} - True if an update is needed, false otherwise.
-     */
     async checkIfUpdateNeeded(diaryName, diaryPath) {
         const diaryManifest = this.manifest[diaryName] || {};
         const files = await fs.readdir(diaryPath);
         const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
 
-        if (Object.keys(diaryManifest).length !== relevantFiles.length) {
-            return true; // File count mismatch
-        }
+        if (Object.keys(diaryManifest).length !== relevantFiles.length) return true;
 
         for (const file of relevantFiles) {
             const oldFileHash = diaryManifest[file];
-            if (!oldFileHash) {
-                return true; // New file found
-            }
+            if (!oldFileHash) return true;
 
             const filePath = path.join(diaryPath, file);
             const content = await fs.readFile(filePath, 'utf-8');
             const currentFileHash = crypto.createHash('md5').update(content).digest('hex');
             
-            if (oldFileHash !== currentFileHash) {
-                return true; // File content has changed
-            }
+            if (oldFileHash !== currentFileHash) return true;
         }
-
-        return false; // No changes detected
+        return false;
     }
-    
-    /**
-     * Calculates changes for a diary book using a more robust diffing strategy.
-     * @param {string} diaryName The name of the diary book.
-     * @returns {Promise<object>} A changeset object.
-     */
+
     async calculateChanges(diaryName) {
         const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
         const newFileHashes = {};
-
-        // 1. Load old state from the chunk map
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
         let oldChunkMap = {};
         try {
             oldChunkMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'));
-        } catch (e) { /* Map doesn't exist, treat as empty */ }
+        } catch (e) { /* ignore */ }
         
         const oldChunkHashToLabel = new Map(Object.entries(oldChunkMap).map(([label, data]) => [data.chunkHash, Number(label)]));
-
-        // 2. Build current state from disk
-        const currentChunkData = new Map(); // hash -> { text, sourceFile }
+        const currentChunkData = new Map();
         const files = await fs.readdir(diaryPath);
         const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
 
@@ -176,8 +248,6 @@ class VectorDBManager {
         }
 
         const currentChunkHashes = new Set(currentChunkData.keys());
-
-        // 3. Compare old and new states to build the changeset
         const chunksToAdd = [];
         for (const currentHash of currentChunkHashes) {
             if (!oldChunkHashToLabel.has(currentHash)) {
@@ -193,41 +263,35 @@ class VectorDBManager {
             }
         }
 
-        return {
-            diaryName,
-            chunksToAdd,
-            labelsToDelete,
-            newFileHashes
-        };
+        return { diaryName, chunksToAdd, labelsToDelete, newFileHashes };
     }
 
-    /**
-     * Fetches embeddings for a batch of text chunks from the API.
-     * @param {string[]} chunks - An array of text strings to embed.
-     * @returns {Promise<Array<number[]>>} - A promise that resolves to an array of vectors.
-     */
     async getEmbeddings(chunks) {
-        // This instance method now delegates to the stateless worker function
         return getEmbeddingsInWorker(chunks, {
             apiKey: this.apiKey,
             apiUrl: this.apiUrl,
             embeddingModel: this.embeddingModel,
         });
     }
-    
-    /**
-     * Processes all .txt files in a diary book directory, creates a vector index, and saves it.
-     * @param {string} diaryName - The name of the diary book to process.
-     * @returns {Promise<object|null>} - An object containing file hashes, or null on failure.
-     */
-    // This instance method is no longer needed, as its logic is now dispatched to a worker
-    // via scheduleDiaryBookProcessing.
 
-    /**
-     * Schedules a diary book to be processed in a background worker thread.
-     * Prevents multiple workers from running for the same diary simultaneously.
-     * @param {string} diaryName The name of the diary book to process.
-     */
+    async getEmbeddingsWithRetry(chunks) {
+        let lastError;
+        for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
+            try {
+                return await this.getEmbeddings(chunks);
+            } catch (error) {
+                lastError = error;
+                console.log(`[VectorDB] Embedding attempt ${attempt} failed:`, error.message);
+                if (attempt < this.config.retryAttempts) {
+                    const delay = Math.min(this.config.retryBaseDelay * Math.pow(2, attempt - 1), this.config.retryMaxDelay);
+                    console.log(`[VectorDB] Retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        throw new Error(`Failed to get embeddings after ${this.config.retryAttempts} attempts: ${lastError.message}`);
+    }
+
     async scheduleDiaryBookProcessing(diaryName) {
         if (this.activeWorkers.has(diaryName)) {
             console.log(`[VectorDB] Processing for "${diaryName}" is already in progress. Skipping.`);
@@ -236,32 +300,27 @@ class VectorDBManager {
 
         this.activeWorkers.add(diaryName);
         try {
-            // First, get the size of the old index to calculate the change ratio correctly.
             const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
             const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
             let totalOldChunks = 0;
             try {
                 const oldChunkMap = JSON.parse(await fs.readFile(mapPath, 'utf-8'));
                 totalOldChunks = Object.keys(oldChunkMap).length;
-            } catch (e) { /* Map doesn't exist, so count is 0 */ }
+            } catch (e) { /* ignore */ }
 
             console.log(`[VectorDB] Calculating changes for "${diaryName}"...`);
             const changeset = await this.calculateChanges(diaryName);
             const { chunksToAdd, labelsToDelete } = changeset;
             
-            const changeThreshold = 0.5; // 50% change threshold to trigger full rebuild
-            const changeRatio = totalOldChunks > 0
-                ? (chunksToAdd.length + labelsToDelete.length) / totalOldChunks
-                : 1.0; // If there were 0 chunks before, any addition is a 100% change.
+            const changeRatio = totalOldChunks > 0 ? (chunksToAdd.length + labelsToDelete.length) / totalOldChunks : 1.0;
 
-            // Decision Logic: When to do a full rebuild vs. incremental update.
-            if (totalOldChunks === 0 || changeRatio > changeThreshold) {
+            if (totalOldChunks === 0 || changeRatio > this.config.changeThreshold) {
                 console.log(`[VectorDB] Major changes detected (${(changeRatio * 100).toFixed(1)}%). Scheduling a full rebuild for "${diaryName}".`);
                 this.runFullRebuildWorker(diaryName);
             } else if (chunksToAdd.length > 0 || labelsToDelete.length > 0) {
                 console.log(`[VectorDB] Minor changes detected. Applying incremental update for "${diaryName}".`);
                 await this.applyChangeset(changeset);
-                this.activeWorkers.delete(diaryName); // Incremental is faster and blocking, so we can clear here.
+                this.activeWorkers.delete(diaryName);
             } else {
                 console.log(`[VectorDB] No effective changes detected for "${diaryName}". Nothing to do.`);
                 this.activeWorkers.delete(diaryName);
@@ -272,10 +331,6 @@ class VectorDBManager {
         }
     }
 
-    /**
-     * Runs a full rebuild of a diary book in a background worker.
-     * @param {string} diaryName The name of the diary book.
-     */
     runFullRebuildWorker(diaryName) {
         const worker = new Worker(path.resolve(__dirname, 'vectorizationWorker.js'), {
             workerData: {
@@ -287,33 +342,25 @@ class VectorDBManager {
 
         worker.on('message', (message) => {
             if (message.status === 'success' && message.task === 'fullRebuild') {
-                // The worker now returns the simple fileHashes manifest
                 this.manifest[message.diaryName] = message.newManifestEntry;
                 this.saveManifest();
+                this.stats.lastUpdateTime = new Date().toISOString();
                 console.log(`[VectorDB] Worker successfully completed full rebuild for "${message.diaryName}".`);
             } else {
                 console.error(`[VectorDB] Worker failed to process "${message.diaryName}":`, message.error);
             }
         });
 
-        worker.on('error', (error) => {
-            console.error(`[VectorDB] Worker for "${diaryName}" encountered an error:`, error);
-        });
-
+        worker.on('error', (error) => console.error(`[VectorDB] Worker for "${diaryName}" encountered an error:`, error));
         worker.on('exit', (code) => {
             this.activeWorkers.delete(diaryName);
-            if (code !== 0) {
-                console.error(`[VectorDB] Worker for "${diaryName}" stopped with exit code ${code}`);
-            }
+            if (code !== 0) console.error(`[VectorDB] Worker for "${diaryName}" stopped with exit code ${code}`);
         });
     }
 
-    /**
-     * Sets up a file watcher to automatically update indices when diary files change.
-     */
     watchDiaries() {
         const watcher = chokidar.watch(DIARY_ROOT_PATH, {
-            ignored: /(^|[\/\\])\../, // ignore dotfiles
+            ignored: /(^|[\/\\])\../,
             persistent: true,
             ignoreInitial: true,
         });
@@ -324,36 +371,33 @@ class VectorDBManager {
             this.scheduleDiaryBookProcessing(diaryName);
         };
 
-        watcher
-            .on('add', handleFileChange)
-            .on('change', handleFileChange)
-            .on('unlink', handleFileChange);
+        watcher.on('add', handleFileChange).on('change', handleFileChange).on('unlink', handleFileChange);
     }
 
-    /**
-     * Lazily loads a diary's vector index and chunk map from disk into memory.
-     * @param {string} diaryName - The name of the diary book to load.
-     * @param {number} [dimensions] - The expected dimensions of the vectors. If not provided, it will be inferred.
-     * @returns {Promise<boolean>} - True if loading was successful, false otherwise.
-     */
     async loadIndexForSearch(diaryName, dimensions) {
         if (this.indices.has(diaryName)) {
-            return true; // Already loaded
+            // 安全地更新 LRU 缓存
+            const cacheEntry = this.lruCache.get(diaryName);
+            if (cacheEntry) {
+                cacheEntry.lastAccessed = Date.now();
+            } else {
+                this.lruCache.set(diaryName, { lastAccessed: Date.now() });
+            }
+            return true;
         }
+        await this.manageMemory();
+
         try {
             const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
             const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
             const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
 
-            await fs.access(indexPath); // Check if index exists before proceeding
+            await fs.access(indexPath);
             await fs.access(mapPath);
 
             if (!dimensions) {
-                 // Fallback to infer dimensions if not provided (e.g., on initial pre-load)
-                 const dummyEmbeddings = await this.getEmbeddings(["."]);
-                 if (!dummyEmbeddings || dummyEmbeddings.length === 0) {
-                     throw new Error("Could not dynamically determine embedding dimensions.");
-                 }
+                 const dummyEmbeddings = await this.getEmbeddingsWithRetry(["."]);
+                 if (!dummyEmbeddings || dummyEmbeddings.length === 0) throw new Error("Could not dynamically determine embedding dimensions.");
                  dimensions = dummyEmbeddings[0].length;
             }
 
@@ -364,6 +408,7 @@ class VectorDBManager {
             
             this.indices.set(diaryName, index);
             this.chunkMaps.set(diaryName, JSON.parse(mapData));
+            this.lruCache.set(diaryName, { lastAccessed: Date.now() });
             console.log(`[VectorDB] Lazily loaded index for "${diaryName}" into memory.`);
             return true;
         } catch (error) {
@@ -372,22 +417,16 @@ class VectorDBManager {
         }
     }
 
-    /**
-     * Applies a changeset using auto-increment IDs.
-     * @param {object} changeset The changeset from calculateChanges.
-     */
     async applyChangeset(changeset) {
         const { diaryName, chunksToAdd, labelsToDelete, newFileHashes } = changeset;
 
-        // 1. Ensure index is loaded
         await this.loadIndexForSearch(diaryName);
         let index = this.indices.get(diaryName);
         let chunkMap = this.chunkMaps.get(diaryName);
 
-        // If index doesn't exist, create it.
         if (!index) {
             if (chunksToAdd.length > 0) {
-                const tempVector = await this.getEmbeddings([chunksToAdd[0].text]);
+                const tempVector = await this.getEmbeddingsWithRetry([chunksToAdd[0].text]);
                 const dimensions = tempVector[0].length;
                 index = new HierarchicalNSW('l2', dimensions);
                 index.initIndex(0);
@@ -395,52 +434,26 @@ class VectorDBManager {
                 chunkMap = {};
                 this.chunkMaps.set(diaryName, chunkMap);
             } else {
-                 console.log(`[VectorDB] No index and nothing to add for "${diaryName}". Skipping.`);
                  this.manifest[diaryName] = newFileHashes;
                  await this.saveManifest();
                  return;
             }
         }
 
-        // 2. Delete vectors
         if (labelsToDelete.length > 0) {
-            // --- Diagnostic Logging ---
-            // To make logs less confusing, check if deletions are from files that no longer exist.
-            try {
-                const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
-                const files = await fs.readdir(diaryPath);
-                const currentFiles = new Set(files);
-                const deletedFilesSources = new Set();
-                
-                labelsToDelete.forEach(label => {
-                    const chunkData = chunkMap[label]; // Check original chunkMap before deletion
-                    if (chunkData && !currentFiles.has(chunkData.sourceFile)) {
-                        deletedFilesSources.add(chunkData.sourceFile);
-                    }
-                });
-
-                if (deletedFilesSources.size > 0) {
-                    console.log(`[VectorDB] Note: Deleting vectors from file(s) that no longer exist: ${[...deletedFilesSources].join(', ')}`);
-                }
-            } catch (e) {
-                console.warn("[VectorDB] Could not perform diagnostic check for deleted files.", e.message);
-            }
-            // --- End Diagnostic Logging ---
-
             console.log(`[VectorDB] Deleting ${labelsToDelete.length} vectors from "${diaryName}".`);
             labelsToDelete.forEach(label => {
                 try {
                     index.markDelete(label);
                     delete chunkMap[label];
-                } catch (e) { /* Ignore errors for already deleted labels */ }
+                } catch (e) { /* ignore */ }
             });
         }
 
-        // 3. Add new vectors
         if (chunksToAdd.length > 0) {
             console.log(`[VectorDB] Adding ${chunksToAdd.length} new vectors to "${diaryName}".`);
             const texts = chunksToAdd.map(c => c.text);
-            const vectors = await this.getEmbeddings(texts);
+            const vectors = await this.getEmbeddingsWithRetry(texts);
             
             let maxLabel = Object.keys(chunkMap).reduce((max, label) => Math.max(max, Number(label)), -1);
             
@@ -458,7 +471,6 @@ class VectorDBManager {
             }
         }
 
-        // 4. Save everything
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
         const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
@@ -468,77 +480,139 @@ class VectorDBManager {
 
         this.manifest[diaryName] = newFileHashes;
         await this.saveManifest();
-
+        this.stats.lastUpdateTime = new Date().toISOString();
         console.log(`[VectorDB] Incremental update for "${diaryName}" completed.`);
     }
 
-    /**
-     * Searches the vector index for a given diary book.
-     * @param {string} diaryName - The name of the diary book to search in.
-     * @param {number[]} queryVector - The vector representation of the search query.
-     * @param {number} [k=3] - The number of nearest neighbors to return.
-     * @returns {Promise<object[]>} - An array of the most relevant chunk objects.
-     */
-    async search(diaryName, queryVector, k = 3) { 
-        console.log(`[VectorDB][Search] Received search request for "${diaryName}".`);
-        const isLoaded = await this.loadIndexForSearch(diaryName, queryVector.length);
-        if (!isLoaded) {
-            console.error(`[VectorDB][Search] Index for "${diaryName}" could not be loaded. Returning empty result.`);
-            return [];
+    async search(diaryName, queryVector, k = 3) {
+        const startTime = performance.now();
+        const cached = this.searchCache.get(diaryName, queryVector, k);
+        if (cached) {
+            console.log(`[VectorDB][Search] Cache hit for "${diaryName}"`);
+            this.recordMetric('search_success', performance.now() - startTime);
+            return cached;
         }
-        
-        const index = this.indices.get(diaryName);
-        const chunkMap = this.chunkMaps.get(diaryName);
-        if (!index || !chunkMap) {
-            console.error(`[VectorDB][Search] Index or chunkMap for "${diaryName}" not found in memory after load. Returning empty result.`);
-            return [];
-        }
-        
+
+        console.log(`[VectorDB][Search] Received async search request for "${diaryName}".`);
+        await this.trackUsage(diaryName);
+
+        // 确保索引文件存在，但不在这里加载它，工作线程将自己加载
+        const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+        const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
         try {
-            const efSearch = 150;
-            if (typeof index.setEf === 'function') {
-                index.setEf(efSearch);
-            }
-            
-            console.log(`[VectorDB][Search] Performing k-NN search in "${diaryName}" with k=${k}.`);
-            const result = index.searchKnn(queryVector, k);
-            console.log(`[VectorDB][Search] Raw search result labels from HNSW:`, result.neighbors);
-
-            if (!result.neighbors || result.neighbors.length === 0) {
-                console.log(`[VectorDB][Search] k-NN search returned no neighbors.`);
-                return [];
-            }
-            
-            // With auto-incrementing integer IDs, the label is the key. JSON keys are strings.
-            const searchResults = result.neighbors.map(label => chunkMap[label]).filter(Boolean);
-
-            console.log(`[VectorDB][Search] Found ${searchResults.length} matching chunks in chunkMap.`);
-            return searchResults;
-
+            await fs.access(indexPath);
         } catch (error) {
-            console.error(`[VectorDB][Search] An error occurred during k-NN search for "${diaryName}":`, error);
+            console.error(`[VectorDB][Search] Index file for "${diaryName}" does not exist. Cannot start search worker.`);
             return [];
         }
+
+        return new Promise((resolve, reject) => {
+            console.log(`[VectorDB][Search] Creating search worker for "${diaryName}".`);
+            const worker = new Worker(path.resolve(__dirname, 'vectorSearchWorker.js'), {
+                workerData: {
+                    diaryName,
+                    queryVector,
+                    k,
+                    efSearch: this.config.efSearch,
+                    vectorStorePath: VECTOR_STORE_PATH,
+                }
+            });
+
+            worker.on('message', (message) => {
+                console.log(`[VectorDB][Search] Received message from worker for "${diaryName}". Status: ${message.status}`);
+                if (message.status === 'success') {
+                    const searchResults = message.results;
+                    this.searchCache.set(diaryName, queryVector, k, searchResults);
+                    this.recordMetric('search_success', performance.now() - startTime);
+                    console.log(`[VectorDB][Search] Worker found ${searchResults.length} matching chunks for "${diaryName}". Resolving promise.`);
+                    resolve(searchResults);
+                } else {
+                    console.error(`[VectorDB][Search] Worker returned an error for "${diaryName}":`, message.error);
+                    console.log(`[VectorDB][Search] Resolving promise with empty array due to worker error.`);
+                    resolve([]);
+                }
+            });
+
+            worker.on('error', (error) => {
+                console.error(`[VectorDB][Search] Worker for "${diaryName}" encountered a critical error:`, error);
+                console.log(`[VectorDB][Search] Resolving promise with empty array due to critical worker error.`);
+                resolve([]);
+            });
+
+            worker.on('exit', (code) => {
+                console.log(`[VectorDB][Search] Worker for "${diaryName}" exited with code ${code}.`);
+                if (code !== 0) {
+                    console.error(`[VectorDB][Search] Worker for "${diaryName}" stopped with a non-zero exit code.`);
+                }
+            });
+        });
+    }
+
+    async manageMemory() {
+        const memUsage = process.memoryUsage().heapUsed;
+        if (memUsage > this.config.maxMemoryUsage) {
+            console.log('[VectorDB] Memory threshold exceeded, evicting least recently used indices...');
+            const entries = Array.from(this.lruCache.entries()).sort(([,a], [,b]) => a.lastAccessed - b.lastAccessed);
+            for (const [diaryName] of entries) {
+                if (process.memoryUsage().heapUsed < this.config.maxMemoryUsage * 0.8) break;
+                this.indices.delete(diaryName);
+                this.chunkMaps.delete(diaryName);
+                this.lruCache.delete(diaryName);
+                console.log(`[VectorDB] Evicted index for "${diaryName}" from memory.`);
+            }
+        }
+    }
+
+    async loadUsageStats() {
+        try {
+            const data = await fs.readFile(USAGE_STATS_PATH, 'utf-8');
+            return JSON.parse(data);
+        } catch (e) {
+            return {};
+        }
+    }
+
+    async trackUsage(diaryName) {
+        let stats = await this.loadUsageStats();
+        if (!stats[diaryName]) {
+            stats[diaryName] = { frequency: 0, lastAccessed: null };
+        }
+        stats[diaryName].frequency++;
+        stats[diaryName].lastAccessed = Date.now();
+        try {
+            await fs.writeFile(USAGE_STATS_PATH, JSON.stringify(stats, null, 2));
+        } catch (e) {
+            console.warn('[VectorDB] Failed to save usage stats:', e.message);
+        }
+    }
+
+    async preWarmIndices() {
+        console.log('[VectorDB] Starting index pre-warming...');
+        const usageStats = await this.loadUsageStats();
+        const sortedDiaries = Object.entries(usageStats)
+            .sort(([,a], [,b]) => b.frequency - a.frequency)
+            .map(([name]) => name);
+        
+        const preLoadCount = Math.min(this.config.preWarmCount, sortedDiaries.length);
+        if (preLoadCount === 0) {
+            console.log('[VectorDB] No usage stats found, skipping pre-warming.');
+            return;
+        }
+        const preLoadPromises = sortedDiaries
+            .slice(0, preLoadCount)
+            .map(diaryName => this.loadIndexForSearch(diaryName));
+        
+        await Promise.all(preLoadPromises);
+        console.log(`[VectorDB] Pre-warmed ${preLoadCount} most frequently used indices.`);
     }
 }
 
 // --- Standalone functions for Worker ---
-
-/**
- * Fetches embeddings for a batch of text chunks from the API.
- * This is a stateless version for use in workers.
- * @param {string[]} chunks - An array of text strings to embed.
- * @param {object} config - API configuration { apiKey, apiUrl, embeddingModel }.
- * @returns {Promise<Array<number[]>>} - A promise that resolves to an array of vectors.
- */
 async function getEmbeddingsInWorker(chunks, config) {
     const { default: fetch } = await import('node-fetch');
     const allVectors = [];
-    // Reading from process.env here as a fallback in worker context
-    const batchSize = parseInt(process.env.WhitelistEmbeddingModelList) || 5;
+    const batchSize = parseInt(process.env.VECTORDB_BATCH_SIZE) || 5;
     
-    console.log(`[VectorDB][Worker] 批量处理配置: batchSize=${batchSize}, 总文本块数=${chunks.length}`);
-
     for (let i = 0; i < chunks.length; i += batchSize) {
         const batch = chunks.slice(i, i + batchSize);
         try {
@@ -562,29 +636,21 @@ async function getEmbeddingsInWorker(chunks, config) {
             const data = await response.json();
             const vectors = data.data.map(item => item.embedding);
             allVectors.push(...vectors);
-            console.log(`[VectorDB][Worker] Successfully processed a batch of ${batch.length} text chunks.`);
         } catch (error) {
             console.error('[VectorDB][Worker] Failed to call Embedding API:', error);
-            allVectors.push(...Array(batch.length).fill(null));
+            throw error; // Propagate error to be caught by retry logic
         }
     }
-    return allVectors.filter(v => v !== null);
+    return allVectors;
 }
 
-/**
- * Processes all .txt files in a diary book, creates a vector index, and saves it.
- * This is a stateless version for use in workers.
- * @param {string} diaryName - The name of the diary book to process.
- * @param {object} config - API configuration { apiKey, apiUrl, embeddingModel }.
- * @returns {Promise<object|null>} - An object containing file hashes, or null on failure.
- */
 async function processSingleDiaryBookInWorker(diaryName, config) {
     const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
     const files = await fs.readdir(diaryPath);
     const relevantFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
 
     let allChunks = [];
-    const fileHashes = {}; // This will be our new, simplified manifest entry
+    const fileHashes = {};
     const chunkMap = {};
     let labelCounter = 0;
 
@@ -594,34 +660,35 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
         fileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
         
         const chunks = chunkText(content);
-        allChunks.push(...chunks);
-
-        chunks.forEach(chunk => {
+        for (const chunk of chunks) {
             const chunkHash = crypto.createHash('sha256').update(chunk).digest('hex');
+            allChunks.push(chunk);
             chunkMap[labelCounter] = {
                 text: chunk,
                 sourceFile: file,
-                chunkHash: chunkHash // Keep hash for future diffing
+                chunkHash: chunkHash
             };
             labelCounter++;
-        });
+        }
     }
+
+    const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+    const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
 
     if (allChunks.length === 0) {
         console.log(`[VectorDB][Worker] Diary book "${diaryName}" is empty. Skipping.`);
-        // Return the simple fileHashes manifest. The map will be empty.
-        const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
-        const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
         await fs.writeFile(mapPath, JSON.stringify({}));
+        // Also clear the binary index file if it exists
+        const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
+        try { await fs.unlink(indexPath); } catch(e) { /* ignore if not found */ }
         return fileHashes;
     }
 
-    console.log(`[VectorDB][Worker] "${diaryName}" has ${allChunks.length} text chunks for full rebuild. Fetching embeddings...`);
+    console.log(`[VectorDB][Worker] "${diaryName}" has ${allChunks.length} text chunks. Fetching embeddings...`);
     const vectors = await getEmbeddingsInWorker(allChunks, config);
 
     if (vectors.length !== allChunks.length) {
-        console.error(`[VectorDB][Worker] Embedding failed or vector count mismatch for "${diaryName}". Aborting.`);
-        return null;
+        throw new Error(`Embedding failed or vector count mismatch for "${diaryName}".`);
     }
 
     const dimensions = vectors[0].length;
@@ -629,20 +696,15 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
     index.initIndex(allChunks.length);
     
     for (let i = 0; i < vectors.length; i++) {
-        index.addPoint(vectors[i], i); // The label is now the simple index 'i'
+        index.addPoint(vectors[i], i);
     }
 
-    const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
     const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
-    const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
-
     await index.writeIndex(indexPath);
-    // Note: chunkMap keys are numbers, but JSON.stringify will convert them to strings. This is expected.
     await fs.writeFile(mapPath, JSON.stringify(chunkMap, null, 2));
 
     console.log(`[VectorDB][Worker] Index for "${diaryName}" created and saved successfully.`);
-    return fileHashes; // Return the simple file hash manifest
+    return fileHashes;
 }
-
 
 module.exports = { VectorDBManager, processSingleDiaryBookInWorker };

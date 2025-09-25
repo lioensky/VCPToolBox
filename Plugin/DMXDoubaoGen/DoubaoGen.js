@@ -20,8 +20,7 @@ const VAR_HTTPS_URL = process.env.VarHttpsUrl; // Read VarHttps Url from env
 const DMX_API_CONFIG = {
     BASE_URL: 'https://www.dmxapi.cn', // New API Host
     IMAGE_GENERATION_ENDPOINT: '/v1/images/generations', // New API Endpoint
-    MODEL_ID_TEXT_TO_IMAGE: "seedream-3.0", // Model for text-to-image
-    MODEL_ID_IMAGE_TO_IMAGE: "seededit-3.0", // Model for image-to-image
+    MODEL_ID: "doubao-seedream-4-0-250828", // New unified model
     DEFAULT_PARAMS: {
         n: 1, // Number of images to generate, typically fixed at 1 for this API
     }
@@ -53,6 +52,19 @@ function isValidDoubaoGenArgs(args) {
             if (isNaN(scale) || scale < 0 || scale > 10) return false;
         }
     
+    } else if (args.command === 'DoubaoComposeImage') {
+        if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
+        
+        // Find at least one image parameter
+        const imageKeys = Object.keys(args).filter(k => k.startsWith('image_'));
+        if (imageKeys.length === 0) return false;
+
+        if (typeof args.resolution !== 'string') return false; // Can be "adaptive" or "WxH"
+        if (args.guidance_scale !== undefined) {
+            const scale = parseFloat(args.guidance_scale);
+            if (isNaN(scale) || scale < 0 || scale > 10) return false;
+        }
+
     } else {
         return false; // Unknown command
     }
@@ -161,17 +173,57 @@ async function generateImageAndSave(args) {
 
     // --- Image Data Processing (only for EditImage command) ---
     let imageData = null;
+    let imagesData = [];
+
     if (command === 'DoubaoEditImage') {
         imageData = await getImageData(args.image, args.image_base64);
         if (!imageData) {
             // This case should ideally not be hit if validation is correct, but as a safeguard.
             throw new Error("DoubaoGen Plugin Error: 'image' parameter is required and must be processed for the DoubaoEditImage command.");
         }
+    } else if (command === 'DoubaoComposeImage') {
+        const imageKeys = Object.keys(args).filter(k => k.startsWith('image_'));
+        
+        const indices = imageKeys.map(k => {
+            const num = k.split('_').pop();
+            return isNaN(num) ? 0 : parseInt(num, 10);
+        }).filter(n => n > 0);
+
+        if (indices.length === 0) {
+            throw new Error("DoubaoGen Plugin Error: For DoubaoComposeImage, at least one 'image_N' or 'image_base64_N' (N>0) parameter is required.");
+        }
+        const maxIndex = Math.max(...indices);
+
+        for (let i = 1; i <= maxIndex; i++) {
+            const imageUrlKey = `image_${i}`;
+            const imageBase64Key = `image_base64_${i}`;
+            
+            const imageUrl = args[imageUrlKey];
+            const imageBase64 = args[imageBase64Key];
+
+            if (!imageUrl && !imageBase64) {
+                throw new Error(`DoubaoGen Plugin Error: Image parameters are not continuous. Missing 'image_${i}' or 'image_base64_${i}'.`);
+            }
+
+            try {
+                const processedImage = await getImageData(imageUrl, imageBase64);
+                imagesData.push(processedImage);
+            } catch (e) {
+                if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+                    const enhancedError = new Error(`In multi-image composition, image ${i} (parameter: ${imageUrlKey}) was not found locally and requires remote fetching.`);
+                    enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
+                    enhancedError.fileUrl = e.fileUrl;
+                    enhancedError.failedParameter = imageUrlKey;
+                    throw enhancedError;
+                }
+                throw new Error(`Error processing image ${i} ('${imageUrlKey}'): ${e.message}`);
+            }
+        }
     }
 
     // --- Payload Construction ---
     const payload = {
-        model: command === 'DoubaoEditImage' ? DMX_API_CONFIG.MODEL_ID_IMAGE_TO_IMAGE : DMX_API_CONFIG.MODEL_ID_TEXT_TO_IMAGE,
+        model: DMX_API_CONFIG.MODEL_ID,
         prompt: args.prompt,
         n: DMX_API_CONFIG.DEFAULT_PARAMS.n,
         size: args.resolution,
@@ -179,11 +231,18 @@ async function generateImageAndSave(args) {
     };
 
     if (command === 'DoubaoEditImage') {
-        payload.image = imageData;
+        payload.image = imageData; // For single image edit
         if (args.guidance_scale !== undefined) {
             payload.guidance_scale = args.guidance_scale;
         }
-        // For image-to-image, if resolution is 'adaptive', it's valid.
+        if (args.resolution.toLowerCase() === 'adaptive') {
+            payload.size = 'adaptive';
+        }
+    } else if (command === 'DoubaoComposeImage') {
+        payload.images = imagesData; // For multiple image composition
+        if (args.guidance_scale !== undefined) {
+            payload.guidance_scale = args.guidance_scale;
+        }
         if (args.resolution.toLowerCase() === 'adaptive') {
             payload.size = 'adaptive';
         }
@@ -340,12 +399,16 @@ async function main() {
     } catch (e) {
         // Handle Hyper-Stack-Trace for remote file fetching
         if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
-            console.log(JSON.stringify({
+            const errorPayload = {
                 status: "error",
                 code: e.code,
                 error: e.message,
                 fileUrl: e.fileUrl
-            }));
+            };
+            if (e.failedParameter) {
+                errorPayload.failedParameter = e.failedParameter;
+            }
+            console.log(JSON.stringify(errorPayload));
         } else {
             let detailedError = e.message || "Unknown error in DoubaoGen plugin";
             if (e.response && e.response.data) {

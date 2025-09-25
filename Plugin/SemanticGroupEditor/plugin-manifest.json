@@ -1,0 +1,31 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SemanticGroupEditor",
+  "version": "1.0.0",
+  "displayName": "语义组编辑器",
+  "description": "一个用于查询和更新RAG知识库中语义词元组的插件。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SemanticGroupEditor.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QueryGroups",
+        "description": "查询当前系统中所有的语义词元组，返回组名和对应的词元列表。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "UpdateGroups",
+        "description": "更新或创建语义词元组。如果组名已存在，则覆盖更新；如果不存在，则新建。支持批量操作。\n参数:\n- groupname (字符串, 必需): 要更新或创建的组名。\n- groupwords (字符串, 必需): 词元列表，用英文逗号分隔。\n\n单次更新调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」新的组名「末」,\ngroupwords:「始」词1,词2,词3「末」\n<<<[END_TOOL_REQUEST]>>>\n\n批量更新调用格式 (使用数字后缀):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand1:「始」UpdateGroups「末」,\ngroupname1:「始」组名A「末」,\ngroupwords1:「始」词A1,词A2「末」,\ncommand2:「始」UpdateGroups「末」,\ngroupname2:「始」组名B「末」,\ngroupwords2:「始」词B1,词B2「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」科幻概念「末」,\ngroupwords:「始」戴森球,曲率引擎,赛博朋克「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

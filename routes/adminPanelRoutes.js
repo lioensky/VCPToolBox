@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const PREPROCESSOR_ORDER_FILE = path.join(__dirname, '..', 'preprocessor_order.json');
 
 // 导入 reidentify_image 函数 (现在是 reidentify_media)
 const { reidentifyMediaByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
@@ -10,7 +11,7 @@ const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
 const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
-module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath) {
+module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
     const adminApiRouter = express.Router();
 
     // --- Admin API Router 内容 ---
@@ -1098,10 +1099,102 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
     // --- End RAG Tags API ---
 
+    // --- Semantic Groups API ---
+    adminApiRouter.get('/semantic-groups', async (req, res) => {
+        const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
+        const mainFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
+        
+        try {
+            // 优先读取 .edit.json 文件
+            const content = await fs.readFile(editFilePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (editError) {
+            if (editError.code === 'ENOENT') {
+                // 如果 .edit.json 不存在，则回退到读取主文件
+                try {
+                    const content = await fs.readFile(mainFilePath, 'utf-8');
+                    res.json(JSON.parse(content));
+                } catch (mainError) {
+                    console.error('[AdminPanelRoutes API] Error reading main semantic_groups.json as fallback:', mainError);
+                     if (mainError.code === 'ENOENT') {
+                        res.json({ config: {}, groups: {} }); // 两个文件都不存在
+                    } else {
+                        res.status(500).json({ error: 'Failed to read semantic_groups.json', details: mainError.message });
+                    }
+                }
+            } else {
+                console.error('[AdminPanelRoutes API] Error reading semantic_groups.edit.json:', editError);
+                res.status(500).json({ error: 'Failed to read semantic_groups.edit.json', details: editError.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/semantic-groups', async (req, res) => {
+        const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
+        const data = req.body;
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            // 直接写入 .edit.json 文件，不再调用插件的复杂逻辑
+            await fs.writeFile(editFilePath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: '编辑配置已保存。更改将在下次服务器重启后生效。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing semantic_groups.edit.json:', error);
+            res.status(500).json({ error: 'Failed to write semantic_groups.edit.json', details: error.message });
+        }
+    });
+    // --- End Semantic Groups API ---
+
     // --- VCPTavern API ---
     // This section is now handled by the VCPTavern plugin's own registerRoutes method.
     // The conflicting routes have been removed from here to allow the plugin to manage them.
     // --- End VCPTavern API ---
+    
+    // --- 新增：预处理器顺序管理 API ---
+    adminApiRouter.get('/preprocessors/order', (req, res) => {
+        try {
+            const order = pluginManager.getPreprocessorOrder();
+            res.json({ status: 'success', order });
+        } catch (error) {
+            console.error('[AdminAPI] Error getting preprocessor order:', error);
+            res.status(500).json({ status: 'error', message: 'Failed to get preprocessor order.' });
+        }
+    });
+
+    adminApiRouter.post('/preprocessors/order', async (req, res) => {
+        const { order } = req.body;
+        if (!Array.isArray(order)) {
+            return res.status(400).json({ status: 'error', message: 'Invalid request: "order" must be an array.' });
+        }
+
+        try {
+            await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(order, null, 2), 'utf-8');
+            if (DEBUG_MODE) console.log('[AdminAPI] Saved new preprocessor order to file.');
+            
+            const newOrder = await pluginManager.hotReloadPluginsAndOrder();
+            res.json({ status: 'success', message: 'Order saved and hot-reloaded successfully.', newOrder });
+
+        } catch (error) {
+            console.error('[AdminAPI] Error saving or hot-reloading preprocessor order:', error);
+            res.status(500).json({ status: 'error', message: 'Failed to save or hot-reload preprocessor order.' });
+        }
+    });
+
+    // --- VectorDB Status API ---
+    adminApiRouter.get('/vectordb/status', (req, res) => {
+        if (vectorDBManager && typeof vectorDBManager.getHealthStatus === 'function') {
+            try {
+                const status = vectorDBManager.getHealthStatus();
+                res.json({ success: true, status });
+            } catch (error) {
+                console.error('[AdminAPI] Error getting VectorDB status:', error);
+                res.status(500).json({ success: false, error: 'Failed to get VectorDB status', details: error.message });
+            }
+        } else {
+            res.status(503).json({ success: false, error: 'VectorDBManager is not available.' });
+        }
+    });
     
     return adminApiRouter;
 };

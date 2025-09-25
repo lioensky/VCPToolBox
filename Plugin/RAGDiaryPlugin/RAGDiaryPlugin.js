@@ -4,6 +4,8 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto'); // <--- 引入加密模块
+const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
+const SemanticGroupManager = require('./SemanticGroupManager.js');
 
 // 从 DailyNoteGet 插件借鉴的常量和路径逻辑
 const projectBasePath = process.env.PROJECT_BASE_PATH;
@@ -11,12 +13,268 @@ const dailyNoteRootPath = projectBasePath ? path.join(projectBasePath, 'dailynot
 
 const GLOBAL_SIMILARITY_THRESHOLD = 0.6; // 全局默认余弦相似度阈值
 
+//####################################################################################
+//## TimeExpressionParser - 时间表达式解析器
+//####################################################################################
+class TimeExpressionParser {
+    constructor(locale = 'zh-CN') {
+        this.setLocale(locale);
+    }
+
+    setLocale(locale) {
+        this.locale = locale;
+        this.expressions = TIME_EXPRESSIONS[locale] || TIME_EXPRESSIONS['zh-CN'];
+    }
+
+    // 将日期设置为北京时间 (UTC+8) 的开始
+    _getBeijingTime(date = new Date()) {
+        // 获取本地时间与UTC的时差（分钟）
+        const localOffset = date.getTimezoneOffset() * 60000;
+        // 北京时间是UTC+8
+        const beijingOffset = 8 * 60 * 60 * 1000;
+        // 转换为北京时间
+        const beijingTime = new Date(date.getTime() + localOffset + beijingOffset);
+        return beijingTime;
+    }
+
+    // 获取一天的开始和结束
+    _getDayBoundaries(date) {
+        const start = new Date(date);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(start);
+        end.setUTCDate(end.getUTCDate() + 1);
+        end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+        return { start, end };
+    }
+    
+    // 核心解析函数 - V2 (支持多表达式)
+    parse(text) {
+        console.log(`[TimeParser] Parsing text for all time expressions: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+        const now = this._getBeijingTime(new Date());
+        let remainingText = text;
+        const results = [];
+
+        // 1. 检查硬编码表达式 (从长到短排序)
+        const sortedHardcodedKeys = Object.keys(this.expressions.hardcoded).sort((a, b) => b.length - a.length);
+        for (const expr of sortedHardcodedKeys) {
+            if (remainingText.includes(expr)) {
+                const config = this.expressions.hardcoded[expr];
+                console.log(`[TimeParser] Matched hardcoded expression: "${expr}"`);
+                let result = null;
+                if (config.days !== undefined) {
+                    const targetDate = new Date(now);
+                    targetDate.setUTCDate(now.getUTCDate() - config.days);
+                    result = this._getDayBoundaries(targetDate);
+                } else if (config.type) {
+                    result = this._getSpecialRange(now, config.type);
+                }
+                if (result) {
+                    results.push(result);
+                    remainingText = remainingText.replace(expr, ''); // 消费掉匹配的部分
+                }
+            }
+        }
+
+        // 2. 检查动态模式
+        for (const pattern of this.expressions.patterns) {
+            const globalRegex = new RegExp(pattern.regex.source, 'g');
+            let match;
+            while ((match = globalRegex.exec(remainingText)) !== null) {
+                console.log(`[TimeParser] Matched pattern: "${pattern.regex}" with text "${match[0]}"`);
+                const result = this._handleDynamicPattern(match, pattern.type, now);
+                if (result) {
+                    results.push(result);
+                    // 简单替换，可能不完美但能处理多数情况
+                    remainingText = remainingText.replace(match[0], '');
+                }
+            }
+        }
+
+        if (results.length > 0) {
+            // --- V2.1: 去重 ---
+            const uniqueRanges = new Map();
+            results.forEach(r => {
+                const key = `${r.start.toISOString()}|${r.end.toISOString()}`;
+                if (!uniqueRanges.has(key)) {
+                    uniqueRanges.set(key, r);
+                }
+            });
+            const finalResults = Array.from(uniqueRanges.values());
+
+            if (finalResults.length < results.length) {
+                console.log(`[TimeParser] Deduplicated ranges from ${results.length} to ${finalResults.length}.`);
+            }
+            
+            console.log(`[TimeParser] Found ${finalResults.length} unique time expressions.`);
+            finalResults.forEach((r, i) => {
+                console.log(`  [${i+1}] Range: ${r.start.toISOString()} to ${r.end.toISOString()}`);
+            });
+            return finalResults;
+        } else {
+            console.log(`[TimeParser] No time expression found in text`);
+            return []; // 始终返回数组
+        }
+    }
+
+    _getSpecialRange(now, type) {
+        let start = new Date(now);
+        let end = new Date(now);
+        start.setUTCHours(0, 0, 0, 0); // 所有计算都从当天的开始算起
+
+        switch (type) {
+            case 'thisWeek':
+                const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday...
+                const diff = now.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // adjust when sunday
+                start.setUTCDate(diff);
+                end = new Date(start);
+                end.setUTCDate(start.getUTCDate() + 7);
+                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                break;
+            case 'lastWeek':
+                const lastWeekDay = now.getUTCDay();
+                const lastWeekDiff = now.getUTCDate() - lastWeekDay - 6;
+                start.setUTCDate(lastWeekDiff);
+                end = new Date(start);
+                end.setUTCDate(start.getUTCDate() + 7);
+                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                break;
+            case 'thisMonth':
+                start.setUTCDate(1);
+                end = new Date(start);
+                end.setUTCMonth(end.getUTCMonth() + 1);
+                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                break;
+            case 'lastMonth':
+                start.setUTCDate(1);
+                start.setUTCMonth(start.getUTCMonth() - 1);
+                end = new Date(start);
+                end.setUTCMonth(end.getUTCMonth() + 1);
+                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                break;
+            case 'thisMonthStart': // 本月初（1-10号）
+                start.setUTCDate(1);
+                end = new Date(start);
+                end.setUTCDate(10);
+                end.setUTCHours(23, 59, 59, 999);
+                break;
+            case 'lastMonthStart': // 上月初（1-10号）
+                start.setUTCMonth(start.getUTCMonth() - 1);
+                start.setUTCDate(1);
+                end = new Date(start);
+                end.setUTCDate(10);
+                end.setUTCHours(23, 59, 59, 999);
+                break;
+            case 'lastMonthMid': // 上月中（11-20号）
+                start.setUTCMonth(start.getUTCMonth() - 1);
+                start.setUTCDate(11);
+                end = new Date(start);
+                end.setUTCDate(20);
+                end.setUTCHours(23, 59, 59, 999);
+                break;
+            case 'lastMonthEnd': // 上月末（21号到月底）
+                start.setUTCMonth(start.getUTCMonth() - 1);
+                start.setUTCDate(21);
+                end = new Date(start.getUTCFullYear(), start.getUTCMonth() + 1, 0); // 月底
+                end.setUTCHours(23, 59, 59, 999);
+                break;
+        }
+        return { start, end };
+    }
+
+    _handleDynamicPattern(match, type, now) {
+        const numStr = match[1];
+        const num = this.chineseToNumber(numStr);
+
+        switch(type) {
+            case 'daysAgo':
+                const targetDate = new Date(now);
+                targetDate.setUTCDate(now.getUTCDate() - num);
+                return this._getDayBoundaries(targetDate);
+            
+            case 'weeksAgo':
+                const weekStart = new Date(now);
+                weekStart.setUTCDate(now.getUTCDate() - (num * 7) - now.getUTCDay() + 1);
+                weekStart.setUTCHours(0, 0, 0, 0);
+                const weekEnd = new Date(weekStart);
+                weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
+                weekEnd.setUTCHours(23, 59, 59, 999);
+                return { start: weekStart, end: weekEnd };
+            
+            case 'monthsAgo':
+                const monthsAgoDate = new Date(now);
+                monthsAgoDate.setUTCMonth(now.getUTCMonth() - num);
+                monthsAgoDate.setUTCDate(1);
+                monthsAgoDate.setUTCHours(0, 0, 0, 0);
+                const monthEnd = new Date(monthsAgoDate.getUTCFullYear(), monthsAgoDate.getUTCMonth() + 1, 0);
+                monthEnd.setUTCHours(23, 59, 59, 999);
+                return { start: monthsAgoDate, end: monthEnd };
+            
+            case 'lastWeekday':
+                const weekdayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
+                const targetWeekday = weekdayMap[match[1]];
+                if (targetWeekday === undefined) return null;
+
+                const lastWeekDate = new Date(now);
+                const currentDay = now.getUTCDay(); // 0 = Sunday
+                
+                // 计算上周对应星期几的日期
+                let daysToSubtract;
+                if (targetWeekday === 0) { // 周日
+                    daysToSubtract = currentDay === 0 ? 7 : (currentDay + 7);
+                } else {
+                    daysToSubtract = currentDay >= targetWeekday
+                        ? (currentDay - targetWeekday + 7)
+                        : (currentDay + 7 - targetWeekday);
+                }
+                
+                lastWeekDate.setUTCDate(now.getUTCDate() - daysToSubtract);
+                return this._getDayBoundaries(lastWeekDate);
+        }
+        
+        return null;
+    }
+
+    chineseToNumber(chinese) {
+        const basicMap = {
+            '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+            '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15,
+            '十六': 16, '十七': 17, '十八': 18, '十九': 19,
+            '二十': 20, '三十': 30, '日': 7, '天': 7
+        };
+        
+        // 先检查是否在基础映射中
+        if (basicMap[chinese] !== undefined) {
+            return basicMap[chinese];
+        }
+        
+        // 处理"二十一"到"三十九"这样的复合数字
+        if (chinese.includes('十')) {
+            // "二十一" -> ["二", "一"]
+            const parts = chinese.split('十');
+            if (parts.length === 2) {
+                let tens = 10; // 默认"十"
+                if (parts[0] === '二') tens = 20;
+                else if (parts[0] === '三') tens = 30;
+                
+                const ones = basicMap[parts[1]] || 0;
+                return tens + ones;
+            }
+        }
+        
+        return parseInt(chinese) || 0;
+    }
+}
+
+
 class RAGDiaryPlugin {
     constructor() {
         this.name = 'RAGDiaryPlugin';
         this.vectorDBManager = null;
         this.ragConfig = {};
         this.enhancedVectorCache = {}; // <--- 新增：用于存储增强向量的缓存
+        this.timeParser = new TimeExpressionParser('zh-CN'); // 实例化时间解析器
+        this.semanticGroups = new SemanticGroupManager(this); // 实例化语义组管理器
         this.loadConfig();
     }
 
@@ -156,6 +414,30 @@ class RAGDiaryPlugin {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
+    _getWeightedAverageVector(vectors, weights) {
+        const [vecA, vecB] = vectors;
+        const [weightA, weightB] = weights;
+
+        if (!vecA && !vecB) return null;
+        // If one vector is missing, return the other one, effectively not averaging.
+        if (vecA && !vecB) return vecA;
+        if (!vecA && vecB) return vecB;
+
+        if (vecA.length !== vecB.length) {
+            console.error('[RAGDiaryPlugin] Vector dimensions do not match for weighted average.');
+            return null;
+        }
+
+        const dimension = vecA.length;
+        const result = new Array(dimension);
+
+        for (let i = 0; i < dimension; i++) {
+            result[i] = (vecA[i] * weightA) + (vecB[i] * weightB);
+        }
+        
+        return result;
+    }
+
     async getDiaryContent(characterName) {
         const characterDirPath = path.join(dailyNoteRootPath, characterName);
         let characterDiaryContent = `[${characterName}日记本内容为空]`;
@@ -225,157 +507,439 @@ class RAGDiaryPlugin {
 
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
-        const systemMessage = messages.find(m => m.role === 'system');
-        if (!systemMessage || typeof systemMessage.content !== 'string') {
+        // V3.0: 支持多system消息处理
+        // 1. 识别所有需要处理的 system 消息
+        const targetSystemMessageIndices = messages.reduce((acc, m, index) => {
+            if (m.role === 'system' &&
+                typeof m.content === 'string' &&
+                /\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》/.test(m.content)) {
+                acc.push(index);
+            }
+            return acc;
+        }, []);
+
+        // 如果没有找到任何包含RAG占位符的system消息，则直接返回
+        if (targetSystemMessageIndices.length === 0) {
             return messages;
         }
 
-        const ragDeclarations = [...systemMessage.content.matchAll(/\[\[(.*?)日记本(?::(\d+\.?\d*))?\]\]/g)];
-        const fullTextDeclarations = [...systemMessage.content.matchAll(/<<(.*?)日记本>>/g)];
-
-        if (ragDeclarations.length === 0 && fullTextDeclarations.length === 0) {
-            return messages; // 没有发现RAG声明，直接返回
-        }
-        
-        // --- [最终修复] 统一准备 userContent 和 aiContent ---
+        // 2. 准备共享资源 (只计算一次)
         const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
         let userContent = '';
         let aiContent = null;
 
         if (lastUserMessageIndex > -1) {
             const lastUserMessage = messages[lastUserMessageIndex];
-            // 健壮地提取 userContent, 兼容 string 和 array 格式
             userContent = typeof lastUserMessage.content === 'string'
                 ? lastUserMessage.content
                 : (Array.isArray(lastUserMessage.content) ? lastUserMessage.content.find(p => p.type === 'text')?.text : '') || '';
 
-            // 向前搜索并正确解析最近的 'assistant' 消息
             for (let i = lastUserMessageIndex - 1; i >= 0; i--) {
-                const msg = messages[i];
-                if (msg.role === 'assistant') {
+                if (messages[i].role === 'assistant') {
+                    const msg = messages[i];
                     if (typeof msg.content === 'string') {
                         aiContent = msg.content;
                     } else if (Array.isArray(msg.content)) {
                         aiContent = msg.content.find(p => p.type === 'text')?.text || null;
                     }
-                    break; // 找到最近的一条就停止
+                    break;
                 }
             }
         }
 
-        // --- V2.0 优化：基于准备好的上下文构建查询 ---
-        let queryText = userContent;
-        if (aiContent) {
-            queryText = `${aiContent}\n${userContent}`;
-            console.log('[RAGDiaryPlugin] Found and spliced the latest AI message for query vectorization.');
+        const userVector = userContent ? await this.getSingleEmbedding(userContent) : null;
+        const aiVector = aiContent ? await this.getSingleEmbedding(aiContent) : null;
+
+        let queryVector = null;
+        if (aiVector && userVector) {
+            queryVector = this._getWeightedAverageVector([userVector, aiVector], [0.7, 0.3]);
         } else {
-            console.log('[RAGDiaryPlugin] No preceding AI message found in history. Using user message only for query vectorization.');
+            queryVector = userVector || aiVector;
         }
 
-        if (!queryText) {
-            console.log('[RAGDiaryPlugin] 未能构建有效的查询文本，跳过处理。');
-            let contentWithoutPlaceholders = systemMessage.content;
-            ragDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
-            fullTextDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
-            messages.find(m => m.role === 'system').content = contentWithoutPlaceholders;
-            return messages;
-        }
-
-        console.log(`[RAGDiaryPlugin] Final combined query text for vectorization: "${queryText.substring(0, 120)}..."`);
-
-        const queryVector = await this.getSingleEmbedding(queryText);
         if (!queryVector) {
             console.error('[RAGDiaryPlugin] 查询向量化失败，跳过RAG处理。');
-            let contentWithoutPlaceholders = systemMessage.content;
-            ragDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
-            fullTextDeclarations.forEach(match => { contentWithoutPlaceholders = contentWithoutPlaceholders.replace(match[0], ''); });
-            messages.find(m => m.role === 'system').content = contentWithoutPlaceholders;
-            return messages;
+            // 安全起见，移除所有占位符
+            const newMessages = JSON.parse(JSON.stringify(messages));
+            for (const index of targetSystemMessageIndices) {
+                newMessages[index].content = newMessages[index].content
+                    .replace(/\[\[.*日记本.*\]\]/g, '')
+                    .replace(/<<.*日记本>>/g, '')
+                    .replace(/《《.*日记本.*》》/g, '');
+            }
+            return newMessages;
         }
-
-        let processedSystemContent = systemMessage.content;
-
-        // --- 处理 [[...]] RAG 片段检索 ---
+        
         const dynamicK = this._calculateDynamicK(userContent, aiContent);
+        const timeRanges = this.timeParser.parse(userContent);
 
-        for (const match of ragDeclarations) {
-            const placeholder = match[0];      // 例如 [[小克日记本:1.5]]
-            const dbName = match[1];           // 例如 "小克"
-            const kMultiplier = match[2] ? parseFloat(match[2]) : 1.0; // 获取K值乘数
-            const displayName = dbName + '日记本';
-
-            const finalK = Math.max(1, Math.round(dynamicK * kMultiplier)); // 计算最终K值, 确保至少为1
-
-            console.log(`[RAGDiaryPlugin] 正在为 "${displayName}" 检索相关信息 (数据库键: ${dbName})...`);
-            if (kMultiplier !== 1.0) {
-                console.log(`[RAGDiaryPlugin] 应用K值乘数: ${kMultiplier}. (基础K: ${dynamicK} -> 最终K: ${finalK})`);
-            }
-            const searchResults = await this.vectorDBManager.search(dbName, queryVector, finalK); // <--- 使用最终 k 值
-
-            let retrievedContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
-            if (searchResults && searchResults.length > 0) {
-                retrievedContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
-            } else {
-                retrievedContent += "没有找到直接相关的记忆片段。";
-            }
-            retrievedContent += `\n[--- 记忆片段结束 ---]\n`;
+        // 3. 循环处理每个识别到的 system 消息
+        const newMessages = JSON.parse(JSON.stringify(messages));
+        for (const index of targetSystemMessageIndices) {
+            console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
+            const systemMessage = newMessages[index];
             
-            processedSystemContent = processedSystemContent.replace(placeholder, retrievedContent);
+            // 调用新的辅助函数处理单个消息
+            const processedContent = await this._processSingleSystemMessage(
+                systemMessage.content,
+                queryVector,
+                userContent, // 传递 userContent 用于语义组和时间解析
+                dynamicK,
+                timeRanges
+            );
+            
+            newMessages[index].content = processedContent;
         }
 
-        // --- 处理 <<...>> RAG 全文检索 (加权标签和独立阈值增强版) ---
+        return newMessages;
+    }
+
+    // V3.0 新增: 处理单条 system 消息内容的辅助函数
+    async _processSingleSystemMessage(content, queryVector, userContent, dynamicK, timeRanges) {
+        let processedContent = content;
+
+        const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
+        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
+        const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
+
+        // --- 1. 处理 [[...]] RAG 片段检索 ---
+        for (const match of ragDeclarations) {
+            const placeholder = match[0];
+            const dbName = match[1];
+            const modifiers = match[2] || '';
+            
+            const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
+            const kMultiplier = kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
+            const useTime = modifiers.includes('::Time');
+            const useGroup = modifiers.includes('::Group');
+
+            const displayName = dbName + '日记本';
+            const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
+            let retrievedContent = '';
+            let finalQueryVector = queryVector;
+            let activatedGroups = null;
+
+            if (useGroup) {
+                activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
+                if (activatedGroups.size > 0) {
+                    const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups);
+                    if (enhancedVector) finalQueryVector = enhancedVector;
+                }
+            }
+
+            if (useTime && timeRanges && timeRanges.length > 0) {
+                const allEntries = new Map();
+                for (const timeRange of timeRanges) {
+                    const resultsData = await this.processWithTimeFilter(dbName, finalQueryVector, timeRange, finalK);
+                    resultsData.results.forEach(entry => {
+                        if (!allEntries.has(entry.text.trim())) {
+                            allEntries.set(entry.text.trim(), entry);
+                        }
+                    });
+                }
+                retrievedContent = this.formatCombinedTimeAwareResults(Array.from(allEntries.values()), timeRanges, dbName);
+            } else {
+                const searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, finalK);
+                if (useGroup) {
+                    retrievedContent = this.formatGroupRAGResults(searchResults, displayName, activatedGroups);
+                } else {
+                    retrievedContent = this.formatStandardResults(searchResults, displayName);
+                }
+            }
+            
+            processedContent = processedContent.replace(placeholder, retrievedContent);
+        }
+
+        // --- 2. 处理 <<...>> RAG 全文检索 ---
         for (const match of fullTextDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
             const diaryConfig = this.ragConfig[dbName] || {};
             const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
 
-            console.log(`[RAGDiaryPlugin] 正在为 <<${dbName}日记本>> 进行相关性评估 (阈值: ${localThreshold})...`);
-
-            // 1. 基础名称向量
             const dbNameVector = await this.getSingleEmbedding(dbName);
             if (!dbNameVector) {
-                console.error(`[RAGDiaryPlugin] 日记本名称 "${dbName}" 向量化失败，跳过。`);
-                processedSystemContent = processedSystemContent.replace(placeholder, '');
+                processedContent = processedContent.replace(placeholder, '');
                 continue;
             }
-            const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
-            console.log(`[RAGDiaryPlugin] 基础名称 "${dbName}" 的相关度: ${baseSimilarity.toFixed(4)}`);
-
-            // 2. 如果有标签，则计算加权增强向量的相似度
-            let enhancedSimilarity = 0;
-            // const tagsConfig = diaryConfig.tags; // 不再需要这行
             
-            // 从缓存中直接获取预计算的向量
+            const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
             const enhancedVector = this.enhancedVectorCache[dbName];
-
-            if (enhancedVector) {
-                enhancedSimilarity = this.cosineSimilarity(queryVector, enhancedVector);
-                console.log(`[RAGDiaryPlugin] (从缓存) 加权增强文本的相关度: ${enhancedSimilarity.toFixed(4)}`);
-            }
-
-            // 3. 取两种相似度中的最大值作为最终决策依据
+            const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
             const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
-            console.log(`[RAGDiaryPlugin] <<${dbName}日记本>> 的最终决策相关度: ${finalSimilarity.toFixed(4)}`);
 
-            // 4. 使用局部或全局阈值进行决策
             if (finalSimilarity >= localThreshold) {
-                console.log(`[RAGDiaryPlugin] 相关度高于阈值 ${localThreshold}，将注入 "${dbName}" 的完整日记内容。`);
                 const diaryContent = await this.getDiaryContent(dbName);
-                processedSystemContent = processedSystemContent.replace(placeholder, diaryContent);
+                // 安全措施：在注入的内容中递归地移除占位符，防止循环
+                const safeContent = diaryContent
+                    .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
+                    .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
+                    .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]');
+                processedContent = processedContent.replace(placeholder, safeContent);
             } else {
-                console.log(`[RAGDiaryPlugin] 相关度低于阈值，将忽略 <<${dbName}日记本>>。`);
-                processedSystemContent = processedSystemContent.replace(placeholder, '');
+                processedContent = processedContent.replace(placeholder, '');
             }
         }
 
-        const newMessages = messages.map(m =>
-            m.role === 'system' ? { ...m, content: processedSystemContent } : m
-        );
+        // --- 3. 处理 《《...》》 混合模式 ---
+        for (const match of hybridDeclarations) {
+            const placeholder = match[0];
+            const dbName = match[1];
+            const modifiers = match[2] || '';
+            const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
+            const kMultiplier = kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
 
-        return newMessages;
+            const diaryConfig = this.ragConfig[dbName] || {};
+            const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
+
+            const dbNameVector = await this.getSingleEmbedding(dbName);
+            if (!dbNameVector) {
+                processedContent = processedContent.replace(placeholder, '');
+                continue;
+            }
+
+            const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
+            const enhancedVector = this.enhancedVectorCache[dbName];
+            const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
+            const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
+
+            if (finalSimilarity >= localThreshold) {
+                const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
+                const searchResults = await this.vectorDBManager.search(dbName, queryVector, finalK);
+                const retrievedContent = this.formatStandardResults(searchResults, dbName + '日记本');
+                processedContent = processedContent.replace(placeholder, retrievedContent);
+            } else {
+                processedContent = processedContent.replace(placeholder, '');
+            }
+        }
+
+        return processedContent;
     }
     
+    //####################################################################################
+    //## Time-Aware RAG Logic - 时间感知RAG逻辑
+    //####################################################################################
+
+    async processWithTimeFilter(dbName, queryVector, timeRange, k) {
+        console.log(`[RAGDiaryPlugin] Processing time-aware search for "${dbName}"`);
+        console.log(`[RAGDiaryPlugin] Time range: ${timeRange.start.toISOString()} to ${timeRange.end.toISOString()}`);
+        
+        // Step 1: 获取RAG检索结果
+        const ragResults = await this.vectorDBManager.search(dbName, queryVector, k);
+        console.log(`[RAGDiaryPlugin] RAG search returned ${ragResults.length} results`);
+        
+        // Step 2: 获取时间范围内的日记
+        const timeResults = await this.getTimeRangeDiaries(dbName, timeRange);
+        console.log(`[RAGDiaryPlugin] Time range search found ${timeResults.length} entries`);
+        
+        // Step 3: 智能融合结果
+        return this.mergeResults(ragResults, timeResults);
+    }
+
+    async getTimeRangeDiaries(dbName, timeRange) {
+        const characterDirPath = path.join(dailyNoteRootPath, dbName);
+        let diariesInRange = [];
+
+        // 确保时间范围有效
+        if (!timeRange || !timeRange.start || !timeRange.end) {
+            console.error('[RAGDiaryPlugin] Invalid time range provided');
+            return diariesInRange;
+        }
+
+        try {
+            const files = await fs.readdir(characterDirPath);
+            const diaryFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+
+            for (const file of diaryFiles) {
+                const filePath = path.join(characterDirPath, file);
+                try {
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    const firstLine = content.split('\n')[0];
+                    // V2.6: 兼容 [YYYY-MM-DD] 和 YYYY.MM.DD 两种日记时间戳格式
+                    const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
+                    if (match) {
+                        const dateStr = match[1];
+                        // 将 YYYY.MM.DD 格式规范化为 YYYY-MM-DD
+                        const normalizedDateStr = dateStr.replace(/\./g, '-');
+                        
+                        // 确保使用UTC时间比较，避免时区问题
+                        const diaryDate = new Date(normalizedDateStr + 'T00:00:00.000Z');
+                        
+                        if (diaryDate >= timeRange.start && diaryDate <= timeRange.end) {
+                            diariesInRange.push({
+                                date: normalizedDateStr, // 使用规范化后的日期
+                                text: content,
+                                source: 'time'
+                            });
+                        }
+                    }
+                } catch (readErr) {
+                    // ignore individual file read errors
+                }
+            }
+        } catch (dirError) {
+            if (dirError.code !== 'ENOENT') {
+                 console.error(`[RAGDiaryPlugin] Error reading character directory for time filter ${characterDirPath}:`, dirError.message);
+            }
+        }
+        return diariesInRange;
+    }
+
+    mergeResults(ragResults, timeResults) {
+        const maxTotal = 30; // 总结果上限
+
+        // 确保RAG结果优先被包含 (取前40%或至少几个)
+        const guaranteedRAGCount = Math.min(ragResults.length, Math.max(5, Math.floor(maxTotal * 0.4)));
+        const guaranteedRAG = ragResults.slice(0, guaranteedRAGCount);
+        
+        // 剩余配额给时间结果
+        const remainingQuota = maxTotal - guaranteedRAG.length;
+        
+        // 时间结果去重 (排除内容完全相同的)
+        const uniqueTimeResults = timeResults.filter(tr =>
+            !guaranteedRAG.some(rr => rr.text.trim() === tr.text.trim())
+        );
+        
+        // 按时间新旧排序，取最新的
+        const selectedTimeResults = uniqueTimeResults
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+            .slice(0, remainingQuota);
+        
+        // 组合并标记来源
+        const finalResults = [
+            ...guaranteedRAG.map(r => ({...r, source: 'rag'})),
+            ...selectedTimeResults
+        ];
+        
+        return {
+            results: finalResults,
+            stats: {
+                ragCount: guaranteedRAG.length,
+                timeCount: selectedTimeResults.length,
+                totalCount: finalResults.length,
+                timeRangeTotal: timeResults.length
+            }
+        };
+    }
+
+    formatStandardResults(searchResults, displayName) {
+        let content = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
+        if (searchResults && searchResults.length > 0) {
+            content += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+        } else {
+            content += "没有找到直接相关的记忆片段。";
+        }
+        content += `\n[--- 记忆片段结束 ---]\n`;
+        return content;
+    }
+
+    formatTimeAwareResults(resultsData, dbName, timeRange) {
+        const { results, stats } = resultsData;
+        const displayName = dbName + '日记本';
+
+        const formatDate = (date) => {
+            const d = new Date(date);
+            return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        }
+    
+        let content = `\n[--- "${displayName}" 时间感知检索结果 ---]\n`;
+        content += `[时间范围: ${formatDate(timeRange.start)} 至 ${formatDate(timeRange.end)}]\n`;
+        content += `[统计: RAG相关 ${stats.ragCount}条 | 时间范围 ${stats.timeCount}条 | 共 ${stats.totalCount}条`;
+    
+        if (stats.timeRangeTotal > stats.timeCount) {
+            content += ` | 该时间段共有${stats.timeRangeTotal}条，已精选最新】\n`;
+        } else {
+            content += `]\n`;
+        }
+        content += '\n';
+    
+        const ragEntries = results.filter(e => e.source === 'rag');
+        const timeEntries = results.filter(e => e.source === 'time');
+    
+        if (ragEntries.length > 0) {
+            content += '【语义相关记忆】\n';
+            ragEntries.forEach(entry => {
+                // 尝试从文本中提取日期
+                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
+                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
+                content += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+            });
+        }
+    
+        if (timeEntries.length > 0) {
+            content += '\n【时间范围记忆】\n';
+            timeEntries.forEach(entry => {
+                content += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+            });
+        }
+    
+        content += `[--- 检索结束 ---]\n`;
+        return content;
+    }
+
+    formatCombinedTimeAwareResults(results, timeRanges, dbName) {
+        const displayName = dbName + '日记本';
+        const formatDate = (date) => {
+            const d = new Date(date);
+            return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        }
+    
+        let content = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
+        
+        const formattedRanges = timeRanges.map(tr => `"${formatDate(tr.start)} ~ ${formatDate(tr.end)}"`).join(' 和 ');
+        content += `[合并查询的时间范围: ${formattedRanges}]\n`;
+    
+        const ragEntries = results.filter(e => e.source === 'rag');
+        const timeEntries = results.filter(e => e.source === 'time');
+        
+        content += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条)]\n\n`;
+    
+        if (ragEntries.length > 0) {
+            content += '【语义相关记忆】\n';
+            ragEntries.forEach(entry => {
+                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
+                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
+                content += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+            });
+        }
+    
+        if (timeEntries.length > 0) {
+            content += '\n【时间范围记忆】\n';
+            // 按日期从新到旧排序
+            timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
+            timeEntries.forEach(entry => {
+                content += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+            });
+        }
+    
+        content += `[--- 检索结束 ---]\n`;
+        return content;
+    }
+
+    formatGroupRAGResults(searchResults, displayName, activatedGroups) {
+        let content = `\n[--- "${displayName}" 语义组增强检索结果 ---]\n`;
+        
+        if (activatedGroups && activatedGroups.size > 0) {
+            content += `[激活的语义组:]\n`;
+            for (const [groupName, data] of activatedGroups) {
+                content += `  • ${groupName} (${(data.strength * 100).toFixed(0)}%激活): 匹配到 "${data.matchedWords.join(', ')}"\n`;
+            }
+            content += '\n';
+        } else {
+            content += `[未激活特定语义组]\n\n`;
+        }
+        
+        content += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
+        if (searchResults && searchResults.length > 0) {
+            content += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+        } else {
+            content += "没有找到直接相关的记忆片段。";
+        }
+        content += `\n[--- 检索结束 ---]\n`;
+        
+        return content;
+    }
+
     async getSingleEmbedding(text) {
         if (!text) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
