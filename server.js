@@ -26,6 +26,11 @@ const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信�
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
+const BLACKLIST_FILE = path.join(__dirname, 'ip_blacklist.json');
+const MAX_API_ERRORS = 5;
+let ipBlacklist = [];
+const apiErrorCounts = new Map();
+
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
 
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
@@ -77,6 +82,32 @@ async function writeDebugLog(filenamePrefix, data) {
         } catch (error) {
             console.error(`写入调试日志失败: ${filePath}`, error);
         }
+    }
+}
+
+// 新增：加载IP黑名单
+async function loadBlacklist() {
+    try {
+        await fs.access(BLACKLIST_FILE);
+        const data = await fs.readFile(BLACKLIST_FILE, 'utf8');
+        ipBlacklist = JSON.parse(data);
+        console.log(`[Security] IP黑名单加载成功，共 ${ipBlacklist.length} 个条目。`);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log('[Security] 未找到IP黑名单文件，将创建一个新的。');
+            await saveBlacklist(); // 创建一个空的黑名单文件
+        } else {
+            console.error('[Security] 加载IP黑名单失败:', error);
+        }
+    }
+}
+
+// 新增：保存IP黑名单
+async function saveBlacklist() {
+    try {
+        await fs.writeFile(BLACKLIST_FILE, JSON.stringify(ipBlacklist, null, 2));
+    } catch (error) {
+        console.error('[Security] 保存IP黑名单失败:', error);
     }
 }
 
@@ -132,6 +163,45 @@ app.use((req, res, next) => {
         if (serverName) {
             console.log(`[IP Tracker] SUCCESS: Post request is from known Distributed Server: '${serverName}' (IP: ${clientIp})`);
         }
+    }
+    next();
+});
+
+// 新增：处理API错误并更新IP计数
+function handleApiError(req) {
+    let clientIp = req.ip;
+    if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+        clientIp = clientIp.substr(7);
+    }
+
+    if (!clientIp || ipBlacklist.includes(clientIp)) {
+        return; // 如果IP无效或已在黑名单中，则不处理
+    }
+
+    const currentErrors = (apiErrorCounts.get(clientIp) || 0) + 1;
+    apiErrorCounts.set(clientIp, currentErrors);
+    console.log(`[Security] IP ${clientIp} 出现API错误，当前计次: ${currentErrors}/${MAX_API_ERRORS}`);
+
+    if (currentErrors >= MAX_API_ERRORS) {
+        if (!ipBlacklist.includes(clientIp)) {
+            ipBlacklist.push(clientIp);
+            console.log(`[Security] IP ${clientIp} 已达到错误上限，已加入黑名单。`);
+            saveBlacklist(); // 异步保存，不阻塞当前请求
+            apiErrorCounts.delete(clientIp); // 从计数器中移除
+        }
+    }
+}
+
+// 新增：IP黑名单中间件
+app.use((req, res, next) => {
+    let clientIp = req.ip;
+    if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+        clientIp = clientIp.substr(7);
+    }
+
+    if (clientIp && ipBlacklist.includes(clientIp)) {
+        console.warn(`[Security] 已阻止来自黑名单IP ${clientIp} 的请求。`);
+        return res.status(403).json({ error: 'Forbidden: Your IP address has been blocked due to suspicious activity.' });
     }
     next();
 });
@@ -476,6 +546,7 @@ app.post('/v1/human/tool', async (req, res) => {
 
     } catch (error) {
         console.error('[Human Tool Exec] Error processing direct tool call:', error.message);
+        handleApiError(req); // 新增：处理API错误计数
         
         let errorObject;
         try {
@@ -773,6 +844,7 @@ async function initialize() {
 let server;
 
 server = app.listen(port, async () => { // Assign to server variable
+    await loadBlacklist(); // 新增：在服务器启动时加载IP黑名单
     console.log(`中间层服务器正在监听端口 ${port}`);
     console.log(`API 服务器地址: ${apiUrl}`);
     
@@ -801,13 +873,6 @@ server = app.listen(port, async () => { // Assign to server variable
     if (DEBUG_MODE) console.log('[Server] WebSocketServer, PluginManager, and FileFetcherServer have been interconnected.');
 
     // The VCPLog plugin's attachWebSocketServer is no longer needed here as WebSocketServer handles it.
-    // const vcpLogPluginModule = pluginManager.serviceModules.get("VCPLog")?.module;
-    // if (vcpLogPluginModule && typeof vcpLogPluginModule.attachWebSocketServer === 'function') {
-    //     if (DEBUG_MODE) console.log('[Server] Attaching WebSocket server for VCPLog plugin...');
-    //     vcpLogPluginModule.attachWebSocketServer(server); // Pass the http.Server instance
-    // } else {
-    //     if (DEBUG_MODE) console.warn('[Server] VCPLog plugin module or attachWebSocketServer function not found.');
-    // }
 });
 
 
