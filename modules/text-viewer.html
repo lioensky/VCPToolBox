@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文本阅读模式</title>
+    <link rel="stylesheet" href="../styles/themes.css"> <!-- 引用主题样式 -->
+    <link rel="stylesheet" href="../style.css"> <!-- 复用主项目的样式 -->
+    <link rel="stylesheet" href="../vendor/katex.min.css" crossorigin="anonymous">
+    <script defer src="../vendor/katex.min.js" crossorigin="anonymous"></script>
+    <script defer src="../vendor/auto-render.min.js" crossorigin="anonymous"></script>
+    <!-- Highlight.js for syntax highlighting -->
+    <link id="highlight-theme-style" rel="stylesheet" href="../vendor/atom-one-dark.min.css">
+    <!-- Anime.js for animations -->
+    <script src="../vendor/anime.min.js"></script>
+    <style>
+        /* Define CSS variables for dark theme (default) */
+        :root {
+            --viewer-bg-color: var(--primary-bg);
+            --viewer-primary-text: var(--primary-text);
+            --viewer-message-bg-assistant: var(--tertiary-bg); /* 聊天区背景 */
+            --viewer-code-bg: var(--secondary-bg); /* 侧边栏/面板背景 */
+            --viewer-code-text: var(--primary-text);
+            --viewer-inline-code-text: var(--highlight-text);
+            --viewer-button-text: var(--primary-text);
+            --viewer-code-bg-hover: var(--accent-bg);
+            --viewer-button-active-bg: var(--accent-bg);
+            --viewer-top-light-effect-bg: var(--shimmer-color-transparent); /* 使用主题中的透明闪烁色 */
+            --viewer-heading-color: var(--highlight-text); /* 新增：深色主题下的标题颜色 */
+
+            /* Tool Result Bubble Dark Theme */
+            --tool-result-bg: linear-gradient(145deg, #2b3a42, #3f5159);
+            --tool-result-border-color: rgba(255, 255, 255, 0.1);
+            --tool-result-text-color: #e0e0e0;
+            --tool-result-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            --tool-result-header-border-color: rgba(255, 255, 255, 0.15);
+            --tool-result-name-color: #81d4fa;
+            --tool-result-name-bg: rgba(129, 212, 250, 0.1);
+            --tool-result-item-key-color: #90a4ae;
+            --tool-result-item-value-color: #cfd8dc;
+            --tool-result-item-link-color: #82b1ff;
+            --tool-result-item-strong-color: #ffd54f;
+            --tool-result-footer-color: #b0bec5;
+        }
+
+        /* Define CSS variables for light theme */
+        body.light-theme {
+            --viewer-bg-color: var(--primary-bg);
+            --viewer-primary-text: var(--primary-text);
+            --viewer-message-bg-assistant: var(--tertiary-bg);
+            --viewer-code-bg: var(--secondary-bg);
+            --viewer-code-text: var(--primary-text);
+            --viewer-inline-code-text: var(--highlight-text);
+            --viewer-button-text: var(--primary-text);
+            --viewer-code-bg-hover: var(--accent-bg);
+            --viewer-button-active-bg: var(--accent-bg);
+            --viewer-top-light-effect-bg: var(--shimmer-color-transparent); /* 使用主题中的透明闪烁色 */
+            --viewer-heading-color-light: var(--highlight-text); /* 新增：浅色主题下的标题颜色 */
+
+            /* Tool Result Bubble Light Theme */
+            --tool-result-bg: linear-gradient(145deg, #f4f6f8, #e8eaf0);
+            --tool-result-border-color: rgba(0, 0, 0, 0.1);
+            --tool-result-text-color: #333;
+            --tool-result-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            --tool-result-header-border-color: rgba(0, 0, 0, 0.1);
+            --tool-result-name-color: #0277bd;
+            --tool-result-name-bg: rgba(2, 119, 189, 0.1);
+            --tool-result-item-key-color: #546e7a;
+            --tool-result-item-value-color: #263238;
+            --tool-result-item-link-color: #1976d2;
+            --tool-result-item-strong-color: #b8860b; /* DarkGoldenRod */
+            --tool-result-footer-color: #78909c;
+        }
+
+        .custom-quote-dark {
+            color: var(--quoted-text); /* 使用主题中的引用文本颜色 */
+        }
+        .custom-quote-light {
+            color: var(--quoted-text); /* 使用主题中的引用文本颜色 */
+        }
+
+        /* Markdown headings */
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--viewer-heading-color); /* Default blue for headings in dark theme */
+        }
+
+        body.light-theme h1,
+        body.light-theme h2,
+        body.light-theme h3,
+        body.light-theme h4,
+        body.light-theme h5,
+        body.light-theme h6 {
+            color: var(--viewer-heading-color-light); /* Blue for headings in light theme */
+        }
+
+        body {
+            font-family: var(--font-family-sans-serif, sans-serif);
+            background-color: var(--viewer-bg-color);
+            color: var(--viewer-primary-text);
+            padding: 20px 20px 80px 20px;
+            margin: 0;
+            overflow-y: auto;
+            line-height: 1.6;
+            padding-top: 30px; /* Add padding for title bar */
+            box-sizing: border-box;
+        }
+        .content-container {
+            /* --- Frosted Glass Effect --- */
+            background-color: var(--panel-bg);
+            backdrop-filter: blur(12px) saturate(150%);
+            -webkit-backdrop-filter: blur(12px) saturate(150%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+
+            color: var(--viewer-primary-text); /* Ensure text inside container is also readable */
+            padding: 20px; /* Increased padding */
+            border-radius: 12px; /* Increased border-radius */
+            margin-top: 15px; /* 调整向下移动的距离 */
+        }
+        /* Ensure pre/code blocks are styled similarly to the main app if possible */
+/* Override default pre for our custom theme */
+        pre {
+            background-color: rgba(42, 45, 53, 0.85); /* Bluish-dark background from chat.css */
+            color: var(--viewer-code-text);
+            padding: 1em;
+            border-radius: 8px; /* Rounded corners */
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        /* --- Light Theme Code Block Overrides --- */
+        body.light-theme pre {
+            background-color: rgba(255, 250, 240, 0.85); /* 米白磨砂背景 */
+            color: #333333; /* 深灰色基础文字 */
+            border-color: rgba(0, 0, 0, 0.1);
+        }
+
+        /* --- Light Theme Syntax Highlighting Overrides --- */
+        body.light-theme pre code.hljs {
+            color: #333333;
+        }
+        body.light-theme pre .hljs-keyword {
+            color: #d73a49; /* Dark Red */
+        }
+        body.light-theme pre .hljs-built_in {
+            color: #6f42c1; /* Dark Purple */
+        }
+        body.light-theme pre .hljs-string {
+            color: #032f62; /* Dark Blue */
+        }
+        body.light-theme pre .hljs-comment {
+            color: #6a737d; /* Grey */
+            font-style: italic;
+        }
+        body.light-theme pre .hljs-number {
+            color: #005cc5; /* Blue */
+        }
+        body.light-theme pre .hljs-title,
+        body.light-theme pre .hljs-class .hljs-title {
+            color: #6f42c1; /* Dark Purple */
+        }
+        body.light-theme pre .hljs-params {
+            color: #24292e; /* Almost black */
+        }
+        body.light-theme pre .hljs-meta {
+            color: #e36209; /* Dark Orange */
+        }
+
+        /* Defensive wrapping rules (mirror chat bubble fixes) */
+        /* 1) Only flex-center paragraphs when they contain images only */
+        .content-container p[style*="text-align: center"] {
+            text-align: center;
+        }
+        .content-container p[style*="text-align: center"]:has(img):not(:has(:not(img))) {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+            flex-wrap: wrap;
+        }
+        /* 2) Ensure strong/span/em... behave as inline even inside accidental flex containers */
+        .content-container p > strong,
+        .content-container p > b,
+        .content-container p > em,
+        .content-container p > i,
+        .content-container p > u,
+        .content-container p > span {
+            display: inline;
+            flex: 0 0 auto;
+            min-width: 0;
+            white-space: inherit;
+            max-width: 100%;
+        }
+        /* 3) Make custom-quote spans soft-wrap-friendly */
+        .content-container .custom-quote-dark,
+        .content-container .custom-quote-light {
+            white-space: normal;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            line-break: anywhere;
+        }
+        pre {
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-code-text);
+            padding: 1em;
+            border-radius: 5px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        code {
+            font-family: var(--font-family-monospace, monospace);
+            background-color: transparent; /* Background for inline code */
+            color: var(--viewer-inline-code-text);
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+        }
+        /* Style for the copy button */
+        .copy-button {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            padding: 5px;
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-button-text);
+            border: none; /* 移除边框 */
+            border-radius: 6px; /* 稍微增加圆角 */
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s, background-color 0.3s, border-color 0.3s;
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2); /* 添加轻微阴影 */
+        }
+        .copy-button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        .copy-button svg {
+            width: 16px; /* SVG 图标大小 */
+            height: 16px; /* SVG 图标大小 */
+        }
+        pre:hover .copy-button {
+            opacity: 1; /* Show on hover */
+        }
+        .copy-button:active {
+            background-color: var(--viewer-button-active-bg);
+        }
+        /* Style for the edit button */
+        .edit-button {
+            position: absolute;
+            top: 5px;
+            right: 35px; /* Positioned to the left of the copy button (5px + 26px + 4px) */
+            padding: 5px;
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-button-text);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s, background-color 0.3s, border-color 0.3s;
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .edit-button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        .edit-button svg {
+            width: 16px;
+            height: 16px;
+        }
+        pre:hover .edit-button {
+            opacity: 1; /* Show on hover */
+        }
+        .edit-button:active {
+            background-color: var(--viewer-button-active-bg);
+        }
+        /* Style for the play button */
+        .play-button {
+            position: absolute;
+            top: 5px;
+            right: 65px; /* Positioned to the left of the edit button */
+            padding: 5px;
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-button-text);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s, background-color 0.3s, border-color 0.3s;
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .play-button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        .play-button svg {
+            width: 16px;
+            height: 16px;
+        }
+        pre:hover .play-button {
+            opacity: 1; /* Show on hover */
+        }
+        .play-button:active {
+            background-color: var(--viewer-button-active-bg);
+        }
+
+        /* Styles for HTML Preview */
+        .html-preview-container {
+            position: relative;
+            width: 100%;
+            height: 85vh; /* 85% of the viewport height */
+            margin-top: 10px;
+            margin-bottom: 10px;
+        }
+
+        .html-preview-container iframe {
+            width: 100%;
+            height: 100%;
+            border: 1px solid var(--viewer-code-bg-hover);
+            border-radius: 5px;
+            background-color: #fff; /* Set a default background for the iframe content */
+        }
+
+        .exit-preview-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-button-text);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            z-index: 10; /* Ensure it's above the iframe content */
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            white-space: nowrap; /* Prevent text from wrapping */
+        }
+        .exit-preview-button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        /* Styles for custom context menu */
+        .custom-context-menu {
+            position: absolute;
+            background-color: var(--viewer-message-bg-assistant);
+            border: 1px solid var(--viewer-code-bg-hover);
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            padding: 5px 0;
+            z-index: 1000; /* Ensure it's on top */
+            display: none; /* Hidden by default */
+            min-width: 150px;
+        }
+        .custom-context-menu button {
+            display: block;
+            width: 100%;
+            padding: 8px 15px;
+            text-align: left;
+            background-color: transparent;
+            color: var(--viewer-primary-text);
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .custom-context-menu button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        /* Container for global action buttons */
+        .global-actions-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px; /* Space between buttons */
+            margin: 20px auto; /* Margin for the container */
+        }
+
+        /* Common style for global action buttons */
+        .global-action-button {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 2px 18px; /* Adjusted padding for better width consistency */
+                    background-color: rgba(255, 255, 255, 0.05); /* Frosted glass background */
+                    backdrop-filter: blur(10px);
+                    -webkit-backdrop-filter: blur(10px);
+                    color: var(--viewer-button-text);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-radius: 6px;
+                    cursor: pointer;
+                    transition: background-color 0.3s;
+                    font-size: 14px;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                    min-width: 130px; /* Ensure a minimum width for consistency */
+                    text-align: center;
+                }
+        .global-action-button:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        .global-action-button:active {
+            background-color: var(--viewer-button-active-bg);
+        }
+        .global-action-button svg {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+        }
+
+        /* Force spacer with content to prevent collapsing */
+        .force-spacer {
+            height: 40px;
+            font-size: 1px; /* Make content invisible */
+            color: transparent; /* Make content invisible */
+            user-select: none; /* Prevent selection */
+        }
+
+        .content-container.editing-all {
+            outline: 2px solid var(--viewer-inline-code-text); /* Visual cue for editing */
+            box-shadow: 0 0 10px var(--viewer-inline-code-text); /* Enhanced visual cue */
+        }
+        .global-edit-textarea {
+            width: 100%;
+            min-height: 75vh; /* Take up significant vertical space */
+            box-sizing: border-box;
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-primary-text);
+            border: 1px solid var(--viewer-code-bg-hover);
+            border-radius: 8px;
+            padding: 15px;
+            font-family: var(--font-family-monospace, monospace);
+            font-size: 14px;
+            line-height: 1.6;
+            resize: vertical; /* Allow vertical resizing */
+        }
+        /* Basic Table Styling for Markdown */
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 1em;
+            color: var(--viewer-primary-text); /* Ensure text color is inherited */
+        }
+        th, td {
+            border: 1px solid var(--viewer-code-bg-hover); /* Use a visible border color */
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: var(--viewer-code-bg); /* Slight background for headers */
+        }
+
+        /* Style for Mermaid diagrams */
+        .mermaid {
+            background-color: var(--viewer-code-bg);
+            padding: 1em;
+            border-radius: 5px;
+            margin-bottom: 1em;
+            display: flex; /* 新增：使其内容居中 */
+            justify-content: center; /* 新增：使其内容居中 */
+            align-items: center; /* 新增：使其内容居中 */
+        }
+
+        /* Style for Draw.io diagrams */
+        .drawio-diagram {
+            background-color: var(--viewer-code-bg);
+            padding: 1em;
+            border-radius: 5px;
+            margin-bottom: 1em;
+            overflow: hidden; /* Ensure content stays within bounds */
+            border: 1px solid var(--viewer-code-bg-hover);
+            display: flex; /* Use flexbox to center content if needed */
+            justify-content: center;
+            align-items: center;
+            min-height: 200px; /* Minimum height for visibility */
+        }
+        .drawio-diagram svg {
+            max-width: 100%;
+            height: auto;
+            display: block; /* Remove extra space below image */
+        }
+
+        /* Styles for Python execution output */
+        .python-output-container {
+            background-color: var(--viewer-code-bg);
+            color: var(--viewer-code-text);
+            padding: 1em;
+            border-radius: 5px;
+            margin-top: 0; /* Spacing from the code block */
+            border-top: 1px solid var(--viewer-code-bg-hover); /* Separator line */
+            font-family: var(--font-family-monospace, monospace);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            display: none; /* Hidden by default */
+        }
+
+        /* Styles for Sandbox Toggle Switch */
+        .sandbox-toggle-container {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center; /* To align items like other buttons */
+                    gap: 8px;
+                    color: var(--viewer-button-text);
+                    padding: 8px 12px; /* Reduced horizontal padding to compensate for width */
+                    background-color: rgba(255, 255, 255, 0.05); /* Frosted glass background */
+                    backdrop-filter: blur(10px);
+                    -webkit-backdrop-filter: blur(10px);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-radius: 6px;
+                    cursor: pointer;
+                    transition: background-color 0.3s;
+                    font-size: 14px;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                    min-width: 130px;
+                }
+        .sandbox-toggle-container:hover {
+            background-color: var(--viewer-code-bg-hover);
+        }
+        .sandbox-toggle-checkbox {
+            display: none;
+        }
+        .sandbox-toggle-label {
+            position: relative;
+            width: 44px; /* Increased width */
+            height: 24px; /* Increased height */
+            background-color: var(--viewer-code-bg-hover);
+            border-radius: 12px; /* Adjusted border-radius */
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .sandbox-toggle-label::after {
+            content: '';
+            position: absolute;
+            width: 20px; /* Increased size */
+            height: 20px; /* Increased size */
+            border-radius: 50%;
+            background-color: white;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.3s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+        .sandbox-toggle-checkbox:checked + .sandbox-toggle-label {
+            background-color: #4CAF50; /* Green when active */
+        }
+        .sandbox-toggle-checkbox:checked + .sandbox-toggle-label::after {
+            transform: translateX(20px);
+        }
+
+        /* --- Start: Ported Styles from messageRenderer.css --- */
+
+        /* VCP ToolUse Bubble */
+        .vcp-tool-use-bubble {
+            background: linear-gradient(145deg, #3a7bd5 0%, #00d2ff 100%) !important;
+            background-size: 200% 200% !important;
+            animation: vcp-bubble-background-flow-kf 20s ease-in-out infinite;
+            border-radius: 10px !important;
+            padding: 8px 15px 8px 35px !important;
+            color: #ffffff !important;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+            margin-top: 5px !important; /* Add space above the tool bubble */
+            margin-bottom: 10px !important;
+            position: relative;
+            overflow: hidden;
+            line-height: 1.6;
+            display: block !important; /* Block display to show full content */
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace !important;
+            font-size: 0.95em !important;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .vcp-tool-use-bubble::before {
+            content: "⚙️";
+            position: absolute;
+            top: 8px;
+            left: 10px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.75);
+            z-index: 2;
+            animation: vcp-icon-rotate 4s linear infinite;
+            transform-origin: center center;
+        }
+        .vcp-tool-use-bubble .vcp-tool-label {
+            font-weight: bold;
+            color: #f1c40f;
+            margin-right: 6px;
+        }
+        .vcp-tool-use-bubble .vcp-tool-name-highlight {
+            background: linear-gradient(90deg, #f1c40f, #ffffff, #00d2ff, #f1c40f) !important;
+            background-size: 300% 100% !important;
+            -webkit-background-clip: text !important;
+            background-clip: text !important;
+            -webkit-text-fill-color: transparent !important;
+            text-fill-color: transparent !important;
+            font-style: normal !important;
+            font-weight: bold !important;
+            padding: 1px 3px !important;
+            border-radius: 4px !important;
+            animation: vcp-toolname-color-flow-kf 4s linear infinite;
+            margin-left: 2px;
+        }
+
+        /* Maid Diary Bubble Redesign */
+        .maid-diary-bubble {
+            background: #fdfaf6 !important;
+            border: 1px solid #eaddd0;
+            border-radius: 8px !important;
+            padding: 12px 18px 15px 48px !important;
+            color: #5d4037 !important;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+            margin-top: 10px !important;
+            margin-bottom: 12px !important;
+            position: relative;
+            overflow: visible;
+            line-height: 1.7;
+            display: block !important;
+            font-family: 'Georgia', 'Times New Roman', serif !important;
+            font-size: 1em !important;
+        }
+        .maid-diary-bubble::before {
+            content: "✒️";
+            position: absolute;
+            top: 14px;
+            left: 16px;
+            font-size: 22px;
+            opacity: 0.6;
+            z-index: 2;
+            transform: rotate(-15deg);
+            animation: none !important;
+        }
+        .diary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            border-bottom: 1px solid #d7ccc8;
+            padding-bottom: 6px;
+            margin-bottom: 10px;
+        }
+        .diary-title {
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #6d4c41;
+        }
+        .diary-date {
+            font-size: 0.85em;
+            color: #a1887f;
+            font-style: italic;
+        }
+        .diary-maid-info {
+            margin-bottom: 12px;
+            font-size: 0.9em;
+            color: #8d6e63;
+        }
+        .diary-maid-label {
+            font-weight: bold;
+        }
+        .diary-maid-name {
+            font-style: italic;
+            color: #a1887f;
+            background: rgba(161, 136, 127, 0.08);
+            padding: 1px 5px;
+            border-radius: 4px;
+        }
+        .diary-content {
+            font-size: 0.95em;
+            color: #4e342e;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Keyframes needed for animations */
+        @keyframes vcp-bubble-background-flow-kf {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        @keyframes vcp-icon-rotate {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        @keyframes vcp-toolname-color-flow-kf {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 150% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        /* --- End: Ported Styles --- */
+
+        /* --- VCP Tool Result Bubble --- */
+        .vcp-tool-result-bubble {
+            display: block !important;
+            background: var(--tool-result-bg, linear-gradient(145deg, #f4f6f8, #e8eaf0)) !important;
+            border-radius: 10px !important;
+            border: 1px solid var(--tool-result-border-color, rgba(0, 0, 0, 0.1));
+            padding: 12px 18px !important;
+            color: var(--tool-result-text-color, #333) !important;
+            box-shadow: var(--tool-result-shadow, 0 4px 12px rgba(0, 0, 0, 0.1));
+            margin-top: 10px !important;
+            margin-bottom: 12px !important;
+            position: relative;
+            font-family: 'Segoe UI', 'Roboto', sans-serif !important;
+            font-size: 0.95em !important;
+            line-height: 1.6;
+            width: fit-content;
+            max-width: 95%;
+            transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
+        }
+        .vcp-tool-result-bubble::before {
+            content: "📊";
+            position: absolute;
+            top: 12px;
+            left: 15px;
+            font-size: 16px;
+            opacity: 0.7;
+        }
+        .vcp-tool-result-header {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding-left: 28px; /* Space for the icon */
+            border-bottom: 1px solid var(--tool-result-header-border-color, rgba(0, 0, 0, 0.1));
+            padding-bottom: 8px;
+            margin-bottom: 10px;
+        }
+        .vcp-tool-result-label {
+            font-weight: bold;
+            color: #4caf50;
+            font-size: 1.05em;
+        }
+        .vcp-tool-result-name {
+            font-weight: bold;
+            color: var(--tool-result-name-color, #0277bd);
+            background-color: var(--tool-result-name-bg, rgba(2, 119, 189, 0.1));
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .vcp-tool-result-status {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .vcp-tool-result-status.status-success {
+            color: #1b5e20;
+            background-color: rgba(76, 175, 80, 0.15);
+        }
+        body:not(.light-theme) .vcp-tool-result-status.status-success {
+            color: #c8e6c9;
+            background-color: rgba(76, 175, 80, 0.2);
+        }
+        .vcp-tool-result-status.status-failure {
+            color: #b71c1c;
+            background-color: rgba(211, 47, 47, 0.15);
+        }
+        body:not(.light-theme) .vcp-tool-result-status.status-failure {
+            color: #ffcdd2;
+            background-color: rgba(211, 47, 47, 0.2);
+        }
+        .vcp-tool-result-details {
+            padding-left: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .vcp-tool-result-item {
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start;
+        }
+        .vcp-tool-result-item-key {
+            font-weight: bold;
+            color: var(--tool-result-item-key-color, #546e7a);
+            margin-right: 8px;
+            white-space: nowrap;
+        }
+        .vcp-tool-result-item-value {
+            color: var(--tool-result-item-value-color, #263238);
+            word-break: break-all;
+        }
+        .vcp-tool-result-item-value a {
+            color: var(--tool-result-item-link-color, #1976d2) !important;
+            text-decoration: underline !important;
+        }
+        .vcp-tool-result-item-value strong {
+            color: var(--tool-result-item-strong-color, #b8860b);
+            font-weight: bold;
+        }
+        .vcp-tool-result-image {
+            max-width: 100%;
+            max-height: 250px;
+            border-radius: 6px;
+            margin-top: 5px;
+            border: 2px solid var(--tool-result-border-color, rgba(0, 0, 0, 0.1));
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+        .vcp-tool-result-image:hover {
+            transform: scale(1.05);
+        }
+        .vcp-tool-result-footer {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid var(--tool-result-header-border-color, rgba(0, 0, 0, 0.1));
+            font-size: 0.9em;
+            color: var(--tool-result-footer-color, #78909c);
+        }
+        .vcp-tool-result-footer pre {
+            margin: 0;
+            padding: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: inherit;
+            background: none;
+        }
+
+       /* --- Custom Title Bar --- */
+       #custom-title-bar {
+           position: fixed;
+           top: 0;
+           left: 0;
+           right: 0;
+           height: 40px;
+           display: flex;
+           justify-content: space-between;
+           align-items: center;
+           padding: 0 10px 0 20px;
+           background-color: transparent;
+           z-index: 1000;
+           -webkit-app-region: drag;
+           user-select: none;
+       }
+
+       .title-text-container {
+           overflow: hidden;
+           text-overflow: ellipsis;
+           white-space: nowrap;
+           -webkit-app-region: no-drag;
+       }
+
+       #custom-title-bar .title {
+           font-size: 14px;
+           font-weight: 600;
+           color: var(--primary-text);
+           opacity: 0.7;
+       }
+
+       #custom-title-bar .window-controls {
+           display: flex;
+           gap: 10px;
+           -webkit-app-region: no-drag;
+       }
+
+       .window-control-btn {
+           width: 30px;
+           height: 30px;
+           border: none;
+           background-color: transparent;
+           color: var(--secondary-text);
+           border-radius: 8px;
+           display: flex;
+           align-items: center;
+           justify-content: center;
+           cursor: pointer;
+           transition: background-color 0.2s ease, color 0.2s ease;
+       }
+
+       .window-control-btn:hover {
+           background-color: var(--button-hover-bg);
+           color: var(--primary-text);
+       }
+
+       #close-viewer-btn:hover {
+           background-color: #e81123;
+           color: white;
+       }
+    </style>
+</head>
+<body>
+   <!-- Custom Title Bar -->
+   <div id="custom-title-bar">
+       <div class="title-text-container">
+           <span id="viewer-title-text" class="title">阅读模式</span>
+       </div>
+       <div class="window-controls">
+           <button id="minimize-viewer-btn" class="window-control-btn" title="最小化">
+               <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"></line></svg>
+           </button>
+           <button id="maximize-viewer-btn" class="window-control-btn" title="最大化">
+               <svg width="10" height="10" viewBox="0 0 10 10"><path fill="none" stroke="currentColor" stroke-width="1" d="M0.5,0.5 h9 v9 h-9 z"></path></svg>
+           </button>
+           <button id="close-viewer-btn" class="window-control-btn" title="关闭">
+               <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M0.5,0.5 9.5,9.5 M9.5,0.5 0.5,9.5" stroke="currentColor" stroke-width="1.2"></path></svg>
+           </button>
+       </div>
+   </div>
+    <div class="content-container" id="textContent">
+        <!-- 文本内容将在这里被渲染 -->
+    </div>
+    <div id="customContextMenu" class="custom-context-menu">
+        <button id="contextMenuCopy">复制</button>
+        <button id="contextMenuCut">剪切</button>
+        <button id="contextMenuDelete">删除</button>
+        <button id="contextMenuEditAll" style="display: none;">编辑全文</button>
+        <button id="contextMenuCopyAll" style="display: none;">复制全文</button>
+        <button id="contextMenuShareScreenshot" style="display: none;">分享截图</button>
+        <button id="contextMenuShareNote" style="display: none;">分享笔记</button>
+    </div>
+    <div class="global-actions-container">
+        <button id="editAllButton" class="global-action-button" title="编辑全文">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+            <span>编辑全文</span>
+        </button>
+        <button id="shareToNotesButton" class="global-action-button" title="分享笔记">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>
+            <span>分享笔记</span>
+        </button>
+        <div class="sandbox-toggle-container" title="切换Python执行环境。开启时使用安全的浏览器沙箱环境，关闭时使用本机的Python环境。">
+            <label for="sandbox-toggle">安全沙箱</label>
+            <input type="checkbox" id="sandbox-toggle" class="sandbox-toggle-checkbox" checked>
+            <label for="sandbox-toggle" class="sandbox-toggle-label"></label>
+        </div>
+    </div>
+    <div class="force-spacer">&nbsp;</div>
+    <script src="../vendor/mermaid.min.js"></script>
+    <script src="../vendor/marked.min.js"></script>
+    <script src="../vendor/highlight.min.js"></script>
+    <script src="../vendor/html2canvas.min.js"></script>
+    <!-- draw.io viewer for embedding diagrams -->
+    <script src="https://app.diagrams.net/js/viewer.min.js"></script>
+    <script src="text-viewer.js"></script>
+</body>
+</html>

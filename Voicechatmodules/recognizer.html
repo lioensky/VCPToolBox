@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova的语音转文本测试页</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-color: #f0f8ff;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 15px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+            width: 90%;
+            max-width: 600px;
+            text-align: center;
+            border: 2px solid #a7d9f7;
+        }
+        h1 {
+            color: #4682b4;
+            margin-bottom: 20px;
+            font-size: 2em;
+        }
+        button {
+            background-color: #4682b4;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 25px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            margin-bottom: 20px;
+        }
+        button:hover {
+            background-color: #5a9bd4;
+            transform: translateY(-2px);
+        }
+        button:active {
+            background-color: #366792;
+            transform: translateY(0);
+        }
+        #status {
+            font-size: 1em;
+            color: #666;
+            margin-bottom: 15px;
+        }
+        #result {
+            background-color: #e0f2f7;
+            border: 1px solid #b3e0ff;
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 100px;
+            text-align: left;
+            word-wrap: break-word;
+            font-size: 1.1em;
+            color: #004d40;
+            line-height: 1.6;
+        }
+        .footer {
+            margin-top: 25px;
+            font-size: 0.9em;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Nova的语音转文本测试</h1>
+        <button id="startButton">开始录音</button>
+        <div id="status">点击“开始录音”并允许麦克风权限...</div>
+        <div id="result">识别结果将显示在这里。</div>
+    </div>
+    <div class="footer">
+        由 Nova 为主人莱恩精心制作 <span style="color: #ff69b4;">❤</span>
+    </div>
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+        let recognition;
+        let recognizing = false;
+        let manualStop = false; // Flag to prevent auto-restart on manual stop
+
+        // The 'window.sendTextToElectron' function will be injected directly by Puppeteer's exposeFunction.
+        // We don't need a setter for it anymore.
+
+        if ('webkitSpeechRecognition' in window) {
+            recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'zh-CN';
+
+            recognition.onstart = function() {
+                recognizing = true;
+                manualStop = false; // Reset flag on start
+                startButton.textContent = '停止录音';
+                startButton.style.backgroundColor = '#dc3545';
+                statusDiv.textContent = '正在聆听...';
+                resultDiv.textContent = '';
+            };
+
+            recognition.onresult = function(event) {
+                let interimTranscript = '';
+                let finalTranscript = '';
+
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+                const fullText = finalTranscript + interimTranscript;
+                resultDiv.innerHTML = finalTranscript + '<span style="color:#999;">' + interimTranscript + '</span>';
+                
+                // Send text back to Electron if the injected function exists
+                if (typeof window.sendTextToElectron === 'function') {
+                    window.sendTextToElectron(fullText);
+                }
+            };
+
+            recognition.onerror = function(event) {
+                console.error('语音识别错误:', event.error);
+                statusDiv.textContent = '识别出错: ' + event.error;
+                recognizing = false;
+                startButton.textContent = '开始录音';
+                startButton.style.backgroundColor = '#4682b4';
+            };
+
+            recognition.onend = function() {
+                recognizing = false;
+                startButton.textContent = '开始录音';
+                startButton.style.backgroundColor = '#4682b4';
+                statusDiv.textContent = '录音结束。';
+                // If recognition stops and it wasn't a manual stop, restart it.
+                // This handles cases where the service stops due to silence or other issues.
+                if (!manualStop) {
+                    console.log('Recognition ended, restarting automatically...');
+                    // Use a small timeout to prevent rapid-fire restarts on some errors
+                    setTimeout(() => {
+                        // Check again in case the user manually started during the timeout
+                        if (!recognizing) {
+                           window.startRecognition();
+                        }
+                    }, 500);
+                }
+            };
+
+            // Allow Puppeteer to control start/stop directly
+            window.startRecognition = () => {
+                if (!recognizing) {
+                    manualStop = false; // Ensure we intend to run
+                    recognition.start();
+                }
+            };
+            window.stopRecognition = () => {
+                if (recognizing) {
+                    manualStop = true;
+                    recognition.stop();
+                }
+            };
+
+            // Keep the button click for manual testing in the browser
+            startButton.onclick = function() {
+                if (recognizing) {
+                    window.stopRecognition();
+                    return;
+                }
+                window.startRecognition();
+            };
+
+        } else {
+            statusDiv.textContent = '抱歉，您的浏览器不支持语音识别API。';
+        }
+    </script>
+</body>
+</html>

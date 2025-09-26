@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>图片预览</title>
+    <link rel="stylesheet" href="../styles/themes.css">
+    <style>
+        :root {
+            --image-viewer-border-transparent: rgba(58, 50, 75, 0.2); /* Midnight Neon border with 20% opacity */
+        }
+
+        body.light-theme {
+            --image-viewer-border-transparent: rgba(212, 196, 176, 0.2); /* Golden Dawn border with 20% opacity */
+        }
+
+        body {
+            margin: 0;
+            background-color: var(--secondary-bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            font-family: sans-serif;
+            color: var(--primary-text);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        body {
+            padding-top: 40px; /* Add padding for the custom title bar */
+            box-sizing: border-box;
+        }
+ 
+         body::before {
+             content: '';
+             position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: inherit;
+            filter: blur(10px) brightness(0.8);
+            z-index: -1;
+        }
+        img {
+            max-width: 98vw;
+            max-height: 90vh;
+            object-fit: contain;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            border-radius: 4px;
+            display: block;
+            margin-bottom: 15px;
+            transition: transform 0.1s ease-out;
+            cursor: grab;
+        }
+        .error-message {
+            padding: 20px;
+            background-color: var(--tool-bubble-bg);
+            border-radius: 5px;
+            font-size: 1.2em;
+        }
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            gap: 15px;
+            padding: 10px;
+            background-color: var(--tool-bubble-bg);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out, background-color 0.3s ease;
+            pointer-events: none;
+            backdrop-filter: blur(10px) saturate(110%);
+            -webkit-backdrop-filter: blur(10px) saturate(110%);
+            border: 1px solid var(--image-viewer-border-transparent);
+        }
+        .controls.active {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+        .control-button {
+            background-color: var(--button-bg);
+            color: var(--primary-text);
+            border: 1px solid var(--image-viewer-border-transparent);
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+            transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        }
+        .control-button:hover {
+            background-color: var(--button-hover-bg);
+        }
+        .control-button svg {
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
+        }
+       /* --- Custom Title Bar --- */
+       #custom-title-bar {
+           position: fixed;
+           top: 0;
+           left: 0;
+           right: 0;
+           height: 40px;
+           display: flex;
+           justify-content: space-between;
+           align-items: center;
+           padding: 0 10px 0 20px;
+           background-color: transparent;
+           z-index: 1000;
+           -webkit-app-region: drag;
+           user-select: none;
+           pointer-events: none; /* Allow clicks to pass through to the image initially */
+       }
+
+       #custom-title-bar > * {
+           pointer-events: auto; /* Re-enable pointer events for children */
+       }
+
+       .title-text-container {
+           overflow: hidden;
+           text-overflow: ellipsis;
+           white-space: nowrap;
+           -webkit-app-region: no-drag;
+       }
+
+       #custom-title-bar .title {
+           font-size: 14px;
+           font-weight: 600;
+           color: var(--primary-text);
+           opacity: 0.7;
+       }
+
+       #custom-title-bar .window-controls {
+           display: flex;
+           gap: 10px;
+           -webkit-app-region: no-drag;
+       }
+
+       .window-control-btn {
+           width: 30px;
+           height: 30px;
+           border: none;
+           background-color: transparent;
+           color: var(--secondary-text);
+           border-radius: 8px;
+           display: flex;
+           align-items: center;
+           justify-content: center;
+           cursor: pointer;
+           transition: background-color 0.2s ease, color 0.2s ease;
+       }
+
+       .window-control-btn:hover {
+           background-color: var(--button-hover-bg);
+           color: var(--primary-text);
+       }
+
+       #close-viewer-btn:hover {
+           background-color: #e81123;
+           color: white;
+       }
+    </style>
+</head>
+<body>
+    <!-- Custom Title Bar -->
+    <div id="custom-title-bar">
+        <div class="title-text-container">
+            <span id="image-title-text" class="title">图片预览</span>
+        </div>
+        <div class="window-controls">
+            <button id="minimize-viewer-btn" class="window-control-btn" title="最小化">
+                <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"></line></svg>
+            </button>
+            <button id="maximize-viewer-btn" class="window-control-btn" title="最大化">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path fill="none" stroke="currentColor" stroke-width="1" d="M0.5,0.5 h9 v9 h-9 z"></path></svg>
+            </button>
+            <button id="close-viewer-btn" class="window-control-btn" title="关闭">
+                <svg width="10" height="10" viewBox="0 0 10 10"><path fill="currentColor" d="M0.5,0.5 9.5,9.5 M9.5,0.5 0.5,9.5" stroke="currentColor" stroke-width="1.2"></path></svg>
+            </button>
+        </div>
+    </div>
+
+    <img id="viewerImage" src="" alt="图片加载中或加载失败..." style="display:none;"/>
+    <div class="controls" id="imageControls" style="display:none;">
+        <button id="copyButton" class="control-button">
+            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"></path></svg>
+            复制
+        </button>
+        <button id="downloadButton" class="control-button">
+            <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"></path></svg>
+            下载
+        </button>
+    </div>
+    <div id="errorMessage" class="error-message" style="display:none;">无法加载图片。</div>
+    <script src="image-viewer.js"></script>
+</body>
+</html>
