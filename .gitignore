@@ -148,6 +148,10 @@ dailynote/
 Plugin/WeatherReporter/city_cache.txt
 Plugin/WeatherReporter/weather_cache.txt
 
+# MCPOMonitor cache files
+Plugin/MCPOMonitor/mcpo_status_cache.json
+Plugin/MCPOMonitor/mcpo_status_cache.txt
+
 
 # 忽略通用表情包目录下的所有内容...
 image/通用表情包/*
