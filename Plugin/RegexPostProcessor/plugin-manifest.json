@@ -1,0 +1,53 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "RegexPostProcessor",
+  "version": "1.0.0",
+  "displayName": "正则表达式后处理器",
+  "description": "一个强大的消息后处理插件，支持使用正则表达式对AI响应内容进行文本替换。支持流式和非流式处理模式。",
+  "author": "VCP Team",
+  "pluginType": "messagePostProcessor",
+  "entryPoint": {
+    "script": "regex-post-processor.js",
+    "type": "nodejs"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "RulesFilePath": {
+      "type": "string",
+      "description": "正则表达式规则文件路径（相对于插件目录）",
+      "default": "regex-rules.json"
+    },
+    "AutoReloadRules": {
+      "type": "boolean",
+      "description": "是否自动重新加载规则文件（当文件被修改时）",
+      "default": false
+    },
+    "ReloadInterval": {
+      "type": "integer",
+      "description": "自动重新加载规则文件的检查间隔（毫秒）",
+      "default": 5000
+    },
+    "EnableStreaming": {
+      "type": "boolean",
+      "description": "是否启用流式处理模式",
+      "default": true
+    },
+    "ChunkBufferSize": {
+      "type": "integer",
+      "description": "流式处理时的chunk缓冲区大小（字符数）",
+      "default": 1000
+    },
+    "ProcessInterval": {
+      "type": "integer",
+      "description": "流式处理时的处理间隔（毫秒）",
+      "default": 500
+    }
+  },
+  "capabilities": {
+    "supportedModes": ["streaming", "non-streaming"],
+    "supportedActions": ["updateRules", "reloadRules"],
+    "description": "RegexPostProcessor插件支持对AI响应内容进行正则表达式替换处理。可以处理流式和非流式两种模式，在AI响应返回给客户端之前进行文本处理。支持动态规则更新和重新加载。"
+  }
+}

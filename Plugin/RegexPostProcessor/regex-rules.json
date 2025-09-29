@@ -1,0 +1,55 @@
+{
+  "rules": [
+    {
+      "pattern": "我",
+      "replacement": "偶",
+      "flags": "g",
+      "description": "将'我'替换为'偶'",
+      "enabled": true
+    },
+    {
+      "pattern": "AI",
+      "replacement": "人工智能",
+      "flags": "gi",
+      "description": "将AI替换为人工智能",
+      "enabled": true
+    },
+    {
+      "pattern": "\\bVCP\\b",
+      "replacement": "Variable & Command Protocol",
+      "flags": "g",
+      "description": "将VCP缩写展开为全称",
+      "enabled": true
+    },
+    {
+      "type": "structured_chunk",
+      "name": "tool_request_filter",
+      "start_pattern": "\\<\\<\\<\\[TOOL_REQUEST\\]\\>\\>\\>[\\s\\S]*?\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
+      "end_pattern": "\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
+      "action": "replace",
+      "replacement": "",
+      "description": "过滤TOOL_REQUEST结构化内容块",
+      "enabled": true,
+      "options": {
+        "capture_groups": false,
+        "multiline": true,
+        "greedy": false,
+        "max_chunk_size": 10000,
+        "timeout_ms": 5000
+      },
+      "metadata": {
+        "author": "VCP System",
+        "version": "1.0.0",
+        "tags": ["tool_filter", "streaming", "security"]
+      }
+    }
+  ],
+  "version": "1.1.0",
+  "description": "RegexPostProcessor插件的正则表达式规则配置（支持结构化chunk处理）",
+  "lastUpdated": "2025-09-28T09:46:00.000Z",
+  "features": {
+    "structured_chunk_processing": true,
+    "intelligent_buffering": true,
+    "pattern_complexity_detection": true
+  }
+}
