@@ -184,7 +184,7 @@ class ChatCompletionHandler {
             for (const name of pluginManager.messagePreprocessors.keys()) {
                 // 跳过已经特殊处理的插件
                 if (name === "ImageProcessor" || name === "MultiModalProcessor" || name === "VCPTavern") continue;
-                
+
                 if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
                 try {
                     // 注意：这里应该使用 processedMessages，而不是 agentExpandedMessages
@@ -192,6 +192,12 @@ class ChatCompletionHandler {
                 } catch (pluginError) {
                     console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
                 }
+            }
+
+            // --- 消息后处理器初始化 ---
+            // 为响应处理预热后处理器（如果有的话）
+            if (pluginManager.messagePostProcessors.size > 0) {
+                if (DEBUG_MODE) console.log(`[Server] Found ${pluginManager.messagePostProcessors.size} message postprocessor(s): ${Array.from(pluginManager.messagePostProcessors.keys()).join(', ')}`);
             }
             if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
 
@@ -268,15 +274,23 @@ class ChatCompletionHandler {
                         let sseBuffer = ""; // Buffer for incomplete SSE lines
                         let collectedContentThisTurn = ""; // Collects textual content from delta
                         let rawResponseDataThisTurn = ""; // Collects all raw chunks for diary
+                        let chunkBuffer = ""; // 新增：用于后处理的chunk缓冲区
+                        let chunkCount = 0; // 新增：用于调试的chunk计数器
 
                         const isGpt5Mini = originalBody.model === 'GPT-5-mini';
                         const thinkingRegex = /^Thinking\.\.\.( \(\d+s elapsed\))?$/;
                         let sseLineBuffer = ""; // Buffer for incomplete SSE lines
 
-                        aiResponse.body.on('data', (chunk) => {
+                        aiResponse.body.on('data', async (chunk) => {
                             const chunkString = chunk.toString('utf-8');
-                            rawResponseDataThisTurn += chunkString;
+                            rawResponseDataThisTurn += chunkString; // 收集完整的原始数据用于后处理器
                             sseLineBuffer += chunkString;
+                            chunkCount++;
+
+                            if (DEBUG_MODE) {
+                                console.log(`[Stream DEBUG] Received chunk #${chunkCount} (length: ${chunkString.length})`);
+                                console.log(`[Stream DEBUG] Chunk preview: "${chunkString.substring(0, 50)}${chunkString.length > 50 ? '...' : ''}"`);
+                            }
 
                             let lines = sseLineBuffer.split('\n');
                             // Keep the last part in buffer if it's not a complete line
@@ -318,22 +332,22 @@ class ChatCompletionHandler {
                             if (filteredLines.length > 0) {
                                 const filteredChunkString = filteredLines.join('\n') + '\n'; // Re-add newline for valid SSE stream
                                 const modifiedChunk = Buffer.from(filteredChunkString, 'utf-8');
-                                processChunk(modifiedChunk);
+                                await processChunk(modifiedChunk);
                             }
                         });
 
                         // Process any remaining data in the buffer on stream end
-                        aiResponse.body.on('end', () => {
-                            if (sseLineBuffer.trim()) {
-                                 const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
-                                 processChunk(modifiedChunk);
-                            }
-                            // Signal end of processing for this stream helper
-                            finalizeStream();
-                        });
+                        aiResponse.body.on('end', async () => {
+                             if (sseLineBuffer.trim()) {
+                                  const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
+                                  await processChunk(modifiedChunk);
+                             }
+                             // Signal end of processing for this stream helper
+                             finalizeStream();
+                         });
 
 
-                        function processChunk(chunk) {
+                        async function processChunk(chunk) {
                             const chunkString = chunk.toString('utf-8');
                             let isChunkAnEndOfStreamSignal = false;
                             if (chunkString.includes("data: [DONE]")) {
@@ -366,14 +380,158 @@ class ChatCompletionHandler {
                                     // do not forward it directly. The final [DONE] will be sent by the server's main loop.
                                     // Its content will still be collected by the sseBuffer logic below.
                                 } else {
-                                    // (原 filterGrokReasoningStream 调用已移除)
-                                    // 只有在过滤后仍有内容时才发送，避免发送空的数据块
-                                    if (chunkString) {
-                                        res.write(chunkString);
+                                    // 实时后处理器调用 - 在chunk发送前进行处理
+                                    let processedChunkString = chunkString;
+
+                                    if (pluginManager.messagePostProcessors.size > 0 && chunkString) {
+                                        // 从chunk中提取content进行实时处理
+                                        let contentToProcess = '';
+                                        const linesInChunk = chunkString.split('\n');
+                                        const processedLines = [];
+
+                                        for (const line of linesInChunk) {
+                                            if (line.startsWith('data: ')) {
+                                                const jsonData = line.substring(5).trim();
+                                                if (jsonData && jsonData !== '[DONE]' && !jsonData.startsWith("[")) {
+                                                    try {
+                                                        const parsedData = JSON.parse(jsonData);
+                                                        let content = parsedData.choices?.[0]?.delta?.content;
+                                                        const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
+
+                                                        // 应用与主处理逻辑相同的过滤
+                                                        if (isGpt5Mini && content && thinkingRegex.test(content)) {
+                                                            if (DEBUG_MODE) {
+                                                                console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk: ${content}`);
+                                                            }
+                                                            processedLines.push(line); // 保持原样
+                                                            continue; // 跳过thinking内容
+                                                        }
+
+                                                        if (reasoningContent !== undefined) {
+                                                            if (DEBUG_MODE) {
+                                                                console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk from model ${originalBody.model}: ${reasoningContent}`);
+                                                            }
+                                                            processedLines.push(line); // 保持原样
+                                                            continue; // 跳过reasoning_content
+                                                        }
+
+                                                        if (content) {
+                                                            contentToProcess += content;
+                                                        }
+                                                        processedLines.push(line); // 先添加原行
+                                                    } catch (e) {
+                                                        // 忽略解析错误，保持原样
+                                                        processedLines.push(line);
+                                                    }
+                                                } else {
+                                                    processedLines.push(line);
+                                                }
+                                            } else {
+                                                processedLines.push(line);
+                                            }
+                                        }
+
+                                        // 如果有内容需要处理，进行实时后处理
+                                        if (contentToProcess && contentToProcess.trim()) {
+                                            try {
+                                                let finalProcessedContent = contentToProcess;
+
+                                                for (const postProcessorName of pluginManager.postProcessorOrder) {
+                                                    try {
+                                                        const processedContent = await pluginManager.executeMessagePostProcessor(
+                                                            postProcessorName,
+                                                            finalProcessedContent,
+                                                            true, // isStreaming = true
+                                                            finalProcessedContent // 当前chunk内容作为缓冲区
+                                                        );
+                                                        if (processedContent !== finalProcessedContent) {
+                                                            finalProcessedContent = processedContent;
+                                                            if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] ${postProcessorName} modified chunk content`);
+                                                        }
+                                                    } catch (postProcessError) {
+                                                        console.error(`[Stream PostProcess DEBUG] Error in postprocessor ${postProcessorName}:`, postProcessError);
+                                                    }
+                                                }
+
+                                                // 如果内容被修改，重新构建chunk
+                                                if (finalProcessedContent !== contentToProcess) {
+                                                    console.log(`[Stream PostProcess DEBUG] Content modified, rebuilding chunk`);
+                                                    console.log(`[Stream PostProcess DEBUG] Original: "${contentToProcess.substring(0, 100)}${contentToProcess.length > 100 ? '...' : ''}"`);
+                                                    console.log(`[Stream PostProcess DEBUG] Processed: "${finalProcessedContent.substring(0, 100)}${finalProcessedContent.length > 100 ? '...' : ''}"`);
+
+                                                    // 重新构建SSE格式的chunk - 直接替换整个chunk的内容
+                                                    const originalChunkLines = chunkString.split('\n');
+                                                    const rebuiltLines = [];
+
+                                                    for (const line of originalChunkLines) {
+                                                        if (line.startsWith('data: ')) {
+                                                            const jsonData = line.substring(5).trim();
+                                                            if (jsonData && jsonData !== '[DONE]' && !jsonData.startsWith("[")) {
+                                                                try {
+                                                                    const parsedData = JSON.parse(jsonData);
+                                                                    const originalContent = parsedData.choices?.[0]?.delta?.content || '';
+                                                                    if (originalContent) {
+                                                                        // 直接用处理后的内容替换
+                                                                        parsedData.choices[0].delta.content = finalProcessedContent;
+                                                                        rebuiltLines.push(`data: ${JSON.stringify(parsedData)}`);
+                                                                        console.log(`[Stream PostProcess DEBUG] CHUNK REPLACEMENT: "${originalContent.substring(0, 50)}..." -> "${finalProcessedContent.substring(0, 50)}..."`);
+                                                                    } else {
+                                                                        rebuiltLines.push(line);
+                                                                    }
+                                                                } catch (e) {
+                                                                    rebuiltLines.push(line);
+                                                                }
+                                                            } else {
+                                                                rebuiltLines.push(line);
+                                                            }
+                                                        } else {
+                                                            rebuiltLines.push(line);
+                                                        }
+                                                    }
+
+                                                    processedChunkString = rebuiltLines.join('\n') + '\n';
+                                                } else {
+                                                    // 如果内容没有被修改，保持原样
+                                                    processedChunkString = chunkString;
+                                                }
+                                            } catch (error) {
+                                                console.error('[Stream PostProcess DEBUG] Error in sync postprocessing:', error);
+                                                processedChunkString = chunkString; // 出错时使用原chunk
+                                            }
+                                        } else {
+                                            processedChunkString = chunkString;
+                                        }
+                                    } else {
+                                        processedChunkString = chunkString;
+                                    }
+
+                                    // 发送处理后的chunk（如果有内容）
+                                    if (processedChunkString && processedChunkString.trim()) {
+                                        res.write(processedChunkString);
                                     }
                                 }
                             }
-                            
+
+                            // --- 流式chunk buffer构建（仅用于调试和监控） ---
+                            if (pluginManager.messagePostProcessors.size > 0 && !isChunkAnEndOfStreamSignal) {
+                                // 构建chunk buffer用于调试和监控
+                                chunkBuffer += chunkString;
+
+                                if (DEBUG_MODE) {
+                                    // 检测是否是合适的处理时机（比如句子结束、段落结束等）
+                                    const shouldProcessChunk = chunkString.includes('\n') ||
+                                                             chunkString.includes('. ') ||
+                                                             chunkString.includes('。') ||
+                                                             chunkString.includes('!') ||
+                                                             chunkString.includes('？');
+
+                                    if (shouldProcessChunk && chunkBuffer.length > 50) {
+                                        console.log(`[Stream DEBUG] Chunk buffer reached processing threshold (length: ${chunkBuffer.length})`);
+                                        console.log(`[Stream DEBUG] Chunk content: "${chunkBuffer.substring(0, 100)}${chunkBuffer.length > 100 ? '...' : ''}"`);
+                                    }
+                                }
+                            }
+
                             // SSE parsing for content collection
                             sseBuffer += chunkString;
                             let lines = sseBuffer.split('\n');
@@ -429,6 +587,95 @@ class ChatCompletionHandler {
                                     }
                                 }
                             }
+
+                            // --- 应用消息后处理器（流式模式） ---
+                            if (pluginManager.messagePostProcessors.size > 0) {
+                                if (DEBUG_MODE) {
+                                    console.log(`[Stream PostProcess DEBUG] Applying ${pluginManager.messagePostProcessors.size} postprocessor(s) to stream content`);
+                                    console.log(`[Stream PostProcess DEBUG] Collected content length: ${collectedContentThisTurn.length}`);
+                                    console.log(`[Stream PostProcess DEBUG] Raw data length: ${rawResponseDataThisTurn.length}`);
+                                }
+
+                                // 从rawResponseDataThisTurn中提取纯文本内容用于后处理
+                                let textContentForPostProcess = collectedContentThisTurn;
+
+                                // 如果filtered content为空但有raw data，尝试从raw data中提取
+                                if ((!textContentForPostProcess || textContentForPostProcess.trim() === '') && rawResponseDataThisTurn) {
+                                    if (DEBUG_MODE) console.log('[Stream PostProcess DEBUG] Extracting text content from raw response data');
+                                    // 从SSE格式的raw data中提取content字段
+                                    const sseLines = rawResponseDataThisTurn.split('\n');
+                                    let extractedContent = '';
+                                    for (const line of sseLines) {
+                                        if (line.startsWith('data: ')) {
+                                            const jsonData = line.substring(5).trim();
+                                            if (jsonData && jsonData !== '[DONE]') {
+                                                try {
+                                                    const parsedData = JSON.parse(jsonData);
+                                                    const content = parsedData.choices?.[0]?.delta?.content;
+                                                    const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
+
+                                                    // 应用与主处理逻辑相同的过滤
+                                                    if (isGpt5Mini && content && thinkingRegex.test(content)) {
+                                                        if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] Skipping thinking content: ${content}`);
+                                                        continue; // 跳过thinking内容
+                                                    }
+
+                                                    if (reasoningContent !== undefined) {
+                                                        if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] Skipping reasoning content: ${reasoningContent}`);
+                                                        continue; // 跳过reasoning_content
+                                                    }
+
+                                                    if (content) {
+                                                        extractedContent += content;
+                                                    }
+                                                } catch (e) {
+                                                    // 忽略解析错误
+                                                }
+                                            }
+                                        }
+                                    }
+                                    textContentForPostProcess = extractedContent;
+                                    if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] Extracted content length: ${extractedContent.length}`);
+                                }
+
+                                if (textContentForPostProcess && textContentForPostProcess.trim()) {
+                                    if (DEBUG_MODE) {
+                                        console.log(`[Stream PostProcess DEBUG] Processing text content (length: ${textContentForPostProcess.length})`);
+                                        console.log(`[Stream PostProcess DEBUG] Content preview: "${textContentForPostProcess.substring(0, 100)}${textContentForPostProcess.length > 100 ? '...' : ''}"`);
+                                    }
+
+                                    // 异步处理，不阻塞流式传输完成
+                                    setImmediate(async () => {
+                                        try {
+                                            for (const postProcessorName of pluginManager.postProcessorOrder) {
+                                                try {
+                                                    if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] Calling ${postProcessorName} with content length: ${textContentForPostProcess.length}`);
+                                                    const processedContent = await pluginManager.executeMessagePostProcessor(
+                                                        postProcessorName,
+                                                        textContentForPostProcess,
+                                                        true, // isStreaming
+                                                        chunkBuffer
+                                                    );
+                                                    if (processedContent !== textContentForPostProcess) {
+                                                        if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] ${postProcessorName} modified content`);
+                                                        // 注意：在流式模式下，我们无法修改已发送的内容
+                                                        // 但可以记录处理结果用于调试和监控
+                                                    } else {
+                                                        if (DEBUG_MODE) console.log(`[Stream PostProcess DEBUG] ${postProcessorName} returned unchanged content`);
+                                                    }
+                                                } catch (postProcessError) {
+                                                    console.error(`[Stream PostProcess DEBUG] Error in postprocessor ${postProcessorName}:`, postProcessError);
+                                                }
+                                            }
+                                        } catch (error) {
+                                            console.error('[Stream PostProcess DEBUG] Error in async postprocessing:', error);
+                                        }
+                                    });
+                                } else if (DEBUG_MODE) {
+                                    console.log('[Stream PostProcess DEBUG] No text content to process');
+                                }
+                            }
+
                             resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
                         }
                         aiResponse.body.on('error', (streamError) => {
@@ -972,7 +1219,29 @@ class ChatCompletionHandler {
                 } while (recursionDepth < maxRecursion);
 
                 // --- Finalize Non-Streaming Response ---
-                const finalContentForClient = conversationHistoryForClient.join('');
+                let finalContentForClient = conversationHistoryForClient.join('');
+
+                // --- 应用消息后处理器（非流式） ---
+                if (finalContentForClient && pluginManager.messagePostProcessors.size > 0) {
+                    if (DEBUG_MODE) console.log(`[NonStream PostProcess] Applying ${pluginManager.messagePostProcessors.size} postprocessor(s) to final content`);
+
+                    for (const postProcessorName of pluginManager.postProcessorOrder) {
+                        try {
+                            const processedContent = await pluginManager.executeMessagePostProcessor(
+                                postProcessorName,
+                                finalContentForClient,
+                                false, // isStreaming = false
+                                null // chunkBuffer = null for non-streaming
+                            );
+                            if (processedContent !== finalContentForClient) {
+                                finalContentForClient = processedContent;
+                                if (DEBUG_MODE) console.log(`[NonStream PostProcess] ${postProcessorName} modified content`);
+                            }
+                        } catch (postProcessError) {
+                            console.error(`[NonStream PostProcess] Error in postprocessor ${postProcessorName}:`, postProcessError);
+                        }
+                    }
+                }
 
                 let finalJsonResponse;
                 try {

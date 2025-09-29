@@ -18,6 +18,8 @@ class PluginManager {
         this.scheduledJobs = new Map();
         this.messagePreprocessors = new Map();
         this.preprocessorOrder = []; // 新增：用于存储预处理器的最终加载顺序
+        this.messagePostProcessors = new Map(); // 新增：消息后处理器插件
+        this.postProcessorOrder = []; // 新增：用于存储后处理器的最终加载顺序
         this.serviceModules = new Map();
         this.projectBasePath = null;
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
@@ -253,17 +255,50 @@ class PluginManager {
             return messages;
         }
     }
+
+    async executeMessagePostProcessor(pluginName, responseContent, isStreaming = false, chunkBuffer = null) {
+        const postProcessorModule = this.messagePostProcessors.get(pluginName);
+        const pluginManifest = this.plugins.get(pluginName);
+        if (!postProcessorModule || !pluginManifest) {
+            console.error(`[PluginManager] Message postprocessor plugin "${pluginName}" not found.`);
+            return responseContent;
+        }
+        if (typeof postProcessorModule.processResponse !== 'function') {
+            console.error(`[PluginManager] Plugin "${pluginName}" does not have 'processResponse' function.`);
+            return responseContent;
+        }
+        try {
+            if (this.debugMode) console.log(`[PluginManager] Executing message postprocessor: ${pluginName} (streaming: ${isStreaming})`);
+            const pluginSpecificConfig = this._getPluginConfig(pluginManifest);
+            const processedResponse = await postProcessorModule.processResponse(responseContent, pluginSpecificConfig, isStreaming, chunkBuffer);
+            if (this.debugMode) console.log(`[PluginManager] Message postprocessor ${pluginName} finished.`);
+            return processedResponse;
+        } catch (error) {
+            console.error(`[PluginManager] Error in message postprocessor ${pluginName}:`, error);
+            return responseContent;
+        }
+    }
     
     async shutdownAllPlugins() {
         console.log('[PluginManager] Shutting down all plugins...'); // Keep
         for (const [name, pluginModuleData] of this.messagePreprocessors) {
-             const pluginModule = pluginModuleData.module || pluginModuleData;
+              const pluginModule = pluginModuleData.module || pluginModuleData;
             if (pluginModule && typeof pluginModule.shutdown === 'function') {
                 try {
-                    if (this.debugMode) console.log(`[PluginManager] Calling shutdown for ${name}...`);
+                    if (this.debugMode) console.log(`[PluginManager] Calling shutdown for preprocessor ${name}...`);
                     await pluginModule.shutdown();
                 } catch (error) {
-                    console.error(`[PluginManager] Error during shutdown of plugin ${name}:`, error); // Keep error
+                    console.error(`[PluginManager] Error during shutdown of preprocessor plugin ${name}:`, error); // Keep error
+                }
+            }
+        }
+        for (const [name, pluginModule] of this.messagePostProcessors) {
+            if (pluginModule && typeof pluginModule.shutdown === 'function') {
+                try {
+                    if (this.debugMode) console.log(`[PluginManager] Calling shutdown for postprocessor ${name}...`);
+                    await pluginModule.shutdown();
+                } catch (error) {
+                    console.error(`[PluginManager] Error during shutdown of postprocessor plugin ${name}:`, error); // Keep error
                 }
             }
         }
@@ -294,6 +329,7 @@ class PluginManager {
         }
         this.plugins = localPlugins;
         this.messagePreprocessors.clear();
+        this.messagePostProcessors.clear();
         this.staticPlaceholderValues.clear();
         this.serviceModules.clear();
 
@@ -324,9 +360,10 @@ class PluginManager {
                         console.log(`[PluginManager] Loaded manifest: ${manifest.displayName} (${manifest.name}, Type: ${manifest.pluginType})`);
 
                         const isPreprocessor = manifest.pluginType === 'messagePreprocessor' || manifest.pluginType === 'hybridservice';
+                        const isPostProcessor = manifest.pluginType === 'messagePostProcessor' || manifest.pluginType === 'hybridservice';
                         const isService = manifest.pluginType === 'service' || manifest.pluginType === 'hybridservice';
 
-                        if (isPreprocessor || isService) {
+                        if (isPreprocessor || isPostProcessor || isService) {
                             if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
                                 try {
                                     const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
@@ -337,6 +374,9 @@ class PluginManager {
                                     }
                                     if (isPreprocessor && typeof module.processMessages === 'function') {
                                         discoveredPreprocessors.set(manifest.name, module);
+                                    }
+                                    if (isPostProcessor && typeof module.processResponse === 'function') {
+                                        this.messagePostProcessors.set(manifest.name, module);
                                     }
                                     if (isService && typeof module.registerRoutes === 'function') {
                                         this.serviceModules.set(manifest.name, { manifest, module });
@@ -355,25 +395,30 @@ class PluginManager {
             }
 
             // --- 新的排序和注册逻辑 ---
-            const availablePlugins = new Set(discoveredPreprocessors.keys());
-            let finalOrder = [];
-            let orderFileExists = false;
+            const availablePreprocessors = new Set(discoveredPreprocessors.keys());
+            const availablePostProcessors = new Set(this.messagePostProcessors.keys());
+            let preprocessorFinalOrder = [];
+            let postProcessorFinalOrder = [];
+            let preprocessorOrderFileExists = false;
+            let postProcessorOrderFileExists = false;
+
+            // 预处理器排序逻辑
             try {
                 await fs.access(PREPROCESSOR_ORDER_FILE);
-                orderFileExists = true;
+                preprocessorOrderFileExists = true;
             } catch (error) {
                 // File does not exist, which is fine.
             }
 
-            if (orderFileExists) {
+            if (preprocessorOrderFileExists) {
                 try {
                     const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
                     const savedOrder = JSON.parse(orderContent);
                     if (Array.isArray(savedOrder)) {
                         for (const pluginName of savedOrder) {
-                            if (availablePlugins.has(pluginName)) {
-                                finalOrder.push(pluginName);
-                                availablePlugins.delete(pluginName);
+                            if (availablePreprocessors.has(pluginName)) {
+                                preprocessorFinalOrder.push(pluginName);
+                                availablePreprocessors.delete(pluginName);
                             }
                         }
                     }
@@ -381,24 +426,68 @@ class PluginManager {
                     console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
                 }
             }
-            
-            finalOrder.push(...Array.from(availablePlugins).sort()); // 将新发现的插件按字母顺序追加
-            
+
+            preprocessorFinalOrder.push(...Array.from(availablePreprocessors).sort()); // 将新发现的插件按字母顺序追加
+
             // 如果文件最初不存在，并且我们确定了最终顺序，则创建它
-            if (!orderFileExists && finalOrder.length > 0) {
+            if (!preprocessorOrderFileExists && preprocessorFinalOrder.length > 0) {
                 try {
-                    await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(finalOrder, null, 2), 'utf-8');
+                    await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(preprocessorFinalOrder, null, 2), 'utf-8');
                     console.log(`[PluginManager] Initialized ${PREPROCESSOR_ORDER_FILE} with default order.`);
                 } catch (writeError) {
                     console.error(`[PluginManager] Failed to create initial ${PREPROCESSOR_ORDER_FILE}:`, writeError);
                 }
             }
 
-            for (const pluginName of finalOrder) {
+            for (const pluginName of preprocessorFinalOrder) {
                 this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
             }
-            this.preprocessorOrder = finalOrder;
-            if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
+            this.preprocessorOrder = preprocessorFinalOrder;
+            if (preprocessorFinalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + preprocessorFinalOrder.join(' -> '));
+
+            // 后处理器排序逻辑
+            const POSTPROCESSOR_ORDER_FILE = path.join(__dirname, 'postprocessor_order.json');
+            try {
+                await fs.access(POSTPROCESSOR_ORDER_FILE);
+                postProcessorOrderFileExists = true;
+            } catch (error) {
+                // File does not exist, which is fine.
+            }
+
+            if (postProcessorOrderFileExists) {
+                try {
+                    const orderContent = await fs.readFile(POSTPROCESSOR_ORDER_FILE, 'utf-8');
+                    const savedOrder = JSON.parse(orderContent);
+                    if (Array.isArray(savedOrder)) {
+                        for (const pluginName of savedOrder) {
+                            if (availablePostProcessors.has(pluginName)) {
+                                postProcessorFinalOrder.push(pluginName);
+                                availablePostProcessors.delete(pluginName);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error(`[PluginManager] Error reading existing ${POSTPROCESSOR_ORDER_FILE}:`, error);
+                }
+            }
+
+            postProcessorFinalOrder.push(...Array.from(availablePostProcessors).sort()); // 将新发现的插件按字母顺序追加
+
+            // 如果文件最初不存在，并且我们确定了最终顺序，则创建它
+            if (!postProcessorOrderFileExists && postProcessorFinalOrder.length > 0) {
+                try {
+                    await fs.writeFile(POSTPROCESSOR_ORDER_FILE, JSON.stringify(postProcessorFinalOrder, null, 2), 'utf-8');
+                    console.log(`[PluginManager] Initialized ${POSTPROCESSOR_ORDER_FILE} with default order.`);
+                } catch (writeError) {
+                    console.error(`[PluginManager] Failed to create initial ${POSTPROCESSOR_ORDER_FILE}:`, writeError);
+                }
+            }
+
+            for (const pluginName of postProcessorFinalOrder) {
+                this.messagePostProcessors.set(pluginName, this.messagePostProcessors.get(pluginName));
+            }
+            this.postProcessorOrder = postProcessorFinalOrder;
+            if (postProcessorFinalOrder.length > 0) console.log('[PluginManager] Final message postprocessor order: ' + postProcessorFinalOrder.join(' -> '));
             // --- 排序逻辑结束 ---
 
             this.buildVCPDescription();
@@ -994,6 +1083,18 @@ class PluginManager {
     getPreprocessorOrder() {
         // 返回所有已发现、已排序的预处理器信息
         return this.preprocessorOrder.map(name => {
+            const manifest = this.plugins.get(name);
+            return {
+                name: name,
+                displayName: manifest ? manifest.displayName : name,
+                description: manifest ? manifest.description : 'N/A'
+            };
+        });
+    }
+
+    getPostProcessorOrder() {
+        // 返回所有已发现、已排序的后处理器信息
+        return this.postProcessorOrder.map(name => {
             const manifest = this.plugins.get(name);
             return {
                 name: name,
