@@ -597,6 +597,7 @@ class RAGDiaryPlugin {
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
     async _processSingleSystemMessage(content, queryVector, userContent, dynamicK, timeRanges) {
         let processedContent = content;
+        const processedDiaries = new Set(); // 用于跟踪已处理的日记本，防止循环引用
 
         const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
         const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
@@ -606,6 +607,13 @@ class RAGDiaryPlugin {
         for (const match of ragDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in [[...]]. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+
             const modifiers = match[2] || '';
             
             const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
@@ -654,6 +662,13 @@ class RAGDiaryPlugin {
         for (const match of fullTextDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in <<...>>. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+
             const diaryConfig = this.ragConfig[dbName] || {};
             const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
 
@@ -685,6 +700,13 @@ class RAGDiaryPlugin {
         for (const match of hybridDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in 《《...》》. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+            
             const modifiers = match[2] || '';
             const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
             const kMultiplier = kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;

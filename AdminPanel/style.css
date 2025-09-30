@@ -189,6 +189,8 @@ body {
 
 .sidebar .material-symbols-outlined {
     font-size: 22px;
+    position: relative;
+    top: 4.5px; /* 微调图标垂直位置 */
 }
 
 .content {

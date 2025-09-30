@@ -49,6 +49,26 @@
            align-items: center;
            margin-bottom: 1rem;
        }
+       #plugin-nav a {
+           display: block;
+           white-space: pre-wrap;
+           line-height: 1.3;
+           padding: 10px 12px;
+           min-height: 40px; /* 确保足够高度容纳两行 */
+           align-items: center;
+       }
+       #plugin-nav .plugin-original-name {
+           display: block;
+           font-size: 0.75em;
+           color: var(--text-color-secondary);
+           font-weight: normal;
+           font-style: italic;
+           margin-top: 1px;
+           padding-left: 20px; /* 与图标对齐 */
+       }
+       #plugin-nav li {
+           padding: 0; /* 调整li padding以适应a的padding */
+       }
    </style>
 </head>
 <body>
