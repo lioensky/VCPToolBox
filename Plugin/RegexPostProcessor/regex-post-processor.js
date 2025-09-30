@@ -470,8 +470,16 @@ class RegexPostProcessor {
                         return { output: chunkContent };
                     }
 
+                    // 保存当前的拦截缓冲区长度，用于检测是否真的累积了内容
+                    const beforeLength = this.interceptBuffer.length;
+
                     // 累积拦截内容
                     this.interceptBuffer += chunkContent;
+
+                    // 检测是否真的有新内容累积
+                    if (this.interceptBuffer.length > beforeLength) {
+                        console.log(`[RegexPostProcessor INTERCEPT] Accumulated ${this.interceptBuffer.length - beforeLength} new characters`);
+                    }
 
                     // 检查安全限制
                     const timeoutMs = this.interceptRule?.options?.timeout_ms || 5000;
@@ -499,11 +507,14 @@ class RegexPostProcessor {
                         if (endMatch) {
                             console.log(`[RegexPostProcessor INTERCEPT] ✓ Found end marker, interception complete`);
                             console.log(`[RegexPostProcessor INTERCEPT] End marker: "${endMatch[0]}"`);
+                            console.log(`[RegexPostProcessor INTERCEPT] Match index: ${endMatch.index}`);
 
                             // 构造精确的结果：过滤掉整个拦截的结构化内容
                             // 注意：这里返回空字符串，因为整个拦截缓冲区都是要被过滤的内容
                             this.resetInterceptionState();
                             return { output: '' };
+                        } else {
+                            console.log(`[RegexPostProcessor INTERCEPT] No end marker found in buffer`);
                         }
                     } catch (error) {
                         console.error(`[RegexPostProcessor INTERCEPT] ✗ Error testing end pattern:`, error);
@@ -558,36 +569,41 @@ class RegexPostProcessor {
                 const endIndex = endMatch.index;
                 const endMarker = endMatch[0];
 
-                console.log(`[RegexPostProcessor PRECISION_CUT] ✓ Found complete structure in single chunk`);
-                console.log(`[RegexPostProcessor PRECISION_CUT] End marker at index ${endIndex}: "${endMarker}"`);
+                // 验证结束标记在开始标记之后
+                if (endIndex > startIndex) {
+                    console.log(`[RegexPostProcessor PRECISION_CUT] ✓ Found complete structure in single chunk`);
+                    console.log(`[RegexPostProcessor PRECISION_CUT] End marker at index ${endIndex}: "${endMarker}"`);
 
-                // 构造精确的结果：保留开始标记前的内容，过滤标记内部的内容，保留结束标记后的内容
-                const beforeStart = chunkContent.substring(0, startIndex);
-                const afterEnd = chunkContent.substring(endIndex + endMarker.length);
+                    // 构造精确的结果：保留开始标记前的内容，过滤标记内部的内容，保留结束标记后的内容
+                    const beforeStart = chunkContent.substring(0, startIndex);
+                    const afterEnd = chunkContent.substring(endIndex + endMarker.length);
 
-                console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
-                console.log(`[RegexPostProcessor PRECISION_CUT] After end: "${afterEnd.substring(0, 50)}${afterEnd.length > 50 ? '...' : ''}"`);
+                    console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
+                    console.log(`[RegexPostProcessor PRECISION_CUT] After end: "${afterEnd.substring(0, 50)}${afterEnd.length > 50 ? '...' : ''}"`);
 
-                // 重置状态，返回处理后的内容
-                this.resetInterceptionState();
-                return { output: beforeStart + afterEnd };
-            } else {
-                // 当前chunk只有开始标记，没有结束标记
-                console.log(`[RegexPostProcessor PRECISION_CUT] Only start marker found, entering INTERCEPTING state`);
-
-                // 保留开始标记前的内容，过滤开始标记后的内容
-                const beforeStart = chunkContent.substring(0, startIndex);
-                const afterStart = chunkContent.substring(startIndex);
-
-                console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
-                console.log(`[RegexPostProcessor PRECISION_CUT] After start (to be intercepted): "${afterStart.substring(0, 50)}${afterStart.length > 50 ? '...' : ''}"`);
-
-                // 进入拦截状态，累积标记后的内容
-                this.streamingState = 'INTERCEPTING';
-                this.interceptBuffer = afterStart;
-
-                return { output: beforeStart };
+                    // 重置状态，返回处理后的内容
+                    this.resetInterceptionState();
+                    return { output: beforeStart + afterEnd };
+                } else {
+                    console.log(`[RegexPostProcessor PRECISION_CUT] ⚠ End marker before start marker, treating as no complete structure`);
+                }
             }
+
+            // 当前chunk只有开始标记，没有结束标记，或者结束标记位置不正确
+            console.log(`[RegexPostProcessor PRECISION_CUT] Only start marker found or invalid structure, entering INTERCEPTING state`);
+
+            // 保留开始标记前的内容，过滤开始标记后的内容
+            const beforeStart = chunkContent.substring(0, startIndex);
+            const afterStart = chunkContent.substring(startIndex);
+
+            console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
+            console.log(`[RegexPostProcessor PRECISION_CUT] After start (to be intercepted): "${afterStart.substring(0, 50)}${afterStart.length > 50 ? '...' : ''}"`);
+
+            // 进入拦截状态，累积标记后的内容
+            this.streamingState = 'INTERCEPTING';
+            this.interceptBuffer = afterStart;
+
+            return { output: beforeStart };
 
         } catch (error) {
             console.error(`[RegexPostProcessor PRECISION_CUT] ✗ Error in precision cut:`, error);

@@ -24,8 +24,8 @@
     {
       "type": "structured_chunk",
       "name": "tool_request_filter",
-      "start_pattern": "\\<\\<\\<\\[[A-Z_]+\\]\\>\\>\\>",
-      "end_pattern": "\\<\\<\\<\\[END_[A-Z_]+\\]\\>\\>\\>",
+      "start_pattern": "\\<\\<\\<\\[TOOL_REQUEST\\]\\>\\>\\>[\\s\\S]*?\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
+      "end_pattern": "\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
       "action": "replace",
       "replacement": "",
       "description": "过滤通用结构化内容块（支持TOOL_REQUEST、STRUCTURED_BLOCK等）",
