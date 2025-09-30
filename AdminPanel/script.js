@@ -39,8 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const notesActionStatusSpan = document.getElementById('notes-action-status');
     const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
 
-    // Agent Files Editor Elements
-    const agentFileSelect = document.getElementById('agent-file-select');
+    // Agent Manager Elements
+    const agentMapListDiv = document.getElementById('agent-map-list');
+    const addAgentMapEntryButton = document.getElementById('add-agent-map-entry-button');
+    const saveAgentMapButton = document.getElementById('save-agent-map-button');
+    const agentMapStatusSpan = document.getElementById('agent-map-status');
+    const editingAgentFileDisplay = document.getElementById('editing-agent-file-display');
     const agentFileContentEditor = document.getElementById('agent-file-content-editor');
     const saveAgentFileButton = document.getElementById('save-agent-file-button');
     const agentFileStatusSpan = document.getElementById('agent-file-status');
@@ -963,7 +967,7 @@ Description Length: ${newDescription.length}`);
             } else if (sectionIdToActivate === 'daily-notes-manager-section') {
                 initializeDailyNotesManager();
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
-                initializeAgentFilesEditor();
+                initializeAgentManager();
             } else if (sectionIdToActivate === 'tvs-files-editor-section') {
                 initializeTvsFilesEditor();
             } else if (sectionIdToActivate === 'server-log-viewer-section') {
@@ -1653,59 +1657,128 @@ Description Length: ${newDescription.length}`);
     }
     // --- End New Function ---
 
-    // --- Agent Files Editor Functions ---
+    // --- Agent Manager Functions ---
     let currentEditingAgentFile = null;
+    let availableAgentFiles = []; // Cache available .txt files
 
-    async function initializeAgentFilesEditor() {
-        console.log('Initializing Agent Files Editor...');
+    async function initializeAgentManager() {
+        console.log('Initializing Agent Manager...');
         agentFileContentEditor.value = '';
         agentFileStatusSpan.textContent = '';
+        agentMapStatusSpan.textContent = '';
+        editingAgentFileDisplay.textContent = '未选择文件';
         saveAgentFileButton.disabled = true;
         currentEditingAgentFile = null;
-        await loadAgentFilesList();
+        agentMapListDiv.innerHTML = '<p>正在加载 Agent 映射...</p>';
+
+        try {
+            // Fetch both map and available files concurrently
+            const [mapData, filesData] = await Promise.all([
+                apiFetch(`${API_BASE_URL}/agents/map`),
+                apiFetch(`${API_BASE_URL}/agents`)
+            ]);
+            
+            availableAgentFiles = filesData.files.sort((a, b) => a.localeCompare(b));
+            renderAgentMap(mapData);
+
+        } catch (error) {
+            agentMapListDiv.innerHTML = `<p class="error-message">加载 Agent 数据失败: ${error.message}</p>`;
+            showMessage(`加载 Agent 数据失败: ${error.message}`, 'error');
+        }
     }
 
-    async function loadAgentFilesList() {
-        try {
-            const data = await apiFetch(`${API_BASE_URL}/agents`);
-            agentFileSelect.innerHTML = '<option value="">请选择一个文件...</option>'; // Reset
-            if (data.files && data.files.length > 0) {
-                data.files.sort((a, b) => a.localeCompare(b)); // Sort alphabetically
-                data.files.forEach(fileName => {
-                    const option = document.createElement('option');
-                    option.value = fileName;
-                    option.textContent = fileName;
-                    agentFileSelect.appendChild(option);
-                });
-            } else {
-                agentFileSelect.innerHTML = '<option value="">没有找到 Agent 文件</option>';
-                agentFileContentEditor.placeholder = '没有 Agent 文件可供编辑。';
-            }
-        } catch (error) {
-            agentFileSelect.innerHTML = '<option value="">加载 Agent 文件列表失败</option>';
-            showMessage('加载 Agent 文件列表失败: ' + error.message, 'error');
-            agentFileContentEditor.placeholder = '加载 Agent 文件列表失败。';
+    function renderAgentMap(agentMap) {
+        agentMapListDiv.innerHTML = ''; // Clear loading message
+        if (Object.keys(agentMap).length === 0) {
+            agentMapListDiv.innerHTML = '<p>没有定义任何 Agent。请点击“添加新 Agent”来创建一个。</p>';
         }
+
+        for (const agentName in agentMap) {
+            const fileName = agentMap[agentName];
+            const entryDiv = createAgentMapEntryElement(agentName, fileName);
+            agentMapListDiv.appendChild(entryDiv);
+        }
+    }
+
+    function createAgentMapEntryElement(agentName, selectedFile) {
+        const entryDiv = document.createElement('div');
+        entryDiv.className = 'agent-map-entry';
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = agentName;
+        nameInput.className = 'agent-name-input';
+        nameInput.placeholder = 'Agent 定义名';
+
+        const fileSelect = document.createElement('select');
+        fileSelect.className = 'agent-file-select';
+        
+        const placeholderOption = document.createElement('option');
+        placeholderOption.value = '';
+        placeholderOption.textContent = '选择一个 .txt 文件...';
+        fileSelect.appendChild(placeholderOption);
+
+        availableAgentFiles.forEach(f => {
+            const option = document.createElement('option');
+            option.value = f;
+            option.textContent = f;
+            if (f === selectedFile) {
+                option.selected = true;
+            }
+            fileSelect.appendChild(option);
+        });
+
+        const editFileButton = document.createElement('button');
+        editFileButton.textContent = '编辑文件';
+        editFileButton.className = 'edit-agent-file-btn';
+        editFileButton.onclick = () => {
+            const selectedValue = fileSelect.value;
+            if (selectedValue) {
+                loadAgentFileContent(selectedValue);
+            } else {
+                showMessage('请先为此 Agent 选择一个文件。', 'info');
+            }
+        };
+
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = '删除';
+        deleteButton.className = 'delete-agent-map-btn';
+        deleteButton.onclick = () => {
+            if (confirm(`确定要删除 Agent "${nameInput.value || '(未命名)'}" 吗？`)) {
+                entryDiv.remove();
+            }
+        };
+
+        entryDiv.appendChild(nameInput);
+        entryDiv.appendChild(document.createTextNode(' → '));
+        entryDiv.appendChild(fileSelect);
+        entryDiv.appendChild(editFileButton);
+        entryDiv.appendChild(deleteButton);
+
+        return entryDiv;
     }
 
     async function loadAgentFileContent(fileName) {
         if (!fileName) {
             agentFileContentEditor.value = '';
-            agentFileStatusSpan.textContent = '请选择一个文件。';
+            agentFileStatusSpan.textContent = '';
+            editingAgentFileDisplay.textContent = '未选择文件';
             saveAgentFileButton.disabled = true;
             currentEditingAgentFile = null;
-            agentFileContentEditor.placeholder = '选择一个 Agent 文件以编辑其内容...';
+            agentFileContentEditor.placeholder = '从左侧选择一个 Agent 以编辑其关联的 .txt 文件...';
             return;
         }
         agentFileStatusSpan.textContent = `正在加载 ${fileName}...`;
         try {
             const data = await apiFetch(`${API_BASE_URL}/agents/${fileName}`);
             agentFileContentEditor.value = data.content;
-            agentFileStatusSpan.textContent = `当前编辑: ${fileName}`;
+            agentFileStatusSpan.textContent = ``; // Clear loading message
+            editingAgentFileDisplay.textContent = `正在编辑: ${fileName}`;
             saveAgentFileButton.disabled = false;
             currentEditingAgentFile = fileName;
         } catch (error) {
             agentFileStatusSpan.textContent = `加载文件 ${fileName} 失败。`;
+            editingAgentFileDisplay.textContent = `加载失败: ${fileName}`;
             showMessage(`加载文件 ${fileName} 失败: ${error.message}`, 'error');
             agentFileContentEditor.value = `无法加载文件: ${fileName}\n\n错误: ${error.message}`;
             saveAgentFileButton.disabled = true;
@@ -1737,17 +1810,80 @@ Description Length: ${newDescription.length}`);
         }
     }
 
-    // Event Listeners for Agent Files Editor
-    if (agentFileSelect) {
-        agentFileSelect.addEventListener('change', (event) => {
-            loadAgentFileContent(event.target.value);
+    async function saveAgentMap() {
+        agentMapStatusSpan.textContent = '正在保存...';
+        agentMapStatusSpan.className = 'status-message info';
+        const newMap = {};
+        let isValid = true;
+
+        agentMapListDiv.querySelectorAll('.agent-map-entry').forEach(entry => {
+            const nameInput = entry.querySelector('.agent-name-input');
+            const fileSelect = entry.querySelector('.agent-file-select');
+            const agentName = nameInput.value.trim();
+            const fileName = fileSelect.value;
+
+            if (!agentName) {
+                showMessage('Agent 定义名不能为空。', 'error');
+                nameInput.focus();
+                isValid = false;
+                return;
+            }
+            if (newMap[agentName]) {
+                showMessage(`Agent 定义名 "${agentName}" 重复。`, 'error');
+                nameInput.focus();
+                isValid = false;
+                return;
+            }
+            if (!fileName) {
+                showMessage(`Agent "${agentName}" 未选择 .txt 文件。`, 'error');
+                fileSelect.focus();
+                isValid = false;
+                return;
+            }
+            newMap[agentName] = fileName;
         });
+
+        if (!isValid) {
+            agentMapStatusSpan.textContent = '保存失败，请检查错误。';
+            agentMapStatusSpan.className = 'status-message error';
+            return;
+        }
+
+        try {
+            await apiFetch(`${API_BASE_URL}/agents/map`, {
+                method: 'POST',
+                body: JSON.stringify(newMap)
+            });
+            showMessage('Agent 映射表已成功保存!', 'success');
+            agentMapStatusSpan.textContent = '保存成功!';
+            agentMapStatusSpan.className = 'status-message success';
+            // Reload to ensure consistency
+            initializeAgentManager();
+        } catch (error) {
+            agentMapStatusSpan.textContent = `保存失败: ${error.message}`;
+            agentMapStatusSpan.className = 'status-message error';
+        }
     }
+
+    function addNewAgentMapEntry() {
+        const entryDiv = createAgentMapEntryElement('', '');
+        agentMapListDiv.appendChild(entryDiv);
+        entryDiv.querySelector('.agent-name-input').focus();
+    }
+
+
+    // Event Listeners for Agent Manager
     if (saveAgentFileButton) {
         saveAgentFileButton.addEventListener('click', saveAgentFileContent);
     }
+    if (saveAgentMapButton) {
+        saveAgentMapButton.addEventListener('click', saveAgentMap);
+    }
+    if (addAgentMapEntryButton) {
+        addAgentMapEntryButton.addEventListener('click', addNewAgentMapEntry);
+    }
 
-    // --- End Agent Files Editor Functions ---
+    // --- End Agent Manager Functions ---
 
     // --- TVS Files Editor Functions ---
     let currentEditingTvsFile = null;
@@ -2296,3 +2432,4 @@ Description Length: ${newDescription.length}`);
     }
     // --- End Semantic Groups Editor Functions ---
     });
+

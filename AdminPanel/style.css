@@ -746,3 +746,107 @@ html[data-theme='light'] .delete-group-btn {
 .add-word-input:focus {
     outline: none;
 }
+
+/* --- Agent Manager Styles --- */
+.agent-manager-container {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 30px;
+    height: calc(100% - 100px); /* Adjust based on title and description height */
+}
+
+.agent-map-editor, .agent-file-editor {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 25px;
+    overflow: hidden;
+}
+
+.agent-map-editor h3, .agent-file-editor h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.2em;
+    color: var(--primary-text);
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 15px;
+}
+
+.agent-map-controls, .agent-editor-controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-shrink: 0;
+}
+
+#agent-map-list {
+    overflow-y: auto;
+    padding-right: 10px; /* For scrollbar */
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.agent-map-entry {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 15px;
+    background-color: var(--tertiary-bg);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.agent-name-input, .agent-file-select {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
+    font-size: 0.9em;
+}
+
+.agent-name-input:focus, .agent-file-select:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+}
+
+.edit-agent-file-btn, .delete-agent-map-btn {
+    padding: 8px 12px;
+    font-size: 0.85em;
+}
+
+.delete-agent-map-btn {
+    background-color: var(--danger-color);
+    color: white;
+}
+html[data-theme='light'] .delete-agent-map-btn {
+    color: white;
+}
+.delete-agent-map-btn:hover {
+    background-color: var(--danger-hover-bg);
+}
+
+#editing-agent-file-display {
+    font-weight: 600;
+    color: var(--secondary-text);
+}
+
+.agent-file-editor #agent-file-content-editor {
+    flex-grow: 1;
+    resize: none; /* Disable manual resize in this layout */
+}
+
+
+/* --- 响应式布局调整 --- */
+@media (max-width: 2000px) {
+    .agent-manager-container {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+}

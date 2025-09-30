@@ -98,7 +98,7 @@
                     <li><a href="#" data-target="rag-tags-editor"><span class="material-symbols-outlined">label</span>知识库RAG-Tags编辑器</a></li>
                     <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
                     <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
-                    <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent 文件编辑器</a></li>
+                    <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
@@ -231,16 +231,30 @@
             </section>
 
             <section id="agent-files-editor-section" class="config-section">
-                <h2>Agent 文件编辑器 (.txt)</h2>
-                <div class="agent-editor-controls">
-                    <label for="agent-file-select">选择 Agent 文件:</label>
-                    <select id="agent-file-select">
-                        <option value="">请选择一个文件...</option>
-                    </select>
-                    <button id="save-agent-file-button" disabled>保存 Agent 文件</button>
-                    <span id="agent-file-status" class="status-message"></span>
+                <h2>Agent 管理</h2>
+                <p class="description">管理 Agent 的定义名称与对应的 .txt 文件。在这里可以添加、删除和修改 Agent 映射，并直接编辑关联的文本文件。</p>
+                <div class="agent-manager-container">
+                    <div class="agent-map-editor">
+                        <h3>Agent 映射表</h3>
+                        <div class="agent-map-controls">
+                            <button id="add-agent-map-entry-button">添加新 Agent</button>
+                            <button id="save-agent-map-button">保存映射表</button>
+                            <span id="agent-map-status" class="status-message"></span>
+                        </div>
+                        <div id="agent-map-list">
+                            <!-- Agent map entries will be dynamically loaded here -->
+                        </div>
+                    </div>
+                    <div class="agent-file-editor">
+                        <h3>Agent 文件内容 (.txt)</h3>
+                        <div class="agent-editor-controls">
+                             <span id="editing-agent-file-display">未选择文件</span>
+                             <button id="save-agent-file-button" disabled>保存文件内容</button>
+                             <span id="agent-file-status" class="status-message"></span>
+                        </div>
+                        <textarea id="agent-file-content-editor" spellcheck="false" placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt 文件..."></textarea>
+                    </div>
                 </div>
-                <textarea id="agent-file-content-editor" spellcheck="false" placeholder="选择一个 Agent 文件以编辑其内容..."></textarea>
             </section>
 
             <section id="tvs-files-editor-section" class="config-section">
