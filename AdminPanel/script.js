@@ -352,11 +352,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
                 const a = document.createElement('a');
                 a.href = '#';
-                let displayName = plugin.manifest.displayName || plugin.manifest.name;
+                const originalName = plugin.manifest.name;
+                const displayName = plugin.manifest.displayName || originalName;
+                let nameHtml = displayName;
                 if (plugin.isDistributed) {
-                    displayName += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
+                    nameHtml += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
                 }
-                a.innerHTML = displayName; // Use innerHTML to render the span
+                nameHtml += `<br><span class="plugin-original-name">(${originalName})</span>`;
+                a.innerHTML = nameHtml; // Use innerHTML to render the span
                 a.dataset.target = `plugin-${plugin.manifest.name}-config`;
                 a.dataset.pluginName = plugin.manifest.name;
                 li.appendChild(a);
@@ -371,8 +374,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (plugin.isDistributed) descriptionHtml += ` (来自节点: ${plugin.serverId || '未知'})`;
                 if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
 
-
-                pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''} ${plugin.isDistributed ? '<span class="plugin-type-icon" title="分布式插件">☁️</span>' : ''}</h2>
+                let titleHtml = `${displayName} <span class="plugin-original-name">(${originalName})</span> 配置`;
+                if (!plugin.enabled) titleHtml += ' <span class="plugin-disabled-badge-title">(已禁用)</span>';
+                if (plugin.isDistributed) titleHtml += ' <span class="plugin-type-icon" title="分布式插件">☁️</span>';
+                
+                pluginSection.innerHTML = `<h2>${titleHtml}</h2>
                                            <p class="plugin-meta">${descriptionHtml}</p>`;
 
                 // Add a control area for plugin actions like toggle
@@ -711,7 +717,7 @@ Description Length: ${newDescription.length}`);
         
         // Rebuild the .env string from the form, preserving comments and order
         const currentPluginEntries = originalPluginConfigs[pluginName] || [];
-        const newConfigString = buildEnvStringForPlugin(form, currentPluginEntries);
+        const newConfigString = buildEnvStringForPlugin(form, currentPluginEntries, pluginName);
 
         try {
             await apiFetch(`${API_BASE_URL}/plugins/${pluginName}/config`, {
@@ -723,7 +729,7 @@ Description Length: ${newDescription.length}`);
         } catch (error) { /* Error handled by apiFetch */ }
     }
 
-    function buildEnvStringForPlugin(formElement, originalParsedEntries) {
+    function buildEnvStringForPlugin(formElement, originalParsedEntries, pluginName) {
         const finalLines = [];
         const editedKeysInForm = new Set();
 
