@@ -488,10 +488,10 @@ async function testRegularRegexRules() {
         console.log(`最终输出内容: "${finalContent}"`);
 
         // 验证普通正则规则是否被应用
-        if (finalContent.includes('偶')) {
-            console.log('✅ 普通正则规则"我"->"偶"被正确应用');
+        if (finalContent.includes('example')) {
+            console.log('✅ 示例正则规则被正确应用');
         } else {
-            console.log('❌ 普通正则规则"我"->"偶"未被应用');
+            console.log('❌ 示例正则规则未被应用');
         }
 
         if (finalContent.includes('人工智能')) {

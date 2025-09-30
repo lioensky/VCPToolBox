@@ -24,11 +24,11 @@
     {
       "type": "structured_chunk",
       "name": "tool_request_filter",
-      "start_pattern": "\\<\\<\\<\\[TOOL_REQUEST\\]\\>\\>\\>[\\s\\S]*?\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
-      "end_pattern": "\\<\\<\\<\\[END_TOOL_REQUEST\\]\\>\\>\\>",
+      "start_pattern": "\\<\\<\\<\\[[A-Z_]+\\]\\>\\>\\>",
+      "end_pattern": "\\<\\<\\<\\[END_[A-Z_]+\\]\\>\\>\\>",
       "action": "replace",
       "replacement": "",
-      "description": "过滤TOOL_REQUEST结构化内容块",
+      "description": "过滤通用结构化内容块（支持TOOL_REQUEST、STRUCTURED_BLOCK等）",
       "enabled": true,
       "options": {
         "capture_groups": false,
@@ -40,7 +40,9 @@
       "metadata": {
         "author": "VCP System",
         "version": "1.0.0",
-        "tags": ["tool_filter", "streaming", "security"]
+        "tags": ["tool_filter", "streaming", "security", "vcp_protocol", "generic"],
+        "description": "通用结构化块过滤规则，支持任何合法的结构化标记格式，无特定协议硬编码依赖",
+        "note": "使用通用模式匹配，支持TOOL_REQUEST、STRUCTURED_BLOCK等多种结构化标记"
       }
     }
   ],

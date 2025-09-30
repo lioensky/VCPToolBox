@@ -23,10 +23,15 @@ class RegexPostProcessor {
         this.activeStructuredChunks = new Map(); // 新增：活跃的结构化chunk
 
         // 新增：真正的流式拦截状态机属性
-        this.streamingState = 'NORMAL'; // NORMAL, INTERCEPTING
+        this.streamingState = 'NORMAL'; // NORMAL, PRECISION_CUT, INTERCEPTING
         this.interceptBuffer = ''; // 拦截状态下的缓冲区
         this.interceptStartTime = null; // 拦截开始时间
         this.interceptRule = null; // 当前拦截的规则
+        this.pendingOutput = ''; // 待输出的内容（用于精确切割）
+
+        // 新增：同步处理锁，防止chunk抢占
+        this.processingLock = false;
+        this.processingQueue = [];
     }
 
     async initialize(config) {
@@ -130,16 +135,9 @@ class RegexPostProcessor {
         } catch (error) {
             console.error('[RegexPostProcessor] Error loading regex rules:', error);
 
-            // 如果文件加载失败，使用内置的默认规则
-            console.log('[RegexPostProcessor] Using built-in default rules as fallback');
-            this.regexRules = [
-                {
-                    pattern: /我/g,
-                    replacement: '偶',
-                    description: '默认规则：将"我"替换为"偶"',
-                    enabled: true
-                }
-            ];
+            // 如果文件加载失败，不使用任何内置规则，保持规则数组为空
+            console.log('[RegexPostProcessor] No rules loaded, regexRules array will remain empty');
+            this.regexRules = [];
         }
     }
 
@@ -147,20 +145,20 @@ class RegexPostProcessor {
         const defaultRules = {
             rules: [
                 {
-                    pattern: "我",
-                    replacement: "偶",
-                    flags: "g",
-                    description: "将'我'替换为'偶'",
-                    enabled: true
+                    pattern: "\\btest\\b",
+                    replacement: "example",
+                    flags: "gi",
+                    description: "示例规则：将'test'替换为'example'",
+                    enabled: false
                 }
             ],
             version: "1.0.0",
-            description: "RegexPostProcessor插件的默认正则表达式规则配置"
+            description: "RegexPostProcessor插件的默认正则表达式规则配置（示例规则已禁用）"
         };
 
         try {
             await fs.writeFile(this.rulesFilePath, JSON.stringify(defaultRules, null, 2), 'utf-8');
-            console.log('[RegexPostProcessor] Created default rules file');
+            console.log('[RegexPostProcessor] Created default rules file with disabled example rules');
         } catch (writeError) {
             console.error('[RegexPostProcessor] Failed to create default rules file:', writeError);
         }
@@ -294,6 +292,49 @@ class RegexPostProcessor {
 
     // 新增：流式chunk处理方法（状态机版本，改进版）
     async processStreamingChunk(chunkContent, chunkBuffer = null) {
+        // 使用队列机制确保严格的顺序处理，避免chunk抢占
+        return new Promise((resolve, reject) => {
+            // 将处理任务加入队列
+            this.processingQueue.push({
+                chunkContent,
+                chunkBuffer,
+                resolve,
+                reject,
+                timestamp: Date.now()
+            });
+
+            // 如果当前没有处理锁，立即开始处理
+            if (!this.processingLock) {
+                this.processQueue();
+            }
+        });
+    }
+
+    // 新增：队列处理方法，确保严格的顺序处理
+    async processQueue() {
+        if (this.processingLock || this.processingQueue.length === 0) {
+            return;
+        }
+
+        this.processingLock = true;
+
+        while (this.processingQueue.length > 0) {
+            const task = this.processingQueue.shift();
+
+            try {
+                const result = await this.processChunkSynchronously(task.chunkContent, task.chunkBuffer);
+                task.resolve(result);
+            } catch (error) {
+                console.error(`[RegexPostProcessor STREAM] ✗ Error processing chunk:`, error);
+                task.resolve(task.chunkContent); // 出错时返回原始内容
+            }
+        }
+
+        this.processingLock = false;
+    }
+
+    // 新增：同步chunk处理方法
+    async processChunkSynchronously(chunkContent, chunkBuffer) {
         try {
             // 输入验证
             if (chunkContent === null || chunkContent === undefined) {
@@ -306,11 +347,10 @@ class RegexPostProcessor {
                 chunkContent = String(chunkContent);
             }
 
-            const currentTime = Date.now();
             console.log(`[RegexPostProcessor STREAM] Processing chunk (length: ${chunkContent.length})`);
             console.log(`[RegexPostProcessor STREAM] Current state: ${this.streamingState}`);
 
-            // 状态机处理
+            // 状态机处理 - 同步执行，确保原子性
             const stateResult = this.processStreamingStateMachine(chunkContent);
 
             if (stateResult === null || stateResult.output === null) {
@@ -338,7 +378,7 @@ class RegexPostProcessor {
                         }
 
                         try {
-                            // 重置正则表达式的lastIndex
+                            // 重置正则表达式的lastIndex，确保每次从头开始匹配
                             rule.pattern.lastIndex = 0;
                             const originalContent = processedContent;
                             processedContent = processedContent.replace(rule.pattern, rule.replacement);
@@ -365,15 +405,21 @@ class RegexPostProcessor {
             return chunkContent;
 
         } catch (error) {
-            console.error(`[RegexPostProcessor STREAM] ✗ Error in processStreamingChunk:`, error);
+            console.error(`[RegexPostProcessor STREAM] ✗ Error in processChunkSynchronously:`, error);
             // 出错时返回原始内容，确保不会丢失数据
             return chunkContent;
         }
     }
 
-    // 新增：真正的流式拦截状态机（改进版）
+    // 新增：真正的流式拦截状态机（精确边界切割版）
     processStreamingStateMachine(chunkContent) {
         try {
+            // 安全检查：确保chunkContent是有效字符串
+            if (typeof chunkContent !== 'string' || chunkContent === null || chunkContent === undefined) {
+                console.error(`[RegexPostProcessor INTERCEPT] ✗ Invalid chunk content:`, typeof chunkContent);
+                return { output: chunkContent };
+            }
+
             switch (this.streamingState) {
                 case 'NORMAL':
                     console.log(`[RegexPostProcessor INTERCEPT] NORMAL state, checking for start patterns`);
@@ -390,25 +436,39 @@ class RegexPostProcessor {
                             return { output: chunkContent };
                         }
 
-                        // 进入拦截状态
-                        this.streamingState = 'INTERCEPTING';
+                        // 验证规则的正则表达式是否有效
+                        if (!rule.startPattern || !rule.endPattern) {
+                            console.error(`[RegexPostProcessor INTERCEPT] ✗ Invalid rule ${rule.name}: missing patterns`);
+                            return { output: chunkContent };
+                        }
+
+                        // 进入精确切割状态，而不是直接拦截
+                        this.streamingState = 'PRECISION_CUT';
                         this.interceptRule = rule;
-                        this.interceptBuffer = chunkContent;
                         this.interceptStartTime = Date.now();
 
-                        console.log(`[RegexPostProcessor INTERCEPT] ✓ Entered INTERCEPTING state for rule: ${rule.name}`);
+                        console.log(`[RegexPostProcessor INTERCEPT] ✓ Entered PRECISION_CUT state for rule: ${rule.name}`);
 
-                        // 注意：这里不检查当前chunk是否包含完整结构
-                        // 一旦检测到开始标记或片段，立即开始拦截
-                        console.log(`[RegexPostProcessor INTERCEPT] ✓ Started intercepting, waiting for end marker`);
-                        return { output: null };
+                        // 立即处理当前chunk，进行精确切割
+                        return this.processPrecisionCut(chunkContent);
                     }
 
                     // 正常状态，无需拦截
                     return { output: chunkContent };
 
+                case 'PRECISION_CUT':
+                    console.log(`[RegexPostProcessor INTERCEPT] PRECISION_CUT state, processing chunk`);
+                    return this.processPrecisionCut(chunkContent);
+
                 case 'INTERCEPTING':
                     console.log(`[RegexPostProcessor INTERCEPT] INTERCEPTING state, buffer size: ${this.interceptBuffer.length}`);
+
+                    // 安全检查：确保拦截规则仍然有效
+                    if (!this.interceptRule || !this.interceptRule.enabled) {
+                        console.error(`[RegexPostProcessor INTERCEPT] ✗ Invalid or disabled intercept rule, resetting state`);
+                        this.resetInterceptionState();
+                        return { output: chunkContent };
+                    }
 
                     // 累积拦截内容
                     this.interceptBuffer += chunkContent;
@@ -431,11 +491,17 @@ class RegexPostProcessor {
                         return { output: interceptedContent };
                     }
 
-                    // 检查结束标记
+                    // 检查结束标记 - 使用更严格的匹配逻辑
                     try {
+                        // 重置正则表达式的lastIndex，确保从头开始匹配
+                        this.interceptRule.endPattern.lastIndex = 0;
                         const endMatch = this.interceptRule.endPattern.exec(this.interceptBuffer);
                         if (endMatch) {
                             console.log(`[RegexPostProcessor INTERCEPT] ✓ Found end marker, interception complete`);
+                            console.log(`[RegexPostProcessor INTERCEPT] End marker: "${endMatch[0]}"`);
+
+                            // 构造精确的结果：过滤掉整个拦截的结构化内容
+                            // 注意：这里返回空字符串，因为整个拦截缓冲区都是要被过滤的内容
                             this.resetInterceptionState();
                             return { output: '' };
                         }
@@ -464,25 +530,92 @@ class RegexPostProcessor {
         }
     }
 
+    // 新增：精确切割处理方法
+    processPrecisionCut(chunkContent) {
+        try {
+            // 在当前chunk中查找开始标记的位置
+            this.interceptRule.startPattern.lastIndex = 0;
+            const startMatch = this.interceptRule.startPattern.exec(chunkContent);
+
+            if (!startMatch) {
+                // 当前chunk中没有开始标记，说明上一个chunk的开始标记处理完成了
+                console.log(`[RegexPostProcessor PRECISION_CUT] No start pattern in current chunk, entering INTERCEPTING state`);
+                this.streamingState = 'INTERCEPTING';
+                this.interceptBuffer = chunkContent;
+                return { output: null };
+            }
+
+            const startIndex = startMatch.index;
+            const startMarker = startMatch[0];
+
+            console.log(`[RegexPostProcessor PRECISION_CUT] Found start marker at index ${startIndex}: "${startMarker}"`);
+
+            // 检查当前chunk是否包含完整的结构（有开始也有结束）
+            this.interceptRule.endPattern.lastIndex = 0;
+            const endMatch = this.interceptRule.endPattern.exec(chunkContent);
+
+            if (endMatch) {
+                const endIndex = endMatch.index;
+                const endMarker = endMatch[0];
+
+                console.log(`[RegexPostProcessor PRECISION_CUT] ✓ Found complete structure in single chunk`);
+                console.log(`[RegexPostProcessor PRECISION_CUT] End marker at index ${endIndex}: "${endMarker}"`);
+
+                // 构造精确的结果：保留开始标记前的内容，过滤标记内部的内容，保留结束标记后的内容
+                const beforeStart = chunkContent.substring(0, startIndex);
+                const afterEnd = chunkContent.substring(endIndex + endMarker.length);
+
+                console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
+                console.log(`[RegexPostProcessor PRECISION_CUT] After end: "${afterEnd.substring(0, 50)}${afterEnd.length > 50 ? '...' : ''}"`);
+
+                // 重置状态，返回处理后的内容
+                this.resetInterceptionState();
+                return { output: beforeStart + afterEnd };
+            } else {
+                // 当前chunk只有开始标记，没有结束标记
+                console.log(`[RegexPostProcessor PRECISION_CUT] Only start marker found, entering INTERCEPTING state`);
+
+                // 保留开始标记前的内容，过滤开始标记后的内容
+                const beforeStart = chunkContent.substring(0, startIndex);
+                const afterStart = chunkContent.substring(startIndex);
+
+                console.log(`[RegexPostProcessor PRECISION_CUT] Before start: "${beforeStart.substring(0, 50)}${beforeStart.length > 50 ? '...' : ''}"`);
+                console.log(`[RegexPostProcessor PRECISION_CUT] After start (to be intercepted): "${afterStart.substring(0, 50)}${afterStart.length > 50 ? '...' : ''}"`);
+
+                // 进入拦截状态，累积标记后的内容
+                this.streamingState = 'INTERCEPTING';
+                this.interceptBuffer = afterStart;
+
+                return { output: beforeStart };
+            }
+
+        } catch (error) {
+            console.error(`[RegexPostProcessor PRECISION_CUT] ✗ Error in precision cut:`, error);
+            this.resetInterceptionState();
+            return { output: chunkContent };
+        }
+    }
+
     // 新增：重置拦截状态的辅助方法
     resetInterceptionState() {
         this.streamingState = 'NORMAL';
         this.interceptBuffer = '';
         this.interceptStartTime = null;
         this.interceptRule = null;
+        this.pendingOutput = '';
         console.log(`[RegexPostProcessor INTERCEPT] ✓ Interception state reset`);
     }
 
     // 流式拦截状态机已重新设计，不再需要复杂的监听器管理
     // 新的状态机直接在processStreamingStateMachine中处理拦截逻辑
 
-    // 新增：检查chunk是否匹配任何结构化规则的开始模式（改进版）
+    // 新增：检查chunk是否匹配任何结构化规则的开始模式（精确边界版）
     checkForStructuredChunkStart(chunkContent) {
         if (!chunkContent || typeof chunkContent !== 'string') {
             return { matched: false };
         }
 
-        // 检查当前chunk是否直接匹配开始模式
+        // 检查当前chunk是否直接匹配开始模式 - 使用更严格的匹配逻辑
         for (const rule of this.structuredChunkRules) {
             if (!rule.enabled || !rule.startPattern) {
                 continue;
@@ -494,20 +627,30 @@ class RegexPostProcessor {
                 const startMatch = rule.startPattern.exec(chunkContent);
 
                 if (startMatch) {
-                    console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected start pattern for rule: ${rule.name}`);
-                    console.log(`[RegexPostProcessor INTERCEPT] Match: "${startMatch[0]}"`);
-                    return {
-                        matched: true,
-                        rule: rule,
-                        match: startMatch
-                    };
+                    // 验证匹配是否在chunk的开始位置（避免误匹配）
+                    if (startMatch.index === 0) {
+                        // 额外验证：确保匹配的长度合理（避免过短的误匹配）
+                        if (startMatch[0].length >= 5) {
+                            console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected start pattern for rule: ${rule.name}`);
+                            console.log(`[RegexPostProcessor INTERCEPT] Match: "${startMatch[0]}"`);
+                            return {
+                                matched: true,
+                                rule: rule,
+                                match: startMatch
+                            };
+                        } else {
+                            console.log(`[RegexPostProcessor INTERCEPT] - Pattern match too short for rule: ${rule.name}`);
+                        }
+                    } else {
+                        console.log(`[RegexPostProcessor INTERCEPT] - Pattern found but not at start of chunk for rule: ${rule.name}`);
+                    }
                 }
             } catch (error) {
                 console.error(`[RegexPostProcessor INTERCEPT] ✗ Error testing start pattern for rule ${rule.name}:`, error.message);
             }
         }
 
-        // 检查当前chunk与拦截缓冲区的组合是否匹配开始模式
+        // 检查当前chunk与拦截缓冲区的组合是否匹配开始模式（仅在拦截状态下）
         if (this.interceptBuffer && this.streamingState === 'INTERCEPTING') {
             const combinedContent = this.interceptBuffer + chunkContent;
             for (const rule of this.structuredChunkRules) {
@@ -520,14 +663,17 @@ class RegexPostProcessor {
                     rule.startPattern.lastIndex = 0;
                     const startMatch = rule.startPattern.exec(combinedContent);
 
-                    if (startMatch) {
-                        console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected start pattern in combined content for rule: ${rule.name}`);
-                        return {
-                            matched: true,
-                            rule: rule,
-                            match: startMatch,
-                            combined: true
-                        };
+                    if (startMatch && startMatch.index === 0) {
+                        // 验证匹配长度
+                        if (startMatch[0].length >= 5) {
+                            console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected start pattern in combined content for rule: ${rule.name}`);
+                            return {
+                                matched: true,
+                                rule: rule,
+                                match: startMatch,
+                                combined: true
+                            };
+                        }
                     }
                 } catch (error) {
                     console.error(`[RegexPostProcessor INTERCEPT] ✗ Error testing start pattern on combined content for rule ${rule.name}:`, error.message);
@@ -535,19 +681,29 @@ class RegexPostProcessor {
             }
         }
 
-        // 检查当前chunk是否包含结构化标记的片段（用于跨chunk检测）
+        // 通用结构化标记检测 - 使用更精确的模式匹配而不是简单的字符串包含
         for (const rule of this.structuredChunkRules) {
             if (!rule.enabled) continue;
 
             try {
-                // 检查是否包含开始标记的片段
-                if (chunkContent.includes('<<<[') && chunkContent.includes('>>>')) {
-                    console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected potential structured chunk fragment for rule: ${rule.name}`);
-                    return {
-                        matched: true,
-                        rule: rule,
-                        fragment: true
-                    };
+                // 使用正则表达式进行更精确的检测，避免误匹配
+                const genericStartPattern = /<<<\[/;
+                const genericEndPattern = />>>/;
+
+                // 只有当chunk同时包含开始和结束标记时才认为是潜在的结构化chunk
+                if (genericStartPattern.test(chunkContent) && genericEndPattern.test(chunkContent)) {
+                    // 额外检查：确保不是嵌套的复杂结构
+                    const startMatches = chunkContent.match(genericStartPattern);
+                    const endMatches = chunkContent.match(genericEndPattern);
+
+                    if (startMatches && endMatches && startMatches.length === endMatches.length) {
+                        console.log(`[RegexPostProcessor INTERCEPT] ✓ Detected potential structured chunk markers for rule: ${rule.name}`);
+                        return {
+                            matched: true,
+                            rule: rule,
+                            fragment: true
+                        };
+                    }
                 }
             } catch (error) {
                 console.error(`[RegexPostProcessor INTERCEPT] ✗ Error testing rule ${rule.name} for fragments:`, error.message);
@@ -865,6 +1021,9 @@ class RegexPostProcessor {
         this.interceptBuffer = '';
         this.interceptStartTime = null;
         this.interceptRule = null;
+
+        // 清空处理队列
+        this.processingQueue = [];
 
         this.isInitialized = false;
         console.log('[RegexPostProcessor] Shutdown completed');
