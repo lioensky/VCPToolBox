@@ -140,9 +140,15 @@ config.env
 config.env.local
 Plugin/EmojiListGenerator/generated_lists/
 Plugin/ImageProcessor/image_cache.json
-Plugin/WeatherReporter/weather_cache.txt
+Plugin/WeatherReporter/weather_cache.json
 DebugLog/
 dailynote/
+Plugin/VCPLog/log/VCPlog.txt
+Plugin/RAGDiaryPlugin/vector_cache.json
+Plugin/ImageProcessor/multimodal_cache.json
+ip_blacklist.json
+preprocessor_order.json
+#//postprocessor_order.json
 
 # WeatherReporter cache files
 Plugin/WeatherReporter/city_cache.txt
@@ -163,3 +169,6 @@ image/通用表情包/*
 
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
+
+# 忽略所有的 .DS_Store 文件
+**/.DS_Store

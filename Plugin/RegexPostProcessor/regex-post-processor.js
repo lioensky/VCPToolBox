@@ -18,6 +18,12 @@ class RegexPostProcessor {
         this.minChunkSize = 10; // 新增：最小chunk大小阈值
         this.maxChunkSize = 1000; // 新增：最大chunk大小阈值
         this.processInterval = 500; // 新增：处理间隔（毫秒）
+
+        // 新增：自适应缓冲区管理（参考server.js流式处理思路）
+        this.chunkSizeHistory = [];
+        this.adaptiveMinChunkSize = 10;
+        this.adaptiveMaxChunkSize = 1000;
+        this.chunkSizeSampleCount = 10;
         this.pendingContent = ''; // 新增：待处理内容
         this.structuredChunkDetectors = new Map(); // 新增：结构化chunk检测器
         this.activeStructuredChunks = new Map(); // 新增：活跃的结构化chunk
@@ -32,6 +38,10 @@ class RegexPostProcessor {
         // 新增：同步处理锁，防止chunk抢占
         this.processingLock = false;
         this.processingQueue = [];
+
+        // 新增：同步插件调用等待机制
+        this.syncPluginWaitQueue = [];
+        this.waitingForSyncPlugin = false;
     }
 
     async initialize(config) {
@@ -310,7 +320,37 @@ class RegexPostProcessor {
         });
     }
 
-    // 新增：队列处理方法，确保严格的顺序处理
+    // 新增：强制重置所有状态的方法（用于紧急恢复）
+    forceResetAllStates() {
+        console.log('[RegexPostProcessor] ⚠ Force resetting all states due to critical error');
+
+        // 重置所有状态机属性
+        this.streamingState = 'NORMAL';
+        this.interceptBuffer = '';
+        this.interceptStartTime = null;
+        this.interceptRule = null;
+        this.pendingOutput = '';
+
+        // 清空缓冲区
+        this.chunkBuffer = '';
+        this.streamingBuffer = '';
+        this.pendingContent = '';
+
+        // 清空队列
+        this.processingQueue = [];
+        this.syncPluginWaitQueue = [];
+
+        // 重置锁状态
+        this.processingLock = false;
+        this.waitingForSyncPlugin = false;
+
+        // 清空活跃的结构化chunk
+        this.activeStructuredChunks.clear();
+
+        console.log('[RegexPostProcessor] ✓ All states reset successfully');
+    }
+
+    // 新增：队列处理方法，确保严格的顺序处理（改进版）
     async processQueue() {
         if (this.processingLock || this.processingQueue.length === 0) {
             return;
@@ -318,19 +358,32 @@ class RegexPostProcessor {
 
         this.processingLock = true;
 
-        while (this.processingQueue.length > 0) {
-            const task = this.processingQueue.shift();
+        try {
+            while (this.processingQueue.length > 0) {
+                const task = this.processingQueue.shift();
 
-            try {
-                const result = await this.processChunkSynchronously(task.chunkContent, task.chunkBuffer);
-                task.resolve(result);
-            } catch (error) {
-                console.error(`[RegexPostProcessor STREAM] ✗ Error processing chunk:`, error);
-                task.resolve(task.chunkContent); // 出错时返回原始内容
+                // 添加超时保护，避免长时间阻塞
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error(`Chunk processing timeout for task at ${task.timestamp}`)), 10000);
+                });
+
+                try {
+                    const result = await Promise.race([
+                        this.processChunkSynchronously(task.chunkContent, task.chunkBuffer),
+                        timeoutPromise
+                    ]);
+                    task.resolve(result);
+                } catch (error) {
+                    console.error(`[RegexPostProcessor STREAM] ✗ Error processing chunk:`, error);
+                    task.resolve(task.chunkContent); // 出错时返回原始内容
+                }
+
+                // 添加小延迟，避免过度占用CPU（参考server.js中流式处理的做法）
+                await new Promise(resolve => setTimeout(resolve, 1));
             }
+        } finally {
+            this.processingLock = false;
         }
-
-        this.processingLock = false;
     }
 
     // 新增：同步chunk处理方法
@@ -346,6 +399,9 @@ class RegexPostProcessor {
                 console.log(`[RegexPostProcessor STREAM] Received non-string chunk, converting to string`);
                 chunkContent = String(chunkContent);
             }
+
+            // 记录chunk大小历史，用于自适应调整
+            this.recordChunkSize(chunkContent.length);
 
             console.log(`[RegexPostProcessor STREAM] Processing chunk (length: ${chunkContent.length})`);
             console.log(`[RegexPostProcessor STREAM] Current state: ${this.streamingState}`);
@@ -541,7 +597,7 @@ class RegexPostProcessor {
         }
     }
 
-    // 新增：精确切割处理方法
+    // 新增：精确切割处理方法（改进版，支持多模型速率适配）
     processPrecisionCut(chunkContent) {
         try {
             // 在当前chunk中查找开始标记的位置
@@ -625,11 +681,14 @@ class RegexPostProcessor {
     // 流式拦截状态机已重新设计，不再需要复杂的监听器管理
     // 新的状态机直接在processStreamingStateMachine中处理拦截逻辑
 
-    // 新增：检查chunk是否匹配任何结构化规则的开始模式（精确边界版）
+    // 新增：检查chunk是否匹配任何结构化规则的开始模式（精确边界版，参考GPT-5思维链处理思路）
     checkForStructuredChunkStart(chunkContent) {
         if (!chunkContent || typeof chunkContent !== 'string') {
             return { matched: false };
         }
+
+        // 参考server.js中GPT-5思维链的精确过滤逻辑，使用严格的正则表达式匹配
+        const thinkingRegex = /^Thinking\.\.\.( \(\d+s elapsed\))?$/;
 
         // 检查当前chunk是否直接匹配开始模式 - 使用更严格的匹配逻辑
         for (const rule of this.structuredChunkRules) {
@@ -638,7 +697,7 @@ class RegexPostProcessor {
             }
 
             try {
-                // 重置正则表达式的lastIndex，确保从头开始匹配
+                // 重置正则表达式的lastIndex，确保从头开始匹配（参考server.js做法）
                 rule.startPattern.lastIndex = 0;
                 const startMatch = rule.startPattern.exec(chunkContent);
 
@@ -675,7 +734,7 @@ class RegexPostProcessor {
                 }
 
                 try {
-                    // 重置正则表达式的lastIndex
+                    // 重置正则表达式的lastIndex（参考server.js的严格模式）
                     rule.startPattern.lastIndex = 0;
                     const startMatch = rule.startPattern.exec(combinedContent);
 
@@ -698,6 +757,7 @@ class RegexPostProcessor {
         }
 
         // 通用结构化标记检测 - 使用更精确的模式匹配而不是简单的字符串包含
+        // 参考server.js中对thinking内容的过滤逻辑，使用严格的模式匹配
         for (const rule of this.structuredChunkRules) {
             if (!rule.enabled) continue;
 
@@ -938,7 +998,7 @@ class RegexPostProcessor {
         return { output: processedContent };
     }
 
-    // 新增：判断是否应该处理流式缓冲区（改进版）
+    // 新增：判断是否应该处理流式缓冲区（自适应版，参考server.js流式处理思路）
     shouldProcessStreamingBuffer(currentTime) {
         try {
             // 如果正在拦截状态，优先处理
@@ -947,15 +1007,17 @@ class RegexPostProcessor {
                 return true;
             }
 
-            // 缓冲区大小检查
-            if (this.streamingBuffer.length >= this.maxChunkSize) {
-                console.log(`[RegexPostProcessor STREAM] Buffer size threshold reached (${this.streamingBuffer.length} >= ${this.maxChunkSize})`);
+            // 自适应缓冲区大小检查（根据历史chunk大小动态调整）
+            const adaptiveThreshold = this.getAdaptiveChunkThreshold();
+            if (this.streamingBuffer.length >= adaptiveThreshold) {
+                console.log(`[RegexPostProcessor STREAM] Adaptive buffer size threshold reached (${this.streamingBuffer.length} >= ${adaptiveThreshold})`);
                 return true;
             }
 
-            // 时间间隔检查
-            if (this.lastStreamProcessTime > 0 && currentTime - this.lastStreamProcessTime >= this.processInterval) {
-                console.log(`[RegexPostProcessor STREAM] Time interval reached (${currentTime - this.lastStreamProcessTime}ms >= ${this.processInterval}ms)`);
+            // 时间间隔检查（自适应调整）
+            const adaptiveInterval = this.getAdaptiveProcessInterval();
+            if (this.lastStreamProcessTime > 0 && currentTime - this.lastStreamProcessTime >= adaptiveInterval) {
+                console.log(`[RegexPostProcessor STREAM] Adaptive time interval reached (${currentTime - this.lastStreamProcessTime}ms >= ${adaptiveInterval}ms)`);
                 return true;
             }
 
@@ -969,9 +1031,10 @@ class RegexPostProcessor {
                 }
             }
 
-            // 缓冲区内容检查（防止缓冲区过小但包含重要内容）
-            if (this.streamingBuffer.length > this.minChunkSize) {
-                console.log(`[RegexPostProcessor STREAM] Buffer size sufficient for processing (${this.streamingBuffer.length} > ${this.minChunkSize})`);
+            // 自适应缓冲区内容检查
+            const adaptiveMinSize = this.getAdaptiveMinChunkSize();
+            if (this.streamingBuffer.length > adaptiveMinSize) {
+                console.log(`[RegexPostProcessor STREAM] Adaptive buffer size sufficient for processing (${this.streamingBuffer.length} > ${adaptiveMinSize})`);
                 return true;
             }
 
@@ -980,6 +1043,51 @@ class RegexPostProcessor {
             console.error(`[RegexPostProcessor STREAM] ✗ Error in shouldProcessStreamingBuffer:`, error);
             // 出错时返回true，确保内容被处理
             return true;
+        }
+    }
+
+    // 新增：获取自适应chunk阈值
+    getAdaptiveChunkThreshold() {
+        if (this.chunkSizeHistory.length === 0) {
+            return this.adaptiveMaxChunkSize;
+        }
+
+        const avgChunkSize = this.chunkSizeHistory.reduce((sum, size) => sum + size, 0) / this.chunkSizeHistory.length;
+        // 根据平均chunk大小动态调整阈值
+        return Math.min(this.adaptiveMaxChunkSize, Math.max(this.adaptiveMinChunkSize, avgChunkSize * 2));
+    }
+
+    // 新增：获取自适应处理间隔
+    getAdaptiveProcessInterval() {
+        if (this.chunkSizeHistory.length === 0) {
+            return this.processInterval;
+        }
+
+        const avgChunkSize = this.chunkSizeHistory.reduce((sum, size) => sum + size, 0) / this.chunkSizeHistory.length;
+        // 根据平均chunk大小动态调整处理间隔
+        if (avgChunkSize < 50) {
+            return Math.max(100, this.processInterval * 0.5); // 小chunk更快处理
+        } else if (avgChunkSize > 500) {
+            return Math.min(2000, this.processInterval * 2); // 大chunk放慢处理
+        }
+        return this.processInterval;
+    }
+
+    // 新增：获取自适应最小chunk大小
+    getAdaptiveMinChunkSize() {
+        if (this.chunkSizeHistory.length === 0) {
+            return this.adaptiveMinChunkSize;
+        }
+
+        const avgChunkSize = this.chunkSizeHistory.reduce((sum, size) => sum + size, 0) / this.chunkSizeHistory.length;
+        return Math.max(5, Math.min(this.adaptiveMinChunkSize, avgChunkSize * 0.5));
+    }
+
+    // 新增：记录chunk大小历史
+    recordChunkSize(size) {
+        this.chunkSizeHistory.push(size);
+        if (this.chunkSizeHistory.length > this.chunkSizeSampleCount) {
+            this.chunkSizeHistory.shift(); // 保持历史记录在合理大小
         }
     }
 
@@ -1040,6 +1148,7 @@ class RegexPostProcessor {
 
         // 清空处理队列
         this.processingQueue = [];
+        this.syncPluginWaitQueue = [];
 
         this.isInitialized = false;
         console.log('[RegexPostProcessor] Shutdown completed');
@@ -1084,8 +1193,61 @@ class RegexPostProcessor {
         };
     }
 
-    // 获取插件状态信息
+    // 新增：等待同步插件完成的方法
+    async waitForSyncPluginCompletion() {
+        if (this.waitingForSyncPlugin) {
+            console.log('[RegexPostProcessor SYNC] Already waiting for sync plugin, queuing request');
+            return new Promise((resolve) => {
+                this.syncPluginWaitQueue.push(resolve);
+            });
+        }
+
+        this.waitingForSyncPlugin = true;
+        console.log('[RegexPostProcessor SYNC] Waiting for sync plugin completion...');
+
+        // 等待状态机完成当前拦截操作
+        const maxWaitTime = 10000; // 最大等待时间10秒
+        const startTime = Date.now();
+
+        while (this.streamingState !== 'NORMAL' && (Date.now() - startTime) < maxWaitTime) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        if (this.streamingState !== 'NORMAL') {
+            console.warn('[RegexPostProcessor SYNC] ⚠ Sync plugin wait timeout, forcing state reset');
+            this.resetInterceptionState();
+        }
+
+        this.waitingForSyncPlugin = false;
+        console.log('[RegexPostProcessor SYNC] ✓ Sync plugin wait completed');
+
+        // 处理等待队列中的请求
+        while (this.syncPluginWaitQueue.length > 0) {
+            const resolve = this.syncPluginWaitQueue.shift();
+            resolve();
+        }
+
+        return true;
+    }
+
+    // 新增：通知同步插件调用开始
+    async onSyncPluginStart() {
+        console.log('[RegexPostProcessor SYNC] Sync plugin call started, ensuring chunk integrity');
+        await this.waitForSyncPluginCompletion();
+    }
+
+    // 新增：通知同步插件调用完成
+    async onSyncPluginComplete() {
+        console.log('[RegexPostProcessor SYNC] Sync plugin call completed, resuming normal processing');
+        // 同步插件完成后，状态机应该已经处于NORMAL状态，可以继续处理后续chunk
+    }
+
+    // 获取插件状态信息（增强版）
     getStatus() {
+        const avgChunkSize = this.chunkSizeHistory.length > 0
+            ? this.chunkSizeHistory.reduce((sum, size) => sum + size, 0) / this.chunkSizeHistory.length
+            : 0;
+
         return {
             initialized: this.isInitialized,
             ruleCount: this.regexRules.length,
@@ -1106,6 +1268,21 @@ class RegexPostProcessor {
                 bufferSize: this.interceptBuffer.length,
                 startTime: this.interceptStartTime,
                 ruleName: this.interceptRule?.name || null
+            },
+            syncPluginState: {
+                waitingForSyncPlugin: this.waitingForSyncPlugin,
+                syncWaitQueueLength: this.syncPluginWaitQueue.length
+            },
+            adaptiveMetrics: {
+                averageChunkSize: Math.round(avgChunkSize),
+                chunkSizeHistoryLength: this.chunkSizeHistory.length,
+                adaptiveChunkThreshold: this.getAdaptiveChunkThreshold(),
+                adaptiveProcessInterval: this.getAdaptiveProcessInterval(),
+                adaptiveMinChunkSize: this.getAdaptiveMinChunkSize()
+            },
+            queueState: {
+                processingLock: this.processingLock,
+                processingQueueLength: this.processingQueue.length
             }
         };
     }
