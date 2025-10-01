@@ -991,6 +991,30 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
+    // POST to create a new agent .txt file
+    adminApiRouter.post('/agents/new-file', async (req, res) => {
+        const { fileName } = req.body;
+
+        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
+        }
+
+        const filePath = path.join(AGENT_FILES_DIR, fileName);
+
+        try {
+            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
+            await fs.writeFile(filePath, '', { flag: 'wx' });
+            res.json({ message: `File '${fileName}' created successfully.` });
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                res.status(409).json({ error: `File '${fileName}' already exists.` });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
+                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
+            }
+        }
+    });
+
     // GET content of a specific agent file
     adminApiRouter.get('/agents/:fileName', async (req, res) => {
         const { fileName } = req.params;
@@ -1036,6 +1060,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
         }
     });
+
     // --- End Agent Files API ---
 
     // --- TVS Variable Files API ---

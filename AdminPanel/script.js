@@ -48,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const agentFileContentEditor = document.getElementById('agent-file-content-editor');
     const saveAgentFileButton = document.getElementById('save-agent-file-button');
     const agentFileStatusSpan = document.getElementById('agent-file-status');
+    const createAgentFileButton = document.getElementById('create-agent-file-button'); // 新增：创建文件按钮
 
     // TVS Files Editor Elements
     const tvsFileSelect = document.getElementById('tvs-file-select');
@@ -1871,6 +1872,49 @@ Description Length: ${newDescription.length}`);
         entryDiv.querySelector('.agent-name-input').focus();
     }
 
+    async function createNewAgentFileHandler() {
+        let fileName = prompt("请输入要创建的新 .txt 文件名（无需包含 .txt 后缀）:", "");
+        if (!fileName || !fileName.trim()) {
+            showMessage('文件名不能为空。', 'info');
+            return;
+        }
+
+        // 标准化文件名：如果用户添加了.txt，则删除它，然后再添加回来以确保格式正确。
+        fileName = fileName.trim().replace(/\.txt$/i, '');
+        const finalFileName = `${fileName}.txt`;
+
+        if (availableAgentFiles.includes(finalFileName)) {
+            showMessage(`文件 "${finalFileName}" 已存在。`, 'error');
+            return;
+        }
+
+        if (!confirm(`确定要创建新的 Agent 文件 "${finalFileName}" 吗？`)) {
+            return;
+        }
+
+        agentMapStatusSpan.textContent = `正在创建文件 ${finalFileName}...`;
+        agentMapStatusSpan.className = 'status-message info';
+
+        try {
+            // 注意：这假设服务器上已创建新的 API 端点 POST /admin_api/agents/new-file
+            await apiFetch(`${API_BASE_URL}/agents/new-file`, {
+                method: 'POST',
+                body: JSON.stringify({ fileName: finalFileName })
+            });
+            showMessage(`文件 "${finalFileName}" 已成功创建!`, 'success');
+            agentMapStatusSpan.textContent = '文件创建成功!';
+            agentMapStatusSpan.className = 'status-message success';
+            
+            // 刷新整个 agent 管理器以在列表中获取新文件
+            await initializeAgentManager();
+
+        } catch (error) {
+            agentMapStatusSpan.textContent = `创建文件失败: ${error.message}`;
+            agentMapStatusSpan.className = 'status-message error';
+            // showMessage 由 apiFetch 处理
+        }
+    }
+
 
     // Event Listeners for Agent Manager
     if (saveAgentFileButton) {
@@ -1881,6 +1925,9 @@ Description Length: ${newDescription.length}`);
     }
     if (addAgentMapEntryButton) {
         addAgentMapEntryButton.addEventListener('click', addNewAgentMapEntry);
+    }
+    if (createAgentFileButton) {
+        createAgentFileButton.addEventListener('click', createNewAgentFileHandler);
     }
 
     // --- End Agent Manager Functions ---
