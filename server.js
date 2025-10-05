@@ -662,30 +662,17 @@ async function handleDiaryFromAIResponse(responseText) {
             const noteBlockContent = match[1].trim();
             if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
 
-            // Extract Maid, Date, Content from noteBlockContent
-            const lines = noteBlockContent.trim().split('\n');
-            let maidName = null;
-            let dateString = null;
-            let contentLines = [];
-            let isContentSection = false;
-
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (trimmedLine.startsWith('Maid:')) {
-                    maidName = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Date:')) {
-                    dateString = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Content:')) {
-                    isContentSection = true;
-                    const firstContentPart = trimmedLine.substring(8).trim();
-                    if (firstContentPart) contentLines.push(firstContentPart);
-                } else if (isContentSection) {
-                    contentLines.push(line);
-                }
+            const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
+            const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
+            
+            const maidName = maidMatch ? maidMatch[1].trim() : null;
+            const dateString = dateMatch ? dateMatch[1].trim() : null;
+            
+            let contentText = null;
+            const contentMatch = noteBlockContent.match(/^\s*Content:\s*([\s\S]*)$/m);
+            if (contentMatch) {
+                contentText = contentMatch[1].trim();
             }
-            const contentText = contentLines.join('\n').trim();
 
             if (maidName && dateString && contentText) {
                 const diaryPayload = { maidName, dateString, contentText };
