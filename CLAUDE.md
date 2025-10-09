@@ -20,6 +20,60 @@ VCP (Variable & Command Protocol) ToolBox is an advanced AI capability enhanceme
 - AI Integration: Support for multiple AI model APIs (OpenAI, Gemini, etc.)
 - Plugin Dependencies: Various based on plugin requirements (see individual plugin directories)
 
+## 模块结构图
+
+```mermaid
+graph TD
+    A["(根) VCPToolBox-fork"] --> B["核心服务模块"];
+    A --> C["插件系统"];
+    A --> D["路由模块"];
+    A --> E["管理面板"];
+    A --> F["配置与工具"];
+    A --> G["数据存储"];
+
+    B --> B1["server.js"];
+    B --> B2["WebSocketServer.js"];
+    B --> B3["Plugin.js"];
+    B --> B4["VectorDBManager.js"];
+
+    C --> C1["同步插件"];
+    C1 --> C1a["Randomness"];
+    C1 --> C1b["SciCalculator"];
+    C --> C2["异步插件"];
+    C2 --> C2a["VideoGenerator"];
+    C2 --> C2b["SunoGen"];
+    C --> C3["静态插件"];
+    C3 --> C3a["WeatherReporter"];
+    C3 --> C3b["DailyHot"];
+    C --> C4["消息预处理器"];
+    C4 --> C4a["ImageProcessor"];
+    C4 --> C4b["AgentMessage"];
+    C --> C5["服务插件"];
+    C5 --> C5a["FileServer"];
+    C5 --> C5b["ImageServer"];
+
+    D --> D1["adminPanelRoutes.js"];
+    D --> D2["taskScheduler.js"];
+    D --> D3["specialModelRouter.js"];
+
+    E --> E1["AdminPanel"];
+    E --> E2["Web管理界面"];
+
+    F --> F1["config.env"];
+    F --> F2["Docker配置"];
+    F --> F3["脚本工具"];
+
+    G --> G1["Agent目录"];
+    G --> G2["dailynote"];
+    G --> G3["TVStxt"];
+    G --> G4["image"];
+
+    click C1a "./Plugin/Randomness/CLAUDE.md" "查看 Randomness 模块文档"
+    click C3a "./Plugin/WeatherReporter/CLAUDE.md" "查看 WeatherReporter 模块文档"
+    click C4a "./Plugin/ImageProcessor/CLAUDE.md" "查看 ImageProcessor 模块文档"
+    click C5a "./Plugin/FileServer/CLAUDE.md" "查看 FileServer 模块文档"
+```
+
 ## Common Development Commands
 
 ### Server Management
@@ -167,3 +221,10 @@ Each plugin can define its own configuration schema in `plugin-manifest.json`:
 5. **Monitoring**: Access AdminPanel for plugin management and system monitoring
 
 The system is designed for extensibility and supports complex AI agent workflows through its sophisticated plugin architecture and distributed computing capabilities.
+
+## 变更记录 (Changelog)
+
+### 2025-09-30 20:07:41 - AI上下文初始化
+- 初始化项目AI上下文文档
+- 添加模块结构图和导航面包屑
+- 更新插件系统说明和架构总览
