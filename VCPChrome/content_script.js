@@ -41,7 +41,7 @@ function isInteractive(node) {
         // 如果一个元素没有文本内容但有子元素，它可能只是一个包装器
         if ((node.innerText || '').trim().length === 0 && node.children.length > 0) {
              // 但如果这个包装器有role属性，它可能是一个自定义组件
-             if (!role) return false;
+            if (!role) return false;
         }
         return true;
     }
@@ -61,7 +61,7 @@ function pageToMarkdown() {
         }
 
         let markdown = `# ${document.title}\nURL: ${document.URL}\n\n`;
-        const ignoredTags = ['SCRIPT', 'STYLE', 'NAV', 'FOOTER', 'ASIDE', 'IFRAME', 'NOSCRIPT'];
+        const ignoredTags = ['SCRIPT', 'STYLE', 'FOOTER', 'IFRAME', 'NOSCRIPT']; // 移除 'NAV' 和 'ASIDE'
         const processedNodes = new WeakSet(); // 记录已处理过的节点，防止重复
 
         function processNode(node) {
@@ -109,6 +109,19 @@ function pageToMarkdown() {
             node.childNodes.forEach(child => {
                 childContent += processNode(child);
             });
+
+            // 新增代码开始
+            if (node.nodeType === Node.ELEMENT_NODE && childContent.trim()) {
+                const tagName = node.tagName.toLowerCase();
+                if (tagName === 'nav') {
+                    // 为导航区添加标题和代码块包裹
+                    return '\n## 导航区\n```markdown\n' + childContent.trim() + '\n```\n\n';
+                } else if (tagName === 'aside') {
+                    // 为侧边栏添加标题和代码块包裹
+                    return '\n## 侧边栏\n```markdown\n' + childContent.trim() + '\n```\n\n';
+                }
+            }
+            // 新增代码结束
 
             // 5. 为块级元素添加换行以保持结构
             if (node.nodeType === Node.ELEMENT_NODE && childContent.trim()) {
@@ -190,6 +203,7 @@ function formatInteractiveElement(el) {
 }
 
 function findLabelForInput(inputElement) {
+    if (!inputElement) return null;
     if (inputElement.id) {
         const label = document.querySelector(`label[for="${inputElement.id}"]`);
         if (label) return label.innerText.trim();
@@ -199,17 +213,265 @@ function findLabelForInput(inputElement) {
     return null;
 }
 
+/**
+ * 多策略元素定位器
+ * @param {string} target - 目标标识符
+ * @returns {Element|null} 找到的元素
+ */
+function findElement(target) {
+    if (!target) return null;
+
+    // 策略1: 精确匹配 vcp-id
+    let element = document.querySelector(`[vcp-id="${target}"]`);
+    if (element) return element;
+
+    // 策略2: ARIA 标签匹配
+    element = document.querySelector(`[aria-label="${target}"]`);
+    if (element) return element;
+
+    // 策略3: XPath 查找（如果 target 看起来像 XPath）
+    if (target.startsWith('/') || target.startsWith('//')) {
+        element = findByXPath(target);
+        if (element) return element;
+    }
+
+    // 策略4: CSS 选择器（如果 target 看起来像选择器）
+    if (target.includes('#') || target.includes('.') || target.includes('[')) {
+        try {
+            element = document.querySelector(target);
+            if (element) return element;
+        } catch (e) {
+            // 不是有效的选择器，继续尝试其他策略
+        }
+    }
+
+    // 策略5: 模糊文本匹配
+    element = findByFuzzyText(target);
+    if (element) return element;
+
+    // 策略6: Name 属性匹配
+    element = document.querySelector(`[name="${target}"]`);
+    if (element) return element;
+
+    // 策略7: ID 匹配
+    element = document.getElementById(target);
+    if (element) return element;
+
+    // 策略8: Placeholder 匹配
+    element = document.querySelector(`[placeholder="${target}"]`);
+    if (element) return element;
+
+    // 策略9: Title 匹配
+    element = document.querySelector(`[title="${target}"]`);
+    if (element) return element;
+
+    return null;
+}
+
+/**
+ * XPath 查找
+ * @param {string} xpath - XPath 表达式
+ * @returns {Element|null}
+ */
+function findByXPath(xpath) {
+    try {
+        const result = document.evaluate(
+            xpath,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        );
+        return result.singleNodeValue;
+    } catch (e) {
+        console.warn('Invalid XPath:', xpath, e);
+        return null;
+    }
+}
+
+/**
+ * 模糊文本匹配（支持部分匹配、忽略大小写、忽略多余空白）
+ * @param {string} targetText - 目标文本
+ * @returns {Element|null}
+ */
+function findByFuzzyText(targetText) {
+    const normalizedTarget = normalizeText(targetText);
+    
+    // 优先查找可交互元素
+    const interactiveElements = document.querySelectorAll(
+        'a, button, input, textarea, select, [role="button"], [role="link"], [onclick], [tabindex]'
+    );
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const el of interactiveElements) {
+        // 跳过不可见元素
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+            continue;
+        }
+
+        // 获取元素的所有文本表示
+        const texts = [
+            el.innerText,
+            el.textContent,
+            el.value,
+            el.placeholder,
+            el.ariaLabel,
+            el.title,
+            el.alt,
+            el.getAttribute('aria-label'),
+            el.getAttribute('data-label')
+        ].filter(Boolean);
+
+        for (const text of texts) {
+            const normalizedText = normalizeText(text);
+            
+            // 精确匹配
+            if (normalizedText === normalizedTarget) {
+                return el;
+            }
+
+            // 计算相似度分数
+            const score = calculateSimilarity(normalizedTarget, normalizedText);
+            if (score > bestScore && score > 0.6) { // 60% 相似度阈值
+                bestScore = score;
+                bestMatch = el;
+            }
+        }
+    }
+
+    return bestMatch;
+}
+
+/**
+ * 文本标准化
+ * @param {string} text
+ * @returns {string}
+ */
+function normalizeText(text) {
+    if (!text) return '';
+    return text
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * 计算文本相似度（简单版本）
+ * @param {string} str1
+ * @param {string} str2
+ * @returns {number} 0-1 之间的相似度分数
+ */
+function calculateSimilarity(str1, str2) {
+    // 包含匹配
+    if (str2.includes(str1)) {
+        return str1.length / str2.length;
+    }
+    if (str1.includes(str2)) {
+        return str2.length / str1.length;
+    }
+
+    // Levenshtein 距离（编辑距离）
+    const longer = str1.length > str2.length ? str1 : str2;
+    const shorter = str1.length > str2.length ? str2 : str1;
+    
+    if (longer.length === 0) {
+        return 1.0;
+    }
+
+    const editDistance = levenshteinDistance(longer, shorter);
+    return (longer.length - editDistance) / longer.length;
+}
+
+/**
+ * Levenshtein 距离算法
+ * @param {string} str1
+ * @param {string} str2
+ * @returns {number}
+ */
+function levenshteinDistance(str1, str2) {
+    const matrix = [];
+
+    for (let i = 0; i <= str2.length; i++) {
+        matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= str1.length; j++) {
+        matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= str2.length; i++) {
+        for (let j = 1; j <= str1.length; j++) {
+            if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1, // 替换
+                    matrix[i][j - 1] + 1,     // 插入
+                    matrix[i - 1][j] + 1      // 删除
+                );
+            }
+        }
+    }
+
+    return matrix[str2.length][str1.length];
+}
+
+/**
+ * 增强版查找（带日志和回退）
+ * @param {string} target
+ * @returns {Element|null}
+ */
+function findElementWithLogging(target) {
+    const strategies = [
+        { name: 'vcp-id', fn: () => document.querySelector(`[vcp-id="${target}"]`) },
+        { name: 'aria-label', fn: () => document.querySelector(`[aria-label="${target}"]`) },
+        { name: 'xpath', fn: () => (target.startsWith('/') || target.startsWith('//')) ? findByXPath(target) : null },
+        { name: 'css-selector', fn: () => {
+            if (target.includes('#') || target.includes('.') || target.includes('[')) {
+                try { return document.querySelector(target); } catch { return null; }
+            }
+            return null;
+        }},
+        { name: 'fuzzy-text', fn: () => findByFuzzyText(target) },
+        { name: 'name', fn: () => document.querySelector(`[name="${target}"]`) },
+        { name: 'id', fn: () => document.getElementById(target) },
+        { name: 'placeholder', fn: () => document.querySelector(`[placeholder="${target}"]`) },
+        { name: 'title', fn: () => document.querySelector(`[title="${target}"]`) },
+    ];
+
+    for (const strategy of strategies) {
+        try {
+            const element = strategy.fn();
+            if (element) {
+                console.log(`✅ Found element using strategy: ${strategy.name}`, element);
+                return element;
+            }
+        } catch (e) {
+            console.warn(`⚠️ Strategy ${strategy.name} failed:`, e);
+        }
+    }
+
+    console.error(`❌ Could not find element: ${target}`);
+    return null;
+}
+
 function sendPageInfoUpdate() {
     const currentPageContent = pageToMarkdown();
     if (currentPageContent && currentPageContent !== lastPageContent) {
         lastPageContent = currentPageContent;
+        console.log('[VCP Content] 📤 发送页面信息到background');
         chrome.runtime.sendMessage({
             type: 'PAGE_INFO_UPDATE',
             data: { markdown: currentPageContent }
         }, () => {
             // 检查 chrome.runtime.lastError 以优雅地处理上下文失效的错误
             if (chrome.runtime.lastError) {
-                // console.log("Page info update failed, context likely invalidated.");
+                // console.log("[VCP Content] Page info update failed, context likely invalidated.");
+            } else {
+                console.log('[VCP Content] ✅ 页面信息已发送');
             }
         });
     }
@@ -220,23 +482,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         lastPageContent = '';
     } else if (request.type === 'REQUEST_PAGE_INFO_UPDATE') {
         sendPageInfoUpdate();
+    } else if (request.type === 'FORCE_PAGE_UPDATE') {
+        // 新增：强制更新页面信息（手动刷新）
+        console.log('[VCP Content] 🔄 收到强制更新请求');
+        lastPageContent = ''; // 清除缓存，强制重新生成
+        const currentPageContent = pageToMarkdown();
+        if (currentPageContent) {
+            lastPageContent = currentPageContent;
+            console.log('[VCP Content] 📤 发送强制更新的页面信息');
+            chrome.runtime.sendMessage({
+                type: 'PAGE_INFO_UPDATE',
+                data: { markdown: currentPageContent }
+            }, () => {
+                if (chrome.runtime.lastError) {
+                    console.log("[VCP Content] ❌ 强制更新失败:", chrome.runtime.lastError.message);
+                    sendResponse({ success: false });
+                } else {
+                    console.log("[VCP Content] ✅ 强制更新成功");
+                    sendResponse({ success: true });
+                }
+            });
+        } else {
+            console.log('[VCP Content] ❌ 无法获取页面内容');
+            sendResponse({ success: false, error: '无法获取页面内容' });
+        }
+        return true; // 保持消息通道开放
     } else if (request.type === 'EXECUTE_COMMAND') {
         const { command, target, text, requestId, sourceClientId } = request.data;
         let result = {};
 
         try {
-            let element = document.querySelector(`[vcp-id="${target}"]`);
-
-            if (!element) {
-                const allInteractiveElements = document.querySelectorAll('[vcp-id]');
-                for (const el of allInteractiveElements) {
-                    const elText = (el.innerText || el.value || el.placeholder || el.ariaLabel || el.title || '').trim().replace(/\s+/g, ' ');
-                    if (elText === target) {
-                        element = el;
-                        break;
-                    }
-                }
-            }
+            let element = findElementWithLogging(target);
 
             if (!element) {
                 throw new Error(`未能在页面上找到目标为 '${target}' 的元素。`);
@@ -272,6 +548,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 requestId,
                 sourceClientId,
                 ...result
+            }
+        }, () => {
+            // 捕获当页面跳转等原因导致上下文失效时的错误，这是正常现象
+            if (chrome.runtime.lastError) {
+                console.log("Could not send command result, context likely invalidated:", chrome.runtime.lastError.message);
             }
         });
         setTimeout(sendPageInfoUpdate, 500);

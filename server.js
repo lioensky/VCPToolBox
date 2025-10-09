@@ -16,6 +16,7 @@ logger.overrideConsole();
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
+const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const messageProcessor = require('./modules/messageProcessor.js');
 const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
 const pluginManager = require('./Plugin.js');
@@ -30,6 +31,12 @@ const BLACKLIST_FILE = path.join(__dirname, 'ip_blacklist.json');
 const MAX_API_ERRORS = 5;
 let ipBlacklist = [];
 const apiErrorCounts = new Map();
+
+const loginAttempts = new Map();
+const tempBlocks = new Map();
+const MAX_LOGIN_ATTEMPTS = 5; // 15分钟内最多尝试5次
+const LOGIN_ATTEMPT_WINDOW = 15 * 60 * 1000; // 15分钟的窗口
+const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
 
@@ -219,13 +226,19 @@ const cachedEmojiLists = new Map();
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
-    // This middleware now ONLY protects the API endpoint. Static files are served before this.
-    const isAdminApiPath = req.path.startsWith('/admin_api');
+    // This middleware protects both the Admin Panel static files and its API endpoints.
+    const isAdminPath = req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel');
 
-    if (isAdminApiPath) {
-        // Check if admin credentials are configured
+    if (isAdminPath) {
+        let clientIp = req.ip;
+        if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+            clientIp = clientIp.substr(7);
+        }
+
+        // 1. 检查管理员凭据是否已配置 (这是最高优先级的安全检查)
         if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
             console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
+            // 对API和页面请求返回不同的错误格式
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
                  res.status(503).json({
                     error: 'Service Unavailable: Admin credentials not configured.',
@@ -234,12 +247,46 @@ const adminAuth = (req, res, next) => {
             } else {
                  res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
             }
-            return; // Stop further processing
+            return; // 停止进一步处理
         }
 
-        // Credentials are configured, proceed with Basic Auth
+        // 2. 检查IP是否被临时封禁
+        const blockInfo = tempBlocks.get(clientIp);
+        if (blockInfo && Date.now() < blockInfo.expires) {
+            console.warn(`[AdminAuth] Blocked login attempt from IP: ${clientIp}. Block expires at ${new Date(blockInfo.expires).toLocaleString()}.`);
+            const timeLeft = Math.ceil((blockInfo.expires - Date.now()) / 1000 / 60);
+            res.setHeader('Retry-After', Math.ceil((blockInfo.expires - Date.now()) / 1000)); // In seconds
+            return res.status(429).json({
+                error: 'Too Many Requests',
+                message: `由于登录失败次数过多，您的IP已被暂时封禁。请在 ${timeLeft} 分钟后重试。`
+            });
+        }
+
+        // 3. 凭据已配置，继续进行 Basic Auth
         const credentials = basicAuth(req);
         if (!credentials || credentials.name !== ADMIN_USERNAME || credentials.pass !== ADMIN_PASSWORD) {
+            // 认证失败，处理登录尝试计数
+            if (clientIp) {
+                const now = Date.now();
+                let attemptInfo = loginAttempts.get(clientIp) || { count: 0, firstAttempt: now };
+
+                // 如果时间窗口已过，则重置计数
+                if (now - attemptInfo.firstAttempt > LOGIN_ATTEMPT_WINDOW) {
+                    attemptInfo = { count: 0, firstAttempt: now };
+                }
+
+                attemptInfo.count++;
+                console.log(`[AdminAuth] Failed login attempt from IP: ${clientIp}. Count: ${attemptInfo.count}/${MAX_LOGIN_ATTEMPTS}`);
+
+                if (attemptInfo.count >= MAX_LOGIN_ATTEMPTS) {
+                    console.warn(`[AdminAuth] IP ${clientIp} has been temporarily blocked for ${TEMP_BLOCK_DURATION / 60000} minutes due to excessive failed login attempts.`);
+                    tempBlocks.set(clientIp, { expires: now + TEMP_BLOCK_DURATION });
+                    loginAttempts.delete(clientIp); // 封禁后清除尝试记录
+                } else {
+                    loginAttempts.set(clientIp, attemptInfo);
+                }
+            }
+            
             res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
                 return res.status(401).json({ error: 'Unauthorized' });
@@ -247,16 +294,23 @@ const adminAuth = (req, res, next) => {
                 return res.status(401).send('<h1>401 Unauthorized</h1><p>Authentication required to access the Admin Panel.</p>');
             }
         }
-        // Authentication successful
+        
+        // 4. 认证成功
+        if (clientIp) {
+            loginAttempts.delete(clientIp); // 成功后清除尝试记录
+        }
         return next();
     }
-    // Not an admin path, proceed
+    
+    // 非管理面板路径，继续
     return next();
 };
-// Serve Admin Panel static files FIRST, before any authentication.
-app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+// Apply admin authentication to all /AdminPanel and /admin_api routes.
+// This MUST come before serving static files to protect the panel itself.
+app.use(adminAuth);
 
-app.use(adminAuth); // Apply admin authentication to subsequent routes, primarily /admin_api.
+// Serve Admin Panel static files only after successful authentication.
+app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
 
 
 // Image server logic is now handled by the ImageServer plugin.
@@ -856,6 +910,12 @@ server = app.listen(port, async () => { // Assign to server variable
     
     // ensureDebugLogDir() is effectively handled by initializeServerLogger() synchronously earlier.
     // If ensureDebugLogDirAsync was meant for other purposes, it can be called where needed.
+    
+    // 新增：初始化Agent管理器
+    console.log('正在初始化Agent管理器...');
+    await agentManager.initialize(DEBUG_MODE);
+    console.log('Agent管理器初始化完成。');
+
     await initialize(); // This loads plugins and initializes services
 
     // Initialize the new WebSocketServer

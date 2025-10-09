@@ -18,6 +18,7 @@ const SILICONFLOW_API_CONFIG = {
         IMAGE_GENERATION: '/v1/images/generations'
     },
     MODEL_ID: "black-forest-labs/FLUX.1-dev",
+    MODEL_ID_IMG2IMG: "siliconflow/kaiwei-flux-kontext-dev/d20v0cs50mis73faguu0",
     DEFAULT_PARAMS: {
         num_inference_steps: 24,
         guidance_scale: 7.5, // May not be used by Flux, but API might accept
@@ -32,6 +33,40 @@ function isValidFluxGenArgs(args) {
     if (typeof args.resolution !== 'string' || !["1024x1024", "960x1280", "768x1024", "720x1440", "720x1280"].includes(args.resolution)) return false;
     if (args.seed !== undefined && (typeof args.seed !== 'number' || !Number.isInteger(args.seed) || args.seed < 0)) return false;
     return true;
+}
+
+function isValidFluxGenImg2ImgArgs(args) {
+    if (!args || typeof args !== 'object') return false;
+    if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
+    if (typeof args.image_url !== 'string' || !args.image_url.trim()) return false;
+    if (args.seed !== undefined && (typeof args.seed !== 'number' || !Number.isInteger(args.seed) || args.seed < 0)) return false;
+    if (args.prompt_enhancement !== undefined && typeof args.prompt_enhancement !== 'boolean') return false;
+    return true;
+}
+
+// Helper to get image data from various URL types, inspired by GeminiImageGen
+async function getImageDataFromUrl(url) {
+    if (url.startsWith('data:')) {
+        const match = url.match(/^data:(image\/\w+);base64,(.*)$/);
+        if (!match) throw new Error('Invalid data URI format.');
+        return { buffer: Buffer.from(match[2], 'base64'), mimeType: match[1] };
+    }
+
+    if (url.startsWith('http')) {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        return { buffer: response.data, mimeType: response.headers['content-type'] || 'image/jpeg' };
+    }
+
+    if (url.startsWith('file://')) {
+        // This is the pattern from GeminiImageGen: delegate file fetching to the main server
+        // by throwing a structured error. This is for security and centralization of file access.
+        const structuredError = new Error("Local file access must be handled by the main server.");
+        structuredError.code = 'FILE_NOT_FOUND_LOCALLY'; // Use a consistent error code
+        structuredError.fileUrl = url;
+        throw structuredError;
+    }
+
+    throw new Error('Unsupported URL protocol. Please use http, https, data URI, or file://.');
 }
 
 async function generateImageAndSave(args) {
@@ -144,20 +179,142 @@ async function generateImageAndSave(args) {
     const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
 
     const result = {
-        message: successMessage,
-        ai_instructions: aiInstructions,
-        imageUrl: accessibleImageUrl,
-        imageHtml: imageHtml,
-        imageData: {
-            base64: base64Image,
-            type: imageMimeType
-        },
-        details: {
+        content: [
+            {
+                type: 'text',
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${args.resolution}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: { // Keep details for logging or other purposes if needed
             serverPath: `image/fluxgen/${generatedFileName}`,
             fileName: generatedFileName,
             prompt: args.prompt,
             resolution: args.resolution,
-            seed: finalSeed
+            seed: finalSeed,
+            imageUrl: accessibleImageUrl
+        }
+    };
+
+    return result;
+}
+
+async function generateImageFromImage(args) {
+    // Check for essential environment variables
+    if (!SILICONFLOW_API_KEY) {
+        throw new Error("FluxGen Plugin Error: SILICONFLOW_API_KEY environment variable is required and not set.");
+    }
+    if (!PROJECT_BASE_PATH) {
+        throw new Error("FluxGen Plugin Error: PROJECT_BASE_PATH environment variable is required for saving images.");
+    }
+    if (!SERVER_PORT) {
+        throw new Error("FluxGen Plugin Error: SERVER_PORT environment variable is required for constructing image URL.");
+    }
+    if (!IMAGESERVER_IMAGE_KEY) {
+        throw new Error("FluxGen Plugin Error: IMAGESERVER_IMAGE_KEY environment variable is required for constructing image URL.");
+    }
+    if (!VAR_HTTP_URL) {
+        throw new Error("FluxGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
+    }
+
+    if (!isValidFluxGenImg2ImgArgs(args)) {
+        throw new Error(`FluxGen Plugin Error: Invalid arguments for image-to-image. Received: ${JSON.stringify(args)}. Required: prompt (string), image_url (string). Optional: seed (integer), prompt_enhancement (boolean).`);
+    }
+
+    // Get image data
+    const { buffer, mimeType } = await getImageDataFromUrl(args.image_url);
+    const base64Image = buffer.toString('base64');
+    const imageDataUri = `data:${mimeType};base64,${base64Image}`;
+
+    // Setup for API call
+    const siliconflowAxiosInstance = axios.create({
+        baseURL: SILICONFLOW_API_CONFIG.BASE_URL,
+        headers: {
+            'Authorization': `Bearer ${SILICONFLOW_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        timeout: 120000 // 120 seconds for img2img
+    });
+
+    const payload = {
+        model: SILICONFLOW_API_CONFIG.MODEL_ID_IMG2IMG,
+        prompt: args.prompt,
+        image: imageDataUri,
+        prompt_enhancement: args.prompt_enhancement === true, // default to false
+    };
+    if (args.seed !== undefined) {
+        payload.seed = args.seed;
+    }
+
+    // Make API call
+    const response = await siliconflowAxiosInstance.post(
+        SILICONFLOW_API_CONFIG.ENDPOINTS.IMAGE_GENERATION,
+        payload
+    );
+
+    // Process response
+    const siliconflowImageUrl = response.data?.images?.[0]?.url;
+    if (!siliconflowImageUrl) {
+        throw new Error("FluxGen Plugin Error: Failed to extract image URL from SiliconFlow API response.");
+    }
+
+    // Download the image from SiliconFlow URL
+    const imageResponse = await axios({
+        method: 'get',
+        url: siliconflowImageUrl,
+        responseType: 'arraybuffer',
+        timeout: 60000
+    });
+
+    let imageExtension = 'png';
+    const contentType = imageResponse.headers['content-type'];
+    if (contentType && contentType.startsWith('image/')) {
+        imageExtension = contentType.split('/')[1];
+    }
+
+    const generatedFileName = `${uuidv4()}.${imageExtension}`;
+    const fluxGenImageDir = path.join(PROJECT_BASE_PATH, 'image', 'fluxgen');
+    const localImageServerPath = path.join(fluxGenImageDir, generatedFileName);
+
+    await fs.mkdir(fluxGenImageDir, { recursive: true });
+    await fs.writeFile(localImageServerPath, imageResponse.data);
+
+    const relativeServerPathForUrl = path.join('fluxgen', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
+
+    const imageBuffer = imageResponse.data;
+    const responseBase64Image = Buffer.from(imageBuffer).toString('base64');
+    const responseMimeType = `image/${imageExtension}`;
+
+    const responseSeed = response.data?.seed;
+    const payloadSeed = payload.seed;
+    const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
+
+    const result = {
+        content: [
+            {
+                type: 'text',
+                text: `图生图已成功生成！\n- 提示词: ${args.prompt}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${responseMimeType};base64,${responseBase64Image}`
+                }
+            }
+        ],
+        details: {
+            serverPath: `image/fluxgen/${generatedFileName}`,
+            fileName: generatedFileName,
+            prompt: args.prompt,
+            seed: finalSeed,
+            imageUrl: accessibleImageUrl,
+            original_image_url: args.image_url
         }
     };
 
@@ -182,14 +339,27 @@ async function main() {
             return;
         }
         parsedArgs = JSON.parse(inputData);
-        const resultObject = await generateImageAndSave(parsedArgs);
-        const resultString = JSON.stringify(resultObject);
-        console.log(JSON.stringify({ status: "success", result: resultString })); // Output success as JSON
+        let resultObject;
+        if (parsedArgs.image_url) {
+            resultObject = await generateImageFromImage(parsedArgs);
+        } else {
+            resultObject = await generateImageAndSave(parsedArgs);
+        }
+        console.log(JSON.stringify({ status: "success", result: resultObject })); // Output success as JSON
     } catch (e) {
-        // Output error as JSON to stdout
-        // Ensure error message is somewhat consistent with what might have been thrown by generateImageAndSave or parsing
-        const errorMessage = e.message || "Unknown error in FluxGen plugin";
-        console.log(JSON.stringify({ status: "error", error: errorMessage.startsWith("FluxGen Plugin Error:") ? errorMessage : `FluxGen Plugin Error: ${errorMessage}` }));
+        // Handle specific error for remote file fetching
+        if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+            console.log(JSON.stringify({
+                status: "error",
+                code: e.code,
+                error: e.message,
+                fileUrl: e.fileUrl
+            }));
+        } else {
+            // General error handling
+            const errorMessage = e.message || "Unknown error in FluxGen plugin";
+            console.log(JSON.stringify({ status: "error", error: errorMessage.startsWith("FluxGen Plugin Error:") ? errorMessage : `FluxGen Plugin Error: ${errorMessage}` }));
+        }
         process.exit(1); // Indicate failure
     }
 }

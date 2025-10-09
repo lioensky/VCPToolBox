@@ -612,33 +612,56 @@ async function getEmbeddingsInWorker(chunks, config) {
     const { default: fetch } = await import('node-fetch');
     const allVectors = [];
     const batchSize = parseInt(process.env.VECTORDB_BATCH_SIZE) || 5;
-    
+
+    // --- Retry Config from environment variables ---
+    const retryAttempts = parseInt(process.env.VECTORDB_RETRY_ATTEMPTS) || 3;
+    const retryBaseDelay = parseInt(process.env.VECTORDB_RETRY_BASE_DELAY_MS) || 1000;
+    const retryMaxDelay = parseInt(process.env.VECTORDB_RETRY_MAX_DELAY_MS) || 10000;
+
     for (let i = 0; i < chunks.length; i += batchSize) {
         const batch = chunks.slice(i, i + batchSize);
-        try {
-            const response = await fetch(`${config.apiUrl}/v1/embeddings`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey}`
-                },
-                body: JSON.stringify({
-                    model: config.embeddingModel,
-                    input: batch
-                })
-            });
+        
+        let lastError;
+        for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+            try {
+                const response = await fetch(`${config.apiUrl}/v1/embeddings`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: config.embeddingModel,
+                        input: batch
+                    })
+                });
 
-            if (!response.ok) {
-                const errorBody = await response.text();
-                throw new Error(`Embedding API error: ${response.status} ${response.statusText} - ${errorBody}`);
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    throw new Error(`Embedding API error: ${response.status} ${response.statusText} - ${errorBody}`);
+                }
+
+                const data = await response.json();
+                const vectors = data.data.map(item => item.embedding);
+                allVectors.push(...vectors);
+                
+                lastError = null; // Success, clear last error
+                break; // Exit retry loop and proceed to next batch
+            } catch (error) {
+                lastError = error;
+                console.error(`[VectorDB][Worker] Batch (start: ${i}) attempt ${attempt} failed:`, error.message);
+                if (attempt < retryAttempts) {
+                    const delay = Math.min(retryBaseDelay * Math.pow(2, attempt - 1), retryMaxDelay);
+                    console.log(`[VectorDB][Worker] Retrying batch in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
             }
+        }
 
-            const data = await response.json();
-            const vectors = data.data.map(item => item.embedding);
-            allVectors.push(...vectors);
-        } catch (error) {
-            console.error('[VectorDB][Worker] Failed to call Embedding API:', error);
-            throw error; // Propagate error to be caught by retry logic
+        // If a batch fails after all retries, the whole operation must fail.
+        if (lastError) {
+            console.error(`[VectorDB][Worker] Failed to process batch (start: ${i}) after ${retryAttempts} attempts.`);
+            throw new Error(`Failed to get embeddings for a batch after ${retryAttempts} attempts: ${lastError.message}`);
         }
     }
     return allVectors;

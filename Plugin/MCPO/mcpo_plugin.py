@@ -76,7 +76,7 @@ class MCPOPlugin:
                 default_config_path = os.path.join(project_root, env_config_path)
         
         config = {
-            'MCPO_PORT': int(os.getenv('MCPO_PORT', '8000')),
+            'MCPO_PORT': int(os.getenv('MCPO_PORT', '9000')),
             'MCPO_API_KEY': os.getenv('MCPO_API_KEY', 'vcp-mcpo-secret'),
             'MCPO_AUTO_START': os.getenv('MCPO_AUTO_START', 'true').lower() == 'true',
             'PYTHON_EXECUTABLE': os.getenv('PYTHON_EXECUTABLE', 'python'),

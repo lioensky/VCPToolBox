@@ -65,7 +65,19 @@
 <body>
     <h3>VCP Chrome Control</h3>
     <div id="status">正在检查连接状态...</div>
-    <button id="toggleConnection">连接</button>
+
+    <!-- 显示最新页面信息 -->
+    <div id="page-info" style="margin-top: 10px; padding: 8px; background-color: #f0f0f0; border-radius: 4px; text-align: left;">
+        <strong>最新返回页面：</strong>
+        <div id="page-title" style="margin-top: 5px; font-size: 12px; word-break: break-all; color: #999;">等待加载...</div>
+        <div id="page-url" style="margin-top: 3px; font-size: 11px; color: #666; word-break: break-all;"></div>
+    </div>
+
+    <div class="button-group" style="display: flex; gap: 10px; margin-top: 10px;">
+        <button id="toggleConnection" style="flex: 1; margin: 0;">连接</button>
+        <button id="refreshPage" style="flex: 1; margin: 0;">🔄 手动更新页面</button>
+    </div>
+    
     <button id="settings-toggle">设置</button>
 
     <div id="settings">

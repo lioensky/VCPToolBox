@@ -18,7 +18,7 @@
     "MCPO_PORT": {
       "type": "integer",
       "description": "MCPO 服务器端口号",
-      "default": 8000
+      "default": 9000
     },
     "MCPO_API_KEY": {
       "type": "string",

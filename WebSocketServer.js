@@ -149,8 +149,14 @@ function initialize(httpServer, config) {
                 if (ws.clientType === 'DistributedServer') {
                     handleDistributedServerMessage(ws.serverId, parsedMessage);
                 } else if (ws.clientType === 'ChromeObserver') {
-                    // 如果是命令结果，则将其路由回原始的ChromeControl客户端
-                    if (parsedMessage.type === 'command_result' && parsedMessage.data && parsedMessage.data.sourceClientId) {
+                    if (parsedMessage.type === 'heartbeat') {
+                        // 收到心跳包，发送确认
+                        ws.send(JSON.stringify({ type: 'heartbeat_ack', timestamp: Date.now() }));
+                        if (serverConfig.debugMode) {
+                            console.log(`[WebSocketServer] Received heartbeat from ChromeObserver client ${ws.clientId}, sent ack.`);
+                        }
+                    } else if (parsedMessage.type === 'command_result' && parsedMessage.data && parsedMessage.data.sourceClientId) {
+                        // 如果是命令结果，则将其路由回原始的ChromeControl客户端
                         const sourceClientId = parsedMessage.data.sourceClientId;
                         
                         // 为ChromeControl客户端重新构建消息
@@ -178,7 +184,7 @@ function initialize(httpServer, config) {
                     const chromeObserverModule = pluginManager.getServiceModule('ChromeObserver');
                     if (chromeObserverModule && typeof chromeObserverModule.handleClientMessage === 'function') {
                         // 避免将命令结果再次传递给状态处理器
-                        if (parsedMessage.type !== 'command_result') {
+                        if (parsedMessage.type !== 'command_result' && parsedMessage.type !== 'heartbeat') {
                             chromeObserverModule.handleClientMessage(ws.clientId, parsedMessage);
                         }
                     }

@@ -23,14 +23,14 @@ MCPOMonitor 是一个静态插件，用于监控 MCPO 服务器状态并提供�
 # MCPO 服务器连接配置
 # 支持多种端口配置方式：
 # 方式1: 仅设置端口号（推荐，与MCPO插件共享配置）
-MCPO_PORT=8000
+MCPO_PORT=9000
 
 # 方式2: 设置完整URL（优先级较低）
-MCPO_HOST=http://0.0.0.0:8000
+MCPO_HOST=http://0.0.0.0:9000
 
 # 方式3: 同时设置时，MCPO_PORT优先级更高
 # MCPO_PORT=9000
-# MCPO_HOST=http://localhost:8000  # 实际会使用 http://localhost:9000
+# MCPO_HOST=http://localhost:9000
 
 # API密钥（与MCPO插件共享）
 MCPO_API_KEY=vcp-mcpo-secret
@@ -52,7 +52,7 @@ HEALTH_CHECK_TIMEOUT=5000
 1. MCPOMonitor插件自己的 `MCPO_PORT` 配置
 2. MCPO插件的 `MCPO_PORT` 配置（自动共享）
 3. MCPOMonitor插件的 `MCPO_HOST` 完整URL配置  
-4. 默认值 `8000`
+4. 默认值 `9000`
 
 **自动配置共享**：
 - 插件会自动读取 `Plugin/MCPO/config.env` 中的端口配置

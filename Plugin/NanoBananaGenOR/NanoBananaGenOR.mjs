@@ -43,7 +43,7 @@ const {
 })();
 
 const API_BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODEL_NAME = 'google/gemini-2.5-flash-image-preview:free';
+const MODEL_NAME = 'google/gemini-2.5-flash-image-preview';
 
 function getRandomApiKey() {
     if (OPENROUTER_API_KEYS.length === 0) {

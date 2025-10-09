@@ -54,7 +54,7 @@ class MCPOMonitor {
         }
         
         // 获取端口配置（优先级：MCPOMonitor具体配置 > MCPO插件配置 > 默认值）
-        const mcpoPort = process.env.MCPO_PORT || '8000';
+        const mcpoPort = process.env.MCPO_PORT || '9000';
         const mcpoHost = process.env.MCPO_HOST;
         
         // 如果指定了完整的HOST URL，解析并更新端口；否则根据端口构造
@@ -65,7 +65,7 @@ class MCPOMonitor {
             try {
                 const url = new URL(mcpoHost);
                 // 如果环境变量MCPO_PORT被单独设置，优先使用它
-                if (process.env.MCPO_PORT && process.env.MCPO_PORT !== '8000') {
+                if (process.env.MCPO_PORT && process.env.MCPO_PORT !== '9000') {
                     actualPort = parseInt(process.env.MCPO_PORT, 10);
                     finalMcpoHost = `${url.protocol}//${url.hostname}:${actualPort}`;
                 } else {

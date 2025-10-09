@@ -944,6 +944,40 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // --- End Daily Notes API ---
 
     // --- Agent Files API ---
+    const AGENT_MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
+
+    // GET agent map
+    adminApiRouter.get('/agents/map', async (req, res) => {
+        try {
+            const content = await fs.readFile(AGENT_MAP_FILE, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.json({}); // Return empty object if file doesn't exist
+            } else {
+                console.error('[AdminPanelRoutes API] Error reading agent_map.json:', error);
+                res.status(500).json({ error: 'Failed to read agent map file', details: error.message });
+            }
+        }
+    });
+
+    // POST to save agent map
+    adminApiRouter.post('/agents/map', async (req, res) => {
+        const newMap = req.body;
+        if (typeof newMap !== 'object' || newMap === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            await fs.writeFile(AGENT_MAP_FILE, JSON.stringify(newMap, null, 2), 'utf-8');
+            // Note: For changes to be reflected in chat, the agentManager needs to be reloaded.
+            // This currently requires a server restart.
+            res.json({ message: 'Agent map saved successfully. A server restart may be required for changes to apply.' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing agent_map.json:', error);
+            res.status(500).json({ error: 'Failed to write agent map file', details: error.message });
+        }
+    });
+
     // GET list of agent .txt files
     adminApiRouter.get('/agents', async (req, res) => {
         try {
@@ -954,6 +988,30 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error listing agent files:', error);
             res.status(500).json({ error: 'Failed to list agent files', details: error.message });
+        }
+    });
+
+    // POST to create a new agent .txt file
+    adminApiRouter.post('/agents/new-file', async (req, res) => {
+        const { fileName } = req.body;
+
+        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
+        }
+
+        const filePath = path.join(AGENT_FILES_DIR, fileName);
+
+        try {
+            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
+            await fs.writeFile(filePath, '', { flag: 'wx' });
+            res.json({ message: `File '${fileName}' created successfully.` });
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                res.status(409).json({ error: `File '${fileName}' already exists.` });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
+                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
+            }
         }
     });
 
@@ -1002,6 +1060,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
         }
     });
+
     // --- End Agent Files API ---
 
     // --- TVS Variable Files API ---

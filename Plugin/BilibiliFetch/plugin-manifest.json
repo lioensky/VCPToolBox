@@ -21,8 +21,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "BilibiliFetch",
-        "description": "调用此工具获取 Bilibili 视频或直播信息。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」BilibiliFetch「末」,\nurl:「始」(必需) Bilibili 视频或直播的 URL。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含 Bilibili 内容信息的JSON对象。请基于这些结果回答用户的问题或完成相关任务。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」BilibiliFetch「末」,\nurl:「始」https://www.bilibili.com/video/BV...「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "调用此工具获取 Bilibili 视频字幕。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」BilibiliFetch「末」,\nurl:「始」(必需) Bilibili 视频的 URL。「末」,\nlang:「始」(可选) 字幕语言代码, 例如 'ai-zh' 或 'ai-en'。如果未提供，将默认尝试获取中文字幕。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含字幕文本的JSON对象。请基于这些结果回答用户的问题或完成相关任务。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」BilibiliFetch「末」,\nurl:「始」https://www.bilibili.com/video/BV...「末」,\nlang:「始」ai-en「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }

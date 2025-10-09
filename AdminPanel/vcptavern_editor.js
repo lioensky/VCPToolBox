@@ -66,10 +66,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const card = document.createElement('div');
         card.className = 'rule-card';
         card.dataset.id = ruleId;
-        card.draggable = true;
 
         card.innerHTML = `
             <div class="rule-header">
+                <div class="drag-handle" title="拖拽移动">⋮⋮</div>
                 <h3 contenteditable="true">${rule.name || '新规则'}</h3>
                 <div class="rule-controls">
                     <button class="toggle-rule" title="启用/禁用">${rule.enabled ? '🟢' : '🔴'}</button>
@@ -138,21 +138,33 @@ document.addEventListener('DOMContentLoaded', () => {
              toggleBtn.textContent = isEnabled ? '🔴' : '🟢';
         });
 
-        // Drag and Drop
-        card.addEventListener('dragstart', (e) => {
-            draggedItem = e.target.closest('.rule-card');
+        // Drag and Drop - 只在拖拽手柄上启用
+        const dragHandle = card.querySelector('.drag-handle');
+        dragHandle.addEventListener('dragstart', (e) => {
+            e.stopPropagation();
+            draggedItem = card;
             setTimeout(() => {
-                draggedItem.classList.add('dragging');
+                card.classList.add('dragging');
             }, 0);
         });
 
-        card.addEventListener('dragend', (e) => {
+        dragHandle.addEventListener('dragend', (e) => {
+            e.stopPropagation();
             setTimeout(() => {
                 if(draggedItem) {
                     draggedItem.classList.remove('dragging');
                     draggedItem = null;
                 }
             }, 0);
+        });
+
+        // 防止文本选择时触发卡片拖拽
+        card.addEventListener('mousedown', (e) => {
+            if (e.target === dragHandle) {
+                card.draggable = true;
+            } else {
+                card.draggable = false;
+            }
         });
 
         rulesList.addEventListener('dragover', (e) => {

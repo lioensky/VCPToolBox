@@ -13,5 +13,32 @@
     },
     "webSocketPush": {
         "enabled": false
+    },
+    "configSchema": {
+        "RerankUrl": {
+            "type": "string",
+            "description": "Rerank服务的URL",
+            "default": ""
+        },
+        "RerankApi": {
+            "type": "string",
+            "description": "Rerank服务的API密钥",
+            "default": ""
+        },
+        "RerankModel": {
+            "type": "string",
+            "description": "Rerank使用的模型",
+            "default": ""
+        },
+        "RerankMultiplier": {
+            "type": "number",
+            "description": "Rerank前K值的放大倍率",
+            "default": 2.0
+        },
+        "RerankMaxTokensPerBatch": {
+            "type": "number",
+            "description": "单次Rerank请求的最大Token数",
+            "default": 30000
+        }
     }
 }
