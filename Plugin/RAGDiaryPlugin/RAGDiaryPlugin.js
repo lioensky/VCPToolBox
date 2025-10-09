@@ -4,6 +4,8 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto'); // <--- 引入加密模块
+const dotenv = require('dotenv');
+const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
 const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
 
@@ -272,6 +274,7 @@ class RAGDiaryPlugin {
         this.name = 'RAGDiaryPlugin';
         this.vectorDBManager = null;
         this.ragConfig = {};
+        this.rerankConfig = {}; // <--- 新增：用于存储Rerank配置
         this.enhancedVectorCache = {}; // <--- 新增：用于存储增强向量的缓存
         this.timeParser = new TimeExpressionParser('zh-CN'); // 实例化时间解析器
         this.semanticGroups = new SemanticGroupManager(this); // 实例化语义组管理器
@@ -279,6 +282,23 @@ class RAGDiaryPlugin {
     }
 
     async loadConfig() {
+        // --- 加载插件独立的 .env 文件 ---
+        const envPath = path.join(__dirname, 'config.env');
+        dotenv.config({ path: envPath });
+
+        // --- 加载 Rerank 配置 ---
+        this.rerankConfig = {
+            url: process.env.RerankUrl || '',
+            apiKey: process.env.RerankApi || '',
+            model: process.env.RerankModel || '',
+            multiplier: parseFloat(process.env.RerankMultiplier) || 2.0,
+            maxTokens: parseInt(process.env.RerankMaxTokensPerBatch) || 30000
+        };
+        // 移除启动时检查，改为在调用时实时检查
+        if (this.rerankConfig.url && this.rerankConfig.apiKey && this.rerankConfig.model) {
+            console.log('[RAGDiaryPlugin] Rerank feature is configured.');
+        }
+
         const configPath = path.join(__dirname, 'rag_tags.json');
         const cachePath = path.join(__dirname, 'vector_cache.json');
 
@@ -505,6 +525,18 @@ class RAGDiaryPlugin {
         return finalK;
     }
 
+    _stripHtml(html) {
+        if (!html || typeof html !== 'string') {
+            return html;
+        }
+        // 1. 使用 cheerio 加载 HTML 并提取纯文本
+        const $ = cheerio.load(html);
+        const plainText = $.text();
+        
+        // 2. 将连续的换行符（两个或更多）替换为单个换行符，并移除首尾空白，以减少噪音
+        return plainText.replace(/\n{2,}/g, '\n').trim();
+    }
+
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         // V3.0: 支持多system消息处理
@@ -523,8 +555,20 @@ class RAGDiaryPlugin {
             return messages;
         }
 
-        // 2. 准备共享资源 (只计算一次)
-        const lastUserMessageIndex = messages.findLastIndex(m => m.role === 'user');
+        // 2. 准备共享资源 (V3.3: 精准上下文提取)
+        // 始终寻找最后一个用户消息和最后一个AI消息，以避免注入污染。
+        // V3.4: 跳过特殊的 "系统邀请指令" user 消息
+        const lastUserMessageIndex = messages.findLastIndex(m => {
+            if (m.role !== 'user') {
+                return false;
+            }
+            const content = typeof m.content === 'string'
+                ? m.content
+                : (Array.isArray(m.content) ? m.content.find(p => p.type === 'text')?.text : '') || '';
+            return !content.startsWith('[系统邀请指令:]') && !content.startsWith('[系统提示:]');
+        });
+        const lastAiMessageIndex = messages.findLastIndex(m => m.role === 'assistant');
+
         let userContent = '';
         let aiContent = null;
 
@@ -533,17 +577,28 @@ class RAGDiaryPlugin {
             userContent = typeof lastUserMessage.content === 'string'
                 ? lastUserMessage.content
                 : (Array.isArray(lastUserMessage.content) ? lastUserMessage.content.find(p => p.type === 'text')?.text : '') || '';
+        }
 
-            for (let i = lastUserMessageIndex - 1; i >= 0; i--) {
-                if (messages[i].role === 'assistant') {
-                    const msg = messages[i];
-                    if (typeof msg.content === 'string') {
-                        aiContent = msg.content;
-                    } else if (Array.isArray(msg.content)) {
-                        aiContent = msg.content.find(p => p.type === 'text')?.text || null;
-                    }
-                    break;
-                }
+        if (lastAiMessageIndex > -1) {
+            const lastAiMessage = messages[lastAiMessageIndex];
+            aiContent = typeof lastAiMessage.content === 'string'
+                ? lastAiMessage.content
+                : (Array.isArray(lastAiMessage.content) ? lastAiMessage.content.find(p => p.type === 'text')?.text : '') || '';
+        }
+
+        // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签
+        if (userContent) {
+            const originalUserContent = userContent;
+            userContent = this._stripHtml(userContent);
+            if (originalUserContent.length !== userContent.length) {
+                console.log('[RAGDiaryPlugin] User content was sanitized from HTML.');
+            }
+        }
+        if (aiContent) {
+            const originalAiContent = aiContent;
+            aiContent = this._stripHtml(aiContent);
+            if (originalAiContent.length !== aiContent.length) {
+                console.log('[RAGDiaryPlugin] AI content was sanitized from HTML.');
             }
         }
 
@@ -571,7 +626,8 @@ class RAGDiaryPlugin {
         }
         
         const dynamicK = this._calculateDynamicK(userContent, aiContent);
-        const timeRanges = this.timeParser.parse(userContent);
+        const combinedTextForTimeParsing = [userContent, aiContent].filter(Boolean).join('\n');
+        const timeRanges = this.timeParser.parse(combinedTextForTimeParsing);
 
         // 3. 循环处理每个识别到的 system 消息
         const newMessages = JSON.parse(JSON.stringify(messages));
@@ -597,6 +653,7 @@ class RAGDiaryPlugin {
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
     async _processSingleSystemMessage(content, queryVector, userContent, dynamicK, timeRanges) {
         let processedContent = content;
+        const processedDiaries = new Set(); // 用于跟踪已处理的日记本，防止循环引用
 
         const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
         const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
@@ -606,15 +663,29 @@ class RAGDiaryPlugin {
         for (const match of ragDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in [[...]]. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+
             const modifiers = match[2] || '';
             
             const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
             const kMultiplier = kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
             const useTime = modifiers.includes('::Time');
             const useGroup = modifiers.includes('::Group');
+            const useRerank = modifiers.includes('::Rerank');
 
             const displayName = dbName + '日记本';
+            // The final number of documents we want is based on the original K
             const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
+            // For reranking, we fetch more documents initially
+            const kForSearch = useRerank
+                ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier))
+                : finalK;
+
             let retrievedContent = '';
             let finalQueryVector = queryVector;
             let activatedGroups = null;
@@ -628,18 +699,47 @@ class RAGDiaryPlugin {
             }
 
             if (useTime && timeRanges && timeRanges.length > 0) {
+                // --- Time-aware path ---
+                // 1. Perform RAG search ONCE.
+                let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch);
+
+                // 2. Apply reranking if specified.
+                if (useRerank) {
+                    ragResults = await this._rerankDocuments(userContent, ragResults, finalK);
+                }
+
+                // 3. Collect all unique entries, starting with the (potentially reranked) RAG results.
                 const allEntries = new Map();
+                ragResults.forEach(entry => {
+                    if (!allEntries.has(entry.text.trim())) {
+                        // Add source marker for formatting
+                        allEntries.set(entry.text.trim(), { ...entry, source: 'rag' });
+                    }
+                });
+
+                // 4. Loop through time ranges to gather time-specific documents.
                 for (const timeRange of timeRanges) {
-                    const resultsData = await this.processWithTimeFilter(dbName, finalQueryVector, timeRange, finalK);
-                    resultsData.results.forEach(entry => {
+                    const timeResults = await this.getTimeRangeDiaries(dbName, timeRange);
+                    timeResults.forEach(entry => {
                         if (!allEntries.has(entry.text.trim())) {
+                            // getTimeRangeDiaries already adds the source marker
                             allEntries.set(entry.text.trim(), entry);
                         }
                     });
                 }
+
+                // 5. Format the combined results.
                 retrievedContent = this.formatCombinedTimeAwareResults(Array.from(allEntries.values()), timeRanges, dbName);
+
             } else {
-                const searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, finalK);
+                // --- Standard path (no time filter) ---
+                let searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch);
+                
+                // Apply reranking if specified
+                if (useRerank) {
+                    searchResults = await this._rerankDocuments(userContent, searchResults, finalK);
+                }
+
                 if (useGroup) {
                     retrievedContent = this.formatGroupRAGResults(searchResults, displayName, activatedGroups);
                 } else {
@@ -654,6 +754,13 @@ class RAGDiaryPlugin {
         for (const match of fullTextDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in <<...>>. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+
             const diaryConfig = this.ragConfig[dbName] || {};
             const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
 
@@ -685,9 +792,17 @@ class RAGDiaryPlugin {
         for (const match of hybridDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in 《《...》》. Skipping.`);
+                processedContent = processedContent.replace(placeholder, `[检测到循环引用，已跳过“${dbName}日记本”的解析]`);
+                continue;
+            }
+            processedDiaries.add(dbName); // 标记为已处理
+            
             const modifiers = match[2] || '';
             const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
             const kMultiplier = kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
+            const useRerank = modifiers.includes('::Rerank');
 
             const diaryConfig = this.ragConfig[dbName] || {};
             const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
@@ -705,7 +820,16 @@ class RAGDiaryPlugin {
 
             if (finalSimilarity >= localThreshold) {
                 const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
-                const searchResults = await this.vectorDBManager.search(dbName, queryVector, finalK);
+                const kForSearch = useRerank
+                    ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier))
+                    : finalK;
+
+                let searchResults = await this.vectorDBManager.search(dbName, queryVector, kForSearch);
+
+                if (useRerank) {
+                    searchResults = await this._rerankDocuments(userContent, searchResults, finalK);
+                }
+
                 const retrievedContent = this.formatStandardResults(searchResults, dbName + '日记本');
                 processedContent = processedContent.replace(placeholder, retrievedContent);
             } else {
@@ -940,6 +1064,100 @@ class RAGDiaryPlugin {
         return content;
     }
 
+    // Helper for token estimation
+    _estimateTokens(text) {
+        if (!text) return 0;
+        // A simple heuristic: average 2 chars per token for mixed language.
+        // This is a conservative estimate to avoid hitting API limits.
+        return Math.ceil(text.length / 2);
+    }
+
+    async _rerankDocuments(query, documents, originalK) {
+        // JIT (Just-In-Time) check for configuration instead of relying on a startup flag
+        if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
+            console.warn('[RAGDiaryPlugin] Rerank called, but is not configured. Skipping.');
+            return documents.slice(0, originalK);
+        }
+        console.log(`[RAGDiaryPlugin] Starting rerank process for ${documents.length} documents.`);
+
+        const rerankUrl = new URL('v1/rerank', this.rerankConfig.url).toString();
+        const headers = {
+            'Authorization': `Bearer ${this.rerankConfig.apiKey}`,
+            'Content-Type': 'application/json',
+        };
+        const maxTokens = this.rerankConfig.maxTokens;
+        const queryTokens = this._estimateTokens(query);
+
+        let batches = [];
+        let currentBatch = [];
+        let currentTokens = queryTokens;
+
+        for (const doc of documents) {
+            const docTokens = this._estimateTokens(doc.text);
+            if (currentTokens + docTokens > maxTokens && currentBatch.length > 0) {
+                // Current batch is full, push it and start a new one
+                batches.push(currentBatch);
+                currentBatch = [doc];
+                currentTokens = queryTokens + docTokens;
+            } else {
+                // Add to current batch
+                currentBatch.push(doc);
+                currentTokens += docTokens;
+            }
+        }
+        // Add the last batch if it's not empty
+        if (currentBatch.length > 0) {
+            batches.push(currentBatch);
+        }
+
+        console.log(`[RAGDiaryPlugin] Split documents into ${batches.length} batches for reranking.`);
+
+        let allRerankedDocs = [];
+        for (let i = 0; i < batches.length; i++) {
+            const batch = batches[i];
+            const docTexts = batch.map(d => d.text);
+            
+            try {
+                const body = {
+                    model: this.rerankConfig.model,
+                    query: query,
+                    documents: docTexts,
+                    top_n: docTexts.length // Rerank all documents within the batch
+                };
+
+                console.log(`[RAGDiaryPlugin] Reranking batch ${i + 1}/${batches.length} with ${docTexts.length} documents.`);
+                const response = await axios.post(rerankUrl, body, { headers });
+
+                if (response.data && Array.isArray(response.data.results)) {
+                    const rerankedResults = response.data.results;
+                    // The rerankedResults are sorted by relevance. We map them back to our original
+                    // document objects using the returned index.
+                    const orderedBatch = rerankedResults
+                        .map(result => batch[result.index])
+                        .filter(Boolean); // Filter out any potential misses (e.g., if an index is invalid)
+                    
+                    allRerankedDocs.push(...orderedBatch);
+                } else {
+                    console.warn(`[RAGDiaryPlugin] Rerank for batch ${i + 1} returned invalid data. Appending original batch documents.`);
+                    allRerankedDocs.push(...batch); // Fallback: use original order for this batch
+                }
+            } catch (error) {
+                console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${i + 1}. Appending original batch documents.`);
+                if (error.response) {
+                    console.error(`[RAGDiaryPlugin] Rerank API Error - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`);
+                } else {
+                    console.error('[RAGDiaryPlugin] Rerank API Error - Message:', error.message);
+                }
+                allRerankedDocs.push(...batch); // Fallback: use original order for this batch
+            }
+        }
+
+        // Finally, truncate the combined, reranked list to the original K value.
+        const finalDocs = allRerankedDocs.slice(0, originalK);
+        console.log(`[RAGDiaryPlugin] Rerank process finished. Returning ${finalDocs.length} documents.`);
+        return finalDocs;
+    }
+    
     async getSingleEmbedding(text) {
         if (!text) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');

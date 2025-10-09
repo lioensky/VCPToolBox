@@ -32,11 +32,12 @@ def extract_bvid(video_input: str) -> str | None:
         return match.group(1)
     return None
 
-def get_subtitle_json_string(bvid: str, user_cookie: str | None) -> str:
+def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None) -> str:
     """
-    Fetches the first available subtitle JSON for a given BVID.
+    Fetches subtitle JSON for a given BVID, allowing language selection.
     Returns the subtitle content as a JSON string or '{"body":[]}' if none found or error.
     Uses user_cookie if provided.
+    Selects subtitle based on lang_code, with 'ai-zh' as a preferred default.
     """
     logging.info(f"Attempting to fetch subtitles for BVID: {bvid}")
     # --- Headers ---
@@ -135,15 +136,32 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None) -> str:
         if wbi_data.get('code') == 0:
             subtitles = wbi_data.get('data', {}).get('subtitle', {}).get('subtitles', [])
             if subtitles:
-                first_subtitle = subtitles[0]
-                subtitle_url = first_subtitle.get('subtitle_url')
-                lan_doc = first_subtitle.get('lan_doc', 'Unknown Language')
+                # --- Language Selection Logic ---
+                subtitle_map = {sub['lan']: sub for sub in subtitles if 'lan' in sub}
+                logging.info(f"Available subtitle languages: {list(subtitle_map.keys())}")
+
+                selected_subtitle = None
+                # 1. Try user-specified language
+                if lang_code and lang_code in subtitle_map:
+                    selected_subtitle = subtitle_map[lang_code]
+                    logging.info(f"Found user-specified language subtitle: {lang_code}")
+                # 2. If not found/specified, try Chinese as default
+                elif 'ai-zh' in subtitle_map:
+                    selected_subtitle = subtitle_map['ai-zh']
+                    logging.info("User language not found or specified. Defaulting to Chinese ('ai-zh').")
+                # 3. Fallback to the first available subtitle
+                else:
+                    selected_subtitle = subtitles[0]
+                    logging.warning("Neither user-specified language nor Chinese found. Falling back to first available.")
+
+                subtitle_url = selected_subtitle.get('subtitle_url')
+                lan_doc = selected_subtitle.get('lan_doc', 'Unknown Language')
                 if subtitle_url:
                     if subtitle_url.startswith('//'):
                         subtitle_url = "https:" + subtitle_url
-                    logging.info(f"Step 3: Found subtitle URL ({lan_doc}): {subtitle_url}")
+                    logging.info(f"Step 3: Selected subtitle URL ({lan_doc}): {subtitle_url}")
                 else:
-                    logging.warning("Step 3: First subtitle entry found but is missing 'subtitle_url'.")
+                    logging.warning("Step 3: Selected subtitle entry found but is missing 'subtitle_url'.")
             else:
                 logging.warning("Step 3: WBI API successful but no subtitles listed in response.")
         else:
@@ -189,15 +207,20 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None) -> str:
 
 # --- Main execution for VCP Synchronous Plugin ---
 
-def process_bilibili_url(video_input: str) -> str:
+def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
     """
     Processes a Bilibili URL or BV ID to fetch and return subtitle text.
     Reads cookie from BILIBILI_COOKIE environment variable.
+    Accepts a language code for subtitle selection.
     Returns plain text subtitle content or an empty string on failure.
     """
     user_cookie = os.environ.get('BILIBILI_COOKIE')
+
     if user_cookie:
         logging.info("Using cookie from BILIBILI_COOKIE environment variable.")
+    if lang_code:
+        logging.info(f"Subtitle language preference passed as argument: {lang_code}")
+
 
     bvid = extract_bvid(video_input)
     if not bvid:
@@ -205,7 +228,7 @@ def process_bilibili_url(video_input: str) -> str:
         return "" # Return empty string on invalid input
 
     try:
-        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie)
+        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie, lang_code)
 
         # Process the subtitle JSON string to extract plain text
         try:
@@ -243,12 +266,13 @@ if __name__ == "__main__":
 
         input_data = json.loads(input_data_raw)
         url = input_data.get('url')
+        lang = input_data.get('lang') # Get lang from input
 
         if not url:
             raise ValueError("Missing required argument: url")
 
-        # Call the new processing function
-        result_text = process_bilibili_url(url)
+        # Call the new processing function with the lang parameter
+        result_text = process_bilibili_url(url, lang_code=lang)
 
         output = {"status": "success", "result": result_text}
 

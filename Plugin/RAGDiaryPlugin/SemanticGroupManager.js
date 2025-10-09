@@ -26,29 +26,119 @@ class SemanticGroupManager {
     async synchronizeFromEditFile() {
         try {
             const editContent = await fs.readFile(this.editFilePath, 'utf-8');
+            const editData = JSON.parse(editContent);
             console.log('[SemanticGroup] 发现 .edit.json 文件，开始同步...');
 
-            let mainContent = '';
+            let mainData = null;
             try {
-                mainContent = await fs.readFile(this.groupsFilePath, 'utf-8');
+                const mainContent = await fs.readFile(this.groupsFilePath, 'utf-8');
+                mainData = JSON.parse(mainContent);
             } catch (mainError) {
                 if (mainError.code !== 'ENOENT') throw mainError;
-                // 主文件不存在，直接同步
+                // 主文件不存在，将直接使用 editData 创建
             }
 
-            if (editContent.trim() !== mainContent.trim()) {
-                console.log('[SemanticGroup] .edit.json 与主文件内容不同，正在执行覆盖...');
-                await fs.writeFile(this.groupsFilePath, editContent, 'utf-8');
+            // 比较核心数据是否发生变化
+            const areDifferent = this._areCoreGroupDataDifferent(editData, mainData);
+
+            if (areDifferent) {
+                console.log('[SemanticGroup] .edit.json 与主文件核心内容不同，正在执行智能合并...');
+                
+                // 智能合并：使用 edit.json 的词元，保留 main.json 的 vector_id 等元数据
+                const newMainData = this._mergeGroupData(editData, mainData);
+
+                await fs.writeFile(this.groupsFilePath, JSON.stringify(newMainData, null, 2), 'utf-8');
                 console.log('[SemanticGroup] 同步完成。');
             } else {
-                console.log('[SemanticGroup] .edit.json 与主文件内容相同，无需同步。');
+                console.log('[SemanticGroup] .edit.json 与主文件核心内容相同，无需同步。');
             }
         } catch (error) {
-            if (error.code !== 'ENOENT') {
-                console.error('[SemanticGroup] 同步 .edit.json 文件时出错:', error);
+            if (error.code === 'ENOENT') {
+                // .edit.json 不存在，什么都不做
+                return;
             }
-            // 如果 .edit.json 不存在，则什么都不做
+            if (error instanceof SyntaxError) {
+                 console.error('[SemanticGroup] 解析 .edit.json 文件时出错，请检查JSON格式:', error);
+            } else {
+                 console.error('[SemanticGroup] 同步 .edit.json 文件时出错:', error);
+            }
         }
+    }
+
+    // 新增辅助函数：比较核心数据
+    _areCoreGroupDataDifferent(editData, mainData) {
+        if (!mainData) return true; // 主文件不存在，肯定不同
+
+        // 比较 config
+        if (JSON.stringify(editData.config || {}) !== JSON.stringify(mainData.config || {})) {
+            return true;
+        }
+
+        const editGroups = editData.groups || {};
+        const mainGroups = mainData.groups || {};
+
+        // 检查组名数量是否一致
+        if (Object.keys(editGroups).length !== Object.keys(mainGroups).length) {
+            return true;
+        }
+
+        // 逐个比较组的核心词元
+        for (const groupName in editGroups) {
+            if (!mainGroups[groupName]) return true; // 组不存在
+
+            const editGroup = editGroups[groupName];
+            const mainGroup = mainGroups[groupName];
+
+            // 为了稳定比较，对词元数组排序
+            const editWords = [...(editGroup.words || [])].sort();
+            const mainWords = [...(mainGroup.words || [])].sort();
+            if (JSON.stringify(editWords) !== JSON.stringify(mainWords)) return true;
+
+            const editAutoLearned = [...(editGroup.auto_learned || [])].sort();
+            const mainAutoLearned = [...(mainGroup.auto_learned || [])].sort();
+            if (JSON.stringify(editAutoLearned) !== JSON.stringify(mainAutoLearned)) return true;
+            
+            // 比较权重
+            if ((editGroup.weight || 1.0) !== (mainGroup.weight || 1.0)) return true;
+        }
+
+        return false;
+    }
+
+    // 新增辅助函数：合并数据
+    _mergeGroupData(editData, mainData) {
+        if (!mainData) {
+            // 如果主数据不存在，直接返回编辑数据（它还没有元数据）
+            return editData;
+        }
+
+        const newMainData = JSON.parse(JSON.stringify(mainData)); // 深拷贝主数据作为基础
+        
+        // 1. 更新 config
+        newMainData.config = editData.config || {};
+
+        const editGroups = editData.groups || {};
+        const newMainGroups = {};
+
+        // 2. 遍历 edit.json 中的组，这是最新的权威来源
+        for (const groupName in editGroups) {
+            const editGroup = editGroups[groupName];
+            const existingGroup = newMainData.groups[groupName];
+
+            if (existingGroup) {
+                // 组存在，更新词元和权重，保留元数据
+                existingGroup.words = editGroup.words || [];
+                existingGroup.auto_learned = editGroup.auto_learned || [];
+                existingGroup.weight = editGroup.weight || 1.0;
+                newMainGroups[groupName] = existingGroup;
+            } else {
+                // 组是新增的，直接添加
+                newMainGroups[groupName] = editGroup;
+            }
+        }
+        
+        newMainData.groups = newMainGroups;
+        return newMainData;
     }
 
     async loadGroups() {
@@ -220,42 +310,86 @@ class SemanticGroupManager {
     }
 
     // ============ 预计算组向量 ============
+    _getWordsHash(words) {
+        if (!words || words.length === 0) {
+            return null;
+        }
+        // Sort to ensure order doesn't matter, and join with a stable separator
+        const sortedWords = [...words].sort();
+        return crypto.createHash('sha256').update(JSON.stringify(sortedWords)).digest('hex');
+    }
+
     async precomputeGroupVectors() {
-        console.log('[SemanticGroup] 开始预计算所有组向量...');
+        console.log('[SemanticGroup] 开始检查并预计算所有组向量...');
         let changesMade = false;
 
         for (const [groupName, groupData] of Object.entries(this.groups)) {
-            // 如果向量已在缓存中，则跳过
-            if (this.groupVectorCache.has(groupName)) {
-                continue;
-            }
-
             const autoLearnedWords = groupData.auto_learned || [];
             const allWords = [...groupData.words, ...autoLearnedWords];
             
-            if (allWords.length === 0) continue; // 跳过空组
+            if (allWords.length === 0) {
+                if (groupData.vector_id) {
+                    console.log(`[SemanticGroup] 组 "${groupName}" 词元为空，正在清理旧向量...`);
+                    try {
+                        const vectorPath = path.join(this.vectorsDirPath, `${groupData.vector_id}.json`);
+                        await fs.unlink(vectorPath);
+                        console.log(`[SemanticGroup] 已删除向量文件: ${groupData.vector_id}.json`);
+                    } catch (e) {
+                        if (e.code !== 'ENOENT') console.error(`[SemanticGroup] 删除旧向量文件失败: ${e.message}`);
+                    }
+                    delete this.groups[groupName].vector_id;
+                    delete this.groups[groupName].words_hash;
+                    this.groupVectorCache.delete(groupName);
+                    changesMade = true;
+                }
+                continue;
+            }
 
-            const groupDescription = `${groupName}相关主题：${allWords.join(', ')}`;
-            
-            const vector = await this.ragPlugin.getSingleEmbedding(groupDescription);
-            if (vector) {
-                const vectorId = groupData.vector_id || crypto.randomUUID();
-                const vectorPath = path.join(this.vectorsDirPath, `${vectorId}.json`);
-                
-                await fs.writeFile(vectorPath, JSON.stringify(vector), 'utf-8');
-                
-                this.groupVectorCache.set(groupName, vector);
-                this.groups[groupName].vector_id = vectorId; // 确保ID被设置
-                delete this.groups[groupName].vector; // 清理内存中的向量数据
-                changesMade = true;
-                console.log(`[SemanticGroup] 已成功计算并保存 "${groupName}" 的组向量 (ID: ${vectorId})`);
+            const currentWordsHash = this._getWordsHash(allWords);
+            const vectorExists = this.groupVectorCache.has(groupName);
+
+            if (currentWordsHash !== groupData.words_hash || !vectorExists) {
+                if (!vectorExists) {
+                    console.log(`[SemanticGroup] 组 "${groupName}" 的向量不存在，开始计算...`);
+                } else {
+                    console.log(`[SemanticGroup] 组 "${groupName}" 的词元已改变，重新计算向量...`);
+                }
+
+                const groupDescription = `${groupName}相关主题：${allWords.join(', ')}`;
+                const vector = await this.ragPlugin.getSingleEmbedding(groupDescription);
+
+                if (vector) {
+                    // If a vector existed before (even with a different ID), we should clean it up.
+                    // This case is mostly for when words change.
+                    if (groupData.vector_id) {
+                         try {
+                            const oldVectorPath = path.join(this.vectorsDirPath, `${groupData.vector_id}.json`);
+                            await fs.unlink(oldVectorPath);
+                         } catch (e) {
+                            if (e.code !== 'ENOENT') console.error(`[SemanticGroup] 删除旧向量文件失败: ${e.message}`);
+                         }
+                    }
+
+                    const vectorId = crypto.randomUUID();
+                    const vectorPath = path.join(this.vectorsDirPath, `${vectorId}.json`);
+                    await fs.writeFile(vectorPath, JSON.stringify(vector), 'utf-8');
+                    
+                    this.groupVectorCache.set(groupName, vector);
+                    this.groups[groupName].vector_id = vectorId;
+                    this.groups[groupName].words_hash = currentWordsHash;
+                    delete this.groups[groupName].vector;
+                    changesMade = true;
+                    console.log(`[SemanticGroup] 已成功计算并保存 "${groupName}" 的新组向量 (ID: ${vectorId})`);
+                }
             }
         }
         
-        // 只要有任何向量被计算，就保存一次主配置文件
-        // 或者，如果这是由 updateGroupsData 调用的，我们也需要保存
-        // 为了简单起见，在计算后总是保存一次以捕获所有更改。
-        await this.saveGroups();
+        if (changesMade) {
+            console.log('[SemanticGroup] 检测到向量变更，正在保存主配置文件...');
+            await this.saveGroups();
+        } else {
+            console.log('[SemanticGroup] 所有组向量均是最新，无需更新。');
+        }
         return changesMade;
     }
 

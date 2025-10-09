@@ -27,12 +27,12 @@
     "MCPO_HOST": {
       "type": "string",
       "description": "MCPO 服务器完整地址（如果指定则优先使用）",
-      "default": "http://0.0.0.0:8000"
+      "default": "http://0.0.0.0:9000"
     },
     "MCPO_PORT": {
       "type": "integer",
       "description": "MCPO 服务器端口号（与MCPO插件共享配置）",
-      "default": 8000
+      "default": 9000
     },
     "MCPO_API_KEY": {
       "type": "string", 

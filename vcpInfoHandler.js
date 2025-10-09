@@ -114,7 +114,11 @@ function streamVcpInfo(responseStream, modelName, toolName, status, pluginResult
         try {
             responseStream.write(`data: ${JSON.stringify(ssePayload)}\n\n`);
         } catch (error) {
-            console.error('[vcpInfoHandler] 写入VCP流信息时出错:', error);
+            // Silently ignore write errors when stream is closed (likely from abort)
+            // Only log if it's not a simple "write after end" error
+            if (!error.message.includes('write after end') && !error.message.includes('Cannot write after end')) {
+                console.error('[vcpInfoHandler] 写入VCP流信息时出错:', error.message);
+            }
         }
     }
     

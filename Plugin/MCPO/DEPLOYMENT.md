@@ -69,7 +69,7 @@
 
 ```env
 # MCPO 服务器设置
-MCPO_PORT=8000
+MCPO_PORT=9000
 MCPO_API_KEY=your-secret-key
 MCPO_AUTO_START=true
 
@@ -116,7 +116,7 @@ node server.js
 
 | 变量名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `MCPO_PORT` | integer | 8000 | MCPO 服务器端口 |
+| `MCPO_PORT` | integer | 9000 | MCPO 服务器端口 |
 | `MCPO_API_KEY` | string | vcp-mcpo-secret | API 访问密钥 |
 | `MCPO_AUTO_START` | boolean | true | 自动启动服务器 |
 | `PYTHON_EXECUTABLE` | string | python | Python 解释器路径 |
@@ -169,7 +169,7 @@ node server.js
 1. 修改 `config.env` 中的 `MCPO_PORT`
 2. 或终止占用端口的进程：
    ```bash
-   lsof -ti:8000 | xargs kill
+   lsof -ti:9000 | xargs kill
    ```
 
 ### 问题 2: MCP 服务器无法启动
@@ -180,7 +180,7 @@ node server.js
 2. 验证 `mcp-config.json` 配置语法
 3. 查看 MCPO 服务器日志：
    ```bash
-   curl http://localhost:8000/docs
+   curl http://localhost:9000/docs
    ```
 
 ### 问题 3: 权限错误

@@ -870,7 +870,7 @@ VarToolList="文生图工具{{VCPFluxGen}} 计算器工具{{VCPSciCalculator}},�
 ### 然后，在实际传递给 AI 模型的系统提示词中组合这些 `Tar*` 模块,以下是一个标准的系统提示词示例用于测试。
 
 ```plaintext
-{{Nova}}
+{{Nova}}{{VCPTavern::dailychat}}{{ShowBase64}}
 ```
 
 ### 这种模块化、基于变量的系统提示词工程具有以下优势
@@ -926,4 +926,5 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 我们相信， VCP 将为 AI 应用的开发带来前所未有的灵活性和可能性。欢迎一切形式的贡献、反馈与交流，让我们共同探索 AI 的未来！
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lioensky/VCPToolBox)
+
 

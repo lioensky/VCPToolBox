@@ -122,41 +122,27 @@ class ChatCompletionHandler {
                 }
             }
 
-            let agentExpandedMessages = await Promise.all(tavernProcessedMessages.map(async (msg) => {
-                const newMessage = JSON.parse(JSON.stringify(msg));
-                if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await messageProcessor.replaceAgentVariables(newMessage.content, originalBody.model, msg.role);
-                } else if (Array.isArray(newMessage.content)) {
-                    newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
-                        if (part.type === 'text' && typeof part.text === 'string') {
-                            const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await messageProcessor.replaceAgentVariables(newPart.text, originalBody.model, msg.role);
-                            return newPart;
-                        }
-                        return part;
-                    }));
-                }
-                return newMessage;
-            }));
-            if (DEBUG_MODE) await writeDebugLog('LogAfterAgentExpansion', agentExpandedMessages);
-
-            let processedMessages = agentExpandedMessages;
-
-            // --- 优先处理日记本和表情包占位符 ---
-            const priorityContext = {
+            // --- 统一处理所有变量替换 ---
+            // 创建一个包含所有所需依赖的统一上下文
+            const processingContext = {
                 pluginManager,
                 cachedEmojiLists: this.config.cachedEmojiLists,
+                detectors: this.config.detectors,
+                superDetectors: this.config.superDetectors,
                 DEBUG_MODE
             };
-            processedMessages = await Promise.all(processedMessages.map(async (msg) => {
+
+            // 调用一个主函数来递归处理所有变量，确保Agent优先展开
+            let processedMessages = await Promise.all(tavernProcessedMessages.map(async (msg) => {
                 const newMessage = JSON.parse(JSON.stringify(msg));
                 if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await messageProcessor.replacePriorityVariables(newMessage.content, priorityContext, msg.role);
+                    // messageProcessor.js 中的 replaceAgentVariables 将被改造为处理所有变量的主函数
+                    newMessage.content = await messageProcessor.replaceAgentVariables(newMessage.content, originalBody.model, msg.role, processingContext);
                 } else if (Array.isArray(newMessage.content)) {
                     newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
                         if (part.type === 'text' && typeof part.text === 'string') {
                             const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await messageProcessor.replacePriorityVariables(newPart.text, priorityContext, msg.role);
+                            newPart.text = await messageProcessor.replaceAgentVariables(newPart.text, originalBody.model, msg.role, processingContext);
                             return newPart;
                         }
                         return part;
@@ -164,8 +150,7 @@ class ChatCompletionHandler {
                 }
                 return newMessage;
             }));
-            if (DEBUG_MODE) await writeDebugLog('LogAfterPriorityProcessing', processedMessages);
-
+            if (DEBUG_MODE) await writeDebugLog('LogAfterVariableProcessing', processedMessages);
 
             // --- 媒体处理器 ---
             if (shouldProcessMedia) {
@@ -187,7 +172,6 @@ class ChatCompletionHandler {
                 
                 if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
                 try {
-                    // 注意：这里应该使用 processedMessages，而不是 agentExpandedMessages
                     processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
                 } catch (pluginError) {
                     console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
@@ -195,31 +179,8 @@ class ChatCompletionHandler {
             }
             if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
 
-            const messageProcessorContext = {
-                pluginManager,
-                cachedEmojiLists: this.config.cachedEmojiLists,
-                detectors: this.config.detectors,
-                superDetectors: this.config.superDetectors,
-                DEBUG_MODE
-            };
-            let finalMessages = await Promise.all(processedMessages.map(async (msg) => {
-                const newMessage = JSON.parse(JSON.stringify(msg));
-                if (newMessage.content && typeof newMessage.content === 'string') {
-                    newMessage.content = await messageProcessor.replaceOtherVariables(newMessage.content, originalBody.model, msg.role, messageProcessorContext);
-                } else if (Array.isArray(newMessage.content)) {
-                    newMessage.content = await Promise.all(newMessage.content.map(async (part) => {
-                        if (part.type === 'text' && typeof part.text === 'string') {
-                            const newPart = JSON.parse(JSON.stringify(part));
-                            newPart.text = await messageProcessor.replaceOtherVariables(newPart.text, originalBody.model, msg.role, messageProcessorContext);
-                            return newPart;
-                        }
-                        return part;
-                    }));
-                }
-                return newMessage;
-            }));
-
-            originalBody.messages = finalMessages;
+            // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
+            originalBody.messages = processedMessages;
             await writeDebugLog('LogOutputAfterProcessing', originalBody);
 
             const isOriginalRequestStreaming = originalBody.stream === true;
@@ -269,8 +230,6 @@ class ChatCompletionHandler {
                         let collectedContentThisTurn = ""; // Collects textual content from delta
                         let rawResponseDataThisTurn = ""; // Collects all raw chunks for diary
 
-                        const isGpt5Mini = originalBody.model === 'GPT-5-mini';
-                        const thinkingRegex = /^Thinking\.\.\.( \(\d+s elapsed\))?$/;
                         let sseLineBuffer = ""; // Buffer for incomplete SSE lines
 
                         aiResponse.body.on('data', (chunk) => {
@@ -290,23 +249,7 @@ class ChatCompletionHandler {
                                         try {
                                             const parsedData = JSON.parse(jsonData);
                                             const content = parsedData.choices?.[0]?.delta?.content;
-                                            const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
-
-                                            // Core filtering logic for thinking content (GPT-5-mini)
-                                            if (isGpt5Mini && content && thinkingRegex.test(content)) {
-                                                if (DEBUG_MODE) {
-                                                    console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk: ${content}`);
-                                                }
-                                                continue; // Skip this line
-                                            }
-
-                                            // Filter out reasoning_content from all models (o1, etc.)
-                                            if (reasoningContent !== undefined) {
-                                                if (DEBUG_MODE) {
-                                                    console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk from model ${originalBody.model}: ${reasoningContent}`);
-                                                }
-                                                continue; // Skip this line entirely
-                                            }
+                                            // Filtering logic for thinking/reasoning content has been removed.
                                         } catch (e) {
                                             // Not a JSON we care about, pass through
                                         }
@@ -404,25 +347,9 @@ class ChatCompletionHandler {
                                             try {
                                                 const parsedData = JSON.parse(jsonData);
                                                 const content = parsedData.choices?.[0]?.delta?.content;
-                                                const reasoningContent = parsedData.choices?.[0]?.delta?.reasoning_content;
+                                                // Filtering logic for thinking/reasoning content has been removed.
 
-                                                // Apply the same filtering logic as in the main processing
-                                                if (isGpt5Mini && content && thinkingRegex.test(content)) {
-                                                    if (DEBUG_MODE) {
-                                                        console.log(`[GPT-5-mini-Compat] Intercepted thinking SSE chunk in finalize: ${content}`);
-                                                    }
-                                                    continue; // Skip this line
-                                                }
-
-                                                // Filter out reasoning_content from all models (o1, etc.)
-                                                if (reasoningContent !== undefined) {
-                                                    if (DEBUG_MODE) {
-                                                        console.log(`[Reasoning-Content-Filter] Intercepted reasoning_content chunk in finalize from model ${originalBody.model}: ${reasoningContent}`);
-                                                    }
-                                                    continue; // Skip this line entirely
-                                                }
-
-                                                // Only collect content if it passed all filters
+                                                // All content is now collected.
                                                 collectedContentThisTurn += content || '';
                                             } catch (e) { /* ignore */ }
                                         }
@@ -1006,7 +933,6 @@ class ChatCompletionHandler {
             }
 
         } catch (error) {
-            console.error('处理请求或转发时出错:', error.message, error.stack);
             if (error.name === 'AbortError') {
                 console.log(`[Abort] Request ${id} was aborted by the user.`);
                 if (!res.headersSent) {
@@ -1023,6 +949,8 @@ class ChatCompletionHandler {
                 }
                 return;
             }
+            // Only log full stack trace for non-abort errors
+            console.error('处理请求或转发时出错:', error.message, error.stack);
 
             if (!res.headersSent) {
                 res.status(500).json({ error: 'Internal Server Error', details: error.message });

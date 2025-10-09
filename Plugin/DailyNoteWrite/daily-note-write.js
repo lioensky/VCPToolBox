@@ -33,16 +33,20 @@ async function writeDiary(maidName, dateString, contentText) {
         throw new Error('Invalid input: Missing Maid, Date, or Content.');
     }
 
-    let folderName = maidName;
-    let actualMaidName = maidName;
+    // Trim maidName to prevent folder/file name issues with whitespace, especially on Windows.
+    const trimmedMaidName = maidName.trim();
+
+    let folderName = trimmedMaidName;
+    let actualMaidName = trimmedMaidName;
     // Use regex to find [tag]name format
-    const tagMatch = maidName.match(/^\[(.*?)\](.*)$/);
+    const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
 
     if (tagMatch) {
         folderName = tagMatch[1].trim(); // Use the captured tag as folder name
         actualMaidName = tagMatch[2].trim(); // Use the captured name as actual maid name
         debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
     } else {
+        // In the non-tag case, folderName and actualMaidName are already the trimmedMaidName
         debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
     }
 

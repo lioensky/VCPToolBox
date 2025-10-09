@@ -2,57 +2,49 @@
 const fs = require('fs').promises;
 const path = require('path');
 const lunarCalendar = require('chinese-lunar-calendar');
+const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
 
 const AGENT_DIR = path.join(__dirname, '..', 'Agent');
 const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
-async function replaceAgentVariables(text, model, role) {
+async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
     if (text == null) return '';
     let processedText = String(text);
 
-    if (role !== 'system') {
-        return processedText;
-    }
+    // 通用正则表达式，匹配所有 {{...}} 格式的占位符
+    const placeholderRegex = /\{\{([a-zA-Z0-9_:]+)\}\}/g;
+    const matches = [...processedText.matchAll(placeholderRegex)];
+    
+    // 提取所有潜在的别名（去除 "agent:" 前缀）
+    const allAliases = new Set(matches.map(match => match[1].replace(/^agent:/, '')));
 
-    const agentConfigs = {};
-    for (const envKey in process.env) {
-        if (envKey.startsWith('Agent')) {
-            const agentName = envKey.substring(5);
-            if (agentName) {
-                agentConfigs[agentName] = process.env[envKey];
-            }
-        }
-    }
-
-    for (const agentName in agentConfigs) {
-        const placeholder = `{{${agentName}}}`;
-        if (processedText.includes(placeholder)) {
-            const agentFileName = agentConfigs[agentName];
-            if (agentFileName.includes('..') || path.isAbsolute(agentFileName)) {
-                const errorMsg = `[Agent] Invalid file path detected: ${agentFileName}. Path traversal attempt blocked.`;
-                console.error(errorMsg);
-                processedText = processedText.replaceAll(placeholder, `[Error: Invalid Agent File Path]`);
+    for (const alias of allAliases) {
+        // 关键：使用 agentManager 来判断这是否是一个真正的Agent
+        if (agentManager.isAgent(alias)) {
+            if (processingStack.has(alias)) {
+                console.error(`[AgentManager] Circular dependency detected! Stack: [${[...processingStack].join(' -> ')} -> ${alias}]`);
+                const errorMessage = `[Error: Circular agent reference detected for '${alias}']`;
+                processedText = processedText.replaceAll(`{{${alias}}}`, errorMessage).replaceAll(`{{agent:${alias}}}`, errorMessage);
                 continue;
             }
-            const agentFilePath = path.join(AGENT_DIR, agentFileName);
-            try {
-                let agentFileContent = await fs.readFile(agentFilePath, 'utf-8');
-                let resolvedAgentContent = await replaceAgentVariables(agentFileContent, model, role);
-                processedText = processedText.replaceAll(placeholder, resolvedAgentContent);
-            } catch (error) {
-                let errorMsg;
-                if (error.code === 'ENOENT') {
-                    errorMsg = `[Agent ${agentName} (${agentFileName}) not found]`;
-                    console.warn(`[Agent] Agent file not found: ${agentFilePath} for placeholder ${placeholder}`);
-                } else {
-                    errorMsg = `[Error processing Agent ${agentName} (${agentFileName})]`;
-                    console.error(`[Agent] Error reading or processing agent file ${agentFilePath} for placeholder ${placeholder}:`, error.message);
-                }
-                processedText = processedText.replaceAll(placeholder, errorMsg);
-            }
+
+            const agentContent = await agentManager.getAgentPrompt(alias);
+            
+            processingStack.add(alias);
+            const resolvedAgentContent = await resolveAllVariables(agentContent, model, role, context, processingStack);
+            processingStack.delete(alias);
+
+            // 替换两种可能的Agent占位符格式
+            processedText = processedText.replaceAll(`{{${alias}}}`, resolvedAgentContent);
+            processedText = processedText.replaceAll(`{{agent:${alias}}}`, resolvedAgentContent);
         }
     }
+
+    // 在所有Agent都被递归展开后，处理剩余的非Agent占位符
+    processedText = await replacePriorityVariables(processedText, context, role);
+    processedText = await replaceOtherVariables(processedText, model, role, context);
+
     return processedText;
 }
 
@@ -303,7 +295,8 @@ async function replacePriorityVariables(text, context, role) {
 }
 
 module.exports = {
-    replaceAgentVariables,
+    // 导出主函数，并重命名旧函数以供内部调用
+    replaceAgentVariables: resolveAllVariables,
     replaceOtherVariables,
     replacePriorityVariables
 };
