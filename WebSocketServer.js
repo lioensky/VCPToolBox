@@ -48,11 +48,13 @@ function initialize(httpServer, config) {
         const pathname = parsedUrl.pathname;
 
         const vcpLogPathRegex = /^\/VCPlog\/VCP_Key=(.+)$/;
+        const vcpInfoPathRegex = /^\/vcpinfo\/VCP_Key=(.+)$/; // 新增：VCPInfo 通道
         const distServerPathRegex = /^\/vcp-distributed-server\/VCP_Key=(.+)$/;
         const chromeControlPathRegex = /^\/vcp-chrome-control\/VCP_Key=(.+)$/;
         const chromeObserverPathRegex = /^\/vcp-chrome-observer\/VCP_Key=(.+)$/;
 
         const vcpMatch = pathname.match(vcpLogPathRegex);
+        const vcpInfoMatch = pathname.match(vcpInfoPathRegex); // 新增匹配
         const distMatch = pathname.match(distServerPathRegex);
         const chromeControlMatch = pathname.match(chromeControlPathRegex);
         const chromeObserverMatch = pathname.match(chromeObserverPathRegex);
@@ -65,6 +67,10 @@ function initialize(httpServer, config) {
             clientType = 'VCPLog';
             connectionKey = vcpMatch[1];
             writeLog(`VCPLog client attempting to connect.`);
+        } else if (vcpInfoMatch && vcpInfoMatch[1]) { // 新增 VCPInfo 客户端处理
+            clientType = 'VCPInfo';
+            connectionKey = vcpInfoMatch[1];
+            writeLog(`VCPInfo client attempting to connect.`);
         } else if (distMatch && distMatch[1]) {
             clientType = 'DistributedServer';
             connectionKey = distMatch[1];
@@ -135,6 +141,8 @@ function initialize(httpServer, config) {
         // 发送连接确认消息给特定类型的客户端
         if (ws.clientType === 'VCPLog') {
             ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPLog.' }));
+        } else if (ws.clientType === 'VCPInfo') { // 新增 VCPInfo 确认消息
+            ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPInfo.' }));
         }
         // 可以根据 ws.clientType 或其他标识符发送不同的欢迎消息
 
@@ -262,6 +270,11 @@ function broadcast(data, targetClientType = null) {
         }
     });
     writeLog(`Broadcasted (Target: ${targetClientType || 'All'}): ${messageString.substring(0, 200)}...`);
+}
+
+// 新增：专门广播给 VCPInfo 客户端
+function broadcastVCPInfo(data) {
+    broadcast(data, 'VCPInfo');
 }
 
 // 发送给特定客户端
@@ -430,8 +443,10 @@ module.exports = {
     initialize,
     setPluginManager,
     broadcast,
+    broadcastVCPInfo, // 导出新的广播函数
     sendMessageToClient,
     executeDistributedTool,
     findServerByIp,
     shutdown
+
 };

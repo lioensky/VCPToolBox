@@ -69,6 +69,86 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         // We no longer need to set UserAgent manually, AnonymizeUAPlugin handles it.
         await page.setViewport({ width: 1280, height: 800 });
 
+        // 设置 Cookies（支持三种格式）
+        const urlObj = new URL(url);
+        let cookiesToSet = [];
+
+        // 辅助函数：解析原始 cookie 字符串
+        const parseRawCookies = (cookieString, targetUrl) => {
+            const cookiePairs = cookieString.split(';').map(pair => pair.trim()).filter(pair => pair);
+            return cookiePairs.map(pair => {
+                const equalIndex = pair.indexOf('=');
+                if (equalIndex === -1) return null;
+                
+                const name = pair.substring(0, equalIndex).trim();
+                const value = pair.substring(equalIndex + 1).trim();
+                
+                return {
+                    name,
+                    value,
+                    domain: `.${targetUrl.hostname}`,
+                    url: `${targetUrl.protocol}//${targetUrl.hostname}`
+                };
+            }).filter(cookie => cookie !== null);
+        };
+
+        // 方式1：多站点原始格式 (FETCH_COOKIES_RAW_MULTI) - 优先级最高
+        const fetchCookiesRawMulti = process.env.FETCH_COOKIES_RAW_MULTI;
+        if (fetchCookiesRawMulti && fetchCookiesRawMulti.trim()) {
+            try {
+                const cookiesMap = JSON.parse(fetchCookiesRawMulti);
+                // 遍历所有域名配置，找到匹配当前访问 URL 的
+                for (const [domain, cookieString] of Object.entries(cookiesMap)) {
+                    if (urlObj.hostname.includes(domain)) {
+                        cookiesToSet = parseRawCookies(cookieString, urlObj);
+                        break;
+                    }
+                }
+            } catch (multiCookieError) {
+                console.error('解析多站点 Cookies 失败:', multiCookieError.message);
+            }
+        }
+        
+        // 方式2：单站点原始格式 (FETCH_COOKIES_RAW)
+        if (cookiesToSet.length === 0) {
+            const fetchCookiesRaw = process.env.FETCH_COOKIES_RAW;
+            if (fetchCookiesRaw && fetchCookiesRaw.trim()) {
+                try {
+                    cookiesToSet = parseRawCookies(fetchCookiesRaw, urlObj);
+                } catch (rawCookieError) {
+                    console.error('解析原始 Cookies 失败:', rawCookieError.message);
+                }
+            }
+        }
+        
+        // 方式3：JSON 数组格式 (FETCH_COOKIES)
+        if (cookiesToSet.length === 0) {
+            const fetchCookies = process.env.FETCH_COOKIES;
+            if (fetchCookies && fetchCookies.trim()) {
+                try {
+                    const cookies = JSON.parse(fetchCookies);
+                    if (Array.isArray(cookies) && cookies.length > 0) {
+                        // 确保每个 cookie 都有 url 字段（Puppeteer 要求）
+                        cookiesToSet = cookies.map(cookie => ({
+                            ...cookie,
+                            url: cookie.url || `${urlObj.protocol}//${cookie.domain || urlObj.hostname}`
+                        }));
+                    }
+                } catch (cookieError) {
+                    console.error('解析 JSON Cookies 失败:', cookieError.message);
+                }
+            }
+        }
+
+        // 应用 cookies
+        if (cookiesToSet.length > 0) {
+            try {
+                await page.setCookie(...cookiesToSet);
+            } catch (setCookieError) {
+                console.error('设置 Cookies 失败:', setCookieError.message);
+            }
+        }
+
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
         if (mode === 'snapshot') {

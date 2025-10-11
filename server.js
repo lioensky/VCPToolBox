@@ -662,30 +662,17 @@ async function handleDiaryFromAIResponse(responseText) {
             const noteBlockContent = match[1].trim();
             if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
 
-            // Extract Maid, Date, Content from noteBlockContent
-            const lines = noteBlockContent.trim().split('\n');
-            let maidName = null;
-            let dateString = null;
-            let contentLines = [];
-            let isContentSection = false;
+            const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
+            const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
 
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (trimmedLine.startsWith('Maid:')) {
-                    maidName = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Date:')) {
-                    dateString = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Content:')) {
-                    isContentSection = true;
-                    const firstContentPart = trimmedLine.substring(8).trim();
-                    if (firstContentPart) contentLines.push(firstContentPart);
-                } else if (isContentSection) {
-                    contentLines.push(line);
-                }
+            const maidName = maidMatch ? maidMatch[1].trim() : null;
+            const dateString = dateMatch ? dateMatch[1].trim() : null;
+
+            let contentText = null;
+            const contentMatch = noteBlockContent.match(/^\s*Content:\s*([\s\S]*)$/m);
+            if (contentMatch) {
+                contentText = contentMatch[1].trim();
             }
-            const contentText = contentLines.join('\n').trim();
 
             if (maidName && dateString && contentText) {
                 const diaryPayload = { maidName, dateString, contentText };
@@ -828,26 +815,46 @@ async function initialize() {
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
 
-    // --- 新增：为 RAG 插件注入依赖 ---
-    try {
-        const ragPlugin = pluginManager.messagePreprocessors.get('RAGDiaryPlugin');
-        if (ragPlugin && typeof ragPlugin.setDependencies === 'function') {
-            ragPlugin.setDependencies({ vectorDBManager });
-        } else if (ragPlugin) {
-            console.warn('[Server] RAGDiaryPlugin 已加载，但未能找到 setDependencies 方法进行依赖注入。');
-        }
-    } catch (e) {
-        console.error('[Server] 注入 RAGDiaryPlugin 依赖时出错:', e);
-    }
-    // --- 依赖注入结束 ---
-
     pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');
+    // --- 关键顺序调整 ---
+    // 必须先将 WebSocketServer 实例注入到 PluginManager，
+    // 这样在 initializeServices 内部才能正确地为 VCPLog 等插件注入广播函数。
+    pluginManager.setWebSocketServer(webSocketServer);
+    
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
     console.log('服务类插件初始化完成，管理面板 API 路由已挂载。');
+
+    // --- 新增：通用依赖注入 ---
+    // 在所有服务都初始化完毕后，再执行依赖注入，确保 VCPLog 等服务已准备就绪。
+    try {
+        const dependencies = {
+            vectorDBManager,
+            vcpLogFunctions: pluginManager.getVCPLogFunctions()
+        };
+        if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
+        
+        // 注入到消息预处理器
+        for (const [name, module] of pluginManager.messagePreprocessors) {
+            if (typeof module.setDependencies === 'function') {
+                module.setDependencies(dependencies);
+                if (DEBUG_MODE) console.log(`  - Injected dependencies into message preprocessor: ${name}.`);
+            }
+        }
+        // 注入到服务模块 (排除VCPLog自身)
+        for (const [name, serviceData] of pluginManager.serviceModules) {
+            if (name !== 'VCPLog' && typeof serviceData.module.setDependencies === 'function') {
+                serviceData.module.setDependencies(dependencies);
+                if (DEBUG_MODE) console.log(`  - Injected dependencies into service: ${name}.`);
+            }
+        }
+    } catch (e) {
+        console.error('[Server] An error occurred during dependency injection:', e);
+    }
+    // --- 依赖注入结束 ---
 
     console.log('开始初始化静态插件...');
     await pluginManager.initializeStaticPlugins();
@@ -924,7 +931,7 @@ server = app.listen(port, async () => { // Assign to server variable
     webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
     
     // --- 注入依赖 ---
-    pluginManager.setWebSocketServer(webSocketServer);
+    // pluginManager.setWebSocketServer(webSocketServer); // 已移动到 initializeServices 之前
     webSocketServer.setPluginManager(pluginManager);
     
     // 初始化 FileFetcherServer

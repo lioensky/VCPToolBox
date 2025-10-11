@@ -8,6 +8,7 @@ const LOG_DIR_NAME = 'log';
 const LOG_FILE_NAME = 'VCPlog.txt';
 let logFilePath;
 let pluginConfigInstance; // 用于存储插件配置
+let broadcastVCPInfoFunction = null; // 新增：用于存储 WebSocketServer 的 broadcastVCPInfo 函数
 // let serverInstance; // 不再直接存储 Express app 实例，WebSocketServer 将处理
 
 // 引入 WebSocketServer 模块以调用其广播功能
@@ -85,6 +86,27 @@ function pushVcpLog(vcpData) {
     writeToLog(logPrefix + mainLogContent);
 }
 
+// 新增：暴露一个函数供 server.js 调用来推送 VCP Info 信息
+function pushVcpInfo(infoData) {
+    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+        console.log('[VCPLog] Received VCP Info data for broadcast:', infoData);
+    }
+    
+    if (broadcastVCPInfoFunction) {
+        broadcastVCPInfoFunction(infoData);
+    } else if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+        console.warn('[VCPLog] broadcastVCPInfoFunction is not set. Cannot broadcast VCP Info.');
+    }
+}
+
+// 新增：用于注入 WebSocketServer 的广播函数
+function setBroadcastFunctions(broadcastInfoFunc) {
+    broadcastVCPInfoFunction = broadcastInfoFunc;
+    if (pluginConfigInstance && pluginConfigInstance.DebugMode) {
+        console.log('[VCPLog] broadcastVCPInfoFunction has been set.');
+    }
+}
+
 
 function initialize(config) {
     pluginConfigInstance = config; // 存储配置
@@ -136,5 +158,7 @@ module.exports = {
     registerRoutes,
     // attachWebSocketServer, // 不再导出
     shutdown,
-    pushVcpLog // 暴露给 server.js 或其他插件调用
+    pushVcpLog, // 暴露给 server.js 或其他插件调用
+    pushVcpInfo, // 暴露新的 VCP Info 推送函数
+    setBroadcastFunctions // 暴露依赖注入函数
 };
