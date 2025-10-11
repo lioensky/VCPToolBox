@@ -186,6 +186,10 @@ class VectorDBManager {
         for (const dirent of diaryBooks) {
             if (dirent.isDirectory()) {
                 const diaryName = dirent.name;
+                if (diaryName.startsWith('已整理')) {
+                    console.log(`[VectorDB] Ignoring folder "${diaryName}" as it is marked as organized.`);
+                    continue;
+                }
                 const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
                 
                 const needsUpdate = await this.checkIfUpdateNeeded(diaryName, diaryPath);
@@ -368,6 +372,10 @@ class VectorDBManager {
         const handleFileChange = (filePath) => {
             console.log(`[VectorDB] File change detected: ${filePath}`);
             const diaryName = path.basename(path.dirname(filePath));
+            if (diaryName.startsWith('已整理')) {
+                console.log(`[VectorDB] Ignoring change in "${diaryName}" as it is marked as organized.`);
+                return;
+            }
             this.scheduleDiaryBookProcessing(diaryName);
         };
 

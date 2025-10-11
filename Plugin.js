@@ -462,6 +462,18 @@ class PluginManager {
     getServiceModule(name) {
         return this.serviceModules.get(name)?.module;
     }
+    
+    // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
+    getVCPLogFunctions() {
+        const vcpLogModule = this.getServiceModule('VCPLog');
+        if (vcpLogModule) {
+            return {
+                pushVcpLog: vcpLogModule.pushVcpLog,
+                pushVcpInfo: vcpLogModule.pushVcpInfo
+            };
+        }
+        return { pushVcpLog: () => {}, pushVcpInfo: () => {} };
+    }
 
     async processToolCall(toolName, toolArgs, requestIp = null) {
         const plugin = this.plugins.get(toolName);
@@ -869,6 +881,16 @@ class PluginManager {
                     // 统一挂载到带命名空间的前缀下
                     app.use(`/api/plugins/${name}`, pluginRouter);
                     if (this.debugMode) console.log(`[PluginManager] Mounted API routes for ${name} at /api/plugins/${name}`);
+                }
+                
+                // VCPLog 特殊处理：注入 WebSocketServer 的广播函数
+                if (name === 'VCPLog' && this.webSocketServer && typeof module.setBroadcastFunctions === 'function') {
+                    if (typeof this.webSocketServer.broadcastVCPInfo === 'function') {
+                        module.setBroadcastFunctions(this.webSocketServer.broadcastVCPInfo);
+                        if (this.debugMode) console.log(`[PluginManager] Injected broadcastVCPInfo into VCPLog.`);
+                    } else {
+                        console.warn(`[PluginManager] WebSocketServer is missing broadcastVCPInfo function. VCPInfo will not be broadcastable.`);
+                    }
                 }
 
                 // 兼容旧的、直接在 app 上注册的 service 插件
