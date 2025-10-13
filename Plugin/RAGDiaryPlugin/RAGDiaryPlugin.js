@@ -285,6 +285,7 @@ class RAGDiaryPlugin {
         this.enhancedVectorCache = {}; // <--- 新增：用于存储增强向量的缓存
         this.timeParser = new TimeExpressionParser('zh-CN'); // 实例化时间解析器
         this.semanticGroups = new SemanticGroupManager(this); // 实例化语义组管理器
+        this.metaThinkingChains = {}; // 新增：元思考链配置
         this.loadConfig();
     }
 
@@ -349,6 +350,21 @@ class RAGDiaryPlugin {
         } catch (error) {
             console.error('[RAGDiaryPlugin] 加载配置文件或处理缓存时发生严重错误:', error);
             this.ragConfig = {};
+        }
+
+        // --- 加载元思考链配置 ---
+        try {
+            const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
+            const metaChainData = await fs.readFile(metaChainPath, 'utf-8');
+            this.metaThinkingChains = JSON.parse(metaChainData);
+            console.log(`[RAGDiaryPlugin] 成功加载元思考链配置，包含 ${Object.keys(this.metaThinkingChains.chains || {}).length} 个链定义。`);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log('[RAGDiaryPlugin] 未找到 meta_thinking_chains.json，元思考功能将不可用。');
+            } else {
+                console.error('[RAGDiaryPlugin] 加载元思考链配置时发生错误:', error);
+            }
+            this.metaThinkingChains = { chains: {} };
         }
     }
 
@@ -625,7 +641,7 @@ class RAGDiaryPlugin {
 
         let queryVector = null;
         if (aiVector && userVector) {
-            queryVector = this._getWeightedAverageVector([userVector, aiVector], [0.7, 0.3]);
+            queryVector = this._getWeightedAverageVector([userVector, aiVector], [0.85, 0.15]);
         } else {
             queryVector = userVector || aiVector;
         }
@@ -680,6 +696,76 @@ class RAGDiaryPlugin {
         const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
         const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
         const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
+        const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
+
+        // --- 0. 优先处理 [[VCP元思考...]] 元思考链 ---
+        for (const match of metaThinkingDeclarations) {
+            const placeholder = match[0];
+            const modifiersAndParams = match[1] || '';
+            
+            console.log(`[RAGDiaryPlugin] 检测到VCP元思考占位符: ${placeholder}`);
+
+            // 解析参数：链名称、修饰符和K值序列
+            // 格式: [[VCP元思考:<链名称>::<修饰符>:<k1-k2-k3-k4-k5>]]
+            // 示例: [[VCP元思考:default::Group:2-1-1-1-1]]
+            //      [[VCP元思考::Group:1-1-1-1-1]]  (使用默认链)
+            //      [[VCP元思考:2-1-1-1-1]]  (使用默认链，无修饰符)
+            
+            let chainName = 'default';
+            let useGroup = false;
+            let kSequence = [1, 1, 1, 1, 1]; // 默认每个阶段返回1个结果
+
+            // 分析修饰符字符串
+            if (modifiersAndParams) {
+                const parts = modifiersAndParams.split(':').filter(p => p.trim());
+                
+                for (const part of parts) {
+                    const trimmed = part.trim();
+                    
+                    // 修复：split后'Group'不再带冒号，所以直接匹配'Group'
+                    if (trimmed === 'Group') {
+                        useGroup = true;
+                    } else if (trimmed.includes('-')) {
+                        // 这是K值序列
+                        const kValues = trimmed.split('-').map(k => {
+                            const parsed = parseInt(k.trim(), 10);
+                            return isNaN(parsed) || parsed < 1 ? 1 : parsed;
+                        });
+                        if (kValues.length > 0) {
+                            kSequence = kValues;
+                        }
+                    } else if (trimmed && trimmed !== 'Group') {
+                        // 这可能是链名称（排除'Group'关键字）
+                        // 只有第一个非K值序列、非Group的参数才被当作链名称
+                        if (chainName === 'default' && !trimmed.includes('-')) {
+                            chainName = trimmed;
+                        }
+                    }
+                }
+            }
+
+            console.log(`[RAGDiaryPlugin] 元思考参数: 链名称="${chainName}", 使用语义组=${useGroup}, K序列=[${kSequence.join(',')}]`);
+
+            try {
+                const metaResult = await this._processMetaThinkingChain(
+                    chainName,
+                    queryVector,
+                    userContent,
+                    combinedQueryForDisplay,
+                    kSequence,
+                    useGroup
+                );
+                
+                processedContent = processedContent.replace(placeholder, metaResult);
+                console.log(`[RAGDiaryPlugin] VCP元思考链处理完成`);
+            } catch (error) {
+                console.error(`[RAGDiaryPlugin] 处理VCP元思考链时发生错误:`, error);
+                processedContent = processedContent.replace(
+                    placeholder,
+                    `[VCP元思考链处理失败: ${error.message}]`
+                );
+            }
+        }
 
         // --- 1. 处理 [[...]] RAG 片段检索 ---
         for (const match of ragDeclarations) {
@@ -908,6 +994,229 @@ class RAGDiaryPlugin {
 
         return processedContent;
     }
+    //####################################################################################
+    //## Meta Thinking Chain - VCP元思考递归推理链
+    //####################################################################################
+
+    /**
+     * 处理VCP元思考链 - 递归向量增强的多阶段推理
+     * @param {string} chainName - 思维链名称 (default, creative_writing等)
+     * @param {Array} queryVector - 初始查询向量
+     * @param {string} userContent - 用户输入内容
+     * @param {string} combinedQueryForDisplay - 用于VCP广播的组合查询字符串
+     * @param {Array} kSequence - K值序列，每个元素对应一个簇的返回数量
+     * @param {boolean} useGroup - 是否使用语义组增强
+     * @returns {string} 格式化的思维链结果
+     */
+    async _processMetaThinkingChain(chainName, queryVector, userContent, combinedQueryForDisplay, kSequence, useGroup) {
+        console.log(`[RAGDiaryPlugin][MetaThinking] 开始处理元思考链: ${chainName}`);
+        
+        // 获取思维链定义
+        const chain = this.metaThinkingChains.chains[chainName];
+        if (!chain || !Array.isArray(chain) || chain.length === 0) {
+            console.error(`[RAGDiaryPlugin][MetaThinking] 未找到思维链定义: ${chainName}`);
+            return `[错误: 未找到"${chainName}"思维链定义]`;
+        }
+
+        // 验证K值序列长度
+        if (kSequence.length !== chain.length) {
+            console.warn(`[RAGDiaryPlugin][MetaThinking] K值序列长度(${kSequence.length})与簇数量(${chain.length})不匹配，将使用默认值1填充`);
+            // 用1填充缺失的k值
+            while (kSequence.length < chain.length) {
+                kSequence.push(1);
+            }
+        }
+
+        // 初始化
+        let currentQueryVector = queryVector;
+        const chainResults = [];
+        const chainDetailedInfo = []; // 用于VCP Info广播
+
+        // 如果启用语义组，获取激活的组
+        let activatedGroups = null;
+        if (useGroup) {
+            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
+            if (activatedGroups.size > 0) {
+                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups);
+                if (enhancedVector) {
+                    currentQueryVector = enhancedVector;
+                    console.log(`[RAGDiaryPlugin][MetaThinking] 语义组已激活，查询向量已增强`);
+                }
+            }
+        }
+
+        // 递归遍历每个思维簇
+        for (let i = 0; i < chain.length; i++) {
+            const clusterName = chain[i];
+            const k = kSequence[i];
+            
+            console.log(`[RAGDiaryPlugin][MetaThinking] 阶段 ${i + 1}/${chain.length}: 查询"${clusterName}"，k=${k}`);
+
+            try {
+                // 使用当前查询向量搜索当前簇
+                const searchResults = await this.vectorDBManager.search(clusterName, currentQueryVector, k);
+                
+                if (!searchResults || searchResults.length === 0) {
+                    console.warn(`[RAGDiaryPlugin][MetaThinking] 在"${clusterName}"中未找到匹配结果`);
+                    chainResults.push({
+                        clusterName,
+                        stage: i + 1,
+                        results: [],
+                        k: k
+                    });
+                    continue;
+                }
+
+                // 存储当前阶段结果
+                chainResults.push({
+                    clusterName,
+                    stage: i + 1,
+                    results: searchResults,
+                    k: k
+                });
+
+                // 用于VCP Info的详细信息
+                chainDetailedInfo.push({
+                    stage: i + 1,
+                    clusterName,
+                    k,
+                    resultCount: searchResults.length,
+                    results: searchResults.map(r => ({
+                        text: r.text,
+                        score: r.score
+                    }))
+                });
+
+                // 关键步骤：向量融合，为下一阶段准备查询向量
+                if (i < chain.length - 1) {
+                    // 不是最后一个阶段，需要融合向量
+                    const resultVectors = [];
+                    
+                    // 为每个结果获取向量
+                    for (const result of searchResults) {
+                        const vector = await this.vectorDBManager.getVectorByText(clusterName, result.text);
+                        if (vector) {
+                            resultVectors.push(vector);
+                        }
+                    }
+
+                    if (resultVectors.length > 0) {
+                        // 计算结果向量的平均值
+                        const avgResultVector = this._getAverageVector(resultVectors);
+                        
+                        // 融合：上下文向量60% + 当前结果向量40%
+                        // 这让推理既保持与原始问题的关联，又能递进到下一层思考
+                        currentQueryVector = this._getWeightedAverageVector(
+                            [queryVector, avgResultVector],
+                            [0.8, 0.2]
+                        );
+                        
+                        console.log(`[RAGDiaryPlugin][MetaThinking] 向量已融合，准备进入下一阶段`);
+                    } else {
+                        console.warn(`[RAGDiaryPlugin][MetaThinking] 无法获取结果向量，使用原始查询向量`);
+                    }
+                }
+
+            } catch (error) {
+                console.error(`[RAGDiaryPlugin][MetaThinking] 处理簇"${clusterName}"时发生错误:`);
+                console.error(`[RAGDiaryPlugin][MetaThinking] Error message: ${error.message}`);
+                console.error(`[RAGDiaryPlugin][MetaThinking] Error stack: ${error.stack}`);
+                console.error(`[RAGDiaryPlugin][MetaThinking] Error type: ${error.constructor.name}`);
+                console.error(`[RAGDiaryPlugin][MetaThinking] Error toString: ${error.toString()}`);
+                chainResults.push({
+                    clusterName,
+                    stage: i + 1,
+                    results: [],
+                    k: k,
+                    error: error.message || error.toString() || '未知错误'
+                });
+            }
+        }
+
+        // VCP Info 广播：发送完整的思维链执行详情
+        if (this.pushVcpInfo) {
+            try {
+                const infoData = {
+                    type: 'META_THINKING_CHAIN',
+                    chainName,
+                    query: combinedQueryForDisplay,
+                    useGroup,
+                    activatedGroups: activatedGroups ? Array.from(activatedGroups.keys()) : [],
+                    stages: chainDetailedInfo,
+                    totalStages: chain.length
+                };
+                this.pushVcpInfo(infoData);
+                console.log(`[RAGDiaryPlugin][MetaThinking] VCP Info 已广播`);
+            } catch (broadcastError) {
+                console.error(`[RAGDiaryPlugin][MetaThinking] VCP Info 广播失败:`, broadcastError);
+            }
+        }
+
+        // 格式化输出
+        return this._formatMetaThinkingResults(chainResults, chainName, activatedGroups);
+    }
+
+    /**
+     * 计算多个向量的平均值
+     */
+    _getAverageVector(vectors) {
+        if (!vectors || vectors.length === 0) return null;
+        if (vectors.length === 1) return vectors[0];
+
+        const dimension = vectors[0].length;
+        const result = new Array(dimension).fill(0);
+
+        for (const vector of vectors) {
+            for (let i = 0; i < dimension; i++) {
+                result[i] += vector[i];
+            }
+        }
+
+        for (let i = 0; i < dimension; i++) {
+            result[i] /= vectors.length;
+        }
+
+        return result;
+    }
+
+    /**
+     * 格式化元思考链结果
+     */
+    _formatMetaThinkingResults(chainResults, chainName, activatedGroups) {
+        let content = `\n[--- VCP元思考链: "${chainName}" ---]\n`;
+        
+        if (activatedGroups && activatedGroups.size > 0) {
+            content += `[语义组增强: `;
+            const groupNames = [];
+            for (const [groupName, data] of activatedGroups) {
+                groupNames.push(`${groupName}(${(data.strength * 100).toFixed(0)}%)`);
+            }
+            content += groupNames.join(', ') + ']\n';
+        }
+
+        content += `[推理链路径: ${chainResults.map(r => r.clusterName).join(' → ')}]\n\n`;
+
+        // 输出每个阶段的结果
+        for (const stageResult of chainResults) {
+            content += `【阶段${stageResult.stage}: ${stageResult.clusterName}】\n`;
+            
+            if (stageResult.error) {
+                content += `  [错误: ${stageResult.error}]\n`;
+            } else if (stageResult.results.length === 0) {
+                content += `  [未找到匹配的元逻辑模块]\n`;
+            } else {
+                content += `  [召回 ${stageResult.results.length} 个元逻辑模块]\n`;
+                for (const result of stageResult.results) {
+                    content += `  * ${result.text.trim()}\n`;
+                }
+            }
+            content += '\n';
+        }
+
+        content += `[--- 元思考链结束 ---]\n`;
+        return content;
+    }
+
     
     //####################################################################################
     //## Time-Aware RAG Logic - 时间感知RAG逻辑

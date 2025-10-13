@@ -17,6 +17,7 @@ const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
+const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const messageProcessor = require('./modules/messageProcessor.js');
 const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
 const pluginManager = require('./Plugin.js');
@@ -922,6 +923,10 @@ server = app.listen(port, async () => { // Assign to server variable
     console.log('正在初始化Agent管理器...');
     await agentManager.initialize(DEBUG_MODE);
     console.log('Agent管理器初始化完成。');
+
+    console.log('正在初始化TVS管理器...');
+    tvsManager.initialize(DEBUG_MODE);
+    console.log('TVS管理器初始化完成。');
 
     await initialize(); // This loads plugins and initializes services
 

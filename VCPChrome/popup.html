@@ -6,37 +6,63 @@
     <style>
         body {
             font-family: sans-serif;
-            width: 250px;
+            width: 300px;
             padding: 10px;
             text-align: center;
         }
-        #status {
+        .status-item {
             margin-top: 10px;
             padding: 8px;
             border-radius: 4px;
             font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        .connected {
+        .status-label {
+            font-size: 14px;
+        }
+        .status-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .badge-on {
             background-color: #d4edda;
             color: #155724;
         }
-        .disconnected {
+        .badge-off {
             background-color: #f8d7da;
             color: #721c24;
         }
         button {
-            margin-top: 15px;
-            padding: 10px 20px;
-            font-size: 16px;
+            padding: 8px 15px;
+            font-size: 14px;
             cursor: pointer;
             border: 1px solid #ccc;
             border-radius: 5px;
+            background-color: #fff;
+        }
+        button:hover {
+            background-color: #f0f0f0;
+        }
+        button:active {
+            background-color: #e0e0e0;
+        }
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .button-group button {
+            flex: 1;
+            margin: 0;
         }
         #settings {
             margin-top: 15px;
             padding-top: 10px;
             border-top: 1px solid #ccc;
-            display: none; /* Initially hidden */
+            display: none;
         }
         .input-group {
             margin-bottom: 10px;
@@ -45,10 +71,12 @@
         .input-group label {
             display: block;
             margin-bottom: 5px;
+            font-size: 12px;
         }
         .input-group input {
             width: 95%;
             padding: 5px;
+            font-size: 12px;
         }
         #settings-toggle {
             font-size: 12px;
@@ -60,25 +88,59 @@
             padding: 0;
             margin-top: 5px;
         }
+        #page-info {
+            margin-top: 10px;
+            padding: 8px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            text-align: left;
+        }
+        #page-title {
+            margin-top: 5px;
+            font-size: 12px;
+            word-break: break-all;
+            color: #333;
+        }
+        #page-url {
+            margin-top: 3px;
+            font-size: 11px;
+            color: #666;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
     <h3>VCP Chrome Control</h3>
-    <div id="status">正在检查连接状态...</div>
-
-    <!-- 显示最新页面信息 -->
-    <div id="page-info" style="margin-top: 10px; padding: 8px; background-color: #f0f0f0; border-radius: 4px; text-align: left;">
-        <strong>最新返回页面：</strong>
-        <div id="page-title" style="margin-top: 5px; font-size: 12px; word-break: break-all; color: #999;">等待加载...</div>
-        <div id="page-url" style="margin-top: 3px; font-size: 11px; color: #666; word-break: break-all;"></div>
-    </div>
-
-    <div class="button-group" style="display: flex; gap: 10px; margin-top: 10px;">
-        <button id="toggleConnection" style="flex: 1; margin: 0;">连接</button>
-        <button id="refreshPage" style="flex: 1; margin: 0;">🔄 手动更新页面</button>
+    
+    <!-- 状态显示区 -->
+    <div class="status-item" style="background-color: #e7f3ff;">
+        <span class="status-label">📡 页面监控</span>
+        <span id="monitor-status" class="status-badge badge-off">关闭</span>
     </div>
     
-    <button id="settings-toggle">设置</button>
+    <div class="status-item" style="background-color: #fff3cd;">
+        <span class="status-label">🔌 VCP连接</span>
+        <span id="vcp-status" class="status-badge badge-off">未连接</span>
+    </div>
+
+    <!-- 控制按钮区 -->
+    <div class="button-group">
+        <button id="toggleMonitor">开启监控</button>
+        <button id="toggleVCP">连接VCP</button>
+    </div>
+    
+    <div class="button-group">
+        <button id="refreshPage" style="width: 100%;">🔄 手动刷新</button>
+    </div>
+
+    <!-- 显示最新页面信息 -->
+    <div id="page-info">
+        <strong>当前页面：</strong>
+        <div id="page-title" style="color: #999;">等待监控...</div>
+        <div id="page-url"></div>
+    </div>
+    
+    <button id="settings-toggle">⚙️ 设置</button>
 
     <div id="settings">
         <div class="input-group">

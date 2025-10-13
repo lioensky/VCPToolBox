@@ -1,5 +1,6 @@
 let lastPageContent = '';
 let vcpIdCounter = 0;
+let isActiveTab = false; // 标记当前标签页是否为活动标签页
 
 function isInteractive(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) {
@@ -459,15 +460,20 @@ function findElementWithLogging(target) {
 }
 
 function sendPageInfoUpdate() {
+    // 关键检查：只有活动标签页才发送更新
+    if (!isActiveTab && !document.hidden) {
+        console.log('[VCP Content] ⚠️ 当前非活动标签页，跳过更新');
+        return;
+    }
+    
     const currentPageContent = pageToMarkdown();
     if (currentPageContent && currentPageContent !== lastPageContent) {
         lastPageContent = currentPageContent;
-        console.log('[VCP Content] 📤 发送页面信息到background');
+        console.log('[VCP Content] 📤 发送页面信息到background (活动标签页)');
         chrome.runtime.sendMessage({
             type: 'PAGE_INFO_UPDATE',
             data: { markdown: currentPageContent }
         }, () => {
-            // 检查 chrome.runtime.lastError 以优雅地处理上下文失效的错误
             if (chrome.runtime.lastError) {
                 // console.log("[VCP Content] Page info update failed, context likely invalidated.");
             } else {
@@ -480,7 +486,11 @@ function sendPageInfoUpdate() {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'CLEAR_STATE') {
         lastPageContent = '';
+        isActiveTab = false; // 重置活动状态
     } else if (request.type === 'REQUEST_PAGE_INFO_UPDATE') {
+        // 收到请求说明这是活动标签页
+        console.log('[VCP Content] 📍 收到更新请求，标记为活动标签页');
+        isActiveTab = true;
         sendPageInfoUpdate();
     } else if (request.type === 'FORCE_PAGE_UPDATE') {
         // 新增：强制更新页面信息（手动刷新）
@@ -575,14 +585,32 @@ document.addEventListener('click', debouncedSendPageInfoUpdate);
 document.addEventListener('focusin', debouncedSendPageInfoUpdate);
 document.addEventListener('scroll', debouncedSendPageInfoUpdate, true); // 监听滚动事件
 
-window.addEventListener('load', sendPageInfoUpdate);
-document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
+window.addEventListener('load', () => {
+    // 页面加载时检查是否为活动标签页
+    isActiveTab = !document.hidden;
+    console.log('[VCP Content] 📄 页面加载完成，活动状态:', isActiveTab);
+    if (isActiveTab) {
         sendPageInfoUpdate();
     }
 });
 
-setInterval(sendPageInfoUpdate, 5000);
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        console.log('[VCP Content] 👁️ 标签页变为可见，标记为活动');
+        isActiveTab = true;
+        sendPageInfoUpdate();
+    } else {
+        console.log('[VCP Content] 🙈 标签页变为隐藏，取消活动标记');
+        isActiveTab = false;
+    }
+});
+
+// 定期更新，但只在活动标签页时发送
+setInterval(() => {
+    if (isActiveTab && !document.hidden) {
+        sendPageInfoUpdate();
+    }
+}, 5000);
 
 function debounce(func, wait) {
     let timeout;
