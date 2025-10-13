@@ -7,7 +7,167 @@
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="woff.css">
     <link rel="icon" href="favicon.ico">
+    <!-- EasyMDE for Markdown Editing -->
+    <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
+    <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
    <style>
+        /* EasyMDE 主题适配 */
+        .editor-toolbar {
+            background-color: var(--background-color-light) !important;
+            border-color: var(--border-color) !important;
+        }
+        .editor-toolbar button {
+            color: var(--text-color-primary) !important;
+        }
+        .editor-toolbar button:hover,
+        .editor-toolbar button.active {
+            background-color: var(--primary-color-translucent) !important;
+            border-color: var(--border-color) !important;
+        }
+        
+        .CodeMirror {
+            background-color: var(--background-color) !important;
+            color: var(--text-color-primary) !important;
+            border-color: var(--border-color) !important;
+            height: auto !important;
+            min-height: 500px !important;
+        }
+        .CodeMirror-scroll {
+            min-height: 500px !important;
+        }
+        .CodeMirror-cursor {
+            border-left-color: var(--text-color-primary) !important;
+        }
+        body .CodeMirror-selected {
+            background-color: var(--primary-color-translucent) !important;
+        }
+        .CodeMirror-gutters {
+            background-color: var(--background-color-light) !important;
+            border-right: 1px solid var(--border-color) !important;
+        }
+        
+        /* 修复全屏预览重叠问题 */
+        .editor-preview-active .CodeMirror {
+            display: none !important;
+        }
+        
+        /* 并排预览模式样式 */
+        .editor-preview-side {
+            background-color: var(--background-color) !important;
+            color: var(--text-color-primary) !important;
+            border-left: 1px solid var(--border-color) !important;
+            padding: 10px 20px !important;
+        }
+        
+        /* 全屏预览模式样式 - 只设置颜色，让EasyMDE处理布局 */
+        .editor-preview {
+            background-color: var(--background-color) !important;
+            color: var(--text-color-primary) !important;
+            padding: 20px !important;
+        }
+        
+        /* 预览模式下的Markdown样式 */
+        .editor-preview h1, .editor-preview-side h1,
+        .editor-preview h2, .editor-preview-side h2,
+        .editor-preview h3, .editor-preview-side h3 {
+            color: var(--text-color-primary) !important;
+        }
+        
+        .editor-preview a, .editor-preview-side a {
+            color: var(--primary-color) !important;
+        }
+        
+        .editor-preview code, .editor-preview-side code {
+            background-color: var(--background-color-light) !important;
+            color: var(--text-color-primary) !important;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        
+        .editor-preview pre, .editor-preview-side pre {
+            background-color: var(--background-color-light) !important;
+            color: var(--text-color-primary) !important;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        /* 预览模式下的 Markdown 渲染样式 */
+        .editor-preview h1, .editor-preview-side h1,
+        .editor-preview h2, .editor-preview-side h2,
+        .editor-preview h3, .editor-preview-side h3,
+        .editor-preview h4, .editor-preview-side h4,
+        .editor-preview h5, .editor-preview-side h5,
+        .editor-preview h6, .editor-preview-side h6 {
+            color: var(--text-color-primary) !important;
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+        }
+        
+        .editor-preview a, .editor-preview-side a {
+            color: var(--primary-color) !important;
+        }
+        
+        .editor-preview code, .editor-preview-side code {
+            background-color: var(--background-color-light) !important;
+            color: var(--text-color-primary) !important;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        
+        .editor-preview pre, .editor-preview-side pre {
+            background-color: var(--background-color-light) !important;
+            color: var(--text-color-primary) !important;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        
+        .editor-preview pre code, .editor-preview-side pre code {
+            background-color: transparent !important;
+        }
+        
+        .editor-preview blockquote, .editor-preview-side blockquote {
+            border-left: 4px solid var(--border-color) !important;
+            padding-left: 10px;
+            margin-left: 0;
+            color: var(--text-color-secondary) !important;
+        }
+        
+        .editor-preview table, .editor-preview-side table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1em 0;
+        }
+        
+        .editor-preview th, .editor-preview-side th,
+        .editor-preview td, .editor-preview-side td {
+            border: 1px solid var(--border-color) !important;
+            padding: 8px;
+            color: var(--text-color-primary) !important;
+        }
+        
+        .editor-preview th, .editor-preview-side th {
+            background-color: var(--background-color-light) !important;
+            font-weight: bold;
+        }
+        
+        .editor-preview hr, .editor-preview-side hr {
+            border: none;
+            border-top: 1px solid var(--border-color) !important;
+            margin: 1em 0;
+        }
+        
+        .editor-preview ul, .editor-preview-side ul,
+        .editor-preview ol, .editor-preview-side ol {
+            color: var(--text-color-primary) !important;
+            padding-left: 2em;
+        }
+        
+        .editor-preview p, .editor-preview-side p {
+            color: var(--text-color-primary) !important;
+            line-height: 1.6;
+        }
+        
        .draggable-list {
            list-style: none;
            padding: 0;
@@ -95,7 +255,6 @@
                     <li><a href="#" data-target="base-config"><span class="material-symbols-outlined">settings</span>全局基础配置</a></li>
                     <li><a href="#" data-target="daily-notes-manager"><span class="material-symbols-outlined">description</span>日记知识库管理</a></li>
                     <li><a href="#" data-target="image-cache-editor"><span class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
-                    <li><a href="#" data-target="rag-tags-editor"><span class="material-symbols-outlined">label</span>知识库RAG-Tags编辑器</a></li>
                     <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
                     <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
                     <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
@@ -172,32 +331,65 @@
             </section>
 
             <section id="daily-notes-manager-section" class="config-section">
-                <h2>日记管理</h2>
+                <h2>日记知识库与RAG标签管理</h2>
                 <div class="daily-notes-manager">
                     <div class="notes-sidebar">
-                        <h3>文件夹</h3>
+                        <h3>知识库列表</h3>
                         <ul id="notes-folder-list"></ul>
                     </div>
-                    <div class="notes-content-area">
-                        <div class="notes-toolbar">
-                            <input type="search" id="search-daily-notes" placeholder="搜索日记..." aria-label="搜索日记">
-                            <button id="move-selected-notes" disabled>移动选中项到...</button>
-                            <select id="move-target-folder" disabled></select>
-                            <button id="delete-selected-notes-button" disabled>批量删除选中项</button>
-                            <span id="notes-action-status" class="status-message"></span>
+                    <div class="notes-main-area">
+                        <!-- RAG-Tags配置区域（在日记列表上方） -->
+                        <div id="rag-tags-config-area" class="rag-tags-config-area" style="display: none;">
+                            <div class="rag-tags-header">
+                                <h3>知识库标签列表</h3>
+                            </div>
+                            <div class="kb-entry">
+                                <div class="kb-header">
+                                    <h3 id="rag-tags-folder-name"></h3>
+                                </div>
+                                <div class="threshold-controls">
+                                    <input type="checkbox" id="rag-threshold-enabled">
+                                    <label for="rag-threshold-enabled">启用阈值:</label>
+                                    <input type="range" id="rag-threshold-value" min="0.1" max="1.0" step="0.01" value="0.7" disabled>
+                                    <span id="rag-threshold-display" class="threshold-value">0.70</span>
+                                </div>
+                                <div class="tags-container" id="rag-tags-container">
+                                    <!-- 标签将动态添加到这里 -->
+                                </div>
+                                <div class="add-tag-controls">
+                                    <button id="add-rag-tag-button" class="add-tag-btn">添加标签</button>
+                                </div>
+                            </div>
+                            <div class="rag-tags-controls">
+                                <button id="save-rag-tags-config">保存更改到 rag_tags.json</button>
+                                <span id="rag-tags-status" class="status-message"></span>
+                            </div>
                         </div>
-                        <div id="notes-list-view"></div>
-                    </div>
-                    <div id="note-editor-area" class="note-editor-area" style="display: none;">
-                        <h3>编辑日记</h3>
-                        <input type="hidden" id="editing-note-folder">
-                        <input type="hidden" id="editing-note-file">
-                        <div class="config-editor-toolbar">
-                             <button id="save-note-content">保存日记</button>
-                             <button id="cancel-edit-note">取消编辑</button>
-                             <span id="note-editor-status" class="status-message"></span>
+
+                        <!-- 日记列表区域 -->
+                        <div class="notes-content-area">
+                            <div class="notes-toolbar">
+                                <input type="search" id="search-daily-notes" placeholder="搜索日记..." aria-label="搜索日记">
+                                <button id="move-selected-notes" disabled>移动选中项到...</button>
+                                <select id="move-target-folder" disabled></select>
+                                <button id="delete-selected-notes-button" disabled>批量删除选中项</button>
+                                <span id="notes-action-status" class="status-message"></span>
+                            </div>
+                            <div id="notes-list-view"></div>
                         </div>
-                        <textarea id="note-content-editor" spellcheck="false"></textarea>
+
+                        <!-- 日记编辑区域 -->
+                        <div id="note-editor-area" class="note-editor-area" style="display: none;">
+                            <h3>编辑日记</h3>
+                            <input type="hidden" id="editing-note-folder">
+                            <input type="hidden" id="editing-note-file">
+                            <div class="config-editor-toolbar">
+                                 <button id="save-note-content">保存日记</button>
+                                 <button id="cancel-edit-note">取消编辑</button>
+                                 <span id="note-editor-status" class="status-message"></span>
+                            </div>
+                            <textarea id="note-content-editor" spellcheck="false"></textarea>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -205,11 +397,6 @@
             <section id="image-cache-editor-section" class="config-section">
                 <h2>图像缓存编辑器</h2>
                 <iframe src="image_cache_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
-            </section>
-
-            <section id="rag-tags-editor-section" class="config-section">
-                <h2>知识库RAG-Tags编辑器</h2>
-                <iframe src="rag_tags_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
             </section>
 
             <section id="semantic-groups-editor-section" class="config-section">

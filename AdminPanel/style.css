@@ -63,6 +63,14 @@ html[data-theme='dark'] {
     --cpu-color: var(--cpu-color-dark);
     --memory-color: var(--memory-color-dark);
     color-scheme: dark;
+
+    /* Variables for EasyMDE editor compatibility */
+    --primary-color: var(--highlight-text-dark);
+    --primary-color-translucent: rgba(138, 180, 248, 0.3); /* From #8ab4f8 */
+    --background-color: var(--secondary-bg-dark);
+    --background-color-light: var(--tertiary-bg-dark);
+    --text-color-primary: var(--primary-text-dark);
+    --text-color-secondary: var(--secondary-text-dark);
 }
 
 html[data-theme='light'] {
@@ -85,6 +93,14 @@ html[data-theme='light'] {
     --cpu-color: var(--cpu-color-light);
     --memory-color: var(--memory-color-light);
     color-scheme: light;
+
+    /* Variables for EasyMDE editor compatibility */
+    --primary-color: var(--highlight-text-light);
+    --primary-color-translucent: rgba(26, 115, 232, 0.3); /* From #1a73e8 */
+    --background-color: var(--secondary-bg-light);
+    --background-color-light: var(--tertiary-bg-light);
+    --text-color-primary: var(--primary-text-light);
+    --text-color-secondary: var(--secondary-text-light);
 }
 
 body {
@@ -471,16 +487,179 @@ button[type="submit"]:hover { background-color: var(--highlight-text); filter: b
 .notes-sidebar { width: 200px; flex-shrink: 0; background-color: var(--tertiary-bg); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; }
 .notes-sidebar h3 { font-size: 1.2em; color: var(--highlight-text); margin-top: 0; margin-bottom: 15px; }
 #notes-folder-list { list-style-type: none; padding: 0; margin: 0; }
-#notes-folder-list li { padding: 10px 12px; cursor: pointer; border-radius: 6px; margin-bottom: 5px; }
+#notes-folder-list li { padding: 10px 12px; cursor: pointer; border-radius: 6px; margin-bottom: 5px; transition: all 0.2s; }
 #notes-folder-list li:hover { background-color: var(--accent-bg); }
 #notes-folder-list li.active { background-color: var(--highlight-text); color: white; }
-.notes-content-area { flex-grow: 1; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+
+.notes-main-area { flex-grow: 1; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+.notes-content-area { display: flex; flex-direction: column; gap: 15px; }
 .notes-toolbar { display: flex; gap: 10px; align-items: center; padding: 10px; background-color: var(--secondary-bg); border-radius: 8px; border: 1px solid var(--border-color); }
 #notes-list-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
-.note-card { background-color: var(--tertiary-bg); padding: 15px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; }
+.note-card { background-color: var(--tertiary-bg); padding: 15px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; transition: all 0.2s; }
 .note-card:hover { box-shadow: 0 0 8px var(--highlight-text); }
 .note-editor-area { display: none; }
 #note-content-editor { width: 100%; min-height: 300px; }
+
+/* RAG Tags Config Area */
+.rag-tags-config-area { 
+    background-color: var(--secondary-bg); 
+    padding: 20px; 
+    border-radius: 8px; 
+    border: 1px solid var(--border-color); 
+    margin-bottom: 15px;
+    display: none;
+}
+.rag-tags-header h3 { 
+    font-size: 1.3em; 
+    color: var(--highlight-text); 
+    margin-top: 0; 
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--highlight-text);
+    padding-bottom: 12px;
+}
+.kb-entry {
+    border: 1px solid var(--border-color);
+    padding: 20px;
+    border-radius: 8px;
+    background-color: var(--tertiary-bg);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 15px;
+}
+.kb-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+.kb-entry h3 {
+    font-size: 1.3em;
+    color: var(--primary-text);
+    margin: 0;
+    font-weight: 600;
+}
+.threshold-controls { 
+    display: flex; 
+    gap: 10px; 
+    align-items: center; 
+    margin-bottom: 15px;
+    padding: 12px;
+    background-color: var(--accent-bg);
+    border-radius: 6px;
+}
+.threshold-controls label {
+    font-weight: 500;
+    color: var(--primary-text);
+}
+.threshold-controls input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+.threshold-controls input[type="range"] { 
+    flex: 1;
+    margin: 0 10px; 
+    cursor: pointer;
+}
+.threshold-controls .threshold-value { 
+    display: inline-block; 
+    font-weight: 600; 
+    color: var(--highlight-text); 
+    font-size: 1em;
+    min-width: 45px;
+}
+.tags-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 15px;
+    min-height: 50px;
+}
+.tag-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: var(--accent-bg);
+    padding: 5px 8px;
+    border-radius: 6px;
+}
+.tag-item input {
+    background-color: transparent;
+    border: none;
+    color: var(--primary-text);
+    font-size: 0.9em;
+    outline: none;
+    padding: 2px 5px;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
+    min-width: 80px;
+}
+.tag-item input:focus {
+    border-bottom-color: var(--highlight-text);
+}
+.delete-tag-btn {
+    background: var(--danger-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    font-size: 16px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    line-height: 1;
+    flex-shrink: 0;
+    padding: 0;
+}
+.delete-tag-btn:hover {
+    background: var(--danger-hover-bg);
+}
+.add-tag-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 10px;
+}
+.add-tag-btn {
+    padding: 8px 15px;
+    border: none;
+    border-radius: 6px;
+    background-color: var(--button-bg);
+    color: var(--primary-text);
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    font-weight: 500;
+}
+.add-tag-btn:hover {
+    background-color: var(--button-hover-bg);
+}
+.rag-tags-controls { 
+    display: flex; 
+    gap: 10px; 
+    align-items: center;
+    padding-top: 15px;
+    border-top: 1px solid var(--border-color);
+}
+#save-rag-tags-config {
+    background-color: #4CAF50;
+    color: white;
+    padding: 12px 22px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+#save-rag-tags-config:hover {
+    background-color: #45a049;
+    transform: translateY(-1px);
+}
+#rag-tags-status {
+    font-size: 0.9em;
+}
 
 
 /* Loading and Message Popup */

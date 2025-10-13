@@ -1,0 +1,30 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ThoughtClusterManager",
+  "version": "1.0.0",
+  "displayName": "思维簇管理器",
+  "description": "一个用于创建和编辑AI自身思维链文件的插件，实现元自学习能力。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ThoughtClusterManager.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "CreateClusterFile",
+        "description": "创建一个新的思维簇文件。\n参数:\n- clusterName (字符串, 必需): 目标簇文件夹的名称，必须以'簇'结尾。如果文件夹不存在，将自动创建。请注意，名称中的空格会被自动移除。\n- content (字符串, 必需): 要写入新文件的内容，建议遵循标准格式。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ThoughtClusterManager「末」,\ncommand:「始」CreateClusterFile「末」,\nclusterName:「始」前思维簇「末」,\ncontent:「始」【思考模块：模块名】\n【触发条件】：\n【核心功能】：\n【执行流程】：「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "EditClusterFile",
+        "description": "编辑一个已存在的思维簇文件，通过查找并替换文本内容。\n参数:\n- clusterName (字符串, 可选): 指定在哪个簇文件夹中进行搜索。如果未提供，将在所有'簇'结尾的文件夹中搜索。\n- targetText (字符串, 必需): 需要被替换的目标文本，长度不能少于15个字符。\n- replacementText (字符串, 必需): 用于替换目标文本的新内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ThoughtClusterManager「末」,\ncommand:「始」EditClusterFile「末」,\nclusterName:「始」前思维簇「末」,\ntargetText:「始」这是需要被替换的旧的思考内容，确保它不少于15字。「末」,\nreplacementText:「始」这是更新后的新的思考内容。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

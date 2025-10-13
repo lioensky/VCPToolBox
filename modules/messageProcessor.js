@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const lunarCalendar = require('chinese-lunar-calendar');
 const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
+const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 
 const AGENT_DIR = path.join(__dirname, '..', 'Agent');
 const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
@@ -60,21 +61,13 @@ async function replaceOtherVariables(text, model, role, context) {
                 if (processedText.includes(placeholder)) {
                     const value = process.env[envKey];
                     if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
-                        const txtFilePath = path.join(TVS_DIR, value);
-                        try {
-                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                        const fileContent = await tvsManager.getContent(value);
+                        // 检查内容是否表示错误
+                        if (fileContent.startsWith('[变量文件') || fileContent.startsWith('[处理变量文件')) {
+                            processedText = processedText.replaceAll(placeholder, fileContent);
+                        } else {
                             const resolvedContent = await replaceOtherVariables(fileContent, model, role, context);
                             processedText = processedText.replaceAll(placeholder, resolvedContent);
-                        } catch (error) {
-                            let errorMsg;
-                            if (error.code === 'ENOENT') {
-                                errorMsg = `[变量 ${envKey} 的文件 (${value}) 未找到]`;
-                                console.warn(`[变量加载] 文件未找到: ${txtFilePath} (占位符: ${placeholder})`);
-                            } else {
-                                errorMsg = `[处理变量 ${envKey} 的文件 (${value}) 时出错]`;
-                                console.error(`[变量加载] 读取文件失败 ${txtFilePath} (占位符: ${placeholder}):`, error.message);
-                            }
-                            processedText = processedText.replaceAll(placeholder, errorMsg);
                         }
                     } else {
                         processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
@@ -94,20 +87,12 @@ async function replaceOtherVariables(text, model, role, context) {
 
                 if (promptValue && models) {
                     if (typeof promptValue === 'string' && promptValue.toLowerCase().endsWith('.txt')) {
-                        const txtFilePath = path.join(TVS_DIR, promptValue);
-                        try {
-                            const fileContent = await fs.readFile(txtFilePath, 'utf-8');
+                        const fileContent = await tvsManager.getContent(promptValue);
+                        // 检查内容是否表示错误
+                        if (fileContent.startsWith('[变量文件') || fileContent.startsWith('[处理变量文件')) {
+                            promptValue = fileContent;
+                        } else {
                             promptValue = await replaceOtherVariables(fileContent, model, role, context);
-                        } catch (error) {
-                            let errorMsg;
-                            if (error.code === 'ENOENT') {
-                                errorMsg = `[SarPrompt 文件 (${promptValue}) 未找到]`;
-                                console.warn(`[Sar加载] 文件未找到: ${txtFilePath}`);
-                            } else {
-                                errorMsg = `[处理 SarPrompt 文件 (${promptValue}) 时出错]`;
-                                console.error(`[Sar加载] 读取文件失败 ${txtFilePath}:`, error.message);
-                            }
-                            promptValue = errorMsg;
                         }
                     }
                     const modelList = models.split(',').map(m => m.trim()).filter(m => m);

@@ -556,6 +556,52 @@ class VectorDBManager {
         });
     }
 
+    /**
+     * 根据文本内容获取对应的向量
+     * @param {string} diaryName - 日记本名称
+     * @param {string} text - 要查找的文本
+     * @returns {Array|null} - 返回对应的向量，如果未找到则返回null
+     */
+    async getVectorByText(diaryName, text) {
+        try {
+            // 确保索引已加载
+            const loaded = await this.loadIndexForSearch(diaryName);
+            if (!loaded) {
+                console.error(`[VectorDB][getVectorByText] Failed to load index for "${diaryName}"`);
+                return null;
+            }
+
+            const index = this.indices.get(diaryName);
+            const chunkMap = this.chunkMaps.get(diaryName);
+
+            if (!index || !chunkMap) {
+                console.error(`[VectorDB][getVectorByText] Index or chunkMap not found for "${diaryName}"`);
+                return null;
+            }
+
+            // 在 chunkMap 中查找匹配的文本
+            const trimmedText = text.trim();
+            for (const [label, data] of Object.entries(chunkMap)) {
+                if (data.text.trim() === trimmedText) {
+                    // 找到匹配的文本，从索引中获取向量
+                    try {
+                        const vector = index.getPoint(Number(label));
+                        return vector;
+                    } catch (error) {
+                        console.error(`[VectorDB][getVectorByText] Error getting vector for label ${label}:`, error.message);
+                        return null;
+                    }
+                }
+            }
+
+            console.warn(`[VectorDB][getVectorByText] Text not found in chunkMap for "${diaryName}"`);
+            return null;
+        } catch (error) {
+            console.error(`[VectorDB][getVectorByText] Error:`, error);
+            return null;
+        }
+    }
+
     async manageMemory() {
         const memUsage = process.memoryUsage().heapUsed;
         if (memUsage > this.config.maxMemoryUsage) {

@@ -695,10 +695,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             await fs.access(specificFolderParentPath); 
             const files = await fs.readdir(specificFolderParentPath);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            const PREVIEW_LENGTH = 100; 
+            const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
+            const PREVIEW_LENGTH = 100;
 
-            const notes = await Promise.all(txtFiles.map(async (file) => {
+            const notes = await Promise.all(noteFiles.map(async (file) => {
                 const filePath = path.join(specificFolderParentPath, file);
                 const stats = await fs.stat(filePath);
                 let preview = '';
@@ -773,9 +773,9 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             for (const dir of foldersToSearch) {
                 const files = await fs.readdir(dir.path);
-                const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+                const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
 
-                for (const fileName of txtFiles) {
+                for (const fileName of noteFiles) {
                     const filePath = path.join(dir.path, fileName);
                     try {
                         const content = await fs.readFile(filePath, 'utf-8');

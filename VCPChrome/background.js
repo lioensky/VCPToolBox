@@ -1,11 +1,13 @@
 console.log('[VCP Background] 🚀 VCPChrome background.js loaded.');
 let ws = null;
 let isConnected = false;
-let heartbeatIntervalId = null; // 新增：用于存储心跳定时器的ID
-let latestPageInfo = null; // 新增：用于在内存中缓存最新的页面信息
-const HEARTBEAT_INTERVAL = 30 * 1000; // 30秒发送一次心跳
-const defaultServerUrl = 'ws://localhost:8088'; // 默认服务器地址
-const defaultVcpKey = 'your_secret_key'; // 默认密钥
+let isMonitoringEnabled = false; // 页面监控开关
+let heartbeatIntervalId = null;
+let latestPageInfo = null;
+let currentActiveTabId = null;
+const HEARTBEAT_INTERVAL = 30 * 1000;
+const defaultServerUrl = 'ws://localhost:8088';
+const defaultVcpKey = 'your_secret_key';
 
 function connect() {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -134,7 +136,34 @@ function updateIcon() {
 // 监听来自popup和content_script的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'GET_STATUS') {
-        sendResponse({ isConnected: isConnected });
+        sendResponse({
+            isConnected: isConnected,
+            isMonitoringEnabled: isMonitoringEnabled
+        });
+    } else if (request.type === 'TOGGLE_MONITORING') {
+        // 切换页面监控状态
+        isMonitoringEnabled = !isMonitoringEnabled;
+        console.log('[VCP Background] 📡 页面监控状态:', isMonitoringEnabled ? '开启' : '关闭');
+        
+        // 保存状态
+        chrome.storage.local.set({ isMonitoringEnabled: isMonitoringEnabled });
+        
+        // 广播状态更新
+        broadcastStatusUpdate();
+        
+        // 如果开启监控，立即请求当前活动标签页的信息
+        if (isMonitoringEnabled && currentActiveTabId) {
+            chrome.tabs.sendMessage(currentActiveTabId, {
+                type: 'REQUEST_PAGE_INFO_UPDATE'
+            }).catch(e => {
+                if (!e.message.includes("Could not establish connection")) {
+                    console.log("Error requesting page info:", e.message);
+                }
+            });
+        }
+        
+        sendResponse({ isMonitoringEnabled: isMonitoringEnabled });
+        return true;
     } else if (request.type === 'TOGGLE_CONNECTION') {
         if (isConnected) {
             disconnect();
@@ -144,7 +173,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // 不再立即返回状态，而是等待广播
         // sendResponse({ isConnected: !isConnected });
     } else if (request.type === 'PAGE_INFO_UPDATE') {
-        // 从content_script接收到页面信息，发送到服务器
+        // 检查1：监控是否开启
+        if (!isMonitoringEnabled) {
+            console.log('[VCP Background] ⚠️ 页面监控未开启，忽略更新');
+            return true;
+        }
+        
+        // 检查2：只接受来自当前活动标签页的更新
+        const senderTabId = sender.tab?.id;
+        
+        if (senderTabId !== currentActiveTabId) {
+            console.log(`[VCP Background] ⚠️ 忽略非活动标签页的更新 [来源ID:${senderTabId} vs 活动ID:${currentActiveTabId}]`);
+            return true;
+        }
+        
+        console.log(`[VCP Background] ✅ 接受活动标签页 [ID:${senderTabId}] 的更新`);
+        
+        // 发送到VCP服务器（如果已连接）
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'pageInfoUpdate',
@@ -197,7 +242,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
         }
     } else if (request.type === 'MANUAL_REFRESH') {
-        // 新增：处理手动刷新请求
+        // 手动刷新不受监控开关限制
         console.log('[VCP Background] 🔄 收到手动刷新请求');
         // 获取所有普通网页标签页（排除chrome://等特殊页面）
         chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (tabs) => {
@@ -210,7 +255,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             
             // 优先选择活动标签页，否则选择最后访问的标签页
             let targetTab = tabs.find(tab => tab.active) || tabs.sort((a, b) => b.id - a.id)[0];
-            console.log('[VCP Background] 目标标签页:', targetTab.id, targetTab.url);
+            console.log(`[VCP Background] 🔄 手动刷新目标 [ID:${targetTab.id}] 标题:《${targetTab.title}》`);
             
             console.log('[VCP Background] 向content script发送强制更新请求');
             
@@ -284,7 +329,8 @@ function forwardCommandToContentScript(commandData) {
 function broadcastStatusUpdate() {
     chrome.runtime.sendMessage({
         type: 'STATUS_UPDATE',
-        isConnected: isConnected
+        isConnected: isConnected,
+        isMonitoringEnabled: isMonitoringEnabled
     }).catch(error => {
         // 捕获当popup未打开时发送消息产生的错误，这是正常现象
         if (error.message.includes("Could not establish connection. Receiving end does not exist.")) {
@@ -297,26 +343,65 @@ function broadcastStatusUpdate() {
 
 // 监听标签页切换
 chrome.tabs.onActivated.addListener((activeInfo) => {
-    // 请求新激活的标签页更新信息
-    chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }).catch(e => {
-        if (!e.message.includes("Could not establish connection")) console.log("Error sending to content script on tab activation:", e.message);
+    currentActiveTabId = activeInfo.tabId;
+    
+    // 获取标签页详细信息并打印
+    chrome.tabs.get(activeInfo.tabId, (tab) => {
+        if (chrome.runtime.lastError) {
+            console.log('[VCP Background] 📍 标签页切换，新活动标签页 ID:', activeInfo.tabId);
+        } else {
+            console.log(`[VCP Background] 🎯 检测到当前激活标签页 [ID:${tab.id}] 标题:《${tab.title}》 URL:${tab.url}`);
+        }
     });
+    
+    // 只有在监控开启时才请求更新
+    if (isMonitoringEnabled) {
+        chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }).catch(e => {
+            if (!e.message.includes("Could not establish connection")) {
+                console.log("Error sending to content script on tab activation:", e.message);
+            }
+        });
+    }
 });
 
 // 监听标签页URL变化或加载状态变化
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     // 当导航开始时，清除内容脚本的状态以防止内容累积
-    if (changeInfo.status === 'loading') {
+    if (changeInfo.status === 'loading' && tab.active) {
         chrome.tabs.sendMessage(tabId, { type: 'CLEAR_STATE' }).catch(e => {
-            // This error is expected if the content script hasn't been injected yet
-            if (!e.message.includes("Could not establish connection")) console.log("Error sending CLEAR_STATE:", e.message);
+            if (!e.message.includes("Could not establish connection")) {
+                console.log("Error sending CLEAR_STATE:", e.message);
+            }
         });
     }
-    // 当页面加载完成时，或者URL变化后加载完成时，请求更新
+    // 只在活动标签页加载完成时请求更新（且监控已开启）
     if (changeInfo.status === 'complete' && tab.active) {
-        chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }).catch(e => {
-            if (!e.message.includes("Could not establish connection")) console.log("Error sending to content script on tab update:", e.message);
-        });
+        currentActiveTabId = tabId;
+        console.log(`[VCP Background] ✅ 活动标签页加载完成 [ID:${tab.id}] 标题:《${tab.title}》`);
+        
+        if (isMonitoringEnabled) {
+            chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }).catch(e => {
+                if (!e.message.includes("Could not establish connection")) {
+                    console.log("Error sending to content script on tab update:", e.message);
+                }
+            });
+        }
+    }
+});
+
+// 初始化：获取当前活动标签页和监控状态
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+        currentActiveTabId = tabs[0].id;
+        console.log(`[VCP Background] 🎯 初始化：检测到当前激活标签页 [ID:${tabs[0].id}] 标题:《${tabs[0].title}》 URL:${tabs[0].url}`);
+    }
+});
+
+// 从storage恢复监控状态
+chrome.storage.local.get(['isMonitoringEnabled'], (result) => {
+    if (result.isMonitoringEnabled !== undefined) {
+        isMonitoringEnabled = result.isMonitoringEnabled;
+        console.log('[VCP Background] 📡 恢复监控状态:', isMonitoringEnabled ? '开启' : '关闭');
     }
 });
 

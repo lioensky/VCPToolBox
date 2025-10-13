@@ -39,6 +39,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const notesActionStatusSpan = document.getElementById('notes-action-status');
     const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
 
+    // RAG Tags Config Elements
+    const ragTagsConfigAreaDiv = document.getElementById('rag-tags-config-area');
+    const ragTagsFolderNameSpan = document.getElementById('rag-tags-folder-name');
+    const ragThresholdEnabledCheckbox = document.getElementById('rag-threshold-enabled');
+    const ragThresholdValueSlider = document.getElementById('rag-threshold-value');
+    const ragThresholdDisplaySpan = document.getElementById('rag-threshold-display');
+    const ragTagsContainer = document.getElementById('rag-tags-container');
+    const addRagTagButton = document.getElementById('add-rag-tag-button');
+    const saveRagTagsConfigButton = document.getElementById('save-rag-tags-config');
+    const ragTagsStatusSpan = document.getElementById('rag-tags-status');
+    
+    let ragTagsData = {}; // 存储所有的RAG-Tags配置
+    let currentRagFolder = null; // 当前选中的文件夹名称
+
     // Agent Manager Elements
     const agentMapListDiv = document.getElementById('agent-map-list');
     const addAgentMapEntryButton = document.getElementById('add-agent-map-entry-button');
@@ -1266,15 +1280,18 @@ Description Length: ${newDescription.length}`);
     // --- Daily Notes Manager Functions ---
     let currentNotesFolder = null;
     let selectedNotes = new Set();
+    let easyMDE = null; // 用于存储EasyMDE实例
 
     async function initializeDailyNotesManager() {
         console.log('Initializing Daily Notes Manager...');
         notesListViewDiv.innerHTML = ''; // Clear previous notes
         noteEditorAreaDiv.style.display = 'none'; // Hide editor
+        ragTagsConfigAreaDiv.style.display = 'none'; // Hide RAG tags config area
         notesActionStatusSpan.textContent = '';
         moveSelectedNotesButton.disabled = true;
         if (deleteSelectedNotesButton) deleteSelectedNotesButton.disabled = true; // 新增：禁用删除按钮
         if (searchDailyNotesInput) searchDailyNotesInput.value = ''; // 清空搜索框
+        await loadRagTagsConfig(); // 加载RAG-Tags配置
         await loadNotesFolders();
         // Optionally, load notes from the first folder automatically or show a placeholder
     }
@@ -1349,6 +1366,10 @@ Description Length: ${newDescription.length}`);
             } else {
                 notesListViewDiv.innerHTML = `<p>文件夹 "${folderName}" 中没有日记。</p>`;
             }
+            
+            // 加载并显示该文件夹的RAG-Tags配置
+            displayRagTagsForFolder(folderName);
+            
         } catch (error) {
             notesListViewDiv.innerHTML = `<p>加载文件夹 "${folderName}" 中的日记失败。</p>`;
             showMessage(`加载日记失败: ${error.message}`, 'error');
@@ -1463,8 +1484,32 @@ Description Length: ${newDescription.length}`);
             const data = await apiFetch(`${API_BASE_URL}/dailynotes/note/${folderName}/${fileName}`);
             editingNoteFolderInput.value = folderName;
             editingNoteFileInput.value = fileName;
+            
+            // 销毁旧的EasyMDE实例（如果存在）
+            if (easyMDE) {
+                easyMDE.toTextArea();
+                easyMDE = null;
+            }
+            
             noteContentEditorTextarea.value = data.content;
             
+            // 初始化EasyMDE
+            easyMDE = new EasyMDE({
+                element: noteContentEditorTextarea,
+                spellChecker: false,
+                sideBySideFullscreen: false,
+                status: ['lines', 'words', 'cursor'],
+                toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "|", "preview", "side-by-side", "fullscreen", "|", "guide"],
+                previewClass: ['editor-preview', 'custom-preview'],
+                previewRender: function(plainText, preview) {
+                    // 使用 EasyMDE 自带的 markdown 渲染
+                    setTimeout(function() {
+                        preview.innerHTML = easyMDE.markdown(plainText);
+                    }, 1);
+                    return "Loading...";
+                }
+            });
+
             document.getElementById('notes-list-view').style.display = 'none';
             document.querySelector('.notes-sidebar').style.display = 'none'; // Hide sidebar too
             document.querySelector('.notes-toolbar').style.display = 'none';
@@ -1479,7 +1524,7 @@ Description Length: ${newDescription.length}`);
     async function saveNoteChanges() {
         const folderName = editingNoteFolderInput.value;
         const fileName = editingNoteFileInput.value;
-        const content = noteContentEditorTextarea.value;
+        const content = easyMDE.value(); // 从EasyMDE获取内容
 
         if (!folderName || !fileName) {
             showMessage('无法保存日记，缺少文件信息。', 'error');
@@ -1503,6 +1548,11 @@ Description Length: ${newDescription.length}`);
     }
 
     function closeNoteEditor() {
+        // 销毁EasyMDE实例
+        if (easyMDE) {
+            easyMDE.toTextArea();
+            easyMDE = null;
+        }
         noteEditorAreaDiv.style.display = 'none';
         editingNoteFolderInput.value = '';
         editingNoteFileInput.value = '';
@@ -1592,6 +1642,157 @@ Description Length: ${newDescription.length}`);
     if (moveSelectedNotesButton) moveSelectedNotesButton.addEventListener('click', moveSelectedNotesHandler);
     if (deleteSelectedNotesButton) deleteSelectedNotesButton.addEventListener('click', deleteSelectedNotesHandler); // 新增：删除按钮事件
     if (searchDailyNotesInput) searchDailyNotesInput.addEventListener('input', filterNotesBySearch);
+
+    // --- RAG Tags Config Functions ---
+    async function loadRagTagsConfig() {
+        try {
+            ragTagsData = await apiFetch(`${API_BASE_URL}/rag-tags`, {}, false);
+            console.log('[RAGTags] Loaded RAG-Tags config:', ragTagsData);
+        } catch (error) {
+            console.error('[RAGTags] Failed to load RAG-Tags config:', error);
+            ragTagsData = {};
+        }
+    }
+
+    function displayRagTagsForFolder(folderName) {
+        currentRagFolder = folderName;
+        ragTagsFolderNameSpan.textContent = folderName;
+        
+        const folderConfig = ragTagsData[folderName] || {};
+        const tags = folderConfig.tags || [];
+        const threshold = folderConfig.threshold;
+        
+        // 设置阈值
+        if (threshold !== undefined) {
+            ragThresholdEnabledCheckbox.checked = true;
+            ragThresholdValueSlider.value = threshold;
+            ragThresholdValueSlider.disabled = false;
+            ragThresholdDisplaySpan.textContent = threshold.toFixed(2);
+        } else {
+            ragThresholdEnabledCheckbox.checked = false;
+            ragThresholdValueSlider.value = 0.7;
+            ragThresholdValueSlider.disabled = true;
+            ragThresholdDisplaySpan.textContent = '0.70';
+        }
+        
+        // 清空并重新创建标签
+        ragTagsContainer.innerHTML = '';
+        tags.forEach((tagData) => {
+            const tagValue = typeof tagData === 'string' ? tagData : (tagData.tag || '');
+            addTagItem(tagValue);
+        });
+        
+        // 显示配置区域
+        ragTagsConfigAreaDiv.style.display = 'block';
+        ragTagsStatusSpan.textContent = '';
+    }
+
+    function addTagItem(value = '') {
+        const tagDiv = document.createElement('div');
+        tagDiv.className = 'tag-item';
+        
+        const tagInput = document.createElement('input');
+        tagInput.type = 'text';
+        tagInput.className = 'tag-input';
+        tagInput.value = value;
+        tagInput.placeholder = '标签:权重(可选)';
+        tagDiv.appendChild(tagInput);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-tag-btn';
+        deleteBtn.textContent = '×';
+        deleteBtn.onclick = () => tagDiv.remove();
+        tagDiv.appendChild(deleteBtn);
+
+        ragTagsContainer.appendChild(tagDiv);
+        if (!value) {
+            tagInput.focus();
+        }
+    }
+
+    async function saveRagTagsConfigHandler() {
+        if (!currentRagFolder) {
+            showMessage('未选中知识库文件夹', 'error');
+            return;
+        }
+
+        ragTagsStatusSpan.textContent = '保存中...';
+        ragTagsStatusSpan.className = 'status-message';
+
+        try {
+            // 构建当前文件夹的配置
+            const folderConfig = {};
+            
+            // 处理标签 - 从tag-item读取
+            const tagInputs = ragTagsContainer.querySelectorAll('.tag-input');
+            const tags = [];
+            tagInputs.forEach(input => {
+                const value = input.value.trim();
+                if (value) {
+                    tags.push(value);
+                }
+            });
+            folderConfig.tags = tags;
+            
+            // 处理阈值
+            if (ragThresholdEnabledCheckbox.checked) {
+                folderConfig.threshold = parseFloat(ragThresholdValueSlider.value);
+            }
+            
+            // 更新本地数据
+            if (folderConfig.tags.length > 0 || folderConfig.threshold !== undefined) {
+                ragTagsData[currentRagFolder] = folderConfig;
+            } else {
+                // 如果没有配置任何内容，则删除该条目
+                delete ragTagsData[currentRagFolder];
+            }
+            
+            // 保存到服务器
+            await apiFetch(`${API_BASE_URL}/rag-tags`, {
+                method: 'POST',
+                body: JSON.stringify(ragTagsData)
+            });
+
+            ragTagsStatusSpan.textContent = '✓ 保存成功';
+            ragTagsStatusSpan.className = 'status-message success';
+            showMessage('RAG-Tags配置已保存', 'success');
+            
+            // 3秒后清空状态
+            setTimeout(() => {
+                ragTagsStatusSpan.textContent = '';
+            }, 3000);
+
+        } catch (error) {
+            console.error('[RAGTags] Save failed:', error);
+            ragTagsStatusSpan.textContent = '✗ 保存失败';
+            ragTagsStatusSpan.className = 'status-message error';
+            showMessage(`保存RAG-Tags配置失败: ${error.message}`, 'error');
+        }
+    }
+
+    // RAG Tags 事件监听器
+    if (ragThresholdEnabledCheckbox) {
+        ragThresholdEnabledCheckbox.addEventListener('change', () => {
+            ragThresholdValueSlider.disabled = !ragThresholdEnabledCheckbox.checked;
+        });
+    }
+    
+    if (ragThresholdValueSlider) {
+        ragThresholdValueSlider.addEventListener('input', () => {
+            ragThresholdDisplaySpan.textContent = parseFloat(ragThresholdValueSlider.value).toFixed(2);
+        });
+    }
+    
+    if (addRagTagButton) {
+        addRagTagButton.addEventListener('click', () => {
+            addTagItem();
+        });
+    }
+    
+    if (saveRagTagsConfigButton) {
+        saveRagTagsConfigButton.addEventListener('click', saveRagTagsConfigHandler);
+    }
+    // --- End RAG Tags Config Functions ---
 
 
     // --- End Daily Notes Manager Functions ---
