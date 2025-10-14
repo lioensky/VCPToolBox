@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/lioensky-vcptoolbox-badge.png)](https://mseep.ai/app/lioensky-vcptoolbox)
+
 # VCP (Variable & Command Protocol) - 新一代 AI 能力增强与进化中间层
 
 ![LOGO图片1](VCPLogo.png)
