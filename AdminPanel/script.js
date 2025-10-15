@@ -996,11 +996,13 @@ Description Length: ${newDescription.length}`);
                 initializePreprocessorOrderManager();
           } else if (sectionIdToActivate === 'semantic-groups-editor-section') {
                initializeSemanticGroupsEditor();
+          } else if (sectionIdToActivate === 'thinking-chains-editor-section') {
+               initializeThinkingChainsEditor();
           }
-        } else {
-            console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
-        }
-    }
+       } else {
+           console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
+       }
+   }
 
     pluginNavList.addEventListener('click', (event) => {
         const anchor = event.target.closest('a');
@@ -1497,17 +1499,9 @@ Description Length: ${newDescription.length}`);
             easyMDE = new EasyMDE({
                 element: noteContentEditorTextarea,
                 spellChecker: false,
-                sideBySideFullscreen: false,
                 status: ['lines', 'words', 'cursor'],
-                toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "|", "preview", "side-by-side", "fullscreen", "|", "guide"],
-                previewClass: ['editor-preview', 'custom-preview'],
-                previewRender: function(plainText, preview) {
-                    // 使用 EasyMDE 自带的 markdown 渲染
-                    setTimeout(function() {
-                        preview.innerHTML = easyMDE.markdown(plainText);
-                    }, 1);
-                    return "Loading...";
-                }
+                minHeight: "500px",
+                maxHeight: "800px"
             });
 
             document.getElementById('notes-list-view').style.display = 'none';
@@ -2679,5 +2673,301 @@ Description Length: ${newDescription.length}`);
         addSemanticGroupButton.addEventListener('click', addNewSemanticGroup);
     }
     // --- End Semantic Groups Editor Functions ---
+
+    // --- Thinking Chains Editor Functions ---
+    let thinkingChainsData = {};
+    let availableClusters = [];
+
+    async function initializeThinkingChainsEditor() {
+        console.log('Initializing Thinking Chains Editor...');
+        const container = document.getElementById('thinking-chains-container');
+        const statusSpan = document.getElementById('thinking-chains-status');
+        if (!container || !statusSpan) return;
+
+        container.innerHTML = '<p>正在加载思维链配置...</p>';
+        statusSpan.textContent = '';
+        try {
+            // Fetch both chains and available clusters concurrently
+            const [chainsResponse, clustersResponse] = await Promise.all([
+                apiFetch(`${API_BASE_URL}/thinking-chains`),
+                apiFetch(`${API_BASE_URL}/available-clusters`)
+            ]);
+            
+            thinkingChainsData = chainsResponse;
+            availableClusters = clustersResponse.clusters || [];
+            
+            renderThinkingChainsEditor(container);
+
+        } catch (error) {
+            container.innerHTML = `<p class="error-message">加载思维链配置失败: ${error.message}</p>`;
+        }
+    }
+
+    function renderThinkingChainsEditor(container) {
+        container.innerHTML = '';
+        const themes = thinkingChainsData.chains || {};
+
+        const editorWrapper = document.createElement('div');
+        editorWrapper.className = 'thinking-chains-editor-wrapper';
+
+        const themesContainer = document.createElement('div');
+        themesContainer.id = 'thinking-chains-themes-container'; // Add ID for easy access
+        themesContainer.className = 'thinking-chains-themes-container';
+
+        if (Object.keys(themes).length === 0) {
+            themesContainer.innerHTML = '<p>没有找到任何思维链主题。请点击“添加新主题”来创建一个。</p>';
+        } else {
+            for (const themeName in themes) {
+                const themeElement = createThemeElement(themeName, themes[themeName]);
+                themesContainer.appendChild(themeElement);
+            }
+        }
+
+        const availableClustersElement = createAvailableClustersElement();
+
+        editorWrapper.appendChild(themesContainer);
+        editorWrapper.appendChild(availableClustersElement);
+        container.appendChild(editorWrapper);
+    }
+
+    function createThemeElement(themeName, chain) {
+        const details = document.createElement('details');
+        details.className = 'theme-details';
+        details.open = true;
+        details.dataset.themeName = themeName;
+
+        const summary = document.createElement('summary');
+        summary.className = 'theme-summary';
+        
+        const themeNameSpan = document.createElement('span');
+        themeNameSpan.className = 'theme-name-display';
+        themeNameSpan.textContent = `主题: ${themeName}`;
+        summary.appendChild(themeNameSpan);
+
+        const deleteThemeBtn = document.createElement('button');
+        deleteThemeBtn.textContent = '删除该主题';
+        deleteThemeBtn.className = 'delete-theme-btn';
+        deleteThemeBtn.onclick = (e) => {
+            e.preventDefault();
+            if (confirm(`确定要删除主题 "${themeName}" 吗？`)) {
+                details.remove();
+            }
+        };
+        summary.appendChild(deleteThemeBtn);
+        details.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'theme-content';
+        
+        const chainList = document.createElement('ul');
+        chainList.className = 'draggable-list theme-chain-list';
+        chainList.dataset.themeName = themeName;
+
+        if (chain.length > 0) {
+            chain.forEach(clusterName => {
+                const listItem = createChainItemElement(clusterName);
+                chainList.appendChild(listItem);
+            });
+        } else {
+            // Add a placeholder to make empty lists a valid drop target
+            const placeholder = document.createElement('li');
+            placeholder.className = 'drop-placeholder';
+            placeholder.textContent = '将思维簇拖拽到此处';
+            chainList.appendChild(placeholder);
+        }
+
+        content.appendChild(chainList);
+        details.appendChild(content);
+
+        // Add drag and drop functionality to the list
+        setupDragAndDrop(chainList);
+
+        return details;
+    }
+
+    function createChainItemElement(clusterName) {
+        const li = document.createElement('li');
+        li.className = 'chain-item';
+        li.draggable = true;
+        li.dataset.clusterName = clusterName;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'cluster-name';
+        nameSpan.textContent = clusterName;
+        li.appendChild(nameSpan);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = '×';
+        removeBtn.className = 'remove-cluster-btn';
+        removeBtn.onclick = () => li.remove();
+        li.appendChild(removeBtn);
+        
+        // Add drag listeners to the item itself
+        li.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('text/plain', clusterName);
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => li.classList.add('dragging'), 0);
+        });
+        li.addEventListener('dragend', () => li.classList.remove('dragging'));
+
+        return li;
+    }
+
+    function createAvailableClustersElement() {
+        const container = document.createElement('div');
+        container.className = 'available-clusters-container';
+
+        const title = document.createElement('h3');
+        title.textContent = '可用的思维簇模块';
+        container.appendChild(title);
+        
+        const p = document.createElement('p');
+        p.className = 'description';
+        p.textContent = '将模块从这里拖拽到左侧的主题列表中。';
+        container.appendChild(p);
+
+        const list = document.createElement('ul');
+        list.className = 'draggable-list available-clusters-list';
+
+        availableClusters.forEach(clusterName => {
+            const listItem = createChainItemElement(clusterName);
+            // Make it a template for dragging, not a removable item
+            listItem.querySelector('.remove-cluster-btn').remove();
+            list.appendChild(listItem);
+        });
+
+        container.appendChild(list);
+        return container;
+    }
+
+    function setupDragAndDrop(listElement) {
+        listElement.addEventListener('dragover', e => {
+            e.preventDefault();
+            const afterElement = getDragAfterElement(listElement, e.clientY);
+            const dragging = document.querySelector('.dragging');
+            if (dragging) {
+                if (afterElement == null) {
+                    listElement.appendChild(dragging);
+                } else {
+                    listElement.insertBefore(dragging, afterElement);
+                }
+            }
+        });
+
+        listElement.addEventListener('drop', e => {
+            e.preventDefault();
+            const clusterName = e.dataTransfer.getData('text/plain');
+            const dragging = document.querySelector('.dragging'); // This is the placeholder moved by dragover
+
+            if (!dragging) return;
+
+            const isFromAvailable = !dragging.querySelector('.remove-cluster-btn');
+
+            if (isFromAvailable) {
+                // It's a new item from the available list.
+                
+                // Remove placeholder for empty lists if it exists
+                const placeholder = listElement.querySelector('.drop-placeholder');
+                if (placeholder) placeholder.remove();
+
+                // Check for duplicates, ignoring the placeholder ('dragging') itself
+                const alreadyExists = Array.from(listElement.querySelectorAll('.chain-item'))
+                                         .filter(item => item !== dragging)
+                                         .some(item => item.dataset.clusterName === clusterName);
+
+                if (clusterName && !alreadyExists) {
+                    const newItem = createChainItemElement(clusterName);
+                    // Replace the placeholder ('dragging') with the new item
+                    listElement.replaceChild(newItem, dragging);
+                } else {
+                    // If it's a duplicate or invalid, just remove the placeholder
+                    dragging.remove();
+                }
+
+                // Restore the available clusters list to fix the "consumed" bug
+                const editorContainer = document.getElementById('thinking-chains-container');
+                const oldAvailableContainer = editorContainer.querySelector('.available-clusters-container');
+                if (oldAvailableContainer) {
+                    const newAvailableContainer = createAvailableClustersElement();
+                    oldAvailableContainer.replaceWith(newAvailableContainer);
+                }
+            }
+            // If it's a reorder, 'dragover' already moved it, and we're done.
+        });
+    }
+
+    async function saveThinkingChains() {
+        const container = document.getElementById('thinking-chains-container');
+        const statusSpan = document.getElementById('thinking-chains-status');
+        if (!container || !statusSpan) return;
+
+        const newChains = {};
+        const themeElements = container.querySelectorAll('.theme-details');
+
+        themeElements.forEach(el => {
+            const themeName = el.dataset.themeName;
+            const clusters = [];
+            el.querySelectorAll('.chain-item').forEach(item => {
+                clusters.push(item.dataset.clusterName);
+            });
+            newChains[themeName] = clusters;
+        });
+
+        const dataToSave = {
+            ...thinkingChainsData, // Preserve other top-level keys like description, version
+            chains: newChains
+        };
+
+        statusSpan.textContent = '正在保存...';
+        statusSpan.className = 'status-message info';
+        try {
+            await apiFetch(`${API_BASE_URL}/thinking-chains`, {
+                method: 'POST',
+                body: JSON.stringify(dataToSave)
+            });
+            showMessage('思维链配置已成功保存!', 'success');
+            statusSpan.textContent = '保存成功!';
+            statusSpan.className = 'status-message success';
+            // Reload to ensure UI is consistent with saved data
+            initializeThinkingChainsEditor();
+        } catch (error) {
+            statusSpan.textContent = `保存失败: ${error.message}`;
+            statusSpan.className = 'status-message error';
+        }
+    }
+
+    function addNewThinkingChainTheme() {
+        const themeName = prompt('请输入新思维链主题的名称 (例如: creative-writing):');
+        if (!themeName || !themeName.trim()) return;
+
+        const normalizedThemeName = themeName.trim();
+        const container = document.getElementById('thinking-chains-themes-container');
+        if (!container) return;
+
+        if (container.querySelector(`[data-theme-name="${normalizedThemeName}"]`)) {
+            showMessage(`主题 "${normalizedThemeName}" 已存在!`, 'error');
+            return;
+        }
+        
+        if (!container.querySelector('.theme-details')) {
+            container.innerHTML = '';
+        }
+
+        const newThemeElement = createThemeElement(normalizedThemeName, []);
+        container.appendChild(newThemeElement);
+        newThemeElement.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // Event Listeners for Thinking Chains Editor
+    const saveThinkingChainsButton = document.getElementById('save-thinking-chains-button');
+    const addThinkingChainThemeButton = document.getElementById('add-thinking-chain-theme-button');
+
+    if (saveThinkingChainsButton) {
+        saveThinkingChainsButton.addEventListener('click', saveThinkingChains);
+    }
+    if (addThinkingChainThemeButton) {
+        addThinkingChainThemeButton.addEventListener('click', addNewThinkingChainTheme);
+    }
+    // --- End Thinking Chains Editor Functions ---
     });
 

@@ -138,43 +138,33 @@ document.addEventListener('DOMContentLoaded', () => {
              toggleBtn.textContent = isEnabled ? '🔴' : '🟢';
         });
 
-        // Drag and Drop - 只在拖拽手柄上启用
+        // Drag and Drop
         const dragHandle = card.querySelector('.drag-handle');
-        dragHandle.addEventListener('dragstart', (e) => {
-            e.stopPropagation();
+
+        // 拖拽事件应该绑定在卡片上，而不是手柄上
+        card.addEventListener('dragstart', (e) => {
             draggedItem = card;
-            setTimeout(() => {
-                card.classList.add('dragging');
-            }, 0);
+            // 使用微任务延迟添加class，确保拖拽的视觉反馈正确
+            setTimeout(() => card.classList.add('dragging'), 0);
         });
 
-        dragHandle.addEventListener('dragend', (e) => {
-            e.stopPropagation();
-            setTimeout(() => {
-                if(draggedItem) {
-                    draggedItem.classList.remove('dragging');
-                    draggedItem = null;
-                }
-            }, 0);
+        card.addEventListener('dragend', (e) => {
+            // 拖拽结束后清理
+            if (draggedItem) {
+                draggedItem.classList.remove('dragging');
+            }
+            draggedItem = null;
+            // 确保拖拽结束后，卡片恢复不可拖拽状态
+            card.draggable = false;
         });
 
-        // 防止文本选择时触发卡片拖拽
+        // 使用 mousedown 来控制是否启用拖拽，这是正确的
         card.addEventListener('mousedown', (e) => {
+            // 只在点击拖拽手柄时才允许拖拽
             if (e.target === dragHandle) {
                 card.draggable = true;
             } else {
                 card.draggable = false;
-            }
-        });
-
-        rulesList.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            const afterElement = getDragAfterElement(rulesList, e.clientY);
-            const currentDragged = document.querySelector('.dragging');
-            if (afterElement == null) {
-                rulesList.appendChild(currentDragged);
-            } else {
-                rulesList.insertBefore(currentDragged, afterElement);
             }
         });
 
@@ -299,6 +289,20 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error('保存预设失败:', error);
             alert('保存预设失败!');
+        }
+    });
+
+    // --- Drag and Drop Logic for the list ---
+    rulesList.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const afterElement = getDragAfterElement(rulesList, e.clientY);
+        const currentDragged = document.querySelector('.dragging');
+        if (!currentDragged) return; // Guard against errors
+
+        if (afterElement == null) {
+            rulesList.appendChild(currentDragged);
+        } else {
+            rulesList.insertBefore(currentDragged, afterElement);
         }
     });
 
