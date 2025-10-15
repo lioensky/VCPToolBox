@@ -14,6 +14,7 @@ const clients = new Map(); // VCPLog 等普通客户端
 const distributedServers = new Map(); // 分布式服务器客户端
 const chromeControlClients = new Map(); // ChromeControl 客户端
 const chromeObserverClients = new Map(); // 新增：ChromeObserver 客户端
+const adminPanelClients = new Map(); // 新增：管理面板客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 
@@ -52,12 +53,14 @@ function initialize(httpServer, config) {
         const distServerPathRegex = /^\/vcp-distributed-server\/VCP_Key=(.+)$/;
         const chromeControlPathRegex = /^\/vcp-chrome-control\/VCP_Key=(.+)$/;
         const chromeObserverPathRegex = /^\/vcp-chrome-observer\/VCP_Key=(.+)$/;
+        const adminPanelPathRegex = /^\/vcp-admin-panel\/VCP_Key=(.+)$/; // 新增
 
         const vcpMatch = pathname.match(vcpLogPathRegex);
         const vcpInfoMatch = pathname.match(vcpInfoPathRegex); // 新增匹配
         const distMatch = pathname.match(distServerPathRegex);
         const chromeControlMatch = pathname.match(chromeControlPathRegex);
         const chromeObserverMatch = pathname.match(chromeObserverPathRegex);
+        const adminPanelMatch = pathname.match(adminPanelPathRegex); // 新增
 
         let isAuthenticated = false;
         let clientType = null;
@@ -83,6 +86,10 @@ function initialize(httpServer, config) {
            clientType = 'ChromeControl';
            connectionKey = chromeControlMatch[1];
            writeLog(`Temporary ChromeControl client attempting to connect.`);
+        } else if (adminPanelMatch && adminPanelMatch[1]) {
+            clientType = 'AdminPanel';
+            connectionKey = adminPanelMatch[1];
+            writeLog(`Admin Panel client attempting to connect.`);
         } else {
             writeLog(`WebSocket upgrade request for unhandled path: ${pathname}. Ignoring.`);
             socket.destroy();
@@ -123,6 +130,9 @@ function initialize(httpServer, config) {
                 } else if (clientType === 'ChromeControl') {
                    chromeControlClients.set(clientId, ws);
                    writeLog(`Temporary ChromeControl client ${clientId} connected.`);
+                } else if (clientType === 'AdminPanel') {
+                   adminPanelClients.set(clientId, ws);
+                   writeLog(`Admin Panel client ${clientId} connected.`);
                 } else {
                     clients.set(clientId, ws);
                     writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
@@ -231,6 +241,9 @@ function initialize(httpServer, config) {
            } else if (ws.clientType === 'ChromeControl') {
               chromeControlClients.delete(ws.clientId);
               writeLog(`ChromeControl client ${ws.clientId} disconnected and removed.`);
+           } else if (ws.clientType === 'AdminPanel') {
+              adminPanelClients.delete(ws.clientId);
+              writeLog(`Admin Panel client ${ws.clientId} disconnected and removed.`);
            } else {
                clients.delete(ws.clientId);
            }
@@ -439,11 +452,27 @@ function findServerByIp(ip) {
    return null;
 }
 
+// 新增：专门广播给管理面板
+function broadcastToAdminPanel(data) {
+    if (!wssInstance) return;
+    const messageString = JSON.stringify(data);
+    
+    adminPanelClients.forEach(clientWs => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(messageString);
+        }
+    });
+    if (serverConfig.debugMode) {
+        writeLog(`Broadcasted to Admin Panel: ${messageString.substring(0, 200)}...`);
+    }
+}
+
 module.exports = {
     initialize,
     setPluginManager,
     broadcast,
     broadcastVCPInfo, // 导出新的广播函数
+    broadcastToAdminPanel, // 导出给管理面板的广播函数
     sendMessageToClient,
     executeDistributedTool,
     findServerByIp,

@@ -6,6 +6,7 @@ const schedule = require('node-schedule');
 const dotenv = require('dotenv'); // Ensures dotenv is available
 const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
+const chokidar = require('chokidar');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -23,6 +24,8 @@ class PluginManager {
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
         this.debugMode = (process.env.DebugMode || "False").toLowerCase() === "true";
         this.webSocketServer = null; // 为 WebSocketServer 实例占位
+        this.isReloading = false;
+        this.reloadTimeout = null;
     }
 
     setWebSocketServer(wss) {
@@ -1023,6 +1026,63 @@ class PluginManager {
                 description: manifest ? manifest.description : 'N/A'
             };
         });
+    }
+    startPluginWatcher() {
+        if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
+        
+        const pathsToWatch = [
+            path.join(PLUGIN_DIR, '**/plugin-manifest.json'),
+            path.join(PLUGIN_DIR, '**/plugin-manifest.json.block')
+        ];
+
+        const watcher = chokidar.watch(pathsToWatch, {
+            persistent: true,
+            ignoreInitial: true, // Don't fire on initial scan
+            awaitWriteFinish: {
+                stabilityThreshold: 500,
+                pollInterval: 100
+            }
+        });
+
+        watcher
+            .on('add', filePath => this.handlePluginManifestChange('add', filePath))
+            .on('change', filePath => this.handlePluginManifestChange('change', filePath))
+            .on('unlink', filePath => this.handlePluginManifestChange('unlink', filePath));
+            
+        console.log(`[PluginManager] Chokidar is now watching for manifest changes in: ${PLUGIN_DIR}`);
+    }
+
+    handlePluginManifestChange(eventType, filePath) {
+        if (this.isReloading) {
+            if (this.debugMode) console.log(`[PluginManager] Already reloading, skipping event '${eventType}' for: ${filePath}`);
+            return;
+        }
+        
+        clearTimeout(this.reloadTimeout);
+        
+        if (this.debugMode) console.log(`[PluginManager] Debouncing plugin reload trigger due to '${eventType}' event on: ${path.basename(filePath)}`);
+
+        this.reloadTimeout = setTimeout(async () => {
+            this.isReloading = true;
+            console.log(`[PluginManager] Manifest file change detected ('${eventType}'). Hot-reloading plugins...`);
+            
+            try {
+                await this.loadPlugins();
+                console.log('[PluginManager] Hot-reload complete.');
+
+                if (this.webSocketServer && typeof this.webSocketServer.broadcastToAdminPanel === 'function') {
+                    this.webSocketServer.broadcastToAdminPanel({
+                        type: 'plugins-reloaded',
+                        message: 'Plugin list has been updated due to file changes.'
+                    });
+                    if (this.debugMode) console.log('[PluginManager] Notified admin panel about plugin reload.');
+                }
+            } catch (error) {
+                console.error('[PluginManager] Error during hot-reload:', error);
+            } finally {
+                this.isReloading = false;
+            }
+        }, 500); // 500ms debounce window
     }
 }
 

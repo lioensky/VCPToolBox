@@ -6,6 +6,7 @@ const chokidar = require('chokidar');
 const { HierarchicalNSW } = require('hnswlib-node');
 const crypto = require('crypto');
 const { chunkText } = require('./TextChunker.js');
+const WorkerPool = require('./WorkerPool.js');
 
 // --- Constants ---
 const DIARY_ROOT_PATH = path.join(__dirname, 'dailynote'); // Your diary root directory
@@ -99,6 +100,7 @@ class VectorDBManager {
         this.lruCache = new Map();
         this.manifest = {};
         this.searchCache = new SearchCache(this.config.cacheSize, this.config.cacheTTL);
+        this.searchWorkerPool = new WorkerPool(path.resolve(__dirname, 'vectorSearchWorker.js'));
 
         this.stats = {
             totalIndices: 0,
@@ -504,7 +506,6 @@ class VectorDBManager {
         console.log(`[VectorDB][Search] Received async search request for "${diaryName}".`);
         await this.trackUsage(diaryName);
 
-        // 确保索引文件存在，但不在这里加载它，工作线程将自己加载
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
         try {
@@ -514,46 +515,33 @@ class VectorDBManager {
             return [];
         }
 
-        return new Promise((resolve, reject) => {
-            console.log(`[VectorDB][Search] Creating search worker for "${diaryName}".`);
-            const worker = new Worker(path.resolve(__dirname, 'vectorSearchWorker.js'), {
-                workerData: {
-                    diaryName,
-                    queryVector,
-                    k,
-                    efSearch: this.config.efSearch,
-                    vectorStorePath: VECTOR_STORE_PATH,
-                }
-            });
-
-            worker.on('message', (message) => {
-                console.log(`[VectorDB][Search] Received message from worker for "${diaryName}". Status: ${message.status}`);
-                if (message.status === 'success') {
-                    const searchResults = message.results;
-                    this.searchCache.set(diaryName, queryVector, k, searchResults);
-                    this.recordMetric('search_success', performance.now() - startTime);
-                    console.log(`[VectorDB][Search] Worker found ${searchResults.length} matching chunks for "${diaryName}". Resolving promise.`);
-                    resolve(searchResults);
-                } else {
-                    console.error(`[VectorDB][Search] Worker returned an error for "${diaryName}":`, message.error);
-                    console.log(`[VectorDB][Search] Resolving promise with empty array due to worker error.`);
-                    resolve([]);
-                }
-            });
-
-            worker.on('error', (error) => {
-                console.error(`[VectorDB][Search] Worker for "${diaryName}" encountered a critical error:`, error);
-                console.log(`[VectorDB][Search] Resolving promise with empty array due to critical worker error.`);
-                resolve([]);
-            });
-
-            worker.on('exit', (code) => {
-                console.log(`[VectorDB][Search] Worker for "${diaryName}" exited with code ${code}.`);
-                if (code !== 0) {
-                    console.error(`[VectorDB][Search] Worker for "${diaryName}" stopped with a non-zero exit code.`);
-                }
-            });
-        });
+        try {
+            console.log(`[VectorDB][Search] Queuing search task for "${diaryName}" in worker pool.`);
+            const workerData = {
+                diaryName,
+                queryVector,
+                k,
+                efSearch: this.config.efSearch,
+                vectorStorePath: VECTOR_STORE_PATH,
+            };
+            
+            const message = await this.searchWorkerPool.execute(workerData);
+            
+            console.log(`[VectorDB][Search] Received message from worker for "${diaryName}". Status: ${message.status}`);
+            if (message.status === 'success') {
+                const searchResults = message.results;
+                this.searchCache.set(diaryName, queryVector, k, searchResults);
+                this.recordMetric('search_success', performance.now() - startTime);
+                console.log(`[VectorDB][Search] Worker found ${searchResults.length} matching chunks for "${diaryName}".`);
+                return searchResults;
+            } else {
+                console.error(`[VectorDB][Search] Worker returned an error for "${diaryName}":`, message.error);
+                return [];
+            }
+        } catch (error) {
+            console.error(`[VectorDB][Search] Worker pool task for "${diaryName}" encountered a critical error:`, error);
+            return [];
+        }
     }
 
     /**

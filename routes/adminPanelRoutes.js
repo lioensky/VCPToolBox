@@ -1205,6 +1205,57 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
     // --- End Semantic Groups API ---
 
+    // --- Thinking Chains API ---
+    adminApiRouter.get('/thinking-chains', async (req, res) => {
+        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
+        try {
+            const content = await fs.readFile(chainsPath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading meta_thinking_chains.json:', error);
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: 'Thinking chains file not found.' });
+            } else {
+                res.status(500).json({ error: 'Failed to read thinking chains file', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/thinking-chains', async (req, res) => {
+        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
+        const data = req.body;
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            await fs.writeFile(chainsPath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: '思维链配置已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing meta_thinking_chains.json:', error);
+            res.status(500).json({ error: 'Failed to write thinking chains file', details: error.message });
+        }
+    });
+
+    adminApiRouter.get('/available-clusters', async (req, res) => {
+        try {
+            await fs.access(dailyNoteRootPath);
+            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            const folders = entries
+                .filter(entry => entry.isDirectory() && entry.name.endsWith('簇'))
+                .map(entry => entry.name);
+            res.json({ clusters: folders });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.warn('[AdminPanelRoutes API] /available-clusters - dailynote directory not found.');
+                res.json({ clusters: [] });
+            } else {
+                console.error('[AdminPanelRoutes API] Error listing available clusters:', error);
+                res.status(500).json({ error: 'Failed to list available clusters', details: error.message });
+            }
+        }
+    });
+    // --- End Thinking Chains API ---
+
     // --- VCPTavern API ---
     // This section is now handled by the VCPTavern plugin's own registerRoutes method.
     // The conflicting routes have been removed from here to allow the plugin to manage them.

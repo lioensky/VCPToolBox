@@ -3,6 +3,7 @@ const path = require('path');
 
 // --- Configuration ---
 const DEBUG_MODE = (process.env.DebugMode || "false").toLowerCase() === "true";
+const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt"; // Allow only txt or md, default to txt
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'); // Fallback
 
@@ -24,6 +25,24 @@ function sendOutput(data) {
         console.error("[DailyNoteWrite] Error stringifying output:", e);
         process.stdout.write(JSON.stringify({ status: "error", message: "Internal error: Failed to stringify output." }));
     }
+}
+
+// --- Helper Function for Sanitization ---
+function sanitizePathComponent(name) {
+    if (!name || typeof name !== 'string') {
+        return 'Untitled'; // Return a default name for invalid input
+    }
+    // Replace invalid characters for Windows/Linux/macOS filenames
+    const sanitized = name.replace(/[\\/:*?"<>|]/g, '')
+                         // Remove control characters
+                         .replace(/[\x00-\x1f\x7f]/g, '')
+                         // Trim whitespace and dots from both ends, which are problematic on Windows
+                         .trim()
+                         .replace(/^[.]+|[.]+$/g, '')
+                         .trim(); // Trim again in case dots were removed
+
+    // If the name is empty after sanitization (e.g., it was just "."), use a fallback.
+    return sanitized || 'Untitled';
 }
 
 // --- Core Diary Writing Logic ---
@@ -50,6 +69,12 @@ async function writeDiary(maidName, dateString, contentText) {
         debugLog(`No tag detected. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
     }
 
+    // Sanitize the final folderName to remove invalid characters and trailing spaces/dots.
+    const sanitizedFolderName = sanitizePathComponent(folderName);
+    if (folderName !== sanitizedFolderName) {
+        debugLog(`Sanitized folder name from "${folderName}" to "${sanitizedFolderName}"`);
+    }
+
     const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
@@ -57,9 +82,9 @@ async function writeDiary(maidName, dateString, contentText) {
     const seconds = now.getSeconds().toString().padStart(2, '0');
     const timeStringForFile = `${hours}_${minutes}_${seconds}`;
 
-    const dirPath = path.join(dailyNoteRootPath, folderName);
+    const dirPath = path.join(dailyNoteRootPath, sanitizedFolderName);
     const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
-    const fileExtension = '.txt';
+    const fileExtension = `.${CONFIGURED_EXTENSION}`;
     const finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
     const filePath = path.join(dirPath, finalFileName);
 

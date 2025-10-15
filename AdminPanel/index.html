@@ -8,8 +8,8 @@
     <link rel="stylesheet" href="woff.css">
     <link rel="icon" href="favicon.ico">
     <!-- EasyMDE for Markdown Editing -->
-    <link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
-    <script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
+    <link rel="stylesheet" href="easymde.min.css">
+    <script src="easymde.min.js"></script>
    <style>
         /* EasyMDE 主题适配 */
         .editor-toolbar {
@@ -260,6 +260,7 @@
                     <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
+                    <li><a href="#" data-target="thinking-chains-editor"><span class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li class="nav-category" id="plugins-category">插件管理</li>
                     <!-- 插件列表将动态生成在这里 -->
@@ -479,6 +480,20 @@
                <ul id="preprocessor-list" class="draggable-list">
                    <!-- 插件将动态加载到这里 -->
                </ul>
+           </section>
+
+           <!-- Section: Thinking Chains Editor -->
+           <section id="thinking-chains-editor-section" class="config-section">
+               <h2>思维链编辑器</h2>
+               <p class="description">管理 RAGDiaryPlugin 使用的元思考链。您可以创建不同的思考主题，并拖拽排序其中的思维簇模块。</p>
+               <div id="thinking-chains-editor-controls" class="form-actions" style="margin-bottom: 1rem;">
+                   <button id="save-thinking-chains-button">保存所有更改</button>
+                   <button id="add-thinking-chain-theme-button">添加新主题</button>
+                   <span id="thinking-chains-status" class="status-message"></span>
+               </div>
+               <div id="thinking-chains-container">
+                   <!-- Editor will be dynamically loaded here -->
+               </div>
            </section>
         </main>
     </div>

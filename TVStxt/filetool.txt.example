@@ -1,12 +1,12 @@
 四.文件管理
 1.文件搜索，基于Everything模块实现。
-tool_name:「始」LocalSearchController「末」,
+tool_name:「始」LocalSearchController「末」, // 注意，如果使用工具名ServerSearchController则代表操作服务器文件！
 command:「始」search「末」,
 query:「始」VCP a.txt「末」, //语法和Everything一致，支持高级语法，支持多tag混合搜索。
 maxResults:「始」50「末」
 
-2.文件管理器。可以管理用户指定文件区域，也可以阅读全局文件。支持富文本格式读取。
-tool_name:「始」FileOperator「末」,
+2.文件管理器。可以管理用户本地指定文件区域，也可以阅读全局文件。支持富文本格式读取。
+tool_name:「始」FileOperator「末」,   // 注意，如果使用工具名ServerFileOperator则代表操作服务器文件！
 ①查看工作目录下所有文件列表。
 command:「始」ListAllowedDirectories「末」
 ②阅读文件，支持阅读电脑里任何区域文件，支持阅读多媒体文件，word/pdf文档等等富格式文件。
@@ -22,7 +22,7 @@ command:「始」AppendFile「末」,
 filePath:「始」/path/to/your/log.txt「末」,
 content:「始」
 在文件末尾追加内容「末」
-⑤编辑文件，编辑后会覆盖已有内容
+⑤编辑文件，编辑后会完全覆盖已有内容
 command:「始」EditFile「末」,
 filePath:「始」/path/to/existing_file.txt「末」,
 content:「始」这是覆盖后的新内容。「末」
@@ -51,7 +51,7 @@ filePath:「始」/path/to/deletable_file.txt「末」
 12.创建文件夹
 command:「始」CreateDirectory「末」,
 directoryPath:「始」/path/to/new_folder/sub_folder「末」
-13.编辑文件
+13.差分化编辑文件，适合对文件内进行部分修改
 command:「始」ApplyDiff「末」,
 filePath:「始」/path/to/your/file.txt「末」,
 searchString:「始」旧内容「末」,
@@ -62,7 +62,14 @@ url:「始」https://example.com/sample.jpg「末」
 15.下载文件
 command:「始」DownloadFile「末」,
 url:「始」http://example.com/archive.zip「末」
-16.构建批量指令——FileOperator支持批量指令例如：
+16.聊天历史编辑器。安全可靠的编辑.json格式的聊天历史文件，有健全的兜底机制避免json文件被损毁。
+command:「始」UpdateHistory「末」,
+filePath:「始」H:\path\to\your\history.json「末」,
+searchString:「始」这是我想修改的旧内容。「末」,
+replaceString:「始」这是替换后的新内容。「末」,
+archery:「始」no_reply「末」  // 可选，更新上下文不需要工具回执。
+
+17.构建批量指令——FileOperator支持批量指令例如：
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」FileOperator「末」,
 command1:「始」RenameFile「末」,
@@ -77,8 +84,19 @@ content3:「始」这是覆盖后的新内容。「末」
 <<<[END_TOOL_REQUEST]>>>
 通过这种方式可以构建多组指令。
 
-17.创建Canvas协同编辑器
+
+18.创建Canvas协同编辑器
 command:「始」CreateCanvas「末」,
 fileName:「始」new_canvas.js「末」,
 content:「始」console.log('Hello, Canvas!');「末」
-这是一个非常强大的指令，它将创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合向用户展示代码或者大型文案，并且邀请用户一同编辑它。
+这是一个非常强大的指令，它将创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合向用户展示代码或者大型文案，并且邀请用户一同编辑它。灵活使用之前的各类文件编辑工具来和用户一起编辑canvas内容吧。
+
+19.[重要]如何创建“内部内容有「始」，「末」”的文件！使用转义文件创造插件，它会自动将文本内的「始exp」，「末exp」，<<<[TOOL_REQUEST_EXP]>>>，<<<[END_TOOL_REQUEST_EXP]>>>进行替换，从而安全创造包含始末的文件。
+tool_name:「始」FileOperator「末」,
+command:「始」WriteEscapedFile「末」,
+filePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,
+content:「始」{
+  "description": "...调用格式:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」MyNewPlugin「末exp」,\n...\n<<<[END_TOOL_REQUEST_EXP]>>>"
+}「末」
+
+[重要提示：事实上，在你向用户演示指令，而非真正调用工具的时候，也应该遵守exp原则！]

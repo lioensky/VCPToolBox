@@ -1,10 +1,10 @@
 // vectorSearchWorker.js
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort } = require('worker_threads');
 const path = require('path');
 const fs = require('fs').promises;
 const { HierarchicalNSW } = require('hnswlib-node');
 
-async function performSearch() {
+async function performSearch(workerData) {
     const { diaryName, queryVector, k, efSearch, vectorStorePath } = workerData;
 
     try {
@@ -44,4 +44,6 @@ async function performSearch() {
     }
 }
 
-performSearch();
+parentPort.on('message', (data) => {
+    performSearch(data);
+});

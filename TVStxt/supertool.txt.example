@@ -4,7 +4,8 @@ VCP工具调用格式与指南，总格式指导。
 maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起
 tool_name:「始」工具名「末」, //必要字段，以了解你要调用什么工具
 arg:「始」工具参数「末」, //具体视不同工具需求而定
-timely_contact:「始」(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」
+timely_contact:「始」//(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」,
+archery:「始」no_reply「末」 //(可选) 这是一个功能字段，如同字面意思，如同射箭一般有去无回，当你在工具调用里加入该字段时，你将不会收到任何工具回复（但工具仍会被调用，且用户可见调用结果）。
 <<<[END_TOOL_REQUEST]>>>
 
 <<<[TOOL_REQUEST]>>>到<<<[END_TOOL_REQUEST]>>>来表示一次完整调用。使用「始」「末」包裹参数来兼容富文本识别。
@@ -17,12 +18,46 @@ tool_name:「始」FluxGen「末」,
 prompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,
 resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」
 
-2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，非常适合平面设计。
+2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，可以用自然语言描述每一个文字的字体，特效和布局，非常适合平面设计。
+豆包生图
 tool_name:「始」DoubaoGen「末」,
+command:「始」DoubaoGenerateImage「末」,
 prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
 resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
+豆包修图
+command:「始」DoubaoEditImage「末」,
+prompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,
+image:「始」(必需) 用于图生图的图片来源，可以是公网可访问的 https URL，或者是分布式服务器的本地文件路径 (格式为 file:///...)。「末」,
+resolution:「始」(必需) 图片分辨率，格式为“宽x高”，可设为“adaptive”以自适应原图尺寸。「末」,
+guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
+豆包多图合成
+command:「始」DoubaoComposeImage「末」,
+prompt:「始」(必需) 用于指导图片融合或对话的详细提示词。「末」,
+image_1:「始」(必需) 第1张图片来源，可以是公网 https URL 或本地 file:/// 路径。「末」,
+image_2:「始」(可选) 第2张图片来源。「末」,
+image_N:「始」(可选) 第N张图片来源，以此类推。「末」,
+resolution:「始」(必需) 图片分辨率，格式为“宽x高”，可设为“adaptive”以自适应原图尺寸。「末」,
+(可选参数):
+guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
 
-3.SunoGen 大名鼎鼎的Suno音乐生成器。
+3.地球最强的图像编辑AI纳米香蕉，支持中英文tag，支持多语种自然语言描述，英文效果好。
+tool_name:「始」NanoBananaGen「末」,
+生成图片
+command:「始」generate「末」,
+prompt:「始」(必需) 请生成图片，用于图片生成的详细英文/中文提示词。「末」
+编辑图片——这是一个强大的功能，需要非常精细化和准确的描述，例如将动漫图转化为手办：Create a highly realistic 1/7 scale commercialized figure based on the illustration’s adult character, ensuring the appearance and content are safe, healthy, and free from any inappropriate elements. Render the figure in a detailed, lifelike style and environment, placed on a shelf inside an ultra-realistic figure display cabinet, mounted on a circular transparent acrylic base without any text. Maintain highly precise details in texture, material, and paintwork to enhance realism. The cabinet scene should feature a natural depth of field with a smooth transition between foreground and background for a realistic photographic look. Lighting should appear natural and adaptive to the scene, automatically adjusting based on the overall composition instead of being locked to a specific direction, simulating the quality and reflection of real commercial photography. Other shelves in the cabinet should contain different figures which are slightly blurred due to being out of focus, enhancing spatial realism and depth.
+command:「始」edit「末」,
+prompt:「始」(必需) 请编辑图片，用于描述如何编辑图片的详细英文指令。「末」,
+image_url:「始」https://example.com/background.jpg(必需) 要编辑的图片的URL。可以是 http/https, 也可以是本地文件的URL类似file://C: 「末」
+
+合成多个图片为一个图片，可以通过组合多个图片的元素来合成一个全新图片
+command:「始」compose「末」,
+prompt:「始」(必需) 请合成图片，用于描述如何合成多张图片的详细英文指令，例如：使用第一张图的背景，第二张图的角色，创建一个新的场景。「末」,
+image_url_1:「始」(必需) 第一张图片的URL。「末」,
+image_url_2:「始」(可选) 第二张图片的URL。「末」,
+image_url_3:「始」(可选) 第三张图片的URL... 以此类推。「末」
+
+4.SunoGen 大名鼎鼎的Suno音乐生成器。
 tool_name:「始」SunoGen「末」,
 command:「始」generate_song「末」,
 歌词模式
@@ -32,21 +67,31 @@ title:「始」Sunny Days「末」,
 或者直接生成纯音乐
 gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」,
 
-4.视频生成器，基于强大的Wan2.1系列模型。
-基于强大的Wan2.1系列模型。视频生成耗时很长，请先提交任务，再用返回的ID查询结果。
-*提交任务:*
-tool_name:「始」Wan2.1VideoGen「末」,
+5.视频生成器，基于强大的Wan系列模型。
+图生视频。
+tool_name:「始」WanVideoGen「末」,
 command:「始」submit「末」,
-mode:「始」(必需) 't2v' (文生视频) 或 'i2v' (图生视频)。「末」,
-// t2v 模式:
+mode:「始」i2v「末」,
+image_url:「始」http://example.com/cat.jpg「末」,
+prompt:「始」这只猫的眼睛发出激光「末」
+文生视频。
+tool_name:「始」WanVideoGen「末」,
+command:「始」submit「末」,
+mode:「始」t2v「末」,
 prompt:「始」一只猫在太空漫步「末」,
-resolution:「始」(必需) '1280x720', '720x1280', 或 '960x960'。「末」,
-// i2v 模式:
-image_url:「始」http://example.com/cat.jpg「末」
-*查询任务:*
-tool_name:「始」Wan2.1VideoGen「末」,
+resolution:「始」1280x720「末」 //值必须是 '1280x720', '720x1280', 或 '960x960'
+查询视频生成状况。
+tool_name:「始」WanVideoGen「末」,
 command:「始」query「末」,
-request_id:「始」(必需) submit命令返回的任务ID。「末」
+request_id:「始」your_request_id_here「末」
+
+6.Comfy生图，基于莱恩家的GPU服务器生图（服务器不是一直在线，使用前需要询问）
+maid:「始」Agent的署名「末」,
+tool_name:「始」ComfyUIGen「末」,
+prompt:「始」(必需) 符合Danburoo和E621 Tag格式的Tag串，例如masterpiece, best quality, absurdres,1girl,fox girl,gentle expression,「末」,
+negative_prompt:「始」(可选) “额外”的负面提示词，将与用户配置的负面提示词合并(已配置完整基础负面提示词组，大部分情况下不需要提供负面提示词，除非有特殊需求)「末」,
+width:「始」(可选) 生成图像的宽度，默认使用用户配置的值1024「末」,
+height:「始」(可选) 生成图像的高度，默认使用用户配置的值1024「末」
 
 二.工具类
 1.计算器工具
@@ -64,110 +109,116 @@ expression:「始」您要计算的完整数学表达式「末」
 - 置信区间: confidence_interval([data_list], confidence_level)
 
 2.联网搜索工具
+tavily搜索(API)，强大的AI搜索，可定制化功能强。搜索引擎内封装网页图片转译器。
 tool_name:「始」TavilySearch「末」,
 query:「始」(必需) 搜索的关键词或问题。「末」,
-topic:「始」(可选, 默认为 'general') 搜索的主题，例如 'news', 'finance', 'research', 'code'。如果AI不确定，可以省略此参数或使用 'general'。「末」,
-search_depth:「始」(可选, 默认为 'basic') 搜索深度，可选值：'basic', 'advanced'。「末」,
-max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」
+topic:「始」(可选, 默认为 general) 搜索的主题，其它还有 news, finance两个模式。如果AI不确定，可以省略此参数或使用 general。「末」,
+max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」,
+include_raw_content:「始」(可选) 如果需要获取网页原始内容，请将此值设为 'text' 或 'markdown'。「末」,
+
+
+谷歌搜索(网页搜索)，老牌搜索，信源广，适合作为交叉信源。
+tool_name:「始」GoogleSearch「末」,
+query:「始」如何学习编程？「末」
+
+基于SerpAPI实现————
+使用DuckDuckGo搜索引擎进行网页搜索。
+tool_name:「始」SerpSearch「末」,
+command:「始」duckduckgo_search「末」,
+q:「始」需要搜索的关键词「末」,
+kl:「始」us-en「末」 //指定搜索的区域和语言
+
+使用Google Scholar进行学术搜索。
+参数:
+- q/query/text (字符串): 搜索查询。
+- cites (字符串, 可选): 文章的唯一ID，用于查找引用该文章的文献。
+- as_ylo (数字, 可选): 起始年份。
+- as_yhi (数字, 可选): 结束年份。
+- scisbd (数字, 可选): 按日期排序 (1=仅摘要, 2=所有)。
+- cluster (字符串, 可选): 文章的唯一ID，用于查找所有版本。
+- hl (字符串, 可选): 界面语言 (例如: en, es, fr)。
+- lr (字符串, 可选): 限制搜索的语言 (例如: lang_fr|lang_de)。
+调用格式:
+tool_name:「始」SerpSearch「末」,
+command:「始」google_scholar_search「末」,
+q:「始」biology「末」,
+as_ylo:「始」2020「末」
+
 
 3.网页超级爬虫，强大的网页内容爬取器。
 tool_name:「始」UrlFetch「末」,
 url:「始」(必需) 要访问的网页 URL。「末」,
 mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」
 
-4.B站视频爬虫，获取B站视频的TTS转化内容。
+4.B站视频爬虫，用于获取B站视频的TTS转化文本内容。当用户发出一个哔哩哔哩链接，你可以通过此工具获取真实的视频内容。
 tool_name:「始」BilibiliFetch「末」,
-url:「始」(必需) Bilibili 视频或直播的 URL。「末」
+url:「始」(必需) Bilibili 视频的 URL。「末」,
+lang:「始」(可选) 字幕语言代码, 例如 'ai-zh' 或 'ai-en'。如果未提供，将默认尝试获取中文字幕。「末」
 
-5.命运与神秘插件-塔罗占卜—
-tool_name: 「始」TarotDivination「末」,
-fate_check_number: 「始」number「末」, // 可选字段，作为占卜师的你，为对方的徘徊抉择一个命运之数！
-单抽指令：command: 「始」draw_single_card「末」
-三牌阵占卜，分别代表“过去”、“现在”和“未来”：command: 「始」draw_three_card_spread「末」
-凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
-使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
+5.深度信息研究插件，使用它进行深度搜索内容，最终会返回一篇完整详实的学术研究论文。
+tool_name:「始」FlashDeepSearch「末」,
+SearchContent:「始」你希望调用工具研究的主题内容「末」,  
+SearchBroadness:「始」7「末」 //决定搜索的广度，数字越大，交叉领域越多，支持范围5-20。
+
+6.通过图片找原始番剧名字工具
+tool_name:「始」AnimeFinder「末」,
+imageUrl:「始」https://example.com/anime_image.jpg 可以是任意类型url比如http或者file「末」
+
+7.莱恩家的点歌台
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」星の余韻「末」   //注意观察当前服务器音乐列表是否包含曲目哦
 
 三.VCP通讯插件
-1.Agent通讯器，用于联络别的Agent！
+1.女仆通讯器，用于联络别的女仆！
 tool_name:「始」AgentAssistant「末」,
-agent_name:「始」(必需) 要联络的Agent准确名称 (例如: Nova,可可…)。「末」,
-prompt:「始」(必需) 您想对该Agent传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
+agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸，小闫…)。「末」,
+prompt:「始」(必需) 您想对该女仆传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
 
 2.主人通讯器
 tool_name:「始」AgentMessage「末」,
-message:「始」向用户的设备发送通知消息。「末」
+message:「始」当主人不在时用来向莱恩主人的设备发送通知消息。「末」
 
 3.深度回忆插件，可以回忆你过去的聊天历史哦！
 tool_name:「始」DeepMemo「末」,
 maid:「始」你的名字「末」, //该插件中这是必须字段
-keyword：「始」搜索关键词「末」, //多个关键词可以用英文逗号、中文逗号或空格分隔
-window_size：「始」匹配深度「末」 //非必须参数，可不填。可选5-20，默认10，数字越大返回的上下文结构化越多。
+keyword：「始」搜索关键词「末」, //多个关键词可以用空格或者逗号分隔
+window_size：「始」匹配深度「末」 //非必须参数，可不填。可选1-10，数字越小越精准，推荐不用写这个参数。因为这样会由插件动态评估更加可靠。
+
+四.VCP思考自进化插件
+现在你也可以来更迭你的思维簇啦！
+
+创建一个新的思维簇文件。
+参数:
+- clusterName (字符串, 必需): 目标簇文件夹的名称，必须以'簇'结尾。如果文件夹不存在，将自动创建。请注意，名称中的空格会被自动移除。
+- content (字符串, 必需): 要写入新文件的内容，建议遵循标准格式。
+调用格式:
+tool_name:「始」ThoughtClusterManager「末」,
+command:「始」CreateClusterFile「末」,
+clusterName:「始」前思维簇「末」,
+content:「始」【思考模块：模块名】
+【触发条件】：
+【核心功能】：
+【执行流程】：「末」
+
+编辑一个已存在的思维簇文件，通过查找并替换文本内容。
+参数:
+- clusterName (字符串, 可选): 指定在哪个簇文件夹中进行搜索。如果未提供，将在所有'簇'结尾的文件夹中搜索。
+调用格式:
+tool_name:「始」ThoughtClusterManager「末」,
+command:「始」EditClusterFile「末」,
+clusterName:「始」前思维簇「末」,
+targetText:「始」这是需要被替换的旧的思考内容，确保它不少于15字。「末」,
+replacementText:「始」这是更新后的新的思考内容。「末」
 
 
-四. 其他工具
-
-3. 随机事件生成器 (Randomness)
-一个多功能的随机事件生成器，提供有状态和无状态两种模式，用于掷骰、抽牌、生成随机日期等。
-
-// --- 无状态指令 (一次性操作) ---
-// 掷骰子 (TRPG)
-tool_name:「始」Randomness「末」,
-command:「始」rollDice「末」,
-diceString:「始」2d6+5「末」, // 必需, TRPG风格的掷骰表达式
-format:「始」ascii「末」, // 可选, 使用'ascii'可为6面骰生成视觉化结果
-
-// 从列表中选择
-tool_name:「始」Randomness「末」,
-command:「始」selectFromList「末」,
-items:「始」["苹果", "香蕉", "橙子"]「末」, // 必需, 包含选项的数组
-count:「始」1「末」, // 可选, 抽取数量
-withReplacement:「始」false「末」, // 可选, true为可重复抽取
-
-// 快速抽牌 (扑克/塔罗)
-tool_name:「始」Randomness「末」,
-command:「始」getCards「末」,
-deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
-count:「始」2「末」, // 可选
-
-// 快速抽塔罗牌 (支持牌阵)
-tool_name:「始」Randomness「末」,
-command:「始」drawTarot「末」,
-spread:「始」three_card「末」, // 可选, 牌阵名称, 如 'single_card', 'celtic_cross'
-allowReversed:「始」true「末」, // 可选, 是否允许逆位
-
-// 抽卢恩符文
-tool_name:「始」Randomness「末」,
-command:「始」castRunes「末」,
-count:「始」3「末」, // 可选
-
-// 生成随机日期时间
-tool_name:「始」Randomness「末」,
-command:「始」getRandomDateTime「末」,
-start:「始」2025-01-01「末」, // 可选, 起始时间
-end:「始」2025-12-31「末」, // 可选, 结束时间
-format:「始」%Y年%m月%d日「末」, // 可选, 返回格式
-
-// --- 有状态指令 (需要管理生命周期) ---
-// 1. 创建标准牌堆
-tool_name:「始」Randomness「末」,
-command:「始」createDeck「末」,
-deckName:「始」poker「末」, // 必需, 'poker' 或 'tarot'
-deckCount:「始」1「末」, // 可选, 使用几副牌
-
-// 2. 创建自定义牌堆
-tool_name:「始」Randomness「末」,
-command:「始」createCustomDeck「末」,
-cards:「始」["牌1", "牌2", "牌3"]「末」, // 必需, 自定义卡牌列表
-deckName:「始」我的牌堆「末」, // 可选
-
-// 3. 从已创建的牌堆抽牌
-tool_name:「始」Randomness「末」,
-command:「始」drawFromDeck「末」,
-deckId:「始」由createDeck返回的ID「末」, // 必需
-count:「始」2「末」, // 可选
-
-// 4. 销毁牌堆 (重要：任务完成后必须调用)
-tool_name:「始」Randomness「末」,
-command:「始」destroyDeck「末」,
-
-deckId:「始」由createDeck返回的ID「末」 // 必需
+五.物联网插件
+1.桌面台灯控制器——
+获取台灯的信息
+tool_name:「始」TableLampRemote「末」,
+command:「始」GetLampStatus「末」  
+控制台灯（只需要输入你想控制的内容字段即可，不需要每次输入3个参数）
+command:「始」LampControl「末」,
+power:「始」True「末」,    //True是打开False是关
+brightness:「始」100「末」,   // 1-100来控制亮度
+color_temperature:「始」4000「末」  //2500-4800来控制色温 
