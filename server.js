@@ -860,6 +860,7 @@ async function initialize() {
     console.log('开始初始化静态插件...');
     await pluginManager.initializeStaticPlugins();
     console.log('静态插件初始化完成。'); // Keep
+    await pluginManager.prewarmPythonPlugins(); // 新增：预热Python插件以解决冷启动问题
     // EmojiListGenerator (static plugin) is automatically executed as part of the initializeStaticPlugins call above.
     // Its script (`emoji-list-generator.js`) will run and generate/update the .txt files
     // in its `generated_lists` directory. No need to call it separately here.

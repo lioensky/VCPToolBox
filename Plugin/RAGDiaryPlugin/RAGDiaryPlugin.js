@@ -992,7 +992,7 @@ class RAGDiaryPlugin {
         if (useGroup) {
             activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
             if (activatedGroups.size > 0) {
-                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups);
+                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups, queryVector);
                 if (enhancedVector) finalQueryVector = enhancedVector;
             }
         }
@@ -1133,7 +1133,7 @@ class RAGDiaryPlugin {
         if (useGroup) {
             activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
             if (activatedGroups.size > 0) {
-                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups);
+                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups, currentQueryVector);
                 if (enhancedVector) {
                     currentQueryVector = enhancedVector;
                     console.log(`[RAGDiaryPlugin][MetaThinking] 语义组已激活，查询向量已增强`);

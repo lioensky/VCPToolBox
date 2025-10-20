@@ -6,7 +6,7 @@
 
 [English](README_en.md) | [日本語](README_ja.md) | [Русский](README_ru.md) 
 
-
+## 警告！本项目Agent拥有绝对底层级分布式系统根权限！非专业用户请勿随意部署！ ##
 ---
 
 ## 1. 项目愿景：超越交互，赋能进化
@@ -999,6 +999,7 @@ VCP 的征程远未结束，我们对未来充满期待，并已规划了更激�
 我们相信， VCP 将为 AI 应用的开发带来前所未有的灵活性和可能性。欢迎一切形式的贡献、反馈与交流，让我们共同探索 AI 的未来！
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lioensky/VCPToolBox)
+
 
 
 

@@ -782,6 +782,27 @@ button[type="submit"]:hover { background-color: var(--highlight-text); filter: b
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--highlight-text) 20%, transparent);
 }
 
+.server-log-controls input[type="search"] {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
+    font-size: 0.9em;
+    font-weight: 500;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    height: 42px;
+    box-sizing: border-box;
+    flex-grow: 1; /* 让输入框填充可用空间 */
+    max-width: 300px; /* 设置一个最大宽度 */
+}
+
+.server-log-controls input[type="search"]:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--highlight-text) 20%, transparent);
+}
+
 
 /* Server Activity Chart Styles */
 .activity-chart-container {

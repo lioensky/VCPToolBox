@@ -88,6 +88,7 @@ class VectorDBManager {
             retryMaxDelay: parseInt(process.env.VECTORDB_RETRY_MAX_DELAY_MS) || 10000,
             preWarmCount: parseInt(process.env.VECTORDB_PREWARM_COUNT) || 5,
             efSearch: parseInt(process.env.VECTORDB_EF_SEARCH) || 150,
+            debug: process.env.VECTORDB_DEBUG === 'true',
         };
 
         this.apiKey = process.env.API_Key;
@@ -117,6 +118,12 @@ class VectorDBManager {
             cacheTTL: this.config.cacheTTL,
             retryAttempts: this.config.retryAttempts,
         });
+    }
+
+    debugLog(message, ...args) {
+        if (this.config.debug) {
+            console.log(`[VectorDB][DEBUG] ${message}`, ...args);
+        }
     }
 
     /**
@@ -227,6 +234,18 @@ class VectorDBManager {
 
     async calculateChanges(diaryName) {
         const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
+        
+        // ✅ 再次检查（防御性编程）
+        try {
+            await fs.access(diaryPath);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`[VectorDB][calculateChanges] Directory "${diaryName}" does not exist.`);
+                return { diaryName, chunksToAdd: [], labelsToDelete: [], newFileHashes: {} };
+            }
+            throw error;
+        }
+        
         const newFileHashes = {};
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
@@ -306,6 +325,21 @@ class VectorDBManager {
 
         this.activeWorkers.add(diaryName);
         try {
+            const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
+            
+            // ✅ 检查目录是否存在
+            try {
+                await fs.access(diaryPath);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    console.log(`[VectorDB] Directory "${diaryName}" no longer exists. Cleaning up resources...`);
+                    await this.cleanupDeletedDiary(diaryName);
+                    this.activeWorkers.delete(diaryName);
+                    return;
+                }
+                throw error; // 其他错误继续抛出
+            }
+
             const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
             const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
             let totalOldChunks = 0;
@@ -364,11 +398,72 @@ class VectorDBManager {
         });
     }
 
+    /**
+     * ✅ 新增方法：清理已删除日记本的所有资源
+     */
+    async cleanupDeletedDiary(diaryName) {
+        try {
+            const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
+            const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
+            const mapPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}_map.json`);
+
+            // 1. 从内存中删除索引和块映射
+            this.indices.delete(diaryName);
+            this.chunkMaps.delete(diaryName);
+            this.lruCache.delete(diaryName);
+            console.log(`[VectorDB] Removed "${diaryName}" from in-memory indices.`);
+
+            // 2. 删除向量存储文件
+            const deletePromises = [];
+            
+            try {
+                await fs.access(indexPath);
+                deletePromises.push(
+                    fs.unlink(indexPath)
+                        .then(() => console.log(`[VectorDB] Deleted index file for "${diaryName}".`))
+                        .catch(e => console.warn(`[VectorDB] Failed to delete index file:`, e.message))
+                );
+            } catch (e) { /* 文件不存在，跳过 */ }
+
+            try {
+                await fs.access(mapPath);
+                deletePromises.push(
+                    fs.unlink(mapPath)
+                        .then(() => console.log(`[VectorDB] Deleted map file for "${diaryName}".`))
+                        .catch(e => console.warn(`[VectorDB] Failed to delete map file:`, e.message))
+                );
+            } catch (e) { /* 文件不存在，跳过 */ }
+
+            await Promise.all(deletePromises);
+
+            // 3. 从 manifest 中删除
+            if (this.manifest[diaryName]) {
+                delete this.manifest[diaryName];
+                await this.saveManifest();
+                console.log(`[VectorDB] Removed "${diaryName}" from manifest.`);
+            }
+
+            // 4. 清理使用统计
+            let usageStats = await this.loadUsageStats();
+            if (usageStats[diaryName]) {
+                delete usageStats[diaryName];
+                await fs.writeFile(USAGE_STATS_PATH, JSON.stringify(usageStats, null, 2));
+                console.log(`[VectorDB] Removed "${diaryName}" from usage statistics.`);
+            }
+
+            console.log(`[VectorDB] Successfully cleaned up all resources for deleted diary "${diaryName}".`);
+        } catch (error) {
+            console.error(`[VectorDB] Error during cleanup of "${diaryName}":`, error);
+        }
+    }
+
     watchDiaries() {
         const watcher = chokidar.watch(DIARY_ROOT_PATH, {
             ignored: /(^|[\/\\])\../,
             persistent: true,
             ignoreInitial: true,
+            // ✅ 启用目录监听
+            depth: 1,
         });
 
         const handleFileChange = (filePath) => {
@@ -381,7 +476,24 @@ class VectorDBManager {
             this.scheduleDiaryBookProcessing(diaryName);
         };
 
-        watcher.on('add', handleFileChange).on('change', handleFileChange).on('unlink', handleFileChange);
+        // ✅ 处理目录删除
+        const handleDirUnlink = (dirPath) => {
+            const diaryName = path.basename(dirPath);
+            console.log(`[VectorDB] Directory deleted: ${diaryName}`);
+            if (diaryName.startsWith('已整理')) {
+                return;
+            }
+            // 直接清理，不需要通过 scheduleDiaryBookProcessing
+            this.cleanupDeletedDiary(diaryName).catch(err => {
+                console.error(`[VectorDB] Error cleaning up deleted directory "${diaryName}":`, err);
+            });
+        };
+
+        watcher
+            .on('add', handleFileChange)
+            .on('change', handleFileChange)
+            .on('unlink', handleFileChange)
+            .on('unlinkDir', handleDirUnlink); // ✅ 监听目录删除
     }
 
     async loadIndexForSearch(diaryName, dimensions) {
@@ -506,21 +618,36 @@ class VectorDBManager {
         console.log(`[VectorDB][Search] Received async search request for "${diaryName}".`);
         await this.trackUsage(diaryName);
 
-        const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
-        const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
-        try {
-            await fs.access(indexPath);
-        } catch (error) {
-            console.error(`[VectorDB][Search] Index file for "${diaryName}" does not exist. Cannot start search worker.`);
+        // --- Bug Fix: K-value Sanity Check ---
+        // 1. Ensure the index is loaded to check its size.
+        const loaded = await this.loadIndexForSearch(diaryName);
+        if (!loaded) {
+            console.error(`[VectorDB][Search] Index for "${diaryName}" could not be loaded. Aborting search.`);
             return [];
         }
+
+        const index = this.indices.get(diaryName);
+        const maxElements = index.getMaxElements();
+
+        // 2. If the index is empty, no search is possible.
+        if (maxElements === 0) {
+            console.log(`[VectorDB][Search] Index for "${diaryName}" is empty. Returning no results.`);
+            return [];
+        }
+
+        // 3. Clamp the k-value to be no larger than the number of elements in the index.
+        const finalK = Math.min(k, maxElements);
+        if (finalK !== k) {
+            console.warn(`[VectorDB][Search] Requested k=${k} is greater than max elements (${maxElements}) for "${diaryName}". Clamping to k=${finalK}.`);
+        }
+        // --- End of Bug Fix ---
 
         try {
             console.log(`[VectorDB][Search] Queuing search task for "${diaryName}" in worker pool.`);
             const workerData = {
                 diaryName,
                 queryVector,
-                k,
+                k: finalK, // Use the sanitized k-value
                 efSearch: this.config.efSearch,
                 vectorStorePath: VECTOR_STORE_PATH,
             };
@@ -530,7 +657,7 @@ class VectorDBManager {
             console.log(`[VectorDB][Search] Received message from worker for "${diaryName}". Status: ${message.status}`);
             if (message.status === 'success') {
                 const searchResults = message.results;
-                this.searchCache.set(diaryName, queryVector, k, searchResults);
+                this.searchCache.set(diaryName, queryVector, k, searchResults); // Cache with original k
                 this.recordMetric('search_success', performance.now() - startTime);
                 console.log(`[VectorDB][Search] Worker found ${searchResults.length} matching chunks for "${diaryName}".`);
                 return searchResults;

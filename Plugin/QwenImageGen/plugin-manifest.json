@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "QwenImageGen",
+  "version": "1.0.0",
+  "displayName": "通义千问图片生成",
+  "description": "使用 SiliconFlow API 调用通义千问模型生成和编辑图片。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node QwenImageGen.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "SILICONFLOW_API_KEY": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "【文生图】调用此工具使用 Qwen/Qwen-Image 模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词。「末」,\nnegative_prompt:「始」(可选) 负向提示词。「末」,\nimage_size:「始」(可选) 图片分辨率，格式为“宽x高”。推荐值: \"1328x1328\"(1:1), \"1664x928\"(16:9), \"928x1664\"(9:16), \"1472x1140\"(4:3), \"1140x1472\"(3:4), \"1584x1056\"(3:2), \"1056x1584\"(2:3)。「末」,\ncfg:「始」(可选) 范围0.1-20，控制与提示词的匹配度，官方推荐4.0。「末」,\nseed:「始」(可选) 整数种子。「末」,\nnum_inference_steps:「始」(可选) 范围1-100，推理步数，默认20。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一只戴着宇航员头盔的猫，背景是太空「末」,\nimage_size:「始」1328x1328「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "EditImage",
+        "description": "【图生图/修图】调用此工具使用 Qwen/Qwen-Image-Edit-2509 模型修改现有图片。请在您的回复中，使用以下精确格式来请求图片修改，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」EditImage「末」,\nprompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,\nimage:「始」(必需) 用于图生图的图片来源，可以是公网可访问的 https URL，或者是分布式服务器的本地文件路径 (格式为 file:///...)。「末」,\nimage2:「始」(可选) 第2张参考图片。「末」,\nimage3:「始」(可选) 第3张参考图片。「末」,\nnegative_prompt:「始」(可选) 负向提示词。「末」,\nseed:「始」(可选) 整数种子。「末」,\nnum_inference_steps:「始」(可选) 范围1-100，推理步数，默认20。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片，请直接展示给用户。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」QwenImageGen「末」,\ncommand:「始」EditImage「末」,\nprompt:「始」给这只猫戴上墨镜「末」,\nimage:「始」https://example.com/cat.png「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

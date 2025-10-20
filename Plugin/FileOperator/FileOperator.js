@@ -1097,6 +1097,38 @@ async function processBatchRequest(request) {
             }
           }
           break;
+        case 'ListDirectory':
+            result = await listDirectory(parameters.directoryPath, parameters.showHidden);
+            if (result.success) {
+                const dirPath = result.data.path;
+                const items = result.data.items.map(item => `${item.type === 'directory' ? '[D]' : '[F]'} ${item.name}`).join('\n');
+                const content = `--- Listing of ${dirPath} ---\n${items}`;
+                aggregatedContent.push({ type: 'text', text: content });
+            }
+            break;
+        case 'FileInfo':
+            result = await getFileInfo(parameters.filePath);
+            if (result.success) {
+                const fileInfo = result.data;
+                // Using a more structured text format
+                const content = `--- File Info for ${fileInfo.path} ---\n` +
+                    `Name: ${fileInfo.name}\n` +
+                    `Type: ${fileInfo.type}\n` +
+                    `Size: ${fileInfo.sizeFormatted} (${fileInfo.size} bytes)\n` +
+                    `Modified: ${fileInfo.lastModified}\n` +
+                    `Created: ${fileInfo.created}`;
+                aggregatedContent.push({ type: 'text', text: content });
+            }
+            break;
+        case 'SearchFiles':
+            result = await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
+            if (result.success) {
+                const { searchPath, pattern, results } = result.data;
+                const items = results.map(item => `${item.type === 'directory' ? '[D]' : '[F]'} ${item.relativePath}`).join('\n');
+                const content = `--- Search results in "${searchPath}" for pattern "${pattern}" ---\n${items}`;
+                aggregatedContent.push({ type: 'text', text: content });
+            }
+            break;
         case 'CopyFile':
           result = await copyFile(parameters.sourcePath, parameters.destinationPath);
           break;
@@ -1125,7 +1157,8 @@ async function processBatchRequest(request) {
     if (result.success) {
       successCount++;
       // For non-read operations, generate a summary message instead of pushing to content
-      if (command !== 'ReadFile' && command !== 'WebReadFile') {
+      const readOnlyCommands = ['ReadFile', 'WebReadFile', 'ListDirectory', 'FileInfo', 'SearchFiles'];
+      if (!readOnlyCommands.includes(command)) {
          summaryMessages.push(result.data.message);
       }
     } else {

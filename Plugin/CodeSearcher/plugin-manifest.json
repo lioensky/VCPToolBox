@@ -1,0 +1,43 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "CodeSearcher",
+  "version": "1.0.0",
+  "displayName": "代码搜索器 (Rust)",
+  "description": "一个使用Rust编写的高性能代码搜索插件，可以在指定的工作区目录中进行快速、精准的代码内容搜索。",
+  "author": "Roo",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "executable",
+    "command": "CodeSearcher.exe"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "MAX_RESULTS": {
+      "type": "integer",
+      "description": "单次搜索返回的最大结果数量。",
+      "default": 50
+    },
+    "IGNORED_FOLDERS": {
+        "type": "string",
+        "description": "搜索时需要忽略的文件夹列表，用逗号分隔。",
+        "default": "node_modules,.git,target,VectorStore,DebugLog"
+    },
+    "ALLOWED_EXTENSIONS": {
+        "type": "string",
+        "description": "允许搜索的文件扩展名白名单，用逗号分隔。",
+        "default": ".js,.json,.md,.txt,.py,.rs,.html,.css"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SearchCode",
+        "description": "调用此工具在VCP项目源码中搜索指定的代码片段或关键词。支持使用正则表达式进行高级搜索。\n参数:\n- query (字符串, 必需): 需要搜索的关键词、代码片段或正则表达式。\n- search_path (字符串, 可选): 指定要搜索的相对路径。如果未提供，则默认为整个项目的工作区。\n- case_sensitive (布尔值, 可选, 默认false): 是否区分大小写搜索。\n- whole_word (布尔值, 可选, 默认false): 是否进行全词匹配。\n- context_lines (整数, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」CodeSearcher「末」,\nquery:「始」关键词或正则表达式「末」,\nsearch_path:「始」(可选)相对路径「末」,\ncase_sensitive:「始」(可选)true/false「末」,\nwhole_word:「始」(可选)true/false「末」,\ncontext_lines:「始」(可选)数字「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」CodeSearcher「末」,\nquery:「始」function\\s+processToolCall\\(「末」,\nsearch_path:「始」modules「末」,\ncase_sensitive:「始」false「末」,\ncontext_lines:「始」3「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
