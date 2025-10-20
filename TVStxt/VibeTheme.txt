@@ -1,0 +1,36 @@
+主题模式自适应气泡实现指南：
+
+使用CSS变量实现亮暗模式自动切换的关键要素：
+
+1. 基础结构：
+<div style="
+    background-color: var(--primary-bg);
+    color: var(--primary-text);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 20px;
+">
+
+2. 核心变量：
+- var(--primary-bg) : 主背景色
+- var(--secondary-bg) : 次要背景色
+- var(--primary-text) : 主文字颜色
+- var(--highlight-text) : 高亮文字颜色
+- var(--border-color) : 边框颜色
+
+3. 增强效果：
+    backdrop-filter: blur(10px) saturate(120%);
+    transition: all 0.3s ease-in-out;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+
+4. 示例应用：
+<h2 style="color: var(--highlight-text); border-bottom: 1px solid var(--border-color);">
+    标题文字
+</h2>
+<p style="color: var(--primary-text);">内容文字</p>
+
+关键优势：
+- 自动适配亮色/暗色主题
+- 无需JavaScript干预
+- 平滑过渡动画
+- 磨砂玻璃效果

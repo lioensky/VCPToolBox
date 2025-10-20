@@ -76,7 +76,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const serverLogPathDisplay = document.getElementById('server-log-path-display');
     const serverLogStatusSpan = document.getElementById('server-log-status');
     const serverLogContentPre = document.getElementById('server-log-content');
+    const serverLogFilterInput = document.getElementById('server-log-filter');
     let serverLogIntervalId = null; // For server log auto-refresh
+    let originalLogContent = ''; // To store the full log content for filtering
     
     // Sidebar Search
     const sidebarSearchInput = document.getElementById('sidebar-search');
@@ -2248,6 +2250,44 @@ Description Length: ${newDescription.length}`);
             serverLogIntervalId = setInterval(loadServerLog, 2000); // Poll every 2 seconds
             console.log('Started server log auto-refresh interval.');
         }
+        if (serverLogFilterInput) serverLogFilterInput.value = ''; // Clear filter on init
+
+        await loadServerLog(); // Perform the initial load
+
+        // Start polling after the initial load
+        if (!serverLogIntervalId) {
+            serverLogIntervalId = setInterval(loadServerLog, 2000); // Poll every 2 seconds
+            console.log('Started server log auto-refresh interval.');
+        }
+    }
+
+    function filterAndHighlightLog() {
+        if (!serverLogContentPre || !serverLogFilterInput) return;
+
+        const filterValue = serverLogFilterInput.value.trim().toLowerCase();
+        
+        if (!filterValue) {
+            serverLogContentPre.textContent = originalLogContent;
+            return;
+        }
+
+        const lines = originalLogContent.split('\n');
+        const filteredLines = [];
+        const escapedFilterValue = filterValue.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const highlightRegex = new RegExp(escapedFilterValue, 'gi');
+
+        for (const line of lines) {
+            if (line.toLowerCase().includes(filterValue)) {
+                const highlightedLine = line.replace(highlightRegex, (match) => `<span class="highlight">${match}</span>`);
+                filteredLines.push(highlightedLine);
+            }
+        }
+
+        if (filteredLines.length > 0) {
+            serverLogContentPre.innerHTML = filteredLines.join('\n');
+        } else {
+            serverLogContentPre.textContent = `没有找到包含 "${serverLogFilterInput.value}" 的日志条目。`;
+        }
     }
 
     async function loadServerLog() {
@@ -2259,14 +2299,19 @@ Description Length: ${newDescription.length}`);
         serverLogStatusSpan.className = 'status-message info';
         try {
             const data = await apiFetch(`${API_BASE_URL}/server-log`);
-            serverLogContentPre.textContent = data.content || '日志内容为空或加载失败。';
+            originalLogContent = data.content || '日志内容为空或加载失败。';
             serverLogPathDisplay.textContent = `当前日志文件: ${data.path || '未知'}`;
             serverLogStatusSpan.textContent = '日志已加载。';
             serverLogStatusSpan.className = 'status-message success';
-            // Scroll to bottom
-            serverLogContentPre.scrollTop = serverLogContentPre.scrollHeight;
+            
+            filterAndHighlightLog();
+
+            if (!serverLogFilterInput.value.trim()) {
+                serverLogContentPre.scrollTop = serverLogContentPre.scrollHeight;
+            }
         } catch (error) {
-            serverLogContentPre.textContent = `加载服务器日志失败: ${error.message}\n\n(可能是因为服务器刚刚重启，日志文件路径已更改，或日志文件为空。)`;
+            originalLogContent = `加载服务器日志失败: ${error.message}\n\n(可能是因为服务器刚刚重启，日志文件路径已更改，或日志文件为空。)`;
+            serverLogContentPre.textContent = originalLogContent;
             serverLogPathDisplay.textContent = `当前日志文件: 未知`;
             serverLogStatusSpan.textContent = `加载失败: ${error.message}`;
             serverLogStatusSpan.className = 'status-message error';
@@ -2278,6 +2323,9 @@ Description Length: ${newDescription.length}`);
     if (copyServerLogButton) { // Changed from refreshServerLogButton
         copyServerLogButton.addEventListener('click', copyServerLogToClipboard);
     }
+    if (serverLogFilterInput) {
+        serverLogFilterInput.addEventListener('input', filterAndHighlightLog);
+    }
 
     async function copyServerLogToClipboard() {
         if (!serverLogContentPre) {
@@ -2285,39 +2333,59 @@ Description Length: ${newDescription.length}`);
             return;
         }
         const logContent = serverLogContentPre.textContent;
-        if (!logContent || logContent === '正在加载日志...' || logContent.startsWith('加载服务器日志失败')) {
+        if (!logContent || logContent === '正在加载日志...' || logContent.startsWith('加载服务器日志失败') || logContent.startsWith('没有找到包含')) {
             showMessage('没有可复制的日志内容。', 'info');
             return;
         }
 
+        // 优先使用现代的 Clipboard API，它更安全、更可靠
+        if (navigator.clipboard && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(logContent);
+                showMessage('日志内容已复制到剪贴板！', 'success');
+                serverLogStatusSpan.textContent = '日志已复制!';
+                serverLogStatusSpan.className = 'status-message success';
+                setTimeout(() => {
+                    if (serverLogStatusSpan.textContent === '日志已复制!') {
+                        serverLogStatusSpan.textContent = '日志已加载。';
+                    }
+                }, 3000);
+                return; // 成功后直接返回
+            } catch (err) {
+                console.warn('navigator.clipboard.writeText 失败，尝试使用旧方法。', err);
+            }
+        }
+
+        // 回退方案：使用 document.execCommand('copy')
+        const textArea = document.createElement("textarea");
+        textArea.value = logContent;
+        textArea.style.position = "fixed"; // 移出屏幕外
+        textArea.style.top = "-9999px";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
         try {
-            await navigator.clipboard.writeText(logContent);
-            showMessage('日志内容已复制到剪贴板！', 'success');
-            serverLogStatusSpan.textContent = '日志已复制!';
-            serverLogStatusSpan.className = 'status-message success';
+            const successful = document.execCommand('copy');
+            if (successful) {
+                showMessage('日志内容已复制到剪贴板！', 'success');
+                serverLogStatusSpan.textContent = '日志已复制!';
+                serverLogStatusSpan.className = 'status-message success';
+            } else {
+                throw new Error('document.execCommand 返回 false');
+            }
+        } catch (err) {
+            console.error('无法复制日志: ', err);
+            showMessage('无法自动复制日志。您的浏览器可能不支持此功能或权限不足。', 'error');
+            serverLogStatusSpan.textContent = '复制失败';
+            serverLogStatusSpan.className = 'status-message error';
+        } finally {
+            document.body.removeChild(textArea);
             setTimeout(() => {
                 if (serverLogStatusSpan.textContent === '日志已复制!') {
-                     serverLogStatusSpan.textContent = '日志已加载。'; // Revert after a few seconds
+                    serverLogStatusSpan.textContent = '日志已加载。';
                 }
             }, 3000);
-        } catch (err) {
-            console.error('无法自动复制日志: ', err);
-            // Fallback: Try to select the text for manual copying
-            try {
-                serverLogContentPre.focus(); // Focus the element
-                const range = document.createRange();
-                range.selectNodeContents(serverLogContentPre);
-                const selection = window.getSelection();
-                selection.removeAllRanges();
-                selection.addRange(range);
-                showMessage('自动复制失败。日志内容已选中，请按 Ctrl+C (或 Cmd+C) 手动复制。', 'info', 5000);
-                serverLogStatusSpan.textContent = '请手动复制';
-            } catch (selectErr) {
-                console.error('选择文本以便手动复制失败: ', selectErr);
-                showMessage('自动复制失败，也无法选中内容供手动复制。请尝试手动选择并复制。', 'error', 5000);
-                serverLogStatusSpan.textContent = '复制失败';
-            }
-            serverLogStatusSpan.className = 'status-message error'; // Keep error class for status
         }
     }
     // --- End Server Log Viewer Functions ---

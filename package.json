@@ -37,6 +37,7 @@
     "node-schedule": "^2.1.1",
     "pdf-parse": "^2.2.16",
     "pm2": "^6.0.13",
+    "proper-lockfile": "^4.1.2",
     "puppeteer": "^22.15.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-anonymize-ua": "^2.4.6",

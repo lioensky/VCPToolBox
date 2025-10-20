@@ -4,15 +4,13 @@
   "displayName": "Multi-Agent Collaboration Plugin",
   "version": "2.0.0",
   "description": "Allows a primary AI or user to invoke specialized, pre-configured agents for various tasks. Supports both immediate and scheduled (time-delayed) communication. Each agent can have its own distinct system prompt and configuration.",
-  "author": "Your Name Here",
-  "pluginType": "synchronous",
+  "author": "LiEonsky",
+  "pluginType": "hybridservice",
   "entryPoint": {
-    "type": "nodejs",
-    "command": "node AgentAssistant.js"
+    "script": "AgentAssistant.js"
   },
   "communication": {
-    "protocol": "stdio",
-    "timeout": 120000
+    "protocol": "direct"
   },
   "configSchema": {
     "AGENT_ASSISTANT_MAX_HISTORY_ROUNDS": "integer",
@@ -28,3 +26,4 @@
     ]
   }
 }
+

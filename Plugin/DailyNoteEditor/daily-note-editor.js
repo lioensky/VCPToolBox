@@ -49,37 +49,41 @@ async function processEditRequest(inputData) {
         const directoriesToScan = [];
 
         if (maid) {
-            // 优化 maid 字段处理，支持 [文件夹]角色名 格式
-            let scanPath = dailyNoteRootPath;
-            let nameToMatch = maid;
-            const maidRegex = /^\[(.+?)\](.+)$/;
+            // 优化 maid 字段处理，支持 [文件夹]角色名 和 [文件夹] 格式
+            const maidRegex = /^\[(.+?)\]/; // 匹配 [文件夹] 前缀
             const match = maid.match(maidRegex);
 
             if (match) {
+                // 格式为 [文件夹]... 时，直接扫描该文件夹
                 const subfolder = match[1];
-                nameToMatch = match[2];
-                scanPath = path.join(dailyNoteRootPath, subfolder);
-                debugLog(`Parsed maid format: scanning in subfolder '${subfolder}' for directories starting with '${nameToMatch}'.`);
+                const scanPath = path.join(dailyNoteRootPath, subfolder);
+                debugLog(`Maid specifies a folder: '${subfolder}'. Scanning directory: ${scanPath}`);
+                
+                try {
+                    const stats = await fs.stat(scanPath);
+                    if (stats.isDirectory()) {
+                        directoriesToScan.push({ name: subfolder, path: scanPath });
+                    } else {
+                        return { status: "error", error: `Specified diary path is not a directory: ${scanPath}` };
+                    }
+                } catch (e) {
+                    if (e.code === 'ENOENT') {
+                        return { status: "error", error: `Diary subfolder not found: ${scanPath}` };
+                    }
+                    // 对于其他错误，让外层 catch 处理
+                    throw e;
+                }
             } else {
+                // 格式为普通角色名时，在根目录查找匹配的角色文件夹
                 debugLog(`Maid specified: '${maid}'. Targeting directories starting with this name in root.`);
-            }
-
-            let allDirs;
-            try {
-                allDirs = await fs.readdir(scanPath, { withFileTypes: true });
-            } catch (e) {
-                if (e.code === 'ENOENT') {
-                    return { status: "error", error: `Diary subfolder not found: ${scanPath}` };
-                }
-                // 对于其他错误，让外层 catch 处理
-                throw e;
-            }
-
-            for (const dirEntry of allDirs) {
-                if (dirEntry.isDirectory() && dirEntry.name.startsWith(nameToMatch)) {
-                    directoriesToScan.push({ name: dirEntry.name, path: path.join(scanPath, dirEntry.name) });
+                const allDirs = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+                for (const dirEntry of allDirs) {
+                    if (dirEntry.isDirectory() && dirEntry.name.startsWith(maid)) {
+                        directoriesToScan.push({ name: dirEntry.name, path: path.join(dailyNoteRootPath, dirEntry.name) });
+                    }
                 }
             }
+
             if (directoriesToScan.length === 0) {
                 return { status: "error", error: `No diary folders found for maid '${maid}'.` };
             }

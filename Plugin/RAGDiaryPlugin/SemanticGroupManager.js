@@ -394,11 +394,16 @@ class SemanticGroupManager {
     }
 
     // ============ 使用预计算向量的快速模式 ============
-    async getEnhancedVector(originalQuery, activatedGroups) {
-        const queryVector = await this.ragPlugin.getSingleEmbedding(originalQuery);
+    async getEnhancedVector(originalQuery, activatedGroups, precomputedQueryVector = null) {
+        let queryVector = precomputedQueryVector;
+
+        if (!queryVector) {
+            console.log('[SemanticGroup] 未提供预计算向量，正在为原始查询生成新向量...');
+            queryVector = await this.ragPlugin.getSingleEmbedding(originalQuery);
+        }
         
         if (!queryVector) {
-            console.error('[SemanticGroup] 原始查询向量化失败，无法进行增强。');
+            console.error('[SemanticGroup] 查询向量无效，无法进行增强。');
             return null;
         }
 

@@ -99,4 +99,33 @@ content:「始」{
   "description": "...调用格式:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」MyNewPlugin「末exp」,\n...\n<<<[END_TOOL_REQUEST_EXP]>>>"
 }「末」
 
-[重要提示：事实上，在你向用户演示指令，而非真正调用工具的时候，也应该遵守exp原则！]
+[重要提示：事实上，在你向用户演示指令，而非真正调用工具的时候，也应该遵守exp转义原则！]
+
+20.PowerShell 命令行工具。可以选择阻塞或后台执行。
+直接调用并获取运行结果
+tool_name:「始」PowerShellExecutor「末」, //若使用 ServerPowerShellExecutor 则代表运行VCP主服务器内的命令行工具
+command:「始」Get-ChildItem「末」,
+executionType:「始」blocking「末」
+后台执行，你不会看到调用结果，但用户会看到可见的调用窗口:
+command:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,
+executionType:「始」background「末」
+
+21.后端代码检索器。
+调用此工具在VCP项目源码中搜索指定的代码片段或关键词。支持使用正则表达式进行高级搜索。通过这个插件更快理解VCP服务器工作原理！
+参数:
+- query (字符串, 必需): 需要搜索的关键词、代码片段或正则表达式。
+- search_path (字符串, 可选): 指定要搜索的相对路径。如果未提供，则默认为整个项目的工作区。
+- case_sensitive (布尔值, 可选, 默认false): 是否区分大小写搜索。
+- whole_word (布尔值, 可选, 默认false): 是否进行全词匹配。
+- context_lines (整数, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数。
+tool_name:「始」CodeSearcher「末」,
+query:「始」关键词或正则表达式「末」,
+search_path:「始」(可选)相对路径「末」,
+case_sensitive:「始」(可选)true/false「末」,
+whole_word:「始」(可选)true/false「末」,
+context_lines:「始」(可选)数字「末」
+
+
+
+
+

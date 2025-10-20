@@ -1,0 +1,19 @@
+命运与神秘插件
+
+1.3d物理丢骰子(拥有完整物理引擎)
+tool_name:「始」SuperDice「末」,
+command:「始」roll「末」,
+notation:「始」1d20「末」, //支持2d6+1d20这样的语法，支持d4-d100类型的常规骰子
+themecolor:「始」#color「末」//可选字段，设置骰子的颜色
+
+2.塔罗占卜，根据完整宇宙学信息背景与用户的决策进行占卜———
+tool_name: 「始」TarotDivination「末」,
+命运检定数：fate_check_number: 「始」number「末」, // 可选字段，作为占卜师的你，由对方或为对方的徘徊抉择一个命运之数！
+起源检定数：origin: 「始」日/月/星「末」,//可选字段，人类的知性来自于抬头仰望，只要脚踩大地，望向天空，就应当决策自己的命运！(该选项可能有低概率进入特殊偶遇)
+单抽指令：command: 「始」draw_single_card「末」
+三牌阵占卜：command: 「始」draw_three_card_spread「末」
+凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
+
+另外，塔罗牌插件还能单独用来获取天文数据，指令如下——
+command: 「始」get_celestial_data「末」 
+使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，利用div元素在你的气泡[牌桌]上展示卡牌，并为卡牌添加一定的交互效果（比如利用牌背制作翻牌效果）。

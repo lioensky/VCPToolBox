@@ -1,6 +1,7 @@
 import ast
 import operator
 import math
+import re
 import statistics
 import sys # 用于 stdin, stdout, stderr
 from typing import Union, Dict, Tuple, Any, List
@@ -22,7 +23,7 @@ from numpy import inf as numpy_inf, nan as numpy_nan # For numerical integration
 allowed_operators = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
     ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
-    ast.Pow: operator.pow, ast.USub: operator.neg,
+    ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos,
 }
 
 # 支持的数学和统计函数 (用于直接数值计算)
@@ -229,18 +230,21 @@ def evaluate(expression: str) -> str:
         elif isinstance(node, ast.BinOp):
             left = eval_expr(node.left)
             right = eval_expr(node.right)
-            if isinstance(left, str) or isinstance(right, str): 
-                raise ValueError(f"Cannot perform arithmetic operation '{type(node.op).__name__}' with non-numeric string operands: '{left}', '{right}'")
-            if not all(isinstance(x, (int, float, complex)) for x in [left, right]):
-                     raise ValueError(f"Operands for '{type(node.op).__name__}' must be numeric, got {type(left).__name__} and {type(right).__name__}")
-            if type(node.op) in allowed_operators:
-                return allowed_operators[type(node.op)](left, right)
-            raise ValueError(f"Unsupported binary operation: {type(node.op).__name__}")
-        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            operand_val = eval_expr(node.operand)
-            if isinstance(operand_val, str):
-                 raise ValueError(f"Cannot apply unary minus to non-numeric string operand: '{operand_val}'")
-            return -operand_val
+            op_type = type(node.op)
+            if op_type in allowed_operators:
+                try:
+                    return allowed_operators[op_type](left, right)
+                except TypeError:
+                    raise ValueError(f"Unsupported operand types for {op_type.__name__}: '{type(left).__name__}' and '{type(right).__name__}'")
+            raise ValueError(f"Unsupported binary operation: {op_type.__name__}")
+        elif isinstance(node, ast.UnaryOp):
+            operand = eval_expr(node.operand)
+            if isinstance(operand, str):
+                raise ValueError(f"Cannot apply unary operation '{type(node.op).__name__}' to non-numeric string operand: '{operand}'")
+            op_type = type(node.op)
+            if op_type in allowed_operators:
+                return allowed_operators[op_type](operand)
+            raise ValueError(f"Unsupported unary operation: {op_type.__name__}")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
             
@@ -304,6 +308,50 @@ def evaluate(expression: str) -> str:
                 if len(args) == 1: return math_functions[func_name](args[0])
                 raise ValueError(f"Incorrect number of arguments or argument type for {func_name}")
             raise ValueError(f"Unsupported function: {func_name}")
+        elif isinstance(node, ast.Compare):
+            # Implements user's suggestion: A > B is handled by calculating A - B
+            if len(node.ops) > 1:
+                raise ValueError("Chained comparisons (e.g., a < b < c) are not supported.")
+
+            left_val = eval_expr(node.left)
+            right_val = eval_expr(node.comparators[0])
+
+            def to_sympy_numeric(val: Any) -> sympy.Expr:
+                if isinstance(val, str):
+                    raise ValueError(f"Cannot compare expression which results in a string: '{val}'")
+                try:
+                    # sympify can handle int, float, complex, and existing sympy objects
+                    return sympify(val)
+                except (TypeError, sympy.SympifyError):
+                    raise ValueError(f"Value '{val}' of type '{type(val).__name__}' cannot be used in a comparison.")
+
+            num_left = to_sympy_numeric(left_val)
+            num_right = to_sympy_numeric(right_val)
+
+            # The core of the user's suggestion
+            diff = num_left - num_right
+            evaluated_diff = diff.evalf(chop=True)
+
+            if not evaluated_diff.is_number:
+                raise ValueError(f"The difference between the expressions is symbolic and cannot be compared: {diff}")
+
+            if not evaluated_diff.is_extended_real:
+                _ , imag_part = evaluated_diff.as_real_imag()
+                # Check if the imaginary part is non-negligible
+                if not math.isclose(float(imag_part.evalf()), 0, abs_tol=1e-9):
+                    return f"无法比较大小，因为表达式的差值为复数: $${latex(evaluated_diff)}$$"
+                else:
+                    # Treat as real if imaginary part is negligible
+                    evaluated_diff = evaluated_diff.as_real_imag()[0]
+
+            num_diff = float(evaluated_diff)
+
+            if math.isclose(num_diff, 0, abs_tol=1e-9):
+                return "两边表达式的值相等。"
+            elif num_diff > 0:
+                return "左边表达式的值更大。"
+            else: # num_diff < 0
+                return "右边表达式的值更大。"
         elif isinstance(node, ast.List): return [eval_expr(elt) for elt in node.elts]
         elif isinstance(node, ast.Dict): 
             keys = []
@@ -368,6 +416,9 @@ def evaluate(expression: str) -> str:
         expression_str_input = str(expression).strip()
         if not expression_str_input:
             raise ValueError("Expression cannot be empty.")
+
+        # Preprocess the expression to handle custom syntax like '^' for power
+        expression_str_input = preprocess_expression_string(expression_str_input)
         
         brackets = {'(': ')', '[': ']', '{': '}'}
         stack = []
@@ -435,24 +486,74 @@ def main():
     if not expression_input:
         output = {"status": "error", "error": "SciCalculator Plugin Error: No expression provided."}
     else:
-        result_str = evaluate(expression_input)
-        error_prefixes = ("Error:", "Syntax Error:", "Input Error:", "Calculation Error:") 
-        
-        is_error_result = False
-        if isinstance(result_str, str):
-            for prefix in error_prefixes:
-                if result_str.startswith(prefix) : 
-                    is_error_result = True
-                    break
-            # Warnings are not necessarily hard errors for status
-            if result_str.startswith("Warning:") and "Potentially large error" in result_str:
-                pass # This is a success with a caveat
+        def split_expressions(text: str) -> List[str]:
+            parts = []
+            nesting_level = 0
+            current_part_start = 0
+            in_string = False
+            string_char = ''
+            for i, char in enumerate(text):
+                if in_string:
+                    if char == string_char: in_string = False
+                else:
+                    if char in "'\"":
+                        in_string = True
+                        string_char = char
+                    elif char in '([{': nesting_level += 1
+                    elif char in ')]}': nesting_level -= 1
+                    elif char == ',' and nesting_level == 0:
+                        parts.append(text[current_part_start:i].strip())
+                        current_part_start = i + 1
+            parts.append(text[current_part_start:].strip())
+            return [p for p in parts if p]
 
-        if is_error_result:
-            output = {"status": "error", "error": result_str}
+        expressions = []
+        original_expressions = []
+        try:
+            # Safely parse the input string as a Python literal
+            data = ast.literal_eval(expression_input)
+            if not isinstance(data, dict): raise ValueError("Input is a literal but not a dictionary.")
+            
+            # Find keys like 'expression1', 'expression2', etc.
+            expr_keys = sorted([k for k in data if isinstance(k, str) and k.startswith('expression')])
+            if not expr_keys: raise ValueError("Dictionary found, but no keys starting with 'expression'.")
+
+            for key in expr_keys:
+                if isinstance(data[key], str):
+                    expressions.append(data[key])
+            original_expressions = list(expressions)
+
+        except (ValueError, SyntaxError):
+            # Fallback for non-dict inputs or parsing errors: treat as comma-separated.
+            expressions = split_expressions(expression_input)
+            original_expressions = list(expressions)
+
+        # Clean expressions for evaluation (e.g., remove "1. " prefixes)
+        cleaned_expressions = [re.sub(r'^\s*\d+[\.\)]\s*', '', expr).strip() for expr in expressions]
+        
+        # Evaluate each non-empty expression
+        results = [evaluate(expr) for expr in cleaned_expressions if expr]
+
+        error_prefixes = ("Error:", "Syntax Error:", "Input Error:", "Calculation Error:")
+        is_any_error = any(isinstance(r, str) and any(r.startswith(p) for p in error_prefixes) for r in results)
+
+        # Format the output string
+        if len(original_expressions) > 1:
+            final_result_str = ",\n".join(f"{expr.strip()} = {res}" for expr, res in zip(original_expressions, results))
+        elif results:
+            final_result_str = str(results[0])
         else:
-            ai_friendly_result = result_str
-            formatted_result_for_ai = f"###计算结果：{ai_friendly_result}###，请将结果转告用户"
+            final_result_str = "No valid expressions found to evaluate."
+            is_any_error = True
+
+        if is_any_error:
+            output = {"status": "error", "error": final_result_str}
+        else:
+            ai_friendly_result = final_result_str
+            if "\n" in ai_friendly_result:
+                formatted_result_for_ai = f"###计算结果：\n{ai_friendly_result}\n###，请将结果转告用户"
+            else:
+                formatted_result_for_ai = f"###计算结果：{ai_friendly_result}###，请将结果转告用户"
             output = {"status": "success", "result": formatted_result_for_ai}
 
     print(json.dumps(output), file=sys.stdout)
