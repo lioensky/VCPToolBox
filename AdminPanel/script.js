@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const pm2ProcessList = document.getElementById('pm2-process-list');
     const nodeInfoList = document.getElementById('node-info-list');
     const activityChartCanvas = document.getElementById('activity-chart-canvas'); // New canvas element
+    const userAuthCodeDisplay = document.getElementById('user-auth-code-display'); // New: User Auth Code Display
     let monitorIntervalId = null; // For dashboard auto-refresh
     let activityDataPoints = new Array(60).fill(0); // Holds the last 60 data points for the chart
     let lastLogCheckTime = null; // Initialize to null, will be set to the latest log timestamp on first run
@@ -1217,11 +1218,24 @@ Description Length: ${newDescription.length}`);
 
     async function updateDashboardData() {
         try {
-            const [resources, processes] = await Promise.all([
+            const [resources, processes, authCodeData] = await Promise.all([
                 apiFetch(`${MONITOR_API_BASE_URL}/system/resources`, {}, false), // Pass false to hide loader
-                apiFetch(`${MONITOR_API_BASE_URL}/pm2/processes`, {}, false)   // Pass false to hide loader
+                apiFetch(`${MONITOR_API_BASE_URL}/pm2/processes`, {}, false),   // Pass false to hide loader
+                apiFetch(`${API_BASE_URL}/user-auth-code`, {}, false).catch(err => {
+                    console.warn('Failed to fetch user auth code:', err.message);
+                    return { success: false, code: 'N/A (Error)' };
+                })
             ]);
             
+            // Update User Auth Code
+            if (userAuthCodeDisplay) {
+                if (authCodeData.success) {
+                    userAuthCodeDisplay.textContent = authCodeData.code;
+                } else {
+                    userAuthCodeDisplay.textContent = authCodeData.code || 'N/A (未运行)';
+                }
+            }
+
             // Update CPU
             const cpuUsage = resources.system.cpu.usage.toFixed(1);
             updateProgressCircle(cpuProgress, cpuUsageText, cpuUsage);

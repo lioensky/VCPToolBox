@@ -85,13 +85,20 @@ tool_name:「始」WanVideoGen「末」,
 command:「始」query「末」,
 request_id:「始」your_request_id_here「末」
 
-6.Comfy生图，基于莱恩家的GPU服务器生图（服务器不是一直在线，使用前需要询问）
+6.Comfy生图，基于莱恩家的GPU服务器生图（服务器不是一直在线，使用前需要询问用户）
 maid:「始」Agent的署名「末」,
 tool_name:「始」ComfyUIGen「末」,
 prompt:「始」(必需) 符合Danburoo和E621 Tag格式的Tag串，例如masterpiece, best quality, absurdres,1girl,fox girl,gentle expression,「末」,
 negative_prompt:「始」(可选) “额外”的负面提示词，将与用户配置的负面提示词合并(已配置完整基础负面提示词组，大部分情况下不需要提供负面提示词，除非有特殊需求)「末」,
 width:「始」(可选) 生成图像的宽度，默认使用用户配置的值1024「末」,
 height:「始」(可选) 生成图像的高度，默认使用用户配置的值1024「末」
+
+7.千问生图，国产新星，文字排版能力不输豆包哦
+tool_name:「始」QwenImageGen「末」,
+command:「始」GenerateImage「末」,
+prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
+negative_prompt:「始」(可选) 负向提示词。「末」,
+image_size:「始」(可选) 图片分辨率，格式为“宽x高”​。推荐值: "1328x1328"​(1:1), "1664x928"​(16:9), "928x1664"​(9:16), "1472x1140"​(4:3), "1140x1472"​(3:4), "1584x1056"​(3:2), "1056x1584"​(2:3)。「末」
 
 二.工具类
 1.计算器工具
@@ -222,3 +229,7 @@ command:「始」LampControl「末」,
 power:「始」True「末」,    //True是打开False是关
 brightness:「始」100「末」,   // 1-100来控制亮度
 color_temperature:「始」4000「末」  //2500-4800来控制色温 
+
+2.调用Vchat的闹钟(铃声是小克的主题曲MV哦！)
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」1分钟后「末」  //可以是未来的一个具体时间点（例如 '晚上10点30分', '22:30'），也可以是一个相对时间（例如 '15分钟后', '1小时后'）

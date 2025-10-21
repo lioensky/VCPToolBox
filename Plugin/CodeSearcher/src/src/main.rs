@@ -1,4 +1,4 @@
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use regex::Regex;
 use serde::{de::{self, Deserializer, Unexpected}, Deserialize, Serialize};
 use std::collections::HashSet;
@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1MB
 const DEFAULT_MAX_RESULTS: usize = 100;
@@ -108,8 +109,12 @@ impl AppConfig {
 fn find_project_root() -> PathBuf {
     // Start from the current working directory
     if let Ok(mut path) = env::current_dir() {
-        for _ in 0..3 {
-            if path.join("package.json").is_file() {
+        // Search up to 5 levels for common project markers
+        for _ in 0..5 {
+            if path.join(".git").is_dir()
+                || path.join("package.json").is_file()
+                || path.join("Cargo.toml").is_file()
+            {
                 return path;
             }
             if !path.pop() {
@@ -118,8 +123,8 @@ fn find_project_root() -> PathBuf {
             }
         }
     }
-    // Fallback to "." if not found or if getting current_dir failed
-    PathBuf::from(".")
+    // Fallback to the current directory if no project root is found or if getting CWD failed
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn main() {
@@ -147,10 +152,7 @@ fn main() {
         }
     };
 
-    let base_path = match env::var("PROJECT_BASE_PATH") {
-        Ok(path) => PathBuf::from(path),
-        Err(_) => find_project_root(),
-    };
+    let base_path = find_project_root();
     
     let search_root = match args.search_path.as_ref() {
         Some(p) => base_path.join(p),
@@ -174,18 +176,18 @@ fn main() {
 }
 
 fn build_regex(args: &InputArgs) -> Result<Regex, regex::Error> {
-    let mut pattern = args.query.clone();
-    
+    let mut pattern = regex::escape(&args.query);
+
     if args.whole_word {
-        pattern = format!(r"\b{}\b", regex::escape(&pattern));
+        pattern = format!(r"\b{}\b", pattern);
     }
-    
+
     let pattern = if args.case_sensitive {
         pattern
     } else {
         format!("(?i){}", pattern)
     };
-    
+
     Regex::new(&pattern)
 }
 
@@ -196,8 +198,6 @@ fn search_in_directory(
     args: &InputArgs,
     project_base: &Path,
 ) -> Result<(Vec<SearchResult>, bool), io::Error> {
-    let mut results = Vec::new();
-
     let mut walk_builder = WalkBuilder::new(path);
     walk_builder.hidden(false).git_ignore(true).max_filesize(Some(MAX_FILE_SIZE));
 
@@ -205,40 +205,65 @@ fn search_in_directory(
         walk_builder.add_ignore(ignored);
     }
 
-    for entry in walk_builder.build()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-    {
-        let file_path = entry.path();
+    let (tx, rx) = mpsc::channel();
+    let query_regex = query_regex.clone();
+    let project_base_buf = project_base.to_path_buf();
+    let allowed_extensions = config.allowed_extensions.clone();
+    let context_lines = args.context_lines;
 
-        // 检查扩展名
-        if let Some(ext) = file_path.extension().and_then(|s| s.to_str()) {
-            if !config.allowed_extensions.is_empty() 
-                && !config.allowed_extensions.contains(ext) {
-                continue;
+    walk_builder.build_parallel().run(move || {
+        let tx = tx.clone();
+        let query_regex = query_regex.clone();
+        let project_base = project_base_buf.clone();
+        let allowed_extensions = allowed_extensions.clone();
+
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => return WalkState::Continue,
+            };
+
+            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                return WalkState::Continue;
             }
-        }
 
-        // 读取并搜索
-        if let Ok(content) = fs::read_to_string(file_path) {
-            let file_results = search_in_content(
-                &content,
-                query_regex,
-                file_path,
-                &project_base,
-                args.context_lines,
-            );
-
-            for result in file_results {
-                results.push(result);
-                if results.len() >= config.max_results {
-                    return Ok((results, true)); // truncated = true
+            let file_path = entry.path();
+            if !allowed_extensions.is_empty() {
+                if let Some(ext) = file_path.extension().and_then(|s| s.to_str()) {
+                    if !allowed_extensions.contains(ext) {
+                        return WalkState::Continue;
+                    }
+                } else {
+                    return WalkState::Continue;
                 }
             }
-        }
-    }
 
-    Ok((results, false))
+            if let Ok(content) = fs::read_to_string(file_path) {
+                let file_results = search_in_content(
+                    &content,
+                    &query_regex,
+                    file_path,
+                    &project_base,
+                    context_lines,
+                );
+                if !file_results.is_empty() {
+                    let _ = tx.send(file_results);
+                }
+            }
+            WalkState::Continue
+        })
+    });
+
+    let mut results: Vec<SearchResult> = rx.into_iter().flatten().collect();
+
+    let truncated = if results.len() > config.max_results {
+        results.truncate(config.max_results);
+        true
+    } else {
+        false
+    };
+
+    Ok((results, truncated))
 }
 
 fn search_in_content(

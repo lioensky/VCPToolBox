@@ -1,0 +1,18 @@
+{
+    "name": "UserAuth",
+    "displayName": "用户认证插件",
+    "description": "每小时生成一个6位数的认证码，用于用户权限验证。",
+    "pluginType": "static",
+    "entryPoint": {
+        "command": "node auth.js"
+    },
+    "refreshIntervalCron": "0 * * * *",
+    "capabilities": {
+        "systemPromptPlaceholders": [
+            {
+                "placeholder": "{{USER_AUTH_CODE}}",
+                "description": "提供一个每小时更新的6位数认证码，用于验证用户权限。"
+            }
+        ]
+    }
+}

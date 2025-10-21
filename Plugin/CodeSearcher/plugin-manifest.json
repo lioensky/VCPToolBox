@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "CodeSearcher",
+  "name": "ServerCodeSearcher",
   "version": "1.0.0",
   "displayName": "代码搜索器 (Rust)",
   "description": "一个使用Rust编写的高性能代码搜索插件，可以在指定的工作区目录中进行快速、精准的代码内容搜索。",
@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 30000
+    "timeout": 60000
   },
   "configSchema": {
     "MAX_RESULTS": {

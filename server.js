@@ -64,6 +64,7 @@ const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
+const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
 
 // 新增：模型重定向功能
@@ -531,6 +532,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
     webSocketServer,
     DEBUG_MODE,
     SHOW_VCP_OUTPUT,
+    VCPToolCode, // 新增：传递VCP工具调用验证码开关
     maxVCPLoopStream: parseInt(process.env.MaxVCPLoopStream),
     maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
     apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数
@@ -812,11 +814,11 @@ async function initialize() {
     await vectorDBManager.initialize(); // 在加载插件之前启动，确保服务就绪
     console.log('向量数据库初始化完成。');
 
+    pluginManager.setProjectBasePath(__dirname);
+    
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
-
-    pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');
     // --- 关键顺序调整 ---

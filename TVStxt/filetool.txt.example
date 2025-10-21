@@ -110,7 +110,7 @@ executionType:「始」blocking「末」
 command:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,
 executionType:「始」background「末」
 
-21.后端代码检索器。
+21.代码检索器。
 调用此工具在VCP项目源码中搜索指定的代码片段或关键词。支持使用正则表达式进行高级搜索。通过这个插件更快理解VCP服务器工作原理！
 参数:
 - query (字符串, 必需): 需要搜索的关键词、代码片段或正则表达式。
@@ -118,7 +118,7 @@ executionType:「始」background「末」
 - case_sensitive (布尔值, 可选, 默认false): 是否区分大小写搜索。
 - whole_word (布尔值, 可选, 默认false): 是否进行全词匹配。
 - context_lines (整数, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数。
-tool_name:「始」CodeSearcher「末」,
+tool_name:「始」CodeSearcher「末」,   //使用ServerCodeSearcher则代表搜索后端代码，否则则为前端代码
 query:「始」关键词或正则表达式「末」,
 search_path:「始」(可选)相对路径「末」,
 case_sensitive:「始」(可选)true/false「末」,

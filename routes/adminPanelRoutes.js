@@ -105,6 +105,36 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ success: false, error: 'Failed to get system resources', details: error.message });
         }
     });
+
+   // 新增：解密函数，与 auth.js 中的加密逻辑相反
+   function decryptCode(encryptedCode) {
+       const secretKey = '314159';
+       let realCode = '';
+       for (let i = 0; i < encryptedCode.length; i++) {
+           const encryptedDigit = parseInt(encryptedCode[i], 10);
+           const keyDigit = parseInt(secretKey[i], 10);
+           // (加密后的数字 - 密钥数字 + 10) % 10 来处理负数情况
+           const realDigit = (encryptedDigit - keyDigit + 10) % 10;
+           realCode += realDigit;
+       }
+       return realCode;
+   }
+
+   // 新增：获取 UserAuth 认证码 (现在会解密)
+   adminApiRouter.get('/user-auth-code', async (req, res) => {
+       const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'auth_code.txt');
+       try {
+           const encryptedCode = await fs.readFile(authCodePath, 'utf-8');
+           const decryptedCode = decryptCode(encryptedCode.trim());
+           res.json({ success: true, code: decryptedCode });
+       } catch (error) {
+           if (error.code === 'ENOENT') {
+               res.status(404).json({ success: false, error: '认证码文件未找到。插件可能尚未运行。' });
+           } else {
+               res.status(500).json({ success: false, error: '读取或解密认证码文件失败。', details: error.message });
+           }
+       }
+   });
     // --- End System Monitor Routes ---
  
     // --- Server Log API ---

@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "PowerShellExecutor",
+  "name": "ServerPowerShellExecutor",
   "version": "1.0.0",
   "displayName": "PowerShell命令执行器",
   "description": "一个允许AI执行PowerShell命令并返回其输出的插件。支持阻塞式和后台式执行。注意：后台式执行会打开一个新的PowerShell窗口，且不会将执行结果直接返回VCP，只会返回任务提交状态。",
@@ -18,7 +18,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "PowerShellExecutor",
-        "description": "调用此工具执行指定的 PowerShell 命令并返回其输出。可以选择阻塞或后台执行。\n参数:\n- command (字符串, 必需): 要执行的 PowerShell 命令内容。\n- executionType (字符串, 必须): 执行类型。'blocking' 用于短期运行并立即返回结果；'background' 用于长期运行的服务类任务，将打开一个用户可见的PowerShell窗口，且不会将执行结果直接返回给你，只会返回任务是否提交。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」Get-ChildItem「末」,\nexecutionType:「始」blocking「末」\n<<<[END_TOOL_REQUEST]>>>\n\n后台执行示例 (长期运行的服务类任务):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,\nexecutionType:「始」background「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "调用此工具执行指定的 PowerShell 命令并返回其输出。可以选择阻塞或后台执行。\n参数:\n- command (字符串, 必需): 要执行的 PowerShell 命令内容。\n- executionType (字符串, 必须): 执行类型。'blocking' 用于短期运行并立即返回结果；'background' 用于长期运行的服务类任务，将打开一个用户可见的PowerShell窗口，且不会将执行结果直接返回给你，只会返回任务是否提交。\n- requireAdmin (字符串, 可选): 仅在 'background' 模式下生效。提供一个6位数的验证码以执行需要管理员权限的后台任务。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」Get-ChildItem「末」,\nexecutionType:「始」blocking「末」\n<<<[END_TOOL_REQUEST]>>>\n\n后台执行示例 (长期运行的服务类任务):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,\nexecutionType:「始」background「末」\n<<<[END_TOOL_REQUEST]>>>\n\n管理员模式后台执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」your-admin-command-here「末」,\nexecutionType:「始」background「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
