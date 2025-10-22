@@ -21,109 +21,6 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     const util = require('util');
     const execAsync = util.promisify(exec);
     const pm2 = require('pm2');
-    const os = require('os');
-
-    // Windows系统环境诊断函数
-    async function diagnoseWindowsEnvironment() {
-        const diagnosis = {
-            platform: process.platform,
-            arch: process.arch,
-            nodeVersion: process.version,
-            timestamp: new Date().toISOString(),
-            checks: {}
-        };
-
-        try {
-            // 检查PowerShell版本
-            const { stdout: psVersion } = await execAsync('powershell -NoProfile -Command "$PSVersionTable.PSVersion.Major"', { windowsHide: true });
-            diagnosis.checks.powershellVersion = parseInt(psVersion.trim()) || 'unknown';
-
-            // 检查Windows版本
-            const { stdout: winVersion } = await execAsync('powershell -NoProfile -Command "(Get-WmiObject -Class Win32_OperatingSystem).Caption"', { windowsHide: true });
-            diagnosis.checks.windowsVersion = winVersion.trim();
-
-            // 检查用户权限
-            const { stdout: whoami } = await execAsync('whoami', { windowsHide: true });
-            diagnosis.checks.currentUser = whoami.trim();
-
-            // 检查管理员权限
-            try {
-                const { stdout: adminCheck } = await execAsync('net session 2>nul || echo NotAdmin', { windowsHide: true });
-                diagnosis.checks.isAdmin = !adminCheck.includes('NotAdmin');
-            } catch {
-                diagnosis.checks.isAdmin = false;
-            }
-
-            // 检查WMI服务状态
-            try {
-                const { stdout: wmiService } = await execAsync('sc query Winmgmt', { windowsHide: true });
-                diagnosis.checks.wmiServiceStatus = wmiService.includes('RUNNING') ? 'running' : 'stopped';
-            } catch {
-                diagnosis.checks.wmiServiceStatus = 'error';
-            }
-
-        } catch (error) {
-            diagnosis.checks.diagnosisError = error.message;
-        }
-
-        return diagnosis;
-    }
-
-    // PowerShell命令诊断执行函数
-    async function executePowerShellWithDiagnosis(command, context = '') {
-        const result = {
-            success: false,
-            data: null,
-            error: null,
-            diagnosis: null
-        };
-
-        try {
-            console.log(`[SystemMonitor] Executing PowerShell: ${command}`);
-            const { stdout } = await execAsync(command, { windowsHide: true, timeout: 10000 });
-            result.success = true;
-
-            // 清理输出数据，提取JSON内容
-            let cleanData = stdout.trim();
-
-            // 如果输出包含非JSON内容，尝试提取JSON部分
-            if (cleanData.includes('{') && cleanData.includes('}')) {
-                const jsonStart = cleanData.indexOf('{');
-                const jsonEnd = cleanData.lastIndexOf('}') + 1;
-                cleanData = cleanData.substring(jsonStart, jsonEnd);
-            }
-
-            result.data = cleanData;
-            console.log(`[SystemMonitor] PowerShell success: ${context}`);
-        } catch (error) {
-            result.error = {
-                message: error.message,
-                code: error.code,
-                signal: error.signal,
-                stdout: error.stdout,
-                stderr: error.stderr
-            };
-
-            console.error(`[SystemMonitor] PowerShell failed: ${context}`);
-            console.error(`[SystemMonitor] Error details:`, {
-                message: error.message,
-                code: error.code,
-                signal: error.signal,
-                stderr: error.stderr
-            });
-
-            // 如果是权限或策略问题，进行详细诊断
-            if (error.message.includes('access') || error.message.includes('policy') || error.message.includes('Unauthorized')) {
-                try {
-                    result.diagnosis = await diagnoseWindowsEnvironment();
-                } catch (diagError) {
-                    result.diagnosis = { error: diagError.message };
-                }
-            }
-        }
-
-        return result;
-    }
     
     // 获取PM2进程列表和资源使用情况 (Using PM2 API to avoid pop-ups)
     adminApiRouter.get('/system-monitor/pm2/processes', (req, res) => {
@@ -149,280 +46,51 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
     // 获取系统整体资源使用情况
     adminApiRouter.get('/system-monitor/system/resources', async (req, res) => {
-        try {
+         try {
             const systemInfo = {};
-            const execOptions = { windowsHide: true };
-
-            // 读取Windows监控配置
-            const config = {
-                windowsMonitorMode: 'auto', // 默认值
-                forcePowerShell: false,
-                windows11Optimized: true
-            };
-
-            try {
-                const configPath = path.join(__dirname, '..', 'config.env');
-                const configContent = await fs.readFile(configPath, 'utf-8');
-                configContent.split('\n').forEach(line => {
-                    if (line.startsWith('WindowsMonitorMode=')) {
-                        config.windowsMonitorMode = line.split('=')[1].trim();
-                    } else if (line.startsWith('ForcePowerShellMonitor=')) {
-                        config.forcePowerShell = line.split('=')[1].trim().toLowerCase() === 'true';
-                    } else if (line.startsWith('Windows11Optimized=')) {
-                        config.windows11Optimized = line.split('=')[1].trim().toLowerCase() === 'true';
-                    }
-                });
-            } catch (configError) {
-                console.warn('[SystemMonitor] Failed to read config, using defaults:', configError.message);
-            }
-
-            // Windows 11 智能检测和适配
-            if (process.platform === 'win32' && config.windows11Optimized) {
-                try {
-                    // 检测Windows版本
-                    const { stdout: winVersion } = await execAsync('powershell -NoProfile -Command "(Get-WmiObject -Class Win32_OperatingSystem).Version"', { windowsHide: true });
-                    const versionParts = winVersion.trim().split('.');
-                    const majorVersion = parseInt(versionParts[0]);
-                    const buildNumber = parseInt(versionParts[2] || '0');
-
-                    // Windows 11 检测 (版本号 >= 10.0.22000)
-                    if (majorVersion >= 10 && buildNumber >= 22000) {
-                        console.log('[SystemMonitor] Windows 11 detected - Applying PowerShell optimization');
-                        // Windows 11 智能优化策略
-                        if (config.windowsMonitorMode === 'auto') {
-                            // auto模式下，Windows 11自动使用PowerShell优先策略
-                            config.forcePowerShell = true;
-                            console.log('[SystemMonitor] Auto-optimized for Windows 11: ForcePowerShellMonitor enabled');
-                        }
-
-                        // 检查PowerShell执行策略并建议修复
-                        try {
-                            const { stdout: execPolicy } = await execAsync('powershell -NoProfile -Command "Get-ExecutionPolicy -Scope CurrentUser"', { windowsHide: true });
-                            const policy = execPolicy.trim();
-                            if (policy === 'Restricted') {
-                                console.warn('[SystemMonitor] PowerShell execution policy is Restricted. This may cause monitoring failures.');
-                                console.warn('[SystemMonitor] Run: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser');
-                            }
-                        } catch (policyError) {
-                            console.warn('[SystemMonitor] Could not check PowerShell execution policy:', policyError.message);
-                        }
-
-                        systemInfo.osInfo = {
-                            platform: 'Windows',
-                            version: 'Windows 11',
-                            buildNumber: buildNumber,
-                            optimization: 'enabled'
-                        };
-                    } else if (majorVersion >= 10) {
-                        // Windows 10
-                        systemInfo.osInfo = {
-                            platform: 'Windows',
-                            version: 'Windows 10',
-                            buildNumber: buildNumber,
-                            optimization: 'standard'
-                        };
-                    } else {
-                        // 旧版Windows
-                        systemInfo.osInfo = {
-                            platform: 'Windows',
-                            version: 'Unknown Windows',
-                            buildNumber: buildNumber,
-                            optimization: 'legacy'
-                        };
-                    }
-                } catch (versionError) {
-                    console.warn('[SystemMonitor] Could not detect Windows version:', versionError.message);
-                    systemInfo.osInfo = {
-                        platform: 'Windows',
-                        version: 'Unknown',
-                        error: versionError.message
-                    };
-                }
-            }
-
-            console.log(`[SystemMonitor] Config - Mode: ${config.windowsMonitorMode}, Force PowerShell: ${config.forcePowerShell}`);
+            const execOptions = { windowsHide: true }; // Option to prevent window pop-up
 
             if (process.platform === 'win32') {
-                // Windows系统监控逻辑
-                let usePowerShell = true;
-
-                // 根据配置决定使用哪种监控模式
-                if (config.windowsMonitorMode === 'wmic') {
-                    usePowerShell = false;
-                } else if (config.windowsMonitorMode === 'powershell') {
-                    usePowerShell = true;
+                // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
+                try {
+                    const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
+                    const memData = JSON.parse(memInfo);
+                    systemInfo.memory = {
+                        total: (memData.TotalVisibleMemorySize || 0) * 1024,
+                        free: (memData.FreePhysicalMemory || 0) * 1024,
+                        used: ((memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)) * 1024
+                    };
+                } catch (powershellError) {
+                    // 回退到 wmic 命令
+                    const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
+                    const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
+                        const [key, value] = line.split('=');
+                        return [key.trim(), parseInt(value.trim()) * 1024];
+                    }));
+                    systemInfo.memory = {
+                        total: memData.TotalVisibleMemorySize || 0,
+                        free: memData.FreePhysicalMemory || 0,
+                        used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
+                    };
                 }
-                // auto模式：保持原有逻辑，优先PowerShell，失败后回退
-                // 除非强制使用PowerShell
-                else if (config.forcePowerShell) {
-                    usePowerShell = true;
+                
+                try {
+                    const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
+                    const cpuData = JSON.parse(cpuInfo);
+                    systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
+                } catch (powershellError) {
+                    // 回退到 wmic 命令
+                    const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
+                    const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
+                    systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
                 }
-
-                // Windows 11 智能优化策略应用
-                if (config.windows11Optimized && systemInfo.osInfo && systemInfo.osInfo.version === 'Windows 11') {
-                    usePowerShell = true;
-                    console.log('[SystemMonitor] Windows 11 optimization applied: Using PowerShell priority');
-                }
-
-                // 内存信息获取
-                if (usePowerShell) {
-                    // 尝试PowerShell命令
-                    const memResult = await executePowerShellWithDiagnosis(
-                        'powershell -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"',
-                        'memory information'
-                    );
-
-                    if (memResult.success) {
-                        const memData = JSON.parse(memResult.data);
-                        systemInfo.memory = {
-                            total: (memData.TotalVisibleMemorySize || 0) * 1024,
-                            free: (memData.FreePhysicalMemory || 0) * 1024,
-                            used: ((memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)) * 1024
-                        };
-                        systemInfo.monitoring = { method: 'powershell', status: 'success' };
-                    } else {
-                        if (config.forcePowerShell) {
-                            // 强制PowerShell模式，不回退WMIC
-                            console.error('[SystemMonitor] PowerShell failed and fallback disabled (ForcePowerShellMonitor=true)');
-                            systemInfo.monitoring = {
-                                method: 'powershell',
-                                status: 'failed',
-                                error: memResult.error,
-                                diagnosis: memResult.diagnosis,
-                                suggestion: 'ForcePowerShellMonitor is enabled. Consider checking PowerShell execution policies or running as administrator.'
-                            };
-                            return res.status(500).json({
-                                success: false,
-                                error: 'PowerShell monitoring failed and fallback disabled',
-                                details: memResult.error.message,
-                                diagnosis: memResult.diagnosis,
-                                suggestions: [
-                                    'Check PowerShell execution policy: Get-ExecutionPolicy',
-                                    'Run as administrator if not already',
-                                    'Check WMI service status: sc query Winmgmt',
-                                    'Consider setting ForcePowerShellMonitor=false to enable WMIC fallback'
-                                ]
-                            });
-                        } else {
-                            // 回退到WMIC
-                            console.log('[SystemMonitor] PowerShell failed, falling back to WMIC');
-                            try {
-                                const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
-                                const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
-                                    const [key, value] = line.split('=');
-                                    return [key.trim(), parseInt(value.trim()) * 1024];
-                                }));
-                                systemInfo.memory = {
-                                    total: memData.TotalVisibleMemorySize || 0,
-                                    free: memData.FreePhysicalMemory || 0,
-                                    used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
-                                };
-                                systemInfo.monitoring = {
-                                    method: 'wmic_fallback',
-                                    status: 'success',
-                                    powershellError: memResult.error.message
-                                };
-                            } catch (wmicError) {
-                                console.error('[SystemMonitor] Both PowerShell and WMIC failed');
-                                systemInfo.monitoring = {
-                                    method: 'failed',
-                                    status: 'failed',
-                                    powershellError: memResult.error.message,
-                                    wmicError: wmicError.message,
-                                    diagnosis: memResult.diagnosis
-                                };
-                                return res.status(500).json({
-                                    success: false,
-                                    error: 'Both PowerShell and WMIC monitoring failed',
-                                    details: 'Windows system monitoring is not available',
-                                    powershellError: memResult.error.message,
-                                    wmicError: wmicError.message,
-                                    diagnosis: memResult.diagnosis,
-                                    suggestions: [
-                                        'Check if Windows Management Instrumentation service is running',
-                                        'Try running as administrator',
-                                        'Check PowerShell execution policy: Get-ExecutionPolicy',
-                                        'Verify Windows system integrity'
-                                    ]
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    // 直接使用WMIC
-                    try {
-                        const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
-                        const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
-                            const [key, value] = line.split('=');
-                            return [key.trim(), parseInt(value.trim()) * 1024];
-                        }));
-                        systemInfo.memory = {
-                            total: memData.TotalVisibleMemorySize || 0,
-                            free: memData.FreePhysicalMemory || 0,
-                            used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
-                        };
-                        systemInfo.monitoring = { method: 'wmic', status: 'success' };
-                    } catch (wmicError) {
-                        console.error('[SystemMonitor] WMIC failed');
-                        return res.status(500).json({
-                            success: false,
-                            error: 'WMIC monitoring failed',
-                            details: wmicError.message,
-                            suggestions: [
-                                'Try setting WindowsMonitorMode=powershell in config.env',
-                                'Check if Windows Management Instrumentation service is running',
-                                'Run as administrator'
-                            ]
-                        });
-                    }
-                }
-
-                // CPU信息获取
-                if (usePowerShell && systemInfo.monitoring.status === 'success') {
-                    // 尝试PowerShell命令
-                    const cpuResult = await executePowerShellWithDiagnosis(
-                        'powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"',
-                        'CPU information'
-                    );
-
-                    if (cpuResult.success) {
-                        const cpuData = JSON.parse(cpuResult.data);
-                        systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
-                    } else if (!config.forcePowerShell) {
-                        // 回退到WMIC
-                        try {
-                            const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
-                            const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
-                            systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
-                        } catch (wmicCpuError) {
-                            console.warn('[SystemMonitor] CPU monitoring failed, using 0');
-                            systemInfo.cpu = { usage: 0, error: wmicCpuError.message };
-                        }
-                    } else {
-                        console.warn('[SystemMonitor] CPU monitoring failed, using 0');
-                        systemInfo.cpu = { usage: 0, error: cpuResult.error.message };
-                    }
-                } else {
-                    // 使用WMIC或默认值
-                    try {
-                        const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
-                        const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
-                        systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
-                    } catch (wmicCpuError) {
-                        console.warn('[SystemMonitor] CPU monitoring failed, using 0');
-                        systemInfo.cpu = { usage: 0, error: wmicCpuError.message };
-                    }
-                }
-
             } else { // Linux/Unix
                 const { stdout: memInfo } = await execAsync('free -b', execOptions);
                 const memLine = memInfo.split('\n')[1].split(/\s+/);
                 systemInfo.memory = { total: parseInt(memLine[1]), used: parseInt(memLine[2]), free: parseInt(memLine[3]) };
                 const { stdout: cpuInfo } = await execAsync("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", execOptions);
                 systemInfo.cpu = { usage: parseFloat(cpuInfo.trim()) || 0 };
-                systemInfo.monitoring = { method: 'linux', status: 'success' };
             }
-
             systemInfo.nodeProcess = {
                 pid: process.pid,
                 memory: process.memoryUsage(),
@@ -431,7 +99,6 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 platform: process.platform,
                 arch: process.arch
             };
-
             res.json({ success: true, system: systemInfo });
         } catch (error) {
             console.error('[SystemMonitor] Error getting system resources:', error);
