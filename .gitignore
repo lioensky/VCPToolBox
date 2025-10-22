@@ -191,3 +191,16 @@ docker-compose.yml
 # Claude Code workflow files (temporary working files)
 .spec-workflow/
 .serena/
+
+# VectorStore binary and map files (AI model data)
+VectorStore/*.bin
+VectorStore/*_map.json
+
+# AI agent and system configuration files
+agent_map.json
+ip_blacklist.json
+preprocessor_order.json
+
+# External tools and libraries
+bfg.jar
+.bmad-core/
