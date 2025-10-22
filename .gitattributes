@@ -1,0 +1,4 @@
+.gitignore merge=ours
+.gitattributes merge=ours
+config.env merge=ours
+*.env merge=ours
