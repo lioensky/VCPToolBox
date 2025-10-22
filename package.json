@@ -44,6 +44,7 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rss-parser": "^3.13.0",
     "serpapi": "^2.2.1",
+    "systeminformation": "^5.27.11",
     "trash": "^10.0.0",
     "turndown": "^7.2.1",
     "undici": "^7.13.0",

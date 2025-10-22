@@ -187,3 +187,7 @@ docker-compose.yml
 # Claude configuration and cache files
 .claude/
 .crush/
+
+# Claude Code workflow files (temporary working files)
+.spec-workflow/
+.serena/
