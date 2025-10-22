@@ -5,6 +5,7 @@ const PREPROCESSOR_ORDER_FILE = path.join(__dirname, '..', 'preprocessor_order.j
 
 // 导入 reidentify_image 函数 (现在是 reidentify_media)
 const { reidentifyMediaByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
+const { getAuthCode } = require('../modules/captchaDecoder'); // 导入统一的解码函数
 
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
@@ -106,27 +107,19 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
-   // 新增：解密函数，与 auth.js 中的加密逻辑相反
-   function decryptCode(encryptedCode) {
-       const secretKey = '314159';
-       let realCode = '';
-       for (let i = 0; i < encryptedCode.length; i++) {
-           const encryptedDigit = parseInt(encryptedCode[i], 10);
-           const keyDigit = parseInt(secretKey[i], 10);
-           // (加密后的数字 - 密钥数字 + 10) % 10 来处理负数情况
-           const realDigit = (encryptedDigit - keyDigit + 10) % 10;
-           realCode += realDigit;
-       }
-       return realCode;
-   }
 
    // 新增：获取 UserAuth 认证码 (现在会解密)
    adminApiRouter.get('/user-auth-code', async (req, res) => {
-       const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'auth_code.txt');
+       const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
        try {
-           const encryptedCode = await fs.readFile(authCodePath, 'utf-8');
-           const decryptedCode = decryptCode(encryptedCode.trim());
-           res.json({ success: true, code: decryptedCode });
+           // 直接调用 getAuthCode 函数，它封装了读取和解密逻辑
+           const decryptedCode = await getAuthCode(authCodePath);
+           if (decryptedCode) {
+               res.json({ success: true, code: decryptedCode });
+           } else {
+               // 如果 getAuthCode 返回空字符串或其他假值，说明内部发生了错误
+               throw new Error('Failed to get auth code internally.');
+           }
        } catch (error) {
            if (error.code === 'ENOENT') {
                res.status(404).json({ success: false, error: '认证码文件未找到。插件可能尚未运行。' });

@@ -6,6 +6,7 @@
   "description": "一个允许AI执行PowerShell命令并返回其输出的插件。支持阻塞式和后台式执行。注意：后台式执行会打开一个新的PowerShell窗口，且不会将执行结果直接返回VCP，只会返回任务提交状态。",
   "author": "Your Name",
   "pluginType": "synchronous",
+  "requiresAdmin": true,
   "entryPoint": {
     "type": "nodejs",
     "command": "node PowerShellExecutor.js"

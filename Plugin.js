@@ -7,6 +7,7 @@ const dotenv = require('dotenv'); // Ensures dotenv is available
 const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
+const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -31,6 +32,19 @@ class PluginManager {
     setWebSocketServer(wss) {
         this.webSocketServer = wss;
         if (this.debugMode) console.log('[PluginManager] WebSocketServer instance has been set.');
+    }
+
+    async _getDecryptedAuthCode() {
+        try {
+            const authCodePath = path.join(__dirname, 'Plugin', 'UserAuth', 'code.bin');
+            // 使用正确的 getAuthCode 函数，并传递文件路径
+            return await getAuthCode(authCodePath);
+        } catch (error) {
+            if (this.debugMode) {
+                console.error('[PluginManager] Failed to read or decrypt auth code for plugin execution:', error.message);
+            }
+            return null; // Return null if code cannot be obtained
+        }
     }
 
     setProjectBasePath(basePath) {
@@ -722,6 +736,17 @@ class PluginManager {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
         } else {
             if (this.debugMode) console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
+        }
+
+        // 如果插件需要管理员权限，则获取解密后的验证码并注入环境变量
+        if (plugin.requiresAdmin) {
+            const decryptedCode = await this._getDecryptedAuthCode();
+            if (decryptedCode) {
+                additionalEnv.DECRYPTED_AUTH_CODE = decryptedCode;
+                if (this.debugMode) console.log(`[PluginManager] Injected DECRYPTED_AUTH_CODE for admin-required plugin: ${pluginName}`);
+            } else {
+                if (this.debugMode) console.warn(`[PluginManager] Could not get decrypted auth code for admin-required plugin: ${pluginName}. Execution will proceed without it.`);
+            }
         }
         // 将 requestIp 添加到环境变量
         if (requestIp) {

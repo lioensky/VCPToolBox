@@ -44,19 +44,6 @@ function sendCallback(requestId, status, result) {
     req.end();
 }
 
-// 解密验证码
-function decryptCode(encryptedCode) {
-    const secretKey = '314159'; // 必须与 auth.js 中的密钥相同
-    let realCode = '';
-    for (let i = 0; i < encryptedCode.length; i++) {
-        const encryptedDigit = parseInt(encryptedCode[i], 10);
-        const keyDigit = parseInt(secretKey[i], 10);
-        // 解密逻辑：(加密数字 - 密钥数字 + 10) % 10
-        const realDigit = (encryptedDigit - keyDigit + 10) % 10;
-        realCode += realDigit;
-    }
-    return realCode;
-}
 
 async function executePowerShellCommand(command, executionType = 'blocking', timeout = 60000) {
     return new Promise((resolve, reject) => {
@@ -157,15 +144,11 @@ async function main() {
                     throw new Error('管理员模式仅支持 "background" 执行类型。');
                 }
 
-                const authCodePath = path.join(__dirname, '..', 'UserAuth', 'auth_code.txt');
-                let encryptedCode;
-                try {
-                    encryptedCode = (await fs.readFile(authCodePath, 'utf-8')).trim();
-                } catch (e) {
-                    throw new Error('读取验证码文件失败。请确保UserAuth插件已生成验证码。');
-                }
+                const realCode = process.env.DECRYPTED_AUTH_CODE;
 
-                const realCode = decryptCode(encryptedCode);
+                if (!realCode) {
+                    throw new Error('无法获取管理员验证码。请确保主服务器配置正确。');
+                }
 
                 if (String(requireAdmin) !== realCode) {
                     throw new Error('管理员验证码错误。');

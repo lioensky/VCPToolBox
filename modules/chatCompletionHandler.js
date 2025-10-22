@@ -3,25 +3,13 @@ const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const fs = require('fs').promises;
 const path = require('path');
-
-// Decrypts the code from UserAuth plugin.
-function decryptCode(encryptedCode) {
-  const secretKey = '314159';
-  let realCode = '';
-  for (let i = 0; i < encryptedCode.length; i++) {
-    const encryptedDigit = parseInt(encryptedCode[i], 10);
-    const keyDigit = parseInt(secretKey[i], 10);
-    const realDigit = (encryptedDigit - keyDigit + 10) % 10;
-    realCode += realDigit;
-  }
-  return realCode;
-}
+const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
 
 async function getRealAuthCode(debugMode = false) {
   try {
-    const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'auth_code.txt');
-    const encryptedCode = await fs.readFile(authCodePath, 'utf-8');
-    return decryptCode(encryptedCode.trim());
+    const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
+    // 使用正确的 getAuthCode 函数，它会自行处理文件读取和解码
+    return await getAuthCode(authCodePath);
   } catch (error) {
     if (debugMode) {
       console.error('[VCPToolCode] Failed to read or decrypt auth code:', error);
