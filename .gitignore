@@ -149,9 +149,11 @@ Plugin/WeatherReporter/weather_cache.txt
 DebugLog/
 dailynote/
 
-# WeatherReporter cache files
-Plugin/WeatherReporter/city_cache.txt
+# WeatherReporter cache files (运行时天气数据缓存，不应提交)
 Plugin/WeatherReporter/weather_cache.txt
+Plugin/WeatherReporter/weather_cache.json
+Plugin/WeatherReporter/city_cache.txt
+Plugin/WeatherReporter/*.cache
 
 
 # 忽略通用表情包目录下的所有内容...
@@ -168,8 +170,7 @@ image/fluxgen/
 # VCPLog 运行时日志
 Plugin/VCPLog/log/
 
-# 插件状态缓存文件
-Plugin/WeatherReporter/weather_cache.json
+# 插件状态缓存文件 (运行时数据，不应提交)
 Plugin/MCPOMonitor/mcpo_status_cache.json
 Plugin/MCPOMonitor/mcpo_status_cache.txt
 
