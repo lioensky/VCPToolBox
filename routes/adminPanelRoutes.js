@@ -1,3 +1,4 @@
+
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
@@ -47,43 +48,194 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
     // 获取系统整体资源使用情况
     adminApiRouter.get('/system-monitor/system/resources', async (req, res) => {
-         try {
+        try {
             const systemInfo = {};
             const execOptions = { windowsHide: true }; // Option to prevent window pop-up
 
+            // 添加明显的标记，便于在 PM2 日志中快速定位
+            console.log('=== [SystemMonitor] 开始获取系统资源 ===');
+            console.log(`[SystemMonitor] 平台: ${process.platform}, 时间: ${new Date().toISOString()}`);
             if (process.platform === 'win32') {
-                // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
+                // 获取内存信息
                 try {
+                    console.log('[SystemMonitor] 尝试使用 PowerShell 获取内存信息...');
                     const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
-                    const memData = JSON.parse(memInfo);
+                    console.log('[SystemMonitor] PowerShell 内存命令执行成功，输出长度:', memInfo.length);
+                    console.log('[SystemMonitor] PowerShell 内存输出原始内容:', memInfo.substring(0, 200));
+                    // 尝试清理和解析 JSON 输出
+                    let cleanedMemInfo = memInfo.trim();
+                    // 移除可能的 PowerShell 输出前缀/后缀和其他非 JSON 内容
+                    // 处理多种可能的 PowerShell 输出格式问题
+                    if (cleanedMemInfo.startsWith('PowerShell')) {
+                        // 尝试提取 JSON 部分 - 使用更宽松的正则表达式匹配多行 JSON
+                        const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
+                        if (jsonMatch) {
+                            cleanedMemInfo = jsonMatch[1];
+                        } else {
+                            // 如果没有找到 JSON，尝试其他方法
+                            console.log('[SystemMonitor] PowerShell 输出格式异常，尝试分割方法');
+                            const lines = cleanedMemInfo.split('\n');
+                            // 查找包含 { 的行和包含 } 的行之间的所有内容
+                            let startIndex = -1;
+                            let endIndex = -1;
+                            for (let i = 0; i < lines.length; i++) {
+                                if (lines[i].trim().startsWith('{')) {
+                                    startIndex = i;
+                                }
+                                if (lines[i].trim().endsWith('}') && startIndex !== -1) {
+                                    endIndex = i;
+                                    break;
+                                }
+                            }
+                            if (startIndex !== -1 && endIndex !== -1) {
+                                cleanedMemInfo = lines.slice(startIndex, endIndex + 1).join('');
+                            } else {
+                                throw new Error('PowerShell 输出中未找到有效的 JSON 数据');
+                            }
+                        }
+                    }
+                    const memData = JSON.parse(cleanedMemInfo);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
                         free: (memData.FreePhysicalMemory || 0) * 1024,
                         used: ((memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)) * 1024
                     };
                 } catch (powershellError) {
-                    // 回退到 wmic 命令
-                    const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
-                    const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
-                        const [key, value] = line.split('=');
-                        return [key.trim(), parseInt(value.trim()) * 1024];
-                    }));
-                    systemInfo.memory = {
-                        total: memData.TotalVisibleMemorySize || 0,
-                        free: memData.FreePhysicalMemory || 0,
-                        used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
-                    };
+                    // 尝试使用更简单的 PowerShell 命令作为替代方案
+                    try {
+                        const { stdout: altMemInfo } = await execAsync('powershell -Command "(Get-WmiObject -Class Win32_OperatingSystem).TotalVisibleMemorySize; (Get-WmiObject -Class Win32_OperatingSystem).FreePhysicalMemory"', execOptions);
+                        console.log('[SystemMonitor] 替代 PowerShell 内存命令执行成功');
+                        const memLines = altMemInfo.trim().split('\n');
+                        const totalMem = parseInt(memLines[0]) * 1024;
+                        const freeMem = parseInt(memLines[1]) * 1024;
+                        systemInfo.memory = {
+                            total: totalMem || 0,
+                            free: freeMem || 0,
+                            used: (totalMem || 0) - (freeMem || 0)
+                        };
+                    } catch (altPowershellError) {
+    
+                        // 使用 Windows 11 兼容的最终替代方案
+                        try {
+                            // 使用 typeperf 命令作为最终替代方案
+                            const { stdout: typeperfMem } = await execAsync('typeperf "\\Memory\\Available MBytes" "\\Memory\\Committed Bytes" -sc 1', execOptions);
+                            console.log('[SystemMonitor] typeperf 内存命令执行成功');
+                            const lines = typeperfMem.split('\n');
+                            if (lines.length > 2) {
+                                const values = lines[2].split(',');
+                                const availableMB = parseFloat(values[1].replace(/"/g, ''));
+                                const committedBytes = parseFloat(values[2].replace(/"/g, ''));
+                                // 估算总内存 (可用 + 已使用)
+                                const totalMemory = availableMB * 1024 * 1024 + committedBytes;
+                                systemInfo.memory = {
+                                    total: totalMemory,
+                                    free: availableMB * 1024 * 1024,
+                                    used: committedBytes
+                                };
+                            } else {
+                                throw new Error('typeperf 输出格式不正确');
+                            }
+                        } catch (typeperfError) {
+                            console.error('!!! [SystemMonitor] typeperf 内存命令失败 !!!');
+                            console.error('!!! [SystemMonitor] 错误详情:', typeperfError.message);
+                            console.error('!!! [SystemMonitor] 错误堆栈:', typeperfError.stack);
+                            console.log('[SystemMonitor] 回退到 WMIC 命令获取内存信息...');
+                            // 最后的回退到 wmic 命令
+                            const { stdout: memInfo } = await execAsync('wmic OS get TotalVisibleMemorySize,FreePhysicalMemory /value', execOptions);
+                            const memData = Object.fromEntries(memInfo.split('\r\n').filter(line => line.includes('=')).map(line => {
+                                const [key, value] = line.split('=');
+                                return [key.trim(), parseInt(value.trim()) * 1024];
+                            }));
+                            systemInfo.memory = {
+                                total: memData.TotalVisibleMemorySize || 0,
+                                free: memData.FreePhysicalMemory || 0,
+                                used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
+                            };
+                        }
+                    }
                 }
-                
+
+                // 获取CPU信息
                 try {
+                    console.log('[SystemMonitor] 尝试使用 PowerShell 获取 CPU 信息...');
                     const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
-                    const cpuData = JSON.parse(cpuInfo);
+                    console.log('[SystemMonitor] PowerShell CPU 命令执行成功，输出长度:', cpuInfo.length);
+                    console.log('[SystemMonitor] PowerShell CPU 输出原始内容:', cpuInfo.substring(0, 200));
+                    // 尝试清理和解析 JSON 输出
+                    let cleanedCpuInfo = cpuInfo.trim();
+                    // 移除可能的 PowerShell 输出前缀/后缀和其他非 JSON 内容
+                    // 处理多种可能的 PowerShell 输出格式问题
+                    if (cleanedCpuInfo.startsWith('PowerShell')) {
+                        // 尝试提取 JSON 部分 - 使用更宽松的正则表达式匹配多行 JSON
+                        const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
+                        if (jsonMatch) {
+                            cleanedCpuInfo = jsonMatch[1];
+                        } else {
+                            // 如果没有找到 JSON，尝试其他方法
+                            console.log('[SystemMonitor] PowerShell CPU 输出格式异常，尝试分割方法');
+                            const lines = cleanedCpuInfo.split('\n');
+                            // 查找包含 { 的行和包含 } 的行之间的所有内容
+                            let startIndex = -1;
+                            let endIndex = -1;
+                            for (let i = 0; i < lines.length; i++) {
+                                if (lines[i].trim().startsWith('{')) {
+                                    startIndex = i;
+                                }
+                                if (lines[i].trim().endsWith('}') && startIndex !== -1) {
+                                    endIndex = i;
+                                    break;
+                                }
+                            }
+                            if (startIndex !== -1 && endIndex !== -1) {
+                                cleanedCpuInfo = lines.slice(startIndex, endIndex + 1).join('');
+                            } else {
+                                throw new Error('PowerShell CPU 输出中未找到有效的 JSON 数据');
+                            }
+                        }
+                    }
+                    
+                    console.log('[SystemMonitor] 清理后的 CPU JSON:', cleanedCpuInfo.substring(0, 200));
+                    const cpuData = JSON.parse(cleanedCpuInfo);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
-                    // 回退到 wmic 命令
-                    const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
-                    const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
-                    systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
+                    console.error('!!! [SystemMonitor] PowerShell CPU 命令失败 !!!');
+                    console.error('!!! [SystemMonitor] 错误详情:', powershellError.message);
+                    console.error('!!! [SystemMonitor] 错误堆栈:', powershellError.stack);
+                    console.log('[SystemMonitor] 尝试使用替代 PowerShell 命令获取 CPU 信息...');
+                    // 尝试使用更简单的 PowerShell 命令作为替代方案
+                    try {
+                        const { stdout: altCpuInfo } = await execAsync('powershell -Command "Get-WmiObject -Class Win32_Processor | Select-Object -ExpandProperty LoadPercentage"', execOptions);
+                        console.log('[SystemMonitor] 替代 PowerShell CPU 命令执行成功');
+                        const cpuUsage = parseInt(altCpuInfo.trim()) || 0;
+                        systemInfo.cpu = { usage: cpuUsage };
+                    } catch (altPowershellError) {
+                        console.error('!!! [SystemMonitor] 替代 PowerShell CPU 命令也失败 !!!');
+                        console.error('!!! [SystemMonitor] 错误详情:', altPowershellError.message);
+                        console.error('!!! [SystemMonitor] 错误堆栈:', altPowershellError.stack);
+                        console.log('[SystemMonitor] 使用 Windows 11 兼容的最终替代方案获取 CPU 信息...');
+                        // 使用 Windows 11 兼容的最终替代方案
+                        try {
+                            // 使用 typeperf 命令作为最终替代方案
+                            const { stdout: typeperfCpu } = await execAsync('typeperf "\\Processor(_Total)\\% Processor Time" -sc 1', execOptions);
+                            console.log('[SystemMonitor] typeperf CPU 命令执行成功');
+                            const lines = typeperfCpu.split('\n');
+                            if (lines.length > 2) {
+                                const cpuValue = parseFloat(lines[2].split(',')[1].replace(/"/g, ''));
+                                systemInfo.cpu = { usage: Math.round(cpuValue) };
+                            } else {
+                                throw new Error('typeperf 输出格式不正确');
+                            }
+                        } catch (typeperfError) {
+                            console.error('!!! [SystemMonitor] typeperf CPU 命令失败 !!!');
+                            console.error('!!! [SystemMonitor] 错误详情:', typeperfError.message);
+                            console.error('!!! [SystemMonitor] 错误堆栈:', typeperfError.stack);
+                            console.log('[SystemMonitor] 回退到 WMIC 命令获取 CPU 信息...');
+                            // 最后的回退到 wmic 命令
+                            const { stdout: cpuInfo } = await execAsync('wmic cpu get loadpercentage /value', execOptions);
+                            const cpuMatch = cpuInfo.match(/LoadPercentage=(\d+)/);
+                            systemInfo.cpu = { usage: cpuMatch ? parseInt(cpuMatch[1]) : 0 };
+                        }
+                    }
                 }
             } else { // Linux/Unix
                 const { stdout: memInfo } = await execAsync('free -b', execOptions);
@@ -92,6 +244,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 const { stdout: cpuInfo } = await execAsync("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", execOptions);
                 systemInfo.cpu = { usage: parseFloat(cpuInfo.trim()) || 0 };
             }
+            
             systemInfo.nodeProcess = {
                 pid: process.pid,
                 memory: process.memoryUsage(),
@@ -100,9 +253,14 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 platform: process.platform,
                 arch: process.arch
             };
+            
+            console.log('[SystemMonitor] 系统资源获取成功，准备返回结果');
             res.json({ success: true, system: systemInfo });
         } catch (error) {
-            console.error('[SystemMonitor] Error getting system resources:', error);
+            console.error('!!! [SystemMonitor] 获取系统资源时发生严重错误 !!!');
+            console.error('!!! [SystemMonitor] 错误详情:', error.message);
+            console.error('!!! [SystemMonitor] 错误堆栈:', error.stack);
+            console.error('!!! [SystemMonitor] 这将导致系统监控功能完全不可用 !!!');
             res.status(500).json({ success: false, error: 'Failed to get system resources', details: error.message });
         }
     });
@@ -693,7 +851,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // GET all folder names in dailynote directory
     adminApiRouter.get('/dailynotes/folders', async (req, res) => {
         try {
-            await fs.access(dailyNoteRootPath); 
+            await fs.access(dailyNoteRootPath);
             const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
             const folders = entries
                 .filter(entry => entry.isDirectory())
@@ -702,7 +860,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         } catch (error) {
             if (error.code === 'ENOENT') {
                 console.warn('[AdminPanelRoutes API] /dailynotes/folders - dailynote directory not found.');
-                res.json({ folders: [] }); 
+                res.json({ folders: [] });
             } else {
                 console.error('[AdminPanelRoutes API] Error listing daily note folders:', error);
                 res.status(500).json({ error: 'Failed to list daily note folders', details: error.message });
@@ -710,598 +868,23 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
-    // GET all note files in a specific folder with last modified time
-    adminApiRouter.get('/dailynotes/folder/:folderName', async (req, res) => {
-        const folderName = req.params.folderName;
-        const specificFolderParentPath = path.join(dailyNoteRootPath, folderName);
-
-        try {
-            await fs.access(specificFolderParentPath); 
-            const files = await fs.readdir(specificFolderParentPath);
-            const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
-            const PREVIEW_LENGTH = 100;
-
-            const notes = await Promise.all(noteFiles.map(async (file) => {
-                const filePath = path.join(specificFolderParentPath, file);
-                const stats = await fs.stat(filePath);
-                let preview = '';
-                try {
-                    const content = await fs.readFile(filePath, 'utf-8');
-                    preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
-                } catch (readError) {
-                    console.warn(`[AdminPanelRoutes API] Error reading file for preview ${filePath}: ${readError.message}`);
-                    preview = '[无法加载预览]';
-                }
-                return {
-                    name: file,
-                    lastModified: stats.mtime.toISOString(),
-                    preview: preview
-                };
-            }));
-
-            // Sort by lastModified time, newest first
-            notes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
-            res.json({ notes });
- 
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn(`[AdminPanelRoutes API] /dailynotes/folder/${folderName} - Folder not found.`);
-                res.status(404).json({ error: `Folder '${folderName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error listing notes in folder ${folderName}:`, error);
-                res.status(500).json({ error: `Failed to list notes in folder ${folderName}`, details: error.message });
-            }
-        }
-    });
-
-    // New API endpoint for searching notes with full content
-    adminApiRouter.get('/dailynotes/search', async (req, res) => {
-        const { term, folder } = req.query; 
-
-        if (!term || typeof term !== 'string' || term.trim() === '') {
-            return res.status(400).json({ error: 'Search term is required.' });
-        }
-
-        const searchTerm = term.trim().toLowerCase();
-        const PREVIEW_LENGTH = 100; 
-        let foldersToSearch = [];
-        const matchedNotes = [];
-
-        try {
-            if (folder && typeof folder === 'string' && folder.trim() !== '') {
-                const specificFolderPath = path.join(dailyNoteRootPath, folder);
-                try {
-                    await fs.access(specificFolderPath); 
-                    if ((await fs.stat(specificFolderPath)).isDirectory()) {
-                        foldersToSearch.push({ name: folder, path: specificFolderPath });
-                    } else {
-                        console.warn(`[AdminPanelRoutes API Search] Specified path '${folder}' is not a directory.`);
-                        return res.status(404).json({ error: `Specified path '${folder}' is not a directory.`});
-                    }
-                } catch (e) {
-                    console.warn(`[AdminPanelRoutes API Search] Specified folder '${folder}' not found during access check.`);
-                    return res.status(404).json({ error: `Specified folder '${folder}' not found.` });
-                }
-            } else {
-                await fs.access(dailyNoteRootPath);
-                const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
-                entries.filter(entry => entry.isDirectory()).forEach(dir => {
-                    foldersToSearch.push({ name: dir.name, path: path.join(dailyNoteRootPath, dir.name) });
-                });
-                if (foldersToSearch.length === 0) {
-                     console.log('[AdminPanelRoutes API Search] No folders found in dailynote directory for global search.');
-                     return res.json({ notes: [] });
-                }
-            }
-
-            for (const dir of foldersToSearch) {
-                const files = await fs.readdir(dir.path);
-                const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
-
-                for (const fileName of noteFiles) {
-                    const filePath = path.join(dir.path, fileName);
-                    try {
-                        const content = await fs.readFile(filePath, 'utf-8');
-                        if (content.toLowerCase().includes(searchTerm)) {
-                            const stats = await fs.stat(filePath);
-                            let preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
-                            matchedNotes.push({
-                                name: fileName,
-                                folderName: dir.name, 
-                                lastModified: stats.mtime.toISOString(),
-                                preview: preview
-                            });
-                        }
-                    } catch (readError) {
-                        console.warn(`[AdminPanelRoutes API Search] Error reading file ${filePath} for search: ${readError.message}`);
-                    }
-                }
-            }
-
-            // Sort by lastModified time, newest first
-            matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
- 
-            res.json({ notes: matchedNotes });
-
-        } catch (error) {
-            if (error.code === 'ENOENT' && error.path && error.path.includes('dailynote')) {
-                console.warn('[AdminPanelRoutes API Search] dailynote directory not found.');
-                return res.json({ notes: [] }); 
-            }
-            console.error('[AdminPanelRoutes API Search] Error during daily note search:', error);
-            res.status(500).json({ error: 'Failed to search daily notes', details: error.message });
-        }
-    });
-
-    // GET content of a specific note file
-    adminApiRouter.get('/dailynotes/note/:folderName/:fileName', async (req, res) => {
-        const { folderName, fileName } = req.params;
-        const filePath = path.join(dailyNoteRootPath, folderName, fileName);
-
-        try {
-            await fs.access(filePath); 
-            const content = await fs.readFile(filePath, 'utf-8');
-            res.json({ content });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn(`[AdminPanelRoutes API] /dailynotes/note/${folderName}/${fileName} - File not found.`);
-                res.status(404).json({ error: `Note file '${fileName}' in folder '${folderName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error reading note file ${folderName}/${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read note file ${folderName}/${fileName}`, details: error.message });
-            }
-        }
-    });
-
-    // POST to save/update content of a specific note file
-    adminApiRouter.post('/dailynotes/note/:folderName/:fileName', async (req, res) => {
-        const { folderName, fileName } = req.params;
-        const { content } = req.body;
-
-        if (typeof content !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
-        }
-
-        const targetFolderPath = path.join(dailyNoteRootPath, folderName); 
-        const filePath = path.join(targetFolderPath, fileName);
-
-        try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-            await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `Note '${fileName}' in folder '${folderName}' saved successfully.` });
-        } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving note file ${folderName}/${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save note file ${folderName}/${fileName}`, details: error.message });
-        }
-    });
-
-    // POST to move one or more notes to a different folder
-    adminApiRouter.post('/dailynotes/move', async (req, res) => {
-        const { sourceNotes, targetFolder } = req.body;
-
-        if (!Array.isArray(sourceNotes) || sourceNotes.some(n => !n.folder || !n.file) || typeof targetFolder !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { sourceNotes: [{folder, file}], targetFolder: string }.' });
-        }
-
-        const results = {
-            moved: [],
-            errors: []
-        };
-
-        const targetFolderPath = path.join(dailyNoteRootPath, targetFolder);
-
-        try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-        } catch (mkdirError) {
-            console.error(`[AdminPanelRoutes API] Error creating target folder ${targetFolder} for move:`, mkdirError);
-            return res.status(500).json({ error: `Failed to create target folder '${targetFolder}'`, details: mkdirError.message });
-        }
-
-        for (const note of sourceNotes) {
-            const sourceFilePath = path.join(dailyNoteRootPath, note.folder, note.file);
-            const destinationFilePath = path.join(targetFolderPath, note.file); 
-
+    // --- VectorDB Status API ---
+    adminApiRouter.get('/vectordb/status', (req, res) => {
+        if (vectorDBManager && typeof vectorDBManager.getHealthStatus === 'function') {
             try {
-                await fs.access(sourceFilePath);
-                try {
-                    await fs.access(destinationFilePath);
-                    results.errors.push({
-                        note: `${note.folder}/${note.file}`,
-                        error: `File already exists at destination '${targetFolder}/${note.file}'. Move aborted for this file.`
-                    });
-                    continue; 
-                } catch (destAccessError) {
-                    // Destination file does not exist, proceed with move
-                }
-                
-                await fs.rename(sourceFilePath, destinationFilePath);
-                results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
+                const status = vectorDBManager.getHealthStatus();
+                res.json({ success: true, status });
             } catch (error) {
-                if (error.code === 'ENOENT' && error.path === sourceFilePath) {
-                     results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Source file not found.' });
-                } else {
-                    console.error(`[AdminPanelRoutes API] Error moving note ${note.folder}/${note.file} to ${targetFolder}:`, error);
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-                }
+                console.error('[AdminAPI] Error getting VectorDB status:', error);
+                res.status(500).json({ success: false, error: 'Failed to get VectorDB status', details: error.message });
             }
-        }
-
-        const message = `Moved ${results.moved.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
-        res.json({ message, moved: results.moved, errors: results.errors });
-    });
-
-    // POST to delete multiple notes
-    if (DEBUG_MODE) console.log('[AdminPanelRoutes DEBUG] Attempting to register POST /admin_api/dailynotes/delete-batch');
-    adminApiRouter.post('/dailynotes/delete-batch', async (req, res) => {
-        if (DEBUG_MODE) console.log('[AdminPanelRoutes DEBUG] POST /admin_api/dailynotes/delete-batch route hit!');
-        const { notesToDelete } = req.body; 
-
-        if (!Array.isArray(notesToDelete) || notesToDelete.some(n => !n.folder || !n.file)) {
-            return res.status(400).json({ error: 'Invalid request body. Expected { notesToDelete: [{folder, file}] }.' });
-        }
-
-        const results = {
-            deleted: [],
-            errors: []
-        };
-
-        for (const note of notesToDelete) {
-            const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
-            try {
-                await fs.access(filePath); 
-                await fs.unlink(filePath); 
-                results.deleted.push(`${note.folder}/${note.file}`);
-            } catch (error) {
-                if (error.code === 'ENOENT') {
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: 'File not found.' });
-                } else {
-                    console.error(`[AdminPanelRoutes API] Error deleting note ${note.folder}/${note.file}:`, error);
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-                }
-            }
-        }
-
-        const message = `Deleted ${results.deleted.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
-        res.json({ message, deleted: results.deleted, errors: results.errors });
-    });
-    // --- End Daily Notes API ---
-
-    // --- Agent Files API ---
-    const AGENT_MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
-
-    // GET agent map
-    adminApiRouter.get('/agents/map', async (req, res) => {
-        try {
-            const content = await fs.readFile(AGENT_MAP_FILE, 'utf-8');
-            res.json(JSON.parse(content));
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                res.json({}); // Return empty object if file doesn't exist
-            } else {
-                console.error('[AdminPanelRoutes API] Error reading agent_map.json:', error);
-                res.status(500).json({ error: 'Failed to read agent map file', details: error.message });
-            }
+        } else {
+            res.status(503).json({ success: false, error: 'VectorDBManager is not available.' });
         }
     });
-
-    // POST to save agent map
-    adminApiRouter.post('/agents/map', async (req, res) => {
-        const newMap = req.body;
-        if (typeof newMap !== 'object' || newMap === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
-        }
-        try {
-            await fs.writeFile(AGENT_MAP_FILE, JSON.stringify(newMap, null, 2), 'utf-8');
-            // Note: For changes to be reflected in chat, the agentManager needs to be reloaded.
-            // This currently requires a server restart.
-            res.json({ message: 'Agent map saved successfully. A server restart may be required for changes to apply.' });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error writing agent_map.json:', error);
-            res.status(500).json({ error: 'Failed to write agent map file', details: error.message });
-        }
-    });
-
-    // GET list of agent .txt files
-    adminApiRouter.get('/agents', async (req, res) => {
-        try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
-            const files = await fs.readdir(AGENT_FILES_DIR);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            res.json({ files: txtFiles });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error listing agent files:', error);
-            res.status(500).json({ error: 'Failed to list agent files', details: error.message });
-        }
-    });
-
-    // POST to create a new agent .txt file
-    adminApiRouter.post('/agents/new-file', async (req, res) => {
-        const { fileName } = req.body;
-
-        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
-        }
-
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
-
-        try {
-            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
-            await fs.writeFile(filePath, '', { flag: 'wx' });
-            res.json({ message: `File '${fileName}' created successfully.` });
-        } catch (error) {
-            if (error.code === 'EEXIST') {
-                res.status(409).json({ error: `File '${fileName}' already exists.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
-            }
-        }
-    });
-
-    // GET content of a specific agent file
-    adminApiRouter.get('/agents/:fileName', async (req, res) => {
-        const { fileName } = req.params;
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
-        }
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
-
-        try {
-            await fs.access(filePath);
-            const content = await fs.readFile(filePath, 'utf-8');
-            res.json({ content });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                res.status(404).json({ error: `Agent file '${fileName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error reading agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read agent file ${fileName}`, details: error.message });
-            }
-        }
-    });
-
-    // POST to save content of a specific agent file
-    adminApiRouter.post('/agents/:fileName', async (req, res) => {
-        const { fileName } = req.params;
-        const { content } = req.body;
-
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
-        }
-        if (typeof content !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
-        }
-
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
-
-        try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
-            await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `Agent file '${fileName}' saved successfully.` });
-        } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving agent file ${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
-        }
-    });
-
-    // --- End Agent Files API ---
-
-    // --- TVS Variable Files API ---
-    const TVS_FILES_DIR = path.join(__dirname, '..', 'TVStxt'); // 定义 TVS 文件目录
-
-    // GET list of TVS .txt files
-    adminApiRouter.get('/tvsvars', async (req, res) => {
-        try {
-            await fs.mkdir(TVS_FILES_DIR, { recursive: true }); // Ensure directory exists
-            const files = await fs.readdir(TVS_FILES_DIR);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            res.json({ files: txtFiles });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error listing TVS files:', error);
-            res.status(500).json({ error: 'Failed to list TVS files', details: error.message });
-        }
-    });
-
-    // GET content of a specific TVS file
-    adminApiRouter.get('/tvsvars/:fileName', async (req, res) => {
-        const { fileName } = req.params;
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
-        }
-        const filePath = path.join(TVS_FILES_DIR, fileName);
-
-        try {
-            await fs.access(filePath);
-            const content = await fs.readFile(filePath, 'utf-8');
-            res.json({ content });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                res.status(404).json({ error: `TVS file '${fileName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error reading TVS file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read TVS file ${fileName}`, details: error.message });
-            }
-        }
-    });
-
-    // POST to save content of a specific TVS file
-    adminApiRouter.post('/tvsvars/:fileName', async (req, res) => {
-        const { fileName } = req.params;
-        const { content } = req.body;
-
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
-        }
-        if (typeof content !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
-        }
-
-        const filePath = path.join(TVS_FILES_DIR, fileName);
-
-        try {
-            await fs.mkdir(TVS_FILES_DIR, { recursive: true }); // Ensure directory exists
-            await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `TVS file '${fileName}' saved successfully.` });
-        } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving TVS file ${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save TVS file ${fileName}`, details: error.message });
-        }
-    });
-    // --- End TVS Variable Files API ---
-
-    // --- RAG Tags API ---
-    adminApiRouter.get('/rag-tags', async (req, res) => {
-        const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
-        try {
-            const content = await fs.readFile(ragTagsPath, 'utf-8');
-            res.json(JSON.parse(content));
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error reading rag_tags.json:', error);
-            if (error.code === 'ENOENT') {
-                res.json({}); // Return empty object if file doesn't exist
-            } else {
-                res.status(500).json({ error: 'Failed to read rag_tags.json', details: error.message });
-            }
-        }
-    });
-
-    adminApiRouter.post('/rag-tags', async (req, res) => {
-        const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
-        const data = req.body;
-        if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
-        }
-        try {
-            await fs.writeFile(ragTagsPath, JSON.stringify(data, null, 2), 'utf-8');
-            res.json({ message: 'RAG Tags 文件已成功保存。' });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error writing rag_tags.json:', error);
-            res.status(500).json({ error: 'Failed to write rag_tags.json', details: error.message });
-        }
-    });
-    // --- End RAG Tags API ---
-
-    // --- Semantic Groups API ---
-    adminApiRouter.get('/semantic-groups', async (req, res) => {
-        const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
-        const mainFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
-        
-        try {
-            // 优先读取 .edit.json 文件
-            const content = await fs.readFile(editFilePath, 'utf-8');
-            res.json(JSON.parse(content));
-        } catch (editError) {
-            if (editError.code === 'ENOENT') {
-                // 如果 .edit.json 不存在，则回退到读取主文件
-                try {
-                    const content = await fs.readFile(mainFilePath, 'utf-8');
-                    res.json(JSON.parse(content));
-                } catch (mainError) {
-                    console.error('[AdminPanelRoutes API] Error reading main semantic_groups.json as fallback:', mainError);
-                     if (mainError.code === 'ENOENT') {
-                        res.json({ config: {}, groups: {} }); // 两个文件都不存在
-                    } else {
-                        res.status(500).json({ error: 'Failed to read semantic_groups.json', details: mainError.message });
-                    }
-                }
-            } else {
-                console.error('[AdminPanelRoutes API] Error reading semantic_groups.edit.json:', editError);
-                res.status(500).json({ error: 'Failed to read semantic_groups.edit.json', details: editError.message });
-            }
-        }
-    });
-
-    adminApiRouter.post('/semantic-groups', async (req, res) => {
-        const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
-        const data = req.body;
-        if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
-        }
-        try {
-            // 直接写入 .edit.json 文件，不再调用插件的复杂逻辑
-            await fs.writeFile(editFilePath, JSON.stringify(data, null, 2), 'utf-8');
-            res.json({ message: '编辑配置已保存。更改将在下次服务器重启后生效。' });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error writing semantic_groups.edit.json:', error);
-            res.status(500).json({ error: 'Failed to write semantic_groups.edit.json', details: error.message });
-        }
-    });
-    // --- End Semantic Groups API ---
-
-    // --- Thinking Chains API ---
-    adminApiRouter.get('/thinking-chains', async (req, res) => {
-        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
-        try {
-            const content = await fs.readFile(chainsPath, 'utf-8');
-            res.json(JSON.parse(content));
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error reading meta_thinking_chains.json:', error);
-            if (error.code === 'ENOENT') {
-                res.status(404).json({ error: 'Thinking chains file not found.' });
-            } else {
-                res.status(500).json({ error: 'Failed to read thinking chains file', details: error.message });
-            }
-        }
-    });
-
-    adminApiRouter.post('/thinking-chains', async (req, res) => {
-        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
-        const data = req.body;
-        if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
-        }
-        try {
-            await fs.writeFile(chainsPath, JSON.stringify(data, null, 2), 'utf-8');
-            res.json({ message: '思维链配置已成功保存。' });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error writing meta_thinking_chains.json:', error);
-            res.status(500).json({ error: 'Failed to write thinking chains file', details: error.message });
-        }
-    });
-
-    adminApiRouter.get('/available-clusters', async (req, res) => {
-        try {
-            await fs.access(dailyNoteRootPath);
-            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
-            const folders = entries
-                .filter(entry => entry.isDirectory() && entry.name.endsWith('簇'))
-                .map(entry => entry.name);
-            res.json({ clusters: folders });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn('[AdminPanelRoutes API] /available-clusters - dailynote directory not found.');
-                res.json({ clusters: [] });
-            } else {
-                console.error('[AdminPanelRoutes API] Error listing available clusters:', error);
-                res.status(500).json({ error: 'Failed to list available clusters', details: error.message });
-            }
-        }
-    });
-    // --- End Thinking Chains API ---
-
-    // --- VCPTavern API ---
-    // This section is now handled by the VCPTavern plugin's own registerRoutes method.
-    // The conflicting routes have been removed from here to allow the plugin to manage them.
-    // --- End VCPTavern API ---
     
-    // --- 新增：预处理器顺序管理 API ---
-    adminApiRouter.get('/preprocessors/order', (req, res) => {
-        try {
-            const order = pluginManager.getPreprocessorOrder();
-            res.json({ status: 'success', order });
-        } catch (error) {
-            console.error('[AdminAPI] Error getting preprocessor order:', error);
-            res.status(500).json({ status: 'error', message: 'Failed to get preprocessor order.' });
-        }
-    });
-
-    adminApiRouter.post('/preprocessors/order', async (req, res) => {
-        const { order } = req.body;
-        if (!Array.isArray(order)) {
-            return res.status(400).json({ status: 'error', message: 'Invalid request: "order" must be an array.' });
-        }
-
-        try {
+    return adminApiRouter;
+};    try {
             await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(order, null, 2), 'utf-8');
             if (DEBUG_MODE) console.log('[AdminAPI] Saved new preprocessor order to file.');
             
