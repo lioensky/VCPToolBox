@@ -58,14 +58,16 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     
                     // 清理PowerShell输出，移除可能的UTF-8编码配置消息
                     let cleanedMemInfo = memInfo.trim();
-                    console.log('[SystemMonitor] Raw PowerShell memory info output:', cleanedMemInfo);
+                    // 移除调试日志输出以减少日志噪音
+                    // console.log('[SystemMonitor] Raw PowerShell memory info output:', cleanedMemInfo);
                     
                     // 检查并清理PowerShell UTF-8编码配置消息
                     if (cleanedMemInfo.startsWith('PowerShell')) {
                         const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
                         if (jsonMatch) {
                             cleanedMemInfo = jsonMatch[1];
-                            console.log('[SystemMonitor] Extracted JSON from PowerShell output:', cleanedMemInfo);
+                            // 移除调试日志输出以减少日志噪音
+                            // console.log('[SystemMonitor] Extracted JSON from PowerShell output:', cleanedMemInfo);
                         } else {
                             // 备用方案：逐行查找JSON边界
                             const lines = cleanedMemInfo.split('\n');
@@ -90,7 +92,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                             
                             if (jsonStart !== -1 && jsonEnd !== -1) {
                                 cleanedMemInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                console.log('[SystemMonitor] Extracted JSON using line-by-line method:', cleanedMemInfo);
+                                // 移除调试日志输出以减少日志噪音
+                                // console.log('[SystemMonitor] Extracted JSON using line-by-line method:', cleanedMemInfo);
                             }
                         }
                     }
@@ -120,14 +123,16 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     
                     // 清理PowerShell输出，移除可能的UTF-8编码配置消息
                     let cleanedCpuInfo = cpuInfo.trim();
-                    console.log('[SystemMonitor] Raw PowerShell CPU info output:', cleanedCpuInfo);
+                    // 移除调试日志输出以减少日志噪音
+                    // console.log('[SystemMonitor] Raw PowerShell CPU info output:', cleanedCpuInfo);
                     
                     // 检查并清理PowerShell UTF-8编码配置消息
                     if (cleanedCpuInfo.startsWith('PowerShell')) {
                         const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
                         if (jsonMatch) {
                             cleanedCpuInfo = jsonMatch[1];
-                            console.log('[SystemMonitor] Extracted JSON from PowerShell CPU output:', cleanedCpuInfo);
+                            // 移除调试日志输出以减少日志噪音
+                            // console.log('[SystemMonitor] Extracted JSON from PowerShell CPU output:', cleanedCpuInfo);
                         } else {
                             // 备用方案：逐行查找JSON边界
                             const lines = cleanedCpuInfo.split('\n');
@@ -152,7 +157,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                             
                             if (jsonStart !== -1 && jsonEnd !== -1) {
                                 cleanedCpuInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                console.log('[SystemMonitor] Extracted CPU JSON using line-by-line method:', cleanedCpuInfo);
+                                // 移除调试日志输出以减少日志噪音
+                                // console.log('[SystemMonitor] Extracted CPU JSON using line-by-line method:', cleanedCpuInfo);
                             }
                         }
                     }
