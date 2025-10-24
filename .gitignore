@@ -202,6 +202,20 @@ agent_map.json
 ip_blacklist.json
 preprocessor_order.json
 
+# RAGDiaryPlugin vector cache and semantic data (运行时AI向量数据，不应提交)
+Plugin/RAGDiaryPlugin/vector_cache.json
+Plugin/RAGDiaryPlugin/semantic_groups.json
+Plugin/RAGDiaryPlugin/meta_chain_vector_cache.json
+Plugin/RAGDiaryPlugin/semantic_vectors/
+Plugin/RAGDiaryPlugin/*.json
+Plugin/RAGDiaryPlugin/*.bin
+
+# DailyHot cache files (运行时热点数据缓存，不应提交)
+Plugin/DailyHot/dailyhot_cache.md
+Plugin/DailyHot/dailyhot_cache.json
+Plugin/DailyHot/*.cache
+Plugin/DailyHot/dist/cache/
+
 # External tools and libraries
 bfg.jar
 .bmad-core/
