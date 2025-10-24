@@ -19,7 +19,14 @@ async function fetchSource(source) {
     }
 
     try {
-        const resultData = await routeHandler.handleRoute(null, true);
+        // Create a mock request object to prevent "Cannot read properties of null" errors
+        const mockRequest = {
+            req: {
+                query: (param) => null  // Return null for any parameter access
+            }
+        };
+
+        const resultData = await routeHandler.handleRoute(mockRequest, true);
         if (!resultData || !Array.isArray(resultData.data)) {
              return { source, error: `返回的数据格式不正确` };
         }
@@ -135,3 +142,4 @@ async function readCacheOnError() {
         process.exit(0);
     });
 })();
+                                                                                                         

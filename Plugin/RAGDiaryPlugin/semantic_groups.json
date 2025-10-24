@@ -6,15 +6,36 @@
   },
   "groups": {
     "编程学习": {
-      "words": ["Python", "算法", "数据结构", "编程", "代码", "debug", "函数", "JavaScript", "Node.js"],
+      "words": [
+        "Python",
+        "算法",
+        "数据结构",
+        "编程",
+        "代码",
+        "debug",
+        "函数",
+        "JavaScript",
+        "Node.js"
+      ],
       "auto_learned": [],
-      "weight": 1.0,
-      "vector_id": null,
+      "weight": 1,
+      "vector_id": "b1edb4dd-205e-4d35-bf47-9e69d40d8219",
       "last_activated": null,
-      "activation_count": 0
+      "activation_count": 0,
+      "words_hash": "c97d1abe2a5f698b64a32f056e5b6b17258e2e302569a7fdcdeed2fbca72d54d"
     },
     "克莱恩·莫雷蒂": {
-      "words": ["愚者", "克莱恩", "世界", "格尔曼", "道恩", "侦探", "塔罗会", "源堡", "灰雾"],
+      "words": [
+        "愚者",
+        "克莱恩",
+        "世界",
+        "格尔曼",
+        "道恩",
+        "侦探",
+        "塔罗会",
+        "源堡",
+        "灰雾"
+      ],
       "auto_learned": [],
       "weight": 1.2,
       "vector_id": null,

@@ -13,6 +13,15 @@ const request = axios_1.default.create({
     // 请求超时设置
     timeout: config_js_1.config.REQUEST_TIMEOUT,
     withCredentials: true,
+    // 添加默认请求头以模拟浏览器访问
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
 });
 // 请求拦截
 request.interceptors.request.use((request) => {
