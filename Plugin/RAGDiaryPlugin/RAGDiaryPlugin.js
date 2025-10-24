@@ -494,7 +494,7 @@ class RAGDiaryPlugin {
         }
     }
 
-    setDependencies(dependencies) {
+    initialize(config, dependencies) {
         if (dependencies.vectorDBManager) {
             this.vectorDBManager = dependencies.vectorDBManager;
             console.log('[RAGDiaryPlugin] VectorDBManager 依赖已注入。');
@@ -893,8 +893,11 @@ class RAGDiaryPlugin {
             processingPromises.push((async () => {
                 const diaryConfig = this.ragConfig[dbName] || {};
                 const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                const dbNameVector = await this.getSingleEmbedding(dbName);
-                if (!dbNameVector) return { placeholder, content: '' };
+                const dbNameVector = this.vectorDBManager.getDiaryNameVector(dbName); // <--- 使用缓存
+                if (!dbNameVector) {
+                    console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
+                    return { placeholder, content: '' };
+                }
 
                 const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
                 const enhancedVector = this.enhancedVectorCache[dbName];
@@ -927,8 +930,11 @@ class RAGDiaryPlugin {
             processingPromises.push((async () => {
                 const diaryConfig = this.ragConfig[dbName] || {};
                 const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                const dbNameVector = await this.getSingleEmbedding(dbName);
-                if (!dbNameVector) return { placeholder, content: '' };
+                const dbNameVector = this.vectorDBManager.getDiaryNameVector(dbName); // <--- 使用缓存
+                if (!dbNameVector) {
+                    console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
+                    return { placeholder, content: '' };
+                }
 
                 const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
                 const enhancedVector = this.enhancedVectorCache[dbName];
@@ -1499,11 +1505,13 @@ class RAGDiaryPlugin {
 
                 if (response.data && Array.isArray(response.data.results)) {
                     const rerankedResults = response.data.results;
-                    // The rerankedResults are sorted by relevance. We map them back to our original
-                    // document objects using the returned index.
                     const orderedBatch = rerankedResults
-                        .map(result => batch[result.index])
-                        .filter(Boolean); // Filter out any potential misses (e.g., if an index is invalid)
+                        .map(result => {
+                            const originalDoc = batch[result.index];
+                            // 关键：将 rerank score 赋给原始文档
+                            return { ...originalDoc, rerank_score: result.relevance_score };
+                        })
+                        .filter(Boolean);
                     
                     allRerankedDocs.push(...orderedBatch);
                 } else {
@@ -1521,7 +1529,9 @@ class RAGDiaryPlugin {
             }
         }
 
-        // Finally, truncate the combined, reranked list to the original K value.
+        // 关键：在所有批次处理完后，根据 rerank_score 进行全局排序
+        allRerankedDocs.sort((a, b) => b.rerank_score - a.rerank_score);
+
         const finalDocs = allRerankedDocs.slice(0, originalK);
         console.log(`[RAGDiaryPlugin] Rerank process finished. Returning ${finalDocs.length} documents.`);
         return finalDocs;

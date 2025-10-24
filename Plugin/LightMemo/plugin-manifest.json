@@ -1,0 +1,46 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "LightMemo",
+  "version": "1.0.0",
+  "displayName": "轻量回忆插件 (LightMemo)",
+  "description": "一个允许AI主动搜索其RAG知识库（日记、知识库）的插件，作为DeepMemo（上下文搜索）的补充。",
+  "author": "VCP",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "LightMemo.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "EXCLUDED_FOLDERS": {
+      "type": "string",
+      "description": "需要屏蔽、任何时候都不搜索的日记文件夹名称，用逗号分隔。",
+      "default": "已整理,夜伽,MusicDiary"
+    },
+    "RerankUrl": {
+        "type": "string",
+        "description": "Rerank服务的URL，如果需要使用Rerank功能则必须提供。",
+        "default": ""
+    },
+    "RerankApi": {
+        "type": "string",
+        "description": "Rerank服务的API密钥。",
+        "default": ""
+    },
+    "RerankModel": {
+        "type": "string",
+        "description": "Rerank服务的模型名称。",
+        "default": ""
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SearchRAG",
+        "description": "调用此工具在RAG知识库（日记）中进行轻量级搜索。\n参数:\n- query (字符串, 必需): 用于向量搜索的查询内容。\n- maid (字符串, 必需): AI自己的署名，用于在非全局搜索模式下定位相关日记本。\n- k (数字, 可选, 默认5): 返回的结果数量。\n- rerank (布尔, 可选, 默认false): 是否启用Rerank。如果为true，将以2倍k值搜索，然后重排并返回k个结果。\n- search_all_knowledge_bases (布尔, 可选, 默认false): 是否搜索所有知识库。如果为false，则先根据maid署名找到相关日记本再进行搜索；如果为true，则直接在所有（未被屏蔽的）日记本中搜索。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\nmaid:「始」Nova「末」,\nquery:「始」关于上次项目会议的讨论内容「末」,\nk:「始」3「末」,\nrerank:「始」true「末」,\nsearch_all_knowledge_bases:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\nmaid:「始」Nova「末」,\nquery:「始」我昨天学到了什么新知识「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

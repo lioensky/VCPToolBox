@@ -8,6 +8,7 @@ const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
+const { VectorDBManager } = require('./VectorDBManager.js');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -27,6 +28,7 @@ class PluginManager {
         this.webSocketServer = null; // 为 WebSocketServer 实例占位
         this.isReloading = false;
         this.reloadTimeout = null;
+        this.vectorDBManager = new VectorDBManager();
     }
 
     setWebSocketServer(wss) {
@@ -308,6 +310,17 @@ class PluginManager {
     
     async shutdownAllPlugins() {
         console.log('[PluginManager] Shutting down all plugins...'); // Keep
+
+        // --- Shutdown VectorDBManager first to stop background processing ---
+        if (this.vectorDBManager && typeof this.vectorDBManager.shutdown === 'function') {
+            try {
+                if (this.debugMode) console.log('[PluginManager] Calling shutdown for VectorDBManager...');
+                await this.vectorDBManager.shutdown();
+            } catch (error) {
+                console.error('[PluginManager] Error during shutdown of VectorDBManager:', error);
+            }
+        }
+
         for (const [name, pluginModuleData] of this.messagePreprocessors) {
              const pluginModule = pluginModuleData.module || pluginModuleData;
             if (pluginModule && typeof pluginModule.shutdown === 'function') {
@@ -338,6 +351,7 @@ class PluginManager {
 
     async loadPlugins() {
         console.log('[PluginManager] Starting plugin discovery...');
+        // 1. 清理现有插件状态
         const localPlugins = new Map();
         for (const [name, manifest] of this.plugins.entries()) {
             if (!manifest.isDistributed) {
@@ -350,8 +364,10 @@ class PluginManager {
         this.serviceModules.clear();
 
         const discoveredPreprocessors = new Map();
+        const modulesToInitialize = [];
 
         try {
+            // 2. 发现并加载所有插件模块，但不初始化
             const pluginFolders = await fs.readdir(PLUGIN_DIR, { withFileTypes: true });
             for (const folder of pluginFolders) {
                 if (folder.isDirectory()) {
@@ -378,34 +394,21 @@ class PluginManager {
                         const isPreprocessor = manifest.pluginType === 'messagePreprocessor' || manifest.pluginType === 'hybridservice';
                         const isService = manifest.pluginType === 'service' || manifest.pluginType === 'hybridservice';
 
-                        if (isPreprocessor || isService) {
-                            if (manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
-                                try {
-                                    const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
-                                    const module = require(scriptPath);
-                                    const initialConfig = this._getPluginConfig(manifest);
-                                    
-                                    // Manually inject essential server configs for service modules
-                                    initialConfig.PORT = process.env.PORT;
-                                    initialConfig.Key = process.env.Key;
-                                    initialConfig.PROJECT_BASE_PATH = this.projectBasePath;
+                        if ((isPreprocessor || isService) && manifest.entryPoint.script && manifest.communication?.protocol === 'direct') {
+                            try {
+                                const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
+                                const module = require(scriptPath);
+                                
+                                modulesToInitialize.push({ manifest, module });
 
-                                    if (typeof module.initialize === 'function') {
-                                        const dependencies = {
-                                            vcpLogFunctions: this.getVCPLogFunctions()
-                                        };
-                                        await module.initialize(initialConfig, dependencies);
-                                    }
-                                    if (isPreprocessor && typeof module.processMessages === 'function') {
-                                        discoveredPreprocessors.set(manifest.name, module);
-                                    }
-                                    // For both service and hybridservice, store the module for direct calls or routing.
-                                    if (isService) {
-                                        this.serviceModules.set(manifest.name, { manifest, module });
-                                    }
-                                } catch (e) {
-                                    console.error(`[PluginManager] Error loading module for ${manifest.name}:`, e);
+                                if (isPreprocessor && typeof module.processMessages === 'function') {
+                                    discoveredPreprocessors.set(manifest.name, module);
                                 }
+                                if (isService) {
+                                    this.serviceModules.set(manifest.name, { manifest, module });
+                                }
+                            } catch (e) {
+                                console.error(`[PluginManager] Error loading module for ${manifest.name}:`, e);
                             }
                         }
                     } catch (error) {
@@ -416,52 +419,83 @@ class PluginManager {
                 }
             }
 
-            // --- 新的排序和注册逻辑 ---
+            // 3. 确定预处理器加载顺序
             const availablePlugins = new Set(discoveredPreprocessors.keys());
             let finalOrder = [];
-            let orderFileExists = false;
             try {
-                await fs.access(PREPROCESSOR_ORDER_FILE);
-                orderFileExists = true;
-            } catch (error) {
-                // File does not exist, which is fine.
-            }
-
-            if (orderFileExists) {
-                try {
-                    const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
-                    const savedOrder = JSON.parse(orderContent);
-                    if (Array.isArray(savedOrder)) {
-                        for (const pluginName of savedOrder) {
-                            if (availablePlugins.has(pluginName)) {
-                                finalOrder.push(pluginName);
-                                availablePlugins.delete(pluginName);
-                            }
+                const orderContent = await fs.readFile(PREPROCESSOR_ORDER_FILE, 'utf-8');
+                const savedOrder = JSON.parse(orderContent);
+                if (Array.isArray(savedOrder)) {
+                    savedOrder.forEach(pluginName => {
+                        if (availablePlugins.has(pluginName)) {
+                            finalOrder.push(pluginName);
+                            availablePlugins.delete(pluginName);
                         }
-                    }
-                } catch (error) {
-                    console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
+                    });
                 }
+            } catch (error) {
+                if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
             }
             
-            finalOrder.push(...Array.from(availablePlugins).sort()); // 将新发现的插件按字母顺序追加
+            finalOrder.push(...Array.from(availablePlugins).sort());
             
-            // 如果文件最初不存在，并且我们确定了最终顺序，则创建它
-            if (!orderFileExists && finalOrder.length > 0) {
-                try {
-                    await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(finalOrder, null, 2), 'utf-8');
-                    console.log(`[PluginManager] Initialized ${PREPROCESSOR_ORDER_FILE} with default order.`);
-                } catch (writeError) {
-                    console.error(`[PluginManager] Failed to create initial ${PREPROCESSOR_ORDER_FILE}:`, writeError);
-                }
-            }
-
+            // 4. 注册预处理器
             for (const pluginName of finalOrder) {
                 this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
             }
             this.preprocessorOrder = finalOrder;
             if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
-            // --- 排序逻辑结束 ---
+
+            // 5. 初始化共享服务 (VectorDBManager)
+            if (this.vectorDBManager) {
+                await this.vectorDBManager.initialize();
+            }
+
+            // 6. 按顺序初始化所有模块
+            const allModulesMap = new Map(modulesToInitialize.map(m => [m.manifest.name, m]));
+            const initializationOrder = [...this.preprocessorOrder];
+            allModulesMap.forEach((_, name) => {
+                if (!initializationOrder.includes(name)) {
+                    initializationOrder.push(name);
+                }
+            });
+
+            for (const pluginName of initializationOrder) {
+                const item = allModulesMap.get(pluginName);
+                if (!item || typeof item.module.initialize !== 'function') continue;
+
+                const { manifest, module } = item;
+                try {
+                    const initialConfig = this._getPluginConfig(manifest);
+                    initialConfig.PORT = process.env.PORT;
+                    initialConfig.Key = process.env.Key;
+                    initialConfig.PROJECT_BASE_PATH = this.projectBasePath;
+
+                    const dependencies = { vcpLogFunctions: this.getVCPLogFunctions() };
+
+                    // --- 注入 VectorDBManager ---
+                    if (manifest.name === 'RAGDiaryPlugin') {
+                        dependencies.vectorDBManager = this.vectorDBManager;
+                    }
+
+                    // --- LightMemo 特殊依赖注入 ---
+                    if (manifest.name === 'LightMemo') {
+                        const ragPluginModule = this.messagePreprocessors.get('RAGDiaryPlugin');
+                        if (ragPluginModule && ragPluginModule.vectorDBManager && typeof ragPluginModule.getSingleEmbedding === 'function') {
+                            dependencies.vectorDBManager = ragPluginModule.vectorDBManager;
+                            dependencies.getSingleEmbedding = ragPluginModule.getSingleEmbedding.bind(ragPluginModule);
+                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager and getSingleEmbedding into LightMemo.`);
+                        } else {
+                            console.error(`[PluginManager] Critical dependency failure: RAGDiaryPlugin or its components not available for LightMemo injection.`);
+                        }
+                    }
+                    // --- 注入结束 ---
+
+                    await module.initialize(initialConfig, dependencies);
+                } catch (e) {
+                    console.error(`[PluginManager] Error initializing module for ${manifest.name}:`, e);
+                }
+            }
 
             this.buildVCPDescription();
             console.log(`[PluginManager] Plugin discovery finished. Loaded ${this.plugins.size} plugins.`);

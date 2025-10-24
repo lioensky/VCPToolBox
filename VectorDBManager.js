@@ -28,7 +28,7 @@ class SearchCache {
 
     getCacheKey(diaryName, queryVector, k) {
         const vectorHash = crypto.createHash('md5')
-            .update(Buffer.from(queryVector))
+            .update(JSON.stringify(queryVector))
             .digest('hex');
         return `${diaryName}-${vectorHash}-${k}`;
     }
@@ -100,6 +100,7 @@ class VectorDBManager {
         this.activeWorkers = new Set();
         this.lruCache = new Map();
         this.manifest = {};
+        this.diaryNameVectors = new Map(); // 新增：缓存日记本名称的向量
         this.searchCache = new SearchCache(this.config.cacheSize, this.config.cacheTTL);
         this.searchWorkerPool = new WorkerPool(path.resolve(__dirname, 'vectorSearchWorker.js'));
 
@@ -161,6 +162,7 @@ class VectorDBManager {
         await fs.mkdir(VECTOR_STORE_PATH, { recursive: true });
         await this.loadManifest();
         await this.scanAndSyncAll();
+        await this.cacheDiaryNameVectors(); // 新增：缓存日记本名称向量
         await this.preWarmIndices();
         this.watchDiaries();
         console.log('[VectorDB] Initialization complete. Now monitoring diary files for changes.');
@@ -474,6 +476,8 @@ class VectorDBManager {
                 return;
             }
             this.scheduleDiaryBookProcessing(diaryName);
+            // 触发日记本名称向量的重新缓存
+            this.cacheDiaryNameVectors();
         };
 
         // ✅ 处理目录删除
@@ -487,6 +491,8 @@ class VectorDBManager {
             this.cleanupDeletedDiary(diaryName).catch(err => {
                 console.error(`[VectorDB] Error cleaning up deleted directory "${diaryName}":`, err);
             });
+            // 触发日记本名称向量的重新缓存
+            this.cacheDiaryNameVectors();
         };
 
         watcher
@@ -732,6 +738,58 @@ class VectorDBManager {
         }
     }
 
+    /**
+     * 缓存所有日记本名称的向量
+     */
+    async cacheDiaryNameVectors() {
+        console.log('[VectorDB] Starting to cache diary book names vectors...');
+        this.diaryNameVectors.clear();
+        
+        const diaryBooks = await fs.readdir(DIARY_ROOT_PATH, { withFileTypes: true });
+        const namesToVectorize = [];
+        const nameMap = new Map();
+
+        for (const dirent of diaryBooks) {
+            if (dirent.isDirectory()) {
+                const diaryName = dirent.name;
+                if (diaryName.startsWith('已整理')) {
+                    continue;
+                }
+                namesToVectorize.push(diaryName);
+                nameMap.set(diaryName, diaryName);
+            }
+        }
+
+        if (namesToVectorize.length === 0) {
+            console.log('[VectorDB] No diary books found to vectorize.');
+            return;
+        }
+
+        try {
+            const vectors = await this.getEmbeddingsWithRetry(namesToVectorize);
+            
+            if (vectors.length !== namesToVectorize.length) {
+                throw new Error(`Vectorization count mismatch: expected ${namesToVectorize.length}, got ${vectors.length}`);
+            }
+
+            for (let i = 0; i < namesToVectorize.length; i++) {
+                this.diaryNameVectors.set(namesToVectorize[i], vectors[i]);
+            }
+            console.log(`[VectorDB] Successfully cached ${this.diaryNameVectors.size} diary book name vectors.`);
+        } catch (error) {
+            console.error('[VectorDB] Failed to cache diary book name vectors:', error);
+        }
+    }
+
+    /**
+     * 获取缓存的日记本名称向量
+     * @param {string} diaryName - 日记本名称
+     * @returns {Array|null} - 向量数组或null
+     */
+    getDiaryNameVector(diaryName) {
+        return this.diaryNameVectors.get(diaryName) || null;
+    }
+
     async loadUsageStats() {
         try {
             const data = await fs.readFile(USAGE_STATS_PATH, 'utf-8');
@@ -773,6 +831,16 @@ class VectorDBManager {
         
         await Promise.all(preLoadPromises);
         console.log(`[VectorDB] Pre-warmed ${preLoadCount} most frequently used indices.`);
+    }
+
+    async shutdown() {
+        console.log('[VectorDB] Shutting down worker pool...');
+        if (this.searchWorkerPool && typeof this.searchWorkerPool.terminate === 'function') {
+            await this.searchWorkerPool.terminate();
+            console.log('[VectorDB] Worker pool shut down successfully.');
+        } else {
+            console.log('[VectorDB] Worker pool not found or does not have a terminate method.');
+        }
     }
 }
 

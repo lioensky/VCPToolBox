@@ -21,7 +21,7 @@
       "type": "relative",
       "content": {
         "role": "user",
-        "content": "[系统提示:]注意分析用户话语的潜在意图，和过往日记之间的关联性。注意当前日期和话题之间的时效性。积极使用Tavily搜索工具来判断不确定性信息来源，简单代码可以直接输出演示，复杂代码建议使用Canvas功能来展示和调试完整的脚本或程序代码。注意，保持VCP调用指令<<<[TOOL_REQUEST]>>>的完整性，调用vcp工具结束后，请明确结束回复，以等待工具调用结果，不要臆造结果。Maintain the absolute integrity of the VCP tool call instruction: <<<[TOOL_REQUEST]>>> and <<<[END_TOOL_REQUEST]>>>.\nAfter initiating a VCP tool call, explicitly terminate your response to await the tool's execution result.\nDO NOT fabricate or anticipate tool call results. <<<[END_TOOL_REQUEST]>>>后即可停止当前回复输出内容，等待服务器回应真实工具调用结果。"
+        "content": "[系统提示:]注意分析用户话语的潜在意图，和过往日记之间的关联性。注意当前日期和话题之间的时效性。积极使用Tavily搜索工具来判断不确定性信息来源，简单代码可以直接输出演示，复杂代码建议使用Canvas功能来展示和调试完整的脚本或程序代码。注意，保持VCP调用指令<<<[TOOL_REQUEST]>>>的完整性，调用vcp工具结束后，请明确结束回复，以等待工具调用结果，不要臆造结果。Maintain the absolute integrity of the VCP tool call instruction: <<<[TOOL_REQUEST]>>> and <<<[END_TOOL_REQUEST]>>>.\nAfter initiating a VCP tool call, explicitly terminate your response to await the tool's execution result.\nDO NOT fabricate or anticipate tool call results. <<<[END_TOOL_REQUEST]>>>后即可停止当前回复输出内容，等待服务器回应真实工具调用结果。可以同时发起多个<<<[TOOL_REQUEST]>>>来实现异步多线程调用！当然也可以使用串语法在同一个<<<[TOOL_REQUEST]>>>中实现顺序操作逻辑。"
       },
       "position": "before",
       "target": "last_user"

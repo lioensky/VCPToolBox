@@ -7,6 +7,8 @@ const AnonymizeUAPlugin = require('puppeteer-extra-plugin-anonymize-ua');
 const stdin = require('process').stdin;
 const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
+const { Readability } = require('@mozilla/readability');
+const { JSDOM } = require('jsdom');
 
 // --- Configuration (from environment variables set by Plugin.js) ---
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
@@ -205,106 +207,22 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             };
         } else {
             // 默认的文本提取模式
-            await autoScroll(page, mode); // 滚动页面以加载所有懒加载内容
-            await page.evaluate((selectors) => {
-                selectors.forEach(selector => {
-                    document.querySelectorAll(selector).forEach(el => el.remove());
-                });
-            }, AD_SELECTORS);
+            await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
 
-            const extractedData = await page.evaluate(() => {
-                // Helper to resolve relative URLs
-                const toAbsoluteURL = (url) => {
-                    try {
-                        // new URL() will correctly handle absolute URLs and resolve relative ones.
-                        return new URL(url, window.location.href).href;
-                    } catch (e) {
-                        return url; // Return original if it's not a valid URL format (e.g., data: URI)
-                    }
-                };
+            // Use Readability to extract the main content
+            const pageContent = await page.content();
+            const doc = new JSDOM(pageContent, { url });
+            const reader = new Readability(doc.window.document);
+            const article = reader.parse();
 
-                // 1. 精准提取正文
-                const contentSelectors = ['[data-testid="article"]', 'article', '.content', '.main', '.post-content', 'main'];
-                let mainContent = null;
-                for (const selector of contentSelectors) {
-                    mainContent = document.querySelector(selector);
-                    if (mainContent) break;
-                }
-                if (!mainContent) mainContent = document.body;
-
-                let text = mainContent.innerText || "";
-                text = text.replace(/\s\s+/g, ' ').trim();
-                const potentialText = text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
-
-                // 2. 全面提取链接 (从整个body)
-                const allLinks = Array.from(document.body.querySelectorAll('a'));
-                const links = allLinks.map(link => {
-                    const text = (link.innerText || "").trim();
-                    const url = link.href;
-                    if (text && url && url.startsWith('http') && link.offsetParent !== null) {
-                        return { text, url };
-                    }
-                    return null;
-                }).filter(item => item !== null);
-                const uniqueLinks = Array.from(new Map(links.map(item => [item.url, item])).values());
-
-                // 3. 提取图片信息
-                const allImages = Array.from(document.body.querySelectorAll('img'));
-                const images = allImages.map(img => {
-                    const src = img.src;
-                    const alt = (img.alt || img.title || "").trim();
-                    // Check for visibility and valid, non-data URI src
-                    if (src && !src.startsWith('data:') && img.offsetParent !== null) {
-                        return { text: alt || 'Untitled Image', url: toAbsoluteURL(src) };
-                    }
-                    return null;
-                }).filter(item => item !== null);
-                const uniqueImages = Array.from(new Map(images.map(item => [item.url, item])).values());
-
-                // 4. 提取视频信息
-                const allVideos = Array.from(document.body.querySelectorAll('video'));
-                const videos = allVideos.map(video => {
-                    const src = video.currentSrc || video.src || (video.querySelector('source') ? video.querySelector('source').src : null);
-                    const title = (video.title || video.getAttribute('aria-label') || "").trim();
-                    if (src && !src.startsWith('blob:') && video.offsetParent !== null) {
-                        return { text: title || 'Untitled Video', url: toAbsoluteURL(src) };
-                    }
-                    return null;
-                }).filter(item => item !== null);
-                const uniqueVideos = Array.from(new Map(videos.map(item => [item.url, item])).values());
-
-                // 5. 智能组合输出
-                let combinedResult = "";
-                if (potentialText.length > 50) { // Consider it a content page if there's some text
-                    combinedResult += potentialText;
-                }
-
-                if (uniqueLinks.length > 0) {
-                    const linkText = uniqueLinks.map(l => `- ${l.text}: ${l.url}`).join('\n');
-                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的链接 ---\n' + linkText;
-                }
-
-                if (uniqueImages.length > 0) {
-                    const imageText = uniqueImages.map(i => `- [图片] ${i.text}: ${i.url}`).join('\n');
-                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的图片 ---\n' + imageText;
-                }
-
-                if (uniqueVideos.length > 0) {
-                    const videoText = uniqueVideos.map(v => `- [视频] ${v.text}: ${v.url}`).join('\n');
-                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的视频 ---\n' + videoText;
-                }
-
-                // Fallback for list-like pages with little text but many links/media
-                if (!combinedResult.trim()) {
-                    if (uniqueLinks.length > 0) return uniqueLinks;
-                    if (uniqueImages.length > 0) return uniqueImages;
-                    if (uniqueVideos.length > 0) return uniqueVideos;
-                }
-                
-                return combinedResult || potentialText; // Return combined or just text if nothing else found
-            });
-
-            return extractedData;
+            if (article && article.textContent) {
+                // Format the output with title and content
+                const result = `标题: ${article.title}\n\n${article.textContent.trim()}`;
+                return result;
+            } else {
+                // Fallback if Readability fails to extract content
+                return "成功获取网页，但无法提取主要内容。";
+            }
         }
     } finally {
         if (browser) {

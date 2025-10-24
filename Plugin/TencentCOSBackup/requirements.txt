@@ -1,0 +1,5 @@
+cos-python-sdk-v5==1.9.38
+python-dotenv==1.0.0
+aiohttp==3.12.15
+aiofiles
+apscheduler
