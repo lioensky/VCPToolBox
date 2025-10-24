@@ -101,14 +101,14 @@ content:「始」{
 
 [重要提示：事实上，在你向用户演示指令，而非真正调用工具的时候，也应该遵守exp转义原则！]
 
-20.PowerShell 命令行工具。可以选择阻塞或后台执行。
-直接调用并获取运行结果
-tool_name:「始」PowerShellExecutor「末」, //若使用 ServerPowerShellExecutor 则代表运行VCP主服务器内的命令行工具
+20.PowerShell 命令行工具。前端版本拥有独立的GUI终端界面(可以连续执行多个指令)，后端服务器版本为无窗口的命令行（只能执行单次指令）
+直接调用并获取运行结果。当后端想要实现连续指令时，必须使用标准串语法（每个串指令队列运行结束后仍会重置窗口）。
+tool_name:「始」PowerShellExecutor「末」, //若使用 ServerPowerShellExecutor 则代表运行VCP主服务器内的后端版本命令行工具
 command:「始」Get-ChildItem「末」,
-executionType:「始」blocking「末」
-后台执行，你不会看到调用结果，但用户会看到可见的调用窗口:
+executionType:「始」blocking/background「末」, //（可选）默认blocking无需选择。选择background为后台执行，你不会看到调用结果，用于长时任务。
 command:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,
-executionType:「始」background「末」
+newSession:「始」true「末」, //（可选）仅限于前端版本，代表新建一个窗口并清理旧的窗口。
+requireAdmin:「始」true「末」 //该参数调用后需要用户确认授权，将启用管理员权限运行指令。当调用ServerPowerShellExecutor版本的时候，该字段需要输入6位数安全码而非true才能被调用。
 
 21.代码检索器。
 调用此工具在VCP项目源码中搜索指定的代码片段或关键词。支持使用正则表达式进行高级搜索。通过这个插件更快理解VCP服务器工作原理！
