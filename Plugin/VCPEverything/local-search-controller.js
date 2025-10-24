@@ -40,10 +40,13 @@ function searchWithEverythingHTTP(query, maxResults = 100) {
         const requestPath = `/?s=${encodedQuery}&json=1&path_column=1&n=${maxResults}`;
         
         const options = {
-            hostname: '127.0.0.1', // 只在本地访问
+            hostname: 'localhost', // 直接使用localhost更直观
             port: EVERYTHING_PORT,
             path: requestPath,
-            method: 'GET'
+            method: 'GET',
+            headers: {
+                'User-Agent': 'VCPToolBox-LocalSearchController/1.0.0' // 自定义User-Agent，避免被代理拦截
+            }
         };
 
         debugLog('Making HTTP request to Everything server', options);
