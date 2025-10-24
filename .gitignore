@@ -219,3 +219,11 @@ Plugin/DailyHot/dist/cache/
 # External tools and libraries
 bfg.jar
 .bmad-core/
+
+# 临时分析文件
+*_analysis.md
+*_temp.*
+
+# 本地开发配置
+*.local.*
+config.local.*
