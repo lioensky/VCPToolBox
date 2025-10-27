@@ -183,23 +183,24 @@ class PluginManager {
         if (plugin.capabilities && plugin.capabilities.systemPromptPlaceholders) {
             plugin.capabilities.systemPromptPlaceholders.forEach(ph => {
                 const placeholderKey = ph.placeholder;
-                const currentValue = this.staticPlaceholderValues.get(placeholderKey);
+                const currentValueEntry = this.staticPlaceholderValues.get(placeholderKey);
+                const currentValue = currentValueEntry ? currentValueEntry.value : undefined;
 
                 if (newValue !== null && newValue.trim() !== "") {
-                    this.staticPlaceholderValues.set(placeholderKey, newValue.trim());
+                    this.staticPlaceholderValues.set(placeholderKey, { value: newValue.trim(), serverId: 'local' });
                     if (this.debugMode) console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} updated with value: "${(newValue.trim()).substring(0,70)}..."`);
                 } else if (executionError) {
                     const errorMessage = `[Error updating ${plugin.name}: ${executionError.message.substring(0,100)}...]`;
                     if (!currentValue || (currentValue && currentValue.startsWith("[Error"))) {
-                        this.staticPlaceholderValues.set(placeholderKey, errorMessage);
+                        this.staticPlaceholderValues.set(placeholderKey, { value: errorMessage, serverId: 'local' });
                         if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to error state: ${errorMessage}`);
                     } else {
                         if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} failed to update. Keeping stale value: "${(currentValue || "").substring(0,70)}..."`);
                     }
                 } else {
                     if (this.debugMode) console.warn(`[PluginManager] Static plugin ${plugin.name} produced no new output for ${placeholderKey}. Keeping stale value (if any).`);
-                    if (!this.staticPlaceholderValues.has(placeholderKey)) {
-                        this.staticPlaceholderValues.set(placeholderKey, `[${plugin.name} data currently unavailable]`);
+                    if (!currentValueEntry) {
+                        this.staticPlaceholderValues.set(placeholderKey, { value: `[${plugin.name} data currently unavailable]`, serverId: 'local' });
                         if (this.debugMode) console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to 'unavailable'.`);
                     }
                 }
@@ -214,7 +215,7 @@ class PluginManager {
                 // Immediately set a "loading" state for the placeholder.
                 if (plugin.capabilities && plugin.capabilities.systemPromptPlaceholders) {
                     plugin.capabilities.systemPromptPlaceholders.forEach(ph => {
-                        this.staticPlaceholderValues.set(ph.placeholder, `[${plugin.displayName} a-zheng-zai-jia-zai-zhong... ]`);
+                        this.staticPlaceholderValues.set(ph.placeholder, { value: `[${plugin.displayName} a-zheng-zai-jia-zai-zhong... ]`, serverId: 'local' });
                     });
                 }
 
@@ -282,7 +283,8 @@ class PluginManager {
     
     
     getPlaceholderValue(placeholder) {
-        return this.staticPlaceholderValues.get(placeholder) || `[Placeholder ${placeholder} not found]`;
+        const entry = this.staticPlaceholderValues.get(placeholder);
+        return entry ? entry.value : `[Placeholder ${placeholder} not found]`;
     }
 
     async executeMessagePreprocessor(pluginName, messages) {
@@ -1082,8 +1084,7 @@ class PluginManager {
         
         for (const [placeholder, value] of Object.entries(placeholders)) {
             // 为分布式占位符添加服务器来源标识
-            const distributedKey = `${placeholder}@@${serverId}`;
-            this.staticPlaceholderValues.set(placeholder, value);
+            this.staticPlaceholderValues.set(placeholder, { value: value, serverId: serverId });
             
             if (this.debugMode) {
                 console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${value.substring(0, 100)}${value.length > 100 ? '...' : ''}`);
@@ -1098,12 +1099,8 @@ class PluginManager {
     clearDistributedStaticPlaceholders(serverId) {
         const placeholdersToRemove = [];
         
-        for (const [placeholder, value] of this.staticPlaceholderValues.entries()) {
-            // 查找属于该服务器的占位符（基于某种标识）
-            // 由于我们没有直接的映射关系，这里我们可以选择保守策略
-            // 仅在明确知道是分布式占位符时才删除
-            const distributedKey = `${placeholder}@@${serverId}`;
-            if (this.staticPlaceholderValues.has(distributedKey)) {
+        for (const [placeholder, entry] of this.staticPlaceholderValues.entries()) {
+            if (entry && entry.serverId === serverId) {
                 placeholdersToRemove.push(placeholder);
             }
         }
@@ -1200,4 +1197,14 @@ class PluginManager {
 }
 
 const pluginManager = new PluginManager();
+
+// 新增：获取所有静态占位符值
+pluginManager.getAllPlaceholderValues = function() {
+    const valuesMap = new Map();
+    for (const [key, entry] of this.staticPlaceholderValues.entries()) {
+        valuesMap.set(key, entry.value || `[Placeholder ${key} not found]`);
+    }
+    return valuesMap;
+};
+
 module.exports = pluginManager;

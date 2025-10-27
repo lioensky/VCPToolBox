@@ -1398,7 +1398,11 @@ class ChatCompletionHandler {
       }
     } finally {
       if (id) {
-        activeRequests.delete(id);
+        const requestData = activeRequests.get(id);
+        if (requestData) {
+          requestData.abortController.abort();
+          activeRequests.delete(id);
+        }
       }
     }
   }

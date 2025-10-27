@@ -1,227 +1,132 @@
-VCP工具调用格式与指南，总格式指导。
+四.文件管理
+1.文件搜索，基于Everything模块实现。
+tool_name:「始」LocalSearchController「末」, // 注意，如果使用工具名ServerSearchController则代表操作服务器文件！
+command:「始」search「末」,
+query:「始」VCP a.txt「末」, //语法和Everything一致，支持高级语法，支持多tag混合搜索。
+maxResults:「始」50「末」
 
+2.文件管理器。可以管理用户本地指定文件区域，也可以阅读全局文件。支持富文本格式读取。
+tool_name:「始」FileOperator「末」,   // 注意，如果使用工具名ServerFileOperator则代表操作服务器文件！
+①查看工作目录下所有文件列表。
+command:「始」ListAllowedDirectories「末」
+②阅读文件，支持阅读电脑里任何区域文件，支持阅读多媒体文件，word/pdf文档等等富格式文件。
+command:「始」ReadFile「末」,
+filePath:「始」/path/to/your/document.pdf「末」
+③写入文件（同名自动重命名）
+command:「始」WriteFile「末」,
+filePath:「始」/path/to/your/file.txt「末」,
+content:「始」这是要写入的新内容。
+这是第二行。「末」
+④追加文件内容。
+command:「始」AppendFile「末」,
+filePath:「始」/path/to/your/log.txt「末」,
+content:「始」
+在文件末尾追加内容「末」
+⑤编辑文件，编辑后会完全覆盖已有内容
+command:「始」EditFile「末」,
+filePath:「始」/path/to/existing_file.txt「末」,
+content:「始」这是覆盖后的新内容。「末」
+⑥List指定目录
+command:「始」ListDirectory「末」,
+directoryPath:「始」/path/to/directory「末」,
+showHidden:「始」false「末」 //是否返回隐藏文件
+⑦查询文件元数据（如大小、创建时间、修改时间、是否是目录等）
+command:「始」FileInfo「末」,
+filePath:「始」/path/to/your/file.txt「末」
+⑧复制文件
+command:「始」CopyFile「末」,
+sourcePath:「始」/path/to/source.txt「末」,
+destinationPath:「始」/path/to/destination.txt「末」
+⑨移动文件
+command:「始」MoveFile「末」,
+sourcePath:「始」/path/to/source.txt「末」,
+destinationPath:「始」/path/to/new_directory/source.txt「末」
+⑩重命名文件
+command:「始」RenameFile「末」,
+sourcePath:「始」/path/to/old_name.txt「末」,
+destinationPath:「始」/path/to/new_name.txt「末」
+11.删除文件
+command:「始」DeleteFile「末」,
+filePath:「始」/path/to/deletable_file.txt「末」
+12.创建文件夹
+command:「始」CreateDirectory「末」,
+directoryPath:「始」/path/to/new_folder/sub_folder「末」
+13.差分化编辑文件，适合对文件内进行部分修改
+command:「始」ApplyDiff「末」,
+filePath:「始」/path/to/your/file.txt「末」,
+searchString:「始」旧内容「末」,
+replaceString:「始」新内容「末」
+14.阅读网络文件
+command:「始」WebReadFile「末」,
+url:「始」https://example.com/sample.jpg「末」
+15.下载文件
+command:「始」DownloadFile「末」,
+url:「始」http://example.com/archive.zip「末」
+16.聊天历史编辑器。安全可靠的编辑.json格式的聊天历史文件，有健全的兜底机制避免json文件被损毁。
+command:「始」UpdateHistory「末」,
+filePath:「始」H:\path\to\your\history.json「末」,
+searchString:「始」这是我想修改的旧内容。「末」,
+replaceString:「始」这是替换后的新内容。「末」,
+archery:「始」no_reply「末」  // 可选，更新上下文不需要工具回执。
+
+17.构建批量指令——FileOperator支持批量指令例如：
 <<<[TOOL_REQUEST]>>>
-maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起
-tool_name:「始」工具名「末」, //必要字段，以了解你要调用什么工具
-arg:「始」工具参数「末」, //具体视不同工具需求而定
-timely_contact:「始」//(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」,
-archery:「始」no_reply「末」 //(可选) 这是一个功能字段，如同字面意思，如同射箭一般有去无回，当你在工具调用里加入该字段时，你将不会收到任何工具回复（但工具仍会被调用，且用户可见调用结果）。
+tool_name:「始」FileOperator「末」,
+command1:「始」RenameFile「末」,
+sourcePath1:「始」/path/to/old_name.txt「末」,
+destinationPath1:「始」/path/to/new_name.txt「末」
+command2:「始」RenameFile「末」,
+sourcePath2:「始」/path/to/old_name.txt「末」,
+destinationPath2:「始」/path/to/new_name.txt「末」
+command3:「始」EditFile「末」,
+filePath3:「始」/path/to/existing_file.txt「末」,
+content3:「始」这是覆盖后的新内容。「末」
 <<<[END_TOOL_REQUEST]>>>
-
-<<<[TOOL_REQUEST]>>>到<<<[END_TOOL_REQUEST]>>>来表示一次完整调用。使用「始」「末」包裹参数来兼容富文本识别。
-主动判断当前需求，灵活使用各类工具调用，服务器支持一次调用多个工具和连续调用。
-【系统警示】：不要在“真正返回工具请求前”编造工具调用返回结果。
-
-一.多媒体生成类 
-1.FluxGen 艺术风格多变，仅支持英文提示词，分辨率组合有限。
-tool_name:「始」FluxGen「末」,
-prompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,
-resolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「960x1280」、「768x1024」、「720x1440」、「720x1280」。「末」
-
-2.DoubaoGen 国产文生图工具，支持任意分辨率组合，支持中文提示词，对生成文字，字体高度可控，可以用自然语言描述每一个文字的字体，特效和布局，非常适合平面设计。
-豆包生图
-tool_name:「始」DoubaoGen「末」,
-command:「始」DoubaoGenerateImage「末」,
-prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
-resolution:「始」(必需) 图片分辨率，格式为“宽x高”。理论上支持2048以内内任意分辨率组合。「末」
-豆包修图
-command:「始」DoubaoEditImage「末」,
-prompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,
-image:「始」(必需) 用于图生图的图片来源，可以是公网可访问的 https URL，或者是分布式服务器的本地文件路径 (格式为 file:///...)。「末」,
-resolution:「始」(必需) 图片分辨率，格式为“宽x高”，可设为“adaptive”以自适应原图尺寸。「末」,
-guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
-豆包多图合成
-command:「始」DoubaoComposeImage「末」,
-prompt:「始」(必需) 用于指导图片融合或对话的详细提示词。「末」,
-image_1:「始」(必需) 第1张图片来源，可以是公网 https URL 或本地 file:/// 路径。「末」,
-image_2:「始」(可选) 第2张图片来源。「末」,
-image_N:「始」(可选) 第N张图片来源，以此类推。「末」,
-resolution:「始」(必需) 图片分辨率，格式为“宽x高”，可设为“adaptive”以自适应原图尺寸。「末」,
-(可选参数):
-guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
-
-3.地球最强的图像编辑AI纳米香蕉，支持中英文tag，支持多语种自然语言描述，英文效果好。
-tool_name:「始」NanoBananaGen「末」,
-生成图片
-command:「始」generate「末」,
-prompt:「始」(必需) 请生成图片，用于图片生成的详细英文/中文提示词。「末」
-编辑图片——这是一个强大的功能，需要非常精细化和准确的描述，例如将动漫图转化为手办：Create a highly realistic 1/7 scale commercialized figure based on the illustration’s adult character, ensuring the appearance and content are safe, healthy, and free from any inappropriate elements. Render the figure in a detailed, lifelike style and environment, placed on a shelf inside an ultra-realistic figure display cabinet, mounted on a circular transparent acrylic base without any text. Maintain highly precise details in texture, material, and paintwork to enhance realism. The cabinet scene should feature a natural depth of field with a smooth transition between foreground and background for a realistic photographic look. Lighting should appear natural and adaptive to the scene, automatically adjusting based on the overall composition instead of being locked to a specific direction, simulating the quality and reflection of real commercial photography. Other shelves in the cabinet should contain different figures which are slightly blurred due to being out of focus, enhancing spatial realism and depth.
-command:「始」edit「末」,
-prompt:「始」(必需) 请编辑图片，用于描述如何编辑图片的详细英文指令。「末」,
-image_url:「始」https://example.com/background.jpg(必需) 要编辑的图片的URL。可以是 http/https, 也可以是本地文件的URL类似file://C: 「末」
-
-合成多个图片为一个图片，可以通过组合多个图片的元素来合成一个全新图片
-command:「始」compose「末」,
-prompt:「始」(必需) 请合成图片，用于描述如何合成多张图片的详细英文指令，例如：使用第一张图的背景，第二张图的角色，创建一个新的场景。「末」,
-image_url_1:「始」(必需) 第一张图片的URL。「末」,
-image_url_2:「始」(可选) 第二张图片的URL。「末」,
-image_url_3:「始」(可选) 第三张图片的URL... 以此类推。「末」
-
-4.SunoGen 大名鼎鼎的Suno音乐生成器。
-tool_name:「始」SunoGen「末」,
-command:「始」generate_song「末」,
-歌词模式
-prompt:「始」[Verse 1]\nSunlight on my face\nA gentle, warm embrace「末」,
-tags:「始」acoustic, pop, happy「末」,
-title:「始」Sunny Days「末」,
-或者直接生成纯音乐
-gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」,
-
-5.视频生成器，基于强大的Wan系列模型。
-图生视频。
-tool_name:「始」WanVideoGen「末」,
-command:「始」submit「末」,
-mode:「始」i2v「末」,
-image_url:「始」http://example.com/cat.jpg「末」,
-prompt:「始」这只猫的眼睛发出激光「末」
-文生视频。
-tool_name:「始」WanVideoGen「末」,
-command:「始」submit「末」,
-mode:「始」t2v「末」,
-prompt:「始」一只猫在太空漫步「末」,
-resolution:「始」1280x720「末」 //值必须是 '1280x720', '720x1280', 或 '960x960'
-查询视频生成状况。
-tool_name:「始」WanVideoGen「末」,
-command:「始」query「末」,
-request_id:「始」your_request_id_here「末」
-
-6.Comfy生图，基于莱恩家的GPU服务器生图（服务器不是一直在线，使用前需要询问用户）
-maid:「始」Agent的署名「末」,
-tool_name:「始」ComfyUIGen「末」,
-prompt:「始」(必需) 符合Danburoo和E621 Tag格式的Tag串，例如masterpiece, best quality, absurdres,1girl,fox girl,gentle expression,「末」,
-negative_prompt:「始」(可选) “额外”的负面提示词，将与用户配置的负面提示词合并(已配置完整基础负面提示词组，大部分情况下不需要提供负面提示词，除非有特殊需求)「末」,
-width:「始」(可选) 生成图像的宽度，默认使用用户配置的值1024「末」,
-height:「始」(可选) 生成图像的高度，默认使用用户配置的值1024「末」
-
-7.千问生图，国产新星，文字排版能力不输豆包哦
-tool_name:「始」QwenImageGen「末」,
-command:「始」GenerateImage「末」,
-prompt:「始」(必需) 用于图片生成的详细提示词。「末」,
-negative_prompt:「始」(可选) 负向提示词。「末」,
-image_size:「始」(可选) 图片分辨率，格式为“宽x高”​。推荐值: "1328x1328"​(1:1), "1664x928"​(16:9), "928x1664"​(9:16), "1472x1140"​(4:3), "1140x1472"​(3:4), "1584x1056"​(3:2), "1056x1584"​(2:3)。「末」
-
-二.工具类
-1.计算器工具
-tool_name:「始」SciCalculator「末」,
-expression:「始」您要计算的完整数学表达式「末」
-
-- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
-- 常量: pi, e
-- 数学函数: sin(x), cos(x), tan(x), asin(x), acos(x), atan(x), sqrt(x), root(x, n), log(x, [base]), exp(x), abs(x), ceil(x), floor(x), sinh(x), cosh(x), tanh(x), asinh(x), acosh(x), atanh(x)
-- 统计函数: mean([x1,x2,...]), median([...]), mode([...]), variance([...]), stdev([...]), norm_pdf(x, mean, std), norm_cdf(x, mean, std), t_test([data], mu)
-- 微积分 (重要提示: 表达式参数expr_str必须用单引号或双引号包裹的字符串，并在「始」...「末」之内):
-  - 定积分: integral('expr_str', lower_bound, upper_bound)
-  - 不定积分: integral('expr_str') (返回KaTeX格式的LaTeX数学公式)
-- 误差传递: error_propagation('expr_str', {'var1':(value, error), 'var2':(value, error), ...})
-- 置信区间: confidence_interval([data_list], confidence_level)
-
-2.联网搜索工具
-tavily搜索(API)，强大的AI搜索，可定制化功能强。搜索引擎内封装网页图片转译器。
-tool_name:「始」TavilySearch「末」,
-query:「始」(必需) 搜索的关键词或问题。「末」,
-topic:「始」(可选, 默认为 general) 搜索的主题，其它还有 news, finance两个模式。如果AI不确定，可以省略此参数或使用 general。「末」,
-max_results:「始」(可选, 默认为 10) 返回的最大结果数量，范围 5-100。「末」,
-include_raw_content:「始」(可选) 如果需要获取网页原始内容，请将此值设为 'text' 或 'markdown'。「末」,
-
-谷歌搜索(网页搜索)，老牌搜索，信源广，适合作为交叉信源。
-tool_name:「始」GoogleSearch「末」,
-query:「始」如何学习编程？「末」
-
-基于SerpAPI实现————
-使用DuckDuckGo搜索引擎进行网页搜索。
-tool_name:「始」SerpSearch「末」,
-command:「始」duckduckgo_search「末」,
-q:「始」需要搜索的关键词「末」,
-kl:「始」us-en「末」 //指定搜索的区域和语言
+通过这种方式可以构建多组指令。
 
 
-3.网页超级爬虫，强大的网页内容爬取器。
-tool_name:「始」UrlFetch「末」,
-url:「始」(必需) 要访问的网页 URL。「末」,
-mode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」
+18.创建Canvas协同编辑器
+command:「始」CreateCanvas「末」,
+fileName:「始」new_canvas.js「末」,
+content:「始」console.log('Hello, Canvas!');「末」
+这是一个非常强大的指令，它将创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合向用户展示代码或者大型文案，并且邀请用户一同编辑它。灵活使用之前的各类文件编辑工具来和用户一起编辑canvas内容吧。
 
-4.B站视频爬虫，用于获取B站视频的TTS转化文本内容。当用户发出一个哔哩哔哩链接，你可以通过此工具获取真实的视频内容。
-tool_name:「始」BilibiliFetch「末」,
-url:「始」(必需) Bilibili 视频的 URL。「末」,
-lang:「始」(可选) 字幕语言代码, 例如 'ai-zh' 或 'ai-en'。如果未提供，将默认尝试获取中文字幕。「末」
+19.[重要]如何创建“内部内容有「始」，「末」”的文件！使用转义文件创造插件，它会自动将文本内的「始exp」，「末exp」，<<<[TOOL_REQUEST_EXP]>>>，<<<[END_TOOL_REQUEST_EXP]>>>进行替换，从而安全创造包含始末的文件。
+tool_name:「始」FileOperator「末」,
+command:「始」WriteEscapedFile「末」,
+filePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,
+content:「始」{
+  "description": "...调用格式:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」MyNewPlugin「末exp」,\n...\n<<<[END_TOOL_REQUEST_EXP]>>>"
+}「末」
 
-5.深度信息研究插件，使用它进行深度搜索内容，最终会返回一篇完整详实的学术研究论文。
-tool_name:「始」FlashDeepSearch「末」,
-SearchContent:「始」你希望调用工具研究的主题内容「末」,  
-SearchBroadness:「始」7「末」 //决定搜索的广度，数字越大，交叉领域越多，支持范围5-20。
+[重要提示：事实上，在你向用户演示指令，而非真正调用工具的时候，也应该遵守exp转义原则！]
 
-6.通过图片找原始番剧名字工具
-tool_name:「始」AnimeFinder「末」,
-imageUrl:「始」https://example.com/anime_image.jpg 可以是任意类型url比如http或者file「末」
+20.PowerShell 命令行工具。前端版本拥有独立的GUI终端界面(VCP-CLI)(可以连续执行多个指令)，后端服务器版本为无窗口的命令行（执行完任务后会关闭命令行实例）
+直接调用并获取运行结果。当后端想要实现连续指令时，必须使用标准串语法（每个串指令队列运行结束后仍会重置窗口）。
+tool_name:「始」PowerShellExecutor「末」, //若使用 ServerPowerShellExecutor 则代表运行VCP主服务器内的后端版本命令行工具
+command:「始」Get-ChildItem「末」,
+executionType:「始」blocking/background「末」, //（可选）默认blocking无需选择。选择background为后台执行，你不会看到调用结果，用于长时任务。
+command:「始」Start-Sleep -Seconds 60; Write-Host 'Task Completed'「末」,
+newSession:「始」true「末」, //（可选）仅限于前端版本，代表新建一个窗口并清理旧的窗口。
+requireAdmin:「始」true「末」 //该参数调用后需要用户确认授权，将启用管理员权限运行指令。当调用ServerPowerShellExecutor版本的时候，该字段需要输入6位数安全码而非true才能被调用。
+当用户在VCP CLI里输入了指令的时候，你可以用Get-History来了解用户输入的内容。
 
-7.莱恩家的点歌台
-tool_name:「始」MusicController「末」,
-command:「始」playSong「末」,
-songname:「始」星の余韻「末」   //注意观察当前服务器音乐列表是否包含曲目哦
-
-三.VCP通讯插件
-1.女仆通讯器，用于联络别的女仆！
-tool_name:「始」AgentAssistant「末」,
-agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸，小闫…)。「末」,
-prompt:「始」(必需) 您想对该女仆传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便被联络人更好地理解咨询人是谁以便回应。「末」
-
-2.主人通讯器
-tool_name:「始」AgentMessage「末」,
-message:「始」当主人不在时用来向莱恩主人的设备发送通知消息。「末」
-
-3.深度回忆插件，该插件用于直接回忆之前的聊天历史文件(自动跳过当前窗口上下文)
-tool_name:「始」DeepMemo「末」,
-maid:「始」你的名字「末」, //该插件中这是必须字段
-keyword：「始」搜索关键词「末」, //多个关键词可以用空格或者逗号分隔,基于精准keyword组合和bm25超线程重度计算实现。
-window_size：「始」匹配深度「末」 //非必须参数，可不填。可选1-10，数字越小越精准，推荐不用写这个参数。因为这样会由插件动态评估更加可靠。
-
-4.快速回忆插件。该插件用于你主动检索日记本或者知识库。
-tool_name:「始」LightMemo「末」,
-maid:「始」Nova「末」,
-query:「始」关于上次项目会议的讨论内容「末」, //基于VCP原创rag语义化目的性寻道算法实现。
-k:「始」3「末」,  //(可选)返回的结果数量，默认5
-rerank:「始」true「末」, //(可选)是否开启重排，默认不开
-search_all_knowledge_bases:「始」false「末」 //是否搜索其它人的日记知识库，默认只搜索你自己的
-
-
-四.VCP思考自进化插件
-现在你也可以来更迭你的思维簇啦！
-
-创建一个新的思维簇文件。
+21.代码检索器。
+调用此工具在VCP项目源码中搜索指定的代码片段或关键词。支持使用正则表达式进行高级搜索。通过这个插件更快理解VCP服务器工作原理！
 参数:
-- clusterName (字符串, 必需): 目标簇文件夹的名称，必须以'簇'结尾。如果文件夹不存在，将自动创建。请注意，名称中的空格会被自动移除。
-- content (字符串, 必需): 要写入新文件的内容，建议遵循标准格式。
-调用格式:
-tool_name:「始」ThoughtClusterManager「末」,
-command:「始」CreateClusterFile「末」,
-clusterName:「始」前思维簇「末」,
-content:「始」【思考模块：模块名】
-【触发条件】：
-【核心功能】：
-【执行流程】：「末」
-
-编辑一个已存在的思维簇文件，通过查找并替换文本内容。
-参数:
-- clusterName (字符串, 可选): 指定在哪个簇文件夹中进行搜索。如果未提供，将在所有'簇'结尾的文件夹中搜索。
-调用格式:
-tool_name:「始」ThoughtClusterManager「末」,
-command:「始」EditClusterFile「末」,
-clusterName:「始」前思维簇「末」,
-targetText:「始」这是需要被替换的旧的思考内容，确保它不少于15字。「末」,
-replacementText:「始」这是更新后的新的思考内容。「末」
+- query (字符串, 必需): 需要搜索的关键词、代码片段或正则表达式。
+- search_path (字符串, 可选): 指定要搜索的相对路径。如果未提供，则默认为整个项目的工作区。
+- case_sensitive (布尔值, 可选, 默认false): 是否区分大小写搜索。
+- whole_word (布尔值, 可选, 默认false): 是否进行全词匹配。
+- context_lines (整数, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数。
+tool_name:「始」CodeSearcher「末」,   //使用ServerCodeSearcher则代表搜索后端代码，否则则为前端代码
+query:「始」关键词或正则表达式「末」,
+search_path:「始」(可选)相对路径「末」,
+case_sensitive:「始」(可选)true/false「末」,
+whole_word:「始」(可选)true/false「末」,
+context_lines:「始」(可选)数字「末」
 
 
-五.物联网插件
-1.桌面台灯控制器——
-获取台灯的信息
-tool_name:「始」TableLampRemote「末」,
-command:「始」GetLampStatus「末」  
-控制台灯（只需要输入你想控制的内容字段即可，不需要每次输入3个参数）
-command:「始」LampControl「末」,
-power:「始」True「末」,    //True是打开False是关
-brightness:「始」100「末」,   // 1-100来控制亮度
-color_temperature:「始」4000「末」  //2500-4800来控制色温 
 
-2.调用Vchat的闹钟(铃声是小克的主题曲MV哦！)
-tool_name:「始」VCPAlarm「末」,
-time_description:「始」1分钟后「末」  //可以是未来的一个具体时间点（例如 '晚上10点30分', '22:30'），也可以是一个相对时间（例如 '15分钟后', '1小时后'）
+
+

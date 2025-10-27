@@ -119,12 +119,11 @@ class WorkerPool {
     /**
      * Gracefully terminates all workers in the pool.
      */
-    destroy() {
-        console.log('[WorkerPool] Destroying worker pool...');
-        for (const worker of this.workers) {
-            worker.terminate();
-        }
+    async terminate() {
+        console.log('[WorkerPool] Terminating worker pool...');
+        await Promise.all(this.workers.map(worker => worker.terminate()));
         this.workers = [];
+        console.log('[WorkerPool] All workers have been terminated.');
     }
 }
 

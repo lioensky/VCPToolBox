@@ -105,7 +105,8 @@ function forceSplitLongText(text, maxTokens, overlapTokens) {
             
             if (bestBreakPoint > 0) {
                 chunkText = chunkText.substring(0, bestBreakPoint);
-                end = start + encoding.encode(chunkText).length;
+                const newTokens = encoding.encode(chunkText);
+                end = start + newTokens.length;
             }
             
             chunks.push(chunkText.trim());

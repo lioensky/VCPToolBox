@@ -55,50 +55,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
                 try {
                     const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
-                    
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedMemInfo = memInfo.trim();
-                    // 移除调试日志输出以减少日志噪音
-                    // console.log('[SystemMonitor] Raw PowerShell memory info output:', cleanedMemInfo);
-                    
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedMemInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedMemInfo = jsonMatch[1];
-                            // 移除调试日志输出以减少日志噪音
-                            // console.log('[SystemMonitor] Extracted JSON from PowerShell output:', cleanedMemInfo);
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedMemInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-                            
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-                            
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedMemInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                // 移除调试日志输出以减少日志噪音
-                                // console.log('[SystemMonitor] Extracted JSON using line-by-line method:', cleanedMemInfo);
-                            }
-                        }
-                    }
-                    
-                    const memData = JSON.parse(cleanedMemInfo);
+                    const memData = JSON.parse(memInfo);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
                         free: (memData.FreePhysicalMemory || 0) * 1024,
@@ -120,50 +77,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 
                 try {
                     const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
-                    
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedCpuInfo = cpuInfo.trim();
-                    // 移除调试日志输出以减少日志噪音
-                    // console.log('[SystemMonitor] Raw PowerShell CPU info output:', cleanedCpuInfo);
-                    
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedCpuInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedCpuInfo = jsonMatch[1];
-                            // 移除调试日志输出以减少日志噪音
-                            // console.log('[SystemMonitor] Extracted JSON from PowerShell CPU output:', cleanedCpuInfo);
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedCpuInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-                            
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-                            
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedCpuInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                // 移除调试日志输出以减少日志噪音
-                                // console.log('[SystemMonitor] Extracted CPU JSON using line-by-line method:', cleanedCpuInfo);
-                            }
-                        }
-                    }
-                    
-                    const cpuData = JSON.parse(cleanedCpuInfo);
+                    const cpuData = JSON.parse(cpuInfo);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
                     // 回退到 wmic 命令
@@ -418,7 +332,6 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             if (enable) {
                 try {
-                    await fs.rename(blockedManifestPathToUse, manifestPathToUse);
                     await fs.rename(blockedManifestPathToUse, manifestPathToUse);
                     await pluginManager.loadPlugins(); // 重新加载插件以更新内存状态
                     res.json({ message: `插件 ${pluginName} 已启用。` });

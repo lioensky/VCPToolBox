@@ -196,8 +196,8 @@ body {
 
 .sidebar nav li.nav-category {
     padding: 15px 15px 5px;
-    font-size: 0.8em;
-    color: var(--secondary-text);
+    font-size: 1em;
+    color: var(--primary-text);
     text-transform: uppercase;
     font-weight: 600;
     letter-spacing: 0.5px;

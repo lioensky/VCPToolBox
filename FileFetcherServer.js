@@ -99,11 +99,13 @@ async function fetchFile(fileUrl, requestIp) {
 
     // --- 检查失败缓存以防止循环 ---
     const cachedFailure = failedFetchCache.get(fileUrl);
-    if (cachedFailure && (Date.now() - cachedFailure.timestamp < CACHE_EXPIRATION_MS)) {
-        if (Date.now() - cachedFailure.timestamp > CACHE_EXPIRATION_MS) {
-            failedFetchCache.delete(fileUrl);
-        } else {
+    if (cachedFailure) {
+        if (Date.now() - cachedFailure.timestamp < CACHE_EXPIRATION_MS) {
+            // 缓存仍然有效，直接抛出错误
             throw new Error(`文件获取在短时间内已失败，为防止循环已中断。错误: ${cachedFailure.error}`);
+        } else {
+            // 缓存已过期，将其删除，然后继续尝试获取
+            failedFetchCache.delete(fileUrl);
         }
     }
 

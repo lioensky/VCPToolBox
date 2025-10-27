@@ -2,6 +2,7 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const chokidar = require('chokidar');
 
 const AGENT_DIR = path.join(__dirname, '..', 'Agent');
 const MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
@@ -68,16 +69,22 @@ class AgentManager {
                 }
             });
 
-            fsSync.watch(AGENT_DIR, { recursive: true }, (eventType, filename) => {
-                if (filename && (eventType === 'change' || eventType === 'rename')) {
-                    for (const [alias, file] of this.agentMap.entries()) {
-                        if (file === filename) {
-                            if (this.promptCache.has(alias)) {
-                                this.promptCache.delete(alias);
-                                console.log(`[AgentManager] Prompt cache for '${alias}' (${filename}) cleared due to file change.`);
-                            }
-                            return; // Found and cleared, no need to check further.
+            const watcher = chokidar.watch(AGENT_DIR, {
+                ignored: /(^|[\/\\])\../, // ignore dotfiles
+                persistent: true,
+                ignoreInitial: true,
+            });
+
+            watcher.on('change', (filePath) => {
+                const filename = path.relative(AGENT_DIR, filePath);
+                for (const [alias, file] of this.agentMap.entries()) {
+                    // Normalize path separators for comparison
+                    if (file.replace(/\\/g, '/') === filename.replace(/\\/g, '/')) {
+                        if (this.promptCache.has(alias)) {
+                            this.promptCache.delete(alias);
+                            console.log(`[AgentManager] Prompt cache for '${alias}' (${filename}) cleared due to file change.`);
                         }
+                        return;
                     }
                 }
             });

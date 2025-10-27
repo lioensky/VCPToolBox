@@ -1,7 +1,7 @@
 {
     "manifestVersion": "1.0.0",
-    "name": "TencentCOSBackup",
-    "version": "1.0.0",
+    "name": "ServerTencentCOSBackup",
+    "version": "1.1.1",
     "displayName": "腾讯云COS备份插件",
     "description": "一个功能完整的腾讯云对象存储（COS）插件，支持文件上传、下载、复制、移动、删除和列出操作，具有权限控制和自动压缩功能。动态读取config.env中的AGENT_FOLDERS_CONFIG，带有对AGENT_FOLDERS_CONFIG中子文件夹权限的文字描述。",
     "author": "VCP Developer",
@@ -26,7 +26,7 @@
         "COS_BUCKET_NAME": {
             "type": "string",
             "description": "腾讯云COS存储桶名称",
-            "default": "golangwebblog-1314943652"
+            "default": "test-1111143652"
         },
         "COS_REGION": {
             "type": "string",
@@ -51,7 +51,7 @@
         "DEBUG_MODE": {
             "type": "boolean",
             "description": "是否启用调试模式",
-            "default": true
+            "default": false
         },
         "COMPRESS_THRESHOLD_MB": {
             "type": "number",
@@ -63,38 +63,43 @@
         "invocationCommands": [
             {
                 "commandIdentifier": "get_permissions",
-                "description": "获取腾讯云COS插件的权限信息和配置。动态读取config.env中的AGENT_FOLDERS_CONFIG，返回详细的文件夹权限描述。参数：无。返回：存储桶信息、地域、父目录、详细权限描述、压缩阈值等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」get_permissions「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 获取腾讯云COS插件的权限信息和配置。动态读取config.env中的AGENT_FOLDERS_CONFIG，返回详细的文件夹权限描述。\n参数: 无。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」get_permissions「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "upload_file",
-                "description": "上传文件到腾讯云COS。支持自动压缩大文件和文件夹。参数：local_path（必需，本地文件路径）、cos_folder（必需，目标COS文件夹）、remote_filename（可选，远程文件名）。返回：上传结果、COS键、文件大小、压缩状态等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」upload_file「末」,\nlocal_path:「始」/path/to/local/file.txt「末」,\ncos_folder:「始」agent-data「末」,\nremote_filename:「始」backup_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 上传文件到腾讯云COS。支持自动压缩大文件和文件夹。\n参数:\n- local_path (字符串, 必需): 本地文件路径。\n- cos_folder (字符串, 必需): 目标COS文件夹。\n- remote_filename (字符串, 可选): 远程文件名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」upload_file「末」,\nlocal_path:「始」/path/to/local/file.txt「末」,\ncos_folder:「始」agent-data「末」,\nremote_filename:「始」backup_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "download_file",
-                "description": "从腾讯云COS下载文件。参数：cos_key（必需，COS文件键）、local_path（可选，本地保存路径）。返回：下载结果、本地路径、文件大小等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」download_file「末」,\ncos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,\nlocal_path:「始」/path/to/save/file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 从腾讯云COS下载文件。\n参数:\n- cos_key (字符串, 必需): COS文件键。\n- local_path (字符串, 可选): 本地保存路径。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」download_file「末」,\ncos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,\nlocal_path:「始」/path/to/save/file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "copy_file",
-                "description": "在腾讯云COS中复制文件。参数：source_cos_key（必需，源文件COS键）、target_cos_folder（必需，目标文件夹）、target_filename（可选，目标文件名）。返回：复制结果、源和目标COS键等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」copy_file「末」,\nsource_cos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,\ntarget_cos_folder:「始」agent-temp「末」,\ntarget_filename:「始」copied_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 在腾讯云COS中复制文件。\n参数:\n- source_cos_key (字符串, 必需): 源文件COS键。\n- target_cos_folder (字符串, 必需): 目标文件夹。\n- target_filename (字符串, 可选): 目标文件名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」copy_file「末」,\nsource_cos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,\ntarget_cos_folder:「始」agent-temp「末」,\ntarget_filename:「始」copied_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "move_file",
-                "description": "在腾讯云COS中移动文件。参数：source_cos_key（必需，源文件COS键）、target_cos_folder（必需，目标文件夹）、target_filename（可选，目标文件名）。返回：移动结果、源和目标COS键等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」move_file「末」,\nsource_cos_key:「始」VCPAgentAI/agent-temp/temp_file.txt「末」,\ntarget_cos_folder:「始」agent-data「末」,\ntarget_filename:「始」moved_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 在腾讯云COS中移动文件。\n参数:\n- source_cos_key (字符串, 必需): 源文件COS键。\n- target_cos_folder (字符串, 必需): 目标文件夹。\n- target_filename (字符串, 可选): 目标文件名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」move_file「末」,\nsource_cos_key:「始」VCPAgentAI/agent-temp/temp_file.txt「末」,\ntarget_cos_folder:「始」agent-data「末」,\ntarget_filename:「始」moved_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "delete_file",
-                "description": "删除腾讯云COS中的文件。注意：不能删除目录，只能删除文件。参数：cos_key（必需，要删除的文件COS键）。返回：删除结果、删除的COS键等。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」delete_file「末」,\ncos_key:「始」VCPAgentAI/agent-temp/old_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 删除腾讯云COS中的文件。注意：不能删除目录，只能删除文件。\n参数:\n- cos_key (字符串, 必需): 要删除的文件COS键。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」delete_file「末」,\ncos_key:「始」VCPAgentAI/agent-temp/old_file.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
             },
             {
                 "commandIdentifier": "list_files",
-                "description": "列出腾讯云COS中的文件。参数：cos_folder（可选，指定文件夹名称，不指定则列出所有文件夹）。返回：文件列表、文件信息（键、名称、大小、修改时间等）。",
-                "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」TencentCOSBackup「末」,\ncommand:「始」list_files「末」,\ncos_folder:「始」agent-data「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 列出腾讯云COS中的文件。\n参数:\n- cos_folder (字符串, 可选): 指定文件夹名称，不指定则列出所有文件夹。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」list_files「末」,\ncos_folder:「始」agent-data「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "commandIdentifier": "submit_virus_detection_by_key",
+                "description": "功能: 提交病毒检测任务（通过COS文件键）。无需任何权限检查。\n参数:\n- key (字符串, 必需): COS文件键。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」submit_virus_detection_by_key「末」,\nkey:「始」VCPAgentAI/agent-data/通用表情包.txt「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "commandIdentifier": "submit_virus_detection_by_url",
+                "description": "功能: 提交病毒检测任务（通过公网文件URL）。无需任何权限检查。\n参数:\n- url (字符串, 必需): 公网文件URL。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」submit_virus_detection_by_url「末」,\nurl:「始」http://example.com/file.exe「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "commandIdentifier": "query_virus_detection",
+                "description": "功能: 查询病毒检测任务结果。\n参数:\n- job_id (字符串, 必需): 任务ID。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerTencentCOSBackup「末」,\ncommand:「始」query_virus_detection「末」,\njob_id:「始」av1234567890abcdef「末」\n<<<[END_TOOL_REQUEST]>>>"
             }
         ]
     }

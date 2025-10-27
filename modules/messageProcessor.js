@@ -130,10 +130,11 @@ async function replaceOtherVariables(text, model, role, context) {
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
         
-        const staticPlaceholderValues = pluginManager.staticPlaceholderValues;
+        const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, value] of staticPlaceholderValues.entries()) {
                 const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
+                // The getter now returns the correct string value
                 processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
             }
         }

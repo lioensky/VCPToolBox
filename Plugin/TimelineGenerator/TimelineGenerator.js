@@ -226,8 +226,14 @@ async function processFile(filePath) {
 
     console.log(`[TimelineGenerator] Processing for [${characterName}] on [${dateStr}] from file ${path.basename(filePath)}`);
 
-    let summary = await getSummaryFromAPI(content);
+    let summary = await getSummaryFromAPI(content, filePath);
     let summaryStatus = 'summarized';
+
+    if (summary === 'SKIP_SENSITIVE') {
+        await updateProcessDb(normalizedPath, contentHash, 'skipped_sensitive');
+        console.log(`[TimelineGenerator] Skipped sensitive content for [${characterName}] on [${dateStr}]. Marked as processed.`);
+        return;
+    }
 
     if (!summary) {
         summaryStatus = 'fallback';
@@ -247,7 +253,7 @@ async function processFile(filePath) {
 
 // --- API 调用 ---
 
-async function getSummaryFromAPI(diaryContent) {
+async function getSummaryFromAPI(diaryContent, filePath) {
     const { API_URL, API_Key, MAX_RETRY_ATTEMPTS, SUMMARY_MODEL, SUMMARY_SYSTEM_PROMPT, SUMMARY_MAX_TOKENS } = pluginConfig;
     if (!API_URL || !API_Key) {
         console.error('[TimelineGenerator] API_URL or API_Key is not configured!');
@@ -274,7 +280,13 @@ async function getSummaryFromAPI(diaryContent) {
             console.warn('[TimelineGenerator] API response did not contain a valid summary tag.', text);
             return null; // 如果格式不符，直接返回null
         } catch (error) {
-            console.error(`[TimelineGenerator] API call failed (attempt ${attempt}/${retries}):`, error.response ? error.response.data : error.message);
+            const errorMessage = error.response?.data?.error?.message || '';
+            if (errorMessage.includes('no candidates returned')) {
+                console.warn(`[TimelineGenerator] API call failed for ${path.basename(filePath)} due to sensitive content (no candidates). Skipping summary.`);
+                return 'SKIP_SENSITIVE';
+            }
+
+            console.error(`[TimelineGenerator] API call failed (attempt ${attempt}/${retries}) for ${path.basename(filePath)}:`, error.response ? error.response.data : error.message);
             if (attempt === retries) return null;
             await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
         }

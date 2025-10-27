@@ -369,112 +369,157 @@ document.addEventListener('DOMContentLoaded', () => {
 
             plugins.sort((a, b) => (a.manifest.displayName || a.manifest.name).localeCompare(b.manifest.displayName || b.manifest.name));
 
-            plugins.forEach(plugin => {
-                const li = document.createElement('li');
-                li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
-                const a = document.createElement('a');
-                a.href = '#';
-                const originalName = plugin.manifest.name;
-                const displayName = plugin.manifest.displayName || originalName;
-                let nameHtml = displayName;
-                if (plugin.isDistributed) {
-                    nameHtml += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
-                }
-                nameHtml += `<br><span class="plugin-original-name">(${originalName})</span>`;
-                a.innerHTML = nameHtml; // Use innerHTML to render the span
-                a.dataset.target = `plugin-${plugin.manifest.name}-config`;
-                a.dataset.pluginName = plugin.manifest.name;
-                li.appendChild(a);
-                pluginNavList.appendChild(li);
+            // 分离已启用和已禁用的插件
+            const enabledPlugins = plugins.filter(plugin => plugin.enabled);
+            const disabledPlugins = plugins.filter(plugin => !plugin.enabled);
 
-                const pluginSection = document.createElement('section');
-                pluginSection.id = `plugin-${plugin.manifest.name}-config-section`;
-                pluginSection.classList.add('config-section', 'dynamic-plugin-section'); // Add class for dynamic items
-                
-                let descriptionHtml = plugin.manifest.description || '暂无描述';
-                if (plugin.manifest.version) descriptionHtml += ` (版本: ${plugin.manifest.version})`;
-                if (plugin.isDistributed) descriptionHtml += ` (来自节点: ${plugin.serverId || '未知'})`;
-                if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
+            // 创建"已启用插件"分组标题
+            if (enabledPlugins.length > 0) {
+                const enabledCategoryLi = document.createElement('li');
+                enabledCategoryLi.className = 'nav-category';
+                enabledCategoryLi.textContent = '✅已启用插件';
+                pluginNavList.appendChild(enabledCategoryLi);
 
-                let titleHtml = `${displayName} <span class="plugin-original-name">(${originalName})</span> 配置`;
-                if (!plugin.enabled) titleHtml += ' <span class="plugin-disabled-badge-title">(已禁用)</span>';
-                if (plugin.isDistributed) titleHtml += ' <span class="plugin-type-icon" title="分布式插件">☁️</span>';
-                
-                pluginSection.innerHTML = `<h2>${titleHtml}</h2>
-                                           <p class="plugin-meta">${descriptionHtml}</p>`;
-
-                // Add a control area for plugin actions like toggle
-                const pluginControlsDiv = document.createElement('div');
-                pluginControlsDiv.className = 'plugin-controls';
-
-                const toggleButton = document.createElement('button');
-                toggleButton.id = `toggle-plugin-${plugin.manifest.name}-button`;
-                toggleButton.textContent = plugin.enabled ? '禁用插件' : '启用插件';
-                toggleButton.classList.add('toggle-plugin-button');
-                if (!plugin.enabled) {
-                    toggleButton.classList.add('disabled-state');
-                }
-
-                // 禁用分布式插件的管理功能
-                if (plugin.isDistributed) {
-                    toggleButton.disabled = true;
-                    toggleButton.title = '分布式插件的状态由其所在的节点管理，无法在此处直接启停。';
-                }
-
-                toggleButton.addEventListener('click', async () => {
-                    const currentEnabledState = !toggleButton.classList.contains('disabled-state'); // Determine current state from class
-                    const enable = !currentEnabledState; // Target state is the opposite
-
-                    // Optional: Confirm action
-                    if (!confirm(`确定要${enable ? '启用' : '禁用'}插件 "${plugin.manifest.displayName || plugin.manifest.name}" 吗？更改可能需要重启服务才能生效。`)) {
-                        return;
-                    }
-
-                    toggleButton.disabled = true; // Disable button during operation
-                    toggleButton.textContent = enable ? '正在启用...' : '正在禁用...';
-
-                    try {
-                        const result = await apiFetch(`${API_BASE_URL}/plugins/${plugin.manifest.name}/toggle`, {
-                            method: 'POST',
-                            body: JSON.stringify({ enable: enable })
-                        });
-                        showMessage(result.message, 'success');
-
-                        // Refresh the plugin list and the current plugin's config
-                        loadPluginList(); // Refresh sidebar status
-                        loadPluginConfig(plugin.manifest.name); // Refresh current section
-
-                    } catch (error) {
-                         // apiFetch already shows error message
-                         console.error(`Failed to toggle plugin ${plugin.manifest.name}:`, error);
-                         // Restore button state on error
-                         toggleButton.disabled = false;
-                         toggleButton.textContent = currentEnabledState ? '禁用插件' : '启用插件'; // Revert text
-                         if (!currentEnabledState) {
-                             toggleButton.classList.add('disabled-state');
-                         } else {
-                             toggleButton.classList.remove('disabled-state');
-                         }
-                    }
+                // 添加已启用的插件
+                enabledPlugins.forEach(plugin => {
+                    const li = createPluginNavItem(plugin);
+                    pluginNavList.appendChild(li);
                 });
+            }
 
-                pluginControlsDiv.appendChild(toggleButton);
-                pluginSection.appendChild(pluginControlsDiv); // Add controls before the form
+            // 创建"已禁用插件"分组标题
+            if (disabledPlugins.length > 0) {
+                const disabledCategoryLi = document.createElement('li');
+                disabledCategoryLi.className = 'nav-category';
+                disabledCategoryLi.textContent = '❎已禁用插件';
+                pluginNavList.appendChild(disabledCategoryLi);
 
-                const form = document.createElement('form');
-                form.id = `plugin-${plugin.manifest.name}-config-form`;
-                pluginSection.appendChild(form);
-                configDetailsContainer.appendChild(pluginSection);
+                // 添加已禁用的插件
+                disabledPlugins.forEach(plugin => {
+                    const li = createPluginNavItem(plugin);
+                    pluginNavList.appendChild(li);
+                });
+            }
 
-                // Store original config if available (for saving later)
-                if (plugin.configEnvContent) {
-                    originalPluginConfigs[plugin.manifest.name] = parseEnvToList(plugin.configEnvContent);
-                } else {
-                    originalPluginConfigs[plugin.manifest.name] = []; // Empty if no config.env
-                }
+            // 为所有插件创建配置区域
+            plugins.forEach(plugin => {
+                createPluginConfigSection(plugin);
             });
+
         } catch (error) {
             pluginNavList.innerHTML += `<li><p class="error-message">加载插件列表失败: ${error.message}</p></li>`;
+        }
+    }
+
+    // 创建插件导航项的辅助函数
+    function createPluginNavItem(plugin) {
+        const li = document.createElement('li');
+        li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
+        const a = document.createElement('a');
+        a.href = '#';
+        const originalName = plugin.manifest.name;
+        const displayName = plugin.manifest.displayName || originalName;
+        let nameHtml = displayName;
+        if (plugin.isDistributed) {
+            nameHtml += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
+        }
+        nameHtml += `<br><span class="plugin-original-name">(${originalName})</span>`;
+        a.innerHTML = nameHtml; // Use innerHTML to render the span
+        a.dataset.target = `plugin-${plugin.manifest.name}-config`;
+        a.dataset.pluginName = plugin.manifest.name;
+        li.appendChild(a);
+        return li;
+    }
+
+    // 创建插件配置区域的辅助函数
+    function createPluginConfigSection(plugin) {
+        const pluginSection = document.createElement('section');
+        pluginSection.id = `plugin-${plugin.manifest.name}-config-section`;
+        pluginSection.classList.add('config-section', 'dynamic-plugin-section'); // Add class for dynamic items
+        
+        const originalName = plugin.manifest.name;
+        const displayName = plugin.manifest.displayName || originalName;
+        
+        let descriptionHtml = plugin.manifest.description || '暂无描述';
+        if (plugin.manifest.version) descriptionHtml += ` (版本: ${plugin.manifest.version})`;
+        if (plugin.isDistributed) descriptionHtml += ` (来自节点: ${plugin.serverId || '未知'})`;
+        if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
+
+        let titleHtml = `${displayName} <span class="plugin-original-name">(${originalName})</span> 配置`;
+        if (!plugin.enabled) titleHtml += ' <span class="plugin-disabled-badge-title">(已禁用)</span>';
+        if (plugin.isDistributed) titleHtml += ' <span class="plugin-type-icon" title="分布式插件">☁️</span>';
+        
+        pluginSection.innerHTML = `<h2>${titleHtml}</h2>
+                                   <p class="plugin-meta">${descriptionHtml}</p>`;
+
+        // Add a control area for plugin actions like toggle
+        const pluginControlsDiv = document.createElement('div');
+        pluginControlsDiv.className = 'plugin-controls';
+
+        const toggleButton = document.createElement('button');
+        toggleButton.id = `toggle-plugin-${plugin.manifest.name}-button`;
+        toggleButton.textContent = plugin.enabled ? '禁用插件' : '启用插件';
+        toggleButton.classList.add('toggle-plugin-button');
+        if (!plugin.enabled) {
+            toggleButton.classList.add('disabled-state');
+        }
+
+        // 禁用分布式插件的管理功能
+        if (plugin.isDistributed) {
+            toggleButton.disabled = true;
+            toggleButton.title = '分布式插件的状态由其所在的节点管理，无法在此处直接启停。';
+        }
+
+        toggleButton.addEventListener('click', async () => {
+            const currentEnabledState = !toggleButton.classList.contains('disabled-state'); // Determine current state from class
+            const enable = !currentEnabledState; // Target state is the opposite
+
+            // Optional: Confirm action
+            if (!confirm(`确定要${enable ? '启用' : '禁用'}插件 "${plugin.manifest.displayName || plugin.manifest.name}" 吗？更改可能需要重启服务才能生效。`)) {
+                return;
+            }
+
+            toggleButton.disabled = true; // Disable button during operation
+            toggleButton.textContent = enable ? '正在启用...' : '正在禁用...';
+
+            try {
+                const result = await apiFetch(`${API_BASE_URL}/plugins/${plugin.manifest.name}/toggle`, {
+                    method: 'POST',
+                    body: JSON.stringify({ enable: enable })
+                });
+                showMessage(result.message, 'success');
+
+                // Refresh the plugin list and the current plugin's config
+                loadPluginList(); // Refresh sidebar status
+                loadPluginConfig(plugin.manifest.name); // Refresh current section
+
+            } catch (error) {
+                 // apiFetch already shows error message
+                 console.error(`Failed to toggle plugin ${plugin.manifest.name}:`, error);
+                 // Restore button state on error
+                 toggleButton.disabled = false;
+                 toggleButton.textContent = currentEnabledState ? '禁用插件' : '启用插件'; // Revert text
+                 if (!currentEnabledState) {
+                     toggleButton.classList.add('disabled-state');
+                 } else {
+                     toggleButton.classList.remove('disabled-state');
+                 }
+            }
+        });
+
+        pluginControlsDiv.appendChild(toggleButton);
+        pluginSection.appendChild(pluginControlsDiv); // Add controls before the form
+
+        const form = document.createElement('form');
+        form.id = `plugin-${plugin.manifest.name}-config-form`;
+        pluginSection.appendChild(form);
+        configDetailsContainer.appendChild(pluginSection);
+
+        // Store original config if available (for saving later)
+        if (plugin.configEnvContent) {
+            originalPluginConfigs[plugin.manifest.name] = parseEnvToList(plugin.configEnvContent);
+        } else {
+            originalPluginConfigs[plugin.manifest.name] = []; // Empty if no config.env
         }
     }
 
@@ -2266,13 +2311,6 @@ Description Length: ${newDescription.length}`);
         }
         if (serverLogFilterInput) serverLogFilterInput.value = ''; // Clear filter on init
 
-        await loadServerLog(); // Perform the initial load
-
-        // Start polling after the initial load
-        if (!serverLogIntervalId) {
-            serverLogIntervalId = setInterval(loadServerLog, 2000); // Poll every 2 seconds
-            console.log('Started server log auto-refresh interval.');
-        }
     }
 
     function filterAndHighlightLog() {

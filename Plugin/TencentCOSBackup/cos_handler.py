@@ -18,10 +18,13 @@ import traceback
 
 # --- 配置和常量 ---
 LOG_FILE = "cos_operations.log"
-PLUGIN_NAME_FOR_CALLBACK = "TencentCOSBackup"
+PLUGIN_NAME_FOR_CALLBACK = "ServerTencentCOSBackup"
 
 # --- 日志记录 ---
 def log_event(level, message, data=None):
+    # 检查是否启用日志记录
+    enable_logging = os.environ.get('ENABLE_LOGGING', 'true').lower() == 'true'
+    
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     log_entry = f"[{timestamp}] [{level.upper()}] {message}"
     if data:
@@ -37,11 +40,13 @@ def log_event(level, message, data=None):
     # 输出到stderr以便调试
     print(log_entry, file=sys.stderr)
     
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(log_entry + "\n")
-    except Exception as e:
-        print(f"Error writing to log file: {e}", file=sys.stderr)
+    # 只有启用日志记录时才写入文件
+    if enable_logging:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_entry + "\n")
+        except Exception as e:
+            print(f"Error writing to log file: {e}", file=sys.stderr)
 
 # --- 结果输出 ---
 def print_json_output(status, result=None, error=None, ai_message=None):
@@ -631,6 +636,109 @@ class FileOperations:
             log_event("error", "Unexpected error during list", {"error": str(e)})
             return {"success": False, "error": f"列出失败: {e}"}
 
+# --- 病毒检测功能 ---
+class VirusDetection:
+    def __init__(self, cos_manager):
+        self.cos_manager = cos_manager
+        self.callback_base_url = os.environ.get('CALLBACK_BASE_URL', 'http://localhost:6005/plugin-callback')
+    
+    def submit_virus_detection(self, key=None, url=None):
+        """提交病毒检测任务"""
+        try:
+            # 验证参数
+            if not key and not url:
+                return {"success": False, "error": "必须提供key或url参数之一"}
+            
+            if key and url:
+                return {"success": False, "error": "key和url参数只能提供其中一个"}
+            
+            # 构建请求参数
+            params = {
+                'Bucket': self.cos_manager.bucket_name,
+                'Callback': self.callback_base_url
+            }
+            
+            if key:
+                # 验证key格式
+                key_parts = key.split('/')
+                if len(key_parts) < 3 or key_parts[0] != self.cos_manager.agent_parent_dir:
+                    return {"success": False, "error": f"无效的COS键格式: {key}"}
+                
+                # 病毒检测无需权限检查
+                params['Key'] = key
+            else:
+                params['Url'] = url
+            
+            # 调用腾讯云COS病毒检测API
+            response = self.cos_manager.client.ci_auditing_virus_submit(**params)
+            
+            log_event("info", f"Virus detection submitted", {
+                "key": key,
+                "url": url,
+                "response": response
+            })
+            
+            return {
+                "success": True,
+                "job_id": response.get('JobsDetail', {}).get('JobId', ''),
+                "state": response.get('JobsDetail', {}).get('State', ''),
+                "creation_time": response.get('JobsDetail', {}).get('CreationTime', ''),
+                "message": "病毒检测任务已提交"
+            }
+            
+        except CosClientError as e:
+            log_event("error", "COS client error during virus detection submission", {"error": str(e)})
+            return {"success": False, "error": f"COS客户端错误: {e}"}
+        except CosServiceError as e:
+            log_event("error", "COS service error during virus detection submission", {"error": str(e)})
+            return {"success": False, "error": f"COS服务错误: {e}"}
+        except Exception as e:
+            log_event("error", "Unexpected error during virus detection submission", {"error": str(e)})
+            return {"success": False, "error": f"提交病毒检测失败: {e}"}
+    
+    def query_virus_detection(self, job_id):
+        """查询病毒检测结果"""
+        try:
+            if not job_id:
+                return {"success": False, "error": "缺少必需参数: job_id"}
+            
+            # 调用腾讯云COS病毒检测查询API
+            response = self.cos_manager.client.ci_auditing_virus_query(
+                Bucket=self.cos_manager.bucket_name,
+                JobID=job_id
+            )
+            
+            log_event("info", f"Virus detection query", {
+                "job_id": job_id,
+                "response": response
+            })
+            
+            jobs_detail = response.get('JobsDetail', {})
+            
+            return {
+                "success": True,
+                "job_id": jobs_detail.get('JobId', job_id),
+                "state": jobs_detail.get('State', ''),
+                "creation_time": jobs_detail.get('CreationTime', ''),
+                "object": jobs_detail.get('Object', ''),
+                "url": jobs_detail.get('Url', ''),
+                "suggestion": jobs_detail.get('Suggestion', ''),
+                "detect_detail": jobs_detail.get('DetectDetail', []),
+                "code": jobs_detail.get('Code', ''),
+                "message": jobs_detail.get('Message', ''),
+                "result_message": "病毒检测结果查询成功"
+            }
+            
+        except CosClientError as e:
+            log_event("error", "COS client error during virus detection query", {"error": str(e)})
+            return {"success": False, "error": f"COS客户端错误: {e}"}
+        except CosServiceError as e:
+            log_event("error", "COS service error during virus detection query", {"error": str(e)})
+            return {"success": False, "error": f"COS服务错误: {e}"}
+        except Exception as e:
+            log_event("error", "Unexpected error during virus detection query", {"error": str(e)})
+            return {"success": False, "error": f"查询病毒检测结果失败: {e}"}
+
 # --- 主逻辑 ---
 def main():
     # 加载环境变量
@@ -648,6 +756,9 @@ def main():
         
         # 初始化文件操作
         file_ops = FileOperations(cos_manager)
+        
+        # 初始化病毒检测
+        virus_detection = VirusDetection(cos_manager)
         
         # 读取输入
         try:
@@ -754,6 +865,48 @@ def main():
             cos_folder = input_data.get("cos_folder")
             
             result = file_ops.list_files(cos_folder)
+            if result["success"]:
+                print_json_output("success", result=result)
+            else:
+                print_json_output("error", error=result["error"])
+                sys.exit(1)
+        
+        elif command == "submit_virus_detection_by_key":
+            key = input_data.get("key")
+            
+            if not key:
+                print_json_output("error", error="缺少必需参数: key")
+                sys.exit(1)
+            
+            result = virus_detection.submit_virus_detection(key=key, url=None)
+            if result["success"]:
+                print_json_output("success", result=result)
+            else:
+                print_json_output("error", error=result["error"])
+                sys.exit(1)
+        
+        elif command == "submit_virus_detection_by_url":
+            url = input_data.get("url")
+            
+            if not url:
+                print_json_output("error", error="缺少必需参数: url")
+                sys.exit(1)
+            
+            result = virus_detection.submit_virus_detection(key=None, url=url)
+            if result["success"]:
+                print_json_output("success", result=result)
+            else:
+                print_json_output("error", error=result["error"])
+                sys.exit(1)
+        
+        elif command == "query_virus_detection":
+            job_id = input_data.get("job_id")
+            
+            if not job_id:
+                print_json_output("error", error="缺少必需参数: job_id")
+                sys.exit(1)
+            
+            result = virus_detection.query_virus_detection(job_id)
             if result["success"]:
                 print_json_output("success", result=result)
             else:
