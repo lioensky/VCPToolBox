@@ -3,6 +3,74 @@ const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const { Jieba } = require('@node-rs/jieba');
+const { dict } = require('@node-rs/jieba/dict');
+
+class BM25Ranker {
+    constructor() {
+        this.k1 = 1.5;  // 词频饱和参数
+        this.b = 0.75;  // 长度惩罚参数
+    }
+
+    /**
+     * 计算BM25分数
+     * @param {Array} queryTokens - 查询分词
+     * @param {Array} docTokens - 文档分词
+     * @param {Number} avgDocLength - 平均文档长度
+     * @param {Object} idfScores - 每个词的IDF分数
+     */
+    score(queryTokens, docTokens, avgDocLength, idfScores) {
+        const docLength = docTokens.length;
+        const termFreq = {};
+        
+        // 统计词频
+        for (const token of docTokens) {
+            termFreq[token] = (termFreq[token] || 0) + 1;
+        }
+
+        let score = 0;
+        for (const token of queryTokens) {
+            const tf = termFreq[token] || 0;
+            if (tf === 0) continue;
+
+            const idf = idfScores[token] || 0;
+            
+            // BM25公式
+            const numerator = tf * (this.k1 + 1);
+            const denominator = tf + this.k1 * (1 - this.b + this.b * (docLength / avgDocLength));
+            
+            score += idf * (numerator / denominator);
+        }
+
+        return score;
+    }
+
+    /**
+     * 计算IDF（逆文档频率）
+     * @param {Array} allDocs - 所有文档的分词数组
+     */
+    calculateIDF(allDocs) {
+        const N = allDocs.length;
+        const df = {}; // document frequency
+
+        // 统计每个词出现在多少文档中
+        for (const doc of allDocs) {
+            const uniqueTokens = new Set(doc);
+            for (const token of uniqueTokens) {
+                df[token] = (df[token] || 0) + 1;
+            }
+        }
+
+        // 计算IDF
+        const idfScores = {};
+        for (const token in df) {
+            // IDF = log((N - df + 0.5) / (df + 0.5) + 1)
+            idfScores[token] = Math.log((N - df[token] + 0.5) / (df[token] + 0.5) + 1);
+        }
+
+        return idfScores;
+    }
+}
 
 class LightMemoPlugin {
     constructor() {
@@ -13,6 +81,22 @@ class LightMemoPlugin {
         this.dailyNoteRootPath = '';
         this.rerankConfig = {};
         this.excludedFolders = [];
+        this.semanticGroups = null;
+        this.wordToGroupMap = new Map();
+        this.stopWords = new Set([
+            '的', '了', '在', '是', '我', '你', '他', '她', '它',
+            '这', '那', '有', '个', '就', '不', '人', '都', '一',
+            '上', '也', '很', '到', '说', '要', '去', '能', '会'
+        ]);
+        
+        // ✅ 初始化 jieba 实例（加载默认字典）
+        try {
+            this.jiebaInstance = Jieba.withDict(dict);
+            console.log('[LightMemo] Jieba initialized successfully.');
+        } catch (error) {
+            console.error('[LightMemo] Failed to initialize Jieba:', error);
+            this.jiebaInstance = null;
+        }
     }
 
     initialize(config, dependencies) {
@@ -27,6 +111,7 @@ class LightMemoPlugin {
         }
 
         this.loadConfig(); // Load config after dependencies are set
+        this.loadSemanticGroups();
         console.log('[LightMemo] Plugin initialized successfully as a hybrid service.');
     }
 
@@ -55,95 +140,122 @@ class LightMemoPlugin {
     }
 
     async handleSearch(args) {
-        const {
-            query,
-            maid,
-            k = 5,
-        } = args;
-
-        // Manually parse boolean-like strings, providing defaults
-        const rerank = args.rerank !== undefined ? String(args.rerank).toLowerCase() === 'true' : false;
-        const search_all_knowledge_bases = args.search_all_knowledge_bases !== undefined ? String(args.search_all_knowledge_bases).toLowerCase() === 'true' : false;
+        const { query, maid, k = 5, rerank = false, search_all_knowledge_bases = false } = args;
 
         if (!query || !maid) {
             throw new Error("参数 'query' 和 'maid' 是必需的。");
         }
-        if (!this.vectorDBManager || !this.getSingleEmbedding) {
-            throw new Error("核心依赖 (VectorDBManager, getSingleEmbedding) 未注入。");
+
+        // --- 第一阶段：关键词初筛（BM25） ---
+        const queryTokens = this._tokenize(query);
+        console.log(`[LightMemo] Query tokens: [${queryTokens.join(', ')}]`);
+
+        // 扩展查询词（语义组）
+        const expandedTokens = this._expandQueryTokens(queryTokens);
+        const allQueryTokens = [...new Set([...queryTokens, ...expandedTokens])];
+        console.log(`[LightMemo] Expanded tokens: [${allQueryTokens.join(', ')}]`);
+
+        // 从所有日记本中收集候选chunks
+        const candidates = await this._gatherCandidateChunks(maid, search_all_knowledge_bases);
+        
+        if (candidates.length === 0) {
+            return `没有找到署名为 "${maid}" 的相关记忆。`;
         }
 
-        let allDiaries = [];
-        try {
-            allDiaries = await fs.readdir(this.dailyNoteRootPath, { withFileTypes: true });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                return "日记本根目录 'dailynote' 未找到。";
-            }
-            throw error;
+        console.log(`[LightMemo] Gathered ${candidates.length} candidate chunks from ${new Set(candidates.map(c => c.dbName)).size} diaries.`);
+
+        // BM25排序
+        const bm25Ranker = new BM25Ranker();
+        const allDocs = candidates.map(c => c.tokens);
+        const idfScores = bm25Ranker.calculateIDF(allDocs);
+        const avgDocLength = allDocs.reduce((sum, doc) => sum + doc.length, 0) / allDocs.length;
+
+        const scoredCandidates = candidates.map(candidate => {
+            const bm25Score = bm25Ranker.score(
+                allQueryTokens,
+                candidate.tokens,
+                avgDocLength,
+                idfScores
+            );
+            return { ...candidate, bm25Score };
+        });
+
+        // 取top K*3用于向量检索
+        const topByKeyword = scoredCandidates
+            .filter(c => c.bm25Score > 0)  // 必须有关键词匹配
+            .sort((a, b) => b.bm25Score - a.bm25Score)
+            .slice(0, k * 3);
+
+        if (topByKeyword.length === 0) {
+            return `关于"${query}"，没有找到包含相关关键词的记忆片段。`;
         }
 
-        const availableDiaries = allDiaries
-            .filter(dirent => dirent.isDirectory())
-            .map(dirent => dirent.name)
-            .filter(name => {
-                if (name.startsWith('已整理') || name.endsWith('簇')) return false;
-                if (this.excludedFolders.includes(name)) return false;
-                return true;
-            });
+        console.log(`[LightMemo] BM25 filtered to ${topByKeyword.length} chunks.`);
 
-        let candidateDiaries = search_all_knowledge_bases
-            ? availableDiaries
-            : availableDiaries.filter(name => name.includes(maid));
-
-        // --- 关键：执行两阶段搜索 ---
-        // 1. 关键字初筛
-        const targetDiaries = await this._keywordPreScreening(query, candidateDiaries);
-
-        if (targetDiaries.length === 0) {
-            return search_all_knowledge_bases
-                ? "没有找到任何可供搜索的知识库。"
-                : `没有找到署名为 "${maid}" 的相关知识库。`;
-        }
-
+        // --- 第二阶段：向量精排 ---
         const queryVector = await this.getSingleEmbedding(query);
         if (!queryVector) {
             throw new Error("查询内容向量化失败。");
         }
 
-        const kForSearch = rerank ? Math.max(1, Math.round(k * this.rerankConfig.multiplier)) : k;
-
-        const searchPromises = targetDiaries.map(dbName =>
-            this.vectorDBManager.search(dbName, queryVector, kForSearch)
-                .then(results => results.map(r => ({ ...r, dbName })))
+        // 为每个候选chunk计算向量相似度
+        const vectorScoredCandidates = await this._scoreByVectorSimilarity(
+            topByKeyword,
+            queryVector
         );
-        
-        let allResults = (await Promise.all(searchPromises)).flat()
-            .sort((a, b) => b.score - a.score); // <-- 关键：先按分数排序
 
-        let finalResults;
-        if (rerank && allResults.length > 0) {
-            // Rerank 前先截取 top N，避免给 reranker 过多不相关的文档
-            const preRerankResults = allResults.slice(0, kForSearch);
-            finalResults = await this._rerankDocuments(query, preRerankResults, k);
-        } else {
-            finalResults = allResults.slice(0, k);
+        // 混合BM25和向量分数
+        const hybridScored = vectorScoredCandidates.map(c => ({
+            ...c,
+            hybridScore: c.bm25Score * 0.6 + c.vectorScore * 0.4  // 提高关键词权重
+        })).sort((a, b) => b.hybridScore - a.hybridScore);
+
+        // 取top K
+        let finalResults = hybridScored.slice(0, k);
+
+        // --- 第三阶段：Rerank（可选） ---
+        if (rerank && finalResults.length > 0) {
+            finalResults = await this._rerankDocuments(query, finalResults, k);
         }
 
-        return this.formatResults(finalResults, query, targetDiaries);
+        return this.formatResults(finalResults, query);
     }
 
-    formatResults(results, query, searchedDiaries) {
+    formatResults(results, query) {
         if (results.length === 0) {
-            return `关于“${query}”，在指定的知识库中没有找到相关的记忆片段。`;
+            return `关于"${query}"，在指定的知识库中没有找到相关的记忆片段。`;
         }
 
+        const searchedDiaries = [...new Set(results.map(r => r.dbName))];
         let content = `\n[--- LightMemo 轻量回忆 ---]\n`;
         content += `[查询内容: "${query}"]\n`;
         content += `[搜索范围: ${searchedDiaries.join(', ')}]\n\n`;
         content += `[找到 ${results.length} 条相关记忆片段:]\n`;
 
-        results.forEach(r => {
-            content += `--- (来源: ${r.dbName}, 相关性: ${(r.score * 100).toFixed(1)}%)\n`;
+        results.forEach((r, index) => {
+            // 👇 修复：正确获取分数
+            let scoreValue = 0;
+            let scoreType = '';
+            
+            if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
+                scoreValue = r.rerank_score;
+                scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
+                scoreValue = r.hybridScore;
+                scoreType = '混合';
+            } else if (typeof r.vectorScore === 'number' && !isNaN(r.vectorScore)) {
+                scoreValue = r.vectorScore;
+                scoreType = '向量';
+            } else if (typeof r.bm25Score === 'number' && !isNaN(r.bm25Score)) {
+                scoreValue = r.bm25Score;
+                scoreType = 'BM25';
+            }
+            
+            const scoreDisplay = scoreValue > 0
+                ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})`
+                : 'N/A';
+            
+            content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
             content += `${r.text.trim()}\n`;
         });
 
@@ -160,10 +272,10 @@ class LightMemoPlugin {
 
     async _rerankDocuments(query, documents, originalK) {
         if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
-            console.warn('[LightMemo] Rerank called, but is not configured. Skipping.');
+            console.warn('[LightMemo] Rerank not configured. Skipping.');
             return documents.slice(0, originalK);
         }
-        console.log(`[LightMemo] Starting rerank process for ${documents.length} documents.`);
+        console.log(`[LightMemo] Starting rerank for ${documents.length} documents.`);
 
         const rerankUrl = new URL('v1/rerank', this.rerankConfig.url).toString();
         const headers = {
@@ -192,7 +304,7 @@ class LightMemoPlugin {
             batches.push(currentBatch);
         }
 
-        console.log(`[LightMemo] Split documents into ${batches.length} batches for reranking.`);
+        console.log(`[LightMemo] Split into ${batches.length} batches for reranking.`);
 
         let allRerankedDocs = [];
         for (let i = 0; i < batches.length; i++) {
@@ -204,119 +316,280 @@ class LightMemoPlugin {
                     model: this.rerankConfig.model,
                     query: query,
                     documents: docTexts,
-                    top_n: docTexts.length 
+                    top_n: docTexts.length
                 };
 
-                console.log(`[LightMemo] Reranking batch ${i + 1}/${batches.length} with ${docTexts.length} documents.`);
-                const response = await axios.post(rerankUrl, body, { headers });
+                console.log(`[LightMemo] Reranking batch ${i + 1}/${batches.length} (${docTexts.length} docs).`);
+                const response = await axios.post(rerankUrl, body, {
+                    headers,
+                    timeout: 30000  // 👈 添加超时
+                });
 
-                if (response.data && Array.isArray(response.data.results)) {
-                    const rerankedResults = response.data.results;
+                let responseData = response.data;
+                if (typeof responseData === 'string') {
+                    try {
+                        responseData = JSON.parse(responseData);
+                    } catch (e) {
+                        console.error('[LightMemo] Failed to parse rerank response:', responseData);
+                        throw new Error('Invalid JSON response');
+                    }
+                }
+
+                if (responseData && Array.isArray(responseData.results)) {
+                    const rerankedResults = responseData.results;
+                    console.log(`[LightMemo] Batch ${i + 1} rerank scores:`,
+                        rerankedResults.map(r => r.relevance_score.toFixed(3)).join(', '));
+                    
                     const orderedBatch = rerankedResults
                         .map(result => {
                             const originalDoc = batch[result.index];
-                            // 关键：将 rerank score 赋给原始文档，但保留原始 score 以备后用
-                            return { ...originalDoc, rerank_score: result.relevance_score };
+                            if (!originalDoc) return null;
+                            return {
+                                ...originalDoc,
+                                rerank_score: result.relevance_score
+                            };
                         })
                         .filter(Boolean);
                     
                     allRerankedDocs.push(...orderedBatch);
                 } else {
-                    console.warn(`[LightMemo] Rerank for batch ${i + 1} returned invalid data. Appending original batch documents.`);
-                    allRerankedDocs.push(...batch);
+                    throw new Error('Invalid response format');
                 }
             } catch (error) {
-                console.error(`[LightMemo] Rerank API call failed for batch ${i + 1}. Appending original batch documents.`);
+                console.error(`[LightMemo] Rerank failed for batch ${i + 1}:`, error.message);
                 if (error.response) {
-                    console.error(`[LightMemo] Rerank API Error - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`);
-                } else {
-                    console.error('[LightMemo] Rerank API Error - Message:', error.message);
+                    console.error(`[LightMemo] API Error - Status: ${error.response.status}, Data:`,
+                        JSON.stringify(error.response.data).slice(0, 200));
                 }
-                allRerankedDocs.push(...batch);
+                
+                // ⚠️ 关键修复：保留原有分数
+                const fallbackBatch = batch.map(doc => ({
+                    ...doc,
+                    rerank_score: doc.hybridScore || doc.vectorScore || doc.bm25Score || 0,
+                    rerank_failed: true  // 标记rerank失败
+                }));
+                allRerankedDocs.push(...fallbackBatch);
             }
         }
 
-        // 关键：在所有批次处理完后，根据 rerank_score 进行全局排序
-        allRerankedDocs.sort((a, b) => b.rerank_score - a.rerank_score);
+        // 👇 修复：安全排序
+        allRerankedDocs.sort((a, b) => {
+            const scoreA = a.rerank_score ?? 0;
+            const scoreB = b.rerank_score ?? 0;
+            return scoreB - scoreA;
+        });
 
         const finalDocs = allRerankedDocs.slice(0, originalK);
-        console.log(`[LightMemo] Rerank process finished. Returning ${finalDocs.length} documents.`);
+        console.log(`[LightMemo] Rerank complete. Final scores:`,
+            finalDocs.map(d => (d.rerank_score || 0).toFixed(3)).join(', '));
+        
         return finalDocs;
     }
 
-    _tokenize(text) {
-        if (!text) return [];
-        // 1. 转换为小写以进行不区分大小写的匹配
-        const lowerText = text.toLowerCase();
-        // 2. 使用正则表达式匹配中文单字或连续的英文/数字序列
-        const tokens = lowerText.match(/[\u4e00-\u9fa5]|[a-z0-9]+/g) || [];
-        // 3. 定义并过滤掉常见的停用词，以减少噪音
-        const stopWords = new Set(['的', '了', '在', '是', '我', '你', '他', '她', '它', '我们', '你们', '他们', 'a', 'an', 'the', 'is', 'are', 'am', 'in', 'on', 'at', 'to', 'and', 'or', 'but', 'what', 'when', 'where', 'how', 'who', 'which']);
-        return tokens.filter(token => !stopWords.has(token));
+    /**
+     * 改用jieba分词（保留词组）
+     */
+
+ /* 使用 jieba 分词（保留词组）
+ */
+_tokenize(text) {
+    if (!text) return [];
+    
+    // ✅ 使用实例调用 cut 方法
+    // 参数说明：
+    // - text: 要分词的文本
+    // - false: 不使用 HMM（隐藏马尔可夫模型），使用精确模式
+    if (!this.jiebaInstance) {
+        console.warn('[LightMemo] Jieba not initialized, falling back to simple split.');
+        // 降级方案：简单分词
+        return text.split(/\s+/)
+            .map(w => w.toLowerCase().trim())
+            .filter(w => w.length >= 2)
+            .filter(w => !this.stopWords.has(w));
+    }
+    
+    const words = this.jiebaInstance.cut(text, false);  // 精确模式
+    
+    return words
+        .map(w => w.toLowerCase().trim())
+        .filter(w => w.length >= 2)
+        .filter(w => !this.stopWords.has(w))
+        .filter(w => w.length > 0);
+}
+    /**
+     * 从所有相关日记本中收集chunks（带署名过滤）
+     */
+    async _gatherCandidateChunks(maid, searchAll) {
+        let allDiaries = [];
+        try {
+            allDiaries = await fs.readdir(this.dailyNoteRootPath, { withFileTypes: true });
+        } catch (error) {
+            console.error('[LightMemo] Failed to read diary root:', error);
+            return [];
+        }
+
+        const availableDiaries = allDiaries
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name)
+            .filter(name => {
+                if (name.startsWith('已整理') || name.endsWith('簇')) return false;
+                if (this.excludedFolders.includes(name)) return false;
+                return true;
+            });
+
+        // 如果不是搜索全部，只搜包含maid名字的日记本
+        const targetDiaries = searchAll
+            ? availableDiaries
+            : availableDiaries.filter(name => name.includes(maid));
+
+        const candidates = [];
+
+        for (const diaryName of targetDiaries) {
+            // 从VectorDBManager获取这个日记本的chunkMap
+            if (!this.vectorDBManager.chunkMaps.has(diaryName)) {
+                // 尝试加载索引
+                await this.vectorDBManager.loadIndexForSearch(diaryName);
+            }
+
+            const chunkMap = this.vectorDBManager.chunkMaps.get(diaryName);
+            if (!chunkMap) continue;
+
+            // 遍历所有chunks
+            for (const [label, data] of Object.entries(chunkMap)) {
+                const text = data.text || '';
+                
+                // 署名过滤：检查chunk内容是否包含署名
+                if (!searchAll && !this._checkSignature(text, maid)) {
+                    continue;  // 跳过不属于这个agent的chunk
+                }
+
+                // 分词
+                const tokens = this._tokenize(text);
+                
+                candidates.push({
+                    dbName: diaryName,
+                    label: parseInt(label),
+                    text: text,
+                    tokens: tokens,
+                    sourceFile: data.sourceFile
+                });
+            }
+        }
+
+        return candidates;
     }
 
-    async _keywordPreScreening(query, diaryNames) {
-        const queryTokens = this._tokenize(query);
-        // 如果查询没有有效的分词，则跳过初筛，返回所有日记本
-        if (queryTokens.length === 0) {
-            console.log('[LightMemo] No valid tokens in query, skipping keyword pre-screening.');
-            return diaryNames;
-        }
-
-        console.log(`[LightMemo] Pre-screening with tokens: [${queryTokens.join(', ')}]`);
-
-        const scoredDiaries = [];
-        const scorePromises = diaryNames.map(async (diaryName) => {
-            try {
-                const diaryPath = path.join(this.dailyNoteRootPath, diaryName);
-                const files = await fs.readdir(diaryPath);
-                const contentFiles = files.filter(f => f.toLowerCase().endsWith('.txt') || f.toLowerCase().endsWith('.md'));
-
-                let totalScore = 0;
-                // 并行读取日记本内的所有文件内容
-                const contents = await Promise.all(
-                    contentFiles.map(file => fs.readFile(path.join(diaryPath, file), 'utf-8'))
-                );
-                const fullContent = contents.join('\n');
-                
-                // 对整个日记本内容进行一次分词，提高效率
-                const contentTokens = this._tokenize(fullContent);
-                const tokenCounts = contentTokens.reduce((acc, token) => {
-                    acc[token] = (acc[token] || 0) + 1;
-                    return acc;
-                }, {});
-
-                // 基于查询词的词频计算分数
-                for (const token of queryTokens) {
-                    totalScore += (tokenCounts[token] || 0);
-                }
-
-                if (totalScore > 0) {
-                    scoredDiaries.push({ name: diaryName, score: totalScore });
-                }
-            } catch (error) {
-                console.error(`[LightMemo] Error during pre-screening diary "${diaryName}":`, error.message);
-            }
-        });
-
-        await Promise.all(scorePromises);
-
-        // 如果没有任何日记本匹配到关键词，则返回原始列表，让向量搜索尝试
-        if (scoredDiaries.length === 0) {
-            console.log('[LightMemo] No keyword matches found. Falling back to vector search on all target diaries.');
-            return diaryNames;
-        }
-
-        // 按分数从高到低排序
-        scoredDiaries.sort((a, b) => b.score - a.score);
-
-        // 设定一个阈值，比如只取分数最高的7个日记本进行精搜
-        const PRE_SCREENING_THRESHOLD = 7;
-        const topDiaries = scoredDiaries.slice(0, PRE_SCREENING_THRESHOLD).map(d => d.name);
-
-        console.log('[LightMemo] Keyword pre-screening top results:', scoredDiaries.slice(0, PRE_SCREENING_THRESHOLD));
+    /**
+     * 检查文本中是否包含特定署名
+     */
+    _checkSignature(text, maid) {
+        if (!text || !maid) return false;
         
-        return topDiaries;
+        // 提取第一行
+        const firstLine = text.split('\n')[0].trim();
+        
+        // 检查第一行是否包含署名
+        return firstLine.includes(maid);
+    }
+
+    /**
+     * 为候选chunks计算向量相似度
+     */
+    async _scoreByVectorSimilarity(candidates, queryVector) {
+        const scored = [];
+
+        for (const candidate of candidates) {
+            // 从VectorDBManager获取这个chunk的向量
+            const index = this.vectorDBManager.indices.get(candidate.dbName);
+            if (!index) continue;
+
+            try {
+                const chunkVector = index.getPoint(candidate.label);
+                const similarity = this._cosineSimilarity(queryVector, chunkVector);
+                
+                scored.push({
+                    ...candidate,
+                    vectorScore: similarity
+                });
+            } catch (error) {
+                // chunk可能已被删除，跳过
+                continue;
+            }
+        }
+
+        return scored;
+    }
+
+    _cosineSimilarity(vecA, vecB) {
+        if (!vecA || !vecB || vecA.length !== vecB.length) {
+            return 0;
+        }
+        let dotProduct = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < vecA.length; i++) {
+            dotProduct += vecA[i] * vecB[i];
+            normA += vecA[i] * vecA[i];
+            normB += vecB[i] * vecB[i];
+        }
+        if (normA === 0 || normB === 0) {
+            return 0;
+        }
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
+
+    /**
+     * 基于语义组扩展查询词
+     */
+    _expandQueryTokens(queryTokens) {
+        if (this.wordToGroupMap.size === 0) {
+            return [];
+        }
+
+        const expandedTokens = new Set();
+        const activatedGroups = new Set();
+
+        for (const token of queryTokens) {
+            const groupWords = this.wordToGroupMap.get(token.toLowerCase());
+            if (groupWords) {
+                const groupKey = groupWords.join(',');
+                if (!activatedGroups.has(groupKey)) {
+                    activatedGroups.add(groupKey);
+                    groupWords.forEach(word => {
+                        if (!queryTokens.includes(word)) {
+                            expandedTokens.add(word);
+                        }
+                    });
+                }
+            }
+        }
+
+        return Array.from(expandedTokens);
+    }
+
+    async loadSemanticGroups() {
+        const semanticGroupsPath = path.join(this.projectBasePath, 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
+        try {
+            const data = await fs.readFile(semanticGroupsPath, 'utf-8');
+            this.semanticGroups = JSON.parse(data);
+            this.wordToGroupMap = new Map();
+            if (this.semanticGroups && this.semanticGroups.groups) {
+                for (const groupName in this.semanticGroups.groups) {
+                    const group = this.semanticGroups.groups[groupName];
+                    if (group.words && Array.isArray(group.words)) {
+                        const lowercasedWords = group.words.map(w => w.toLowerCase());
+                        for (const word of lowercasedWords) {
+                            this.wordToGroupMap.set(word, lowercasedWords);
+                        }
+                    }
+                }
+            }
+            console.log(`[LightMemo] Semantic groups loaded successfully. ${this.wordToGroupMap.size} words mapped.`);
+        } catch (error) {
+            console.warn('[LightMemo] Could not load semantic_groups.json. Proceeding without query expansion.', error.message);
+            this.semanticGroups = null;
+            this.wordToGroupMap = new Map();
+        }
     }
 }
 
