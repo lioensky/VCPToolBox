@@ -1,0 +1,180 @@
+{
+  "a1b2c3d4e5f6789abcdef0123456789": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "hash": "a1b2c3d4e5f6789abcdef0123456789",
+    "cacheVersion": "3.0",
+    "mimeType": "image/jpeg",
+    "base64Data": "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlbaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==",
+    "fileSize": 245760,
+    "paths": [
+      {
+        "originalPath": "@hornet/example.jpg",
+        "resolvedPath": "/Users/username/Pictures/Hornet表情包/example.jpg",
+        "usedAlias": true,
+        "aliasName": "@hornet",
+        "isFolder": false,
+        "folderPath": null,
+        "batchId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "groupId": "def456abc789xyz123456789abcdef01",
+        "fileIndex": 0,
+        "totalFiles": 1,
+        "lastUsed": "2024-01-15T08:30:00.000Z"
+      },
+      {
+        "originalPath": "images/example.jpg",
+        "resolvedPath": "/Users/username/Pictures/Hornet表情包/example.jpg",
+        "usedAlias": true,
+        "aliasName": "images",
+        "isFolder": false,
+        "folderPath": null,
+        "batchId": "8d0f7780-8536-51ef-c058-f18fd2g01bf8",
+        "groupId": "efg567bcd890zyx234567890bcdef12",
+        "fileIndex": 0,
+        "totalFiles": 1,
+        "lastUsed": "2024-01-20T14:22:00.000Z"
+      }
+    ],
+    "createdTime": "2024-01-01T12:00:00.000Z",
+    "lastAccessTime": "2024-01-20T14:22:00.000Z",
+    "descriptions": {
+      "technical": {
+        "description": "这是一张高质量的角色表情包图片，分辨率为800x800像素。图片采用JPEG格式，压缩质量良好。画面清晰，色彩饱和度适中，无明显噪点或失真。",
+        "descriptionLength": 89,
+        "presetConfig": {
+          "model": "gpt-4o",
+          "temperature": 0.3,
+          "maxTokens": 2000,
+          "topP": 0.9,
+          "thinkingBudget": null
+        },
+        "createdTime": "2024-01-01T12:00:00.000Z",
+        "lastAccessTime": "2024-01-15T08:30:00.000Z",
+        "accessCount": 15
+      },
+      "detailed": {
+        "description": "一张可爱的角色表情包。画面中的角色双眼闪亮，表情生动活泼，充满趣味性。背景简洁，突出主体。整体风格偏向二次元动漫风格，线条流畅，色彩明快。适合用于社交聊天场景，能够有效表达情绪。",
+        "descriptionLength": 112,
+        "presetConfig": {
+          "model": "gpt-4-vision-preview",
+          "temperature": 0.7,
+          "maxTokens": 2000,
+          "topP": 1.0,
+          "thinkingBudget": 0
+        },
+        "createdTime": "2024-01-03T10:15:00.000Z",
+        "lastAccessTime": "2024-01-20T14:22:00.000Z",
+        "accessCount": 8
+      },
+      "emotional": {
+        "description": "这张表情包传达出一种惊讶、好奇或者期待的情绪。角色的眼神和姿态给人一种天真可爱的感觉，容易引起观看者的共鸣和愉悦感。适合用于表达"哇"、"期待"、"好奇"等情绪。",
+        "descriptionLength": 98,
+        "presetConfig": {
+          "model": "claude-3-opus-20240229",
+          "temperature": 0.8,
+          "maxTokens": 1500,
+          "topP": 0.95,
+          "thinkingBudget": 0
+        },
+        "createdTime": "2024-01-05T16:45:00.000Z",
+        "lastAccessTime": "2024-01-18T09:20:00.000Z",
+        "accessCount": 5
+      }
+    }
+  },
+  "b2c3d4e5f6a1890bcdef1234567890ab": {
+    "id": "660f9511-f3ac-52e5-b827-557766551111",
+    "hash": "b2c3d4e5f6a1890bcdef1234567890ab",
+    "cacheVersion": "3.0",
+    "mimeType": "image/png",
+    "base64Data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "fileSize": 524288,
+    "paths": [
+      {
+        "originalPath": "images/vacation/sunset.png",
+        "resolvedPath": "/Users/username/Pictures/vacation/sunset.png",
+        "usedAlias": true,
+        "aliasName": "images",
+        "isFolder": true,
+        "folderPath": "/Users/username/Pictures/vacation",
+        "batchId": "9e1g8891-9647-62fg-d169-g29ge3h12cg9",
+        "groupId": "fgh678cde901axy345678901cdef23",
+        "fileIndex": 2,
+        "totalFiles": 10,
+        "lastUsed": "2024-01-20T10:15:00.000Z"
+      }
+    ],
+    "createdTime": "2024-01-03T15:22:00.000Z",
+    "lastAccessTime": "2024-01-20T10:15:00.000Z",
+    "descriptions": {
+      "detailed": {
+        "description": "一张壮观的日落照片。画面中，橘红色的太阳正缓缓沉入地平线，天空被染成了渐变的橙色、粉色和紫色。前景是深色的山脉轮廓，与明亮的天空形成强烈对比。整体构图平衡，光线柔和而温暖，营造出宁静祥和的氛围。照片可能拍摄于傍晚时分，使用了较长的曝光时间来捕捉天空的细腻色彩变化。",
+        "descriptionLength": 156,
+        "presetConfig": {
+          "model": "gpt-4-vision-preview",
+          "temperature": 0.7,
+          "maxTokens": 2000,
+          "topP": 1.0,
+          "thinkingBudget": 0
+        },
+        "createdTime": "2024-01-03T15:22:00.000Z",
+        "lastAccessTime": "2024-01-20T10:15:00.000Z",
+        "accessCount": 8
+      },
+      "summary": {
+        "description": "日落风景照，色彩绚丽，天空渐变，山脉轮廓清晰。",
+        "descriptionLength": 26,
+        "presetConfig": {
+          "model": "gpt-4o",
+          "temperature": 0.5,
+          "maxTokens": 1000,
+          "topP": 0.9,
+          "thinkingBudget": 0
+        },
+        "createdTime": "2024-01-10T11:30:00.000Z",
+        "lastAccessTime": "2024-01-10T11:30:00.000Z",
+        "accessCount": 1
+      }
+    }
+  },
+  "c3d4e5f6a1b2901cdef2345678901bcd": {
+    "id": "771ga622-g4bd-63f6-c938-668877662222",
+    "hash": "c3d4e5f6a1b2901cdef2345678901bcd",
+    "cacheVersion": "3.0",
+    "mimeType": "video/mp4",
+    "base64Data": "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAACKBtZGF0AAAC",
+    "fileSize": 2097152,
+    "paths": [
+      {
+        "originalPath": "/home/user/videos/demo.mp4",
+        "resolvedPath": "/home/user/videos/demo.mp4",
+        "usedAlias": false,
+        "aliasName": null,
+        "isFolder": false,
+        "folderPath": null,
+        "batchId": "0f2h9902-0758-73gh-e270-h30hf4i23dh0",
+        "groupId": "ghi789def012bxy456789012def34",
+        "fileIndex": 0,
+        "totalFiles": 1,
+        "lastUsed": "2024-01-05T09:45:00.000Z"
+      }
+    ],
+    "createdTime": "2024-01-05T09:45:00.000Z",
+    "lastAccessTime": "2024-01-05T09:45:00.000Z",
+    "descriptions": {
+      "creative": {
+        "description": "这是一段充满活力的演示视频，如同一首视觉交响曲。画面中的元素像音符般跃动，色彩如同调色板上的颜料，随心所欲地挥洒。整个视频充满了创造力和想象力，每一帧都是一幅独特的艺术品，传递着创作者天马行空的思维和独特的美学观点。",
+        "descriptionLength": 134,
+        "presetConfig": {
+          "model": "claude-3-opus-20240229",
+          "temperature": 1.0,
+          "maxTokens": 1500,
+          "topP": 0.95,
+          "thinkingBudget": 0
+        },
+        "createdTime": "2024-01-05T09:45:00.000Z",
+        "lastAccessTime": "2024-01-05T09:45:00.000Z",
+        "accessCount": 1
+      }
+    }
+  }
+}

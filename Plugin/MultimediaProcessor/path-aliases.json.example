@@ -1,0 +1,8 @@
+{
+  "images": "/path/to/images",
+  "videos": "/path/to/videos",
+  "media": "/path/to/media",
+  "downloads": "/Users/username/Downloads",
+  "desktop": "/Users/username/Desktop",
+  "documents": "/Users/username/Documents"
+}

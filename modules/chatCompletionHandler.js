@@ -107,27 +107,65 @@ class ChatCompletionHandler {
       await writeDebugLog('LogInput', originalBody);
 
       let shouldProcessMedia = true;
+      let hasShowBase64PathPlaceholder = false;
+      let hasShowBase64PlusPlaceholder = false;
+      
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         for (const msg of originalBody.messages) {
           let foundPlaceholderInMsg = false;
+          
           if (msg.role === 'user' || msg.role === 'system') {
-            if (typeof msg.content === 'string' && msg.content.includes('{{ShowBase64}}')) {
-              foundPlaceholderInMsg = true;
-              msg.content = msg.content.replace(/\{\{ShowBase64\}\}/g, '');
+            if (typeof msg.content === 'string') {
+              // 检查 {{ShowBase64}} 占位符（全局禁用）
+              if (msg.content.includes('{{ShowBase64}}')) {
+                foundPlaceholderInMsg = true;
+                msg.content = msg.content.replace(/\{\{ShowBase64\}\}/g, '');
+              }
+              // 检查 {{ShowBase64::path}} 占位符（仅标记，不禁用全局处理）
+              if (msg.content.match(/\{\{ShowBase64::[^}]+\}\}/)) {
+                hasShowBase64PathPlaceholder = true;
+              }
+              // 检查 {{ShowBase64+::~}} 占位符（仅标记，不禁用全局处理）
+              if (msg.content.match(/\{\{ShowBase64\+::[^:]+::[^}]+\}\}/)) {
+                hasShowBase64PlusPlaceholder = true;
+              }
             } else if (Array.isArray(msg.content)) {
               for (const part of msg.content) {
-                if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{ShowBase64}}')) {
-                  foundPlaceholderInMsg = true;
-                  part.text = part.text.replace(/\{\{ShowBase64\}\}/g, '');
+                if (part.type === 'text' && typeof part.text === 'string') {
+                  // 检查 {{ShowBase64}} 占位符（全局禁用）
+                  if (part.text.includes('{{ShowBase64}}')) {
+                    foundPlaceholderInMsg = true;
+                    part.text = part.text.replace(/\{\{ShowBase64\}\}/g, '');
+                  }
+                  // 检查 {{ShowBase64::path}} 占位符（仅标记，不禁用全局处理）
+                  if (part.text.match(/\{\{ShowBase64::[^}]+\}\}/)) {
+                    hasShowBase64PathPlaceholder = true;
+                  }
+                  // 检查 {{ShowBase64+::~}} 占位符（仅标记，不禁用全局处理）
+                  if (part.text.match(/\{\{ShowBase64\+::[^:]+::[^}]+\}\}/)) {
+                    hasShowBase64PlusPlaceholder = true;
+                  }
                 }
               }
             }
           }
+          
+          // 只有 {{ShowBase64}} 会禁用所有媒体处理
           if (foundPlaceholderInMsg) {
             shouldProcessMedia = false;
-            if (DEBUG_MODE) console.log('[Server] Media processing disabled by {{ShowBase64}} placeholder.');
+            if (DEBUG_MODE) {
+              console.log('[Server] Media processing disabled by {{ShowBase64}} placeholder.');
+            }
             break;
           }
+        }
+        
+        // {{ShowBase64::path}} 和 {{ShowBase64+::~}} 不禁用全局媒体处理，只是标记有路径占位符
+        if (hasShowBase64PathPlaceholder && DEBUG_MODE) {
+          console.log('[Server] Found {{ShowBase64::path}} placeholder, will inject specified files directly.');
+        }
+        if (hasShowBase64PlusPlaceholder && DEBUG_MODE) {
+          console.log('[Server] Found {{ShowBase64+::~}} placeholder, will process and inject specified files.');
         }
       }
 
@@ -195,7 +233,16 @@ class ChatCompletionHandler {
         if (pluginManager.messagePreprocessors.has(processorName)) {
           if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
           try {
-            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
+            // 如果是 MultiModalProcessor，传递 context 以便处理 ShowBase64+ 文件
+            if (processorName === 'MultiModalProcessor') {
+              processedMessages = await pluginManager.executeMessagePreprocessor(
+                processorName,
+                processedMessages,
+                { context: processingContext }
+              );
+            } else {
+              processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
+            }
           } catch (pluginError) {
             console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
           }
@@ -218,6 +265,44 @@ class ChatCompletionHandler {
 
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
       originalBody.messages = processedMessages;
+      
+      // 如果有 ShowBase64::path 或 ShowBase64+::~ 占位符被处理，需要将收集到的文件注入到消息中
+      if ((hasShowBase64PathPlaceholder || hasShowBase64PlusPlaceholder) && processingContext.showBase64Files && processingContext.showBase64Files.length > 0) {
+        if (DEBUG_MODE) {
+          console.log(`[Server] 注入 ${processingContext.showBase64Files.length} 个 ShowBase64::path 文件到消息中`);
+        }
+        
+        // 找到最后一条用户消息，将 Base64 数据注入
+        for (let i = originalBody.messages.length - 1; i >= 0; i--) {
+          const msg = originalBody.messages[i];
+          if (msg.role === 'user' || msg.role === 'system') {
+            // 将字符串内容转换为数组格式
+            if (typeof msg.content === 'string') {
+              const textContent = msg.content;
+              msg.content = [{ type: 'text', text: textContent }];
+            }
+            
+            // 确保 content 是数组
+            if (Array.isArray(msg.content)) {
+              // 将所有 Base64 文件作为 image_url 添加到消息中
+              for (const fileData of processingContext.showBase64Files) {
+                msg.content.push({
+                  type: 'image_url',
+                  image_url: {
+                    url: fileData.base64
+                  }
+                });
+              }
+              
+              if (DEBUG_MODE) {
+                console.log(`[Server] 已向消息注入 ${processingContext.showBase64Files.length} 个文件`);
+              }
+            }
+            break; // 只处理最后一条用户/系统消息
+          }
+        }
+      }
+      
       await writeDebugLog('LogOutputAfterProcessing', originalBody);
 
       const isOriginalRequestStreaming = originalBody.stream === true;

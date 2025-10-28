@@ -1,0 +1,37 @@
+# .showbase64plusignore 示例文件
+# 
+# 此文件用于指定在使用 {{ShowBase64+::preset::path}} 占位符进行文件夹批量处理时要忽略的文件
+# 语法与 .gitignore 相同
+#
+# 使用方法：
+# 1. 将此文件复制到要处理的媒体文件夹中
+# 2. 重命名为 .showbase64plusignore
+# 3. 根据需要编辑忽略规则
+
+# 忽略所有临时文件
+*.tmp
+*.temp
+
+# 忽略特定文件名
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# 忽略特定文件
+screenshot_old.png
+draft_*.jpg
+
+# 忽略包含特定关键词的文件
+*_backup.*
+*_old.*
+*_draft.*
+*test*
+
+# 忽略特定扩展名（即使在白名单中）
+*.bmp
+*.tiff
+
+# 示例：只处理特定前缀的文件
+# （通过排除其他的方式）
+# !final_*.jpg
+# *.jpg

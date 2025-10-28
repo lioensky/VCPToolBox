@@ -1,0 +1,74 @@
+{
+  "PresetName01": {
+    "displayName": "详细描述预设",
+    "prompt": "请详细描述这个多媒体内容，包括主要元素、颜色、构图、氛围等所有细节。",
+    "model": "",
+    "maxTokens": 2000,
+    "temperature": 0.7,
+    "topP": 1.0,
+    "thinkingBudget": 0
+  },
+  "PresetName02": {
+    "displayName": "简洁摘要预设",
+    "prompt": "用一句话简洁地概括这个多媒体内容的核心主题。",
+    "model": "",
+    "maxTokens": 500,
+    "temperature": 0.5,
+    "topP": 1.0,
+    "thinkingBudget": 0
+  },
+  "VCPShowBase64": {
+    "displayName": "VCPShowBase64",
+    "prompt": "{{ShowBase64}}描述这个多模态文件的内容。",
+    "model": "",
+    "maxTokens": 1500,
+    "temperature": 0.3,
+    "topP": 0.9,
+    "thinkingBudget": 0
+  },
+  "technical": {
+    "displayName": "技术分析预设",
+    "prompt": "从技术角度分析这个多媒体内容：分辨率、质量、格式特征、技术细节等。",
+    "model": "",
+    "maxTokens": 1500,
+    "temperature": 0.3,
+    "topP": 0.9,
+    "thinkingBudget": 0
+  },
+  "emotional": {
+    "displayName": "情感分析预设",
+    "prompt": "分析这个多媒体内容传达的情感、氛围和情绪基调。",
+    "model": "",
+    "maxTokens": 1000,
+    "temperature": 0.8,
+    "topP": 1.0,
+    "thinkingBudget": 0
+  },
+  "creative": {
+    "displayName": "创意描述预设",
+    "prompt": "用富有创意和想象力的语言描述这个内容，可以使用比喻和修辞手法。",
+    "model": "claude-3-opus-20240229",
+    "maxTokens": 1500,
+    "temperature": 1.0,
+    "topP": 0.95,
+    "thinkingBudget": 0
+  },
+  "precise": {
+    "displayName": "精确分析预设",
+    "prompt": "以最精确和客观的方式描述这个内容，只陈述可观察的事实。",
+    "model": "gpt-4-vision-preview",
+    "maxTokens": 1200,
+    "temperature": 0.1,
+    "topP": 0.8,
+    "thinkingBudget": 0
+  },
+  "default": {
+    "displayName": "默认预设",
+    "prompt": "请描述这个多媒体内容。",
+    "model": "",
+    "maxTokens": 1000,
+    "temperature": 0.7,
+    "topP": 1.0,
+    "thinkingBudget": 0
+  }
+}

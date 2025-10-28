@@ -159,3 +159,21 @@ image/通用表情包/*
 
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
+ip_blacklist.json
+/VectorStore
+Plugin/MCPOMonitor/mcpo_status_cache.json
+Plugin/MCPOMonitor/mcpo_status_cache.txt
+Plugin/ImageProcessor/multimodal_cache.json
+Plugin/UserAuth/code.bin
+Plugin/UserAuth/code.bin
+Plugin/VCPLog/log/VCPlog.txt
+Plugin/WeatherReporter/weather_cache.json
+Plugin/UserAuth/code.bin
+Plugin/UserAuth/code.bin
+Plugin/TavilySearch/.vcptoolbox_tavily_cache.json
+Plugin/UserAuth/code.bin
+Plugin/MultimediaProcessor/multimedia_cache.json
+Plugin/MultimediaProcessor/.DS_Store
+Plugin/ImageProcessor/.DS_Store
+Plugin/MultimediaProcessor/presets.json
+Plugin/MultimediaProcessor/path-aliases.json

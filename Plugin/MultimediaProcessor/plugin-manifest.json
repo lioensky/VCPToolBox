@@ -1,0 +1,31 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MultimediaProcessor",
+  "version": "1.0.0",
+  "displayName": "多媒体预设处理器",
+  "description": "基于自定义预设处理多媒体数据（图像、音频、视频），支持预设组合、缓存复用、文件夹批量处理和路径别名。使用 {{OverBase64::PresetName::path}} 语法。",
+  "author": "System",
+  "pluginType": "messagePreprocessor",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "multimedia-processor.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "capabilities": {},
+  "configSchema": {
+    "API_URL": "string",
+    "API_Key": "string",
+    "MultiModalModel": "string",
+    "MultiModalModelOutputMaxTokens": "integer",
+    "MultiModalModelThinkingBudget": "integer",
+    "MultiModalModelAsynchronousLimit": "integer",
+    "SupportedMediaFormats": "string",
+    "DebugMode": "boolean"
+  },
+  "lifecycle": {
+    "loadCache": "initialize",
+    "saveCache": "shutdown"
+  }
+}
