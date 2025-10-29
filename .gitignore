@@ -197,6 +197,9 @@ docker-compose.yml
 VectorStore/*.bin
 VectorStore/*_map.json
 
+# Plugin binary cache files (运行时二进制缓存，不应提交)
+**/*.bin
+
 # AI agent and system configuration files
 agent_map.json
 ip_blacklist.json
