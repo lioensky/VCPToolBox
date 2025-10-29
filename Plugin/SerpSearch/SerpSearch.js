@@ -30,6 +30,12 @@ async function processRequest(request) {
             const apiKey = getRandomApiKey();
             return await engineModule.search(parameters, apiKey);
         } catch (error) {
+            // Hyper-Stack-Trace: If the specific error is caught, re-throw it
+            // so the main catch block can handle it and format the output correctly.
+            if (error.code === 'FILE_NOT_FOUND_LOCALLY') {
+                throw error;
+            }
+            // For all other errors, return the standard error format.
             return { success: false, error: `Error executing engine module '${engineName}': ${error.message}` };
         }
     } else {
@@ -90,7 +96,19 @@ async function main() {
         process.exit(0);
 
     } catch (error) {
-        console.log(JSON.stringify({ status: "error", error: error.message }));
+        // Handle Hyper-Stack-Trace for remote file fetching
+        if (error.code === 'FILE_NOT_FOUND_LOCALLY') {
+            const errorPayload = {
+                status: "error",
+                code: error.code,
+                error: error.message,
+                fileUrl: error.fileUrl
+            };
+            console.log(JSON.stringify(errorPayload));
+        } else {
+            // Handle other generic errors
+            console.log(JSON.stringify({ status: "error", error: error.message }));
+        }
         process.exit(1);
     }
 }
