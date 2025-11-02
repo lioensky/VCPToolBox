@@ -52,8 +52,8 @@
 {
   "mcpServers": {
     "time": {
-      "command": "uvx", 
-      "args": ["mcp-server-time", "--local-timezone=Asia/Shanghai"]
+      "command": "uvx",
+      "args": ["mcp-server-time"]
     },
     "memory": {
       "command": "npx",

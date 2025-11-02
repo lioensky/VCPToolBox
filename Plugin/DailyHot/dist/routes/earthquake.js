@@ -4,7 +4,7 @@ exports.handleRoute = void 0;
 const getData_js_1 = require("../utils/getData.js");
 const getTime_js_1 = require("../utils/getTime.js");
 const mappings = {
-    O_TIME: "发震时刻(UTC+8)",
+    O_TIME: "发震时刻",
     LOCATION_C: "参考位置",
     M: "震级(M)",
     EPI_LAT: "纬度(°)",

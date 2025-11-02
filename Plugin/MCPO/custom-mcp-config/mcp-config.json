@@ -3,8 +3,7 @@
     "time": {
       "command": "uvx",
       "args": [
-        "mcp-server-time",
-        "--local-timezone=Asia/Shanghai"
+        "mcp-server-time"
       ]
     },
     "context7": {

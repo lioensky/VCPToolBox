@@ -3,6 +3,13 @@ const express = require('express');
 const dotenv = require('dotenv');
 const schedule = require('node-schedule');
 const lunarCalendar = require('chinese-lunar-calendar');
+const dayjs = require('dayjs');
+const timezone = require('dayjs/plugin/timezone');
+const utc = require('dayjs/plugin/utc');
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const fs = require('fs').promises; // fs.promises for async operations
 const path = require('path');
 const { Writable } = require('stream');
@@ -81,8 +88,8 @@ async function writeDebugLog(filenamePrefix, data) {
         } catch (error) {
             console.error(`创建 DebugLog 目录失败 (async): ${DEBUG_LOG_DIR}`, error);
         }
-        const now = new Date();
-        const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}_${now.getMilliseconds().toString().padStart(3, '0')}`;
+        const now = dayjs().tz(DEFAULT_TIMEZONE);
+        const timestamp = now.format('YYYYMMDD_HHmmss_SSS');
         const filename = `${filenamePrefix}-${timestamp}.txt`;
         const filePath = path.join(DEBUG_LOG_DIR, filename);
         try {
@@ -432,21 +439,9 @@ const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, 'VCPTimedContacts');
 
 // 辅助函数：将 Date 对象格式化为包含时区偏移的本地时间字符串 (e.g., 2025-06-29T15:00:00+08:00)
 function formatToLocalDateTimeWithOffset(date) {
-    const pad = (num) => num.toString().padStart(2, '0');
-
-    const year = date.getFullYear();
-    const month = pad(date.getMonth() + 1);
-    const day = pad(date.getDate());
-    const hours = pad(date.getHours());
-    const minutes = pad(date.getMinutes());
-    const seconds = pad(date.getSeconds());
-
-    const tzOffset = -date.getTimezoneOffset();
-    const offsetHours = pad(Math.floor(Math.abs(tzOffset) / 60));
-    const offsetMinutes = pad(Math.abs(tzOffset) % 60);
-    const offsetSign = tzOffset >= 0 ? '+' : '-';
-
-    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${offsetSign}${offsetHours}:${offsetMinutes}`;
+    // 使用 dayjs 在配置的时区中解析 Date 对象，并格式化为 ISO 8601 扩展格式
+    // 'YYYY-MM-DDTHH:mm:ssZ' 格式会包含时区偏移
+    return dayjs(date).tz(DEFAULT_TIMEZONE).format('YYYY-MM-DDTHH:mm:ssZ');
 }
 
 app.post('/v1/schedule_task', async (req, res) => {
@@ -975,7 +970,7 @@ async function gracefulShutdown() {
     if (serverLogWriteStream) {
         logger.originalConsoleLog('[Server] Closing server log file stream...');
         const logClosePromise = new Promise((resolve) => {
-            serverLogWriteStream.end(`[${new Date().toLocaleString()}] Server gracefully shut down.\n`, () => {
+            serverLogWriteStream.end(`[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server gracefully shut down.\n`, () => {
                 logger.originalConsoleLog('[Server] Server log stream closed.');
                 resolve();
             });
@@ -997,7 +992,7 @@ process.on('exit', (code) => {
     const currentServerLogPath = logger.getServerLogPath();
     if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
         try {
-            fsSync.appendFileSync(currentServerLogPath, `[${new Date().toLocaleString()}] Server exited with code ${code}.\n`);
+            fsSync.appendFileSync(currentServerLogPath, `[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server exited with code ${code}.\n`);
             serverLogWriteStream.end();
         } catch (e) {
             logger.originalConsoleError('[Server] Error during final log write on exit:', e.message);

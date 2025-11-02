@@ -2,6 +2,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 // --- 配置 ---
 const MD_SOURCE_DIR = path.join(__dirname, 'converted_md');
 const TXT_TARGET_DIR = path.join(__dirname, '..', '..', '..', 'dailynote', '文献');
@@ -15,14 +16,14 @@ const PERMANENT_INDEX_FILE = path.join(__dirname, 'stork_paper_ids.txt');
  * @returns {string}
  */
 /**
- * 获取格式化的北京时间时间戳
+ * 获取格式化的时区时间戳
  * @returns {{fileNameTimestamp: string, headerDate: string}}
  */
 function getFormattedTimestamps() {
     const now = new Date();
-    const beijingTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+    const localTime = new Date(now.toLocaleString("en-US", { timeZone: DEFAULT_TIMEZONE }));
 
-    const year = beijingTime.getFullYear();
+    const year = localTime.getFullYear();
     const month = (beijingTime.getMonth() + 1).toString().padStart(2, '0');
     const day = beijingTime.getDate().toString().padStart(2, '0');
     const hours = beijingTime.getHours().toString().padStart(2, '0');

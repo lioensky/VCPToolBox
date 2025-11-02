@@ -195,6 +195,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
+
     // GET plugin list with manifest, status, and config.env content
     adminApiRouter.get('/plugins', async (req, res) => {
         try {

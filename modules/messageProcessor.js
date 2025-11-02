@@ -5,6 +5,8 @@ const lunarCalendar = require('chinese-lunar-calendar');
 const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
 const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai'; // 新增：用于控制 AI 报告的时间，默认回退到中国时区
 const AGENT_DIR = path.join(__dirname, '..', 'Agent');
 const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
@@ -115,11 +117,17 @@ async function replaceOtherVariables(text, model, role, context) {
         }
 
         const now = new Date();
-        const date = now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        if (DEBUG_MODE) {
+            console.log(`[TimeVar] Raw Date: ${now.toISOString()}`);
+            console.log(`[TimeVar] Default Timezone (for internal use): ${DEFAULT_TIMEZONE}`);
+            console.log(`[TimeVar] Report Timezone (for AI prompt): ${REPORT_TIMEZONE}`);
+        }
+        // 使用 REPORT_TIMEZONE 替换时间占位符
+        const date = now.toLocaleDateString('zh-CN', { timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Date\}\}/g, date);
-        const time = now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const time = now.toLocaleTimeString('zh-CN', { timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Time\}\}/g, time);
-        const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: 'Asia/Shanghai' });
+        const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Today\}\}/g, today);
         const year = now.getFullYear();
         const month = now.getMonth() + 1;

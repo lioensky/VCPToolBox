@@ -9,6 +9,13 @@ const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
 const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
 
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 // 从 DailyNoteGet 插件借鉴的常量和路径逻辑
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote');
@@ -28,27 +35,17 @@ class TimeExpressionParser {
         this.expressions = TIME_EXPRESSIONS[locale] || TIME_EXPRESSIONS['zh-CN'];
     }
 
-    // 将日期设置为北京时间 (UTC+8) 的开始
-    _getBeijingTime(date = new Date()) {
-        // 既然后续所有计算都统一使用UTC方法，直接返回原始date对象即可。
-        // 之前的 new Date(date.toISOString()) 是不必要的。
-        return date;
-    }
-
-    // 获取一天的开始和结束
+    // 获取一天的开始和结束 (使用配置的时区)
     _getDayBoundaries(date) {
-        const start = new Date(date);
-        start.setUTCHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setUTCDate(end.getUTCDate() + 1);
-        end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
-        return { start, end };
+        const start = dayjs(date).tz(DEFAULT_TIMEZONE).startOf('day');
+        const end = dayjs(date).tz(DEFAULT_TIMEZONE).endOf('day');
+        return { start: start.toDate(), end: end.toDate() };
     }
     
     // 核心解析函数 - V2 (支持多表达式)
     parse(text) {
         console.log(`[TimeParser] Parsing text for all time expressions: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
-        const now = this._getBeijingTime(new Date());
+        const now = dayjs().tz(DEFAULT_TIMEZONE); // 获取当前配置时区的时间
         let remainingText = text;
         const results = [];
 
@@ -115,68 +112,45 @@ class TimeExpressionParser {
     }
 
     _getSpecialRange(now, type) {
-        let start = new Date(now);
-        let end = new Date(now);
-        start.setUTCHours(0, 0, 0, 0); // 所有计算都从当天的开始算起
+        let start = now.clone().startOf('day');
+        let end = now.clone().endOf('day');
 
         switch (type) {
             case 'thisWeek':
-                const dayOfWeek = now.getUTCDay(); // 0=Sunday, 1=Monday...
-                const diff = now.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // adjust when sunday
-                start.setUTCDate(diff);
-                end = new Date(start);
-                end.setUTCDate(start.getUTCDate() + 7);
-                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                // dayjs 默认周日为 0，但我们希望周一为一周的开始 (locale: zh-cn)
+                start = now.clone().startOf('week');
+                end = now.clone().endOf('week');
                 break;
             case 'lastWeek':
-                const lastWeekDay = now.getUTCDay();
-                const lastWeekDiff = now.getUTCDate() - lastWeekDay - 6;
-                start.setUTCDate(lastWeekDiff);
-                end = new Date(start);
-                end.setUTCDate(start.getUTCDate() + 7);
-                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                start = now.clone().subtract(1, 'week').startOf('week');
+                end = now.clone().subtract(1, 'week').endOf('week');
                 break;
             case 'thisMonth':
-                start.setUTCDate(1);
-                end = new Date(start);
-                end.setUTCMonth(end.getUTCMonth() + 1);
-                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                start = now.clone().startOf('month');
+                end = now.clone().endOf('month');
                 break;
             case 'lastMonth':
-                start.setUTCDate(1);
-                start.setUTCMonth(start.getUTCMonth() - 1);
-                end = new Date(start);
-                end.setUTCMonth(end.getUTCMonth() + 1);
-                end.setUTCMilliseconds(end.getUTCMilliseconds() - 1);
+                start = now.clone().subtract(1, 'month').startOf('month');
+                end = now.clone().subtract(1, 'month').endOf('month');
                 break;
             case 'thisMonthStart': // 本月初（1-10号）
-                start.setUTCDate(1);
-                end = new Date(start);
-                end.setUTCDate(10);
-                end.setUTCHours(23, 59, 59, 999);
+                start = now.clone().startOf('month');
+                end = now.clone().date(10).endOf('day');
                 break;
             case 'lastMonthStart': // 上月初（1-10号）
-                start.setUTCMonth(start.getUTCMonth() - 1);
-                start.setUTCDate(1);
-                end = new Date(start);
-                end.setUTCDate(10);
-                end.setUTCHours(23, 59, 59, 999);
+                start = now.clone().subtract(1, 'month').startOf('month');
+                end = start.clone().date(10).endOf('day');
                 break;
             case 'lastMonthMid': // 上月中（11-20号）
-                start.setUTCMonth(start.getUTCMonth() - 1);
-                start.setUTCDate(11);
-                end = new Date(start);
-                end.setUTCDate(20);
-                end.setUTCHours(23, 59, 59, 999);
+                start = now.clone().subtract(1, 'month').startOf('month').date(11).startOf('day');
+                end = now.clone().subtract(1, 'month').startOf('month').date(20).endOf('day');
                 break;
             case 'lastMonthEnd': // 上月末（21号到月底）
-                start.setUTCMonth(start.getUTCMonth() - 1);
-                start.setUTCDate(21);
-                end = new Date(start.getUTCFullYear(), start.getUTCMonth() + 1, 0); // 月底
-                end.setUTCHours(23, 59, 59, 999);
+                start = now.clone().subtract(1, 'month').startOf('month').date(21).startOf('day');
+                end = now.clone().subtract(1, 'month').endOf('month');
                 break;
         }
-        return { start, end };
+        return { start: start.toDate(), end: end.toDate() };
     }
 
     _handleDynamicPattern(match, type, now) {
@@ -185,48 +159,34 @@ class TimeExpressionParser {
 
         switch(type) {
             case 'daysAgo':
-                const targetDate = new Date(now);
-                targetDate.setUTCDate(now.getUTCDate() - num);
-                return this._getDayBoundaries(targetDate);
+                const targetDate = now.clone().subtract(num, 'day');
+                return this._getDayBoundaries(targetDate.toDate());
             
             case 'weeksAgo':
-                const weekStart = new Date(now);
-                weekStart.setUTCDate(now.getUTCDate() - (num * 7) - now.getUTCDay() + 1);
-                weekStart.setUTCHours(0, 0, 0, 0);
-                const weekEnd = new Date(weekStart);
-                weekEnd.setUTCDate(weekStart.getUTCDate() + 6);
-                weekEnd.setUTCHours(23, 59, 59, 999);
-                return { start: weekStart, end: weekEnd };
+                const weekStart = now.clone().subtract(num, 'week').startOf('week');
+                const weekEnd = now.clone().subtract(num, 'week').endOf('week');
+                return { start: weekStart.toDate(), end: weekEnd.toDate() };
             
             case 'monthsAgo':
-                const monthsAgoDate = new Date(now);
-                monthsAgoDate.setUTCMonth(now.getUTCMonth() - num);
-                monthsAgoDate.setUTCDate(1);
-                monthsAgoDate.setUTCHours(0, 0, 0, 0);
-                const monthEnd = new Date(monthsAgoDate.getUTCFullYear(), monthsAgoDate.getUTCMonth() + 1, 0);
-                monthEnd.setUTCHours(23, 59, 59, 999);
-                return { start: monthsAgoDate, end: monthEnd };
+                const monthStart = now.clone().subtract(num, 'month').startOf('month');
+                const monthEnd = now.clone().subtract(num, 'month').endOf('month');
+                return { start: monthStart.toDate(), end: monthEnd.toDate() };
             
             case 'lastWeekday':
                 const weekdayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
                 const targetWeekday = weekdayMap[match[1]];
                 if (targetWeekday === undefined) return null;
 
-                const lastWeekDate = new Date(now);
-                const currentDay = now.getUTCDay(); // 0 = Sunday
+                // dayjs 的 weekday() 方法返回 0 (Sunday) 到 6 (Saturday)
+                // 我们需要找到上一个匹配的星期几
+                let lastWeekDate = now.clone().day(targetWeekday);
                 
-                // 计算上周对应星期几的日期
-                let daysToSubtract;
-                if (targetWeekday === 0) { // 周日
-                    daysToSubtract = currentDay === 0 ? 7 : (currentDay + 7);
-                } else {
-                    daysToSubtract = currentDay >= targetWeekday
-                        ? (currentDay - targetWeekday + 7)
-                        : (currentDay + 7 - targetWeekday);
+                // 如果计算出的日期是今天或未来，则减去一周
+                if (lastWeekDate.isSame(now, 'day') || lastWeekDate.isAfter(now)) {
+                    lastWeekDate = lastWeekDate.subtract(1, 'week');
                 }
                 
-                lastWeekDate.setUTCDate(now.getUTCDate() - daysToSubtract);
-                return this._getDayBoundaries(lastWeekDate);
+                return this._getDayBoundaries(lastWeekDate.toDate());
         }
         
         return null;
@@ -1340,8 +1300,8 @@ class RAGDiaryPlugin {
                         // 将 YYYY.MM.DD 格式规范化为 YYYY-MM-DD
                         const normalizedDateStr = dateStr.replace(/\./g, '-');
                         
-                        // 确保使用UTC时间比较，避免时区问题
-                        const diaryDate = new Date(normalizedDateStr + 'T00:00:00.000Z');
+                        // 使用 dayjs 在配置的时区中解析日期，并获取该日期在配置时区下的开始时间
+                        const diaryDate = dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate();
                         
                         if (diaryDate >= timeRange.start && diaryDate <= timeRange.end) {
                             diariesInRange.push({

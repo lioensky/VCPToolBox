@@ -53,6 +53,7 @@ class MCPOPlugin:
         if hasattr(self, 'logger'):
             self.logger.info(f"Environment MCP_CONFIG_PATH: {env_config_path}")
             self.logger.info(f"Environment MCPO_CONFIG_NAME: {custom_config_name}")
+            self.logger.info(f"Environment DEFAULT_TIMEZONE: {os.getenv('DEFAULT_TIMEZONE', 'UTC')}") # 诊断日志
         
         # 根据是否指定了自定义配置文件名称来决定配置文件路径
         if custom_config_name:
@@ -82,7 +83,8 @@ class MCPOPlugin:
             'PYTHON_EXECUTABLE': os.getenv('PYTHON_EXECUTABLE', 'python'),
             'MCP_CONFIG_PATH': default_config_path,  # 使用处理后的路径
             'MCPO_HOT_RELOAD': os.getenv('MCPO_HOT_RELOAD', 'true').lower() == 'true',
-            'MCPO_CONFIG_NAME': custom_config_name  # 记录自定义配置名称
+            'MCPO_CONFIG_NAME': custom_config_name,  # 记录自定义配置名称
+            'DEFAULT_TIMEZONE': os.getenv('DEFAULT_TIMEZONE', 'Asia/Shanghai') # 新增时区配置
         }
         
         self.logger.info(f"Loaded config: Port={config['MCPO_PORT']}, ConfigPath={config['MCP_CONFIG_PATH']}, HotReload={config['MCPO_HOT_RELOAD']}, CustomConfigName={config['MCPO_CONFIG_NAME']}")
@@ -289,7 +291,7 @@ class MCPOPlugin:
             "mcpServers": {
                 "time": {
                     "command": "uvx",
-                    "args": ["mcp-server-time", "--local-timezone=Asia/Shanghai"]
+                    "args": ["mcp-server-time", f"--local-timezone={self.config['DEFAULT_TIMEZONE']}"]
                 }
             }
         }

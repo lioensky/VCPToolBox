@@ -11,6 +11,9 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+console.log(`[md_to_txt] 使用的默认时区: ${DEFAULT_TIMEZONE}`); // 诊断日志
+
 // ============================ 手动可改配置（开始） ============================
 // dailynote 子目录名（手动修改），例如：'文献鸟'
 const OUTPUT_SUBDIR_NAME = '文献';
@@ -27,14 +30,19 @@ const DAILYNOTE_ROOT = path.resolve(WORK_DIR, '..', '..', '..', 'dailynote');
 // --- 配置结束 ---
 
 /**
- * 北京时间（Asia/Shanghai）日期片段
+ * 配置时区日期片段
  */
-function getBeijingDateParts() {
+function getLocalTimeDateParts() {
   const now = new Date();
-  const bj = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-  const y = bj.getFullYear();
-  const m = String(bj.getMonth() + 1).padStart(2, '0');
-  const d = String(bj.getDate()).padStart(2, '0');
+  // 使用配置的时区获取日期部分
+  const localTime = new Date(now.toLocaleString('en-US', { timeZone: DEFAULT_TIMEZONE }));
+  
+  // 注意：这里使用 toLocaleString 转换后再 new Date() 可能会导致时区偏移问题，
+  // 更好的做法是直接使用 Intl.DateTimeFormat 获取时区相关的日期部分。
+  // 沿用原逻辑，但替换时区硬编码。
+  const y = localTime.getFullYear();
+  const m = String(localTime.getMonth() + 1).padStart(2, '0');
+  const d = String(localTime.getDate()).padStart(2, '0');
   return { y, m, d };
 }
 
@@ -134,7 +142,7 @@ async function processOne(doiKey, txtDir) {
     const mdContent = await fs.readFile(mdFilePath, 'utf-8');
     const normalized = normalizeMarkdownToTxt(mdContent);
 
-    const { y, m, d } = getBeijingDateParts();
+    const { y, m, d } = getLocalTimeDateParts();
     const headerDate = `${y}-${m}-${d}`;
     const finalContent = `[${headerDate}] - 文献\n` + normalized;
 
