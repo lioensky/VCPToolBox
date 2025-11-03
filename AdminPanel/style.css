@@ -467,11 +467,15 @@ form { display: flex; flex-direction: column; gap: 22px; }
 .form-group:focus-within { box-shadow: 0 0 0 2px var(--highlight-text); }
 .form-group label { font-weight: 600; font-size: 1em; }
 .form-group .description { font-weight: normal; font-size: 0.88em; color: var(--secondary-text); }
-.form-group input[type="text"], .form-group input[type="password"], .form-group input[type="number"], .form-group textarea, .form-group select {
+.form-group input[type="text"], .form-group input[type="password"], .form-group input[type="number"], .form-group textarea, .form-group select,
+.forum-controls select, .forum-controls input[type="search"], .forum-reply-area input[type="text"], .forum-reply-area textarea { /* ADDED FORUM ELEMENTS */
     width: 100%; padding: 12px 15px; border: 1px solid var(--border-color); border-radius: 6px;
     background-color: var(--input-bg); color: var(--primary-text); font-size: 0.95em; box-sizing: border-box;
 }
-.form-group input:focus, .form-group textarea:focus { outline: none; border-color: var(--highlight-text); }
+.form-group input:focus, .form-group textarea:focus,
+.forum-controls select:focus, .forum-controls input[type="search"]:focus, .forum-reply-area input:focus, .forum-reply-area textarea:focus { /* ADDED FORUM ELEMENTS */
+    outline: none; border-color: var(--highlight-text);
+}
 .form-actions { display: flex; gap: 15px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-color); }
 button, input[type="submit"] {
     padding: 12px 22px; border: none; border-radius: 6px; cursor: pointer; font-size: 1em;
@@ -480,9 +484,101 @@ button, input[type="submit"] {
 button:hover { background-color: var(--button-hover-bg); }
 button[type="submit"] { background-color: var(--highlight-text); color: white; }
 button[type="submit"]:hover { background-color: var(--highlight-text); filter: brightness(1.1); }
+ 
+/* Danger Button Style */
+.danger-btn, .delete-floor-btn {
+    background-color: var(--danger-color);
+    color: white;
+    border: 1px solid var(--danger-color);
+}
+.danger-btn:hover, .delete-floor-btn:hover {
+    background-color: var(--danger-hover-bg);
+    border-color: var(--danger-hover-bg);
+}
+ 
+ /* VCP Forum Specific Styles */
+ #forum-search-input {
+    max-width: 350px; /* Or adjust as needed */
+    flex-grow: 1;
+ }
+ .forum-posts-list {
+     width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+.forum-posts-list th, .forum-posts-list td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+}
+.forum-posts-list th {
+    background-color: var(--accent-bg);
+    font-weight: 600;
+    color: var(--primary-text);
+}
+.forum-posts-list tr:hover td {
+    background-color: var(--accent-bg);
+    cursor: pointer;
+}
+.forum-posts-list .post-title {
+    font-weight: 500;
+    color: var(--highlight-text);
+}
+.forum-posts-list .post-meta {
+    font-size: 0.9em;
+    color: var(--secondary-text);
+}
 
+.forum-post-content-view {
+    /* Inherits from index.html style block for markdown rendering */
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--secondary-bg);
+}
 
-/* Daily Notes Manager, etc. */
+.forum-reply-area input[type="text"] {
+    margin-bottom: 10px;
+}
+
+.forum-reply-area button {
+    background-color: var(--highlight-text);
+    color: white;
+}
+.forum-reply-area button:hover {
+    background-color: var(--highlight-text);
+    filter: brightness(1.1);
+}
+ 
+ 
+#vcp-forum-section .forum-replies-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  margin-top: 20px;
+}
+#vcp-forum-section .forum-reply-item {
+  background-color: var(--tertiary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 15px 20px;
+  position: relative; /* For item-actions positioning */
+}
+#vcp-forum-section .forum-reply-item h3 { /* Style for "楼层 #1" */
+  margin-top: 0;
+  font-size: 1.1em;
+  color: var(--secondary-text);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+#vcp-forum-section .forum-reply-item .item-actions {
+   display: flex;
+   justify-content: flex-end;
+   margin-top: 10px;
+}
+ 
+ /* Daily Notes Manager, etc. */
 .daily-notes-manager { display: flex; gap: 20px; height: calc(100% - 60px); }
 .notes-sidebar { width: 200px; flex-shrink: 0; background-color: var(--tertiary-bg); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); overflow-y: auto; }
 .notes-sidebar h3 { font-size: 1.2em; color: var(--highlight-text); margin-top: 0; margin-bottom: 15px; }

@@ -209,7 +209,61 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             // 默认的文本提取模式
             await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
 
-            // Use Readability to extract the main content
+            // 优先尝试作为聚合页提取有分类的链接
+            const groupedLinks = await page.evaluate(() => {
+                // 根据用户反馈，新闻源标题的特征是 'span.text-xl.font-bold'
+                const titleElements = Array.from(document.querySelectorAll('span.text-xl.font-bold'));
+                const results = [];
+
+                for (const titleEl of titleElements) {
+                    const category = titleEl.textContent.trim();
+                    // 寻找包裹该分类和其链接的最近的 "卡片" 容器
+                    // 这是一个基于典型卡片式布局的推断，对特定网站有效
+                    const container = titleEl.closest('div[class*="rounded"]');
+                    if (!container) continue;
+
+                    const anchors = Array.from(container.querySelectorAll('a[href]'));
+                    const linkData = anchors.map(anchor => ({
+                        title: anchor.textContent.trim(),
+                        url: anchor.href
+                    })).filter(link =>
+                        link.title &&
+                        link.url &&
+                        link.url.startsWith('http') &&
+                        !link.url.startsWith('javascript:') &&
+                        link.title.length > 5 // 过滤掉短的导航链接
+                    );
+                    
+                    // 对分类内部的链接进行去重
+                    const uniqueLinks = [];
+                    const seenUrls = new Set();
+                    for (const link of linkData) {
+                        if (!seenUrls.has(link.url)) {
+                            seenUrls.add(link.url);
+                            uniqueLinks.push(link);
+                        }
+                    }
+
+                    if (uniqueLinks.length > 0) {
+                        results.push({ category, links: uniqueLinks });
+                    }
+                }
+                return results;
+            });
+
+            // 如果找到了带分组的链接，格式化为带标题的Markdown列表
+            if (groupedLinks && groupedLinks.length > 0) {
+                const pageTitle = await page.title();
+                let markdownOutput = `页面标题: ${pageTitle}\n\n`;
+                for (const group of groupedLinks) {
+                    markdownOutput += `## ${group.category}\n`;
+                    markdownOutput += group.links.map(link => `- [${link.title}](${link.url})`).join('\n');
+                    markdownOutput += '\n\n';
+                }
+                return markdownOutput.trim();
+            }
+
+            // 如果链接提取失败或链接很少，则回退到使用Readability提取文章正文
             const pageContent = await page.content();
             const doc = new JSDOM(pageContent, { url });
             const reader = new Readability(doc.window.document);
@@ -221,7 +275,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 return result;
             } else {
                 // Fallback if Readability fails to extract content
-                return "成功获取网页，但无法提取主要内容。";
+                return "成功获取网页，但无法提取主要内容或链接列表。";
             }
         }
     } finally {

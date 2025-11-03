@@ -15,6 +15,8 @@ const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文
 module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
     const adminApiRouter = express.Router();
 
+  
+
     // --- Admin API Router 内容 ---
     
     // --- System Monitor Routes (Merged) ---
@@ -55,50 +57,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
                 try {
                     const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
-
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedMemInfo = memInfo.trim();
-                    // 移除调试日志输出以减少日志噪音
-                    // console.log('[SystemMonitor] Raw PowerShell memory info output:', cleanedMemInfo);
-
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedMemInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedMemInfo = jsonMatch[1];
-                            // 移除调试日志输出以减少日志噪音
-                            // console.log('[SystemMonitor] Extracted JSON from PowerShell output:', cleanedMemInfo);
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedMemInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedMemInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                // 移除调试日志输出以减少日志噪音
-                                // console.log('[SystemMonitor] Extracted memory JSON using line-by-line method:', cleanedMemInfo);
-                            }
-                        }
-                    }
-
-                    const memData = JSON.parse(cleanedMemInfo);
+                    const memData = JSON.parse(memInfo);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
                         free: (memData.FreePhysicalMemory || 0) * 1024,
@@ -120,50 +79,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 
                 try {
                     const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
-
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedCpuInfo = cpuInfo.trim();
-                    // 移除调试日志输出以减少日志噪音
-                    // console.log('[SystemMonitor] Raw PowerShell CPU info output:', cleanedCpuInfo);
-
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedCpuInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedCpuInfo = jsonMatch[1];
-                            // 移除调试日志输出以减少日志噪音
-                            // console.log('[SystemMonitor] Extracted JSON from PowerShell CPU output:', cleanedCpuInfo);
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedCpuInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedCpuInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                                // 移除调试日志输出以减少日志噪音
-                                // console.log('[SystemMonitor] Extracted CPU JSON using line-by-line method:', cleanedCpuInfo);
-                            }
-                        }
-                    }
-
-                    const cpuData = JSON.parse(cleanedCpuInfo);
+                    const cpuData = JSON.parse(cpuInfo);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
                     // 回退到 wmic 命令
@@ -1411,6 +1327,258 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             }
         } else {
             res.status(503).json({ success: false, error: 'VectorDBManager is not available.' });
+        }
+    });
+
+    // ========================
+    // Tool List Editor API
+    // ========================
+    const PROJECT_BASE_PATH = path.join(__dirname, '..');
+    const TOOL_CONFIGS_DIR = path.join(PROJECT_BASE_PATH, 'ToolConfigs');
+
+    // 确保ToolConfigs目录存在
+    async function ensureToolConfigsDir() {
+        try {
+            await fs.access(TOOL_CONFIGS_DIR);
+        } catch {
+            await fs.mkdir(TOOL_CONFIGS_DIR, { recursive: true });
+        }
+    }
+
+    // 获取所有可用工具列表
+    adminApiRouter.get('/tool-list-editor/tools', (req, res) => {
+        try {
+            const tools = [];
+            
+            // 遍历所有插件
+            for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
+                if (manifest.capabilities && manifest.capabilities.invocationCommands) {
+                    // 为每个invocation command创建一个工具条目
+                    manifest.capabilities.invocationCommands.forEach(cmd => {
+                        tools.push({
+                            name: cmd.commandIdentifier || pluginName,
+                            pluginName: pluginName,
+                            displayName: manifest.displayName || pluginName,
+                            description: cmd.description || manifest.description || '',
+                            example: cmd.example || ''
+                        });
+                    });
+                }
+            }
+            
+            res.json({ tools });
+        } catch (error) {
+            console.error('[AdminAPI] Error getting tool list:', error);
+            res.status(500).json({ error: 'Failed to get tool list', details: error.message });
+        }
+    });
+
+    // 获取所有可用的配置文件列表
+    adminApiRouter.get('/tool-list-editor/configs', async (req, res) => {
+        try {
+            await ensureToolConfigsDir();
+            const files = await fs.readdir(TOOL_CONFIGS_DIR);
+            const configs = files
+                .filter(f => f.endsWith('.json'))
+                .map(f => f.replace('.json', ''));
+            res.json({ configs });
+        } catch (error) {
+            console.error('[AdminAPI] Error getting config list:', error);
+            res.status(500).json({ error: 'Failed to get config list', details: error.message });
+        }
+    });
+
+    // 加载指定的配置文件
+    adminApiRouter.get('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            const content = await fs.readFile(configPath, 'utf-8');
+            const configData = JSON.parse(content);
+            
+            res.json(configData);
+        } catch (error) {
+            console.error('[AdminAPI] Error loading config:', error);
+            res.status(500).json({ error: 'Failed to load config', details: error.message });
+        }
+    });
+
+    // 保存配置文件
+    adminApiRouter.post('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            await ensureToolConfigsDir();
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            const configData = {
+                selectedTools: req.body.selectedTools || [],
+                toolDescriptions: req.body.toolDescriptions || {}
+            };
+            
+            await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
+            res.json({ status: 'success', message: 'Config saved successfully' });
+        } catch (error) {
+            console.error('[AdminAPI] Error saving config:', error);
+            res.status(500).json({ error: 'Failed to save config', details: error.message });
+        }
+    });
+
+    // 删除配置文件
+    adminApiRouter.delete('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            await fs.unlink(configPath);
+            res.json({ status: 'success', message: 'Config deleted successfully' });
+        } catch (error) {
+            console.error('[AdminAPI] Error deleting config:', error);
+            res.status(500).json({ error: 'Failed to delete config', details: error.message });
+        }
+    });
+
+    // 检查文件是否存在
+    adminApiRouter.get('/tool-list-editor/check-file/:fileName', async (req, res) => {
+        try {
+            const fileName = req.params.fileName;
+            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            
+            try {
+                await fs.access(outputPath);
+                // 文件存在
+                res.json({ exists: true });
+            } catch {
+                // 文件不存在
+                res.json({ exists: false });
+            }
+        } catch (error) {
+            console.error('[AdminAPI] Error checking file:', error);
+            res.status(500).json({ error: 'Failed to check file', details: error.message });
+        }
+    });
+
+    // 导出为txt文件
+    adminApiRouter.post('/tool-list-editor/export/:fileName', async (req, res) => {
+        try {
+            const fileName = req.params.fileName;
+            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            
+            const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
+            
+            let output = '';
+            
+            // 添加头部说明
+            if (includeHeader) {
+                output += 'VCP工具调用格式与指南\r\n\r\n';
+                output += '<<<[TOOL_REQUEST]>>>\r\n';
+                output += 'maid:「始」你的署名「末」, //重要字段，以进行任务追踪\r\n';
+                output += 'tool_name:「始」工具名「末」, //必要字段\r\n';
+                output += 'arg:「始」工具参数「末」, //具体视不同工具需求而定\r\n';
+                output += '<<<[END_TOOL_REQUEST]>>>\r\n\r\n';
+                output += '使用「始」「末」包裹参数来兼容富文本识别。\r\n';
+                output += '主动判断当前需求，灵活使用各类工具调用。\r\n\r\n';
+                output += '========================================\r\n\r\n';
+            }
+            
+            // 收集所有选中的工具信息
+            const tools = [];
+            for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
+                if (manifest.capabilities && manifest.capabilities.invocationCommands) {
+                    manifest.capabilities.invocationCommands.forEach(cmd => {
+                        const toolName = cmd.commandIdentifier || pluginName;
+                        if (selectedTools.includes(toolName)) {
+                            tools.push({
+                                name: toolName,
+                                pluginName: pluginName,
+                                displayName: manifest.displayName || pluginName,
+                                description: cmd.description || manifest.description || '',
+                                example: cmd.example || ''
+                            });
+                        }
+                    });
+                }
+            }
+            
+            // 按插件分组工具，以节省Tokens
+            const toolsByPlugin = {};
+            tools.forEach(tool => {
+                if (!toolsByPlugin[tool.pluginName]) {
+                    toolsByPlugin[tool.pluginName] = [];
+                }
+                toolsByPlugin[tool.pluginName].push(tool);
+            });
+            
+            // 按插件名排序
+            const sortedPluginNames = Object.keys(toolsByPlugin).sort((a, b) => a.localeCompare(b));
+            
+            // 为每个插件生成说明
+            let pluginIndex = 0;
+            sortedPluginNames.forEach(pluginName => {
+                pluginIndex++;
+                const pluginTools = toolsByPlugin[pluginName];
+                
+                // 获取插件显示名称（使用第一个工具的displayName）
+                const pluginDisplayName = pluginTools[0].displayName || pluginName;
+                
+                // 如果该插件只有一个工具
+                if (pluginTools.length === 1) {
+                    const tool = pluginTools[0];
+                    const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
+                    
+                    output += `${pluginIndex}. ${pluginDisplayName} (${tool.name})\r\n`;
+                    output += `插件: ${pluginName}\r\n`;
+                    output += `说明: ${desc}\r\n`;
+                    
+                    if (includeExamples && tool.example) {
+                        output += `\r\n示例:\r\n${tool.example}\r\n`;
+                    }
+                } else {
+                    // 如果该插件有多个工具，合并显示
+                    output += `${pluginIndex}. ${pluginDisplayName}\r\n`;
+                    output += `插件: ${pluginName}\r\n`;
+                    output += `该插件包含 ${pluginTools.length} 个工具调用:\r\n\r\n`;
+                    
+                    pluginTools.forEach((tool, toolIdx) => {
+                        const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
+                        
+                        output += `  ${pluginIndex}.${toolIdx + 1} ${tool.name}\r\n`;
+                        
+                        // 处理说明部分，保持原有的多行格式
+                        const descLines = desc.split('\n');
+                        descLines.forEach((line, lineIdx) => {
+                            if (lineIdx === 0) {
+                                output += `  说明: ${line}\r\n`;
+                            } else {
+                                output += `  ${line}\r\n`;
+                            }
+                        });
+                        
+                        if (includeExamples && tool.example) {
+                            output += `\r\n`;
+                            // 将示例内容缩进
+                            const exampleLines = tool.example.split('\n');
+                            exampleLines.forEach(line => {
+                                output += `  ${line}\r\n`;
+                            });
+                        }
+                        
+                        if (toolIdx < pluginTools.length - 1) {
+                            output += '\r\n';
+                        }
+                    });
+                }
+                
+                output += '\r\n' + '----------------------------------------' + '\r\n\r\n';
+            });
+            
+            await fs.writeFile(outputPath, output, 'utf-8');
+            res.json({ status: 'success', filePath: `TVStxt/${fileName}.txt` });
+        } catch (error) {
+            console.error('[AdminAPI] Error exporting to txt:', error);
+            res.status(500).json({ error: 'Failed to export to txt', details: error.message });
         }
     });
     

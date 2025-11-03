@@ -749,6 +749,9 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     vectorDBManager // Pass the vectorDBManager instance
 );
 
+// 新增：引入 VCP 论坛 API 路由
+const forumApiRoutes = require('./routes/forumApi');
+
 // --- End Admin API Router ---
 
 // 新增：异步插件回调路由
@@ -829,7 +832,9 @@ async function initialize() {
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
-    console.log('服务类插件初始化完成，管理面板 API 路由已挂载。');
+    // 挂载 VCP 论坛 API 路由
+    app.use('/admin_api/forum', forumApiRoutes);
+    console.log('服务类插件初始化完成，管理面板 API 路由和 VCP 论坛 API 路由已挂载。');
 
     // --- 新增：通用依赖注入 ---
     // 在所有服务都初始化完毕后，再执行依赖注入，确保 VCPLog 等服务已准备就绪。

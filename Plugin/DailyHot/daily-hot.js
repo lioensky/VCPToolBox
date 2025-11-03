@@ -19,22 +19,17 @@ async function fetchSource(source) {
     }
 
     try {
-        // Create a mock request object to prevent "Cannot read properties of null" errors
-        const mockRequest = {
-            req: {
-                query: (param) => null  // Return null for any parameter access
-            }
-        };
-
-        const resultData = await routeHandler.handleRoute(mockRequest, true);
+        // 传递一个空对象而不是 null，以避免在下游模块中出现 'reading req of null' 的错误
+        const resultData = await routeHandler.handleRoute({}, true);
         if (!resultData || !Array.isArray(resultData.data)) {
              return { source, error: `返回的数据格式不正确` };
         }
         const title = resultData.title || source.charAt(0).toUpperCase() + source.slice(1);
         const type = resultData.type || '热榜';
-        const category = `${title} - ${type}`;
+        const defaultCategory = `${title} - ${type}`;
         return resultData.data.map(item => ({
-            category: category,
+            // 如果条目自带分类，则使用自带的，否则使用默认分类
+            category: item.category || defaultCategory,
             title: item.title,
             url: item.url
         }));
@@ -141,5 +136,9 @@ async function readCacheOnError() {
         // Ensure all output is written before exiting.
         process.exit(0);
     });
+<<<<<<< HEAD
 })();
                                                                                                          
+=======
+})();
+>>>>>>> upstream/main

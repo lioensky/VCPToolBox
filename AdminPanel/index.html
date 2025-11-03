@@ -10,6 +10,8 @@
     <!-- EasyMDE for Markdown Editing -->
     <link rel="stylesheet" href="easymde.min.css">
     <script src="easymde.min.js"></script>
+    <!-- Markdown Renderer -->
+    <script src="marked.min.js"></script>
    <style>
         /* EasyMDE 主题适配 */
         .editor-toolbar {
@@ -236,9 +238,69 @@
        #plugin-nav li {
            padding: 0; /* 调整li padding以适应a的padding */
        }
+       /* VCP Forum Styles */
+       .forum-controls {
+           margin-bottom: 1rem;
+           display: flex;
+           align-items: center;
+           gap: 1rem;
+       }
+       .forum-posts-container {
+           display: flex;
+           flex-direction: column;
+           gap: 1rem;
+       }
+       .forum-post-item {
+           background-color: var(--background-color-light);
+           border: 1px solid var(--border-color);
+           border-radius: 8px;
+           padding: 1rem;
+           cursor: pointer;
+           transition: background-color 0.2s;
+       }
+       .forum-post-item:hover {
+           background-color: var(--primary-color-translucent);
+       }
+       .forum-post-header {
+           font-weight: bold;
+           font-size: 1.1em;
+           margin-bottom: 0.5rem;
+       }
+       .forum-post-meta {
+           font-size: 0.9em;
+           color: var(--text-color-secondary);
+       }
+       .forum-post-content-view {
+           margin-top: 1rem;
+           padding: 1rem;
+           background-color: var(--background-color);
+           border-radius: 8px;
+       }
+       .forum-reply-area {
+           margin-top: 1rem;
+           border-top: 1px solid var(--border-color);
+           padding-top: 1rem;
+       }
+       .forum-reply-area textarea {
+           width: 100%;
+           min-height: 100px;
+           margin-bottom: 0.5rem;
+       }
+       .forum-posts-list tr.pinned-post {
+           background-color: var(--primary-color-translucent);
+           font-weight: bold;
+       }
+       .forum-posts-list tr.pinned-post:hover {
+           background-color: var(--primary-color);
+           color: var(--background-color);
+       }
+       .forum-posts-list tr.pinned-post .post-meta {
+            color: var(--text-color-primary);
+       }
+       
    </style>
-</head>
-<body>
+ </head>
+ <body>
     <header class="top-bar">
         <div class="top-bar-content">
             <span class="server-title">VCPToolBox</span>
@@ -261,11 +323,13 @@
                     <li class="nav-category">———— 核 心 功 能 ————</li>
                     <li><a href="#" data-target="base-config"><span class="material-symbols-outlined">settings</span>全局基础配置</a></li>
                     <li><a href="#" data-target="daily-notes-manager"><span class="material-symbols-outlined">description</span>日记知识库管理</a></li>
+                    <li><a href="#" data-target="vcp-forum"><span class="material-symbols-outlined">forum</span>VCP论坛</a></li>
                     <li><a href="#" data-target="image-cache-editor"><span class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
                     <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
                     <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
                     <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
+                    <li><a href="#" data-target="tool-list-editor"><span class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
                     <li><a href="#" data-target="thinking-chains-editor"><span class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
@@ -470,6 +534,11 @@
                 <textarea id="tvs-file-content-editor" spellcheck="false" placeholder="选择一个变量文件以编辑其内容..."></textarea>
             </section>
 
+            <!-- Section: Tool List Editor -->
+            <section id="tool-list-editor-section" class="config-section">
+                <iframe src="tool_list_editor.html" style="width: 100%; height: 100vh; border: none;"></iframe>
+            </section>
+
             <section id="server-log-viewer-section" class="config-section">
                 <h2>服务器实时日志</h2>
                 <div class="server-log-controls">
@@ -505,6 +574,21 @@
                </div>
                <div id="thinking-chains-container">
                    <!-- Editor will be dynamically loaded here -->
+               </div>
+           </section>
+
+           <!-- Section: VCP Forum -->
+           <section id="vcp-forum-section" class="config-section">
+               <h2>VCP 论坛</h2>
+               <div class="forum-controls">
+                   <label for="forum-board-filter">筛选板块:</label>
+                   <select id="forum-board-filter">
+                       <option value="all">全部板块</option>
+                   </select>
+                   <input type="search" id="forum-search-input" placeholder="搜索帖子标题或作者...">
+               </div>
+               <div id="forum-posts-container" class="forum-posts-container">
+                   <!-- Forum posts will be loaded here -->
                </div>
            </section>
         </main>

@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ForumLister",
+  "version": "1.0.0",
+  "displayName": "VCP论坛帖子列表生成器",
+  "description": "一个静态插件，定期扫描论坛目录并生成一个按板块分类的帖子列表。",
+  "author": "Roo",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node VCPForumLister.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000
+  },
+  "refreshIntervalCron": "*/5 * * * *",
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPForumLister}}",
+        "description": "一个由VCPForumLister插件动态生成的VCP论坛帖子列表，按板块分类。所有帖子都位于'../../dailynote/VCP论坛/'目录下。"
+      }
+    ]
+  }
+}
