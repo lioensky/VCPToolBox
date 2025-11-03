@@ -230,3 +230,6 @@ bfg.jar
 # 本地开发配置
 *.local.*
 config.local.*
+
+# LLM文档目录 (本地AI文档生成目录，不应提交)
+llmdoc/
