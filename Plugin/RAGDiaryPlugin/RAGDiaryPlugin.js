@@ -767,7 +767,7 @@ class RAGDiaryPlugin {
         let processedContent = content;
 
         const ragDeclarations = [...processedContent.matchAll(/\[\[(.*?)日记本(.*?)\]\]/g)];
-        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
+        const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本(.*?)>>/g)];
         const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
         const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
 
@@ -879,25 +879,35 @@ class RAGDiaryPlugin {
             })());
         }
 
-        // --- 2. 准备 <<...>> RAG 全文检索任务 ---
+        // --- 2. 准备 <<...>> RAG 检索任务(支持K值和修饰符) ---  
         for (const match of fullTextDeclarations) {
             const placeholder = match[0];
             const dbName = match[1];
+            const modifiers = match[2] || '';  
+            
             if (processedDiaries.has(dbName)) {
                 console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in <<...>>. Skipping.`);
-                processingPromises.push(Promise.resolve({ placeholder, content: `[检测到循环引用，已跳过“${dbName}日记本”的解析]` }));
+                processingPromises.push(Promise.resolve({ placeholder, content: `[检测到循环引用,已跳过"${dbName}日记本"的解析]` }));  
                 continue;
             }
             processedDiaries.add(dbName);
 
             processingPromises.push((async () => {
+                // 复用元思考的K值解析逻辑  
+                let manualK = null;  
+                const parts = modifiers.split(':').map(p => p.trim()).filter(Boolean);  
+                for (const part of parts) {  
+                    // 如果包含数字且不包含 '-',则视为单个K值  
+                    if (/^\d+$/.test(part)) {  
+                        manualK = parseInt(part, 10);  
+                        break;  
+                    }  
+                }  
+                
                 const diaryConfig = this.ragConfig[dbName] || {};
                 const localThreshold = diaryConfig.threshold || GLOBAL_SIMILARITY_THRESHOLD;
-                const dbNameVector = this.vectorDBManager.getDiaryNameVector(dbName); // <--- 使用缓存
-                if (!dbNameVector) {
-                    console.warn(`[RAGDiaryPlugin] Could not find cached vector for diary name: "${dbName}". Skipping.`);
-                    return { placeholder, content: '' };
-                }
+                const dbNameVector = await this.getSingleEmbedding(dbName);  
+                if (!dbNameVector) return { placeholder, content: '' };  
 
                 const baseSimilarity = this.cosineSimilarity(queryVector, dbNameVector);
                 const enhancedVector = this.enhancedVectorCache[dbName];
@@ -905,12 +915,29 @@ class RAGDiaryPlugin {
                 const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
 
                 if (finalSimilarity >= localThreshold) {
+                    if (manualK === null) {  
+                        // 未设置K值,全文注入  
                     const diaryContent = await this.getDiaryContent(dbName);
                     const safeContent = diaryContent
                         .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
+                            .replace(/<<.*日记本.*>>/g, '[循环占位符已移除]')  
                         .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]');
                     return { placeholder, content: safeContent };
+                    } else {  
+                        // 设置了K值,RAG片段检索  
+                        const retrievedContent = await this._processRAGPlaceholder({  
+                            dbName,   
+                            modifiers,   
+                            queryVector,   
+                            userContent,   
+                            combinedQueryForDisplay,  
+                            dynamicK: manualK,  
+                            timeRanges,   
+                            allowTimeAndGroup: true,  
+                            useManualK: true  
+                        });  
+                        return { placeholder, content: retrievedContent };  
+                    }  
                 }
                 return { placeholder, content: '' };
             })());
@@ -976,10 +1003,13 @@ class RAGDiaryPlugin {
             combinedQueryForDisplay,
             dynamicK,
             timeRanges,
-            allowTimeAndGroup = true
+            allowTimeAndGroup = true,  
+            useManualK = false  // 添加默认值  
         } = options;
 
-        const kMultiplier = this._extractKMultiplier(modifiers);
+        // 只有在非手动K值模式下才提取倍数  
+        const kMultiplier = useManualK ? 1.0 : this._extractKMultiplier(modifiers);  
+        
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
         const useRerank = modifiers.includes('::Rerank');
