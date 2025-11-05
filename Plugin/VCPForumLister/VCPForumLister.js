@@ -24,14 +24,34 @@ async function generateForumList() {
             const content = await fs.readFile(fullPath, 'utf-8');
 
             // Find all replies and get the last one
-            const replyMatches = [...content.matchAll(/\*\*回复者:\*\* (.*?)\s*\n\*\*时间:\*\* (.*?)\s*\n/g)];
-            let displayLine = file;
+            // 正则表达式从文件名中提取信息
+            // 格式: [版块][[标题]][作者][时间戳][UID].md
+            const fileMatch = file.match(/^\[(.*?)\]\[\[(.*?)\]\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\.md$/);
 
+            let displayLine;
+
+            if (fileMatch) {
+                const title = fileMatch[2];
+                const author = fileMatch[3];
+                const postTimestamp = fileMatch[4];
+                
+                // 格式化时间戳，使其更易读
+                const formattedPostTime = new Date(postTimestamp).toLocaleString('zh-CN', { hour12: false });
+
+                displayLine = `[${author}] ${title} (发布于: ${formattedPostTime})`;
+            } else {
+                // 如果文件名格式不匹配，则回退到显示原始文件名
+                displayLine = file;
+            }
+
+            const replyMatches = [...content.matchAll(/\*\*回复者:\*\* (.*?)\s*\n\*\*时间:\*\* (.*?)\s*\n/g)];
             if (replyMatches.length > 0) {
                 const lastReply = replyMatches[replyMatches.length - 1];
                 const replier = lastReply[1].trim();
-                const timestamp = lastReply[2].trim();
-                displayLine = `${file} (最后回复来自 ${replier}-${timestamp})`;
+                const replyTimestamp = lastReply[2].trim();
+                const formattedReplyTime = new Date(replyTimestamp).toLocaleString('zh-CN', { hour12: false });
+
+                displayLine += ` (最后回复: ${replier} at ${formattedReplyTime})`;
             }
 
             // Group by board

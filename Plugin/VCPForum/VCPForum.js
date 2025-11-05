@@ -73,7 +73,8 @@ ${content}
  * @returns {Promise<object>} - The result of the operation.
  */
 async function replyToPost(args) {
-    const { maid, post_uid, content } = args;
+    const { maid, post_uid, content: rawContent } = args;
+    const content = rawContent.replace(/\\n/g, '\n');
     if (!maid || !post_uid || !content) {
         throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' 参数。");
     }
@@ -100,7 +101,7 @@ async function replyToPost(args) {
 **回复者:** ${maid}
 **时间:** ${timestamp}
 
-${content}
+${content.trim()}
 `;
 
     await fs.appendFile(fullPath, replyContent, 'utf-8');

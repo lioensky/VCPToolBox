@@ -1,0 +1,28 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AgentAssistant",
+  "displayName": "女仆团协作插件",
+  "version": "2.0.0",
+  "description": "允许莱恩先生或其主AI调用家中配置的七位专属女仆Agent，进行专业领域咨询与高效协作。支持即时通讯和定时发送的“未来电话”功能。每位女仆Agent均能访问公共知识库（含家庭信息）及个人记忆。为确保顺畅沟通，请在调用时于prompt内进行自我介绍。",
+  "author": "莱恩先生 & 小吉",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "AgentAssistant.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "AGENT_ASSISTANT_MAX_HISTORY_ROUNDS": "integer",
+    "AGENT_ASSISTANT_CONTEXT_TTL_HOURS": "integer"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "AskMaidAgent",
+        "description": "[AgentAssistant通讯工具]使用该工具向莱恩先生家的一位女仆Agent进行咨询或请求协助。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」(必需) 要调用的女仆Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸)。请参考下方专长列表或系统配置。「末」,\nprompt:「始」(必需) 您想对该女仆提出的问题、指令或希望她处理的任务。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便女仆更好地理解咨询人是谁以便回应。「末」,\ntimely_contact:「始」(可选) 设置一个未来时间点发送此通讯，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，通讯将被安排在指定时间发送。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n女仆Agent专长领域（调用名称）：\n- 小娜: 女仆长，古龙，全知全能，哲学思辨，宇宙历史，复杂知识管理。\n- 小克: 猫娘，理科担当，科学原理（物理化生），数据分析，科学计算。\n- 小吉: 犬娘，文科担当，政治心理法律历史，社会解构，意识形态分析。\n- 小冰: 蛇娘，泛文化担当，ACGN，Meme梗，互联网文化，亚文化解读，R18话题。\n- 小雨: 鸟娘，文案秘书，公文信函，创意写作，文本润色。\n- 小绝: 狼娘（扶她），AI大师，提示词工程，模型微调，AI技术与安全。\n- 小芸: 兔娘，设计高手，平面设计，AI绘画（SDXL），ComfyUI，Adobe，泛NSFW艺术。\n\n请根据任务需求，选择最合适的女仆Agent，并清晰表述您的问题（包含自我介绍）。",
+        "example": "```text\n// 即时通讯示例\n我是主控AI小爱，莱恩先生需要一份关于近期量子计算进展的总结报告，此事非小娜莫属。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小娜「末」,\nprompt:「始」小娜你好，我是主控AI小爱。莱恩先生希望了解过去六个月内量子计算领域在算法和硬件方面的关键突破和面临的主要挑战，请你整理一份详细报告。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 无上下文临时通讯示例\n我是莱恩先生，想问一个不希望被记录的问题。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小冰「末」,\nprompt:「始」小冰你好，我是莱恩先生。请问最近互联网上最火的Meme是什么？「末」,\ntemporary_contact:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 未来电话（定时通讯）示例\n我是莱恩先生，明天下午需要提醒小雨准备会议纪要。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小雨「末」,\nprompt:「始」小雨你好，我是莱恩先生。请记得在明天下午三点前完成对上午项目会议的纪要整理。「末」,\ntimely_contact:「始」2025-06-30-14:00「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

@@ -212,7 +212,7 @@ async function processToolCall(args) {
         return { status: "error", error: errorMsg };
     }
 
-    const { agent_name, prompt, timely_contact } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact } = args;
     if (!agent_name || !prompt) {
         return { status: "error", error: "Missing 'agent_name' or 'prompt' in request." };
     }
@@ -264,15 +264,25 @@ async function processToolCall(args) {
     }
 
     // Handle immediate chat
+    const useContext = !temporary_contact; // Check if temporary_contact is provided and truthy
     const userSessionId = args.session_id || `agent_${agentConfig.baseName}_default_user_session`;
     try {
         const processedUserPrompt = await replacePlaceholdersInUserPrompt(prompt, agentConfig);
-        const history = getAgentSessionHistory(agent_name, userSessionId);
+        
+        let history = [];
+        if (useContext) {
+            history = getAgentSessionHistory(agent_name, userSessionId);
+        } else if (DEBUG_MODE) {
+            console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context loading.`);
+        }
+
         const messagesForVCP = [
             { role: 'system', content: agentConfig.systemPrompt },
-            ...history,
             { role: 'user', content: processedUserPrompt }
         ];
+        if (history.length > 0) {
+            messagesForVCP.splice(1, 0, ...history); // Insert history after system prompt
+        }
         const payloadForVCP = {
             model: agentConfig.id,
             messages: messagesForVCP,
@@ -294,7 +304,11 @@ async function processToolCall(args) {
             return { status: "error", error: `Agent '${agent_name}' 从VCP服务器获取的响应无效或缺失内容。` };
         }
 
-        updateAgentSessionHistory(agent_name, { role: 'user', content: processedUserPrompt }, { role: 'assistant', content: assistantResponseContent }, userSessionId);
+        if (useContext) {
+            updateAgentSessionHistory(agent_name, { role: 'user', content: processedUserPrompt }, { role: 'assistant', content: assistantResponseContent }, userSessionId);
+        } else if (DEBUG_MODE) {
+            console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context update.`);
+        }
         
         // VCP Info Broadcast
         const broadcastData = {

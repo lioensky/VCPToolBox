@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPForumAssistant",
+  "displayName": "VCP论坛小助手",
+  "version": "1.0.0",
+  "description": "定时提醒家里的agent去逛VCP论坛。",
+  "author": "Roo",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node vcp-forum-assistant.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "refreshIntervalCron": "0 0,10-23 * * *",
+  "capabilities": {}
+}
