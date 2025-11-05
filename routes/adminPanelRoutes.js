@@ -57,7 +57,44 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
                 try {
                     const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
-                    const memData = JSON.parse(memInfo);
+
+                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
+                    let cleanedMemInfo = memInfo.trim();
+
+                    // 检查并清理PowerShell UTF-8编码配置消息
+                    if (cleanedMemInfo.startsWith('PowerShell')) {
+                        const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
+                        if (jsonMatch) {
+                            cleanedMemInfo = jsonMatch[1];
+                        } else {
+                            // 备用方案：逐行查找JSON边界
+                            const lines = cleanedMemInfo.split('\n');
+                            let jsonStart = -1;
+                            let jsonEnd = -1;
+                            let braceCount = 0;
+
+                            for (let i = 0; i < lines.length; i++) {
+                                const line = lines[i].trim();
+                                if (line.includes('{')) {
+                                    if (jsonStart === -1) jsonStart = i;
+                                    for (const char of line) {
+                                        if (char === '{') braceCount++;
+                                        else if (char === '}') braceCount--;
+                                    }
+                                }
+                                if (jsonStart !== -1 && braceCount === 0) {
+                                    jsonEnd = i;
+                                    break;
+                                }
+                            }
+
+                            if (jsonStart !== -1 && jsonEnd !== -1) {
+                                cleanedMemInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
+                            }
+                        }
+                    }
+
+                    const memData = JSON.parse(cleanedMemInfo);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
                         free: (memData.FreePhysicalMemory || 0) * 1024,
@@ -76,10 +113,47 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                         used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
                     };
                 }
-                
+
                 try {
                     const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
-                    const cpuData = JSON.parse(cpuInfo);
+
+                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
+                    let cleanedCpuInfo = cpuInfo.trim();
+
+                    // 检查并清理PowerShell UTF-8编码配置消息
+                    if (cleanedCpuInfo.startsWith('PowerShell')) {
+                        const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
+                        if (jsonMatch) {
+                            cleanedCpuInfo = jsonMatch[1];
+                        } else {
+                            // 备用方案：逐行查找JSON边界
+                            const lines = cleanedCpuInfo.split('\n');
+                            let jsonStart = -1;
+                            let jsonEnd = -1;
+                            let braceCount = 0;
+
+                            for (let i = 0; i < lines.length; i++) {
+                                const line = lines[i].trim();
+                                if (line.includes('{')) {
+                                    if (jsonStart === -1) jsonStart = i;
+                                    for (const char of line) {
+                                        if (char === '{') braceCount++;
+                                        else if (char === '}') braceCount--;
+                                    }
+                                }
+                                if (jsonStart !== -1 && braceCount === 0) {
+                                    jsonEnd = i;
+                                    break;
+                                }
+                            }
+
+                            if (jsonStart !== -1 && jsonEnd !== -1) {
+                                cleanedCpuInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
+                            }
+                        }
+                    }
+
+                    const cpuData = JSON.parse(cleanedCpuInfo);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
                     // 回退到 wmic 命令
