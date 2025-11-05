@@ -54,47 +54,38 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             const execOptions = { windowsHide: true }; // Option to prevent window pop-up
 
             if (process.platform === 'win32') {
-                // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
-                try {
-                    const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
+                // 智能PowerShell输出处理
+                function cleanPowerShellOutput(output) {
+                    try {
+                        // 尝试直接解析JSON（理想情况）
+                        const trimmed = output.trim();
+                        JSON.parse(trimmed);
+                        return trimmed;
+                    } catch {}
 
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedMemInfo = memInfo.trim();
-
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedMemInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedMemInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedMemInfo = jsonMatch[1];
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedMemInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedMemInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                            }
+                    // 智能查找有效JSON：优先匹配最后一行
+                    const lines = output.split('\n');
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                        const line = lines[i].trim();
+                        if ((line.startsWith('{') && line.endsWith('}')) ||
+                            (line.startsWith('[') && line.endsWith(']'))) {
+                            try {
+                                JSON.parse(line);
+                                return line;
+                            } catch {}
                         }
                     }
+                    throw new Error('无法提取有效JSON');
+                }
 
-                    const memData = JSON.parse(cleanedMemInfo);
+                try {
+                    // 优化的PowerShell命令：设置编码并抑制干扰输出
+                    const { stdout: memInfo } = await execAsync(
+                        'powershell -Command "$ProgressPreference=\'SilentlyContinue\'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json -Compress"',
+                        execOptions
+                    );
+                    const jsonStr = cleanPowerShellOutput(memInfo);
+                    const memData = JSON.parse(jsonStr);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
                         free: (memData.FreePhysicalMemory || 0) * 1024,
@@ -115,45 +106,13 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 }
 
                 try {
-                    const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
-
-                    // 清理PowerShell输出，移除可能的UTF-8编码配置消息
-                    let cleanedCpuInfo = cpuInfo.trim();
-
-                    // 检查并清理PowerShell UTF-8编码配置消息
-                    if (cleanedCpuInfo.startsWith('PowerShell')) {
-                        const jsonMatch = cleanedCpuInfo.match(/({[\s\S]*?})/);
-                        if (jsonMatch) {
-                            cleanedCpuInfo = jsonMatch[1];
-                        } else {
-                            // 备用方案：逐行查找JSON边界
-                            const lines = cleanedCpuInfo.split('\n');
-                            let jsonStart = -1;
-                            let jsonEnd = -1;
-                            let braceCount = 0;
-
-                            for (let i = 0; i < lines.length; i++) {
-                                const line = lines[i].trim();
-                                if (line.includes('{')) {
-                                    if (jsonStart === -1) jsonStart = i;
-                                    for (const char of line) {
-                                        if (char === '{') braceCount++;
-                                        else if (char === '}') braceCount--;
-                                    }
-                                }
-                                if (jsonStart !== -1 && braceCount === 0) {
-                                    jsonEnd = i;
-                                    break;
-                                }
-                            }
-
-                            if (jsonStart !== -1 && jsonEnd !== -1) {
-                                cleanedCpuInfo = lines.slice(jsonStart, jsonEnd + 1).join('\n');
-                            }
-                        }
-                    }
-
-                    const cpuData = JSON.parse(cleanedCpuInfo);
+                    // 同样优化的CPU检测命令
+                    const { stdout: cpuInfo } = await execAsync(
+                        'powershell -Command "$ProgressPreference=\'SilentlyContinue\'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json -Compress"',
+                        execOptions
+                    );
+                    const jsonStr = cleanPowerShellOutput(cpuInfo);
+                    const cpuData = JSON.parse(jsonStr);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
                     // 回退到 wmic 命令
