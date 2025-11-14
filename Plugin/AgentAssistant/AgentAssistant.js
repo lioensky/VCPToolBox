@@ -998,5 +998,6 @@ module.exports = {
     processToolCall,
     loadAgentsFromLocalConfig,
     getConfigStatus,
-    migrateFromEnvToJson
+    migrateFromEnvToJson,
+    AGENTS
 };
