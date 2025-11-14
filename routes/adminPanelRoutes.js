@@ -1293,19 +1293,27 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             // 主动触发AgentAssistant插件热重载
             try {
-                const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
-                if (agentAssistantPlugin && agentAssistantPlugin.moduleInstance) {
+                // 修复：AgentAssistant是service插件，应该从serviceModules获取
+                const agentAssistantService = pluginManager.serviceModules.get('AgentAssistant');
+                if (agentAssistantService && agentAssistantService.module) {
                     console.log('🔄 [AdminPanelRoutes] 触发AgentAssistant插件热重载...');
 
                     // 调用插件模块的配置重载方法
-                    if (typeof agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig === 'function') {
-                        agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig();
+                    if (typeof agentAssistantService.module.loadAgentsFromLocalConfig === 'function') {
+                        agentAssistantService.module.loadAgentsFromLocalConfig();
                         console.log('✅ [AdminPanelRoutes] AgentAssistant插件配置热重载成功');
                     } else {
                         console.warn('⚠️ [AdminPanelRoutes] AgentAssistant插件模块没有找到loadAgentsFromLocalConfig方法');
                     }
                 } else {
-                    console.warn('⚠️ [AdminPanelRoutes] 未找到AgentAssistant插件实例');
+                    console.warn('⚠️ [AdminPanelRoutes] 未找到AgentAssistant插件服务实例');
+                    // 尝试通过plugins获取作为备选方案
+                    const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
+                    if (agentAssistantPlugin) {
+                        console.log('🔄 [AdminPanelRoutes] 通过插件清单找到AgentAssistant，尝试重新加载插件');
+                        await pluginManager.loadPlugins();
+                        console.log('✅ [AdminPanelRoutes] 插件重新加载完成');
+                    }
                 }
             } catch (hotReloadError) {
                 console.error('❌ [AdminPanelRoutes] AgentAssistant插件热重载失败:', hotReloadError.message);
@@ -1625,21 +1633,22 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             console.log('🔄 [AdminPanelRoutes] 手动触发AgentAssistant配置重载...');
 
-            const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
+            // 修复：AgentAssistant是service插件，应该从serviceModules获取
+            const agentAssistantService = pluginManager.serviceModules.get('AgentAssistant');
             let reloadStatus = 'failed';
             let message = '';
 
-            if (agentAssistantPlugin && agentAssistantPlugin.moduleInstance) {
-                if (typeof agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig === 'function') {
+            if (agentAssistantService && agentAssistantService.module) {
+                if (typeof agentAssistantService.module.loadAgentsFromLocalConfig === 'function') {
                     try {
                         // 获取重载前的agent数量
-                        const agentCountBefore = Object.keys(agentAssistantPlugin.moduleInstance.AGENTS || {}).length;
+                        const agentCountBefore = Object.keys(agentAssistantService.module.AGENTS || {}).length;
 
                         // 执行重载
-                        agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig();
+                        agentAssistantService.module.loadAgentsFromLocalConfig();
 
                         // 获取重载后的agent数量
-                        const agentCountAfter = Object.keys(agentAssistantPlugin.moduleInstance.AGENTS || {}).length;
+                        const agentCountAfter = Object.keys(agentAssistantService.module.AGENTS || {}).length;
 
                         reloadStatus = 'success';
                         message = `配置重载成功。Agent数量从 ${agentCountBefore} 变更为 ${agentCountAfter}`;
@@ -1653,7 +1662,21 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     message = 'AgentAssistant插件模块没有找到loadAgentsFromLocalConfig方法';
                 }
             } else {
-                message = '未找到AgentAssistant插件实例';
+                message = '未找到AgentAssistant插件服务实例';
+                // 尝试通过plugins获取作为备选方案
+                const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
+                if (agentAssistantPlugin) {
+                    console.log('🔄 [AdminPanelRoutes] 通过插件清单找到AgentAssistant，尝试重新加载插件');
+                    try {
+                        await pluginManager.loadPlugins();
+                        reloadStatus = 'success';
+                        message = '插件重新加载完成';
+                        console.log('✅ [AdminPanelRoutes] 插件重新加载完成');
+                    } catch (pluginReloadError) {
+                        message = `插件重新加载失败: ${pluginReloadError.message}`;
+                        console.error(`❌ [AdminPanelRoutes] 插件重新加载失败:`, pluginReloadError);
+                    }
+                }
             }
 
             res.json({
