@@ -190,6 +190,12 @@ function handleApiError(req) {
         clientIp = clientIp.substr(7);
     }
 
+    // Don't blacklist the server itself.
+    if (clientIp === '127.0.0.1' || clientIp === '::1') {
+        console.log(`[Security] Ignored an API error from the local server itself (IP: ${clientIp}). This is to prevent self-blocking.`);
+        return;
+    }
+
     if (!clientIp || ipBlacklist.includes(clientIp)) {
         return; // 如果IP无效或已在黑名单中，则不处理
     }

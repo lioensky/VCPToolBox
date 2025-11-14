@@ -609,12 +609,11 @@ class VectorDBManager {
         });
 
         const handleFileChange = (filePath) => {
-            console.log(`[VectorDB] File change detected: ${filePath}`);
             const diaryName = path.basename(path.dirname(filePath));
             if (diaryName.startsWith('已整理') || diaryName === 'VCP论坛') {
-                console.log(`[VectorDB] Ignoring change in "${diaryName}" as it is in the exclusion list.`);
                 return;
             }
+            console.log(`[VectorDB] File change detected: ${filePath}`);
             this.scheduleDiaryBookProcessing(diaryName);
             // 触发日记本名称向量的重新缓存
             this.cacheDiaryNameVectors();
@@ -623,10 +622,10 @@ class VectorDBManager {
         // ✅ 处理目录删除
         const handleDirUnlink = (dirPath) => {
             const diaryName = path.basename(dirPath);
-            console.log(`[VectorDB] Directory deleted: ${diaryName}`);
             if (diaryName.startsWith('已整理') || diaryName === 'VCP论坛') {
                 return;
             }
+            console.log(`[VectorDB] Directory deleted: ${diaryName}`);
             // 直接清理，不需要通过 scheduleDiaryBookProcessing
             this.cleanupDeletedDiary(diaryName).catch(err => {
                 console.error(`[VectorDB] Error cleaning up deleted directory "${diaryName}":`, err);
