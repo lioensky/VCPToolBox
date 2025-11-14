@@ -10,13 +10,6 @@ let availableModels = [];
 let currentConfigFormat = 'none';
 let codemirrorInstance = null;
 
-// 保存按钮防抖管理
-let saveButtonState = {
-    clickCount: 0,
-    lastClickTime: 0,
-    isAnimating: false
-};
-
 // 导入相关全局变量
 let availableAgentFiles = [];
 let agentMappingData = {};
@@ -263,7 +256,15 @@ async function saveAgentsConfiguration() {
         showMessage(`Agent配置保存成功 (${configData.agents.length} 个Agent)`, 'success');
         updateSaveStatus('已保存', 'success');
 
-        console.log('✅ [AgentAssistant] 配置保存完成，等待后续手动重新加载');
+        // 等待短暂时间确保文件写入完成，然后重新加载
+        console.log('⏳ [AgentAssistant] 等待文件写入完成...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 重新加载以获取最新状态
+        console.log('🔄 [AgentAssistant] 重新加载配置...');
+        await loadAgentsConfiguration();
+
+        console.log('✅ [AgentAssistant] 配置保存和重新加载完成');
 
     } catch (error) {
         console.error('❌ [AgentAssistant] 保存配置失败:', error);
@@ -430,6 +431,7 @@ function renderAgentEditor() {
             </div>
 
             <div class="form-actions">
+                <button id="save-agent-button" class="primary-button">保存 Agent</button>
                 <button id="cancel-edit-button" class="secondary-button">取消编辑</button>
             </div>
         </div>
@@ -464,7 +466,7 @@ function initializeCodeMirrorEditor(initialContent) {
         autoCloseBrackets: true,
         extraKeys: {
             'Ctrl-S': function() {
-                saveAndReloadAgent();
+                saveCurrentAgent();
             }
         }
     });
@@ -690,7 +692,7 @@ function generateBaseName(chineseName) {
 function setupEventListeners() {
     // 工具栏按钮
     const addButton = document.getElementById('add-agent-button');
-    const saveButton = document.getElementById('save-agent-button');
+    const saveButton = document.getElementById('save-all-agents-button');
     const migrateButton = document.getElementById('migrate-to-json-button');
 
     if (addButton && !addButton.dataset.listenerAttached) {
@@ -699,7 +701,7 @@ function setupEventListeners() {
     }
 
     if (saveButton && !saveButton.dataset.listenerAttached) {
-        saveButton.addEventListener('click', saveAndReloadAgent);
+        saveButton.addEventListener('click', saveAgentsConfiguration);
         saveButton.dataset.listenerAttached = 'true';
     }
 
@@ -717,6 +719,7 @@ function setupEventListeners() {
  */
 function setupFormListeners() {
     const chineseNameInput = document.getElementById('agent-chinese-name');
+    const saveAgentButton = document.getElementById('save-agent-button');
     const cancelEditButton = document.getElementById('cancel-edit-button');
     const previewButton = document.getElementById('preview-placeholders-button');
 
@@ -728,6 +731,11 @@ function setupFormListeners() {
             }
         });
         chineseNameInput.dataset.listenerAttached = 'true';
+    }
+
+    if (saveAgentButton && !saveAgentButton.dataset.listenerAttached) {
+        saveAgentButton.addEventListener('click', saveCurrentAgent);
+        saveAgentButton.dataset.listenerAttached = 'true';
     }
 
     // 刷新模型列表按钮
@@ -796,153 +804,6 @@ async function migrateConfigToJSON() {
         await checkConfigurationFormat();
     } catch (error) {
         showMessage(`迁移失败: ${error.message}`, 'error');
-    }
-}
-
-/**
- * 手动重新加载AgentAssistant配置
- */
-async function reloadAgentAssistantConfig() {
-    try {
-        showMessage('正在重新加载AgentAssistant配置...', 'info');
-        updateSaveStatus('重新加载中...', 'info');
-
-        const response = await apiFetch(`${API_BASE_URL}/agent-assistant/reload`, {
-            method: 'POST'
-        });
-
-        console.log('✅ [AgentAssistant] 配置重新加载成功:', response);
-
-        showMessage(`配置重新加载成功 (${response.agentCount} 个Agent)`, 'success');
-        updateSaveStatus('重新加载完成', 'success');
-
-        // 重新加载当前配置以确保UI同步
-        await loadAgentsConfiguration();
-
-    } catch (error) {
-        console.error('❌ [AgentAssistant] 重新加载配置失败:', error);
-
-        let errorMessage = `重新加载失败: ${error.message}`;
-        if (error.status === 404) {
-            errorMessage = 'AgentAssistant插件未找到或未加载';
-        }
-
-        showMessage(errorMessage, 'error');
-        updateSaveStatus('重新加载失败', 'error');
-    }
-}
-
-/**
- * 防抖函数：2秒内最多触发3次
- */
-function isSaveButtonClickAllowed() {
-    const now = Date.now();
-    const timeWindow = 2000; // 2秒
-
-    // 重置计数窗口
-    if (now - saveButtonState.lastClickTime > timeWindow) {
-        saveButtonState.clickCount = 0;
-        saveButtonState.lastClickTime = now;
-    }
-
-    // 检查是否允许点击
-    if (saveButtonState.clickCount >= 3) {
-        // 超过限制，不执行功能，但触发动画
-        triggerSaveButtonAnimation();
-        return false;
-    }
-
-    // 允许执行，更新计数
-    saveButtonState.clickCount++;
-    saveButtonState.lastClickTime = now;
-    return true;
-}
-
-/**
- * 触发保存按钮动画
- */
-function triggerSaveButtonAnimation() {
-    const button = document.getElementById('save-agent-button');
-    if (button) {
-        // 添加动画类
-        button.classList.add('click-limited');
-
-        // 移除动画类，让动画可以重复触发
-        setTimeout(() => {
-            button.classList.remove('click-limited');
-        }, 300);
-    }
-}
-
-/**
- * 合并保存和重新加载功能
- */
-async function saveAndReloadAgent() {
-    // 检查是否允许点击
-    if (!isSaveButtonClickAllowed()) {
-        showMessage('操作过于频繁，请稍后再试', 'warning');
-        return;
-    }
-
-    try {
-        let hasChanges = false;
-
-        // 如果当前正在编辑Agent，先将其保存到配置中
-        if (currentEditingAgent) {
-            // 验证表单
-            if (!validateAgentForm()) {
-                return;
-            }
-
-            // 更新Agent数据
-            updateAgentFromForm();
-
-            // 保存到配置数组
-            const existingIndex = currentAgents.findIndex(a =>
-                a.chineseName === currentEditingAgent.chineseName
-            );
-
-            if (existingIndex >= 0) {
-                // 更新现有Agent
-                currentAgents[existingIndex] = { ...currentEditingAgent };
-            } else {
-                // 添加新Agent
-                currentAgents.push({ ...currentEditingAgent });
-                currentEditingAgent.isNew = false;
-            }
-
-            hasChanges = true;
-
-            // 立即重新渲染Agent列表，让用户看到新增的Agent
-            renderAgentList();
-
-            // 重新加载编辑器以保持状态同步
-            if (currentEditingAgent) {
-                renderAgentEditor();
-            }
-        }
-
-        // 保存Agent配置到文件
-        await saveAgentsConfiguration();
-
-        // 如果有更改，显示成功消息
-        if (hasChanges) {
-            showMessage('Agent 保存成功', 'success');
-        }
-
-        // 短暂延迟后重新加载插件配置
-        setTimeout(async () => {
-            try {
-                await reloadAgentAssistantConfig();
-            } catch (error) {
-                console.error('重新加载配置失败:', error);
-                showMessage('保存成功，但重新加载配置失败', 'warning');
-            }
-        }, 500);
-
-    } catch (error) {
-        console.error('保存失败:', error);
-        showMessage(`保存失败: ${error.message}`, 'error');
     }
 }
 
