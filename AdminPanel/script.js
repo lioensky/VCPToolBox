@@ -5,6 +5,7 @@ import { loadPluginList, loadPluginConfig } from './js/plugins.js';
 import { initializeDashboard, stopDashboardUpdates } from './js/dashboard.js';
 import { initializeDailyNotesManager } from './js/notes-manager.js';
 import { initializeAgentManager } from './js/agent-manager.js';
+import { initializeAgentAssistantEditor } from './js/agent-assistant-editor.js';
 import { initializeTvsFilesEditor } from './js/tvs-editor.js';
 import { initializeServerLogViewer, stopServerLogUpdates } from './js/log-viewer.js';
 import { initializePreprocessorOrderManager } from './js/preprocessor-manager.js';
@@ -56,6 +57,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         break;
                     case 'agent-files-editor-section':
                         initializeAgentManager();
+                        break;
+                    case 'agent-assistant-editor-section':
+                        initializeAgentAssistantEditor();
                         break;
                     case 'tvs-files-editor-section':
                         initializeTvsFilesEditor();

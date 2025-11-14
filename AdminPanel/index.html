@@ -12,6 +12,12 @@
     <script src="easymde.min.js"></script>
     <!-- Markdown Renderer -->
     <script src="marked.min.js"></script>
+    <!-- CodeMirror for Rich Text Editing -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.2/lib/codemirror.css">
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.2/lib/codemirror.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.2/mode/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.2/addon/edit/matchbrackets.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.2/addon/edit/closebrackets.js"></script>
    <style>
         /* EasyMDE 主题适配 */
         .editor-toolbar {
@@ -328,6 +334,7 @@
                     <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
                     <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTarven预设编辑</a></li>
                     <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
+                    <li><a href="#" data-target="agent-assistant-editor"><span class="material-symbols-outlined">groups</span>AgentAssistant 配置</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
                     <li><a href="#" data-target="tool-list-editor"><span class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
@@ -491,6 +498,52 @@
             <section id="vcptavern-editor-section" class="config-section">
                 <h2>VCPTarven预设编辑</h2>
                 <iframe src="vcptavern_editor.html" style="width: 100%; height: 80vh; border: none;"></iframe>
+            </section>
+
+            <section id="agent-assistant-editor-section" class="config-section">
+                <h2>AgentAssistant 子 Agent 配置</h2>
+                <p class="description">配置和管理 AgentAssistant 的子 Agent。支持热重载、占位符预览、主Agent复用等功能。</p>
+
+                <!-- 配置格式检测和迁移工具栏 -->
+                <div class="agent-assistant-toolbar">
+                    <div class="config-format-info">
+                        <span id="config-format-display" class="format-badge">检测中...</span>
+                        <button id="migrate-to-json-button" class="tool-button" style="display: none;">迁移到新格式</button>
+                    </div>
+                    <div class="toolbar-actions">
+                        <div class="agent-import-controls">
+                            <button id="import-from-agent-button" class="secondary-button">
+                                <span class="material-symbols-outlined">file_upload</span>
+                                从主Agent导入
+                            </button>
+                            <button id="import-history-button" class="text-button" style="display: none;">
+                                导入历史
+                            </button>
+                        </div>
+                        <button id="add-agent-button" class="primary-button">添加新 Agent</button>
+                        <button id="save-all-agents-button" class="primary-button">保存所有更改</button>
+                        <span id="agents-save-status" class="status-message"></span>
+                    </div>
+                </div>
+
+                <!-- 主要编辑区域 -->
+                <div class="agent-assistant-editor-container">
+                    <!-- Agent 列表区域 -->
+                    <div class="agent-list-panel">
+                        <h3>Agent 列表</h3>
+                        <div id="agent-list-container">
+                            <!-- Agent列表将通过JavaScript动态生成 -->
+                        </div>
+                    </div>
+
+                    <!-- Agent 编辑器区域 -->
+                    <div class="agent-editor-panel">
+                        <h3>Agent 配置</h3>
+                        <div id="agent-editor-container">
+                            <!-- 编辑器内容将通过JavaScript动态生成 -->
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <section id="agent-files-editor-section" class="config-section">
@@ -784,5 +837,92 @@
             }
         });
     </script>
+
+    <!-- 主Agent导入功能模态框 -->
+    <div id="agent-import-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>从主Agent导入配置</h3>
+                <button class="modal-close" id="close-import-modal">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- Agent文件选择区域 -->
+                <div class="import-section">
+                    <h4>选择Agent文件</h4>
+                    <div class="agent-files-grid" id="agent-files-grid">
+                        <!-- Agent文件将通过JavaScript动态生成 -->
+                    </div>
+                </div>
+
+                <!-- Agent映射选择区域 -->
+                <div class="import-section">
+                    <h4>Agent映射</h4>
+                    <div class="agent-mapping-list" id="agent-mapping-list">
+                        <!-- Agent映射将通过JavaScript动态生成 -->
+                    </div>
+                </div>
+
+                <!-- 文件预览区域 -->
+                <div class="import-section">
+                    <h4>文件预览</h4>
+                    <div class="file-preview-container">
+                        <div class="file-preview-header">
+                            <span id="selected-file-name" class="file-name">请选择一个文件...</span>
+                            <button id="preview-refresh-button" class="text-button">刷新</button>
+                        </div>
+                        <pre id="agent-file-preview" class="file-preview-content">选择Agent文件以预览内容...</pre>
+                    </div>
+                </div>
+
+                <!-- 导入选项 -->
+                <div class="import-section">
+                    <h4>导入选项</h4>
+                    <div class="import-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="append-to-existing" checked>
+                            <span class="checkbox-custom"></span>
+                            追加到现有内容
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="keep-placeholders" checked>
+                            <span class="checkbox-custom"></span>
+                            保留占位符
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="import-as-template">
+                            <span class="checkbox-custom"></span>
+                            导入为模板（不清空编辑框）
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="cancel-import-button" class="secondary-button">取消</button>
+                <button id="confirm-import-button" class="primary-button" disabled>导入</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 导入历史模态框 -->
+    <div id="import-history-modal" class="modal">
+        <div class="modal-content small">
+            <div class="modal-header">
+                <h3>导入历史</h3>
+                <button class="modal-close" id="close-history-modal">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <div id="import-history-list" class="import-history-list">
+                    <!-- 导入历史将通过JavaScript动态生成 -->
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button id="close-history-button" class="primary-button">关闭</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
