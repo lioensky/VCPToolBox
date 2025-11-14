@@ -1291,11 +1291,33 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             const successMessage = `AgentAssistant agents configuration saved successfully (${agents.length} agents)`;
             console.log('✅ [AdminPanelRoutes] 保存完成:', successMessage);
 
+            // 主动触发AgentAssistant插件热重载
+            try {
+                const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
+                if (agentAssistantPlugin && agentAssistantPlugin.moduleInstance) {
+                    console.log('🔄 [AdminPanelRoutes] 触发AgentAssistant插件热重载...');
+
+                    // 调用插件模块的配置重载方法
+                    if (typeof agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig === 'function') {
+                        agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig();
+                        console.log('✅ [AdminPanelRoutes] AgentAssistant插件配置热重载成功');
+                    } else {
+                        console.warn('⚠️ [AdminPanelRoutes] AgentAssistant插件模块没有找到loadAgentsFromLocalConfig方法');
+                    }
+                } else {
+                    console.warn('⚠️ [AdminPanelRoutes] 未找到AgentAssistant插件实例');
+                }
+            } catch (hotReloadError) {
+                console.error('❌ [AdminPanelRoutes] AgentAssistant插件热重载失败:', hotReloadError.message);
+                // 热重载失败不影响保存操作的成功
+            }
+
             res.json({
                 message: successMessage,
                 agentCount: agents.length,
                 filePath: AGENT_ASSISTANT_CONFIG_FILE,
-                savedAt: config.savedAt
+                savedAt: config.savedAt,
+                hotReloadStatus: 'attempted'
             });
 
         } catch (error) {
@@ -1595,6 +1617,58 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error migrating configuration:', error);
             res.status(500).json({ error: 'Failed to migrate configuration', details: error.message });
+        }
+    });
+
+    // POST /admin_api/agent-assistant/reload - 手动触发AgentAssistant配置重载
+    adminApiRouter.post('/agent-assistant/reload', async (req, res) => {
+        try {
+            console.log('🔄 [AdminPanelRoutes] 手动触发AgentAssistant配置重载...');
+
+            const agentAssistantPlugin = pluginManager.plugins.get('AgentAssistant');
+            let reloadStatus = 'failed';
+            let message = '';
+
+            if (agentAssistantPlugin && agentAssistantPlugin.moduleInstance) {
+                if (typeof agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig === 'function') {
+                    try {
+                        // 获取重载前的agent数量
+                        const agentCountBefore = Object.keys(agentAssistantPlugin.moduleInstance.AGENTS || {}).length;
+
+                        // 执行重载
+                        agentAssistantPlugin.moduleInstance.loadAgentsFromLocalConfig();
+
+                        // 获取重载后的agent数量
+                        const agentCountAfter = Object.keys(agentAssistantPlugin.moduleInstance.AGENTS || {}).length;
+
+                        reloadStatus = 'success';
+                        message = `配置重载成功。Agent数量从 ${agentCountBefore} 变更为 ${agentCountAfter}`;
+
+                        console.log(`✅ [AdminPanelRoutes] 手动重载成功: ${message}`);
+                    } catch (reloadError) {
+                        message = `重载过程中发生错误: ${reloadError.message}`;
+                        console.error(`❌ [AdminPanelRoutes] 重载失败:`, reloadError);
+                    }
+                } else {
+                    message = 'AgentAssistant插件模块没有找到loadAgentsFromLocalConfig方法';
+                }
+            } else {
+                message = '未找到AgentAssistant插件实例';
+            }
+
+            res.json({
+                status: reloadStatus,
+                message: message,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error in manual reload:', error);
+            res.status(500).json({
+                status: 'error',
+                message: '手动重载失败',
+                details: error.message
+            });
         }
     });
 
