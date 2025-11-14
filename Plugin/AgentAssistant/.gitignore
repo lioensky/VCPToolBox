@@ -1,2 +1,5 @@
 plugin-manifest.json
 plugin-manifest.json.bak
+agent_assistant_config.json
+config.env
+CLAUDE.md

@@ -4,6 +4,7 @@ const path = require('path');
 const dotenv = require('dotenv');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const chokidar = require('chokidar');
 
 // --- State and Config Variables ---
 let VCP_SERVER_PORT;
@@ -17,6 +18,14 @@ const AGENTS = {};
 const agentContexts = new Map();
 let pushVcpInfo = () => {}; // Default no-op function
 let cleanupInterval;
+let configWatcher = null; // File watcher for config hot reload
+
+// --- Configuration File Paths ---
+const AGENT_ASSISTANT_CONFIG_JSON = path.join(__dirname, 'agent_assistant_config.json');
+const PLUGIN_CONFIG_ENV_PATH = path.join(__dirname, 'config.env'); // Legacy ENV config path
+
+// API Configuration validation
+let API_KEY, API_URL;
 
 // --- Core Module Functions ---
 
@@ -34,6 +43,18 @@ function initialize(config, dependencies) {
     DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
     VCP_API_TARGET_URL = `http://localhost:${VCP_SERVER_PORT}/v1`;
 
+    // 验证API配置 - 修复AgentAssistant配置读取问题
+    API_KEY = process.env.API_Key;
+    API_URL = process.env.API_URL;
+
+    if (DEBUG_MODE) {
+        console.error('[AgentAssistant] === API配置验证 ===');
+        console.error(`[AgentAssistant] API_KEY: ${API_KEY ? '已配置 (' + API_KEY.substring(0, 10) + '...)' : '未配置'}`);
+        console.error(`[AgentAssistant] API_URL: ${API_URL || '未配置'}`);
+        console.error(`[AgentAssistant] WhitelistImageModel: ${process.env.WhitelistImageModel || '未配置'}`);
+        console.error('[AgentAssistant] ====================');
+    }
+
     if (DEBUG_MODE) {
         console.error(`[AgentAssistant Service] Initializing...`);
         console.error(`[AgentAssistant Service] VCP PORT: ${VCP_SERVER_PORT}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND'}`);
@@ -41,6 +62,9 @@ function initialize(config, dependencies) {
     }
 
     loadAgentsFromLocalConfig();
+
+    // Set up configuration file watcher for hot reload
+    setupConfigWatcher();
 
     if (dependencies && dependencies.vcpLogFunctions && typeof dependencies.vcpLogFunctions.pushVcpInfo === 'function') {
         pushVcpInfo = dependencies.vcpLogFunctions.pushVcpInfo;
@@ -51,45 +75,368 @@ function initialize(config, dependencies) {
 
     if (cleanupInterval) clearInterval(cleanupInterval);
     cleanupInterval = setInterval(periodicCleanup, 60 * 60 * 1000);
-    
+
+    // Output configuration status in debug mode
+    if (DEBUG_MODE) {
+        const configStatus = getConfigStatus();
+        console.error(`[AgentAssistant] Configuration Status:`, configStatus);
+    }
+
     console.log('[AgentAssistant Service] Initialized successfully.');
 }
 
 /**
- * Shuts down the service, clearing any intervals.
+ * Shuts down the service, clearing any intervals and watchers.
  */
 function shutdown() {
+    // Clear context cleanup interval
     if (cleanupInterval) {
         clearInterval(cleanupInterval);
         if (DEBUG_MODE) console.error('[AgentAssistant Service] Context cleanup interval stopped.');
     }
+
+    // Close configuration file watcher
+    if (configWatcher) {
+        configWatcher.close();
+        configWatcher = null;
+        if (DEBUG_MODE) console.error('[AgentAssistant Service] Configuration file watcher closed.');
+    }
+
     console.log('[AgentAssistant Service] Shutdown complete.');
+
+
+/**
+ * Compares two agent configurations for equality
+ * @param {object} envConfig - Configuration from ENV format
+ * @param {object} jsonConfig - Configuration from JSON format
+ * @returns {boolean} - True if configurations are equivalent
+ */
+function configsAreEqual(envConfig, jsonConfig) {
+    try {
+        // Get agent base names from ENV config
+        const envAgentBaseNames = new Set();
+        for (const key in envConfig) {
+            if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                if (nameMatch && nameMatch[1]) envAgentBaseNames.add(nameMatch[1].toUpperCase());
+            }
+        }
+
+        // Check if agent count matches
+        if (envAgentBaseNames.size !== jsonConfig.agents.length) {
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Agent count mismatch: ENV has ${envAgentBaseNames.size}, JSON has ${jsonConfig.agents.length}`);
+            }
+            return false;
+        }
+
+        // Compare each agent configuration
+        for (const baseName of envAgentBaseNames) {
+            const jsonAgent = jsonConfig.agents.find(agent =>
+                agent.baseName.toUpperCase() === baseName
+            );
+
+            if (!jsonAgent) {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Agent ${baseName} missing in JSON config`);
+                }
+                return false;
+            }
+
+            // Compare key fields
+            const envModelId = envConfig[`AGENT_${baseName}_MODEL_ID`];
+            const envChineseName = envConfig[`AGENT_${baseName}_CHINESE_NAME`];
+            const envSystemPrompt = envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are {{MaidName}}.`;
+            const envMaxTokens = parseInt(envConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10);
+            const envTemperature = parseFloat(envConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7');
+            const envDescription = envConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${envChineseName}.`;
+
+            if (
+                jsonAgent.modelId !== envModelId ||
+                jsonAgent.chineseName !== envChineseName ||
+                jsonAgent.systemPrompt !== envSystemPrompt ||
+                jsonAgent.maxOutputTokens !== envMaxTokens ||
+                Math.abs(jsonAgent.temperature - envTemperature) > 0.001 ||
+                jsonAgent.description !== envDescription
+            ) {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Agent ${baseName} configuration mismatch detected`);
+                    console.error(`[AgentAssistant] ENV: modelId=${envModelId}, chineseName=${envChineseName}`);
+                    console.error(`[AgentAssistant] JSON: modelId=${jsonAgent.modelId}, chineseName=${jsonAgent.chineseName}`);
+                }
+                return false;
+            }
+        }
+
+        return true;
+    } catch (error) {
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] Error comparing configs:`, error.message);
+        }
+        return false;
+    }
+}
+
 }
 
 /**
- * Loads agent definitions from the plugin's local config.env file.
+ * Migrates configuration from ENV format to JSON format if needed.
+ * This ensures backward compatibility while standardizing on JSON format.
  */
-function loadAgentsFromLocalConfig() {
-    const pluginConfigEnvPath = path.join(__dirname, 'config.env');
-    let pluginLocalEnvConfig = {};
-
-    if (fs.existsSync(pluginConfigEnvPath)) {
-        try {
-            const fileContent = fs.readFileSync(pluginConfigEnvPath, { encoding: 'utf8' });
-            pluginLocalEnvConfig = dotenv.parse(fileContent);
-        } catch (e) {
-            console.error(`[AgentAssistant Service] Error parsing plugin's local config.env (${pluginConfigEnvPath}): ${e.message}.`);
-            return;
+function migrateConfigIfNeeded() {
+    // Check if ENV config exists
+    if (!fs.existsSync(PLUGIN_CONFIG_ENV_PATH)) {
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] No ENV config found - using empty config or existing JSON`);
         }
+        return; // No ENV config to migrate from
+    }
+
+    let needsMigration = false;
+    let shouldCompare = false;
+
+    // If JSON config doesn't exist, migration is needed
+    if (!fs.existsSync(AGENT_ASSISTANT_CONFIG_JSON)) {
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] JSON config doesn't exist - migration needed`);
+        }
+        needsMigration = true;
     } else {
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Plugin's local config.env not found at: ${pluginConfigEnvPath}.`);
+        // JSON exists, but we need to check if it's valid and up-to-date
+        try {
+            const jsonContent = fs.readFileSync(AGENT_ASSISTANT_CONFIG_JSON, 'utf8');
+            const jsonConfig = JSON.parse(jsonContent);
+
+            if (!jsonConfig.agents || !Array.isArray(jsonConfig.agents) || jsonConfig.agents.length === 0) {
+                // JSON exists but is invalid or empty
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] JSON config exists but is invalid/empty - migration needed`);
+                }
+                needsMigration = true;
+            } else {
+                // JSON is valid, but we should compare with ENV to check for changes
+                shouldCompare = true;
+            }
+        } catch (error) {
+            // JSON exists but is malformed
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] JSON config exists but is malformed - migration needed:`, error.message);
+            }
+            needsMigration = true;
+        }
+    }
+
+    // If we need to compare configurations, load both and check for differences
+    if (shouldCompare) {
+        try {
+            // Load ENV config
+            const envFileContent = fs.readFileSync(PLUGIN_CONFIG_ENV_PATH, 'utf8');
+            const envConfig = dotenv.parse(envFileContent);
+
+            // Load JSON config
+            const jsonContent = fs.readFileSync(AGENT_ASSISTANT_CONFIG_JSON, 'utf8');
+            const jsonConfig = JSON.parse(jsonContent);
+
+            // Compare configurations
+            if (!configsAreEqual(envConfig, jsonConfig)) {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Configuration changes detected - performing migration`);
+                }
+                needsMigration = true;
+            } else {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Configurations are identical - no migration needed`);
+                }
+                return; // No migration needed
+            }
+        } catch (error) {
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Error comparing configurations - performing migration:`, error.message);
+            }
+            needsMigration = true;
+        }
+    }
+
+    // If migration is needed, proceed with it
+    if (!needsMigration) {
         return;
     }
 
+    if (DEBUG_MODE) {
+        console.error(`[AgentAssistant] Starting migration from ENV config to JSON format...`);
+    }
+
+    try {
+        // Load agents from ENV (existing logic)
+        const fileContent = fs.readFileSync(PLUGIN_CONFIG_ENV_PATH, 'utf8');
+        const pluginLocalEnvConfig = dotenv.parse(fileContent);
+
+        const AGENT_ALL_SYSTEM_PROMPT = pluginLocalEnvConfig.AGENT_ALL_SYSTEM_PROMPT || "";
+        const agentBaseNames = new Set();
+
+        // Identify agent base names from environment variables
+        for (const key in pluginLocalEnvConfig) {
+            if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                if (nameMatch && nameMatch[1]) agentBaseNames.add(nameMatch[1].toUpperCase());
+            }
+        }
+
+        // Convert ENV config to JSON format
+        const agents = [];
+        for (const baseName of agentBaseNames) {
+            const modelId = pluginLocalEnvConfig[`AGENT_${baseName}_MODEL_ID`];
+            const chineseName = pluginLocalEnvConfig[`AGENT_${baseName}_CHINESE_NAME`];
+
+            if (!modelId || !chineseName) {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Skipping agent ${baseName}: Missing MODEL_ID or CHINESE_NAME.`);
+                }
+                continue;
+            }
+
+            const agentConfig = {
+                baseName: baseName,
+                chineseName: chineseName,
+                modelId: modelId,
+                systemPrompt: pluginLocalEnvConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are {{MaidName}}.`,
+                maxOutputTokens: parseInt(pluginLocalEnvConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
+                temperature: parseFloat(pluginLocalEnvConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
+                description: pluginLocalEnvConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`
+            };
+
+            agents.push(agentConfig);
+
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Migrated agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
+            }
+        }
+
+        // Create JSON config structure
+        const jsonConfig = {
+            agents: agents,
+            globalSystemPrompt: AGENT_ALL_SYSTEM_PROMPT,
+            migratedAt: new Date().toISOString(),
+            migrationVersion: "1.0",
+            migratedFrom: "config.env"
+        };
+
+        // Write JSON config file
+        const jsonString = JSON.stringify(jsonConfig, null, 2);
+        fs.writeFileSync(AGENT_ASSISTANT_CONFIG_JSON, jsonString, 'utf8');
+
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] ✅ Migration completed successfully!`);
+            console.error(`[AgentAssistant] Migrated ${agents.length} agents from ENV to JSON format`);
+            console.error(`[AgentAssistant] JSON config saved to: ${AGENT_ASSISTANT_CONFIG_JSON}`);
+        }
+
+    } catch (error) {
+        console.error(`[AgentAssistant] ❌ Migration failed:`, error.message);
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] Migration error details:`, error.stack);
+        }
+    }
+}
+
+
+/**
+ * Loads agent definitions from configuration files with auto-migration support.
+ * Priority: JSON config (auto-migrated from ENV if needed)
+ */
+function loadAgentsFromLocalConfig() {
+    if (DEBUG_MODE) {
+        console.error(`[AgentAssistant] Loading agents from configuration files...`);
+        console.error(`[AgentAssistant] JSON config path: ${AGENT_ASSISTANT_CONFIG_JSON}`);
+        console.error(`[AgentAssistant] ENV config path: ${PLUGIN_CONFIG_ENV_PATH}`);
+    }
+
+    // Clear existing agents first
+    Object.keys(AGENTS).forEach(key => delete AGENTS[key]);
+
+    // Step 1: Check if migration is needed and perform it
+    migrateConfigIfNeeded();
+
+    // Step 2: Load from JSON config (post-migration)
+    if (fs.existsSync(AGENT_ASSISTANT_CONFIG_JSON)) {
+        try {
+            loadFromJSON(AGENT_ASSISTANT_CONFIG_JSON);
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Successfully loaded ${Object.keys(AGENTS).length} agents from JSON config`);
+            }
+            return;
+        } catch (error) {
+            console.error(`[AgentAssistant] JSON config failed:`, error.message);
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] JSON config error details:`, error.stack);
+            }
+        }
+    } else {
+        console.error(`[AgentAssistant] No configuration found. Please create ${AGENT_ASSISTANT_CONFIG_JSON}`);
+    }
+}
+
+/**
+ * Loads agents from JSON configuration file
+ * @param {string} jsonPath - Path to JSON config file
+ */
+function loadFromJSON(jsonPath) {
+    const fileContent = fs.readFileSync(jsonPath, { encoding: 'utf8' });
+    const config = JSON.parse(fileContent);
+
+    // Validate config format
+    if (!config.agents || !Array.isArray(config.agents)) {
+        throw new Error('Invalid JSON config format: missing or invalid "agents" array');
+    }
+
+    const globalSystemPrompt = config.globalSystemPrompt || "";
+
+    // Convert JSON config to standard AGENTS format
+    for (const agentDef of config.agents) {
+        // Validate required fields
+        if (!agentDef.chineseName || !agentDef.modelId) {
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Skipping agent: missing required fields (chineseName or modelId)`);
+            }
+            continue;
+        }
+
+        // Process system prompt with placeholders
+        let finalSystemPrompt = agentDef.systemPrompt || 'You are {{MaidName}}.';
+        finalSystemPrompt = finalSystemPrompt.replace(/\{\{MaidName\}\}/g, agentDef.chineseName);
+        if (globalSystemPrompt) {
+            finalSystemPrompt += `\n\n${globalSystemPrompt}`;
+        }
+
+        // Build standard AGENTS format
+        AGENTS[agentDef.chineseName] = {
+            id: agentDef.modelId,
+            name: agentDef.chineseName,
+            baseName: agentDef.baseName || agentDef.chineseName.toUpperCase().replace(/\s+/g, '_'),
+            systemPrompt: finalSystemPrompt,
+            maxOutputTokens: agentDef.maxOutputTokens || 40000,
+            temperature: agentDef.temperature || 0.7,
+            description: agentDef.description || `Assistant ${agentDef.chineseName}.`,
+        };
+
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] Loaded JSON agent: '${agentDef.chineseName}' (Base: ${AGENTS[agentDef.chineseName].baseName}, ModelID: ${agentDef.modelId})`);
+        }
+    }
+}
+
+/**
+ * Loads agents from ENV configuration file (legacy format)
+ * @param {string} envPath - Path to ENV config file
+ */
+function loadFromEnv(envPath) {
+    const fileContent = fs.readFileSync(envPath, { encoding: 'utf8' });
+    const pluginLocalEnvConfig = dotenv.parse(fileContent);
+
     const AGENT_ALL_SYSTEM_PROMPT = pluginLocalEnvConfig.AGENT_ALL_SYSTEM_PROMPT || "";
     const agentBaseNames = new Set();
-    Object.keys(AGENTS).forEach(key => delete AGENTS[key]); // Clear existing agents
 
+    // Identify agent base names from environment variables
     for (const key in pluginLocalEnvConfig) {
         if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
             const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
@@ -97,14 +444,19 @@ function loadAgentsFromLocalConfig() {
         }
     }
 
-    if (DEBUG_MODE) console.error(`[AgentAssistant Service] Identified agent base names: ${[...agentBaseNames].join(', ') || 'None'}`);
+    if (DEBUG_MODE) {
+        console.error(`[AgentAssistant] Identified agent base names: ${[...agentBaseNames].join(', ') || 'None'}`);
+    }
 
+    // Load each agent from ENV configuration
     for (const baseName of agentBaseNames) {
         const modelId = pluginLocalEnvConfig[`AGENT_${baseName}_MODEL_ID`];
         const chineseName = pluginLocalEnvConfig[`AGENT_${baseName}_CHINESE_NAME`];
 
         if (!modelId || !chineseName) {
-            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Skipping agent ${baseName}: Missing MODEL_ID or CHINESE_NAME.`);
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Skipping agent ${baseName}: Missing MODEL_ID or CHINESE_NAME.`);
+            }
             continue;
         }
 
@@ -121,10 +473,203 @@ function loadAgentsFromLocalConfig() {
             temperature: parseFloat(pluginLocalEnvConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
             description: pluginLocalEnvConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`,
         };
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Loaded agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
+
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] Loaded ENV agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
+        }
     }
+
     if (Object.keys(AGENTS).length === 0 && DEBUG_MODE) {
-        console.error("[AgentAssistant Service] Warning: No agents were loaded.");
+        console.error("[AgentAssistant] Warning: No agents were loaded from ENV config.");
+    }
+}
+
+/**
+ * Sets up file watchers for configuration files to enable hot reload
+ */
+function setupConfigWatcher() {
+    try {
+        // Stop existing watcher if any
+        if (configWatcher) {
+            configWatcher.close();
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Closed existing config watcher`);
+            }
+        }
+
+        // Watch JSON config file only (ENV config is now read-only for migration)
+        const configFiles = [AGENT_ASSISTANT_CONFIG_JSON].filter(filePath =>
+            fs.existsSync(filePath)
+        );
+
+        if (configFiles.length === 0) {
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] No config files found to watch`);
+            }
+            return;
+        }
+
+        configWatcher = chokidar.watch(configFiles, {
+            persistent: true,
+            ignoreInitial: true,
+            awaitWriteFinish: {
+                stabilityThreshold: 200,
+                pollInterval: 100
+            }
+        });
+
+        configWatcher
+            .on('change', (filePath) => {
+                // console.log(`[AgentAssistant] Configuration file changed: ${path.basename(filePath)}`);
+                loadAgentsFromLocalConfig();
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Configuration reloaded due to file change`);
+                }
+            })
+            .on('unlink', (filePath) => {
+                console.log(`[AgentAssistant] Configuration file deleted: ${path.basename(filePath)}`);
+                loadAgentsFromLocalConfig(); // Reload to check for alternative config
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Configuration reloaded due to file deletion`);
+                }
+            })
+            .on('add', (filePath) => {
+                console.log(`[AgentAssistant] New configuration file detected: ${path.basename(filePath)}`);
+                loadAgentsFromLocalConfig();
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Configuration reloaded due to new file`);
+                }
+            });
+
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] File watcher set up for config files: ${configFiles.join(', ')}`);
+        }
+    } catch (error) {
+        console.error(`[AgentAssistant] Failed to set up config file watcher:`, error);
+    }
+}
+
+/**
+ * Gets the current configuration status for debugging
+ * @returns {object} Configuration status information
+ */
+function getConfigStatus() {
+    const jsonExists = fs.existsSync(AGENT_ASSISTANT_CONFIG_JSON);
+    const envExists = fs.existsSync(PLUGIN_CONFIG_ENV_PATH);
+
+    // Check if JSON config was migrated from ENV
+    let migrationInfo = null;
+    if (jsonExists) {
+        try {
+            const jsonContent = fs.readFileSync(AGENT_ASSISTANT_CONFIG_JSON, 'utf8');
+            const jsonConfig = JSON.parse(jsonContent);
+            if (jsonConfig.migratedFrom === 'config.env') {
+                migrationInfo = {
+                    migrated: true,
+                    migratedAt: jsonConfig.migratedAt,
+                    migrationVersion: jsonConfig.migrationVersion
+                };
+            }
+        } catch (error) {
+            // Ignore parsing errors for migration info
+        }
+    }
+
+    return {
+        jsonConfigExists: jsonExists,
+        envConfigExists: envExists,
+        currentFormat: jsonExists ? 'json' : 'none', // ENV is now read-only for migration
+        jsonConfigPath: AGENT_ASSISTANT_CONFIG_JSON,
+        envConfigPath: PLUGIN_CONFIG_ENV_PATH,
+        envConfigStatus: envExists ? 'read-only (migration source)' : 'not found',
+        migrationInfo: migrationInfo,
+        agentCount: Object.keys(AGENTS).length,
+        loadedAgents: Object.keys(AGENTS),
+        watcherActive: configWatcher !== null
+    };
+}
+
+/**
+ * Migrates configuration from ENV format to JSON format
+ * @returns {object} Migration result with statistics
+ */
+function migrateFromEnvToJson() {
+    try {
+        if (!fs.existsSync(PLUGIN_CONFIG_ENV_PATH)) {
+            return {
+                success: false,
+                message: 'ENV configuration file not found',
+                migratedCount: 0
+            };
+        }
+
+        const fileContent = fs.readFileSync(PLUGIN_CONFIG_ENV_PATH, { encoding: 'utf8' });
+        const pluginLocalEnvConfig = dotenv.parse(fileContent);
+
+        const agentBaseNames = new Set();
+        for (const key in pluginLocalEnvConfig) {
+            if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                if (nameMatch && nameMatch[1]) agentBaseNames.add(nameMatch[1].toUpperCase());
+            }
+        }
+
+        if (agentBaseNames.size === 0) {
+            return {
+                success: false,
+                message: 'No agents found in ENV configuration',
+                migratedCount: 0
+            };
+        }
+
+        const globalSystemPrompt = pluginLocalEnvConfig.AGENT_ALL_SYSTEM_PROMPT || "";
+        const agents = [];
+
+        for (const baseName of agentBaseNames) {
+            const modelId = pluginLocalEnvConfig[`AGENT_${baseName}_MODEL_ID`];
+            const chineseName = pluginLocalEnvConfig[`AGENT_${baseName}_CHINESE_NAME`];
+
+            if (!modelId || !chineseName) {
+                continue;
+            }
+
+            const systemPrompt = pluginLocalEnvConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are {{MaidName}}.`;
+            const maxOutputTokens = parseInt(pluginLocalEnvConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10);
+            const temperature = parseFloat(pluginLocalEnvConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7');
+            const description = pluginLocalEnvConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`;
+
+            agents.push({
+                baseName: baseName,
+                chineseName: chineseName,
+                modelId: modelId,
+                systemPrompt: systemPrompt,
+                maxOutputTokens: maxOutputTokens,
+                temperature: temperature,
+                description: description
+            });
+        }
+
+        const jsonConfig = {
+            version: "2.0",
+            agents: agents,
+            globalSystemPrompt: globalSystemPrompt
+        };
+
+        // Write JSON config file
+        fs.writeFileSync(AGENT_ASSISTANT_CONFIG_JSON, JSON.stringify(jsonConfig, null, 2), 'utf8');
+
+        return {
+            success: true,
+            message: `Successfully migrated ${agents.length} agents from ENV to JSON format`,
+            migratedCount: agents.length,
+            jsonConfigPath: AGENT_ASSISTANT_CONFIG_JSON
+        };
+    } catch (error) {
+        return {
+            success: false,
+            message: `Migration failed: ${error.message}`,
+            migratedCount: 0
+        };
     }
 }
 
@@ -353,5 +898,8 @@ async function processToolCall(args) {
 module.exports = {
     initialize,
     shutdown,
-    processToolCall
+    processToolCall,
+    loadAgentsFromLocalConfig,
+    getConfigStatus,
+    migrateFromEnvToJson
 };
