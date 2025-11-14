@@ -2,15 +2,22 @@ const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, '..', 'preprocessor_order.json');
+const axios = require('axios');
 
 // 导入 reidentify_image 函数 (现在是 reidentify_media)
 const { reidentifyMediaByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
 const { getAuthCode } = require('../modules/captchaDecoder'); // 导入统一的解码函数
+const { replaceAgentVariables } = require('../modules/messageProcessor'); // 导入占位符解析函数
+const dotenv = require('dotenv'); // 导入dotenv用于解析.env文件
 
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
 const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
+
+// AgentAssistant 配置文件路径常量
+const AGENT_ASSISTANT_CONFIG_FILE = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'agent_assistant_config.json');
+const AGENT_ASSISTANT_ENV_FILE = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env');
 
 module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
     const adminApiRouter = express.Router();
@@ -1087,6 +1094,511 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
 
     // --- End Agent Files API ---
+
+    // --- AgentAssistant APIs ---
+
+    // GET /admin_api/agent-assistant/agents - 获取所有子Agent配置
+    adminApiRouter.get('/agent-assistant/agents', async (req, res) => {
+        try {
+            // 尝试读取JSON配置格式
+            let agents = [];
+            let globalSystemPrompt = "";
+
+            try {
+                const content = await fs.readFile(AGENT_ASSISTANT_CONFIG_FILE, 'utf-8');
+                const config = JSON.parse(content);
+                agents = config.agents || [];
+                globalSystemPrompt = config.globalSystemPrompt || "";
+            } catch (jsonError) {
+                if (jsonError.code === 'ENOENT') {
+                    // JSON文件不存在，尝试读取ENV格式
+                    try {
+                        const envContent = await fs.readFile(AGENT_ASSISTANT_ENV_FILE, 'utf-8');
+                        const envConfig = dotenv.parse(envContent);
+
+                        // 从ENV格式转换为标准格式
+                        const agentBaseNames = new Set();
+                        Object.keys(envConfig).forEach(key => {
+                            if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                                const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                                if (nameMatch && nameMatch[1]) {
+                                    agentBaseNames.add(nameMatch[1].toUpperCase());
+                                }
+                            }
+                        });
+
+                        for (const baseName of agentBaseNames) {
+                            const modelId = envConfig[`AGENT_${baseName}_MODEL_ID`];
+                            const chineseName = envConfig[`AGENT_${baseName}_CHINESE_NAME`];
+
+                            if (modelId && chineseName) {
+                                const systemPromptTemplate = envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are a helpful AI assistant named {{MaidName}}.`;
+                                agents.push({
+                                    baseName: baseName,
+                                    modelId: modelId,
+                                    chineseName: chineseName,
+                                    systemPrompt: systemPromptTemplate,
+                                    maxOutputTokens: parseInt(envConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
+                                    temperature: parseFloat(envConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
+                                    description: envConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`
+                                });
+                            }
+                        }
+                        globalSystemPrompt = envConfig.AGENT_ALL_SYSTEM_PROMPT || "";
+                    } catch (envError) {
+                        if (envError.code === 'ENOENT') {
+                            // 两个文件都不存在，返回空配置
+                            agents = [];
+                            globalSystemPrompt = "";
+                        } else {
+                            throw envError;
+                        }
+                    }
+                } else {
+                    throw jsonError;
+                }
+            }
+
+            res.json({ agents, globalSystemPrompt });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading AgentAssistant agents:', error);
+            res.status(500).json({ error: 'Failed to read AgentAssistant agents configuration', details: error.message });
+        }
+    });
+
+    // POST /admin_api/agent-assistant/agents - 保存所有子Agent配置
+    adminApiRouter.post('/agent-assistant/agents', async (req, res) => {
+        console.log('🔄 [AdminPanelRoutes] POST /admin_api/agent-assistant/agents - 开始保存配置');
+
+        const { agents, globalSystemPrompt } = req.body;
+
+        console.log('📊 [AdminPanelRoutes] 接收到的数据:', {
+            agentCount: Array.isArray(agents) ? agents.length : 'invalid',
+            hasGlobalSystemPrompt: !!globalSystemPrompt,
+            globalSystemPromptLength: globalSystemPrompt?.length || 0,
+            dataType: typeof agents
+        });
+
+        // 输入验证
+        if (!Array.isArray(agents)) {
+            console.error('❌ [AdminPanelRoutes] 输入验证失败: agents不是数组');
+            return res.status(400).json({
+                error: 'Invalid request body. Expected { agents: array, globalSystemPrompt: string }.',
+                receivedType: typeof agents,
+                receivedData: agents
+            });
+        }
+
+        // 验证每个agent的数据结构
+        const invalidAgents = [];
+        agents.forEach((agent, index) => {
+            if (!agent.chineseName || !agent.modelId || !agent.baseName) {
+                invalidAgents.push({
+                    index,
+                    chineseName: agent.chineseName,
+                    modelId: agent.modelId,
+                    baseName: agent.baseName
+                });
+            }
+        });
+
+        if (invalidAgents.length > 0) {
+            console.error('❌ [AdminPanelRoutes] Agent数据验证失败:', invalidAgents);
+            return res.status(400).json({
+                error: 'Invalid agent data structure. Each agent must have chineseName, modelId, and baseName.',
+                invalidAgents: invalidAgents
+            });
+        }
+
+        try {
+            // 确保AgentAssistant目录存在
+            const agentAssistantDir = path.dirname(AGENT_ASSISTANT_CONFIG_FILE);
+            console.log('📁 [AdminPanelRoutes] 确保目录存在:', agentAssistantDir);
+            await fs.mkdir(agentAssistantDir, { recursive: true });
+
+            // 验证目录创建成功
+            await fs.access(agentAssistantDir);
+            console.log('✅ [AdminPanelRoutes] 目录验证成功');
+
+            // 准备配置数据
+            const config = {
+                agents: agents,
+                globalSystemPrompt: globalSystemPrompt || "",
+                savedAt: new Date().toISOString(),
+                version: "2.0"
+            };
+
+            // JSON字符串化以验证数据
+            let jsonString;
+            try {
+                jsonString = JSON.stringify(config, null, 2);
+                console.log('📝 [AdminPanelRoutes] JSON序列化成功，长度:', jsonString.length);
+            } catch (serializeError) {
+                console.error('❌ [AdminPanelRoutes] JSON序列化失败:', serializeError);
+                return res.status(500).json({
+                    error: 'Failed to serialize configuration data',
+                    details: serializeError.message
+                });
+            }
+
+            // 写入JSON配置文件
+            console.log('💾 [AdminPanelRoutes] 写入JSON配置文件:', AGENT_ASSISTANT_CONFIG_FILE);
+            await fs.writeFile(AGENT_ASSISTANT_CONFIG_FILE, jsonString, 'utf-8');
+
+            // 验证文件写入成功
+            await fs.access(AGENT_ASSISTANT_CONFIG_FILE);
+            const fileStats = await fs.stat(AGENT_ASSISTANT_CONFIG_FILE);
+            console.log('✅ [AdminPanelRoutes] JSON文件写入成功，大小:', fileStats.size, 'bytes');
+
+            // 读取文件验证内容
+            const savedContent = await fs.readFile(AGENT_ASSISTANT_CONFIG_FILE, 'utf-8');
+            if (savedContent !== jsonString) {
+                console.error('❌ [AdminPanelRoutes] 文件内容验证失败');
+                throw new Error('File content verification failed - written content does not match expected content');
+            }
+            console.log('✅ [AdminPanelRoutes] 文件内容验证成功');
+
+            // 可选：同时更新ENV格式以保持向后兼容
+            try {
+                console.log('📝 [AdminPanelRoutes] 更新ENV配置文件');
+                let envContent = `# AgentAssistant Configuration (Auto-generated)\n`;
+                envContent += `# This file is auto-generated from the JSON configuration\n`;
+                envContent += `# Last updated: ${new Date().toISOString()}\n\n`;
+
+                if (globalSystemPrompt) {
+                    envContent += `AGENT_ALL_SYSTEM_PROMPT="${globalSystemPrompt.replace(/"/g, '\\"')}"\n\n`;
+                }
+
+                for (const agent of agents) {
+                    envContent += `# Agent: ${agent.chineseName}\n`;
+                    envContent += `AGENT_${agent.baseName}_MODEL_ID="${agent.modelId}"\n`;
+                    envContent += `AGENT_${agent.baseName}_CHINESE_NAME="${agent.chineseName}"\n`;
+                    envContent += `AGENT_${agent.baseName}_SYSTEM_PROMPT="${(agent.systemPrompt || '').replace(/"/g, '\\"')}"\n`;
+                    envContent += `AGENT_${agent.baseName}_MAX_OUTPUT_TOKENS=${agent.maxOutputTokens || 40000}\n`;
+                    envContent += `AGENT_${agent.baseName}_TEMPERATURE=${agent.temperature || 0.7}\n`;
+                    if (agent.description) {
+                        envContent += `AGENT_${agent.baseName}_DESCRIPTION="${agent.description.replace(/"/g, '\\"')}"\n`;
+                    }
+                    envContent += `\n`;
+                }
+
+                await fs.writeFile(AGENT_ASSISTANT_ENV_FILE, envContent, 'utf-8');
+                console.log('✅ [AdminPanelRoutes] ENV文件更新成功');
+            } catch (envError) {
+                console.warn('⚠️ [AdminPanelRoutes] ENV文件更新失败（非关键）:', envError.message);
+            }
+
+            const successMessage = `AgentAssistant agents configuration saved successfully (${agents.length} agents)`;
+            console.log('✅ [AdminPanelRoutes] 保存完成:', successMessage);
+
+            res.json({
+                message: successMessage,
+                agentCount: agents.length,
+                filePath: AGENT_ASSISTANT_CONFIG_FILE,
+                savedAt: config.savedAt
+            });
+
+        } catch (error) {
+            console.error('❌ [AdminPanelRoutes] 保存配置失败:', {
+                error: error.message,
+                stack: error.stack,
+                code: error.code,
+                path: error.path,
+                agentsCount: agents.length
+            });
+
+            // 区分不同类型的错误
+            if (error.code === 'EACCES') {
+                res.status(500).json({
+                    error: 'Permission denied when saving configuration file',
+                    details: error.message,
+                    filePath: AGENT_ASSISTANT_CONFIG_FILE
+                });
+            } else if (error.code === 'ENOSPC') {
+                res.status(500).json({
+                    error: 'Insufficient disk space when saving configuration file',
+                    details: error.message
+                });
+            } else if (error.code === 'ENOENT') {
+                res.status(500).json({
+                    error: 'Directory not found when saving configuration file',
+                    details: error.message,
+                    directory: path.dirname(AGENT_ASSISTANT_CONFIG_FILE)
+                });
+            } else {
+                res.status(500).json({
+                    error: 'Failed to save AgentAssistant agents configuration',
+                    details: error.message,
+                    errorCode: error.code,
+                    errorPath: error.path
+                });
+            }
+        }
+    });
+
+    // GET /admin_api/agent-assistant/preview - 预览占位符替换结果
+    adminApiRouter.get('/agent-assistant/preview', async (req, res) => {
+        const { text, model } = req.query;
+
+        if (!text || typeof text !== 'string') {
+            return res.status(400).json({ error: 'Invalid request. Expected { text: string, model?: string }.' });
+        }
+
+        try {
+            const resolvedText = await replaceAgentVariables(text, model || 'default', 'user', { superDetectors: [], detectors: [] });
+            res.json({
+                original: text,
+                resolved: resolvedText
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error resolving placeholders:', error);
+            res.status(500).json({ error: 'Failed to resolve placeholders', details: error.message });
+        }
+    });
+
+    // GET /admin_api/models - 获取可用模型列表
+    adminApiRouter.get('/models', async (req, res) => {
+        try {
+            const models = [];
+
+            // 读取主配置文件中的MODEL_*_ID格式
+            const mainConfigPath = path.join(__dirname, '..', 'config.env');
+            try {
+                const mainContent = await fs.readFile(mainConfigPath, 'utf-8');
+                const mainEnvConfig = dotenv.parse(mainContent);
+
+                // 查找MODEL_*_ID格式的配置（新格式）
+                Object.keys(mainEnvConfig).forEach(key => {
+                    if (key.startsWith('MODEL_') && key.endsWith('_ID')) {
+                        const modelName = key.replace(/^MODEL_/, '').replace(/_ID$/, '');
+                        models.push({
+                            key: key,
+                            value: mainEnvConfig[key],
+                            name: modelName
+                        });
+                    }
+                });
+
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    console.warn('[AdminPanelRoutes API] Failed to read main config:', error.message);
+                }
+            }
+
+            // 读取AgentAssistant配置中的AGENT_*_MODEL_ID格式
+            const agentConfigPath = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env');
+            try {
+                const agentContent = await fs.readFile(agentConfigPath, 'utf-8');
+                const agentEnvConfig = dotenv.parse(agentContent);
+
+                // 同时查找现有的API配置格式（AGENT_*_MODEL_ID）- 从AgentAssistant配置中提取
+                const existingModels = new Set();
+                Object.keys(agentEnvConfig).forEach(key => {
+                    if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                        const modelValue = agentEnvConfig[key];
+                        if (modelValue && !existingModels.has(modelValue)) {
+                            existingModels.add(modelValue);
+                            models.push({
+                                key: key,
+                                value: modelValue,
+                                name: modelValue // 使用模型ID作为名称
+                            });
+                        }
+                    }
+                });
+
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    console.warn('[AdminPanelRoutes API] Failed to read AgentAssistant config:', error.message);
+                }
+            }
+
+            // 按名称排序
+            models.sort((a, b) => a.name.localeCompare(b.name));
+
+            res.json({ models });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading models configuration:', error);
+            res.status(500).json({ error: 'Failed to read models configuration', details: error.message });
+        }
+    });
+
+        // GET /admin_api/models/refresh - 从配置的API地址获取实时模型列表
+    adminApiRouter.get('/models/refresh', async (req, res) => {
+        try {
+            // 读取根目录的config.env获取API配置
+            const mainConfigPath = path.join(__dirname, '..', 'config.env');
+            const configContent = await fs.readFile(mainConfigPath, 'utf-8');
+            const envConfig = dotenv.parse(configContent);
+
+            const API_KEY = envConfig.API_Key;
+            const API_URL = envConfig.API_URL;
+
+            if (!API_KEY || !API_URL) {
+                return res.status(400).json({
+                    error: 'API configuration missing',
+                    details: 'Please configure API_Key and API_URL in config.env'
+                });
+            }
+
+            console.log('[Models Refresh] 正在调用API获取模型列表...', { API_URL });
+
+            // 调用AI服务API获取模型列表
+            const modelsResponse = await axios.get(`${API_URL}/v1/models`, {
+                headers: {
+                    'Authorization': `Bearer ${API_KEY}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            console.log('[Models Refresh] API响应状态:', modelsResponse.status);
+
+            const modelsData = modelsResponse.data;
+
+            if (!modelsData.data || !Array.isArray(modelsData.data)) {
+                throw new Error('Invalid API response format: missing data array');
+            }
+
+            // 格式化模型数据
+            const models = modelsData.data
+                .filter(model => model.id && !model.id.startsWith('//')) // 过滤掉无效模型
+                .map(model => ({
+                    key: `REALTIME_${model.id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`,
+                    value: model.id,
+                    name: model.id,
+                    description: model.object === 'model' ? `实时获取的模型 (${model.created ? new Date(model.created * 1000).toLocaleDateString() : '未知日期'})` : '未知',
+                    owned_by: model.owned_by || '未知',
+                    permission: model.permission || [],
+                    root: model.root || model.id,
+                    parent: model.parent || null
+                }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            console.log('[Models Refresh] 成功获取', models.length, '个模型');
+
+            res.json({
+                models,
+                source: 'realtime_api',
+                timestamp: new Date().toISOString(),
+                api_url: API_URL,
+                total_models: models.length
+            });
+
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error fetching models from API:', error);
+            res.status(500).json({
+                error: 'Failed to fetch models from API',
+                details: error.message
+            });
+        }
+    });
+
+    // GET /admin_api/agent-assistant/config-format - 检测当前配置格式
+    adminApiRouter.get('/agent-assistant/config-format', async (req, res) => {
+        try {
+            const hasJSON = await fs.access(AGENT_ASSISTANT_CONFIG_FILE).then(() => true).catch(() => false);
+            const hasEnv = await fs.access(AGENT_ASSISTANT_ENV_FILE).then(() => true).catch(() => false);
+
+            let currentFormat = 'none';
+            if (hasJSON && hasEnv) {
+                // 两者都存在，优先返回JSON（作为主要格式）
+                try {
+                    await fs.access(AGENT_ASSISTANT_CONFIG_FILE);
+                    currentFormat = 'json';
+                } catch {
+                    currentFormat = 'env';
+                }
+            } else if (hasJSON) {
+                currentFormat = 'json';
+            } else if (hasEnv) {
+                currentFormat = 'env';
+            }
+
+            const canMigrate = hasEnv && !hasJSON;
+
+            res.json({
+                currentFormat,
+                hasJSON,
+                hasEnv,
+                canMigrate
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error detecting config format:', error);
+            res.status(500).json({ error: 'Failed to detect configuration format', details: error.message });
+        }
+    });
+
+    // GET /admin_api/agent-assistant/migrate - 迁移ENV配置到JSON格式
+    adminApiRouter.get('/agent-assistant/migrate', async (req, res) => {
+        try {
+            if (!await fs.access(AGENT_ASSISTANT_ENV_FILE).then(() => true).catch(() => false)) {
+                return res.status(404).json({ error: 'No ENV configuration file found to migrate.' });
+            }
+
+            if (await fs.access(AGENT_ASSISTANT_CONFIG_FILE).then(() => true).catch(() => false)) {
+                return res.status(409).json({ error: 'JSON configuration file already exists. Migration aborted.' });
+            }
+
+            const envContent = await fs.readFile(AGENT_ASSISTANT_ENV_FILE, 'utf-8');
+            const envConfig = dotenv.parse(envContent);
+
+            // 转换为JSON格式
+            const agents = [];
+            const agentBaseNames = new Set();
+
+            // 收集所有Agent基础名称
+            Object.keys(envConfig).forEach(key => {
+                if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                    const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                    if (nameMatch && nameMatch[1]) {
+                        agentBaseNames.add(nameMatch[1].toUpperCase());
+                    }
+                }
+            });
+
+            // 为每个Agent创建配置条目
+            for (const baseName of agentBaseNames) {
+                const modelId = envConfig[`AGENT_${baseName}_MODEL_ID`];
+                const chineseName = envConfig[`AGENT_${baseName}_CHINESE_NAME`];
+
+                if (modelId && chineseName) {
+                    const systemPromptTemplate = envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are a helpful AI assistant named {{MaidName}}.`;
+                    agents.push({
+                        baseName: baseName,
+                        modelId: modelId,
+                        chineseName: chineseName,
+                        systemPrompt: systemPromptTemplate,
+                        maxOutputTokens: parseInt(envConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
+                        temperature: parseFloat(envConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
+                        description: envConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`
+                    });
+                }
+            }
+
+            const globalSystemPrompt = envConfig.AGENT_ALL_SYSTEM_PROMPT || "";
+            const config = {
+                agents: agents,
+                globalSystemPrompt: globalSystemPrompt
+            };
+
+            // 保存JSON配置
+            const agentAssistantDir = path.dirname(AGENT_ASSISTANT_CONFIG_FILE);
+            await fs.mkdir(agentAssistantDir, { recursive: true });
+            await fs.writeFile(AGENT_ASSISTANT_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+
+            res.json({
+                message: 'Configuration migrated successfully from ENV to JSON format.',
+                agentCount: agents.length,
+                config: config
+            });
+
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error migrating configuration:', error);
+            res.status(500).json({ error: 'Failed to migrate configuration', details: error.message });
+        }
+    });
+
+    // --- End AgentAssistant APIs ---
 
     // --- TVS Variable Files API ---
     const TVS_FILES_DIR = path.join(__dirname, '..', 'TVStxt'); // 定义 TVS 文件目录
