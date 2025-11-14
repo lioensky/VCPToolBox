@@ -260,8 +260,27 @@ async function saveAgentsConfiguration() {
         console.log('⏳ [AgentAssistant] 等待文件写入完成...');
         await new Promise(resolve => setTimeout(resolve, 500));
 
+        // 尝试手动触发服务器端热重载
+        console.log('🔄 [AgentAssistant] 触发服务器端热重载...');
+        try {
+            const reloadResponse = await apiFetch(`${API_BASE_URL}/agent-assistant/reload`, {
+                method: 'POST'
+            });
+
+            if (reloadResponse.status === 'success') {
+                console.log('✅ [AgentAssistant] 服务器端热重载成功:', reloadResponse.message);
+                showMessage(`服务器端热重载成功: ${reloadResponse.message}`, 'success');
+            } else {
+                console.warn('⚠️ [AgentAssistant] 服务器端热重载返回警告:', reloadResponse.message);
+                showMessage(`服务器端热重载警告: ${reloadResponse.message}`, 'warning');
+            }
+        } catch (reloadError) {
+            console.error('❌ [AgentAssistant] 服务器端热重载失败:', reloadError);
+            showMessage(`服务器端热重载失败: ${reloadError.message}`, 'warning');
+        }
+
         // 重新加载以获取最新状态
-        console.log('🔄 [AgentAssistant] 重新加载配置...');
+        console.log('🔄 [AgentAssistant] 重新加载前端配置...');
         await loadAgentsConfiguration();
 
         console.log('✅ [AgentAssistant] 配置保存和重新加载完成');
