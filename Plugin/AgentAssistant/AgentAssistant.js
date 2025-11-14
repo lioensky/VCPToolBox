@@ -185,8 +185,6 @@ function configsAreEqual(envConfig, jsonConfig) {
     }
 }
 
-}
-
 /**
  * Migrates configuration from ENV format to JSON format if needed.
  * This ensures backward compatibility while standardizing on JSON format.
