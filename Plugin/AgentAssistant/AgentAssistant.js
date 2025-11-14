@@ -102,7 +102,15 @@ function shutdown() {
         if (DEBUG_MODE) console.error('[AgentAssistant Service] Configuration file watcher closed.');
     }
 
+    // Clear fallback polling interval
+    if (typeof global.agentAssistantPollInterval !== 'undefined') {
+        clearInterval(global.agentAssistantPollInterval);
+        delete global.agentAssistantPollInterval;
+        if (DEBUG_MODE) console.error('[AgentAssistant Service] Fallback polling interval cleared.');
+    }
+
     console.log('[AgentAssistant Service] Shutdown complete.');
+}
 
 
 /**
@@ -497,55 +505,146 @@ function setupConfigWatcher() {
             }
         }
 
-        // Watch JSON config file only (ENV config is now read-only for migration)
-        const configFiles = [AGENT_ASSISTANT_CONFIG_JSON].filter(filePath =>
-            fs.existsSync(filePath)
-        );
-
-        if (configFiles.length === 0) {
+        // Ensure the directory exists before watching
+        const configDir = path.dirname(AGENT_ASSISTANT_CONFIG_JSON);
+        if (!fs.existsSync(configDir)) {
             if (DEBUG_MODE) {
-                console.error(`[AgentAssistant] No config files found to watch`);
+                console.error(`[AgentAssistant] Creating config directory: ${configDir}`);
             }
-            return;
+            fs.mkdirSync(configDir, { recursive: true });
         }
 
+        // Watch JSON config file with enhanced options
+        const configFiles = [AGENT_ASSISTANT_CONFIG_JSON];
+
+        // Always try to watch the file, even if it doesn't exist yet
         configWatcher = chokidar.watch(configFiles, {
             persistent: true,
             ignoreInitial: true,
+            usePolling: false, // Use native file system events
+            interval: 100,
+            binaryInterval: 300,
             awaitWriteFinish: {
-                stabilityThreshold: 200,
+                stabilityThreshold: 300, // Increased stability threshold
                 pollInterval: 100
             }
         });
 
-        configWatcher
-            .on('change', (filePath) => {
-                // console.log(`[AgentAssistant] Configuration file changed: ${path.basename(filePath)}`);
+        let reloadInProgress = false;
+
+        const performReload = (reason) => {
+            if (reloadInProgress) {
+                if (DEBUG_MODE) {
+                    console.error(`[AgentAssistant] Reload already in progress, skipping...`);
+                }
+                return;
+            }
+
+            reloadInProgress = true;
+            if (DEBUG_MODE) {
+                console.error(`[AgentAssistant] Configuration reloaded: ${reason}`);
+            }
+
+            try {
                 loadAgentsFromLocalConfig();
                 if (DEBUG_MODE) {
-                    console.error(`[AgentAssistant] Configuration reloaded due to file change`);
+                    const agentCount = Object.keys(AGENTS).length;
+                    console.error(`[AgentAssistant] ✅ Reload completed. Currently loaded ${agentCount} agents`);
                 }
+            } catch (error) {
+                console.error(`[AgentAssistant] ❌ Reload failed:`, error.message);
+            } finally {
+                // Use a timeout to prevent rapid successive reloads
+                setTimeout(() => {
+                    reloadInProgress = false;
+                }, 500);
+            }
+        };
+
+        configWatcher
+            .on('change', (filePath) => {
+                performReload(`file changed: ${path.basename(filePath)}`);
             })
             .on('unlink', (filePath) => {
                 console.log(`[AgentAssistant] Configuration file deleted: ${path.basename(filePath)}`);
-                loadAgentsFromLocalConfig(); // Reload to check for alternative config
-                if (DEBUG_MODE) {
-                    console.error(`[AgentAssistant] Configuration reloaded due to file deletion`);
-                }
+                performReload(`file deleted: ${path.basename(filePath)}`);
             })
             .on('add', (filePath) => {
                 console.log(`[AgentAssistant] New configuration file detected: ${path.basename(filePath)}`);
-                loadAgentsFromLocalConfig();
-                if (DEBUG_MODE) {
-                    console.error(`[AgentAssistant] Configuration reloaded due to new file`);
-                }
+                performReload(`file added: ${path.basename(filePath)}`);
+            })
+            .on('error', (error) => {
+                console.error(`[AgentAssistant] File watcher error:`, error);
+                // Try to recover by re-setting up the watcher
+                setTimeout(() => {
+                    if (DEBUG_MODE) {
+                        console.error(`[AgentAssistant] Attempting to recover file watcher...`);
+                    }
+                    setupConfigWatcher();
+                }, 5000);
             });
 
         if (DEBUG_MODE) {
-            console.error(`[AgentAssistant] File watcher set up for config files: ${configFiles.join(', ')}`);
+            console.error(`[AgentAssistant] ✅ File watcher set up for config files: ${configFiles.join(', ')}`);
+            console.error(`[AgentAssistant] Watching directory: ${configDir}`);
         }
     } catch (error) {
-        console.error(`[AgentAssistant] Failed to set up config file watcher:`, error);
+        console.error(`[AgentAssistant] ❌ Failed to set up config file watcher:`, error);
+
+        // Fallback: try to set up a simple polling mechanism
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant] Setting up fallback polling mechanism...`);
+        }
+        setupFallbackPolling();
+    }
+}
+
+/**
+ * Fallback polling mechanism for configuration changes
+ */
+function setupFallbackPolling() {
+    let lastModified = 0;
+
+    try {
+        if (fs.existsSync(AGENT_ASSISTANT_CONFIG_JSON)) {
+            const stats = fs.statSync(AGENT_ASSISTANT_CONFIG_JSON);
+            lastModified = stats.mtime.getTime();
+        }
+    } catch (error) {
+        // Ignore errors during initial check
+    }
+
+    const pollInterval = setInterval(() => {
+        try {
+            if (fs.existsSync(AGENT_ASSISTANT_CONFIG_JSON)) {
+                const stats = fs.statSync(AGENT_ASSISTANT_CONFIG_JSON);
+                const currentModified = stats.mtime.getTime();
+
+                if (currentModified > lastModified) {
+                    lastModified = currentModified;
+                    if (DEBUG_MODE) {
+                        console.error(`[AgentAssistant] Configuration change detected by polling`);
+                    }
+                    loadAgentsFromLocalConfig();
+                    if (DEBUG_MODE) {
+                        const agentCount = Object.keys(AGENTS).length;
+                        console.error(`[AgentAssistant] ✅ Poll-based reload completed. Currently loaded ${agentCount} agents`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`[AgentAssistant] Polling error:`, error.message);
+        }
+    }, 2000); // Check every 2 seconds
+
+    // Store polling interval reference for cleanup
+    if (typeof global.agentAssistantPollInterval !== 'undefined') {
+        clearInterval(global.agentAssistantPollInterval);
+    }
+    global.agentAssistantPollInterval = pollInterval;
+
+    if (DEBUG_MODE) {
+        console.error(`[AgentAssistant] ✅ Fallback polling mechanism started`);
     }
 }
 
