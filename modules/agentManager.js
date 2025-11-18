@@ -12,6 +12,8 @@ class AgentManager {
         this.agentMap = new Map();
         this.promptCache = new Map();
         this.debugMode = false;
+        this.agentFiles = []; // 存储所有可用的Agent文件
+        this.folderStructure = {}; // 存储文件夹结构
     }
 
     /**
@@ -22,6 +24,7 @@ class AgentManager {
         this.debugMode = debugMode;
         console.log('[AgentManager] Initializing...');
         await this.loadMap();
+        await this.scanAgentFiles(); // 扫描Agent文件和文件夹结构
         this.watchFiles();
     }
 
@@ -62,12 +65,17 @@ class AgentManager {
      */
     watchFiles() {
         try {
-            fsSync.watch(MAP_FILE, (eventType, filename) => {
-                if (filename && (eventType === 'change' || eventType === 'rename')) {
-                    console.log(`[AgentManager] Detected change in ${filename}. Reloading agent map...`);
-                    this.loadMap();
-                }
-            });
+            // 检查文件是否存在，如果不存在则不监视
+            if (fsSync.existsSync(MAP_FILE)) {
+                fsSync.watch(MAP_FILE, (eventType, filename) => {
+                    if (filename && (eventType === 'change' || eventType === 'rename')) {
+                        console.log(`[AgentManager] Detected change in ${filename}. Reloading agent map...`);
+                        this.loadMap();
+                    }
+                });
+            } else {
+                console.log(`[AgentManager] agent_map.json not found, not watching for changes.`);
+            }
 
             const watcher = chokidar.watch(AGENT_DIR, {
                 ignored: /(^|[\/\\])\../, // ignore dotfiles
@@ -75,11 +83,13 @@ class AgentManager {
                 ignoreInitial: true,
             });
 
-            watcher.on('change', (filePath) => {
+            watcher.on('change', async (filePath) => {
                 const filename = path.relative(AGENT_DIR, filePath);
+                const normalizedFilename = filename.replace(/\\/g, '/');
+                
                 for (const [alias, file] of this.agentMap.entries()) {
                     // Normalize path separators for comparison
-                    if (file.replace(/\\/g, '/') === filename.replace(/\\/g, '/')) {
+                    if (file.replace(/\\/g, '/') === normalizedFilename) {
                         if (this.promptCache.has(alias)) {
                             this.promptCache.delete(alias);
                             console.log(`[AgentManager] Prompt cache for '${alias}' (${filename}) cleared due to file change.`);
@@ -87,10 +97,128 @@ class AgentManager {
                         return;
                     }
                 }
+                
+                // 如果文件变化，重新扫描文件列表
+                await this.scanAgentFiles();
+            });
+            
+            // 监听文件添加和删除
+            watcher.on('add', async (filePath) => {
+                console.log(`[AgentManager] New file detected: ${path.relative(AGENT_DIR, filePath)}`);
+                await this.scanAgentFiles();
+            });
+            
+            watcher.on('unlink', async (filePath) => {
+                console.log(`[AgentManager] File deleted: ${path.relative(AGENT_DIR, filePath)}`);
+                await this.scanAgentFiles();
             });
         } catch (error) {
             console.error(`[AgentManager] Failed to set up file watchers:`, error);
         }
+    }
+
+    /**
+     * 递归扫描Agent目录，获取所有.txt和.md文件以及文件夹结构
+     */
+    async scanAgentFiles() {
+        try {
+            this.agentFiles = [];
+            this.folderStructure = {};
+            
+            // 确保Agent目录存在
+            await fs.mkdir(AGENT_DIR, { recursive: true });
+            
+            // 递归扫描目录
+            await this.scanDirectory(AGENT_DIR, '');
+            
+            if (this.debugMode) {
+                console.log(`[AgentManager] Found ${this.agentFiles.length} agent files.`);
+                console.log(`[AgentManager] Folder structure:`, JSON.stringify(this.folderStructure, null, 2));
+            }
+        } catch (error) {
+            console.error('[AgentManager] Error scanning agent files:', error);
+        }
+    }
+
+    /**
+     * 递归扫描目录，收集文件和构建文件夹结构
+     * @param {string} dirPath - 要扫描的目录路径
+     * @param {string} relativePath - 相对于Agent目录的路径
+     */
+    async scanDirectory(dirPath, relativePath) {
+        try {
+            const entries = await fs.readdir(dirPath, { withFileTypes: true });
+            
+            for (const entry of entries) {
+                const entryPath = path.join(dirPath, entry.name);
+                const entryRelativePath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+                
+                if (entry.isDirectory()) {
+                    // 添加到文件夹结构
+                    this.addToFolderStructure(entryRelativePath, 'folder');
+                    
+                    // 递归扫描子目录
+                    await this.scanDirectory(entryPath, entryRelativePath);
+                } else if (entry.isFile() && (entry.name.toLowerCase().endsWith('.txt') || entry.name.toLowerCase().endsWith('.md'))) {
+                    // 添加到文件列表
+                    this.agentFiles.push(entryRelativePath);
+                    
+                    // 添加到文件夹结构
+                    this.addToFolderStructure(entryRelativePath, 'file', entryRelativePath);
+                }
+            }
+        } catch (error) {
+            console.error(`[AgentManager] Error scanning directory ${dirPath}:`, error);
+        }
+    }
+
+    /**
+     * 添加文件或文件夹到结构中
+     * @param {string} relativePath - 相对路径
+     * @param {string} type - 类型 ('folder' 或 'file')
+     * @param {string} filePath - 文件完整路径（仅当type为file时使用）
+     */
+    addToFolderStructure(relativePath, type, filePath = null) {
+        const parts = relativePath.split(path.sep);
+        let current = this.folderStructure;
+        
+        // 遍历路径的每个部分
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const isLastPart = i === parts.length - 1;
+            
+            if (!current[part]) {
+                if (isLastPart && type === 'file') {
+                    // 如果是文件，添加文件信息
+                    current[part] = {
+                        type: 'file',
+                        path: filePath
+                    };
+                } else {
+                    // 如果是文件夹或路径中间部分，创建文件夹对象
+                    current[part] = {
+                        type: 'folder',
+                        children: {}
+                    };
+                }
+            }
+            
+            // 移动到下一级
+            if (current[part] && current[part].type === 'folder') {
+                current = current[part].children;
+            }
+        }
+    }
+
+    /**
+     * 获取所有Agent文件和文件夹结构
+     * @returns {Object} 包含文件列表和文件夹结构的对象
+     */
+    getAllAgentFiles() {
+        return {
+            files: this.agentFiles,
+            folderStructure: this.folderStructure
+        };
     }
 
     /**
@@ -112,7 +240,9 @@ class AgentManager {
         }
 
         try {
-            const filePath = path.join(AGENT_DIR, filename);
+            // 处理路径分隔符，确保跨平台兼容性
+            const normalizedFilename = filename.replace(/\//g, path.sep);
+            const filePath = path.join(AGENT_DIR, normalizedFilename);
             const prompt = await fs.readFile(filePath, 'utf8');
             this.promptCache.set(alias, prompt);
             return prompt;

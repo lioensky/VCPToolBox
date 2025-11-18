@@ -1003,39 +1003,59 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
-    // GET list of agent .txt files
+    // GET list of agent .txt and .md files with folder structure
     adminApiRouter.get('/agents', async (req, res) => {
         try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
-            const files = await fs.readdir(AGENT_FILES_DIR);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            res.json({ files: txtFiles });
+            // 使用agentManager的scanAgentFiles方法获取文件列表和文件夹结构
+            const agentManager = require('../modules/agentManager');
+            const agentFilesData = agentManager.getAllAgentFiles();
+            res.json(agentFilesData);
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error listing agent files:', error);
             res.status(500).json({ error: 'Failed to list agent files', details: error.message });
         }
     });
 
-    // POST to create a new agent .txt file
+    // POST to create a new agent .txt or .md file
     adminApiRouter.post('/agents/new-file', async (req, res) => {
-        const { fileName } = req.body;
+        const { fileName, folderPath } = req.body;
 
-        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
+        if (!fileName || typeof fileName !== 'string') {
+            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string.' });
         }
 
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        // 确保文件名以.txt或.md结尾
+        let finalFileName = fileName;
+        if (!fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
+            finalFileName = `${fileName}.txt`; // 默认为.txt
+        }
+
+        // 构建完整路径
+        let targetDir = AGENT_FILES_DIR;
+        if (folderPath && typeof folderPath === 'string') {
+            targetDir = path.join(AGENT_FILES_DIR, folderPath);
+        }
+        
+        const filePath = path.join(targetDir, finalFileName);
 
         try {
-            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
+            // 确保目录存在
+            await fs.mkdir(targetDir, { recursive: true });
+            
+            // 使用 'wx' 标志来原子性地"如果不存在则写入"，如果文件已存在，它会抛出错误。
             await fs.writeFile(filePath, '', { flag: 'wx' });
-            res.json({ message: `File '${fileName}' created successfully.` });
+            
+            // 通知agentManager重新扫描文件
+            const agentManager = require('../modules/agentManager');
+            await agentManager.scanAgentFiles();
+            
+            res.json({ message: `File '${finalFileName}' created successfully.` });
         } catch (error) {
             if (error.code === 'EEXIST') {
-                res.status(409).json({ error: `File '${fileName}' already exists.` });
+                res.status(409).json({ error: `File '${finalFileName}' already exists.` });
             } else {
-                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
+                console.error(`[AdminPanelRoutes API] Error creating new agent file ${finalFileName}:`, error);
+                res.status(500).json({ error: `Failed to create agent file ${finalFileName}`, details: error.message });
             }
         }
     });
@@ -1043,10 +1063,17 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // GET content of a specific agent file
     adminApiRouter.get('/agents/:fileName', async (req, res) => {
         const { fileName } = req.params;
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        
+        // 解码URL编码的文件名，处理路径中的斜杠
+        const decodedFileName = decodeURIComponent(fileName);
+        
+        // 检查文件扩展名
+        if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
         }
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        
+        // 处理路径中的斜杠，支持子文件夹
+        const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
 
         try {
             await fs.access(filePath);
@@ -1054,10 +1081,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.json({ content });
         } catch (error) {
             if (error.code === 'ENOENT') {
-                res.status(404).json({ error: `Agent file '${fileName}' not found.` });
+                res.status(404).json({ error: `Agent file '${decodedFileName}' not found.` });
             } else {
-                console.error(`[AdminPanelRoutes API] Error reading agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read agent file ${fileName}`, details: error.message });
+                console.error(`[AdminPanelRoutes API] Error reading agent file ${decodedFileName}:`, error);
+                res.status(500).json({ error: `Failed to read agent file ${decodedFileName}`, details: error.message });
             }
         }
     });
@@ -1067,22 +1094,28 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const { fileName } = req.params;
         const { content } = req.body;
 
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        // 解码URL编码的文件名，处理路径中的斜杠
+        const decodedFileName = decodeURIComponent(fileName);
+        
+        // 检查文件扩展名
+        if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
         }
         if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
         }
 
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        // 处理路径中的斜杠，支持子文件夹
+        const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
+        const fileDir = path.dirname(filePath);
 
         try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
+            await fs.mkdir(fileDir, { recursive: true }); // Ensure directory exists
             await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `Agent file '${fileName}' saved successfully.` });
+            res.json({ message: `Agent file '${decodedFileName}' saved successfully.` });
         } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving agent file ${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
+            console.error(`[AdminPanelRoutes API] Error saving agent file ${decodedFileName}:`, error);
+            res.status(500).json({ error: `Failed to save agent file ${decodedFileName}`, details: error.message });
         }
     });
 
