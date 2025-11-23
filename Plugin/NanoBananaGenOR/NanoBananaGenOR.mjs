@@ -73,9 +73,22 @@ async function getImageDataFromUrl(url) {
     }
 
     if (url.startsWith('file://')) {
-        const { fileURLToPath } = await import('url');
+        const { fileURLToPath, URL } = await import('url');
         const { default: mime } = await import('mime-types');
-        const filePath = fileURLToPath(url);
+        
+        let filePath;
+        try {
+            filePath = fileURLToPath(url);
+        } catch (e) {
+            // 如果标准转换失败（例如在 Windows 上处理 macOS 的 file:// URL），
+            // 则尝试手动提取 pathname 并解码。
+            try {
+                const urlObj = new URL(url);
+                filePath = decodeURIComponent(urlObj.pathname);
+            } catch (urlError) {
+                throw new Error(`无法解析文件 URL: ${url}。原始错误: ${e.message}`);
+            }
+        }
 
         try {
             const buffer = await fs.readFile(filePath);
@@ -255,6 +268,7 @@ async function editImage(args) {
     
     // 优先使用 image_base64, 其次是 image_url
     let imageUrlInput = args.image_base64 || args.image_url;
+    let activeKey = args.image_base64 ? 'image_base64' : 'image_url';
 
     if (!imageUrlInput) {
         throw new Error("参数错误: 必须提供 'image_url' 或 'image_base64'。");
@@ -267,9 +281,20 @@ async function editImage(args) {
         imageUrl = imageUrlInput;
     } else {
         // 否则, 视作 URL 处理
-        const { buffer, mimeType } = await getImageDataFromUrl(imageUrlInput);
-        const base64Data = buffer.toString('base64');
-        imageUrl = `data:${mimeType};base64,${base64Data}`;
+        try {
+            const { buffer, mimeType } = await getImageDataFromUrl(imageUrlInput);
+            const base64Data = buffer.toString('base64');
+            imageUrl = `data:${mimeType};base64,${base64Data}`;
+        } catch (e) {
+            if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+                const enhancedError = new Error(`图片编辑中图片 (参数: ${activeKey}) 本地未找到，需要远程获取。`);
+                enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
+                enhancedError.fileUrl = e.fileUrl;
+                enhancedError.failedParameter = activeKey; // 报告正确的失败参数
+                throw enhancedError;
+            }
+            throw e;
+        }
     }
 
     // 按照 OpenRouter 的格式构建请求

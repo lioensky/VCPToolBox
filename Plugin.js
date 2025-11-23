@@ -707,27 +707,41 @@ class PluginManager {
                             
                             // 新的重试逻辑：精确替换失败的参数
                             const newToolArgs = { ...toolArgs };
-                            const failedParam = pluginOutput.failedParameter; // e.g., "image_url1"
+                            const failedParam = pluginOutput.failedParameter; // e.g., "image_url_1" 或 "image_url"
 
                             if (failedParam && newToolArgs[failedParam]) {
                                 // 删除旧的 file:// url 参数
                                 delete newToolArgs[failedParam];
                                 
-                                // 添加新的 base64 参数。我们使用一个新的键来避免命名冲突，
-                                // 并且让插件知道这是一个已经处理过的 base64 数据。
-                                // e.g., "image_base64_1"
-                               // 关键修复：确保正确地从 "image_url_1" 提取出 "1"
-                               const paramIndex = failedParam.replace('image_url_', '');
-                               const newParamKey = `image_base64_${paramIndex}`;
-                               newToolArgs[newParamKey] = dataUri;
-                               
-                               if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
+                                // 添加新的 base64 参数。
+                                let newParamKey;
+                                
+                                // 检查是否是带索引的参数 (如 image_url_1)
+                                if (failedParam.startsWith('image_url_')) {
+                                    const paramIndex = failedParam.replace('image_url_', '');
+                                    newParamKey = `image_base64_${paramIndex}`;
+                                } else if (failedParam === 'image_url') {
+                                    // 如果是不带索引的 image_url，则替换为 image_base64
+                                    newParamKey = 'image_base64';
+                                } else {
+                                    // 默认回退策略，虽然理论上不应走到这里如果 failedParam 正确
+                                    newParamKey = failedParam.replace('url', 'base64');
+                                }
+
+                                newToolArgs[newParamKey] = dataUri;
+                                
+                                if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
 
                             } else {
                                 // 旧的后备逻辑，用于兼容单个 image_url 的情况
-                                delete newToolArgs.image_url;
-                                newToolArgs.image_base64 = dataUri;
-                                if (this.debugMode) console.log(`[PluginManager] 'failedParameter' not specified. Falling back to replacing 'image_url' with 'image_base64'.`);
+                                if (newToolArgs.image_url) {
+                                    delete newToolArgs.image_url;
+                                    newToolArgs.image_base64 = dataUri;
+                                    if (this.debugMode) console.log(`[PluginManager] 'failedParameter' not specified but 'image_url' found. Replacing with 'image_base64'.`);
+                                } else {
+                                     if (this.debugMode) console.warn(`[PluginManager] 'failedParameter' not specified and 'image_url' not found in args. Cannot retry.`);
+                                     // 这种情况下可能无法重试，或者需要更复杂的逻辑
+                                }
                             }
                             
                             // 直接返回重试调用的结果

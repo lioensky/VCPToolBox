@@ -1,6 +1,6 @@
 // FileFetcherServer.js
 const fs = require('fs').promises;
-const { fileURLToPath } = require('url');
+const { fileURLToPath, URL } = require('url');
 const mime = require('mime-types');
 const path = require('path');
 const crypto = require('crypto');
@@ -63,7 +63,21 @@ async function fetchFile(fileUrl, requestIp) {
         throw new Error('FileFetcher 目前只支持 file:// 协议。');
     }
 
-    const filePath = fileURLToPath(fileUrl);
+    let filePath;
+    try {
+        filePath = fileURLToPath(fileUrl);
+    } catch (e) {
+        // 如果标准转换失败（例如在 Windows 上处理 macOS 的 file:// URL），
+        // 则尝试手动提取 pathname 并解码。
+        // 这对于跨平台文件获取（如 Windows 服务器从 macOS 前端获取文件）是必要的。
+        try {
+            const urlObj = new URL(fileUrl);
+            filePath = decodeURIComponent(urlObj.pathname);
+        } catch (urlError) {
+            throw new Error(`无法解析文件 URL: ${fileUrl}。原始错误: ${e.message}`);
+        }
+    }
+
     const mimeType = mime.lookup(filePath) || 'application/octet-stream';
 
     // --- 健壮的缓存逻辑 ---
@@ -117,7 +131,20 @@ async function fetchFile(fileUrl, requestIp) {
         throw new Error('FileFetcherServer 尚未初始化。');
     }
 
-    const serverId = webSocketServer.findServerByIp(requestIp);
+    let serverId = webSocketServer.findServerByIp(requestIp);
+    
+    // 如果通过 IP 找不到服务器，且 IP 是本地回环地址，则尝试查找任何已连接的分布式服务器
+    // 这是一种后备策略，假设在单机开发或特定网络配置下，请求可能来自本地但需要路由到唯一的分布式节点
+    if (!serverId && (requestIp === '127.0.0.1' || requestIp === '::1')) {
+        console.log(`[FileFetcherServer] IP [${requestIp}] 未匹配到服务器，尝试查找任意已连接的分布式服务器...`);
+        const allServers = webSocketServer.getAllDistributedServers();
+        if (allServers && allServers.length > 0) {
+            // 简单策略：取第一个。在多客户端场景下可能不准确，但在单用户场景下通常有效。
+            serverId = allServers[0].serverName || allServers[0].id;
+            console.log(`[FileFetcherServer] 自动回退到分布式服务器: ${serverId}`);
+        }
+    }
+
     if (!serverId) {
         throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
     }

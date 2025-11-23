@@ -518,6 +518,19 @@ function findServerByIp(ip) {
    return null;
 }
 
+// 新增：获取所有已连接的分布式服务器信息
+function getAllDistributedServers() {
+    const servers = [];
+    for (const [id, server] of distributedServers.entries()) {
+        servers.push({
+            id: id,
+            serverName: server.serverName,
+            // 可以根据需要添加更多信息
+        });
+    }
+    return servers;
+}
+
 // 新增：专门广播给管理面板
 function broadcastToAdminPanel(data) {
     if (!wssInstance) return;
@@ -542,6 +555,7 @@ module.exports = {
     sendMessageToClient,
     executeDistributedTool,
     findServerByIp,
+    getAllDistributedServers,
     shutdown
 
 };
