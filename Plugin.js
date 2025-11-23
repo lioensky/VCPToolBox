@@ -695,8 +695,11 @@ class PluginManager {
                     }
                 } else {
                     // 检查是否是文件未找到的特定错误
+                    // 注意：前端 VCPChat 现在应该在发送请求前自动将 file:// URL 转换为 Base64。
+                    // 如果仍然收到此错误，说明前端转换失败或未启用。
+                    // 为了保持向后兼容性，我们保留此逻辑，但它不再是首选路径。
                     if (pluginOutput.code === 'FILE_NOT_FOUND_LOCALLY' && pluginOutput.fileUrl && requestIp) {
-                        if (this.debugMode) console.log(`[PluginManager] Plugin '${toolName}' reported local file not found. Attempting to fetch via FileFetcherServer...`);
+                        if (this.debugMode) console.log(`[PluginManager] Plugin '${toolName}' reported local file not found. Attempting to fetch via FileFetcherServer (Legacy Fallback)...`);
                         
                         try {
                             const { buffer, mimeType } = await FileFetcherServer.fetchFile(pluginOutput.fileUrl, requestIp);

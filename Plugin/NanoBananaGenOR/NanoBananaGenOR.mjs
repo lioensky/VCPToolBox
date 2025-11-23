@@ -402,6 +402,7 @@ async function composeImage(args) {
                 processedImageUrl = `data:${mimeType};base64,${base64Data}`;
             } catch (e) {
                 if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+                    // 即使前端已经做了转换，如果转换失败或未启用，这里仍需抛出结构化错误以触发服务端的后备机制
                     const enhancedError = new Error(`多图片合成中第 ${i} 张图片 (参数: ${activeKey}) 本地未找到，需要远程获取。`);
                     enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
                     enhancedError.fileUrl = e.fileUrl;

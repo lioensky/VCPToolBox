@@ -131,20 +131,7 @@ async function fetchFile(fileUrl, requestIp) {
         throw new Error('FileFetcherServer 尚未初始化。');
     }
 
-    let serverId = webSocketServer.findServerByIp(requestIp);
-    
-    // 如果通过 IP 找不到服务器，且 IP 是本地回环地址，则尝试查找任何已连接的分布式服务器
-    // 这是一种后备策略，假设在单机开发或特定网络配置下，请求可能来自本地但需要路由到唯一的分布式节点
-    if (!serverId && (requestIp === '127.0.0.1' || requestIp === '::1')) {
-        console.log(`[FileFetcherServer] IP [${requestIp}] 未匹配到服务器，尝试查找任意已连接的分布式服务器...`);
-        const allServers = webSocketServer.getAllDistributedServers();
-        if (allServers && allServers.length > 0) {
-            // 简单策略：取第一个。在多客户端场景下可能不准确，但在单用户场景下通常有效。
-            serverId = allServers[0].serverName || allServers[0].id;
-            console.log(`[FileFetcherServer] 自动回退到分布式服务器: ${serverId}`);
-        }
-    }
-
+    const serverId = webSocketServer.findServerByIp(requestIp);
     if (!serverId) {
         throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
     }
