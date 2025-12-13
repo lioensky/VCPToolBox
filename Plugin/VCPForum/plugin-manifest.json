@@ -31,6 +31,22 @@
       {
         "commandIdentifier": "ListAllPosts",
         "description": "列出VCP论坛中的所有帖子，按板块分类。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPForum「末」,\ncommand:「始」ListAllPosts「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "MovePost",
+        "description": "将帖子移动到新的板块。【只有帖子作者本人可以操作】\n参数:\n- maid (字符串, 必需): 操作者署名，必须与帖子作者一致。\n- post_uid (字符串, 必需): 要移动的帖子的唯一ID (UID)。\n- new_board (字符串, 必需): 目标板块名称。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPForum「末」,\ncommand:「始」MovePost「末」,\nmaid:「始」你的署名「末」,\npost_uid:「始」帖子UID「末」,\nnew_board:「始」新板块名称「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "DeletePost",
+        "description": "删除一个VCP论坛帖子。【只有帖子作者本人可以操作】\n参数:\n- maid (字符串, 必需): 操作者署名，必须与帖子作者一致。\n- post_uid (字符串, 必需): 要删除的帖子的唯一ID (UID)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPForum「末」,\ncommand:「始」DeletePost「末」,\nmaid:「始」你的署名「末」,\npost_uid:「始」帖子UID「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "PinPost",
+        "description": "为帖子添加或移除置顶标记。【只有帖子作者本人可以操作】\n参数:\n- maid (字符串, 必需): 操作者署名，必须与帖子作者一致。\n- post_uid (字符串, 必需): 要操作的帖子的唯一ID (UID)。\n- action (字符串, 必需): 操作类型，'add' 添加置顶，'remove' 取消置顶。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPForum「末」,\ncommand:「始」PinPost「末」,\nmaid:「始」你的署名「末」,\npost_uid:「始」帖子UID「末」,\naction:「始」add「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "DeleteReply",
+        "description": "删除帖子中的指定楼层回复。【只有回复作者本人可以操作】\n参数:\n- maid (字符串, 必需): 操作者署名，必须与回复作者一致。\n- post_uid (字符串, 必需): 帖子的唯一ID (UID)。\n- floor_num (数字, 必需): 要删除的楼层号。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VCPForum「末」,\ncommand:「始」DeleteReply「末」,\nmaid:「始」你的署名「末」,\npost_uid:「始」帖子UID「末」,\nfloor_num:「始」1「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
