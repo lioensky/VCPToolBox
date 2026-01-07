@@ -75,11 +75,25 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
                         { type: "text", text: currentConfig.MultiModalPrompt },
                         { type: "image_url", image_url: { url: `${mediaMimeType}base64,${pureBase64Data}` } }
                     ]
-                }],
-                max_tokens: currentConfig.MultiModalModelOutputMaxTokens || 50000,
+                }]
             };
+
+            const isGlmMultiModal = currentConfig.MultiModalModel.toLowerCase().includes('glm');
+            
+            // 只为非 GLM 模型添加 max_tokens（OpenAI格式，GLM模型不支持该参数）
+            if (!isGlmMultiModal) {
+                payload.max_tokens = currentConfig.MultiModalModelOutputMaxTokens || 50000;
+            }
+            
+            // 添加 thinking 参数支持
             if (currentConfig.MultiModalModelThinkingBudget && currentConfig.MultiModalModelThinkingBudget > 0) {
-                payload.extra_body = { thinking_config: { thinking_budget: currentConfig.MultiModalModelThinkingBudget } };
+                // 支持 GLM-V系列 的 thinking 参数格式
+                if (isGlmMultiModal) {
+                    payload.thinking = { type: "enabled" };
+                } else {
+                    // 保留 OpenAI 标准格式
+                    payload.extra_body = { thinking_config: { thinking_budget: currentConfig.MultiModalModelThinkingBudget } };
+                }
             }
 
             const fetchResponse = await fetch(`${currentConfig.API_URL}/v1/chat/completions`, {
