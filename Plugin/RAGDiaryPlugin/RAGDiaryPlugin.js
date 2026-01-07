@@ -1086,6 +1086,7 @@ class RAGDiaryPlugin {
                     chainName,
                     queryVector,
                     userContent,
+                    aiContent,
                     combinedQueryForDisplay,
                     null, // kSequence现在从JSON配置中获取，不再从占位符传递
                     useGroup,
@@ -1132,7 +1133,7 @@ class RAGDiaryPlugin {
                 processingPromises.push((async () => {
                     try {
                         const retrievedContent = await this._processRAGPlaceholder({
-                            dbName, modifiers, queryVector, userContent, combinedQueryForDisplay,
+                            dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
                             dynamicK, timeRanges, allowTimeAndGroup: true
                         });
                         return { placeholder, content: retrievedContent };
@@ -1160,7 +1161,8 @@ class RAGDiaryPlugin {
                 userContent,
                 aiContent: aiContent || '',
                 dbName,
-                modifiers: '' // 全文模式无修饰符
+                modifiers: '', // 全文模式无修饰符
+                dynamicK
             });
 
             // ✅ 尝试从缓存获取
@@ -1223,7 +1225,8 @@ class RAGDiaryPlugin {
                 userContent,
                 aiContent: aiContent || '',
                 dbName,
-                modifiers
+                modifiers,
+                dynamicK
             });
 
             // ✅ 尝试从缓存获取
@@ -1262,7 +1265,7 @@ class RAGDiaryPlugin {
                         } else {
                             // ✅ 混合模式也传递TagMemo参数
                             const retrievedContent = await this._processRAGPlaceholder({
-                                dbName, modifiers, queryVector, userContent, combinedQueryForDisplay,
+                                dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
                                 dynamicK, timeRanges, allowTimeAndGroup: true
                             });
                             
@@ -1449,7 +1452,8 @@ class RAGDiaryPlugin {
             userContent,
             aiContent: aiContent || '',
             dbName,
-            modifiers
+            modifiers,
+            dynamicK
         });
 
         // 2️⃣ 尝试从缓存获取
@@ -1608,7 +1612,7 @@ class RAGDiaryPlugin {
      * @param {number} autoThreshold - 自动模式的切换阈值
      * @returns {string} 格式化的思维链结果
      */
-    async _processMetaThinkingChain(chainName, queryVector, userContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
+    async _processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
         
         // 如果是自动模式，需要先决定使用哪个 chain
         let finalChainName = chainName;
@@ -1668,6 +1672,7 @@ class RAGDiaryPlugin {
         // 1️⃣ 生成缓存键（使用最终确定的链名称和K序列）
         const cacheKey = this._generateCacheKey({
             userContent,
+            aiContent: aiContent || '',
             chainName: finalChainName,
             kSequence: finalKSequence,
             useGroup,
@@ -2350,6 +2355,7 @@ class RAGDiaryPlugin {
             modifiers = '',
             chainName = '',
             kSequence = [],
+            dynamicK = null,
             useGroup = false,
             isAutoMode = false
         } = params;
@@ -2365,7 +2371,8 @@ class RAGDiaryPlugin {
             db: dbName,
             mod: modifiers,
             chain: chainName,
-            k: kSequence.join('-'),
+            k_seq: kSequence.join('-'),
+            k_dyn: dynamicK,
             group: useGroup,
             auto: isAutoMode,
             date: currentDate
