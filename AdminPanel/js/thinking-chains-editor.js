@@ -162,19 +162,45 @@ function createChainItemElement(clusterName, index = null) {
     removeBtn.textContent = '×';
     removeBtn.className = 'remove-cluster-btn';
     removeBtn.onclick = () => {
+        // 先获取theme-details，再删除元素
+        const themeDetails = li.closest('.theme-details');
         li.remove();
-        // 移除对应的K值输入框
-        updateKSequenceInputs(li.closest('.theme-details'));
+        // 更新K值输入框
+        updateKSequenceInputs(themeDetails);
     };
     li.appendChild(removeBtn);
     
     li.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', clusterName);
         e.dataTransfer.effectAllowed = 'move';
-        setTimeout(() => li.classList.add('dragging'), 0);
+        
+        // 记录原始父元素
+        li.dataset.originalParent = li.parentNode.className;
+        
+        setTimeout(() => {
+            li.classList.add('dragging');
+            
+            // 如果是从可用模块拖拽，创建一个占位符
+            const isFromAvailable = !li.querySelector('.remove-cluster-btn');
+            if (isFromAvailable) {
+                const placeholder = document.createElement('li');
+                placeholder.className = 'dragging-placeholder';
+                placeholder.textContent = clusterName;
+                li.dataset.placeholder = 'true';
+                document.body.appendChild(placeholder);
+            }
+        }, 0);
     });
     li.addEventListener('dragend', () => {
         li.classList.remove('dragging');
+        
+        // 移除占位符
+        const placeholder = document.querySelector('.dragging-placeholder');
+        if (placeholder) {
+            placeholder.remove();
+        }
+        delete li.dataset.placeholder;
+        
         // 拖拽结束后更新K值输入框
         updateKSequenceInputs(li.closest('.theme-details'));
     });
@@ -253,9 +279,27 @@ function createAvailableClustersElement() {
 function setupDragAndDrop(listElement) {
     listElement.addEventListener('dragover', e => {
         e.preventDefault();
-        const afterElement = getDragAfterElement(listElement, e.clientY);
         const dragging = document.querySelector('.dragging');
-        if (dragging) {
+        
+        if (!dragging) return;
+
+        const isFromAvailable = dragging.dataset.placeholder === 'true';
+        const isInSameList = dragging.parentNode === listElement;
+
+        if (isFromAvailable) {
+            // 从可用模块拖拽：使用占位符显示位置
+            const placeholder = document.querySelector('.dragging-placeholder');
+            if (placeholder) {
+                const afterElement = getDragAfterElement(listElement, e.clientY);
+                if (afterElement == null) {
+                    listElement.appendChild(placeholder);
+                } else {
+                    listElement.insertBefore(placeholder, afterElement);
+                }
+            }
+        } else if (isInSameList) {
+            // 同列表内排序：移动实际元素
+            const afterElement = getDragAfterElement(listElement, e.clientY);
             if (afterElement == null) {
                 listElement.appendChild(dragging);
             } else {
@@ -268,11 +312,14 @@ function setupDragAndDrop(listElement) {
         e.preventDefault();
         const clusterName = e.dataTransfer.getData('text/plain');
         const dragging = document.querySelector('.dragging');
+        
         if (!dragging) return;
 
-        const isFromAvailable = !dragging.querySelector('.remove-cluster-btn');
+        const isFromAvailable = dragging.dataset.placeholder === 'true';
+        const isInSameList = dragging.parentNode === listElement;
 
         if (isFromAvailable) {
+            // 从可用模块拖拽到主题列表
             listElement.querySelector('.drop-placeholder')?.remove();
 
             const alreadyExists = [...listElement.querySelectorAll('.chain-item')]
@@ -280,21 +327,32 @@ function setupDragAndDrop(listElement) {
 
             if (clusterName && !alreadyExists) {
                 const newItem = createChainItemElement(clusterName);
-                listElement.replaceChild(newItem, dragging);
                 
-                // 更新K值输入框
+                const afterElement = getDragAfterElement(listElement, e.clientY);
+                
+                if (afterElement == null) {
+                    listElement.appendChild(newItem);
+                } else {
+                    listElement.insertBefore(newItem, afterElement);
+                }
+                
+                dragging.remove();
                 updateKSequenceInputs(listElement.closest('.theme-details'));
             } else {
                 dragging.remove();
             }
 
-            // Restore the available clusters list
+            // 恢复可用簇列表
             const editorContainer = document.getElementById('thinking-chains-container');
             const oldAvailableContainer = editorContainer.querySelector('.available-clusters-container');
             if (oldAvailableContainer) {
                 const newAvailableContainer = createAvailableClustersElement();
                 oldAvailableContainer.replaceWith(newAvailableContainer);
             }
+        } else if (isInSameList) {
+            // 主题内排序，已经在dragover中完成了位置更新
+            // 只需要更新K值输入框
+            updateKSequenceInputs(listElement.closest('.theme-details'));
         }
     });
 }
