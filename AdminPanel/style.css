@@ -2267,6 +2267,26 @@ html[data-theme='light'] .delete-theme-btn {
     /* Inherits from .draggable-list li */
 }
 
+.chain-item.dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+}
+
+.dragging-placeholder {
+    opacity: 0.5;
+    background-color: var(--accent-bg);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 4px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.dragging-placeholder .cluster-name {
+    font-weight: 500;
+}
+
 .remove-cluster-btn {
     background: var(--danger-color);
     color: white;
