@@ -24,8 +24,8 @@ try {
 class KnowledgeBaseManager {
     constructor(config = {}) {
         this.config = {
-            rootPath: config.rootPath || path.join(__dirname, 'dailynote'),
-            storePath: config.storePath || path.join(__dirname, 'VectorStore'),
+            rootPath: config.rootPath || process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote'),
+            storePath: config.storePath || process.env.KNOWLEDGEBASE_STORE_PATH || path.join(__dirname, 'VectorStore'),
             apiKey: process.env.API_Key,
             apiUrl: process.env.API_URL,
             model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',

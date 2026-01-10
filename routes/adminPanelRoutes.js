@@ -10,13 +10,18 @@ const { getAuthCode } = require('../modules/captchaDecoder'); // 导入统一的
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
-const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
 // 记录每个日志文件的 inode，用于检测日志轮转
 const logFileInodes = new Map();
 
-module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
+module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath) {
+    if (!agentDirPath || typeof agentDirPath !== 'string') {
+        throw new Error('[AdminPanelRoutes] agentDirPath must be a non-empty string');
+    }
+    
     const adminApiRouter = express.Router();
+    const AGENT_FILES_DIR = agentDirPath;
+    console.log('[AdminPanelRoutes] Agent files directory:', AGENT_FILES_DIR);
 
   
 

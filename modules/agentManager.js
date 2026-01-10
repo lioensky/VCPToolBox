@@ -4,11 +4,11 @@ const fsSync = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
 
-const AGENT_DIR = path.join(__dirname, '..', 'Agent');
 const MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
 
 class AgentManager {
-    constructor() {
+    constructor(defaultAgentDir = null) {
+        this.agentDir = defaultAgentDir;
         this.agentMap = new Map();
         this.promptCache = new Map();
         this.debugMode = false;
@@ -23,6 +23,8 @@ class AgentManager {
     async initialize(debugMode = false) {
         this.debugMode = debugMode;
         console.log('[AgentManager] Initializing...');
+        console.log(`[AgentManager] Agent directory: ${this.agentDir}`);
+        
         await this.loadMap();
         await this.scanAgentFiles(); // 扫描Agent文件和文件夹结构
         this.watchFiles();
@@ -77,14 +79,14 @@ class AgentManager {
                 console.log(`[AgentManager] agent_map.json not found, not watching for changes.`);
             }
 
-            const watcher = chokidar.watch(AGENT_DIR, {
+            const watcher = chokidar.watch(this.agentDir, {
                 ignored: /(^|[\/\\])\../, // ignore dotfiles
                 persistent: true,
                 ignoreInitial: true,
             });
 
             watcher.on('change', async (filePath) => {
-                const filename = path.relative(AGENT_DIR, filePath);
+                const filename = path.relative(this.agentDir, filePath);
                 const normalizedFilename = filename.replace(/\\/g, '/');
                 
                 for (const [alias, file] of this.agentMap.entries()) {
@@ -104,13 +106,17 @@ class AgentManager {
             
             // 监听文件添加和删除
             watcher.on('add', async (filePath) => {
-                console.log(`[AgentManager] New file detected: ${path.relative(AGENT_DIR, filePath)}`);
+                console.log(`[AgentManager] New file detected: ${path.relative(this.agentDir, filePath)}`);
                 await this.scanAgentFiles();
             });
             
             watcher.on('unlink', async (filePath) => {
-                console.log(`[AgentManager] File deleted: ${path.relative(AGENT_DIR, filePath)}`);
+                console.log(`[AgentManager] File deleted: ${path.relative(this.agentDir, filePath)}`);
                 await this.scanAgentFiles();
+            });
+            
+            watcher.on('error', (error) => {
+                console.error('[AgentManager] File watcher error:', error.message);
             });
         } catch (error) {
             console.error(`[AgentManager] Failed to set up file watchers:`, error);
@@ -126,10 +132,10 @@ class AgentManager {
             this.folderStructure = {};
             
             // 确保Agent目录存在
-            await fs.mkdir(AGENT_DIR, { recursive: true });
+            await fs.mkdir(this.agentDir, { recursive: true });
             
             // 递归扫描目录
-            await this.scanDirectory(AGENT_DIR, '');
+            await this.scanDirectory(this.agentDir, '');
             
             if (this.debugMode) {
                 console.log(`[AgentManager] Found ${this.agentFiles.length} agent files.`);
@@ -271,7 +277,7 @@ class AgentManager {
         try {
             // 处理路径分隔符，确保跨平台兼容性
             const normalizedFilename = filename.replace(/\//g, path.sep);
-            let filePath = path.join(AGENT_DIR, normalizedFilename);
+            let filePath = path.join(this.agentDir, normalizedFilename);
             
             // 检查是否是符号链接，如果是则解析真实路径
             try {
@@ -308,7 +314,18 @@ class AgentManager {
     isAgent(alias) {
         return this.agentMap.has(alias);
     }
+    
+    /**
+     * Sets the Agent directory path. Must be called before initialize.
+     * @param {string} agentDirPath - The path to the Agent directory.
+     */
+    setAgentDir(agentDirPath) {
+        if (!agentDirPath || typeof agentDirPath !== 'string') {
+            throw new Error('[AgentManager] agentDirPath must be a non-empty string');
+        }
+        this.agentDir = agentDirPath;
+    }
 }
 
-const agentManager = new AgentManager();
+const agentManager = new AgentManager(path.join(__dirname, '..', 'Agent'));
 module.exports = agentManager;

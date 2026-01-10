@@ -21,7 +21,49 @@ const logger = require('./modules/logger.js');
 logger.initializeServerLogger();
 logger.overrideConsole();
 
-const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
+// Agent 目录路径初始化（同步，在模块加载时解析）
+let AGENT_DIR;
+
+function resolveAgentDir() {
+    const configPath = process.env.AGENT_DIR_PATH;
+    
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, 'Agent');
+    }
+    
+    const normalizedPath = path.normalize(configPath.trim());
+    const absolutePath = path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, normalizedPath);
+    
+    return absolutePath;
+}
+
+AGENT_DIR = resolveAgentDir();
+
+// 确保目录存在（异步，在服务器启动时调用）
+async function ensureAgentDirectory() {
+    try {
+        await fs.mkdir(AGENT_DIR, { recursive: true });
+        console.log(`[Server] Agent directory: ${AGENT_DIR}`);
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            console.error(`[Server] Failed to create Agent directory: ${AGENT_DIR}`);
+            
+            if (error.code === 'EACCES' || error.code === 'EPERM') {
+                console.error('[Server] Error: Permission denied');
+            } else if (error.code === 'ENOENT') {
+                console.error('[Server] Error: Parent directory does not exist');
+            } else if (error.code === 'ENOSPC') {
+                console.error('[Server] Error: No space left on device');
+            } else if (error.code === 'ENAMETOOLONG') {
+                console.error('[Server] Error: Path is too long');
+            }
+            
+            process.exit(1);
+        }
+    }
+}
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
@@ -956,7 +998,7 @@ async function handleDiaryFromAIResponse(responseText) {
 
 // Define dailyNoteRootPath here as it's needed by the adminPanelRoutes module
 // and was previously defined within the moved block.
-const dailyNoteRootPath = path.join(__dirname, 'dailynote');
+const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote');
 
 // Import and use the admin panel routes, passing the getter for currentServerLogPath
 const adminPanelRoutes = require('./routes/adminPanelRoutes')(
@@ -964,7 +1006,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     dailyNoteRootPath,
     pluginManager,
     logger.getServerLogPath, // Pass the getter function
-    knowledgeBaseManager // Pass the knowledgeBaseManager instance
+    knowledgeBaseManager, // Pass the knowledgeBaseManager instance
+    AGENT_DIR // Pass the Agent directory path
 );
 
 // 新增：引入 VCP 论坛 API 路由
@@ -1134,6 +1177,10 @@ let server;
 
 server = app.listen(port, async () => { // Assign to server variable
     await loadBlacklist(); // 新增：在服务器启动时加载IP黑名单
+    
+    // 确保 Agent 目录存在
+    await ensureAgentDirectory();
+    
     console.log(`中间层服务器正在监听端口 ${port}`);
     console.log(`API 服务器地址: ${apiUrl}`);
     
@@ -1148,6 +1195,7 @@ server = app.listen(port, async () => { // Assign to server variable
     
     // 新增：初始化Agent管理器
     console.log('正在初始化Agent管理器...');
+    agentManager.setAgentDir(AGENT_DIR);
     await agentManager.initialize(DEBUG_MODE);
     console.log('Agent管理器初始化完成。');
 
