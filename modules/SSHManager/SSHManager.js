@@ -1,6 +1,6 @@
 /**
  * SSHManager - SSH 连接管理器（共享模块版本）
- * 
+ *
  * 功能：
  * - 多主机 SSH 连接管理
  * - 支持密钥和密码认证
@@ -9,8 +9,10 @@
  * - 自动重连和心跳保活
  * - 连接数量限制和重试机制
  * - 流式会话支持（用于 tail -f 等长时命令）
+ * - 资产状态持久化（host_status.json）
+ * - 主机级认证锁（PAM 保护机制）
  *
- * @version 1.2.0
+ * @version 1.1.9
  * @author VCP Team
  */
 
@@ -24,18 +26,29 @@ class SSHManager {
         this.hosts = hostsConfig.hosts || {};
         this.defaultHost = hostsConfig.defaultHost || 'local';
         this.globalSettings = hostsConfig.globalSettings || {};
+        this.statusCachePath = path.join(__dirname, 'host_status.json');
         
-        // 连接池
+        // 连接池配置 (v1.2.5: 默认关闭池化，适应 VCP 多进程架构)
+        this.usePool = this.globalSettings.usePool === true;
         this.connectionPool = new Map();
         
-        // 连接状态
+        // 连接状态（运行时）
         this.connectionStatus = new Map();
+        
+        // 状态缓存（持久化）
+        this.statusCache = this._loadStatusCache();
+
+        // 状态缓存写入队列：串行化写入，避免并行 writeFile 产生 0 字节文件
+        this._statusCacheWriteQueue = Promise.resolve();
+
+        // testConnection 并发去重：同一 hostId 只允许一个探测在途
+        this._inFlightTestConnections = new Map();
         
         // 流式会话池
         this.streamSessions = new Map();
         
         // 调试日志收集器（用于返回给调用者）
-        this.debugLogs = [];
+        this.debugLogs = this.debugLogs || [];
         
         // 连接限制配置
         this.maxConcurrentConnections = this.globalSettings.maxConcurrentConnections || 5;
@@ -48,6 +61,9 @@ class SSHManager {
         
         // 连接等待队列
         this.connectionQueue = [];
+
+        // 主机级并发队列 (防止针对同一主机的认证冲击导致 PAM 锁定)
+        this.hostQueues = new Map();
     }
     
     /**
@@ -57,6 +73,9 @@ class SSHManager {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] [SSHManager] ${message}`;
         console.error(logEntry);  // 输出到 stderr（VCP 会在 DebugMode 下显示）
+        if (!this.debugLogs) {
+            this.debugLogs = [];
+        }
         this.debugLogs.push(logEntry);  // 收集到数组
     }
     
@@ -84,11 +103,165 @@ class SSHManager {
     }
     
     /**
-     * 列出所有可用主机
+     * 加载状态缓存文件
      */
-    listHosts() {
+    _loadStatusCache() {
+        const fsSync = require('fs');
+        try {
+            const backupPath = `${this.statusCachePath}.bak`;
+
+            if (!fsSync.existsSync(this.statusCachePath) && fsSync.existsSync(backupPath)) {
+                this._log('状态缓存文件缺失，检测到 host_status.json.bak，尝试使用备份恢复');
+                const rawBak = fsSync.readFileSync(backupPath, 'utf8').trim();
+                const dataBak = rawBak ? JSON.parse(rawBak) : {};
+                if (dataBak && typeof dataBak === 'object') {
+                    this._log(`已从备份恢复资产状态缓存: ${Object.keys(dataBak).length} 条记录`);
+                    return dataBak;
+                }
+            }
+
+            if (fsSync.existsSync(this.statusCachePath)) {
+                const stat = fsSync.statSync(this.statusCachePath);
+                if (stat.size === 0) {
+                    if (fsSync.existsSync(backupPath) && fsSync.statSync(backupPath).size > 0) {
+                        try {
+                            const rawBak = fsSync.readFileSync(backupPath, 'utf8').trim();
+                            const dataBak = rawBak ? JSON.parse(rawBak) : {};
+                            if (dataBak && typeof dataBak === 'object') {
+                                fsSync.writeFileSync(this.statusCachePath, JSON.stringify(dataBak, null, 2), 'utf8');
+                                this._log(`已从备份恢复资产状态缓存: ${Object.keys(dataBak).length} 条记录`);
+                                return dataBak;
+                            }
+                        } catch {
+                            // ignore
+                        }
+                    }
+                    this._log('状态缓存文件 host_status.json 为空(0字节)，已忽略并准备重置');
+                    fs.writeFile(this.statusCachePath, JSON.stringify({}, null, 2)).catch(err =>
+                        this._log(`重置状态缓存失败: ${err.message}`)
+                    );
+                    return {};
+                }
+
+                const raw = fsSync.readFileSync(this.statusCachePath, 'utf8').trim();
+                if (!raw) {
+                    this._log('状态缓存文件 host_status.json 为空内容，已忽略');
+                    return {};
+                }
+
+                const data = JSON.parse(raw);
+                if (!data || typeof data !== 'object') {
+                    this._log('状态缓存内容无效(非对象)，已忽略');
+                    return {};
+                }
+
+                this._log(`已加载资产状态缓存: ${Object.keys(data).length} 条记录`);
+                return data;
+            }
+        } catch (error) {
+            this._log(`加载状态缓存失败: ${error.message}`);
+        }
+        return {};
+    }
+
+    /**
+     * 更新并保存状态缓存
+     */
+    async _updateStatusCache(hostId, statusData) {
+        if (!this.statusCache || typeof this.statusCache !== 'object') {
+            this.statusCache = {};
+        }
+
+        this.statusCache[hostId] = {
+            ...(statusData && typeof statusData === 'object' ? statusData : { success: false, message: '状态数据无效' }),
+            updatedAt: new Date().toISOString()
+        };
+
+        await this._enqueueStatusCacheWrite();
+    }
+
+    /**
+     * 将状态缓存写入操作串行化，并使用临时文件 + 重命名的方式落盘。
+     * 目的：避免并行 writeFile 导致 host_status.json 被截断为 0 字节。
+     */
+    _enqueueStatusCacheWrite() {
+        const writeTask = async () => {
+            try {
+                const payload = this.statusCache && typeof this.statusCache === 'object' ? this.statusCache : {};
+                const content = JSON.stringify(payload, null, 2);
+
+                if (typeof content !== 'string' || content.length === 0) {
+                    throw new Error('状态缓存序列化为空');
+                }
+
+                const tmpPath = `${this.statusCachePath}.tmp-${process.pid}-${Date.now()}`;
+                await fs.writeFile(tmpPath, content, 'utf8');
+
+                try {
+                    await fs.rename(tmpPath, this.statusCachePath);
+                } catch (renameError) {
+                    // Windows 下 rename 覆盖可能失败：先备份旧文件，再替换
+                    const backupPath = `${this.statusCachePath}.bak`;
+                    let backedUp = false;
+
+                    try {
+                        await Promise.resolve();
+                    } catch {
+                        // ignore
+                    }
+
+                    try {
+                        await fs.copyFile(this.statusCachePath, backupPath);
+                        backedUp = true;
+                    } catch {
+                        // ignore
+                    }
+
+                    try {
+                        await fs.copyFile(tmpPath, this.statusCachePath);
+                        await fs.unlink(tmpPath);
+                    } catch (replaceError) {
+                        if (backedUp) {
+                            try {
+                                await fs.copyFile(backupPath, this.statusCachePath);
+                            } catch {
+                                // ignore
+                            }
+                        }
+                        throw replaceError;
+                    }
+
+                    if (backedUp) {
+                        // 保留备份文件用于自愈恢复
+                    }
+                }
+            } catch (error) {
+                this._log(`保存状态缓存失败: ${error.message}`);
+            }
+        };
+
+        this._statusCacheWriteQueue = this._statusCacheWriteQueue
+            .then(writeTask)
+            .catch(() => writeTask());
+
+        return this._statusCacheWriteQueue;
+    }
+
+    /**
+     * 列出所有可用主机（集成缓存状态）
+     */
+    listHosts(onlyConnectable = false) {
         const result = [];
         for (const [id, config] of Object.entries(this.hosts)) {
+            const cache = config.type === 'local'
+                ? { success: true, message: '本地执行', latency: 0, updatedAt: new Date().toISOString() }
+                : (this.statusCache[id] || { success: false, message: '未探测' });
+            
+            // 如果要求只列出可连接资产
+            if (onlyConnectable && !cache.success) {
+                continue;
+            }
+
             result.push({
                 id,
                 name: config.name,
@@ -97,7 +270,13 @@ class SSHManager {
                 enabled: config.enabled,
                 host: config.host || 'localhost',
                 securityLevel: config.securityLevel,
-                tags: config.tags || []
+                tags: config.tags || [],
+                status: {
+                    online: cache.success,
+                    latency: cache.latency,
+                    lastCheck: cache.updatedAt,
+                    message: cache.message
+                }
             });
         }
         return result;
@@ -105,8 +284,10 @@ class SSHManager {
     
     /**
      * 解析私钥路径（支持 ~ 展开和相对路径）
+     * @param {string} keyPath - 私钥路径
+     * @param {string} [basePath] - 基础查找路径（可选）
      */
-    async resolveKeyPath(keyPath) {
+    async resolveKeyPath(keyPath, basePath) {
         if (!keyPath) return null;
         
         let resolvedPath = keyPath;
@@ -115,9 +296,14 @@ class SSHManager {
         if (keyPath.startsWith('~')) {
             resolvedPath = path.join(os.homedir(), keyPath.slice(1));
         }
-        // 相对路径：相对于插件目录
-        else if (keyPath.startsWith('./') || keyPath.startsWith('../') || !path.isAbsolute(keyPath)) {
-            resolvedPath = path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', keyPath);
+        // 绝对路径
+        else if (path.isAbsolute(keyPath)) {
+            resolvedPath = keyPath;
+        }
+        // 相对路径
+        else {
+            const root = basePath || path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor');
+            resolvedPath = path.join(root, keyPath);
         }
         
         // 规范化路径
@@ -202,9 +388,13 @@ class SSHManager {
     
     /**
      * 创建 SSH 连接（公共接口，带重试和连接限制）
+     * @param {string} hostId - 主机ID
+     * @param {Object} [options] - 连接选项
+     * @param {boolean} [options.bypassPool] - 是否强制跳过连接池（新建连接）
      */
-    async connect(hostId) {
+    async connect(hostId, options = {}) {
         const config = this.getHostConfig(hostId);
+        const bypassPool = options.bypassPool === true || !this.usePool;
         
         // 本地执行不需要 SSH 连接
         if (config.type === 'local') {
@@ -212,30 +402,79 @@ class SSHManager {
         }
         
         // 检查连接池中是否已有可用连接
-        const existingConn = this.connectionPool.get(hostId);
-        if (existingConn && existingConn.isConnected) {
-            this._log(`复用现有连接: ${hostId}`);
-            return existingConn;
+        if (!bypassPool) {
+            const existingConn = this.connectionPool.get(hostId);
+            if (existingConn && existingConn.isConnected) {
+                this._log(`复用现有连接: ${hostId}`);
+                return existingConn;
+            }
+        } else {
+            this._log(`非池化模式: 将为 ${hostId} 创建独立连接`);
         }
         
-        // 等待连接槽位
+        // 1. 等待全局连接槽位
         await this.waitForConnectionSlot();
+        
+        // 2. 获取主机级锁 (主机串行化，防止 PAM 并发错误)
+        await this.acquireHostLock(hostId);
         
         try {
             // 使用带重试的连接
-            return await this.connectWithRetry(hostId);
+            const connection = await this.connectWithRetry(hostId, options);
+            return connection;
         } catch (error) {
-            // 连接失败，释放槽位
-            this.releaseConnectionSlot();
+            // 连接失败，释放全局槽位
             throw error;
+        } finally {
+            // 无论成功失败，都必须释放主机锁
+            this.releaseHostLock(hostId);
+        }
+    }
+
+    /**
+     * 获取针对特定主机的认证锁
+     */
+    async acquireHostLock(hostId) {
+        if (!this.hostQueues.has(hostId)) {
+            this.hostQueues.set(hostId, { locked: false, queue: [] });
+        }
+        
+        const hostState = this.hostQueues.get(hostId);
+        if (!hostState.locked) {
+            hostState.locked = true;
+            this._log(`[Lock] 获得主机锁: ${hostId}`);
+            return;
+        }
+
+        this._log(`[Lock] 主机认证冲突，正在排队: ${hostId}`);
+        return new Promise(resolve => {
+            hostState.queue.push(resolve);
+        });
+    }
+
+    /**
+     * 释放特定主机的认证锁
+     */
+    releaseHostLock(hostId) {
+        const hostState = this.hostQueues.get(hostId);
+        if (!hostState) return;
+
+        if (hostState.queue.length > 0) {
+            const next = hostState.queue.shift();
+            this._log(`[Lock] 移交主机锁给下一个等待者: ${hostId}`);
+            next();
+        } else {
+            hostState.locked = false;
+            this._log(`[Lock] 释放主机锁 (队列空): ${hostId}`);
         }
     }
     
     /**
      * 内部连接实现
      */
-    async _connectInternal(hostId) {
+    async _connectInternal(hostId, options = {}) {
         const config = this.getHostConfig(hostId);
+        const bypassPool = options.bypassPool === true || !this.usePool;
         
         // 增加活跃连接计数
         this.activeConnections++;
@@ -250,7 +489,9 @@ class SSHManager {
             username: config.username,
             readyTimeout: config.timeout || this.globalSettings.defaultTimeout || 30000,
             keepaliveInterval: config.keepAliveInterval || 10000,
-            keepaliveCountMax: 3
+            keepaliveCountMax: 3,
+            // 核心修复：显式禁用键盘交互探测，防止 PAM 记录 authentication failure
+            tryKeyboard: false
         };
         
         // 认证方式
@@ -281,14 +522,24 @@ class SSHManager {
         this._log(`认证方式: ${config.authMethod}, 私钥长度: ${sshConfig.privateKey ? sshConfig.privateKey.length : 'N/A'}`);
         
         return new Promise((resolve, reject) => {
+            let slotReleased = false;
+            let connected = false;
+            const releaseSlotOnce = () => {
+                if (slotReleased) return;
+                slotReleased = true;
+                this.releaseConnectionSlot();
+            };
+
             const timeout = setTimeout(() => {
                 this._log(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId}`);
                 conn.end();
+                releaseSlotOnce();
                 reject(new Error(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId} - 请检查: 1) 网络连通性 2) 防火墙规则 3) SSH 服务状态 4) 私钥权限`));
             }, sshConfig.readyTimeout);
             
             conn.on('ready', () => {
                 clearTimeout(timeout);
+                connected = true;
                 this._log(`SSH 握手成功: ${hostId}`);
                 
                 const connection = {
@@ -296,18 +547,23 @@ class SSHManager {
                     hostId,
                     client: conn,
                     isConnected: true,
+                    isPooled: !bypassPool, // 标记是否为池化连接
                     connectedAt: new Date(),
                     config
                 };
                 
-                // 检查连接池大小限制
-                if (this.connectionPool.size >= this.connectionPoolSize) {
-                    // 移除最旧的未使用连接
-                    this._evictOldestConnection();
+                if (!bypassPool) {
+                    // 检查连接池大小限制
+                    if (this.connectionPool.size >= this.connectionPoolSize) {
+                        // 移除最旧的未使用连接
+                        this._evictOldestConnection();
+                    }
+                    
+                    // 存入连接池
+                    this.connectionPool.set(hostId, connection);
+                    this._log(`连接已存入池中: ${hostId}`);
                 }
                 
-                // 存入连接池
-                this.connectionPool.set(hostId, connection);
                 this.connectionStatus.set(hostId, 'connected');
                 
                 this._log(`已连接到 ${hostId} (${config.host})，当前连接数: ${this.activeConnections}/${this.maxConcurrentConnections}`);
@@ -319,7 +575,9 @@ class SSHManager {
                 this._log(`SSH 错误 (${hostId}): ${err.message}`);
                 this._log(`错误详情: ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`);
                 this.connectionStatus.set(hostId, 'error');
-                this.releaseConnectionSlot();
+                if (!connected) {
+                    releaseSlotOnce();
+                }
                 reject(new Error(`SSH 连接错误 (${hostId}): ${err.message}`));
             });
             
@@ -329,7 +587,7 @@ class SSHManager {
                     connection.isConnected = false;
                 }
                 this.connectionStatus.set(hostId, 'disconnected');
-                this.releaseConnectionSlot();
+                releaseSlotOnce();
                 this._log(`连接已关闭: ${hostId}，当前连接数: ${this.activeConnections}/${this.maxConcurrentConnections}`);
             });
             
@@ -387,7 +645,10 @@ class SSHManager {
      * 执行远程命令
      */
     async execute(hostId, command, options = {}) {
-        const connection = await this.connect(hostId);
+        // 如果是批量执行或显式要求池化，则不 bypass
+        const connection = await this.connect(hostId, {
+            bypassPool: options.usePool === undefined ? !this.usePool : !options.usePool
+        });
         
         // 本地执行
         if (connection.type === 'local') {
@@ -404,10 +665,12 @@ class SSHManager {
     async executeLocal(command, options = {}) {
         const { spawn } = require('child_process');
         const timeout = options.timeout || 30000;
+        const maxOutputLength = options.maxOutputLength || 5 * 1024 * 1024; // 默认 5MB
         
         return new Promise((resolve, reject) => {
             let stdout = '';
             let stderr = '';
+            let totalLength = 0;
             
             const child = spawn('/bin/bash', ['-c', command], {
                 timeout,
@@ -419,7 +682,16 @@ class SSHManager {
                 reject(new Error(`命令执行超时 (${timeout}ms)`));
             }, timeout);
             
-            child.stdout.on('data', data => { stdout += data.toString(); });
+            child.stdout.on('data', data => {
+                if (totalLength < maxOutputLength) {
+                    const chunk = data.toString();
+                    stdout += chunk;
+                    totalLength += chunk.length;
+                    if (totalLength >= maxOutputLength) {
+                        stdout += "\n[Output Truncated due to length limit]";
+                    }
+                }
+            });
             child.stderr.on('data', data => { stderr += data.toString(); });
             
             child.on('close', code => {
@@ -445,10 +717,12 @@ class SSHManager {
      */
     async executeSSH(connection, command, options = {}) {
         const timeout = options.timeout || connection.config.timeout || 30000;
+        const maxOutputLength = options.maxOutputLength || 5 * 1024 * 1024; // 默认 5MB
         
         return new Promise((resolve, reject) => {
             let stdout = '';
             let stderr = '';
+            let totalLength = 0;
             
             const timeoutId = setTimeout(() => {
                 reject(new Error(`SSH 命令执行超时 (${timeout}ms)`));
@@ -463,6 +737,14 @@ class SSHManager {
                 
                 stream.on('close', (code, signal) => {
                     clearTimeout(timeoutId);
+
+                    // 如果是非池化连接，执行完毕后立即断开
+                    if (!connection.isPooled && connection.client) {
+                        this._log(`非池化连接任务完成，正在断开: ${connection.hostId}`);
+                        connection.client.end();
+                        connection.isConnected = false;
+                    }
+
                     resolve({
                         stdout,
                         stderr,
@@ -474,7 +756,14 @@ class SSHManager {
                 });
                 
                 stream.on('data', data => {
-                    stdout += data.toString();
+                    if (totalLength < maxOutputLength) {
+                        const chunk = data.toString();
+                        stdout += chunk;
+                        totalLength += chunk.length;
+                        if (totalLength >= maxOutputLength) {
+                            stdout += "\n[Output Truncated due to length limit]";
+                        }
+                    }
                 });
                 
                 stream.stderr.on('data', data => {
@@ -835,32 +1124,71 @@ class SSHManager {
     // ==================== 流式会话支持结束 ====================
     
     /**
-     * 测试主机连接
+     * 测试主机连接（并更新缓存）
      */
     async testConnection(hostId) {
+        if (this._inFlightTestConnections && this._inFlightTestConnections.has(hostId)) {
+            return this._inFlightTestConnections.get(hostId);
+        }
+
+        const task = this._testConnectionInternal(hostId);
+        if (this._inFlightTestConnections) {
+            this._inFlightTestConnections.set(hostId, task);
+        }
+
+        try {
+            return await task;
+        } finally {
+            if (this._inFlightTestConnections) {
+                this._inFlightTestConnections.delete(hostId);
+            }
+        }
+    }
+
+    /**
+     * 内部测试连接逻辑（优化：仅握手，不执行额外命令）
+     */
+    async _testConnectionInternal(hostId) {
+        let testResult;
         try {
             const startTime = Date.now();
-            const connection = await this.connect(hostId);
-            
-            // 执行简单命令测试
-            const result = await this.execute(hostId, 'echo "VCP_CONNECTION_TEST"', { timeout: 10000 });
+            // 仅执行 connect，握手成功即代表通路
+            await this.connect(hostId);
             const latency = Date.now() - startTime;
-            
-            return {
+
+            testResult = {
                 success: true,
                 hostId,
                 latency,
-                output: result.stdout.trim(),
+                output: "SSH_HANDSHAKE_OK",
                 message: `连接成功，延迟 ${latency}ms`
             };
         } catch (error) {
-            return {
+            testResult = {
                 success: false,
                 hostId,
                 error: error.message,
                 message: `连接失败: ${error.message}`
             };
         }
+
+        // 写入缓存后再返回：避免 Windows 下进程提前退出导致缓存未落盘
+        try {
+            await this._updateStatusCache(hostId, testResult);
+        } catch (err) {
+            this._log(`缓存更新失败: ${err.message}`);
+        }
+
+        return testResult;
+    }
+
+    async refreshAllStatuses() {
+        this._log('开始批量刷新主机状态...');
+        const tasks = Object.keys(this.hosts)
+            .filter(id => this.hosts[id].enabled)
+            .map(id => this.testConnection(id));
+        
+        return Promise.allSettled(tasks);
     }
     
     /**

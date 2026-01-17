@@ -1,9 +1,9 @@
 {
     "manifestVersion": "1.0.0",
     "name": "LinuxShellExecutor",
-    "version": "0.4.0",
+    "version": "1.1.9",
     "displayName": "Linux Shell 安全执行器",
-    "description": "六层安全防护的 Linux Shell 命令执行器。支持四级安全分级（read/safe/write/danger）、预设诊断命令、输出格式化、多主机 SSH 远程执行、密钥/密码认证、跳板机、AST分析、沙箱隔离、资源限制(rlimit)和审计日志。",
+    "description": "六层安全防护的 Linux Shell 命令执行器。支持多发行版静默安装、异步任务托管、交互阻塞探测及跨插件联动监控。",
     "author": "VCP Team",
     "pluginType": "synchronous",
     "requiresAdmin": true,
@@ -22,7 +22,7 @@
         "invocationCommands": [
             {
                 "commandIdentifier": "LinuxShellExecutor",
-                "description": "在安全沙箱中执行 Linux Shell 命令，支持本地和远程 SSH 执行。\n\n🆕 v0.4.0 新功能:\n- 四级安全分级（read/safe/write/danger）\n- 预设诊断命令（preset:quickDiag 等）\n- 输出格式化（自动截断、表格美化）\n\n⚠️ 重要：write/danger 级别命令需要管理员验证码。\n\n参数:\n- command (字符串, 必需): 要执行的 Shell 命令，或 preset:预设名?参数 格式。\n- hostId (字符串, 可选): 目标主机ID，默认 'local'。\n- timeout (数字, 可选): 超时时间（毫秒），默认30000。\n- outputFormat (字符串, 可选): 输出格式 'raw'|'formatted'|'json'，默认 'formatted'。\n- requireAdmin (字符串, 条件必需): 管理员验证码，write/danger 级别命令必需。\n- doubleConfirm (布尔, 条件必需): danger 级别命令需要设为 true。\n\n基本调用（read级别，无需验证）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」ls -la /tmp「末」\n<<<[END_TOOL_REQUEST]>>>\n\n预设命令调用:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」preset:quickDiag「末」\n<<<[END_TOOL_REQUEST]>>>\n\n带参数的预设命令:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」preset:checkService?serviceName=nginx「末」\n<<<[END_TOOL_REQUEST]>>>\n\nwrite级别命令（需验证）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」systemctl restart nginx「末」,\nrequireAdmin:「始」用户提供的验证码「末」\n<<<[END_TOOL_REQUEST]>>>\n\n列出预设命令:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listPresets「末」\n<<<[END_TOOL_REQUEST]>>>\n\n列出所有主机:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listHosts「末」\n<<<[END_TOOL_REQUEST]>>>"}
+                "description": "在安全沙箱中执行 Linux Shell 命令，支持本地和远程 SSH 执行。\n\n🆕 v1.1.7 审计加固版:\n- 异步闭环：修复 isLongRunning 逻辑，确保 yum/apt/tail 等指令真实托管。\n- 资产引导修复：修正 Discovery 状态透传，引导 hostId 自动发现。\n- 安全逃逸支持：授权码 (authCode) 可绕过白名单及安全层级限制。\n- 鲁棒性增强：新增特殊操作符 (; && |) 校验及全局 1MB/5MB 输出截断防护。\n\n参数:\n- command (字符串, 必需): 要执行的 Shell 命令，或 preset:预设名?参数 格式。\n- hostId (字符串, 可选): 目标主机ID，默认 'local'。\n- isLongRunning (布尔, 可选): 是否为长待机指令，设为 true 时任务将转入后台并返回 taskId。\n- requireAdmin (字符串, 可选): 管理员验证码/授权码。用于 write/danger 级别确认，或强制执行不在白名单内的命令。\n- timeout (数字, 可选): 超时时间（毫秒）。\n- outputFormat (字符串, 可选): 输出格式 'raw'|'formatted'|'json'。\n\n授权码执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」unknown-tool --args「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>\n\n长待机指令调用:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\ncommand:「始」yum install -y nginx「末」,\nisLongRunning:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n列出可连接的主机:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LinuxShellExecutor「末」,\naction:「始」listHosts「末」,\nonlyConnectable:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"}
         ]
     }
 }

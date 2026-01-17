@@ -1,9 +1,9 @@
 /**
  * SSHManager 共享模块 - 单例导出
- * 
+ *
  * 用途：为 LinuxShellExecutor 和 LinuxLogMonitor 提供统一的 SSH 连接管理
- * 
- * @version 1.0.0
+ *
+ * @version 1.1.0
  * @author VCP Team
  */
 
@@ -14,12 +14,21 @@ let SSHManagerClass = null;
 let instance = null;
 let hostsConfig = null;
 
+let lastError = null;
+let lastConfigPath = null;
+let lastConfigError = null;
+let lastClassPath = null;
+let lastClassError = null;
+
 /**
  * 加载主机配置
  * @returns {Object} 主机配置对象
  */
 function loadHostsConfig() {
     if (hostsConfig) return hostsConfig;
+
+    lastConfigPath = null;
+    lastConfigError = null;
     
     // 配置文件搜索路径（优先级从高到低）
     const configPaths = [
@@ -33,10 +42,13 @@ function loadHostsConfig() {
                 // 清除 require 缓存以支持热重载
                 delete require.cache[require.resolve(configPath)];
                 hostsConfig = require(configPath);
+                lastConfigPath = configPath;
                 console.error(`[SSHManager Module] 加载主机配置: ${configPath}`);
                 return hostsConfig;
             }
         } catch (e) {
+            lastClassError = e.message;
+            lastConfigError = e.message;
             console.error(`[SSHManager Module] 无法加载配置 ${configPath}: ${e.message}`);
         }
     }
@@ -72,6 +84,9 @@ function loadHostsConfig() {
  */
 function loadSSHManagerClass() {
     if (SSHManagerClass) return SSHManagerClass;
+
+    lastClassPath = null;
+    lastClassError = null;
     
     // SSHManager 类文件搜索路径
     const classPaths = [
@@ -85,6 +100,7 @@ function loadSSHManagerClass() {
                 // 清除 require 缓存以支持热重载
                 delete require.cache[require.resolve(classPath)];
                 SSHManagerClass = require(classPath);
+                lastClassPath = classPath;
                 console.error(`[SSHManager Module] 加载 SSHManager 类: ${classPath}`);
                 return SSHManagerClass;
             }
@@ -94,29 +110,38 @@ function loadSSHManagerClass() {
     }
     
     console.error('[SSHManager Module] 未找到 SSHManager 类文件');
+    lastClassError = lastClassError || '未找到 SSHManager 类文件';
     return null;
 }
 
 /**
  * 获取 SSHManager 单例实例
+ * @param {Object} [providedConfig] 可选的主机配置，若提供则优先使用
+ * @param {Object} [options] 初始化选项，如 { basePath: __dirname }
  * @returns {Object|null} SSHManager 实例或 null
  */
-function getSSHManager() {
+function getSSHManager(providedConfig = null, options = {}) {
     if (instance) return instance;
+
+    lastError = null;
     
     const ManagerClass = loadSSHManagerClass();
     if (!ManagerClass) {
+        lastError = `无法创建 SSHManager 实例：类未加载 (${lastClassError || 'unknown'})`;
         console.error('[SSHManager Module] 无法创建 SSHManager 实例：类未加载');
         return null;
     }
     
-    const config = loadHostsConfig();
+    // 优先级：显式提供的配置 > 自动加载的配置
+    const config = providedConfig || loadHostsConfig();
     
     try {
-        instance = new ManagerClass(config);
-        console.error('[SSHManager Module] 创建新的 SSHManager 单例实例');
+        // 将 config 和 options (包含 basePath) 传递给构造函数
+        instance = new ManagerClass(config, options);
+        console.error('[SSHManager Module] 创建新的 SSHManager 单例实例', options.basePath ? `(basePath: ${options.basePath})` : '');
         return instance;
     } catch (e) {
+        lastError = e.message;
         console.error(`[SSHManager Module] 创建 SSHManager 实例失败: ${e.message}`);
         return null;
     }
@@ -179,7 +204,12 @@ function getStatus() {
         available: isAvailable(),
         instanceCreated: instance !== null,
         configLoaded: hostsConfig !== null,
-        activeConnections: instance ? (instance.getActiveConnectionCount?.() || 0) : 0
+        activeConnections: instance ? (instance.getActiveConnectionCount?.() || 0) : 0,
+        lastError,
+        configPath: lastConfigPath,
+        configError: lastConfigError,
+        classPath: lastClassPath,
+        classError: lastClassError
     };
 }
 

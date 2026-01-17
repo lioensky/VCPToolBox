@@ -1,14 +1,67 @@
-# LinuxShellExecutor
+# LinuxShellExecutor v1.1.9
 
 六层安全防护的 Linux Shell 命令执行器，专为 VCP Agent 设计。
 
-## 🆕 v0.4.0 新功能
+## 🆕 v1.1.9 新功能 (连接策略优化)
 
-- ✅ **四级安全分级** - read（只读自动放行）/ safe（低风险自动放行）/ write（需验证）/ danger（二次确认）
-- ✅ **智能管道验证** - 基于安全级别的管道链验证，只允许 read→read、read→safe、safe→read 的管道组合
-- ✅ **预设诊断命令** - 12 个预设命令集（quickDiag、checkService、netDiag、checkDisk、checkDocker 等）
-- ✅ **输出格式化** - 自动截断（100行）、表格美化、支持 raw/formatted/json 三种输出格式
-- ✅ **参数化预设** - 支持 `preset:checkService?serviceName=nginx` 格式的参数化调用
+- ✅ **SSH 连接策略重构 (v1.1.9)** - 默认采用“即用即连、完工即断”模式，彻底解决 VCP 多进程架构下的连接池失效与进程挂起问题。
+- ✅ **智能连接复用** - 仅在执行批量预设 (Presets) 命令时启用临时连接池，兼顾单次调用的轻量化与批量操作的高性能。
+- ✅ **资源回收增强** - 确保非池化连接在命令结束后立即释放，提升系统响应速度与稳定性。
+
+## 📋 v1.1.8 功能 (架构统一)
+
+- ✅ **SSHManager 架构重构 (v1.1.8)** - 将插件私有的 SSH 管理逻辑合并至系统共享模块 `modules/SSHManager` (v1.2.4)。
+- ✅ **共享单例模式** - 插件通过 `basePath` 注入方式复用系统级 SSH 连接管理器，确保与 `LinuxLogMonitor` 等插件共享连接池。
+- ✅ **主机锁与状态同步** - 继承了 v1.1.7 的 HostLock (PAM 保护) 和资产状态持久化功能。
+
+## 🆕 v1.1.7 新功能 (审计修复与加固)
+
+- ✅ **异步任务闭环 (v1.1.7)** - 修复 `isLongRunning` 识别逻辑，确保 `yum/apt/tail` 等指令真实进入托管流程而非同步阻塞。
+- ✅ **状态透传修复 (v1.1.7)** - 修正 `main()` 异步包装，确保 `Discovery` 资产引导状态能正确穿透至 Agent。
+- ✅ **安全层级重构 (v1.1.7)** - 调整校验顺序，支持 `DECRYPTED_AUTH_CODE` 匹配时强制逃逸白名单与安全等级限制。
+- ✅ **特殊操作符校验 (v1.1.7)** - 增强 `SecurityLevelValidator`，实现对 `;`, `&&`, `|` 等操作符的细粒度安全过滤。
+- ✅ **全局 OOM 防护 (v1.1.7)** - 在插件内置及共享 `SSHManager` 模块中引入输出长度硬限制，防止长日志导致内存溢出。
+
+## 🆕 v1.1.6 新功能 (PAM 锁定防御)
+
+- ✅ **SSH 认证锁定防御 (v1.1.6)** - 显式禁用 `keyboard-interactive` 探测，防止因并发连接触发服务器 PAM `pam_faillock` 导致账户锁定。
+- ✅ **主机级并发串行化 (v1.1.6)** - 引入 `Host-Level Serialization` 机制。在全局并发限制基础上，对单个主机的认证过程进行强制排队，彻底消除瞬时并发认证冲击风险。
+- ✅ **认证方法显式化 (v1.1.6)** - 优化 `ssh2` 配置，根据 `hosts.json` 显式指定 `key` 或 `password` 路径，跳过冗余的认证方法协商。
+
+## 🆕 v1.1.5 新功能
+
+- ✅ **全平台静默安装 (v1.1.5)** - 自动为 `apt`, `yum`, `pacman`, `yay`, `zypper`, `pip`, `npm` 等补全非交互参数（`-y`, `--noconfirm`）及 CI 环境变量。
+- ✅ **资源锁柔性修复 (v1.1.5)** - 内置 `_safeCleanupLocks` 逻辑，自动识别并安全修复包管理器死锁（如 `/var/lib/dpkg/lock`），规避 AI 执行 `rm` 指令受限的问题。
+- ✅ **异步任务托管强化** - 完善 `isLongRunning` 逻辑，支持真正的后台进程运行与日志重定向。
+- ✅ **交互阻塞探测** - 自动识别 `sudo` 密码、`[y/n]`、资源锁、选择提示符等交互特征，并及时返回 `interaction_required` 或 `background` 状态。
+- ✅ **跨插件接力引导** - 异步任务自动返回 `LinuxLogMonitor` 指令模板，引导 AI 进行全量进度追踪。
+
+## 📋 v1.1.0 功能
+
+- ✅ **授权码逃逸层** - 允许通过管理员授权码强制执行未定义（unknown）的命令。
+- ✅ **资产引导系统** - 当 `hostId` 缺失或不匹配时，主动返回 `status: "discovery"` 及可用资产列表。
+- ✅ **长待机指令支持** - 增加 `isLongRunning` 选项，将耗时任务（如安装、日志追踪）托管至后台并立即返回 `taskId`。
+- ✅ **毫秒级状态列表** - `listHosts` 支持 `onlyConnectable` 过滤，基于 `host_status.json` 缓存实现即时响应。
+
+## 📋 v0.4.0 功能
+
+- ✅ **四级安全分级** - read/safe/write/danger 权限分级。
+- ✅ **智能管道验证** - 基于安全级别的管道链验证。
+- ✅ **预设诊断命令** - 12 个预设命令集（quickDiag, checkService 等）。
+- ✅ **输出格式化** - 自动截断、表格美化、多格式支持。
+
+## 📋 v1.1.5 AI 协作流程
+
+1. **执行长时任务**: 建议设置 `isLongRunning: true`。插件会返回 `taskId`，AI 随后应引导用户使用 `LinuxLogMonitor` 插件进行日志追踪。
+2. **处理资源锁**: 若返回 `interaction_required` 且 `blockType` 为 `resource_locked`，AI 应主动调用 `_safeCleanupLocks` 进行修复。
+3. **静默化原则**: 插件已内置 `_patchCommandForNonInteractive`，AI 无需在命令中手动拼接 `-y`。
+
+## 📋 v1.1.0 迭代功能
+
+- ✅ **授权码逃逸** - 允许通过管理员授权码强制执行未定义命令。
+- ✅ **资产引导** - `hostId` 错误时自动返回可用资产列表。
+- ✅ **长待机托管** - 支持 `isLongRunning` 参数，自动托管耗时任务。
+- ✅ **毫秒级状态** - `listHosts` 支持 `onlyConnectable` 缓存读取。
 
 ## 📋 v0.3.x 功能
 
@@ -267,11 +320,11 @@ action:「始」getStatus「末」
 | `command` | string | ✓* | 要执行的 Shell 命令，或 `preset:预设名?参数` 格式 |
 | `action` | string | ✓* | 特殊操作：listHosts/testConnection/getStatus/listPresets |
 | `hostId` | string | | 目标主机ID，默认 'local' |
+| `isLongRunning` | boolean | | 是否为长待机指令（设为 true 后任务转入后台） |
+| `authCode` | string | | 管理员授权码，用于强制执行 unknown 命令 |
 | `timeout` | number | | 超时时间（毫秒），默认 30000 |
-| `securityLevel` | string | | 安全等级：basic/standard/high/maximum |
 | `outputFormat` | string | | 输出格式：raw/formatted/json，默认 'formatted' |
 | `requireAdmin` | string | 条件必需 | 管理员验证码，write/danger 级别命令必需 |
-| `doubleConfirm` | boolean | 条件必需 | danger 级别命令需要设为 true |
 
 *注：command 和 action 二选一
 
@@ -622,6 +675,25 @@ action:「始」listPresets「末」
 
 ## 版本历史
 
+- **v1.1.9** - 连接策略优化与资源回收
+  - 重构 SSH 连接逻辑，默认不使用连接池以适配 VCP 多进程架构。
+  - 实现命令执行完毕后自动断开非池化连接，防止进程挂起。
+  - 优化批量预设命令执行流程，仅在批量模式下启用临时连接池。
+- **v1.1.8** - SSHManager 共享模块重构 (v1.2.4)
+  - 将 LinuxShellExecutor 私有 SSHManager 逻辑合并至共享模块。
+  - 实现 `basePath` 动态私钥路径解析，支持插件级私钥文件。
+  - 插件入口对齐 `getSSHManager(config, options)` 接口。
+- **v1.1.7** - 审计修复与稳定性增强
+  - 修复 `isLongRunning` 异步闭环逻辑，确保长时任务托管至 `MonitorManager`。
+  - 修正 `main()` 异步包装，解决 `Discovery` 资产发现状态透传失效问题。
+  - 调整安全校验顺序，支持授权码逃逸白名单及安全等级限制。
+  - 增强 `SecurityLevelValidator`，实现特殊操作符（`;`, `&&`, `|`）校验。
+  - 在内置及共享 `SSHManager` 模块中引入输出长度限制，彻底根治 OOM 风险。
+- **v1.1.6** - SSH 认证安全加固 (PAM Defense)
+  - 显式禁用 `keyboard-interactive` 探测，规避 PAM 认证失败计数。
+  - 引入 `hostQueues` 主机级锁，强制认证过程串行化。
+- **v1.1.5** - 全平台静默安装与资源锁柔性修复
+- **v1.1.0** - 授权码逃逸、资产引导、长待机指令支持
 - **v0.4.0** - 四级安全分级、预设命令、输出格式化
   - 新增四级安全分级（read/safe/write/danger）
   - 新增智能管道链验证
