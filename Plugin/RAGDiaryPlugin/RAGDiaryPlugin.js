@@ -6,11 +6,13 @@ const path = require('path');
 const crypto = require('crypto'); // <--- 引入加密模块
 const dotenv = require('dotenv');
 const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
-const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
+const TimeExpressionParser = require('./TimeExpressionParser.js'); // <--- 模块化：引入时间解析器
+const MetaThinkingManager = require('./MetaThinkingManager.js'); // <--- 模块化：引入元思考管理器
 const SemanticGroupManager = require('./SemanticGroupManager.js');
 const AIMemoHandler = require('./AIMemoHandler.js'); // <--- 新增：引入AIMemoHandler
 const ContextVectorManager = require('./ContextVectorManager.js'); // <--- 新增：引入上下文向量管理器
 const { chunkText } = require('../../TextChunker.js'); // <--- 新增：引入文本分块器
+const CoreTagExtractor = require('./CoreTagExtractor.js'); // <--- 新增：引入核心 Tag 提取器
 
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
@@ -28,209 +30,6 @@ const GLOBAL_SIMILARITY_THRESHOLD = 0.6; // 全局默认余弦相似度阈值
 //####################################################################################
 //## TimeExpressionParser - 时间表达式解析器
 //####################################################################################
-class TimeExpressionParser {
-    constructor(locale = 'zh-CN') {
-        this.setLocale(locale);
-    }
-
-    setLocale(locale) {
-        this.locale = locale;
-        this.expressions = TIME_EXPRESSIONS[locale] || TIME_EXPRESSIONS['zh-CN'];
-    }
-
-    // 获取一天的开始和结束 (使用配置的时区)
-    _getDayBoundaries(date) {
-        const start = dayjs(date).tz(DEFAULT_TIMEZONE).startOf('day');
-        const end = dayjs(date).tz(DEFAULT_TIMEZONE).endOf('day');
-        return { start: start.toDate(), end: end.toDate() };
-    }
-    
-    // 核心解析函数 - V2 (支持多表达式)
-    parse(text) {
-        console.log(`[TimeParser] Parsing text for all time expressions: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
-        const now = dayjs().tz(DEFAULT_TIMEZONE); // 获取当前配置时区的时间
-        let remainingText = text;
-        const results = [];
-
-        // 1. 检查硬编码表达式 (从长到短排序)
-        const sortedHardcodedKeys = Object.keys(this.expressions.hardcoded).sort((a, b) => b.length - a.length);
-        for (const expr of sortedHardcodedKeys) {
-            if (remainingText.includes(expr)) {
-                const config = this.expressions.hardcoded[expr];
-                console.log(`[TimeParser] Matched hardcoded expression: "${expr}"`);
-                let result = null;
-                if (config.days !== undefined) {
-                    const targetDate = now.subtract(config.days, 'day');
-                    result = this._getDayBoundaries(targetDate);
-                } else if (config.type) {
-                    result = this._getSpecialRange(now, config.type);
-                }
-                if (result) {
-                    results.push(result);
-                    remainingText = remainingText.replace(expr, ''); // 消费掉匹配的部分
-                }
-            }
-        }
-
-        // 2. 检查动态模式
-        for (const pattern of this.expressions.patterns) {
-            const globalRegex = new RegExp(pattern.regex.source, 'g');
-            let match;
-            while ((match = globalRegex.exec(remainingText)) !== null) {
-                console.log(`[TimeParser] Matched pattern: "${pattern.regex}" with text "${match[0]}"`);
-                const result = this._handleDynamicPattern(match, pattern.type, now);
-                if (result) {
-                    results.push(result);
-                    // 简单替换，可能不完美但能处理多数情况
-                    remainingText = remainingText.replace(match[0], '');
-                }
-            }
-        }
-
-        if (results.length > 0) {
-            // --- V2.1: 去重 (使用时间戳以提高性能) ---
-            const uniqueRanges = new Map();
-            results.forEach(r => {
-                const key = `${r.start.getTime()}|${r.end.getTime()}`;
-                if (!uniqueRanges.has(key)) {
-                    uniqueRanges.set(key, r);
-                }
-            });
-            const finalResults = Array.from(uniqueRanges.values());
-
-            if (finalResults.length < results.length) {
-                console.log(`[TimeParser] 去重时间范围：${results.length} → ${finalResults.length}`);
-            }
-            
-            console.log(`[TimeParser] Found ${finalResults.length} unique time expressions.`);
-            finalResults.forEach((r, i) => {
-                console.log(`  [${i+1}] Range: ${r.start.toISOString()} to ${r.end.toISOString()}`);
-            });
-            return finalResults;
-        } else {
-            console.log(`[TimeParser] No time expression found in text`);
-            return []; // 始终返回数组
-        }
-    }
-
-    _getSpecialRange(now, type) {
-        let start = now.clone().startOf('day');
-        let end = now.clone().endOf('day');
-
-        switch (type) {
-            case 'thisWeek':
-                // dayjs 默认周日为 0，但我们希望周一为一周的开始 (locale: zh-cn)
-                start = now.clone().startOf('week');
-                end = now.clone().endOf('week');
-                break;
-            case 'lastWeek':
-                start = now.clone().subtract(1, 'week').startOf('week');
-                end = now.clone().subtract(1, 'week').endOf('week');
-                break;
-            case 'thisMonth':
-                start = now.clone().startOf('month');
-                end = now.clone().endOf('month');
-                break;
-            case 'lastMonth':
-                start = now.clone().subtract(1, 'month').startOf('month');
-                end = now.clone().subtract(1, 'month').endOf('month');
-                break;
-            case 'thisMonthStart': // 本月初（1-10号）
-                start = now.clone().startOf('month');
-                end = now.clone().date(10).endOf('day');
-                break;
-            case 'lastMonthStart': // 上月初（1-10号）
-                start = now.clone().subtract(1, 'month').startOf('month');
-                end = start.clone().date(10).endOf('day');
-                break;
-            case 'lastMonthMid': // 上月中（11-20号）
-                start = now.clone().subtract(1, 'month').startOf('month').date(11).startOf('day');
-                end = now.clone().subtract(1, 'month').startOf('month').date(20).endOf('day');
-                break;
-            case 'lastMonthEnd': // 上月末（21号到月底）
-                start = now.clone().subtract(1, 'month').startOf('month').date(21).startOf('day');
-                end = now.clone().subtract(1, 'month').endOf('month');
-                break;
-        }
-        return { start: start.toDate(), end: end.toDate() };
-    }
-
-    _handleDynamicPattern(match, type, now) {
-        const numStr = match[1];
-        const num = this.chineseToNumber(numStr);
-
-        switch(type) {
-            case 'daysAgo':
-                const targetDate = now.clone().subtract(num, 'day');
-                return this._getDayBoundaries(targetDate.toDate());
-            
-            case 'weeksAgo':
-                const weekStart = now.clone().subtract(num, 'week').startOf('week');
-                const weekEnd = now.clone().subtract(num, 'week').endOf('week');
-                return { start: weekStart.toDate(), end: weekEnd.toDate() };
-            
-            case 'monthsAgo':
-                const monthStart = now.clone().subtract(num, 'month').startOf('month');
-                const monthEnd = now.clone().subtract(num, 'month').endOf('month');
-                return { start: monthStart.toDate(), end: monthEnd.toDate() };
-            
-            case 'lastWeekday':
-                const weekdayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0 };
-                const targetWeekday = weekdayMap[match[1]];
-                if (targetWeekday === undefined) return null;
-
-                // dayjs 的 weekday() 方法返回 0 (Sunday) 到 6 (Saturday)
-                // 我们需要找到上一个匹配的星期几
-                let lastWeekDate = now.clone().day(targetWeekday);
-                
-                // 如果计算出的日期是今天或未来，则减去一周
-                if (lastWeekDate.isSame(now, 'day') || lastWeekDate.isAfter(now)) {
-                    lastWeekDate = lastWeekDate.subtract(1, 'week');
-                }
-                
-                return this._getDayBoundaries(lastWeekDate.toDate());
-        }
-        
-        return null;
-    }
-
-    chineseToNumber(chinese) {
-        const numMap = {
-            '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-            '六': 6, '七': 7, '八': 8, '九': 9,
-            '日': 7, '天': 7 // 特殊映射
-        };
-
-        if (numMap[chinese] !== undefined) {
-            return numMap[chinese];
-        }
-
-        if (chinese === '十') return 10;
-
-        // 处理 "十一" 到 "九十九"
-        if (chinese.includes('十')) {
-            const parts = chinese.split('十');
-            const tensPart = parts[0];
-            const onesPart = parts[1];
-
-            let total = 0;
-
-            if (tensPart === '') { // "十"开头, e.g., "十三"
-                total = 10;
-            } else { // "二"开头, e.g., "二十三"
-                total = (numMap[tensPart] || 1) * 10;
-            }
-
-            if (onesPart) { // e.g., "二十三" 的 "三"
-                total += numMap[onesPart] || 0;
-            }
-            
-            return total;
-        }
-
-        return parseInt(chinese, 10) || 0;
-    }
-}
 
 
 class RAGDiaryPlugin {
@@ -241,12 +40,12 @@ class RAGDiaryPlugin {
         this.rerankConfig = {}; // <--- 新增：用于存储Rerank配置
         this.pushVcpInfo = null; // 新增：用于推送 VCP Info
         this.enhancedVectorCache = {}; // <--- 新增：用于存储增强向量的缓存
-        this.timeParser = new TimeExpressionParser('zh-CN'); // 实例化时间解析器
+        this.timeParser = new TimeExpressionParser('zh-CN', DEFAULT_TIMEZONE); // 实例化时间解析器
         this.semanticGroups = new SemanticGroupManager(this); // 实例化语义组管理器
         this.contextVectorManager = new ContextVectorManager(this); // <--- 新增：实例化上下文向量管理器
-        this.metaThinkingChains = {}; // 新增：元思考链配置
-        this.metaChainThemeVectors = {}; // 新增：元思考链主题向量缓存
+        this.metaThinkingManager = new MetaThinkingManager(this); // <--- 模块化：实例化元思考管理器
         this.aiMemoHandler = null; // <--- 延迟初始化，在 loadConfig 之后
+        this.coreTagExtractor = null; // <--- 延迟初始化
         this.isInitialized = false; // <--- 新增：初始化状态标志
         
         // ✅ 新增：查询结果缓存系统
@@ -376,49 +175,7 @@ class RAGDiaryPlugin {
         }
 
         // --- 加载元思考链配置 ---
-        try {
-            const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
-            const metaChainData = await fs.readFile(metaChainPath, 'utf-8');
-            this.metaThinkingChains = JSON.parse(metaChainData);
-            console.log(`[RAGDiaryPlugin] 成功加载元思考链配置，包含 ${Object.keys(this.metaThinkingChains.chains || {}).length} 个链定义。`);
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.log('[RAGDiaryPlugin] 未找到 meta_thinking_chains.json，元思考功能将不可用。');
-            } else {
-                console.error('[RAGDiaryPlugin] 加载元思考链配置时发生错误:', error);
-            }
-            this.metaThinkingChains = { chains: {} };
-        }
-
-        // --- 加载并缓存元思考链主题向量 ---
-        try {
-            const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
-            const metaChainCachePath = path.join(__dirname, 'meta_chain_vector_cache.json');
-            const currentMetaChainHash = await this._getFileHash(metaChainPath);
-
-            if (currentMetaChainHash) {
-                let cache = null;
-                try {
-                    const cacheData = await fs.readFile(metaChainCachePath, 'utf-8');
-                    cache = JSON.parse(cacheData);
-                } catch (e) {
-                    // Cache not found or corrupt
-                }
-
-                if (cache && cache.sourceHash === currentMetaChainHash) {
-                    console.log('[RAGDiaryPlugin] 元思考链主题向量缓存有效，从磁盘加载...');
-                    this.metaChainThemeVectors = cache.vectors;
-                    console.log(`[RAGDiaryPlugin] 成功从缓存加载 ${Object.keys(this.metaChainThemeVectors).length} 个主题向量。`);
-                } else {
-                    if (this.metaThinkingChains.chains && Object.keys(this.metaThinkingChains.chains).length > 0) {
-                         console.log('[RAGDiaryPlugin] 元思考链配置已更新或缓存无效，正在重建主题向量...');
-                         await this._buildAndSaveMetaChainThemeCache(currentMetaChainHash, metaChainCachePath);
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('[RAGDiaryPlugin] 加载或构建元思考链主题向量时发生错误:', error);
-        }
+        await this.metaThinkingManager.loadConfig();
     }
 
     async _buildAndSaveCache(configHash, cachePath) {
@@ -473,40 +230,6 @@ class RAGDiaryPlugin {
         }
     }
 
-    async _buildAndSaveMetaChainThemeCache(configHash, cachePath) {
-        console.log('[RAGDiaryPlugin] 正在为所有元思考链主题请求 Embedding API...');
-        this.metaChainThemeVectors = {}; // 清空旧的内存缓存
-
-        const chainNames = Object.keys(this.metaThinkingChains.chains || {});
-        
-        for (const chainName of chainNames) {
-            // 关键：跳过 'default' 主题，因为它不是自动切换的目标
-            if (chainName === 'default') {
-                continue;
-            }
-
-            const themeVector = await this.getSingleEmbedding(chainName);
-            if (themeVector) {
-                this.metaChainThemeVectors[chainName] = themeVector;
-                console.log(`[RAGDiaryPlugin] -> 已为元思考主题 "${chainName}" 成功获取向量。`);
-            } else {
-                console.error(`[RAGDiaryPlugin] -> 为元思考主题 "${chainName}" 获取向量失败。`);
-            }
-        }
-
-        const newCache = {
-            sourceHash: configHash,
-            createdAt: new Date().toISOString(),
-            vectors: this.metaChainThemeVectors,
-        };
-
-        try {
-            await fs.writeFile(cachePath, JSON.stringify(newCache, null, 2), 'utf-8');
-            console.log(`[RAGDiaryPlugin] 元思考链主题向量缓存已成功写入到 ${cachePath}`);
-        } catch (writeError) {
-            console.error('[RAGDiaryPlugin] 写入元思考链主题向量缓存文件失败:', writeError);
-        }
-    }
 
     async _getFileHash(filePath) {
         try {
@@ -532,6 +255,9 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] 警告：pushVcpInfo 依赖注入失败或未提供。');
         }
         
+        // ✅ 初始化核心 Tag 提取器
+        this.coreTagExtractor = new CoreTagExtractor(this.vectorDBManager);
+
         // ✅ 关键修复：确保配置加载完成后再处理消息
         console.log('[RAGDiaryPlugin] 开始加载配置...');
         await this.loadConfig();
@@ -1200,7 +926,7 @@ class RAGDiaryPlugin {
             // 参数已解析，开始处理
 
             try {
-                const metaResult = await this._processMetaThinkingChain(
+                const metaResult = await this.metaThinkingManager.processMetaThinkingChain(
                     chainName,
                     queryVector,
                     userContent,
@@ -1582,10 +1308,14 @@ class RAGDiaryPlugin {
         if (cachedResult) {
             // 缓存命中时，仍需广播VCP Info（可选）
             if (this.pushVcpInfo && cachedResult.vcpInfo) {
-                this.pushVcpInfo({
-                    ...cachedResult.vcpInfo,
-                    fromCache: true // 标记为缓存结果
-                });
+                try {
+                    this.pushVcpInfo({
+                        ...cachedResult.vcpInfo,
+                        fromCache: true // 标记为缓存结果
+                    });
+                } catch (e) {
+                    console.error('[RAGDiaryPlugin] Cache hit broadcast failed:', e.message || e);
+                }
             }
             return cachedResult.content;
         }
@@ -1633,10 +1363,14 @@ class RAGDiaryPlugin {
             }
         }
 
+        // ✅ 提取核心 Tag (聚光灯) - 提前提取以供广播使用
+        const rawCoreTags = await this.coreTagExtractor.extract(combinedQueryForDisplay);
+        const coreTags = Array.isArray(rawCoreTags) ? rawCoreTags.filter(t => typeof t === 'string') : [];
+
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- Time-aware path ---
-            // ✅ Time模式下也传递tagWeight
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight);
+            // ✅ Time模式下也传递tagWeight和coreTags
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTags);
 
             if (useRerank) {
                 ragResults = await this._rerankDocuments(userContent, ragResults, finalK);
@@ -1663,8 +1397,8 @@ class RAGDiaryPlugin {
 
         } else {
             // --- Standard path (no time filter) ---
-            // ✅ 传递tagWeight参数到search方法
-            let searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight);
+            // ✅ 传递tagWeight和coreTags参数到search方法
+            let searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTags);
             
             if (useRerank) {
                 searchResults = await this._rerankDocuments(userContent, searchResults, finalK);
@@ -1699,14 +1433,43 @@ class RAGDiaryPlugin {
                     useRerank: useRerank,
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
-                    timeRanges: useTime ? timeRanges.map(r => ({ start: r.start.toISOString(), end: r.end.toISOString() })) : undefined,
-                    results: cleanedResults,
+                    coreTags: coreTags, // 🌟 显式展示核心 Tag
+                    timeRanges: (useTime && Array.isArray(timeRanges)) ? timeRanges.map(r => {
+                        try {
+                            return {
+                                start: (r.start && typeof r.start.toISOString === 'function') ? r.start.toISOString() : String(r.start),
+                                end: (r.end && typeof r.end.toISOString === 'function') ? r.end.toISOString() : String(r.end)
+                            };
+                        } catch (e) {
+                            return { error: 'Invalid date format', raw: String(r) };
+                        }
+                    }) : undefined,
+                    // 🌟 限制广播结果数量和长度，防止 payload 过大导致广播失败
+                    results: cleanedResults.slice(0, 10).map(r => ({
+                        ...r,
+                        text: r.text.length > 300 ? r.text.substring(0, 300) + '...' : r.text
+                    })),
                     // ✅ 新增：汇总Tag统计信息
                     tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
                 };
-                this.pushVcpInfo(vcpInfoData);
+                
+                // 🛡️ 安全序列化检查
+                try {
+                    const safeData = JSON.parse(JSON.stringify(vcpInfoData));
+                    this.pushVcpInfo(safeData);
+                } catch (innerError) {
+                    console.error('[RAGDiaryPlugin] VCPInfo broadcast or serialization failed:', innerError.message || innerError);
+                    // 降级广播：只发送核心元数据
+                    try {
+                        this.pushVcpInfo({
+                            type: 'RAG_RETRIEVAL_DETAILS',
+                            dbName: dbName,
+                            error: 'Detailed stats broadcast failed: ' + (innerError.message || 'Unknown error')
+                        });
+                    } catch (e) {}
+                }
             } catch (broadcastError) {
-                console.error(`[RAGDiaryPlugin] Error during VCPInfo broadcast (RAG path):`, broadcastError);
+                console.error(`[RAGDiaryPlugin] Critical error during VCPInfo preparation:`, broadcastError.message || broadcastError);
             }
         }
 
@@ -1717,291 +1480,6 @@ class RAGDiaryPlugin {
         });
         
         return retrievedContent;
-    }
-    //####################################################################################
-    //## Meta Thinking Chain - VCP元思考递归推理链
-    //####################################################################################
-
-    /**
-     * 处理VCP元思考链 - 递归向量增强的多阶段推理
-     * @param {string} chainName - 思维链名称 (default, creative_writing等)
-     * @param {Array} queryVector - 初始查询向量
-     * @param {string} userContent - 用户输入内容
-     * @param {string} combinedQueryForDisplay - 用于VCP广播的组合查询字符串
-     * @param {Array|null} kSequence - 已废弃，K值序列现在从JSON配置中获取
-     * @param {boolean} useGroup - 是否使用语义组增强
-     * @param {boolean} isAutoMode - 是否为自动模式
-     * @param {number} autoThreshold - 自动模式的切换阈值
-     * @returns {string} 格式化的思维链结果
-     */
-    async _processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
-        
-        // 如果是自动模式，需要先决定使用哪个 chain
-        let finalChainName = chainName;
-        if (isAutoMode) {
-            let bestChain = 'default';
-            let maxSimilarity = -1;
-
-            for (const [themeName, themeVector] of Object.entries(this.metaChainThemeVectors)) {
-                const similarity = this.cosineSimilarity(queryVector, themeVector);
-                if (similarity > maxSimilarity) {
-                    maxSimilarity = similarity;
-                    bestChain = themeName;
-                }
-            }
-
-            console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 最匹配的主题是 "${bestChain}"，相似度: ${maxSimilarity.toFixed(4)}`);
-
-            if (maxSimilarity >= autoThreshold) {
-                finalChainName = bestChain;
-                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度超过阈值 ${autoThreshold}，切换到主题: ${finalChainName}`);
-            } else {
-                finalChainName = 'default';
-                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度未达到阈值，使用默认主题: ${finalChainName}`);
-            }
-        }
-        
-        console.log(`[RAGDiaryPlugin][MetaThinking] 开始处理元思考链: ${finalChainName}`);
-        
-        // 获取思维链配置
-        const chainConfig = this.metaThinkingChains.chains[finalChainName];
-        if (!chainConfig || !chainConfig.clusters || !chainConfig.kSequence) {
-            console.error(`[RAGDiaryPlugin][MetaThinking] 未找到完整的思维链配置: ${finalChainName}`);
-            return `[错误: 未找到"${finalChainName}"思维链配置]`;
-        }
-
-        const chain = chainConfig.clusters;
-        const finalKSequence = [...chainConfig.kSequence]; // 复制数组避免修改原配置
-        
-        if (!Array.isArray(chain) || chain.length === 0) {
-            console.error(`[RAGDiaryPlugin][MetaThinking] 思维链簇定义为空: ${finalChainName}`);
-            return `[错误: "${finalChainName}"思维链簇定义为空]`;
-        }
-
-        if (!Array.isArray(finalKSequence) || finalKSequence.length === 0) {
-            console.error(`[RAGDiaryPlugin][MetaThinking] K序列定义为空: ${finalChainName}`);
-            return `[错误: "${finalChainName}"K序列定义为空]`;
-        }
-
-        // 验证K值序列长度
-        if (finalKSequence.length !== chain.length) {
-            console.warn(`[RAGDiaryPlugin][MetaThinking] K值序列长度(${finalKSequence.length})与簇数量(${chain.length})不匹配`);
-            return `[错误: "${finalChainName}"的K序列长度与簇数量不匹配]`;
-        }
-
-        console.log(`[RAGDiaryPlugin][MetaThinking] 使用K序列: [${finalKSequence.join(', ')}]`);
-
-        // 1️⃣ 生成缓存键（使用最终确定的链名称和K序列）
-        const cacheKey = this._generateCacheKey({
-            userContent,
-            aiContent: aiContent || '',
-            chainName: finalChainName,
-            kSequence: finalKSequence,
-            useGroup,
-            isAutoMode
-        });
-
-        // 2️⃣ 尝试从缓存获取
-        const cachedResult = this._getCachedResult(cacheKey);
-        if (cachedResult) {
-            if (this.pushVcpInfo && cachedResult.vcpInfo) {
-                this.pushVcpInfo({
-                    ...cachedResult.vcpInfo,
-                    fromCache: true
-                });
-            }
-            return cachedResult.content;
-        }
-
-        // 3️⃣ 缓存未命中，执行原有逻辑
-        console.log(`[RAGDiaryPlugin][MetaThinking] 缓存未命中，执行元思考链...`);
-
-        // 初始化
-        let currentQueryVector = queryVector;
-        const chainResults = [];
-        const chainDetailedInfo = []; // 用于VCP Info广播
-
-        // 如果启用语义组，获取激活的组
-        let activatedGroups = null;
-        if (useGroup) {
-            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
-            if (activatedGroups.size > 0) {
-                const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups, currentQueryVector);
-                if (enhancedVector) {
-                    currentQueryVector = enhancedVector;
-                    console.log(`[RAGDiaryPlugin][MetaThinking] 语义组已激活，查询向量已增强`);
-                }
-            }
-        }
-
-        // 递归遍历每个思维簇
-        for (let i = 0; i < chain.length; i++) {
-            const clusterName = chain[i];
-            // 使用配置文件中定义的k序列
-            const k = finalKSequence[i];
-            
-            // 静默查询阶段 ${i + 1}/${chain.length}
-
-            try {
-                // 使用当前查询向量搜索当前簇
-                const searchResults = await this.vectorDBManager.search(clusterName, currentQueryVector, k);
-                
-                if (!searchResults || searchResults.length === 0) {
-                    console.warn(`[MetaThinking] 阶段${i+1}未找到结果，使用原始查询向量继续`);
-                    chainResults.push({
-                        clusterName,
-                        stage: i + 1,
-                        results: [],
-                        k: k,
-                        degraded: true // 标记为降级模式
-                    });
-                    // currentQueryVector 保持不变，继续下一阶段
-                    continue; // 改为 continue 而不是 break
-                }
-
-                // 存储当前阶段结果
-                chainResults.push({ clusterName, stage: i + 1, results: searchResults, k: k });
-
-                // 用于VCP Info的详细信息
-                chainDetailedInfo.push({
-                    stage: i + 1,
-                    clusterName,
-                    k,
-                    resultCount: searchResults.length,
-                    results: searchResults.map(r => ({ text: r.text, score: r.score }))
-                });
-
-                // 关键步骤：向量融合，为下一阶段准备查询向量
-                if (i < chain.length - 1) {
-                    const resultVectors = [];
-                    for (const result of searchResults) {
-                        const vector = await this.vectorDBManager.getVectorByText(clusterName, result.text);
-                        if (vector) resultVectors.push(vector);
-                    }
-
-                    if (resultVectors.length > 0) {
-                        const avgResultVector = this._getAverageVector(resultVectors);
-                        currentQueryVector = this._getWeightedAverageVector(
-                            [queryVector, avgResultVector],
-                            [0.8, 0.2]
-                        );
-                        // 向量融合完成（静默）
-                    } else {
-                        console.warn(`[RAGDiaryPlugin][MetaThinking] 无法获取结果向量，中断递归`);
-                        break;
-                    }
-                }
-            } catch (error) {
-                console.error(`[RAGDiaryPlugin][MetaThinking] 处理簇"${clusterName}"时发生错误:`, error);
-                chainResults.push({
-                    clusterName,
-                    stage: i + 1,
-                    results: [],
-                    k: k,
-                    error: error.message || '未知错误'
-                });
-                break;
-            }
-        }
-
-        // VCP Info 广播：发送完整的思维链执行详情
-        let vcpInfoData = null;
-        if (this.pushVcpInfo) {
-            try {
-                vcpInfoData = {
-                    type: 'META_THINKING_CHAIN',
-                    chainName: finalChainName,
-                    query: combinedQueryForDisplay,
-                    useGroup,
-                    activatedGroups: activatedGroups ? Array.from(activatedGroups.keys()) : [],
-                    stages: chainDetailedInfo,
-                    totalStages: chain.length,
-                    kSequence: finalKSequence
-                };
-                this.pushVcpInfo(vcpInfoData);
-                // VCP Info 已广播（静默）
-            } catch (broadcastError) {
-                console.error(`[RAGDiaryPlugin][MetaThinking] VCP Info 广播失败:`, broadcastError);
-            }
-        }
-
-        // 4️⃣ 保存到缓存
-        const formattedResult = this._formatMetaThinkingResults(chainResults, finalChainName, activatedGroups, isAutoMode);
-        this._setCachedResult(cacheKey, {
-            content: formattedResult,
-            vcpInfo: vcpInfoData
-        });
-
-        return formattedResult;
-    }
-
-    /**
-     * 计算多个向量的平均值
-     */
-    _getAverageVector(vectors) {
-        if (!vectors || vectors.length === 0) return null;
-        if (vectors.length === 1) return vectors[0];
-
-        const dimension = vectors[0].length;
-        const result = new Array(dimension).fill(0);
-
-        for (const vector of vectors) {
-            for (let i = 0; i < dimension; i++) {
-                result[i] += vector[i];
-            }
-        }
-
-        for (let i = 0; i < dimension; i++) {
-            result[i] /= vectors.length;
-        }
-
-        return result;
-    }
-
-    /**
-     * 格式化元思考链结果
-     */
-    _formatMetaThinkingResults(chainResults, chainName, activatedGroups, isAutoMode = false) {
-        let content = `\n[--- VCP元思考链: "${chainName}" ${isAutoMode ? '(Auto模式)' : ''} ---]\n`;
-        
-        if (activatedGroups && activatedGroups.size > 0) {
-            content += `[语义组增强: `;
-            const groupNames = [];
-            for (const [groupName, data] of activatedGroups) {
-                groupNames.push(`${groupName}(${(data.strength * 100).toFixed(0)}%)`);
-            }
-            content += groupNames.join(', ') + ']\n';
-        }
-
-        if (isAutoMode) {
-            content += `[自动选择主题: "${chainName}"]\n`;
-        }
-        content += `[推理链路径: ${chainResults.map(r => r.clusterName).join(' → ')}]\n\n`;
-
-        // 输出每个阶段的结果
-        for (const stageResult of chainResults) {
-            content += `【阶段${stageResult.stage}: ${stageResult.clusterName}】`;
-            if (stageResult.degraded) {
-                content += ` [降级模式]\n`;
-            } else {
-                content += '\n';
-            }
-            
-            if (stageResult.error) {
-                content += `  [错误: ${stageResult.error}]\n`;
-            } else if (stageResult.results.length === 0) {
-                content += `  [未找到匹配的元逻辑模块]\n`;
-            } else {
-                content += `  [召回 ${stageResult.results.length} 个元逻辑模块]\n`;
-                for (const result of stageResult.results) {
-                    content += `  * ${result.text.trim()}\n`;
-                }
-            }
-            content += '\n';
-        }
-
-        content += `[--- 元思考链结束 ---]\n`;
-        return content;
     }
 
     
@@ -2349,6 +1827,10 @@ class RAGDiaryPlugin {
             if (r.matchedTags && Array.isArray(r.matchedTags)) cleaned.matchedTags = r.matchedTags;
             if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
             if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
+            // 🛡️ 确保 coreTagsMatched 是纯字符串数组
+            if (r.coreTagsMatched && Array.isArray(r.coreTagsMatched)) {
+                cleaned.coreTagsMatched = r.coreTagsMatched.filter(t => typeof t === 'string');
+            }
             
             return cleaned;
         });
