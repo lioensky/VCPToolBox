@@ -476,8 +476,12 @@ class KnowledgeBaseManager {
                         const isTechnicalWorld = queryWorld !== 'Unknown' && /^[A-Za-z0-9\-_.]+$/.test(queryWorld);
                         
                         if (isTechnicalNoise && !isTechnicalWorld) {
-                            // 如果世界观不明或明确非技术，则强烈压制英文技术词汇
-                            langPenalty = queryWorld === 'Unknown' ? this.config.langPenaltyUnknown : this.config.langPenaltyCrossDomain;
+                            // 🌟 阶梯式语言补偿：不再一刀切
+                            // 如果是政治/社会世界观，减轻对英文实体的压制（可能是 Trump, Musk 等重要实体）
+                            // 🌟 更加鲁棒的世界观判定：使用模糊匹配
+                            const isSocialWorld = /Politics|Society|History|Economics|Culture/i.test(queryWorld);
+                            const basePenalty = queryWorld === 'Unknown' ? this.config.langPenaltyUnknown : this.config.langPenaltyCrossDomain;
+                            langPenalty = isSocialWorld ? Math.sqrt(basePenalty) : basePenalty; // 使用平方根软化惩罚
                         }
                     }
 
@@ -498,14 +502,15 @@ class KnowledgeBaseManager {
             // [4.5] 逻辑分支拉回 (Logic Pull-back)
             // 利用共现矩阵拉回与第一梯队 Tag 强相关的逻辑词
             if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
-                const topTags = allTags.slice(0, 3);
+                // 🌟 增强逻辑拉回：从前 5 个高权重标签中拉回关联词，且增加拉回深度
+                const topTags = allTags.slice(0, 5);
                 topTags.forEach(parentTag => {
                     const related = this.tagCooccurrenceMatrix.get(parentTag.id);
                     if (related) {
-                        // 找回前 2 个最相关的关联词
+                        // 找回前 4 个最相关的关联词（提升高频实体的召回机会）
                         const sortedRelated = Array.from(related.entries())
                             .sort((a, b) => b[1] - a[1])
-                            .slice(0, 2);
+                            .slice(0, 4);
                             
                         sortedRelated.forEach(([relId, weight]) => {
                             if (!seenTagIds.has(relId)) {
@@ -564,16 +569,53 @@ class KnowledgeBaseManager {
             ).all(...allTagIds);
             const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
 
+            // [5.5] 语义去重 (Semantic Deduplication)
+            // 目的：消除冗余标签（如“委内瑞拉局势”与“委内瑞拉危机”），为多样性腾出空间
+            const deduplicatedTags = [];
+            const sortedTags = [...allTags].sort((a, b) => b.adjustedWeight - a.adjustedWeight);
+            
+            for (const tag of sortedTags) {
+                const data = tagDataMap.get(tag.id);
+                if (!data || !data.vector) continue;
+                
+                const vec = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
+                let isRedundant = false;
+                
+                for (const existing of deduplicatedTags) {
+                    const existingData = tagDataMap.get(existing.id);
+                    const existingVec = new Float32Array(existingData.vector.buffer, existingData.vector.byteOffset, dim);
+                    
+                    // 计算余弦相似度
+                    let dot = 0, normA = 0, normB = 0;
+                    for (let d = 0; d < dim; d++) {
+                        dot += vec[d] * existingVec[d];
+                        normA += vec[d] * vec[d];
+                        normB += existingVec[d] * existingVec[d];
+                    }
+                    const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+                    
+                    if (similarity > 0.88) {
+                        isRedundant = true;
+                        // 权重合并：将冗余标签的部分能量转移给代表性标签，并保留 Core 属性
+                        existing.adjustedWeight += tag.adjustedWeight * 0.2;
+                        if (tag.isCore) existing.isCore = true;
+                        break;
+                    }
+                }
+                
+                if (!isRedundant) {
+                    if (!tag.name) tag.name = data.name; // 补全名称
+                    deduplicatedTags.push(tag);
+                }
+            }
+
             // [6] 构建上下文向量
             const contextVec = new Float32Array(dim);
             let totalWeight = 0;
             
-            for (const t of allTags) {
+            for (const t of deduplicatedTags) {
                 const data = tagDataMap.get(t.id);
                 if (data && data.vector) {
-                    // 补全名称（针对 Pullback 标签）
-                    if (!t.name) t.name = data.name;
-                    
                     const v = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                     for (let d = 0; d < dim; d++) contextVec[d] += v[d] * t.adjustedWeight;
                     totalWeight += t.adjustedWeight;
@@ -608,18 +650,24 @@ class KnowledgeBaseManager {
                 vector: fused,
                 info: {
                     // 🌟 标记核心 Tag 召回情况 (安全映射)
-                    coreTagsMatched: allTags.filter(t => t.isCore && t.name).map(t => t.name),
+                    coreTagsMatched: deduplicatedTags.filter(t => t.isCore && t.name).map(t => t.name),
                     // 仅返回权重足够高的 Tag，过滤掉被压制的噪音，提升召回纯净度
                     matchedTags: (() => {
-                        if (allTags.length === 0) return [];
-                        const maxWeight = Math.max(...allTags.map(t => t.adjustedWeight));
-                        return allTags.filter(t => {
+                        if (deduplicatedTags.length === 0) return [];
+                        const maxWeight = Math.max(...deduplicatedTags.map(t => t.adjustedWeight));
+                        return deduplicatedTags.filter(t => {
+                            // 🌟 核心修正：Core Tags 必须始终包含在 Normal Tags 中，防止排挤效应
+                            if (t.isCore) return true;
+
                             const tName = t.name || '';
                             const isTech = !/[\u4e00-\u9fa5]/.test(tName) && /^[A-Za-z0-9\-_.\s]+$/.test(tName);
                             if (isTech) {
-                                return t.adjustedWeight > maxWeight * 0.2;
+                                // 🌟 软化 TF-IDF 压制：将英文实体的过滤门槛从 0.2 降至 0.08
+                                return t.adjustedWeight > maxWeight * 0.08;
                             }
-                            return t.adjustedWeight > maxWeight * 0.05;
+                            // 🌟 进一步降低门槛：从 0.03 降至 0.015
+                            // 理由：Normal 必须是 Core 的超集，且要容纳高频背景主语
+                            return t.adjustedWeight > maxWeight * 0.015;
                         }).map(t => t.name).filter(Boolean);
                     })(),
                     boostFactor: effectiveTagBoost,
