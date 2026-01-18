@@ -17,6 +17,21 @@ export interface SvdResult {
   k: number
   dim: number
 }
+export interface OrthogonalProjectionResult {
+  projection: Array<number>
+  residual: Array<number>
+  basisCoefficients: Array<number>
+}
+export interface HandshakeResult {
+  magnitudes: Array<number>
+  directions: Array<number>
+}
+export interface ProjectResult {
+  projections: Array<number>
+  probabilities: Array<number>
+  entropy: number
+  totalEnergy: number
+}
 /** 统计信息 */
 export interface VexusStats {
   totalVectors: number
@@ -54,4 +69,10 @@ export declare class VexusIndex {
    * max_k: 最大保留的主成分数量
    */
   computeSvd(flattenedVectors: Buffer, n: number, maxK: number): SvdResult
+  /** 高性能 Gram-Schmidt 正交投影 */
+  computeOrthogonalProjection(vector: Buffer, flattenedTags: Buffer, nTags: number): OrthogonalProjectionResult
+  /** 高性能握手分析 */
+  computeHandshakes(query: Buffer, flattenedTags: Buffer, nTags: number): HandshakeResult
+  /** 高性能 EPA 投影 */
+  project(vector: Buffer, flattenedBasis: Buffer, meanVector: Buffer, k: number): ProjectResult
 }

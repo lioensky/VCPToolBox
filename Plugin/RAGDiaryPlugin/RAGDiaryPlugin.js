@@ -12,7 +12,6 @@ const SemanticGroupManager = require('./SemanticGroupManager.js');
 const AIMemoHandler = require('./AIMemoHandler.js'); // <--- 新增：引入AIMemoHandler
 const ContextVectorManager = require('./ContextVectorManager.js'); // <--- 新增：引入上下文向量管理器
 const { chunkText } = require('../../TextChunker.js'); // <--- 新增：引入文本分块器
-const CoreTagExtractor = require('./CoreTagExtractor.js'); // <--- 新增：引入核心 Tag 提取器
 
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
@@ -45,7 +44,6 @@ class RAGDiaryPlugin {
         this.contextVectorManager = new ContextVectorManager(this); // <--- 新增：实例化上下文向量管理器
         this.metaThinkingManager = new MetaThinkingManager(this); // <--- 模块化：实例化元思考管理器
         this.aiMemoHandler = null; // <--- 延迟初始化，在 loadConfig 之后
-        this.coreTagExtractor = null; // <--- 延迟初始化
         this.isInitialized = false; // <--- 新增：初始化状态标志
         
         // ✅ 新增：查询结果缓存系统
@@ -255,9 +253,6 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] 警告：pushVcpInfo 依赖注入失败或未提供。');
         }
         
-        // ✅ 初始化核心 Tag 提取器
-        this.coreTagExtractor = new CoreTagExtractor(this.vectorDBManager);
-
         // ✅ 关键修复：确保配置加载完成后再处理消息
         console.log('[RAGDiaryPlugin] 开始加载配置...');
         await this.loadConfig();
@@ -331,6 +326,30 @@ class RAGDiaryPlugin {
             }
         }
         
+        return result;
+    }
+
+    /**
+     * 计算多个向量的平均值
+     */
+    _getAverageVector(vectors) {
+        if (!vectors || vectors.length === 0) return null;
+        if (vectors.length === 1) return vectors[0];
+
+        const dimension = vectors[0].length;
+        const result = new Array(dimension).fill(0);
+
+        for (const vector of vectors) {
+            if (!vector || vector.length !== dimension) continue;
+            for (let i = 0; i < dimension; i++) {
+                result[i] += vector[i];
+            }
+        }
+
+        for (let i = 0; i < dimension; i++) {
+            result[i] /= vectors.length;
+        }
+
         return result;
     }
 
@@ -411,9 +430,16 @@ class RAGDiaryPlugin {
 
         console.log(`[RAGDiaryPlugin][V3] L=${L.toFixed(3)}, R=${R.toFixed(3)}, S=${S.toFixed(3)} => Beta=${beta.toFixed(3)}, TagWeight=${finalTagWeight.toFixed(3)}, K=${finalK}`);
         
+        // 6. 计算动态 Tag 截断比例 (Truncation Ratio)
+        // 逻辑：逻辑越深(L)说明意图越明确，可以保留更多 Tag；语义宽度(S)越大说明噪音或干扰越多，应收紧截断。
+        // 基础比例 0.6，范围 [0.5, 0.9] (调优：防止截断过于激进)
+        let tagTruncationRatio = 0.6 + (L * 0.3) - (S * 0.2) + (Math.min(R, 1) * 0.1);
+        tagTruncationRatio = Math.max(0.5, Math.min(0.9, tagTruncationRatio));
+
         return {
             k: finalK,
             tagWeight: finalTagWeight,
+            tagTruncationRatio: tagTruncationRatio,
             metrics: { L, R, S, beta }
         };
     }
@@ -431,6 +457,24 @@ class RAGDiaryPlugin {
         if (uniqueTokens > 100) k_ai = 7;
         else if (uniqueTokens > 40) k_ai = 5;
         return Math.round((k_user + k_ai) / 2);
+    }
+
+    /**
+     * 核心标签截断技术：规避尾部噪音
+     * 基于动态比例保留最重要的标签
+     */
+    _truncateCoreTags(tags, ratio, metrics) {
+        // 如果标签较少（<=5个），不进行截断，保留原始语义
+        if (!tags || tags.length <= 5) return tags;
+
+        // 动态计算保留数量，最小保留 5 个（除非原始数量不足）
+        const targetCount = Math.max(5, Math.ceil(tags.length * ratio));
+        const truncated = tags.slice(0, targetCount);
+
+        if (truncated.length < tags.length) {
+            console.log(`[RAGDiaryPlugin][Truncation] ${tags.length} -> ${truncated.length} tags (Ratio: ${ratio.toFixed(2)}, L:${metrics.L.toFixed(2)}, S:${metrics.S.toFixed(2)})`);
+        }
+        return truncated;
     }
 
     _stripHtml(html) {
@@ -763,32 +807,9 @@ class RAGDiaryPlugin {
                 ? `[AI]: ${aiContent}\n[User]: ${userContent}`
                 : userContent;
 
-            console.log(`[RAGDiaryPlugin] 准备向量化 - User: ${userContent.substring(0, 100)}...`);
-            // ✅ 关键修复：使用带缓存的向量化方法
-            const userVector = userContent ? await this.getSingleEmbeddingCached(userContent) : null;
-            // 🌟 逻辑修正：当前对话对的 AI 内容必须向量化以保证检索对齐，不受历史门控约束
-            const aiVector = aiContent ? await this.getSingleEmbeddingCached(aiContent) : null;
-
-            // 🌟 V3 增强：使用衰减聚合向量
-            const aggregatedAiVector = this.contextVectorManager.aggregateContext('assistant');
-            const aggregatedUserVector = this.contextVectorManager.aggregateContext('user');
-
-            let queryVector = null;
-            if (aiVector && userVector) {
-                // 结合当前意图与历史聚合意图
-                const currentIntent = this._getWeightedAverageVector([userVector, aiVector], [0.5, 0.5]);
-                if (aggregatedAiVector || aggregatedUserVector) {
-                    const historyIntent = this._getWeightedAverageVector(
-                        [aggregatedUserVector, aggregatedAiVector].filter(Boolean),
-                        [0.6, 0.4]
-                    );
-                    queryVector = this._getWeightedAverageVector([currentIntent, historyIntent], [0.8, 0.2]);
-                } else {
-                    queryVector = currentIntent;
-                }
-            } else {
-                queryVector = userVector || aiVector;
-            }
+            console.log(`[RAGDiaryPlugin] 🌟 原子级复刻 LightMemo 流程：对完整上下文进行统一向量化...`);
+            // ✅ 关键修复：不再分开向量化再平均，而是直接对合并后的上下文进行向量化，确保语义重心与 LightMemo 完全一致
+            const queryVector = await this.getSingleEmbeddingCached(combinedQueryForDisplay);
 
             if (!queryVector) {
                 // 检查是否是系统提示导致的空内容（这是正常情况）
@@ -835,7 +856,9 @@ class RAGDiaryPlugin {
                     timeRanges,
                     globalProcessedDiaries, // 传递全局 Set
                     isAIMemoLicensed, // 新增：AIMemo许可证
-                    dynamicParams.tagWeight // 🌟 传递动态 Tag 权重
+                    dynamicParams.tagWeight, // 🌟 传递动态 Tag 权重
+                    dynamicParams.tagTruncationRatio, // 🌟 传递动态截断比例
+                    dynamicParams.metrics // 传递指标用于日志
                 );
                 
                 newMessages[index].content = processedContent;
@@ -862,7 +885,7 @@ class RAGDiaryPlugin {
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -979,7 +1002,9 @@ class RAGDiaryPlugin {
                         const retrievedContent = await this._processRAGPlaceholder({
                             dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
                             dynamicK, timeRanges, allowTimeAndGroup: true,
-                            defaultTagWeight: dynamicTagWeight // 🌟 传入动态权重
+                            defaultTagWeight: dynamicTagWeight, // 🌟 传入动态权重
+                            tagTruncationRatio: tagTruncationRatio, // 🌟 传入截断比例
+                            metrics: metrics
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1112,7 +1137,9 @@ class RAGDiaryPlugin {
                             const retrievedContent = await this._processRAGPlaceholder({
                                 dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
                                 dynamicK, timeRanges, allowTimeAndGroup: true,
-                                defaultTagWeight: dynamicTagWeight // 🌟 传入动态权重
+                                defaultTagWeight: dynamicTagWeight, // 🌟 传入动态权重
+                                tagTruncationRatio: tagTruncationRatio, // 🌟 传入截断比例
+                                metrics: metrics
                             });
                             
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -1291,7 +1318,9 @@ class RAGDiaryPlugin {
             dynamicK,
             timeRanges,
             allowTimeAndGroup = true,
-            defaultTagWeight = 0.15 // 🌟 新增默认权重参数
+            defaultTagWeight = 0.15, // 🌟 新增默认权重参数
+            tagTruncationRatio = 0.5, // 🌟 新增截断比例
+            metrics = {}
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -1363,14 +1392,31 @@ class RAGDiaryPlugin {
             }
         }
 
-        // ✅ 提取核心 Tag (聚光灯) - 提前提取以供广播使用
-        const rawCoreTags = await this.coreTagExtractor.extract(combinedQueryForDisplay);
-        const coreTags = Array.isArray(rawCoreTags) ? rawCoreTags.filter(t => typeof t === 'string') : [];
+        // ✅ 🌟 原子级复刻 LightMemo 流程：利用 applyTagBoost 预先感应语义 Tag
+        // 逻辑：不再使用 Jieba 提取关键词，也不使用简单的 searchSimilarTags。
+        // 而是直接调用 V3 引擎的 applyTagBoost，让残差金字塔（ResidualPyramid）从向量中感应出最匹配的标签。
+        // 这才是 LightMemo 能够返回“完美标签”的真正原因。
+        let coreTagsForSearch = [];
+        if (tagWeight !== null && this.vectorDBManager.applyTagBoost) {
+            try {
+                // 模拟 LightMemo 的第一次“感应”过程，获取 ResidualPyramid 识别出的语义标签
+                const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tagWeight, []);
+                if (boostResult && boostResult.info && boostResult.info.matchedTags) {
+                    const rawTags = boostResult.info.matchedTags;
+                    // 🌟 应用截断技术规避尾部噪音
+                    coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
+                    console.log(`[RAGDiaryPlugin] 🌟 原子级复刻成功！感应到核心 Tag: [${coreTagsForSearch.join(', ')}]${rawTags.length > coreTagsForSearch.length ? ` (从 ${rawTags.length} 个截断)` : ''}`);
+                }
+            } catch (e) {
+                console.warn('[RAGDiaryPlugin] Failed to sense tags via applyTagBoost:', e.message);
+            }
+        }
+
+        const coreTagsForDisplay = coreTagsForSearch;
 
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- Time-aware path ---
-            // ✅ Time模式下也传递tagWeight和coreTags
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTags);
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTagsForSearch);
 
             if (useRerank) {
                 ragResults = await this._rerankDocuments(userContent, ragResults, finalK);
@@ -1397,8 +1443,7 @@ class RAGDiaryPlugin {
 
         } else {
             // --- Standard path (no time filter) ---
-            // ✅ 传递tagWeight和coreTags参数到search方法
-            let searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTags);
+            let searchResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTagsForSearch);
             
             if (useRerank) {
                 searchResults = await this._rerankDocuments(userContent, searchResults, finalK);
@@ -1433,7 +1478,7 @@ class RAGDiaryPlugin {
                     useRerank: useRerank,
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
-                    coreTags: coreTags, // 🌟 显式展示核心 Tag
+                    coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
                     timeRanges: (useTime && Array.isArray(timeRanges)) ? timeRanges.map(r => {
                         try {
                             return {
@@ -1445,10 +1490,7 @@ class RAGDiaryPlugin {
                         }
                     }) : undefined,
                     // 🌟 限制广播结果数量和长度，防止 payload 过大导致广播失败
-                    results: cleanedResults.slice(0, 10).map(r => ({
-                        ...r,
-                        text: r.text.length > 300 ? r.text.substring(0, 300) + '...' : r.text
-                    })),
+                    results: cleanedResults.slice(0, 10),
                     // ✅ 新增：汇总Tag统计信息
                     tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
                 };

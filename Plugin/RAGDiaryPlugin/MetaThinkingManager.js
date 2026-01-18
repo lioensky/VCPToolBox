@@ -290,13 +290,7 @@ class MetaThinkingManager {
                     totalStages: chain.length,
                     kSequence: finalKSequence,
                     // 🌟 限制广播结果长度
-                    stages: chainDetailedInfo.map(s => ({
-                        ...s,
-                        results: s.results.slice(0, 5).map(r => ({
-                            ...r,
-                            text: r.text.length > 200 ? r.text.substring(0, 200) + '...' : r.text
-                        }))
-                    }))
+                    stages: chainDetailedInfo
                 };
                 this.ragPlugin.pushVcpInfo(vcpInfoData);
             } catch (broadcastError) {

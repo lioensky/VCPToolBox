@@ -107,10 +107,15 @@ class KnowledgeBaseManager {
         this._buildCooccurrenceMatrix();
 
         // 初始化 EPA 和残差金字塔模块
-        this.epa = new EPAModule(this.db, { dimension: this.config.dimension });
+        this.epa = new EPAModule(this.db, {
+            dimension: this.config.dimension,
+            vexusIndex: this.tagIndex
+        });
         await this.epa.initialize();
         
-        this.residualPyramid = new ResidualPyramid(this.tagIndex, this.db, { dimension: this.config.dimension });
+        this.residualPyramid = new ResidualPyramid(this.tagIndex, this.db, {
+            dimension: this.config.dimension
+        });
 
         this._startWatcher();
         this.initialized = true;
@@ -236,7 +241,6 @@ class KnowledgeBaseManager {
             let tagBoost = 0;
             let coreTags = [];
             let coreBoostFactor = 1.33; // 默认 33% 提升
-            let useV3 = true; // 默认启用 V3 增强
 
             if (typeof arg1 === 'string' && Array.isArray(arg2)) {
                 diaryName = arg1;
@@ -257,9 +261,9 @@ class KnowledgeBaseManager {
             if (!queryVec) return [];
 
             if (diaryName) {
-                return await this._searchSpecificIndex(diaryName, queryVec, k, tagBoost, useV3, coreTags, coreBoostFactor);
+                return await this._searchSpecificIndex(diaryName, queryVec, k, tagBoost, coreTags, coreBoostFactor);
             } else {
-                return await this._searchAllIndices(queryVec, k, tagBoost, useV3, coreTags, coreBoostFactor);
+                return await this._searchAllIndices(queryVec, k, tagBoost, coreTags, coreBoostFactor);
             }
         } catch (e) {
             console.error('[KnowledgeBase] Search Error:', e);
@@ -267,7 +271,7 @@ class KnowledgeBaseManager {
         }
     }
 
-    async _searchSpecificIndex(diaryName, vector, k, tagBoost, useV3 = true, coreTags = [], coreBoostFactor = 1.33) {
+    async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
         const idx = await this._getOrLoadDiaryIndex(diaryName);
         
         // 如果索引为空，直接返回
@@ -284,10 +288,8 @@ class KnowledgeBaseManager {
         try {
             let searchVecFloat;
             if (tagBoost > 0) {
-                // 🌟 TagMemo 逻辑回归：应用 Tag 增强
-                const boostResult = useV3
-                    ? this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor)
-                    : this._applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+                // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V3)
+                const boostResult = this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
             } else {
@@ -341,15 +343,13 @@ class KnowledgeBaseManager {
         }).filter(Boolean);
     }
 
-    async _searchAllIndices(vector, k, tagBoost, useV3 = true, coreTags = [], coreBoostFactor = 1.33) {
+    async _searchAllIndices(vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
         // 优化2：使用 Promise.all 并行搜索
         let searchVecFloat;
         let tagInfo = null;
 
         if (tagBoost > 0) {
-            const boostResult = useV3
-                ? this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor)
-                : this._applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+            const boostResult = this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
             searchVecFloat = boostResult.vector;
             tagInfo = boostResult.info;
         } else {
@@ -399,185 +399,6 @@ class KnowledgeBaseManager {
         }).filter(Boolean);
     }
 
-    // 🌟 TagMemo 最终修复版：带调试探针 + 强类型安全 + 高对比度突触
-    _applyTagBoost(vector, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
-        // 调试探针：每 50 次调用才打印一次，避免刷屏，但能看到是否在工作
-        const debug = true;
-        
-        try {
-            // [步骤 1] 数据类型防御性转换
-            let searchBuffer;
-            let originalFloat32;
-            
-            if (vector instanceof Float32Array) {
-                originalFloat32 = vector;
-                searchBuffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
-            } else if (Array.isArray(vector)) {
-                originalFloat32 = new Float32Array(vector);
-                searchBuffer = Buffer.from(originalFloat32.buffer);
-            } else {
-                if(debug) console.warn('[TagMemo] ❌ Vector input type invalid:', typeof vector);
-                return { vector: vector, info: null };
-            }
-
-            // [步骤 2] Tag 索引召回 (Tag海握手)
-            // 注意：Vexus 搜索如果不传 k，或者索引为空，可能抛错或返回空
-            let tagResults = [];
-            try {
-                // 确保索引已初始化且有数据
-                // if (this.tagIndex && this.tagIndex.size() > 0) ... (vexus-lite 可能没有 size 方法，跳过)
-                tagResults = this.tagIndex.search(searchBuffer, 10);
-            } catch (e) {
-                if(debug) console.warn('[TagMemo] ⚠️ Vexus search exception:', e.message);
-                return { vector: vector, info: null };
-            }
-            
-            // 🚨 探针 A：如果这里是 0，说明 Tag 索引没数据，或者维度不对
-            if (tagResults.length === 0) {
-                if(debug) console.log('[TagMemo] ⚠️ No tags found in index. (Index empty or dimension mismatch?)');
-                return { vector: vector, info: null };
-            }
-
-            // [步骤 2.5] 动态计算 Tag Boost 指数 (Alpha)
-            const avgScore = tagResults.reduce((sum, r) => sum + r.score, 0) / tagResults.length;
-            // 映射范围: [0, 1] -> [1.5, 3.5] (并添加边界限制，防止极端值)
-            const dynamicAlpha = Math.min(3.5, Math.max(1.5, 1.5 + 2.0 * avgScore));
-            // 动态 Beta: 模糊查询时 (avgScore低) 提高降噪常数，宽容高频词
-            const dynamicBeta = 2 + (1 - avgScore) * 3;
-            
-            if(debug) console.log(`[TagMemo] ℹ️ Avg Tag Score: ${avgScore.toFixed(3)}, Alpha: ${dynamicAlpha.toFixed(3)}, Beta: ${dynamicBeta.toFixed(3)}`);
-
-            const tagIds = tagResults.map(r => r.id);
-            const placeholders = tagIds.map(() => '?').join(',');
-
-            // [步骤 3] 优化1：从预计算的共现矩阵中查找关联Tag
-            const coTags = new Map(); // Map<tagId, totalWeight>
-            tagResults.forEach(t1 => {
-                const relatedMap = this.tagCooccurrenceMatrix.get(t1.id);
-                if (relatedMap) {
-                    relatedMap.forEach((weight, t2Id) => {
-                        if (!tagIds.includes(t2Id)) { // 排除原始Tag
-                           coTags.set(t2Id, (coTags.get(t2Id) || 0) + weight * t1.score); // 权重叠加
-                        }
-                    });
-                }
-            });
-
-            const sortedCoTags = Array.from(coTags.entries())
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, this.config.tagExpandMaxCount);
-
-            let relatedTags = [];
-            if (sortedCoTags.length > 0) {
-                const relatedTagIds = sortedCoTags.map(t => t[0]);
-                const relatedPlaceholders = relatedTagIds.map(() => '?').join(',');
-                const stmt = this.db.prepare(`
-                    SELECT
-                        id, name, vector,
-                        (SELECT COUNT(*) FROM file_tags WHERE tag_id = tags.id) as global_freq
-                    FROM tags
-                    WHERE id IN (${relatedPlaceholders})
-                `);
-                const tagInfoMap = new Map(stmt.all(...relatedTagIds).map(t => [t.id, t]));
-                
-                relatedTags = sortedCoTags.map(([id, weight]) => {
-                    const info = tagInfoMap.get(id);
-                    return info ? { ...info, co_weight: weight } : null;
-                }).filter(Boolean);
-            }
-
-            // 🚨 探针 B：如果这里是 0，说明 file_tags 表是空的，或者 Tag 之间没有关联
-            // 启用【回退策略】：如果找不到扩展词，直接使用步骤 2 召回的 Tag 作为上下文
-            if (relatedTags.length === 0) {
-                if(debug) console.log(`[TagMemo] ℹ️ Sparse graph (0 relations). Fallback to ${tagIds.length} direct tags.`);
-                
-                const getDirectTags = this.db.prepare(`SELECT id, name, vector, 10 as co_weight, 100 as global_freq FROM tags WHERE id IN (${placeholders})`);
-                relatedTags = getDirectTags.all(...tagIds);
-                
-                if (relatedTags.length === 0) return { vector: vector, info: null }; // 彻底没救了
-            }
-
-            // [步骤 4] 向量合成 (高对比度算法)
-            const dim = originalFloat32.length;
-            const contextVec = new Float32Array(dim);
-            let totalSpikeScore = 0;
-            
-            relatedTags.forEach(t => {
-                if (!t.vector) return;
-                
-                // 必须从 Buffer 转回 Float32Array
-                const v = new Float32Array(t.vector.buffer, t.vector.byteOffset, dim);
-                
-                // 💡 核心算法：指数级毛刺增强 + 对数级降噪
-                // 1. 基础强度：共现次数的 Alpha 次方 (动态增强)
-                let logicStrength = Math.pow(t.co_weight || 1, dynamicAlpha);
-                
-                // 2. 降噪因子：全局频率的对数 (动态 Beta 降噪)
-                let noisePenalty = Math.log((t.global_freq || 1) + dynamicBeta);
-                
-                // 3. 最终得分
-                let score = logicStrength / noisePenalty;
-                
-                // 安全检查
-                if (!isFinite(score) || isNaN(score)) score = 0;
-
-                for (let i = 0; i < dim; i++) {
-                    contextVec[i] += v[i] * score;
-                }
-                totalSpikeScore += score;
-            });
-            
-            // 归一化上下文向量
-            if (totalSpikeScore > 0) {
-                let mag = 0;
-                for (let i = 0; i < dim; i++) {
-                    contextVec[i] /= totalSpikeScore; // 平均化
-                    mag += contextVec[i] * contextVec[i];
-                }
-                mag = Math.sqrt(mag);
-                // 再次单位化，确保方向纯净
-                if (mag > 1e-9) {
-                    for (let i = 0; i < dim; i++) contextVec[i] /= mag;
-                }
-            } else {
-                return { vector: vector, info: null }; // 计算出问题，回退
-            }
-
-            // [步骤 5] 最终融合
-            const fused = new Float32Array(dim);
-            let fusedMag = 0;
-            for (let i = 0; i < dim; i++) {
-                fused[i] = (1 - tagBoost) * originalFloat32[i] + tagBoost * contextVec[i];
-                fusedMag += fused[i] * fused[i];
-            }
-            
-            // 最终结果单位化
-            fusedMag = Math.sqrt(fusedMag);
-            if (fusedMag > 1e-9) {
-                for (let i = 0; i < dim; i++) fused[i] /= fusedMag;
-            }
-
-            if(debug) console.log(`[TagMemo] ✅ Boost Applied! Fusion complete. (Spikes: ${relatedTags.length})`);
-            
-            // 收集 Tag 信息
-            const matchedTags = relatedTags.map(t => t.name).filter(Boolean);
-            
-            return {
-                vector: fused,
-                info: {
-                    matchedTags: matchedTags,
-                    boostFactor: tagBoost,
-                    spikeCount: relatedTags.length,
-                    totalSpikeScore: totalSpikeScore // ✅ 新增：返回总得分
-                }
-            };
-
-        } catch (e) {
-            console.error('[KnowledgeBase] TagMemo CRITICAL FAIL:', e);
-            return { vector: vector, info: null }; // 绝对底线：任何错误都返回原向量，保证不崩
-        }
-    }
-
     /**
      * 🌟 TagMemo V3.7 + EPA + Residual Pyramid + Worldview Gating 增强版
      */
@@ -615,7 +436,7 @@ class KnowledgeBaseManager {
             
             if (debug) {
                 console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
-                console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplained * 100).toFixed(1)}%`);
+                console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
                 console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
             }
 
@@ -667,7 +488,7 @@ class KnowledgeBaseManager {
                     
                     allTags.push({
                         ...t,
-                        adjustedWeight: t.weight * layerDecay * langPenalty * coreBoost,
+                        adjustedWeight: (t.contribution || t.weight || 0) * layerDecay * langPenalty * coreBoost,
                         isCore: isCore
                     });
                     seenTagIds.add(t.id);

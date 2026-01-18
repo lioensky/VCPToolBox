@@ -140,7 +140,14 @@ class LightMemoPlugin {
     }
 
     async handleSearch(args) {
-        const { query, maid, folder, k = 5, rerank = false, search_all_knowledge_bases = false, tag_boost = 0.5 } = args;
+        // 兼容性处理：解构时提供默认值，确保 core_tags 缺失时不会报错
+        const {
+            query, maid, folder, k = 5, rerank = false,
+            search_all_knowledge_bases = false,
+            tag_boost = 0.5,
+            core_tags = [],
+            core_boost_factor = 1.33
+        } = args;
 
         if (!query || (!maid && !folder)) {
             throw new Error("参数 'query' 是必需的，且必须提供 'maid' 或 'folder'。");
@@ -207,13 +214,31 @@ class LightMemoPlugin {
         let tagBoostInfo = null;
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
-            console.log(`[LightMemo] Applying TagMemo boost with factor: ${tag_boost}`);
-            // KBM 的方法需要 Float32Array
-            const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tag_boost);
+            const hasCore = Array.isArray(core_tags) && core_tags.length > 0;
+            console.log(`[LightMemo] Applying TagMemo V3 boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
+            
+            // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
+            const boostResult = this.vectorDBManager.applyTagBoost(
+                new Float32Array(queryVector),
+                tag_boost,
+                core_tags,
+                core_boost_factor
+            );
+
             if (boostResult && boostResult.vector) {
-                queryVector = boostResult.vector; // 使用增强后的向量 (Float32Array)
+                queryVector = boostResult.vector;
                 tagBoostInfo = boostResult.info;
-                console.log(`[LightMemo] TagMemo boost applied. Matched tags: ${tagBoostInfo?.matchedTags?.slice(0, 5).join(', ')}`);
+                
+                if (tagBoostInfo) {
+                    const matched = tagBoostInfo.matchedTags || [];
+                    const coreMatched = tagBoostInfo.coreTagsMatched || [];
+                    if (coreMatched.length > 0) {
+                        console.log(`[LightMemo] TagMemo V3 Spotlight: [${coreMatched.join(', ')}]`);
+                    }
+                    if (matched.length > 0) {
+                        console.log(`[LightMemo] TagMemo V3 Matched: [${matched.slice(0, 5).join(', ')}]`);
+                    }
+                }
             }
         }
 
@@ -286,8 +311,21 @@ class LightMemoPlugin {
                 : 'N/A';
             
             content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
-            if (r.tagBoostInfo && r.tagBoostInfo.matchedTags && r.tagBoostInfo.matchedTags.length > 0) {
-                content += `    [TagMemo 增强: ${r.tagBoostInfo.matchedTags.slice(0, 5).join(', ')}]\n`;
+            if (r.tagBoostInfo) {
+                // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行
+                const { matchedTags = [], coreTagsMatched = [] } = r.tagBoostInfo;
+                if (matchedTags.length > 0 || coreTagsMatched.length > 0) {
+                    let boostLine = `    [TagMemo 增强: `;
+                    // 只有当确实命中了核心标签时，才显示 🌟 标志
+                    if (coreTagsMatched.length > 0) {
+                        boostLine += `🌟${coreTagsMatched.join(', ')} `;
+                        if (matchedTags.length > 0) boostLine += `| `;
+                    }
+                    if (matchedTags.length > 0) {
+                        boostLine += `${matchedTags.slice(0, 5).join(', ')}`;
+                    }
+                    content += boostLine + `]\n`;
+                }
             }
             content += `${r.text.trim()}\n`;
         });
