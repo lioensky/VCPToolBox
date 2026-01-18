@@ -1040,8 +1040,8 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] 准备向量化 - User: ${userContent.substring(0, 100)}...`);
             // ✅ 关键修复：使用带缓存的向量化方法
             const userVector = userContent ? await this.getSingleEmbeddingCached(userContent) : null;
-            // 🌟 修复：aiVector 的获取也应受 contextVectorAllowApi 约束，防止无视配置强制向量化导致污染
-            const aiVector = (aiContent && this.contextVectorAllowApi) ? await this.getSingleEmbeddingCached(aiContent) : null;
+            // 🌟 逻辑修正：当前对话对的 AI 内容必须向量化以保证检索对齐，不受历史门控约束
+            const aiVector = aiContent ? await this.getSingleEmbeddingCached(aiContent) : null;
 
             // 🌟 V3 增强：使用衰减聚合向量
             const aggregatedAiVector = this.contextVectorManager.aggregateContext('assistant');
@@ -1050,7 +1050,7 @@ class RAGDiaryPlugin {
             let queryVector = null;
             if (aiVector && userVector) {
                 // 结合当前意图与历史聚合意图
-                const currentIntent = this._getWeightedAverageVector([userVector, aiVector], [0.7, 0.3]);
+                const currentIntent = this._getWeightedAverageVector([userVector, aiVector], [0.5, 0.5]);
                 if (aggregatedAiVector || aggregatedUserVector) {
                     const historyIntent = this._getWeightedAverageVector(
                         [aggregatedUserVector, aggregatedAiVector].filter(Boolean),
