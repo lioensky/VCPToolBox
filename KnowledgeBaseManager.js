@@ -1211,12 +1211,22 @@ class KnowledgeBaseManager {
     }
 
     _extractTags(content) {
-        const match = content.match(/Tag:\s*(.+)$/im);
-        if (!match) return [];
-        let tags = match[1].split(/[,，、]/).map(t => t.trim()).filter(Boolean);
-        
-        // 🔧 修复：清理每个tag末尾的句号
-        tags = tags.map(t => t.replace(/[。.]+$/g, '').trim()).filter(Boolean);
+        // 增强型正则：支持多行 Tag 提取，并兼容多种分隔符 (中英文逗号、分号、顿号、竖线)
+        const tagLines = content.match(/Tag:\s*(.+)$/gim);
+        if (!tagLines) return [];
+
+        let allTags = [];
+        tagLines.forEach(line => {
+            const tagContent = line.replace(/Tag:\s*/i, '');
+            const splitTags = tagContent.split(/[,，、;|｜]/).map(t => t.trim()).filter(Boolean);
+            allTags.push(...splitTags);
+        });
+
+        // 🔧 修复：清理每个tag末尾的句号，并应用统一的 Embedding 预处理（处理多余空格、表情等）
+        let tags = allTags.map(t => {
+            let cleaned = t.replace(/[。.]+$/g, '').trim();
+            return this._prepareTextForEmbedding(cleaned);
+        }).filter(t => t !== '[EMPTY_CONTENT]');
         
         if (this.config.tagBlacklistSuper.length > 0) {
             const superRegex = new RegExp(this.config.tagBlacklistSuper.join('|'), 'g');
