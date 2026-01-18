@@ -3069,3 +3069,183 @@ html[data-theme='light'] .delete-theme-btn {
         min-height: 60vh !important;
     }
 }
+
+/* --- RAG Tuning Styles --- */
+.rag-tuning-container {
+    display: block;
+    width: 100%;
+}
+
+.rag-tuning-main {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+}
+
+.param-group {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+    margin-bottom: 40px;
+}
+
+.param-group h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.4em;
+    color: var(--highlight-text);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-left: 10px;
+    border-left: 4px solid var(--highlight-text);
+}
+
+#rag-params-content {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.param-group > div:not(h3) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+    gap: 25px;
+    width: 100%;
+    margin-bottom: 20px;
+}
+
+.param-item {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    padding: 25px;
+    background-color: var(--secondary-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.param-item:hover {
+    border-color: var(--highlight-text);
+    background-color: var(--accent-bg);
+}
+
+.param-content-left {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.param-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 12px;
+    margin-bottom: 5px;
+}
+
+.param-label-row label {
+    font-weight: 800;
+    font-size: 1.15em;
+    color: var(--primary-text);
+    font-family: 'Monaco', 'Consolas', monospace;
+}
+
+.param-label-row .param-chinese-name {
+    font-size: 0.95em;
+    color: var(--highlight-text);
+    font-weight: 600;
+    background: rgba(56, 189, 248, 0.15);
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+
+.param-info-box {
+    font-size: 1em;
+    line-height: 1.6;
+    flex-grow: 1;
+}
+
+.param-meaning {
+    color: var(--primary-text);
+    opacity: 0.9;
+}
+
+.param-logic {
+    color: var(--secondary-text);
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+.param-range-hint {
+    font-size: 0.85em;
+    color: var(--highlight-text);
+    font-weight: 500;
+}
+
+.param-input-row {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.param-input-row input[type="number"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--input-bg);
+    color: var(--highlight-text);
+    font-size: 1.1em;
+    font-weight: 700;
+    font-family: 'Monaco', 'Consolas', monospace;
+    text-align: center;
+}
+
+.param-input-row input[type="number"]:focus {
+    border-color: var(--highlight-text);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.param-range-inputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+}
+
+@media (max-width: 900px) {
+    .param-item {
+        grid-template-columns: 1fr;
+        gap: 15px;
+    }
+    .param-input-row {
+        justify-content: stretch;
+    }
+}
+
+.loading-msg {
+    text-align: center;
+    color: var(--secondary-text);
+    padding: 40px;
+    font-style: italic;
+}
+
+@media (max-width: 1100px) {
+    .rag-tuning-container {
+        grid-template-columns: 1fr;
+    }
+    
+    .rag-tuning-guide {
+        position: static;
+        max-height: none;
+    }
+}

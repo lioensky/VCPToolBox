@@ -67,6 +67,8 @@ class KnowledgeBaseManager {
         this.tagCooccurrenceMatrix = null; // 优化1：Tag共现矩阵
         this.epa = null;
         this.residualPyramid = null;
+        this.ragParams = {}; // ✅ 新增：用于存储热调控参数
+        this.ragParamsWatcher = null;
     }
 
     async initialize() {
@@ -118,8 +120,40 @@ class KnowledgeBaseManager {
         });
 
         this._startWatcher();
+        await this.loadRagParams();
+        this._startRagParamsWatcher();
+
         this.initialized = true;
         console.log('[KnowledgeBase] ✅ System Ready');
+    }
+
+    /**
+     * ✅ 新增：加载 RAG 热调控参数
+     */
+    async loadRagParams() {
+        const paramsPath = path.join(__dirname, 'rag_params.json');
+        try {
+            const data = await fs.readFile(paramsPath, 'utf-8');
+            this.ragParams = JSON.parse(data);
+            console.log('[KnowledgeBase] ✅ RAG 热调控参数已加载');
+        } catch (e) {
+            console.error('[KnowledgeBase] ❌ 加载 rag_params.json 失败:', e.message);
+            this.ragParams = { KnowledgeBaseManager: {} };
+        }
+    }
+
+    /**
+     * ✅ 新增：启动参数监听器
+     */
+    _startRagParamsWatcher() {
+        const paramsPath = path.join(__dirname, 'rag_params.json');
+        if (this.ragParamsWatcher) return;
+        
+        this.ragParamsWatcher = chokidar.watch(paramsPath);
+        this.ragParamsWatcher.on('change', async () => {
+            console.log('[KnowledgeBase] 🔄 检测到 rag_params.json 变更，正在重新加载...');
+            await this.loadRagParams();
+        });
     }
 
     _initSchema() {
@@ -418,21 +452,25 @@ class KnowledgeBaseManager {
             const features = pyramid.features;
 
             // [3] 动态调整策略
+            const config = this.ragParams?.KnowledgeBaseManager || {};
             const logicDepth = epaResult.logicDepth;        // 0~1, 高=逻辑聚焦
             const entropyPenalty = epaResult.entropy;       // 0~1, 高=信息散乱
             const resonanceBoost = Math.log(1 + resonance.resonance);
             
             // 核心公式：结合 EPA 和残差特征
-            const activationMultiplier = 0.5 + features.tagMemoActivation * 1.5;
+            const actRange = config.activationMultiplier || [0.5, 1.5];
+            const activationMultiplier = actRange[0] + features.tagMemoActivation * (actRange[1] - actRange[0]);
             const dynamicBoostFactor = (logicDepth * (1 + resonanceBoost) / (1 + entropyPenalty * 0.5)) * activationMultiplier;
             
-            const effectiveTagBoost = baseTagBoost * Math.min(2.0, Math.max(0.3, dynamicBoostFactor));
+            const boostRange = config.dynamicBoostRange || [0.3, 2.0];
+            const effectiveTagBoost = baseTagBoost * Math.max(boostRange[0], Math.min(boostRange[1], dynamicBoostFactor));
 
             // 🌟 动态核心加权优化 (Dynamic Core Boost Optimization)
             // 目标范围：1.20 (20%) ~ 1.40 (40%)
             // 逻辑：逻辑深度越高（意图明确）或覆盖率越低（新领域需要锚点），核心标签权重越高
             const coreMetric = (logicDepth * 0.5) + ((1 - features.coverage) * 0.5);
-            const dynamicCoreBoostFactor = 1.20 + (coreMetric * 0.20);
+            const coreRange = config.coreBoostRange || [1.20, 1.40];
+            const dynamicCoreBoostFactor = coreRange[0] + (coreMetric * (coreRange[1] - coreRange[0]));
             
             if (debug) {
                 console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
@@ -480,7 +518,10 @@ class KnowledgeBaseManager {
                             // 如果是政治/社会世界观，减轻对英文实体的压制（可能是 Trump, Musk 等重要实体）
                             // 🌟 更加鲁棒的世界观判定：使用模糊匹配
                             const isSocialWorld = /Politics|Society|History|Economics|Culture/i.test(queryWorld);
-                            const basePenalty = queryWorld === 'Unknown' ? this.config.langPenaltyUnknown : this.config.langPenaltyCrossDomain;
+                            const comp = config.languageCompensator || {};
+                            const basePenalty = queryWorld === 'Unknown'
+                                ? (comp.penaltyUnknown ?? this.config.langPenaltyUnknown)
+                                : (comp.penaltyCrossDomain ?? this.config.langPenaltyCrossDomain);
                             langPenalty = isSocialWorld ? Math.sqrt(basePenalty) : basePenalty; // 使用平方根软化惩罚
                         }
                     }
@@ -594,7 +635,8 @@ class KnowledgeBaseManager {
                     }
                     const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
                     
-                    if (similarity > 0.88) {
+                    const dedupThreshold = config.deduplicationThreshold ?? 0.88;
+                    if (similarity > dedupThreshold) {
                         isRedundant = true;
                         // 权重合并：将冗余标签的部分能量转移给代表性标签，并保留 Core 属性
                         existing.adjustedWeight += tag.adjustedWeight * 0.2;
@@ -663,11 +705,11 @@ class KnowledgeBaseManager {
                             const isTech = !/[\u4e00-\u9fa5]/.test(tName) && /^[A-Za-z0-9\-_.\s]+$/.test(tName);
                             if (isTech) {
                                 // 🌟 软化 TF-IDF 压制：将英文实体的过滤门槛从 0.2 降至 0.08
-                                return t.adjustedWeight > maxWeight * 0.08;
+                                return t.adjustedWeight > maxWeight * (config.techTagThreshold ?? 0.08);
                             }
                             // 🌟 进一步降低门槛：从 0.03 降至 0.015
                             // 理由：Normal 必须是 Core 的超集，且要容纳高频背景主语
-                            return t.adjustedWeight > maxWeight * 0.015;
+                            return t.adjustedWeight > maxWeight * (config.normalTagThreshold ?? 0.015);
                         }).map(t => t.name).filter(Boolean);
                     })(),
                     boostFactor: effectiveTagBoost,
@@ -1200,6 +1242,10 @@ class KnowledgeBaseManager {
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
         await this.watcher?.close();
+        if (this.ragParamsWatcher) {
+            this.ragParamsWatcher.close();
+            this.ragParamsWatcher = null;
+        }
 
         // 确保所有待保存的索引都被写入磁盘
         for (const [name, timer] of this.saveTimers) {

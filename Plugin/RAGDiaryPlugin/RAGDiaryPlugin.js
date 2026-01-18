@@ -3,6 +3,7 @@
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
+const chokidar = require('chokidar'); // ✅ 新增：用于热调控参数监听
 const crypto = require('crypto'); // <--- 引入加密模块
 const dotenv = require('dotenv');
 const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
@@ -68,6 +69,9 @@ class RAGDiaryPlugin {
         this.aiMemoCacheMaxSize = 50; // 可配置
         this.aiMemoCacheTTL = 1800000; // 30分钟
         
+        this.ragParams = {}; // ✅ 新增：用于存储热调控参数
+        this.ragParamsWatcher = null;
+
         // 注意：不在构造函数中调用 loadConfig()，而是在 initialize() 中调用
     }
 
@@ -176,6 +180,35 @@ class RAGDiaryPlugin {
         await this.metaThinkingManager.loadConfig();
     }
 
+    /**
+     * ✅ 新增：加载 RAG 热调控参数
+     */
+    async loadRagParams() {
+        const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
+        try {
+            const data = await fs.readFile(paramsPath, 'utf-8');
+            this.ragParams = JSON.parse(data);
+            console.log('[RAGDiaryPlugin] ✅ RAG 热调控参数已加载');
+        } catch (e) {
+            console.error('[RAGDiaryPlugin] ❌ 加载 rag_params.json 失败:', e.message);
+            this.ragParams = { RAGDiaryPlugin: {} };
+        }
+    }
+
+    /**
+     * ✅ 新增：启动参数监听器
+     */
+    _startRagParamsWatcher() {
+        const paramsPath = path.join(projectBasePath || path.join(__dirname, '../../'), 'rag_params.json');
+        if (this.ragParamsWatcher) return;
+        
+        this.ragParamsWatcher = chokidar.watch(paramsPath);
+        this.ragParamsWatcher.on('change', async () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_params.json 变更，正在重新加载...');
+            await this.loadRagParams();
+        });
+    }
+
     async _buildAndSaveCache(configHash, cachePath) {
         console.log('[RAGDiaryPlugin] 正在为所有日记本请求 Embedding API...');
         this.enhancedVectorCache = {}; // 清空旧的内存缓存
@@ -256,6 +289,8 @@ class RAGDiaryPlugin {
         // ✅ 关键修复：确保配置加载完成后再处理消息
         console.log('[RAGDiaryPlugin] 开始加载配置...');
         await this.loadConfig();
+        await this.loadRagParams();
+        this._startRagParamsWatcher();
         
         // ✅ 启动缓存清理任务
         this._startCacheCleanupTask();
@@ -416,12 +451,14 @@ class RAGDiaryPlugin {
 
         // 4. 计算动态 Beta (TagWeight)
         // β = σ(L · log(1 + R) - S · noise_penalty)
-        const noise_penalty = 0.05;
+        const config = this.ragParams?.RAGDiaryPlugin || {};
+        const noise_penalty = config.noise_penalty ?? 0.05;
         const betaInput = L * Math.log(1 + R + 1) - S * noise_penalty;
         const beta = this._sigmoid(betaInput);
         
         // 将 beta 映射到合理的 RAG 权重范围，例如 [0.05, 0.45]，默认基准 0.15
-        const finalTagWeight = 0.05 + beta * 0.4;
+        const weightRange = config.tagWeightRange || [0.05, 0.45];
+        const finalTagWeight = weightRange[0] + beta * (weightRange[1] - weightRange[0]);
 
         // 5. 计算动态 K
         // 逻辑越深(L)且共振越强(R)，说明信息量越大，需要更高的 K 来覆盖
@@ -433,8 +470,9 @@ class RAGDiaryPlugin {
         // 6. 计算动态 Tag 截断比例 (Truncation Ratio)
         // 逻辑：逻辑越深(L)说明意图越明确，可以保留更多 Tag；语义宽度(S)越大说明噪音或干扰越多，应收紧截断。
         // 基础比例 0.6，范围 [0.5, 0.9] (调优：防止截断过于激进)
-        let tagTruncationRatio = 0.6 + (L * 0.3) - (S * 0.2) + (Math.min(R, 1) * 0.1);
-        tagTruncationRatio = Math.max(0.5, Math.min(0.9, tagTruncationRatio));
+        let tagTruncationRatio = (config.tagTruncationBase ?? 0.6) + (L * 0.3) - (S * 0.2) + (Math.min(R, 1) * 0.1);
+        const truncationRange = config.tagTruncationRange || [0.5, 0.9];
+        tagTruncationRatio = Math.max(truncationRange[0], Math.min(truncationRange[1], tagTruncationRatio));
 
         return {
             k: finalK,
@@ -2256,6 +2294,10 @@ class RAGDiaryPlugin {
      * ✅ 关闭插件，清理定时器
      */
     shutdown() {
+        if (this.ragParamsWatcher) {
+            this.ragParamsWatcher.close();
+            this.ragParamsWatcher = null;
+        }
         if (this.cacheCleanupInterval) {
             clearInterval(this.cacheCleanupInterval);
             this.cacheCleanupInterval = null;

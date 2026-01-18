@@ -366,6 +366,7 @@
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
                     <li><a href="#" data-target="thinking-chains-editor"><span class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
                     <li><a href="#" data-target="schedule-manager"><span class="material-symbols-outlined">calendar_month</span>日程管理</a></li>
+                    <li><a href="#" data-target="rag-tuning"><span class="material-symbols-outlined">tune</span>浪潮RAG调参</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li class="nav-category" id="plugins-category">———— 插 件 管 理 ————</li>
                     <!-- 插件列表将动态生成在这里 -->
@@ -781,6 +782,28 @@
                                <p class="empty-msg">加载中...</p>
                            </div>
                        </div>
+                   </div>
+               </div>
+           </section>
+
+           <!-- Section: RAG Tuning -->
+           <section id="rag-tuning-section" class="config-section">
+               <h2>RAG 算法调参 (rag_params.json)</h2>
+               <p class="description">在这里，您可以实时调整 TagMemo 算法的各项核心参数。所有更改将立即生效，无需重启服务器。</p>
+               
+               <div class="rag-tuning-container">
+                   <div class="rag-tuning-main">
+                       <form id="rag-params-form">
+                           <div id="rag-params-content">
+                               <!-- 参数将动态加载到这里 -->
+                               <p class="loading-msg">正在加载参数...</p>
+                           </div>
+                           <div class="form-actions">
+                               <button type="submit" class="primary-btn">保存参数配置</button>
+                               <button type="button" id="reset-rag-params" class="btn-secondary">重置更改</button>
+                               <span id="rag-params-status" class="status-message"></span>
+                           </div>
+                       </form>
                    </div>
                </div>
            </section>

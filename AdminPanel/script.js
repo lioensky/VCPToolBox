@@ -13,6 +13,7 @@ import { initializeSemanticGroupsEditor } from './js/semantic-groups-editor.js';
 import { initializeThinkingChainsEditor } from './js/thinking-chains-editor.js';
 import { initializeVCPForum } from './js/forum.js';
 import { initializeScheduleManager } from './js/schedule-manager.js';
+import { initializeRAGTuning } from './js/rag-tuning.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. 通过后端验证登录状态（替代前端 Cookie 检查，解决 HttpOnly 无法读取问题）
@@ -143,6 +144,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         break;
                     case 'schedule-manager-section':
                         initializeScheduleManager();
+                        break;
+                    case 'rag-tuning-section':
+                        initializeRAGTuning();
                         break;
                 }
             }
