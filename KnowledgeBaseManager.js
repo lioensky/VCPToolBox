@@ -606,11 +606,17 @@ class KnowledgeBaseManager {
             const dynamicBoostFactor = (logicDepth * (1 + resonanceBoost) / (1 + entropyPenalty * 0.5)) * activationMultiplier;
             
             const effectiveTagBoost = baseTagBoost * Math.min(2.0, Math.max(0.3, dynamicBoostFactor));
+
+            // 🌟 动态核心加权优化 (Dynamic Core Boost Optimization)
+            // 目标范围：1.20 (20%) ~ 1.40 (40%)
+            // 逻辑：逻辑深度越高（意图明确）或覆盖率越低（新领域需要锚点），核心标签权重越高
+            const coreMetric = (logicDepth * 0.5) + ((1 - features.coverage) * 0.5);
+            const dynamicCoreBoostFactor = 1.20 + (coreMetric * 0.20);
             
             if (debug) {
                 console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
                 console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplained * 100).toFixed(1)}%`);
-                console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}`);
+                console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
             }
 
             // [4] 收集金字塔中的所有 Tags 并应用“世界观门控”与“语言补偿”
@@ -634,7 +640,9 @@ class KnowledgeBaseManager {
                     // 安全访问 t.name
                     const tagName = t.name ? t.name.toLowerCase() : '';
                     const isCore = tagName && coreTagSet.has(tagName);
-                    const coreBoost = isCore ? coreBoostFactor : 1.0;
+                    // 🌟 个体相关度微调：如果核心标签本身与查询高度相关，在动态基准上给予额外奖励 (0.95 ~ 1.05x)
+                    const individualRelevance = t.similarity || 0.5;
+                    const coreBoost = isCore ? (dynamicCoreBoostFactor * (0.95 + individualRelevance * 0.1)) : 1.0;
 
                     // A. 语言置信度补偿 (Language Confidence Gating)
                     // 如果是纯英文技术词汇且当前不是技术语境，引入惩罚
@@ -712,7 +720,8 @@ class KnowledgeBaseManager {
                                 allTags.push({
                                     id: row.id,
                                     name: row.name,
-                                    adjustedWeight: maxBaseWeight * coreBoostFactor, // 给予核心 Tag 顶格权重
+                                    // 虚拟召回的核心标签使用动态计算的加权因子
+                                    adjustedWeight: maxBaseWeight * dynamicCoreBoostFactor,
                                     isCore: true,
                                     isVirtual: true // 标记为非向量召回
                                 });
