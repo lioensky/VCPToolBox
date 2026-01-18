@@ -2641,6 +2641,22 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * ✅ 仅从缓存获取向量（不触发 API）
+     */
+    _getEmbeddingFromCacheOnly(text) {
+        if (!text) return null;
+        const cacheKey = crypto.createHash('sha256').update(text.trim()).digest('hex');
+        const cached = this.embeddingCache.get(cacheKey);
+        if (cached) {
+            const now = Date.now();
+            if (now - cached.timestamp <= this.embeddingCacheTTL) {
+                return cached.vector;
+            }
+        }
+        return null;
+    }
+
+    /**
      * ✅ 定期清理过期向量缓存
      */
     _startEmbeddingCacheCleanupTask() {

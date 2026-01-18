@@ -125,7 +125,12 @@ class ContextVectorManager {
             else {
                 vector = this._findFuzzyMatch(normalized);
                 
-                // 3. 如果都没有，且允许 API，则请求新向量
+                // 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
+                if (!vector) {
+                    vector = this.plugin._getEmbeddingFromCacheOnly(content);
+                }
+
+                // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
                 if (!vector && allowApi) {
                     vector = await this.plugin.getSingleEmbeddingCached(content);
                 }
