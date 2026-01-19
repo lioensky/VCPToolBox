@@ -1,0 +1,35 @@
+[package]
+name = "midi-quantizer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+log = []
+
+# 添加 napi 配置，强制指定输出文件名
+[package.metadata.napi]
+name = "midi_quantizer"  # 这是关键！指定输出文件名
+triples = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-apple-darwin", 
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc"
+]
+
+[dependencies]
+napi = { version = "2", features = ["async"] }
+napi-derive = "2"
+midly = "0.5"
+regex = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+opt-level = 3
+strip = true
+codegen-units = 1
