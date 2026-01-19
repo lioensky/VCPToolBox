@@ -22,6 +22,27 @@ pub struct SvdResult {
     pub dim: u32,
 }
 
+#[napi(object)]
+pub struct OrthogonalProjectionResult {
+    pub projection: Vec<f64>,
+    pub residual: Vec<f64>,
+    pub basis_coefficients: Vec<f64>,
+}
+
+#[napi(object)]
+pub struct HandshakeResult {
+    pub magnitudes: Vec<f64>,
+    pub directions: Vec<f64>, // 扁平化的方向向量 (n * dim)
+}
+
+#[napi(object)]
+pub struct ProjectResult {
+    pub projections: Vec<f64>,
+    pub probabilities: Vec<f64>,
+    pub entropy: f64,
+    pub total_energy: f64,
+}
+
 /// 统计信息
 #[napi(object)]
 pub struct VexusStats {
@@ -328,6 +349,197 @@ impl VexusIndex {
             s: s[..k].to_vec(),
             k: k as u32,
             dim: dim as u32,
+        })
+    }
+
+    /// 高性能 Gram-Schmidt 正交投影
+    #[napi]
+    pub fn compute_orthogonal_projection(
+        &self,
+        vector: Buffer,
+        flattened_tags: Buffer,
+        n_tags: u32,
+    ) -> Result<OrthogonalProjectionResult> {
+        let dim = self.dimensions as usize;
+        let n = n_tags as usize;
+
+        let query: &[f32] = unsafe {
+            std::slice::from_raw_parts(vector.as_ptr() as *const f32, vector.len() / 4)
+        };
+        let tags_slice: &[f32] = unsafe {
+            std::slice::from_raw_parts(flattened_tags.as_ptr() as *const f32, flattened_tags.len() / 4)
+        };
+
+        if query.len() != dim || tags_slice.len() != n * dim {
+            return Err(Error::from_reason("Dimension mismatch".to_string()));
+        }
+
+        let mut basis: Vec<Vec<f64>> = Vec::with_capacity(n);
+        let mut basis_coefficients = vec![0.0; n];
+        let mut projection = vec![0.0; dim];
+
+        for i in 0..n {
+            let start = i * dim;
+            let tag_vec = &tags_slice[start..start + dim];
+            let mut v: Vec<f64> = tag_vec.iter().map(|&x| x as f64).collect();
+
+            for u in &basis {
+                let mut dot = 0.0;
+                for d in 0..dim {
+                    dot += v[d] * u[d];
+                }
+                for d in 0..dim {
+                    v[d] -= dot * u[d];
+                }
+            }
+
+            let mut mag_sq = 0.0;
+            for d in 0..dim {
+                mag_sq += v[d] * v[d];
+            }
+            let mag = mag_sq.sqrt();
+
+            if mag > 1e-6 {
+                for d in 0..dim {
+                    v[d] /= mag;
+                }
+                
+                let mut coeff = 0.0;
+                for d in 0..dim {
+                    coeff += (query[d] as f64) * v[d];
+                }
+                basis_coefficients[i] = coeff.abs();
+                
+                for d in 0..dim {
+                    projection[d] += coeff * v[d];
+                }
+                basis.push(v);
+            }
+        }
+
+        let mut residual = vec![0.0; dim];
+        for d in 0..dim {
+            residual[d] = (query[d] as f64) - projection[d];
+        }
+
+        Ok(OrthogonalProjectionResult {
+            projection,
+            residual,
+            basis_coefficients,
+        })
+    }
+
+    /// 高性能握手分析
+    #[napi]
+    pub fn compute_handshakes(&self, query: Buffer, flattened_tags: Buffer, n_tags: u32) -> Result<HandshakeResult> {
+        let dim = self.dimensions as usize;
+        let n = n_tags as usize;
+
+        let q: &[f32] = unsafe {
+            std::slice::from_raw_parts(query.as_ptr() as *const f32, query.len() / 4)
+        };
+        let tags: &[f32] = unsafe {
+            std::slice::from_raw_parts(flattened_tags.as_ptr() as *const f32, flattened_tags.len() / 4)
+        };
+
+        let mut magnitudes = Vec::with_capacity(n);
+        let mut directions = Vec::with_capacity(n * dim);
+
+        for i in 0..n {
+            let start = i * dim;
+            let tag_vec = &tags[start..start + dim];
+            let mut mag_sq = 0.0;
+            let mut delta = vec![0.0; dim];
+
+            for d in 0..dim {
+                let diff = (q[d] - tag_vec[d]) as f64;
+                delta[d] = diff;
+                mag_sq += diff * diff;
+            }
+
+            let mag = mag_sq.sqrt();
+            magnitudes.push(mag);
+
+            if mag > 1e-9 {
+                for d in 0..dim {
+                    directions.push(delta[d] / mag);
+                }
+            } else {
+                for _ in 0..dim {
+                    directions.push(0.0);
+                }
+            }
+        }
+
+        Ok(HandshakeResult {
+            magnitudes,
+            directions,
+        })
+    }
+
+    /// 高性能 EPA 投影
+    #[napi]
+    pub fn project(
+        &self,
+        vector: Buffer,
+        flattened_basis: Buffer,
+        mean_vector: Buffer,
+        k: u32,
+    ) -> Result<ProjectResult> {
+        let dim = self.dimensions as usize;
+        let k = k as usize;
+
+        let vec: &[f32] = unsafe {
+            std::slice::from_raw_parts(vector.as_ptr() as *const f32, vector.len() / 4)
+        };
+        let basis_slice: &[f32] = unsafe {
+            std::slice::from_raw_parts(flattened_basis.as_ptr() as *const f32, flattened_basis.len() / 4)
+        };
+        let mean: &[f32] = unsafe {
+            std::slice::from_raw_parts(mean_vector.as_ptr() as *const f32, mean_vector.len() / 4)
+        };
+
+        if vec.len() != dim || basis_slice.len() != k * dim || mean.len() != dim {
+            return Err(Error::from_reason("Dimension mismatch".to_string()));
+        }
+
+        let mut centered = vec![0.0; dim];
+        for d in 0..dim {
+            centered[d] = (vec[d] - mean[d]) as f64;
+        }
+
+        let mut projections = vec![0.0; k];
+        let mut total_energy = 0.0;
+
+        for i in 0..k {
+            let start = i * dim;
+            let b = &basis_slice[start..start + dim];
+            let mut dot = 0.0;
+            for d in 0..dim {
+                dot += centered[d] * (b[d] as f64);
+            }
+            projections[i] = dot;
+            total_energy += dot * dot;
+        }
+
+        let mut probabilities = vec![0.0; k];
+        let mut entropy = 0.0;
+
+        if total_energy > 1e-12 {
+            for i in 0..k {
+                let p = (projections[i] * projections[i]) / total_energy;
+                probabilities[i] = p;
+                if p > 1e-9 {
+                    entropy -= p * p.log2();
+                }
+            }
+        }
+
+        Ok(ProjectResult {
+            projections,
+            probabilities,
+            entropy,
+            total_energy,
         })
     }
 }
