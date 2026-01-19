@@ -1,0 +1,52 @@
+## MIDI翻译器
+
+一个高性能的MIDI文件解析与生成插件，核心引擎由Rust编写，提供双向转换、语法验证和事件提取功能。
+1. 列出输入MIDI文件
+列出`midi-input`目录中所有可用的MIDI文件。
+tool_name:「始」MIDITranslator「末」,
+command:「始」list_midi_files「末」,
+maidname:「始」AI-Assistant「末」
+2. 解析MIDI文件
+将MIDI文件解析为结构化DSL格式。
+tool_name:「始」MIDITranslator「末」,
+command:「始」parse_midi「末」,
+fileName:「始」example.mid「末」,
+maidname:「始」AI-Assistant「末」
+可选参数：`outputDSLPath` 指定DSL输出路径
+3. 生成MIDI文件
+根据DSL内容生成MIDI文件到`midi-output`目录。
+tool_name:「始」MIDITranslator「末」,
+command:「始」generate_midi「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480
+Track0: [c4,0.0,100,ch0] [~c4,4.0,ch0] [e4,1.0,100,ch0]「末」,
+outputFileName:「始」generated.mid「末」,
+maidname:「始」AI-Assistant「末」
+4. 验证DSL语法
+快速验证DSL语法是否正确。
+tool_name:「始」MIDITranslator「末」,
+command:「始」validate_dsl「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480
+Track0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」
+5. 详细DSL验证
+验证DSL语法并返回完整错误信息列表。
+tool_name:「始」MIDITranslator「末」,
+command:「始」validate_dsl_with_details「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480
+Track0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」
+6. 提取MIDI事件
+从DSL中提取特定类型事件（如`note_on`, `lyric`, `cc`等）。
+tool_name:「始」MIDITranslator「末」,
+command:「始」extract_events「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480
+Track0: [c4,0.0,100,ch0] [lyric,2.0,"hello"]「末」,
+eventType:「始」lyric「末」
+7. 列出输出MIDI文件
+列出`midi-output`目录中所有已生成的MIDI文件。
+tool_name:「始」MIDITranslator「末」,
+command:「始」list_output_files「末」,
+maidname:「始」AI-Assistant「末」
+-------------------------------------------------------------------------------------------
+DSL格式说明：
+- Timeline: `[0-总ticks]BPM|拍号|TPB每四分音符ticks数
+- TrackX: `[音符名,起始拍位,力度,ch通道号] [~音符名,结束拍位,ch通道号]
+- 支持事件：`cc`控制器、`lyric`歌词等
