@@ -82,9 +82,10 @@ class VCPTavern {
                 const systemMsg = newMessages.find(m => m.role === 'system');
                 if (systemMsg && typeof systemMsg.content === 'string') {
                     if (rule.position === 'before') {
-                        systemMsg.content = textToEmbed + systemMsg.content;
+                        // 强制在嵌入内容与原有内容之间保持一个空行
+                        systemMsg.content = textToEmbed.trim() + '\n\n' + systemMsg.content.trim();
                     } else { // after
-                        systemMsg.content = systemMsg.content + textToEmbed;
+                        systemMsg.content = systemMsg.content.trim() + '\n\n' + textToEmbed.trim();
                     }
                 }
             } else if (rule.target === 'last_user') {
@@ -97,9 +98,9 @@ class VCPTavern {
                 }
                 if (lastUserIndex !== -1 && typeof newMessages[lastUserIndex].content === 'string') {
                     if (rule.position === 'before') {
-                        newMessages[lastUserIndex].content = textToEmbed + newMessages[lastUserIndex].content;
+                        newMessages[lastUserIndex].content = textToEmbed.trim() + '\n\n' + newMessages[lastUserIndex].content.trim();
                     } else { // after
-                        newMessages[lastUserIndex].content = newMessages[lastUserIndex].content + textToEmbed;
+                        newMessages[lastUserIndex].content = newMessages[lastUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
                     }
                 }
             }
