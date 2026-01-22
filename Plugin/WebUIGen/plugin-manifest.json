@@ -19,6 +19,11 @@
       "type": "string",
       "description": "云算力API密钥",
       "default": ""
+    },
+    "HTTPS_PROXY": {
+      "type": "string",
+      "description": "HTTPS代理地址，用于翻墙访问API（如 http://127.0.0.1:7897）",
+      "default": ""
     }
   },
   "capabilities": {
