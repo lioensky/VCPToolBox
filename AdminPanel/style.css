@@ -3110,7 +3110,7 @@ html[data-theme='light'] .delete-theme-btn {
 
 .param-group > div:not(h3) {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
     gap: 25px;
     width: 100%;
     margin-bottom: 20px;
@@ -3222,11 +3222,16 @@ html[data-theme='light'] .delete-theme-btn {
     width: 100%;
 }
 
-@media (max-width: 900px) {
-    .param-item {
+@media (max-width: 768px) {
+    .param-group > div:not(h3) {
         grid-template-columns: 1fr;
         gap: 15px;
     }
+
+    .param-item {
+        padding: 15px;
+    }
+
     .param-input-row {
         justify-content: stretch;
     }

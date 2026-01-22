@@ -1246,6 +1246,53 @@ body {
     .config-actions button {
         flex: 1;
     }
+
+    /* 插件分组头部移动端适配 - 分为上下两层，左对齐 */
+    .plugin-group-header {
+        display: flex;
+        flex-wrap: wrap;
+        padding: 8px 12px;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0;
+    }
+
+    .plugin-group-icon {
+        width: 18px;
+        height: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1em;
+        margin-right: 4px; /* 紧挨着名称 */
+        flex: 0 0 auto;
+    }
+
+    .plugin-group-name {
+        flex: 1;
+        min-width: calc(100% - 22px); /* 18px + 4px = 22px, 强制换行形成第一层 */
+        font-size: 0.9em;
+        font-weight: 600;
+        text-align: left;
+    }
+
+    .plugin-group-original-name {
+        display: none; /* 移动端隐藏原始名称 */
+    }
+
+    .plugin-group-count {
+        flex: 0 0 auto; /* 左对齐 */
+        font-size: 0.75em;
+        margin-top: 4px;
+        margin-right: 12px;
+    }
+
+    .btn-select-all-plugin {
+        flex: 0 0 auto;
+        margin-top: 4px;
+        padding: 4px 10px;
+        font-size: 0.7em;
+    }
 }
 
 /* ==================== 无效工具样式 ==================== */
