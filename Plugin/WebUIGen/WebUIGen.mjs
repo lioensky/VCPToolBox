@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import axios from 'axios';
+import { fetch, ProxyAgent, setGlobalDispatcher } from 'undici';
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,16 +12,24 @@ const {
     SERVER_PORT,
     IMAGESERVER_IMAGE_KEY,
     VAR_HTTP_URL,
-    WEBUI_API_KEY
+    WEBUI_API_KEY,
+    HTTPS_PROXY
 } = (() => {
     return {
         PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH || '.',
         SERVER_PORT: process.env.SERVER_PORT || '3000',
         IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY || 'default_key',
         VAR_HTTP_URL: process.env.VarHttpUrl || 'http://localhost',
-        WEBUI_API_KEY: process.env.WEBUI_API_KEY
+        WEBUI_API_KEY: process.env.WEBUI_API_KEY,
+        HTTPS_PROXY: process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy
     };
 })();
+
+// 配置全局代理
+if (HTTPS_PROXY) {
+    const proxyAgent = new ProxyAgent(HTTPS_PROXY);
+    setGlobalDispatcher(proxyAgent);
+}
 
 const API_URL = 'https://sd.exacg.cc/api/v1/generate_image';
 
@@ -79,18 +87,28 @@ async function callWebUIAPI(args) {
         seed: parseInt(args.seed) || -1
     };
 
-    const response = await axios.post(API_URL, payload, {
+    const response = await fetch(API_URL, {
+        method: 'POST',
         headers: {
             'Authorization': `Bearer ${WEBUI_API_KEY}`,
             'Content-Type': 'application/json'
         },
-        timeout: 120000 // 2分钟超时
+        body: JSON.stringify(payload)
     });
 
-    if (response.data && response.data.success) {
-        return response.data.data;
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+            return result.data;
+        } else {
+            throw new Error(result.error || result.message || "未知 API 错误");
+        }
     } else {
-        throw new Error(response.data?.error || response.data?.message || "未知 API 错误");
+        const text = await response.text();
+        throw new Error(`API 返回非 JSON 响应 (${response.status}): ${text.substring(0, 200)}`);
     }
 }
 
@@ -100,12 +118,15 @@ async function callWebUIAPI(args) {
  * @returns {Promise<object>} - 本地文件信息
  */
 async function saveImage(imageUrl) {
-    const response = await axios.get(imageUrl, {
-        responseType: 'arraybuffer'
-    });
-    const buffer = response.data;
-    const mimeType = response.headers['content-type'] || 'image/jpeg';
-    const extension = mimeType.split('/')[1] || 'jpg';
+    const response = await fetch(imageUrl);
+    
+    if (!response.ok) {
+        throw new Error(`下载图片失败: ${response.status} ${response.statusText}`);
+    }
+    
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+    const extension = mimeType.split('/')[1]?.split(';')[0] || 'jpg';
     
     const generatedFileName = `${uuidv4()}.${extension}`;
     const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'webuigen');
