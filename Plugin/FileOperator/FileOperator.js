@@ -164,22 +164,21 @@ function resolveAndNormalizePath(inputPath) {
   }
 }
 
-async function runValidationAndFormat(filePath, content) {
-  try {
-    const validationResults = await validateCode(filePath, content);
-    if (validationResults.length > 0) {
-      let message = '\n\n代码检查发现以下问题:\n';
-      validationResults.forEach(res => {
-        message += `- [${res.severity}] Line ${res.line}, Col ${res.column}: ${res.message} (${res.ruleId || 'general'})\n`;
-      });
-      return message;
-    } else {
-      return '\n代码检查通过, 未发现明显问题。';
+// Helper function to run validation and attach results
+async function runValidationAndAttachResults(result, filePath, fileContent) {
+  if (result.success && fileContent) {
+    try {
+      const validationResults = await validateCode(filePath, fileContent);
+      if (validationResults && validationResults.length > 0) {
+        result.data.validation = validationResults;
+        result.data.message += ' (with validation)';
+      }
+    } catch (error) {
+      debugLog('Code validation failed', { filePath, error: error.message });
+      // We don't fail the whole operation if validation fails
     }
-  } catch (error) {
-    debugLog('Code validation failed', { filePath, error: error.message });
-    return `\n代码检查器运行时发生错误: ${error.message}`;
   }
+  return result;
 }
  
 // File operation functions
@@ -215,9 +214,9 @@ async function webReadFile(fileUrl) {
     if (result.success) {
       result.data.localPath = localFilePath;
       result.data.originalUrl = fileUrl;
-      // Modify the text message to reflect the web origin
-      if (Array.isArray(result.data.content) && result.data.content[0]?.type === 'text') {
-          result.data.content[0].text = `已从网络地址读取文件 '${result.data.fileName}' 并保存到本地。`;
+      // Prepend a message to reflect the web origin
+      if (Array.isArray(result.data.content)) {
+          result.data.content.unshift({ type: 'text', text: `已从网络地址读取文件 '${result.data.fileName}' 并保存到本地。` });
       }
     }
     
@@ -311,22 +310,24 @@ async function readFile(filePath, encoding = 'utf8') {
         fileName: path.basename(filePath)
     };
 
+    const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。`;
+
     if (isExtracted && content.startsWith('data:image')) {
         returnData.content = [
-            { type: 'text', text: `已读取图片文件 '${returnData.fileName}'。` },
+            { type: 'text', text: headerText },
             { type: 'image_url', image_url: { url: content } }
         ];
     } else if (isExtracted && (content.startsWith('data:audio') || content.startsWith('data:video'))) {
-        // For audio/video, we follow the same structure as images,
-        // relying on the data URI's MIME type for the model to differentiate.
-        const fileType = content.startsWith('data:audio') ? '音频' : '视频';
         returnData.content = [
-            { type: 'text', text: `已读取${fileType}文件 '${returnData.fileName}'。` },
+            { type: 'text', text: headerText },
             { type: 'image_url', image_url: { url: content } }
         ];
     } else {
         // For text-based files
-        returnData.content = content;
+        returnData.content = [
+            { type: 'text', text: headerText },
+            { type: 'text', text: content }
+        ];
     }
 
     return {
@@ -360,14 +361,11 @@ async function writeFile(filePath, content, encoding = 'utf8') {
     await fs.writeFile(newPath, content, encoding);
     const stats = await fs.stat(newPath);
 
-    let message = renamed
+    const message = renamed
       ? `已存在同名文件 "${path.basename(filePath)}"，已为您创建为 "${path.basename(newPath)}"`
       : '文件写入成功';
     
-    const validationMessage = await runValidationAndFormat(newPath, content);
-    message += validationMessage;
-
-    return {
+    let result = {
       success: true,
       data: {
         message: message,
@@ -379,6 +377,8 @@ async function writeFile(filePath, content, encoding = 'utf8') {
         lastModified: stats.mtime.toISOString(),
       },
     };
+
+    return await runValidationAndAttachResults(result, newPath, content);
   } catch (error) {
     debugLog('Error writing file', { filePath, error: error.message });
     return {
@@ -437,7 +437,7 @@ async function appendFile(filePath, content, encoding = 'utf8') {
     await fs.appendFile(filePath, content, encoding);
     const stats = await fs.stat(filePath);
 
-    return {
+    let result = {
       success: true,
       data: {
         message: 'Content appended successfully',
@@ -446,6 +446,10 @@ async function appendFile(filePath, content, encoding = 'utf8') {
         lastModified: stats.mtime.toISOString(),
       },
     };
+
+    // For append, we need to read the whole file to validate
+    const updatedContent = await fs.readFile(filePath, encoding);
+    return await runValidationAndAttachResults(result, filePath, updatedContent);
   } catch (error) {
     debugLog('Error appending to file', { filePath, error: error.message });
     return {
@@ -484,20 +488,18 @@ async function editFile(filePath, content, encoding = 'utf8') {
     await fs.writeFile(filePath, content, encoding);
     const stats = await fs.stat(filePath);
 
-    let message = '文件编辑成功';
-    const validationMessage = await runValidationAndFormat(filePath, content);
-    message += validationMessage;
-
-    return {
+    let result = {
       success: true,
       data: {
-        message: message,
+        message: '文件编辑成功',
         path: filePath,
         size: stats.size,
         sizeFormatted: formatFileSize(stats.size),
         lastModified: stats.mtime.toISOString(),
       },
     };
+
+    return await runValidationAndAttachResults(result, filePath, content);
   } catch (error) {
     debugLog('Error editing file', { filePath, error: error.message });
     return {
@@ -543,6 +545,7 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
       }
     }
 
+    const message = `Directory listing of ${dirPath} (${result.length} items${items.length > MAX_DIRECTORY_ITEMS ? ', truncated' : ''})`;
     return {
       success: true,
       data: {
@@ -550,6 +553,11 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
         items: result,
         totalItems: result.length,
         truncated: items.length > MAX_DIRECTORY_ITEMS,
+        message: message,
+        content: [
+            { type: 'text', text: message },
+            { type: 'text', text: JSON.stringify(result, null, 2) }
+        ]
       },
     };
   } catch (error) {
@@ -572,9 +580,7 @@ async function getFileInfo(filePath) {
 
     const stats = await fs.stat(filePath);
 
-    return {
-      success: true,
-      data: {
+    const fileData = {
         path: filePath,
         name: path.basename(filePath),
         directory: path.dirname(filePath),
@@ -589,6 +595,17 @@ async function getFileInfo(filePath) {
         isDirectory: stats.isDirectory(),
         isFile: stats.isFile(),
         isSymbolicLink: stats.isSymbolicLink(),
+    };
+
+    return {
+      success: true,
+      data: {
+        ...fileData,
+        message: `File info for ${filePath}`,
+        content: [
+            { type: 'text', text: `File info for ${filePath}:` },
+            { type: 'text', text: JSON.stringify(fileData, null, 2) }
+        ]
       },
     };
   } catch (error) {
@@ -848,6 +865,7 @@ async function searchFiles(searchPath, pattern, options = {}) {
       }
     }
 
+    const message = `Search results for "${pattern}" in ${searchPath} (${results.length} results${files.length >= MAX_SEARCH_RESULTS ? ', truncated' : ''})`;
     return {
       success: true,
       data: {
@@ -857,6 +875,11 @@ async function searchFiles(searchPath, pattern, options = {}) {
         totalResults: results.length,
         truncated: files.length >= MAX_SEARCH_RESULTS,
         options: options,
+        message: message,
+        content: [
+            { type: 'text', text: message },
+            { type: 'text', text: JSON.stringify(results, null, 2) }
+        ]
       },
     };
   } catch (error) {
@@ -985,7 +1008,17 @@ async function listAllowedDirectories() {
       }
     }
   }
-  return { success: true, data: { allowedRoots: allProjects } };
+  return {
+    success: true,
+    data: {
+      allowedRoots: allProjects,
+      message: 'Allowed directories listed',
+      content: [
+          { type: 'text', text: 'Allowed directories and their contents:' },
+          { type: 'text', text: JSON.stringify(allProjects, null, 2) }
+      ]
+    }
+  };
 }
 
 async function createCanvas(fileName, content, encoding = 'utf8') {
@@ -1086,6 +1119,60 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
   }
 }
  
+async function applyDiff(parameters) {
+  try {
+    const { filePath, diffContent, searchString, replaceString, encoding } = parameters;
+
+    const readResult = await readFile(filePath, encoding);
+    if (!readResult.success) {
+      throw new Error(`Failed to read file for applying diff: ${readResult.error}`);
+    }
+    // We can only apply diff to string content.
+    // Note: readFile now returns content as an array of objects.
+    // We need to find the text content.
+    let originalContent = '';
+    if (Array.isArray(readResult.data.content)) {
+        // The first text part is usually the header, the second is the content
+        const textParts = readResult.data.content.filter(p => p.type === 'text');
+        if (textParts.length >= 2) {
+            originalContent = textParts[1].text;
+        } else if (textParts.length === 1 && !textParts[0].text.startsWith('已读取文件')) {
+            originalContent = textParts[0].text;
+        }
+    } else if (typeof readResult.data.content === 'string') {
+        originalContent = readResult.data.content;
+    }
+
+    if (!originalContent && readResult.data.isExtracted) {
+         throw new Error('ApplyDiff can only be used on plain text files or extracted text content.');
+    }
+
+    let newContent;
+    if (diffContent) {
+      // Use the existing diff logic if diffContent is provided
+      newContent = applyDiffLogic(originalContent, diffContent);
+    } else if (searchString !== undefined && replaceString !== undefined) {
+      // Handle the legacy format with searchString and replaceString
+      if (!originalContent.includes(searchString)) {
+        // Make error more specific for debugging
+        throw new Error(`Diff application failed: searchString content not found in the original file. Content not found: "${searchString}"`);
+      }
+      // Per user feedback, use .replace() to only replace the first occurrence.
+      newContent = originalContent.replace(searchString, replaceString);
+    } else {
+      throw new Error('ApplyDiff requires either "diffContent" or both "searchString" and "replaceString" parameters.');
+    }
+    
+    const editResult = await editFile(filePath, newContent, encoding);
+    if (editResult.success) {
+      editResult.data.message = '文件编辑已经提交等待用户确认';
+    }
+    return await runValidationAndAttachResults(editResult, filePath, newContent);
+  } catch (error) {
+    return { success: false, error: `Failed to apply diff: ${error.message}` };
+  }
+}
+
 // Batch processing for legacy format with robust content and action aggregation
 async function processBatchRequest(request) {
   debugLog('Processing legacy batch request with robust aggregation', { request });
@@ -1125,34 +1212,23 @@ async function processBatchRequest(request) {
           break;
         case 'ListDirectory':
             result = await listDirectory(parameters.directoryPath, parameters.showHidden);
-            if (result.success) {
-                const dirPath = result.data.path;
-                const items = result.data.items.map(item => `${item.type === 'directory' ? '[D]' : '[F]'} ${item.name}`).join('\n');
-                const content = `--- Listing of ${dirPath} ---\n${items}`;
-                aggregatedContent.push({ type: 'text', text: content });
+            if (result.success && result.data.content) {
+                aggregatedContent.push({ type: 'text', text: `--- Directory listing of ${parameters.directoryPath} ---` });
+                aggregatedContent.push(...result.data.content);
             }
             break;
         case 'FileInfo':
             result = await getFileInfo(parameters.filePath);
-            if (result.success) {
-                const fileInfo = result.data;
-                // Using a more structured text format
-                const content = `--- File Info for ${fileInfo.path} ---\n` +
-                    `Name: ${fileInfo.name}\n` +
-                    `Type: ${fileInfo.type}\n` +
-                    `Size: ${fileInfo.sizeFormatted} (${fileInfo.size} bytes)\n` +
-                    `Modified: ${fileInfo.lastModified}\n` +
-                    `Created: ${fileInfo.created}`;
-                aggregatedContent.push({ type: 'text', text: content });
+            if (result.success && result.data.content) {
+                aggregatedContent.push({ type: 'text', text: `--- File info of ${parameters.filePath} ---` });
+                aggregatedContent.push(...result.data.content);
             }
             break;
         case 'SearchFiles':
             result = await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
-            if (result.success) {
-                const { searchPath, pattern, results } = result.data;
-                const items = results.map(item => `${item.type === 'directory' ? '[D]' : '[F]'} ${item.relativePath}`).join('\n');
-                const content = `--- Search results in "${searchPath}" for pattern "${pattern}" ---\n${items}`;
-                aggregatedContent.push({ type: 'text', text: content });
+            if (result.success && result.data.content) {
+                aggregatedContent.push({ type: 'text', text: `--- Search results for "${parameters.pattern}" in ${parameters.searchPath} ---` });
+                aggregatedContent.push(...result.data.content);
             }
             break;
         case 'CopyFile':
@@ -1171,7 +1247,32 @@ async function processBatchRequest(request) {
           result = await createDirectory(parameters.directoryPath);
           break;
         case 'WriteFile':
-          result = await writeFile(parameters.filePath, parameters.content);
+          result = await writeFile(parameters.filePath, parameters.content, parameters.encoding);
+          break;
+        case 'AppendFile':
+          result = await appendFile(parameters.filePath, parameters.content, parameters.encoding);
+          break;
+        case 'EditFile':
+          result = await editFile(parameters.filePath, parameters.content, parameters.encoding);
+          break;
+        case 'DownloadFile':
+          result = await downloadFile(parameters.url);
+          break;
+        case 'CreateCanvas':
+          result = await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
+          break;
+        case 'UpdateHistory':
+          result = await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
+          break;
+        case 'ApplyDiff':
+          result = await applyDiff(parameters);
+          break;
+        case 'ListAllowedDirectories':
+          result = await listAllowedDirectories();
+          if (result.success && result.data.content) {
+            aggregatedContent.push({ type: 'text', text: `--- Allowed Directories ---` });
+            aggregatedContent.push(...result.data.content);
+          }
           break;
         default:
           result = { success: false, error: `Unsupported batch command: ${command}` };
@@ -1183,8 +1284,8 @@ async function processBatchRequest(request) {
     if (result.success) {
       successCount++;
       // For non-read operations, generate a summary message instead of pushing to content
-      const readOnlyCommands = ['ReadFile', 'WebReadFile', 'ListDirectory', 'FileInfo', 'SearchFiles'];
-      if (!readOnlyCommands.includes(command)) {
+      const contentCommands = ['ReadFile', 'WebReadFile', 'ListDirectory', 'FileInfo', 'SearchFiles', 'ListAllowedDirectories'];
+      if (!contentCommands.includes(command)) {
          summaryMessages.push(result.data.message);
       }
     } else {
@@ -1273,39 +1374,7 @@ async function processRequest(request) {
     case 'UpdateHistory':
         return await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
     case 'ApplyDiff':
-      try {
-        const { filePath, diffContent, searchString, replaceString, encoding } = parameters;
-
-        const readResult = await readFile(filePath, encoding);
-        if (!readResult.success) {
-          throw new Error(`Failed to read file for applying diff: ${readResult.error}`);
-        }
-        // We can only apply diff to string content.
-        if (typeof readResult.data.content !== 'string') {
-            throw new Error('ApplyDiff can only be used on plain text files.');
-        }
-        const originalContent = readResult.data.content;
-        let newContent;
-
-        if (diffContent) {
-          // Use the existing diff logic if diffContent is provided
-          newContent = applyDiffLogic(originalContent, diffContent);
-        } else if (searchString !== undefined && replaceString !== undefined) {
-          // Handle the legacy format with searchString and replaceString
-          if (!originalContent.includes(searchString)) {
-            // Make error more specific for debugging
-            throw new Error(`Diff application failed: searchString content not found in the original file. Content not found: "${searchString}"`);
-          }
-          // Per user feedback, use .replace() to only replace the first occurrence.
-          newContent = originalContent.replace(searchString, replaceString);
-        } else {
-          throw new Error('ApplyDiff requires either "diffContent" or both "searchString" and "replaceString" parameters.');
-        }
-        
-        return await editFile(filePath, newContent, encoding);
-      } catch (error) {
-        return { success: false, error: `Failed to apply diff: ${error.message}` };
-      }
+      return await applyDiff(parameters);
     default:
       return {
         success: false,
@@ -1342,9 +1411,78 @@ process.stdin.on('data', async data => {
 // Convert internal response format to VCP protocol format
 function convertToVCPFormat(response) {
   if (response.success) {
+    const data = response.data || {};
+    
+    // Special action handling
+    if (data._specialAction) {
+      debugLog('Converting response with special action', {
+        action: data._specialAction,
+        payload: data.payload
+      });
+      
+      return {
+        status: 'success',
+        _specialAction: data._specialAction,
+        payload: data.payload,
+        result: {
+          content: [{ type: 'text', text: data.message || 'Operation completed successfully' }],
+          details: data.payload
+        },
+      };
+    }
+
+    let contentArray = [];
+    
+    // 1. Handle content if present
+    if (data.content) {
+      if (Array.isArray(data.content)) {
+        contentArray.push(...data.content);
+      } else {
+        contentArray.push({ type: 'text', text: data.content });
+      }
+    }
+    
+    // 2. Handle message if present
+    if (data.message) {
+      // Check if message is already represented in content
+      const alreadyHasMessage = contentArray.some(part => part.type === 'text' && part.text.includes(data.message));
+      if (!alreadyHasMessage) {
+        contentArray.unshift({ type: 'text', text: data.message });
+      }
+    }
+
+    // 3. Handle details/items/results if content is still empty
+    if (contentArray.length === 0) {
+      if (data.items) {
+        contentArray.push({ type: 'text', text: `Items found (${data.totalItems || data.items.length}):\n${JSON.stringify(data.items, null, 2)}` });
+      } else if (data.results) {
+        contentArray.push({ type: 'text', text: `Search results (${data.totalResults || data.results.length}):\n${JSON.stringify(data.results, null, 2)}` });
+      } else if (data.details) {
+        contentArray.push({ type: 'text', text: typeof data.details === 'string' ? data.details : JSON.stringify(data.details, null, 2) });
+      }
+    }
+
+    // 4. Add validation results if present
+    if (data.validation && Array.isArray(data.validation)) {
+      contentArray.push({ type: 'text', text: `Code Validation Results:\n${JSON.stringify(data.validation, null, 2)}` });
+    }
+
+    // 5. Fallback for other structured data
+    if (contentArray.length === 0) {
+      const { content, message, details, validation, ...rest } = data;
+      if (Object.keys(rest).length > 0) {
+        contentArray.push({ type: 'text', text: JSON.stringify(rest, null, 2) });
+      } else {
+        contentArray.push({ type: 'text', text: 'Operation completed successfully' });
+      }
+    }
+
     return {
       status: 'success',
-      result: response.data || { message: response.message || 'Operation completed successfully' },
+      result: {
+        content: contentArray,
+        details: data
+      },
     };
   } else {
     return {
