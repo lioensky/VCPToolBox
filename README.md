@@ -109,6 +109,8 @@ VCP 初始的 DailyNote 里提供了 VCP 开发文档等大量专业日记，方
 
 日记的创建、编辑和批处理现在统一为 **DailyNote** 一个插件，从而方便串行和并发处理。
 
+[深入了解 DailyNote 日记系统的工作原理与使用方式](dailynote.md)
+
 ### 3.2 分布式备份与恢复
 
 **VCP 分布式备份和恢复中心**：[VCPBackUpDEV](https://github.com/lioensky/VCPBcakUpDEV)
