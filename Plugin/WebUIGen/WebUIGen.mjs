@@ -165,7 +165,7 @@ async function generateImage(args) {
 
     // 3. 构造返回结果
     const { width, height } = parseResolution(args.resolution);
-    const finalResponseText = `图片已成功生成！\n\n**图片详情:**\n- 提示词: ${args.prompt}\n- 模型: ${apiResult.model_name}\n- 分辨率: ${width}x${height}\n- 消耗点数: ${apiResult.points_used}\n- 剩余点数: ${apiResult.remaining_points}\n- 可访问URL: ${savedImage.imageUrl}\n\n请利用可访问url将图片转发给用户`;
+    const finalResponseText = `图片已成功生成！\n\n**图片详情:**\n- 模型: ${apiResult.model_name}\n- 分辨率: ${width}x${height}\n- 消耗点数: ${apiResult.points_used}\n- 剩余点数: ${apiResult.remaining_points}\n- 可访问URL: ${savedImage.imageUrl}\n\n请利用可访问url将图片转发给用户`;
 
     const content = [
         {
