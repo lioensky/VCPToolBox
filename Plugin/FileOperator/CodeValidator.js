@@ -82,7 +82,7 @@ async function validateCode(filePath, content) {
 
       case '.py':
         // TODO: Implement Python linting (e.g., via child_process)
-        console.log(`Validation for ${extension} files is not yet implemented.`);
+        console.error(`Validation for ${extension} files is not yet implemented.`);
         break;
 
       // Add other file types as needed

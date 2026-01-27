@@ -1165,7 +1165,7 @@ async function applyDiff(parameters) {
     
     const editResult = await editFile(filePath, newContent, encoding);
     if (editResult.success) {
-      editResult.data.message = '文件编辑已经提交等待用户确认';
+      editResult.data.message = '文件编辑成功';
     }
     return await runValidationAndAttachResults(editResult, filePath, newContent);
   } catch (error) {
