@@ -139,17 +139,33 @@ function resolveAndNormalizePath(inputPath) {
   const parts = originalPath.split(/[/\\]+/);
   const trimmedParts = parts.map(part => part.trim());
   const sanitizedPath = path.join(...trimmedParts);
-  
+
+  // 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
+  const resolvedInput = path.resolve(originalPath);
+  const fileOperatorRoot = path.resolve(__dirname);
+
+  // 使用 startsWith 检查是否已经是 FileOperator 下的绝对路径
+  // 注意：Windows 下路径大小写不敏感，但这里主要是解决 Linux/Mac 的双写问题
+  if (resolvedInput.toLowerCase().startsWith(fileOperatorRoot.toLowerCase())) {
+    return resolvedInput;
+  }
+
+  // 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
+  if (originalPath.startsWith('/')) {
+    const relativePath = originalPath.slice(1); // 去掉开头的 /
+    return path.resolve(__dirname, relativePath);
+  }
+
   // 2. Handle absolute paths. Check originalPath as sanitizing might alter it.
   if (path.isAbsolute(originalPath)) {
-      // On Windows, path.join(['', 'foo']) becomes '\\foo'.
-      // path.resolve correctly handles this, ensuring a drive letter.
-      return path.resolve(sanitizedPath);
+    // On Windows, path.join(['', 'foo']) becomes '\\foo'.
+    // path.resolve correctly handles this, ensuring a drive letter.
+    return path.resolve(sanitizedPath);
   }
 
   // 3. Handle all relative paths.
   const normalized = path.normalize(sanitizedPath);
-  
+
   // Check if the path starts with './' or '../' in an OS-agnostic way.
   const startsWithDot = normalized.startsWith(`.${path.sep}`);
   const startsWithDotDot = normalized.startsWith(`..${path.sep}`);
