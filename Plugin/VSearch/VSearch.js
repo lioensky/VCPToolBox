@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // --- 1. 初始化与配置加载 ---
 const configPath = path.resolve(__dirname, './config.env');
@@ -12,7 +13,8 @@ const {
     VSearchUrl: API_URL,
     VSearchModel: MODEL,
     VSearchMaxToken: MAX_TOKENS,
-    MaxConcurrent: MAX_CONCURRENT
+    MaxConcurrent: MAX_CONCURRENT,
+    HTTP_PROXY: PROXY
 } = process.env;
 
 const CONCURRENCY = parseInt(MAX_CONCURRENT, 10) || 5;
@@ -27,6 +29,37 @@ const log = (message) => {
 const sendResponse = (data) => {
     console.log(JSON.stringify(data));
     process.exit(0);
+};
+
+const resolveRedirect = async (url) => {
+    if (!url || !url.includes('vertexaisearch.cloud.google.com/grounding-api-redirect')) {
+        return url;
+    }
+
+    try {
+        const axiosConfig = {
+            maxRedirects: 0,
+            timeout: 10000,
+            validateStatus: (status) => status >= 200 && status < 400
+        };
+
+        if (PROXY) {
+            axiosConfig.httpsAgent = new HttpsProxyAgent(PROXY);
+            axiosConfig.proxy = false;
+        }
+
+        const response = await axios.get(url, axiosConfig);
+        if (response.status >= 300 && response.status < 400 && response.headers.location) {
+            return response.headers.location;
+        }
+        return url;
+    } catch (error) {
+        if (error.response && error.response.status >= 300 && error.response.status < 400 && error.response.headers.location) {
+            return error.response.headers.location;
+        }
+        log(`解析重定向失败 (${url}): ${error.message}`);
+        return url;
+    }
 };
 
 const callSearchModel = async (topic, keyword, showURL = false) => {
@@ -83,17 +116,29 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
             try {
                 const metadata = response.data.choices[0].message.grounding_metadata || response.data.choices[0].grounding_metadata;
                 if (metadata && metadata.grounding_chunks) {
-                    const citations = metadata.grounding_chunks
-                        .map((chunk, index) => {
+                    const urlMap = new Map();
+                    const citationPromises = metadata.grounding_chunks
+                        .map(async (chunk, index) => {
                             if (chunk.web) {
-                                return `[cite: ${index + 1}] ${chunk.web.title}: ${chunk.web.uri}`;
+                                const originalUrl = chunk.web.uri;
+                                const realUrl = await resolveRedirect(originalUrl);
+                                urlMap.set(originalUrl, realUrl);
+                                return `[cite: ${index + 1}] ${chunk.web.title}: ${realUrl}`;
                             }
                             return null;
-                        })
-                        .filter(c => c !== null);
+                        });
                     
+                    const citations = (await Promise.all(citationPromises)).filter(c => c !== null);
+                    
+                    // 替换正文中可能存在的重定向 URL
+                    for (const [original, resolved] of urlMap.entries()) {
+                        if (original !== resolved) {
+                            content = content.split(original).join(resolved);
+                        }
+                    }
+
                     if (citations.length > 0) {
-                        content += `\n\n**API 自动引证来源:**\n${citations.join('\n')}`;
+                        content += `\n\n**API 自动引证来源 (已解析真实URL):**\n${citations.join('\n')}`;
                     }
                 }
             } catch (metaError) {
