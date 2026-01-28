@@ -1071,7 +1071,7 @@ It is recommended to use frontends that render Markdown well, support code highl
 
 - **VCPChat** (Official Project, highly recommended!): [VCPChat](https://github.com/lioensky/VCPChat)
 - **SillyTavern**
-- **CherryStudio Client**
+- **aio-hub** (Friendly Project): [aio-hub](https://github.com/miaotouy/aio-hub) - A higher-performance desktop LLM chat client based on Tauri, with native VCP API compatibility.
 
 An ideal frontend should also:
 - Allow users to easily configure the system prompt.

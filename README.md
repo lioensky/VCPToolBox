@@ -1097,7 +1097,7 @@ VCP 的设计使其能够灵活适配多种后端。
 
 - **VCPChat**（官方项目，首选！）：[VCPChat](https://github.com/lioensky/VCPChat)
 - **Sillytavern**
-- **CherryStudio 客户端**
+- **aio-hub** (友情项目): [aio-hub](https://github.com/miaotouy/aio-hub) - 一个基于 Tauri 开发的更高性能的桌面 LLM 聊天客户端，并作了部分 VCP 的原生 API 兼容。
 
 理想的前端还应：
 - 允许用户方便地配置系统提示词

@@ -1071,7 +1071,7 @@ Markdownをうまく描画し、コードハイライトを支援し、VCP道具
 
 - **VCPChat** (公式プロジェクト、強く推奨！): [VCPChat](https://github.com/lioensky/VCPChat)
 - **SillyTavern**
-- **CherryStudioクライアント**
+- **aio-hub** (友情プロジェクト): [aio-hub](https://github.com/miaotouy/aio-hub) - Tauriベースの高性能デスクトップLLMチャットクライアント。一部のVCPネイティブAPIとの互换性があります。
 
 理想的なフロントエンドは、以下の条件も満たすべきです：
 - 利用者が体系プロンプトを容易に構成できる。
