@@ -1,0 +1,29 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ZImageGen",
+  "displayName": "Z-Image Base 文生图",
+  "version": "1.1.0",
+  "description": "通过 Hugging Face Spaces API 使用 Z-Image-Base 模型生成高质量图片。支持中英文提示词，28步推理，支持负向提示词和CFG调节。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ZImageGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 45000
+  },
+  "configSchema": {
+    "HF_TOKEN": "string (可选，用于私有Space或更高速率限制)"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ZImageGenerate",
+        "description": "调用此工具通过 Z-Image-Base 模型生成高质量图片。支持中英文提示词。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageGen「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nnegative_prompt:「始」(可选) 负向提示词，描述不想在图片中出现的内容。「末」,\nresolution:「始」(可选) 图片分辨率，默认1024x1024。可选值：「1024x1024」「1280x720」「720x1280」「1152x864」「864x1152」等，或使用比例如「16:9」「9:16」「square」「landscape」「portrait」。「末」,\nsteps:「始」(可选) 推理步数，默认28。「末」,\ncfg:「始」(可选) 引导比例(CFG)，默认4。「末」,\ncfg_normalization:「始」(可选) 是否开启CFG归一化，默认false。「末」,\nshowbase64:「始」(可选) 是否在返回结果中包含base64图片数据供AI查看，默认false。设置为true时AI可以看到生成的图片，但会消耗更多token。「末」\n(可选参数：seed:「始」整数种子「末」 - 省略使用随机种子)\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含以下信息的结果：\n1. 生成图片的公开访问URL。\n2. 图片在服务器上的存储相对路径 (例如：image/zimage/图片名.png)。\n3. 图片的文件名和使用的Seed。\n4. 如果showbase64设置为true，还会包含base64格式的图片数据供AI查看。\n请在您的最终回复中，使用返回的【图片URL】为用户生成一个HTML的 `<img>` 标签来直接展示图片，例如：`<img src=\"[此处填写图片URL]\" alt=\"[此处可填写部分prompt作为描述]\" width=\"300\">`。请确保替换占位符，并可调整 `width` 属性（建议200-500像素）。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageGen「末」,\nprompt:「始」一位穿着精美汉服的中国古典美女，站在江南水乡的石桥上，手持油纸伞，背景是烟雨蒙蒙的白墙黑瓦建筑「末」,\nresolution:「始」1024x1024「末」,\nshowbase64:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
