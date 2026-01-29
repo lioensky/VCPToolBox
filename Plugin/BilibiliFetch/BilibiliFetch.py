@@ -13,16 +13,89 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 import io
+from functools import reduce
+from hashlib import md5
+import urllib.parse
 
 # --- Logging Setup ---
 # Log to stderr to avoid interfering with stdout communication
-logging.basicConfig(level=logging.INFO, stream=sys.stderr, format='%(asctime)s - %(levelname)s - %(message)s')
+# Use a custom handler to ensure UTF-8 output even on Windows
+class UTF8StreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            if hasattr(stream, 'buffer'):
+                stream.buffer.write((msg + self.terminator).encode('utf-8'))
+                stream.buffer.flush()
+            else:
+                stream.write(msg + self.terminator)
+                self.flush()
+        except Exception:
+            self.handleError(record)
+
+handler = UTF8StreamHandler(sys.stderr)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger().addHandler(handler)
+logging.getLogger().setLevel(logging.INFO)
 
 # --- Constants ---
 BILIBILI_VIDEO_BASE_URL = "https://www.bilibili.com/video/"
 PAGELIST_API_URL = "https://api.bilibili.com/x/player/pagelist"
 PLAYER_WBI_API_URL = "https://api.bilibili.com/x/player/wbi/v2"
-# Removed SERVER_NAME
+SEARCH_WBI_API_URL = "https://api.bilibili.com/x/web-interface/wbi/search/type"
+SPACE_ARC_WBI_API_URL = "https://api.bilibili.com/x/space/wbi/arc/search"
+NAV_API_URL = "https://api.bilibili.com/x/web-interface/nav"
+PBP_API_URL = "https://bvc.bilivideo.com/pbp/data"
+
+# --- WBI Signing Logic ---
+
+mixinKeyEncTab = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52
+]
+
+def getMixinKey(orig: str):
+    """对 imgKey 和 subKey 进行字符顺序打乱编码"""
+    return reduce(lambda s, i: s + orig[i], mixinKeyEncTab, '')[:32]
+
+def encWbi(params: dict, img_key: str, sub_key: str):
+    """为请求参数进行 wbi 签名"""
+    mixin_key = getMixinKey(img_key + sub_key)
+    curr_time = round(time.time())
+    params['wts'] = curr_time                                   # 添加 wts 字段
+    params = dict(sorted(params.items()))                       # 按照 key 重排参数
+    # 过滤 value 中的 "!'()*" 字符
+    params = {
+        k : ''.join(filter(lambda chr: chr not in "!'()*", str(v)))
+        for k, v
+        in params.items()
+    }
+    query = urllib.parse.urlencode(params)                      # 序列化参数
+    wbi_sign = md5((query + mixin_key).encode()).hexdigest()    # 计算 w_rid
+    params['w_rid'] = wbi_sign
+    return params
+
+def getWbiKeys(headers: dict) -> tuple[str, str]:
+    """获取最新的 img_key 和 sub_key"""
+    try:
+        resp = requests.get(NAV_API_URL, headers=headers, timeout=10)
+        resp.raise_for_status()
+        json_content = resp.json()
+        wbi_img = json_content.get('data', {}).get('wbi_img', {})
+        img_url = wbi_img.get('img_url')
+        sub_url = wbi_img.get('sub_url')
+        if not img_url or not sub_url:
+            logging.error("Failed to get WBI keys from nav API.")
+            return "", ""
+        img_key = img_url.rsplit('/', 1)[1].split('.')[0]
+        sub_key = sub_url.rsplit('/', 1)[1].split('.')[0]
+        return img_key, sub_key
+    except Exception as e:
+        logging.error(f"Error getting WBI keys: {e}")
+        return "", ""
 
 # --- Helper Functions ---
 
@@ -61,36 +134,19 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     else:
         logging.warning("User cookie not provided. Access may be limited or fail.")
 
-    # --- Step 1: Get AID (Attempt from video page) ---
+    # --- Step 1: Get AID (Attempt from View API) ---
     aid = None
     try:
-        logging.info(f"Step 1: Fetching video page for AID: {BILIBILI_VIDEO_BASE_URL}{bvid}/")
-        resp = requests.get(f'{BILIBILI_VIDEO_BASE_URL}{bvid}/', headers=headers, timeout=10)
-        resp.raise_for_status()
-        text = resp.text
-        aid_match = re.search(r'"aid"\s*:\s*(\d+)', text)
-        if aid_match:
-            aid = aid_match.group(1)
-            logging.info(f"Step 1: Found AID via regex: {aid}")
+        logging.info(f"Step 1: Fetching video info for AID via View API: {bvid}")
+        view_resp = requests.get("https://api.bilibili.com/x/web-interface/view", params={'bvid': bvid}, headers=headers, timeout=10)
+        view_data = view_resp.json()
+        if view_data.get('code') == 0:
+            aid = str(view_data.get('data', {}).get('aid'))
+            logging.info(f"Step 1: Found AID via View API: {aid}")
         else:
-            state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});?', text)
-            if state_match:
-                try:
-                    initial_state = json.loads(state_match.group(1))
-                    aid = initial_state.get('videoData', {}).get('aid')
-                    if aid:
-                        aid = str(aid)
-                        logging.info(f"Step 1: Found AID in __INITIAL_STATE__: {aid}")
-                    else:
-                        logging.warning("Step 1: Could not find AID in __INITIAL_STATE__.")
-                except json.JSONDecodeError:
-                    logging.warning("Step 1: Failed to parse __INITIAL_STATE__ for AID.")
-            else:
-                 logging.warning("Step 1: Could not find AID in page HTML using regex or __INITIAL_STATE__.")
-    except requests.exceptions.RequestException as e:
-        logging.warning(f"Step 1: Error fetching video page for AID: {e}. Proceeding without AID.")
+            logging.warning(f"Step 1: View API returned error {view_data.get('code')}: {view_data.get('message')}")
     except Exception as e:
-         logging.warning(f"Step 1: Unexpected error fetching AID: {e}. Proceeding without AID.")
+        logging.warning(f"Step 1: Error fetching AID via View API: {e}. Proceeding without AID.")
 
 
     # --- Step 2: Get CID (from pagelist API) ---
@@ -120,16 +176,23 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     subtitle_url = None
     try:
         logging.info("Step 3: Fetching subtitle list using WBI Player API...")
+        
+        img_key, sub_key = getWbiKeys(headers)
+        
         wbi_params = {
             'cid': cid,
             'bvid': bvid,
             'isGaiaAvoided': 'false',
             'web_location': '1315873',
-            'w_rid': '364cdf378b75ef6a0cee77484ce29dbb', # Hardcoded - might break
-            'wts': int(time.time()),
         }
         if aid:
              wbi_params['aid'] = aid
+
+        if img_key and sub_key:
+            wbi_params = encWbi(wbi_params, img_key, sub_key)
+        else:
+            logging.warning("Failed to get WBI keys, proceeding without WBI signing (might fail)")
+            wbi_params['wts'] = int(time.time())
 
         wbi_resp = requests.get(PLAYER_WBI_API_URL, params=wbi_params, headers=headers, timeout=15)
         logging.info(f"Step 3: WBI API Status Code: {wbi_resp.status_code}")
@@ -281,6 +344,56 @@ def fetch_videoshot(bvid: str, aid: str, cid: str, headers: dict) -> dict:
         logging.error(f"Error fetching videoshot: {e}")
     return {}
 
+def fetch_pbp(cid: str, aid: str = None, bvid: str = None) -> str:
+    """获取高能进度条数据并返回弹幕最集中的时间点"""
+    try:
+        logging.info(f"Fetching PBP data for CID: {cid}")
+        params = {'cid': cid}
+        if aid: params['aid'] = aid
+        if bvid: params['bvid'] = bvid
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
+        }
+        
+        resp = requests.get(PBP_API_URL, params=params, headers=headers, timeout=10)
+        data = resp.json()
+        
+        # 检查是否为有效数据（排除空壳响应）
+        if not data or not data.get('events') or not data.get('events', {}).get('default'):
+            logging.info("PBP data is empty or invalid, skipping.")
+            return ""
+
+        if data.get('events', {}).get('default'):
+            events = data['events']['default']
+            step = data.get('step_sec', 1)
+            
+            # 找出局部峰值并排序
+            peaks = []
+            for i in range(1, len(events) - 1):
+                if events[i] > events[i-1] and events[i] > events[i+1] and events[i] > 0:
+                    peaks.append((i * step, events[i]))
+            
+            # 如果没有局部峰值，退而求其次找最高点
+            if not peaks:
+                indexed_events = list(enumerate(events))
+                sorted_events = sorted(indexed_events, key=lambda x: x[1], reverse=True)
+                peaks = [(idx * step, val) for idx, val in sorted_events[:5] if val > 0]
+            else:
+                # 按热度排序并取前 5
+                peaks = sorted(peaks, key=lambda x: x[1], reverse=True)[:5]
+                # 按时间排序回原序
+                peaks = sorted(peaks, key=lambda x: x[0])
+            
+            if peaks:
+                points_str = ", ".join([f"{p[0]}s({int(p[1])})" for p in peaks])
+                return f"\n【高能时刻(秒/热度)】: {points_str}"
+        return ""
+    except Exception as e:
+        logging.error(f"Error fetching PBP: {e}")
+        return ""
+
 def sanitize_filename(name: str) -> str:
     """Sanitizes a string to be used as a filename/directory name."""
     # Replace invalid characters with underscores
@@ -312,9 +425,9 @@ def get_accessible_url(local_path: str) -> str:
     # Fallback to file URI if env vars are missing or error occurs
     return "file:///" + local_path.replace("\\", "/")
 
-def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True) -> dict:
+def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True) -> dict:
     """
-    Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, and snapshots.
+    Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, snapshots, and PBP.
     Returns a dictionary suitable for VCP multimodal output.
     """
     # 1. Resolve short URL
@@ -323,10 +436,7 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     # 2. Extract BVID
     bvid = extract_bvid(resolved_url)
     if not bvid:
-        return {
-            "text": f"无法从输入提取 BV 号: {video_input}",
-            "image_urls": []
-        }
+        return f"无法从输入提取 BV 号: {video_input}"
 
     user_cookie = os.environ.get('BILIBILI_COOKIE')
     headers = {
@@ -350,6 +460,14 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             video_title = data.get('title')
             video_author = data.get('owner', {}).get('name')
             logging.info(f"Found AID: {aid}, CID: {cid}, Title: {video_title}, Author: {video_author} via View API")
+        else:
+            # Fallback to pagelist for CID if view API fails
+            logging.warning(f"View API failed (code {view_data.get('code')}), attempting pagelist for CID")
+            page_resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
+            page_data = page_resp.json()
+            if page_data.get('code') == 0 and page_data.get('data'):
+                cid = str(page_data['data'][0]['cid'])
+                logging.info(f"Found CID via pagelist fallback: {cid}")
     except Exception as e:
         logging.error(f"Error getting video info: {e}")
 
@@ -368,10 +486,14 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
         # Fetch videoshot metadata
         future_shot = executor.submit(fetch_videoshot, bvid, aid, cid, headers) if aid and cid else None
         
+        # Fetch PBP (High Energy Bar)
+        future_pbp = executor.submit(fetch_pbp, cid, aid, bvid) if cid and need_pbp else None
+
         results['subs'] = future_subs.result() if future_subs else ""
         results['danmaku'] = future_danmaku.result() if future_danmaku else []
         results['comments'] = future_comments.result() if future_comments else []
         results['shot'] = future_shot.result() if future_shot else {}
+        results['pbp'] = future_pbp.result() if future_pbp else ""
 
     # 5. Process snapshots if requested
     images_to_add = []
@@ -456,11 +578,9 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
                         # Use file:// URI for local path
                         file_uri = "file:///" + img_path.replace("\\", "/")
                         
-                        accessible_url = get_accessible_url(img_path)
-                        
                         images_to_add.append({
                             "type": "image_url",
-                            "image_url": {"url": accessible_url}
+                            "image_url": {"url": file_uri}
                         })
                         snapshot_text += f"- 时间点 {t_val}s (实际匹配 {actual_timestamp}s) 的快照已保存并附加: {img_filename}\n"
                 except Exception as e:
@@ -496,6 +616,9 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     if results['comments']:
         text_parts.append("\n\n【热门评论】\n" + "\n".join(results['comments']))
     
+    if results['pbp']:
+        text_parts.append(results['pbp'])
+
     if snapshot_text:
         text_parts.append(snapshot_text)
         
@@ -509,10 +632,129 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             img_url = img_obj["image_url"]["url"]
             full_text += f'<img src="{img_url}" width="400" alt="Bilibili Snapshot">\n'
     
-    return {
-        "text": full_text,
-        "image_urls": [img["image_url"]["url"] for img in images_to_add]
+    return full_text
+
+def search_bilibili(keyword: str, search_type: str = "video", page: int = 1) -> dict:
+    """
+    关键词搜索视频或 UP 主。
+    search_type: 'video' 或 'bili_user'
+    """
+    logging.info(f"Searching Bilibili for '{keyword}' with type '{search_type}', page {page}")
+    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.bilibili.com/',
     }
+    if user_cookie:
+        headers['Cookie'] = user_cookie
+
+    img_key, sub_key = getWbiKeys(headers)
+    if not img_key or not sub_key:
+        return {"error": "Failed to get WBI keys for search"}
+
+    params = {
+        'keyword': keyword,
+        'search_type': search_type,
+        'page': page
+    }
+    signed_params = encWbi(params, img_key, sub_key)
+
+    try:
+        resp = requests.get(SEARCH_WBI_API_URL, params=signed_params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get('code') != 0:
+            return f"搜索失败: {data.get('message', '未知错误')}"
+        
+        results = data.get('data', {}).get('result', [])
+        if not results:
+            return "未找到相关结果。"
+        
+        clean_results = []
+        if search_type == "video":
+            clean_results.append(f"--- 关键词 '{keyword}' 的视频搜索结果 (第 {page} 页) ---")
+            for item in results:
+                title = item.get('title', '').replace('<em class="keyword">', '').replace('</em>', '')
+                author = item.get('author', '未知')
+                bvid = item.get('bvid', '未知')
+                play = item.get('play', 0)
+                pubdate = time.strftime('%Y-%m-%d', time.localtime(item.get('pubdate', 0)))
+                desc = item.get('description', '').strip()
+                clean_results.append(f"【{title}】\n- UP主: {author} | BV号: {bvid}\n- 播放量: {play} | 发布日期: {pubdate}\n- 简介: {desc[:100]}...")
+        
+        elif search_type == "bili_user":
+            clean_results.append(f"--- 关键词 '{keyword}' 的用户搜索结果 (第 {page} 页) ---")
+            for item in results:
+                uname = item.get('uname', '未知')
+                mid_val = item.get('mid', '未知')
+                fans = item.get('fans', 0)
+                videos = item.get('videos', 0)
+                usign = item.get('usign', '').strip()
+                user_info = f"【{uname}】(MID: {mid_val})\n- 粉丝数: {fans} | 投稿数: {videos}\n- 签名: {usign}"
+                
+                # Extract recent videos if available
+                recent_vids = item.get('res', [])
+                if recent_vids:
+                    vid_list = [f"  * {v.get('title')} ({v.get('bvid')})" for v in recent_vids[:3]]
+                    user_info += "\n- 最近投稿:\n" + "\n".join(vid_list)
+                
+                clean_results.append(user_info)
+        
+        return "\n\n".join(clean_results)
+    except Exception as e:
+        logging.error(f"Error during Bilibili search: {e}")
+        return f"搜索出错: {e}"
+
+def get_up_videos(mid: str, pn: int = 1, ps: int = 30) -> dict:
+    """获取指定 UP 主的所有投稿视频 BV 号"""
+    logging.info(f"Fetching videos for UP mid: {mid}, page {pn}")
+    user_cookie = os.environ.get('BILIBILI_COOKIE')
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': f'https://space.bilibili.com/{mid}/video',
+    }
+    if user_cookie:
+        headers['Cookie'] = user_cookie
+
+    img_key, sub_key = getWbiKeys(headers)
+    if not img_key or not sub_key:
+        return {"error": "Failed to get WBI keys for space search"}
+
+    params = {
+        'mid': mid,
+        'pn': pn,
+        'ps': ps,
+        'order': 'pubdate'
+    }
+    signed_params = encWbi(params, img_key, sub_key)
+
+    try:
+        resp = requests.get(SPACE_ARC_WBI_API_URL, params=signed_params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get('code') != 0:
+            return f"获取 UP 主视频失败: {data.get('message', '未知错误')}"
+        
+        vlist = data.get('data', {}).get('list', {}).get('vlist', [])
+        if not vlist:
+            return "该 UP 主暂无投稿视频。"
+        
+        clean_results = [f"--- UP主 (MID: {mid}) 的投稿视频 (第 {pn} 页) ---"]
+        for item in vlist:
+            title = item.get('title', '无标题')
+            bvid = item.get('bvid', '未知')
+            play = item.get('play', 0)
+            created = time.strftime('%Y-%m-%d', time.localtime(item.get('created', 0)))
+            length = item.get('length', '00:00')
+            desc = item.get('description', '').strip()
+            clean_results.append(f"【{title}】\n- BV号: {bvid} | 时长: {length}\n- 播放量: {play} | 发布日期: {created}\n- 简介: {desc[:100]}...")
+            
+        return "\n\n".join(clean_results)
+    except Exception as e:
+        logging.error(f"Error fetching UP videos: {e}")
+        return f"获取视频列表出错: {e}"
 
 # --- Main execution for VCP Synchronous Plugin ---
 
@@ -565,22 +807,34 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
         return "" # Return empty string on any other error during the process
 
 
-if __name__ == "__main__":
-    input_data_raw = sys.stdin.read()
-    output = {}
+def handle_single_request(data: dict):
+    """Handles a single request dictionary and returns the result data."""
+    action = data.get('action', 'fetch_video')
+    
+    if action == 'search':
+        keyword = data.get('keyword')
+        if not keyword:
+            raise ValueError("Missing required argument: keyword for search")
+        search_type = data.get('search_type', 'video')
+        page = int(data.get('page', 1))
+        return search_bilibili(keyword, search_type, page)
+    
+    elif action == 'get_up_videos':
+        mid = data.get('mid')
+        if not mid:
+            raise ValueError("Missing required argument: mid for get_up_videos")
+        pn = int(data.get('pn', 1))
+        ps = int(data.get('ps', 30))
+        return get_up_videos(str(mid), pn, ps)
 
-    try:
-        if not input_data_raw.strip():
-            raise ValueError("No input data received from stdin.")
-
-        input_data = json.loads(input_data_raw)
-        url = input_data.get('url')
-        lang = input_data.get('lang')
-        danmaku_num = int(input_data.get('danmaku_num', 0))
-        comment_num = int(input_data.get('comment_num', 0))
+    else: # Default: fetch_video
+        url = data.get('url')
+        lang = data.get('lang')
+        danmaku_num = int(data.get('danmaku_num', 0))
+        comment_num = int(data.get('comment_num', 0))
         
         # Parse snapshot_at_times if provided (comma separated string or list)
-        snapshots_raw = input_data.get('snapshots')
+        snapshots_raw = data.get('snapshots')
         snapshot_at_times = []
         if isinstance(snapshots_raw, list):
             snapshot_at_times = snapshots_raw
@@ -590,18 +844,52 @@ if __name__ == "__main__":
         if not url:
             raise ValueError("Missing required argument: url")
 
-        need_subs = input_data.get('need_subs', True)
+        need_subs = data.get('need_subs', True)
         if isinstance(need_subs, str):
             need_subs = need_subs.lower() != 'false'
 
-        # Call the enhanced processing function
-        result_data = process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs)
+        need_pbp = data.get('need_pbp', True)
+        if isinstance(need_pbp, str):
+            need_pbp = need_pbp.lower() != 'false'
 
-        output = {
-            "status": "success",
-            "result": result_data["text"],
-            "imageurl": result_data["image_urls"]
-        }
+        return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp)
+
+if __name__ == "__main__":
+    input_data_raw = sys.stdin.read()
+    output = {}
+
+    try:
+        if not input_data_raw.strip():
+            raise ValueError("No input data received from stdin.")
+
+        input_data = json.loads(input_data_raw)
+        
+        # Check for serial/batch calls (command1, command2, etc.)
+        is_serial = any(key.startswith('command') or key.startswith('url') and key[3:].isdigit() for key in input_data)
+        
+        if is_serial:
+            logging.info("Detected serial/batch request.")
+            results = []
+            # Find all indices
+            indices = sorted(list(set([re.findall(r'\d+', k)[0] for k in input_data.keys() if re.findall(r'\d+', k)])))
+            if not indices: # Fallback if no digits found but suspected serial
+                indices = ['']
+
+            for idx in indices:
+                # Extract parameters for this index
+                sub_data = {k.replace(idx, ''): v for k, v in input_data.items() if k.endswith(idx)}
+                # Map 'urlX' to 'url' etc. if needed, handle_single_request expects clean keys
+                try:
+                    res = handle_single_request(sub_data)
+                    results.append(f"--- 任务 {idx} 结果 ---\n{res if isinstance(res, str) else json.dumps(res, indent=2, ensure_ascii=False)}")
+                except Exception as e:
+                    results.append(f"--- 任务 {idx} 失败 ---\n错误: {e}")
+            
+            combined_res = "\n\n".join(results)
+            output = {"status": "success", "result": combined_res}
+        else:
+            result_data = handle_single_request(input_data)
+            output = {"status": "success", "result": result_data}
 
     except (json.JSONDecodeError, ValueError) as e:
         output = {"status": "error", "error": f"Input Error: {e}"}
@@ -610,7 +898,9 @@ if __name__ == "__main__":
         output = {"status": "error", "error": f"An unexpected error occurred: {e}"}
 
     # Output JSON to stdout
-    print(json.dumps(output, indent=2))
-    sys.stdout.flush() # Ensure output is sent immediately
+    # Use sys.stdout.buffer to write UTF-8 encoded bytes directly, avoiding Windows console encoding issues
+    sys.stdout.buffer.write(json.dumps(output, indent=2, ensure_ascii=False).encode('utf-8'))
+    sys.stdout.buffer.write(b'\n')
+    sys.stdout.buffer.flush()
 
 # Removed main() function definition as it's replaced by the __main__ block
