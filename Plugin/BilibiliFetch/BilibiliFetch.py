@@ -575,12 +575,12 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
                         img_path = os.path.join(img_dir, img_filename)
                         cropped_img.save(img_path, "JPEG")
                         
-                        # Use file:// URI for local path
-                        file_uri = "file:///" + img_path.replace("\\", "/")
+                        # Use VCP accessible URL for local path
+                        accessible_url = get_accessible_url(img_path)
                         
                         images_to_add.append({
                             "type": "image_url",
-                            "image_url": {"url": file_uri}
+                            "image_url": {"url": accessible_url}
                         })
                         snapshot_text += f"- 时间点 {t_val}s (实际匹配 {actual_timestamp}s) 的快照已保存并附加: {img_filename}\n"
                 except Exception as e:
