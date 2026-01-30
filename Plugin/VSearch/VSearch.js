@@ -36,6 +36,11 @@ const resolveRedirect = async (url) => {
         return url;
     }
 
+    let targetUrl = url.trim();
+    if (!targetUrl.startsWith('http')) {
+        targetUrl = 'https://' + targetUrl;
+    }
+
     try {
         const axiosConfig = {
             maxRedirects: 0,
@@ -48,7 +53,7 @@ const resolveRedirect = async (url) => {
             axiosConfig.proxy = false;
         }
 
-        const response = await axios.get(url, axiosConfig);
+        const response = await axios.get(targetUrl, axiosConfig);
         if (response.status >= 300 && response.status < 400 && response.headers.location) {
             return response.headers.location;
         }
@@ -115,27 +120,44 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
         if (showURL) {
             try {
                 const metadata = response.data.choices[0].message.grounding_metadata || response.data.choices[0].grounding_metadata;
+                
+                // 1. 提取正文中所有可能的 Vertex 重定向 URL (包括没有协议头的)
+                const vertexUrlRegex = /(?:https?:\/\/)?vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[a-zA-Z0-9_-]+/g;
+                const foundUrls = content.match(vertexUrlRegex) || [];
+                
+                // 2. 提取 grounding_metadata 中的 URL
+                const metadataUrls = (metadata && metadata.grounding_chunks)
+                    ? metadata.grounding_chunks.filter(chunk => chunk.web).map(chunk => chunk.web.uri)
+                    : [];
+
+                // 合并并去重
+                const allVertexUrls = [...new Set([...foundUrls, ...metadataUrls])];
+                const urlMap = new Map();
+
+                // 并发解析所有发现的 URL
+                await Promise.all(allVertexUrls.map(async (vUrl) => {
+                    const realUrl = await resolveRedirect(vUrl);
+                    if (realUrl !== vUrl) {
+                        urlMap.set(vUrl, realUrl);
+                    }
+                }));
+
+                // 3. 替换正文中的所有匹配项
+                for (const [original, resolved] of urlMap.entries()) {
+                    content = content.split(original).join(resolved);
+                }
+
+                // 4. 构建引证来源列表 (如果 metadata 存在)
                 if (metadata && metadata.grounding_chunks) {
-                    const urlMap = new Map();
-                    const citationPromises = metadata.grounding_chunks
-                        .map(async (chunk, index) => {
+                    const citations = metadata.grounding_chunks
+                        .map((chunk, index) => {
                             if (chunk.web) {
-                                const originalUrl = chunk.web.uri;
-                                const realUrl = await resolveRedirect(originalUrl);
-                                urlMap.set(originalUrl, realUrl);
+                                const realUrl = urlMap.get(chunk.web.uri) || chunk.web.uri;
                                 return `[cite: ${index + 1}] ${chunk.web.title}: ${realUrl}`;
                             }
                             return null;
-                        });
-                    
-                    const citations = (await Promise.all(citationPromises)).filter(c => c !== null);
-                    
-                    // 替换正文中可能存在的重定向 URL
-                    for (const [original, resolved] of urlMap.entries()) {
-                        if (original !== resolved) {
-                            content = content.split(original).join(resolved);
-                        }
-                    }
+                        })
+                        .filter(c => c !== null);
 
                     if (citations.length > 0) {
                         content += `\n\n**API 自动引证来源 (已解析真实URL):**\n${citations.join('\n')}`;
