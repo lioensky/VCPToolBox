@@ -47,6 +47,8 @@ SEARCH_WBI_API_URL = "https://api.bilibili.com/x/web-interface/wbi/search/type"
 SPACE_ARC_WBI_API_URL = "https://api.bilibili.com/x/space/wbi/arc/search"
 NAV_API_URL = "https://api.bilibili.com/x/web-interface/nav"
 PBP_API_URL = "https://bvc.bilivideo.com/pbp/data"
+VIEW_API_URL = "https://api.bilibili.com/x/web-interface/view"
+SUMMARY_API_URL = "https://api.bilibili.com/x/web-interface/view/conclusion/get"
 
 # --- WBI Signing Logic ---
 
@@ -112,163 +114,161 @@ def extract_bvid(video_input: str) -> str | None:
 def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None) -> str:
     """
     Fetches subtitle JSON for a given BVID, allowing language selection.
+    Tries multiple sources:
+    1. View API (data.subtitle.list)
+    2. Player WBI API (data.subtitle.subtitles)
+    3. AI Summary API (data.model_result.subtitle) - Ultimate fallback
     Returns the subtitle content as a JSON string or '{"body":[]}' if none found or error.
-    Uses user_cookie if provided.
-    Selects subtitle based on lang_code, with 'ai-zh' as a preferred default.
     """
     logging.info(f"Attempting to fetch subtitles for BVID: {bvid}")
-    # --- Headers ---
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.5',
         'Referer': f'{BILIBILI_VIDEO_BASE_URL}{bvid}/',
         'Origin': 'https://www.bilibili.com',
-        'Connection': 'keep-alive',
     }
-
-    # --- Cookie Handling ---
     if user_cookie:
-        logging.info("Using user-provided cookie.")
         headers['Cookie'] = user_cookie
-    else:
-        logging.warning("User cookie not provided. Access may be limited or fail.")
 
-    # --- Step 1: Get AID (Attempt from View API) ---
-    aid = None
+    aid, cid = None, None
+    subtitles_from_apis = [] # List of subtitle objects from various APIs
+
+    # --- Step 1: Get Video Info & Subtitles from View API ---
     try:
-        logging.info(f"Step 1: Fetching video info for AID via View API: {bvid}")
-        view_resp = requests.get("https://api.bilibili.com/x/web-interface/view", params={'bvid': bvid}, headers=headers, timeout=10)
+        logging.info(f"Step 1: Fetching video info via View API: {bvid}")
+        view_resp = requests.get(VIEW_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
         view_data = view_resp.json()
         if view_data.get('code') == 0:
-            aid = str(view_data.get('data', {}).get('aid'))
-            logging.info(f"Step 1: Found AID via View API: {aid}")
+            data = view_data.get('data', {})
+            aid = str(data.get('aid'))
+            cid = str(data.get('cid'))
+            view_subs = data.get('subtitle', {}).get('list', [])
+            if view_subs:
+                subtitles_from_apis.extend(view_subs)
+                logging.info(f"Step 1: Found {len(view_subs)} subtitles via View API.")
         else:
             logging.warning(f"Step 1: View API returned error {view_data.get('code')}: {view_data.get('message')}")
     except Exception as e:
-        logging.warning(f"Step 1: Error fetching AID via View API: {e}. Proceeding without AID.")
+        logging.warning(f"Step 1: Error fetching via View API: {e}")
 
+    # --- Step 2: Get CID from Pagelist (if View API failed to provide CID) ---
+    if not cid:
+        try:
+            logging.info(f"Step 2: Fetching CID from pagelist API for {bvid}")
+            page_resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
+            page_data = page_resp.json()
+            if page_data.get('code') == 0 and page_data.get('data'):
+                cid = str(page_data['data'][0]['cid'])
+                logging.info(f"Step 2: Found CID via pagelist: {cid}")
+        except Exception as e:
+            logging.error(f"Step 2: Error fetching pagelist: {e}")
 
-    # --- Step 2: Get CID (from pagelist API) ---
-    cid = None
-    try:
-        logging.info(f"Step 2: Fetching CID from pagelist API: {PAGELIST_API_URL}?bvid={bvid}")
-        pagelist_headers = headers.copy()
-        cid_back = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=pagelist_headers, timeout=10)
-        cid_back.raise_for_status()
-        cid_json = cid_back.json()
-        if cid_json.get('code') == 0 and cid_json.get('data') and len(cid_json['data']) > 0:
-            cid = cid_json['data'][0]['cid']
-            part_title = cid_json['data'][0]['part']
-            logging.info(f"Step 2: Found CID: {cid} for part: {part_title}")
-        else:
-            logging.error(f"Step 2: Failed to get CID from pagelist. Code: {cid_json.get('code')}, Message: {cid_json.get('message')}")
-            return json.dumps({"body":[]}) # Cannot proceed without CID
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Step 2: Error fetching pagelist: {e}")
+    if not cid:
+        logging.error("Could not obtain CID, cannot proceed with subtitle fetching.")
         return json.dumps({"body":[]})
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-         logging.error(f"Step 2: Error parsing pagelist response: {e}")
-         return json.dumps({"body":[]})
 
-
-    # --- Step 3: Get Subtitle List (using WBI API) ---
-    subtitle_url = None
+    # --- Step 3: Get Subtitles from Player WBI API ---
     try:
         logging.info("Step 3: Fetching subtitle list using WBI Player API...")
-        
         img_key, sub_key = getWbiKeys(headers)
+        wbi_params = {'cid': cid, 'bvid': bvid, 'isGaiaAvoided': 'false', 'web_location': '1315873'}
+        if aid: wbi_params['aid'] = aid
         
-        wbi_params = {
-            'cid': cid,
-            'bvid': bvid,
-            'isGaiaAvoided': 'false',
-            'web_location': '1315873',
-        }
-        if aid:
-             wbi_params['aid'] = aid
-
         if img_key and sub_key:
             wbi_params = encWbi(wbi_params, img_key, sub_key)
         else:
-            logging.warning("Failed to get WBI keys, proceeding without WBI signing (might fail)")
             wbi_params['wts'] = int(time.time())
 
         wbi_resp = requests.get(PLAYER_WBI_API_URL, params=wbi_params, headers=headers, timeout=15)
-        logging.info(f"Step 3: WBI API Status Code: {wbi_resp.status_code}")
-
         wbi_data = wbi_resp.json()
-        logging.debug(f"Step 3: WBI API Response Data: {json.dumps(wbi_data)}")
-
         if wbi_data.get('code') == 0:
-            subtitles = wbi_data.get('data', {}).get('subtitle', {}).get('subtitles', [])
-            if subtitles:
-                # --- Language Selection Logic ---
-                subtitle_map = {sub['lan']: sub for sub in subtitles if 'lan' in sub}
-                logging.info(f"Available subtitle languages: {list(subtitle_map.keys())}")
-
-                selected_subtitle = None
-                # 1. Try user-specified language
-                if lang_code and lang_code in subtitle_map:
-                    selected_subtitle = subtitle_map[lang_code]
-                    logging.info(f"Found user-specified language subtitle: {lang_code}")
-                # 2. If not found/specified, try Chinese as default
-                elif 'ai-zh' in subtitle_map:
-                    selected_subtitle = subtitle_map['ai-zh']
-                    logging.info("User language not found or specified. Defaulting to Chinese ('ai-zh').")
-                # 3. Fallback to the first available subtitle
-                else:
-                    selected_subtitle = subtitles[0]
-                    logging.warning("Neither user-specified language nor Chinese found. Falling back to first available.")
-
-                subtitle_url = selected_subtitle.get('subtitle_url')
-                lan_doc = selected_subtitle.get('lan_doc', 'Unknown Language')
-                if subtitle_url:
-                    if subtitle_url.startswith('//'):
-                        subtitle_url = "https:" + subtitle_url
-                    logging.info(f"Step 3: Selected subtitle URL ({lan_doc}): {subtitle_url}")
-                else:
-                    logging.warning("Step 3: Selected subtitle entry found but is missing 'subtitle_url'.")
-            else:
-                logging.warning("Step 3: WBI API successful but no subtitles listed in response.")
+            wbi_subs = wbi_data.get('data', {}).get('subtitle', {}).get('subtitles', [])
+            if wbi_subs:
+                subtitles_from_apis.extend(wbi_subs)
+                logging.info(f"Step 3: Found {len(wbi_subs)} subtitles via Player WBI API.")
         else:
-            logging.warning(f"Step 3: WBI API returned error code {wbi_data.get('code')}: {wbi_data.get('message', 'Unknown error')}")
-            if not wbi_resp.ok:
-                 wbi_resp.raise_for_status()
-
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Step 3: Error fetching subtitle list from WBI API: {e}")
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        logging.error(f"Step 3: Error parsing WBI API response: {e}")
+            logging.warning(f"Step 3: Player WBI API returned error {wbi_data.get('code')}")
     except Exception as e:
-        logging.error(f"Step 3: Unexpected error during WBI API call: {e}")
+        logging.warning(f"Step 3: Error fetching via Player WBI API: {e}")
 
-    # --- Step 4: Fetch Subtitle Content ---
+    # --- Step 4: Language Selection & Fetch Content ---
+    subtitle_url = None
+    if subtitles_from_apis:
+        # Deduplicate by lan and prefer entries with subtitle_url
+        subtitle_map = {}
+        for sub in subtitles_from_apis:
+            lan = sub.get('lan')
+            url = sub.get('subtitle_url')
+            if lan and url:
+                if url.startswith('//'): url = "https:" + url
+                # Prefer non-AI if multiple exist for same language?
+                # Actually B站 usually only has one per language code.
+                subtitle_map[lan] = url
+
+        logging.info(f"Collected subtitle languages: {list(subtitle_map.keys())}")
+
+        # Selection logic
+        selected_lan = None
+        if lang_code and lang_code in subtitle_map:
+            selected_lan = lang_code
+        elif 'ai-zh' in subtitle_map:
+            selected_lan = 'ai-zh'
+        elif 'zh-CN' in subtitle_map:
+            selected_lan = 'zh-CN'
+        elif 'zh-Hans' in subtitle_map:
+            selected_lan = 'zh-Hans'
+        elif subtitle_map:
+            selected_lan = list(subtitle_map.keys())[0]
+            logging.warning(f"Preferred language not found, falling back to: {selected_lan}")
+
+        if selected_lan:
+            subtitle_url = subtitle_map[selected_lan]
+            logging.info(f"Selected subtitle language: {selected_lan}")
+
     if subtitle_url:
         try:
-            logging.info(f"Step 4: Fetching subtitle content from: {subtitle_url}")
-            subtitle_resp = requests.get(subtitle_url, headers=headers, timeout=15)
-            subtitle_resp.raise_for_status()
-            subtitle_text = subtitle_resp.text
-            try:
-                parsed_subtitle = json.loads(subtitle_text)
-                if isinstance(parsed_subtitle, dict) and 'body' in parsed_subtitle:
-                    logging.info(f"Step 4: Successfully fetched and validated subtitle content (Length: {len(subtitle_text)}).")
-                    return subtitle_text # Return the raw JSON string
-                else:
-                    logging.error("Step 4: Fetched content is valid JSON but missing 'body' key.")
-                    return json.dumps({"body":[]})
-            except json.JSONDecodeError:
-                 logging.error("Step 4: Fetched content is not valid JSON.")
-                 return json.dumps({"body":[]})
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Step 4: Error fetching subtitle content: {e}")
-    else:
-        logging.warning("Step 4: No subtitle URL found in Step 3.")
+            logging.info(f"Fetching subtitle content from: {subtitle_url}")
+            resp = requests.get(subtitle_url, headers=headers, timeout=15)
+            if resp.ok and 'body' in resp.json():
+                return resp.text
+        except Exception as e:
+            logging.error(f"Error fetching subtitle content: {e}")
 
-    # --- Fallback: Return empty if no subtitle found/fetched ---
-    logging.info("Returning empty subtitle list.")
+    # --- Step 5: Ultimate Fallback - AI Summary API ---
+    logging.info("Step 5: No CC subtitles found, attempting AI Summary API...")
+    try:
+        img_key, sub_key = getWbiKeys(headers)
+        sum_params = {'cid': cid, 'bvid': bvid}
+        if aid: sum_params['aid'] = aid
+        
+        if img_key and sub_key:
+            sum_params = encWbi(sum_params, img_key, sub_key)
+        else:
+            sum_params['wts'] = int(time.time())
+
+        sum_resp = requests.get(SUMMARY_API_URL, params=sum_params, headers=headers, timeout=15)
+        sum_data = sum_resp.json()
+        if sum_data.get('code') == 0:
+            model_result = sum_data.get('data', {}).get('model_result', {})
+            ai_subs_list = model_result.get('subtitle', [])
+            if ai_subs_list and len(ai_subs_list) > 0:
+                part_subs = ai_subs_list[0].get('part_subtitle', [])
+                if part_subs:
+                    logging.info(f"Step 5: Found {len(part_subs)} AI transcript segments.")
+                    # Convert to standard CC format
+                    standard_body = []
+                    for item in part_subs:
+                        standard_body.append({
+                            'from': item.get('start_timestamp', 0),
+                            'to': item.get('end_timestamp', 0),
+                            'content': item.get('content', '')
+                        })
+                    return json.dumps({"body": standard_body}, ensure_ascii=False)
+        logging.warning("Step 5: AI Summary API did not return subtitles.")
+    except Exception as e:
+        logging.warning(f"Step 5: Error fetching via AI Summary API: {e}")
+
+    logging.info("No subtitles found across all sources.")
     return json.dumps({"body":[]})
 
 
