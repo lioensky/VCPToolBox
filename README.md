@@ -67,9 +67,9 @@ VCP (Variable & Command Protocol) 是一个超越传统 AI 交互模式的革命
 |:---:|:---:|
 | VCP 子应用群：Canvas + 论坛 + CLI | VCP 子应用群：分布式笔记 + VCP 多媒体播放器 |
 
-| ![示例5VChat界面+Tagmemo可视化](示例5VChat界面+Tagmemo可视化.png) |
-|:---:|
-| VChat 界面 + Tagmemo 可视化 |
+| ![示例5VChat界面+Tagmemo可视化](示例5VChat界面+Tagmemo可视化.png) | ![示例6VChat界面2+VCP高级渲染器](示例6VChat界面2+VCP高级渲染器.png) |
+|:---:|:---:|
+| VChat 界面 + Tagmemo 可视化 | VChat 界面 2 + VCP 高级渲染器 |
 
 ---
 
@@ -858,6 +858,10 @@ param2:「始」value2「末」
 ```
 
 #### 核心特性
+
+- **高级控制指令**：
+  - **`archery:「始」no_reply「末」` (异步射箭)**：指令发出后立即执行，但 AI 不会等待工具返回结果，而是直接继续后续对话。适用于耗时较长且不需要立即反馈的操作。
+  - **`ink:「始」mark_history「末」` (主动持久化)**：即使在全局 `ShowVCP=false` 的情况下，也会强制将该工具的执行结果格式化并注入到 Assistant 的回复中。这允许 Agent 自主决定哪些关键回调需要被持久化到后续对话历史中。
 
 - **参数格式**：使用 `key:「始」value「末」` 格式
 - **支持复杂数据类型**：支持多行文本、JSON 对象、代码块
