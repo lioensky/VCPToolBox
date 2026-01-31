@@ -49,6 +49,7 @@ class ToolCallParser {
     const args = {};
     let toolName = null;
     let isArchery = false;
+    let markHistory = false;
     let match;
 
     while ((match = paramRegex.exec(blockContent)) !== null) {
@@ -59,12 +60,14 @@ class ToolCallParser {
         toolName = trimmedValue;
       } else if (key === 'archery') {
         isArchery = trimmedValue === 'true' || trimmedValue === 'no_reply';
+      } else if (key === 'ink') {
+        markHistory = trimmedValue === 'mark_history';
       } else {
         args[key] = trimmedValue;
       }
     }
 
-    return toolName ? { name: toolName, args, archery: isArchery } : null;
+    return toolName ? { name: toolName, args, archery: isArchery, markHistory } : null;
   }
 
   /**

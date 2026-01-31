@@ -91,8 +91,9 @@ class NonStreamHandler {
                 type: 'text',
                 text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${result.content[0].text}`
               });
-              if (shouldShowVCP) {
-                const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, 'error', result.raw || result.error, abortController);
+              const forceThisOne = !shouldShowVCP && toolCall.markHistory;
+              if ((shouldShowVCP || forceThisOne) && (isError || forceThisOne)) {
+                const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
                 if (vcpText) conversationHistoryForClient.push(vcpText);
               }
             }
@@ -170,10 +171,13 @@ class NonStreamHandler {
         if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
         // VCP 信息展示
-        if (shouldShowVCP) {
-          for (let i = 0; i < normalCalls.length; i++) {
-            const result = toolResults[i];
-            const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, normalCalls[i].name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
+        for (let i = 0; i < normalCalls.length; i++) {
+          const toolCall = normalCalls[i];
+          const result = toolResults[i];
+          const forceThisOne = !shouldShowVCP && toolCall.markHistory;
+          
+          if (shouldShowVCP || forceThisOne) {
+            const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
             if (vcpText) conversationHistoryForClient.push(vcpText);
           }
         }

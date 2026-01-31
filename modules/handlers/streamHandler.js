@@ -234,8 +234,9 @@ class StreamHandler {
             });
           }
 
-          if (shouldShowVCP && !res.writableEnded && isError) {
-            vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', result.raw || result.error, abortController);
+          const forceThisOne = !shouldShowVCP && toolCall.markHistory;
+          if ((shouldShowVCP || forceThisOne) && !res.writableEnded && (isError || forceThisOne)) {
+            vcpInfoHandler.streamVcpInfo(res, originalBody.model, result.success ? 'success' : 'error', toolCall.name, result.raw || result.error, abortController);
           }
         } catch (e) {
           console.error(`[VCP Stream Loop Archery Error] ${toolCall.name}:`, e);
@@ -304,12 +305,13 @@ class StreamHandler {
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
       // VCP 信息展示
-      if (shouldShowVCP) {
-        for (let i = 0; i < normalCalls.length; i++) {
-          const result = toolResults[i];
-          if (!res.writableEnded && !res.destroyed) {
-            vcpInfoHandler.streamVcpInfo(res, originalBody.model, normalCalls[i].name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
-          }
+      for (let i = 0; i < normalCalls.length; i++) {
+        const toolCall = normalCalls[i];
+        const result = toolResults[i];
+        const forceThisOne = !shouldShowVCP && toolCall.markHistory;
+        
+        if ((shouldShowVCP || forceThisOne) && !res.writableEnded && !res.destroyed) {
+          vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
         }
       }
 

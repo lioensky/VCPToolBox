@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "ZImageGen",
+  "name": "ZImageGen2",
   "displayName": "Z-Image Base 文生图",
   "version": "1.1.0",
   "description": "通过 Hugging Face Spaces API 使用 Z-Image-Base 模型生成高质量图片。支持中英文提示词，28步推理，支持负向提示词和CFG调节。",
