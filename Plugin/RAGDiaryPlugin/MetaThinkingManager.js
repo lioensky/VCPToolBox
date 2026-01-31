@@ -9,11 +9,15 @@ class MetaThinkingManager {
         this.ragPlugin = ragPlugin;
         this.metaThinkingChains = { chains: {} };
         this.metaChainThemeVectors = {};
+        this._loadPromise = null;
     }
 
     async loadConfig() {
-        // --- 加载元思考链配置 ---
-        try {
+        if (this._loadPromise) return this._loadPromise;
+
+        this._loadPromise = (async () => {
+            // --- 加载元思考链配置 ---
+            try {
             const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
             const metaChainData = await fs.readFile(metaChainPath, 'utf-8');
             this.metaThinkingChains = JSON.parse(metaChainData);
@@ -55,7 +59,10 @@ class MetaThinkingManager {
             }
         } catch (error) {
             console.error('[MetaThinkingManager] 加载或构建元思考链主题向量时发生错误:', error);
-        }
+            }
+        })();
+
+        return this._loadPromise;
     }
 
     async _buildAndSaveMetaChainThemeCache(configHash, cachePath) {
@@ -98,13 +105,22 @@ class MetaThinkingManager {
      */
     async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
         
-        // 如果是自动模式，需要先决定使用哪个 chain
+        // 🌟 兜底：如果配置尚未加载，先执行加载
+        if (!this.metaThinkingChains.chains || Object.keys(this.metaThinkingChains.chains).length === 0) {
+            console.log(`[MetaThinkingManager] 检测到配置未就绪，正在触发兜底加载...`);
+            await this.loadConfig();
+        }
         let finalChainName = chainName;
         if (isAutoMode) {
             let bestChain = 'default';
             let maxSimilarity = -1;
 
-            for (const [themeName, themeVector] of Object.entries(this.metaChainThemeVectors)) {
+            const themeEntries = Object.entries(this.metaChainThemeVectors);
+            if (themeEntries.length === 0) {
+                console.log(`[MetaThinkingManager][Auto] 未加载任何主题向量，将使用默认主题。`);
+            }
+
+            for (const [themeName, themeVector] of themeEntries) {
                 const similarity = this.ragPlugin.cosineSimilarity(queryVector, themeVector);
                 if (similarity > maxSimilarity) {
                     maxSimilarity = similarity;
