@@ -41,30 +41,44 @@ const resolveRedirect = async (url) => {
         targetUrl = 'https://' + targetUrl;
     }
 
-    try {
-        const axiosConfig = {
-            maxRedirects: 0,
-            timeout: 10000,
-            validateStatus: (status) => status >= 200 && status < 400
-        };
+    // 递归解析，最多跳转 3 次
+    let currentUrl = targetUrl;
+    for (let i = 0; i < 3; i++) {
+        try {
+            const axiosConfig = {
+                maxRedirects: 0,
+                timeout: 10000,
+                validateStatus: (status) => status >= 200 && status < 400
+            };
 
-        if (PROXY) {
-            axiosConfig.httpsAgent = new HttpsProxyAgent(PROXY);
-            axiosConfig.proxy = false;
-        }
+            if (PROXY) {
+                axiosConfig.httpsAgent = new HttpsProxyAgent(PROXY);
+                axiosConfig.proxy = false;
+            }
 
-        const response = await axios.get(targetUrl, axiosConfig);
-        if (response.status >= 300 && response.status < 400 && response.headers.location) {
-            return response.headers.location;
+            const response = await axios.get(currentUrl, axiosConfig);
+            if (response.status >= 300 && response.status < 400 && response.headers.location) {
+                currentUrl = response.headers.location;
+                // 如果重定向到非 Vertex 链接，说明解析完成
+                if (!currentUrl.includes('vertexaisearch.cloud.google.com/grounding-api-redirect')) {
+                    return currentUrl;
+                }
+                continue;
+            }
+            return currentUrl;
+        } catch (error) {
+            if (error.response && error.response.status >= 300 && error.response.status < 400 && error.response.headers.location) {
+                currentUrl = error.response.headers.location;
+                if (!currentUrl.includes('vertexaisearch.cloud.google.com/grounding-api-redirect')) {
+                    return currentUrl;
+                }
+                continue;
+            }
+            log(`解析重定向失败 (${currentUrl}): ${error.message}`);
+            return currentUrl;
         }
-        return url;
-    } catch (error) {
-        if (error.response && error.response.status >= 300 && error.response.status < 400 && error.response.headers.location) {
-            return error.response.headers.location;
-        }
-        log(`解析重定向失败 (${url}): ${error.message}`);
-        return url;
     }
+    return currentUrl;
 };
 
 const callSearchModel = async (topic, keyword, showURL = false) => {
@@ -122,7 +136,7 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
                 const metadata = response.data.choices[0].message.grounding_metadata || response.data.choices[0].grounding_metadata;
                 
                 // 1. 提取正文中所有可能的 Vertex 重定向 URL (包括没有协议头的)
-                const vertexUrlRegex = /(?:https?:\/\/)?vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[a-zA-Z0-9_-]+/g;
+                const vertexUrlRegex = /(?:https?:\/\/)?vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[a-zA-Z0-9_=-]+/g;
                 const foundUrls = content.match(vertexUrlRegex) || [];
                 
                 // 2. 提取 grounding_metadata 中的 URL
