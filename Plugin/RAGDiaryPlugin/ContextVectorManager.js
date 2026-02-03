@@ -17,7 +17,7 @@ class ContextVectorManager {
         // 顺序索引：用于按顺序获取向量
         this.historyAssistantVectors = [];
         this.historyUserVectors = [];
-        
+
         // 模糊匹配阈值 (0.0 ~ 1.0)，用于判断两个文本是否足够相似以复用向量，因为是用于提取特征向量所以模糊程度可以大一点
         this.fuzzyThreshold = 0.85;
         this.decayRate = 0.75; // 🌟 衰减率加快 (0.85 -> 0.75)
@@ -109,7 +109,7 @@ class ContextVectorManager {
             const content = typeof msg.content === 'string'
                 ? msg.content
                 : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
-            
+
             if (!content || content.length < 2) return;
 
             const normalized = this._normalize(content);
@@ -124,7 +124,7 @@ class ContextVectorManager {
             // 2. 模糊匹配 (处理微小编辑)
             else {
                 vector = this._findFuzzyMatch(normalized);
-                
+
                 // 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
                 if (!vector) {
                     vector = this.plugin._getEmbeddingFromCacheOnly(content);
@@ -285,6 +285,159 @@ class ContextVectorManager {
             this.vectorMap.clear();
         }
     }
+
+    /**
+     * 🌟 Tagmemo V4: 基于语义向量的上下文分段 (Semantic Segmentation)
+     * 将连续的、高相似度的消息归并为一个段落 (Segment/Topic)
+     * 
+     * @param {Array} messages - 消息列表 (通常是 history)
+     * @param {number} similarityThreshold - 分段阈值，低于此值则断开 (默认 0.70)
+     * @returns {Array<{vector: Float32Array, text: string, role: string, range: [number, number]}>}
+     */
+    segmentContext(messages, similarityThreshold = 0.70) {
+        // 1. 获取所有有效向量并按顺序排列
+        // 我们需要合并 assistant 和 user 的向量，按 index 排序
+        const allEntries = [];
+        this.vectorMap.forEach((entry, hash) => {
+            // 注意：vectorMap 中存储的是无序的 hash 映射，我们需要找到对应的 index
+            // 但 updateContext 中构建的 historyAssistantVectors 丢失了原始 index
+            // 因此我们需要重新扫描一次 messages 来对齐向量
+            // 优化：直接在 updateContext 时存储带 index 的列表会更好，但为了少改动，这里重新扫描
+        });
+
+        // 由于 vectorMap hash 丢失了 index，我们利用 updateContext 中的逻辑重新构建有序列表
+        // 或者直接修改 updateContext 让 vectorMap 存 index? 不行，hash是去重的。
+        // 最好的办法是重新遍历 messages，查 vectorMap
+
+        const sequence = [];
+        messages.forEach((msg, index) => {
+            // 跳过系统消息和无关消息
+            if (msg.role === 'system') return;
+
+            const content = typeof msg.content === 'string'
+                ? msg.content
+                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+
+            if (!content || content.length < 2) return;
+
+            const normalized = this._normalize(content);
+            const hash = this._generateHash(normalized);
+
+            // 尝试精确匹配
+            let entry = this.vectorMap.get(hash);
+
+            // 尝试模糊匹配 (如果精确匹配失败)
+            if (!entry) {
+                // 这里为了性能，只做精确查找。模糊查找开销较大且 updateContext 已经做过了并存入 vectorMap
+                // 理论上如果 updateContext 刚跑过，vectorMap 里应该有（或是 fuzzy 后的 match）
+                // 我们再次计算 fuzzy 可能会很慢。
+                // 妥协：如果没有 vector，跳过
+            }
+
+            if (entry && entry.vector) {
+                sequence.push({
+                    index,
+                    role: msg.role,
+                    text: content,
+                    vector: entry.vector
+                });
+            }
+        });
+
+        if (sequence.length === 0) return [];
+
+        // 2. 执行分段
+        const segments = [];
+        let currentSegment = {
+            vectors: [sequence[0].vector],
+            texts: [sequence[0].text],
+            startIndex: sequence[0].index,
+            endIndex: sequence[0].index,
+            roles: [sequence[0].role]
+        };
+
+        for (let i = 1; i < sequence.length; i++) {
+            const curr = sequence[i];
+            const prev = sequence[i - 1];
+
+            // 计算与上一条的相似度
+            const sim = this._cosineSimilarity(prev.vector, curr.vector);
+
+            // 角色变化也可以作为分段的弱信号，但在这里我们主要看语义
+            // 如果相似度高，即使角色不同也可以合并（例如连续的问答对，讨论同一个话题）
+            // 如果相似度低，即使角色相同也应该断开
+
+            if (sim >= similarityThreshold) {
+                // 合并
+                currentSegment.vectors.push(curr.vector);
+                currentSegment.texts.push(curr.text);
+                currentSegment.endIndex = curr.index;
+                currentSegment.roles.push(curr.role);
+            } else {
+                // 断开，保存旧段
+                segments.push(this._finalizeSegment(currentSegment));
+                // 开启新段
+                currentSegment = {
+                    vectors: [curr.vector],
+                    texts: [curr.text],
+                    startIndex: curr.index,
+                    endIndex: curr.index,
+                    roles: [curr.role]
+                };
+            }
+        }
+        // 保存最后一个段
+        segments.push(this._finalizeSegment(currentSegment));
+
+        return segments;
+    }
+
+    _finalizeSegment(seg) {
+        // 计算平均向量
+        const count = seg.vectors.length;
+        const dim = seg.vectors[0].length;
+        const avgVec = new Float32Array(dim);
+
+        for (const v of seg.vectors) {
+            for (let d = 0; d < dim; d++) {
+                avgVec[d] += v[d];
+            }
+        }
+
+        // 归一化
+        let mag = 0;
+        for (let d = 0; d < dim; d++) {
+            avgVec[d] /= count;
+            mag += avgVec[d] * avgVec[d];
+        }
+        mag = Math.sqrt(mag);
+        if (mag > 1e-9) {
+            for (let d = 0; d < dim; d++) avgVec[d] /= mag;
+        }
+
+        return {
+            vector: avgVec,
+            // 组合文本用于展示或日志
+            text: seg.texts.join('\n'),
+            roles: [...new Set(seg.roles)], // 去重角色
+            range: [seg.startIndex, seg.endIndex],
+            count: count
+        };
+    }
+
+    _cosineSimilarity(vecA, vecB) {
+        let dot = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < vecA.length; i++) {
+            dot += vecA[i] * vecB[i];
+            normA += vecA[i] * vecA[i];
+            normB += vecB[i] * vecB[i];
+        }
+        if (normA === 0 || normB === 0) return 0;
+        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
+
 }
 
 module.exports = ContextVectorManager;

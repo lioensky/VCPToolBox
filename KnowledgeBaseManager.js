@@ -7,10 +7,11 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const chokidar = require('chokidar');
-const { chunkText } = require('./TextChunker'); 
+const { chunkText } = require('./TextChunker');
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');
 const EPAModule = require('./EPAModule');
 const ResidualPyramid = require('./ResidualPyramid');
+const ResultDeduplicator = require('./ResultDeduplicator'); // ✅ Tagmemo v4 requirement
 
 // 尝试加载 Rust Vexus 引擎
 let VexusIndex = null;
@@ -33,12 +34,12 @@ class KnowledgeBaseManager {
             model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
             dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
-            
+
             batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 2000,
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
-            
+
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
             ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
@@ -55,7 +56,7 @@ class KnowledgeBaseManager {
         };
 
         this.db = null;
-        this.diaryIndices = new Map(); 
+        this.diaryIndices = new Map();
         this.tagIndex = null;
         this.watcher = null;
         this.initialized = false;
@@ -67,6 +68,7 @@ class KnowledgeBaseManager {
         this.tagCooccurrenceMatrix = null; // 优化1：Tag共现矩阵
         this.epa = null;
         this.residualPyramid = null;
+        this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
     }
@@ -83,7 +85,7 @@ class KnowledgeBaseManager {
         this.db.pragma('synchronous = NORMAL');
 
         this._initSchema();
-        
+
         // 1. 初始化全局 Tag 索引 (异步恢复)
         const tagIdxPath = path.join(this.config.storePath, 'index_global_tags.usearch');
         const tagCapacity = 50000;
@@ -101,10 +103,10 @@ class KnowledgeBaseManager {
             this.tagIndex = new VexusIndex(this.config.dimension, tagCapacity);
             this._recoverTagsAsync(); // Fire-and-forget
         }
-        
+
         // 2. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
         this._hydrateDiaryNameCacheSync();
-        
+
         // 优化1：启动时构建共现矩阵
         this._buildCooccurrenceMatrix();
 
@@ -114,8 +116,13 @@ class KnowledgeBaseManager {
             vexusIndex: this.tagIndex
         });
         await this.epa.initialize();
-        
+
         this.residualPyramid = new ResidualPyramid(this.tagIndex, this.db, {
+            dimension: this.config.dimension
+        });
+
+        // ✅ Tagmemo v4: 初始化结果去重器
+        this.resultDeduplicator = new ResultDeduplicator(this.db, {
             dimension: this.config.dimension
         });
 
@@ -148,7 +155,7 @@ class KnowledgeBaseManager {
     _startRagParamsWatcher() {
         const paramsPath = path.join(__dirname, 'rag_params.json');
         if (this.ragParamsWatcher) return;
-        
+
         this.ragParamsWatcher = chokidar.watch(paramsPath);
         this.ragParamsWatcher.on('change', async () => {
             console.log('[KnowledgeBase] 🔄 检测到 rag_params.json 变更，正在重新加载...');
@@ -307,13 +314,13 @@ class KnowledgeBaseManager {
 
     async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
         const idx = await this._getOrLoadDiaryIndex(diaryName);
-        
+
         // 如果索引为空，直接返回
         // 注意：vexus-lite-js 可能没有 size() 方法，用 catch 捕获
         try {
             const stats = idx.stats ? idx.stats() : { totalVectors: 1 };
             if (stats.totalVectors === 0) return [];
-        } catch(e) {}
+        } catch (e) { }
 
         // 🛠️ 修复 1: 安全的 Buffer 转换
         let searchBuffer;
@@ -329,7 +336,7 @@ class KnowledgeBaseManager {
             } else {
                 searchVecFloat = new Float32Array(vector);
             }
-            
+
             // ⚠️ 维度检查
             if (searchVecFloat.length !== this.config.dimension) {
                 console.error(`[KnowledgeBase] Dimension mismatch! Expected ${this.config.dimension}, got ${searchVecFloat.length}`);
@@ -389,11 +396,11 @@ class KnowledgeBaseManager {
         } else {
             searchVecFloat = new Float32Array(vector);
         }
-        
+
         const searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
 
         const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all();
-        
+
         const searchPromises = allDiaries.map(async ({ diary_name }) => {
             try {
                 const idx = await this._getOrLoadDiaryIndex(diary_name);
@@ -408,9 +415,9 @@ class KnowledgeBaseManager {
 
         const resultsPerIndex = await Promise.all(searchPromises);
         let allResults = resultsPerIndex.flat();
-        
+
         allResults.sort((a, b) => b.score - a.score);
-        
+
         const topK = allResults.slice(0, k);
 
         const hydrate = this.db.prepare(`
@@ -456,12 +463,12 @@ class KnowledgeBaseManager {
             const logicDepth = epaResult.logicDepth;        // 0~1, 高=逻辑聚焦
             const entropyPenalty = epaResult.entropy;       // 0~1, 高=信息散乱
             const resonanceBoost = Math.log(1 + resonance.resonance);
-            
+
             // 核心公式：结合 EPA 和残差特征
             const actRange = config.activationMultiplier || [0.5, 1.5];
             const activationMultiplier = actRange[0] + features.tagMemoActivation * (actRange[1] - actRange[0]);
             const dynamicBoostFactor = (logicDepth * (1 + resonanceBoost) / (1 + entropyPenalty * 0.5)) * activationMultiplier;
-            
+
             const boostRange = config.dynamicBoostRange || [0.3, 2.0];
             const effectiveTagBoost = baseTagBoost * Math.max(boostRange[0], Math.min(boostRange[1], dynamicBoostFactor));
 
@@ -471,7 +478,7 @@ class KnowledgeBaseManager {
             const coreMetric = (logicDepth * 0.5) + ((1 - features.coverage) * 0.5);
             const coreRange = config.coreBoostRange || [1.20, 1.40];
             const dynamicCoreBoostFactor = coreRange[0] + (coreMetric * (coreRange[1] - coreRange[0]));
-            
+
             if (debug) {
                 console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
                 console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
@@ -484,17 +491,17 @@ class KnowledgeBaseManager {
             // 安全处理 coreTags，过滤非字符串
             const safeCoreTags = Array.isArray(coreTags) ? coreTags.filter(t => typeof t === 'string') : [];
             const coreTagSet = new Set(safeCoreTags.map(t => t.toLowerCase()));
-            
+
             // 🛡️ 防御性检查：确保 pyramid.levels 存在且为数组
             const levels = Array.isArray(pyramid.levels) ? pyramid.levels : [];
 
             levels.forEach(level => {
                 // 🛡️ 防御性检查：确保 level.tags 存在且为数组
                 const tags = Array.isArray(level.tags) ? level.tags : [];
-                
+
                 tags.forEach(t => {
                     if (!t || seenTagIds.has(t.id)) return;
-                    
+
                     // 🌟 核心 Tag 增强逻辑 (Spotlight)
                     // 安全访问 t.name
                     const tagName = t.name ? t.name.toLowerCase() : '';
@@ -512,7 +519,7 @@ class KnowledgeBaseManager {
                         const tName = t.name || '';
                         const isTechnicalNoise = !/[\u4e00-\u9fa5]/.test(tName) && /^[A-Za-z0-9\-_.\s]+$/.test(tName) && tName.length > 3;
                         const isTechnicalWorld = queryWorld !== 'Unknown' && /^[A-Za-z0-9\-_.]+$/.test(queryWorld);
-                        
+
                         if (isTechnicalNoise && !isTechnicalWorld) {
                             // 🌟 阶梯式语言补偿：不再一刀切
                             // 如果是政治/社会世界观，减轻对英文实体的压制（可能是 Trump, Musk 等重要实体）
@@ -530,7 +537,7 @@ class KnowledgeBaseManager {
                     // 简单实现：如果 Tag 本身有向量，检查其与查询世界的正交性
                     // 这里暂用 layerDecay 代替复杂的实时投影以保证性能
                     const layerDecay = Math.pow(0.7, level.level);
-                    
+
                     allTags.push({
                         ...t,
                         adjustedWeight: (t.contribution || t.weight || 0) * layerDecay * langPenalty * coreBoost,
@@ -552,7 +559,7 @@ class KnowledgeBaseManager {
                         const sortedRelated = Array.from(related.entries())
                             .sort((a, b) => b[1] - a[1])
                             .slice(0, 4);
-                            
+
                         sortedRelated.forEach(([relId, weight]) => {
                             if (!seenTagIds.has(relId)) {
                                 // 仅记录 ID，稍后统一批量查询
@@ -573,12 +580,12 @@ class KnowledgeBaseManager {
                 const missingCoreTags = Array.from(coreTagSet).filter(ct =>
                     !allTags.some(at => at.name && at.name.toLowerCase() === ct)
                 );
-                
+
                 if (missingCoreTags.length > 0) {
                     try {
                         const placeholders = missingCoreTags.map(() => '?').join(',');
                         const rows = this.db.prepare(`SELECT id, name, vector FROM tags WHERE name IN (${placeholders})`).all(...missingCoreTags);
-                        
+
                         // 获取当前 pyramid 的最大权重作为基准
                         const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / 1.33)) : 1.0;
 
@@ -614,18 +621,18 @@ class KnowledgeBaseManager {
             // 目的：消除冗余标签（如“委内瑞拉局势”与“委内瑞拉危机”），为多样性腾出空间
             const deduplicatedTags = [];
             const sortedTags = [...allTags].sort((a, b) => b.adjustedWeight - a.adjustedWeight);
-            
+
             for (const tag of sortedTags) {
                 const data = tagDataMap.get(tag.id);
                 if (!data || !data.vector) continue;
-                
+
                 const vec = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                 let isRedundant = false;
-                
+
                 for (const existing of deduplicatedTags) {
                     const existingData = tagDataMap.get(existing.id);
                     const existingVec = new Float32Array(existingData.vector.buffer, existingData.vector.byteOffset, dim);
-                    
+
                     // 计算余弦相似度
                     let dot = 0, normA = 0, normB = 0;
                     for (let d = 0; d < dim; d++) {
@@ -634,7 +641,7 @@ class KnowledgeBaseManager {
                         normB += existingVec[d] * existingVec[d];
                     }
                     const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
-                    
+
                     const dedupThreshold = config.deduplicationThreshold ?? 0.88;
                     if (similarity > dedupThreshold) {
                         isRedundant = true;
@@ -644,7 +651,7 @@ class KnowledgeBaseManager {
                         break;
                     }
                 }
-                
+
                 if (!isRedundant) {
                     if (!tag.name) tag.name = data.name; // 补全名称
                     deduplicatedTags.push(tag);
@@ -654,7 +661,7 @@ class KnowledgeBaseManager {
             // [6] 构建上下文向量
             const contextVec = new Float32Array(dim);
             let totalWeight = 0;
-            
+
             for (const t of deduplicatedTags) {
                 const data = tagDataMap.get(t.id);
                 if (data && data.vector) {
@@ -684,7 +691,7 @@ class KnowledgeBaseManager {
                 fused[d] = (1 - effectiveTagBoost) * originalFloat32[d] + effectiveTagBoost * contextVec[d];
                 fusedMag += fused[d] * fused[d];
             }
-            
+
             fusedMag = Math.sqrt(fusedMag);
             if (fusedMag > 1e-9) for (let d = 0; d < dim; d++) fused[d] /= fusedMag;
 
@@ -752,20 +759,31 @@ class KnowledgeBaseManager {
             dominantAxes: projection.dominantAxes
         };
     }
- 
+
+    /**
+     * 🌟 Tagmemo V4: 对结果集进行智能去重 (SVD + Residual)
+     * @param {Array} candidates - 候选结果数组
+     * @param {Float32Array|Array} queryVector - 查询向量
+     * @returns {Promise<Array>} 去重后的结果
+     */
+    async deduplicateResults(candidates, queryVector) {
+        if (!this.resultDeduplicator) return candidates;
+        return await this.resultDeduplicator.deduplicate(candidates, queryVector);
+    }
+
     // =========================================================================
     // 兼容性 API (修复版)
     // =========================================================================
- 
+
     // 🛠️ 修复 3: 同步回退 + 缓存预热
     async getDiaryNameVector(diaryName) {
         if (!diaryName) return null;
-        
+
         // 1. 查内存缓存
         if (this.diaryNameVectorCache.has(diaryName)) {
             return this.diaryNameVectorCache.get(diaryName);
         }
-        
+
         // 2. 查数据库 (同步)
         try {
             const row = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?").get(`diary_name:${diaryName}`);
@@ -782,7 +800,7 @@ class KnowledgeBaseManager {
         console.warn(`[KnowledgeBase] Cache MISS for diary name vector: "${diaryName}". Fetching now...`);
         return await this._fetchAndCacheDiaryNameVector(diaryName);
     }
-    
+
     // 强制同步预热缓存
     _hydrateDiaryNameCacheSync() {
         console.log('[KnowledgeBase] Hydrating diary name vectors (Sync)...');
@@ -815,7 +833,7 @@ class KnowledgeBaseManager {
         }
         return null; // 失败时返回 null
     }
-    
+
     // 兼容性 API: getVectorByText
     async getVectorByText(diaryName, text) {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
@@ -831,41 +849,41 @@ class KnowledgeBaseManager {
         // 兼容旧接口
         let queryVec;
         if (typeof input === 'string') {
-             try {
+            try {
                 const [vec] = await getEmbeddingsBatch([input], {
                     apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model
                 });
                 queryVec = vec;
-            } catch(e) { return []; }
+            } catch (e) { return []; }
         } else {
             queryVec = input;
         }
-        
+
         if (!queryVec) return [];
 
         try {
-             const searchVecFloat = new Float32Array(queryVec);
-             const searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
-             const results = this.tagIndex.search(searchBuffer, k);
-             
-             // 需要 hydrate tag 名称
-             const hydrate = this.db.prepare("SELECT name FROM tags WHERE id = ?");
-             return results.map(r => {
-                 const row = hydrate.get(r.id);
-                 return row ? { tag: row.name, score: r.score } : null;
-             }).filter(Boolean);
+            const searchVecFloat = new Float32Array(queryVec);
+            const searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
+            const results = this.tagIndex.search(searchBuffer, k);
+
+            // 需要 hydrate tag 名称
+            const hydrate = this.db.prepare("SELECT name FROM tags WHERE id = ?");
+            return results.map(r => {
+                const row = hydrate.get(r.id);
+                return row ? { tag: row.name, score: r.score } : null;
+            }).filter(Boolean);
         } catch (e) {
             return [];
         }
     }
 
     _startWatcher() {
-        if(!this.watcher) {
+        if (!this.watcher) {
             const handleFile = (filePath) => {
                 const relPath = path.relative(this.config.rootPath, filePath);
                 // 提取第一级目录作为日记本名称
                 const parts = relPath.split(path.sep);
-                const diaryName = parts.length > 1 ? parts[0] : 'Root'; 
+                const diaryName = parts.length > 1 ? parts[0] : 'Root';
 
                 if (this.config.ignoreFolders.includes(diaryName)) return;
                 const fileName = path.basename(relPath);
@@ -891,15 +909,15 @@ class KnowledgeBaseManager {
     }
 
     async _flushBatch() {
-         if (this.isProcessing || this.pendingFiles.size === 0) return;
-         this.isProcessing = true;
-         const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
-         batchFiles.forEach(f => this.pendingFiles.delete(f));
-         if (this.batchTimer) clearTimeout(this.batchTimer);
+        if (this.isProcessing || this.pendingFiles.size === 0) return;
+        this.isProcessing = true;
+        const batchFiles = Array.from(this.pendingFiles).slice(0, this.config.maxBatchSize);
+        batchFiles.forEach(f => this.pendingFiles.delete(f));
+        if (this.batchTimer) clearTimeout(this.batchTimer);
 
-         console.log(`[KnowledgeBase] 🚌 Processing ${batchFiles.length} files...`);
+        console.log(`[KnowledgeBase] 🚌 Processing ${batchFiles.length} files...`);
 
-         try {
+        try {
             // 1. 解析文件并按日记本分组
             const docsByDiary = new Map(); // Map<DiaryName, Array<Doc>>
             const checkFile = this.db.prepare('SELECT checksum, mtime, size FROM files WHERE path = ?');
@@ -916,7 +934,7 @@ class KnowledgeBaseManager {
 
                     const content = await fs.readFile(filePath, 'utf-8');
                     const checksum = crypto.createHash('md5').update(content).digest('hex');
-                    
+
                     if (row && row.checksum === checksum) {
                         this.db.prepare('UPDATE files SET mtime = ?, size = ? WHERE path = ?').run(stats.mtimeMs, stats.size, relPath);
                         return;
@@ -934,13 +952,13 @@ class KnowledgeBaseManager {
             if (docsByDiary.size === 0) { this.isProcessing = false; return; }
 
             // 2. 收集所有文本进行 Embedding
-            const allChunksWithMeta = []; 
+            const allChunksWithMeta = [];
             const uniqueTags = new Set();
 
             for (const [dName, docs] of docsByDiary) {
                 docs.forEach((doc, dIdx) => {
                     const validChunks = doc.chunks.map(c => this._prepareTextForEmbedding(c)).filter(c => c !== '[EMPTY_CONTENT]');
-                    doc.chunks = validChunks; 
+                    doc.chunks = validChunks;
                     validChunks.forEach((txt, cIdx) => {
                         allChunksWithMeta.push({ text: txt, diaryName: dName, doc: doc, chunkIdx: cIdx });
                     });
@@ -964,7 +982,7 @@ class KnowledgeBaseManager {
             const newTags = Array.from(newTagsSet);
             // 3. Embedding API Calls
             const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
-            
+
             let chunkVectors = [];
             if (allChunksWithMeta.length > 0) {
                 const texts = allChunksWithMeta.map(i => i.text);
@@ -1014,7 +1032,7 @@ class KnowledgeBaseManager {
 
                 for (const [dName, docs] of docsByDiary) {
                     if (!updates.has(dName)) updates.set(dName, []);
-                    
+
                     docs.forEach(doc => {
                         let fileId;
                         const fRow = getFile.get(doc.relPath);
@@ -1022,7 +1040,7 @@ class KnowledgeBaseManager {
 
                         if (fRow) {
                             fileId = fRow.id;
-                            
+
                             // 💡 核心修复：在删除数据库记录前，先收集旧 chunk ID 用于后续的索引清理
                             const oldChunkIds = getOldChunkIds.all(fileId).map(c => c.id);
                             if (oldChunkIds.length > 0) {
@@ -1089,7 +1107,7 @@ class KnowledgeBaseManager {
             // 🛠️ 修复：针对 Diary Index 的安全写入
             for (const [dName, chunks] of updates) {
                 const idx = await this._getOrLoadDiaryIndex(dName);
-                
+
                 chunks.forEach(u => {
                     try {
                         // 尝试直接添加
@@ -1111,7 +1129,7 @@ class KnowledgeBaseManager {
                         }
                     }
                 });
-                
+
                 this._scheduleIndexSave(dName);
             }
 
@@ -1120,38 +1138,38 @@ class KnowledgeBaseManager {
             // 优化1：数据更新后，异步重建共现矩阵
             setImmediate(() => this._buildCooccurrenceMatrix());
 
-         } catch (e) {
-             console.error('[KnowledgeBase] ❌ Batch processing failed catastrophically.');
-             console.error('Error Details:', e);
-             if (e.stack) {
-                 console.error('Stack Trace:', e.stack);
-             }
-         }
-         finally {
-             this.isProcessing = false;
-             if (this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
-         }
+        } catch (e) {
+            console.error('[KnowledgeBase] ❌ Batch processing failed catastrophically.');
+            console.error('Error Details:', e);
+            if (e.stack) {
+                console.error('Stack Trace:', e.stack);
+            }
+        }
+        finally {
+            this.isProcessing = false;
+            if (this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
+        }
     }
-    
+
     _prepareTextForEmbedding(text) {
         const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
         // 1. 移除表情符号, 2. 合并水平空格, 3. 移除换行符周围的空格, 4. 合并多个换行符, 5. 清理首尾
         let cleaned = text.replace(decorativeEmojis, ' ')
-                          .replace(/[ \t]+/g, ' ')
-                          .replace(/ *\n */g, '\n')
-                          .replace(/\n{2,}/g, '\n')
-                          .trim();
+            .replace(/[ \t]+/g, ' ')
+            .replace(/ *\n */g, '\n')
+            .replace(/\n{2,}/g, '\n')
+            .trim();
         return cleaned.length === 0 ? '[EMPTY_CONTENT]' : cleaned;
     }
 
     async _handleDelete(filePath) {
-         const relPath = path.relative(this.config.rootPath, filePath);
-         try {
+        const relPath = path.relative(this.config.rootPath, filePath);
+        try {
             const row = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?').get(relPath);
             if (!row) return;
             const chunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(row.id);
             this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
-            
+
             const idx = await this._getOrLoadDiaryIndex(row.diary_name);
             if (idx && idx.remove) {
                 chunkIds.forEach(c => idx.remove(c.id));
@@ -1202,7 +1220,7 @@ class KnowledgeBaseManager {
             let cleaned = t.replace(/[。.]+$/g, '').trim();
             return this._prepareTextForEmbedding(cleaned);
         }).filter(t => t !== '[EMPTY_CONTENT]');
-        
+
         if (this.config.tagBlacklistSuper.length > 0) {
             const superRegex = new RegExp(this.config.tagBlacklistSuper.join('|'), 'g');
             tags = tags.map(t => t.replace(superRegex, '').trim());
@@ -1210,7 +1228,7 @@ class KnowledgeBaseManager {
         tags = tags.filter(t => !this.config.tagBlacklist.has(t) && t.length > 0);
         return [...new Set(tags)];
     }
-    
+
     // 优化1：新增方法，用于构建和缓存Tag共现矩阵
     _buildCooccurrenceMatrix() {
         console.log('[KnowledgeBase] 🧠 Building tag co-occurrence matrix...');
@@ -1221,12 +1239,12 @@ class KnowledgeBaseManager {
                 JOIN file_tags ft2 ON ft1.file_id = ft2.file_id AND ft1.tag_id < ft2.tag_id
                 GROUP BY ft1.tag_id, ft2.tag_id
             `);
-            
+
             const matrix = new Map();
             for (const row of stmt.iterate()) {
                 if (!matrix.has(row.tag1)) matrix.set(row.tag1, new Map());
                 if (!matrix.has(row.tag2)) matrix.set(row.tag2, new Map());
-                
+
                 matrix.get(row.tag1).set(row.tag2, row.weight);
                 matrix.get(row.tag2).set(row.tag1, row.weight); // 对称填充
             }
