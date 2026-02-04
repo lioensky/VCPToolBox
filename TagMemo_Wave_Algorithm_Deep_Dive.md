@@ -1,7 +1,8 @@
 # TagMemo “浪潮”算法 (V4 alpha 内测中) 深度技术文档
 
 ## 1. 算法概述
-TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RAG（检索增强生成）的核心优化方案。不同于传统的线性向量检索，浪潮算法引入了物理学中的**能量分解**与**引力坍缩**概念，通过对用户意图进行多维度的语义重塑，实现“原子级”的精准记忆召回。
+TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RAG（检索增强生成）的核心优化方案。
+V4 版本引入了**语义分段 (Semantic Segmentation)**、**霰弹枪查询 (Shotgun Query)** 和 **SVD智能去重 (Latent Topic Deduplication)**，进一步解决了长上下文中的"语义稀释"问题，实现了对复杂对话流的多点精准召回。
 
 ## 2. 核心哲学：语义引力与向量重塑
 在浪潮算法的视角下，向量空间并非平坦的，而是充满了语义引力。
@@ -30,9 +31,14 @@ TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RA
 
 ### 3.4 偏振语义舵 (Polarization Semantic Rudder, PSR)
 [`RAGDiaryPlugin.js`](Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js) 中的核心工程化函数。
-*   **犹豫度检测 (Hesitation Detection)**：利用 NLP 解析识别输入输出中的转折与摇摆成分（如“虽然...但是...”、“是这样...但如果...”）。
-*   **动态偏振算法 (Dynamic Polarization)**：通过高级分段器与分段向量算法，物理动态化语义向量在投影上的摆动程度，量化语义的“犹豫程度”。
-*   **辩证对冲 (Dialectical Hedging)**：根据偏振量化值，在召回阶段引入“同类知识”的“负向对冲知识/日记”，构建辩证认知。
+*   **犹豫度检测 (Hesitation Detection)**：利用 NLP 解析识别输入输出中的转折与摇摆成分。
+*   **动态偏振算法 (Dynamic Polarization)**：物理动态化语义向量在投影上的摆动程度。
+*   **辩证对冲**：在召回阶段引入“同类知识”的“负向对冲知识”，构建辩证认知。
+
+### 3.5 结果去重器 (ResultDeduplicator)
+[`ResultDeduplicator.js`](ResultDeduplicator.js) 是 V4 新增的"智能过滤器"。
+*   **SVD 主题建模**：对"霰弹枪"检索回来的海量结果进行 SVD 分解，识别出本次检索的 n 个潜在主题 (Latent Topics)。
+*   **残差选择 (Residual Selection)**：使用 Gram-Schmidt 正交化，迭代选择能解释"未覆盖主题能量"的最佳结果。该机制确保了检索结果的多样性，既能覆盖主要意图，又能保留那些微弱但独特的重要信息 (Weak Links)，同时彻底消除语义重复的冗余条目。
 
 ## 4. 详细工作流
 
@@ -40,13 +46,10 @@ TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RA
 1.  **净化处理**：移除 HTML标签、json结构化转md、Emoji 及工具调用标记（Tool Markers），消除技术噪音。
 2.  **EPA 投影**：计算原始向量的逻辑深度和共振值，确定初始语义坐标。
 
-### 阶段二：分解 (Decomposition)
-1.  **首轮感应**：使用融合向量投射Tag向量海，获取最强匹配标签(CoreTag)。
-2.  **金字塔迭代**：
-    *   将向量投影到标签空间。
-    *   计算残差向量。
-    *   使用残差向量进行下一轮标签搜索。
-    *   重复直至 90% 的语义能量被解释。
+### 阶段二：分段与分解 (Segmentation & Decomposition)
+1.  **语义分段**：`ContextVectorManager` 扫描历史上下文，基于向量相似度（阈值 0.70）将连续对话流切割为独立的语义段落 (Topics)。
+2.  **首轮感应**：使用当前查询向量投射 Tag 向量海，获取最强匹配标签 (CoreTag)。
+3.  **金字塔迭代**：对当前向量进行残差分解，挖掘深层标签。
 
 ### 阶段三：扩张与召回 (Expansion & Recall)
 1.  **核心标签补全**：若显式指定的核心标签未被搜到，强行从数据库捞取其向量。
@@ -62,9 +65,11 @@ TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RA
     *   检测上下文中的语义偏振信号。
     *   若触发犹豫机制，计算偏振向量投影。
     *   根据偏振强度，计算对冲检索参数。
-4.  **最终检索与对冲召回**：
-    *   执行主向量检索。
-    *   若偏振触发，同步执行“负向对冲”检索，将对立观点或反向案例引入召回上下文。
+4.  **霰弹枪检索与相控阵去重 (Shotgun & Deduplication)**：
+    *   **霰弹枪发射**：并行执行 N+1 次检索（1次当前向量 + N次历史分段向量），最大限度覆盖长上下文中的所有潜在关注点。
+    *   **SVD 建模**：对汇聚的数百条候选结果进行 SVD 分析，提取潜在主题。
+    *   **残差去重**：迭代选择最具信息增量的结果，形成最终的精简结果集（通常为 Top K）。
+    *   **对冲召回**：若偏振触发，同步混入对冲检索结果。
 
 ## 5. 工程原理亮点
 
