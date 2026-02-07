@@ -1,0 +1,75 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PaperReader",
+  "version": "0.2.0",
+  "displayName": "超文本递归阅读器",
+  "description": "将超长 PDF/文档转为可递归阅读的分块工件（Skeleton/Deep/Query）。适用于学术论文、技术报告、书籍章节、法律文书等各类长文档。v0.2: MinerU 云端高保真解析（公式/表格/图片/多栏/扫描OCR）+ 章节感知切分 + Rolling Context 深度阅读。MinerU 不可用时自动降级到 pdf-parse。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node PaperReader.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 600000
+  },
+  "configSchema": {
+    "MINERU_API_TOKEN": {
+      "type": "string",
+      "description": "MinerU 云端 API Token（从 mineru.net 获取）。不填则自动降级到 pdf-parse。"
+    },
+    "MINERU_API_TIMEOUT": {
+      "type": "integer",
+      "description": "MinerU 轮询超时（ms），默认 300000（5分钟）。"
+    },
+    "MINERU_POLL_INTERVAL": {
+      "type": "integer",
+      "description": "MinerU 轮询间隔（ms），默认 5000。"
+    },
+    "PaperReaderChunkSize": {
+      "type": "integer",
+      "description": "目标 chunk 大小（tokens），默认 2000。"
+    },
+    "PaperReaderOverlap": {
+      "type": "number",
+      "description": "chunk 重叠比例，默认 0.15。"
+    },
+    "PaperReaderModel": {
+      "type": "string",
+      "description": "用于阅读/总结的模型名称。"
+    },
+    "PaperReaderMaxOutputTokens": {
+      "type": "integer",
+      "description": "单次模型输出上限，默认 12000。"
+    },
+    "PaperReaderBatchSize": {
+      "type": "integer",
+      "description": "Deep 阅读分批处理的 chunk 数，默认 4。"
+    },
+    "PaperReaderMaxChunks": {
+      "type": "integer",
+      "description": "单次 deep 阅读最多处理的 chunk 数（防止成本失控），默认 120。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "IngestPDF",
+        "description": "解析 PDF 并生成可递归阅读的分块工件。支持学术论文、技术报告、书籍、法律文书等各类 PDF。使用 MinerU 云端 API 高保真解析（保留公式/表格/图片/多栏排版），失败自动降级到 pdf-parse。输出章节感知的 chunk 文件。\n参数:\n- command: 固定为 IngestPDF\n- filePath (字符串, 必需): PDF 绝对路径\n- paperId (字符串, 可选): 自定义 ID（不传则自动生成）\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」IngestPDF「末」,\nfilePath:「始」D:\\\\books\\\\paper.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ReadSkeleton",
+        "description": "基于已导入的文档工件生成骨架地图（Global Map）。从 Markdown 结构提取目录树、关键章节和图注，生成带阅读优先级标签的全局地图。适用于任何已 Ingest 的文档。\n参数:\n- command: 固定为 ReadSkeleton\n- paperId (字符串, 必需)\n- focus (字符串, 可选): 本次阅读关注点\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」ReadSkeleton「末」,\npaperId:「始」paper-xxx「末」,\nfocus:「始」方法学与实验设计「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ReadDeep",
+        "description": "带 Rolling Context 的深度阅读：逐 chunk 摘要时携带前序累积的关键事实，保持 chunk 间连贯性。超出上限自动压缩。最终合并为 Round-1 深度笔记。\n参数:\n- command: 固定为 ReadDeep\n- paperId (字符串, 必需)\n- goal (字符串, 可选): 主任务目标（用于决定摘要粒度）\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」ReadDeep「末」,\npaperId:「始」paper-xxx「末」,\ngoal:「始」快速理解核心贡献与可复现实验步骤「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "Query",
+        "description": "对已导入的文档做检索式问答（关键词匹配 + 章节权重挑选相关 chunk）。返回答案及引用来源。\n参数:\n- command: 固定为 Query\n- paperId (字符串, 必需)\n- question (字符串, 必需)\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」Query「末」,\npaperId:「始」paper-xxx「末」,\nquestion:「始」这份文档的核心结论是什么？「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
