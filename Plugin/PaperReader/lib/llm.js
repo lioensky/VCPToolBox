@@ -42,12 +42,26 @@ async function callLLM(messages, { max_tokens = MAX_OUTPUT_TOKENS, temperature =
     temperature
   };
 
-  const resp = await axios.post(API_URL, payload, {
-    headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-    timeout: 180000
-  });
-
-  return resp?.data?.choices?.[0]?.message?.content || '';
+  const maxRetries = 5;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const resp = await axios.post(API_URL, payload, {
+        headers: { Authorization: `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 180000
+      });
+      return resp?.data?.choices?.[0]?.message?.content || '';
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 429 && attempt < maxRetries - 1) {
+        // Exponential backoff: 3s, 6s, 12s, 24s
+        const delay = 3000 * Math.pow(2, attempt);
+        process.stderr.write(`[PaperReader] 429 rate limit, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})\n`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**

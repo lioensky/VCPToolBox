@@ -15,6 +15,7 @@ const WORKSPACE_ROOT = path.join(__dirname, '..', 'workspace');
 const BATCH_SIZE = parseInt(process.env.PaperReaderBatchSize || '4', 10);
 const MAX_CHUNKS = parseInt(process.env.PaperReaderMaxChunks || '120', 10);
 const ROLLING_CONTEXT_MAX_TOKENS = 4000;
+const CHUNK_DELAY_MS = parseInt(process.env.PaperReaderChunkDelay || '1500', 10);
 
 /**
  * 压缩 Rolling Context（当超过上限时）
@@ -101,16 +102,24 @@ async function readDeep(paperId, options = {}) {
   let rollingContext = '';
 
   // Sequential processing with Rolling Context
+  // Process in small batches but maintain rolling context between batches
   for (let i = 0; i < limited.length; i += batchSize) {
     const batch = limited.slice(i, i + batchSize);
 
+    // Within a batch, process sequentially to maintain rolling context
     for (const chunk of batch) {
+      // Read chunk content
       const chunkPath = path.join(chunksDir, `chunk_${chunk.index}.md`);
       let chunkText;
       if (fsSync.existsSync(chunkPath)) {
         chunkText = await fs.readFile(chunkPath, 'utf-8');
       } else {
         chunkText = chunk.text || '';
+      }
+
+      // Delay between LLM calls to avoid 429 rate limiting (skip first chunk)
+      if (summaries.length > 0) {
+        await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
       }
 
       const summary = await summarizeChunk(chunkText, {

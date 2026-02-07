@@ -122,12 +122,17 @@ async function handleIngestPDF({ filePath, paperId }) {
 async function handleReadSkeleton({ paperId, focus }) {
   if (!paperId) throw new Error('ReadSkeleton requires paperId');
   const result = await generateSkeleton(paperId, { focus });
-  return { paperId, globalMapPath: result.globalMapPath };
+  return { paperId, globalMapPath: result.globalMapPath, content: result.globalMapContent };
 }
 
 async function handleReadDeep({ paperId, goal }) {
   if (!paperId) throw new Error('ReadDeep requires paperId');
-  return await readDeep(paperId, { goal });
+  const result = await readDeep(paperId, { goal });
+  // Read the Round_1_Summary.md to return its content
+  const summaryContent = fsSync.existsSync(result.roundPath)
+    ? (await fs.readFile(result.roundPath, 'utf-8'))
+    : '';
+  return { ...result, content: summaryContent };
 }
 
 async function handleQuery({ paperId, question }) {
