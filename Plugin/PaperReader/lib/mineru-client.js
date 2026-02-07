@@ -21,10 +21,12 @@ class MineruError extends Error {
 /**
  * 获取预签名上传URL
  */
-async function getUploadUrl(token, fileName) {
+async function getUploadUrl(token, fileName, modelVersion) {
   const resp = await axios.post(`${MINERU_API_BASE}/file-urls/batch`, {
     files: [{ name: fileName, data_id: `pr_${Date.now()}` }],
-    model_version: 'hybrid-auto-engine'
+    enable_formula: true,
+    enable_table: true,
+    model_version: modelVersion
   }, {
     headers: {
       'Content-Type': 'application/json',
@@ -49,8 +51,8 @@ async function getUploadUrl(token, fileName) {
  */
 async function uploadFile(uploadUrl, filePath) {
   const fileBuffer = await fs.readFile(filePath);
+  // MinerU 文档明确说明：上传文件时无须设置 Content-Type 请求头
   await axios.put(uploadUrl, fileBuffer, {
-    headers: { 'Content-Type': 'application/octet-stream' },
     timeout: 120000,
     maxContentLength: 200 * 1024 * 1024
   });
@@ -164,7 +166,7 @@ function extractFigureCaptions(markdown) {
  * 完整流程：上传 PDF → 提交解析 → 轮询 → 返回结果
  * 
  * @param {string} pdfPath - PDF 绝对路径
- * @param {object} options - { token, timeout, pollInterval, outputDir }
+ * @param {object} options - { token, timeout, pollInterval, outputDir, modelVersion }
  * @returns {Promise<{ markdown: string, figures: Array, pageCount: number, figureMap: Array }>}
  */
 async function parsePdf(pdfPath, options = {}) {
@@ -175,12 +177,13 @@ async function parsePdf(pdfPath, options = {}) {
 
   const timeout = options.timeout || parseInt(process.env.MINERU_API_TIMEOUT || '300000', 10);
   const pollInterval = options.pollInterval || parseInt(process.env.MINERU_POLL_INTERVAL || '5000', 10);
+  const modelVersion = options.modelVersion || process.env.MINERU_MODEL_VERSION || 'pipeline';
 
   const fileName = path.basename(pdfPath);
   const outputDir = options.outputDir || path.dirname(pdfPath);
 
   // Step 1: 获取上传URL
-  const { uploadUrl, batchId } = await getUploadUrl(token, fileName);
+  const { uploadUrl, batchId } = await getUploadUrl(token, fileName, modelVersion);
 
   // Step 2: 上传文件
   await uploadFile(uploadUrl, pdfPath);
