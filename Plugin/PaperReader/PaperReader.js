@@ -39,7 +39,7 @@ async function writeJson(filePath, obj) {
 
 // ─── Command Handlers ───
 
-async function handleIngestPDF({ filePath, paperId }) {
+async function handleIngestPDF({ filePath, paperId, forceReparse }) {
   if (!filePath || typeof filePath !== 'string') {
     throw new Error('IngestPDF requires filePath');
   }
@@ -54,6 +54,26 @@ async function handleIngestPDF({ filePath, paperId }) {
     : `paper-${sha1(abs).slice(0, 10)}`;
 
   const wsDir = getPaperWorkspace(resolvedPaperId);
+  const manifestPath = path.join(wsDir, 'chunks', 'manifest.json');
+  const metaPath = path.join(wsDir, 'meta.json');
+
+  // ── Cache check: if manifest + meta already exist, skip re-parsing ──
+  if (!forceReparse && fsSync.existsSync(manifestPath) && fsSync.existsSync(metaPath)) {
+    const existingMeta = JSON.parse(await fs.readFile(metaPath, 'utf-8'));
+    const existingManifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    process.stderr.write(`[PaperReader][Ingest] cache hit: paperId=${resolvedPaperId}, chunkCount=${existingManifest.chunkCount}, engine=${existingMeta.engine}\n`);
+    return {
+      paperId: resolvedPaperId,
+      workspace: wsDir,
+      pageCount: existingMeta.pageCount,
+      chunkCount: existingManifest.chunkCount,
+      engine: existingMeta.engine,
+      cached: true
+    };
+  }
+
+  process.stderr.write(`[PaperReader][Ingest] no cache, starting full parse: paperId=${resolvedPaperId}\n`);
+
   await fs.mkdir(wsDir, { recursive: true });
 
   // L0: 解析 PDF → Markdown + Figures
@@ -68,7 +88,7 @@ async function handleIngestPDF({ filePath, paperId }) {
     textLength: (parsed.markdown || '').length,
     engine: parsed.engine
   };
-  await writeJson(path.join(wsDir, 'meta.json'), meta);
+  await writeJson(metaPath, meta);
 
   // Save full markdown
   await fs.writeFile(path.join(wsDir, 'full_text.md'), parsed.markdown || '', 'utf-8');
@@ -105,7 +125,7 @@ async function handleIngestPDF({ filePath, paperId }) {
       tokenCount: c.tokenCount
     }))
   };
-  await writeJson(path.join(chunksDir, 'manifest.json'), manifest);
+  await writeJson(manifestPath, manifest);
 
   // Create reading_notes dir
   await fs.mkdir(path.join(wsDir, 'reading_notes'), { recursive: true });
@@ -115,7 +135,8 @@ async function handleIngestPDF({ filePath, paperId }) {
     workspace: wsDir,
     pageCount: meta.pageCount,
     chunkCount: chunks.length,
-    engine: parsed.engine
+    engine: parsed.engine,
+    cached: false
   };
 }
 
@@ -125,9 +146,13 @@ async function handleReadSkeleton({ paperId, focus }) {
   return { paperId, globalMapPath: result.globalMapPath, content: result.globalMapContent };
 }
 
-async function handleReadDeep({ paperId, goal }) {
+async function handleReadDeep({ paperId, goal, maxChunks, batchSize, forceReread }) {
   if (!paperId) throw new Error('ReadDeep requires paperId');
-  const result = await readDeep(paperId, { goal });
+  const opts = { goal };
+  if (maxChunks) opts.maxChunks = maxChunks;
+  if (batchSize) opts.batchSize = batchSize;
+  if (forceReread) opts.forceReread = true;
+  const result = await readDeep(paperId, opts);
   // Read the Round_1_Summary.md to return its content
   const summaryContent = fsSync.existsSync(result.roundPath)
     ? (await fs.readFile(result.roundPath, 'utf-8'))
@@ -149,21 +174,27 @@ async function main() {
   const request = JSON.parse(inputData || '{}');
   const command = request.command;
 
+  process.stderr.write(`[PaperReader][Main] request received: command=${command || 'undefined'}, paperId=${request.paperId || 'n/a'}\n`);
+
   try {
     if (!command) throw new Error('Missing command');
 
     let result;
     switch (command) {
       case 'IngestPDF':
-        result = await handleIngestPDF({ filePath: request.filePath, paperId: request.paperId });
+        process.stderr.write('[PaperReader][Main] route hit: IngestPDF\n');
+        result = await handleIngestPDF({ filePath: request.filePath, paperId: request.paperId, forceReparse: request.forceReparse });
         break;
       case 'ReadSkeleton':
+        process.stderr.write('[PaperReader][Main] route hit: ReadSkeleton\n');
         result = await handleReadSkeleton({ paperId: request.paperId, focus: request.focus });
         break;
       case 'ReadDeep':
-        result = await handleReadDeep({ paperId: request.paperId, goal: request.goal });
+        process.stderr.write('[PaperReader][Main] route hit: ReadDeep\n');
+        result = await handleReadDeep({ paperId: request.paperId, goal: request.goal, maxChunks: request.maxChunks, batchSize: request.batchSize, forceReread: request.forceReread });
         break;
       case 'Query':
+        process.stderr.write('[PaperReader][Main] route hit: Query\n');
         result = await handleQuery({ paperId: request.paperId, question: request.question });
         break;
       default:
@@ -172,6 +203,7 @@ async function main() {
 
     sendResponse({ status: 'success', result });
   } catch (err) {
+    process.stderr.write(`[PaperReader][Main] request failed: command=${command || 'undefined'}, error=${err?.message || String(err)}\n`);
     sendResponse({ status: 'error', error: err?.message || String(err) });
   }
 }

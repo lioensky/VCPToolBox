@@ -56,7 +56,7 @@ async function summarizeChunk(chunkText, { goal, globalMap, rollingContext, chun
   const result = await callLLMJson([
     { role: 'system', content: system },
     { role: 'user', content: userParts.join('\n\n') }
-  ], { temperature: 0.1 });
+  ], { temperature: 0.1, traceTag: `DeepReader:chunk_${chunkIndex}` });
 
   // Normalize result
   return {
@@ -79,6 +79,18 @@ async function readDeep(paperId, options = {}) {
   const wsDir = path.join(WORKSPACE_ROOT, paperId);
   const chunksDir = path.join(wsDir, 'chunks');
   const manifestPath = path.join(chunksDir, 'manifest.json');
+  const notesDir = path.join(wsDir, 'reading_notes');
+  const summariesPath = path.join(notesDir, 'Chunk_Summaries.json');
+  const roundPath = path.join(notesDir, 'Round_1_Summary.md');
+
+  process.stderr.write(`[PaperReader][DeepReader] start: paperId=${paperId}, goal=${options.goal || '(default)'}\n`);
+
+  // ── Cache check: if Round_1_Summary.md already exists, return directly ──
+  if (!options.forceReread && fsSync.existsSync(roundPath) && fsSync.existsSync(summariesPath)) {
+    const existingSummaries = JSON.parse(await fs.readFile(summariesPath, 'utf-8'));
+    process.stderr.write(`[PaperReader][DeepReader] cache hit: Round_1_Summary.md exists (${existingSummaries.count} chunk summaries). Returning cached result.\n`);
+    return { paperId, summariesPath, roundPath, cached: true };
+  }
 
   if (!fsSync.existsSync(manifestPath)) {
     throw new Error(`chunks/manifest.json not found: ${manifestPath}`);
@@ -98,16 +110,50 @@ async function readDeep(paperId, options = {}) {
   const goal = options.goal || '';
 
   const limited = chunks.slice(0, maxChunks);
-  const summaries = [];
+  let summaries = [];
   let rollingContext = '';
 
-  // Sequential processing with Rolling Context
-  // Process in small batches but maintain rolling context between batches
+  // ── Incremental resume: load existing chunk summaries if available ──
+  const existingSummariesMap = new Map();
+  if (!options.forceReread && fsSync.existsSync(summariesPath)) {
+    try {
+      const existing = JSON.parse(await fs.readFile(summariesPath, 'utf-8'));
+      if (existing.summaries && Array.isArray(existing.summaries)) {
+        for (const s of existing.summaries) {
+          existingSummariesMap.set(s.chunkIndex, s);
+        }
+        process.stderr.write(`[PaperReader][DeepReader] found ${existingSummariesMap.size} cached chunk summaries, will skip those\n`);
+      }
+    } catch { /* ignore corrupt file */ }
+  }
+
+  process.stderr.write(`[PaperReader][DeepReader] config: totalChunks=${chunks.length}, processing=${limited.length}, batchSize=${batchSize}, chunkDelay=${CHUNK_DELAY_MS}ms\n`);
+
+  // Concurrent batch processing with Rolling Context
+  // Each batch shares the same rolling context snapshot, chunks within a batch run in parallel.
+  // After a batch completes, results are merged in order to update rolling context before next batch.
   for (let i = 0; i < limited.length; i += batchSize) {
     const batch = limited.slice(i, i + batchSize);
+    const batchNum = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(limited.length / batchSize);
+    process.stderr.write(`[PaperReader][DeepReader] batch ${batchNum}/${totalBatches} start (chunks ${i}-${Math.min(i + batchSize, limited.length) - 1}, concurrency=${batch.length})\n`);
 
-    // Within a batch, process sequentially to maintain rolling context
-    for (const chunk of batch) {
+    // Delay between batches to avoid rate limiting (skip first batch)
+    if (i > 0) {
+      await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+    }
+
+    // Snapshot rolling context for this batch — all chunks in the batch see the same context
+    const batchRollingContext = rollingContext;
+
+    // Launch all chunks in this batch concurrently (skip cached ones)
+    const batchPromises = batch.map(async (chunk) => {
+      // Check incremental cache
+      if (existingSummariesMap.has(chunk.index)) {
+        process.stderr.write(`[PaperReader][DeepReader] chunk ${chunk.index}/${limited.length - 1} (section: ${chunk.section || 'unknown'}) CACHED, skipping LLM\n`);
+        return existingSummariesMap.get(chunk.index);
+      }
+
       // Read chunk content
       const chunkPath = path.join(chunksDir, `chunk_${chunk.index}.md`);
       let chunkText;
@@ -117,43 +163,50 @@ async function readDeep(paperId, options = {}) {
         chunkText = chunk.text || '';
       }
 
-      // Delay between LLM calls to avoid 429 rate limiting (skip first chunk)
-      if (summaries.length > 0) {
-        await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-      }
+      process.stderr.write(`[PaperReader][DeepReader] chunk ${chunk.index}/${limited.length - 1} (section: ${chunk.section || 'unknown'}) summarizing...\n`);
 
       const summary = await summarizeChunk(chunkText, {
         goal,
         globalMap,
-        rollingContext,
+        rollingContext: batchRollingContext,
         chunkIndex: chunk.index,
         section: chunk.section || 'unknown'
       });
 
-      summaries.push({
+      return {
         chunkIndex: chunk.index,
         section: chunk.section,
         ...summary
-      });
+      };
+    });
 
-      // Update Rolling Context
-      const newFacts = summary.key_facts.join('; ');
+    // Wait for all chunks in this batch to complete
+    const batchResults = await Promise.all(batchPromises);
+
+    // Merge results in order
+    for (const result of batchResults) {
+      summaries.push(result);
+      process.stderr.write(`[PaperReader][DeepReader] chunk ${result.chunkIndex} done (${summaries.length}/${limited.length} completed)\n`);
+
+      // Update Rolling Context in order
+      const newFacts = result.key_facts.join('; ');
       if (newFacts) {
-        rollingContext += `\n[Chunk ${chunk.index} - ${chunk.section}]: ${newFacts}`;
+        rollingContext += `\n[Chunk ${result.chunkIndex} - ${result.section}]: ${newFacts}`;
       }
+    }
 
-      // Compress if exceeding limit
-      if (countTokens(rollingContext) > ROLLING_CONTEXT_MAX_TOKENS) {
-        rollingContext = await compressContext(rollingContext);
-      }
+    // Compress rolling context if exceeding limit (once per batch)
+    if (countTokens(rollingContext) > ROLLING_CONTEXT_MAX_TOKENS) {
+      process.stderr.write(`[PaperReader][DeepReader] rolling context exceeds ${ROLLING_CONTEXT_MAX_TOKENS} tokens, compressing...\n`);
+      rollingContext = await compressContext(rollingContext);
     }
   }
 
   // Save chunk summaries
-  const notesDir = path.join(wsDir, 'reading_notes');
   await fs.mkdir(notesDir, { recursive: true });
-  const summariesPath = path.join(notesDir, 'Chunk_Summaries.json');
   await fs.writeFile(summariesPath, JSON.stringify({ count: summaries.length, summaries }, null, 2), 'utf-8');
+
+  process.stderr.write(`[PaperReader][DeepReader] all ${summaries.length} chunks summarized, starting synthesis...\n`);
 
   // Synthesis: merge all summaries into Round_1_Summary.md
   const system = [
@@ -172,10 +225,11 @@ async function readDeep(paperId, options = {}) {
   const merged = await callLLM([
     { role: 'system', content: system },
     { role: 'user', content: user }
-  ], { temperature: 0.2 });
+  ], { temperature: 0.2, traceTag: 'DeepReader:synthesis' });
 
-  const roundPath = path.join(notesDir, 'Round_1_Summary.md');
   await fs.writeFile(roundPath, merged || '', 'utf-8');
+
+  process.stderr.write(`[PaperReader][DeepReader] complete: summariesPath=${summariesPath}, roundPath=${roundPath}\n`);
 
   return { paperId, summariesPath, roundPath };
 }
