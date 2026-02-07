@@ -52,9 +52,38 @@ async function getUploadUrl(token, fileName, modelVersion) {
 async function uploadFile(uploadUrl, filePath) {
   const fileBuffer = await fs.readFile(filePath);
   // MinerU 文档明确说明：上传文件时无须设置 Content-Type 请求头
-  await axios.put(uploadUrl, fileBuffer, {
-    timeout: 120000,
-    maxContentLength: 200 * 1024 * 1024
+  // axios 会自动添加 Content-Type/Accept 等头部，导致 OSS 预签名 URL 签名校验失败
+  // 改用 Node 原生 https 模块，只发送 Content-Length，完全匹配 Python requests.put(url, data=f) 的行为
+  const { URL } = require('url');
+  const https = require('https');
+  const parsedUrl = new URL(uploadUrl);
+
+  await new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'PUT',
+      headers: {
+        'Content-Length': fileBuffer.length
+      },
+      timeout: 120000
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          reject(new MineruError('MINERU_UPLOAD_FAILED',
+            `Upload failed: HTTP ${res.statusCode} - ${body.slice(0, 200)}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new MineruError('MINERU_UPLOAD_FAILED', 'Upload timeout')); });
+    req.write(fileBuffer);
+    req.end();
   });
 }
 
