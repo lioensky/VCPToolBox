@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SVCardFinder",
+  "version": "1.0.0",
+  "displayName": "影之诗查卡器(WB)",
+  "description": "一个用于查询《影之诗：世界超越》卡牌信息的插件。",
+  "author": "greyfilm",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python card_finder.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SearchCards",
+        "description": "调用此工具查询《影之诗：世界超越》的卡牌信息。\n参数说明 (所有参数均为可选):\n- free_word (字符串): 关键词，用于模糊搜索卡牌名称或描述。\n- class (数字或逗号分隔的数字): 职业。0:中立, 1:妖精, 2:皇家, 3:法师, 4:龙, 5:梦魇, 6:主教, 7:超越者。\n- cost (数字或逗号分隔的数字): 卡牌费用 (0-10)。\n- type (数字或逗号分隔的数字): 卡牌类型。1:随从, 2:法术, 3:护符。\n- rarity (数字或逗号分隔的数字): 稀有度。1:铜, 2:银, 3:金, 4:虹。\n- card_set (数字或逗号分隔的数字): 卡包ID。例如 10000 (基础), 10001 (传说揭幕)，10002 (无限进化)，10003 (灾变的继承者)，10004 (苍穹六龙)，10004 (花醉游戏)。编号越大代表越新出。\n- atk_lower / atk_upper (数字): 攻击力范围。\n- life_lower / life_upper (数字): 生命值范围。\n- skill (字符串): 卡牌技能关键词，例如 '入场曲', '守护'。\n- tribe (字符串): 种族/特性，例如 '士兵', '财宝'。\n- offset (数字): 结果偏移量，用于翻页，每次递增30。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SVCardFinder「末」,\nclass:「始」6「末」,\ncost:「始」6「末」,\ntype:「始」1「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SVCardFinder「末」,\nfree_word:「始」哥布林「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
