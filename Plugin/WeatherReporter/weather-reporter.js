@@ -308,7 +308,7 @@ async function getAirQuality(latitude, longitude, weatherKey, weatherUrl) {
     return { success: false, data: null, error: new Error('Missing parameters for getAirQuality.') };
   }
 
-  const airQualityUrlEndpoint = `https://${weatherUrl}/v7/air/now?location=${longitude},${latitude}&key=${weatherKey}`;
+  const airQualityUrlEndpoint = `https://${weatherUrl}/airquality/v1/current/${latitude}/${longitude}?key=${weatherKey}`;
 
   try {
     console.error(`[WeatherReporter] Fetching air quality for coords: ${latitude},${longitude}`);
@@ -320,9 +320,20 @@ async function getAirQuality(latitude, longitude, weatherKey, weatherUrl) {
     }
 
     const data = await response.json();
-    if (data.code === '200') {
+    // 新 API 直接返回 { indexes, pollutants, stations }，无 code 字段
+    if (data.indexes && data.indexes.length > 0) {
+      const mainIndex = data.indexes.find((i) => i.code === 'us-epa') || data.indexes[0];
+      const pm2p5Pollutant =
+        data.pollutants && data.pollutants.find((p) => p.code === 'pm2p5');
+      const now = {
+        aqi: mainIndex.aqi,
+        primary:
+          (mainIndex.primaryPollutant && mainIndex.primaryPollutant.name) || 'NA',
+        category: mainIndex.category || '',
+        pm2p5: pm2p5Pollutant ? pm2p5Pollutant.concentration.value : null,
+      };
       console.error(`[WeatherReporter] Successfully fetched air quality for ${latitude},${longitude}.`);
-      return { success: true, data: data.now, error: null };
+      return { success: true, data: now, error: null };
     } else {
       throw new Error(`Failed to get air quality for ${latitude},${longitude}. Response: ${JSON.stringify(data)}`);
     }
