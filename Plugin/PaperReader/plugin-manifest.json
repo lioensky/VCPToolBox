@@ -1,0 +1,87 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PaperReader",
+  "version": "0.4.0",
+  "displayName": "超文本递归阅读器",
+  "description": "统一自适应阅读引擎：将超长 PDF/文档转为目标驱动的多分辨率阅读流程。v0.4: 统一 Read 命令（Survey→Triage→DeepDive/Skim→Audit→Synthesize）、Triage 分诊注意力分配、Skim 轻量扫读、Auditor 去偏见审核、ReadingState 持久化。MinerU 云端高保真解析，不可用时自动降级到 pdf-parse。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node PaperReader.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1800000
+  },
+  "configSchema": {
+    "MINERU_API_TOKEN": {
+      "type": "string",
+      "description": "MinerU 云端 API Token（从 mineru.net 获取）。不填则自动降级到 pdf-parse。"
+    },
+    "MINERU_API_TIMEOUT": {
+      "type": "integer",
+      "description": "MinerU 轮询超时（ms），默认 300000（5分钟）。"
+    },
+    "MINERU_POLL_INTERVAL": {
+      "type": "integer",
+      "description": "MinerU 轮询间隔（ms），默认 5000。"
+    },
+    "PaperReaderChunkSize": {
+      "type": "integer",
+      "description": "目标 chunk 大小（tokens），默认 2000。"
+    },
+    "PaperReaderOverlap": {
+      "type": "number",
+      "description": "chunk 重叠比例，默认 0.15。"
+    },
+    "PaperReaderModel": {
+      "type": "string",
+      "description": "用于阅读/总结的模型名称。"
+    },
+    "PaperReaderMaxOutputTokens": {
+      "type": "integer",
+      "description": "单次模型输出上限，默认 12000。"
+    },
+    "PaperReaderBatchSize": {
+      "type": "integer",
+      "description": "Deep 阅读分批处理的 chunk 数，默认 5。同批内共享 Rolling Context 快照，越大速度越快但上下文递进越弱。"
+    },
+    "PaperReaderMaxConcurrentLLM": {
+      "type": "integer",
+      "description": "进程级 LLM 最大并发请求数（semaphore），默认 5。真正的并发控制。"
+    },
+    "PaperReaderMaxChunks": {
+      "type": "integer",
+      "description": "单次阅读最多处理的 chunk 数（防止成本失控），默认 120。"
+    },
+    "PaperReaderMaxAuditChunks": {
+      "type": "integer",
+      "description": "Auditor 审核抽样最大 chunk 数，默认 8。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "IngestPDF",
+        "description": "解析 PDF 并生成可递归阅读的分块工件。支持学术论文、技术报告、书籍、法律文书等各类 PDF。使用 MinerU 云端 API 高保真解析（保留公式/表格/图片/多栏排版），失败自动降级到 pdf-parse。输出章节感知的 chunk 文件。\n参数:\n- command: 固定为 IngestPDF\n- filePath (字符串, 必需): PDF 绝对路径\n- paperId (字符串, 可选): 自定义 ID（不传则自动生成）\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」IngestPDF「末」,\nfilePath:「始」D:\\\\books\\\\paper.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "Read",
+        "description": "v0.4 统一自适应阅读命令。自动执行完整流程：Survey（骨架提取）→ Triage（分诊注意力分配）→ DeepDive/Skim（精读/扫读）→ Audit（去偏见审核）→ Synthesize（合成报告）。这是推荐的阅读方式，自动决定哪些章节精读、哪些扫读、哪些跳过。注意：处理大文档（100+ chunks）可能需要数分钟。\n参数:\n- command: 固定为 Read\n- paperId (字符串, 必需): 文档 ID\n- goal (字符串, 可选): 阅读目标（影响 Triage 分诊策略）\n- forceReread (布尔值, 可选): 强制重新阅读（忽略缓存）\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」Read「末」,\npaperId:「始」xray-20260208-xxx「末」,\ngoal:「始」理解核心方法和实验设计「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ReadSkeleton",
+        "description": "基于已导入的文档工件生成骨架地图（Global Map）+ 层级树索引。Read 命令会自动调用此步骤，通常不需要单独使用。\n参数:\n- command: 固定为 ReadSkeleton\n- paperId (字符串, 必需)\n- focus (字符串, 可选): 本次阅读关注点\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」ReadSkeleton「末」,\npaperId:「始」xray-xxx「末」,\nfocus:「始」方法学与实验设计「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "ReadDeep",
+        "description": "全量 Rolling Context 深度阅读（无 Triage/Audit 的 v0.3 兼容模式）。对所有 chunk 无差别精读。推荐使用 Read 命令替代。\n参数:\n- command: 固定为 ReadDeep\n- paperId (字符串, 必需)\n- goal (字符串, 可选): 主任务目标\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」ReadDeep「末」,\npaperId:「始」xray-xxx「末」,\ngoal:「始」快速理解核心贡献「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "Query",
+        "description": "对已导入的文档做检索式问答（树索引推理式检索，降级到关键词匹配）。返回答案、推理过程及引用来源。\n参数:\n- command: 固定为 Query\n- paperId (字符串, 必需)\n- question (字符串, 必需)\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PaperReader「末」,\ncommand:「始」Query「末」,\npaperId:「始」xray-xxx「末」,\nquestion:「始」这份文档的核心结论是什么？「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

@@ -12,8 +12,12 @@ class ToolCallParser {
    */
   static parse(content) {
     if (!content || typeof content !== 'string') return [];
+
+    // 移除 <think> 标签及其内容，防止解析思维链中的工具调用
+    const contentWithoutThink = content.replace(/<think>[\s\S]*?<\/think>/g, '');
     
     const toolCalls = [];
+    content = contentWithoutThink;
     let searchOffset = 0;
 
     while (searchOffset < content.length) {
