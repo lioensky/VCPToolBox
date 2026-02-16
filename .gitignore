@@ -176,3 +176,15 @@ image/fluxgen/
 .DS_Store?
 /.obsidian
 Plugin/MIDITranslator/config.env
+
+# 忽略所有 .vscode 目录
+.vscode/
+
+# Trae
+.trae/
+
+# 虚拟环境
+.venv/
+
+Plugin/UserAuth/code.bin
+Plugin/DailyHot/dailyhot_cache.md

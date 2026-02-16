@@ -46,8 +46,9 @@ function initialize(httpServer, config) {
     wssInstance = new WebSocket.Server({ noServer: true });
 
     httpServer.on('upgrade', (request, socket, head) => {
-        const parsedUrl = url.parse(request.url, true);
-        const pathname = parsedUrl.pathname;
+        // 解决 DeprecationWarning: url.parse() behavior is not standardized...
+        const urlObject = new URL(request.url, `http://${request.headers.host}`);
+        const pathname = urlObject.pathname;
 
         const vcpLogPathRegex = /^\/VCPlog\/VCP_Key=(.+)$/;
         const vcpInfoPathRegex = /^\/vcpinfo\/VCP_Key=(.+)$/; // 新增：VCPInfo 通道

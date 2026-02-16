@@ -18,8 +18,36 @@ async function _sendBatch(batchTexts, config, batchNumber) {
 
     for (let attempt = 1; attempt <= retryAttempts; attempt++) {
         try {
-            const requestUrl = `${config.apiUrl}/v1/embeddings`;
-            const requestBody = { model: config.model, input: batchTexts };
+            // 检测是否为字节跳动 Ark 平台
+            const isArkPlatform = config.apiUrl.toLowerCase().includes('volces') && config.apiUrl.toLowerCase().includes('ark');
+
+            let requestUrl;
+            let requestBody;
+
+            if (isArkPlatform) {
+                // 字节跳动 Ark 格式
+                requestUrl = `${config.apiUrl}/embeddings/multimodal`;
+                requestBody = {
+                    model: config.model,
+                    input: batchTexts.map(text => ({
+                        type: "text",
+                        text: text
+                    })),
+                    dimensions: 2048, // 嵌入模型的维度
+                    multi_embedding: {
+                        type: "enabled"
+                    },
+                    sparse_embedding: {
+                        type: "enabled"
+                    },
+                    encoding_format: "float"
+                };
+            } else {
+                // 标准 OpenAI 格式
+                requestUrl = `${config.apiUrl}/v1/embeddings`;
+                requestBody = { model: config.model, input: batchTexts };
+            }
+
             const requestHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
 
             const response = await fetch(requestUrl, {
@@ -34,7 +62,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
                 if (response.status === 429) {
                     // 429 限流时，增加等待时间
                     const waitTime = 5000 * attempt;
-                    console.warn(`[Embedding] Batch ${batchNumber} rate limited (429). Retrying in ${waitTime/1000}s...`);
+                    console.warn(`[Embedding] Batch ${batchNumber} rate limited (429). Retrying in ${waitTime / 1000}s...`);
                     await new Promise(r => setTimeout(r, waitTime));
                     continue;
                 }
@@ -54,7 +82,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             if (!data) {
                 throw new Error(`API returned empty/null response`);
             }
-            
+
             // 检查是否是错误响应
             if (data.error) {
                 const errorMsg = data.error.message || JSON.stringify(data.error);
@@ -65,29 +93,36 @@ async function _sendBatch(batchTexts, config, batchNumber) {
                 console.error(`  Hint: Check if embedding model "${config.model}" is available on your API server`);
                 throw new Error(`API Error ${errorCode}: ${errorMsg}`);
             }
-            
+
             if (!data.data) {
                 console.error(`[Embedding] Missing 'data' field in response for Batch ${batchNumber}`);
                 console.error(`Response keys: ${Object.keys(data).join(', ')}`);
                 console.error(`Response preview: ${JSON.stringify(data).substring(0, 500)}`);
                 throw new Error(`Invalid API response structure: missing 'data' field`);
             }
-            
-            if (!Array.isArray(data.data)) {
-                console.error(`[Embedding] 'data' field is not an array for Batch ${batchNumber}`);
+
+            // 处理不同 API 响应格式
+            let embeddingsData;
+            if (Array.isArray(data.data)) {
+                // 标准格式：data.data 是数组
+                embeddingsData = data.data;
+                if (embeddingsData.length === 0) {
+                    console.warn(`[Embedding] Warning: Batch ${batchNumber} returned empty embeddings array`);
+                }
+            } else if (data.data && data.data.embedding) {
+                // 字节跳动 Ark 格式：data.data 是对象，直接包含 embedding 字段
+                embeddingsData = [data.data];
+            } else {
+                console.error(`[Embedding] Invalid 'data' field structure for Batch ${batchNumber}`);
                 console.error(`data type: ${typeof data.data}`);
                 console.error(`data value: ${JSON.stringify(data.data).substring(0, 200)}`);
-                throw new Error(`Invalid API response structure: 'data' is not an array`);
+                throw new Error(`Invalid API response structure: 'data' field has unexpected format`);
             }
 
-            if (data.data.length === 0) {
-                console.warn(`[Embedding] Warning: Batch ${batchNumber} returned empty embeddings array`);
-            }
-            
             // 简单的 Log，证明并发正在跑
             // console.log(`[Embedding] ✅ Batch ${batchNumber} completed (${batchTexts.length} items).`);
-            
-            return data.data.sort((a, b) => a.index - b.index).map(item => item.embedding);
+
+            return embeddingsData.map(item => item.embedding);
 
         } catch (e) {
             console.warn(`[Embedding] Batch ${batchNumber}, Attempt ${attempt} failed: ${e.message}`);
@@ -136,7 +171,7 @@ async function getEmbeddingsBatch(texts, config) {
     const worker = async (workerId) => {
         while (true) {
             // 🔒 获取任务索引 (原子操作模拟)
-            const batchIndex = cursor++; 
+            const batchIndex = cursor++;
             if (batchIndex >= batches.length) break; // 没任务了，下班
 
             const batchTexts = batches[batchIndex];
