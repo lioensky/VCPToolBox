@@ -338,9 +338,13 @@ class ChatCompletionHandler {
             const modelNameLower = originalBody.model.toLowerCase();
             const isChinaModel = chinaModel1.some(m => modelNameLower.includes(m.toLowerCase()));
             if (isChinaModel) {
-                originalBody.enable_thinking = chinaModel1Cot;
+                if (chinaModel1Cot) {
+                    originalBody.thinking = { type: "enabled" };
+                } else {
+                    delete originalBody.thinking;
+                }
                 if (DEBUG_MODE) {
-                    console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。设置 enable_thinking = ${chinaModel1Cot}`);
+                    console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。设置 thinking = ${JSON.stringify(originalBody.thinking || 'disabled')}`);
                 }
             }
         }
