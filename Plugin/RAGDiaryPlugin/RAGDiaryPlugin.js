@@ -620,6 +620,104 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 🌟 V4.1 新增：上下文日记去重 - 提取前缀索引
+     * 扫描所有 assistant 消息中的 DailyNote create 工具调用，
+     * 提取 Content 字段的前 80 个字符作为去重索引。
+     * @param {Array} messages - 完整的消息数组
+     * @returns {Set<string>} 去重前缀索引集合
+     */
+    _extractContextDiaryPrefixes(messages) {
+        const prefixes = new Set();
+        const PREFIX_LEN = 80;
+
+        for (const msg of messages) {
+            if (msg.role !== 'assistant') continue;
+
+            const content = typeof msg.content === 'string'
+                ? msg.content
+                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+
+            if (!content.includes('TOOL_REQUEST')) continue;
+
+            // 匹配所有工具调用块
+            const blockRegex = /<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi;
+            let blockMatch;
+            while ((blockMatch = blockRegex.exec(content)) !== null) {
+                const block = blockMatch[1];
+
+                // 提取键值对（「始」...「末」格式）
+                const kvRegex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
+                const fields = {};
+                let kvMatch;
+                while ((kvMatch = kvRegex.exec(block)) !== null) {
+                    fields[kvMatch[1].toLowerCase()] = kvMatch[2].trim();
+                }
+
+                // 仅处理 DailyNote create 指令
+                if (fields.tool_name?.toLowerCase() === 'dailynote' &&
+                    fields.command?.toLowerCase() === 'create' &&
+                    fields.content) {
+                    const prefix = fields.content.substring(0, PREFIX_LEN).trim();
+                    if (prefix.length > 0) {
+                        prefixes.add(prefix);
+                    }
+                }
+            }
+        }
+
+        if (prefixes.size > 0) {
+            console.log(`[RAGDiaryPlugin] 🧹 Context Dedup: 从上下文提取了 ${prefixes.size} 条日记写入前缀索引`);
+        }
+        return prefixes;
+    }
+
+    /**
+     * 🌟 V4.1 新增：上下文日记去重 - 过滤已在上下文中的召回结果
+     * @param {Array} results - RAG 搜索结果数组 [{text, score, ...}]
+     * @param {Set<string>} prefixes - 上下文日记前缀索引
+     * @returns {Array} 过滤后的结果
+     */
+    _filterContextDuplicates(results, prefixes) {
+        if (!prefixes || prefixes.size === 0 || !results || results.length === 0) {
+            return results;
+        }
+
+        const PREFIX_LEN = 80;
+        const before = results.length;
+
+        const filtered = results.filter(r => {
+            if (!r.text) return true;
+
+            // 日记条目格式: "[2026-02-15] - 角色名\n[14:00] 内容..."
+            // 需要跳过日期头 "[yyyy-MM-dd] - name\n" 来匹配 Content 字段
+            let body = r.text.trim();
+            const headerMatch = body.match(/^\[\d{4}-\d{2}-\d{2}\]\s*-\s*.*?\n/);
+            if (headerMatch) {
+                body = body.substring(headerMatch[0].length);
+            }
+
+            const resultPrefix = body.substring(0, PREFIX_LEN).trim();
+            if (resultPrefix.length === 0) return true;
+
+            // 前缀匹配：检查 resultPrefix 是否与任一上下文前缀的开头相同
+            for (const ctxPrefix of prefixes) {
+                // 取两者较短长度进行比较
+                const compareLen = Math.min(resultPrefix.length, ctxPrefix.length);
+                if (compareLen > 10 && resultPrefix.substring(0, compareLen) === ctxPrefix.substring(0, compareLen)) {
+                    return false; // 命中去重，过滤掉
+                }
+            }
+            return true;
+        });
+
+        const removed = before - filtered.length;
+        if (removed > 0) {
+            console.log(`[RAGDiaryPlugin] 🧹 Context Dedup: 过滤了 ${removed} 条与上下文工具调用重复的召回结果`);
+        }
+        return filtered;
+    }
+
+    /**
      * 更精确的 Base64 检测函数
      * @param {string} str - 要检测的字符串
      * @returns {boolean} 是否可能是 Base64 数据
@@ -883,6 +981,9 @@ class RAGDiaryPlugin {
             const combinedTextForTimeParsing = [userContent, aiContent].filter(Boolean).join('\n');
             const timeRanges = this.timeParser.parse(combinedTextForTimeParsing);
 
+            // 🌟 V4.1: 上下文日记去重 - 提取当前上下文中所有 DailyNote create 的 Content 前缀
+            const contextDiaryPrefixes = this._extractContextDiaryPrefixes(messages);
+
             // 3. 循环处理每个识别到的 system 消息
             const newMessages = JSON.parse(JSON.stringify(messages));
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
@@ -904,7 +1005,8 @@ class RAGDiaryPlugin {
                     dynamicParams.tagWeight, // 🌟 传递动态 Tag 权重
                     dynamicParams.tagTruncationRatio, // 🌟 传递动态截断比例
                     dynamicParams.metrics, // 传递指标用于日志
-                    historySegments // 🌟 Tagmemo V4: 传递历史分段
+                    historySegments, // 🌟 Tagmemo V4: 传递历史分段
+                    contextDiaryPrefixes // 🌟 V4.1: 传递上下文日记去重前缀
                 );
 
                 newMessages[index].content = processedContent;
@@ -931,7 +1033,7 @@ class RAGDiaryPlugin {
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = []) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set()) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -1057,7 +1159,8 @@ class RAGDiaryPlugin {
                                 tagTruncationRatio: tagTruncationRatio,
                                 metrics: metrics,
                                 historySegments: historySegments,
-                                processedDiaries: processedDiaries
+                                processedDiaries: processedDiaries,
+                                contextDiaryPrefixes // 🌟 V4.1
                             });
                             return { placeholder, content: retrievedContent };
                         } catch (error) {
@@ -1095,7 +1198,8 @@ class RAGDiaryPlugin {
                             defaultTagWeight: dynamicTagWeight, // 🌟 传入动态权重
                             tagTruncationRatio: tagTruncationRatio, // 🌟 传入截断比例
                             metrics: metrics,
-                            historySegments: historySegments // 🌟 传入历史分段
+                            historySegments: historySegments, // 🌟 传入历史分段
+                            contextDiaryPrefixes // 🌟 V4.1: 传入上下文日记去重前缀
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1230,7 +1334,8 @@ class RAGDiaryPlugin {
                             tagTruncationRatio: tagTruncationRatio,
                             metrics: metrics,
                             historySegments: historySegments,
-                            processedDiaries: processedDiaries
+                            processedDiaries: processedDiaries,
+                            contextDiaryPrefixes // 🌟 V4.1
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1301,7 +1406,8 @@ class RAGDiaryPlugin {
                                 defaultTagWeight: dynamicTagWeight, // 🌟 传入动态权重
                                 tagTruncationRatio: tagTruncationRatio, // 🌟 传入截断比例
                                 metrics: metrics,
-                                historySegments: historySegments // 🌟 传入历史分段
+                                historySegments: historySegments, // 🌟 传入历史分段
+                                contextDiaryPrefixes // 🌟 V4.1: 传入上下文日记去重前缀
                             });
 
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -1458,7 +1564,8 @@ class RAGDiaryPlugin {
             tagTruncationRatio,
             metrics,
             historySegments,
-            processedDiaries // 🛡️ 循环引用检测
+            processedDiaries, // 🛡️ 循环引用检测
+            contextDiaryPrefixes = new Set() // 🌟 V4.1: 上下文日记去重前缀
         } = options;
 
         const totalK = Math.max(1, Math.round(dynamicK * kMultiplier));
@@ -1552,7 +1659,8 @@ class RAGDiaryPlugin {
                     defaultTagWeight,
                     tagTruncationRatio,
                     metrics,
-                    historySegments
+                    historySegments,
+                    contextDiaryPrefixes // 🌟 V4.1: 透传上下文日记去重前缀
                 });
                 return { name: allocation.name, content, k: allocation.k, success: true };
             } catch (e) {
@@ -1691,7 +1799,8 @@ class RAGDiaryPlugin {
             defaultTagWeight = 0.15, // 🌟 新增默认权重参数
             tagTruncationRatio = 0.5, // 🌟 新增截断比例
             metrics = {},
-            historySegments = [] // 🌟 Tagmemo V4
+            historySegments = [], // 🌟 Tagmemo V4
+            contextDiaryPrefixes = new Set() // 🌟 V4.1: 上下文日记去重前缀
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -1737,9 +1846,11 @@ class RAGDiaryPlugin {
 
         const displayName = dbName + '日记本';
         const finalK = Math.max(1, Math.round(dynamicK * kMultiplier));
+        // 🧹 V4.1: 多取 contextDiaryPrefixes.size 条作为去重补偿缓冲
+        const dedupBuffer = contextDiaryPrefixes.size;
         const kForSearch = useRerank
-            ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier))
-            : finalK;
+            ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier) + dedupBuffer)
+            : finalK + dedupBuffer;
 
         // 准备元数据用于生成自描述区块
         const metadata = {
@@ -1788,6 +1899,7 @@ class RAGDiaryPlugin {
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- Time-aware path ---
             let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTagsForSearch);
+            ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes); // 🧹 V4.1: 上下文去重
 
             if (useRerank) {
                 ragResults = await this._rerankDocuments(userContent, ragResults, finalK);
@@ -1847,7 +1959,10 @@ class RAGDiaryPlugin {
             });
 
             const resultsArrays = await Promise.all(searchPromises);
-            const flattenedResults = resultsArrays.flat();
+            let flattenedResults = resultsArrays.flat();
+
+            // 🧹 V4.1: 上下文去重（在 SVD 去重之前先过滤掉与上下文工具调用重复的条目）
+            flattenedResults = this._filterContextDuplicates(flattenedResults, contextDiaryPrefixes);
 
             // 🌟 Tagmemo V4: Intelligent Deduplication
             // 使用 KnowledgeBaseManager 提供的去重接口 (封装了 SVD + Residual)
