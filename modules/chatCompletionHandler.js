@@ -338,13 +338,14 @@ class ChatCompletionHandler {
             const modelNameLower = originalBody.model.toLowerCase();
             const isChinaModel = chinaModel1.some(m => modelNameLower.includes(m.toLowerCase()));
             if (isChinaModel) {
-                // 显式设置 enabled 或 disabled
-                originalBody.thinking = {
-                    type: chinaModel1Cot ? "enabled" : "disabled"
-                };
+                if (chinaModel1Cot) {
+                    originalBody.thinking = { type: "enabled" };
+                } else {
+                    delete originalBody.thinking;
+                }
                 
                 if (DEBUG_MODE) {
-                    console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。设置 thinking = ${JSON.stringify(originalBody.thinking)}`);
+                    console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。思维链状态: ${chinaModel1Cot ? '开启 (enabled)' : '关闭 (已移除字段)'}`);
                 }
             }
         }
