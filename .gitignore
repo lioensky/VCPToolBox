@@ -185,6 +185,3 @@ Plugin/MIDITranslator/config.env
 
 # 虚拟环境
 .venv/
-
-Plugin/UserAuth/code.bin
-Plugin/DailyHot/dailyhot_cache.md
