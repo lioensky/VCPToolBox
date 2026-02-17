@@ -203,8 +203,8 @@ class VCPTavern {
 
         // --- 计算时间间隔逻辑 ---
         const now = Date.now();
-        let lastChatTimeStr = '从未';
-        let timeSinceLastChatStr = '首次对话';
+        let lastChatTimeStr = '';
+        let timeSinceLastChatStr = '';
 
         // 获取会话唯一标识
         const sessionKey = this._getSessionKey(messages, explicitSessionId);
@@ -217,10 +217,10 @@ class VCPTavern {
             
             // 格式化上次时间
             const lastDate = new Date(lastTime);
-            lastChatTimeStr = lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE });
+            lastChatTimeStr = `上次对话时间：${lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE })}`;
             
             // 格式化时间间隔
-            timeSinceLastChatStr = this._formatDuration(diff);
+            timeSinceLastChatStr = `距离上次对话已过去 ${this._formatDuration(diff)}`;
             
             if (this.debugMode) {
                 console.log(`[VCPTavern] 预设 ${presetName} (ID:${sessionKey}) 上次访问: ${lastChatTimeStr}, 间隔: ${timeSinceLastChatStr}`);

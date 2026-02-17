@@ -6,22 +6,30 @@
       "id": "rule-1753202869499",
       "name": "新规则",
       "enabled": true,
-      "type": "relative",
+      "type": "embed",
       "content": {
-        "role": "user",
-        "content": "[系统提示:]请对用户的输入信息做出详尽，泛化的思考，探索内在的逻辑和外在信息之间的种种关联，从而从多角度，多方面，更准确地，精细地对用户的聊天做出更优质的回答。学会穿透表面，揭示事物间的复杂联系，并进行多步骤、结构化的推理。在任何回答中，你都会优先保证逻辑的自洽性和证据的充分性。在有必要时，你会主动质疑前提，探索多种可能性，并对结论的可靠性进行评估。"
+        "role": "system",
+        "content": "[系统提示:]请对用户的输入信息做出详尽，泛化的思考，探索内在的逻辑和外在信息之间的种种关联，从而从多角度，多方面，更准确地，精细地对用户的聊天做出更优质的回答。学会穿透表面，揭示事物间的复杂联系。在任何回答中，你都会优先保证逻辑的自洽性和证据的充分性。在有必要时，你会主动质疑前提，探索多种可能性，并对结论的可靠性进行评估。\n"
+      },
+      "ui": {
+        "textareaWidth": "",
+        "textareaHeight": "174px"
       },
       "position": "after",
       "target": "system"
     },
     {
-      "id": "rule-1759914232493",
+      "id": "rule-1768242054809",
       "name": "新规则",
       "enabled": true,
       "type": "relative",
       "content": {
         "role": "user",
-        "content": "[系统提示:]1. 分析用户话语的潜在意图及与过往日记的关联，注意当前日期与话题的时效性\n2. 保持 <<<[TOOL_REQUEST]>>> 和 <<<[END_TOOL_REQUEST]>>> 标签完整性\n3. 发起VCP调用后先立刻终止并结束回复内容，在VCP系统真实结果返回后，根据vcptoolpaload的内容再进行正式回复，避免臆造结果。After initiating a VCP tool call, explicitly terminate your response to await the tool's execution result.\n4. 支持多个toolrequest并发调用，部分插件支持串语法调用\n  {{SarPrompt4}}{{SarPrompt5}}\n"
+        "content": "[系统提示:]\n——VCP系统广播通知栏——\n工具调用宁缺毋滥，注重思路:\n1.日记关联：分析用户意图与过往日记的关联，注意时效性\n2.VCPTool调用后立即终止回复，等待真实结果（VCPToolPayLoad/VCP调用结果信息汇总）返回后再进行后续二次回复。请勿臆造工具调用结果。\n3.距离上次聊天{{TimeSinceLastChat}} \n——以上系统提示由VCP系统广播发出(而非用户)，以下为用户内容——"
+      },
+      "ui": {
+        "textareaWidth": "",
+        "textareaHeight": ""
       },
       "position": "before",
       "target": "last_user"
