@@ -119,7 +119,7 @@ function renderDetail(detail, data, filename) {
         html += `
             <div class="dream-narrative-block">
                 <h4>🌙 梦境叙事</h4>
-                <div class="dream-narrative-text">${escapeHtml(data.dreamNarrative)}</div>
+                <div class="dream-narrative-text">${marked.parse(data.dreamNarrative || '')}</div>
             </div>`;
     }
 
@@ -165,7 +165,7 @@ function renderOperation(op, filename) {
                 </div>
                 <div class="dream-op-field">
                     <label>合并后内容</label>
-                    <pre class="dream-content-preview">${escapeHtml(op.newContent || '(空)')}</pre>
+                    <div class="dream-content-preview markdown-body">${marked.parse(op.newContent || '(空)')}</div>
                 </div>`;
 
             // 源日记原始内容
@@ -175,7 +175,7 @@ function renderOperation(op, filename) {
                     contentHtml += `
                         <div class="dream-source-item">
                             <strong>${escapeHtml(extractFileName(url))}</strong>
-                            <pre class="dream-content-preview">${escapeHtml(content)}</pre>
+                            <div class="dream-content-preview markdown-body">${marked.parse(content || '')}</div>
                         </div>`;
                 }
                 contentHtml += '</details>';
@@ -197,7 +197,7 @@ function renderOperation(op, filename) {
             if (op.targetContent) {
                 contentHtml += `
                     <details class="dream-source-details"><summary>📄 查看待删除内容</summary>
-                        <pre class="dream-content-preview">${escapeHtml(op.targetContent)}</pre>
+                        <div class="dream-content-preview markdown-body">${marked.parse(op.targetContent || '')}</div>
                     </details>`;
             }
             break;
@@ -213,7 +213,7 @@ function renderOperation(op, filename) {
                 </div>
                 <div class="dream-op-field">
                     <label>梦感悟内容</label>
-                    <pre class="dream-content-preview">${escapeHtml(op.insightContent || '(空)')}</pre>
+                    <div class="dream-content-preview markdown-body">${marked.parse(op.insightContent || '(空)')}</div>
                 </div>`;
             break;
         }
