@@ -192,19 +192,19 @@ class VCPTavern {
         const triggerContent = match[1];
         let [presetName, explicitSessionId] = triggerContent.split('::');
         
-        systemMessage.content = systemMessage.content.replace(triggerRegex, '').trim();
-        if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
-
         const preset = this.presets.get(presetName);
         if (!preset || !Array.isArray(preset.rules)) {
             console.warn(`[VCPTavern] 预设 "${presetName}" 未找到或其 'rules' 格式无效。`);
             return messages;
         }
 
+        systemMessage.content = systemMessage.content.replace(triggerRegex, '').trim();
+        if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
+
         // --- 计算时间间隔逻辑 ---
         const now = Date.now();
-        let lastChatTimeStr = '从未';
-        let timeSinceLastChatStr = '首次对话';
+        let lastChatTimeStr = '';
+        let timeSinceLastChatStr = '';
 
         // 获取会话唯一标识
         const sessionKey = this._getSessionKey(messages, explicitSessionId);
@@ -217,10 +217,10 @@ class VCPTavern {
             
             // 格式化上次时间
             const lastDate = new Date(lastTime);
-            lastChatTimeStr = lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE });
+            lastChatTimeStr = `上次对话时间：${lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE })}`;
             
             // 格式化时间间隔
-            timeSinceLastChatStr = this._formatDuration(diff);
+            timeSinceLastChatStr = `距离上次对话已过去 ${this._formatDuration(diff)}`;
             
             if (this.debugMode) {
                 console.log(`[VCPTavern] 预设 ${presetName} (ID:${sessionKey}) 上次访问: ${lastChatTimeStr}, 间隔: ${timeSinceLastChatStr}`);
@@ -241,37 +241,81 @@ class VCPTavern {
                 .replace(/\{\{LastChatTime\}\}/g, lastChatTimeStr)
                 .replace(/\{\{TimeSinceLastChat\}\}/g, timeSinceLastChatStr);
         };
+
+        // 辅助函数：确保注入内容是消息对象格式
+        const ensureMessageObject = (content, defaultRole = 'system') => {
+            if (typeof content === 'string') {
+                return { role: defaultRole, content: content };
+            }
+            return content;
+        };
         
         let newMessages = [...messages];
 
         // 按照注入规则处理
-        // 为了处理深度注入，我们先处理相对注入，再处理深度注入
+        // 为了处理深度注入，我们先处理嵌入注入，再处理相对注入，最后处理深度注入
+        const embedRules = preset.rules.filter(r => r.enabled && r.type === 'embed');
         const relativeRules = preset.rules.filter(r => r.enabled && r.type === 'relative').sort((a, b) => (a.position === 'before' ? -1 : 1));
         const depthRules = preset.rules.filter(r => r.enabled && r.type === 'depth').sort((a, b) => b.depth - a.depth);
 
-        // 相对注入
+        // 1. 嵌入注入 (直接修改现有消息内容) - 恢复兼容老版本
+        for (const rule of embedRules) {
+            let textToEmbed = typeof rule.content === 'object' ? rule.content.content : rule.content;
+            if (typeof textToEmbed !== 'string') continue;
+
+            // 解析时间变量
+            textToEmbed = resolveExtendedVariables(textToEmbed);
+
+            if (rule.target === 'system') {
+                const systemMsg = newMessages.find(m => m.role === 'system');
+                if (systemMsg && typeof systemMsg.content === 'string') {
+                    if (rule.position === 'before') {
+                        systemMsg.content = textToEmbed.trim() + '\n\n' + systemMsg.content.trim();
+                    } else { // after
+                        systemMsg.content = systemMsg.content.trim() + '\n\n' + textToEmbed.trim();
+                    }
+                }
+            } else if (rule.target === 'last_user') {
+                let lastUserIndex = -1;
+                for (let i = newMessages.length - 1; i >= 0; i--) {
+                    if (newMessages[i].role === 'user') {
+                        lastUserIndex = i;
+                        break;
+                    }
+                }
+                if (lastUserIndex !== -1 && typeof newMessages[lastUserIndex].content === 'string') {
+                    if (rule.position === 'before') {
+                        newMessages[lastUserIndex].content = textToEmbed.trim() + '\n\n' + newMessages[lastUserIndex].content.trim();
+                    } else { // after
+                        newMessages[lastUserIndex].content = newMessages[lastUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
+                    }
+                }
+            }
+        }
+
+        // 2. 相对注入
         for (const rule of relativeRules) {
             // 即时解析时间变量（包含新变量），将当前时间"烤死"进注入内容
-            // 使用临时定义的 resolveExtendedVariables 逻辑
             let contentToInject = rule.content;
             
-            // 手动应用扩展变量替换
             if (typeof contentToInject === 'string') {
                 contentToInject = resolveExtendedVariables(contentToInject);
             } else if (typeof contentToInject === 'object') {
-                // 简单的对象深拷贝和替换
                 const contentStr = JSON.stringify(contentToInject);
                 const resolvedStr = resolveExtendedVariables(contentStr);
                 contentToInject = JSON.parse(resolvedStr);
             }
+
+            // 确保是对象格式
+            const msgObj = ensureMessageObject(contentToInject);
             
             if (rule.target === 'system') {
                 const systemIndex = newMessages.findIndex(m => m.role === 'system');
                 if (systemIndex !== -1) {
                     if (rule.position === 'before') {
-                        newMessages.splice(systemIndex, 0, contentToInject);
+                        newMessages.splice(systemIndex, 0, msgObj);
                     } else { // after
-                        newMessages.splice(systemIndex + 1, 0, contentToInject);
+                        newMessages.splice(systemIndex + 1, 0, msgObj);
                     }
                 }
             } else if (rule.target === 'last_user') {
@@ -284,14 +328,12 @@ class VCPTavern {
                 }
                 if (lastUserIndex !== -1) {
                      if (rule.position === 'after') {
-                        newMessages.splice(lastUserIndex + 1, 0, contentToInject);
+                        newMessages.splice(lastUserIndex + 1, 0, msgObj);
                     } else { // before
-                        newMessages.splice(lastUserIndex, 0, contentToInject);
+                        newMessages.splice(lastUserIndex, 0, msgObj);
                     }
                 }
             } else if (rule.target === 'all_user') {
-                // 对所有用户消息进行注入
-                // 从后往前遍历，避免 splice 后索引错位
                 const userIndices = [];
                 for (let i = 0; i < newMessages.length; i++) {
                     if (newMessages[i].role === 'user') {
@@ -299,10 +341,8 @@ class VCPTavern {
                     }
                 }
                 
-                // 根据 position 决定插入位置，从后往前处理避免索引偏移
                 for (let j = userIndices.length - 1; j >= 0; j--) {
                     const userIndex = userIndices[j];
-                    // 每次注入都重新解析时间
                     let clonedContent = rule.content;
                     if (typeof clonedContent === 'string') {
                         clonedContent = resolveExtendedVariables(clonedContent);
@@ -312,23 +352,20 @@ class VCPTavern {
                         clonedContent = JSON.parse(resolvedStr);
                     }
 
+                    const clonedMsgObj = ensureMessageObject(clonedContent);
+
                     if (rule.position === 'after') {
-                        newMessages.splice(userIndex + 1, 0, clonedContent);
+                        newMessages.splice(userIndex + 1, 0, clonedMsgObj);
                     } else { // before
-                        newMessages.splice(userIndex, 0, clonedContent);
+                        newMessages.splice(userIndex, 0, clonedMsgObj);
                     }
-                }
-                
-                if (this.debugMode) {
-                    console.log(`[VCPTavern] all_user 注入完成，共注入 ${userIndices.length} 条消息`);
                 }
             }
         }
 
-        // 深度注入
+        // 3. 深度注入
         for (const rule of depthRules) {
             if (rule.depth > 0) {
-                // 即时解析时间变量（包含新变量）
                 let contentToInject = rule.content;
                 if (typeof contentToInject === 'string') {
                     contentToInject = resolveExtendedVariables(contentToInject);
@@ -337,16 +374,16 @@ class VCPTavern {
                     const resolvedStr = resolveExtendedVariables(contentStr);
                     contentToInject = JSON.parse(resolvedStr);
                 }
+
+                const msgObj = ensureMessageObject(contentToInject);
                 
-                // 如果消息长度足以支持深度注入，则按深度注入
                 if (rule.depth < newMessages.length) {
                     const injectionIndex = newMessages.length - rule.depth;
-                    newMessages.splice(injectionIndex, 0, contentToInject);
+                    newMessages.splice(injectionIndex, 0, msgObj);
                 } else {
-                    // 否则，作为兜底，注入到 system prompt 之后
                     const systemIndex = newMessages.findIndex(m => m.role === 'system');
                     if (systemIndex !== -1) {
-                        newMessages.splice(systemIndex + 1, 0, contentToInject);
+                        newMessages.splice(systemIndex + 1, 0, msgObj);
                     }
                 }
             }
