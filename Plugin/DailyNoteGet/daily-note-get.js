@@ -42,7 +42,8 @@ async function getAllCharacterDiaries() {
                                 try {
                                     const content = await fs.readFile(filePath, 'utf-8');
                                     debugLog(`Read content from ${file} (length: ${content.length})`);
-                                    return content;
+                                    // 在内容前添加本地文件路径信息
+                                    return `[File: ${filePath}]\n${content}`;
                                 } catch (readErr) {
                                     console.error(`[DailyNoteGet] Error reading diary file ${filePath}:`, readErr.message);
                                     return `[Error reading file: ${file}]`; // Include error marker in content

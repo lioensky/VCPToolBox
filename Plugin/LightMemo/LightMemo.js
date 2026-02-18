@@ -310,7 +310,11 @@ class LightMemoPlugin {
                 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})`
                 : 'N/A';
             
+            const localUrl = r.sourceFile ? `file:///${r.sourceFile.replace(/\\/g, '/')}` : '';
             content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
+            if (localUrl) {
+                content += `    [路径: ${localUrl}]\n`;
+            }
             if (r.tagBoostInfo) {
                 // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行
                 const { matchedTags = [], coreTagsMatched = [] } = r.tagBoostInfo;

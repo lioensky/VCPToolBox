@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,21 +13,23 @@
     <script src="easymde.min.js"></script>
     <!-- Markdown Renderer -->
     <script src="marked.min.js"></script>
-   <style>
+    <style>
         /* EasyMDE 主题适配 */
         .editor-toolbar {
             background-color: var(--background-color-light) !important;
             border-color: var(--border-color) !important;
         }
+
         .editor-toolbar button {
             color: var(--text-color-primary) !important;
         }
+
         .editor-toolbar button:hover,
         .editor-toolbar button.active {
             background-color: var(--primary-color-translucent) !important;
             border-color: var(--border-color) !important;
         }
-        
+
         .CodeMirror {
             background-color: var(--background-color) !important;
             color: var(--text-color-primary) !important;
@@ -34,15 +37,19 @@
             height: auto !important;
             min-height: 500px !important;
         }
+
         .CodeMirror-scroll {
             min-height: 500px !important;
         }
+
         .CodeMirror-cursor {
             border-left-color: var(--text-color-primary) !important;
         }
+
         body .CodeMirror-selected {
             background-color: var(--primary-color-translucent) !important;
         }
+
         .CodeMirror-gutters {
             background-color: var(--background-color-light) !important;
             border-right: 1px solid var(--border-color) !important;
@@ -54,12 +61,12 @@
             border-radius: 3px;
             padding: 0 2px;
         }
-        
+
         /* 修复全屏预览重叠问题 */
         .editor-preview-active .CodeMirror {
             display: none !important;
         }
-        
+
         /* 并排预览模式样式 */
         .editor-preview-side {
             background-color: var(--background-color) !important;
@@ -67,260 +74,325 @@
             border-left: 1px solid var(--border-color) !important;
             padding: 10px 20px !important;
         }
-        
+
         /* 全屏预览模式样式 - 只设置颜色，让EasyMDE处理布局 */
         .editor-preview {
             background-color: var(--background-color) !important;
             color: var(--text-color-primary) !important;
             padding: 20px !important;
         }
-        
+
         /* 预览模式下的Markdown样式 */
-        .editor-preview h1, .editor-preview-side h1,
-        .editor-preview h2, .editor-preview-side h2,
-        .editor-preview h3, .editor-preview-side h3 {
+        .editor-preview h1,
+        .editor-preview-side h1,
+        .editor-preview h2,
+        .editor-preview-side h2,
+        .editor-preview h3,
+        .editor-preview-side h3 {
             color: var(--text-color-primary) !important;
         }
-        
-        .editor-preview a, .editor-preview-side a {
+
+        .editor-preview a,
+        .editor-preview-side a {
             color: var(--primary-color) !important;
         }
-        
-        .editor-preview code, .editor-preview-side code {
+
+        .editor-preview code,
+        .editor-preview-side code {
             background-color: var(--background-color-light) !important;
             color: var(--text-color-primary) !important;
             padding: 2px 4px;
             border-radius: 3px;
         }
-        
-        .editor-preview pre, .editor-preview-side pre {
+
+        .editor-preview pre,
+        .editor-preview-side pre {
             background-color: var(--background-color-light) !important;
             color: var(--text-color-primary) !important;
             padding: 10px;
             border-radius: 5px;
         }
-        
+
         /* 预览模式下的 Markdown 渲染样式 */
-        .editor-preview h1, .editor-preview-side h1,
-        .editor-preview h2, .editor-preview-side h2,
-        .editor-preview h3, .editor-preview-side h3,
-        .editor-preview h4, .editor-preview-side h4,
-        .editor-preview h5, .editor-preview-side h5,
-        .editor-preview h6, .editor-preview-side h6 {
+        .editor-preview h1,
+        .editor-preview-side h1,
+        .editor-preview h2,
+        .editor-preview-side h2,
+        .editor-preview h3,
+        .editor-preview-side h3,
+        .editor-preview h4,
+        .editor-preview-side h4,
+        .editor-preview h5,
+        .editor-preview-side h5,
+        .editor-preview h6,
+        .editor-preview-side h6 {
             color: var(--text-color-primary) !important;
             margin-top: 1em;
             margin-bottom: 0.5em;
         }
-        
-        .editor-preview a, .editor-preview-side a {
+
+        .editor-preview a,
+        .editor-preview-side a {
             color: var(--primary-color) !important;
         }
-        
-        .editor-preview code, .editor-preview-side code {
+
+        .editor-preview code,
+        .editor-preview-side code {
             background-color: var(--background-color-light) !important;
             color: var(--text-color-primary) !important;
             padding: 2px 4px;
             border-radius: 3px;
         }
-        
-        .editor-preview pre, .editor-preview-side pre {
+
+        .editor-preview pre,
+        .editor-preview-side pre {
             background-color: var(--background-color-light) !important;
             color: var(--text-color-primary) !important;
             padding: 10px;
             border-radius: 5px;
             overflow-x: auto;
         }
-        
-        .editor-preview pre code, .editor-preview-side pre code {
+
+        .editor-preview pre code,
+        .editor-preview-side pre code {
             background-color: transparent !important;
         }
-        
-        .editor-preview blockquote, .editor-preview-side blockquote {
+
+        .editor-preview blockquote,
+        .editor-preview-side blockquote {
             border-left: 4px solid var(--border-color) !important;
             padding-left: 10px;
             margin-left: 0;
             color: var(--text-color-secondary) !important;
         }
-        
-        .editor-preview table, .editor-preview-side table {
+
+        .editor-preview table,
+        .editor-preview-side table {
             border-collapse: collapse;
             width: 100%;
             margin: 1em 0;
         }
-        
-        .editor-preview th, .editor-preview-side th,
-        .editor-preview td, .editor-preview-side td {
+
+        .editor-preview th,
+        .editor-preview-side th,
+        .editor-preview td,
+        .editor-preview-side td {
             border: 1px solid var(--border-color) !important;
             padding: 8px;
             color: var(--text-color-primary) !important;
         }
-        
-        .editor-preview th, .editor-preview-side th {
+
+        .editor-preview th,
+        .editor-preview-side th {
             background-color: var(--background-color-light) !important;
             font-weight: bold;
         }
-        
-        .editor-preview hr, .editor-preview-side hr {
+
+        .editor-preview hr,
+        .editor-preview-side hr {
             border: none;
             border-top: 1px solid var(--border-color) !important;
             margin: 1em 0;
         }
-        
-        .editor-preview ul, .editor-preview-side ul,
-        .editor-preview ol, .editor-preview-side ol {
+
+        .editor-preview ul,
+        .editor-preview-side ul,
+        .editor-preview ol,
+        .editor-preview-side ol {
             color: var(--text-color-primary) !important;
             padding-left: 2em;
         }
-        
-        .editor-preview p, .editor-preview-side p {
+
+        .editor-preview p,
+        .editor-preview-side p {
             color: var(--text-color-primary) !important;
             line-height: 1.6;
         }
-        
-       .draggable-list {
-           list-style: none;
-           padding: 0;
-           margin-top: 1rem;
-       }
-       .draggable-list li {
-           background-color: var(--background-color-light);
-           padding: 15px 20px;
-           margin-bottom: 10px;
-           border-radius: 8px;
-           cursor: grab;
-           display: flex;
-           align-items: center;
-           border: 1px solid var(--border-color);
-           transition: background-color 0.2s, box-shadow 0.2s;
-           user-select: none;
-       }
-       .draggable-list li.dragging {
-           opacity: 0.6;
-           background-color: var(--primary-color-translucent);
-           box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-       }
-       .draggable-list li .plugin-info {
-           display: flex;
-           flex-direction: column;
-       }
-       .draggable-list li .plugin-name {
-           font-weight: bold;
-           color: var(--text-color-primary);
-       }
-       .draggable-list li .plugin-description {
-           font-size: 0.9em;
-           color: var(--text-color-secondary);
-           margin-top: 4px;
-       }
-       .preprocessor-order-controls {
-           display: flex;
-           gap: 15px;
-           align-items: center;
-           margin-bottom: 1rem;
-       }
-       #plugin-nav a {
-           display: block;
-           white-space: pre-wrap;
-           line-height: 1.3;
-           padding: 10px 12px;
-           min-height: 40px; /* 确保足够高度容纳两行 */
-           align-items: center;
-       }
-       #plugin-nav .plugin-original-name {
-           display: block;
-           font-size: 0.75em;
-           color: var(--text-color-secondary);
-           font-weight: normal;
-           font-style: italic;
-           margin-top: 1px;
-           padding-left: 20px; /* 与图标对齐 */
-       }
-       #plugin-nav li {
-           padding: 0; /* 调整li padding以适应a的padding */
-       }
-       /* VCP Forum Styles */
-       .forum-controls {
-           margin-bottom: 1rem;
-           display: flex;
-           align-items: center;
-           gap: 1rem;
-       }
-       .forum-posts-container {
-           display: flex;
-           flex-direction: column;
-           gap: 1rem;
-       }
-       .forum-post-item {
-           background-color: var(--background-color-light);
-           border: 1px solid var(--border-color);
-           border-radius: 8px;
-           padding: 1rem;
-           cursor: pointer;
-           transition: background-color 0.2s;
-       }
-       .forum-post-item:hover {
-           background-color: var(--primary-color-translucent);
-       }
-       .forum-post-header {
-           font-weight: bold;
-           font-size: 1.1em;
-           margin-bottom: 0.5rem;
-       }
-       .forum-post-meta {
-           font-size: 0.9em;
-           color: var(--text-color-secondary);
-       }
-       .forum-post-content-view {
-           margin-top: 1rem;
-           padding: 1rem;
-           background-color: var(--background-color);
-           border-radius: 8px;
-       }
-       .forum-reply-area {
-           margin-top: 1rem;
-           border-top: 1px solid var(--border-color);
-           padding-top: 1rem;
-       }
-       .forum-reply-area textarea {
-           width: 100%;
-           min-height: 100px;
-           margin-bottom: 0.5rem;
-       }
-       .forum-posts-list tr.pinned-post {
-           background-color: var(--primary-color-translucent);
-           font-weight: bold;
-       }
-       .forum-posts-list tr.pinned-post:hover {
-           background-color: var(--primary-color);
-           color: var(--background-color);
-       }
-       .forum-posts-list tr.pinned-post .post-meta {
+
+        .draggable-list {
+            list-style: none;
+            padding: 0;
+            margin-top: 1rem;
+        }
+
+        .draggable-list li {
+            background-color: var(--background-color-light);
+            padding: 15px 20px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: grab;
+            display: flex;
+            align-items: center;
+            border: 1px solid var(--border-color);
+            transition: background-color 0.2s, box-shadow 0.2s;
+            user-select: none;
+        }
+
+        .draggable-list li.dragging {
+            opacity: 0.6;
+            background-color: var(--primary-color-translucent);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .draggable-list li .plugin-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .draggable-list li .plugin-name {
+            font-weight: bold;
             color: var(--text-color-primary);
-       }
-       
-   </style>
- </head>
- <body>
-   <div class="solar-system-bg" aria-hidden="true">
-       <div class="stars"></div>
-       <div class="stars2"></div>
-       <div class="stars3"></div>
-       <div class="sun"></div>
-       <div class="orbit orbit-mercury"><div class="planet planet-mercury"></div></div>
-       <div class="orbit orbit-venus"><div class="planet planet-venus"></div></div>
-       <div class="orbit orbit-earth"><div class="planet planet-earth"></div></div>
-       <div class="orbit orbit-mars"><div class="planet planet-mars"></div></div>
-       <div class="orbit orbit-jupiter"><div class="planet planet-jupiter"></div></div>
-       <div class="orbit orbit-saturn"><div class="planet planet-saturn"></div></div>
-       <div class="orbit orbit-uranus"><div class="planet planet-uranus"></div></div>
-       <div class="orbit orbit-neptune"><div class="planet planet-neptune"></div></div>
-       <div class="shooting-stars">
-           <div class="shooting-star"></div>
-           <div class="shooting-star"></div>
-           <div class="shooting-star"></div>
-       </div>
-       <button id="exit-immersive-button" class="exit-immersive-button">退出沉浸模式</button>
-   </div>
+        }
+
+        .draggable-list li .plugin-description {
+            font-size: 0.9em;
+            color: var(--text-color-secondary);
+            margin-top: 4px;
+        }
+
+        .preprocessor-order-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        #plugin-nav a {
+            display: block;
+            white-space: pre-wrap;
+            line-height: 1.3;
+            padding: 10px 12px;
+            min-height: 40px;
+            /* 确保足够高度容纳两行 */
+            align-items: center;
+        }
+
+        #plugin-nav .plugin-original-name {
+            display: block;
+            font-size: 0.75em;
+            color: var(--text-color-secondary);
+            font-weight: normal;
+            font-style: italic;
+            margin-top: 1px;
+            padding-left: 20px;
+            /* 与图标对齐 */
+        }
+
+        #plugin-nav li {
+            padding: 0;
+            /* 调整li padding以适应a的padding */
+        }
+
+        /* VCP Forum Styles */
+        .forum-controls {
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .forum-posts-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .forum-post-item {
+            background-color: var(--background-color-light);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .forum-post-item:hover {
+            background-color: var(--primary-color-translucent);
+        }
+
+        .forum-post-header {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 0.5rem;
+        }
+
+        .forum-post-meta {
+            font-size: 0.9em;
+            color: var(--text-color-secondary);
+        }
+
+        .forum-post-content-view {
+            margin-top: 1rem;
+            padding: 1rem;
+            background-color: var(--background-color);
+            border-radius: 8px;
+        }
+
+        .forum-reply-area {
+            margin-top: 1rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+        }
+
+        .forum-reply-area textarea {
+            width: 100%;
+            min-height: 100px;
+            margin-bottom: 0.5rem;
+        }
+
+        .forum-posts-list tr.pinned-post {
+            background-color: var(--primary-color-translucent);
+            font-weight: bold;
+        }
+
+        .forum-posts-list tr.pinned-post:hover {
+            background-color: var(--primary-color);
+            color: var(--background-color);
+        }
+
+        .forum-posts-list tr.pinned-post .post-meta {
+            color: var(--text-color-primary);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="solar-system-bg" aria-hidden="true">
+        <div class="stars"></div>
+        <div class="stars2"></div>
+        <div class="stars3"></div>
+        <div class="sun"></div>
+        <div class="orbit orbit-mercury">
+            <div class="planet planet-mercury"></div>
+        </div>
+        <div class="orbit orbit-venus">
+            <div class="planet planet-venus"></div>
+        </div>
+        <div class="orbit orbit-earth">
+            <div class="planet planet-earth"></div>
+        </div>
+        <div class="orbit orbit-mars">
+            <div class="planet planet-mars"></div>
+        </div>
+        <div class="orbit orbit-jupiter">
+            <div class="planet planet-jupiter"></div>
+        </div>
+        <div class="orbit orbit-saturn">
+            <div class="planet planet-saturn"></div>
+        </div>
+        <div class="orbit orbit-uranus">
+            <div class="planet planet-uranus"></div>
+        </div>
+        <div class="orbit orbit-neptune">
+            <div class="planet planet-neptune"></div>
+        </div>
+        <div class="shooting-stars">
+            <div class="shooting-star"></div>
+            <div class="shooting-star"></div>
+            <div class="shooting-star"></div>
+        </div>
+        <button id="exit-immersive-button" class="exit-immersive-button">退出沉浸模式</button>
+    </div>
     <header class="top-bar">
         <div class="top-bar-content">
             <button id="mobile-menu-toggle" class="mobile-menu-toggle">
@@ -351,23 +423,41 @@
             </div>
             <nav id="plugin-nav">
                 <ul>
-                    <li><a href="#" data-target="dashboard" class="active"><span class="material-symbols-outlined">dashboard</span>仪表盘</a></li>
+                    <li><a href="#" data-target="dashboard" class="active"><span
+                                class="material-symbols-outlined">dashboard</span>仪表盘</a></li>
                     <li class="nav-category">———— 核 心 功 能 ————</li>
-                    <li><a href="#" data-target="base-config"><span class="material-symbols-outlined">settings</span>全局基础配置</a></li>
-                    <li><a href="#" data-target="daily-notes-manager"><span class="material-symbols-outlined">description</span>日记知识库管理</a></li>
-                    <li><a href="#" data-target="vcp-forum"><span class="material-symbols-outlined">forum</span>VCP论坛</a></li>
-                    <li><a href="#" data-target="image-cache-editor"><span class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
-                    <li><a href="#" data-target="semantic-groups-editor"><span class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
-                    <li><a href="#" data-target="vcptavern-editor"><span class="material-symbols-outlined">casino</span>VCPTavern预设编辑</a></li>
-                    <li><a href="#" data-target="agent-files-editor"><span class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
-                    <li><a href="#" data-target="agent-assistant-config"><span class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
-                    <li><a href="#" data-target="tvs-files-editor"><span class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
-                    <li><a href="#" data-target="tool-list-editor"><span class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
-                    <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
-                    <li><a href="#" data-target="thinking-chains-editor"><span class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
-                    <li><a href="#" data-target="schedule-manager"><span class="material-symbols-outlined">calendar_month</span>日程管理</a></li>
-                    <li><a href="#" data-target="rag-tuning"><span class="material-symbols-outlined">tune</span>浪潮RAG调参</a></li>
-                    <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
+                    <li><a href="#" data-target="base-config"><span
+                                class="material-symbols-outlined">settings</span>全局基础配置</a></li>
+                    <li><a href="#" data-target="daily-notes-manager"><span
+                                class="material-symbols-outlined">description</span>日记知识库管理</a></li>
+                    <li><a href="#" data-target="vcp-forum"><span
+                                class="material-symbols-outlined">forum</span>VCP论坛</a></li>
+                    <li><a href="#" data-target="image-cache-editor"><span
+                                class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
+                    <li><a href="#" data-target="semantic-groups-editor"><span
+                                class="material-symbols-outlined">hub</span>语义组编辑器</a></li>
+                    <li><a href="#" data-target="vcptavern-editor"><span
+                                class="material-symbols-outlined">casino</span>VCPTavern预设编辑</a></li>
+                    <li><a href="#" data-target="agent-files-editor"><span
+                                class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
+                    <li><a href="#" data-target="agent-assistant-config"><span
+                                class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
+                    <li><a href="#" data-target="tvs-files-editor"><span
+                                class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
+                    <li><a href="#" data-target="tool-list-editor"><span
+                                class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
+                    <li><a href="#" data-target="preprocessor-order-manager"><span
+                                class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
+                    <li><a href="#" data-target="thinking-chains-editor"><span
+                                class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
+                    <li><a href="#" data-target="schedule-manager"><span
+                                class="material-symbols-outlined">calendar_month</span>日程管理</a></li>
+                    <li><a href="#" data-target="dream-manager"><span
+                                class="material-symbols-outlined">nights_stay</span>梦境审批</a></li>
+                    <li><a href="#" data-target="rag-tuning"><span
+                                class="material-symbols-outlined">tune</span>浪潮RAG调参</a></li>
+                    <li><a href="#" data-target="server-log-viewer"><span
+                                class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li class="nav-category" id="plugins-category">———— 插 件 管 理 ————</li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
@@ -401,7 +491,7 @@
                     <div class="status-card memory-card">
                         <h3>内存使用情况</h3>
                         <div class="status-card-content">
-                             <div class="progress-circle" id="mem-progress" data-progress="0">
+                            <div class="progress-circle" id="mem-progress" data-progress="0">
                                 <svg width="120" height="120" viewBox="0 0 120 120">
                                     <circle class="progress-bg" cx="60" cy="60" r="54"></circle>
                                     <circle class="progress-bar" cx="60" cy="60" r="54"></circle>
@@ -425,7 +515,7 @@
                     <div class="status-card node-card">
                         <h3>Node.js 进程信息</h3>
                         <div class="status-card-content" id="node-info-list">
-                           <p>加载中...</p>
+                            <p>加载中...</p>
                         </div>
                     </div>
                     <div class="status-card weather-card">
@@ -433,7 +523,8 @@
                         <div class="weather-container">
                             <div class="weather-current">
                                 <div class="current-main">
-                                    <span id="weather-icon" class="material-symbols-outlined weather-icon-large">--</span>
+                                    <span id="weather-icon"
+                                        class="material-symbols-outlined weather-icon-large">--</span>
                                     <div class="current-temp-box">
                                         <div class="temp-row">
                                             <span id="weather-temp">--</span><span class="unit">°C</span>
@@ -473,7 +564,7 @@
                     <canvas id="activity-chart-canvas"></canvas>
                 </div>
             </section>
-            
+
             <section id="base-config-section" class="config-section">
                 <h2>全局基础配置 (config.env)</h2>
                 <form id="base-config-form">
@@ -501,7 +592,8 @@
                                 <div class="threshold-controls">
                                     <input type="checkbox" id="rag-threshold-enabled">
                                     <label for="rag-threshold-enabled">启用阈值:</label>
-                                    <input type="range" id="rag-threshold-value" min="0.1" max="1.0" step="0.01" value="0.7" disabled>
+                                    <input type="range" id="rag-threshold-value" min="0.1" max="1.0" step="0.01"
+                                        value="0.7" disabled>
                                     <span id="rag-threshold-display" class="threshold-value">0.70</span>
                                 </div>
                                 <div class="tags-container" id="rag-tags-container">
@@ -535,9 +627,9 @@
                             <input type="hidden" id="editing-note-folder">
                             <input type="hidden" id="editing-note-file">
                             <div class="config-editor-toolbar">
-                                 <button id="save-note-content">保存日记</button>
-                                 <button id="cancel-edit-note">取消编辑</button>
-                                 <span id="note-editor-status" class="status-message"></span>
+                                <button id="save-note-content">保存日记</button>
+                                <button id="cancel-edit-note">取消编辑</button>
+                                <span id="note-editor-status" class="status-message"></span>
                             </div>
                             <textarea id="note-content-editor" spellcheck="false"></textarea>
                         </div>
@@ -587,11 +679,12 @@
                     <div class="agent-file-editor">
                         <h3>Agent 文件内容 (.txt)</h3>
                         <div class="agent-editor-controls">
-                             <span id="editing-agent-file-display">未选择文件</span>
-                             <button id="save-agent-file-button" disabled>保存文件内容</button>
-                             <span id="agent-file-status" class="status-message"></span>
+                            <span id="editing-agent-file-display">未选择文件</span>
+                            <button id="save-agent-file-button" disabled>保存文件内容</button>
+                            <span id="agent-file-status" class="status-message"></span>
                         </div>
-                        <textarea id="agent-file-content-editor" spellcheck="false" placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt 文件..."></textarea>
+                        <textarea id="agent-file-content-editor" spellcheck="false"
+                            placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt 文件..."></textarea>
                     </div>
                 </div>
             </section>
@@ -632,7 +725,8 @@
                             <label for="aa-global-system-prompt">
                                 所有助手共享的补充系统提示词（可选）
                             </label>
-                            <textarea id="aa-global-system-prompt" rows="3" placeholder="例如：统一要求所有助手说话更温柔、避免输出敏感内容、统一使用某种语言等。"></textarea>
+                            <textarea id="aa-global-system-prompt" rows="3"
+                                placeholder="例如：统一要求所有助手说话更温柔、避免输出敏感内容、统一使用某种语言等。"></textarea>
                             <p class="aa-hint">
                                 这里的内容会自动追加到每个助手的系统提示词后面，可用于统一规定整体风格和安全边界。
                             </p>
@@ -698,115 +792,395 @@
                 </div>
             </section>
 
-           <!-- Section: Preprocessor Order Manager -->
-           <section id="preprocessor-order-manager-section" class="config-section">
-               <h2>预处理器顺序管理</h2>
-               <p class="description">在这里，您可以拖动消息预处理器插件来调整它们的执行顺序。顺序越靠上，执行越优先。系统会自动处理新插件的添加和旧插件的移除。</p>
-               <div class="preprocessor-order-controls">
-                   <button id="save-preprocessor-order-button">保存顺序并热重载</button>
-                   <span id="preprocessor-order-status" class="status-message"></span>
-               </div>
-               <ul id="preprocessor-list" class="draggable-list">
-                   <!-- 插件将动态加载到这里 -->
-               </ul>
-           </section>
+            <!-- Section: Preprocessor Order Manager -->
+            <section id="preprocessor-order-manager-section" class="config-section">
+                <h2>预处理器顺序管理</h2>
+                <p class="description">在这里，您可以拖动消息预处理器插件来调整它们的执行顺序。顺序越靠上，执行越优先。系统会自动处理新插件的添加和旧插件的移除。</p>
+                <div class="preprocessor-order-controls">
+                    <button id="save-preprocessor-order-button">保存顺序并热重载</button>
+                    <span id="preprocessor-order-status" class="status-message"></span>
+                </div>
+                <ul id="preprocessor-list" class="draggable-list">
+                    <!-- 插件将动态加载到这里 -->
+                </ul>
+            </section>
 
-           <!-- Section: Thinking Chains Editor -->
-           <section id="thinking-chains-editor-section" class="config-section">
-               <h2>思维链编辑器</h2>
-               <p class="description">管理 RAGDiaryPlugin 使用的元思考链。您可以创建不同的思考主题，并拖拽排序其中的思维簇模块。</p>
-               <div id="thinking-chains-editor-controls" class="form-actions" style="margin-bottom: 1rem;">
-                   <button id="save-thinking-chains-button">保存所有更改</button>
-                   <button id="add-thinking-chain-theme-button">添加新主题</button>
-                   <span id="thinking-chains-status" class="status-message"></span>
-               </div>
-               <div id="thinking-chains-container">
-                   <!-- Editor will be dynamically loaded here -->
-               </div>
-           </section>
+            <!-- Section: Thinking Chains Editor -->
+            <section id="thinking-chains-editor-section" class="config-section">
+                <h2>思维链编辑器</h2>
+                <p class="description">管理 RAGDiaryPlugin 使用的元思考链。您可以创建不同的思考主题，并拖拽排序其中的思维簇模块。</p>
+                <div id="thinking-chains-editor-controls" class="form-actions" style="margin-bottom: 1rem;">
+                    <button id="save-thinking-chains-button">保存所有更改</button>
+                    <button id="add-thinking-chain-theme-button">添加新主题</button>
+                    <span id="thinking-chains-status" class="status-message"></span>
+                </div>
+                <div id="thinking-chains-container">
+                    <!-- Editor will be dynamically loaded here -->
+                </div>
+            </section>
 
-           <!-- Section: VCP Forum -->
-           <section id="vcp-forum-section" class="config-section">
-               <h2>VCP 论坛</h2>
-               <div class="forum-controls">
-                   <label for="forum-board-filter">筛选板块:</label>
-                   <select id="forum-board-filter">
-                       <option value="all">全部板块</option>
-                   </select>
-                   <input type="search" id="forum-search-input" placeholder="搜索帖子标题或作者...">
-               </div>
-               <div id="forum-posts-container" class="forum-posts-container">
-                   <!-- Forum posts will be loaded here -->
-               </div>
-           </section>
+            <!-- Section: VCP Forum -->
+            <section id="vcp-forum-section" class="config-section">
+                <h2>VCP 论坛</h2>
+                <div class="forum-controls">
+                    <label for="forum-board-filter">筛选板块:</label>
+                    <select id="forum-board-filter">
+                        <option value="all">全部板块</option>
+                    </select>
+                    <input type="search" id="forum-search-input" placeholder="搜索帖子标题或作者...">
+                </div>
+                <div id="forum-posts-container" class="forum-posts-container">
+                    <!-- Forum posts will be loaded here -->
+                </div>
+            </section>
 
-           <!-- Section: Schedule Manager -->
-           <section id="schedule-manager-section" class="config-section">
-               <h2>日程管理</h2>
-               <div class="schedule-manager-container">
-                   <div class="schedule-left-panel">
-                       <div class="calendar-container card">
-                           <div class="calendar-header">
-                               <button id="prev-month" class="icon-btn"><span class="material-symbols-outlined">chevron_left</span></button>
-                               <h3 id="current-month-year">2023年 10月</h3>
-                               <button id="next-month" class="icon-btn"><span class="material-symbols-outlined">chevron_right</span></button>
-                           </div>
-                           <div id="calendar-grid" class="calendar-grid">
-                               <!-- 日历格子 -->
-                           </div>
-                       </div>
-                       <div class="add-schedule-form card">
-                           <h3>添加新日程</h3>
-                           <div class="form-group">
-                               <label for="new-schedule-time">时间</label>
-                               <input type="datetime-local" id="new-schedule-time">
-                           </div>
-                           <div class="form-group">
-                               <label for="new-schedule-content">内容</label>
-                               <textarea id="new-schedule-content" rows="3" placeholder="输入日程内容..."></textarea>
-                           </div>
-                           <button id="add-schedule-btn" class="primary-btn">添加日程</button>
-                       </div>
-                   </div>
-                   <div class="schedule-right-panel">
-                       <div class="schedule-list-container card">
-                           <div class="list-header">
-                               <h3>日程列表</h3>
-                               <div class="list-filters">
-                                   <button id="filter-all" class="filter-btn active">全部</button>
-                                   <button id="filter-upcoming" class="filter-btn">即将到来</button>
-                               </div>
-                           </div>
-                           <div id="schedule-list" class="schedule-list">
-                               <!-- 日程条目 -->
-                               <p class="empty-msg">加载中...</p>
-                           </div>
-                       </div>
-                   </div>
-               </div>
-           </section>
+            <!-- Section: Schedule Manager -->
+            <section id="schedule-manager-section" class="config-section">
+                <h2>日程管理</h2>
+                <div class="schedule-manager-container">
+                    <div class="schedule-left-panel">
+                        <div class="calendar-container card">
+                            <div class="calendar-header">
+                                <button id="prev-month" class="icon-btn"><span
+                                        class="material-symbols-outlined">chevron_left</span></button>
+                                <h3 id="current-month-year">2023年 10月</h3>
+                                <button id="next-month" class="icon-btn"><span
+                                        class="material-symbols-outlined">chevron_right</span></button>
+                            </div>
+                            <div id="calendar-grid" class="calendar-grid">
+                                <!-- 日历格子 -->
+                            </div>
+                        </div>
+                        <div class="add-schedule-form card">
+                            <h3>添加新日程</h3>
+                            <div class="form-group">
+                                <label for="new-schedule-time">时间</label>
+                                <input type="datetime-local" id="new-schedule-time">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-schedule-content">内容</label>
+                                <textarea id="new-schedule-content" rows="3" placeholder="输入日程内容..."></textarea>
+                            </div>
+                            <button id="add-schedule-btn" class="primary-btn">添加日程</button>
+                        </div>
+                    </div>
+                    <div class="schedule-right-panel">
+                        <div class="schedule-list-container card">
+                            <div class="list-header">
+                                <h3>日程列表</h3>
+                                <div class="list-filters">
+                                    <button id="filter-all" class="filter-btn active">全部</button>
+                                    <button id="filter-upcoming" class="filter-btn">即将到来</button>
+                                </div>
+                            </div>
+                            <div id="schedule-list" class="schedule-list">
+                                <!-- 日程条目 -->
+                                <p class="empty-msg">加载中...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-           <!-- Section: RAG Tuning -->
-           <section id="rag-tuning-section" class="config-section">
-               <h2>RAG 算法调参 (rag_params.json)</h2>
-               <p class="description">在这里，您可以实时调整 TagMemo 算法的各项核心参数。所有更改将立即生效，无需重启服务器。</p>
-               
-               <div class="rag-tuning-container">
-                   <div class="rag-tuning-main">
-                       <form id="rag-params-form">
-                           <div id="rag-params-content">
-                               <!-- 参数将动态加载到这里 -->
-                               <p class="loading-msg">正在加载参数...</p>
-                           </div>
-                           <div class="form-actions">
-                               <button type="submit" class="primary-btn">保存参数配置</button>
-                               <button type="button" id="reset-rag-params" class="btn-secondary">重置更改</button>
-                               <span id="rag-params-status" class="status-message"></span>
-                           </div>
-                       </form>
-                   </div>
-               </div>
-           </section>
+            <!-- Section: RAG Tuning -->
+            <section id="rag-tuning-section" class="config-section">
+                <h2>RAG 算法调参 (rag_params.json)</h2>
+                <p class="description">在这里，您可以实时调整 TagMemo 算法的各项核心参数。所有更改将立即生效，无需重启服务器。</p>
+
+                <div class="rag-tuning-container">
+                    <div class="rag-tuning-main">
+                        <form id="rag-params-form">
+                            <div id="rag-params-content">
+                                <!-- 参数将动态加载到这里 -->
+                                <p class="loading-msg">正在加载参数...</p>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="primary-btn">保存参数配置</button>
+                                <button type="button" id="reset-rag-params" class="btn-secondary">重置更改</button>
+                                <span id="rag-params-status" class="status-message"></span>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section: Dream Manager -->
+            <section id="dream-manager-section" class="config-section">
+                <h2>🌙 梦境审批</h2>
+                <p class="description">查看和审批 Agent 在梦境中发起的日记操作。批准后将执行实际的文件操作。</p>
+                <div id="dream-manager-content"></div>
+            </section>
+
+            <style>
+                /* Dream Manager Styles */
+                .dream-empty-state {
+                    text-align: center;
+                    padding: 60px 20px;
+                    opacity: 0.7;
+                }
+
+                .dream-log-card {
+                    border: 1px solid var(--border-color, #333);
+                    border-radius: 8px;
+                    margin-bottom: 12px;
+                    overflow: hidden;
+                    transition: box-shadow 0.2s;
+                }
+
+                .dream-log-card.has-pending {
+                    border-left: 3px solid #f0a500;
+                }
+
+                .dream-log-card:hover {
+                    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+                }
+
+                .dream-log-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 12px 16px;
+                    cursor: pointer;
+                    gap: 12px;
+                }
+
+                .dream-log-header:hover {
+                    background: var(--hover-bg, rgba(255, 255, 255, 0.05));
+                }
+
+                .dream-log-title {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    font-size: 0.95em;
+                }
+
+                .dream-log-meta {
+                    display: flex;
+                    gap: 16px;
+                    font-size: 0.82em;
+                    opacity: 0.6;
+                    flex-shrink: 0;
+                }
+
+                .dream-badge {
+                    font-size: 0.75em;
+                    padding: 2px 8px;
+                    border-radius: 10px;
+                    font-weight: 600;
+                }
+
+                .dream-badge.pending {
+                    background: rgba(240, 165, 0, 0.2);
+                    color: #f0a500;
+                }
+
+                .dream-badge.done {
+                    background: rgba(76, 175, 80, 0.2);
+                    color: #4caf50;
+                }
+
+                .dream-log-ops-summary {
+                    padding: 0 16px 10px;
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 6px;
+                }
+
+                .dream-op-chip {
+                    font-size: 0.75em;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    background: var(--chip-bg, rgba(255, 255, 255, 0.08));
+                }
+
+                .dream-op-chip.pending_review {
+                    color: #f0a500;
+                }
+
+                .dream-op-chip.approved {
+                    color: #4caf50;
+                }
+
+                .dream-op-chip.rejected {
+                    color: #f44336;
+                    opacity: 0.6;
+                }
+
+                .dream-op-chip.error {
+                    color: #ff5722;
+                }
+
+                .dream-log-detail {
+                    padding: 0 16px 16px;
+                    border-top: 1px solid var(--border-color, #333);
+                }
+
+                .dream-narrative-block {
+                    background: var(--card-bg, rgba(255, 255, 255, 0.03));
+                    padding: 12px;
+                    border-radius: 6px;
+                    margin-bottom: 16px;
+                }
+
+                .dream-narrative-block h4 {
+                    margin: 0 0 8px;
+                }
+
+                .dream-narrative-text {
+                    white-space: pre-wrap;
+                    font-size: 0.9em;
+                    line-height: 1.6;
+                    max-height: 300px;
+                    overflow-y: auto;
+                }
+
+                .dream-op-card {
+                    border: 1px solid var(--border-color, #333);
+                    border-radius: 6px;
+                    margin-bottom: 10px;
+                    overflow: hidden;
+                }
+
+                .dream-op-card.approved {
+                    border-left: 3px solid #4caf50;
+                }
+
+                .dream-op-card.rejected {
+                    border-left: 3px solid #f44336;
+                    opacity: 0.7;
+                }
+
+                .dream-op-card.error {
+                    border-left: 3px solid #ff5722;
+                }
+
+                .dream-op-card.pending_review {
+                    border-left: 3px solid #f0a500;
+                }
+
+                .dream-op-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 8px 12px;
+                    background: var(--card-bg, rgba(255, 255, 255, 0.03));
+                }
+
+                .dream-op-type {
+                    font-weight: 600;
+                    font-size: 0.9em;
+                }
+
+                .dream-op-status {
+                    font-size: 0.8em;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                }
+
+                .dream-op-status.pending_review {
+                    color: #f0a500;
+                }
+
+                .dream-op-status.approved {
+                    color: #4caf50;
+                }
+
+                .dream-op-status.rejected {
+                    color: #f44336;
+                }
+
+                .dream-op-body {
+                    padding: 10px 12px;
+                }
+
+                .dream-op-field {
+                    margin-bottom: 8px;
+                }
+
+                .dream-op-field label {
+                    font-size: 0.8em;
+                    opacity: 0.6;
+                    display: block;
+                    margin-bottom: 4px;
+                }
+
+                .dream-file-list {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 4px;
+                }
+
+                .dream-file-path {
+                    font-size: 0.82em;
+                    background: var(--chip-bg, rgba(255, 255, 255, 0.08));
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                }
+
+                .dream-content-preview {
+                    background: var(--card-bg, rgba(0, 0, 0, 0.15));
+                    padding: 10px;
+                    border-radius: 4px;
+                    font-size: 0.85em;
+                    white-space: pre-wrap;
+                    word-break: break-word;
+                    max-height: 250px;
+                    overflow-y: auto;
+                    margin: 4px 0;
+                }
+
+                .dream-source-details {
+                    margin-top: 8px;
+                }
+
+                .dream-source-details summary {
+                    cursor: pointer;
+                    font-size: 0.85em;
+                    opacity: 0.7;
+                }
+
+                .dream-source-item {
+                    margin-top: 6px;
+                }
+
+                .dream-op-actions {
+                    display: flex;
+                    gap: 8px;
+                    padding: 10px 12px;
+                    border-top: 1px solid var(--border-color, #333);
+                }
+
+                .dream-action-btn {
+                    padding: 6px 16px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 0.85em;
+                    font-weight: 600;
+                    transition: opacity 0.15s;
+                }
+
+                .dream-action-btn:hover {
+                    opacity: 0.85;
+                }
+
+                .dream-action-btn.approve {
+                    background: #4caf50;
+                    color: #fff;
+                }
+
+                .dream-action-btn.reject {
+                    background: #f44336;
+                    color: #fff;
+                }
+
+                .dream-reviewed-info {
+                    font-size: 0.8em;
+                    opacity: 0.5;
+                    padding: 6px 12px;
+                }
+            </style>
         </main>
     </div>
 
@@ -820,7 +1194,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const canvas = document.getElementById('vcp-animation-canvas');
-            if(canvas) {
+            if (canvas) {
                 const ctx = canvas.getContext('2d');
                 let width = canvas.offsetWidth;
                 let height = canvas.offsetHeight;
@@ -840,7 +1214,7 @@
                     draw() {
                         const theme = document.documentElement.getAttribute('data-theme') || 'dark';
                         const particleColor = theme === 'dark' ? '#8ab4f8' : '#1a73e8';
-                        
+
                         // Helper to convert hex to rgba for opacity
                         const hexToRgb = (hex) => {
                             let r = 0, g = 0, b = 0;
@@ -870,7 +1244,7 @@
                         if (this.y < 0 || this.y > height) this.vy *= -1;
                     }
                 }
-                
+
                 let particles = [];
                 function init() {
                     width = canvas.offsetWidth;
@@ -925,19 +1299,19 @@
 
                     requestAnimationFrame(animate);
                 }
-                
+
                 // Debounce resize
                 let resizeTimeout;
                 window.addEventListener('resize', () => {
                     clearTimeout(resizeTimeout);
                     resizeTimeout = setTimeout(init, 250);
                 });
-                
+
                 // Re-init on theme change
                 const observer = new MutationObserver((mutations) => {
                     mutations.forEach((mutation) => {
                         if (mutation.attributeName === "data-theme") {
-                           init();
+                            init();
                         }
                     });
                 });
@@ -988,11 +1362,11 @@
             if (theme === 'dark') {
                 document.documentElement.setAttribute('data-theme', 'dark');
                 localStorage.setItem('theme', 'dark');
-                if(themeToggleButton) themeToggleButton.textContent = '切换亮色';
+                if (themeToggleButton) themeToggleButton.textContent = '切换亮色';
             } else {
                 document.documentElement.setAttribute('data-theme', 'light');
                 localStorage.setItem('theme', 'light');
-                if(themeToggleButton) themeToggleButton.textContent = '切换暗色';
+                if (themeToggleButton) themeToggleButton.textContent = '切换暗色';
             }
             const iframes = document.querySelectorAll('iframe');
             iframes.forEach(iframe => {
@@ -1026,10 +1400,11 @@
                     iframe => iframe.contentWindow === event.source
                 );
                 if (sourceFrame && sourceFrame.contentWindow) {
-                     sourceFrame.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
+                    sourceFrame.contentWindow.postMessage({ type: 'themeChange', theme: currentAppliedTheme }, '*');
                 }
             }
         });
     </script>
 </body>
+
 </html>
