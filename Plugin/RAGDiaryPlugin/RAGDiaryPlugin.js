@@ -872,7 +872,7 @@ class RAGDiaryPlugin {
                     }
 
                     // 检查 RAG/Meta/AIMemo 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
+                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
                         // 确保每个包含占位符的 system 消息都被处理
                         if (!acc.includes(index)) {
                             acc.push(index);
@@ -1025,7 +1025,8 @@ class RAGDiaryPlugin {
                     msg.content = msg.content
                         .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
                         .replace(/<<.*日记本>>/g, '[RAG处理失败]')
-                        .replace(/《《.*日记本.*》》/g, '[RAG处理失败]');
+                        .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
+                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]');
                 }
             });
             return safeMessages;
@@ -1046,6 +1047,7 @@ class RAGDiaryPlugin {
         const fullTextDeclarations = [...processedContent.matchAll(/<<(.*?)日记本>>/g)];
         const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
         const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
+        const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本\}\}/g)];
         // --- 1. 处理 [[VCP元思考...]] 元思考链 ---
         for (const match of metaThinkingDeclarations) {
             const placeholder = match[0];
@@ -1258,7 +1260,17 @@ class RAGDiaryPlugin {
                     const safeContent = diaryContent
                         .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
                         .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
-                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]');
+                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
+                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
+
+                    if (this.pushVcpInfo) {
+                        this.pushVcpInfo({
+                            type: 'DailyNote',
+                            action: 'FullTextRecall',
+                            dbName: dbName,
+                            message: `[RAGDiary] 已全文召回日记本：${dbName}，共 1 条全量记录`
+                        });
+                    }
 
                     // ✅ 缓存结果
                     this._setCachedResult(cacheKey, { content: safeContent });
@@ -1477,6 +1489,46 @@ class RAGDiaryPlugin {
                     });
                 }
             }
+        }
+
+        // --- 5. 处理 {{...日记本}} 直接引入模式 ---
+        for (const match of directDiariesDeclarations) {
+            const placeholder = match[0];
+            const dbName = match[1];
+
+            if (processedDiaries.has(dbName)) {
+                console.warn(`[RAGDiaryPlugin] Detected circular reference to "${dbName}" in {{...}}. Skipping.`);
+                processingPromises.push(Promise.resolve({ placeholder, content: `[检测到循环引用，已跳过"${dbName}日记本"的解析]` }));
+                continue;
+            }
+            // 标记以防其他模式循环
+            processedDiaries.add(dbName);
+
+            // 直接获取内容，跳过阈值判断
+            processingPromises.push((async () => {
+                try {
+                    const diaryContent = await this.getDiaryContent(dbName);
+                    const safeContent = diaryContent
+                        .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
+                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
+                        .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
+                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
+
+                    if (this.pushVcpInfo) {
+                        this.pushVcpInfo({
+                            type: 'DailyNote',
+                            action: 'DirectRecall',
+                            dbName: dbName,
+                            message: `[RAGDiary] 已直接引入日记本：${dbName}，共 1 条全量记录`
+                        });
+                    }
+
+                    return { placeholder, content: safeContent };
+                } catch (error) {
+                    console.error(`[RAGDiaryPlugin] 处理 {{...日记本}} 直接引入模式出错 (${dbName}):`, error);
+                    return { placeholder, content: `[处理失败: ${error.message}]` };
+                }
+            })());
         }
 
         // --- 执行所有任务并替换内容 ---

@@ -18,7 +18,7 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     // 通用正则表达式，匹配所有 {{...}} 格式的占位符
     const placeholderRegex = /\{\{([a-zA-Z0-9_:]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
-    
+
     // 提取所有潜在的别名（去除 "agent:" 前缀）
     const allAliases = new Set(matches.map(match => match[1].replace(/^agent:/, '')));
 
@@ -33,7 +33,7 @@ async function resolveAllVariables(text, model, role, context, processingStack =
             }
 
             const agentContent = await agentManager.getAgentPrompt(alias);
-            
+
             processingStack.add(alias);
             const resolvedAgentContent = await resolveAllVariables(agentContent, model, role, context, processingStack);
             processingStack.delete(alias);
@@ -95,7 +95,7 @@ async function replaceOtherVariables(text, model, role, context) {
                     replacementText = promptValue;
                 }
             }
-            
+
             // 对当前文本中所有匹配的占位符进行替换
             const placeholderRegExp = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
             processedText = processedText.replace(placeholderRegExp, replacementText);
@@ -145,7 +145,7 @@ async function replaceOtherVariables(text, model, role, context) {
         let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-        
+
         const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, value] of staticPlaceholderValues.entries()) {
@@ -188,7 +188,7 @@ async function replaceOtherVariables(text, model, role, context) {
             }
         }
     }
-    
+
     for (const rule of superDetectors) {
         if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
             processedText = processedText.replaceAll(rule.detector, rule.output);
@@ -204,7 +204,7 @@ async function replaceOtherVariables(text, model, role, context) {
         const placeholder = asyncMatch[0];
         const pluginName = asyncMatch[1];
         const requestId = asyncMatch[2];
-        
+
         promises.push(
             (async () => {
                 const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${requestId}.json`);
@@ -215,7 +215,7 @@ async function replaceOtherVariables(text, model, role, context) {
                     if (callbackData && callbackData.message) {
                         replacementText = callbackData.message;
                     } else if (callbackData && callbackData.status === 'Succeed') {
-                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
+                        replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
                     } else if (callbackData && callbackData.status === 'Failed') {
                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 处理失败。原因: ${callbackData.reason || JSON.stringify(callbackData.data || callbackData.error || callbackData)}`;
                     }
@@ -231,7 +231,7 @@ async function replaceOtherVariables(text, model, role, context) {
             })()
         );
     }
-    
+
     await Promise.all(promises);
     processedText = tempAsyncProcessedText;
 
@@ -258,40 +258,8 @@ async function replacePriorityVariables(text, context, role) {
         processedText = processedText.replaceAll(placeholder, emojiList || `[${emojiName}列表不可用]`);
     }
 
-    // --- 日记本处理 (已修复循环风险) ---
-    const diaryPlaceholderRegex = /\{\{([^{}]+?)日记本\}\}/g;
-    let allDiariesData = {};
-    const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
-
-    if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
-        try {
-            allDiariesData = JSON.parse(allDiariesDataString);
-        } catch (e) {
-            console.error(`[replacePriorityVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0, 100)}...`);
-        }
-    } else if (allDiariesDataString && allDiariesDataString.startsWith("[Placeholder")) {
-        if (DEBUG_MODE) console.warn(`[replacePriorityVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated. Value: ${allDiariesDataString}`);
-    }
-
-    // Step 1: Find all unique diary placeholders in the original text to avoid loops.
-    const matches = [...processedText.matchAll(diaryPlaceholderRegex)];
-    const uniquePlaceholders = [...new Set(matches.map(match => match[0]))];
-
-    // Step 2: Iterate through the unique placeholders and replace them.
-    for (const placeholder of uniquePlaceholders) {
-        // Extract character name from placeholder like "{{小雨日记本}}" -> "小雨"
-        const characterNameMatch = placeholder.match(/\{\{([^{}]+?)日记本\}\}/);
-        if (characterNameMatch && characterNameMatch[1]) {
-            const characterName = characterNameMatch[1];
-            let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`;
-            if (allDiariesData.hasOwnProperty(characterName)) {
-                diaryContent = allDiariesData[characterName];
-            }
-            // Replace all instances of this specific placeholder.
-            // This is safe because we are iterating over a pre-determined list, not re-scanning the string.
-            processedText = processedText.replaceAll(placeholder, diaryContent);
-        }
-    }
+    // --- 日记本处理 (迁移到 RAGDiaryPlugin) ---
+    // (逻辑已移除)
 
     return processedText;
 }
