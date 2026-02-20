@@ -161,6 +161,16 @@ function initialize(httpServer, config) {
             ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPLog.' }));
         } else if (ws.clientType === 'VCPInfo') { // 新增 VCPInfo 确认消息
             ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPInfo.' }));
+        } else if (ws.clientType === 'DistributedServer') {
+            // 分布式服务器连接确认，告知分配的 serverId
+            ws.send(JSON.stringify({
+                type: 'connection_ack',
+                message: 'WebSocket connection successful for DistributedServer.',
+                data: {
+                    serverId: ws.serverId,
+                    clientId: ws.clientId
+                }
+            }));
         }
         // 可以根据 ws.clientType 或其他标识符发送不同的欢迎消息
 
