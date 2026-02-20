@@ -404,14 +404,25 @@ function formatWeatherInfo(
     return '[天气信息获取失败]';
   }
 
+  // --- Prepare Weather Warning Detail (Always shown if exists) ---
+  let warningDetailStr = '';
+  if (weatherWarning && weatherWarning.length > 0) {
+    warningDetailStr += '⚠️【天气预警详情】\n';
+    weatherWarning.forEach(warning => {
+      warningDetailStr += `\n标题: ${warning.title}\n`;
+      warningDetailStr += `发布时间: ${new Date(warning.pubTime).toLocaleString('zh-CN', { timeZone: DEFAULT_TIMEZONE })}\n`;
+      warningDetailStr += `级别: ${warning.severityColor || '未知'}\n`;
+      warningDetailStr += `类型: ${warning.typeName}\n`;
+      warningDetailStr += `内容: ${warning.text}\n`;
+    });
+    warningDetailStr += '--------------------\n';
+  }
+
   // --- Block 0.0: Current Data (Air Quality & Warnings only) ---
-  let currentStr = '';
+  let currentStr = warningDetailStr;
   currentStr += '【实时概况】\n';
   if (airQuality) {
     currentStr += `空气质量: ${airQuality.category} (AQI ${airQuality.aqi}), PM2.5: ${airQuality.pm2p5}\n`;
-  }
-  if (weatherWarning && weatherWarning.length > 0) {
-    currentStr += `⚠️当前有 ${weatherWarning.length} 条天气预警！\n`;
   }
 
   // --- Block 0.35: Short Forecast (Next 3 Days) + Current ---
@@ -444,13 +455,7 @@ function formatWeatherInfo(
   // Add Weather Warning section
   fullStr += '\n【天气预警】\n';
   if (weatherWarning && weatherWarning.length > 0) {
-    weatherWarning.forEach(warning => {
-      fullStr += `\n标题: ${warning.title}\n`;
-      fullStr += `发布时间: ${new Date(warning.pubTime).toLocaleString('zh-CN', { timeZone: DEFAULT_TIMEZONE })}\n`;
-      fullStr += `级别: ${warning.severityColor || '未知'}\n`;
-      fullStr += `类型: ${warning.typeName}\n`;
-      fullStr += `内容: ${warning.text}\n`;
-    });
+    fullStr += warningDetailStr;
   } else {
     fullStr += '当前无天气预警信息。\n';
   }
