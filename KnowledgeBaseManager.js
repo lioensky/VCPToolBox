@@ -834,6 +834,42 @@ class KnowledgeBaseManager {
         return null; // 失败时返回 null
     }
 
+    // 🌟 新增：基于 SQLite kv_store 的持久化插件描述向量缓存
+    async getPluginDescriptionVector(descText, getEmbeddingFn) {
+        let hash;
+        try {
+            hash = crypto.createHash('sha256').update(descText).digest('hex');
+            const key = `plugin_desc_hash:${hash}`;
+
+            // 1. 查 SQLite
+            const stmt = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?");
+            const row = stmt.get(key);
+
+            if (row && row.vector) {
+                return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            }
+
+            // 2. 未命中，去查 Embedding API
+            if (typeof getEmbeddingFn !== 'function') {
+                return null;
+            }
+
+            console.log(`[KnowledgeBase] Cache MISS for plugin description. Fetching API...`);
+            const vec = await getEmbeddingFn(descText);
+
+            if (vec) {
+                // 3. 存入 SQLite
+                const vecBuf = Buffer.from(new Float32Array(vec).buffer);
+                this.db.prepare("INSERT OR REPLACE INTO kv_store (key, vector) VALUES (?, ?)").run(key, vecBuf);
+                return vec;
+            }
+
+        } catch (e) {
+            console.error(`[KnowledgeBase] Failed to process plugin description vector:`, e.message);
+        }
+        return null;
+    }
+
     // 兼容性 API: getVectorByText
     async getVectorByText(diaryName, text) {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');

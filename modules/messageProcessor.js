@@ -51,6 +51,100 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     return processedText;
 }
 
+// 🌟 新增：动态折叠协议处理器
+async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
+    if (!foldObj || !foldObj.vcp_dynamic_fold || !Array.isArray(foldObj.fold_blocks) || foldObj.fold_blocks.length === 0) {
+        return `[无效的动态折叠数据结构: ${placeholderKey}]`;
+    }
+
+    // 按阈值降序排序 (0.7, 0.5, 0.0)
+    const blocks = [...foldObj.fold_blocks].sort((a, b) => b.threshold - a.threshold);
+    // 最低阈值区块作为后备 (Fallback)
+    const fallbackBlock = blocks[blocks.length - 1];
+
+    try {
+        const ragPlugin = context.pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
+        if (!ragPlugin || typeof ragPlugin.getSingleEmbeddingCached !== 'function') {
+            if (context.DEBUG_MODE) console.log(`[DynamicFold] RAGDiaryPlugin 不可用，返回基础内容 (${placeholderKey})`);
+            return fallbackBlock.content;
+        }
+
+        // 提取最后一个 User 的消息作为核心比对内容
+        const contextMessages = context.messages || [];
+        let lastUserText = '';
+        for (let i = contextMessages.length - 1; i >= 0; i--) {
+            if (contextMessages[i].role === 'user') {
+                const msgContent = contextMessages[i].content;
+                lastUserText = typeof msgContent === 'string'
+                    ? msgContent
+                    : (Array.isArray(msgContent) ? (msgContent.find(p => p.type === 'text')?.text || '') : '');
+                if (lastUserText) break;
+            }
+        }
+
+        if (!lastUserText) {
+            if (context.DEBUG_MODE) console.log(`[DynamicFold] 未找到 User 文本消息，返回基础内容 (${placeholderKey})`);
+            return fallbackBlock.content;
+        }
+
+        // 获取当前会话上下文向量
+        const userVector = await ragPlugin.getSingleEmbeddingCached(lastUserText);
+        if (!userVector) {
+            if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取用户上下文向量失败，返回基础内容 (${placeholderKey})`);
+            return fallbackBlock.content;
+        }
+
+        // 计算插件描述向量 (使用 KBM 的 SQLite 持久化缓存)
+        const descText = foldObj.plugin_description || placeholderKey;
+        let descVector = null;
+        if (ragPlugin.vectorDBManager && typeof ragPlugin.vectorDBManager.getPluginDescriptionVector === 'function') {
+            descVector = await ragPlugin.vectorDBManager.getPluginDescriptionVector(
+                descText,
+                // 必须绑定 this 到 ragPlugin 避免上下文丢失
+                ragPlugin.getSingleEmbeddingCached.bind(ragPlugin)
+            );
+        } else {
+            // 后备：没有 SQLite 时使用自带内存缓存
+            descVector = await ragPlugin.getSingleEmbeddingCached(descText);
+        }
+
+        if (!descVector) {
+            if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取插件描述向量失败，返回基础内容 (${placeholderKey})`);
+            return fallbackBlock.content;
+        }
+
+        // 计算余弦相似度
+        let dotProduct = 0;
+        let normA = 0;
+        let normB = 0;
+        const len = Math.min(descVector.length, userVector.length);
+        for (let i = 0; i < len; i++) {
+            dotProduct += descVector[i] * userVector[i];
+            normA += descVector[i] * descVector[i];
+            normB += userVector[i] * userVector[i];
+        }
+        const sim = (normA === 0 || normB === 0) ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+
+        if (context.DEBUG_MODE) {
+            console.log(`[DynamicFold] ${placeholderKey} 上下文相似度: ${sim.toFixed(3)} (目标区块数: ${blocks.length})`);
+        }
+
+        // 匹配折叠阈值
+        for (const block of blocks) {
+            if (sim >= block.threshold) {
+                if (context.DEBUG_MODE) console.log(`[DynamicFold] ${placeholderKey} 命中阈值 >= ${block.threshold}，展开相关内容。`);
+                return block.content;
+            }
+        }
+
+        return fallbackBlock.content;
+    } catch (e) {
+        console.error(`[DynamicFold] 处理动态折叠时发生异常 (${placeholderKey}):`, e.message);
+        // 如果出错或者拿不到索引，安全回退到最精简内容
+        return fallbackBlock.content;
+    }
+}
+
 async function replaceOtherVariables(text, model, role, context) {
     const { pluginManager, cachedEmojiLists, detectors, superDetectors, DEBUG_MODE } = context;
     if (text == null) return '';
@@ -148,10 +242,20 @@ async function replaceOtherVariables(text, model, role, context) {
 
         const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
-            for (const [placeholder, value] of staticPlaceholderValues.entries()) {
+            for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
                 const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
-                // The getter now returns the correct string value
-                processedText = processedText.replace(placeholderRegex, value || `[${placeholder} 信息不可用]`);
+
+                let valueToInject = entry;
+                if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
+                    valueToInject = entry.value;
+                }
+
+                // 支持 vcp_dynamic_fold 协议
+                if (typeof valueToInject === 'object' && valueToInject !== null && valueToInject.vcp_dynamic_fold) {
+                    valueToInject = await resolveDynamicFoldProtocol(valueToInject, context, placeholder);
+                }
+
+                processedText = processedText.replace(placeholderRegex, valueToInject || `[${placeholder} 信息不可用]`);
             }
         }
 
