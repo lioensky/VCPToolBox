@@ -96,15 +96,47 @@ async function getRealAuthCode(debugMode = false) {
 }
 
 // A helper function to handle fetch with retries for specific status codes
+// connectionTimeout: 连接超时安全网，防止上游 API 静默挂起导致永久等待（仅覆盖到收到响应头为止）
 async function fetchWithRetry(
   url,
   options,
-  { retries = 3, delay = 1000, debugMode = false, onRetry = null } = {},
+  { retries = 3, delay = 1000, debugMode = false, onRetry = null, connectionTimeout = 120000 } = {},
 ) {
   const { default: fetch } = await import('node-fetch');
   for (let i = 0; i < retries; i++) {
+    // 为每次尝试创建独立的中止控制器，用于超时保护
+    const attemptController = new AbortController();
+    let didTimeout = false;
+    const externalSignal = options.signal;
+
+    // 将外部中止信号转发给本次尝试的控制器
+    let removeExternalListener = null;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+      }
+      const forwardAbort = () => attemptController.abort();
+      externalSignal.addEventListener('abort', forwardAbort, { once: true });
+      removeExternalListener = () => externalSignal.removeEventListener('abort', forwardAbort);
+    }
+
+    // 设置连接超时
+    const timeoutId = connectionTimeout > 0
+      ? setTimeout(() => { didTimeout = true; attemptController.abort(); }, connectionTimeout)
+      : null;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (removeExternalListener) removeExternalListener();
+    };
+
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, {
+        ...options,
+        signal: attemptController.signal,
+      });
+      cleanup();
+
       if (response.status === 500 || response.status === 503 || response.status === 429) {
         const currentDelay = delay * (i + 1);
         if (debugMode) {
@@ -115,19 +147,37 @@ async function fetchWithRetry(
         if (onRetry) {
           await onRetry(i + 1, { status: response.status, message: response.statusText });
         }
-        await new Promise(resolve => setTimeout(resolve, currentDelay)); // Increase delay for subsequent retries
-        continue; // Try again
+        await new Promise(resolve => setTimeout(resolve, currentDelay));
+        continue;
       }
-      return response; // Success or non-retriable error
+      return response;
     } catch (error) {
-      // If the request was aborted, don't retry, just rethrow the error immediately.
+      cleanup();
+
+      // 区分超时中止和外部中止
       if (error.name === 'AbortError') {
+        if (didTimeout) {
+          // 超时中止 → 视为可重试的网络错误
+          const msg = `Connection timed out after ${connectionTimeout / 1000}s`;
+          if (i === retries - 1) {
+            console.error(`[Fetch Retry] ${msg}. All retries exhausted.`);
+            throw new Error(msg);
+          }
+          if (debugMode) console.warn(`[Fetch Retry] ${msg}. Retrying... (${i + 1}/${retries})`);
+          if (onRetry) {
+            await onRetry(i + 1, { status: 'TIMEOUT', message: msg });
+          }
+          await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+          continue;
+        }
+        // 外部中止（用户取消）→ 不重试
         if (debugMode) console.log('[Fetch Retry] Request was aborted. No retries will be attempted.');
         throw error;
       }
+
       if (i === retries - 1) {
         console.error(`[Fetch Retry] All retries failed. Last error: ${error.message}`);
-        throw error; // Rethrow the last error after all retries fail
+        throw error;
       }
       if (debugMode) {
         console.warn(
