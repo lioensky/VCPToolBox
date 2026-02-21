@@ -74,7 +74,7 @@ impl VexusIndex {
     pub fn new(dim: u32, capacity: u32) -> Result<Self> {
         let index = Index::new(&usearch::IndexOptions {
             dimensions: dim as usize,
-            metric: usearch::MetricKind::L2sq, // 余弦相似度通常用 L2sq 或 Cosine (如果是归一化向量，L2sq 等价于 Cosine)
+            metric: usearch::MetricKind::Cos, // 余弦距离：返回值范围 [0, 2]，适用于未归一化向量
             quantization: usearch::ScalarKind::F32,
             connectivity: 16,
             expansion_add: 128,
@@ -103,7 +103,7 @@ impl VexusIndex {
         // 创建空索引配置
         let index = Index::new(&usearch::IndexOptions {
             dimensions: dim as usize,
-            metric: usearch::MetricKind::L2sq,
+            metric: usearch::MetricKind::Cos,
             quantization: usearch::ScalarKind::F32,
             connectivity: 16,
             expansion_add: 128,

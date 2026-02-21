@@ -346,9 +346,15 @@ async function replaceOtherVariables(text, model, role, context) {
         processedText = processedText.replace(/\{\{Time\}\}/g, time);
         const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: REPORT_TIMEZONE });
         processedText = processedText.replace(/\{\{Today\}\}/g, today);
-        const year = now.getFullYear();
-        const month = now.getMonth() + 1;
-        const day = now.getDate();
+        // 使用 REPORT_TIMEZONE 获取正确时区的年月日，避免服务器本地时区导致农历日期偏差
+        const tzFormatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone: REPORT_TIMEZONE,
+            year: 'numeric', month: '2-digit', day: '2-digit'
+        });
+        const dateParts = tzFormatter.formatToParts(now);
+        const year = parseInt(dateParts.find(p => p.type === 'year').value);
+        const month = parseInt(dateParts.find(p => p.type === 'month').value);
+        const day = parseInt(dateParts.find(p => p.type === 'day').value);
         const lunarDate = lunarCalendar.getLunar(year, month, day);
         let yearName = lunarDate.lunarYear.replace('年', '');
         let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
