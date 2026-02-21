@@ -229,6 +229,8 @@ adminApiRouter.get('/check-auth', (req, res) => {
 });
 ```
 
+扩展管理面板（新增分区、接口、模块）的步骤与约定见 [ADMINPANEL_DEVELOPMENT.md](./ADMINPANEL_DEVELOPMENT.md)。
+
 ---
 
 ## 3. VCPChrome 浏览器扩展
