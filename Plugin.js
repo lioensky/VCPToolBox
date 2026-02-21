@@ -1168,11 +1168,25 @@ class PluginManager {
         }
 
         for (const [placeholder, value] of Object.entries(placeholders)) {
+            // 新增逻辑：尝试解析可能的 JSON 折叠对象
+            let parsedValue = value;
+            if (typeof value === 'string' && value.trim().startsWith('{')) {
+                try {
+                    const jsonObj = JSON.parse(value.trim());
+                    if (jsonObj && jsonObj.vcp_dynamic_fold) {
+                        parsedValue = jsonObj; // 保持对象形式以供折叠处理
+                    }
+                } catch (e) {
+                    // 解析失败说明只是普通的字符串，可以直接忽略错误
+                }
+            }
+
             // 为分布式占位符添加服务器来源标识
-            this.staticPlaceholderValues.set(placeholder, { value: value, serverId: serverId });
+            this.staticPlaceholderValues.set(placeholder, { value: parsedValue, serverId: serverId });
 
             if (this.debugMode) {
-                console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${value.substring(0, 100)}${value.length > 100 ? '...' : ''}`);
+                const logVal = typeof parsedValue === 'object' ? JSON.stringify(parsedValue) : parsedValue;
+                console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${logVal.substring(0, 100)}${logVal.length > 100 ? '...' : ''}`);
             }
         }
 
