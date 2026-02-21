@@ -14,7 +14,7 @@ const blockedManifestExtension = '.block';
 // 记录每个日志文件的 inode，用于检测日志轮转
 const logFileInodes = new Map();
 
-module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath) {
+module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath, cachedEmojiLists) {
     if (!agentDirPath || typeof agentDirPath !== 'string') {
         throw new Error('[AdminPanelRoutes] agentDirPath must be a non-empty string');
     }
@@ -1151,15 +1151,26 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             }
             // 2. Tar / Var（env 中以 Tar 或 Var 开头）
             const tvsManager = require('../modules/tvsManager');
+            const emojiPlaceholderRegex = /^[^{}]+?表情包\.txt$/g;
+            const emojiLists = cachedEmojiLists && typeof cachedEmojiLists.get === 'function' ? cachedEmojiLists : new Map();
             const tarVarKeys = Object.keys(process.env).filter(k => k.startsWith('Tar') || k.startsWith('Var'));
             for (const envKey of tarVarKeys) {
                 const raw = process.env[envKey] || '';
                 let preview = raw;
-                if (typeof raw === 'string' && raw.toLowerCase().endsWith('.txt')) {
-                    try {
-                        preview = await tvsManager.getContent(raw);
-                    } catch (e) {
-                        preview = `[读取文件失败: ${e.message}]`;
+                if (typeof raw === 'string') {
+                    if (emojiPlaceholderRegex.test(raw)) {
+                        const emojiName = raw.replace('.txt', '');
+                        const emojiList = emojiLists.get(emojiName);
+                        preview = emojiList || `[${emojiName}列表不可用]`;
+                    } else if (raw.toLowerCase().endsWith('.txt')) {
+                        try {
+                            preview = await tvsManager.getContent(raw);
+                            if (preview.startsWith('[变量文件') || preview.startsWith('[处理变量文件')) {
+                                preview = raw;
+                            }
+                        } catch (e) {
+                            preview = `[读取文件失败: ${e.message}]`;
+                        }
                     }
                 }
                 list.push({ type: 'env_tar_var', name: `{{${envKey}}}`, preview: truncatePreview(preview), charCount: charCount(preview) });
@@ -1169,11 +1180,20 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             for (const envKey of sarKeys) {
                 const raw = process.env[envKey] || '';
                 let preview = raw;
-                if (typeof raw === 'string' && raw.toLowerCase().endsWith('.txt')) {
-                    try {
-                        preview = await tvsManager.getContent(raw);
-                    } catch (e) {
-                        preview = raw || '[按模型注入]';
+                if (typeof raw === 'string') {
+                    if (emojiPlaceholderRegex.test(raw)) {
+                        const emojiName = raw.replace('.txt', '');
+                        const emojiList = emojiLists.get(emojiName);
+                        preview = emojiList || `[${emojiName}列表不可用]`;
+                    } else if (raw.toLowerCase().endsWith('.txt')) {
+                        try {
+                            preview = await tvsManager.getContent(raw);
+                            if (preview.startsWith('[变量文件') || preview.startsWith('[处理变量文件')) {
+                                preview = raw;
+                            }
+                        } catch (e) {
+                            preview = raw || '[按模型注入]';
+                        }
                     }
                 }
                 list.push({ type: 'env_sar', name: `{{${envKey}}}`, preview: truncatePreview(preview || '[按模型注入]'), charCount: charCount(preview || '[按模型注入]') });
@@ -1303,9 +1323,20 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                     if (envVal === undefined) {
                         return res.status(404).json({ success: false, error: 'Environment variable not found', details: name });
                     }
-                    if (typeof envVal === 'string' && envVal.toLowerCase().endsWith('.txt')) {
-                        const tvsManager = require('../modules/tvsManager');
-                        value = await tvsManager.getContent(envVal);
+                    if (typeof envVal === 'string') {
+                        const emojiPlaceholderRegex = /^[^{}]+?表情包\.txt$/g;
+                        if (emojiPlaceholderRegex.test(envVal)) {
+                            const emojiName = envVal.replace('.txt', '');
+                            const emojiLists = cachedEmojiLists && typeof cachedEmojiLists.get === 'function' ? cachedEmojiLists : new Map();
+                            const emojiList = emojiLists.get(emojiName);
+                            value = emojiList || `[${emojiName}列表不可用]`;
+                        } else if (envVal.toLowerCase().endsWith('.txt')) {
+                            const tvsManager = require('../modules/tvsManager');
+                            value = await tvsManager.getContent(envVal);
+                            if (value.startsWith('[变量文件') || value.startsWith('[处理变量文件')) {
+                                value = envVal;
+                            }
+                        }
                     } else {
                         value = envVal || '';
                     }
