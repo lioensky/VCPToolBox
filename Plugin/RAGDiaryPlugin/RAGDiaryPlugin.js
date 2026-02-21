@@ -1949,31 +1949,67 @@ class RAGDiaryPlugin {
         const coreTagsForDisplay = coreTagsForSearch;
 
         if (useTime && timeRanges && timeRanges.length > 0) {
-            // --- Time-aware path ---
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kForSearch, tagWeight, coreTagsForSearch);
-            ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes); // 🧹 V4.1: 上下文去重
+            // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
+            // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
+            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
+            const kTime = Math.max(1, finalK - kSemantic);
+            
+            console.log(`[RAGDiaryPlugin] 🌟 Time-Aware Balanced Mode: Total K=${finalK} (Semantic=${kSemantic}, Time=${kTime})`);
 
-            if (useRerank) {
-                ragResults = await this._rerankDocuments(userContent, ragResults, finalK);
+            // 1. 语义路召回
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kSemantic + dedupBuffer, tagWeight, coreTagsForSearch);
+            ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
+            ragResults = ragResults.slice(0, kSemantic).map(r => ({ ...r, source: 'rag' }));
+
+            // 2. 时间路召回 (带相关性排序)
+            let timeFilePaths = [];
+            for (const timeRange of timeRanges) {
+                const files = await this._getTimeRangeFilePaths(dbName, timeRange);
+                timeFilePaths.push(...files);
+            }
+            // 去重文件路径
+            timeFilePaths = [...new Set(timeFilePaths)];
+            
+            let timeResults = [];
+            if (timeFilePaths.length > 0) {
+                // 从数据库获取这些文件的所有分块及其向量
+                const timeChunks = await this.vectorDBManager.getChunksByFilePaths(timeFilePaths);
+                
+                // 计算每个分块与当前查询向量的相似度
+                const scoredTimeChunks = timeChunks.map(chunk => {
+                    const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, Array.from(chunk.vector)) : 0;
+                    return {
+                        ...chunk,
+                        score: sim,
+                        source: 'time'
+                    };
+                });
+
+                // 按相似度排序并取前 kTime 个
+                scoredTimeChunks.sort((a, b) => b.score - a.score);
+                timeResults = scoredTimeChunks.slice(0, kTime);
+                console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range, selected top ${timeResults.length} by relevance.`);
             }
 
+            // 3. 合并与去重
             const allEntries = new Map();
-            ragResults.forEach(entry => {
-                if (!allEntries.has(entry.text.trim())) {
-                    allEntries.set(entry.text.trim(), { ...entry, source: 'rag' });
+            // 语义路优先
+            ragResults.forEach(r => allEntries.set(r.text.trim(), r));
+            // 时间路补充（如果内容不重复）
+            timeResults.forEach(r => {
+                const trimmedText = r.text.trim();
+                if (!allEntries.has(trimmedText)) {
+                    allEntries.set(trimmedText, r);
                 }
             });
 
-            for (const timeRange of timeRanges) {
-                const timeResults = await this.getTimeRangeDiaries(dbName, timeRange);
-                timeResults.forEach(entry => {
-                    if (!allEntries.has(entry.text.trim())) {
-                        allEntries.set(entry.text.trim(), entry);
-                    }
-                });
+            finalResultsForBroadcast = Array.from(allEntries.values());
+            
+            // 如果启用了 Rerank，对合并后的结果进行最终重排
+            if (useRerank && finalResultsForBroadcast.length > 0) {
+                finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK);
             }
 
-            finalResultsForBroadcast = Array.from(allEntries.values());
             retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
 
         } else {
@@ -2118,7 +2154,51 @@ class RAGDiaryPlugin {
     //## Time-Aware RAG Logic - 时间感知RAG逻辑
     //####################################################################################
 
+    /**
+     * 🌟 新增：仅获取时间范围内的文件路径列表
+     * 用于 V5 平衡召回逻辑
+     */
+    async _getTimeRangeFilePaths(dbName, timeRange) {
+        const characterDirPath = path.join(dailyNoteRootPath, dbName);
+        let filePathsInRange = [];
+
+        if (!timeRange || !timeRange.start || !timeRange.end) return filePathsInRange;
+
+        try {
+            const files = await fs.readdir(characterDirPath);
+            const diaryFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
+
+            for (const file of diaryFiles) {
+                const filePath = path.join(characterDirPath, file);
+                try {
+                    // 优化：只读取前 100 个字符来解析日期，不读取全文
+                    const fd = await fs.open(filePath, 'r');
+                    const buffer = Buffer.alloc(100);
+                    await fd.read(buffer, 0, 100, 0);
+                    await fd.close();
+                    
+                    const content = buffer.toString('utf-8');
+                    const firstLine = content.split('\n')[0];
+                    const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
+                    
+                    if (match) {
+                        const dateStr = match[1];
+                        const normalizedDateStr = dateStr.replace(/\./g, '-');
+                        const diaryDate = dayjs.tz(normalizedDateStr, DEFAULT_TIMEZONE).startOf('day').toDate();
+
+                        if (diaryDate >= timeRange.start && diaryDate <= timeRange.end) {
+                            // 存储相对于知识库根目录的路径，以便 KnowledgeBaseManager 查询
+                            filePathsInRange.push(path.join(dbName, file));
+                        }
+                    }
+                } catch (readErr) { }
+            }
+        } catch (dirError) { }
+        return filePathsInRange;
+    }
+
     async getTimeRangeDiaries(dbName, timeRange) {
+        // 此方法保留用于兼容旧逻辑，但 V5 逻辑已转向 _getTimeRangeFilePaths + getChunksByFilePaths
         const characterDirPath = path.join(dailyNoteRootPath, dbName);
         let diariesInRange = [];
 

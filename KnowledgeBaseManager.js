@@ -880,6 +880,40 @@ class KnowledgeBaseManager {
         return null;
     }
 
+    /**
+     * 🌟 新增：按文件路径列表获取所有分块及其向量
+     * 用于 Time 模式下的二次相关性排序
+     */
+    async getChunksByFilePaths(filePaths) {
+        if (!filePaths || filePaths.length === 0) return [];
+        
+        // 考虑到 SQLite 参数限制（通常为 999），如果路径过多需要分批
+        const batchSize = 500;
+        let allResults = [];
+        
+        for (let i = 0; i < filePaths.length; i += batchSize) {
+            const batch = filePaths.slice(i, i + batchSize);
+            const placeholders = batch.map(() => '?').join(',');
+            const stmt = this.db.prepare(`
+                SELECT c.id, c.content as text, c.vector, f.path as sourceFile
+                FROM chunks c
+                JOIN files f ON c.file_id = f.id
+                WHERE f.path IN (${placeholders})
+            `);
+            
+            const rows = stmt.all(...batch);
+            const processed = rows.map(r => ({
+                id: r.id,
+                text: r.text,
+                vector: r.vector ? new Float32Array(r.vector.buffer, r.vector.byteOffset, this.config.dimension) : null,
+                sourceFile: r.sourceFile
+            }));
+            allResults.push(...processed);
+        }
+        
+        return allResults;
+    }
+
     // 兼容性 API: searchSimilarTags
     async searchSimilarTags(input, k = 10) {
         // 兼容旧接口
