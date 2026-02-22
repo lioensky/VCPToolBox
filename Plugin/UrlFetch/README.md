@@ -2,9 +2,11 @@
 
 ## 功能概述
 
-UrlFetch 插件用于访问指定 URL 的网页内容，支持两种模式：
-- **text 模式**（默认）：返回解析后的文本内容或链接列表
+UrlFetch 插件用于访问各种 URL 内容，支持以下模式：
+- **text 模式**（默认）：返回解析后的网页文本内容或链接列表
 - **snapshot 模式**：返回网页的完整长截图
+- **image 模式**：直接下载网络图片并返回 Base64（URL 以图片扩展名结尾时自动启用）
+- **file:// 本地文件**：读取本地文本文件（.txt/.md/.json 等）或图片，无需指定 mode
 
 ## 配置说明
 
@@ -120,7 +122,36 @@ mode:「始」snapshot「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-### 3. 使用 Cookies 访问需要登录的网站
+### 3. 下载网络图片（自动检测）
+
+当 URL 以图片扩展名结尾时，自动切换为 image 模式：
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」UrlFetch「末」,
+url:「始」https://example.com/photo.jpg「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### 4. 读取本地文本文件
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」UrlFetch「末」,
+url:「始」file:///C:/Projects/notes/readme.md「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### 5. 读取本地图片
+
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」UrlFetch「末」,
+url:「始」file:///C:/Pictures/screenshot.png「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### 6. 使用 Cookies 访问需要登录的网站
 
 #### 多站点配置方式（推荐）
 
