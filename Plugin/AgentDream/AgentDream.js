@@ -943,11 +943,14 @@ function _startDreamScheduler() {
         dreamSchedulerTimer.unref();
     }
 
-    const agentNames = Object.keys(DREAM_AGENTS);
+    let scheduledAgents = Object.keys(DREAM_AGENTS);
+    if (DREAM_CONFIG.agentList && DREAM_CONFIG.agentList.length > 0) {
+        scheduledAgents = scheduledAgents.filter(a => DREAM_CONFIG.agentList.includes(a));
+    }
     console.log(`[AgentDream] ⏰ Dream scheduler started. Check every ${SCHEDULER_CHECK_INTERVAL_MS / 60000}min, ` +
         `window ${DREAM_CONFIG.timeWindowStart}:00-${DREAM_CONFIG.timeWindowEnd}:00, ` +
         `frequency ${DREAM_CONFIG.frequencyHours}h, probability ${DREAM_CONFIG.probability}, ` +
-        `agents: [${agentNames.join(', ')}]`);
+        `agents: [${scheduledAgents.join(', ')}]`);
 }
 
 /**
@@ -997,7 +1000,11 @@ async function _checkAndTriggerDreams() {
     }
 
     // 获取所有可做梦的 Agent
-    const eligibleAgents = Object.keys(DREAM_AGENTS);
+    let eligibleAgents = Object.keys(DREAM_AGENTS);
+    if (DREAM_CONFIG.agentList && DREAM_CONFIG.agentList.length > 0) {
+        eligibleAgents = eligibleAgents.filter(agent => DREAM_CONFIG.agentList.includes(agent));
+    }
+
     if (eligibleAgents.length === 0) {
         return;
     }
