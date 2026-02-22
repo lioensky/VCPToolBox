@@ -1,3 +1,11 @@
+// 保存原始 stdout.write 引用，用于最终输出 JSON
+const _originalStdoutWrite = process.stdout.write.bind(process.stdout);
+// 劫持 stdout，屏蔽下游路由模块的所有日志输出（它们的日志库直接写 stdout）
+process.stdout.write = () => true;
+// 同时屏蔽 console.log（双保险）
+console.log = () => { };
+console.error = () => { };
+
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -246,7 +254,7 @@ async function readCacheOnError() {
     }
 
     const output = JSON.stringify(foldOutput, null, 2);
-    process.stdout.write(output, () => {
+    _originalStdoutWrite(output, 'utf-8', () => {
         process.exit(0);
     });
 })();
