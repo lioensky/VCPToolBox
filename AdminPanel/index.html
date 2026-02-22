@@ -458,6 +458,8 @@
                                 class="material-symbols-outlined">tune</span>浪潮RAG调参</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span
                                 class="material-symbols-outlined">terminal</span>服务器日志</a></li>
+                    <li><a href="#" data-target="placeholder-viewer"><span
+                                class="material-symbols-outlined">view_list</span>占位符查看器</a></li>
                     <li class="nav-category" id="plugins-category">———— 插 件 管 理 ————</li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
@@ -774,6 +776,41 @@
             <!-- Section: Tool List Editor -->
             <section id="tool-list-editor-section" class="config-section">
                 <iframe data-src="tool_list_editor.html" style="width: 100%; height: 100vh; border: none;"></iframe>
+            </section>
+
+            <section id="placeholder-viewer-section" class="config-section">
+                <h2>占位符查看器</h2>
+                <p class="description">当前可用的系统提示词占位符列表，点击「查看详情」可查看完整内容。</p>
+                <div class="placeholder-viewer-filters">
+                    <label for="placeholder-filter-type">类型：</label>
+                    <select id="placeholder-filter-type" class="placeholder-filter-select">
+                        <option value="">全部类型</option>
+                    </select>
+                    <label for="placeholder-filter-keyword">关键字：</label>
+                    <input type="text" id="placeholder-filter-keyword" class="placeholder-filter-input" placeholder="搜索占位符名称或预览…">
+                </div>
+                <div id="placeholder-viewer-list" class="placeholder-viewer-list">
+                    <!-- 占位符列表由 placeholder-viewer.js 渲染 -->
+                </div>
+                <div id="placeholder-detail-modal" class="placeholder-detail-modal" aria-hidden="true">
+                    <div class="placeholder-detail-modal-backdrop"></div>
+                    <div class="placeholder-detail-modal-content">
+                        <div class="placeholder-detail-modal-header">
+                            <h3 id="placeholder-detail-title"></h3>
+                            <button type="button" class="placeholder-detail-modal-close" aria-label="关闭">&times;</button>
+                        </div>
+                        <div class="placeholder-detail-tabs" role="tablist">
+                            <button type="button" class="placeholder-detail-tab active" role="tab" aria-selected="true" data-tab="raw">原始文本</button>
+                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false" data-tab="markdown">Markdown 渲染</button>
+                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false" data-tab="json">JSON 格式化</button>
+                        </div>
+                        <div id="placeholder-detail-body" class="placeholder-detail-modal-body">
+                            <div id="placeholder-detail-panel-raw" class="placeholder-detail-panel active" role="tabpanel"></div>
+                            <div id="placeholder-detail-panel-markdown" class="placeholder-detail-panel" role="tabpanel"></div>
+                            <div id="placeholder-detail-panel-json" class="placeholder-detail-panel" role="tabpanel"></div>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <section id="server-log-viewer-section" class="config-section">

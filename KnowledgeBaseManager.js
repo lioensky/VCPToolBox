@@ -834,6 +834,42 @@ class KnowledgeBaseManager {
         return null; // 失败时返回 null
     }
 
+    // 🌟 新增：基于 SQLite kv_store 的持久化插件描述向量缓存
+    async getPluginDescriptionVector(descText, getEmbeddingFn) {
+        let hash;
+        try {
+            hash = crypto.createHash('sha256').update(descText).digest('hex');
+            const key = `plugin_desc_hash:${hash}`;
+
+            // 1. 查 SQLite
+            const stmt = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?");
+            const row = stmt.get(key);
+
+            if (row && row.vector) {
+                return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            }
+
+            // 2. 未命中，去查 Embedding API
+            if (typeof getEmbeddingFn !== 'function') {
+                return null;
+            }
+
+            console.log(`[KnowledgeBase] Cache MISS for plugin description. Fetching API...`);
+            const vec = await getEmbeddingFn(descText);
+
+            if (vec) {
+                // 3. 存入 SQLite
+                const vecBuf = Buffer.from(new Float32Array(vec).buffer);
+                this.db.prepare("INSERT OR REPLACE INTO kv_store (key, vector) VALUES (?, ?)").run(key, vecBuf);
+                return vec;
+            }
+
+        } catch (e) {
+            console.error(`[KnowledgeBase] Failed to process plugin description vector:`, e.message);
+        }
+        return null;
+    }
+
     // 兼容性 API: getVectorByText
     async getVectorByText(diaryName, text) {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
@@ -842,6 +878,40 @@ class KnowledgeBaseManager {
             return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
         }
         return null;
+    }
+
+    /**
+     * 🌟 新增：按文件路径列表获取所有分块及其向量
+     * 用于 Time 模式下的二次相关性排序
+     */
+    async getChunksByFilePaths(filePaths) {
+        if (!filePaths || filePaths.length === 0) return [];
+        
+        // 考虑到 SQLite 参数限制（通常为 999），如果路径过多需要分批
+        const batchSize = 500;
+        let allResults = [];
+        
+        for (let i = 0; i < filePaths.length; i += batchSize) {
+            const batch = filePaths.slice(i, i + batchSize);
+            const placeholders = batch.map(() => '?').join(',');
+            const stmt = this.db.prepare(`
+                SELECT c.id, c.content as text, c.vector, f.path as sourceFile
+                FROM chunks c
+                JOIN files f ON c.file_id = f.id
+                WHERE f.path IN (${placeholders})
+            `);
+            
+            const rows = stmt.all(...batch);
+            const processed = rows.map(r => ({
+                id: r.id,
+                text: r.text,
+                vector: r.vector ? new Float32Array(r.vector.buffer, r.vector.byteOffset, this.config.dimension) : null,
+                sourceFile: r.sourceFile
+            }));
+            allResults.push(...processed);
+        }
+        
+        return allResults;
     }
 
     // 兼容性 API: searchSimilarTags

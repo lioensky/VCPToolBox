@@ -28,6 +28,14 @@ const TIME_EXPRESSIONS = {
             '上个月初': { type: 'lastMonthStart' },
             '上个月中': { type: 'lastMonthMid' },
             '上个月末': { type: 'lastMonthEnd' },
+
+            // 🌟 寒暄语触发 (用于唤起最近记忆)
+            '在吗': { days: 1 },
+            '在不': { days: 1 },
+            '在不在': { days: 1 },
+            '你好': { days: 1 },
+            '哈喽': { days: 1 },
+            '早上好': { days: 0 }
         },
         patterns: [
             {

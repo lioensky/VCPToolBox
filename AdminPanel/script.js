@@ -15,6 +15,7 @@ import { initializeVCPForum } from './js/forum.js';
 import { initializeScheduleManager } from './js/schedule-manager.js';
 import { initializeRAGTuning } from './js/rag-tuning.js';
 import { initializeDreamManager } from './js/dream-manager.js';
+import { initializePlaceholderViewer } from './js/placeholder-viewer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. 通过后端验证登录状态（替代前端 Cookie 检查，解决 HttpOnly 无法读取问题）
@@ -151,6 +152,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         break;
                     case 'dream-manager-section':
                         initializeDreamManager();
+                        break;
+                    case 'placeholder-viewer-section':
+                        initializePlaceholderViewer();
                         break;
                 }
             }
