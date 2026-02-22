@@ -16,6 +16,12 @@ const path = require('path');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 
+// 🌟 核心修复：彻底解放 Node.js 默认的全局连接池限制，防止底层网络排队导致 AdminPanel 死锁
+const http = require('http');
+const https = require('https');
+http.globalAgent.maxSockets = 10000;
+https.globalAgent.maxSockets = 10000;
+
 // 初始化日志记录器
 const logger = require('./modules/logger.js');
 logger.initializeServerLogger();
@@ -26,16 +32,16 @@ let AGENT_DIR;
 
 function resolveAgentDir() {
     const configPath = process.env.AGENT_DIR_PATH;
-    
+
     if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
         return path.join(__dirname, 'Agent');
     }
-    
+
     const normalizedPath = path.normalize(configPath.trim());
     const absolutePath = path.isAbsolute(normalizedPath)
         ? normalizedPath
         : path.resolve(__dirname, normalizedPath);
-    
+
     return absolutePath;
 }
 
@@ -49,7 +55,7 @@ async function ensureAgentDirectory() {
     } catch (error) {
         if (error.code !== 'EEXIST') {
             console.error(`[Server] Failed to create Agent directory: ${AGENT_DIR}`);
-            
+
             if (error.code === 'EACCES' || error.code === 'EPERM') {
                 console.error('[Server] Error: Permission denied');
             } else if (error.code === 'ENOENT') {
@@ -59,7 +65,7 @@ async function ensureAgentDirectory() {
             } else if (error.code === 'ENAMETOOLONG') {
                 console.error('[Server] Error: Path is too long');
             }
-            
+
             process.exit(1);
         }
     }
@@ -154,16 +160,16 @@ async function writeDebugLog(filenamePrefix, data) {
         const now = dayjs().tz(DEFAULT_TIMEZONE);
         const dateStr = now.format('YYYY-MM-DD');
         const timestamp = now.format('HHmmss_SSS');
-        
+
         // 归档目录：DebugLog/archive/YYYY-MM-DD/Debug/
         const archiveDir = path.join(DEBUG_LOG_DIR, 'archive', dateStr, 'Debug');
-        
+
         try {
             await fs.mkdir(archiveDir, { recursive: true });
         } catch (error) {
             console.error(`创建 Debug 归档目录失败: ${archiveDir}`, error);
         }
-        
+
         const filename = `${filenamePrefix}-${timestamp}.txt`;
         const filePath = path.join(archiveDir, filename);
         try {
@@ -245,7 +251,7 @@ app.use((req, res, next) => {
         if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
             clientIp = clientIp.substr(7);
         }
-        
+
         // 始终记录收到的POST请求IP
         console.log(`[IP Tracker] Received POST request from IP: ${clientIp}`);
 
@@ -328,10 +334,10 @@ const adminAuth = (req, res, next) => {
             '/AdminPanel/woff.css',
             '/AdminPanel/font.woff2'
         ];
-        
+
         // 验证登录的端点也需要特殊处理（允许无凭据时返回401而不是重定向）
         const isVerifyEndpoint = req.path === '/admin_api/verify-login';
-        
+
         if (publicPaths.includes(req.path)) {
             return next(); // 直接放行登录页面相关资源
         }
@@ -347,12 +353,12 @@ const adminAuth = (req, res, next) => {
             console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
             // 对API和页面请求返回不同的错误格式
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
-                 res.status(503).json({
+                res.status(503).json({
                     error: 'Service Unavailable: Admin credentials not configured.',
                     message: 'Please set AdminUsername and AdminPassword in the config.env file to enable the admin panel.'
                 });
             } else {
-                 res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
+                res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
             }
             return; // 停止进一步处理
         }
@@ -371,7 +377,7 @@ const adminAuth = (req, res, next) => {
 
         // 3. 尝试获取凭据（优先 Header，其次 Cookie）
         let credentials = basicAuth(req);
-        
+
         // 如果 Header 中没有凭据，尝试从 Cookie 中读取
         if (!credentials && req.headers.cookie) {
             const cookies = req.headers.cookie.split(';').reduce((acc, cookie) => {
@@ -379,7 +385,7 @@ const adminAuth = (req, res, next) => {
                 acc[key] = value;
                 return acc;
             }, {});
-            
+
             if (cookies.admin_auth) {
                 try {
                     // Cookie 存储的是 "Basic xxxx" 格式
@@ -421,7 +427,7 @@ const adminAuth = (req, res, next) => {
                     loginAttempts.set(clientIp, attemptInfo);
                 }
             }
-            
+
             // ========== 修改：根据请求类型决定响应方式 ==========
             // API 请求或验证端点：返回 401 JSON
             if (isVerifyEndpoint || req.path.startsWith('/admin_api') ||
@@ -440,14 +446,14 @@ const adminAuth = (req, res, next) => {
             }
             // ========== 修改结束 ==========
         }
-        
+
         // 4. 认证成功
         if (clientIp) {
             loginAttempts.delete(clientIp); // 成功后清除尝试记录
         }
         return next();
     }
-    
+
     // 非管理面板路径，继续
     return next();
 };
@@ -515,7 +521,7 @@ app.get('/v1/models', async (req, res) => {
             const responseText = await apiResponse.text();
             try {
                 const modelsData = JSON.parse(responseText);
-                
+
                 // 替换模型列表中的内部模型名为公开模型名
                 if (modelsData.data && Array.isArray(modelsData.data)) {
                     modelsData.data = modelsData.data.map(model => {
@@ -531,7 +537,7 @@ app.get('/v1/models', async (req, res) => {
                         return model;
                     });
                 }
-                
+
                 // 设置响应头
                 res.status(apiResponse.status);
                 apiResponse.headers.forEach((value, name) => {
@@ -539,7 +545,7 @@ app.get('/v1/models', async (req, res) => {
                         res.setHeader(name, value);
                     }
                 });
-                
+
                 // 发送修改后的响应
                 res.json(modelsData);
                 return;
@@ -554,7 +560,7 @@ app.get('/v1/models', async (req, res) => {
         apiResponse.headers.forEach((value, name) => {
             // Avoid forwarding hop-by-hop headers
             if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                 res.setHeader(name, value);
+                res.setHeader(name, value);
             }
         });
 
@@ -564,10 +570,10 @@ app.get('/v1/models', async (req, res) => {
     } catch (error) {
         console.error('转发 /v1/models 请求时出错:', error.message, error.stack);
         if (!res.headersSent) {
-             res.status(500).json({ error: 'Internal Server Error', details: error.message });
+            res.status(500).json({ error: 'Internal Server Error', details: error.message });
         } else if (!res.writableEnded) {
-             console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
-             res.end();
+            console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
+            res.end();
         }
     }
 });
@@ -601,9 +607,9 @@ app.post('/v1/schedule_task', async (req, res) => {
     try {
         // 确保目录存在
         await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
-        
+
         const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
-        
+
         const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
 
         const taskData = {
@@ -615,9 +621,9 @@ app.post('/v1/schedule_task', async (req, res) => {
 
         await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
         if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
-        
+
         // 返回成功的响应，插件可以基于此生成最终的用户回执
-        res.status(200).json({ 
+        res.status(200).json({
             status: "success",
             message: "任务已成功调度。",
             details: {
@@ -642,18 +648,18 @@ app.post('/v1/interrupt', (req, res) => {
     const context = activeRequests.get(id);
     if (context) {
         console.log(`[Interrupt] Received stop signal for ID: ${id}`);
-        
+
         // 修复 Bug #1, #2, #3: 先设置中止标志，再触发 abort，最后才尝试写入
         // 1. 设置中止标志，防止 chatCompletionHandler 继续写入
         if (!context.aborted) {
             context.aborted = true; // 标记为已中止
-            
+
             // 2. 立即触发 abort 信号（中断正在进行的 fetch 请求）
             if (context.abortController && !context.abortController.signal.aborted) {
                 context.abortController.abort();
                 console.log(`[Interrupt] AbortController.abort() called for ID: ${id}`);
             }
-            
+
             // 3. 等待一小段时间让 abort 传播（避免竞态条件）
             setImmediate(() => {
                 // 4. 现在安全地尝试关闭响应流（如果还未关闭）
@@ -663,7 +669,7 @@ app.post('/v1/interrupt', (req, res) => {
                         if (!context.res.headersSent) {
                             // 修复竞态条件Bug: 根据原始请求的stream属性判断响应类型
                             const isStreamRequest = context.req?.body?.stream === true;
-                            
+
                             if (isStreamRequest) {
                                 // 流式请求：发送SSE格式的中止信号
                                 console.log(`[Interrupt] Sending SSE abort signal for stream request ${id}`);
@@ -671,7 +677,7 @@ app.post('/v1/interrupt', (req, res) => {
                                 context.res.setHeader('Content-Type', 'text/event-stream');
                                 context.res.setHeader('Cache-Control', 'no-cache');
                                 context.res.setHeader('Connection', 'keep-alive');
-                                
+
                                 const abortChunk = {
                                     id: `chatcmpl-interrupt-${Date.now()}`,
                                     object: 'chat.completion.chunk',
@@ -727,7 +733,7 @@ app.post('/v1/interrupt', (req, res) => {
         } else {
             console.log(`[Interrupt] Request ${id} already aborted, skipping duplicate abort.`);
         }
-        
+
         // 最后从 activeRequests 中移除，防止内存泄漏
         setTimeout(() => {
             if (activeRequests.has(id)) {
@@ -735,7 +741,7 @@ app.post('/v1/interrupt', (req, res) => {
                 console.log(`[Interrupt] Cleaned up request ${id} from activeRequests`);
             }
         }, 1000); // 延迟1秒删除，确保所有异步操作完成
-        
+
         // 向中断请求的发起者返回成功响应
         res.status(200).json({ status: 'success', message: `Interrupt signal sent for request ${id}.` });
     } else {
@@ -864,7 +870,7 @@ app.post('/v1/human/tool', async (req, res) => {
     } catch (error) {
         console.error('[Human Tool Exec] Error processing direct tool call:', error.message);
         handleApiError(req); // 新增：处理API错误计数
-        
+
         let errorObject;
         try {
             // processToolCall 抛出的错误是一个字符串化的JSON
@@ -872,7 +878,7 @@ app.post('/v1/human/tool', async (req, res) => {
         } catch (parseError) {
             errorObject = { error: 'Internal Server Error', details: error.message };
         }
-        
+
         res.status(500).json(errorObject);
     }
 });
@@ -904,9 +910,9 @@ async function handleDiaryFromAIResponse(responseText) {
             successfullyParsedForDiary = true;
         }
     }
-    if (!successfullyParsedForDiary) { 
+    if (!successfullyParsedForDiary) {
         try {
-            const parsedJson = JSON.parse(responseText); 
+            const parsedJson = JSON.parse(responseText);
             const jsonContent = parsedJson.choices?.[0]?.message?.content;
             if (jsonContent && typeof jsonContent === 'string') {
                 fullAiResponseTextForDiary = jsonContent;
@@ -914,7 +920,7 @@ async function handleDiaryFromAIResponse(responseText) {
             }
         } catch (e) { /* ignore */ }
     }
-    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) { 
+    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) {
         fullAiResponseTextForDiary = responseText;
     }
 
@@ -954,7 +960,7 @@ async function handleDiaryFromAIResponse(responseText) {
                         const dailyNoteWriteResponse = pluginResult; // Use pluginResult directly
 
                         if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${dailyNoteWriteResponse.message}`);
-                        
+
                         let filePath = '';
                         const successMessage = dailyNoteWriteResponse.message; // e.g., "Diary saved to /path/to/file.txt"
                         const pathMatchMsg = /Diary saved to (.*)/;
@@ -988,7 +994,7 @@ async function handleDiaryFromAIResponse(responseText) {
                     console.error('[handleDiaryFromAIResponse] Error executing DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
                 }
             } else {
-                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0,50) });
+                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0, 50) });
             }
         }
     }
@@ -1080,17 +1086,17 @@ async function initialize() {
 
     pluginManager.setProjectBasePath(__dirname);
     pluginManager.setVectorDBManager(knowledgeBaseManager); // 注入 knowledgeBaseManager
-    
+
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
-    
+
     console.log('开始初始化服务类插件...');
     // --- 关键顺序调整 ---
     // 必须先将 WebSocketServer 实例注入到 PluginManager，
     // 这样在 initializeServices 内部才能正确地为 VCPLog 等插件注入广播函数。
     pluginManager.setWebSocketServer(webSocketServer);
-    
+
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
@@ -1106,7 +1112,7 @@ async function initialize() {
             vcpLogFunctions: pluginManager.getVCPLogFunctions()
         };
         if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
-        
+
         // 注入到消息预处理器
         for (const [name, module] of pluginManager.messagePreprocessors) {
             if (typeof module.setDependencies === 'function') {
@@ -1160,14 +1166,14 @@ async function initialize() {
             if (DEBUG_MODE) console.log('[initialize] All available emoji lists loaded into cache.');
         }
     } catch (error) {
-         if (error.code === 'ENOENT') {
-             console.error(`[initialize] Error: Emoji list source directory not found: ${emojiListSourceDir}. Make sure the EmojiListGenerator plugin ran successfully.`); // Keep as error
-         } else {
+        if (error.code === 'ENOENT') {
+            console.error(`[initialize] Error: Emoji list source directory not found: ${emojiListSourceDir}. Make sure the EmojiListGenerator plugin ran successfully.`); // Keep as error
+        } else {
             console.error(`[initialize] Error reading emoji list source directory ${emojiListSourceDir}:`, error.message); // Keep as error
-         }
+        }
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
-    
+
     // 初始化通用任务调度器
     taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
 }
@@ -1177,16 +1183,16 @@ let server;
 
 async function startServer() {
     await loadBlacklist(); // 新增：在服务器启动时加载IP黑名单
-    
+
     // 确保 Agent 目录存在
     await ensureAgentDirectory();
-    
+
     // 新增：加载模型重定向配置
     console.log('正在加载模型重定向配置...');
     modelRedirectHandler.setDebugMode(DEBUG_MODE);
     await modelRedirectHandler.loadModelRedirectConfig(path.join(__dirname, 'ModelRedirect.json'));
     console.log('模型重定向配置加载完成。');
-    
+
     // 新增：初始化Agent管理器
     console.log('正在初始化Agent管理器...');
     agentManager.setAgentDir(AGENT_DIR);
@@ -1208,10 +1214,10 @@ async function startServer() {
         if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
         const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
         webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
-        
+
         // --- 注入依赖 ---
         webSocketServer.setPluginManager(pluginManager);
-        
+
         // 初始化 FileFetcherServer
         FileFetcherServer.initialize(webSocketServer);
 
@@ -1227,7 +1233,7 @@ startServer().catch(err => {
 
 async function gracefulShutdown() {
     console.log('Initiating graceful shutdown...');
-    
+
     if (taskScheduler) {
         taskScheduler.shutdown();
     }
@@ -1263,7 +1269,7 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('uncaughtException', (error) => {
     console.error('[CRITICAL] Uncaught Exception detected:', error.message);
     console.error('[CRITICAL] Stack trace:', error.stack);
-    
+
     // 记录到日志文件
     const serverLogWriteStream = logger.getLogWriteStream();
     if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
@@ -1275,7 +1281,7 @@ process.on('uncaughtException', (error) => {
             console.error('[CRITICAL] Failed to write exception to log:', e.message);
         }
     }
-    
+
     // 不要立即退出，让服务器继续运行
     console.log('[CRITICAL] Server will continue running despite the exception.');
 });
@@ -1284,7 +1290,7 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[WARNING] Unhandled Promise Rejection at:', promise);
     console.error('[WARNING] Reason:', reason);
-    
+
     // 记录到日志文件
     const serverLogWriteStream = logger.getLogWriteStream();
     if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
