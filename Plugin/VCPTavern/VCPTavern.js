@@ -54,7 +54,7 @@ class VCPTavern {
 
         // --- 锚点 1: 角色身份 (CharID) ---
         let charId = 'UnknownChar';
-        
+
         // A. 尝试从 name 字段获取
         const assistantMsg = messages.find(m => m.role === 'assistant' && m.name);
         if (assistantMsg && assistantMsg.name) {
@@ -111,12 +111,12 @@ class VCPTavern {
     // 即时解析时间占位符，将当前时间"烤死"进内容中
     _resolveTimeVariables(text) {
         if (!text || typeof text !== 'string') return text;
-        
+
         const now = new Date();
         const date = now.toLocaleDateString('zh-CN', { timeZone: REPORT_TIMEZONE });
         const time = now.toLocaleTimeString('zh-CN', { timeZone: REPORT_TIMEZONE });
         const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: REPORT_TIMEZONE });
-        
+
         return text
             .replace(/\{\{Date\}\}/g, date)
             .replace(/\{\{Time\}\}/g, time)
@@ -126,9 +126,9 @@ class VCPTavern {
     // 深度解析消息对象中的时间变量
     _resolveMessageTimeVariables(messageObj) {
         if (!messageObj) return messageObj;
-        
+
         const resolved = JSON.parse(JSON.stringify(messageObj));
-        
+
         if (typeof resolved.content === 'string') {
             resolved.content = this._resolveTimeVariables(resolved.content);
         } else if (Array.isArray(resolved.content)) {
@@ -139,7 +139,7 @@ class VCPTavern {
                 return part;
             });
         }
-        
+
         return resolved;
     }
 
@@ -191,7 +191,7 @@ class VCPTavern {
         // 支持解析 {{VCPTavern::PresetName::SessionID}} 格式
         const triggerContent = match[1];
         let [presetName, explicitSessionId] = triggerContent.split('::');
-        
+
         const preset = this.presets.get(presetName);
         if (!preset || !Array.isArray(preset.rules)) {
             console.warn(`[VCPTavern] 预设 "${presetName}" 未找到或其 'rules' 格式无效。`);
@@ -214,22 +214,29 @@ class VCPTavern {
         if (this.accessLogs.has(logKey)) {
             const lastTime = this.accessLogs.get(logKey);
             const diff = now - lastTime;
-            
+
             // 格式化上次时间
             const lastDate = new Date(lastTime);
             lastChatTimeStr = `上次对话时间：${lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE })}`;
-            
+
             // 格式化时间间隔
             timeSinceLastChatStr = `距离上次对话已过去 ${this._formatDuration(diff)}`;
-            
+
             if (this.debugMode) {
                 console.log(`[VCPTavern] 预设 ${presetName} (ID:${sessionKey}) 上次访问: ${lastChatTimeStr}, 间隔: ${timeSinceLastChatStr}`);
             }
         }
 
-        // 更新访问时间并保存
-        this.accessLogs.set(logKey, now);
-        this._saveAccessLogs().catch(e => console.error('[VCPTavern] 异步保存日志失败:', e));
+        // 更新访问时间并保存 (带防抖：1分钟内的重复请求不刷新时间戳)
+        const DEBOUNCE_MS = 60 * 1000; // 1分钟防抖窗口
+        const lastLoggedTime = this.accessLogs.get(logKey);
+        if (!lastLoggedTime || (now - lastLoggedTime) >= DEBOUNCE_MS) {
+            this.accessLogs.set(logKey, now);
+            this._saveAccessLogs().catch(e => console.error('[VCPTavern] 异步保存日志失败:', e));
+            if (this.debugMode) console.log(`[VCPTavern] 访问时间已更新 (Key: ${logKey})`);
+        } else {
+            if (this.debugMode) console.log(`[VCPTavern] 防抖生效，跳过时间更新 (距上次仅 ${Math.round((now - lastLoggedTime) / 1000)}s)`);
+        }
 
         // 将计算出的时间变量注入到实例中，供 _resolveTimeVariables 使用
         // 注意：这里我们需要稍微修改 _resolveTimeVariables 来支持这两个新变量
@@ -249,7 +256,7 @@ class VCPTavern {
             }
             return content;
         };
-        
+
         let newMessages = [...messages];
 
         // 按照注入规则处理
@@ -297,7 +304,7 @@ class VCPTavern {
         for (const rule of relativeRules) {
             // 即时解析时间变量（包含新变量），将当前时间"烤死"进注入内容
             let contentToInject = rule.content;
-            
+
             if (typeof contentToInject === 'string') {
                 contentToInject = resolveExtendedVariables(contentToInject);
             } else if (typeof contentToInject === 'object') {
@@ -308,7 +315,7 @@ class VCPTavern {
 
             // 确保是对象格式
             const msgObj = ensureMessageObject(contentToInject);
-            
+
             if (rule.target === 'system') {
                 const systemIndex = newMessages.findIndex(m => m.role === 'system');
                 if (systemIndex !== -1) {
@@ -327,7 +334,7 @@ class VCPTavern {
                     }
                 }
                 if (lastUserIndex !== -1) {
-                     if (rule.position === 'after') {
+                    if (rule.position === 'after') {
                         newMessages.splice(lastUserIndex + 1, 0, msgObj);
                     } else { // before
                         newMessages.splice(lastUserIndex, 0, msgObj);
@@ -340,7 +347,7 @@ class VCPTavern {
                         userIndices.push(i);
                     }
                 }
-                
+
                 for (let j = userIndices.length - 1; j >= 0; j--) {
                     const userIndex = userIndices[j];
                     let clonedContent = rule.content;
@@ -376,7 +383,7 @@ class VCPTavern {
                 }
 
                 const msgObj = ensureMessageObject(contentToInject);
-                
+
                 if (rule.depth < newMessages.length) {
                     const injectionIndex = newMessages.length - rule.depth;
                     newMessages.splice(injectionIndex, 0, msgObj);
@@ -388,7 +395,7 @@ class VCPTavern {
                 }
             }
         }
-        
+
         if (this.debugMode) {
             console.log(`[VCPTavern] 原始消息数量: ${messages.length}, 注入后消息数量: ${newMessages.length}`);
         }
@@ -434,7 +441,7 @@ class VCPTavern {
                 res.status(500).json({ error: 'Failed to save preset' });
             }
         });
-        
+
         // 删除预设
         router.delete('/presets/:name', async (req, res) => {
             const presetName = req.params.name;
@@ -445,7 +452,7 @@ class VCPTavern {
                 if (this.debugMode) console.log(`[VCPTavern] 预设已删除: ${presetName}`);
                 res.status(200).json({ message: 'Preset deleted' });
             } catch (error) {
-                 if (error.code === 'ENOENT') {
+                if (error.code === 'ENOENT') {
                     return res.status(404).json({ error: 'Preset not found' });
                 }
                 console.error(`[VCPTavern] 删除预设失败 ${presetName}:`, error);
@@ -458,7 +465,7 @@ class VCPTavern {
 
         if (this.debugMode) console.log('[VCPTavern] API 路由已通过 adminApiRouter 注册到 /vcptavern');
     }
-    
+
     async shutdown() {
         console.log('[VCPTavern] 插件已卸载。');
     }
