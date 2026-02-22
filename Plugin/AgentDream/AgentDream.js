@@ -35,6 +35,13 @@ let pushVcpInfo = () => { };
 let dailyNoteRootPath = '';
 const dreamContexts = new Map(); // agentName -> { timestamp, history }
 
+// --- 自动做梦调度状态 ---
+let dreamSchedulerTimer = null;
+const SCHEDULER_CHECK_INTERVAL_MS = 15 * 60 * 1000; // 每15分钟检查一次
+const lastDreamTimestamps = new Map(); // agentName -> timestamp(ms)
+const DREAM_STATE_FILE = 'dream_schedule_state.json';
+let isDreamingInProgress = false; // 防止并发做梦
+
 // --- Core Module Functions ---
 
 /**
@@ -77,6 +84,12 @@ function initialize(config, dependencies) {
         fs.mkdirSync(dreamLogsDir, { recursive: true });
     }
 
+    // 加载上次做梦时间戳（持久化状态）
+    _loadDreamState();
+
+    // 启动自动做梦调度器
+    _startDreamScheduler();
+
     console.log('[AgentDream] ✅ Initialized successfully.');
     if (DEBUG_MODE) {
         console.error(`[AgentDream] VCP PORT: ${VCP_SERVER_PORT}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND'}`);
@@ -89,6 +102,8 @@ function initialize(config, dependencies) {
  * 关闭梦系统
  */
 function shutdown() {
+    _stopDreamScheduler();
+    _saveDreamState();
     dreamContexts.clear();
     console.log('[AgentDream] Shutdown complete.');
 }
@@ -897,6 +912,210 @@ function _broadcastDream(type, agentName, dreamId, data) {
 function _getDateStr() {
     const now = new Date();
     return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+}
+
+// =========================================================================
+// 自动做梦调度器
+// =========================================================================
+
+/**
+ * 启动自动做梦调度定时器
+ */
+function _startDreamScheduler() {
+    if (dreamSchedulerTimer) {
+        clearInterval(dreamSchedulerTimer);
+    }
+
+    // 检查是否有可做梦的 Agent
+    if (DREAM_CONFIG.agentList.length === 0 && Object.keys(DREAM_AGENTS).length === 0) {
+        console.log('[AgentDream] ⏸️ No dream agents configured, scheduler not started.');
+        return;
+    }
+
+    dreamSchedulerTimer = setInterval(() => {
+        _checkAndTriggerDreams().catch(err => {
+            console.error('[AgentDream] ❌ Scheduler error:', err.message);
+        });
+    }, SCHEDULER_CHECK_INTERVAL_MS);
+
+    // 让定时器不阻止进程退出
+    if (dreamSchedulerTimer.unref) {
+        dreamSchedulerTimer.unref();
+    }
+
+    const agentNames = Object.keys(DREAM_AGENTS);
+    console.log(`[AgentDream] ⏰ Dream scheduler started. Check every ${SCHEDULER_CHECK_INTERVAL_MS / 60000}min, ` +
+        `window ${DREAM_CONFIG.timeWindowStart}:00-${DREAM_CONFIG.timeWindowEnd}:00, ` +
+        `frequency ${DREAM_CONFIG.frequencyHours}h, probability ${DREAM_CONFIG.probability}, ` +
+        `agents: [${agentNames.join(', ')}]`);
+}
+
+/**
+ * 停止自动做梦调度定时器
+ */
+function _stopDreamScheduler() {
+    if (dreamSchedulerTimer) {
+        clearInterval(dreamSchedulerTimer);
+        dreamSchedulerTimer = null;
+        console.log('[AgentDream] ⏰ Dream scheduler stopped.');
+    }
+}
+
+/**
+ * 核心调度检查 - 每次定时器触发时执行
+ * 1. 检查当前时间是否在做梦时间窗口内
+ * 2. 对每个 Agent 检查频率冷却
+ * 3. 掷骰子决定是否触发
+ * 4. 逐个触发做梦（避免并发压力）
+ */
+async function _checkAndTriggerDreams() {
+    // 防止并发执行（上一轮做梦还未完成）
+    if (isDreamingInProgress) {
+        if (DEBUG_MODE) console.error('[AgentDream] Scheduler: skipping, previous dream still in progress.');
+        return;
+    }
+
+    const now = new Date();
+    const currentHour = now.getHours();
+
+    // 检查时间窗口（支持跨午夜，例如 22:00 - 06:00）
+    const windowStart = DREAM_CONFIG.timeWindowStart;
+    const windowEnd = DREAM_CONFIG.timeWindowEnd;
+    let inWindow = false;
+
+    if (windowStart <= windowEnd) {
+        // 正常窗口: 例如 1:00 - 6:00
+        inWindow = currentHour >= windowStart && currentHour < windowEnd;
+    } else {
+        // 跨午夜窗口: 例如 22:00 - 6:00
+        inWindow = currentHour >= windowStart || currentHour < windowEnd;
+    }
+
+    if (!inWindow) {
+        if (DEBUG_MODE) console.error(`[AgentDream] Scheduler: outside dream window (current: ${currentHour}:00, window: ${windowStart}:00-${windowEnd}:00)`);
+        return;
+    }
+
+    // 获取所有可做梦的 Agent
+    const eligibleAgents = Object.keys(DREAM_AGENTS);
+    if (eligibleAgents.length === 0) {
+        return;
+    }
+
+    const nowMs = Date.now();
+    const frequencyMs = DREAM_CONFIG.frequencyHours * 60 * 60 * 1000;
+    const agentsToTrigger = [];
+
+    for (const agentName of eligibleAgents) {
+        const lastDreamTime = lastDreamTimestamps.get(agentName) || 0;
+        const elapsed = nowMs - lastDreamTime;
+
+        // 频率冷却检查
+        if (elapsed < frequencyMs) {
+            if (DEBUG_MODE) {
+                const remainingMin = Math.ceil((frequencyMs - elapsed) / 60000);
+                console.error(`[AgentDream] Scheduler: ${agentName} cooldown, ${remainingMin}min remaining.`);
+            }
+            continue;
+        }
+
+        // 概率掷骰子
+        const roll = Math.random();
+        if (roll >= DREAM_CONFIG.probability) {
+            if (DEBUG_MODE) console.error(`[AgentDream] Scheduler: ${agentName} dice roll failed (${roll.toFixed(3)} >= ${DREAM_CONFIG.probability})`);
+            continue;
+        }
+
+        if (DEBUG_MODE) console.error(`[AgentDream] Scheduler: ${agentName} dice roll passed (${roll.toFixed(3)} < ${DREAM_CONFIG.probability})`);
+        agentsToTrigger.push(agentName);
+    }
+
+    if (agentsToTrigger.length === 0) {
+        if (DEBUG_MODE) console.error('[AgentDream] Scheduler: no agents eligible for dreaming this cycle.');
+        return;
+    }
+
+    // 逐个触发做梦（串行避免过大并发压力）
+    isDreamingInProgress = true;
+    console.log(`[AgentDream] 🌙 Scheduler triggering auto-dream for: [${agentsToTrigger.join(', ')}]`);
+
+    // 广播: 自动做梦开始
+    _broadcastDream('AGENT_DREAM_SCHEDULE', 'system', 'scheduler', {
+        message: `自动做梦调度触发，即将为 ${agentsToTrigger.join(', ')} 入梦`,
+        agents: agentsToTrigger,
+        currentHour: currentHour
+    });
+
+    try {
+        for (const agentName of agentsToTrigger) {
+            try {
+                console.log(`[AgentDream] ⏰ Auto-dreaming: ${agentName}...`);
+                const result = await triggerDream(agentName);
+
+                if (result.status === 'success') {
+                    // 更新上次做梦时间
+                    lastDreamTimestamps.set(agentName, Date.now());
+                    _saveDreamState();
+                    console.log(`[AgentDream] ✅ Auto-dream completed for ${agentName}: ${result.dreamId}`);
+                } else {
+                    console.error(`[AgentDream] ⚠️ Auto-dream failed for ${agentName}: ${result.error}`);
+                }
+
+                // Agent 之间间隔 30 秒，避免 API 压力
+                if (agentsToTrigger.indexOf(agentName) < agentsToTrigger.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 30000));
+                }
+            } catch (err) {
+                console.error(`[AgentDream] ❌ Auto-dream error for ${agentName}:`, err.message);
+            }
+        }
+    } finally {
+        isDreamingInProgress = false;
+    }
+}
+
+// =========================================================================
+// 调度状态持久化
+// =========================================================================
+
+/**
+ * 从磁盘加载上次做梦时间戳（防止重启后立即重新触发）
+ */
+function _loadDreamState() {
+    const stateFilePath = path.join(__dirname, DREAM_STATE_FILE);
+    try {
+        if (fs.existsSync(stateFilePath)) {
+            const data = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
+            if (data.lastDreamTimestamps && typeof data.lastDreamTimestamps === 'object') {
+                for (const [agent, ts] of Object.entries(data.lastDreamTimestamps)) {
+                    lastDreamTimestamps.set(agent, ts);
+                }
+            }
+            if (DEBUG_MODE) {
+                const entries = [...lastDreamTimestamps.entries()].map(([a, t]) => `${a}: ${new Date(t).toLocaleString()}`);
+                console.error(`[AgentDream] Loaded dream state: ${entries.join(', ') || 'empty'}`);
+            }
+        }
+    } catch (e) {
+        console.error(`[AgentDream] Failed to load dream state: ${e.message}`);
+    }
+}
+
+/**
+ * 将上次做梦时间戳保存到磁盘
+ */
+function _saveDreamState() {
+    const stateFilePath = path.join(__dirname, DREAM_STATE_FILE);
+    try {
+        const data = {
+            lastDreamTimestamps: Object.fromEntries(lastDreamTimestamps),
+            savedAt: new Date().toISOString()
+        };
+        fs.writeFileSync(stateFilePath, JSON.stringify(data, null, 2), 'utf-8');
+        if (DEBUG_MODE) console.error('[AgentDream] Dream state saved.');
+    } catch (e) {
+        console.error(`[AgentDream] Failed to save dream state: ${e.message}`);
+    }
 }
 
 // =========================================================================
