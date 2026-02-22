@@ -44,5 +44,5 @@
       "min": 1
     }
   },
-  "refreshIntervalCron": "0 */8 * * *"
+  "refreshIntervalCron": "0 */6 * * *"
 }

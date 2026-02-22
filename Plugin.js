@@ -84,8 +84,8 @@ class PluginManager {
                 if (expectedType === 'integer') {
                     value = parseInt(value, 10);
                     if (isNaN(value)) {
-                       if (this.debugMode) console.warn(`[PluginManager] Config key '${key}' for ${pluginManifest.name} expected integer, got NaN from raw value '${rawValue}'. Using undefined.`);
-                       value = undefined;
+                        if (this.debugMode) console.warn(`[PluginManager] Config key '${key}' for ${pluginManifest.name} expected integer, got NaN from raw value '${rawValue}'. Using undefined.`);
+                        value = undefined;
                     }
                 } else if (expectedType === 'boolean') {
                     value = String(value).toLowerCase() === 'true';
@@ -98,8 +98,8 @@ class PluginManager {
             config.DebugMode = String(pluginSpecificEnv.DebugMode).toLowerCase() === 'true';
         } else if (globalEnv.hasOwnProperty('DebugMode')) {
             config.DebugMode = String(globalEnv.DebugMode).toLowerCase() === 'true';
-        } else if (!config.hasOwnProperty('DebugMode')) { 
-            config.DebugMode = false; 
+        } else if (!config.hasOwnProperty('DebugMode')) {
+            config.DebugMode = false;
         }
         return config;
     }
@@ -109,7 +109,7 @@ class PluginManager {
         if (!pluginManifest) {
             return undefined;
         }
-        const effectiveConfig = this._getPluginConfig(pluginManifest); 
+        const effectiveConfig = this._getPluginConfig(pluginManifest);
         return effectiveConfig ? effectiveConfig[configKey] : undefined;
     }
 
@@ -120,8 +120,8 @@ class PluginManager {
         }
 
         return new Promise((resolve, reject) => {
-            const pluginConfig = this._getPluginConfig(plugin); 
-            const envForProcess = { ...process.env }; 
+            const pluginConfig = this._getPluginConfig(plugin);
+            const envForProcess = { ...process.env };
             for (const key in pluginConfig) {
                 if (pluginConfig.hasOwnProperty(key) && pluginConfig[key] !== undefined) {
                     envForProcess[key] = String(pluginConfig[key]);
@@ -157,7 +157,7 @@ class PluginManager {
                 console.error(`[PluginManager] Failed to start static plugin ${plugin.name}: ${err.message}`);
                 reject(err);
             });
-            
+
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId);
@@ -196,16 +196,39 @@ class PluginManager {
                 const currentValueEntry = this.staticPlaceholderValues.get(placeholderKey);
                 const currentValue = currentValueEntry ? currentValueEntry.value : undefined;
 
-                if (newValue !== null && newValue.trim() !== "") {
-                    this.staticPlaceholderValues.set(placeholderKey, { value: newValue.trim(), serverId: 'local' });
-                    if (this.debugMode) console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} updated with value: "${(newValue.trim()).substring(0,70)}..."`);
+                let parsedValue = newValue;
+                if (newValue !== null) {
+                    try {
+                        let trimmedValue = newValue.trim();
+                        // 尝试解析 JSON，支持 vcp_dynamic_fold 协议
+                        if (trimmedValue.startsWith('{')) {
+                            const jsonObj = JSON.parse(trimmedValue);
+                            if (jsonObj && jsonObj.vcp_dynamic_fold) {
+                                parsedValue = jsonObj; // 保持对象形式以供折叠处理
+                            } else {
+                                parsedValue = trimmedValue;
+                            }
+                        } else {
+                            parsedValue = trimmedValue;
+                        }
+                    } catch (e) {
+                        parsedValue = newValue.trim();
+                    }
+                }
+
+                if (parsedValue !== null && parsedValue !== "") {
+                    this.staticPlaceholderValues.set(placeholderKey, { value: parsedValue, serverId: 'local' });
+                    if (this.debugMode) {
+                        const logVal = typeof parsedValue === 'object' ? JSON.stringify(parsedValue) : parsedValue;
+                        console.log(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} updated with value: "${logVal.substring(0, 70)}..."`);
+                    }
                 } else if (executionError) {
-                    const errorMessage = `[Error updating ${plugin.name}: ${executionError.message.substring(0,100)}...]`;
-                    if (!currentValue || (currentValue && currentValue.startsWith("[Error"))) {
+                    const errorMessage = `[Error updating ${plugin.name}: ${executionError.message.substring(0, 100)}...]`;
+                    if (!currentValue || (typeof currentValue === 'string' && currentValue.startsWith("[Error"))) {
                         this.staticPlaceholderValues.set(placeholderKey, { value: errorMessage, serverId: 'local' });
                         if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} set to error state: ${errorMessage}`);
                     } else {
-                        if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} failed to update. Keeping stale value: "${(currentValue || "").substring(0,70)}..."`);
+                        if (this.debugMode) console.warn(`[PluginManager] Placeholder ${placeholderKey} for ${plugin.name} failed to update. Keeping stale value: "${(typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue)).substring(0, 70)}..."`);
                     }
                 } else {
                     if (this.debugMode) console.warn(`[PluginManager] Static plugin ${plugin.name} produced no new output for ${placeholderKey}. Keeping stale value (if any).`);
@@ -243,7 +266,7 @@ class PluginManager {
                         const job = schedule.scheduleJob(plugin.refreshIntervalCron, () => {
                             if (this.debugMode) console.log(`[PluginManager] Scheduled update for static plugin: ${plugin.name}`);
                             this._updateStaticPluginValue(plugin).catch(err => {
-                                 console.error(`[PluginManager] Scheduled background update for ${plugin.name} failed: ${err.message}`);
+                                console.error(`[PluginManager] Scheduled background update for ${plugin.name} failed: ${err.message}`);
                             });
                         });
                         this.scheduledJobs.set(plugin.name, job);
@@ -290,8 +313,8 @@ class PluginManager {
             if (this.debugMode) console.log('[PluginManager] SciCalculator not found, skipping Python pre-warming.');
         }
     }
-    
-    
+
+
     getPlaceholderValue(placeholder) {
         // First, try the modern, clean key (e.g., "VCPChromePageInfo")
         let entry = this.staticPlaceholderValues.get(placeholder);
@@ -311,7 +334,7 @@ class PluginManager {
         if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
             return entry.value;
         }
-        
+
         // Legacy format: raw string
         if (typeof entry === 'string') {
             return entry;
@@ -343,7 +366,7 @@ class PluginManager {
             return messages;
         }
     }
-    
+
     async shutdownAllPlugins() {
         console.log('[PluginManager] Shutting down all plugins...'); // Keep
 
@@ -358,7 +381,7 @@ class PluginManager {
         }
 
         for (const [name, pluginModuleData] of this.messagePreprocessors) {
-             const pluginModule = pluginModuleData.module || pluginModuleData;
+            const pluginModule = pluginModuleData.module || pluginModuleData;
             if (pluginModule && typeof pluginModule.shutdown === 'function') {
                 try {
                     if (this.debugMode) console.log(`[PluginManager] Calling shutdown for ${name}...`);
@@ -399,7 +422,7 @@ class PluginManager {
                 // 收集本地插件模块以进行清理
                 const preprocessor = this.messagePreprocessors.get(name);
                 if (preprocessor) localModulesToShutdown.add(preprocessor);
-                
+
                 const service = this.serviceModules.get(name)?.module;
                 if (service) localModulesToShutdown.add(service);
             }
@@ -436,7 +459,7 @@ class PluginManager {
                         const manifest = JSON.parse(manifestContent);
                         if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) continue;
                         if (this.plugins.has(manifest.name)) continue;
-                        
+
                         manifest.basePath = pluginPath;
                         manifest.pluginSpecificEnvConfig = {};
                         try {
@@ -456,7 +479,7 @@ class PluginManager {
                             try {
                                 const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
                                 const module = require(scriptPath);
-                                
+
                                 modulesToInitialize.push({ manifest, module });
 
                                 if (isPreprocessor && typeof module.processMessages === 'function') {
@@ -494,9 +517,9 @@ class PluginManager {
             } catch (error) {
                 if (error.code !== 'ENOENT') console.error(`[PluginManager] Error reading existing ${PREPROCESSOR_ORDER_FILE}:`, error);
             }
-            
+
             finalOrder.push(...Array.from(availablePlugins).sort());
-            
+
             // 4. 注册预处理器
             for (const pluginName of finalOrder) {
                 this.messagePreprocessors.set(pluginName, discoveredPreprocessors.get(pluginName));
@@ -575,7 +598,7 @@ class PluginManager {
                         let commandDescription = `- ${plugin.displayName} (${plugin.name}) - 命令: ${cmd.command || 'N/A'}:\n`; // Assuming cmd might have a 'command' field or similar identifier
                         const indentedCmdDescription = cmd.description.split('\n').map(line => `    ${line}`).join('\n');
                         commandDescription += `${indentedCmdDescription}`;
-                        
+
                         if (cmd.example) {
                             const exampleHeader = `\n  调用示例:\n`;
                             const indentedExample = cmd.example.split('\n').map(line => `    ${line}`).join('\n');
@@ -605,10 +628,14 @@ class PluginManager {
         return this.individualPluginDescriptions;
     }
 
+    getAllPlaceholderValues() {
+        return this.staticPlaceholderValues;
+    }
+
     // getVCPDescription() { // This method is no longer needed as VCPDescription is deprecated
     //     return this.vcpDescription;
     // }
-    
+
     getPlugin(name) {
         return this.plugins.get(name);
     }
@@ -616,7 +643,7 @@ class PluginManager {
     getServiceModule(name) {
         return this.serviceModules.get(name)?.module;
     }
-    
+
     // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
     getVCPLogFunctions() {
         const vcpLogModule = this.getServiceModule('VCPLog');
@@ -626,7 +653,7 @@ class PluginManager {
                 pushVcpInfo: vcpLogModule.pushVcpInfo
             };
         }
-        return { pushVcpLog: () => {}, pushVcpInfo: () => {} };
+        return { pushVcpLog: () => { }, pushVcpInfo: () => { } };
     }
 
     async processToolCall(toolName, toolArgs, requestIp = null) {
@@ -671,37 +698,37 @@ class PluginManager {
                 resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs);
                 // 分布式工具的返回结果应该已经是JS对象了
             } else if (toolName === 'ChromeControl' && plugin.communication?.protocol === 'direct') {
-               // --- ChromeControl 特殊处理逻辑 ---
-               if (!this.webSocketServer) {
-                   throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call ChromeControl tool.');
-               }
-               if (this.debugMode) console.log(`[PluginManager] Processing direct WebSocket tool call for: ${toolName}`);
-               const command = pluginSpecificArgs.command;
-               delete pluginSpecificArgs.command;
-               resultFromPlugin = await this.webSocketServer.forwardCommandToChrome(command, pluginSpecificArgs);
+                // --- ChromeControl 特殊处理逻辑 ---
+                if (!this.webSocketServer) {
+                    throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call ChromeControl tool.');
+                }
+                if (this.debugMode) console.log(`[PluginManager] Processing direct WebSocket tool call for: ${toolName}`);
+                const command = pluginSpecificArgs.command;
+                delete pluginSpecificArgs.command;
+                resultFromPlugin = await this.webSocketServer.forwardCommandToChrome(command, pluginSpecificArgs);
 
             } else if (plugin.pluginType === 'hybridservice' && plugin.communication?.protocol === 'direct') {
-               // --- 混合服务插件直接调用逻辑 ---
-               if (this.debugMode) console.log(`[PluginManager] Processing direct tool call for hybrid service: ${toolName}`);
-               const serviceModule = this.getServiceModule(toolName);
-               if (!serviceModule) {
-                   throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" module not found. It may have failed to load or initialize during hot-reload.`);
-               }
-               if (typeof serviceModule.processToolCall !== 'function') {
-                   throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" does not have a processToolCall function.`);
-               }
-               resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs);
+                // --- 混合服务插件直接调用逻辑 ---
+                if (this.debugMode) console.log(`[PluginManager] Processing direct tool call for hybrid service: ${toolName}`);
+                const serviceModule = this.getServiceModule(toolName);
+                if (!serviceModule) {
+                    throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" module not found. It may have failed to load or initialize during hot-reload.`);
+                }
+                if (typeof serviceModule.processToolCall !== 'function') {
+                    throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" does not have a processToolCall function.`);
+                }
+                resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs);
             } else {
                 // --- 本地插件调用逻辑 (现有逻辑) ---
                 if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
                     throw new Error(`[PluginManager] Local plugin "${toolName}" (type: ${plugin.pluginType}) is not a supported stdio plugin for direct tool call.`);
                 }
-                
+
                 let executionParam = null;
                 if (Object.keys(pluginSpecificArgs).length > 0) {
                     executionParam = JSON.stringify(pluginSpecificArgs);
                 }
-                
+
                 const logParam = executionParam ? (executionParam.length > 100 ? executionParam.substring(0, 100) + '...' : executionParam) : null;
                 if (this.debugMode) console.log(`[PluginManager] Calling local executePlugin for: ${toolName} with prepared param:`, logParam);
 
@@ -725,14 +752,14 @@ class PluginManager {
                     // 检查是否是文件未找到的特定错误
                     if (pluginOutput.code === 'FILE_NOT_FOUND_LOCALLY' && pluginOutput.fileUrl && requestIp) {
                         if (this.debugMode) console.log(`[PluginManager] Plugin '${toolName}' reported local file not found. Attempting to fetch via FileFetcherServer...`);
-                        
+
                         try {
                             const { buffer, mimeType } = await FileFetcherServer.fetchFile(pluginOutput.fileUrl, requestIp);
                             const base64Data = buffer.toString('base64');
                             const dataUri = `data:${mimeType};base64,${base64Data}`;
-                            
+
                             if (this.debugMode) console.log(`[PluginManager] Successfully fetched file as data URI. Retrying plugin call...`);
-                            
+
                             // 新的重试逻辑：精确替换失败的参数
                             const newToolArgs = { ...toolArgs };
                             const failedParam = pluginOutput.failedParameter; // e.g., "image_url1"
@@ -740,16 +767,16 @@ class PluginManager {
                             if (failedParam && newToolArgs[failedParam]) {
                                 // 删除旧的 file:// url 参数
                                 delete newToolArgs[failedParam];
-                                
+
                                 // 添加新的 base64 参数。我们使用一个新的键来避免命名冲突，
                                 // 并且让插件知道这是一个已经处理过的 base64 数据。
                                 // e.g., "image_base64_1"
-                               // 关键修复：确保正确地从 "image_url_1" 提取出 "1"
-                               const paramIndex = failedParam.replace('image_url_', '');
-                               const newParamKey = `image_base64_${paramIndex}`;
-                               newToolArgs[newParamKey] = dataUri;
-                               
-                               if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
+                                // 关键修复：确保正确地从 "image_url_1" 提取出 "1"
+                                const paramIndex = failedParam.replace('image_url_', '');
+                                const newParamKey = `image_base64_${paramIndex}`;
+                                newToolArgs[newParamKey] = dataUri;
+
+                                if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
 
                             } else {
                                 // 旧的后备逻辑，用于兼容单个 image_url 的情况
@@ -757,7 +784,7 @@ class PluginManager {
                                 newToolArgs.image_base64 = dataUri;
                                 if (this.debugMode) console.log(`[PluginManager] 'failedParameter' not specified. Falling back to replacing 'image_url' with 'image_base64'.`);
                             }
-                            
+
                             // 直接返回重试调用的结果
                             return await this.processToolCall(toolName, newToolArgs, requestIp);
 
@@ -780,7 +807,7 @@ class PluginManager {
                 finalResultObject.MaidName = maidNameFromArgs;
             }
             finalResultObject.timestamp = _getFormattedLocalTimestamp();
-            
+
             return finalResultObject;
 
         } catch (e) {
@@ -791,7 +818,7 @@ class PluginManager {
             } catch (jsonParseError) {
                 errorObject = { plugin_execution_error: e.message || 'Unknown plugin execution error' };
             }
-            
+
             if (maidNameFromArgs && !errorObject.MaidName) {
                 errorObject.MaidName = maidNameFromArgs;
             }
@@ -815,7 +842,7 @@ class PluginManager {
         if (!plugin.entryPoint || !plugin.entryPoint.command) {
             throw new Error(`[PluginManager executePlugin] Entry point command undefined for plugin "${pluginName}".`);
         }
-        
+
         const pluginConfig = this._getPluginConfig(plugin);
         const envForProcess = { ...process.env };
 
@@ -824,7 +851,7 @@ class PluginManager {
                 envForProcess[key] = String(pluginConfig[key]);
             }
         }
-        
+
         const additionalEnv = {};
         if (this.projectBasePath) {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
@@ -864,7 +891,7 @@ class PluginManager {
             }
             additionalEnv.PLUGIN_NAME_FOR_CALLBACK = pluginName; // Pass the plugin's name
         }
-        
+
         // Force Python stdio encoding to UTF-8
         additionalEnv.PYTHONIOENCODING = 'utf-8';
         const finalEnv = { ...envForProcess, ...additionalEnv };
@@ -886,13 +913,13 @@ class PluginManager {
             const isAsyncPlugin = plugin.pluginType === 'asynchronous';
 
             const timeoutDuration = plugin.communication.timeout || (isAsyncPlugin ? 1800000 : 60000); // Use manifest timeout, or 30min for async, 1min for sync
-            
+
             const timeoutId = setTimeout(() => {
                 if (!processExited && !initialResponseSent && isAsyncPlugin) {
                     // For async, if initial response not sent by timeout, it's an error for that phase
-                     console.error(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" initial response timed out after ${timeoutDuration}ms.`);
-                     pluginProcess.kill('SIGKILL'); // Kill if no initial response
-                     reject(new Error(`Plugin "${pluginName}" initial response timed out.`));
+                    console.error(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" initial response timed out after ${timeoutDuration}ms.`);
+                    pluginProcess.kill('SIGKILL'); // Kill if no initial response
+                    reject(new Error(`Plugin "${pluginName}" initial response timed out.`));
                 } else if (!processExited && !isAsyncPlugin) {
                     // For sync plugins, or if async initial response was sent but process hangs
                     console.error(`[PluginManager executePlugin Internal] Plugin "${pluginName}" execution timed out after ${timeoutDuration}ms.`);
@@ -911,7 +938,7 @@ class PluginManager {
                 if (processExited || (isAsyncPlugin && initialResponseSent)) {
                     // If async and initial response sent, or process exited, ignore further stdout for this Promise.
                     // The plugin's background task might still log to its own stdout, but we don't collect it here.
-                    if (this.debugMode && isAsyncPlugin && initialResponseSent) console.log(`[PluginManager executePlugin Internal] Async plugin ${pluginName} (initial response sent) produced more stdout: ${data.substring(0,100)}...`);
+                    if (this.debugMode && isAsyncPlugin && initialResponseSent) console.log(`[PluginManager executePlugin Internal] Async plugin ${pluginName} (initial response sent) produced more stdout: ${data.substring(0, 100)}...`);
                     return;
                 }
                 outputBuffer += data;
@@ -945,7 +972,7 @@ class PluginManager {
                     }
                 } catch (e) {
                     // Incomplete JSON or invalid JSON, wait for more data or 'exit' event.
-                    if (this.debugMode && outputBuffer.length > 2) console.log(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout buffer not yet a complete JSON or invalid. Buffer: ${outputBuffer.substring(0,100)}...`);
+                    if (this.debugMode && outputBuffer.length > 2) console.log(`[PluginManager executePlugin Internal] Plugin "${pluginName}" stdout buffer not yet a complete JSON or invalid. Buffer: ${outputBuffer.substring(0, 100)}...`);
                 }
             });
 
@@ -963,7 +990,7 @@ class PluginManager {
                     console.error(`[PluginManager executePlugin Internal] Error after initial response for async plugin "${pluginName}": ${err.message}. Process might have been expected to continue.`);
                 }
             });
-            
+
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId); // Clear the main timeout once the process exits.
@@ -973,7 +1000,7 @@ class PluginManager {
                     if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" process exited with code ${code}, signal ${signal} after initial response was sent.`);
                     return;
                 }
-                
+
                 // If we are here, it's either a sync plugin, or an async plugin whose initial response was NOT sent before exit.
 
                 if (signal === 'SIGKILL') { // Typically means timeout killed it
@@ -985,20 +1012,20 @@ class PluginManager {
                     const parsedOutput = JSON.parse(outputBuffer.trim()); // Use accumulated outputBuffer
                     if (parsedOutput && (parsedOutput.status === "success" || parsedOutput.status === "error")) {
                         if (code !== 0 && parsedOutput.status === "success" && this.debugMode) {
-                             console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code ${code} but reported success in JSON. Trusting JSON.`);
+                            console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code ${code} but reported success in JSON. Trusting JSON.`);
                         }
                         if (code === 0 && parsedOutput.status === "error" && this.debugMode) {
                             console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" exited with code 0 but reported error in JSON. Trusting JSON.`);
                         }
                         if (errorOutput.trim()) parsedOutput.pluginStderr = errorOutput.trim();
-                        
+
                         if (!initialResponseSent) resolve(parsedOutput); // Ensure resolve only once
                         else if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Plugin ${pluginName} exited, initial async response already sent.`);
                         return;
                     }
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${outputBuffer.trim().substring(0,100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Plugin "${pluginName}" final stdout was not in the expected JSON format: ${outputBuffer.trim().substring(0, 100)}`);
                 } catch (e) {
-                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${outputBuffer.trim().substring(0,100)}`);
+                    if (this.debugMode) console.warn(`[PluginManager executePlugin Internal] Failed to parse final stdout JSON from plugin "${pluginName}". Error: ${e.message}. Stdout: ${outputBuffer.trim().substring(0, 100)}`);
                 }
 
                 if (!initialResponseSent) { // Only reject if no response has been sent yet
@@ -1009,7 +1036,7 @@ class PluginManager {
                         reject(new Error(detailedError));
                     } else {
                         // Exit code 0, but no valid initial JSON response was sent/parsed.
-                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${outputBuffer.trim().substring(0,200)}`));
+                        reject(new Error(`Plugin "${pluginName}" exited successfully but did not provide a valid initial JSON response. Stdout: ${outputBuffer.trim().substring(0, 200)}`));
                     }
                 }
             });
@@ -1058,7 +1085,7 @@ class PluginManager {
                     app.use(`/api/plugins/${name}`, pluginRouter);
                     if (this.debugMode) console.log(`[PluginManager] Mounted API routes for ${name} at /api/plugins/${name}`);
                 }
-                
+
                 // VCPLog 特殊处理：注入 WebSocketServer 的广播函数
                 if (name === 'VCPLog' && this.webSocketServer && typeof module.setBroadcastFunctions === 'function') {
                     if (typeof this.webSocketServer.broadcastVCPInfo === 'function') {
@@ -1099,11 +1126,11 @@ class PluginManager {
                 if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing tool. Skipping.`);
                 continue;
             }
-            
+
             // 标记为分布式插件并存储其来源服务器ID
             toolManifest.isDistributed = true;
             toolManifest.serverId = serverId;
-            
+
             // 在显示名称前加上[云端]前缀
             toolManifest.displayName = `[云端] ${toolManifest.displayName || toolManifest.name}`;
 
@@ -1129,7 +1156,7 @@ class PluginManager {
             // 注销后重建描述
             this.buildVCPDescription();
         }
-        
+
         // 新增：清理分布式静态占位符
         this.clearDistributedStaticPlaceholders(serverId);
     }
@@ -1139,16 +1166,30 @@ class PluginManager {
         if (this.debugMode) {
             console.log(`[PluginManager] Updating static placeholders from distributed server ${serverName} (${serverId})`);
         }
-        
+
         for (const [placeholder, value] of Object.entries(placeholders)) {
+            // 新增逻辑：尝试解析可能的 JSON 折叠对象
+            let parsedValue = value;
+            if (typeof value === 'string' && value.trim().startsWith('{')) {
+                try {
+                    const jsonObj = JSON.parse(value.trim());
+                    if (jsonObj && jsonObj.vcp_dynamic_fold) {
+                        parsedValue = jsonObj; // 保持对象形式以供折叠处理
+                    }
+                } catch (e) {
+                    // 解析失败说明只是普通的字符串，可以直接忽略错误
+                }
+            }
+
             // 为分布式占位符添加服务器来源标识
-            this.staticPlaceholderValues.set(placeholder, { value: value, serverId: serverId });
-            
+            this.staticPlaceholderValues.set(placeholder, { value: parsedValue, serverId: serverId });
+
             if (this.debugMode) {
-                console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${value.substring(0, 100)}${value.length > 100 ? '...' : ''}`);
+                const logVal = typeof parsedValue === 'object' ? JSON.stringify(parsedValue) : parsedValue;
+                console.log(`[PluginManager] Updated distributed placeholder ${placeholder} from ${serverName}: ${logVal.substring(0, 100)}${logVal.length > 100 ? '...' : ''}`);
             }
         }
-        
+
         // 强制日志记录分布式静态占位符更新
         console.log(`[PluginManager] Updated ${Object.keys(placeholders).length} static placeholders from distributed server ${serverName}.`);
     }
@@ -1156,20 +1197,20 @@ class PluginManager {
     // 新增：清理分布式静态占位符
     clearDistributedStaticPlaceholders(serverId) {
         const placeholdersToRemove = [];
-        
+
         for (const [placeholder, entry] of this.staticPlaceholderValues.entries()) {
             if (entry && entry.serverId === serverId) {
                 placeholdersToRemove.push(placeholder);
             }
         }
-        
+
         for (const placeholder of placeholdersToRemove) {
             this.staticPlaceholderValues.delete(placeholder);
             if (this.debugMode) {
                 console.log(`[PluginManager] Removed distributed placeholder ${placeholder} from disconnected server ${serverId}`);
             }
         }
-        
+
         if (placeholdersToRemove.length > 0) {
             console.log(`[PluginManager] Cleared ${placeholdersToRemove.length} static placeholders from disconnected server ${serverId}.`);
         }
@@ -1197,7 +1238,7 @@ class PluginManager {
     }
     startPluginWatcher() {
         if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
-        
+
         const pathsToWatch = [
             path.join(PLUGIN_DIR, '**/plugin-manifest.json'),
             path.join(PLUGIN_DIR, '**/plugin-manifest.json.block')
@@ -1216,7 +1257,7 @@ class PluginManager {
             .on('add', filePath => this.handlePluginManifestChange('add', filePath))
             .on('change', filePath => this.handlePluginManifestChange('change', filePath))
             .on('unlink', filePath => this.handlePluginManifestChange('unlink', filePath));
-            
+
         console.log(`[PluginManager] Chokidar is now watching for manifest changes in: ${PLUGIN_DIR}`);
     }
 
@@ -1225,21 +1266,21 @@ class PluginManager {
             if (this.debugMode) console.log(`[PluginManager] Already reloading, skipping event '${eventType}' for: ${filePath}`);
             return;
         }
-        
+
         clearTimeout(this.reloadTimeout);
-        
+
         if (this.debugMode) console.log(`[PluginManager] Debouncing plugin reload trigger due to '${eventType}' event on: ${path.basename(filePath)}`);
 
         this.reloadTimeout = setTimeout(async () => {
             this.isReloading = true;
-            
+
             try {
                 // --- 精细化检查：判断是否需要触发重载 ---
                 if (eventType !== 'unlink') {
                     try {
                         const content = await fs.readFile(filePath, 'utf-8');
                         const manifest = JSON.parse(content);
-                        
+
                         // 如果是常驻内存型插件（direct 协议），禁止自动热重载以维持稳定性
                         if (manifest.communication?.protocol === 'direct') {
                             if (this.debugMode) console.log(`[PluginManager] Resident plugin manifest change detected (${manifest.name}), skipping auto-reload to maintain stability.`);
@@ -1274,24 +1315,24 @@ class PluginManager {
 const pluginManager = new PluginManager();
 
 // 新增：获取所有静态占位符值
-pluginManager.getAllPlaceholderValues = function() {
+pluginManager.getAllPlaceholderValues = function () {
     const valuesMap = new Map();
     for (const [key, entry] of this.staticPlaceholderValues.entries()) {
         // Sanitize the key to remove legacy brackets for consistency
         const sanitizedKey = key.replace(/^{{|}}$/g, '');
-        
+
         let value;
         // Handle modern object format
         if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
             value = entry.value;
-        // Handle legacy raw string format
+            // Handle legacy raw string format
         } else if (typeof entry === 'string') {
             value = entry;
         } else {
             // Fallback for any other unexpected format
             value = `[Invalid format for placeholder ${sanitizedKey}]`;
         }
-        
+
         valuesMap.set(sanitizedKey, value || `[Placeholder ${sanitizedKey} has no value]`);
     }
     return valuesMap;

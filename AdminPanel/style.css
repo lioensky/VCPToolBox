@@ -3254,3 +3254,228 @@ html[data-theme='light'] .delete-theme-btn {
         max-height: none;
     }
 }
+
+/* --- 占位符查看器 --- */
+.placeholder-viewer-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    margin: 1rem 0;
+    padding: 0.5rem 0;
+}
+.placeholder-viewer-filters label {
+    color: var(--secondary-text);
+    font-size: 0.9rem;
+}
+.placeholder-filter-select {
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--input-bg);
+    color: var(--primary-text);
+    min-width: 140px;
+}
+.placeholder-filter-input {
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--input-bg);
+    color: var(--primary-text);
+    min-width: 200px;
+}
+.placeholder-viewer-list {
+    margin-top: 0.5rem;
+}
+.placeholder-viewer-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border: 1px solid var(--border-color);
+    background: var(--tertiary-bg);
+}
+.placeholder-viewer-table .col-type { width: 10%; }
+.placeholder-viewer-table .col-name { width: 18%; }
+.placeholder-viewer-table .col-preview { width: 46%; }
+.placeholder-viewer-table .col-desc { width: 20%; }
+.placeholder-viewer-table .col-charcount { width: 6%; }
+.placeholder-viewer-table th,
+.placeholder-viewer-table td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border: 1px solid var(--border-color);
+}
+.placeholder-viewer-table th {
+    background: var(--accent-bg);
+    color: var(--primary-text);
+    font-weight: 600;
+}
+.placeholder-viewer-table td.placeholder-preview-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.placeholder-viewer-table .placeholder-preview-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.placeholder-viewer-table .placeholder-expand-icon {
+    flex-shrink: 0;
+    font-size: 1.2rem;
+    color: var(--secondary-text);
+    cursor: pointer;
+    padding: 0.2rem;
+    border-radius: 4px;
+}
+.placeholder-viewer-table .placeholder-expand-icon:hover {
+    color: var(--primary-color);
+    background: var(--accent-bg);
+}
+.placeholder-viewer-table td.placeholder-desc {
+    max-width: 240px;
+    font-size: 0.9em;
+    color: var(--secondary-text);
+    line-height: 1.35;
+}
+.placeholder-viewer-table td.placeholder-charcount {
+    text-align: right;
+    white-space: nowrap;
+    min-width: 4em;
+}
+.placeholder-viewer-table code {
+    font-size: 0.9em;
+    background: var(--accent-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+}
+.placeholder-detail-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    box-sizing: border-box;
+}
+.placeholder-detail-modal.show {
+    display: flex;
+}
+.placeholder-detail-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+}
+.placeholder-detail-modal-content {
+    position: relative;
+    max-width: 640px;
+    width: 100%;
+    max-height: 85vh;
+    background: var(--tertiary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.placeholder-detail-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--accent-bg);
+    flex-shrink: 0;
+}
+.placeholder-detail-modal-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--primary-text);
+    word-break: break-all;
+}
+.placeholder-detail-modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--secondary-text);
+    cursor: pointer;
+    padding: 0.25rem;
+}
+.placeholder-detail-modal-close:hover {
+    color: var(--primary-color);
+}
+.placeholder-detail-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 1rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--accent-bg);
+    flex-shrink: 0;
+}
+.placeholder-detail-tab {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--secondary-text);
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+.placeholder-detail-tab:hover {
+    color: var(--primary-text);
+}
+.placeholder-detail-tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+.placeholder-detail-modal-body {
+    padding: 0;
+    overflow: hidden;
+    max-height: 70vh;
+    color: var(--primary-text);
+    display: flex;
+    flex-direction: column;
+}
+.placeholder-detail-panel {
+    display: none;
+    padding: 1rem;
+    overflow: auto;
+    flex: 1;
+    min-height: 0;
+}
+.placeholder-detail-panel.active {
+    display: block;
+}
+.placeholder-detail-raw,
+.placeholder-detail-json {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.9em;
+}
+.placeholder-detail-markdown {
+    font-size: 0.9em;
+}
+.placeholder-detail-modal-body h1,
+.placeholder-detail-modal-body h2,
+.placeholder-detail-modal-body h3 {
+    color: var(--primary-text);
+    margin-top: 0.75em;
+    margin-bottom: 0.5em;
+}
+.placeholder-detail-modal-body pre,
+.placeholder-detail-modal-body code {
+    background: var(--accent-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+}
+.placeholder-detail-modal-body pre {
+    padding: 0.75rem;
+    overflow: auto;
+}
