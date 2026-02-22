@@ -136,33 +136,52 @@ dist
 .pnp.*
 
 # Custom VCPToolBox ignores
+
+# ===== 环境配置文件 =====
+# 所有插件的实际 config.env（保留 .example）
 config.env
 config.env.local
-Plugin/EmojiListGenerator/generated_lists/
-Plugin/ImageProcessor/image_cache.json
-Plugin/WeatherReporter/weather_cache.txt
+**/config.env
+!**/config.env.example
+
+# 有 .example 对应的运行时配置
+ModelRedirect.json
+agent_map.json
+preprocessor_order.json
+tag-processor-config.env
+
+# ===== 运行时数据 / 缓存 =====
 DebugLog/
 dailynote/
+ip_blacklist.json
+/VectorStore
+
+# 插件缓存文件
+Plugin/ArtistMatcher/artist_cache.json
 Plugin/DailyHot/dailyhot_cache.md
-Plugin/TavilySearch/.vcptoolbox_tavily_cache.json
+Plugin/EmojiListGenerator/generated_lists/
+Plugin/FRPSInfoProvider/frps_info_cache.txt
+Plugin/ImageProcessor/image_cache.json
 Plugin/ImageProcessor/multimodal_cache.json
+Plugin/MCPOMonitor/mcpo_status_cache.txt
+Plugin/MCPOMonitor/mcpo_status_cache.json
+Plugin/ProjectAnalyst/database/
+Plugin/RAGDiaryPlugin/vector_cache.json
+Plugin/RAGDiaryPlugin/meta_chain_vector_cache.json
+Plugin/RAGDiaryPlugin/rag_tags.json
+Plugin/RAGDiaryPlugin/semantic_groups.json
+Plugin/RAGDiaryPlugin/semantic_groups.edit.json
+Plugin/RAGDiaryPlugin/semantic_vectors/
+Plugin/TavilySearch/.vcptoolbox_tavily_cache.json
 Plugin/UserAuth/code.bin
 Plugin/VCPLog/log/VCPlog.txt
 Plugin/WeatherReporter/weather_cache.json
-Plugin/UserAuth/code.bin
-Plugin/MCPOMonitor/mcpo_status_cache.txt
-Plugin/MCPOMonitor/mcpo_status_cache.json
-/VectorStore
-ip_blacklist.json
-
-# WeatherReporter cache files
-Plugin/WeatherReporter/city_cache.txt
 Plugin/WeatherReporter/weather_cache.txt
+Plugin/WeatherReporter/city_cache.txt
 
-
+# ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...
 image/通用表情包/*
-
 # ...除了这两个文件
 !image/通用表情包/阿库娅-一脸智障.jpg
 !image/通用表情包/阿库娅-智慧的眼神.jpg
@@ -170,9 +189,12 @@ image/通用表情包/*
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
 
-# macOS & app files
+# ===== IDE / OS 文件 =====
+.vscode/
 .DS_Store
 **/.DS_Store
 .DS_Store?
 /.obsidian
-Plugin/MIDITranslator/config.env
+
+# ===== 编译产物 =====
+rust-vexus-lite/target/
