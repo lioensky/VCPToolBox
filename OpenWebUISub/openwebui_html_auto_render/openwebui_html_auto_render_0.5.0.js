@@ -2,7 +2,7 @@
 // @name         OpenWebUI HTML Auto-Render（遮点挪）
 // @namespace    http(s)://your.openwebui.url/*
 // @version      0.5.0
-// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.0: iframe 右上角加入“复制/保存”悬浮按钮（触屏常显），支持复制为图像/保存到本地；html2canvas 运行时动态加载，便于非油猴环境拆分复用。
+// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.0: iframe 右上角加入“复制/保存”悬浮按钮，支持复制为图像/保存到本地；html2canvas 运行时动态加载，便于非油猴环境拆分复用。
 // @author       B3000Kcn & DBL1F7E5
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -209,9 +209,14 @@
             pointer-events: auto;
         }
         @media (hover: none) {
-            /* 触屏设备没有 hover：常显但半透明 */
+            /* 触屏设备：默认隐藏，点击 wrapper 切换显示 */
             .vcp-iframe-toolbar {
-                opacity: 0.72;
+                opacity: 0;
+                transform: translateY(-2px);
+                pointer-events: none;
+            }
+            .vcp-html-iframe-wrapper.vcp-toolbar-visible .vcp-iframe-toolbar {
+                opacity: 0.85;
                 transform: translateY(0);
                 pointer-events: auto;
             }
@@ -725,6 +730,19 @@
         bar.appendChild(btnSave);
 
         wrapper.appendChild(bar);
+
+        // 触屏设备：点击 wrapper 切换工具栏显隐
+        // 仅在 (hover: none) 环境下生效，桌面端靠 CSS :hover 控制
+        try {
+            const isTouch = window.matchMedia && window.matchMedia('(hover: none)').matches;
+            if (isTouch) {
+                wrapper.addEventListener('click', (e) => {
+                    // 如果点击的是工具栏按钮本身，不 toggle（让按钮事件正常处理）
+                    if (e.target.closest('.vcp-iframe-toolbar')) return;
+                    wrapper.classList.toggle('vcp-toolbar-visible');
+                });
+            }
+        } catch (_) { /* ignore */ }
     }
 
     // ========== 消息级任务管理 ==========
