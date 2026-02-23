@@ -441,7 +441,7 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 🌟 TagMemo V3.7 + EPA + Residual Pyramid + Worldview Gating 增强版
+     * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating 增强版
      */
     _applyTagBoostV3(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
         const debug = true;
