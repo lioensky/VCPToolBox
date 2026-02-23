@@ -1,0 +1,68 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DiscourseReader",
+  "displayName": "Discourse 论坛阅读器",
+  "version": "1.2.0",
+  "description": "通用 Discourse 论坛阅读器。通过 Discourse JSON API 获取结构化数据，支持浏览帖子列表、阅读帖子详情和搜索。依赖 UrlFetch 插件绕过 Cloudflare 防护。",
+  "author": "Rosa",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node DiscourseReader.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "DISCOURSE_BASE_URL": {
+      "type": "string",
+      "description": "Discourse 论坛的基础 URL",
+      "default": "https://linux.do"
+    },
+    "DEFAULT_CATEGORY": {
+      "type": "string",
+      "description": "默认板块 slug",
+      "default": "develop"
+    },
+    "MAX_CONTENT_LENGTH": {
+      "type": "number",
+      "description": "帖子正文最大字符数",
+      "default": 3000
+    },
+    "MAX_POSTS": {
+      "type": "number",
+      "description": "读取帖子时默认最大回复数",
+      "default": 10
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ListTopics",
+        "description": "浏览 Discourse 论坛的帖子列表。支持按板块(Category)或标签(Tag)筛选，支持分页和排序。返回帖子标题、作者、回复数、浏览数、标签等结构化信息。\n\n参数:\n- command (字符串, 必需): 固定为 'ListTopics'\n- category (字符串, 可选): 板块 slug，如 'develop'、'welfare'、'resource' 等\n- tag (字符串, 可选): 标签路径，如 '444-tag/444'（人工智能）、'chatgpt' 等。传入时 category 默认失效\n- page (数字, 可选): 页码，默认 0（第一页），每页 30 条\n- order (字符串, 可选): 排序方式 'latest'(默认) / 'views' / 'posts'",
+        "example": "浏览开发板块:\ncommand: ListTopics\ncategory: develop\n\n按标签筛选（人工智能）:\ncommand: ListTopics\ntag: 444-tag/444\n\n翻页:\ncommand: ListTopics\ncategory: develop\npage: 1"
+      },
+      {
+        "commandIdentifier": "ReadTopic",
+        "description": "阅读 Discourse 论坛帖子的完整内容，包括正文和回复。HTML 自动转换为 Markdown 格式。支持通过帖子 ID 或完整 URL 访问，支持分页楼层加载。\n\n参数:\n- command (字符串, 必需): 固定为 'ReadTopic'\n- topic_id (数字, 二选一): 帖子 ID\n- url (字符串, 二选一): 帖子完整 URL（如 https://linux.do/t/topic/123456），会自动提取 ID\n- max_posts (数字, 可选): 最大读取回复数，默认为配置值。单次稳定上限约 50 楼\n- post_number (数字, 可选): 从第几楼开始读取，默认 1。用于分批读取超过 50 楼的长帖",
+        "example": "读取帖子:\ncommand: ReadTopic\ntopic_id: 1638705\nmax_posts: 20\n\n分批读取长帖（从第 51 楼开始）:\ncommand: ReadTopic\ntopic_id: 1638705\nmax_posts: 50\npost_number: 51"
+      },
+      {
+        "commandIdentifier": "ListCategories",
+        "description": "获取 Discourse 论坛的所有板块列表，包含板块名称、slug 和帖子数量。返回的 slug 可直接用于 ListTopics 的 category 参数。\n\n参数:\n- command (字符串, 必需): 固定为 'ListCategories'",
+        "example": "获取所有板块:\ncommand: ListCategories"
+      },
+      {
+        "commandIdentifier": "ListTags",
+        "description": "获取 Discourse 论坛的所有标签列表，包含标签名称、路径和帖子数量，按帖子数降序排列。返回的 Path 可直接用于 ListTopics 的 tag 参数。\n\n参数:\n- command (字符串, 必需): 固定为 'ListTags'",
+        "example": "获取所有标签:\ncommand: ListTags"
+      },
+      {
+        "commandIdentifier": "SearchForum",
+        "description": "在 Discourse 论坛中搜索帖子。返回匹配的话题列表和内容片段。注意：搜索 API 有频率限制，频繁调用可能返回错误。\n\n参数:\n- command (字符串, 必需): 固定为 'SearchForum'\n- keyword (字符串, 必需): 搜索关键词\n- category (字符串, 可选): 限定板块 slug\n- order (字符串, 可选): 排序 'relevance'(默认) / 'latest' / 'likes' / 'views'\n- page (数字, 可选): 页码，默认 1",
+        "example": "搜索帖子:\ncommand: SearchForum\nkeyword: claude code\n\n限定板块搜索:\ncommand: SearchForum\nkeyword: docker\ncategory: develop"
+      }
+    ]
+  }
+}
