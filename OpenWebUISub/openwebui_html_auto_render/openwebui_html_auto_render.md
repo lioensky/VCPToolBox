@@ -145,7 +145,7 @@ v0.3.0 将处理粒度从"代码块级独立流程"提升为"消息级协调流�
 ### CHANGELOG
 
 #### v0.5.0（2026-02-23）
-- 新增"复制/保存"悬浮工具栏：每个渲染出的 iframe 右上角显示"复制"和"保存"按钮，hover 时浮现，触屏设备（`@media (hover: none)`）常显半透明。
+- 新增"复制/保存"悬浮工具栏：每个渲染出的 iframe 右上角显示"复制"和"保存"按钮，桌面端 hover 时浮现，触屏设备点击 iframe 区域切换工具栏显隐（不再常显，避免遮挡内容）。
 - 截图导出：通过 html2canvas（运行时从 CDN 动态加载）对 iframe 内部 DOM 截图，生成 PNG。
 - 油猴沙箱兼容：html2canvas 注入到页面 window 后，通过 `findHtml2Canvas()` 三级查找（`window` → `unsafeWindow` → `globalThis`）+ 轮询等待，解决 Firefox 油猴沙箱隔离问题。
 - 导出质量优化：
