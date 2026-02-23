@@ -418,26 +418,26 @@ class ChatCompletionHandler {
         if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
       }
 
-      let shouldProcessMedia = true;
+      let shouldProcessMedia = false;
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         for (const msg of originalBody.messages) {
           let foundPlaceholderInMsg = false;
           if (msg.role === 'user' || msg.role === 'system') {
-            if (typeof msg.content === 'string' && msg.content.includes('{{ShowBase64}}')) {
+            if (typeof msg.content === 'string' && msg.content.includes('{{TransBase64}}')) {
               foundPlaceholderInMsg = true;
-              msg.content = msg.content.replace(/\{\{ShowBase64\}\}/g, '');
+              msg.content = msg.content.replace(/\{\{TransBase64\}\}/g, '');
             } else if (Array.isArray(msg.content)) {
               for (const part of msg.content) {
-                if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{ShowBase64}}')) {
+                if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{TransBase64}}')) {
                   foundPlaceholderInMsg = true;
-                  part.text = part.text.replace(/\{\{ShowBase64\}\}/g, '');
+                  part.text = part.text.replace(/\{\{TransBase64\}\}/g, '');
                 }
               }
             }
           }
           if (foundPlaceholderInMsg) {
-            shouldProcessMedia = false;
-            if (DEBUG_MODE) console.log('[Server] Media processing disabled by {{ShowBase64}} placeholder.');
+            shouldProcessMedia = true;
+            if (DEBUG_MODE) console.log('[Server] Media translation enabled by {{TransBase64}} placeholder.');
             break;
           }
         }

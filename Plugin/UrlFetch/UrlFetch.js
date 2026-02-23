@@ -10,6 +10,14 @@ const { v4: uuidv4 } = require('uuid');
 const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
 
+// 图片扩展名常量
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
+const MIME_MAP = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+    '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.tiff': 'image/tiff', '.tif': 'image/tiff'
+};
+
 // --- Configuration (from environment variables set by Plugin.js) ---
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
@@ -53,6 +61,64 @@ async function autoScroll(page, mode = 'text') {
     }
 }
 
+// --- 本地文件读取 ---
+async function handleLocalFile(fileUrl) {
+    // 解析 file:/// URL 为本地路径
+    let localPath;
+    try {
+        // 使用 URL API 正确解析 file:// URL
+        const fileUrlObj = new URL(fileUrl);
+        localPath = decodeURIComponent(fileUrlObj.pathname);
+        // Windows 路径修正：移除开头的 / (e.g., /C:/... → C:/...)
+        if (/^\/[A-Za-z]:/.test(localPath)) {
+            localPath = localPath.substring(1);
+        }
+    } catch {
+        // 回退：手动解析，兼容 file:/// 和 file://
+        localPath = decodeURIComponent(fileUrl.replace(/^file:\/\/\/?\/?(\w)/, '$1'));
+    }
+
+    // 检查文件是否存在
+    try {
+        await fs.access(localPath);
+    } catch {
+        throw new Error(`本地文件不存在或无法访问: ${localPath}`);
+    }
+
+    const ext = path.extname(localPath).toLowerCase();
+
+    if (IMAGE_EXTENSIONS.includes(ext)) {
+        // 本地图片 → 读取并返回 base64
+        const buffer = await fs.readFile(localPath);
+        const mime = MIME_MAP[ext] || 'application/octet-stream';
+        const base64 = buffer.toString('base64');
+        const fileName = path.basename(localPath);
+
+        return {
+            content: [
+                { type: 'text', text: `已读取本地图片: ${fileName}\n路径: ${localPath}\n类型: ${mime}\n大小: ${(buffer.length / 1024).toFixed(1)} KB` },
+                { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }
+            ]
+        };
+    } else {
+        // 本地文本文件 → 读取并返回内容
+        const textContent = await fs.readFile(localPath, 'utf-8');
+        const fileName = path.basename(localPath);
+        return `文件: ${fileName}\n路径: ${localPath}\n\n${textContent}`;
+    }
+}
+
+// --- 判断 URL 是否指向图片 ---
+function isImageUrl(url) {
+    try {
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname.toLowerCase();
+        return IMAGE_EXTENSIONS.some(ext => pathname.endsWith(ext));
+    } catch {
+        return false;
+    }
+}
+
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
     let browser;
     try {
@@ -81,10 +147,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             return cookiePairs.map(pair => {
                 const equalIndex = pair.indexOf('=');
                 if (equalIndex === -1) return null;
-                
+
                 const name = pair.substring(0, equalIndex).trim();
                 const value = pair.substring(equalIndex + 1).trim();
-                
+
                 return {
                     name,
                     value,
@@ -110,7 +176,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 console.error('解析多站点 Cookies 失败:', multiCookieError.message);
             }
         }
-        
+
         // 方式2：单站点原始格式 (FETCH_COOKIES_RAW)
         if (cookiesToSet.length === 0) {
             const fetchCookiesRaw = process.env.FETCH_COOKIES_RAW;
@@ -122,7 +188,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 }
             }
         }
-        
+
         // 方式3：JSON 数组格式 (FETCH_COOKIES)
         if (cookiesToSet.length === 0) {
             const fetchCookies = process.env.FETCH_COOKIES;
@@ -151,6 +217,23 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }
         }
 
+        // image 模式：直接下载图片，不需要先导航到页面
+        if (mode === 'image') {
+            const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            const buffer = await response.buffer();
+            const contentType = response.headers()['content-type'] || 'image/png';
+            // 提取纯 MIME 类型（去除 charset 等参数）
+            const mime = contentType.split(';')[0].trim();
+            const base64 = buffer.toString('base64');
+
+            return {
+                content: [
+                    { type: 'text', text: `已下载网络图片: ${url}\n类型: ${mime}\n大小: ${(buffer.length / 1024).toFixed(1)} KB` },
+                    { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }
+                ]
+            };
+        }
+
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
         if (mode === 'snapshot') {
@@ -161,10 +244,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
 
             // Use the robust auto-scroll function
             await autoScroll(page, mode);
-            
+
             // 网页快照模式
             const imageBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-            
+
             // Save the image
             const generatedFileName = `${uuidv4()}.png`;
             const urlFetchImageDir = path.join(PROJECT_BASE_PATH, 'image', 'urlfetch');
@@ -233,7 +316,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                         !link.url.startsWith('javascript:') &&
                         link.title.length > 5 // 过滤掉短的导航链接
                     );
-                    
+
                     // 对分类内部的链接进行去重
                     const uniqueLinks = [];
                     const seenUrls = new Set();
@@ -289,11 +372,11 @@ async function main() {
     let inputData = '';
     stdin.setEncoding('utf8');
 
-    stdin.on('data', function(chunk) {
+    stdin.on('data', function (chunk) {
         inputData += chunk;
     });
 
-    stdin.on('end', async function() {
+    stdin.on('end', async function () {
         let output = {};
         try {
             if (!inputData.trim()) {
@@ -302,42 +385,60 @@ async function main() {
 
             const data = JSON.parse(inputData);
             const url = data.url;
-            const mode = data.mode || 'text'; // 'text' or 'snapshot'
+            let mode = data.mode || 'text'; // 'text', 'snapshot', or 'image'
 
             if (!url) {
                 throw new Error("缺少必需的参数: url");
             }
 
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                throw new Error("无效的 URL 格式。URL 必须以 http:// 或 https:// 开头。");
+            if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://')) {
+                throw new Error("无效的 URL 格式。URL 必须以 http:// 、 https:// 或 file:// 开头。");
             }
 
             let fetchedData;
-            try {
-                fetchedData = await fetchWithPuppeteer(url, mode);
-            } catch (e) {
-                const proxyPort = process.env.FETCH_PROXY_PORT;
-                if (proxyPort) {
-                    try {
-                        fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
-                    } catch (proxyError) {
-                        throw new Error(`直接访问和通过代理端口 ${proxyPort} 访问均失败。原始错误: ${e.message}, 代理错误: ${proxyError.message}`);
-                    }
-                } else {
-                    throw e;
-                }
-            }
-            
-            if (mode === 'snapshot') {
-                output = { status: "success", result: fetchedData };
-            } else {
-                const isEmptyString = typeof fetchedData === 'string' && !fetchedData.trim();
-                const isEmptyArray = Array.isArray(fetchedData) && fetchedData.length === 0;
 
-                if (isEmptyString || isEmptyArray) {
-                    output = { status: "success", result: "成功获取网页，但提取到的内容为空。" };
+            // === 本地文件处理 ===
+            if (url.startsWith('file://')) {
+                fetchedData = await handleLocalFile(url);
+                // 根据返回类型设置 output
+                if (typeof fetchedData === 'object' && fetchedData.content) {
+                    output = { status: "success", result: fetchedData };
                 } else {
                     output = { status: "success", result: fetchedData };
+                }
+            } else {
+                // === 网络 URL 处理 ===
+                // 智能检测：如果 URL 指向图片且未指定模式，自动切换为 image 模式
+                if (mode === 'text' && isImageUrl(url)) {
+                    mode = 'image';
+                }
+
+                try {
+                    fetchedData = await fetchWithPuppeteer(url, mode);
+                } catch (e) {
+                    const proxyPort = process.env.FETCH_PROXY_PORT;
+                    if (proxyPort) {
+                        try {
+                            fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
+                        } catch (proxyError) {
+                            throw new Error(`直接访问和通过代理端口 ${proxyPort} 访问均失败。原始错误: ${e.message}, 代理错误: ${proxyError.message}`);
+                        }
+                    } else {
+                        throw e;
+                    }
+                }
+
+                if (mode === 'snapshot' || mode === 'image') {
+                    output = { status: "success", result: fetchedData };
+                } else {
+                    const isEmptyString = typeof fetchedData === 'string' && !fetchedData.trim();
+                    const isEmptyArray = Array.isArray(fetchedData) && fetchedData.length === 0;
+
+                    if (isEmptyString || isEmptyArray) {
+                        output = { status: "success", result: "成功获取网页，但提取到的内容为空。" };
+                    } else {
+                        output = { status: "success", result: fetchedData };
+                    }
                 }
             }
 

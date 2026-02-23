@@ -1,3 +1,11 @@
+// 保存原始 stdout.write 引用，用于最终输出 JSON
+const _originalStdoutWrite = process.stdout.write.bind(process.stdout);
+// 劫持 stdout，屏蔽下游路由模块的所有日志输出（它们的日志库直接写 stdout）
+process.stdout.write = () => true;
+// 同时屏蔽 console.log（双保险）
+console.log = () => { };
+console.error = () => { };
+
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -22,7 +30,7 @@ async function fetchSource(source) {
         // 传递一个空对象而不是 null，以避免在下游模块中出现 'reading req of null' 的错误
         const resultData = await routeHandler.handleRoute({}, true);
         if (!resultData || !Array.isArray(resultData.data)) {
-             return { source, error: `返回的数据格式不正确` };
+            return { source, error: `返回的数据格式不正确` };
         }
         const title = resultData.title || source.charAt(0).toUpperCase() + source.slice(1);
         const type = resultData.type || '热榜';
@@ -47,12 +55,12 @@ async function fetchAndProcessData() {
         allSources = files.filter(file => file.endsWith('.js')).map(file => path.basename(file, '.js'));
     } catch (e) {
         console.error(`[DailyHot] 无法读取数据源目录: ${e.message}`);
-        return { success: false, data: null, error: e };
+        return { success: false, data: null, rawResults: [], error: e };
     }
 
     if (allSources.length === 0) {
         console.error('[DailyHot] 在 dist/routes 目录中没有找到任何数据源。');
-        return { success: false, data: null, error: new Error('No sources found') };
+        return { success: false, data: null, rawResults: [], error: new Error('No sources found') };
     }
 
     const allResults = [];
@@ -84,56 +92,169 @@ async function fetchAndProcessData() {
             });
             markdownOutput += `\n`;
         }
-        
+
         try {
             await fs.writeFile(CACHE_FILE_PATH, markdownOutput, 'utf-8');
-            console.log(`[DailyHot] 成功更新缓存文件: ${CACHE_FILE_PATH}`);
-        } catch(e) {
+            console.error(`[DailyHot] 成功更新缓存文件: ${CACHE_FILE_PATH}`);
+        } catch (e) {
             console.error(`[DailyHot] 写入缓存文件失败: ${e.message}`);
         }
-        return { success: true, data: markdownOutput, error: null };
+        return { success: true, data: markdownOutput, rawResults: allResults, error: null };
     } else {
-        return { success: false, data: null, error: new Error('Failed to fetch data from any source') };
+        return { success: false, data: null, rawResults: [], error: new Error('Failed to fetch data from any source') };
     }
+}
+
+/**
+ * 从原始数据构建 vcp_dynamic_fold 输出
+ */
+function buildFoldFromResults(allResults) {
+    const cachePath = path.resolve(CACHE_FILE_PATH);
+    const pathNote = `完整热榜数据文件: ${cachePath}`;
+
+    const grouped = allResults.reduce((acc, item) => {
+        if (!acc[item.category]) acc[item.category] = [];
+        acc[item.category].push(item);
+        return acc;
+    }, {});
+
+    const categories = Object.keys(grouped);
+
+    // 高相关: 每个源 Top 3 标题，不显示源名称
+    const highLines = [];
+    for (const cat of categories) {
+        grouped[cat].slice(0, 3).forEach(item => {
+            highLines.push(`- ${item.title}`);
+        });
+    }
+
+    // 中相关: 每个源 Top 1 标题，不显示源名称
+    const medLines = [];
+    for (const cat of categories) {
+        medLines.push(`- ${grouped[cat][0].title}`);
+    }
+
+    return {
+        vcp_dynamic_fold: true,
+        plugin_description: "每日热榜新闻聚合插件，汇集科技、社会、游戏、财经等多源实时热点新闻与热搜话题",
+        fold_blocks: [
+            {
+                threshold: 0.5,
+                content: `${pathNote}\n\n各源热点Top3:\n${highLines.join('\n')}`
+            },
+            {
+                threshold: 0.35,
+                content: `${pathNote}\n\n各源头条:\n${medLines.join('\n')}`
+            },
+            {
+                threshold: 0.0,
+                content: `当前已缓存 ${categories.length} 个新闻源的热榜数据。${pathNote}`
+            }
+        ]
+    };
+}
+
+/**
+ * 从缓存 Markdown 解析并构建 vcp_dynamic_fold 输出（降级兜底）
+ */
+function buildFoldFromCache(cacheContent) {
+    const cachePath = path.resolve(CACHE_FILE_PATH);
+    const pathNote = `完整热榜数据文件: ${cachePath}`;
+
+    const lines = cacheContent.split('\n');
+    const headlines = [];
+    let categoryCount = 0;
+
+    for (const line of lines) {
+        const headlineMatch = line.match(/^\d+\.\s+\[(.+?)\]\(.*?\)$/);
+        if (headlineMatch) {
+            headlines.push(headlineMatch[1]);
+        }
+        if (line.match(/^## /)) {
+            categoryCount++;
+        }
+    }
+
+    // 从缓存中取前30条做高相关，前10条做中相关
+    const highLines = headlines.slice(0, 30).map(h => `- ${h}`);
+    const medLines = headlines.slice(0, 10).map(h => `- ${h}`);
+
+    return {
+        vcp_dynamic_fold: true,
+        plugin_description: "每日热榜新闻聚合插件，汇集科技、社会、游戏、财经等多源实时热点新闻与热搜话题",
+        fold_blocks: [
+            {
+                threshold: 0.5,
+                content: `${pathNote}\n\n热点摘要(缓存):\n${highLines.join('\n')}`
+            },
+            {
+                threshold: 0.35,
+                content: `${pathNote}\n\n头条摘要(缓存):\n${medLines.join('\n')}`
+            },
+            {
+                threshold: 0.0,
+                content: `当前已缓存 ${categoryCount} 个新闻源的热榜数据(来自缓存)。${pathNote}`
+            }
+        ]
+    };
 }
 
 async function readCacheOnError() {
     try {
         const cachedData = await fs.readFile(CACHE_FILE_PATH, 'utf-8');
-        console.log(`[DailyHot] 成功从缓存文件 ${CACHE_FILE_PATH} 提供数据。`);
+        console.error(`[DailyHot] 成功从缓存文件 ${CACHE_FILE_PATH} 提供数据。`);
         return cachedData;
     } catch (e) {
-        const errorMessage = '# 每日热榜\n\n获取热榜数据失败，且本地无可用缓存。';
         console.error(`[DailyHot] 读取缓存文件失败: ${e.message}`);
-        return errorMessage;
+        return null;
     }
 }
 
 (async () => {
-    const timeoutPromise = new Promise((_, reject) => 
+    const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Internal script timeout')), INTERNAL_TIMEOUT_MS)
     );
 
-    let output;
+    let foldOutput;
     try {
         const result = await Promise.race([
             fetchAndProcessData(),
             timeoutPromise
         ]);
 
-        if (result.success) {
-            output = result.data;
+        if (result.success && result.rawResults.length > 0) {
+            foldOutput = buildFoldFromResults(result.rawResults);
         } else {
             console.error(`[DailyHot] Fetch and process failed: ${result.error.message}. Falling back to cache.`);
-            output = await readCacheOnError();
+            const cached = await readCacheOnError();
+            if (cached) {
+                foldOutput = buildFoldFromCache(cached);
+            }
         }
     } catch (e) {
         console.error(`[DailyHot] Operation timed out or failed critically: ${e.message}. Falling back to cache.`);
-        output = await readCacheOnError();
+        const cached = await readCacheOnError();
+        if (cached) {
+            foldOutput = buildFoldFromCache(cached);
+        }
     }
-    
-    process.stdout.write(output, () => {
-        // Ensure all output is written before exiting.
+
+    // 最终兜底：连缓存都没有
+    if (!foldOutput) {
+        const cachePath = path.resolve(CACHE_FILE_PATH);
+        foldOutput = {
+            vcp_dynamic_fold: true,
+            plugin_description: "每日热榜新闻聚合插件，汇集科技、社会、游戏、财经等多源实时热点新闻与热搜话题",
+            fold_blocks: [
+                { threshold: 0.5, content: "获取热榜数据失败，且本地无可用缓存。" },
+                { threshold: 0.35, content: "获取热榜数据失败，且本地无可用缓存。" },
+                { threshold: 0.0, content: "热榜数据暂不可用。" }
+            ]
+        };
+    }
+
+    const output = JSON.stringify(foldOutput, null, 2);
+    _originalStdoutWrite(output, 'utf-8', () => {
         process.exit(0);
     });
 })();
