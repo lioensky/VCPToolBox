@@ -1013,7 +1013,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     pluginManager,
     logger.getServerLogPath, // Pass the getter function
     knowledgeBaseManager, // Pass the knowledgeBaseManager instance
-    AGENT_DIR // Pass the Agent directory path
+    AGENT_DIR, // Pass the Agent directory path
+    cachedEmojiLists
 );
 
 // 新增：引入 VCP 论坛 API 路由
