@@ -2951,9 +2951,34 @@ html[data-theme='light'] .delete-theme-btn {
        width: 100%;
    }
 
-   /* 隐藏可能导致溢出的太阳系背景元素（可选，如果仍然溢出） */
+   /* 移动端星系背景适配 - 缩小尺寸并保持可见 */
    .solar-system-bg {
-       display: none;
+       display: block;
+   }
+
+   .sun {
+       width: 20px;
+       height: 20px;
+       box-shadow: 0 0 15px var(--sun-color);
+       opacity: 0.4;
+   }
+
+   .orbit-mercury { width: 60px; height: 60px; }
+   .orbit-venus { width: 100px; height: 100px; }
+   .orbit-earth { width: 150px; height: 150px; }
+   .orbit-mars { width: 200px; height: 200px; }
+   .orbit-jupiter { width: 300px; height: 300px; }
+   .orbit-saturn { width: 400px; height: 400px; }
+   .orbit-uranus { width: 500px; height: 500px; }
+   .orbit-neptune { width: 600px; height: 600px; }
+
+   .planet-jupiter { width: 16px; height: 16px; }
+   .planet-saturn { width: 14px; height: 14px; }
+   .planet-uranus { width: 10px; height: 10px; }
+   .planet-neptune { width: 10px; height: 10px; }
+
+   .shooting-star:nth-child(3) {
+       display: none; /* 减少一颗流星，降低移动端性能开销 */
    }
 
    /* 修复文本换行和溢出 */
@@ -2966,6 +2991,15 @@ html[data-theme='light'] .delete-theme-btn {
        word-wrap: break-word;
        word-break: break-word;
        max-width: 100%;
+   }
+
+   /* 星系背景元素不受 max-width 限制，保持同心圆形态 */
+   .solar-system-bg,
+   .solar-system-bg * {
+       max-width: none !important;
+       overflow-wrap: normal;
+       word-wrap: normal;
+       word-break: normal;
    }
 
    /* 强制表格在移动端可滚动 */
