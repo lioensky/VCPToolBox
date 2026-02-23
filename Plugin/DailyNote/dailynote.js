@@ -231,14 +231,41 @@ async function handleCreateCommand(args) {
 
 
 // --- 'update' Command Logic ---
+
+/**
+ * 反转义 HTML 实体，解决 LLM 输出转义导致的匹配失败问题
+ * @param {string} str
+ * @returns {string}
+ */
+function unescapeHtml(str) {
+    if (!str || typeof str !== 'string') return str;
+    return str
+        .replace(/"/g, '"')
+        .replace(/&/g, '&')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/'/g, "'")
+        .replace(/'/g, "'")
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&copy;/g, '©')
+        .replace(/&reg;/g, '®')
+        .replace(/&trade;/g, '™')
+        .replace(/&times;/g, '×')
+        .replace(/&divide;/g, '÷');
+}
+
 async function handleUpdateCommand(args) {
     debugLog("Processing 'update' command with args:", args);
 
-    const { target, replace, maid } = args;
+    let { target, replace, maid } = args;
 
     if (typeof target !== 'string' || typeof replace !== 'string') {
         return { status: "error", error: "Invalid arguments for update: 'target' and 'replace' must be strings." };
     }
+
+    // 在安全校验前进行反转义，确保长度校验和后续匹配使用的是原始字符
+    target = unescapeHtml(target);
+    replace = unescapeHtml(replace);
 
     if (target.length < 15) {
         return { status: "error", error: `Security check failed: 'target' must be at least 15 characters long. Provided length: ${target.length}` };
