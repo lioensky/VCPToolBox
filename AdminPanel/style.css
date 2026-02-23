@@ -2951,9 +2951,34 @@ html[data-theme='light'] .delete-theme-btn {
        width: 100%;
    }
 
-   /* 隐藏可能导致溢出的太阳系背景元素（可选，如果仍然溢出） */
+   /* 移动端星系背景适配 - 缩小尺寸并保持可见 */
    .solar-system-bg {
-       display: none;
+       display: block;
+   }
+
+   .sun {
+       width: 20px;
+       height: 20px;
+       box-shadow: 0 0 15px var(--sun-color);
+       opacity: 0.4;
+   }
+
+   .orbit-mercury { width: 60px; height: 60px; }
+   .orbit-venus { width: 100px; height: 100px; }
+   .orbit-earth { width: 150px; height: 150px; }
+   .orbit-mars { width: 200px; height: 200px; }
+   .orbit-jupiter { width: 300px; height: 300px; }
+   .orbit-saturn { width: 400px; height: 400px; }
+   .orbit-uranus { width: 500px; height: 500px; }
+   .orbit-neptune { width: 600px; height: 600px; }
+
+   .planet-jupiter { width: 16px; height: 16px; }
+   .planet-saturn { width: 14px; height: 14px; }
+   .planet-uranus { width: 10px; height: 10px; }
+   .planet-neptune { width: 10px; height: 10px; }
+
+   .shooting-star:nth-child(3) {
+       display: none; /* 减少一颗流星，降低移动端性能开销 */
    }
 
    /* 修复文本换行和溢出 */
@@ -2966,6 +2991,15 @@ html[data-theme='light'] .delete-theme-btn {
        word-wrap: break-word;
        word-break: break-word;
        max-width: 100%;
+   }
+
+   /* 星系背景元素不受 max-width 限制，保持同心圆形态 */
+   .solar-system-bg,
+   .solar-system-bg * {
+       max-width: none !important;
+       overflow-wrap: normal;
+       word-wrap: normal;
+       word-break: normal;
    }
 
    /* 强制表格在移动端可滚动 */
@@ -3067,6 +3101,101 @@ html[data-theme='light'] .delete-theme-btn {
         flex-grow: 1 !important;
         height: auto !important;
         min-height: 60vh !important;
+    }
+
+    /* --- 占位符查看器移动端适配 --- */
+    .placeholder-viewer-filters {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+    .placeholder-filter-select,
+    .placeholder-filter-input {
+        min-width: unset;
+        width: 100%;
+    }
+    .placeholder-viewer-table {
+        table-layout: auto;
+        background: transparent;
+        border: none;
+    }
+    .placeholder-viewer-table colgroup {
+        display: none;
+    }
+    .placeholder-viewer-table thead {
+        display: none;
+    }
+    .placeholder-viewer-table tbody {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .placeholder-viewer-table tbody tr {
+        display: flex;
+        flex-direction: column;
+        background: var(--secondary-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 14px 16px;
+        gap: 8px;
+        /* 给卡片添加阴影 */
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+        transition: box-shadow 0.2s ease;
+    }
+    .placeholder-viewer-table tbody tr td {
+        display: flex;
+        border: none;
+        padding: 0;
+        text-align: left;
+        max-width: none !important;
+    }
+    /* 为每个 td 添加标签前缀 */
+    .placeholder-viewer-table tbody tr td::before {
+        content: attr(data-label);
+        display: inline-block;
+        min-width: 5em;
+        flex-shrink: 0;
+        font-weight: 600;
+        color: var(--secondary-text);
+        font-size: 0.85em;
+        margin-right: 0.5rem;
+        padding-top: 0.1em;
+    }
+    /* 名称列：让 code 标签自然换行 */
+    .placeholder-viewer-table tbody tr td:nth-child(2) code {
+        word-break: break-all;
+        white-space: normal;
+    }
+    /* 预览列：改为纵向排列，文本可换行 */
+    .placeholder-viewer-table td.placeholder-preview-cell {
+        flex-direction: row;
+        align-items: flex-start;
+    }
+    .placeholder-viewer-table .placeholder-preview-text {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: unset;
+        -webkit-line-clamp: 3;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        line-height: 1.4;
+        font-size: 0.9em;
+    }
+    /* 字符数列：右对齐 */
+    .placeholder-viewer-table tbody tr td.placeholder-charcount {
+        justify-content: space-between;
+    }
+    /* 描述列 */
+    .placeholder-viewer-table tbody tr td.placeholder-desc {
+        font-size: 0.85em;
+        color: var(--secondary-text);
+    }
+    /* 详情弹窗移动端适配 */
+    .placeholder-detail-modal-content {
+        max-width: 100%;
+        max-height: 90vh;
+        border-radius: 8px 8px 0 0;
     }
 }
 

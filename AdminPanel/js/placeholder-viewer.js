@@ -121,14 +121,14 @@ function renderPlaceholderList(list, container) {
         const desc = item.description != null ? String(item.description) : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td>${escapeHtml(getTypeLabel(item.type))}</td>
-            <td><code>${escapeHtml(item.name || '')}</code></td>
-            <td class="placeholder-preview-cell">
+            <td data-label="类型">${escapeHtml(getTypeLabel(item.type))}</td>
+            <td data-label="名称"><code>${escapeHtml(item.name || '')}</code></td>
+            <td class="placeholder-preview-cell" data-label="预览">
                 <span class="placeholder-preview-text">${escapeHtml(item.preview || '')}</span>
                 <span class="material-symbols-outlined placeholder-expand-icon" title="查看详情" aria-label="查看详情">expand_content</span>
             </td>
-            <td class="placeholder-desc">${escapeHtml(desc)}</td>
-            <td class="placeholder-charcount">${escapeHtml(charCount)}</td>
+            <td class="placeholder-desc" data-label="描述">${escapeHtml(desc)}</td>
+            <td class="placeholder-charcount" data-label="字符数">${escapeHtml(charCount)}</td>
         `;
         const expandIcon = tr.querySelector('.placeholder-expand-icon');
         expandIcon.addEventListener('click', (e) => { e.preventDefault(); openDetail(item.type, item.name); });
