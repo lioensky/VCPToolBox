@@ -1953,7 +1953,7 @@ class RAGDiaryPlugin {
             // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
             const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
             const kTime = Math.max(1, finalK - kSemantic);
-            
+
             console.log(`[RAGDiaryPlugin] 🌟 Time-Aware Balanced Mode: Total K=${finalK} (Semantic=${kSemantic}, Time=${kTime})`);
 
             // 1. 语义路召回
@@ -1969,12 +1969,12 @@ class RAGDiaryPlugin {
             }
             // 去重文件路径
             timeFilePaths = [...new Set(timeFilePaths)];
-            
+
             let timeResults = [];
             if (timeFilePaths.length > 0) {
                 // 从数据库获取这些文件的所有分块及其向量
                 const timeChunks = await this.vectorDBManager.getChunksByFilePaths(timeFilePaths);
-                
+
                 // 计算每个分块与当前查询向量的相似度
                 const scoredTimeChunks = timeChunks.map(chunk => {
                     const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, Array.from(chunk.vector)) : 0;
@@ -2004,7 +2004,7 @@ class RAGDiaryPlugin {
             });
 
             finalResultsForBroadcast = Array.from(allEntries.values());
-            
+
             // 如果启用了 Rerank，对合并后的结果进行最终重排
             if (useRerank && finalResultsForBroadcast.length > 0) {
                 finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK);
@@ -2016,18 +2016,32 @@ class RAGDiaryPlugin {
             // --- Standard path (no time filter) ---
 
             // 🌟 Tagmemo V4: Shotgun Query Implementation
-            let searchVectors = [{ vector: finalQueryVector, type: 'current' }];
+            let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
             // 仅在存在历史分段且未使用 Time 模式时启用霰弹枪 (Time 模式通常很精确)
             if (historySegments && historySegments.length > 0) {
                 // 限制: 最多取最近的 3 个分段，防止查询爆炸
                 const recentSegments = historySegments.slice(-3);
+
+                // 🌟 V5.1 新增：时间距离衰减惩罚 (Decay Multiplier)
+                // d 优先，a 末尾：越久远的分段权重越低
+                const decayFactor = 0.85;
+
                 recentSegments.forEach((seg, idx) => {
-                    searchVectors.push({ vector: seg.vector, type: `history_${idx}` });
+                    // index 越大代表在 recentSegments 中越靠后，也就是离 current 越近
+                    // 比如 length=3 时，idx=2 是最近的(距离=1)，idx=0 是最远的(距离=3)
+                    const distance = recentSegments.length - idx;
+                    const weightMultiplier = Math.pow(decayFactor, distance);
+
+                    searchVectors.push({
+                        vector: seg.vector,
+                        type: `history_${idx}`,
+                        weight: weightMultiplier
+                    });
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches with decay weights...`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
@@ -2039,7 +2053,17 @@ class RAGDiaryPlugin {
 
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
 
-                    return await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch);
+                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch);
+
+                    // 🌟 核心：把当前段落的时间权重乘到结果的分数上，实现近因效应
+                    if (qv.weight !== 1.0) {
+                        results = results.map(r => ({
+                            ...r,
+                            score: r.score * qv.weight, // 惩罚较远历史的得分
+                            original_score: r.score // 保留原分数供排查
+                        }));
+                    }
+                    return results;
                 } catch (e) {
                     console.error(`[RAGDiaryPlugin] Shotgun search failed for ${qv.type}:`, e.message);
                     return [];
@@ -2176,11 +2200,11 @@ class RAGDiaryPlugin {
                     const buffer = Buffer.alloc(100);
                     await fd.read(buffer, 0, 100, 0);
                     await fd.close();
-                    
+
                     const content = buffer.toString('utf-8');
                     const firstLine = content.split('\n')[0];
                     const match = firstLine.match(/^\[?(\d{4}[-.]\d{2}[-.]\d{2})\]?/);
-                    
+
                     if (match) {
                         const dateStr = match[1];
                         const normalizedDateStr = dateStr.replace(/\./g, '-');
