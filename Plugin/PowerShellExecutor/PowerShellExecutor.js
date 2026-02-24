@@ -7,7 +7,7 @@ require('dotenv').config({ path: path.join(__dirname, 'config.env') });
 
 // 用于向主服务器发送回调的函数
 function sendCallback(requestId, status, result) {
-    const callbackBaseUrl = process.env.CALLBACK_BASE_URL|| 'http://localhost:6005/plugin-callback'; // 默认为localhost
+    const callbackBaseUrl = process.env.CALLBACK_BASE_URL || 'http://localhost:6005/plugin-callback'; // 默认为localhost
     const pluginNameForCallback = process.env.PLUGIN_NAME_FOR_CALLBACK || 'PowerShellExecutor';
 
     if (!callbackBaseUrl) {
@@ -62,7 +62,7 @@ async function executePowerShellCommand(command, executionType = 'blocking', tim
             // start 命令的第一个带引号的参数会被视为窗口标题。
             // 我们需要确保 powershell.exe 的路径和命令被正确包裹。
             const args = ['/c', 'start', '""', 'powershell.exe', '-Command', fullCommand];
-            
+
             // 我们调用cmd.exe来使用它的'start'命令
             child = spawn('cmd.exe', args, {
                 detached: true, // 分离子进程
@@ -70,7 +70,7 @@ async function executePowerShellCommand(command, executionType = 'blocking', tim
                 // 默认的stdio ('pipe') 即可，或者我们可以明确地忽略它。
                 stdio: 'ignore'
             });
-            
+
             child.unref(); // 允许父进程独立退出
         } else {
             // 对于同步执行，隐藏控制台窗口
@@ -259,12 +259,12 @@ async function main() {
                                         fileContent = fileBuffer.toString('utf16le');
                                     }
                                 }
-                                await fs.unlink(tempFilePath).catch(() => {});
+                                await fs.unlink(tempFilePath).catch(() => { });
                                 resolve(fileContent);
                             }
                         } catch (error) {
                             clearInterval(intervalId);
-                            await fs.unlink(tempFilePath).catch(() => {});
+                            await fs.unlink(tempFilePath).catch(() => { });
                             reject(new Error(`轮询后台任务输出时出错: ${error.message}`));
                         }
                     }, pollingInterval);
@@ -276,13 +276,31 @@ async function main() {
                     try {
                         // 如果是多命令模式，输出应该是JSON字符串，我们将其解析为对象
                         resultOutput = JSON.parse(output);
+
+                        // ===== 将多命令输出转化为 Markdown =====
+                        let markdownOutput = `**PowerShell 批量执行结果**\n\n`;
+                        if (Array.isArray(resultOutput)) {
+                            resultOutput.forEach((res, index) => {
+                                markdownOutput += `### 命令行 ${index + 1}\n\`\`\`powershell\n${res.command}\n\`\`\`\n`;
+                                markdownOutput += `**输出:**\n\`\`\`\n${res.output || '(无输出)'}\n\`\`\`\n\n`;
+                            });
+                        } else {
+                            markdownOutput += `\`\`\`json\n${JSON.stringify(resultOutput, null, 2)}\n\`\`\``;
+                        }
+                        resultOutput = markdownOutput;
+
                     } catch (e) {
                         console.error(`多命令JSON解析错误: ${e.message}。返回原始输出。`);
+                        resultOutput = `**PowerShell 原始输出**\n\`\`\`\n${output}\n\`\`\``;
                     }
+                } else {
+                    // 单一命令直接包装
+                    resultOutput = `**PowerShell 执行结果**\n\`\`\`\n${output}\n\`\`\``;
                 }
-                const finalResult = { status: 'success', result: resultOutput };
+                const finalResult = { status: 'success', result: { content: [{ type: 'text', text: resultOutput }] } };
                 if (notice) {
-                    finalResult.notice = notice;
+                    finalResult.result.notice = notice;
+                    finalResult.result.content = [{ type: 'text', text: `> [!WARNING]\n> ${notice}\n\n` + resultOutput }];
                 }
                 console.log(JSON.stringify(finalResult));
 
@@ -294,11 +312,28 @@ async function main() {
                     try {
                         // 如果是多命令模式，输出应该是JSON字符串，我们将其解析为对象
                         resultOutput = JSON.parse(output);
+
+                        // ===== 将多命令输出转化为 Markdown =====
+                        let markdownOutput = `**PowerShell 批量执行结果**\n\n`;
+                        if (Array.isArray(resultOutput)) {
+                            resultOutput.forEach((res, index) => {
+                                markdownOutput += `### 命令行 ${index + 1}\n\`\`\`powershell\n${res.command}\n\`\`\`\n`;
+                                markdownOutput += `**输出:**\n\`\`\`\n${res.output || '(无输出)'}\n\`\`\`\n\n`;
+                            });
+                        } else {
+                            markdownOutput += `\`\`\`json\n${JSON.stringify(resultOutput, null, 2)}\n\`\`\``;
+                        }
+                        resultOutput = markdownOutput;
+
                     } catch (e) {
                         console.error(`多命令JSON解析错误: ${e.message}。返回原始输出。`);
+                        resultOutput = `**PowerShell 原始输出**\n\`\`\`\n${output}\n\`\`\``;
                     }
+                } else {
+                    // 单一命令直接包装
+                    resultOutput = `**PowerShell 执行结果**\n\`\`\`\n${output}\n\`\`\``;
                 }
-                console.log(JSON.stringify({ status: 'success', result: resultOutput }));
+                console.log(JSON.stringify({ status: 'success', result: { content: [{ type: 'text', text: resultOutput }] } }));
             }
         } catch (error) {
             console.error(JSON.stringify({ status: 'error', error: error.message }));

@@ -345,9 +345,18 @@ async function readFile(filePath, encoding = 'utf8') {
       ];
     } else {
       // For text-based files
+      let language = extension.slice(1).toLowerCase();
+      const codeLangs = {
+        'js': 'javascript', 'py': 'python', 'md': 'markdown', 'ts': 'typescript',
+        'html': 'html', 'css': 'css', 'json': 'json', 'sh': 'bash', 'yml': 'yaml', 'yaml': 'yaml'
+      };
+      language = codeLangs[language] || language;
+      if (isExtracted) language = '';
+
+      const backticks = content.includes('```') ? '````' : '```';
+
       returnData.content = [
-        { type: 'text', text: headerText },
-        { type: 'text', text: content }
+        { type: 'text', text: `${headerText}\n${backticks}${language}\n${content}\n${backticks}` }
       ];
     }
 
@@ -566,7 +575,17 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
       }
     }
 
-    const message = `Directory listing of ${dirPath} (${result.length} items${items.length > MAX_DIRECTORY_ITEMS ? ', truncated' : ''})`;
+    const message = `Directory listing of \`${dirPath}\` (${result.length} items${items.length > MAX_DIRECTORY_ITEMS ? ', truncated' : ''})`;
+
+    let markdownTable = `| 名称 | 类型 | 大小 | 修改时间 | 隐藏 |\n|---|---|---|---|---|\n`;
+    for (const item of result) {
+      const typeStr = item.type === 'directory' ? '📁' : '📄';
+      const sizeStr = item.sizeFormatted || '-';
+      const timeStr = new Date(item.lastModified).toLocaleString();
+      const hiddenStr = item.isHidden ? '是' : '否';
+      markdownTable += `| ${typeStr} **${item.name}** | ${item.type} | ${sizeStr} | ${timeStr} | ${hiddenStr} |\n`;
+    }
+
     return {
       success: true,
       data: {
@@ -576,8 +595,7 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
         truncated: items.length > MAX_DIRECTORY_ITEMS,
         message: message,
         content: [
-          { type: 'text', text: message },
-          { type: 'text', text: JSON.stringify(result, null, 2) }
+          { type: 'text', text: message + '\n\n' + markdownTable }
         ]
       },
     };
@@ -618,14 +636,24 @@ async function getFileInfo(filePath) {
       isSymbolicLink: stats.isSymbolicLink(),
     };
 
+    const markdownList = `**文件信息**: \`${fileData.name}\`
+- **路径**: \`${fileData.path}\`
+- **目录**: \`${fileData.directory}\`
+- **类型**: ${fileData.type === 'directory' ? '📁 目录' : '📄 文件'}
+- **大小**: ${fileData.sizeFormatted} (${fileData.size} Bytes)
+- **修改时间**: ${new Date(fileData.lastModified).toLocaleString()}
+- **访问时间**: ${new Date(fileData.lastAccessed).toLocaleString()}
+- **创建时间**: ${new Date(fileData.created).toLocaleString()}
+- **权限**: ${fileData.permissions.toString(8)}
+- **状态**: ${fileData.isDirectory ? '目录' : ''}${fileData.isFile ? '文件' : ''}${fileData.isSymbolicLink ? ' 符号链接' : ''}`;
+
     return {
       success: true,
       data: {
         ...fileData,
         message: `File info for ${filePath}`,
         content: [
-          { type: 'text', text: `File info for ${filePath}:` },
-          { type: 'text', text: JSON.stringify(fileData, null, 2) }
+          { type: 'text', text: markdownList }
         ]
       },
     };
@@ -886,7 +914,21 @@ async function searchFiles(searchPath, pattern, options = {}) {
       }
     }
 
-    const message = `Search results for "${pattern}" in ${searchPath} (${results.length} results${files.length >= MAX_SEARCH_RESULTS ? ', truncated' : ''})`;
+    const message = `Search results for "${pattern}" in \`${searchPath}\` (${results.length} results${files.length >= MAX_SEARCH_RESULTS ? ', truncated' : ''})`;
+
+    let markdownList = `**搜索结果**: \`${pattern}\`\n\n`;
+    if (results.length === 0) {
+      markdownList += "*未找到匹配的文件或目录。*";
+    } else {
+      for (const [index, item] of results.entries()) {
+        const typeIcon = item.type === 'directory' ? '📁' : '📄';
+        markdownList += `${index + 1}. ${typeIcon} **${item.name}**\n   - 相对路径: \`${item.relativePath}\`\n   - 绝对路径: \`${item.path}\`\n`;
+        if (item.type === 'file') {
+          markdownList += `   - 大小: ${item.sizeFormatted} | 修改时间: ${new Date(item.lastModified).toLocaleString()}\n`;
+        }
+      }
+    }
+
     return {
       success: true,
       data: {
@@ -898,8 +940,7 @@ async function searchFiles(searchPath, pattern, options = {}) {
         options: options,
         message: message,
         content: [
-          { type: 'text', text: message },
-          { type: 'text', text: JSON.stringify(results, null, 2) }
+          { type: 'text', text: message + '\n\n' + markdownList }
         ]
       },
     };
@@ -1029,14 +1070,30 @@ async function listAllowedDirectories() {
       }
     }
   }
+  let markdownContent = '**配置的允许访问目录及内容总览:**\n\n';
+  for (const [dirPath, items] of Object.entries(allProjects)) {
+    markdownContent += `### 📁 \`${dirPath}\`\n`;
+    if (items.length === 0) {
+      markdownContent += `*(空目录)*\n\n`;
+    } else if (items.length === 1 && (items[0].type === 'error' || items[0].type === 'info')) {
+      markdownContent += `*${items[0].name}*\n\n`;
+    } else {
+      markdownContent += `| 名称 | 类型 |\n|---|---|\n`;
+      for (const item of items) {
+        const typeIcon = item.type === 'directory' ? '📁' : '📄';
+        markdownContent += `| ${typeIcon} **${item.name}** | ${item.type} |\n`;
+      }
+      markdownContent += '\n';
+    }
+  }
+
   return {
     success: true,
     data: {
       allowedRoots: allProjects,
       message: 'Allowed directories listed',
       content: [
-        { type: 'text', text: 'Allowed directories and their contents:' },
-        { type: 'text', text: JSON.stringify(allProjects, null, 2) }
+        { type: 'text', text: markdownContent }
       ]
     }
   };
