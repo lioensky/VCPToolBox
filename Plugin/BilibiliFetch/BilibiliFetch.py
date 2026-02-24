@@ -101,17 +101,49 @@ def getWbiKeys(headers: dict) -> tuple[str, str]:
 
 # --- Helper Functions ---
 
-def extract_bvid(video_input: str) -> str | None:
-    """Extracts BV ID from URL or direct input."""
+def extract_bvid_and_page(video_input: str) -> 'tuple[str | None, int]':
+    """Extracts BV ID and page number from URL or direct input."""
+    bvid = None
+    page = 1
     match = re.search(r'bilibili\.com/video/(BV[a-zA-Z0-9]+)', video_input, re.IGNORECASE)
     if match:
-        return match.group(1)
-    match = re.match(r'^(BV[a-zA-Z0-9]+)$', video_input, re.IGNORECASE)
-    if match:
-        return match.group(1)
+        bvid = match.group(1)
+        page_match = re.search(r'[?&]p=(\d+)', video_input)
+        if page_match:
+            page = int(page_match.group(1))
+    else:
+        match = re.match(r'^(BV[a-zA-Z0-9]+)$', video_input, re.IGNORECASE)
+        if match:
+            bvid = match.group(1)
+    return bvid, page
+
+
+def get_cid_for_page(bvid: str, page: int, headers: dict) -> str | None:
+    """Fetches CID for a specific page of a multi-part video via pagelist API."""
+    try:
+        logging.info(f"Fetching CID for BVID: {bvid}, page: {page}")
+        resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
+        data = resp.json()
+        if data.get('code') == 0 and data.get('data'):
+            pl = data['data']
+            idx = page - 1
+            if 0 <= idx < len(pl):
+                logging.info(f"Found CID {pl[idx]['cid']} for page {page}")
+                return str(pl[idx]['cid'])
+            else:
+                logging.warning(f"Page {page} out of range, using page 1")
+                return str(pl[0]['cid']) if pl else None
+    except Exception as e:
+        logging.error(f"Error fetching CID for page {page}: {e}")
     return None
 
-def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None) -> str:
+
+def extract_bvid(video_input: str) -> str | None:
+    """Legacy wrapper for backward compatibility."""
+    bvid, _ = extract_bvid_and_page(video_input)
+    return bvid
+
+def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None, target_cid: str | None = None) -> str:
     """
     Fetches subtitle JSON for a given BVID, allowing language selection.
     Tries multiple sources:
@@ -151,6 +183,12 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     except Exception as e:
         logging.warning(f"Step 1: Error fetching via View API: {e}")
 
+   # --- Step 1.5: Override CID for multi-part video ---
+    if target_cid:
+        logging.info(f"Overriding CID with target_cid: {target_cid}")
+        cid = target_cid
+        subtitles_from_apis = []
+
     # --- Step 2: Get CID from Pagelist (if View API failed to provide CID) ---
     if not cid:
         try:
@@ -159,7 +197,7 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
             page_data = page_resp.json()
             if page_data.get('code') == 0 and page_data.get('data'):
                 cid = str(page_data['data'][0]['cid'])
-                logging.info(f"Step 2: Found CID via pagelist: {cid}")
+                logging.info(f"Step 2: Found CID via pagelist fallback: {cid}")
         except Exception as e:
             logging.error(f"Step 2: Error fetching pagelist: {e}")
 
@@ -434,9 +472,10 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     resolved_url = resolve_short_url(video_input)
     
     # 2. Extract BVID
-    bvid = extract_bvid(resolved_url)
+    bvid, page = extract_bvid_and_page(resolved_url)
     if not bvid:
         return f"无法从输入提取 BV 号: {video_input}"
+    logging.info(f"Extracted BVID: {bvid}, Page: {page}")
 
     user_cookie = os.environ.get('BILIBILI_COOKIE')
     headers = {
@@ -460,14 +499,24 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             video_title = data.get('title')
             video_author = data.get('owner', {}).get('name')
             logging.info(f"Found AID: {aid}, CID: {cid}, Title: {video_title}, Author: {video_author} via View API")
+            # Override CID for multi-part videos
+            if page > 1:
+                page_cid = get_cid_for_page(bvid, page, headers)
+                if page_cid:
+                    cid = page_cid
+                    logging.info(f"Overrode CID to {cid} for page {page}")
         else:
             # Fallback to pagelist for CID if view API fails
             logging.warning(f"View API failed (code {view_data.get('code')}), attempting pagelist for CID")
             page_resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
             page_data = page_resp.json()
             if page_data.get('code') == 0 and page_data.get('data'):
-                cid = str(page_data['data'][0]['cid'])
-                logging.info(f"Found CID via pagelist fallback: {cid}")
+                idx = page - 1 if page > 0 else 0
+                if idx < len(page_data['data']):
+                    cid = str(page_data['data'][idx]['cid'])
+                else:
+                    cid = str(page_data['data'][0]['cid'])
+                logging.info(f"Found CID via pagelist fallback: {cid} (page {page})")
     except Exception as e:
         logging.error(f"Error getting video info: {e}")
 
@@ -773,13 +822,23 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
         logging.info(f"Subtitle language preference passed as argument: {lang_code}")
 
 
-    bvid = extract_bvid(video_input)
+    bvid, page = extract_bvid_and_page(video_input)
     if not bvid:
         logging.error(f"Invalid input: Could not extract BV ID from '{video_input}'.")
-        return "" # Return empty string on invalid input
+        return ""
+
+    target_cid = None
+    if page > 1:
+        _h = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': f'{BILIBILI_VIDEO_BASE_URL}{bvid}/',
+        }
+        if user_cookie:
+            _h['Cookie'] = user_cookie
+        target_cid = get_cid_for_page(bvid, page, _h)
 
     try:
-        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie, lang_code)
+        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie, lang_code, target_cid=target_cid)
 
         # Process the subtitle JSON string to extract plain text
         try:
