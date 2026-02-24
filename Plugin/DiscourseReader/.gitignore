@@ -1,0 +1,13 @@
+# Secrets - NEVER commit these
+_rsa_private.pem
+ciphertext.txt
+
+# Generated temp files
+authorize.html
+
+# Development/diagnostic scripts (not part of the plugin)
+test_cookie.js
+get_user_api_key_step1.py
+get_user_api_key_step2.py
+decrypt_key.py
+gen_auth_url.py
