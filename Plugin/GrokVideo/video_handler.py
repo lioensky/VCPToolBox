@@ -83,9 +83,17 @@ def process_image_from_url(image_url):
         img = None
         if parsed_url.scheme == 'file':
             log_event("info", f"Processing local file URL: {image_url}")
-            file_path = url2pathname(parsed_url.path)
-            if os.name == 'nt' and parsed_url.path.startswith('/'):
-                file_path = url2pathname(parsed_url.path[1:])
+            # 处理 Windows 下不规范的 file:// 路径
+            path = parsed_url.path
+            if not path and parsed_url.netloc: # 处理 file://C:/path 这种 netloc 误判
+                path = parsed_url.netloc + parsed_url.path
+            
+            file_path = url2pathname(path)
+            if os.name == 'nt':
+                # 移除开头的斜杠，例如 /C:/... -> C:/...
+                file_path = re.sub(r'^/([a-zA-Z]:)', r'\1', file_path)
+            
+            log_event("info", f"Resolved local file path: {file_path}")
 
             try:
                 with open(file_path, 'rb') as f:
@@ -216,19 +224,64 @@ def main():
 
         log_event("info", f"[{task_id}] Calling Grok API (Synchronous)", {"url": api_url, "model": model})
         response = requests.post(api_url, json=payload, headers=headers, timeout=300)
-        response.raise_for_status()
-        result = response.json()
-
-        # 3. 解析视频 URL
-        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        video_url = None
-        # 兼容多种视频/图片格式的正则匹配
-        url_match = re.search(r'(https?://[^\s<>"\']+\.(mp4|webp|png|jpg|jpeg)[^\s<>"\']*)', content, re.IGNORECASE)
-        if url_match:
-            video_url = url_match.group(1)
         
+        if response.status_code != 200:
+            log_event("error", f"[{task_id}] API request failed with status {response.status_code}", {"text": response.text[:1000]})
+            response.raise_for_status()
+
+        response_text = response.text
+        video_url = None
+        content = ""
+        
+        try:
+            # 1. 优先尝试标准 JSON 解析
+            result = response.json()
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not video_url:
+                video_url = result.get("video_url") # 备选方案
+        except json.JSONDecodeError:
+            # 2. 尝试解析 SSE 流式响应
+            log_event("info", f"[{task_id}] Failed to parse as standard JSON, trying SSE stream parsing")
+            lines = response_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith("data: "):
+                    content_str = line[6:].strip()
+                    if content_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(content_str)
+                        if "choices" in chunk and chunk["choices"]:
+                            delta = chunk["choices"][0].get("delta", {})
+                            if "content" in delta:
+                                content += delta["content"]
+                    except:
+                        continue
+
+        # 3. 如果通过JSON或SSE获取到了内容，提取其中的URL
+        if content and not video_url:
+            url_match = re.search(r'(https?://[^\s<>"\']+\.(mp4|webp|png|jpg|jpeg)[^\s<>"\']*)', content, re.IGNORECASE)
+            if url_match:
+                video_url = url_match.group(1)
+            
+            if not video_url:
+                # HTML 标签提取
+                html_match = re.search(r'src=["\']([^"\'>]+\.(mp4|webp|png|jpg|jpeg)[^"\'>]*)["\']', content, re.IGNORECASE)
+                if html_match:
+                    video_url = html_match.group(1)
+                    
+            if not video_url:
+                # Markdown 链接提取
+                md_match = re.search(r'!?\[[^\]]*\]\(([^\)]+\.(mp4|webp|png|jpg|jpeg)[^\)]*)\)', content, re.IGNORECASE)
+                if md_match:
+                    video_url = md_match.group(1)
+
+        # 4. 最后一道防线：对整个原始文本进行暴力正则提取
         if not video_url:
-            video_url = result.get("video_url") # 备选方案
+            log_event("info", f"[{task_id}] Fallback to regex extraction directly from response text")
+            url_match = re.search(r'(https?://[^\s<>"\']+\.(mp4|webp|png|jpg|jpeg)[^\s<>"\']*)', response_text, re.IGNORECASE)
+            if url_match:
+                video_url = url_match.group(1)
 
         if video_url:
             log_event("success", f"[{task_id}] Video URL obtained: {video_url}")
