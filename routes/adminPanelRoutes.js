@@ -129,8 +129,11 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                 }
 
                 try {
-                    const { stdout: cpuInfo } = await execAsync("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", execOptions);
-                    systemInfo.cpu = { usage: parseFloat(cpuInfo.trim()) || 0 };
+                    // 不同系统top命令的输出格式不同，需要根据不同的格式来解析CPU使用率
+                    // Procps: "%Cpu(s):  0.3 us, ... 99.7 id,"
+                    // BusyBox: "CPU:   2% usr ... 97% idle"
+                    const { stdout: cpuInfo } = await execAsync("top -bn1 | grep -E '^\\s*(%?Cpu\\(s\\)?:|CPU:)' | head -1 | awk '{print $2}'", execOptions);
+                    systemInfo.cpu = { usage: parseFloat(cpuInfo.trim().replace('%', '')) || 0 };
                 } catch (cpuErr) {
                     systemInfo.cpu = { usage: 0 };
                 }
