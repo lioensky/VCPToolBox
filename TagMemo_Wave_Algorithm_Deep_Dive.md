@@ -1,4 +1,4 @@
-# TagMemo “浪潮”算法 深度技术文档
+# TagMemo “浪潮”算法 (V4 alpha 内测中) 深度技术文档
 
 ## 1. 算法概述
 TagMemo “浪潮”算法（TagMemo Wave Algorithm）是 VCP 系统中用于 RAG（检索增强生成）的核心优化方案。
