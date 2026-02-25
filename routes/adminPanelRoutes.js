@@ -1326,6 +1326,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                     if (envVal === undefined) {
                         return res.status(404).json({ success: false, error: 'Environment variable not found', details: name });
                     }
+                    value = envVal || '';
                     if (typeof envVal === 'string') {
                         const emojiPlaceholderRegex = /^[^{}]+?表情包\.txt$/g;
                         if (emojiPlaceholderRegex.test(envVal)) {
@@ -1340,8 +1341,6 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                                 value = envVal;
                             }
                         }
-                    } else {
-                        value = envVal || '';
                     }
                     if (type === 'env_sar') {
                         value = value || '[当前未配置或按请求模型注入]';
