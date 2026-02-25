@@ -104,7 +104,7 @@ async function handleLocalFile(fileUrl) {
         // 本地文本文件 → 读取并返回内容
         const textContent = await fs.readFile(localPath, 'utf-8');
         const fileName = path.basename(localPath);
-        return `文件: ${fileName}\n路径: ${localPath}\n\n${textContent}`;
+        return { content: [{ type: 'text', text: `文件: ${fileName}\n路径: ${localPath}\n\n${textContent}` }] };
     }
 }
 
@@ -292,6 +292,77 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             // 默认的文本提取模式
             await autoScroll(page, mode); // Scroll page to load all lazy-loaded content
 
+            // === 特定站点提取增强 ===
+            const isGithub = urlObj.hostname.includes('github.com');
+            if (isGithub) {
+                const githubData = await page.evaluate(() => {
+                    let md = '';
+
+                    // 1. 获取 Repository 名称和简述
+                    const repoNameEl = document.querySelector('strong[itemprop="name"] a') || document.querySelector('[itemprop="name"]');
+                    if (repoNameEl) {
+                        md += `# GitHub Repository: ${repoNameEl.textContent.trim()}\n\n`;
+                    }
+                    const aboutEl = document.querySelector('p.f4') || document.querySelector('.BorderGrid-cell p');
+                    if (aboutEl) {
+                        md += `> ${aboutEl.textContent.trim()}\n\n`;
+                    }
+
+                    // 2. 获取文件和目录列表
+                    const fileRows = Array.from(document.querySelectorAll('tr.react-directory-row, div.react-directory-row'));
+                    if (fileRows.length > 0) {
+                        md += `## 文件列表\n`;
+                        fileRows.forEach(row => {
+                            const nameEl = row.querySelector('.react-directory-truncate a, a.Link--primary');
+                            if (nameEl && nameEl.textContent) {
+                                const isDir = row.querySelector('svg.icon-directory') || row.querySelector('[aria-label="Directory"]');
+                                const typeIcon = isDir ? '📁' : '📄';
+                                md += `- ${typeIcon} [${nameEl.textContent.trim()}](${nameEl.href})\n`;
+                            }
+                        });
+                        md += '\n';
+                    } else {
+                        const fileLinks = Array.from(document.querySelectorAll('.js-navigation-item .js-navigation-open'));
+                        if (fileLinks.length > 0) {
+                            md += `## 文件列表\n`;
+                            fileLinks.forEach(link => {
+                                if (link.textContent && link.textContent.trim() !== '..') {
+                                    md += `- [${link.textContent.trim()}](${link.href})\n`;
+                                }
+                            });
+                            md += '\n';
+                        }
+                    }
+
+                    // 3. 获取 README 内容
+                    const readmeArticle = document.querySelector('article.markdown-body');
+                    if (readmeArticle) {
+                        md += `## README\n\n${readmeArticle.innerText}\n`;
+                    }
+
+                    // 4. Issue 或 PR 的内容支持
+                    const issueTitle = document.querySelector('.gh-header-title');
+                    if (issueTitle) {
+                        md += `# ${issueTitle.textContent.trim()}\n\n`;
+                        const comments = document.querySelectorAll('.timeline-comment');
+                        comments.forEach(comment => {
+                            const author = comment.querySelector('.author');
+                            const body = comment.querySelector('.comment-body');
+                            if (author && body) {
+                                md += `**${author.textContent.trim()}**: \n${body.innerText}\n\n---\n`;
+                            }
+                        });
+                    }
+
+                    return md;
+                });
+
+                if (githubData && githubData.length > 50) {
+                    return githubData;
+                }
+            }
+            // === 特定站点提取增强结束 ===
+
             // 优先尝试作为聚合页提取有分类的链接
             const groupedLinks = await page.evaluate(() => {
                 // 根据用户反馈，新闻源标题的特征是 'span.text-xl.font-bold'
@@ -404,7 +475,7 @@ async function main() {
                 if (typeof fetchedData === 'object' && fetchedData.content) {
                     output = { status: "success", result: fetchedData };
                 } else {
-                    output = { status: "success", result: fetchedData };
+                    output = { status: "success", result: { content: [{ type: 'text', text: typeof fetchedData === 'string' ? fetchedData : JSON.stringify(fetchedData) }] } };
                 }
             } else {
                 // === 网络 URL 处理 ===
@@ -435,9 +506,13 @@ async function main() {
                     const isEmptyArray = Array.isArray(fetchedData) && fetchedData.length === 0;
 
                     if (isEmptyString || isEmptyArray) {
-                        output = { status: "success", result: "成功获取网页，但提取到的内容为空。" };
+                        output = { status: "success", result: { content: [{ type: 'text', text: "成功获取网页，但提取到的内容为空。" }] } };
                     } else {
-                        output = { status: "success", result: fetchedData };
+                        if (typeof fetchedData === 'object' && fetchedData.content) {
+                            output = { status: "success", result: fetchedData };
+                        } else {
+                            output = { status: "success", result: { content: [{ type: 'text', text: typeof fetchedData === 'string' ? fetchedData : JSON.stringify(fetchedData) }] } };
+                        }
                     }
                 }
             }
@@ -451,7 +526,8 @@ async function main() {
             } else {
                 errorMessage = "发生未知错误。";
             }
-            output = { status: "error", error: `UrlFetch 错误: ${errorMessage}` };
+            const errorMsgStr = `UrlFetch 错误: ${errorMessage}`;
+            output = { status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } };
         }
 
         process.stdout.write(JSON.stringify(output, null, 2));
@@ -459,6 +535,7 @@ async function main() {
 }
 
 main().catch(error => {
-    process.stdout.write(JSON.stringify({ status: "error", error: `未处理的插件错误: ${error.message || error}` }));
+    const errorMsgStr = `未处理的插件错误: ${error.message || error}`;
+    process.stdout.write(JSON.stringify({ status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } }));
     process.exit(1);
 });
