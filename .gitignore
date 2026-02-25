@@ -199,5 +199,5 @@ image/fluxgen/
 # ===== 编译产物 =====
 rust-vexus-lite/target/
 
-# ===== 分布式开发 ====
+# ==== 分布式开发 ====
 VCPDistributedServer
