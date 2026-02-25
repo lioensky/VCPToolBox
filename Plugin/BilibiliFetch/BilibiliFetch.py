@@ -16,10 +16,25 @@ import io
 from functools import reduce
 from hashlib import md5
 import urllib.parse
-
+import subprocess
+import shutil
 # --- Logging Setup ---
 # Log to stderr to avoid interfering with stdout communication
 # Use a custom handler to ensure UTF-8 output even on Windows
+def get_ffmpeg_path():
+    """查找 ffmpeg：项目内置 → 系统 PATH"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # BilibiliFetch.py 在 Plugin/BilibiliFetch/ 下，往上3层到项目根
+    project_root = os.path.join(script_dir, '..', '..', '..')
+    candidates = [
+        os.path.join(project_root, 'VCPChat', 'bin', 'ffmpeg.exe'),
+        os.path.join(project_root, 'VCPToolBox', 'bin', 'ffmpeg.exe'),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+    return 'ffmpeg'
+
 class UTF8StreamHandler(logging.StreamHandler):
     def emit(self, record):
         try:
@@ -381,6 +396,87 @@ def fetch_videoshot(bvid: str, aid: str, cid: str, headers: dict) -> dict:
     except Exception as e:
         logging.error(f"Error fetching videoshot: {e}")
     return {}
+    
+def get_video_stream_url(bvid: str, cid: str, headers: dict) -> tuple:
+    """通过 playurl API 获取视频流地址（取最高画质）"""
+    try:
+        params = {
+            'bvid': bvid,
+            'cid': cid,
+            'fnval': 16,
+            'qn': 127,
+            'fourk': 1
+        }
+        resp = requests.get(
+            "https://api.bilibili.com/x/player/playurl",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+        data = resp.json()
+        if data.get('code') == 0:
+            dash = data.get('data', {}).get('dash', {})
+            videos = dash.get('video', [])
+            if videos:
+                best = sorted(
+                    videos,
+                    key=lambda v: v.get('bandwidth', 0),
+                    reverse=True
+                )[0]
+                url = best.get('baseUrl') or best.get('base_url')
+                w = best.get('width', 0)
+                h = best.get('height', 0)
+                logging.info(f"Best stream: {w}x{h}, bw={best.get('bandwidth')}")
+                return url, w, h
+    except Exception as e:
+        logging.error(f"Error getting video stream URL: {e}")
+    return None, 0, 0
+
+
+def fetch_hd_snapshot(bvid: str, cid: str, timestamp: float, img_dir: str, headers: dict) -> str | None:
+    """用 ffmpeg 从视频流中抽取指定时间点的高清帧"""
+    ffmpeg_cmd = get_ffmpeg_path()
+    if ffmpeg_cmd == 'ffmpeg' and not shutil.which('ffmpeg'):
+        logging.warning("ffmpeg not found, cannot fetch HD snapshot")
+        return None
+
+    stream_url, w, h = get_video_stream_url(bvid, cid, headers)
+    if not stream_url:
+        logging.warning("Failed to get video stream URL")
+        return None
+
+    out_path = os.path.join(
+        img_dir,
+        f"hd_snapshot_{bvid}_{int(timestamp)}s.jpg"
+    )
+    referer = f"https://www.bilibili.com/video/{bvid}/"
+    user_agent = headers.get('User-Agent', 'Mozilla/5.0')
+
+    cmd = [
+        ffmpeg_cmd, '-y',
+        '-headers', f"Referer: {referer}\r\nUser-Agent: {user_agent}\r\n",
+        '-ss', str(timestamp),
+        '-i', stream_url,
+        '-frames:v', '1',
+        '-q:v', '2',
+        out_path
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.exists(out_path):
+            size = os.path.getsize(out_path)
+            logging.info(f"HD snapshot saved: {out_path} ({w}x{h}, {size}B)")
+            return out_path
+        else:
+            stderr = result.stderr.decode('utf-8', errors='ignore')[:300]
+            logging.error(f"ffmpeg failed (rc={result.returncode}): {stderr}")
+    except subprocess.TimeoutExpired:
+        logging.error("ffmpeg timed out after 30s")
+    except Exception as e:
+        logging.error(f"Error running ffmpeg: {e}")
+    return None
+
 
 def fetch_pbp(cid: str, aid: str = None, bvid: str = None) -> str:
     """获取高能进度条数据并返回弹幕最集中的时间点"""
@@ -463,7 +559,7 @@ def get_accessible_url(local_path: str) -> str:
     # Fallback to file URI if env vars are missing or error occurs
     return "file:///" + local_path.replace("\\", "/")
 
-def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True) -> dict:
+def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> dict:
     """
     Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, snapshots, and PBP.
     Returns a dictionary suitable for VCP multimodal output.
@@ -577,63 +673,73 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             for t in snapshot_at_times:
                 try:
                     t_val = float(t)
-                    # Find closest index
-                    closest_idx = 0
-                    min_diff = float('inf')
-                    for i, timestamp in enumerate(index_list):
-                        diff = abs(timestamp - t_val)
-                        if diff < min_diff:
-                            min_diff = diff
-                            closest_idx = i
-                    
-                    actual_timestamp = index_list[closest_idx]
-                    
-                    # Calculate sprite sheet and position
-                    img_x_len = shot_data.get('img_x_len', 10)
-                    img_y_len = shot_data.get('img_y_len', 10)
-                    img_x_size = shot_data.get('img_x_size', 160)
-                    img_y_size = shot_data.get('img_y_size', 90)
-                    per_sheet = img_x_len * img_y_len
-                    
-                    sheet_idx = closest_idx // per_sheet
-                    pos_in_sheet = closest_idx % per_sheet
-                    row = pos_in_sheet // img_x_len
-                    col = pos_in_sheet % img_x_len
-                    
-                    if sheet_idx < len(image_urls):
-                        img_url = image_urls[sheet_idx]
-                        if img_url.startswith('//'):
-                            img_url = 'https:' + img_url
-                        
-                        # Download and crop
-                        if sheet_idx not in sheet_cache:
-                            logging.info(f"Downloading sprite sheet: {img_url}")
-                            img_resp = requests.get(img_url, timeout=15)
-                            sheet_cache[sheet_idx] = Image.open(io.BytesIO(img_resp.content))
-                        
-                        sheet_img = sheet_cache[sheet_idx]
-                        left = col * img_x_size
-                        top = row * img_y_size
-                        right = left + img_x_size
-                        bottom = top + img_y_size
-                        
-                        cropped_img = sheet_img.crop((left, top, right, bottom))
-                        
-                        # Save cropped image
-                        img_filename = f"snapshot_{bvid}_{actual_timestamp}s.jpg"
-                        img_path = os.path.join(img_dir, img_filename)
-                        cropped_img.save(img_path, "JPEG")
-                        
-                        # Use VCP accessible URL for local path
+                    img_path = None
+
+                    # 优先尝试 ffmpeg 高清抽帧
+                    if hd_snapshot and cid:
+                        img_path = fetch_hd_snapshot(bvid, cid, t_val, img_dir, headers)
+
+                    # 降级到雪碧图裁切
+                    if not img_path and shot_data and shot_data.get('image'):
+                        # Find closest index
+                        closest_idx = 0
+                        min_diff = float('inf')
+                        for i, timestamp in enumerate(index_list):
+                            diff = abs(timestamp - t_val)
+                            if diff < min_diff:
+                                min_diff = diff
+                                closest_idx = i
+
+                        actual_timestamp = index_list[closest_idx]
+
+                        # Calculate sprite sheet and position
+                        img_x_len = shot_data.get('img_x_len', 10)
+                        img_y_len = shot_data.get('img_y_len', 10)
+                        img_x_size = shot_data.get('img_x_size', 160)
+                        img_y_size = shot_data.get('img_y_size', 90)
+                        per_sheet = img_x_len * img_y_len
+
+                        sheet_idx = closest_idx // per_sheet
+                        pos_in_sheet = closest_idx % per_sheet
+                        row = pos_in_sheet // img_x_len
+                        col = pos_in_sheet % img_x_len
+
+                        if sheet_idx < len(image_urls):
+                            img_url = image_urls[sheet_idx]
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+
+                            if sheet_idx not in sheet_cache:
+                                logging.info(f"Downloading sprite sheet: {img_url}")
+                                img_resp = requests.get(img_url, timeout=15)
+                                sheet_cache[sheet_idx] = Image.open(io.BytesIO(img_resp.content))
+
+                            sheet_img = sheet_cache[sheet_idx]
+                            left = col * img_x_size
+                            top = row * img_y_size
+                            right = left + img_x_size
+                            bottom = top + img_y_size
+
+                            cropped_img = sheet_img.crop((left, top, right, bottom))
+
+                            img_filename = f"snapshot_{bvid}_{actual_timestamp}s.jpg"
+                            img_path = os.path.join(img_dir, img_filename)
+                            cropped_img.save(img_path, "JPEG")
+
+                    if img_path:
                         accessible_url = get_accessible_url(img_path)
-                        
                         images_to_add.append({
                             "type": "image_url",
                             "image_url": {"url": accessible_url}
                         })
-                        snapshot_text += f"- 时间点 {t_val}s (实际匹配 {actual_timestamp}s) 的快照已保存并附加: {img_filename}\n"
+                        mode_label = "HD" if hd_snapshot and "hd_snapshot" in os.path.basename(img_path) else "雪碧图"
+                        snapshot_text += f"- 时间点 {t_val}s 的快照已保存 [{mode_label}]: {os.path.basename(img_path)}\n"
+                    else:
+                        snapshot_text += f"- 时间点 {t_val}s 的快照获取失败\n"
+
                 except Exception as e:
                     logging.error(f"Error processing snapshot time {t}: {e}")
+                    snapshot_text += f"- 时间点 {t}s 处理出错: {e}\n"
         else:
             # Provide info about available snapshots
             if index_list:
@@ -910,8 +1016,12 @@ def handle_single_request(data: dict):
         need_pbp = data.get('need_pbp', True)
         if isinstance(need_pbp, str):
             need_pbp = need_pbp.lower() != 'false'
+            
+        hd_snapshot = data.get('hd_snapshot', False)
+        if isinstance(hd_snapshot, str):
+            hd_snapshot = hd_snapshot.lower() in ('true', '1', 'yes')
 
-        return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp)
+        return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp, hd_snapshot=hd_snapshot)
 
 if __name__ == "__main__":
     input_data_raw = sys.stdin.read()
