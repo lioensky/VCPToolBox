@@ -354,6 +354,24 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                         });
                     }
 
+                    // 5. Blob 文件（具体代码文件）内容支持
+                    const blobTextArea = document.querySelector('textarea#read-only-cursor-text-area');
+                    if (blobTextArea && blobTextArea.value) {
+                        const fileNameEl = document.querySelector('[data-testid="breadcrumbs-filename"]') || document.querySelector('#blob-path');
+                        const fileName = fileNameEl ? fileNameEl.textContent.trim() : 'Code File';
+                        md += `## 文件内容: ${fileName}\n\n\`\`\`\n${blobTextArea.value}\n\`\`\`\n`;
+                    } else {
+                        // 回退尝试获取旧版或不同结构的纯文本
+                        const rawContentEl = document.querySelector('[data-testid="raw-button"]');
+                        if (rawContentEl && window.location.href.includes('/blob/')) {
+                            // Blob 页面但没找到 textarea，可能是其他类型或者渲染不同，尝试抓取内容区
+                            const codeArea = document.querySelector('.js-file-line-container') || document.querySelector('table[data-paste-markdown-skip]');
+                            if (codeArea) {
+                                md += `## 文件代码\n\n\`\`\`\n${codeArea.innerText}\n\`\`\`\n`;
+                            }
+                        }
+                    }
+
                     return md;
                 });
 
