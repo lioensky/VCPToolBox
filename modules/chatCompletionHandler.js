@@ -419,26 +419,41 @@ class ChatCompletionHandler {
       }
 
       let shouldProcessMedia = false;
+      let shouldProcessMediaPlus = false;
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         for (const msg of originalBody.messages) {
           let foundPlaceholderInMsg = false;
+          let foundPlusPlaceholderInMsg = false;
           if (msg.role === 'user' || msg.role === 'system') {
-            if (typeof msg.content === 'string' && msg.content.includes('{{TransBase64}}')) {
-              foundPlaceholderInMsg = true;
-              msg.content = msg.content.replace(/\{\{TransBase64\}\}/g, '');
+            if (typeof msg.content === 'string') {
+              if (msg.content.includes('{{TransBase64+}}')) {
+                foundPlusPlaceholderInMsg = true;
+                msg.content = msg.content.replace(/\{\{TransBase64\+\}\}/g, '');
+              } else if (msg.content.includes('{{TransBase64}}')) {
+                foundPlaceholderInMsg = true;
+                msg.content = msg.content.replace(/\{\{TransBase64\}\}/g, '');
+              }
             } else if (Array.isArray(msg.content)) {
               for (const part of msg.content) {
-                if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{TransBase64}}')) {
-                  foundPlaceholderInMsg = true;
-                  part.text = part.text.replace(/\{\{TransBase64\}\}/g, '');
+                if (part.type === 'text' && typeof part.text === 'string') {
+                  if (part.text.includes('{{TransBase64+}}')) {
+                    foundPlusPlaceholderInMsg = true;
+                    part.text = part.text.replace(/\{\{TransBase64\+\}\}/g, '');
+                  } else if (part.text.includes('{{TransBase64}}')) {
+                    foundPlaceholderInMsg = true;
+                    part.text = part.text.replace(/\{\{TransBase64\}\}/g, '');
+                  }
                 }
               }
             }
           }
-          if (foundPlaceholderInMsg) {
+          if (foundPlaceholderInMsg || foundPlusPlaceholderInMsg) {
             shouldProcessMedia = true;
-            if (DEBUG_MODE) console.log('[Server] Media translation enabled by {{TransBase64}} placeholder.');
-            break;
+            if (foundPlusPlaceholderInMsg) {
+              shouldProcessMediaPlus = true;
+            }
+            if (DEBUG_MODE) console.log(`[Server] Media translation enabled by ${foundPlusPlaceholderInMsg ? '{{TransBase64+}}' : '{{TransBase64}}'} placeholder.`);
+            // Removed break to ensure all + modifiers are processed if present in multiple messages
           }
         }
       }
@@ -502,6 +517,17 @@ class ChatCompletionHandler {
 
       // --- 媒体处理器 ---
       if (shouldProcessMedia) {
+        if (shouldProcessMediaPlus) {
+          for (const msg of processedMessages) {
+            if (msg.role === 'user' && Array.isArray(msg.content)) {
+              const mediaParts = msg.content.filter(part => part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string' && /^data:(image|audio|video)\/[^;]+;base64,/.test(part.image_url.url));
+              if (mediaParts.length > 0) {
+                msg.__vcp_media_backup__ = JSON.parse(JSON.stringify(mediaParts));
+              }
+            }
+          }
+        }
+
         const processorName = pluginManager.messagePreprocessors.has('MultiModalProcessor')
           ? 'MultiModalProcessor'
           : 'ImageProcessor';
@@ -528,6 +554,41 @@ class ChatCompletionHandler {
         }
       }
       if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
+
+      // --- TransBase64+ Cleanup & Restore ---
+      if (shouldProcessMediaPlus) {
+        for (const msg of processedMessages) {
+          if (msg.role === 'user') {
+            // Remove the info block
+            if (typeof msg.content === 'string') {
+              msg.content = msg.content.replace(/<VCP_MULTIMODAL_INFO>[\s\S]*?<\/VCP_MULTIMODAL_INFO>/g, '');
+            } else if (Array.isArray(msg.content)) {
+              for (const part of msg.content) {
+                if (part.type === 'text' && typeof part.text === 'string') {
+                  part.text = part.text.replace(/<VCP_MULTIMODAL_INFO>[\s\S]*?<\/VCP_MULTIMODAL_INFO>/g, '');
+                }
+              }
+            }
+
+            // Restore the backup
+            if (msg.__vcp_media_backup__) {
+              if (typeof msg.content === 'string') {
+                msg.content = [
+                  { type: 'text', text: msg.content },
+                  ...msg.__vcp_media_backup__
+                ];
+              } else if (Array.isArray(msg.content)) {
+                msg.content = [
+                  ...msg.content,
+                  ...msg.__vcp_media_backup__
+                ];
+              }
+              delete msg.__vcp_media_backup__;
+            }
+          }
+        }
+        if (DEBUG_MODE) console.log(`[Server] TransBase64+ cleanup and media restore complete.`);
+      }
 
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
 

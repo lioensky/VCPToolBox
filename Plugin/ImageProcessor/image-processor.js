@@ -119,7 +119,7 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
         if (attempt < maxRetries) await new Promise(resolve => setTimeout(resolve, 500));
     }
     console.error(`[MultiModalProcessor] Failed to translate media ${mediaIndexForLabel + 1} after ${maxRetries} attempts.`);
-    return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: 多模态数据转译失败: ${lastError ? lastError.message.substring(0,100) : '未知错误'}]`;
+    return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: 多模态数据转译失败: ${lastError ? lastError.message.substring(0, 100) : '未知错误'}]`;
 }
 
 module.exports = {
@@ -173,8 +173,10 @@ module.exports = {
                     }
                     const insertPrompt = currentConfig.MediaInsertPrompt || "[多模态数据信息已提取:]";
                     userTextPart.text = (userTextPart.text ? userTextPart.text.trim() + '\n' : '') +
-                                        insertPrompt + '\n' +
-                                        allTranslatedMediaTexts.join('\n');
+                        '<VCP_MULTIMODAL_INFO>\n' +
+                        insertPrompt + '\n' +
+                        allTranslatedMediaTexts.join('\n') +
+                        '\n</VCP_MULTIMODAL_INFO>';
                     msg.content = contentWithoutMedia;
                 }
             }
