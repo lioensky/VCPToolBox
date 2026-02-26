@@ -286,6 +286,7 @@ class MediaSidecarManager extends EventEmitter {
             tags,
             generator: Array.isArray(currentSidecar?.generator) ? currentSidecar.generator : ['Cognito-Core'],
             source: currentSidecar?.source || 'auto',
+            agentSignature: (typeof currentSidecar?.agentSignature === 'string' ? currentSidecar.agentSignature : ''),
             createdAt: currentSidecar?.createdAt || now,
             updatedAt: now
         };

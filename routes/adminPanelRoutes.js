@@ -1241,13 +1241,18 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                 ? existing.description.trim()
                 : buildAutoDescription(mediaPath, stats));
 
+        const nextPresetName = (typeof options.presetName === 'string')
+            ? options.presetName.trim()
+            : (existing && typeof existing.presetName === 'string' ? existing.presetName : '');
+
         const sidecar = {
             version: 1,
             filePath: toFileUrl(mediaPath),
             mediaPath: toFileUrl(mediaPath),
-            presetName: existing && typeof existing.presetName === 'string' ? existing.presetName : '',
+            presetName: nextPresetName,
             description: nextDescription,
             tags: existing && Array.isArray(existing.tags) ? normalizeTags(existing.tags) : [],
+            agentSignature: existing && typeof existing.agentSignature === 'string' ? existing.agentSignature : '',
             updatedAt: now
         };
 
@@ -1260,6 +1265,9 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             }
             if (options.patch.tags !== undefined) {
                 sidecar.tags = normalizeTags(options.patch.tags);
+            }
+            if (typeof options.patch.agentSignature === 'string') {
+                sidecar.agentSignature = options.patch.agentSignature.trim();
             }
             sidecar.updatedAt = now;
         }
@@ -1298,6 +1306,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             const description = sidecar && typeof sidecar.description === 'string' ? sidecar.description : '';
             const presetName = sidecar && typeof sidecar.presetName === 'string' ? sidecar.presetName : '';
             const tags = sidecar && Array.isArray(sidecar.tags) ? normalizeTags(sidecar.tags) : [];
+            const agentSignature = sidecar && typeof sidecar.agentSignature === 'string' ? sidecar.agentSignature : '';
 
             const item = {
                 mediaPath: toFileUrl(mediaPath),
@@ -1309,7 +1318,8 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                 hasSidecar: !!sidecar,
                 presetName,
                 description,
-                tags
+                tags,
+                agentSignature
             };
 
             if (loweredKeyword) {
@@ -1317,7 +1327,8 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
                     relativePath.toLowerCase(),
                     description.toLowerCase(),
                     presetName.toLowerCase(),
-                    tags.join(',').toLowerCase()
+                    tags.join(',').toLowerCase(),
+                    agentSignature.toLowerCase()
                 ].join('\n');
                 if (!searchable.includes(loweredKeyword)) {
                     continue;
@@ -1353,13 +1364,13 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     });
 
     adminApiRouter.post('/knowledge-media/update', async (req, res) => {
-        const { mediaPath, description, presetName, tags } = req.body || {};
+        const { mediaPath, description, presetName, tags, agentSignature } = req.body || {};
         try {
             const knowledgeRootPath = getKnowledgeRootPath();
             await fs.access(knowledgeRootPath);
 
             const resolved = await resolveKnowledgeMediaPath(mediaPath, knowledgeRootPath);
-            const patch = { description, presetName, tags };
+            const patch = { description, presetName, tags, agentSignature };
             const { sidecarPath, sidecar } = await ensureSidecarForMedia(resolved.mediaPath, { patch });
             notifyKnowledgeSidecarChanged(sidecarPath);
 
@@ -1377,13 +1388,16 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     });
 
     adminApiRouter.post('/knowledge-media/regenerate', async (req, res) => {
-        const { mediaPath } = req.body || {};
+        const { mediaPath, presetName } = req.body || {};
         try {
             const knowledgeRootPath = getKnowledgeRootPath();
             await fs.access(knowledgeRootPath);
 
             const resolved = await resolveKnowledgeMediaPath(mediaPath, knowledgeRootPath);
-            const { sidecarPath, sidecar } = await ensureSidecarForMedia(resolved.mediaPath, { regenerate: true });
+            const { sidecarPath, sidecar } = await ensureSidecarForMedia(resolved.mediaPath, {
+                regenerate: true,
+                presetName: typeof presetName === 'string' ? presetName : undefined
+            });
             notifyKnowledgeSidecarChanged(sidecarPath);
 
             res.json({
@@ -1396,70 +1410,6 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error regenerating knowledge media sidecar:', error);
             res.status(400).json({ success: false, error: 'Failed to regenerate knowledge media sidecar', details: error.message });
-        }
-    });
-
-    adminApiRouter.post('/knowledge-media/rebuild', async (req, res) => {
-        const { regenerateExisting = false } = req.body || {};
-        try {
-            const knowledgeRootPath = getKnowledgeRootPath();
-            await fs.access(knowledgeRootPath);
-
-            const mediaFiles = await walkKnowledgeMediaFiles(knowledgeRootPath);
-            let created = 0;
-            let updated = 0;
-
-            for (const mediaPath of mediaFiles) {
-                const sidecarSuffix = getKnowledgeMediaSidecarSuffix();
-                const sidecarPath = `${mediaPath}${sidecarSuffix}`;
-                const sidecarExists = !!(await safeReadJson(sidecarPath));
-
-                if (!sidecarExists || regenerateExisting) {
-                    const { sidecarPath } = await ensureSidecarForMedia(mediaPath, { regenerate: !!regenerateExisting });
-                    notifyKnowledgeSidecarChanged(sidecarPath);
-                    if (sidecarExists) {
-                        updated += 1;
-                    } else {
-                        created += 1;
-                    }
-                }
-            }
-
-            res.json({
-                success: true,
-                message: '知识库多媒体侧车重建完成。',
-                scanned: mediaFiles.length,
-                created,
-                updated
-            });
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error rebuilding knowledge media sidecars:', error);
-            res.status(500).json({ success: false, error: 'Failed to rebuild knowledge media sidecars', details: error.message });
-        }
-    });
-
-    adminApiRouter.post('/knowledge-media/export', async (req, res) => {
-        try {
-            const knowledgeRootPath = getKnowledgeRootPath();
-            await fs.access(knowledgeRootPath);
-
-            const items = await buildKnowledgeMediaList(knowledgeRootPath);
-            const exportedAt = new Date().toISOString();
-            const payload = {
-                exportedAt,
-                rootPath: toFileUrl(knowledgeRootPath),
-                sidecarSuffix: getKnowledgeMediaSidecarSuffix(),
-                itemCount: items.length,
-                items
-            };
-
-            const fileName = `knowledge_media_export_${Date.now()}.json`;
-            res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-            res.status(200).send(JSON.stringify(payload, null, 2));
-        } catch (error) {
-            console.error('[AdminPanelRoutes API] Error exporting knowledge media:', error);
-            res.status(500).json({ success: false, error: 'Failed to export knowledge media', details: error.message });
         }
     });
     // --- End Knowledge Media Describer API ---

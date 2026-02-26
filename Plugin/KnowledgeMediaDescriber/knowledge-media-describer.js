@@ -227,6 +227,10 @@ async function buildAndWriteSidecar(mediaPath, knowledgeRootPath, options = {}) 
     ? options.source.trim()
     : (typeof existing?.source === 'string' && existing.source.trim() ? existing.source.trim() : 'manual');
 
+  const agentSignature = options.agentSignature !== undefined
+    ? String(options.agentSignature || '').trim()
+    : (typeof existing?.agentSignature === 'string' ? existing.agentSignature.trim() : '');
+
   const sidecar = {
     version: 1,
     mediaHash,
@@ -239,6 +243,7 @@ async function buildAndWriteSidecar(mediaPath, knowledgeRootPath, options = {}) 
     tags,
     generator: generator.length > 0 ? generator : [presetName],
     source,
+    agentSignature,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
@@ -258,6 +263,7 @@ async function traceAndPersistMedia(request) {
     presetName,
     generator,
     source,
+    agentSignature,
     targetDiaryName,
     targetFileName,
     relocateMode = 'copy',
@@ -272,7 +278,8 @@ async function traceAndPersistMedia(request) {
     tags,
     presetName,
     generator,
-    source
+    source,
+    agentSignature
   });
 
   const result = {
@@ -322,7 +329,8 @@ async function traceAndPersistMedia(request) {
     tags,
     presetName,
     generator,
-    source: source || 'trace'
+    source: source || 'trace',
+    agentSignature
   });
 
   result.target = {
@@ -373,7 +381,7 @@ function convertToVCPFormat(response) {
 
 async function updateSidecarParams(request) {
   const knowledgeRootPath = getKnowledgeRootPath();
-  const { diaryName, fileName, description, tags, presetName, generator, source } = request || {};
+  const { diaryName, fileName, description, tags, presetName, generator, source, agentSignature } = request || {};
 
   if (!diaryName || !fileName) {
     throw new Error('diaryName 和 fileName 不能为空。');
@@ -392,11 +400,44 @@ async function updateSidecarParams(request) {
     tags,
     presetName,
     generator,
-    source
+    source,
+    agentSignature
   });
 
   return {
     action: 'UpdateSidecarParams',
+    diaryName,
+    fileName,
+    sidecarPath: toFileUrl(sidecarResult.sidecarPath),
+    sidecar: sidecarResult.sidecar
+  };
+}
+
+async function updateSidecarAgentSignature(request) {
+  const knowledgeRootPath = getKnowledgeRootPath();
+  const { diaryName, fileName, agentSignature } = request || {};
+
+  if (!diaryName || !fileName) {
+    throw new Error('diaryName 和 fileName 不能为空。');
+  }
+  if (agentSignature !== undefined && typeof agentSignature !== 'string') {
+    throw new Error('agentSignature 必须是字符串。');
+  }
+
+  const diaryPath = resolveTargetDiaryPath(diaryName, knowledgeRootPath);
+  const mediaPath = path.join(diaryPath, fileName);
+
+  const stats = await fs.stat(mediaPath);
+  if (!stats.isFile()) {
+    throw new Error(`文件不存在: ${mediaPath}`);
+  }
+
+  const sidecarResult = await buildAndWriteSidecar(mediaPath, knowledgeRootPath, {
+    agentSignature
+  });
+
+  return {
+    action: 'UpdateSidecarAgentSignature',
     diaryName,
     fileName,
     sidecarPath: toFileUrl(sidecarResult.sidecarPath),
@@ -611,6 +652,17 @@ async function processRequest(request) {
           data: {
             message: '侧车参数更新完成。',
             ...updateResult
+          }
+        };
+      }
+
+      case 'UpdateSidecarAgentSignature': {
+        const updateAgentSignatureResult = await updateSidecarAgentSignature(request);
+        return {
+          success: true,
+          data: {
+            message: '侧车 Agent 署名更新完成。',
+            ...updateAgentSignatureResult
           }
         };
       }

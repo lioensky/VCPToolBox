@@ -73,6 +73,11 @@ class RAGDiaryPlugin {
         this.ragParamsWatcher = null;
         this.regexRuleCache = new Map();
 
+        // 召回权重统计：文件路径 -> 累计权重（用于超限时优先保留高权重）
+        this.recallWeights = {};
+        this.recallWeightsPath = path.join(__dirname, 'diary_recall_weights.json');
+        this.recallWeightsMaxEntries = parseInt(process.env.DIARY_RECALL_WEIGHTS_MAX_ENTRIES || '20000', 10);
+
         // 注意：不在构造函数中调用 loadConfig()，而是在 initialize() 中调用
     }
 
@@ -292,6 +297,7 @@ class RAGDiaryPlugin {
         await this.loadConfig();
         await this.loadRagParams();
         this._startRagParamsWatcher();
+        await this._loadRecallWeights();
 
         // ✅ 启动缓存清理任务
         this._startCacheCleanupTask();
@@ -2020,6 +2026,210 @@ class RAGDiaryPlugin {
         }
     }
 
+    _resolveResultFilePath(result, dbName = '') {
+        if (!result || typeof result !== 'object') return '';
+        const sidecarSuffix = this._getSidecarSuffix();
+
+        let candidate = '';
+        if (typeof result.fullPath === 'string' && result.fullPath.trim()) {
+            candidate = result.fullPath.trim();
+        } else if (typeof result.sourceFile === 'string' && result.sourceFile.trim()) {
+            candidate = result.sourceFile.trim();
+        } else {
+            const mediaUrl = this._extractMediaFileUrlFromResult(result);
+            if (typeof mediaUrl === 'string' && mediaUrl.startsWith('file://')) {
+                candidate = decodeURIComponent(mediaUrl.replace(/^file:\/\//i, ''));
+            }
+        }
+
+        if (!candidate) return '';
+
+        if (candidate.startsWith('file://')) {
+            candidate = decodeURIComponent(candidate.replace(/^file:\/\//i, ''));
+        }
+
+        if (candidate.toLowerCase().endsWith(sidecarSuffix)) {
+            candidate = candidate.slice(0, -sidecarSuffix.length);
+        }
+
+        if (path.isAbsolute(candidate)) return path.normalize(candidate);
+
+        const normalized = path.normalize(candidate);
+        const directUnderRoot = path.join(dailyNoteRootPath, normalized);
+        if (normalized.startsWith(`${dbName}${path.sep}`) || normalized === dbName) {
+            return path.normalize(directUnderRoot);
+        }
+
+        if (dbName) {
+            return path.normalize(path.join(dailyNoteRootPath, dbName, normalized));
+        }
+
+        return path.normalize(directUnderRoot);
+    }
+
+    _buildRecallWeightKey(result, dbName = '', index = 0) {
+        const resolvedPath = this._resolveResultFilePath(result, dbName);
+        if (resolvedPath) return resolvedPath.toLowerCase();
+
+        const source = (result?.sourceFile || result?.fullPath || '').toString().trim();
+        if (source) return `${dbName || 'unknown'}::${source.toLowerCase()}`;
+
+        const textSig = (result?.text || '').toString().trim().slice(0, 120);
+        if (textSig) return `${dbName || 'unknown'}::__text__${textSig}`;
+
+        return `${dbName || 'unknown'}::__idx__${index}`;
+    }
+
+    _getRecallWeightByKey(fileKey = '') {
+        if (!fileKey) return 0;
+        const raw = this.recallWeights?.[fileKey];
+        return Number.isFinite(raw) ? raw : 0;
+    }
+
+    async _loadRecallWeights() {
+        try {
+            const raw = await fs.readFile(this.recallWeightsPath, 'utf-8');
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                this.recallWeights = parsed;
+            } else {
+                this.recallWeights = {};
+            }
+            console.log(`[RAGDiaryPlugin] 召回权重已加载: ${Object.keys(this.recallWeights).length} 条`);
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                console.warn(`[RAGDiaryPlugin] 读取召回权重失败，使用空表: ${error.message}`);
+            }
+            this.recallWeights = {};
+        }
+    }
+
+    _pruneRecallWeightsIfNeeded() {
+        const maxEntries = Number.isFinite(this.recallWeightsMaxEntries) && this.recallWeightsMaxEntries > 0
+            ? this.recallWeightsMaxEntries
+            : 20000;
+
+        const entries = Object.entries(this.recallWeights || {});
+        if (entries.length <= maxEntries) return;
+
+        entries.sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0));
+        this.recallWeights = Object.fromEntries(entries.slice(0, maxEntries));
+    }
+
+    async _saveRecallWeights() {
+        this._pruneRecallWeightsIfNeeded();
+        try {
+            await fs.writeFile(this.recallWeightsPath, JSON.stringify(this.recallWeights, null, 2), 'utf-8');
+        } catch (error) {
+            console.warn(`[RAGDiaryPlugin] 写入召回权重失败: ${error.message}`);
+        }
+    }
+
+    async _recordRecallWeightsForResults(results, dbName) {
+        if (!Array.isArray(results) || results.length === 0) return;
+
+        const touchedKeys = new Set();
+        for (let i = 0; i < results.length; i++) {
+            const item = results[i];
+            const key = this._buildRecallWeightKey(item, dbName, i);
+            if (!key || touchedKeys.has(key)) continue;
+            touchedKeys.add(key);
+
+            const current = this._getRecallWeightByKey(key);
+            this.recallWeights[key] = current + 1;
+        }
+
+        if (touchedKeys.size > 0) {
+            await this._saveRecallWeights();
+        }
+    }
+
+    async _applyFileLimitsToResults(results, dbName, retrievalOptions = null) {
+        if (!Array.isArray(results) || results.length === 0) return results;
+        const opts = retrievalOptions || {};
+        const hasMaxNum = Number.isFinite(opts.maxNum) && opts.maxNum > 0;
+        const hasMaxSize = Number.isFinite(opts.maxSizeKb) && opts.maxSizeKb > 0;
+        if (!hasMaxNum && !hasMaxSize) return results;
+
+        const maxNum = hasMaxNum ? opts.maxNum : Number.POSITIVE_INFINITY;
+        const maxSizeBytes = hasMaxSize ? Math.floor(opts.maxSizeKb * 1024) : Number.POSITIVE_INFINITY;
+
+        // 先按“文件”聚合，再按权重排序；超限时优先剔除低权重文件
+        const candidateMap = new Map();
+
+        for (let i = 0; i < results.length; i++) {
+            const item = results[i];
+            const fileKey = this._buildRecallWeightKey(item, dbName, i);
+            const resolvedPath = this._resolveResultFilePath(item, dbName);
+            const score = Number(item?.rerank_score ?? item?.score ?? 0);
+
+            if (!candidateMap.has(fileKey)) {
+                let fileSizeBytes = 0;
+                if (resolvedPath) {
+                    try {
+                        const stat = await fs.stat(resolvedPath);
+                        if (stat && stat.isFile()) fileSizeBytes = Number(stat.size) || 0;
+                    } catch (e) {
+                        fileSizeBytes = 0;
+                    }
+                }
+
+                candidateMap.set(fileKey, {
+                    fileKey,
+                    fileSizeBytes,
+                    recallWeight: this._getRecallWeightByKey(fileKey),
+                    bestScore: score,
+                    firstIndex: i,
+                    items: [item]
+                });
+            } else {
+                const existing = candidateMap.get(fileKey);
+                existing.items.push(item);
+                existing.bestScore = Math.max(existing.bestScore, score);
+            }
+        }
+
+        const candidates = Array.from(candidateMap.values()).sort((a, b) => {
+            // 1) 历史权重高的优先保留
+            if (b.recallWeight !== a.recallWeight) return b.recallWeight - a.recallWeight;
+            // 2) 同权重时相关度高优先
+            if (b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
+            // 3) 最后保持原始顺序稳定
+            return a.firstIndex - b.firstIndex;
+        });
+
+        const selectedGroups = [];
+        let selectedFileCount = 0;
+        let selectedSizeBytes = 0;
+
+        for (const candidate of candidates) {
+            const exceedNum = selectedFileCount + 1 > maxNum;
+            const exceedSize = selectedSizeBytes + candidate.fileSizeBytes > maxSizeBytes;
+            if (exceedNum || exceedSize) {
+                continue;
+            }
+
+            selectedGroups.push(candidate);
+            selectedFileCount += 1;
+            selectedSizeBytes += candidate.fileSizeBytes;
+        }
+
+        // 回到原结果顺序输出（避免格式波动）
+        const selectedKeySet = new Set(selectedGroups.map(g => g.fileKey));
+        const selected = [];
+        for (let i = 0; i < results.length; i++) {
+            const item = results[i];
+            const key = this._buildRecallWeightKey(item, dbName, i);
+            if (selectedKeySet.has(key)) selected.push(item);
+        }
+
+        if (selected.length !== results.length) {
+            console.log(`[RAGDiaryPlugin] 文件返回限制生效(${dbName}): 原始 ${results.length} 条 -> 保留 ${selected.length} 条, 文件数=${selectedFileCount}, 总大小=${Math.round(selectedSizeBytes / 1024)}KB（按历史权重优先保留）`);
+        }
+
+        return selected;
+    }
+
     _toPathOnlyMultimodalResult(result) {
         if (!result || typeof result !== 'object') return '';
         const source = (result.fullPath || result.sourceFile || '').toString();
@@ -2057,7 +2267,9 @@ class RAGDiaryPlugin {
             blacklist: [],
             regexRulesEarly: [],
             regexRulesLate: [],
-            tagOnlyStage: null
+            tagOnlyStage: null,
+            maxNum: null,
+            maxSizeKb: null
         };
 
         if (!modifiers || typeof modifiers !== 'string') return options;
@@ -2126,6 +2338,24 @@ class RAGDiaryPlugin {
 
             if (lower.startsWith('tagonly')) {
                 options.tagOnlyStage = token.toLowerCase().includes('@laststep') ? 'late' : 'early';
+                continue;
+            }
+
+            const maxNumMatch = token.match(/^MAX_NUM:(\d+)$/i);
+            if (maxNumMatch) {
+                const parsed = parseInt(maxNumMatch[1], 10);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                    options.maxNum = parsed;
+                }
+                continue;
+            }
+
+            const maxSizeMatch = token.match(/^MAX_SIZE:(\d+(?:\.\d+)?)$/i);
+            if (maxSizeMatch) {
+                const parsed = parseFloat(maxSizeMatch[1]);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                    options.maxSizeKb = parsed;
+                }
                 continue;
             }
         }
@@ -2863,6 +3093,9 @@ class RAGDiaryPlugin {
                 );
             }
         }
+
+        finalResultsForBroadcast = await this._applyFileLimitsToResults(finalResultsForBroadcast, dbName, effectiveRetrievalOptions);
+        await this._recordRecallWeightsForResults(finalResultsForBroadcast, dbName);
 
         const shouldDirectSendMedia =
             (effectiveRetrievalOptions.transMode === null || effectiveRetrievalOptions.transMode === 'plus') &&

@@ -6,65 +6,107 @@
   <title>知识库多媒体描述管理</title>
   <link rel="stylesheet" href="style.css">
   <style>
+    :root {
+      --kms-radius: 12px;
+    }
+
     body {
       margin: 0;
-      padding: 16px;
+      padding: 18px;
       background: var(--background-color);
       color: var(--text-color-primary);
       font-family: inherit;
     }
 
-    .page-header {
+    .kms-page {
       display: flex;
-      flex-wrap: wrap;
-      align-items: center;
+      flex-direction: column;
       gap: 12px;
-      margin-bottom: 12px;
     }
 
-    .page-header h2 {
-      margin: 0;
-      font-size: 1.2rem;
-      color: var(--text-color-primary);
-    }
-
-    .toolbar {
+    .kms-header {
       display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
       flex-wrap: wrap;
+    }
+
+    .kms-title-wrap h2 {
+      margin: 0;
+      font-size: 1.25rem;
+      color: var(--text-color-primary);
+    }
+
+    .kms-title-wrap p {
+      margin: 6px 0 0 0;
+      color: var(--text-color-secondary);
+      font-size: 0.9rem;
+    }
+
+    .kms-stats {
+      display: flex;
       gap: 8px;
-      margin-bottom: 12px;
-      align-items: center;
+      flex-wrap: wrap;
     }
 
-    .toolbar input[type="text"] {
-      min-width: 280px;
+    .kms-stat-chip {
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: var(--background-color-light);
+      color: var(--text-color-primary);
+      font-size: 0.85rem;
+      white-space: nowrap;
+    }
+
+    .kms-toolbar {
+      display: grid;
+      grid-template-columns: 2fr repeat(4, minmax(120px, 1fr)) auto auto;
+      gap: 8px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--kms-radius);
+      padding: 10px;
+      background: var(--background-color-light);
+    }
+
+    .kms-toolbar input[type="text"],
+    .kms-toolbar select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--background-color);
+      color: var(--text-color-primary);
       padding: 8px 10px;
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      background: var(--background-color-light);
-      color: var(--text-color-primary);
+      min-height: 36px;
     }
 
-    .toolbar button {
+    .kms-btn {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--background-color);
+      color: var(--text-color-primary);
       padding: 8px 12px;
-      border: 1px solid var(--border-color);
-      background: var(--background-color-light);
-      color: var(--text-color-primary);
-      border-radius: 6px;
+      min-height: 36px;
       cursor: pointer;
+      white-space: nowrap;
     }
 
-    .toolbar button:hover {
+    .kms-btn:hover {
       background: var(--primary-color-translucent);
     }
 
-    .meta-row {
+    .kms-btn.primary {
+      background: var(--primary-color-translucent);
+    }
+
+    .kms-meta-row {
       display: flex;
-      gap: 12px;
+      justify-content: space-between;
       align-items: center;
-      margin-bottom: 10px;
-      color: var(--text-color-secondary);
-      font-size: 0.9rem;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
     .status-message {
@@ -76,88 +118,165 @@
     .status-message.error { color: #e74c3c; }
     .status-message.info { color: #7aa1ff; }
 
-    .table-wrap {
+    .kms-list-wrap {
       border: 1px solid var(--border-color);
-      border-radius: 8px;
-      overflow: auto;
+      border-radius: var(--kms-radius);
       background: var(--background-color-light);
+      overflow: hidden;
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 1100px;
-    }
-
-    th, td {
+    .kms-list-header {
+      display: grid;
+      grid-template-columns: 1fr 112px 148px 116px;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--border-color);
-      padding: 8px;
-      vertical-align: top;
-      color: var(--text-color-primary);
-    }
-
-    th {
-      position: sticky;
-      top: 0;
+      color: var(--text-color-secondary);
+      font-size: 0.85rem;
       background: var(--background-color);
-      z-index: 1;
-      text-align: left;
     }
 
-    .path-cell {
-      max-width: 260px;
+    .kms-list {
+      display: flex;
+      flex-direction: column;
+      max-height: 68vh;
+      overflow: auto;
+    }
+
+    .kms-empty {
+      text-align: center;
+      color: var(--text-color-secondary);
+      padding: 28px 8px;
+      font-size: 0.95rem;
+    }
+
+    .kms-item {
+      display: grid;
+      grid-template-columns: 1fr 112px 148px 116px;
+      gap: 10px;
+      align-items: stretch;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .kms-item:last-child {
+      border-bottom: none;
+    }
+
+    .kms-main {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .kms-main-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .kms-path {
+      font-weight: 600;
+      color: var(--text-color-primary);
       word-break: break-all;
     }
 
-    .empty {
-      text-align: center;
-      color: var(--text-color-secondary);
-      padding: 24px 0;
-    }
-
-    .preset-input,
-    .tags-input,
-    .desc-input {
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid var(--border-color);
-      background: var(--background-color);
-      color: var(--text-color-primary);
-      border-radius: 6px;
-      padding: 6px 8px;
-    }
-
-    .tags-row {
-      margin-top: 6px;
+    .kms-badges {
       display: flex;
       gap: 6px;
       align-items: center;
+      flex-wrap: wrap;
     }
 
-    .tags-row label {
-      white-space: nowrap;
+    .badge {
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      border: 1px solid var(--border-color);
+      background: var(--background-color);
+      color: var(--text-color-secondary);
+    }
+
+    .badge.ok {
+      color: #2ecc71;
+      border-color: rgba(46, 204, 113, 0.4);
+    }
+
+    .badge.warn {
+      color: #f39c12;
+      border-color: rgba(243, 156, 18, 0.4);
+    }
+
+    .kms-input,
+    .kms-textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      padding: 8px 10px;
+      min-height: 34px;
+    }
+
+    .kms-textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
+    .kms-inline-grid {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(200px, 1fr);
+      gap: 8px;
+    }
+
+    .kms-right,
+    .kms-size,
+    .kms-actions {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .kms-size {
       color: var(--text-color-secondary);
       font-size: 0.85rem;
     }
 
-    .actions-cell {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      min-width: 90px;
+    .kms-actions .kms-btn {
+      width: 100%;
+      padding: 7px 8px;
+      font-size: 0.85rem;
     }
 
-    .btn-small {
-      padding: 6px 8px;
-      border: 1px solid var(--border-color);
-      background: var(--background-color);
-      color: var(--text-color-primary);
-      border-radius: 6px;
-      cursor: pointer;
+    .kms-actions .kms-btn.regen {
+      border-color: rgba(122, 161, 255, 0.5);
+      color: #7aa1ff;
     }
 
-    .btn-small:hover {
-      background: var(--primary-color-translucent);
+    @media (max-width: 1260px) {
+      .kms-toolbar {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+      .kms-list-header {
+        display: none;
+      }
+      .kms-item {
+        grid-template-columns: 1fr;
+      }
+      .kms-right, .kms-size, .kms-actions {
+        flex-direction: row;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .kms-actions .kms-btn {
+        width: auto;
+      }
     }
   </style>
   <script>
@@ -175,42 +294,60 @@
   </script>
 </head>
 <body>
-  <div class="page-header">
-    <h2>知识库多媒体描述管理</h2>
-  </div>
+  <div class="kms-page">
+    <div class="kms-header">
+      <div class="kms-title-wrap">
+        <h2>知识库多媒体描述管理</h2>
+        <p>按类型分类筛选、就地编辑描述与标签，支持按预设重生成。</p>
+      </div>
+      <div class="kms-stats">
+        <span class="kms-stat-chip" id="kms-count">共 0 项</span>
+        <span class="kms-stat-chip" id="kms-sidecar-count">有侧车 0 项</span>
+        <span class="kms-stat-chip" id="kms-missing-count">缺侧车 0 项</span>
+      </div>
+    </div>
 
-  <div class="toolbar">
-    <input id="kms-search-input" type="text" placeholder="按文件名/描述/Tag 搜索...">
-    <button id="kms-search-btn">搜索</button>
-    <button id="kms-reload-btn">刷新</button>
-    <button id="kms-rebuild-missing-btn">重建缺失侧车</button>
-    <button id="kms-rebuild-all-btn">全部重生成</button>
-    <button id="kms-export-btn">导出</button>
-  </div>
+    <div class="kms-toolbar">
+      <input id="kms-search-input" type="text" placeholder="搜索：路径 / 描述 / Tag / 署名">
+      <select id="kms-type-filter">
+        <option value="all">全部类型</option>
+        <option value="image">图片</option>
+        <option value="audio">音频</option>
+        <option value="video">视频</option>
+        <option value="document">文档</option>
+        <option value="other">其他</option>
+      </select>
+      <select id="kms-sidecar-filter">
+        <option value="all">全部侧车状态</option>
+        <option value="has">仅有侧车</option>
+        <option value="missing">仅缺侧车</option>
+      </select>
+      <select id="kms-sort-select">
+        <option value="modified_desc">修改时间：新→旧</option>
+        <option value="modified_asc">修改时间：旧→新</option>
+        <option value="size_desc">大小：大→小</option>
+        <option value="size_asc">大小：小→大</option>
+        <option value="path_asc">路径：A→Z</option>
+      </select>
+      <button id="kms-search-btn" class="kms-btn">筛选</button>
+      <button id="kms-reload-btn" class="kms-btn">刷新</button>
+    </div>
 
-  <div class="meta-row">
-    <span id="kms-count">共 0 项</span>
-    <span id="kms-status" class="status-message info"></span>
-  </div>
+    <div class="kms-meta-row">
+      <div id="kms-status" class="status-message info"></div>
+    </div>
 
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>相对路径</th>
-          <th>类型</th>
-          <th>大小(bytes)</th>
-          <th>侧车</th>
-          <th>预设名</th>
-          <th>描述与Tag</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="kms-table-body">
-        <tr><td colspan="8" class="empty">加载中...</td></tr>
-      </tbody>
-    </table>
+    <div class="kms-list-wrap">
+      <div class="kms-list-header">
+        <div>文件 / 描述 / Tag / 署名</div>
+        <div>预设</div>
+        <div>大小 / 修改时间</div>
+        <div>操作</div>
+      </div>
+      <div id="kms-list" class="kms-list">
+        <div class="kms-empty">加载中...</div>
+      </div>
+    </div>
   </div>
 
   <script src="js/knowledge-media-describer.js"></script>
