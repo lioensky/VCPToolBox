@@ -18,13 +18,81 @@ const multiModalPromptText = process.env.MultiModalPrompt; // 使用新的配置
 const multiModalModelOutputMaxTokens = parseInt(process.env.MultiModalModelOutputMaxTokens, 10) || 50000;
 const multiModalModelThinkingBudget = parseInt(process.env.MultiModalModelThinkingBudget, 10);
 
+function getMultimediaPresetsDir() {
+    const explicit = process.env.MULTIMEDIA_PRESETS_PATH || process.env.MULTIMEDIA_PRESETS_DIR_PATH;
+    if (explicit && explicit.trim()) return explicit.trim();
+    if (process.env.PROJECT_BASE_PATH) return path.join(process.env.PROJECT_BASE_PATH, 'MultimediaPresets');
+    return path.join(__dirname, '..', '..', 'MultimediaPresets');
+}
+
+function toOptionalNumber(value) {
+    if (value === null || value === undefined || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function toOptionalInteger(value) {
+    const parsed = toOptionalNumber(value);
+    if (parsed === undefined) return undefined;
+    return Number.isInteger(parsed) ? parsed : Math.round(parsed);
+}
+
+function extractPresetRequestParams(presetJson) {
+    const requestParams = (presetJson && typeof presetJson.requestParams === 'object' && !Array.isArray(presetJson.requestParams))
+        ? presetJson.requestParams
+        : {};
+
+    const model = typeof requestParams.model === 'string' && requestParams.model.trim()
+        ? requestParams.model.trim()
+        : (typeof presetJson?.model === 'string' && presetJson.model.trim() ? presetJson.model.trim() : undefined);
+
+    const temperature = toOptionalNumber(requestParams.temperature ?? presetJson?.temperature);
+    const topP = toOptionalNumber(requestParams.top_p ?? requestParams.topP ?? presetJson?.top_p ?? presetJson?.topP);
+    const topK = toOptionalInteger(requestParams.top_k ?? requestParams.topK ?? presetJson?.top_k ?? presetJson?.topK);
+
+    return {
+        model,
+        temperature,
+        top_p: topP,
+        top_k: topK
+    };
+}
+
+async function resolveCognitoPrompt(presetName) {
+    const normalized = (presetName || '').trim();
+    if (!normalized) {
+        return { prompt: multiModalPromptText, agentName: 'Cognito-Core', requestParams: {} };
+    }
+
+    const presetsDir = getMultimediaPresetsDir();
+    try {
+        const presetPath = path.join(presetsDir, `${normalized}.json`);
+        const presetRaw = await fs.readFile(presetPath, 'utf-8');
+        const presetJson = JSON.parse(presetRaw);
+        const presetPrompt = typeof presetJson.systemPrompt === 'string'
+            ? presetJson.systemPrompt.trim()
+            : (typeof presetJson.prompt === 'string' ? presetJson.prompt.trim() : '');
+        const requestParams = extractPresetRequestParams(presetJson);
+
+        if (presetPrompt) {
+            return { prompt: presetPrompt, agentName: normalized, requestParams };
+        }
+    } catch (error) {
+        console.warn(`[Reidentify] Cognito预设加载失败，回退默认提示词: ${normalized} (${error.message})`);
+    }
+
+    return { prompt: multiModalPromptText, agentName: 'Cognito-Core', requestParams: {} };
+}
+
 /**
 * 根据 Base64 Key 重新识别多模态数据并更新缓存。
 * @param {string} base64Key - 要重新识别的媒体缓存条目的 Base64 Key (纯 Base64 字符串)。
-* @returns {Promise<{newDescription: string, newTimestamp: string}>} 包含新描述和时间戳的对象。
+* @param {object} options
+* @param {string} options.presetName - 署名/预设名（可选）。
+* @returns {Promise<{newDescription: string, newTimestamp: string, presetName: string}>} 包含新描述和时间戳的对象。
 * @throws {Error} 如果重新识别或更新缓存失败。
 */
-async function reidentifyMediaByBase64Key(base64Key) {
+async function reidentifyMediaByBase64Key(base64Key, options = {}) {
    if (!base64Key) {
        throw new Error('错误：请输入要重新识别的媒体缓存条目的 Base64 Key。');
    }
@@ -35,6 +103,9 @@ async function reidentifyMediaByBase64Key(base64Key) {
    if (!apiKey || !apiUrl || !multiModalModelName || !multiModalPromptText) {
        throw new Error('错误：必要的 API 配置 (API_Key, API_URL, MultiModalModel, MultiModalPrompt) 未在 config.env 中设置。');
    }
+
+   const { prompt: effectivePrompt, agentName: effectiveAgentName, requestParams } = await resolveCognitoPrompt(options.presetName);
+   const presetSignature = effectiveAgentName || 'Cognito-Core';
 
    // 2. 加载缓存
    let mediaBase64Cache;
@@ -53,9 +124,32 @@ async function reidentifyMediaByBase64Key(base64Key) {
    }
 
    // 3. 查找 Base64 数据条目
-   const entryToUpdate = mediaBase64Cache[base64Key];
+   let entryToUpdate = mediaBase64Cache[base64Key];
 
-   if (!entryToUpdate || typeof entryToUpdate !== 'object') {
+   if (!entryToUpdate) {
+       throw new Error(`错误：在缓存中未找到 Base64 Key (部分): ${base64Key.substring(0, 30)}... 对应的有效条目。`);
+   }
+
+   if (typeof entryToUpdate === 'string') {
+       const now = new Date().toISOString();
+       entryToUpdate = {
+           id: crypto.randomUUID(),
+           description: entryToUpdate,
+           timestamp: now,
+           cognitoAgent: 'Cognito-Core',
+           variants: {
+               'Cognito-Core': {
+                   id: crypto.randomUUID(),
+                   description: entryToUpdate,
+                   timestamp: now,
+                   cognitoAgent: 'Cognito-Core'
+               }
+           }
+       };
+       mediaBase64Cache[base64Key] = entryToUpdate;
+   }
+
+   if (typeof entryToUpdate !== 'object') {
        throw new Error(`错误：在缓存中未找到 Base64 Key (部分): ${base64Key.substring(0, 30)}... 对应的有效条目。`);
    }
 
@@ -68,7 +162,13 @@ async function reidentifyMediaByBase64Key(base64Key) {
    console.log(`[Reidentify] 对 Base64 Key (部分): ${base64Key.substring(0, 30)}... 进行重新识别...`);
 
    // 从缓存中获取准确的 MIME 类型
-   const mimeType = entryToUpdate.mimeType || 'application/octet-stream'; // 如果旧缓存没有mimeType，则使用通用二进制流
+   let mimeType = entryToUpdate.mimeType || 'application/octet-stream'; // 如果旧缓存没有mimeType，则使用通用二进制流
+   if (!entryToUpdate.mimeType) {
+       if (base64Key.startsWith('/9j/')) mimeType = 'image/jpeg';
+       else if (base64Key.startsWith('iVBOR')) mimeType = 'image/png';
+       else if (base64Key.startsWith('R0lGOD')) mimeType = 'image/gif';
+       else if (base64Key.startsWith('UklGR')) mimeType = 'image/webp';
+   }
    console.log(`[Reidentify] 使用缓存的 MIME 类型: ${mimeType}`);
 
 
@@ -80,18 +180,28 @@ async function reidentifyMediaByBase64Key(base64Key) {
           const fetch = (await import('node-fetch')).default;
 
           const payload = {
-              model: multiModalModelName,
+              model: requestParams?.model || multiModalModelName,
               messages: [
                   {
                       role: "user",
                       content: [
-                          { type: "text", text: multiModalPromptText },
+                          { type: "text", text: effectivePrompt },
                           { type: "image_url", image_url: { url: `${mimeType}base64,${base64Key}` } }
                       ]
                   }
               ],
               max_tokens: multiModalModelOutputMaxTokens,
           };
+
+          if (typeof requestParams?.temperature === 'number') {
+              payload.temperature = requestParams.temperature;
+          }
+          if (typeof requestParams?.top_p === 'number') {
+              payload.top_p = requestParams.top_p;
+          }
+          if (typeof requestParams?.top_k === 'number') {
+              payload.top_k = requestParams.top_k;
+          }
 
           if (multiModalModelThinkingBudget && !isNaN(multiModalModelThinkingBudget) && multiModalModelThinkingBudget > 0) {
               payload.extra_body = {
@@ -152,18 +262,42 @@ async function reidentifyMediaByBase64Key(base64Key) {
 
    // 5. 更新缓存
    try {
-       entryToUpdate.description = cleanedNewDescription; // 使用清理后的描述
-       entryToUpdate.timestamp = new Date().toISOString(); // 更新时间戳
+       const now = new Date().toISOString();
+
+       if (!entryToUpdate.variants || typeof entryToUpdate.variants !== 'object') {
+           entryToUpdate.variants = {};
+       }
+
+       const existingVariant = entryToUpdate.variants[presetSignature] || {};
+       entryToUpdate.variants[presetSignature] = {
+           ...existingVariant,
+           id: existingVariant.id || entryToUpdate.id || crypto.randomUUID(),
+           description: cleanedNewDescription,
+           timestamp: now,
+           mimeType: existingVariant.mimeType || entryToUpdate.mimeType || mimeType,
+           cognitoAgent: presetSignature
+       };
+
+       if (!entryToUpdate.cognitoAgent) {
+           entryToUpdate.cognitoAgent = presetSignature;
+       }
+       if (!entryToUpdate.description || entryToUpdate.cognitoAgent === presetSignature) {
+           entryToUpdate.description = cleanedNewDescription;
+           entryToUpdate.timestamp = now;
+       } else if (!entryToUpdate.timestamp) {
+           entryToUpdate.timestamp = now;
+       }
+
        // 如果旧条目没有mimeType，也一并更新
        if (!entryToUpdate.mimeType) {
            entryToUpdate.mimeType = mimeType;
        }
 
        await fs.writeFile(mediaCacheFilePath, JSON.stringify(mediaBase64Cache, null, 2));
-       console.log(`[Reidentify] 缓存中 Base64 Key (部分): ${base64Key.substring(0, 30)}... 的条目已成功更新描述和时间戳。`);
+       console.log(`[Reidentify] 缓存中 Base64 Key (部分): ${base64Key.substring(0, 30)}... 的条目已成功更新描述和时间戳。署名: ${presetSignature}`);
        console.log("[Reidentify] 新描述:", cleanedNewDescription);
 
-       return { newDescription: cleanedNewDescription, newTimestamp: entryToUpdate.timestamp };
+       return { newDescription: cleanedNewDescription, newTimestamp: entryToUpdate.timestamp, presetName: presetSignature };
 
    } catch (error) {
        console.error(`[Reidentify] 错误：写入更新后的媒体缓存文件 ${mediaCacheFilePath} 失败:`, error);

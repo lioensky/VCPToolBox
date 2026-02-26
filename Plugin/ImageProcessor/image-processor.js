@@ -7,6 +7,7 @@ let mediaBase64Cache = {};
 // Cache file will be stored inside the plugin's directory for better encapsulation
 const mediaCacheFilePath = path.join(__dirname, 'multimodal_cache.json');
 let pluginConfig = {}; // To store config passed from Plugin.js
+const cognitoPresetPromptCache = new Map();
 
 // --- Debug logging (simplified for plugin) ---
 function debugLog(message, data) {
@@ -64,28 +65,176 @@ function _formatStructuredMediaInfo(description, cacheEntry, mediaIndexForLabel)
     );
 }
 
-async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexForLabel, currentConfig) {
+function _getMultimediaPresetsDir() {
+    const explicit = process.env.MULTIMEDIA_PRESETS_PATH || process.env.MULTIMEDIA_PRESETS_DIR_PATH;
+    if (explicit && explicit.trim()) return explicit.trim();
+    if (process.env.PROJECT_BASE_PATH) return path.join(process.env.PROJECT_BASE_PATH, 'MultimediaPresets');
+    return path.join(__dirname, '..', '..', 'MultimediaPresets');
+}
+
+function _toOptionalNumber(value) {
+    if (value === null || value === undefined || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function _toOptionalInteger(value) {
+    const parsed = _toOptionalNumber(value);
+    if (parsed === undefined) return undefined;
+    return Number.isInteger(parsed) ? parsed : Math.round(parsed);
+}
+
+function _extractPresetRequestParams(presetJson) {
+    const requestParams = (presetJson && typeof presetJson.requestParams === 'object' && !Array.isArray(presetJson.requestParams))
+        ? presetJson.requestParams
+        : {};
+
+    const model = typeof requestParams.model === 'string' && requestParams.model.trim()
+        ? requestParams.model.trim()
+        : (typeof presetJson?.model === 'string' && presetJson.model.trim() ? presetJson.model.trim() : undefined);
+
+    const temperature = _toOptionalNumber(requestParams.temperature ?? presetJson?.temperature);
+    const topP = _toOptionalNumber(requestParams.top_p ?? requestParams.topP ?? presetJson?.top_p ?? presetJson?.topP);
+    const topK = _toOptionalInteger(requestParams.top_k ?? requestParams.topK ?? presetJson?.top_k ?? presetJson?.topK);
+
+    return {
+        model,
+        temperature,
+        top_p: topP,
+        top_k: topK
+    };
+}
+
+async function _resolveCognitoPrompt(currentConfig, cognitoAgents = []) {
+    const defaultPrompt = currentConfig.MultiModalPrompt;
+    if (!Array.isArray(cognitoAgents) || cognitoAgents.length === 0) {
+        return { prompt: defaultPrompt, agentName: 'Cognito-Core', requestParams: {} };
+    }
+
+    const presetsDir = _getMultimediaPresetsDir();
+    for (const rawName of cognitoAgents) {
+        const agentName = (rawName || '').trim();
+        if (!agentName) continue;
+
+        const cacheKey = `${presetsDir}::${agentName}`;
+        if (cognitoPresetPromptCache.has(cacheKey)) {
+            const cachedPreset = cognitoPresetPromptCache.get(cacheKey);
+            if (cachedPreset && cachedPreset.prompt) {
+                return cachedPreset;
+            }
+            continue;
+        }
+
+        try {
+            const presetPath = path.join(presetsDir, `${agentName}.json`);
+            const presetRaw = await fs.readFile(presetPath, 'utf-8');
+            const presetJson = JSON.parse(presetRaw);
+            const presetPrompt = typeof presetJson.systemPrompt === 'string'
+                ? presetJson.systemPrompt.trim()
+                : (typeof presetJson.prompt === 'string' ? presetJson.prompt.trim() : '');
+
+            if (presetPrompt) {
+                const resolvedPreset = {
+                    prompt: presetPrompt,
+                    agentName,
+                    requestParams: _extractPresetRequestParams(presetJson)
+                };
+                cognitoPresetPromptCache.set(cacheKey, resolvedPreset);
+                return resolvedPreset;
+            }
+
+            cognitoPresetPromptCache.set(cacheKey, null);
+            console.warn(`[MultiModalProcessor] Cognito预设缺少 systemPrompt/prompt，跳过: ${agentName}`);
+        } catch (error) {
+            cognitoPresetPromptCache.set(cacheKey, null);
+            console.warn(`[MultiModalProcessor] Cognito预设加载失败，跳过: ${agentName} (${error.message})`);
+        }
+    }
+
+    return { prompt: defaultPrompt, agentName: 'Cognito-Core', requestParams: {} };
+}
+
+async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexForLabel, currentConfig, cognitoAgents = []) {
     const { default: fetch } = await import('node-fetch');
     const base64PrefixPattern = /^data:(image|audio|video)\/[^;]+;base64,/;
     const pureBase64Data = base64DataWithPrefix.replace(base64PrefixPattern, '');
     const mediaMimeType = (base64DataWithPrefix.match(base64PrefixPattern) || ['data:application/octet-stream;base64,'])[0].replace('base64,', '');
 
-    const cachedEntry = mediaBase64Cache[pureBase64Data];
-    if (cachedEntry) {
-        const description = typeof cachedEntry === 'string' ? cachedEntry : cachedEntry.description;
-        const normalizedEntry = typeof cachedEntry === 'string'
-            ? { id: crypto.randomUUID(), description, timestamp: new Date().toISOString(), mimeType: mediaMimeType }
-            : cachedEntry;
-        console.log(`[MultiModalProcessor] Cache hit for media ${mediaIndexForLabel + 1}.`);
-        return {
-            inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${description}]`,
-            structuredText: _formatStructuredMediaInfo(description, normalizedEntry, mediaIndexForLabel),
-            cacheEntry: normalizedEntry
-        };
+    const cacheKey = pureBase64Data;
+    const hasExplicitPreset = Array.isArray(cognitoAgents) && cognitoAgents.length > 0;
+
+    const cachedEntry = mediaBase64Cache[cacheKey];
+    if (cachedEntry && hasExplicitPreset && cachedEntry && typeof cachedEntry === 'object') {
+        for (const rawName of cognitoAgents) {
+            const agentName = (rawName || '').trim();
+            if (!agentName) continue;
+
+            if (cachedEntry.variants && cachedEntry.variants[agentName] && typeof cachedEntry.variants[agentName].description === 'string' && cachedEntry.variants[agentName].description.trim()) {
+                const selectedEntry = cachedEntry.variants[agentName];
+                console.log(`[MultiModalProcessor] Cache hit for media ${mediaIndexForLabel + 1}. agent=${agentName}`);
+                return {
+                    inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${selectedEntry.description}]`,
+                    structuredText: _formatStructuredMediaInfo(selectedEntry.description, selectedEntry, mediaIndexForLabel),
+                    cacheEntry: selectedEntry
+                };
+            }
+
+            if (cachedEntry.cognitoAgent === agentName && typeof cachedEntry.description === 'string' && cachedEntry.description.trim()) {
+                const selectedEntry = cachedEntry;
+                console.log(`[MultiModalProcessor] Cache hit for media ${mediaIndexForLabel + 1}. agent=${agentName}`);
+                return {
+                    inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${selectedEntry.description}]`,
+                    structuredText: _formatStructuredMediaInfo(selectedEntry.description, selectedEntry, mediaIndexForLabel),
+                    cacheEntry: selectedEntry
+                };
+            }
+        }
     }
 
-    console.log(`[MultiModalProcessor] Translating media ${mediaIndexForLabel + 1}...`);
-    if (!currentConfig.MultiModalModel || !currentConfig.MultiModalPrompt || !currentConfig.API_Key || !currentConfig.API_URL) {
+    const { prompt: effectivePrompt, agentName: effectiveAgentName, requestParams } = await _resolveCognitoPrompt(currentConfig, cognitoAgents);
+    const presetSignature = effectiveAgentName || 'Cognito-Core';
+    const requirePresetVariant = hasExplicitPreset && presetSignature !== 'Cognito-Core';
+
+    if (cachedEntry) {
+        let selectedEntry = null;
+
+        if (typeof cachedEntry === 'string') {
+            if (!requirePresetVariant) {
+                selectedEntry = {
+                    id: crypto.randomUUID(),
+                    description: cachedEntry,
+                    timestamp: new Date().toISOString(),
+                    mimeType: mediaMimeType,
+                    cognitoAgent: 'Cognito-Core'
+                };
+            }
+        } else if (cachedEntry && typeof cachedEntry === 'object') {
+            if (cachedEntry.variants && cachedEntry.variants[presetSignature]) {
+                selectedEntry = cachedEntry.variants[presetSignature];
+            } else if (requirePresetVariant && cachedEntry.cognitoAgent === presetSignature && typeof cachedEntry.description === 'string' && cachedEntry.description.trim()) {
+                selectedEntry = cachedEntry;
+            } else if (!requirePresetVariant) {
+                const isDefaultAgent = !cachedEntry.cognitoAgent || cachedEntry.cognitoAgent === 'Cognito-Core';
+                if (isDefaultAgent && typeof cachedEntry.description === 'string' && cachedEntry.description.trim()) {
+                    selectedEntry = cachedEntry;
+                } else if (cachedEntry.variants && cachedEntry.variants['Cognito-Core']) {
+                    selectedEntry = cachedEntry.variants['Cognito-Core'];
+                }
+            }
+        }
+
+        if (selectedEntry && typeof selectedEntry.description === 'string' && selectedEntry.description.trim()) {
+            console.log(`[MultiModalProcessor] Cache hit for media ${mediaIndexForLabel + 1}. agent=${presetSignature}`);
+            return {
+                inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${selectedEntry.description}]`,
+                structuredText: _formatStructuredMediaInfo(selectedEntry.description, selectedEntry, mediaIndexForLabel),
+                cacheEntry: selectedEntry
+            };
+        }
+    }
+
+    console.log(`[MultiModalProcessor] Translating media ${mediaIndexForLabel + 1} with agent=${presetSignature}...`);
+    if (!currentConfig.MultiModalModel || !effectivePrompt || !currentConfig.API_Key || !currentConfig.API_URL) {
         console.error('[MultiModalProcessor] Multimodal translation config incomplete.');
         const failText = '[多模态数据转译服务配置不完整]';
         return {
@@ -103,16 +252,27 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
         attempt++;
         try {
             const payload = {
-                model: currentConfig.MultiModalModel,
+                model: requestParams?.model || currentConfig.MultiModalModel,
                 messages: [{
                     role: "user",
                     content: [
-                        { type: "text", text: currentConfig.MultiModalPrompt },
+                        { type: "text", text: effectivePrompt },
                         { type: "image_url", image_url: { url: `${mediaMimeType}base64,${pureBase64Data}` } }
                     ]
                 }],
                 max_tokens: currentConfig.MultiModalModelOutputMaxTokens || 50000,
             };
+
+            if (typeof requestParams?.temperature === 'number') {
+                payload.temperature = requestParams.temperature;
+            }
+            if (typeof requestParams?.top_p === 'number') {
+                payload.top_p = requestParams.top_p;
+            }
+            if (typeof requestParams?.top_k === 'number') {
+                payload.top_k = requestParams.top_k;
+            }
+
             if (currentConfig.MultiModalModelThinkingBudget && currentConfig.MultiModalModelThinkingBudget > 0) {
                 payload.extra_body = { thinking_config: { thinking_budget: currentConfig.MultiModalModelThinkingBudget } };
             }
@@ -137,9 +297,52 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
                     id: crypto.randomUUID(),
                     description: cleanedDescription,
                     timestamp: new Date().toISOString(),
-                    mimeType: mediaMimeType
+                    mimeType: mediaMimeType,
+                    cognitoAgent: presetSignature
                 };
-                mediaBase64Cache[pureBase64Data] = newCacheEntry;
+
+                const existing = mediaBase64Cache[cacheKey];
+                if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+                    const mergedVariants = {
+                        ...(existing.variants && typeof existing.variants === 'object' ? existing.variants : {})
+                    };
+                    mergedVariants[presetSignature] = newCacheEntry;
+                    mediaBase64Cache[cacheKey] = {
+                        ...existing,
+                        variants: mergedVariants,
+                        description: existing.description || newCacheEntry.description,
+                        id: existing.id || newCacheEntry.id,
+                        timestamp: existing.timestamp || newCacheEntry.timestamp,
+                        mimeType: existing.mimeType || newCacheEntry.mimeType,
+                        cognitoAgent: existing.cognitoAgent || newCacheEntry.cognitoAgent
+                    };
+                } else if (typeof existing === 'string') {
+                    mediaBase64Cache[cacheKey] = {
+                        id: crypto.randomUUID(),
+                        description: existing,
+                        timestamp: new Date().toISOString(),
+                        mimeType: mediaMimeType,
+                        cognitoAgent: 'Cognito-Core',
+                        variants: {
+                            'Cognito-Core': {
+                                id: crypto.randomUUID(),
+                                description: existing,
+                                timestamp: new Date().toISOString(),
+                                mimeType: mediaMimeType,
+                                cognitoAgent: 'Cognito-Core'
+                            },
+                            [presetSignature]: newCacheEntry
+                        }
+                    };
+                } else {
+                    mediaBase64Cache[cacheKey] = {
+                        ...newCacheEntry,
+                        variants: {
+                            [presetSignature]: newCacheEntry
+                        }
+                    };
+                }
+
                 await saveMediaCacheToFile();
                 return {
                     inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${cleanedDescription}]`,
@@ -204,27 +407,26 @@ module.exports = {
                 }
 
                 if (mediaPartsToTranslate.length > 0) {
-                    const translatedInlineTexts = [];
                     const translatedStructuredTexts = [];
                     const asyncLimit = currentConfig.MultiModalModelAsynchronousLimit || 1;
 
                     for (let j = 0; j < mediaPartsToTranslate.length; j += asyncLimit) {
                         const chunkToTranslate = mediaPartsToTranslate.slice(j, j + asyncLimit);
                         const translationPromisesInChunk = chunkToTranslate.map((base64Url) =>
-                            translateMediaAndCacheInternal(base64Url, globalMediaIndexForLabel++, currentConfig)
+                            translateMediaAndCacheInternal(base64Url, globalMediaIndexForLabel++, currentConfig, cognitoAgents)
                         );
                         const translatedResultsInChunk = await Promise.all(translationPromisesInChunk);
                         for (const result of translatedResultsInChunk) {
-                            translatedInlineTexts.push(result.inlineText);
                             translatedStructuredTexts.push(result.structuredText);
                         }
                     }
+
+                    const agentsLine = `[CognitoAgents: ${cognitoAgents.length > 0 ? cognitoAgents.join(', ') : 'Cognito-Core'}]`;
 
                     if (transMode === 'minus') {
                         const markerId = crypto.randomUUID();
                         const beginMarker = `[TRANSBASE64_MINUS_BEGIN_${markerId}]`;
                         const endMarker = `[TRANSBASE64_MINUS_END_${markerId}]`;
-                        const agentsLine = `[CognitoAgents: ${cognitoAgents.length > 0 ? cognitoAgents.join(', ') : 'Cognito-Core'}]`;
                         const hiddenBlock = `${beginMarker}\n${agentsLine}\n${translatedStructuredTexts.join('\n')}\n${endMarker}`;
 
                         let userTextPart = contentWithoutMedia.find(p => p.type === 'text');
@@ -253,9 +455,8 @@ module.exports = {
                     }
 
                     const insertPrompt = currentConfig.MediaInsertPrompt || "[多模态数据信息已提取:]";
-                    userTextPart.text = (userTextPart.text ? userTextPart.text.trim() + '\n' : '') +
-                                        insertPrompt + '\n' +
-                                        translatedInlineTexts.join('\n');
+                    const injectedBlock = `${insertPrompt}\n${agentsLine}\n${translatedStructuredTexts.join('\n')}`;
+                    userTextPart.text = (userTextPart.text ? userTextPart.text.trim() + '\n' : '') + injectedBlock;
 
                     if (transMode === 'default') {
                         msg.content = contentWithoutMedia;

@@ -66,6 +66,111 @@
         return 'application/octet-stream'; // Default for unknown
     }
 
+    function generateId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        return `id_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    }
+
+    function normalizeCacheEntry(entry, now) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            const baseDesc = typeof entry === 'string' ? entry : '';
+            const baseId = generateId();
+            return {
+                id: baseId,
+                description: baseDesc,
+                timestamp: now,
+                variants: {
+                    'Cognito-Core': {
+                        id: baseId,
+                        description: baseDesc,
+                        timestamp: now,
+                        cognitoAgent: 'Cognito-Core'
+                    }
+                }
+            };
+        }
+        if (!entry.variants || typeof entry.variants !== 'object') {
+            entry.variants = {};
+        }
+        return entry;
+    }
+
+    function updateDefaultDescription(entry, description, now) {
+        if (!entry || typeof entry !== 'object') return;
+        if (!entry.variants || typeof entry.variants !== 'object') {
+            entry.variants = {};
+        }
+        const existingVariant = entry.variants['Cognito-Core'] || {};
+        entry.variants['Cognito-Core'] = {
+            ...existingVariant,
+            id: existingVariant.id || entry.id || generateId(),
+            description,
+            timestamp: now,
+            mimeType: existingVariant.mimeType || entry.mimeType,
+            cognitoAgent: 'Cognito-Core'
+        };
+
+        const isDefaultAgent = !entry.cognitoAgent || entry.cognitoAgent === 'Cognito-Core';
+        if (isDefaultAgent) {
+            entry.description = description;
+            entry.timestamp = now;
+        }
+    }
+
+    function getPresetOptions(entry) {
+        const options = new Set();
+        if (entry && typeof entry === 'object') {
+            if (entry.cognitoAgent) options.add(entry.cognitoAgent);
+            if (entry.variants && typeof entry.variants === 'object') {
+                Object.keys(entry.variants).forEach(key => options.add(key));
+            }
+        }
+        options.add('Cognito-Core');
+        return Array.from(options).filter(Boolean).map(name => ({ name, label: name }));
+    }
+
+    function resolveDescriptionByPreset(entry, presetName) {
+        if (!entry || typeof entry !== 'object') return '';
+        const normalized = (presetName || '').trim();
+
+        if (!normalized) {
+            const isDefaultAgent = !entry.cognitoAgent || entry.cognitoAgent === 'Cognito-Core';
+            if (isDefaultAgent && entry.description) return entry.description;
+            if (entry.variants && entry.variants['Cognito-Core'] && entry.variants['Cognito-Core'].description) {
+                return entry.variants['Cognito-Core'].description;
+            }
+            return entry.description || '';
+        }
+
+        if (entry.variants && entry.variants[normalized] && entry.variants[normalized].description) {
+            return entry.variants[normalized].description;
+        }
+        if (entry.cognitoAgent === normalized && entry.description) {
+            return entry.description;
+        }
+        return '';
+    }
+
+    function applyPresetSelection(entryDiv, entry, presetName, presetInput, descriptionTextarea) {
+        const normalized = (presetName || '').trim();
+        entryDiv.dataset.presetName = normalized;
+        if (presetInput) {
+            presetInput.value = normalized;
+        }
+        descriptionTextarea.value = resolveDescriptionByPreset(entry, normalized);
+        const buttons = entryDiv.querySelectorAll('.preset-toggle-btn');
+        buttons.forEach(btn => {
+            const btnPreset = btn.dataset.presetName || '';
+            if (btnPreset === normalized) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+    }
+
     async function loadMediaCache() {
         try {
             const response = await fetch('/admin_api/multimodal-cache'); // UPDATED API ENDPOINT
@@ -89,8 +194,37 @@
             const entryDiv = entries[i];
             const base64Key = entryDiv.dataset.base64Key;
             const textarea = entryDiv.querySelector('textarea');
+            const presetInput = entryDiv.querySelector('.preset-input');
+            const presetName = entryDiv.dataset.presetName !== undefined
+                ? entryDiv.dataset.presetName
+                : (presetInput ? presetInput.value.trim() : '');
+            const now = new Date().toISOString();
+
             if (mediaCacheData[base64Key]) {
-                mediaCacheData[base64Key].description = textarea.value;
+                const entry = normalizeCacheEntry(mediaCacheData[base64Key], now);
+
+                if (presetName) {
+                    const existingVariant = entry.variants[presetName] || {};
+                    entry.variants[presetName] = {
+                        ...existingVariant,
+                        id: existingVariant.id || entry.id || generateId(),
+                        description: textarea.value,
+                        timestamp: now,
+                        mimeType: existingVariant.mimeType || entry.mimeType,
+                        cognitoAgent: presetName
+                    };
+                    if (!entry.cognitoAgent) {
+                        entry.cognitoAgent = presetName;
+                    }
+                    if (entry.cognitoAgent === presetName) {
+                        entry.description = textarea.value;
+                        entry.timestamp = now;
+                    }
+                } else {
+                    updateDefaultDescription(entry, textarea.value, now);
+                }
+
+                mediaCacheData[base64Key] = entry;
             }
         }
 
@@ -185,12 +319,16 @@
 
         try {
             // Call the new backend API endpoint
+            const presetInput = entryDiv.querySelector('.preset-input');
+            const presetName = entryDiv.dataset.presetName !== undefined
+                ? entryDiv.dataset.presetName
+                : (presetInput ? presetInput.value.trim() : '');
             const response = await fetch('/admin_api/multimodal-cache/reidentify', { // UPDATED API ENDPOINT
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ base64Key: base64Key })
+                body: JSON.stringify({ base64Key: base64Key, presetName })
             });
 
             const result = await response.json();
@@ -202,10 +340,33 @@
 
                 // Update the mediaCacheData in memory as well
                 if (mediaCacheData[base64Key]) {
-                    mediaCacheData[base64Key].description = result.newDescription || '';
-                    mediaCacheData[base64Key].timestamp = result.newTimestamp || mediaCacheData[base64Key].timestamp; // Keep old timestamp if new one is missing
-                }
+                    const presetName = (result.presetName || entryDiv.dataset.presetName || (entryDiv.querySelector('.preset-input')?.value || '')).trim();
+                    const now = result.newTimestamp || new Date().toISOString();
+                    const entry = normalizeCacheEntry(mediaCacheData[base64Key], now);
 
+                    if (presetName) {
+                        const existingVariant = entry.variants[presetName] || {};
+                        entry.variants[presetName] = {
+                            ...existingVariant,
+                            id: existingVariant.id || entry.id || generateId(),
+                            description: result.newDescription || '',
+                            timestamp: now,
+                            mimeType: existingVariant.mimeType || entry.mimeType,
+                            cognitoAgent: presetName
+                        };
+                        if (!entry.cognitoAgent) {
+                            entry.cognitoAgent = presetName;
+                        }
+                        if (entry.cognitoAgent === presetName) {
+                            entry.description = result.newDescription || '';
+                            entry.timestamp = now;
+                        }
+                    } else {
+                        updateDefaultDescription(entry, result.newDescription || '', now);
+                    }
+
+                    mediaCacheData[base64Key] = entry;
+                }
 
                 statusSpan.textContent = '重新识别成功!';
                 statusSpan.style.color = '#2ecc71'; // Success color
@@ -334,13 +495,102 @@
                 };
                 entryDiv.appendChild(mediaElement);
                 
+                const presetLabel = document.createElement('label');
+                presetLabel.textContent = '署名/预设名:';
+                entryDiv.appendChild(presetLabel);
+
+                const presetInput = document.createElement('input');
+                presetInput.type = 'text';
+                presetInput.className = 'preset-input';
+                const presetOptions = getPresetOptions(entry);
+                const defaultPreset = (entry && typeof entry === 'object' && entry.cognitoAgent)
+                    ? entry.cognitoAgent
+                    : 'Cognito-Core';
+                entryDiv.dataset.presetName = defaultPreset || '';
+                presetInput.value = defaultPreset;
+                const presetListId = `preset-options-${mediaKeys.indexOf(base64Key)}`;
+                presetInput.setAttribute('list', presetListId);
+
+                const presetList = document.createElement('datalist');
+                presetList.id = presetListId;
+                presetOptions
+                    .filter(option => option.name)
+                    .forEach(option => {
+                        const opt = document.createElement('option');
+                        opt.value = option.name;
+                        presetList.appendChild(opt);
+                    });
+
+                presetInput.addEventListener('change', () => {
+                    const selectedPreset = presetInput.value.trim();
+                    applyPresetSelection(entryDiv, entry, selectedPreset, presetInput, descriptionTextarea);
+                });
+
+                entryDiv.appendChild(presetInput);
+                entryDiv.appendChild(presetList);
+
+                const presetButtons = document.createElement('div');
+                presetButtons.className = 'preset-toggle';
+                presetOptions.forEach(option => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'preset-toggle-btn';
+                    btn.dataset.presetName = option.name;
+                    btn.textContent = option.label;
+                    btn.style.marginRight = '6px';
+                    btn.style.marginBottom = '6px';
+                    btn.addEventListener('click', () => {
+                        applyPresetSelection(entryDiv, entry, option.name, presetInput, descriptionTextarea);
+                    });
+                    btn.addEventListener('contextmenu', (event) => {
+                        event.preventDefault();
+                        if (option.name === 'Cognito-Core') {
+                            alert('Cognito-Core 为默认描述，不能删除。');
+                            return;
+                        }
+                        if (!confirm(`确定要删除署名「${option.label}」的描述吗？`)) {
+                            return;
+                        }
+
+                        const now = new Date().toISOString();
+                        const currentEntry = normalizeCacheEntry(mediaCacheData[base64Key], now);
+                        if (currentEntry.variants && currentEntry.variants[option.name]) {
+                            delete currentEntry.variants[option.name];
+                        }
+
+                        if (currentEntry.cognitoAgent === option.name) {
+                            currentEntry.cognitoAgent = 'Cognito-Core';
+                            if (currentEntry.variants['Cognito-Core'] && currentEntry.variants['Cognito-Core'].description) {
+                                currentEntry.description = currentEntry.variants['Cognito-Core'].description;
+                                currentEntry.timestamp = currentEntry.variants['Cognito-Core'].timestamp || currentEntry.timestamp;
+                            }
+                        }
+
+                        mediaCacheData[base64Key] = currentEntry;
+
+                        const presetListOption = presetList.querySelector(`option[value="${option.name}"]`);
+                        if (presetListOption) {
+                            presetListOption.remove();
+                        }
+                        btn.remove();
+
+                        const currentPreset = entryDiv.dataset.presetName || '';
+                        if (currentPreset === option.name) {
+                            applyPresetSelection(entryDiv, currentEntry, 'Cognito-Core', presetInput, descriptionTextarea);
+                        }
+                    });
+                    presetButtons.appendChild(btn);
+                });
+                entryDiv.appendChild(presetButtons);
+
                 const descriptionLabel = document.createElement('label');
                 descriptionLabel.textContent = '媒体描述 (可编辑):';
                 entryDiv.appendChild(descriptionLabel);
 
                 const descriptionTextarea = document.createElement('textarea');
-                descriptionTextarea.value = entry.description || '';
+                descriptionTextarea.value = resolveDescriptionByPreset(entry, entryDiv.dataset.presetName || '');
                 entryDiv.appendChild(descriptionTextarea);
+                applyPresetSelection(entryDiv, entry, entryDiv.dataset.presetName || '', presetInput, descriptionTextarea);
 
                 const keyInfo = document.createElement('div');
                 keyInfo.className = 'base64-key';

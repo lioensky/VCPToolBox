@@ -906,16 +906,17 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     });
 
     adminApiRouter.post('/multimodal-cache/reidentify', async (req, res) => {
-        const { base64Key } = req.body;
+        const { base64Key, presetName } = req.body;
         if (typeof base64Key !== 'string' || !base64Key) {
             return res.status(400).json({ error: 'Invalid request body. Expected { base64Key: string }.' });
         }
         try {
-            const result = await reidentifyMediaByBase64Key(base64Key);
+            const result = await reidentifyMediaByBase64Key(base64Key, { presetName });
             res.json({
                 message: '媒体重新识别成功。',
                 newDescription: result.newDescription,
-                newTimestamp: result.newTimestamp
+                newTimestamp: result.newTimestamp,
+                presetName: result.presetName || presetName || 'Cognito-Core'
             });
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error reidentifying media:', error);
@@ -923,6 +924,154 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
         }
     });
     // --- End MultiModal Cache API ---
+
+    // --- Multimedia Presets API ---
+    const MULTIMEDIA_PRESETS_DIR = path.join(__dirname, '..', 'MultimediaPresets');
+
+    function normalizePresetFileName(inputName) {
+        const decoded = decodeURIComponent(String(inputName || '')).trim();
+        if (!decoded) {
+            throw new Error('预设文件名不能为空。');
+        }
+
+        const withExt = decoded.toLowerCase().endsWith('.json') ? decoded : `${decoded}.json`;
+        const safeName = path.basename(withExt);
+
+        if (!/^[A-Za-z0-9._\-\u4e00-\u9fa5]+\.json$/i.test(safeName)) {
+            throw new Error('预设文件名包含非法字符。');
+        }
+
+        return safeName;
+    }
+
+    function inferPresetType(presetData) {
+        if (presetData && typeof presetData === 'object') {
+            if (presetData.type === 'regexRule') return 'regexRule';
+            if (presetData.type === 'cognito') return 'cognito';
+            if (Array.isArray(presetData.rules)) return 'regexRule';
+        }
+        return 'cognito';
+    }
+
+    adminApiRouter.get('/multimedia-presets', async (req, res) => {
+        try {
+            await fs.mkdir(MULTIMEDIA_PRESETS_DIR, { recursive: true });
+            const onlyTypeRaw = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+            const onlyType = (onlyTypeRaw === 'cognito' || onlyTypeRaw === 'regexRule') ? onlyTypeRaw : '';
+
+            const files = await fs.readdir(MULTIMEDIA_PRESETS_DIR);
+            const jsonFiles = files.filter(file => file.toLowerCase().endsWith('.json'));
+
+            const items = [];
+            for (const fileName of jsonFiles) {
+                const fullPath = path.join(MULTIMEDIA_PRESETS_DIR, fileName);
+                try {
+                    const raw = await fs.readFile(fullPath, 'utf-8');
+                    const data = JSON.parse(raw);
+                    const stats = await fs.stat(fullPath);
+
+                    const type = inferPresetType(data);
+                    if (onlyType && type !== onlyType) {
+                        continue;
+                    }
+
+                    items.push({
+                        fileName,
+                        name: (data && typeof data.name === 'string' && data.name.trim()) ? data.name.trim() : path.basename(fileName, '.json'),
+                        type,
+                        description: (data && typeof data.description === 'string') ? data.description : '',
+                        updatedAt: stats.mtime.toISOString(),
+                        size: stats.size
+                    });
+                } catch (fileError) {
+                    console.warn(`[AdminPanelRoutes API] Skip invalid multimedia preset ${fileName}:`, fileError.message);
+                }
+            }
+
+            items.sort((a, b) => a.fileName.localeCompare(b.fileName, 'zh-Hans-CN'));
+            res.json({ success: true, total: items.length, items });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error listing multimedia presets:', error);
+            res.status(500).json({ success: false, error: 'Failed to list multimedia presets', details: error.message });
+        }
+    });
+
+    adminApiRouter.get('/multimedia-presets/:fileName', async (req, res) => {
+        try {
+            const fileName = normalizePresetFileName(req.params.fileName);
+            const fullPath = path.join(MULTIMEDIA_PRESETS_DIR, fileName);
+
+            const raw = await fs.readFile(fullPath, 'utf-8');
+            const data = JSON.parse(raw);
+
+            res.json({
+                success: true,
+                fileName,
+                data: {
+                    ...data,
+                    type: inferPresetType(data)
+                }
+            });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ success: false, error: 'Preset file not found' });
+            }
+            console.error('[AdminPanelRoutes API] Error reading multimedia preset:', error);
+            res.status(500).json({ success: false, error: 'Failed to read multimedia preset', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/multimedia-presets/:fileName', async (req, res) => {
+        try {
+            const fileName = normalizePresetFileName(req.params.fileName);
+            const fullPath = path.join(MULTIMEDIA_PRESETS_DIR, fileName);
+
+            const payload = (req.body && typeof req.body === 'object' && req.body.data && typeof req.body.data === 'object')
+                ? req.body.data
+                : req.body;
+
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+                return res.status(400).json({ success: false, error: 'Invalid preset payload. Expected JSON object.' });
+            }
+
+            const normalized = { ...payload };
+            normalized.name = (typeof normalized.name === 'string' && normalized.name.trim())
+                ? normalized.name.trim()
+                : path.basename(fileName, '.json');
+
+            normalized.type = inferPresetType(normalized);
+
+            await fs.mkdir(MULTIMEDIA_PRESETS_DIR, { recursive: true });
+            await fs.writeFile(fullPath, JSON.stringify(normalized, null, 2), 'utf-8');
+
+            res.json({
+                success: true,
+                message: 'Preset saved successfully.',
+                fileName,
+                type: normalized.type
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error saving multimedia preset:', error);
+            res.status(500).json({ success: false, error: 'Failed to save multimedia preset', details: error.message });
+        }
+    });
+
+    adminApiRouter.delete('/multimedia-presets/:fileName', async (req, res) => {
+        try {
+            const fileName = normalizePresetFileName(req.params.fileName);
+            const fullPath = path.join(MULTIMEDIA_PRESETS_DIR, fileName);
+
+            await fs.unlink(fullPath);
+            res.json({ success: true, message: 'Preset deleted successfully.', fileName });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ success: false, error: 'Preset file not found' });
+            }
+            console.error('[AdminPanelRoutes API] Error deleting multimedia preset:', error);
+            res.status(500).json({ success: false, error: 'Failed to delete multimedia preset', details: error.message });
+        }
+    });
+    // --- End Multimedia Presets API ---
 
     // --- Knowledge Media Describer API ---
     const KNOWLEDGE_MEDIA_EXTENSIONS = new Set([

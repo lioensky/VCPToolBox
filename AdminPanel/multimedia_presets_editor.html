@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>多媒体预设编辑器</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      font-family: inherit;
+    }
+
+    .page-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .page-header h2 {
+      margin: 0;
+      font-size: 1.2rem;
+      color: var(--text-color-primary);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 12px;
+      min-height: 70vh;
+    }
+
+    .panel {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--background-color-light);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .panel-header h3 {
+      margin: 0;
+      font-size: 1rem;
+    }
+
+    .panel-body {
+      padding: 10px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .toolbar input[type="text"],
+    .toolbar select,
+    .editor-area input[type="text"],
+    .editor-area input[type="number"],
+    .editor-area textarea,
+    .editor-area select {
+      border: 1px solid var(--border-color);
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      border-radius: 6px;
+      padding: 6px 8px;
+      box-sizing: border-box;
+    }
+
+    .toolbar button,
+    .editor-area button {
+      border: 1px solid var(--border-color);
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .toolbar button:hover,
+    .editor-area button:hover {
+      background: var(--primary-color-translucent);
+    }
+
+    .preset-list {
+      max-height: 65vh;
+      overflow: auto;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .preset-item {
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      background: var(--background-color);
+    }
+
+    .preset-item.active {
+      outline: 2px solid var(--primary-color);
+      background: var(--primary-color-translucent);
+    }
+
+    .preset-item .name {
+      font-weight: bold;
+      margin-bottom: 4px;
+      word-break: break-all;
+    }
+
+    .preset-item .meta {
+      font-size: 0.85rem;
+      color: var(--text-color-secondary);
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .editor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 0.9rem;
+      color: var(--text-color-secondary);
+    }
+
+    .form-group.full {
+      grid-column: 1 / -1;
+    }
+
+    .editor-area textarea {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    .rules-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 10px 0 6px 0;
+    }
+
+    .rules-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .rule-card {
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px;
+      background: var(--background-color);
+    }
+
+    .rule-grid {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .rule-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .editor-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .status-message {
+      min-height: 20px;
+      font-size: 0.9rem;
+      margin-top: 8px;
+    }
+
+    .status-message.success { color: #2ecc71; }
+    .status-message.error { color: #e74c3c; }
+    .status-message.info { color: #7aa1ff; }
+
+    .empty-tip {
+      color: var(--text-color-secondary);
+      font-size: 0.9rem;
+      padding: 8px 2px;
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <script>
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'themeChange') {
+        document.documentElement.setAttribute('data-theme', event.data.theme);
+      }
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'requestTheme' }, '*');
+      }
+    });
+  </script>
+</head>
+<body>
+  <div class="page-header">
+    <h2>RegexRule / 多模态翻译预设编辑器</h2>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="panel-header">
+        <h3>预设列表</h3>
+      </div>
+      <div class="panel-body">
+        <div class="toolbar">
+          <select id="mpe-type-filter">
+            <option value="all">全部类型</option>
+            <option value="cognito">Cognito</option>
+            <option value="regexRule">RegexRule</option>
+          </select>
+          <input id="mpe-search-input" type="text" placeholder="搜索名称 / 文件名">
+          <button id="mpe-refresh-btn">刷新</button>
+        </div>
+
+        <ul id="mpe-preset-list" class="preset-list">
+          <li class="empty-tip">加载中...</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h3>编辑器</h3>
+      </div>
+      <div class="panel-body editor-area">
+        <div class="toolbar">
+          <button id="mpe-new-cognito-btn">新建 Cognito</button>
+          <button id="mpe-new-regex-btn">新建 RegexRule</button>
+        </div>
+
+        <div class="editor-grid">
+          <div class="form-group">
+            <label for="mpe-file-name">文件名 (.json)</label>
+            <input id="mpe-file-name" type="text" placeholder="例如：MyPreset.json">
+          </div>
+          <div class="form-group">
+            <label for="mpe-type">类型</label>
+            <select id="mpe-type">
+              <option value="cognito">cognito</option>
+              <option value="regexRule">regexRule</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="mpe-name">name</label>
+            <input id="mpe-name" type="text" placeholder="预设名称">
+          </div>
+          <div class="form-group">
+            <label for="mpe-model">requestParams.model</label>
+            <input id="mpe-model" type="text" placeholder="可选，模型名">
+          </div>
+          <div class="form-group">
+            <label for="mpe-temperature">requestParams.temperature</label>
+            <input id="mpe-temperature" type="number" step="0.01" placeholder="可选">
+          </div>
+          <div class="form-group">
+            <label for="mpe-top-p">requestParams.top_p</label>
+            <input id="mpe-top-p" type="number" step="0.01" placeholder="可选">
+          </div>
+          <div class="form-group">
+            <label for="mpe-top-k">requestParams.top_k</label>
+            <input id="mpe-top-k" type="number" step="1" placeholder="可选">
+          </div>
+          <div class="form-group full">
+            <label for="mpe-description">description</label>
+            <textarea id="mpe-description" rows="3" placeholder="描述"></textarea>
+          </div>
+          <div class="form-group full" id="mpe-prompt-group">
+            <label for="mpe-prompt">prompt（支持多行）</label>
+            <textarea id="mpe-prompt" rows="8" placeholder="多模态翻译提示词"></textarea>
+          </div>
+        </div>
+
+        <div id="mpe-rules-block" style="display: none;">
+          <div class="rules-header">
+            <strong>rules</strong>
+            <button id="mpe-add-rule-btn" type="button">添加规则</button>
+          </div>
+          <div id="mpe-rules-list" class="rules-list"></div>
+        </div>
+
+        <div class="editor-actions">
+          <button id="mpe-save-btn">保存</button>
+          <button id="mpe-delete-btn">删除</button>
+          <button id="mpe-reset-btn">重置为已加载内容</button>
+        </div>
+        <div id="mpe-status" class="status-message info"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/multimedia-presets-editor.js"></script>
+</body>
+</html>

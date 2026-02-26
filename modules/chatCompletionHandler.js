@@ -663,6 +663,50 @@ class ChatCompletionHandler {
       );
       if (DEBUG_MODE) await writeDebugLog('LogAfterVariableProcessing', processedMessages);
 
+      // 二次解析：变量替换后再次检查 TransBase64 占位符（避免通过变量注入时漏解析）
+      if (processedMessages && Array.isArray(processedMessages)) {
+        let foundPlaceholderAfterVars = false;
+
+        for (const msg of processedMessages) {
+          const normalizedRole = typeof msg.role === 'string' ? msg.role.toLowerCase() : '';
+          if (normalizedRole !== 'user' && normalizedRole !== 'system') continue;
+
+          if (typeof msg.content === 'string') {
+            const parsed = parseTransBase64Directives(msg.content);
+            if (parsed.found) {
+              foundPlaceholderAfterVars = true;
+              msg.content = parsed.cleanedText;
+              if (!transBase64Mode && parsed.mode) transBase64Mode = parsed.mode;
+              if (transBase64CognitoAgents.length === 0 && parsed.agents.length > 0) {
+                transBase64CognitoAgents = parsed.agents;
+              }
+            }
+          } else if (Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+              if (typeof part.text !== 'string') continue;
+              const parsed = parseTransBase64Directives(part.text);
+              if (parsed.found) {
+                foundPlaceholderAfterVars = true;
+                part.text = parsed.cleanedText;
+                if (!transBase64Mode && parsed.mode) transBase64Mode = parsed.mode;
+                if (transBase64CognitoAgents.length === 0 && parsed.agents.length > 0) {
+                  transBase64CognitoAgents = parsed.agents;
+                }
+              }
+            }
+          }
+        }
+
+        if (foundPlaceholderAfterVars) {
+          shouldProcessMedia = true;
+          if (DEBUG_MODE) {
+            console.log(
+              `[Server] TransBase64 detected after variable processing. mode=${transBase64Mode || 'default'} agents=${transBase64CognitoAgents.join(',') || 'Cognito-Core'}`
+            );
+          }
+        }
+      }
+
       // --- 媒体处理器 ---
       if (shouldProcessMedia) {
         const processorName = pluginManager.messagePreprocessors.has('MultiModalProcessor')

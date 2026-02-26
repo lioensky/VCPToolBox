@@ -449,6 +449,10 @@ class RAGDiaryPlugin {
 
         let promptText = defaultPromptText;
         let effectiveAgentName = 'Cognito-Core';
+        let effectiveModelName = multiModalModelName;
+        let presetTemperature;
+        let presetTopP;
+        let presetTopK;
 
         const requestedAgent = typeof cognitoAgentName === 'string' ? cognitoAgentName.trim() : '';
         if (requestedAgent) {
@@ -460,9 +464,35 @@ class RAGDiaryPlugin {
                 const presetPrompt = typeof presetJson.systemPrompt === 'string'
                     ? presetJson.systemPrompt.trim()
                     : (typeof presetJson.prompt === 'string' ? presetJson.prompt.trim() : '');
+
+                const requestParams = (presetJson && typeof presetJson.requestParams === 'object' && !Array.isArray(presetJson.requestParams))
+                    ? presetJson.requestParams
+                    : {};
+                const parseOptionalNumber = (value) => {
+                    if (value === null || value === undefined || value === '') return undefined;
+                    const parsed = Number(value);
+                    return Number.isFinite(parsed) ? parsed : undefined;
+                };
+                const parseOptionalInteger = (value) => {
+                    const parsed = parseOptionalNumber(value);
+                    if (parsed === undefined) return undefined;
+                    return Number.isInteger(parsed) ? parsed : Math.round(parsed);
+                };
+
+                const presetModel = typeof requestParams.model === 'string' && requestParams.model.trim()
+                    ? requestParams.model.trim()
+                    : (typeof presetJson?.model === 'string' && presetJson.model.trim() ? presetJson.model.trim() : '');
+                const presetTemp = parseOptionalNumber(requestParams.temperature ?? presetJson?.temperature);
+                const presetTopPValue = parseOptionalNumber(requestParams.top_p ?? requestParams.topP ?? presetJson?.top_p ?? presetJson?.topP);
+                const presetTopKValue = parseOptionalInteger(requestParams.top_k ?? requestParams.topK ?? presetJson?.top_k ?? presetJson?.topK);
+
                 if (presetPrompt) {
                     promptText = presetPrompt;
                     effectiveAgentName = requestedAgent;
+                    if (presetModel) effectiveModelName = presetModel;
+                    if (typeof presetTemp === 'number') presetTemperature = presetTemp;
+                    if (typeof presetTopPValue === 'number') presetTopP = presetTopPValue;
+                    if (typeof presetTopKValue === 'number') presetTopK = presetTopKValue;
                 } else {
                     console.warn(`[RAGDiaryPlugin] Cognito预设缺少 systemPrompt/prompt，回退默认Agent: ${requestedAgent}`);
                 }
@@ -471,7 +501,7 @@ class RAGDiaryPlugin {
             }
         }
 
-        if (!apiKey || !apiUrl || !multiModalModelName || !promptText) {
+        if (!apiKey || !apiUrl || !effectiveModelName || !promptText) {
             console.warn(`[RAGDiaryPlugin] 侧车描述为空且缺少多模态识别配置，无法重生成(${mediaFileName || mediaFilePath})`);
             return '';
         }
@@ -482,7 +512,7 @@ class RAGDiaryPlugin {
             const dataUri = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
 
             const payload = {
-                model: multiModalModelName,
+                model: effectiveModelName,
                 messages: [
                     {
                         role: 'user',
@@ -494,6 +524,16 @@ class RAGDiaryPlugin {
                 ],
                 max_tokens: maxTokens
             };
+
+            if (typeof presetTemperature === 'number') {
+                payload.temperature = presetTemperature;
+            }
+            if (typeof presetTopP === 'number') {
+                payload.top_p = presetTopP;
+            }
+            if (typeof presetTopK === 'number') {
+                payload.top_k = presetTopK;
+            }
 
             if (!Number.isNaN(thinkingBudget) && thinkingBudget > 0) {
                 payload.extra_body = {
@@ -1257,9 +1297,11 @@ class RAGDiaryPlugin {
             }
 
             if (pendingUserMediaDirectives.size > 0) {
-                const targetUserMessageIndex = firstUserMessageIndex > -1 ? firstUserMessageIndex : lastUserMessageIndex;
-                if (targetUserMessageIndex > -1) {
-                    this._appendFileDirectivesToUserMessage(newMessages[targetUserMessageIndex], Array.from(pendingUserMediaDirectives));
+                const injectionMessage = this._buildDiaryMediaInjectionMessage(Array.from(pendingUserMediaDirectives));
+                if (injectionMessage) {
+                    // 按“历史记忆层”语义插入到首条真实用户消息之前，避免与用户最新上传文件混淆
+                    const insertionIndex = firstUserMessageIndex > -1 ? firstUserMessageIndex : 0;
+                    newMessages.splice(Math.max(0, insertionIndex), 0, injectionMessage);
                 }
             }
 
@@ -1843,32 +1885,52 @@ class RAGDiaryPlugin {
         return processedContent;
     }
 
-    _appendFileDirectivesToUserMessage(message, fileUrls = []) {
-        if (!message || !Array.isArray(fileUrls) || fileUrls.length === 0) return;
+    _buildDiaryMediaInjectionMessage(fileUrls = []) {
+        if (!Array.isArray(fileUrls) || fileUrls.length === 0) return null;
 
         const normalizedUrls = fileUrls
             .map(item => (typeof item === 'string' ? item.trim() : ''))
             .filter(item => item.startsWith('file://'));
 
-        if (normalizedUrls.length === 0) return;
+        if (normalizedUrls.length === 0) return null;
 
-        const lines = normalizedUrls.map(url => `{{VCP@${url}}}`).join('\n');
+        const uniqueUrls = Array.from(new Set(normalizedUrls));
+        const fileLines = uniqueUrls.map((url, index) => {
+            const decodedPath = decodeURIComponent(url.replace(/^file:\/\//i, ''));
+            const fileName = path.basename(decodedPath || `media_${index + 1}`);
+            return `- ${fileName} | ${url}`;
+        });
 
-        if (typeof message.content === 'string') {
-            const suffix = message.content && !message.content.endsWith('\n') ? '\n' : '';
-            message.content = `${message.content || ''}${suffix}${lines}`;
-            return;
-        }
+        const diaryNames = Array.from(new Set(uniqueUrls.map(url => {
+            const decodedPath = decodeURIComponent(url.replace(/^file:\/\//i, ''));
+            const normalizedRoot = path.normalize(dailyNoteRootPath || '');
+            const normalizedPath = path.normalize(decodedPath || '');
+            if (!normalizedRoot || !normalizedPath.startsWith(normalizedRoot)) return '';
+            const rel = path.relative(normalizedRoot, normalizedPath);
+            const firstSegment = rel.split(path.sep)[0];
+            return firstSegment || '';
+        }).filter(Boolean)));
 
-        if (Array.isArray(message.content)) {
-            let textPart = message.content.find(part => part && part.type === 'text' && typeof part.text === 'string');
-            if (!textPart) {
-                textPart = { type: 'text', text: '' };
-                message.content.unshift(textPart);
-            }
-            const suffix = textPart.text && !textPart.text.endsWith('\n') ? '\n' : '';
-            textPart.text = `${textPart.text || ''}${suffix}${lines}`;
-        }
+        const sourceLine = diaryNames.length > 0
+            ? `来源日记本: ${diaryNames.join(', ')}`
+            : '来源日记本: [未知，来自日记检索链路]';
+
+        const directiveLines = uniqueUrls.map(url => `{{VCP@${url}}}`).join('\n');
+
+        const declaration = [
+            '[系统提示: 日记本历史多模态文件注入层]',
+            '以下文件由“……日记本::TransBase64+”召回注入，属于历史记忆，不是当前用户本轮上传。',
+            sourceLine,
+            '文件清单(文件名 | 绝对路径):',
+            ...fileLines,
+            '',
+            directiveLines
+        ].join('\n');
+
+        return {
+            role: 'user',
+            content: declaration
+        };
     }
 
     _extractMediaFileUrlFromResult(result) {
