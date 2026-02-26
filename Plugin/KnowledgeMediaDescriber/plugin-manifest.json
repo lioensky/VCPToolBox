@@ -1,0 +1,41 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "KnowledgeMediaDescriber",
+  "version": "1.0.0",
+  "displayName": "知识库多媒体描述管理器",
+  "description": "管理 KNOWLEDGEBASE_ROOT_PATH 下多媒体文件侧车描述，支持列表、更新、重生成与重建。",
+  "author": "System",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "node knowledge-media-describer.js",
+    "timeout": 120000
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "ListKnowledgeMedia",
+        "description": "列出知识库中的多媒体文件与侧车信息。参数: keyword(可选，关键字过滤)。"
+      },
+      {
+        "command": "UpdateKnowledgeMedia",
+        "description": "更新指定媒体文件侧车信息。参数: mediaPath(必需), description(可选), presetName(可选), tags(可选，字符串或数组)。"
+      },
+      {
+        "command": "RegenerateKnowledgeMedia",
+        "description": "重生成指定媒体文件描述。参数: mediaPath(必需)。"
+      },
+      {
+        "command": "RebuildKnowledgeMedia",
+        "description": "批量重建侧车文件。参数: regenerateExisting(可选，布尔)。"
+      }
+    ]
+  },
+  "configSchema": {
+    "KNOWLEDGEBASE_ROOT_PATH": "string",
+    "MULTIMODAL_SIDECAR_SUFFIX": "string",
+    "DebugMode": "boolean"
+  }
+}

@@ -924,6 +924,397 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     });
     // --- End MultiModal Cache API ---
 
+    // --- Knowledge Media Describer API ---
+    const KNOWLEDGE_MEDIA_EXTENSIONS = new Set([
+        '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif', '.avif', '.svg',
+        '.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg',
+        '.mp4', '.mov', '.mkv', '.webm', '.avi',
+        '.pdf'
+    ]);
+
+    function getKnowledgeRootPath() {
+        const configuredRoot = (process.env.KNOWLEDGEBASE_ROOT_PATH || '').trim();
+        const root = configuredRoot
+            ? (path.isAbsolute(configuredRoot) ? configuredRoot : path.resolve(__dirname, '..', configuredRoot))
+            : path.join(__dirname, '..', 'dailynote');
+        return path.normalize(root);
+    }
+
+    function getKnowledgeMediaSidecarSuffix() {
+        return (process.env.MULTIMODAL_SIDECAR_SUFFIX || '.vcpmeta.json').trim() || '.vcpmeta.json';
+    }
+
+    function isPathInsideRoot(targetPath, rootPath) {
+        const relative = path.relative(rootPath, targetPath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    }
+
+    function decodeFileUrlToPath(fileUrlOrPath) {
+        if (typeof fileUrlOrPath !== 'string') return '';
+        const input = fileUrlOrPath.trim();
+        if (!input) return '';
+        if (input.startsWith('file://')) {
+            const rawPath = input.replace(/^file:\/\//i, '');
+            try {
+                return decodeURIComponent(rawPath);
+            } catch (_) {
+                return rawPath;
+            }
+        }
+        return input;
+    }
+
+    function normalizeTags(tags) {
+        if (Array.isArray(tags)) {
+            return tags
+                .map(tag => (typeof tag === 'string' ? tag.trim() : ''))
+                .filter(Boolean);
+        }
+        if (typeof tags === 'string') {
+            return tags
+                .split(',')
+                .map(tag => tag.trim())
+                .filter(Boolean);
+        }
+        return [];
+    }
+
+    function toFileUrl(absPath) {
+        return `file://${absPath}`;
+    }
+
+    async function safeReadJson(jsonPath) {
+        try {
+            const raw = await fs.readFile(jsonPath, 'utf-8');
+            return JSON.parse(raw);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function buildAutoDescription(mediaPath, stats) {
+        const ext = path.extname(mediaPath).toLowerCase() || 'unknown';
+        const fileName = path.basename(mediaPath);
+        const sizeBytes = stats && typeof stats.size === 'number' ? stats.size : 0;
+        const modifiedAt = stats && stats.mtime ? stats.mtime.toISOString() : new Date().toISOString();
+        return [
+            `文件名：${fileName}`,
+            `类型：${ext}`,
+            `大小：${sizeBytes} bytes`,
+            `最近修改：${modifiedAt}`,
+            `路径：${toFileUrl(mediaPath)}`
+        ].join('\n');
+    }
+
+    async function resolveKnowledgeMediaPath(inputPath, knowledgeRootPath) {
+        const decoded = decodeFileUrlToPath(inputPath);
+        if (!decoded) {
+            throw new Error('mediaPath 不能为空。');
+        }
+
+        const resolvedPath = path.isAbsolute(decoded)
+            ? path.normalize(decoded)
+            : path.normalize(path.join(knowledgeRootPath, decoded));
+
+        if (!isPathInsideRoot(resolvedPath, knowledgeRootPath)) {
+            throw new Error('mediaPath 不在 KNOWLEDGEBASE_ROOT_PATH 范围内。');
+        }
+
+        const stats = await fs.stat(resolvedPath);
+        if (!stats.isFile()) {
+            throw new Error('mediaPath 必须指向文件。');
+        }
+
+        const extension = path.extname(resolvedPath).toLowerCase();
+        if (!KNOWLEDGE_MEDIA_EXTENSIONS.has(extension)) {
+            throw new Error(`不支持的媒体类型: ${extension}`);
+        }
+
+        return { mediaPath: resolvedPath, stats };
+    }
+
+    async function walkKnowledgeMediaFiles(knowledgeRootPath) {
+        const result = [];
+        const stack = [knowledgeRootPath];
+
+        while (stack.length > 0) {
+            const currentDir = stack.pop();
+            let entries = [];
+            try {
+                entries = await fs.readdir(currentDir, { withFileTypes: true });
+            } catch (_) {
+                continue;
+            }
+
+            for (const entry of entries) {
+                if (!entry || !entry.name || entry.name.startsWith('.')) {
+                    continue;
+                }
+
+                const fullPath = path.join(currentDir, entry.name);
+
+                if (entry.isDirectory()) {
+                    stack.push(fullPath);
+                    continue;
+                }
+
+                if (!entry.isFile()) {
+                    continue;
+                }
+
+                const ext = path.extname(entry.name).toLowerCase();
+                const sidecarSuffix = getKnowledgeMediaSidecarSuffix().toLowerCase();
+                if (entry.name.toLowerCase().endsWith(sidecarSuffix)) {
+                    continue;
+                }
+
+                if (KNOWLEDGE_MEDIA_EXTENSIONS.has(ext)) {
+                    result.push(fullPath);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    async function ensureSidecarForMedia(mediaPath, options = {}) {
+        const sidecarSuffix = getKnowledgeMediaSidecarSuffix();
+        const sidecarPath = `${mediaPath}${sidecarSuffix}`;
+        const existing = await safeReadJson(sidecarPath);
+
+        const stats = await fs.stat(mediaPath);
+        const now = new Date().toISOString();
+
+        const regenerate = !!options.regenerate;
+        const nextDescription = regenerate
+            ? buildAutoDescription(mediaPath, stats)
+            : (existing && typeof existing.description === 'string' && existing.description.trim()
+                ? existing.description.trim()
+                : buildAutoDescription(mediaPath, stats));
+
+        const sidecar = {
+            version: 1,
+            filePath: toFileUrl(mediaPath),
+            mediaPath: toFileUrl(mediaPath),
+            presetName: existing && typeof existing.presetName === 'string' ? existing.presetName : '',
+            description: nextDescription,
+            tags: existing && Array.isArray(existing.tags) ? normalizeTags(existing.tags) : [],
+            updatedAt: now
+        };
+
+        if (options.patch && typeof options.patch === 'object') {
+            if (typeof options.patch.presetName === 'string') {
+                sidecar.presetName = options.patch.presetName.trim();
+            }
+            if (typeof options.patch.description === 'string') {
+                sidecar.description = options.patch.description.trim();
+            }
+            if (options.patch.tags !== undefined) {
+                sidecar.tags = normalizeTags(options.patch.tags);
+            }
+            sidecar.updatedAt = now;
+        }
+
+        await fs.writeFile(sidecarPath, JSON.stringify(sidecar, null, 2), 'utf-8');
+        return { sidecarPath, sidecar, existed: !!existing };
+    }
+
+    function notifyKnowledgeSidecarChanged(sidecarPath) {
+        if (!sidecarPath) return;
+        if (!vectorDBManager || typeof vectorDBManager.notifyFileChanged !== 'function') return;
+        try {
+            vectorDBManager.notifyFileChanged(sidecarPath);
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Failed to notify knowledge sidecar change:', error.message);
+        }
+    }
+
+    async function buildKnowledgeMediaList(knowledgeRootPath, keyword = '') {
+        const mediaFiles = await walkKnowledgeMediaFiles(knowledgeRootPath);
+        const loweredKeyword = (keyword || '').trim().toLowerCase();
+        const sidecarSuffix = getKnowledgeMediaSidecarSuffix();
+
+        const items = [];
+        for (const mediaPath of mediaFiles) {
+            let stats;
+            try {
+                stats = await fs.stat(mediaPath);
+            } catch (_) {
+                continue;
+            }
+
+            const sidecarPath = `${mediaPath}${sidecarSuffix}`;
+            const sidecar = await safeReadJson(sidecarPath);
+            const relativePath = path.relative(knowledgeRootPath, mediaPath);
+            const description = sidecar && typeof sidecar.description === 'string' ? sidecar.description : '';
+            const presetName = sidecar && typeof sidecar.presetName === 'string' ? sidecar.presetName : '';
+            const tags = sidecar && Array.isArray(sidecar.tags) ? normalizeTags(sidecar.tags) : [];
+
+            const item = {
+                mediaPath: toFileUrl(mediaPath),
+                relativePath,
+                extension: path.extname(mediaPath).toLowerCase(),
+                size: stats.size,
+                modifiedAt: stats.mtime.toISOString(),
+                sidecarPath: toFileUrl(sidecarPath),
+                hasSidecar: !!sidecar,
+                presetName,
+                description,
+                tags
+            };
+
+            if (loweredKeyword) {
+                const searchable = [
+                    relativePath.toLowerCase(),
+                    description.toLowerCase(),
+                    presetName.toLowerCase(),
+                    tags.join(',').toLowerCase()
+                ].join('\n');
+                if (!searchable.includes(loweredKeyword)) {
+                    continue;
+                }
+            }
+
+            items.push(item);
+        }
+
+        items.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+        return items;
+    }
+
+    adminApiRouter.get('/knowledge-media/list', async (req, res) => {
+        try {
+            const knowledgeRootPath = getKnowledgeRootPath();
+            await fs.access(knowledgeRootPath);
+
+            const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : '';
+            const items = await buildKnowledgeMediaList(knowledgeRootPath, keyword);
+
+            res.json({
+                success: true,
+                rootPath: toFileUrl(knowledgeRootPath),
+                sidecarSuffix: getKnowledgeMediaSidecarSuffix(),
+                total: items.length,
+                items
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error listing knowledge media:', error);
+            res.status(500).json({ success: false, error: 'Failed to list knowledge media', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/knowledge-media/update', async (req, res) => {
+        const { mediaPath, description, presetName, tags } = req.body || {};
+        try {
+            const knowledgeRootPath = getKnowledgeRootPath();
+            await fs.access(knowledgeRootPath);
+
+            const resolved = await resolveKnowledgeMediaPath(mediaPath, knowledgeRootPath);
+            const patch = { description, presetName, tags };
+            const { sidecarPath, sidecar } = await ensureSidecarForMedia(resolved.mediaPath, { patch });
+            notifyKnowledgeSidecarChanged(sidecarPath);
+
+            res.json({
+                success: true,
+                message: '媒体侧车已更新。',
+                mediaPath: toFileUrl(resolved.mediaPath),
+                sidecarPath: toFileUrl(sidecarPath),
+                sidecar
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error updating knowledge media sidecar:', error);
+            res.status(400).json({ success: false, error: 'Failed to update knowledge media sidecar', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/knowledge-media/regenerate', async (req, res) => {
+        const { mediaPath } = req.body || {};
+        try {
+            const knowledgeRootPath = getKnowledgeRootPath();
+            await fs.access(knowledgeRootPath);
+
+            const resolved = await resolveKnowledgeMediaPath(mediaPath, knowledgeRootPath);
+            const { sidecarPath, sidecar } = await ensureSidecarForMedia(resolved.mediaPath, { regenerate: true });
+            notifyKnowledgeSidecarChanged(sidecarPath);
+
+            res.json({
+                success: true,
+                message: '媒体描述已重生成。',
+                mediaPath: toFileUrl(resolved.mediaPath),
+                sidecarPath: toFileUrl(sidecarPath),
+                sidecar
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error regenerating knowledge media sidecar:', error);
+            res.status(400).json({ success: false, error: 'Failed to regenerate knowledge media sidecar', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/knowledge-media/rebuild', async (req, res) => {
+        const { regenerateExisting = false } = req.body || {};
+        try {
+            const knowledgeRootPath = getKnowledgeRootPath();
+            await fs.access(knowledgeRootPath);
+
+            const mediaFiles = await walkKnowledgeMediaFiles(knowledgeRootPath);
+            let created = 0;
+            let updated = 0;
+
+            for (const mediaPath of mediaFiles) {
+                const sidecarSuffix = getKnowledgeMediaSidecarSuffix();
+                const sidecarPath = `${mediaPath}${sidecarSuffix}`;
+                const sidecarExists = !!(await safeReadJson(sidecarPath));
+
+                if (!sidecarExists || regenerateExisting) {
+                    const { sidecarPath } = await ensureSidecarForMedia(mediaPath, { regenerate: !!regenerateExisting });
+                    notifyKnowledgeSidecarChanged(sidecarPath);
+                    if (sidecarExists) {
+                        updated += 1;
+                    } else {
+                        created += 1;
+                    }
+                }
+            }
+
+            res.json({
+                success: true,
+                message: '知识库多媒体侧车重建完成。',
+                scanned: mediaFiles.length,
+                created,
+                updated
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error rebuilding knowledge media sidecars:', error);
+            res.status(500).json({ success: false, error: 'Failed to rebuild knowledge media sidecars', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/knowledge-media/export', async (req, res) => {
+        try {
+            const knowledgeRootPath = getKnowledgeRootPath();
+            await fs.access(knowledgeRootPath);
+
+            const items = await buildKnowledgeMediaList(knowledgeRootPath);
+            const exportedAt = new Date().toISOString();
+            const payload = {
+                exportedAt,
+                rootPath: toFileUrl(knowledgeRootPath),
+                sidecarSuffix: getKnowledgeMediaSidecarSuffix(),
+                itemCount: items.length,
+                items
+            };
+
+            const fileName = `knowledge_media_export_${Date.now()}.json`;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            res.status(200).send(JSON.stringify(payload, null, 2));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error exporting knowledge media:', error);
+            res.status(500).json({ success: false, error: 'Failed to export knowledge media', details: error.message });
+        }
+    });
+    // --- End Knowledge Media Describer API ---
+
     // --- Image Cache API (Legacy, for backward compatibility) ---
     adminApiRouter.get('/image-cache', async (req, res) => {
         const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');

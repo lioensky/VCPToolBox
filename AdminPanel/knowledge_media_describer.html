@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识库多媒体描述管理</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      font-family: inherit;
+    }
+
+    .page-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .page-header h2 {
+      margin: 0;
+      font-size: 1.2rem;
+      color: var(--text-color-primary);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+    }
+
+    .toolbar input[type="text"] {
+      min-width: 280px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--background-color-light);
+      color: var(--text-color-primary);
+    }
+
+    .toolbar button {
+      padding: 8px 12px;
+      border: 1px solid var(--border-color);
+      background: var(--background-color-light);
+      color: var(--text-color-primary);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .toolbar button:hover {
+      background: var(--primary-color-translucent);
+    }
+
+    .meta-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+      color: var(--text-color-secondary);
+      font-size: 0.9rem;
+    }
+
+    .status-message {
+      min-height: 20px;
+      font-size: 0.9rem;
+    }
+
+    .status-message.success { color: #2ecc71; }
+    .status-message.error { color: #e74c3c; }
+    .status-message.info { color: #7aa1ff; }
+
+    .table-wrap {
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      overflow: auto;
+      background: var(--background-color-light);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1100px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--border-color);
+      padding: 8px;
+      vertical-align: top;
+      color: var(--text-color-primary);
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--background-color);
+      z-index: 1;
+      text-align: left;
+    }
+
+    .path-cell {
+      max-width: 260px;
+      word-break: break-all;
+    }
+
+    .empty {
+      text-align: center;
+      color: var(--text-color-secondary);
+      padding: 24px 0;
+    }
+
+    .preset-input,
+    .tags-input,
+    .desc-input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border-color);
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+
+    .tags-row {
+      margin-top: 6px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .tags-row label {
+      white-space: nowrap;
+      color: var(--text-color-secondary);
+      font-size: 0.85rem;
+    }
+
+    .actions-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 90px;
+    }
+
+    .btn-small {
+      padding: 6px 8px;
+      border: 1px solid var(--border-color);
+      background: var(--background-color);
+      color: var(--text-color-primary);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .btn-small:hover {
+      background: var(--primary-color-translucent);
+    }
+  </style>
+  <script>
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'themeChange') {
+        document.documentElement.setAttribute('data-theme', event.data.theme);
+      }
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'requestTheme' }, '*');
+      }
+    });
+  </script>
+</head>
+<body>
+  <div class="page-header">
+    <h2>知识库多媒体描述管理</h2>
+  </div>
+
+  <div class="toolbar">
+    <input id="kms-search-input" type="text" placeholder="按文件名/描述/Tag 搜索...">
+    <button id="kms-search-btn">搜索</button>
+    <button id="kms-reload-btn">刷新</button>
+    <button id="kms-rebuild-missing-btn">重建缺失侧车</button>
+    <button id="kms-rebuild-all-btn">全部重生成</button>
+    <button id="kms-export-btn">导出</button>
+  </div>
+
+  <div class="meta-row">
+    <span id="kms-count">共 0 项</span>
+    <span id="kms-status" class="status-message info"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>相对路径</th>
+          <th>类型</th>
+          <th>大小(bytes)</th>
+          <th>侧车</th>
+          <th>预设名</th>
+          <th>描述与Tag</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="kms-table-body">
+        <tr><td colspan="8" class="empty">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script src="js/knowledge-media-describer.js"></script>
+</body>
+</html>

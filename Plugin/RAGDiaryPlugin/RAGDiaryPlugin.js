@@ -487,10 +487,16 @@ class RAGDiaryPlugin {
                         const text = await fs.readFile(filePath, 'utf-8');
                         rendered.push(text);
                     } else {
-                        const structured = await this._buildMultimodalStructuredText(filePath, file);
-                        rendered.push(`[MULTIMODAL:${file}]\n${structured}`);
-                        if (options.transMode === 'plus' && mediaFileCollector && typeof mediaFileCollector.add === 'function') {
-                            mediaFileCollector.add(`file://${filePath}`);
+                        const fileUrl = `file://${filePath}`;
+                        if (options.transMode === null) {
+                            rendered.push(`[MULTIMODAL_FILE:${file}]\n{"filePath":"${fileUrl}"}`);
+                        } else {
+                            const structured = await this._buildMultimodalStructuredText(filePath, file);
+                            rendered.push(`[MULTIMODAL:${file}]\n${structured}`);
+                        }
+
+                        if ((options.transMode === null || options.transMode === 'plus') && mediaFileCollector && typeof mediaFileCollector.add === 'function') {
+                            mediaFileCollector.add(fileUrl);
                         }
                     }
                 } catch (readErr) {
@@ -979,6 +985,16 @@ class RAGDiaryPlugin {
             // 2. 准备共享资源 (V3.3: 精准上下文提取)
             // 始终寻找最后一个用户消息和最后一个AI消息，以避免注入污染。
             // V3.4: 跳过特殊的 "系统邀请指令" user 消息
+            const firstUserMessageIndex = messages.findIndex(m => {
+                if (m.role !== 'user') {
+                    return false;
+                }
+                const content = typeof m.content === 'string'
+                    ? m.content
+                    : (Array.isArray(m.content) ? m.content.find(p => p.type === 'text')?.text : '') || '';
+                return !content.startsWith('[系统邀请指令:]') && !content.startsWith('[系统提示:]');
+            });
+
             const lastUserMessageIndex = messages.findLastIndex(m => {
                 if (m.role !== 'user') {
                     return false;
@@ -1103,8 +1119,11 @@ class RAGDiaryPlugin {
                 newMessages[index].content = processedContent;
             }
 
-            if (lastUserMessageIndex > -1 && pendingUserMediaDirectives.size > 0) {
-                this._appendFileDirectivesToUserMessage(newMessages[lastUserMessageIndex], Array.from(pendingUserMediaDirectives));
+            if (pendingUserMediaDirectives.size > 0) {
+                const targetUserMessageIndex = firstUserMessageIndex > -1 ? firstUserMessageIndex : lastUserMessageIndex;
+                if (targetUserMessageIndex > -1) {
+                    this._appendFileDirectivesToUserMessage(newMessages[targetUserMessageIndex], Array.from(pendingUserMediaDirectives));
+                }
             }
 
             return newMessages;
@@ -1260,7 +1279,8 @@ class RAGDiaryPlugin {
                                 historySegments: historySegments,
                                 processedDiaries: processedDiaries,
                                 contextDiaryPrefixes, // 🌟 V4.1
-                                retrievalOptions
+                                retrievalOptions,
+                                pendingUserMediaDirectives
                             });
                             return { placeholder, content: retrievedContent };
                         } catch (error) {
@@ -1300,7 +1320,8 @@ class RAGDiaryPlugin {
                             metrics: metrics,
                             historySegments: historySegments, // 🌟 传入历史分段
                             contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
-                            retrievalOptions: this._parseDiaryRetrievalOptions(modifiers)
+                            retrievalOptions: this._parseDiaryRetrievalOptions(modifiers),
+                            pendingUserMediaDirectives
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1317,6 +1338,7 @@ class RAGDiaryPlugin {
             const rawName = match[1];
             const modifiers = match[2] || '';
             const aggregateInfo = this._parseAggregateSyntax(rawName, modifiers);
+            const allowInjectByThreshold = new Set();
 
             for (const dbName of aggregateInfo.diaryNames) {
                 if (processedDiaries.has(dbName)) {
@@ -1359,7 +1381,11 @@ class RAGDiaryPlugin {
                     const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
 
                     if (finalSimilarity >= localThreshold) {
-                        const diaryContent = await this.getDiaryContentByOptions(dbName, retrievalOptions, pendingUserMediaDirectives);
+                        allowInjectByThreshold.add(dbName);
+                        const mediaCollectorForThisDiary = pendingUserMediaDirectives && typeof pendingUserMediaDirectives.add === 'function'
+                            ? pendingUserMediaDirectives
+                            : null;
+                        const diaryContent = await this.getDiaryContentByOptions(dbName, retrievalOptions, mediaCollectorForThisDiary);
                         const safeContent = diaryContent
                             .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
                             .replace(/<<.*日记本.*>>/g, '[循环占位符已移除]')
@@ -1383,6 +1409,19 @@ class RAGDiaryPlugin {
                     this._setCachedResult(cacheKey, { content: emptyResult });
                     return { placeholder, content: emptyResult };
                 })());
+            }
+
+            if (pendingUserMediaDirectives && typeof pendingUserMediaDirectives.add === 'function') {
+                for (const fileUrl of Array.from(pendingUserMediaDirectives)) {
+                    if (typeof fileUrl !== 'string' || !fileUrl.startsWith('file://')) continue;
+                    const belongsToMatchedDiary = Array.from(allowInjectByThreshold).some(name => {
+                        const diaryPrefix = `/${name}/`;
+                        return fileUrl.includes(diaryPrefix) || fileUrl.includes(`\\${name}\\`);
+                    });
+                    if (!belongsToMatchedDiary) {
+                        pendingUserMediaDirectives.delete(fileUrl);
+                    }
+                }
             }
         }
 
@@ -1452,7 +1491,8 @@ class RAGDiaryPlugin {
                             historySegments: historySegments,
                             processedDiaries: processedDiaries,
                             contextDiaryPrefixes, // 🌟 V4.1
-                            retrievalOptions
+                            retrievalOptions,
+                            pendingUserMediaDirectives
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1525,7 +1565,8 @@ class RAGDiaryPlugin {
                                 metrics: metrics,
                                 historySegments: historySegments, // 🌟 传入历史分段
                                 contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
-                                retrievalOptions: this._parseDiaryRetrievalOptions(modifiers)
+                                retrievalOptions: this._parseDiaryRetrievalOptions(modifiers),
+                                pendingUserMediaDirectives
                             });
 
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -1691,6 +1732,115 @@ class RAGDiaryPlugin {
             const suffix = textPart.text && !textPart.text.endsWith('\n') ? '\n' : '';
             textPart.text = `${textPart.text || ''}${suffix}${lines}`;
         }
+    }
+
+    _extractMediaFileUrlFromResult(result) {
+        if (!result || typeof result !== 'object') return '';
+
+        const toAbsoluteFileUrl = (rawValue, fallbackFromSidecar = '') => {
+            if (typeof rawValue !== 'string') return '';
+            const trimmed = rawValue.trim();
+            if (!trimmed) return '';
+
+            const normalizeAbsPathToUrl = (absPath) => {
+                if (!absPath || typeof absPath !== 'string') return '';
+                const normalized = path.normalize(absPath);
+                return `file://${normalized}`;
+            };
+
+            if (trimmed.startsWith('file://')) {
+                const decodedPath = decodeURIComponent(trimmed.replace(/^file:\/\//i, ''));
+                if (path.isAbsolute(decodedPath)) {
+                    return normalizeAbsPathToUrl(decodedPath);
+                }
+
+                if (fallbackFromSidecar && path.isAbsolute(fallbackFromSidecar)) {
+                    return normalizeAbsPathToUrl(fallbackFromSidecar);
+                }
+
+                return normalizeAbsPathToUrl(path.join(dailyNoteRootPath, decodedPath));
+            }
+
+            if (path.isAbsolute(trimmed)) {
+                return normalizeAbsPathToUrl(trimmed);
+            }
+
+            if (fallbackFromSidecar && path.isAbsolute(fallbackFromSidecar)) {
+                return normalizeAbsPathToUrl(fallbackFromSidecar);
+            }
+
+            return normalizeAbsPathToUrl(path.join(dailyNoteRootPath, trimmed));
+        };
+
+        const sidecarSuffix = this._getSidecarSuffix();
+        const fullPath = typeof result.fullPath === 'string' ? result.fullPath.trim() : '';
+        const sourceFile = typeof result.sourceFile === 'string' ? result.sourceFile.trim() : '';
+
+        if (fullPath) {
+            if (fullPath.toLowerCase().endsWith(sidecarSuffix)) {
+                const mediaAbsPath = fullPath.slice(0, -sidecarSuffix.length);
+                return toAbsoluteFileUrl(mediaAbsPath);
+            }
+            if (!this._isTextDiaryFile(fullPath) && !this._isSidecarFileName(fullPath)) {
+                return toAbsoluteFileUrl(fullPath);
+            }
+        }
+
+        if (sourceFile) {
+            if (sourceFile.toLowerCase().endsWith(sidecarSuffix)) {
+                const mediaPath = sourceFile.slice(0, -sidecarSuffix.length);
+                return toAbsoluteFileUrl(mediaPath);
+            }
+            if (!this._isTextDiaryFile(sourceFile) && !this._isSidecarFileName(sourceFile)) {
+                return toAbsoluteFileUrl(sourceFile);
+            }
+        }
+
+        const text = typeof result.text === 'string' ? result.text : '';
+        if (text) {
+            const match = text.match(/"filePath"\s*:\s*"([^"]+)"/i);
+            if (match && typeof match[1] === 'string') {
+                const fallbackFromSidecar = (fullPath && fullPath.toLowerCase().endsWith(sidecarSuffix))
+                    ? fullPath.slice(0, -sidecarSuffix.length)
+                    : '';
+                return toAbsoluteFileUrl(match[1], fallbackFromSidecar);
+            }
+        }
+
+        return '';
+    }
+
+    _collectMediaDirectivesFromResults(results, mediaFileCollector) {
+        if (!Array.isArray(results) || results.length === 0) return;
+        if (!mediaFileCollector || typeof mediaFileCollector.add !== 'function') return;
+
+        for (const result of results) {
+            const fileUrl = this._extractMediaFileUrlFromResult(result);
+            if (!fileUrl || !fileUrl.startsWith('file://')) continue;
+            mediaFileCollector.add(fileUrl);
+        }
+    }
+
+    _toPathOnlyMultimodalResult(result) {
+        if (!result || typeof result !== 'object') return '';
+        const source = (result.fullPath || result.sourceFile || '').toString();
+        const lowerSource = source.toLowerCase();
+        const looksLikeMultimodal =
+            this._isSidecarFileName(lowerSource) ||
+            (!!lowerSource && !this._isTextDiaryFile(lowerSource));
+
+        if (!looksLikeMultimodal) {
+            return typeof result.text === 'string' ? result.text.trim() : '';
+        }
+
+        const fileUrl = this._extractMediaFileUrlFromResult(result);
+        if (!fileUrl || !fileUrl.startsWith('file://')) {
+            return typeof result.text === 'string' ? result.text.trim() : '';
+        }
+
+        const decodedPath = decodeURIComponent(fileUrl.replace(/^file:\/\//i, ''));
+        const fileName = path.basename(decodedPath || source || 'unknown');
+        return `[MULTIMODAL_FILE:${fileName}]\n{"filePath":"${fileUrl}"}`;
     }
 
     _extractKMultiplier(modifiers) {
@@ -2002,7 +2152,8 @@ class RAGDiaryPlugin {
             historySegments,
             processedDiaries, // 🛡️ 循环引用检测
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
-            retrievalOptions = null
+            retrievalOptions = null,
+            pendingUserMediaDirectives = new Set()
         } = options;
 
         const totalK = Math.max(1, Math.round(dynamicK * kMultiplier));
@@ -2100,7 +2251,8 @@ class RAGDiaryPlugin {
                     metrics,
                     historySegments,
                     contextDiaryPrefixes, // 🌟 V4.1: 透传上下文日记去重前缀
-                    retrievalOptions: effectiveRetrievalOptions
+                    retrievalOptions: effectiveRetrievalOptions,
+                    pendingUserMediaDirectives
                 });
                 return { name: allocation.name, content, k: allocation.k, success: true };
             } catch (e) {
@@ -2241,7 +2393,8 @@ class RAGDiaryPlugin {
             metrics = {},
             historySegments = [], // 🌟 Tagmemo V4
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
-            retrievalOptions = null
+            retrievalOptions = null,
+            pendingUserMediaDirectives = new Set()
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -2401,7 +2554,14 @@ class RAGDiaryPlugin {
                 finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK);
             }
 
-            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
+            const usePathOnlyForMultimodal = effectiveRetrievalOptions.transMode === null;
+            retrievedContent = this.formatCombinedTimeAwareResults(
+                finalResultsForBroadcast,
+                timeRanges,
+                dbName,
+                metadata,
+                { usePathOnlyForMultimodal }
+            );
 
         } else {
             // --- Standard path (no time filter) ---
@@ -2492,11 +2652,26 @@ class RAGDiaryPlugin {
             // ✅ 统一添加 source 标识，防止 VCP Info 显示 unknown
             finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: 'rag' }));
 
+            const usePathOnlyForMultimodal = effectiveRetrievalOptions.transMode === null;
             if (useGroup) {
                 retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
             } else {
-                retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
+                retrievedContent = this.formatStandardResults(
+                    finalResultsForBroadcast,
+                    displayName,
+                    metadata,
+                    { usePathOnlyForMultimodal }
+                );
             }
+        }
+
+        const shouldDirectSendMedia =
+            (effectiveRetrievalOptions.transMode === null || effectiveRetrievalOptions.transMode === 'plus') &&
+            pendingUserMediaDirectives &&
+            typeof pendingUserMediaDirectives.add === 'function';
+
+        if (shouldDirectSendMedia && Array.isArray(finalResultsForBroadcast) && finalResultsForBroadcast.length > 0) {
+            this._collectMediaDirectivesFromResults(finalResultsForBroadcast, pendingUserMediaDirectives);
         }
 
         if (this.pushVcpInfo && finalResultsForBroadcast) {
@@ -2664,10 +2839,20 @@ class RAGDiaryPlugin {
         return diariesInRange;
     }
 
-    formatStandardResults(searchResults, displayName, metadata) {
+    formatStandardResults(searchResults, displayName, metadata, options = {}) {
+        const usePathOnlyForMultimodal = !!options.usePathOnlyForMultimodal;
         let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
         if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+            const lines = searchResults
+                .map(r => {
+                    if (usePathOnlyForMultimodal) {
+                        const pathOnly = this._toPathOnlyMultimodalResult(r);
+                        if (pathOnly) return `* ${pathOnly}`;
+                    }
+                    return `* ${(r.text || '').trim()}`;
+                })
+                .filter(Boolean);
+            innerContent += lines.join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
@@ -2677,7 +2862,8 @@ class RAGDiaryPlugin {
         return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
     }
 
-    formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata) {
+    formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata, options = {}) {
+        const usePathOnlyForMultimodal = !!options.usePathOnlyForMultimodal;
         const displayName = dbName + '日记本';
         const formatDate = (date) => {
             const d = new Date(date);
@@ -2697,9 +2883,17 @@ class RAGDiaryPlugin {
         if (ragEntries.length > 0) {
             innerContent += '【语义相关记忆】\n';
             ragEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
+                if (usePathOnlyForMultimodal) {
+                    const pathOnly = this._toPathOnlyMultimodalResult(entry);
+                    if (pathOnly) {
+                        innerContent += `* ${pathOnly}\n`;
+                        return;
+                    }
+                }
+                const text = typeof entry.text === 'string' ? entry.text : '';
+                const dateMatch = text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                innerContent += `* ${datePrefix}${text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
             });
         }
 
@@ -2708,7 +2902,15 @@ class RAGDiaryPlugin {
             // 按日期从新到旧排序
             timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
             timeEntries.forEach(entry => {
-                innerContent += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                if (usePathOnlyForMultimodal) {
+                    const pathOnly = this._toPathOnlyMultimodalResult(entry);
+                    if (pathOnly) {
+                        innerContent += `* ${pathOnly}\n`;
+                        return;
+                    }
+                }
+                const text = typeof entry.text === 'string' ? entry.text : '';
+                innerContent += `* [${entry.date}] ${text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
             });
         }
 

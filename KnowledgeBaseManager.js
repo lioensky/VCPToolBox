@@ -1075,6 +1075,14 @@ class KnowledgeBaseManager {
             }
 
             const newTags = Array.from(newTagsSet);
+            if (newTags.length > 0) {
+                const preview = newTags.slice(0, 20).join(', ');
+                const suffix = newTags.length > 20 ? ' ...' : '';
+                console.log(`[KnowledgeBase] 🏷️ New tags in this batch: ${newTags.length} (${preview}${suffix})`);
+            } else {
+                console.log('[KnowledgeBase] 🏷️ New tags in this batch: 0');
+            }
+
             // 3. Embedding API Calls
             const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
 
@@ -1318,13 +1326,22 @@ class KnowledgeBaseManager {
             const sidecar = JSON.parse(raw);
             const description = typeof sidecar.description === 'string' ? sidecar.description.trim() : '';
             const tagsArray = Array.isArray(sidecar.tags)
-                ? sidecar.tags.map(t => (typeof t === 'string' ? t.trim() : '')).filter(Boolean)
+                ? sidecar.tags
+                    .map(t => (typeof t === 'string' ? t.trim() : ''))
+                    .map(t => t.replace(/^Tag:\s*/i, '').trim())
+                    .filter(Boolean)
                 : [];
 
-            let merged = description;
-            if (tagsArray.length > 0 && !/^\s*Tag:/im.test(merged)) {
-                merged = `${merged}${merged ? '\n' : ''}Tag: ${tagsArray.join(', ')}`;
-            }
+            const normalizedTags = [...new Set(tagsArray)];
+            const descriptionWithoutTagLines = description
+                .split(/\r?\n/)
+                .filter(line => !/^\s*Tag:\s*/i.test(line))
+                .join('\n')
+                .trim();
+
+            const merged = normalizedTags.length > 0
+                ? `${descriptionWithoutTagLines}${descriptionWithoutTagLines ? '\n' : ''}Tag: ${normalizedTags.join(', ')}`
+                : descriptionWithoutTagLines;
 
             return this._prepareTextForEmbedding(merged) === '[EMPTY_CONTENT]' ? null : merged;
         } catch (error) {

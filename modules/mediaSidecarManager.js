@@ -23,7 +23,7 @@ class MediaSidecarManager extends EventEmitter {
             rootPath: '',
             storePath: '',
             sidecarSuffix: process.env.MULTIMODAL_SIDECAR_SUFFIX || '.vcpmeta.json',
-            enable: (process.env.MULTIMODAL_SIDECAR_ENABLED || 'false').toLowerCase() === 'true',
+            enable: (process.env.MULTIMODAL_SIDECAR_ENABLED || 'true').toLowerCase() === 'true',
             sidecarCreateDelayMs: parseInt(process.env.MULTIMODAL_SIDECAR_CREATE_DELAY_MS || '1000', 10),
             metadataSyncEnabled: (process.env.MEDIA_METADATA_SYNC || 'false').toLowerCase() === 'true'
         };
@@ -52,6 +52,7 @@ class MediaSidecarManager extends EventEmitter {
         await fs.mkdir(this.config.storePath, { recursive: true });
         await this._loadHashMap();
         this._startWatcher();
+        await this._bootstrapExistingMediaSidecars();
 
         this.initialized = true;
         this._log(`initialized. root=${this.config.rootPath}`);
@@ -137,6 +138,60 @@ class MediaSidecarManager extends EventEmitter {
         }
     }
 
+    _upsertHashMapEntry(mediaHash, mediaFilePath, sidecarPath, updatedAt) {
+        if (!mediaHash) return false;
+
+        const relativeMediaPath = path.relative(this.config.rootPath, mediaFilePath);
+        const relativeSidecarPath = path.relative(this.config.rootPath, sidecarPath);
+        const now = updatedAt || new Date().toISOString();
+
+        let changed = false;
+
+        for (const [hash, info] of this.hashMap.entries()) {
+            if (hash === mediaHash) continue;
+            if (info?.relativeMediaPath === relativeMediaPath || info?.relativeSidecarPath === relativeSidecarPath) {
+                this.hashMap.delete(hash);
+                changed = true;
+            }
+        }
+
+        const prev = this.hashMap.get(mediaHash);
+        if (!prev || prev.relativeMediaPath !== relativeMediaPath || prev.relativeSidecarPath !== relativeSidecarPath) {
+            this.hashMap.set(mediaHash, {
+                relativeMediaPath,
+                relativeSidecarPath,
+                updatedAt: now
+            });
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    _removeHashMapEntriesByMediaPath(mediaFilePath) {
+        const relativeMediaPath = path.relative(this.config.rootPath, mediaFilePath);
+        let changed = false;
+        for (const [hash, info] of this.hashMap.entries()) {
+            if (info?.relativeMediaPath === relativeMediaPath) {
+                this.hashMap.delete(hash);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    _removeHashMapEntriesBySidecarPath(sidecarPath) {
+        const relativeSidecarPath = path.relative(this.config.rootPath, sidecarPath);
+        let changed = false;
+        for (const [hash, info] of this.hashMap.entries()) {
+            if (info?.relativeSidecarPath === relativeSidecarPath) {
+                this.hashMap.delete(hash);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
     async _computeFileHash(filePath) {
         const data = await fs.readFile(filePath);
         return `sha256:${crypto.createHash('sha256').update(data).digest('hex')}`;
@@ -194,12 +249,29 @@ class MediaSidecarManager extends EventEmitter {
             }
         }
 
+        const relativePath = path.relative(this.config.rootPath, mediaFilePath);
+        const relativeSidecarPath = path.relative(this.config.rootPath, sidecarPath);
+        const now = new Date().toISOString();
+
+        let shouldWriteSidecar = force || !sidecarExists;
         if (sidecarExists && !force) {
+            const sidecarHash = typeof currentSidecar?.mediaHash === 'string' ? currentSidecar.mediaHash : '';
+            if (sidecarHash !== mediaHash) {
+                shouldWriteSidecar = true;
+            }
+        }
+
+        const hashMapChanged = this._upsertHashMapEntry(mediaHash, mediaFilePath, sidecarPath, now);
+
+        if (!shouldWriteSidecar) {
+            if (hashMapChanged) {
+                await this._saveHashMap();
+            }
+            this.emit('sidecar-upsert', { mediaFilePath, sidecarPath, sidecar: currentSidecar });
             return currentSidecar;
         }
-        const relativePath = path.relative(this.config.rootPath, mediaFilePath);
+
         const mimeType = this._guessMimeType(mediaFilePath);
-        const now = new Date().toISOString();
         const description = sidecarExists ? (currentSidecar.description || '') : await this._buildInitialDescription(mediaFilePath);
         const tags = Array.isArray(currentSidecar?.tags) ? currentSidecar.tags : [];
 
@@ -220,19 +292,17 @@ class MediaSidecarManager extends EventEmitter {
 
         await fs.writeFile(sidecarPath, JSON.stringify(sidecar, null, 2), 'utf8');
 
-        this.hashMap.set(mediaHash, {
-            relativeMediaPath: relativePath,
-            relativeSidecarPath: path.relative(this.config.rootPath, sidecarPath),
-            updatedAt: now
-        });
-        await this._saveHashMap();
+        const hashChangedAfterWrite = this._upsertHashMapEntry(mediaHash, mediaFilePath, sidecarPath, now);
+        if (hashMapChanged || hashChangedAfterWrite) {
+            await this._saveHashMap();
+        }
 
         if (this.config.metadataSyncEnabled && (mediaFilePath.toLowerCase().endsWith('.png') || mediaFilePath.toLowerCase().endsWith('.jpg') || mediaFilePath.toLowerCase().endsWith('.jpeg'))) {
             await this._syncPngJpegDescription(mediaFilePath, sidecar.description);
         }
 
         this.emit('sidecar-upsert', { mediaFilePath, sidecarPath, sidecar });
-        this._log(`sidecar upserted: ${path.relative(this.config.rootPath, sidecarPath)}`);
+        this._log(`sidecar upserted: ${relativeSidecarPath}`);
         return sidecar;
     }
 
@@ -253,8 +323,13 @@ class MediaSidecarManager extends EventEmitter {
             }
         }
 
+        let hashMapChanged = false;
         if (sidecar?.mediaHash) {
-            this.hashMap.delete(sidecar.mediaHash);
+            hashMapChanged = this.hashMap.delete(sidecar.mediaHash) || hashMapChanged;
+        }
+        hashMapChanged = this._removeHashMapEntriesByMediaPath(mediaFilePath) || hashMapChanged;
+        hashMapChanged = this._removeHashMapEntriesBySidecarPath(sidecarPath) || hashMapChanged;
+        if (hashMapChanged) {
             await this._saveHashMap();
         }
 
@@ -269,12 +344,18 @@ class MediaSidecarManager extends EventEmitter {
             sidecar = JSON.parse(raw);
         } catch (_) { }
 
+        let hashMapChanged = false;
         if (sidecar?.mediaHash) {
-            this.hashMap.delete(sidecar.mediaHash);
+            hashMapChanged = this.hashMap.delete(sidecar.mediaHash) || hashMapChanged;
+        }
+        hashMapChanged = this._removeHashMapEntriesBySidecarPath(sidecarPath) || hashMapChanged;
+        const mediaFilePath = sidecarPath.slice(0, -this.config.sidecarSuffix.length);
+        hashMapChanged = this._removeHashMapEntriesByMediaPath(mediaFilePath) || hashMapChanged;
+
+        if (hashMapChanged) {
             await this._saveHashMap();
         }
 
-        const mediaFilePath = sidecarPath.slice(0, -this.config.sidecarSuffix.length);
         this.emit('sidecar-delete', { mediaFilePath, sidecarPath, sidecar });
         this._log(`sidecar removed event handled: ${path.relative(this.config.rootPath, sidecarPath)}`);
     }
@@ -287,14 +368,23 @@ class MediaSidecarManager extends EventEmitter {
         }
     }
 
-    _scheduleSidecarCreate(mediaFilePath) {
+    _scheduleSidecarCreate(mediaFilePath, attempt = 0) {
         if (this.pendingTimers.has(mediaFilePath)) {
             clearTimeout(this.pendingTimers.get(mediaFilePath));
         }
 
         const timer = setTimeout(async () => {
             this.pendingTimers.delete(mediaFilePath);
-            await this._createOrUpdateSidecar(mediaFilePath, { force: false });
+            const sidecar = await this._createOrUpdateSidecar(mediaFilePath, { force: false });
+
+            if (sidecar) return;
+            if (!fsSync.existsSync(mediaFilePath)) return;
+            if (attempt >= 5) {
+                this._log(`sidecar create retries exceeded: ${path.relative(this.config.rootPath, mediaFilePath)}`);
+                return;
+            }
+
+            this._scheduleSidecarCreate(mediaFilePath, attempt + 1);
         }, this.config.sidecarCreateDelayMs);
 
         this.pendingTimers.set(mediaFilePath, timer);
@@ -322,6 +412,14 @@ class MediaSidecarManager extends EventEmitter {
         try {
             await fs.mkdir(path.dirname(targetSidecarPath), { recursive: true });
             await fs.rename(oldSidecarPath, targetSidecarPath);
+
+            const oldMediaPath = hashInfo.relativeMediaPath
+                ? path.join(this.config.rootPath, hashInfo.relativeMediaPath)
+                : null;
+            if (oldMediaPath) {
+                this._clearPendingDelete(oldMediaPath);
+            }
+
             const raw = await fs.readFile(targetSidecarPath, 'utf8');
             this._log(`sidecar rename recovered by hash: ${path.relative(this.config.rootPath, oldSidecarPath)} -> ${path.relative(this.config.rootPath, targetSidecarPath)}`);
             return JSON.parse(raw);
@@ -382,6 +480,46 @@ class MediaSidecarManager extends EventEmitter {
             .on('error', (error) => {
                 console.error('[MediaSidecarManager] watcher error:', error.message);
             });
+    }
+
+    async _bootstrapExistingMediaSidecars() {
+        const mediaFiles = [];
+
+        const walk = async (dirPath) => {
+            let entries = [];
+            try {
+                entries = await fs.readdir(dirPath, { withFileTypes: true });
+            } catch (error) {
+                console.error('[MediaSidecarManager] bootstrap scan failed:', error.message);
+                return;
+            }
+
+            for (const entry of entries) {
+                if (entry.name.startsWith('.')) continue;
+
+                const fullPath = path.join(dirPath, entry.name);
+                if (entry.isDirectory()) {
+                    await walk(fullPath);
+                    continue;
+                }
+
+                if (entry.isFile() && this._isSupportedMediaFile(fullPath)) {
+                    mediaFiles.push(fullPath);
+                }
+            }
+        };
+
+        await walk(this.config.rootPath);
+
+        for (const mediaFilePath of mediaFiles) {
+            try {
+                await this._createOrUpdateSidecar(mediaFilePath, { force: false });
+            } catch (error) {
+                console.error('[MediaSidecarManager] bootstrap sidecar create failed:', error.message);
+            }
+        }
+
+        this._log(`bootstrap scan finished. mediaCount=${mediaFiles.length}`);
     }
 
     _guessMimeType(filePath) {
