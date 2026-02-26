@@ -410,6 +410,134 @@ class RAGDiaryPlugin {
         return `${mediaFilePath}${this._getSidecarSuffix()}`;
     }
 
+    _guessMediaMimeTypeForTransbase64(mediaFilePath) {
+        const ext = (path.extname(mediaFilePath || '').toLowerCase() || '');
+        const mimeMap = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+            '.tiff': 'image/tiff',
+            '.tif': 'image/tiff',
+            '.avif': 'image/avif',
+            '.svg': 'image/svg+xml',
+            '.mp3': 'audio/mpeg',
+            '.wav': 'audio/wav',
+            '.flac': 'audio/flac',
+            '.m4a': 'audio/mp4',
+            '.aac': 'audio/aac',
+            '.ogg': 'audio/ogg',
+            '.mp4': 'video/mp4',
+            '.mov': 'video/quicktime',
+            '.mkv': 'video/x-matroska',
+            '.webm': 'video/webm',
+            '.avi': 'video/x-msvideo',
+            '.pdf': 'application/pdf'
+        };
+        return mimeMap[ext] || 'application/octet-stream';
+    }
+
+    async _regenerateSidecarDescriptionWithDefaultAgent(mediaFilePath, mediaFileName = '', cognitoAgentName = '') {
+        const apiKey = process.env.API_Key;
+        const apiUrl = process.env.API_URL;
+        const multiModalModelName = process.env.MultiModalModel;
+        const defaultPromptText = process.env.MultiModalPrompt;
+        const maxTokens = parseInt(process.env.MultiModalModelOutputMaxTokens, 10) || 50000;
+        const thinkingBudget = parseInt(process.env.MultiModalModelThinkingBudget, 10);
+
+        let promptText = defaultPromptText;
+        let effectiveAgentName = 'Cognito-Core';
+
+        const requestedAgent = typeof cognitoAgentName === 'string' ? cognitoAgentName.trim() : '';
+        if (requestedAgent) {
+            try {
+                const presetsDir = this._getMultimediaPresetsDir();
+                const presetPath = path.join(presetsDir, `${requestedAgent}.json`);
+                const presetRaw = await fs.readFile(presetPath, 'utf-8');
+                const presetJson = JSON.parse(presetRaw);
+                const presetPrompt = typeof presetJson.systemPrompt === 'string'
+                    ? presetJson.systemPrompt.trim()
+                    : (typeof presetJson.prompt === 'string' ? presetJson.prompt.trim() : '');
+                if (presetPrompt) {
+                    promptText = presetPrompt;
+                    effectiveAgentName = requestedAgent;
+                } else {
+                    console.warn(`[RAGDiaryPlugin] Cognito预设缺少 systemPrompt/prompt，回退默认Agent: ${requestedAgent}`);
+                }
+            } catch (error) {
+                console.warn(`[RAGDiaryPlugin] Cognito预设加载失败(${requestedAgent})，回退默认Agent: ${error.message}`);
+            }
+        }
+
+        if (!apiKey || !apiUrl || !multiModalModelName || !promptText) {
+            console.warn(`[RAGDiaryPlugin] 侧车描述为空且缺少多模态识别配置，无法重生成(${mediaFileName || mediaFilePath})`);
+            return '';
+        }
+
+        try {
+            const fileBuffer = await fs.readFile(mediaFilePath);
+            const mimeType = this._guessMediaMimeTypeForTransbase64(mediaFilePath);
+            const dataUri = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+
+            const payload = {
+                model: multiModalModelName,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: promptText },
+                            { type: 'image_url', image_url: { url: dataUri } }
+                        ]
+                    }
+                ],
+                max_tokens: maxTokens
+            };
+
+            if (!Number.isNaN(thinkingBudget) && thinkingBudget > 0) {
+                payload.extra_body = {
+                    thinking_config: { thinking_budget: thinkingBudget }
+                };
+            }
+
+            const response = await axios.post(
+                `${apiUrl}/v1/chat/completions`,
+                payload,
+                {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 45000
+                }
+            );
+
+            const regenerated = response?.data?.choices?.[0]?.message?.content;
+            const finalText = typeof regenerated === 'string' ? regenerated.trim() : '';
+            if (!finalText) {
+                console.warn(`[RAGDiaryPlugin] 识别Agent返回空描述(${effectiveAgentName} | ${mediaFileName || mediaFilePath})`);
+            }
+            return finalText;
+        } catch (error) {
+            console.warn(`[RAGDiaryPlugin] 识别Agent重生成失败(${effectiveAgentName} | ${mediaFileName || mediaFilePath}): ${error.message}`);
+            return '';
+        }
+    }
+
+    _mergeDescriptionAndTags(description, tags) {
+        let merged = typeof description === 'string' ? description.trim() : '';
+        const normalizedTags = Array.isArray(tags)
+            ? tags.map(item => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+            : [];
+
+        if (normalizedTags.length > 0 && !/^\s*Tag:/im.test(merged)) {
+            merged = `${merged}${merged ? '\n' : ''}Tag: ${normalizedTags.join(', ')}`;
+        }
+
+        return merged;
+    }
+
     _shouldIncludeFileByOptions(fileName, retrievalOptions) {
         const opts = retrievalOptions || {};
         const lower = (fileName || '').toLowerCase();
@@ -431,35 +559,43 @@ class RAGDiaryPlugin {
         return true;
     }
 
-    async _buildMultimodalStructuredText(mediaFilePath, mediaFileName) {
-        const fallback = JSON.stringify({
-            description: '[多模态文件暂无侧车描述信息]',
-            filePath: `file://${mediaFilePath}`
-        }, null, 2);
-
+    async _buildMultimodalStructuredText(mediaFilePath, mediaFileName, retrievalOptions = null) {
+        const fallback = '[多模态文件暂无描述]';
         const sidecarPath = this._getSidecarPathForMedia(mediaFilePath);
+        const options = retrievalOptions || {};
+        const requestedAgents = Array.isArray(options.transCognitoAgents)
+            ? options.transCognitoAgents.map(item => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+            : [];
+
+        let sidecar = {};
         try {
             const raw = await fs.readFile(sidecarPath, 'utf-8');
-            const sidecar = JSON.parse(raw);
-            let description = typeof sidecar.description === 'string' ? sidecar.description.trim() : '';
-            const tags = Array.isArray(sidecar.tags)
-                ? sidecar.tags.map(t => (typeof t === 'string' ? t.trim() : '')).filter(Boolean)
-                : [];
-
-            if (tags.length > 0 && !/^\s*Tag:/im.test(description)) {
-                description = `${description}${description ? '\n' : ''}Tag: ${tags.join(', ')}`;
-            }
-
-            return JSON.stringify({
-                description: description || '[多模态文件暂无描述]',
-                filePath: (typeof sidecar.filePath === 'string' && sidecar.filePath.trim())
-                    ? sidecar.filePath.trim()
-                    : `file://${mediaFilePath}`
-            }, null, 2);
+            sidecar = JSON.parse(raw);
         } catch (error) {
             console.warn(`[RAGDiaryPlugin] 读取侧车失败(${mediaFileName}): ${error.message}`);
-            return fallback;
+            sidecar = {};
         }
+
+        const tags = Array.isArray(sidecar.tags) ? sidecar.tags : [];
+        let description = typeof sidecar.description === 'string' ? sidecar.description.trim() : '';
+
+        if (requestedAgents.length > 0) {
+            const generatedChunks = [];
+            for (const agentName of requestedAgents) {
+                const generated = await this._regenerateSidecarDescriptionWithDefaultAgent(mediaFilePath, mediaFileName, agentName);
+                if (generated) {
+                    generatedChunks.push(`[${agentName}]\n${generated}`);
+                }
+            }
+            if (generatedChunks.length > 0) {
+                description = generatedChunks.join('\n\n');
+            }
+        } else if (!description) {
+            description = await this._regenerateSidecarDescriptionWithDefaultAgent(mediaFilePath, mediaFileName);
+        }
+
+        const merged = this._mergeDescriptionAndTags(description, tags);
+        return merged || fallback;
     }
 
     async getDiaryContentByOptions(characterName, retrievalOptions = null, mediaFileCollector = null) {
@@ -491,8 +627,8 @@ class RAGDiaryPlugin {
                         if (options.transMode === null) {
                             rendered.push(`[MULTIMODAL_FILE:${file}]\n{"filePath":"${fileUrl}"}`);
                         } else {
-                            const structured = await this._buildMultimodalStructuredText(filePath, file);
-                            rendered.push(`[MULTIMODAL:${file}]\n${structured}`);
+                            const structured = await this._buildMultimodalStructuredText(filePath, file, options);
+                            rendered.push(structured);
                         }
 
                         if ((options.transMode === null || options.transMode === 'plus') && mediaFileCollector && typeof mediaFileCollector.add === 'function') {
@@ -967,7 +1103,7 @@ class RAGDiaryPlugin {
                     }
 
                     // 检查 RAG/Meta/AIMemo 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
+                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
                         // 确保每个包含占位符的 system 消息都被处理
                         if (!acc.includes(index)) {
                             acc.push(index);
@@ -1067,8 +1203,9 @@ class RAGDiaryPlugin {
                 for (const index of targetSystemMessageIndices) {
                     newMessages[index].content = newMessages[index].content
                         .replace(/\[\[.*日记本.*\]\]/g, '')
-                        .replace(/<<.*日记本>>/g, '')
-                        .replace(/《《.*日记本.*》》/g, '');
+                        .replace(/<<.*日记本.*>>/g, '')
+                        .replace(/《《.*日记本.*》》/g, '')
+                        .replace(/\{\{.*日记本.*\}\}/g, '');
                 }
                 return newMessages;
             }
@@ -1138,9 +1275,9 @@ class RAGDiaryPlugin {
                 if (msg.role === 'system' && typeof msg.content === 'string') {
                     msg.content = msg.content
                         .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
-                        .replace(/<<.*日记本>>/g, '[RAG处理失败]')
+                        .replace(/<<.*日记本.*>>/g, '[RAG处理失败]')
                         .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]');
+                        .replace(/\{\{.*日记本.*\}\}/g, '[RAG处理失败]');
                 }
             });
             return safeMessages;
