@@ -2626,23 +2626,59 @@ class RAGDiaryPlugin {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                const response = await axios.post(`${apiUrl}/v1/embeddings`, {
-                    model: embeddingModel,
-                    input: textChunks // 传入所有文本块
-                }, {
+                // 检测是否为字节跳动 Ark 平台
+                const isArkPlatform = apiUrl.toLowerCase().includes('volces') && apiUrl.toLowerCase().includes('ark');
+                let requestUrl;
+                let requestBody;
+
+                if (isArkPlatform) {
+                    // 字节跳动 Ark 格式 /v3/embeddings/multimodal
+                    requestUrl = `${apiUrl}/v3/embeddings/multimodal`;
+                    requestBody = {
+                        model: embeddingModel,
+                        input: textChunks.map(text => ({
+                            type: "text",
+                            text: text
+                        })),
+                        dimensions: 2048, // 嵌入模型的维度
+                        multi_embedding: {
+                            type: "enabled"
+                        },
+                        sparse_embedding: {
+                            type: "enabled"
+                        },
+                        encoding_format: "float"
+                    };
+                } else {
+                    // 标准 OpenAI 格式
+                    requestUrl = `${apiUrl}/v1/embeddings`;
+                    requestBody = { model: embeddingModel, input: textChunks };
+                }
+
+                const response = await axios.post(requestUrl, requestBody, {
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
                     }
                 });
 
-                const embeddings = response.data?.data;
-                if (!embeddings || embeddings.length === 0) {
-                    console.error('[RAGDiaryPlugin] No embeddings found in the API response.');
+                let embeddingsData;
+                if (Array.isArray(response.data?.data)) {
+                    // 标准格式：data.data 是数组
+                    embeddingsData = response.data.data;
+                    if (embeddingsData.length === 0) {
+                        console.error('[RAGDiaryPlugin] No embeddings found in the API response.');
+                        return null;
+                    }
+                } else if (response.data?.data && response.data.data.embedding) {
+                    // 字节跳动 Ark 格式：data.data 是对象，直接包含 embedding 字段
+                    embeddingsData = [response.data.data];
+                } else {
+                    console.error('[RAGDiaryPlugin] Invalid API response structure.');
                     return null;
                 }
 
-                const vectors = embeddings.map(e => e.embedding).filter(Boolean);
+                const vectors = embeddingsData.map(e => e.embedding).filter(Boolean);
                 if (vectors.length === 0) {
                     console.error('[RAGDiaryPlugin] No valid embedding vectors in the API response data.');
                     return null;

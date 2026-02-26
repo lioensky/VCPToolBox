@@ -25,8 +25,8 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             let requestBody;
 
             if (isArkPlatform) {
-                // 字节跳动 Ark 格式
-                requestUrl = `${config.apiUrl}/embeddings/multimodal`;
+                // 字节跳动 Ark 格式 /v3/embeddings/multimodal
+                requestUrl = `${config.apiUrl}/v3/embeddings/multimodal`;
                 requestBody = {
                     model: config.model,
                     input: batchTexts.map(text => ({
@@ -42,6 +42,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
                     },
                     encoding_format: "float"
                 };
+                // console.log(`[DEBUG][Embedding] Batch ${batchNumber} Ark Request Body:`, JSON.stringify(requestBody, null, 2));
             } else {
                 // 标准 OpenAI 格式
                 requestUrl = `${config.apiUrl}/v1/embeddings`;
@@ -175,8 +176,14 @@ async function getEmbeddingsBatch(texts, config) {
             if (batchIndex >= batches.length) break; // 没任务了，下班
 
             const batchTexts = batches[batchIndex];
-            // 执行请求 (Batch ID 从 1 开始显示)
-            results[batchIndex] = await _sendBatch(batchTexts, config, batchIndex + 1);
+            try {
+                // 执行请求 (Batch ID 从 1 开始显示)
+                results[batchIndex] = await _sendBatch(batchTexts, config, batchIndex + 1);
+            } catch (error) {
+                console.error(`[Embedding] Batch ${batchIndex + 1} failed with error: ${error.message}`);
+                // 出错时返回空数组，这样系统不会因为嵌入失败而完全无法工作
+                results[batchIndex] = [];
+            }
         }
     };
 
