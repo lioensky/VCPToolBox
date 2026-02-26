@@ -41,6 +41,29 @@ async function saveMediaCacheToFile() {
     }
 }
 
+function _resolveMediaPath(cacheEntry, mediaIndexForLabel) {
+    if (cacheEntry && typeof cacheEntry.filePath === 'string' && cacheEntry.filePath.trim()) {
+        return cacheEntry.filePath.trim();
+    }
+    if (cacheEntry && typeof cacheEntry.id === 'string' && cacheEntry.id.trim()) {
+        return `file://multimodal_cache/${cacheEntry.id.trim()}`;
+    }
+    return `file://multimodal_cache/media_${mediaIndexForLabel + 1}`;
+}
+
+function _formatStructuredMediaInfo(description, cacheEntry, mediaIndexForLabel) {
+    const safeDescription = (description || '').replace(/\s+/g, ' ').trim();
+    const mediaPath = _resolveMediaPath(cacheEntry, mediaIndexForLabel);
+    return JSON.stringify(
+        {
+            description: safeDescription,
+            filePath: mediaPath
+        },
+        null,
+        2
+    );
+}
+
 async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexForLabel, currentConfig) {
     const { default: fetch } = await import('node-fetch');
     const base64PrefixPattern = /^data:(image|audio|video)\/[^;]+;base64,/;
@@ -49,15 +72,27 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
 
     const cachedEntry = mediaBase64Cache[pureBase64Data];
     if (cachedEntry) {
-        const description = typeof cachedEntry === 'string' ? cachedEntry : cachedEntry.description; // Handle old and new cache format
+        const description = typeof cachedEntry === 'string' ? cachedEntry : cachedEntry.description;
+        const normalizedEntry = typeof cachedEntry === 'string'
+            ? { id: crypto.randomUUID(), description, timestamp: new Date().toISOString(), mimeType: mediaMimeType }
+            : cachedEntry;
         console.log(`[MultiModalProcessor] Cache hit for media ${mediaIndexForLabel + 1}.`);
-        return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${description}]`;
+        return {
+            inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${description}]`,
+            structuredText: _formatStructuredMediaInfo(description, normalizedEntry, mediaIndexForLabel),
+            cacheEntry: normalizedEntry
+        };
     }
 
     console.log(`[MultiModalProcessor] Translating media ${mediaIndexForLabel + 1}...`);
     if (!currentConfig.MultiModalModel || !currentConfig.MultiModalPrompt || !currentConfig.API_Key || !currentConfig.API_URL) {
         console.error('[MultiModalProcessor] Multimodal translation config incomplete.');
-        return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: 多模态数据转译服务配置不完整]`;
+        const failText = '[多模态数据转译服务配置不完整]';
+        return {
+            inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${failText}]`,
+            structuredText: _formatStructuredMediaInfo(failText, null, mediaIndexForLabel),
+            cacheEntry: null
+        };
     }
 
     const maxRetries = 3;
@@ -106,7 +141,11 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
                 };
                 mediaBase64Cache[pureBase64Data] = newCacheEntry;
                 await saveMediaCacheToFile();
-                return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${cleanedDescription}]`;
+                return {
+                    inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${cleanedDescription}]`,
+                    structuredText: _formatStructuredMediaInfo(cleanedDescription, newCacheEntry, mediaIndexForLabel),
+                    cacheEntry: newCacheEntry
+                };
             } else if (description) {
                 lastError = new Error(`Description too short (length: ${description.length}, attempt ${attempt}).`);
             } else {
@@ -118,8 +157,14 @@ async function translateMediaAndCacheInternal(base64DataWithPrefix, mediaIndexFo
         }
         if (attempt < maxRetries) await new Promise(resolve => setTimeout(resolve, 500));
     }
+
     console.error(`[MultiModalProcessor] Failed to translate media ${mediaIndexForLabel + 1} after ${maxRetries} attempts.`);
-    return `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: 多模态数据转译失败: ${lastError ? lastError.message.substring(0,100) : '未知错误'}]`;
+    const failReason = `多模态数据转译失败: ${lastError ? lastError.message.substring(0, 100) : '未知错误'}`;
+    return {
+        inlineText: `[MULTIMODAL_DATA_${mediaIndexForLabel + 1}_Info: ${failReason}]`,
+        structuredText: _formatStructuredMediaInfo(failReason, null, mediaIndexForLabel),
+        cacheEntry: null
+    };
 }
 
 module.exports = {
@@ -132,10 +177,15 @@ module.exports = {
 
     // Called by Plugin.js for each relevant request
     async processMessages(messages, requestConfig = {}) {
-        // Merge base config with request-specific config
         const currentConfig = { ...pluginConfig, ...requestConfig };
+        const transModeRaw = (currentConfig.TransBase64Mode || 'default').toString().toLowerCase();
+        const transMode = ['default', 'plus', 'minus'].includes(transModeRaw) ? transModeRaw : 'default';
+        const cognitoAgents = Array.isArray(currentConfig.TransBase64CognitoAgents)
+            ? currentConfig.TransBase64CognitoAgents.filter(item => typeof item === 'string' && item.trim())
+            : [];
+
         let globalMediaIndexForLabel = 0;
-        const processedMessages = JSON.parse(JSON.stringify(messages)); // Deep copy
+        const processedMessages = JSON.parse(JSON.stringify(messages));
 
         for (let i = 0; i < processedMessages.length; i++) {
             const msg = processedMessages[i];
@@ -154,7 +204,8 @@ module.exports = {
                 }
 
                 if (mediaPartsToTranslate.length > 0) {
-                    const allTranslatedMediaTexts = [];
+                    const translatedInlineTexts = [];
+                    const translatedStructuredTexts = [];
                     const asyncLimit = currentConfig.MultiModalModelAsynchronousLimit || 1;
 
                     for (let j = 0; j < mediaPartsToTranslate.length; j += asyncLimit) {
@@ -162,20 +213,53 @@ module.exports = {
                         const translationPromisesInChunk = chunkToTranslate.map((base64Url) =>
                             translateMediaAndCacheInternal(base64Url, globalMediaIndexForLabel++, currentConfig)
                         );
-                        const translatedTextsInChunk = await Promise.all(translationPromisesInChunk);
-                        allTranslatedMediaTexts.push(...translatedTextsInChunk);
+                        const translatedResultsInChunk = await Promise.all(translationPromisesInChunk);
+                        for (const result of translatedResultsInChunk) {
+                            translatedInlineTexts.push(result.inlineText);
+                            translatedStructuredTexts.push(result.structuredText);
+                        }
                     }
 
-                    let userTextPart = contentWithoutMedia.find(p => p.type === 'text');
-                    if (!userTextPart) {
-                        userTextPart = { type: 'text', text: '' };
-                        contentWithoutMedia.unshift(userTextPart);
+                    if (transMode === 'minus') {
+                        const markerId = crypto.randomUUID();
+                        const beginMarker = `[TRANSBASE64_MINUS_BEGIN_${markerId}]`;
+                        const endMarker = `[TRANSBASE64_MINUS_END_${markerId}]`;
+                        const agentsLine = `[CognitoAgents: ${cognitoAgents.length > 0 ? cognitoAgents.join(', ') : 'Cognito-Core'}]`;
+                        const hiddenBlock = `${beginMarker}\n${agentsLine}\n${translatedStructuredTexts.join('\n')}\n${endMarker}`;
+
+                        let userTextPart = contentWithoutMedia.find(p => p.type === 'text');
+                        if (!userTextPart) {
+                            userTextPart = { type: 'text', text: '' };
+                            contentWithoutMedia.unshift(userTextPart);
+                        }
+                        userTextPart.text = (userTextPart.text ? userTextPart.text.trim() + '\n' : '') + hiddenBlock;
+                        msg.content = contentWithoutMedia;
+                        continue;
                     }
+
+                    let userTextPart;
+                    if (transMode === 'plus') {
+                        userTextPart = msg.content.find(p => p.type === 'text');
+                        if (!userTextPart) {
+                            userTextPart = { type: 'text', text: '' };
+                            msg.content.unshift(userTextPart);
+                        }
+                    } else {
+                        userTextPart = contentWithoutMedia.find(p => p.type === 'text');
+                        if (!userTextPart) {
+                            userTextPart = { type: 'text', text: '' };
+                            contentWithoutMedia.unshift(userTextPart);
+                        }
+                    }
+
                     const insertPrompt = currentConfig.MediaInsertPrompt || "[多模态数据信息已提取:]";
                     userTextPart.text = (userTextPart.text ? userTextPart.text.trim() + '\n' : '') +
                                         insertPrompt + '\n' +
-                                        allTranslatedMediaTexts.join('\n');
-                    msg.content = contentWithoutMedia;
+                                        translatedInlineTexts.join('\n');
+
+                    if (transMode === 'default') {
+                        msg.content = contentWithoutMedia;
+                    }
                 }
             }
         }

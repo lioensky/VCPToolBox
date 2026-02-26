@@ -10,6 +10,7 @@ const ToolCallParser = require('./vcpLoop/toolCallParser');
 const ToolExecutor = require('./vcpLoop/toolExecutor');
 const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
+const FileFetcherServer = require('../FileFetcherServer.js');
 
 /**
  * 检测工具返回结果是否为错误
@@ -289,6 +290,113 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
   return newMessages;
 }
 
+async function _expandVcpFileDirectives(messages, requestIp, debugMode = false) {
+  if (!Array.isArray(messages)) return messages;
+  const directiveRegex = /\{\{VCP@((?:file:\/\/)[^}]+)\}\}/g;
+  const newMessages = JSON.parse(JSON.stringify(messages));
+  let hasDirective = false;
+  const isEnabled = (process.env.VCP_FILE_DIRECTIVE_ENABLED || 'true').toLowerCase() === 'true';
+
+  if (!isEnabled) {
+    return newMessages;
+  }
+
+  async function transformTextToParts(text) {
+    if (typeof text !== 'string' || !text.includes('{{VCP@file://')) {
+      return null;
+    }
+
+    const matches = [...text.matchAll(directiveRegex)];
+    if (matches.length === 0) {
+      return null;
+    }
+
+    hasDirective = true;
+    const parts = [];
+    let cursor = 0;
+
+    for (const match of matches) {
+      const fullMatch = match[0];
+      const rawUrl = match[1];
+      const startIndex = match.index || 0;
+      const endIndex = startIndex + fullMatch.length;
+
+      if (startIndex > cursor) {
+        const plainText = text.slice(cursor, startIndex);
+        if (plainText) parts.push({ type: 'text', text: plainText });
+      }
+
+      const fileUrl = (rawUrl || '').trim();
+      try {
+        const { buffer, mimeType } = await FileFetcherServer.fetchFile(fileUrl, requestIp);
+        const dataUri = `data:${mimeType || 'application/octet-stream'};base64,${buffer.toString('base64')}`;
+        parts.push({
+          type: 'image_url',
+          image_url: { url: dataUri }
+        });
+        if (debugMode) {
+          console.log(`[VCPFileDirective] Resolved directive via FileFetcherServer: ${fileUrl}`);
+        }
+      } catch (error) {
+        const errorText = `[VCP@file 读取失败: ${fileUrl} | ${error.message}]`;
+        parts.push({ type: 'text', text: errorText });
+        if (debugMode) {
+          console.warn(`[VCPFileDirective] Failed to resolve ${fileUrl}: ${error.message}`);
+        }
+      }
+
+      cursor = endIndex;
+    }
+
+    if (cursor < text.length) {
+      const tail = text.slice(cursor);
+      if (tail) parts.push({ type: 'text', text: tail });
+    }
+
+    if (parts.length === 0) {
+      parts.push({ type: 'text', text: '' });
+    }
+
+    return parts;
+  }
+
+  for (const msg of newMessages) {
+    if (!msg || msg.role !== 'user') continue;
+
+    if (typeof msg.content === 'string') {
+      const transformedParts = await transformTextToParts(msg.content);
+      if (transformedParts) {
+        msg.content = transformedParts;
+      }
+      continue;
+    }
+
+    if (Array.isArray(msg.content)) {
+      const flattened = [];
+      for (const part of msg.content) {
+        if (!part || typeof part.text !== 'string') {
+          flattened.push(part);
+          continue;
+        }
+
+        const transformedParts = await transformTextToParts(part.text);
+        if (transformedParts) {
+          flattened.push(...transformedParts);
+        } else {
+          flattened.push(part);
+        }
+      }
+      msg.content = flattened;
+    }
+  }
+
+  if (debugMode && hasDirective) {
+    console.log('[VCPFileDirective] All {{VCP@file://...}} directives have been transformed for user messages.');
+  }
+
+  return newMessages;
+}
+
 class ChatCompletionHandler {
   constructor(config) {
     this.config = config;
@@ -418,29 +526,84 @@ class ChatCompletionHandler {
         if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
       }
 
+      originalBody.messages = await _expandVcpFileDirectives(originalBody.messages, clientIp, DEBUG_MODE);
+      if (DEBUG_MODE) await writeDebugLog('LogAfterVcpFileDirectiveProcessing', originalBody.messages);
+
       let shouldProcessMedia = false;
+      let transBase64Mode = null;
+      let transBase64CognitoAgents = [];
+      const transBase64PlaceholderRegex = /\{\{TransBase64([+-]?)(?:::(.*?))?\}\}/g;
+
+      const parseTransBase64Directives = (text) => {
+        if (typeof text !== 'string' || !text) {
+          return { cleanedText: text, found: false, mode: null, agents: [] };
+        }
+
+        let found = false;
+        let detectedMode = null;
+        let detectedAgents = [];
+        const cleanedText = text.replace(transBase64PlaceholderRegex, (_, modeSymbol, agentsRaw) => {
+          found = true;
+          if (!detectedMode) {
+            if (modeSymbol === '-') detectedMode = 'minus';
+            else if (modeSymbol === '+') detectedMode = 'plus';
+            else detectedMode = 'default';
+          }
+
+          if (!detectedAgents.length && typeof agentsRaw === 'string' && agentsRaw.trim()) {
+            detectedAgents = agentsRaw.split(';').map(item => item.trim()).filter(Boolean);
+          }
+
+          return '';
+        });
+
+        return { cleanedText, found, mode: detectedMode, agents: detectedAgents };
+      };
+
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         for (const msg of originalBody.messages) {
           let foundPlaceholderInMsg = false;
-          if (msg.role === 'user' || msg.role === 'system') {
-            if (typeof msg.content === 'string' && msg.content.includes('{{TransBase64}}')) {
-              foundPlaceholderInMsg = true;
-              msg.content = msg.content.replace(/\{\{TransBase64\}\}/g, '');
+          const normalizedRole = typeof msg.role === 'string' ? msg.role.toLowerCase() : '';
+          if (normalizedRole === 'user' || normalizedRole === 'system') {
+            if (typeof msg.content === 'string') {
+              const parsed = parseTransBase64Directives(msg.content);
+              if (parsed.found) {
+                foundPlaceholderInMsg = true;
+                msg.content = parsed.cleanedText;
+                if (!transBase64Mode && parsed.mode) transBase64Mode = parsed.mode;
+                if (transBase64CognitoAgents.length === 0 && parsed.agents.length > 0) {
+                  transBase64CognitoAgents = parsed.agents;
+                }
+              }
             } else if (Array.isArray(msg.content)) {
               for (const part of msg.content) {
-                if (part.type === 'text' && typeof part.text === 'string' && part.text.includes('{{TransBase64}}')) {
-                  foundPlaceholderInMsg = true;
-                  part.text = part.text.replace(/\{\{TransBase64\}\}/g, '');
+                if (typeof part.text === 'string') {
+                  const parsed = parseTransBase64Directives(part.text);
+                  if (parsed.found) {
+                    foundPlaceholderInMsg = true;
+                    part.text = parsed.cleanedText;
+                    if (!transBase64Mode && parsed.mode) transBase64Mode = parsed.mode;
+                    if (transBase64CognitoAgents.length === 0 && parsed.agents.length > 0) {
+                      transBase64CognitoAgents = parsed.agents;
+                    }
+                  }
                 }
               }
             }
           }
           if (foundPlaceholderInMsg) {
             shouldProcessMedia = true;
-            if (DEBUG_MODE) console.log('[Server] Media translation enabled by {{TransBase64}} placeholder.');
-            break;
           }
         }
+      }
+
+      if (!transBase64Mode && shouldProcessMedia) {
+        transBase64Mode = 'default';
+      }
+      if (DEBUG_MODE && shouldProcessMedia) {
+        console.log(
+          `[Server] Media translation enabled by TransBase64 placeholder. mode=${transBase64Mode || 'default'} agents=${transBase64CognitoAgents.join(',') || 'Cognito-Core'}`
+        );
       }
 
       // --- VCPTavern 优先处理 ---
@@ -508,7 +671,14 @@ class ChatCompletionHandler {
         if (pluginManager.messagePreprocessors.has(processorName)) {
           if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
           try {
-            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
+            processedMessages = await pluginManager.executeMessagePreprocessor(
+              processorName,
+              processedMessages,
+              {
+                TransBase64Mode: transBase64Mode || 'default',
+                TransBase64CognitoAgents: transBase64CognitoAgents
+              }
+            );
           } catch (pluginError) {
             console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
           }
@@ -529,7 +699,34 @@ class ChatCompletionHandler {
       }
       if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
 
+      // 二次展开：允许预处理器（如 RAGDiaryPlugin 的 TransBase64+）在后置阶段新增 {{VCP@file://...}} 指令
+      // 这样可把“日记本召回出的媒体文件”真正转为多模态 part 发送给模型
+      processedMessages = await _expandVcpFileDirectives(processedMessages, clientIp, DEBUG_MODE);
+      if (DEBUG_MODE) await writeDebugLog('LogAfterPostPreprocessorVcpFileDirectiveProcessing', processedMessages);
+
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
+
+      if (shouldProcessMedia && transBase64Mode === 'minus') {
+        const minusBlockRegex = /\[TRANSBASE64_MINUS_BEGIN_[^\]]+\][\s\S]*?\[TRANSBASE64_MINUS_END_[^\]]+\]\s*/g;
+        processedMessages = processedMessages.map(message => {
+          if (!message || message.role !== 'user') return message;
+          if (typeof message.content === 'string') {
+            return { ...message, content: message.content.replace(minusBlockRegex, '') };
+          }
+          if (Array.isArray(message.content)) {
+            return {
+              ...message,
+              content: message.content.map(part => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                  return { ...part, text: part.text.replace(minusBlockRegex, '') };
+                }
+                return part;
+              })
+            };
+          }
+          return message;
+        });
+      }
 
       originalBody.messages = processedMessages;
       await writeDebugLog('LogOutputAfterProcessing', originalBody);

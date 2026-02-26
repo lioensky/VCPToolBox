@@ -23,6 +23,18 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     const AGENT_FILES_DIR = agentDirPath;
     console.log('[AdminPanelRoutes] Agent files directory:', AGENT_FILES_DIR);
 
+    function resolveTvsDir() {
+        const configPath = process.env.TVS_DIR_PATH || process.env.TVSTXT_DIR_PATH; // 兼容两种命名
+        if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+            return path.join(__dirname, '..', 'TVStxt');
+        }
+
+        const normalizedPath = path.normalize(configPath.trim());
+        return path.isAbsolute(normalizedPath)
+            ? normalizedPath
+            : path.resolve(__dirname, '..', normalizedPath);
+    }
+
 
 
     // --- Admin API Router 内容 ---
@@ -736,6 +748,59 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
 
 
     // --- MultiModal Cache API (New) ---
+    function normalizeMediaBase64Key(base64Key) {
+        if (typeof base64Key !== 'string') return '';
+        const trimmed = base64Key.trim();
+        const match = trimmed.match(/^data:[^;]+;base64,(.+)$/i);
+        return match ? match[1] : trimmed;
+    }
+
+    function guessMimeTypeFromBase64(base64String) {
+        if (typeof base64String !== 'string') return 'application/octet-stream';
+        const sample = base64String.trim();
+        if (sample.startsWith('/9j/')) return 'image/jpeg';
+        if (sample.startsWith('iVBOR')) return 'image/png';
+        if (sample.startsWith('R0lGOD')) return 'image/gif';
+        if (sample.startsWith('UklGR')) return 'image/webp';
+        if (sample.startsWith('JVBER')) return 'application/pdf';
+        return 'application/octet-stream';
+    }
+
+    function getExtensionByMimeType(mimeType) {
+        const map = {
+            'image/jpeg': '.jpg',
+            'image/png': '.png',
+            'image/gif': '.gif',
+            'image/webp': '.webp',
+            'image/bmp': '.bmp',
+            'image/tiff': '.tiff',
+            'image/avif': '.avif',
+            'image/svg+xml': '.svg',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'audio/flac': '.flac',
+            'audio/mp4': '.m4a',
+            'audio/aac': '.aac',
+            'audio/ogg': '.ogg',
+            'video/mp4': '.mp4',
+            'video/quicktime': '.mov',
+            'video/x-matroska': '.mkv',
+            'video/webm': '.webm',
+            'video/x-msvideo': '.avi',
+            'application/pdf': '.pdf'
+        };
+        return map[mimeType] || '.bin';
+    }
+
+    function decodeFileUrl(fileUrl) {
+        if (typeof fileUrl !== 'string' || !fileUrl.startsWith('file://')) return null;
+        try {
+            return decodeURIComponent(fileUrl.slice('file://'.length));
+        } catch (_) {
+            return fileUrl.slice('file://'.length);
+        }
+    }
+
     adminApiRouter.get('/multimodal-cache', async (req, res) => {
         const cachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'multimodal_cache.json');
         try {
@@ -763,6 +828,80 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error writing multimodal cache file:', error);
             res.status(500).json({ error: 'Failed to write multimodal cache file', details: error.message });
+        }
+    });
+
+    adminApiRouter.get('/multimodal-cache/export', async (req, res) => {
+        const cachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'multimodal_cache.json');
+        const sidecarSuffix = process.env.MULTIMODAL_SIDECAR_SUFFIX || '.vcpmeta.json';
+
+        try {
+            const content = await fs.readFile(cachePath, 'utf-8');
+            const cacheData = JSON.parse(content || '{}');
+            const keys = Object.keys(cacheData || {});
+
+            const exportData = {
+                exportedAt: new Date().toISOString(),
+                source: 'multimodal_cache',
+                sidecarSuffix,
+                itemCount: keys.length,
+                items: []
+            };
+
+            for (let index = 0; index < keys.length; index++) {
+                const base64Key = keys[index];
+                const entry = cacheData[base64Key] || {};
+                const pureBase64 = normalizeMediaBase64Key(base64Key);
+                const mimeType = entry.mimeType || guessMimeTypeFromBase64(pureBase64);
+                const ext = getExtensionByMimeType(mimeType);
+                const mediaFileName = `media_${index + 1}${ext}`;
+
+                let mediaSize = 0;
+                try {
+                    mediaSize = Buffer.from(pureBase64, 'base64').length;
+                } catch (_) {
+                    mediaSize = 0;
+                }
+
+                const mediaFilePath = decodeFileUrl(entry.filePath);
+                let sidecarPath = null;
+                let sidecar = null;
+
+                if (mediaFilePath) {
+                    sidecarPath = `${mediaFilePath}${sidecarSuffix}`;
+                    try {
+                        const sidecarRaw = await fs.readFile(sidecarPath, 'utf-8');
+                        sidecar = JSON.parse(sidecarRaw);
+                    } catch (_) {
+                        sidecar = null;
+                    }
+                }
+
+                exportData.items.push({
+                    id: entry.id || null,
+                    timestamp: entry.timestamp || null,
+                    mimeType,
+                    description: entry.description || '',
+                    sourceFilePath: entry.filePath || null,
+                    mediaFileName,
+                    mediaSize,
+                    mediaBase64: pureBase64,
+                    sidecarFilePath: sidecarPath ? `file://${sidecarPath}` : null,
+                    sidecar
+                });
+            }
+
+            const fileName = `multimodal_cache_export_${Date.now()}.json`;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            res.status(200).send(JSON.stringify(exportData, null, 2));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error exporting multimodal cache:', error);
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: 'multimodal_cache.json 不存在，无法导出。' });
+            } else {
+                res.status(500).json({ error: 'Failed to export multimodal cache', details: error.message });
+            }
         }
     });
 
@@ -997,7 +1136,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     // --- End Agent Files API ---
 
     // --- TVS Variable Files API ---
-    const TVS_FILES_DIR = path.join(__dirname, '..', 'TVStxt'); // 定义 TVS 文件目录
+    const TVS_FILES_DIR = resolveTvsDir(); // 定义 TVS 文件目录（支持 TVS_DIR_PATH）
 
     // GET list of TVS .txt files
     adminApiRouter.get('/tvsvars', async (req, res) => {
@@ -2138,8 +2277,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     adminApiRouter.get('/tool-list-editor/check-file/:fileName', async (req, res) => {
         try {
             const fileName = req.params.fileName;
-            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
-            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            const outputPath = path.join(TVS_FILES_DIR, `${fileName}.txt`);
 
             try {
                 await fs.access(outputPath);
@@ -2159,8 +2297,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     adminApiRouter.post('/tool-list-editor/export/:fileName', async (req, res) => {
         try {
             const fileName = req.params.fileName;
-            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
-            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            const outputPath = path.join(TVS_FILES_DIR, `${fileName}.txt`);
 
             const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
 
@@ -2271,7 +2408,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             });
 
             await fs.writeFile(outputPath, output, 'utf-8');
-            res.json({ status: 'success', filePath: `TVStxt/${fileName}.txt` });
+            res.json({ status: 'success', filePath: outputPath });
         } catch (error) {
             console.error('[AdminAPI] Error exporting to txt:', error);
             res.status(500).json({ error: 'Failed to export to txt', details: error.message });

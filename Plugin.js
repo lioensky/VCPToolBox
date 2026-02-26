@@ -344,7 +344,7 @@ class PluginManager {
         return `[Invalid value format for placeholder ${placeholder}]`;
     }
 
-    async executeMessagePreprocessor(pluginName, messages) {
+    async executeMessagePreprocessor(pluginName, messages, runtimeConfig = {}) {
         const processorModule = this.messagePreprocessors.get(pluginName);
         const pluginManifest = this.plugins.get(pluginName);
         if (!processorModule || !pluginManifest) {
@@ -358,7 +358,11 @@ class PluginManager {
         try {
             if (this.debugMode) console.log(`[PluginManager] Executing message preprocessor: ${pluginName}`);
             const pluginSpecificConfig = this._getPluginConfig(pluginManifest);
-            const processedMessages = await processorModule.processMessages(messages, pluginSpecificConfig);
+            const mergedConfig = {
+                ...pluginSpecificConfig,
+                ...(runtimeConfig && typeof runtimeConfig === 'object' ? runtimeConfig : {})
+            };
+            const processedMessages = await processorModule.processMessages(messages, mergedConfig);
             if (this.debugMode) console.log(`[PluginManager] Message preprocessor ${pluginName} finished.`);
             return processedMessages;
         } catch (error) {

@@ -48,6 +48,8 @@ class KnowledgeBaseManager {
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
             tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
             fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
+            multimodalIndexEnabled: (process.env.KNOWLEDGEBASE_MULTIMODAL_INDEX || 'false').toLowerCase() === 'true',
+            sidecarSuffix: process.env.MULTIMODAL_SIDECAR_SUFFIX || '.vcpmeta.json',
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
@@ -947,29 +949,50 @@ class KnowledgeBaseManager {
         }
     }
 
+    notifyFileChanged(filePath) {
+        if (!filePath || typeof filePath !== 'string') return false;
+
+        const normalizedPath = path.resolve(filePath);
+        const relPath = path.relative(this.config.rootPath, normalizedPath);
+        if (!relPath || relPath.startsWith('..')) return false;
+
+        const parts = relPath.split(path.sep);
+        const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+        if (this.config.ignoreFolders.includes(diaryName)) return false;
+        const fileName = path.basename(relPath);
+        if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return false;
+        if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return false;
+        if (!this._isIndexableFile(normalizedPath)) return false;
+
+        this.pendingFiles.add(normalizedPath);
+        if (this.pendingFiles.size >= this.config.maxBatchSize) {
+            this._flushBatch();
+        } else {
+            this._scheduleBatch();
+        }
+        return true;
+    }
+
+    async notifyFileDeleted(filePath) {
+        if (!filePath || typeof filePath !== 'string') return false;
+
+        const normalizedPath = path.resolve(filePath);
+        const relPath = path.relative(this.config.rootPath, normalizedPath);
+        if (!relPath || relPath.startsWith('..')) return false;
+
+        if (!this._isIndexableFile(normalizedPath)) return false;
+        await this._handleDelete(normalizedPath);
+        return true;
+    }
+
     _startWatcher() {
         if (!this.watcher) {
             const handleFile = (filePath) => {
-                const relPath = path.relative(this.config.rootPath, filePath);
-                // 提取第一级目录作为日记本名称
-                const parts = relPath.split(path.sep);
-                const diaryName = parts.length > 1 ? parts[0] : 'Root';
-
-                if (this.config.ignoreFolders.includes(diaryName)) return;
-                const fileName = path.basename(relPath);
-                if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
-                if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;
-                if (!filePath.match(/\.(md|txt)$/i)) return;
-
-                this.pendingFiles.add(filePath);
-                if (this.pendingFiles.size >= this.config.maxBatchSize) {
-                    this._flushBatch();
-                } else {
-                    this._scheduleBatch();
-                }
+                this.notifyFileChanged(filePath);
             };
             this.watcher = chokidar.watch(this.config.rootPath, { ignored: /(^|[\/\\])\../, ignoreInitial: !this.config.fullScanOnStartup });
-            this.watcher.on('add', handleFile).on('change', handleFile).on('unlink', fp => this._handleDelete(fp));
+            this.watcher.on('add', handleFile).on('change', handleFile).on('unlink', fp => this.notifyFileDeleted(fp));
         }
     }
 
@@ -1002,7 +1025,9 @@ class KnowledgeBaseManager {
                     const row = checkFile.get(relPath);
                     if (row && row.mtime === stats.mtimeMs && row.size === stats.size) return;
 
-                    const content = await fs.readFile(filePath, 'utf-8');
+                    const content = await this._readIndexableContent(filePath);
+                    if (!content) return;
+
                     const checksum = crypto.createHash('md5').update(content).digest('hex');
 
                     if (row && row.checksum === checksum) {
@@ -1271,6 +1296,41 @@ class KnowledgeBaseManager {
             }
             console.log(`[KnowledgeBase] 💾 Saved index: ${name}`);
         } catch (e) { console.error(`[KnowledgeBase] Save failed for ${name}:`, e); }
+    }
+
+    _isSidecarFile(filePath) {
+        return filePath.toLowerCase().endsWith((this.config.sidecarSuffix || '.vcpmeta.json').toLowerCase());
+    }
+
+    _isIndexableFile(filePath) {
+        if (filePath.match(/\.(md|txt)$/i)) return true;
+        if (!this.config.multimodalIndexEnabled) return false;
+        return this._isSidecarFile(filePath);
+    }
+
+    async _readIndexableContent(filePath) {
+        if (!this._isSidecarFile(filePath)) {
+            return await fs.readFile(filePath, 'utf-8');
+        }
+
+        try {
+            const raw = await fs.readFile(filePath, 'utf-8');
+            const sidecar = JSON.parse(raw);
+            const description = typeof sidecar.description === 'string' ? sidecar.description.trim() : '';
+            const tagsArray = Array.isArray(sidecar.tags)
+                ? sidecar.tags.map(t => (typeof t === 'string' ? t.trim() : '')).filter(Boolean)
+                : [];
+
+            let merged = description;
+            if (tagsArray.length > 0 && !/^\s*Tag:/im.test(merged)) {
+                merged = `${merged}${merged ? '\n' : ''}Tag: ${tagsArray.join(', ')}`;
+            }
+
+            return this._prepareTextForEmbedding(merged) === '[EMPTY_CONTENT]' ? null : merged;
+        } catch (error) {
+            console.warn(`[KnowledgeBase] Failed to parse sidecar file "${filePath}": ${error.message}`);
+            return null;
+        }
     }
 
     _extractTags(content) {

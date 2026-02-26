@@ -38,6 +38,7 @@
 <div class="container">
     <div class="controls">
         <button id="saveButton">保存更改到 multimodal_cache.json</button>
+        <button id="exportButton">导出缓存媒体+侧车</button>
         <!--  按钮暂时不加入主题切换，因为iframe内切换可能与外部不同步，由外部统一控制 -->
     </div>
 
@@ -51,8 +52,10 @@
     let mediaCacheData = {};
     const mediaListDiv = document.getElementById('mediaList');
     const saveButton = document.getElementById('saveButton');
+    const exportButton = document.getElementById('exportButton');
 
     saveButton.addEventListener('click', handleSave);
+    exportButton.addEventListener('click', handleExport);
 
     function guessMimeType(base64String) {
         if (base64String.startsWith('/9j/')) return 'image/jpeg';
@@ -78,10 +81,7 @@
     }
 
     async function handleSave() {
-        if (Object.keys(mediaCacheData).length === 0) {
-            alert('没有数据可保存。');
-            return;
-        }
+        // 允许空对象保存：用于“删除最后一条后清空缓存文件”的场景
 
         // Update mediaCacheData with current textarea values
         const entries = mediaListDiv.getElementsByClassName('media-entry');
@@ -114,6 +114,46 @@
         } catch (error) {
             alert('保存多媒体缓存时发生错误: ' + error.message);
             console.error("保存错误:", error);
+        }
+    }
+
+    async function handleExport() {
+        exportButton.disabled = true;
+        const originalText = exportButton.textContent;
+        exportButton.textContent = '导出中...';
+
+        try {
+            const response = await fetch('/admin_api/multimodal-cache/export');
+            if (!response.ok) {
+                let errorMsg = `HTTP ${response.status}`;
+                try {
+                    const errJson = await response.json();
+                    errorMsg = errJson.error || errJson.details || errorMsg;
+                } catch (_) {}
+                throw new Error(errorMsg);
+            }
+
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
+            const fileName = fileNameMatch ? fileNameMatch[1] : `multimodal_cache_export_${Date.now()}.json`;
+
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            alert(`导出完成：${fileName}`);
+        } catch (error) {
+            console.error('导出多媒体缓存失败:', error);
+            alert(`导出失败: ${error.message}`);
+        } finally {
+            exportButton.disabled = false;
+            exportButton.textContent = originalText;
         }
     }
 

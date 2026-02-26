@@ -3,23 +3,39 @@ const fs = require('fs').promises;
 const path = require('path');
 const chokidar = require('chokidar');
 
-const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
+function resolveTvsDir() {
+    const configPath = process.env.TVS_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, '..', 'TVStxt');
+    }
+
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, '..', normalizedPath);
+}
 
 class TvsManager {
     constructor() {
         this.contentCache = new Map();
         this.debugMode = false;
+        this.tvsDir = resolveTvsDir();
     }
 
     initialize(debugMode = false) {
         this.debugMode = debugMode;
-        console.log('[TvsManager] Initializing...');
-        this.watchFiles();
+        this.tvsDir = resolveTvsDir();
+        console.log(`[TvsManager] Initializing... TVS directory: ${this.tvsDir}`);
+        fs.mkdir(this.tvsDir, { recursive: true })
+            .then(() => this.watchFiles())
+            .catch((error) => {
+                console.error(`[TvsManager] Failed to ensure TVS directory: ${this.tvsDir}`, error);
+            });
     }
 
     watchFiles() {
         try {
-            const watcher = chokidar.watch(TVS_DIR, {
+            const watcher = chokidar.watch(this.tvsDir, {
                 ignored: /(^|[\/\\])\../, // ignore dotfiles
                 persistent: true,
                 ignoreInitial: true, // Don't trigger 'add' events on startup
@@ -43,7 +59,7 @@ class TvsManager {
                 .on('error', (error) => console.error(`[TvsManager] Watcher error: ${error}`));
 
             if (this.debugMode) {
-                console.log(`[TvsManager] Watching for changes in: ${TVS_DIR}`);
+                console.log(`[TvsManager] Watching for changes in: ${this.tvsDir}`);
             }
         } catch (error) {
             console.error(`[TvsManager] Failed to set up file watcher:`, error);
@@ -63,7 +79,7 @@ class TvsManager {
         }
 
         try {
-            const filePath = path.join(TVS_DIR, filename);
+            const filePath = path.join(this.tvsDir, filename);
             const content = await fs.readFile(filePath, 'utf8');
             this.contentCache.set(filename, content);
             return content;

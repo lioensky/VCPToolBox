@@ -70,11 +70,40 @@ async function ensureAgentDirectory() {
         }
     }
 }
-const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
+let TVS_DIR;
+
+function resolveTvsDir() {
+    const configPath = process.env.TVS_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, 'TVStxt');
+    }
+
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, normalizedPath);
+}
+
+TVS_DIR = resolveTvsDir();
+
+async function ensureTvsDirectory() {
+    try {
+        await fs.mkdir(TVS_DIR, { recursive: true });
+        console.log(`[Server] TVS directory: ${TVS_DIR}`);
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            console.error(`[Server] Failed to create TVS directory: ${TVS_DIR}`);
+            console.error(error);
+            process.exit(1);
+        }
+    }
+}
+
 const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const messageProcessor = require('./modules/messageProcessor.js');
+const mediaSidecarManager = require('./modules/mediaSidecarManager.js');
 const knowledgeBaseManager = require('./KnowledgeBaseManager.js'); // 新增：引入统一知识库管理器
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
@@ -1188,6 +1217,9 @@ async function startServer() {
     // 确保 Agent 目录存在
     await ensureAgentDirectory();
 
+    // 确保 TVS 目录存在
+    await ensureTvsDirectory();
+
     // 新增：加载模型重定向配置
     console.log('正在加载模型重定向配置...');
     modelRedirectHandler.setDebugMode(DEBUG_MODE);
@@ -1206,6 +1238,40 @@ async function startServer() {
 
     // 🌟 关键修复：在监听端口前完成所有初始化
     await initialize(); // This loads plugins and initializes services
+
+    console.log('正在初始化多模态侧车管理器...');
+    await mediaSidecarManager.initialize({
+        rootPath: dailyNoteRootPath,
+        storePath: process.env.KNOWLEDGEBASE_STORE_PATH || path.join(__dirname, 'VectorStore'),
+        debugMode: DEBUG_MODE
+    });
+    console.log('多模态侧车管理器初始化完成。');
+
+    if (knowledgeBaseManager && typeof knowledgeBaseManager.notifyFileChanged === 'function' && typeof knowledgeBaseManager.notifyFileDeleted === 'function') {
+        mediaSidecarManager.on('sidecar-upsert', async ({ sidecarPath }) => {
+            try {
+                if (sidecarPath) {
+                    knowledgeBaseManager.notifyFileChanged(sidecarPath);
+                }
+            } catch (error) {
+                console.error('[Server] sidecar-upsert -> KnowledgeBase notify failed:', error.message);
+            }
+        });
+
+        mediaSidecarManager.on('sidecar-delete', async ({ sidecarPath }) => {
+            try {
+                if (sidecarPath) {
+                    await knowledgeBaseManager.notifyFileDeleted(sidecarPath);
+                }
+            } catch (error) {
+                console.error('[Server] sidecar-delete -> KnowledgeBase notify failed:', error.message);
+            }
+        });
+
+        if (DEBUG_MODE) {
+            console.log('[Server] Media sidecar lifecycle bridge to KnowledgeBaseManager is active.');
+        }
+    }
 
     server = app.listen(port, () => {
         console.log(`中间层服务器正在监听端口 ${port}`);
@@ -1245,6 +1311,10 @@ async function gracefulShutdown() {
     }
     if (pluginManager) {
         await pluginManager.shutdownAllPlugins();
+    }
+
+    if (mediaSidecarManager) {
+        await mediaSidecarManager.shutdown();
     }
 
     const serverLogWriteStream = logger.getLogWriteStream();

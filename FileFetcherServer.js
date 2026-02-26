@@ -89,8 +89,28 @@ async function fetchFile(fileUrl, requestIp) {
         console.log(`[FileFetcherServer] URL缓存未命中: ${fileUrl}。将尝试从来源服务器获取。`);
     }
 
-    // 2. 缓存未命中，直接从来源的分布式服务器获取
-    // 已移除：在主服务器上直接读取本地文件的尝试，因为这是逻辑缺陷。
+    // 2. 缓存未命中，优先尝试主服务器本地读取（单机/本机客户端场景）
+    // 若本地不存在或不可读，再回退到分布式超栈追踪链路。
+    try {
+        const localFilePath = fileURLToPath(fileUrl);
+        const localBuffer = await fs.readFile(localFilePath);
+        const localMimeType = mime.lookup(localFilePath) || 'application/octet-stream';
+        console.log(`[FileFetcherServer] 本地直读成功: ${localFilePath}`);
+
+        try {
+            await fs.writeFile(cachedFilePath, localBuffer);
+            console.log(`[FileFetcherServer] 已将本地文件缓存到: ${cachedFilePath}`);
+        } catch (writeError) {
+            console.error(`[FileFetcherServer] 本地文件缓存写入失败: ${writeError.message}`);
+        }
+
+        return { buffer: localBuffer, mimeType: localMimeType };
+    } catch (localReadError) {
+        const localErrorCode = localReadError && localReadError.code ? localReadError.code : 'UNKNOWN';
+        console.log(`[FileFetcherServer] 本地直读未命中或失败 (${localErrorCode})，回退到分布式拉取: ${fileUrl}`);
+    }
+
+    // 3. 本地直读失败后，回退到来源分布式服务器获取
 
     // --- 失败缓存逻辑 (保留) ---
     const cachedFailure = failedFetchCache.get(fileUrl);

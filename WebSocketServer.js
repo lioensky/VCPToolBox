@@ -520,11 +520,58 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
 }
 
 function findServerByIp(ip) {
+   const buildIpVariants = (rawIp) => {
+       const variants = new Set();
+       if (!rawIp || typeof rawIp !== 'string') return variants;
+
+       let normalized = rawIp.trim();
+       if (!normalized) return variants;
+
+       variants.add(normalized);
+
+       if (normalized.startsWith('::ffff:')) {
+           const mapped = normalized.slice(7);
+           if (mapped) variants.add(mapped);
+           normalized = mapped || normalized;
+       }
+
+       if (normalized === '::1') {
+           variants.add('127.0.0.1');
+           variants.add('localhost');
+       }
+
+       if (normalized === '127.0.0.1' || normalized === 'localhost') {
+           variants.add('::1');
+       }
+
+       return variants;
+   };
+
+   const requestIpVariants = buildIpVariants(ip);
+   if (requestIpVariants.size === 0) {
+       return null;
+   }
+
    for (const [serverId, ipInfo] of distributedServerIPs.entries()) {
-       if (ipInfo.publicIP === ip || (ipInfo.localIPs && ipInfo.localIPs.includes(ip))) {
-           return ipInfo.serverName || serverId;
+       const candidateIps = new Set();
+
+       if (ipInfo.publicIP) {
+           for (const v of buildIpVariants(ipInfo.publicIP)) candidateIps.add(v);
+       }
+
+       if (Array.isArray(ipInfo.localIPs)) {
+           for (const localIp of ipInfo.localIPs) {
+               for (const v of buildIpVariants(localIp)) candidateIps.add(v);
+           }
+       }
+
+       for (const candidateIp of candidateIps) {
+           if (requestIpVariants.has(candidateIp)) {
+               return ipInfo.serverName || serverId;
+           }
        }
    }
+
    return null;
 }
 
