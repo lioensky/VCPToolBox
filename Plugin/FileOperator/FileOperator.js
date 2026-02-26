@@ -63,7 +63,7 @@ function isPathAllowed(targetPath, operationType = 'generic') {
     debugLog(`Path is outside allowed directories, but operation is a read-only bypass. Access granted.`, { targetPath, operationType });
     return true;
   }
-  
+
   // 3. 对于所有其他情况（例如，在沙箱外的写/删除操作），一律拒绝。
   debugLog(`Access denied. Path is outside allowed directories and operation is not a read-only bypass.`, { targetPath, operationType });
   return false;
@@ -117,7 +117,7 @@ function applyDiffLogic(originalContent, diffContent) {
   // This logic correctly ignores line numbers and only takes content after '-------'
   const searchContent = searchPart.substring(searchPart.indexOf('-------') + '-------'.length).trim();
   const replaceContent = replacePart.trim();
-  
+
   if (modifiedContent.includes(searchContent)) {
     // .replace() will only replace the first occurrence found in the file.
     modifiedContent = modifiedContent.replace(searchContent, replaceContent);
@@ -139,6 +139,11 @@ function resolveAndNormalizePath(inputPath) {
   const parts = originalPath.split(/[/\\]+/);
   const trimmedParts = parts.map(part => part.trim());
   const sanitizedPath = path.join(...trimmedParts);
+
+  // 原样返回 Windows 绝对路径
+  if (/^[a-zA-Z]:[\\/]/.test(originalPath)) {
+    return path.win32.normalize(originalPath);
+  }
 
   // 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
   const resolvedInput = path.resolve(originalPath);
@@ -196,7 +201,7 @@ async function runValidationAndAttachResults(result, filePath, fileContent) {
   }
   return result;
 }
- 
+
 // File operation functions
 async function webReadFile(fileUrl) {
   try {
@@ -232,10 +237,10 @@ async function webReadFile(fileUrl) {
       result.data.originalUrl = fileUrl;
       // Prepend a message to reflect the web origin
       if (Array.isArray(result.data.content)) {
-          result.data.content.unshift({ type: 'text', text: `已从网络地址读取文件 '${result.data.fileName}' 并保存到本地。` });
+        result.data.content.unshift({ type: 'text', text: `已从网络地址读取文件 '${result.data.fileName}' 并保存到本地。` });
       }
     }
-    
+
     return result;
 
   } catch (error) {
@@ -301,49 +306,58 @@ async function readFile(filePath, encoding = 'utf8') {
       content = sheetContent;
       isExtracted = true;
     } else if (imageExtensions.includes(extension)) {
-        const mimeType = `image/${extension.slice(1).replace('jpg', 'jpeg')}`;
-        content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
-        isExtracted = true;
+      const mimeType = `image/${extension.slice(1).replace('jpg', 'jpeg')}`;
+      content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+      isExtracted = true;
     } else if (audioExtensions.includes(extension)) {
-        const mimeType = `audio/${extension.slice(1).replace('mp3', 'mpeg')}`;
-        content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
-        isExtracted = true;
+      const mimeType = `audio/${extension.slice(1).replace('mp3', 'mpeg')}`;
+      content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+      isExtracted = true;
     } else if (videoExtensions.includes(extension)) {
-        const mimeType = `video/${extension.slice(1)}`;
-        content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
-        isExtracted = true;
+      const mimeType = `video/${extension.slice(1)}`;
+      content = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
+      isExtracted = true;
     } else {
       // Fallback for plain text files
       content = fileBuffer.toString(encoding);
     }
 
     const returnData = {
-        size: stats.size,
-        sizeFormatted: formatFileSize(stats.size),
-        lastModified: stats.mtime.toISOString(),
-        encoding: isExtracted ? 'utf8' : encoding,
-        isExtracted: isExtracted,
-        fileName: path.basename(filePath)
+      size: stats.size,
+      sizeFormatted: formatFileSize(stats.size),
+      lastModified: stats.mtime.toISOString(),
+      encoding: isExtracted ? 'utf8' : encoding,
+      isExtracted: isExtracted,
+      fileName: path.basename(filePath)
     };
 
     const headerText = `已读取文件 '${returnData.fileName}' (${returnData.sizeFormatted})。`;
 
     if (isExtracted && content.startsWith('data:image')) {
-        returnData.content = [
-            { type: 'text', text: headerText },
-            { type: 'image_url', image_url: { url: content } }
-        ];
+      returnData.content = [
+        { type: 'text', text: headerText },
+        { type: 'image_url', image_url: { url: content } }
+      ];
     } else if (isExtracted && (content.startsWith('data:audio') || content.startsWith('data:video'))) {
-        returnData.content = [
-            { type: 'text', text: headerText },
-            { type: 'image_url', image_url: { url: content } }
-        ];
+      returnData.content = [
+        { type: 'text', text: headerText },
+        { type: 'image_url', image_url: { url: content } }
+      ];
     } else {
-        // For text-based files
-        returnData.content = [
-            { type: 'text', text: headerText },
-            { type: 'text', text: content }
-        ];
+      // For text-based files
+      let language = extension.slice(1).toLowerCase();
+      const codeLangs = {
+        'js': 'javascript', 'py': 'python', 'md': 'markdown', 'ts': 'typescript',
+        'html': 'html', 'css': 'css', 'json': 'json', 'sh': 'bash', 'yml': 'yaml', 'yaml': 'yaml'
+      };
+      language = codeLangs[language] || language;
+      if (isExtracted) language = '';
+
+      const backticks = content.includes('```') ? '````' : '```';
+
+      returnData.content = [
+        { type: 'text', text: `${headerText}\n${backticks}${language}\n${content}\n${backticks}` }
+      ];
     }
 
     return {
@@ -380,7 +394,7 @@ async function writeFile(filePath, content, encoding = 'utf8') {
     const message = renamed
       ? `已存在同名文件 "${path.basename(filePath)}"，已为您创建为 "${path.basename(newPath)}"`
       : '文件写入成功';
-    
+
     let result = {
       success: true,
       data: {
@@ -413,16 +427,16 @@ async function writeEscapedFile(filePath, content, encoding = 'utf8') {
     .replace(/「末exp」/g, '「末」')
     .replace(/<<<\[TOOL_REQUEST_EXP\]>>>/g, '<<<[TOOL_REQUEST]>>>')
     .replace(/<<<\[END_TOOL_REQUEST_EXP\]>>>/g, '<<<[END_TOOL_REQUEST]>>>');
-  
+
   // Delegate the actual writing to the original writeFile function
   // This reuses all the safety checks, unique file naming, etc.
   const result = await writeFile(filePath, processedContent, encoding);
-  
+
   // Optionally, modify the success message to be more specific
   if (result.success) {
     result.data.message = `文件内容已转义处理，并成功写入。详情: ${result.data.message}`;
   }
-  
+
   return result;
 }
 
@@ -561,7 +575,17 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
       }
     }
 
-    const message = `Directory listing of ${dirPath} (${result.length} items${items.length > MAX_DIRECTORY_ITEMS ? ', truncated' : ''})`;
+    const message = `Directory listing of \`${dirPath}\` (${result.length} items${items.length > MAX_DIRECTORY_ITEMS ? ', truncated' : ''})`;
+
+    let markdownTable = `| 名称 | 类型 | 大小 | 修改时间 | 隐藏 |\n|---|---|---|---|---|\n`;
+    for (const item of result) {
+      const typeStr = item.type === 'directory' ? '📁' : '📄';
+      const sizeStr = item.sizeFormatted || '-';
+      const timeStr = new Date(item.lastModified).toLocaleString();
+      const hiddenStr = item.isHidden ? '是' : '否';
+      markdownTable += `| ${typeStr} **${item.name}** | ${item.type} | ${sizeStr} | ${timeStr} | ${hiddenStr} |\n`;
+    }
+
     return {
       success: true,
       data: {
@@ -571,8 +595,7 @@ async function listDirectory(dirPath, showHidden = ENABLE_HIDDEN_FILES) {
         truncated: items.length > MAX_DIRECTORY_ITEMS,
         message: message,
         content: [
-            { type: 'text', text: message },
-            { type: 'text', text: JSON.stringify(result, null, 2) }
+          { type: 'text', text: message + '\n\n' + markdownTable }
         ]
       },
     };
@@ -597,21 +620,32 @@ async function getFileInfo(filePath) {
     const stats = await fs.stat(filePath);
 
     const fileData = {
-        path: filePath,
-        name: path.basename(filePath),
-        directory: path.dirname(filePath),
-        extension: path.extname(filePath),
-        type: stats.isDirectory() ? 'directory' : 'file',
-        size: stats.size,
-        sizeFormatted: formatFileSize(stats.size),
-        lastModified: stats.mtime.toISOString(),
-        lastAccessed: stats.atime.toISOString(),
-        created: stats.birthtime.toISOString(),
-        permissions: stats.mode,
-        isDirectory: stats.isDirectory(),
-        isFile: stats.isFile(),
-        isSymbolicLink: stats.isSymbolicLink(),
+      path: filePath,
+      name: path.basename(filePath),
+      directory: path.dirname(filePath),
+      extension: path.extname(filePath),
+      type: stats.isDirectory() ? 'directory' : 'file',
+      size: stats.size,
+      sizeFormatted: formatFileSize(stats.size),
+      lastModified: stats.mtime.toISOString(),
+      lastAccessed: stats.atime.toISOString(),
+      created: stats.birthtime.toISOString(),
+      permissions: stats.mode,
+      isDirectory: stats.isDirectory(),
+      isFile: stats.isFile(),
+      isSymbolicLink: stats.isSymbolicLink(),
     };
+
+    const markdownList = `**文件信息**: \`${fileData.name}\`
+- **路径**: \`${fileData.path}\`
+- **目录**: \`${fileData.directory}\`
+- **类型**: ${fileData.type === 'directory' ? '📁 目录' : '📄 文件'}
+- **大小**: ${fileData.sizeFormatted} (${fileData.size} Bytes)
+- **修改时间**: ${new Date(fileData.lastModified).toLocaleString()}
+- **访问时间**: ${new Date(fileData.lastAccessed).toLocaleString()}
+- **创建时间**: ${new Date(fileData.created).toLocaleString()}
+- **权限**: ${fileData.permissions.toString(8)}
+- **状态**: ${fileData.isDirectory ? '目录' : ''}${fileData.isFile ? '文件' : ''}${fileData.isSymbolicLink ? ' 符号链接' : ''}`;
 
     return {
       success: true,
@@ -619,8 +653,7 @@ async function getFileInfo(filePath) {
         ...fileData,
         message: `File info for ${filePath}`,
         content: [
-            { type: 'text', text: `File info for ${filePath}:` },
-            { type: 'text', text: JSON.stringify(fileData, null, 2) }
+          { type: 'text', text: markdownList }
         ]
       },
     };
@@ -881,7 +914,21 @@ async function searchFiles(searchPath, pattern, options = {}) {
       }
     }
 
-    const message = `Search results for "${pattern}" in ${searchPath} (${results.length} results${files.length >= MAX_SEARCH_RESULTS ? ', truncated' : ''})`;
+    const message = `Search results for "${pattern}" in \`${searchPath}\` (${results.length} results${files.length >= MAX_SEARCH_RESULTS ? ', truncated' : ''})`;
+
+    let markdownList = `**搜索结果**: \`${pattern}\`\n\n`;
+    if (results.length === 0) {
+      markdownList += "*未找到匹配的文件或目录。*";
+    } else {
+      for (const [index, item] of results.entries()) {
+        const typeIcon = item.type === 'directory' ? '📁' : '📄';
+        markdownList += `${index + 1}. ${typeIcon} **${item.name}**\n   - 相对路径: \`${item.relativePath}\`\n   - 绝对路径: \`${item.path}\`\n`;
+        if (item.type === 'file') {
+          markdownList += `   - 大小: ${item.sizeFormatted} | 修改时间: ${new Date(item.lastModified).toLocaleString()}\n`;
+        }
+      }
+    }
+
     return {
       success: true,
       data: {
@@ -893,8 +940,7 @@ async function searchFiles(searchPath, pattern, options = {}) {
         options: options,
         message: message,
         content: [
-            { type: 'text', text: message },
-            { type: 'text', text: JSON.stringify(results, null, 2) }
+          { type: 'text', text: message + '\n\n' + markdownList }
         ]
       },
     };
@@ -912,7 +958,7 @@ async function downloadFile(url) {
     // Automatically parse filename from URL
     const parsedUrl = new URL(url);
     const fileName = path.basename(parsedUrl.pathname);
-    
+
     // Construct the full destination path in the designated AppData/file directory
     const baseDir = path.join(__dirname, '..', '..', '..', 'AppData', 'file');
     const destinationPath = path.join(baseDir, fileName);
@@ -1010,7 +1056,7 @@ async function listAllowedDirectories() {
           });
         } catch (e) {
           // Ignore items that can't be stat'd, e.g. due to permissions
-           debugLog(`Could not stat item: ${itemPath}`, { error: e.message });
+          debugLog(`Could not stat item: ${itemPath}`, { error: e.message });
         }
       }
       allProjects[dir] = subItems;
@@ -1024,14 +1070,30 @@ async function listAllowedDirectories() {
       }
     }
   }
+  let markdownContent = '**配置的允许访问目录及内容总览:**\n\n';
+  for (const [dirPath, items] of Object.entries(allProjects)) {
+    markdownContent += `### 📁 \`${dirPath}\`\n`;
+    if (items.length === 0) {
+      markdownContent += `*(空目录)*\n\n`;
+    } else if (items.length === 1 && (items[0].type === 'error' || items[0].type === 'info')) {
+      markdownContent += `*${items[0].name}*\n\n`;
+    } else {
+      markdownContent += `| 名称 | 类型 |\n|---|---|\n`;
+      for (const item of items) {
+        const typeIcon = item.type === 'directory' ? '📁' : '📄';
+        markdownContent += `| ${typeIcon} **${item.name}** | ${item.type} |\n`;
+      }
+      markdownContent += '\n';
+    }
+  }
+
   return {
     success: true,
     data: {
       allowedRoots: allProjects,
       message: 'Allowed directories listed',
       content: [
-          { type: 'text', text: 'Allowed directories and their contents:' },
-          { type: 'text', text: JSON.stringify(allProjects, null, 2) }
+        { type: 'text', text: markdownContent }
       ]
     }
   };
@@ -1088,7 +1150,7 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
 
     // 1. Read the file content
     const fileContent = await fs.readFile(filePath, encoding);
-    
+
     // 2. Parse the JSON content
     const history = JSON.parse(fileContent);
 
@@ -1134,7 +1196,7 @@ async function updateHistory(filePath, searchString, replaceString, encoding = '
     };
   }
 }
- 
+
 async function applyDiff(parameters) {
   try {
     const { filePath, diffContent, searchString, replaceString, encoding } = parameters;
@@ -1148,19 +1210,19 @@ async function applyDiff(parameters) {
     // We need to find the text content.
     let originalContent = '';
     if (Array.isArray(readResult.data.content)) {
-        // The first text part is usually the header, the second is the content
-        const textParts = readResult.data.content.filter(p => p.type === 'text');
-        if (textParts.length >= 2) {
-            originalContent = textParts[1].text;
-        } else if (textParts.length === 1 && !textParts[0].text.startsWith('已读取文件')) {
-            originalContent = textParts[0].text;
-        }
+      // The first text part is usually the header, the second is the content
+      const textParts = readResult.data.content.filter(p => p.type === 'text');
+      if (textParts.length >= 2) {
+        originalContent = textParts[1].text;
+      } else if (textParts.length === 1 && !textParts[0].text.startsWith('已读取文件')) {
+        originalContent = textParts[0].text;
+      }
     } else if (typeof readResult.data.content === 'string') {
-        originalContent = readResult.data.content;
+      originalContent = readResult.data.content;
     }
 
     if (!originalContent && readResult.data.isExtracted) {
-         throw new Error('ApplyDiff can only be used on plain text files or extracted text content.');
+      throw new Error('ApplyDiff can only be used on plain text files or extracted text content.');
     }
 
     let newContent;
@@ -1178,7 +1240,7 @@ async function applyDiff(parameters) {
     } else {
       throw new Error('ApplyDiff requires either "diffContent" or both "searchString" and "replaceString" parameters.');
     }
-    
+
     const editResult = await editFile(filePath, newContent, encoding);
     if (editResult.success) {
       editResult.data.message = '文件编辑成功';
@@ -1227,26 +1289,26 @@ async function processBatchRequest(request) {
           }
           break;
         case 'ListDirectory':
-            result = await listDirectory(parameters.directoryPath, parameters.showHidden);
-            if (result.success && result.data.content) {
-                aggregatedContent.push({ type: 'text', text: `--- Directory listing of ${parameters.directoryPath} ---` });
-                aggregatedContent.push(...result.data.content);
-            }
-            break;
+          result = await listDirectory(parameters.directoryPath, parameters.showHidden);
+          if (result.success && result.data.content) {
+            aggregatedContent.push({ type: 'text', text: `--- Directory listing of ${parameters.directoryPath} ---` });
+            aggregatedContent.push(...result.data.content);
+          }
+          break;
         case 'FileInfo':
-            result = await getFileInfo(parameters.filePath);
-            if (result.success && result.data.content) {
-                aggregatedContent.push({ type: 'text', text: `--- File info of ${parameters.filePath} ---` });
-                aggregatedContent.push(...result.data.content);
-            }
-            break;
+          result = await getFileInfo(parameters.filePath);
+          if (result.success && result.data.content) {
+            aggregatedContent.push({ type: 'text', text: `--- File info of ${parameters.filePath} ---` });
+            aggregatedContent.push(...result.data.content);
+          }
+          break;
         case 'SearchFiles':
-            result = await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
-            if (result.success && result.data.content) {
-                aggregatedContent.push({ type: 'text', text: `--- Search results for "${parameters.pattern}" in ${parameters.searchPath} ---` });
-                aggregatedContent.push(...result.data.content);
-            }
-            break;
+          result = await searchFiles(parameters.searchPath, parameters.pattern, parameters.options);
+          if (result.success && result.data.content) {
+            aggregatedContent.push({ type: 'text', text: `--- Search results for "${parameters.pattern}" in ${parameters.searchPath} ---` });
+            aggregatedContent.push(...result.data.content);
+          }
+          break;
         case 'CopyFile':
           result = await copyFile(parameters.sourcePath, parameters.destinationPath);
           break;
@@ -1302,7 +1364,7 @@ async function processBatchRequest(request) {
       // For non-read operations, generate a summary message instead of pushing to content
       const contentCommands = ['ReadFile', 'WebReadFile', 'ListDirectory', 'FileInfo', 'SearchFiles', 'ListAllowedDirectories'];
       if (!contentCommands.includes(command)) {
-         summaryMessages.push(result.data.message);
+        summaryMessages.push(result.data.message);
       }
     } else {
       failureCount++;
@@ -1314,8 +1376,8 @@ async function processBatchRequest(request) {
 
   // Prepend summary of all non-read operations to the aggregated content
   if (summaryMessages.length > 0) {
-      const summaryText = `Batch Operations Summary:\n- ${summaryMessages.join('\n- ')}`;
-      aggregatedContent.unshift({ type: 'text', text: summaryText });
+    const summaryText = `Batch Operations Summary:\n- ${summaryMessages.join('\n- ')}`;
+    aggregatedContent.unshift({ type: 'text', text: summaryText });
   }
 
   // If there's any content (from reads or summaries), return the aggregated multimodal response.
@@ -1386,9 +1448,9 @@ async function processRequest(request) {
     case 'DownloadFile':
       return await downloadFile(parameters.url);
     case 'CreateCanvas':
-        return await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
+      return await createCanvas(parameters.fileName, parameters.content, parameters.encoding);
     case 'UpdateHistory':
-        return await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
+      return await updateHistory(parameters.filePath, parameters.searchString, parameters.replaceString, parameters.encoding);
     case 'ApplyDiff':
       return await applyDiff(parameters);
     default:
@@ -1428,14 +1490,14 @@ process.stdin.on('data', async data => {
 function convertToVCPFormat(response) {
   if (response.success) {
     const data = response.data || {};
-    
+
     // Special action handling
     if (data._specialAction) {
       debugLog('Converting response with special action', {
         action: data._specialAction,
         payload: data.payload
       });
-      
+
       return {
         status: 'success',
         _specialAction: data._specialAction,
@@ -1448,7 +1510,7 @@ function convertToVCPFormat(response) {
     }
 
     let contentArray = [];
-    
+
     // 1. Handle content if present
     if (data.content) {
       if (Array.isArray(data.content)) {
@@ -1457,7 +1519,7 @@ function convertToVCPFormat(response) {
         contentArray.push({ type: 'text', text: data.content });
       }
     }
-    
+
     // 2. Handle message if present
     if (data.message) {
       // Check if message is already represented in content

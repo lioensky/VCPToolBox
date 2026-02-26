@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "UrlFetch",
   "displayName": "URL 内容获取插件",
-  "version": "0.1.0",
-  "description": "访问指定 URL 的网页内容。支持两种模式：1. 'text' (默认): 返回解析后的文本或链接列表。 2. 'snapshot': 返回网页的完整长截图。",
+  "version": "0.2.0",
+  "description": "通用 URL 内容获取插件。支持：1. 'text' (默认): 返回解析后的网页文本或链接列表。 2. 'snapshot': 返回网页的完整长截图。 3. 'image': 直接下载网络图片并返回 Base64（URL 为图片时自动启用）。 4. 'file:///' 本地路径: 读取本地文本文件或图片。",
   "author": "Lionsky",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -19,8 +19,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "UrlFetch",
-        "description": "调用此工具访问指定 URL 的网页内容。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」(必需) 要访问的网页 URL。「末」,\nmode:「始」(可选) 模式，'text' (默认) 或 'snapshot' (网页快照)。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n- 'text' 模式: 您将收到包含网页文本内容或链接列表的JSON对象。\n- 'snapshot' 模式: 您将收到包含网页长截图的 Base64 图片数据，请直接展示给用户。",
-        "example": "获取文本内容:\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n获取网页快照:\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」,\nmode:「始」snapshot「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "调用此工具访问指定 URL 的内容，支持网页、网络图片、本地文件。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」(必需) 要访问的 URL，支持 http:// 、 https:// 和 file:/// 三种协议。「末」,\nmode:「始」(可选) 模式：'text' (默认，提取网页文本)、'snapshot' (网页长截图)、'image' (下载图片返回Base64)。图片URL会自动检测。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n- 'text' 模式: 您将收到包含网页文本内容或链接列表的JSON对象。\n- 'snapshot' 模式: 您将收到包含网页长截图的 Base64 图片数据，请直接展示给用户。\n- 'image' 模式: 您将收到图片的 Base64 数据，可用于理解图片内容。当URL以图片扩展名结尾时会自动启用。\n- 'file:///' URL: 直接读取本地文件。图片文件返回 Base64，文本文件(.txt/.md/.json等)返回文本内容。",
+        "example": "获取文本内容：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n获取网页快照：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://www.example.com「末」,\nmode:「始」snapshot「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n下载网络图片（自动检测，无需指定mode）：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」https://example.com/photo.jpg「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n读取本地文件：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」file:///C:/path/to/document.md「末」\n<<<[END_TOOL_REQUEST]>>>\n```\n\n读取本地图片：\n```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」UrlFetch「末」,\nurl:「始」file:///C:/path/to/image.png「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }

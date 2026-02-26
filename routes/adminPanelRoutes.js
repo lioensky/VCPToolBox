@@ -14,26 +14,26 @@ const blockedManifestExtension = '.block';
 // 记录每个日志文件的 inode，用于检测日志轮转
 const logFileInodes = new Map();
 
-module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath) {
+module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath, cachedEmojiLists) {
     if (!agentDirPath || typeof agentDirPath !== 'string') {
         throw new Error('[AdminPanelRoutes] agentDirPath must be a non-empty string');
     }
-    
+
     const adminApiRouter = express.Router();
     const AGENT_FILES_DIR = agentDirPath;
     console.log('[AdminPanelRoutes] Agent files directory:', AGENT_FILES_DIR);
 
-  
+
 
     // --- Admin API Router 内容 ---
-    
+
     // --- System Monitor Routes (Merged) ---
     const { exec } = require('child_process');
     const os = require('os');
     const util = require('util');
     const execAsync = util.promisify(exec);
     const pm2 = require('pm2');
-    
+
     // 获取PM2进程列表和资源使用情况 (Using PM2 API to avoid pop-ups)
     adminApiRouter.get('/system-monitor/pm2/processes', (req, res) => {
         pm2.list((err, list) => {
@@ -41,7 +41,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 console.error('[SystemMonitor] PM2 API Error:', err);
                 return res.status(500).json({ success: false, error: 'Failed to get PM2 processes via API', details: err.message });
             }
-            
+
             const processInfo = list.map(proc => ({
                 name: proc.name,
                 pid: proc.pid,
@@ -51,14 +51,14 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 uptime: proc.pm2_env.pm_uptime,
                 restarts: proc.pm2_env.restart_time
             }));
-            
+
             res.json({ success: true, processes: processInfo });
         });
     });
 
     // 获取系统整体资源使用情况
     adminApiRouter.get('/system-monitor/system/resources', async (req, res) => {
-         try {
+        try {
             const systemInfo = {};
             const execOptions = { windowsHide: true }; // Option to prevent window pop-up
 
@@ -85,7 +85,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                         used: (memData.TotalVisibleMemorySize || 0) - (memData.FreePhysicalMemory || 0)
                     };
                 }
-                
+
                 try {
                     const { stdout: cpuInfo } = await execAsync('powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
                     const cpuData = JSON.parse(cpuInfo);
@@ -104,7 +104,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     free: freeMemory,
                     used: totalMemory - freeMemory
                 };
-                
+
                 try {
                     // macOS 下获取 CPU 使用率的简单方法
                     const { stdout: cpuInfo } = await execAsync("top -l 1 | grep 'CPU usage' | awk '{print $3}' | sed 's/%//'", execOptions);
@@ -129,8 +129,11 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 }
 
                 try {
-                    const { stdout: cpuInfo } = await execAsync("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'", execOptions);
-                    systemInfo.cpu = { usage: parseFloat(cpuInfo.trim()) || 0 };
+                    // 不同系统top命令的输出格式不同，需要根据不同的格式来解析CPU使用率
+                    // Procps: "%Cpu(s):  0.3 us, ... 99.7 id,"
+                    // BusyBox: "CPU:   2% usr ... 97% idle"
+                    const { stdout: cpuInfo } = await execAsync("top -bn1 | grep -E '^\\s*(%?Cpu\\(s\\)?:|CPU:)' | head -1 | awk '{print $2}'", execOptions);
+                    systemInfo.cpu = { usage: parseFloat(cpuInfo.trim().replace('%', '')) || 0 };
                 } catch (cpuErr) {
                     systemInfo.cpu = { usage: 0 };
                 }
@@ -151,43 +154,43 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
 
 
-   // 新增：获取 UserAuth 认证码 (现在会解密)
-   adminApiRouter.get('/user-auth-code', async (req, res) => {
-       const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
-       try {
-           // 直接调用 getAuthCode 函数，它封装了读取和解密逻辑
-           const decryptedCode = await getAuthCode(authCodePath);
-           if (decryptedCode) {
-               res.json({ success: true, code: decryptedCode });
-           } else {
-               // 如果 getAuthCode 返回空字符串或其他假值，说明内部发生了错误
-               throw new Error('Failed to get auth code internally.');
-           }
-       } catch (error) {
-           if (error.code === 'ENOENT') {
-               res.status(404).json({ success: false, error: '认证码文件未找到。插件可能尚未运行。' });
-           } else {
-               res.status(500).json({ success: false, error: '读取或解密认证码文件失败。', details: error.message });
-           }
-       }
-   });
+    // 新增：获取 UserAuth 认证码 (现在会解密)
+    adminApiRouter.get('/user-auth-code', async (req, res) => {
+        const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
+        try {
+            // 直接调用 getAuthCode 函数，它封装了读取和解密逻辑
+            const decryptedCode = await getAuthCode(authCodePath);
+            if (decryptedCode) {
+                res.json({ success: true, code: decryptedCode });
+            } else {
+                // 如果 getAuthCode 返回空字符串或其他假值，说明内部发生了错误
+                throw new Error('Failed to get auth code internally.');
+            }
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ success: false, error: '认证码文件未找到。插件可能尚未运行。' });
+            } else {
+                res.status(500).json({ success: false, error: '读取或解密认证码文件失败。', details: error.message });
+            }
+        }
+    });
 
-   // 新增：获取天气预报数据
-   adminApiRouter.get('/weather', async (req, res) => {
-       const weatherCachePath = path.join(__dirname, '..', 'Plugin', 'WeatherReporter', 'weather_cache.json');
-       try {
-           const content = await fs.readFile(weatherCachePath, 'utf-8');
-           res.json(JSON.parse(content));
-       } catch (error) {
-           if (error.code === 'ENOENT') {
-               res.status(404).json({ success: false, error: '天气缓存文件未找到。' });
-           } else {
-               res.status(500).json({ success: false, error: '读取天气缓存失败。', details: error.message });
-           }
-       }
-   });
-   // --- End System Monitor Routes ---
- 
+    // 新增：获取天气预报数据
+    adminApiRouter.get('/weather', async (req, res) => {
+        const weatherCachePath = path.join(__dirname, '..', 'Plugin', 'WeatherReporter', 'weather_cache.json');
+        try {
+            const content = await fs.readFile(weatherCachePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ success: false, error: '天气缓存文件未找到。' });
+            } else {
+                res.status(500).json({ success: false, error: '读取天气缓存失败。', details: error.message });
+            }
+        }
+    });
+    // --- End System Monitor Routes ---
+
     // --- Server Log API ---
     adminApiRouter.get('/server-log', async (req, res) => {
         const logPath = getCurrentServerLogPath();
@@ -244,7 +247,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     const buffer = Buffer.alloc(readSize);
                     const { bytesRead } = await fd.read(buffer, 0, readSize, startPos);
                     content = buffer.toString('utf-8', 0, bytesRead);
-                    
+
                     // 如果是截断读取，跳过第一行（可能不完整）
                     if (startPos > 0) {
                         const firstNewline = content.indexOf('\n');
@@ -285,7 +288,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             // 使用 truncate 清空文件内容
             await fs.writeFile(logPath, '', 'utf-8');
-            
+
             // 更新 inode 记录，防止增量读取出错
             const stats = await fs.stat(logPath);
             logFileInodes.set(logPath, stats.ino);
@@ -394,7 +397,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                                     console.warn(`[AdminPanelRoutes] Error reading config.env for disabled plugin ${manifest.name}:`, envError);
                                 }
                             }
-                            
+
                             // 为 manifest 添加 basePath，以便前端和后续操作使用
                             manifest.basePath = pluginPath;
 
@@ -415,7 +418,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     }
                 }
             }
-            
+
             const pluginDataList = Array.from(pluginDataMap.values());
             res.json(pluginDataList);
 
@@ -428,7 +431,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // POST to toggle plugin enabled/disabled status
     adminApiRouter.post('/plugins/:pluginName/toggle', async (req, res) => {
         const pluginName = req.params.pluginName;
-        const { enable } = req.body; 
+        const { enable } = req.body;
         const PLUGIN_DIR = path.join(__dirname, '..', 'Plugin');
 
         if (typeof enable !== 'boolean') {
@@ -443,7 +446,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             let foundManifest = null; // To ensure we operate on a valid plugin
 
             for (const folder of pluginFolders) {
-                 if (folder.isDirectory()) {
+                if (folder.isDirectory()) {
                     const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
                     const potentialManifestPath = path.join(potentialPluginPath, manifestFileName);
                     const potentialBlockedPath = potentialManifestPath + blockedManifestExtension;
@@ -463,8 +466,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                         const manifest = JSON.parse(manifestContent);
                         if (manifest.name === pluginName) {
                             targetPluginPath = potentialPluginPath;
-                            foundManifest = manifest; 
-                            break; 
+                            foundManifest = manifest;
+                            break;
                         }
                     } catch (parseErr) { continue; /* Invalid JSON, skip folder */ }
                 }
@@ -473,7 +476,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             if (!targetPluginPath || !foundManifest) {
                 return res.status(404).json({ error: `Plugin '${pluginName}' not found.` });
             }
-            
+
             const manifestPathToUse = path.join(targetPluginPath, manifestFileName);
             const blockedManifestPathToUse = manifestPathToUse + blockedManifestExtension;
 
@@ -484,12 +487,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     res.json({ message: `插件 ${pluginName} 已启用。` });
                 } catch (error) {
                     if (error.code === 'ENOENT') {
-                         try {
-                             await fs.access(manifestPathToUse);
-                             res.json({ message: `插件 ${pluginName} 已经是启用状态。` });
-                         } catch (accessError) {
-                             res.status(500).json({ error: `无法启用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
-                         }
+                        try {
+                            await fs.access(manifestPathToUse);
+                            res.json({ message: `插件 ${pluginName} 已经是启用状态。` });
+                        } catch (accessError) {
+                            res.status(500).json({ error: `无法启用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
+                        }
                     } else {
                         console.error(`[AdminPanelRoutes] Error enabling plugin ${pluginName}:`, error);
                         res.status(500).json({ error: `启用插件 ${pluginName} 时出错`, details: error.message });
@@ -503,11 +506,11 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 } catch (error) {
                     if (error.code === 'ENOENT') {
                         try {
-                             await fs.access(blockedManifestPathToUse);
-                             res.json({ message: `插件 ${pluginName} 已经是禁用状态。` });
-                         } catch (accessError) {
-                             res.status(500).json({ error: `无法禁用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
-                         }
+                            await fs.access(blockedManifestPathToUse);
+                            res.json({ message: `插件 ${pluginName} 已经是禁用状态。` });
+                        } catch (accessError) {
+                            res.status(500).json({ error: `无法禁用插件 ${pluginName}。找不到 manifest 文件。`, details: accessError.message });
+                        }
                     } else {
                         console.error(`[AdminPanelRoutes] Error disabling plugin ${pluginName}:`, error);
                         res.status(500).json({ error: `禁用插件 ${pluginName} 时出错`, details: error.message });
@@ -543,12 +546,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     let currentPath = null;
                     let manifestContent = null;
 
-                    try { 
+                    try {
                         manifestContent = await fs.readFile(potentialManifestPath, 'utf-8');
                         currentPath = potentialManifestPath;
                     } catch (err) {
                         if (err.code === 'ENOENT') {
-                            try { 
+                            try {
                                 manifestContent = await fs.readFile(potentialBlockedPath, 'utf-8');
                                 currentPath = potentialBlockedPath;
                             } catch (blockedErr) { continue; }
@@ -587,7 +590,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const { content } = req.body;
         const PLUGIN_DIR = path.join(__dirname, '..', 'Plugin');
 
-         if (typeof content !== 'string') {
+        if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid content format. String expected.' });
         }
 
@@ -596,31 +599,31 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             let targetPluginPath = null;
 
             for (const folder of pluginFolders) {
-                 if (folder.isDirectory()) {
+                if (folder.isDirectory()) {
                     const potentialPluginPath = path.join(PLUGIN_DIR, folder.name);
                     const manifestPath = path.join(potentialPluginPath, manifestFileName);
                     const blockedManifestPath = manifestPath + blockedManifestExtension;
                     let manifestContent = null;
-                     try {
+                    try {
                         manifestContent = await fs.readFile(manifestPath, 'utf-8');
-                     } catch (err) {
-                         if (err.code === 'ENOENT') {
-                             try { manifestContent = await fs.readFile(blockedManifestPath, 'utf-8'); }
-                             catch (blockedErr) { continue; }
-                         } else { continue; }
-                     }
-                     try {
-                         const manifest = JSON.parse(manifestContent);
-                         if (manifest.name === pluginName) {
-                             targetPluginPath = potentialPluginPath;
-                             break;
-                         }
-                     } catch (parseErr) { continue; }
-                 }
+                    } catch (err) {
+                        if (err.code === 'ENOENT') {
+                            try { manifestContent = await fs.readFile(blockedManifestPath, 'utf-8'); }
+                            catch (blockedErr) { continue; }
+                        } else { continue; }
+                    }
+                    try {
+                        const manifest = JSON.parse(manifestContent);
+                        if (manifest.name === pluginName) {
+                            targetPluginPath = potentialPluginPath;
+                            break;
+                        }
+                    } catch (parseErr) { continue; }
+                }
             }
 
             if (!targetPluginPath) {
-                 return res.status(404).json({ error: `Plugin folder for '${pluginName}' not found.` });
+                return res.status(404).json({ error: `Plugin folder for '${pluginName}' not found.` });
             }
 
             const configPath = path.join(targetPluginPath, 'config.env');
@@ -715,10 +718,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // POST to restart the server
     adminApiRouter.post('/server/restart', async (req, res) => {
         res.json({ message: '服务器重启命令已发送。服务器正在关闭，如果由进程管理器（如 PM2）管理，它应该会自动重启。' });
-        
+
         setTimeout(() => {
             console.log('[AdminPanelRoutes] Received restart command. Shutting down...');
-            
+
             // 强制清除Node.js模块缓存，特别是TextChunker.js
             const moduleKeys = Object.keys(require.cache);
             moduleKeys.forEach(key => {
@@ -726,11 +729,11 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     delete require.cache[key];
                 }
             });
-            
+
             process.exit(1);
         }, 1000);
     });
-     
+
 
     // --- MultiModal Cache API (New) ---
     adminApiRouter.get('/multimodal-cache', async (req, res) => {
@@ -752,7 +755,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const { data } = req.body;
         const cachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'multimodal_cache.json');
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
         }
         try {
             await fs.writeFile(cachePath, JSON.stringify(data, null, 2), 'utf-8');
@@ -802,7 +805,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const { data } = req.body;
         const imageCachePath = path.join(__dirname, '..', 'Plugin', 'ImageProcessor', 'image_cache.json');
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object in "data" field.' });
         }
         try {
             await fs.writeFile(imageCachePath, JSON.stringify(data, null, 2), 'utf-8');
@@ -862,7 +865,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     adminApiRouter.post('/agents/map', async (req, res) => {
         const newMap = req.body;
         if (typeof newMap !== 'object' || newMap === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
         }
         try {
             await fs.writeFile(AGENT_MAP_FILE, JSON.stringify(newMap, null, 2), 'utf-8');
@@ -907,20 +910,20 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         if (folderPath && typeof folderPath === 'string') {
             targetDir = path.join(AGENT_FILES_DIR, folderPath);
         }
-        
+
         const filePath = path.join(targetDir, finalFileName);
 
         try {
             // 确保目录存在
             await fs.mkdir(targetDir, { recursive: true });
-            
+
             // 使用 'wx' 标志来原子性地"如果不存在则写入"，如果文件已存在，它会抛出错误。
             await fs.writeFile(filePath, '', { flag: 'wx' });
-            
+
             // 通知agentManager重新扫描文件
             const agentManager = require('../modules/agentManager');
             await agentManager.scanAgentFiles();
-            
+
             res.json({ message: `File '${finalFileName}' created successfully.` });
         } catch (error) {
             if (error.code === 'EEXIST') {
@@ -935,15 +938,15 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // GET content of a specific agent file
     adminApiRouter.get('/agents/:fileName', async (req, res) => {
         const { fileName } = req.params;
-        
+
         // 解码URL编码的文件名，处理路径中的斜杠
         const decodedFileName = decodeURIComponent(fileName);
-        
+
         // 检查文件扩展名
         if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
             return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
         }
-        
+
         // 处理路径中的斜杠，支持子文件夹
         const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
 
@@ -968,7 +971,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
         // 解码URL编码的文件名，处理路径中的斜杠
         const decodedFileName = decodeURIComponent(fileName);
-        
+
         // 检查文件扩展名
         if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
             return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
@@ -1056,6 +1059,369 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
     // --- End TVS Variable Files API ---
 
+    // --- Placeholders Viewer API ---
+    const PREVIEW_MAX_LEN = 180;
+    function truncatePreview(text, maxLen = PREVIEW_MAX_LEN) {
+        if (text == null) return '';
+        if (typeof text !== 'string') return `<${typeof text}>`;
+        const str = String(text).trim();
+        if (str.length <= maxLen) return str;
+        return Array.from(str).slice(0, maxLen).join('') + '…';
+    }
+
+    function charCount(str) {
+        if (str == null) return 0;
+        if (typeof str !== 'string') return '-';
+        return Array.from(String(str)).length;
+    }
+
+    function getFixedTimeValues() {
+        const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai';
+        const now = new Date();
+        const date = now.toLocaleDateString('zh-CN', { timeZone: REPORT_TIMEZONE });
+        const time = now.toLocaleTimeString('zh-CN', { timeZone: REPORT_TIMEZONE });
+        const today = now.toLocaleDateString('zh-CN', { weekday: 'long', timeZone: REPORT_TIMEZONE });
+        const year = now.getFullYear();
+        const month = now.getMonth() + 1;
+        const day = now.getDate();
+        const lunarCalendar = require('chinese-lunar-calendar');
+        const lunarDate = lunarCalendar.getLunar(year, month, day);
+        let yearName = lunarDate.lunarYear.replace('年', '');
+        let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
+        if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
+        const port = process.env.PORT || '';
+        return { Date: date, Time: time, Today: today, Festival: festivalInfo, Port: port };
+    }
+
+    function getPlaceholderDescriptionsFromManifests() {
+        const map = new Map();
+        if (!pluginManager.plugins) return map;
+        for (const plugin of pluginManager.plugins.values()) {
+            const placeholders = plugin.capabilities && plugin.capabilities.systemPromptPlaceholders;
+            if (!Array.isArray(placeholders)) continue;
+            placeholders.forEach(ph => {
+                const desc = (ph && ph.description) ? String(ph.description).trim() : '';
+                if (ph && ph.placeholder) {
+                    const raw = String(ph.placeholder).trim();
+                    map.set(raw, desc);
+                    const normalized = raw.replace(/^\{\{|\}\}$/g, '');
+                    if (normalized !== raw) map.set(normalized, desc);
+                }
+            });
+        }
+        return map;
+    }
+
+    /** 工具类插件占位符（VCPPluginName）→ 对应插件的 manifest.description */
+    function getPluginDescriptionsByToolPlaceholder() {
+        const map = new Map();
+        if (!pluginManager.plugins) return map;
+        for (const plugin of pluginManager.plugins.values()) {
+            const hasTools = plugin.capabilities && plugin.capabilities.invocationCommands && plugin.capabilities.invocationCommands.length > 0;
+            if (!hasTools) continue;
+            const placeholderKey = `VCP${plugin.name}`;
+            const desc = (plugin.description != null && plugin.description !== '') ? String(plugin.description).trim() : '';
+            map.set(placeholderKey, desc);
+        }
+        return map;
+    }
+
+    adminApiRouter.get('/placeholders', async (req, res) => {
+        try {
+            const list = [];
+            const placeholderDescriptions = getPlaceholderDescriptionsFromManifests();
+            const getDesc = (nameOrKey) => {
+                const withBraces = nameOrKey.includes('{{') ? nameOrKey : `{{${nameOrKey}}}`;
+                const withoutBraces = nameOrKey.replace(/^\{\{|\}\}$/g, '');
+                return placeholderDescriptions.get(nameOrKey) || placeholderDescriptions.get(withBraces) || placeholderDescriptions.get(withoutBraces) || '';
+            };
+            // 1. Agent
+            const agentManager = require('../modules/agentManager');
+            if (agentManager.agentMap && agentManager.agentMap.size > 0) {
+                for (const alias of Array.from(agentManager.agentMap.keys())) {
+                    try {
+                        const content = await agentManager.getAgentPrompt(alias);
+                        list.push({
+                            type: 'agent',
+                            name: `{{${alias}}}`,
+                            preview: truncatePreview(content),
+                            charCount: charCount(content)
+                        });
+                    } catch (e) {
+                        list.push({ type: 'agent', name: `{{${alias}}}`, preview: `[获取失败: ${e.message}]`, charCount: 0 });
+                    }
+                }
+            }
+            // 2. Tar / Var（env 中以 Tar 或 Var 开头）
+            const tvsManager = require('../modules/tvsManager');
+            const emojiPlaceholderRegex = /^[^{}]+?表情包\.txt$/g;
+            const emojiLists = cachedEmojiLists && typeof cachedEmojiLists.get === 'function' ? cachedEmojiLists : new Map();
+            const tarVarKeys = Object.keys(process.env).filter(k => k.startsWith('Tar') || k.startsWith('Var'));
+            for (const envKey of tarVarKeys) {
+                const raw = process.env[envKey] || '';
+                let preview = raw;
+                if (typeof raw === 'string') {
+                    if (emojiPlaceholderRegex.test(raw)) {
+                        const emojiName = raw.replace('.txt', '');
+                        const emojiList = emojiLists.get(emojiName);
+                        preview = emojiList || `[${emojiName}列表不可用]`;
+                    } else if (raw.toLowerCase().endsWith('.txt')) {
+                        try {
+                            preview = await tvsManager.getContent(raw);
+                            if (preview.startsWith('[变量文件') || preview.startsWith('[处理变量文件')) {
+                                preview = raw;
+                            }
+                        } catch (e) {
+                            preview = `[读取文件失败: ${e.message}]`;
+                        }
+                    }
+                }
+                list.push({ type: 'env_tar_var', name: `{{${envKey}}}`, preview: truncatePreview(preview), charCount: charCount(preview) });
+            }
+            // 3. SarPrompt（env 中 ^SarPrompt\d+$）
+            const sarKeys = Object.keys(process.env).filter(k => /^SarPrompt\d+$/.test(k));
+            for (const envKey of sarKeys) {
+                const raw = process.env[envKey] || '';
+                let preview = raw;
+                if (typeof raw === 'string') {
+                    if (emojiPlaceholderRegex.test(raw)) {
+                        const emojiName = raw.replace('.txt', '');
+                        const emojiList = emojiLists.get(emojiName);
+                        preview = emojiList || `[${emojiName}列表不可用]`;
+                    } else if (raw.toLowerCase().endsWith('.txt')) {
+                        try {
+                            preview = await tvsManager.getContent(raw);
+                            if (preview.startsWith('[变量文件') || preview.startsWith('[处理变量文件')) {
+                                preview = raw;
+                            }
+                        } catch (e) {
+                            preview = raw || '[按模型注入]';
+                        }
+                    }
+                }
+                list.push({ type: 'env_sar', name: `{{${envKey}}}`, preview: truncatePreview(preview || '[按模型注入]'), charCount: charCount(preview || '[按模型注入]') });
+            }
+            // 4. 固定时间/Port
+            const fixedVals = getFixedTimeValues();
+            for (const key of ['Date', 'Time', 'Today', 'Festival']) {
+                list.push({ type: 'fixed', name: `{{${key}}}`, preview: truncatePreview(fixedVals[key]), charCount: charCount(fixedVals[key]) });
+            }
+            if (fixedVals.Port !== undefined && fixedVals.Port !== '') {
+                list.push({ type: 'fixed', name: '{{Port}}', preview: String(fixedVals.Port), charCount: charCount(fixedVals.Port) });
+            }
+            // 5. 静态插件占位符
+            const staticPlaceholderValues = pluginManager.getAllPlaceholderValues && pluginManager.getAllPlaceholderValues();
+            if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
+                for (const [key, value] of staticPlaceholderValues.entries()) {
+                    const name = key.includes('{{') ? key : `{{${key}}}`;
+                    list.push({
+                        type: 'static_plugin',
+                        name,
+                        preview: truncatePreview(value),
+                        charCount: charCount(value),
+                        description: getDesc(name)
+                    });
+                }
+            }
+            // 6. 工具描述（每个 key 一项）+ VCPAllTools（一项）
+            const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions && pluginManager.getIndividualPluginDescriptions();
+            const pluginDescByTool = getPluginDescriptionsByToolPlaceholder();
+            if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
+                for (const [placeholderKey, description] of individualPluginDescriptions) {
+                    const toolDesc = pluginDescByTool.get(placeholderKey) || '';
+                    list.push({
+                        type: 'tool_description',
+                        name: `{{${placeholderKey}}}`,
+                        preview: truncatePreview(description),
+                        charCount: charCount(description),
+                        description: toolDesc
+                    });
+                }
+                const vcpDescriptionsList = [...individualPluginDescriptions.values()];
+                const allVcpToolsString = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
+                list.push({
+                    type: 'vcp_all_tools',
+                    name: '{{VCPAllTools}}',
+                    preview: truncatePreview(allVcpToolsString),
+                    charCount: charCount(allVcpToolsString)
+                });
+            }
+            // 7. Image_Key
+            const effectiveImageKey = pluginManager.getResolvedPluginConfigValue && pluginManager.getResolvedPluginConfigValue('ImageServer', 'Image_Key');
+            if (effectiveImageKey) {
+                list.push({
+                    type: 'image_key',
+                    name: '{{Image_Key}}',
+                    preview: '******',
+                    charCount: charCount(effectiveImageKey)
+                });
+            }
+            // 8. AllCharacterDiariesData + X日记本
+            const allDiariesDataString = pluginManager.getPlaceholderValue && pluginManager.getPlaceholderValue('{{AllCharacterDiariesData}}');
+            if (allDiariesDataString && !allDiariesDataString.startsWith('[Placeholder')) {
+                try {
+                    const allDiariesData = JSON.parse(allDiariesDataString);
+                    list.push({
+                        type: 'diary',
+                        name: '{{AllCharacterDiariesData}}',
+                        preview: truncatePreview(allDiariesDataString),
+                        charCount: charCount(allDiariesDataString)
+                    });
+                    for (const characterName of Object.keys(allDiariesData)) {
+                        const content = allDiariesData[characterName];
+                        list.push({
+                            type: 'diary_character',
+                            name: `{{${characterName}日记本}}`,
+                            preview: truncatePreview(content),
+                            charCount: charCount(content)
+                        });
+                    }
+                } catch (e) {
+                    list.push({
+                        type: 'diary',
+                        name: '{{AllCharacterDiariesData}}',
+                        preview: truncatePreview(allDiariesDataString),
+                        charCount: charCount(allDiariesDataString)
+                    });
+                }
+            }
+            // 9. VCP_ASYNC_RESULT 说明项
+            const asyncDesc = '动态占位符：异步任务完成后按 PluginName 与 requestId 替换为结果内容。列表中不列举具体 requestId。';
+            list.push({
+                type: 'async_placeholder',
+                name: '{{VCP_ASYNC_RESULT::PluginName::requestId}}',
+                preview: asyncDesc,
+                charCount: charCount(asyncDesc)
+            });
+            res.json({ success: true, data: { list } });
+        } catch (error) {
+            console.error('[AdminPanelRoutes] Error listing placeholders:', error);
+            res.status(500).json({ success: false, error: 'Failed to list placeholders', details: error.message });
+        }
+    });
+
+    adminApiRouter.get('/placeholders/detail', async (req, res) => {
+        try {
+            const type = req.query.type;
+            let name = req.query.name;
+            if (!type || name === undefined || name === '') {
+                return res.status(400).json({ success: false, error: 'Missing type or name' });
+            }
+            
+            name = decodeURIComponent(String(name));
+            const rawName = name.replace(/^\{\{|\}\}$/g, '');
+            let value = '';
+            switch (type) {
+                case 'agent': {
+                    const agentManager = require('../modules/agentManager');
+                    if (!agentManager.isAgent(rawName)) {
+                        return res.status(404).json({ success: false, error: 'Agent not found', details: name });
+                    }
+                    value = await agentManager.getAgentPrompt(rawName);
+                    break;
+                }
+                case 'env_tar_var':
+                case 'env_sar': {
+                    const envVal = process.env[rawName];
+                    if (envVal === undefined) {
+                        return res.status(404).json({ success: false, error: 'Environment variable not found', details: name });
+                    }
+                    if (typeof envVal === 'string') {
+                        const emojiPlaceholderRegex = /^[^{}]+?表情包\.txt$/g;
+                        if (emojiPlaceholderRegex.test(envVal)) {
+                            const emojiName = envVal.replace('.txt', '');
+                            const emojiLists = cachedEmojiLists && typeof cachedEmojiLists.get === 'function' ? cachedEmojiLists : new Map();
+                            const emojiList = emojiLists.get(emojiName);
+                            value = emojiList || `[${emojiName}列表不可用]`;
+                        } else if (envVal.toLowerCase().endsWith('.txt')) {
+                            const tvsManager = require('../modules/tvsManager');
+                            value = await tvsManager.getContent(envVal);
+                            if (value.startsWith('[变量文件') || value.startsWith('[处理变量文件')) {
+                                value = envVal;
+                            }
+                        }
+                    } else {
+                        value = envVal || '';
+                    }
+                    if (type === 'env_sar') {
+                        value = value || '[当前未配置或按请求模型注入]';
+                    }
+                    break;
+                }
+                case 'fixed': {
+                    const fixedVals = getFixedTimeValues();
+                    const key = rawName === 'Port' ? 'Port' : rawName;
+                    value = fixedVals[key] !== undefined ? String(fixedVals[key]) : '[未知固定占位符]';
+                    break;
+                }
+                case 'static_plugin': {
+                    value = pluginManager.getPlaceholderValue(rawName);
+                    if (value && typeof value === 'string' && value.startsWith('[Placeholder ') && value.includes('not found')) {
+                        return res.status(404).json({ success: false, error: 'Placeholder not found', details: name });
+                    }
+                    if (value != null && typeof value !== 'string') {
+                        value = JSON.stringify(value, null, 2);
+                    }
+                    break;
+                }
+                case 'tool_description': {
+                    const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions && pluginManager.getIndividualPluginDescriptions();
+                    if (!individualPluginDescriptions || !individualPluginDescriptions.has(rawName)) {
+                        return res.status(404).json({ success: false, error: 'Tool description not found', details: name });
+                    }
+                    value = individualPluginDescriptions.get(rawName) || '';
+                    break;
+                }
+                case 'vcp_all_tools': {
+                    const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions && pluginManager.getIndividualPluginDescriptions();
+                    const vcpDescriptionsList = individualPluginDescriptions ? [...individualPluginDescriptions.values()] : [];
+                    value = vcpDescriptionsList.length > 0 ? vcpDescriptionsList.join('\n\n---\n\n') : '没有可用的VCP工具描述信息';
+                    break;
+                }
+                case 'image_key': {
+                    const effectiveImageKey = pluginManager.getResolvedPluginConfigValue && pluginManager.getResolvedPluginConfigValue('ImageServer', 'Image_Key');
+                    if (!effectiveImageKey) {
+                        return res.status(404).json({ success: false, error: 'Image_Key not configured', details: name });
+                    }
+                    value = '安全第一，不显示';
+                    break;
+                }
+                case 'diary': {
+                    value = pluginManager.getPlaceholderValue && pluginManager.getPlaceholderValue('{{AllCharacterDiariesData}}');
+                    if (!value || value.startsWith('[Placeholder')) {
+                        return res.status(404).json({ success: false, error: 'AllCharacterDiariesData not found', details: name });
+                    }
+                    break;
+                }
+                case 'diary_character': {
+                    const characterName = rawName.replace(/日记本$/, '');
+                    const allDiariesDataString = pluginManager.getPlaceholderValue && pluginManager.getPlaceholderValue('{{AllCharacterDiariesData}}');
+                    if (!allDiariesDataString || allDiariesDataString.startsWith('[Placeholder')) {
+                        return res.status(404).json({ success: false, error: '日记本数据不可用', details: name });
+                    }
+                    try {
+                        const allDiariesData = JSON.parse(allDiariesDataString);
+                        value = allDiariesData.hasOwnProperty(characterName) ? allDiariesData[characterName] : `[角色「${characterName}」无日记数据]`;
+                    } catch (e) {
+                        return res.status(404).json({ success: false, error: '解析日记本数据失败', details: e.message });
+                    }
+                    break;
+                }
+                case 'async_placeholder':
+                    value = '此占位符为动态格式：`{{VCP_ASYNC_RESULT::插件名::requestId}}`。在系统提示词中使用时，会在对应异步任务完成后被替换为任务结果。具体 requestId 由运行时生成，列表中不列举。';
+                    break;
+                default:
+                    return res.status(400).json({ success: false, error: 'Unknown placeholder type', details: type });
+            }
+            const displayName = name.includes('{{') ? name : `{{${name}}}`;
+            res.json({ success: true, data: { name: displayName, value } });
+        } catch (error) {
+            console.error('[AdminPanelRoutes] Error getting placeholder detail:', error);
+            res.status(500).json({ success: false, error: 'Failed to get placeholder detail', details: error.message });
+        }
+    });
+    // --- End Placeholders Viewer API ---
+
     // --- Schedule Manager API ---
     const SCHEDULE_FILE = path.join(__dirname, '..', 'Plugin', 'ScheduleManager', 'schedules.json');
 
@@ -1081,7 +1447,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             if (!time || !content) {
                 return res.status(400).json({ error: 'Time and content are required.' });
             }
-            
+
             let schedules = [];
             try {
                 const fileContent = await fs.readFile(SCHEDULE_FILE, 'utf-8');
@@ -1117,7 +1483,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             const initialLength = schedules.length;
             schedules = schedules.filter(s => s.id !== id);
-            
+
             if (schedules.length === initialLength) {
                 return res.status(404).json({ error: `未找到 ID 为 ${id} 的日程。` });
             }
@@ -1151,7 +1517,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
         const data = req.body;
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
         }
         try {
             await fs.writeFile(ragTagsPath, JSON.stringify(data, null, 2), 'utf-8');
@@ -1183,7 +1549,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const ragParamsPath = path.join(__dirname, '..', 'rag_params.json');
         const data = req.body;
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
         }
         try {
             await fs.writeFile(ragParamsPath, JSON.stringify(data, null, 2), 'utf-8');
@@ -1199,7 +1565,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     adminApiRouter.get('/semantic-groups', async (req, res) => {
         const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
         const mainFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
-        
+
         try {
             // 优先读取 .edit.json 文件
             const content = await fs.readFile(editFilePath, 'utf-8');
@@ -1212,7 +1578,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     res.json(JSON.parse(content));
                 } catch (mainError) {
                     console.error('[AdminPanelRoutes API] Error reading main semantic_groups.json as fallback:', mainError);
-                     if (mainError.code === 'ENOENT') {
+                    if (mainError.code === 'ENOENT') {
                         res.json({ config: {}, groups: {} }); // 两个文件都不存在
                     } else {
                         res.status(500).json({ error: 'Failed to read semantic_groups.json', details: mainError.message });
@@ -1229,7 +1595,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const editFilePath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
         const data = req.body;
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
         }
         try {
             // 直接写入 .edit.json 文件，不再调用插件的复杂逻辑
@@ -1262,7 +1628,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
         const data = req.body;
         if (typeof data !== 'object' || data === null) {
-             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+            return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
         }
         try {
             await fs.writeFile(chainsPath, JSON.stringify(data, null, 2), 'utf-8');
@@ -1297,7 +1663,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // This section is now handled by the VCPTavern plugin's own registerRoutes method.
     // The conflicting routes have been removed from here to allow the plugin to manage them.
     // --- End VCPTavern API ---
-    
+
     // --- 新增：预处理器顺序管理 API ---
     adminApiRouter.get('/preprocessors/order', (req, res) => {
         try {
@@ -1318,7 +1684,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             await fs.writeFile(PREPROCESSOR_ORDER_FILE, JSON.stringify(order, null, 2), 'utf-8');
             if (DEBUG_MODE) console.log('[AdminAPI] Saved new preprocessor order to file.');
-            
+
             const newOrder = await pluginManager.hotReloadPluginsAndOrder();
             res.json({ status: 'success', message: 'Order saved and hot-reloaded successfully.', newOrder });
 
@@ -1679,7 +2045,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     adminApiRouter.get('/tool-list-editor/tools', (req, res) => {
         try {
             const tools = [];
-            
+
             // 遍历所有插件
             for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
                 if (manifest.capabilities && manifest.capabilities.invocationCommands) {
@@ -1695,7 +2061,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     });
                 }
             }
-            
+
             res.json({ tools });
         } catch (error) {
             console.error('[AdminAPI] Error getting tool list:', error);
@@ -1723,10 +2089,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             const configName = req.params.configName;
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
-            
+
             const content = await fs.readFile(configPath, 'utf-8');
             const configData = JSON.parse(content);
-            
+
             res.json(configData);
         } catch (error) {
             console.error('[AdminAPI] Error loading config:', error);
@@ -1740,12 +2106,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             await ensureToolConfigsDir();
             const configName = req.params.configName;
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
-            
+
             const configData = {
                 selectedTools: req.body.selectedTools || [],
                 toolDescriptions: req.body.toolDescriptions || {}
             };
-            
+
             await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
             res.json({ status: 'success', message: 'Config saved successfully' });
         } catch (error) {
@@ -1759,7 +2125,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             const configName = req.params.configName;
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
-            
+
             await fs.unlink(configPath);
             res.json({ status: 'success', message: 'Config deleted successfully' });
         } catch (error) {
@@ -1774,7 +2140,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             const fileName = req.params.fileName;
             const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
             const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
-            
+
             try {
                 await fs.access(outputPath);
                 // 文件存在
@@ -1795,11 +2161,11 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             const fileName = req.params.fileName;
             const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
             const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
-            
+
             const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
-            
+
             let output = '';
-            
+
             // 添加头部说明
             if (includeHeader) {
                 output += 'VCP工具调用格式与指南\r\n\r\n';
@@ -1812,7 +2178,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 output += '主动判断当前需求，灵活使用各类工具调用。\r\n\r\n';
                 output += '========================================\r\n\r\n';
             }
-            
+
             // 收集所有选中的工具信息
             const tools = [];
             for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
@@ -1831,7 +2197,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     });
                 }
             }
-            
+
             // 按插件分组工具，以节省Tokens
             const toolsByPlugin = {};
             tools.forEach(tool => {
@@ -1840,28 +2206,28 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 }
                 toolsByPlugin[tool.pluginName].push(tool);
             });
-            
+
             // 按插件名排序
             const sortedPluginNames = Object.keys(toolsByPlugin).sort((a, b) => a.localeCompare(b));
-            
+
             // 为每个插件生成说明
             let pluginIndex = 0;
             sortedPluginNames.forEach(pluginName => {
                 pluginIndex++;
                 const pluginTools = toolsByPlugin[pluginName];
-                
+
                 // 获取插件显示名称（使用第一个工具的displayName）
                 const pluginDisplayName = pluginTools[0].displayName || pluginName;
-                
+
                 // 如果该插件只有一个工具
                 if (pluginTools.length === 1) {
                     const tool = pluginTools[0];
                     const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
-                    
+
                     output += `${pluginIndex}. ${pluginDisplayName} (${tool.name})\r\n`;
                     output += `插件: ${pluginName}\r\n`;
                     output += `说明: ${desc}\r\n`;
-                    
+
                     if (includeExamples && tool.example) {
                         output += `\r\n示例:\r\n${tool.example}\r\n`;
                     }
@@ -1870,12 +2236,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                     output += `${pluginIndex}. ${pluginDisplayName}\r\n`;
                     output += `插件: ${pluginName}\r\n`;
                     output += `该插件包含 ${pluginTools.length} 个工具调用:\r\n\r\n`;
-                    
+
                     pluginTools.forEach((tool, toolIdx) => {
                         const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
-                        
+
                         output += `  ${pluginIndex}.${toolIdx + 1} ${tool.name}\r\n`;
-                        
+
                         // 处理说明部分，保持原有的多行格式
                         const descLines = desc.split('\n');
                         descLines.forEach((line, lineIdx) => {
@@ -1885,7 +2251,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                                 output += `  ${line}\r\n`;
                             }
                         });
-                        
+
                         if (includeExamples && tool.example) {
                             output += `\r\n`;
                             // 将示例内容缩进
@@ -1894,16 +2260,16 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                                 output += `  ${line}\r\n`;
                             });
                         }
-                        
+
                         if (toolIdx < pluginTools.length - 1) {
                             output += '\r\n';
                         }
                     });
                 }
-                
+
                 output += '\r\n' + '----------------------------------------' + '\r\n\r\n';
             });
-            
+
             await fs.writeFile(outputPath, output, 'utf-8');
             res.json({ status: 'success', filePath: `TVStxt/${fileName}.txt` });
         } catch (error) {
@@ -1925,15 +2291,15 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 'SameSite=Strict',
                 'Max-Age=86400' // 24小时
             ];
-            
+
             // 如果是 HTTPS，添加 Secure 标志
             if (isSecure) {
                 cookieOptions.push('Secure');
             }
-            
+
             res.setHeader('Set-Cookie', cookieOptions.join('; '));
         }
-        
+
         res.status(200).json({
             status: 'success',
             message: 'Authentication successful'
@@ -1952,6 +2318,211 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         // 能到达这里说明已通过 adminAuth 中间件验证
         res.status(200).json({ authenticated: true });
     });
-    
+
+    // ========================
+    // AgentDream 梦境审批 API
+    // ========================
+    const DREAM_LOGS_DIR = path.join(__dirname, '..', 'Plugin', 'AgentDream', 'dream_logs');
+
+    // 列出所有梦日志
+    adminApiRouter.get('/dream-logs', async (req, res) => {
+        try {
+            await fs.mkdir(DREAM_LOGS_DIR, { recursive: true });
+            const files = await fs.readdir(DREAM_LOGS_DIR);
+            const jsonFiles = files.filter(f => f.endsWith('.json'));
+
+            const logs = [];
+            for (const file of jsonFiles) {
+                try {
+                    const content = await fs.readFile(path.join(DREAM_LOGS_DIR, file), 'utf-8');
+                    const data = JSON.parse(content);
+                    const ops = data.operations || [];
+                    const pendingCount = ops.filter(o => o.status === 'pending_review').length;
+                    logs.push({
+                        filename: file,
+                        dreamId: data.dreamId || file,
+                        agentName: data.agentName || '未知',
+                        timestamp: data.timestamp || '',
+                        hasNarrative: !!(data.dreamNarrative),
+                        operationCount: ops.length,
+                        pendingCount,
+                        operationSummary: ops.map(o => ({ type: o.type, status: o.status, operationId: o.operationId }))
+                    });
+                } catch (e) {
+                    logs.push({ filename: file, error: e.message });
+                }
+            }
+
+            // 按时间倒序
+            logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+            res.json({ logs });
+        } catch (error) {
+            console.error('[AdminAPI] Error listing dream logs:', error);
+            res.status(500).json({ error: 'Failed to list dream logs', details: error.message });
+        }
+    });
+
+    // 获取单个梦日志详情
+    adminApiRouter.get('/dream-logs/:filename', async (req, res) => {
+        try {
+            const filename = req.params.filename;
+            if (!filename.endsWith('.json') || filename.includes('..')) {
+                return res.status(400).json({ error: 'Invalid filename.' });
+            }
+            const filePath = path.join(DREAM_LOGS_DIR, filename);
+            const content = await fs.readFile(filePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ error: 'Dream log not found.' });
+            }
+            console.error('[AdminAPI] Error reading dream log:', error);
+            res.status(500).json({ error: 'Failed to read dream log', details: error.message });
+        }
+    });
+
+    // 审批/拒绝梦操作
+    adminApiRouter.post('/dream-logs/:filename/operations/:opId', async (req, res) => {
+        const { filename, opId } = req.params;
+        const { action } = req.body; // 'approve' or 'reject'
+
+        if (!['approve', 'reject'].includes(action)) {
+            return res.status(400).json({ error: 'action 必须是 "approve" 或 "reject"。' });
+        }
+        if (!filename.endsWith('.json') || filename.includes('..')) {
+            return res.status(400).json({ error: 'Invalid filename.' });
+        }
+
+        const filePath = path.join(DREAM_LOGS_DIR, filename);
+
+        try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            const dreamLog = JSON.parse(content);
+            const operations = dreamLog.operations || [];
+            const operation = operations.find(o => o.operationId === opId);
+
+            if (!operation) {
+                return res.status(404).json({ error: `操作 ${opId} 未找到。` });
+            }
+            if (operation.status !== 'pending_review') {
+                return res.status(400).json({ error: `操作 ${opId} 已被处理 (${operation.status})，无法重复审批。` });
+            }
+
+            if (action === 'reject') {
+                operation.status = 'rejected';
+                operation.reviewedAt = new Date().toISOString();
+                await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                return res.json({ status: 'success', message: `操作 ${opId} 已拒绝。`, operation });
+            }
+
+            // --- action === 'approve' ---
+            let result = {};
+
+            switch (operation.type) {
+                case 'merge': {
+                    // 用 DailyNoteWrite 插件创建合并后的新日记
+                    const maidName = dreamLog.agentName || '未知';
+                    const now = new Date();
+                    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+                    try {
+                        const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
+                            maidName: maidName,
+                            dateString: dateStr,
+                            contentText: operation.newContent || ''
+                        }));
+                        result.newDiary = writeResult;
+                    } catch (e) {
+                        operation.status = 'error';
+                        operation.error = `创建合并日记失败: ${e.message}`;
+                        operation.reviewedAt = new Date().toISOString();
+                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                        return res.status(500).json({ error: operation.error });
+                    }
+
+                    // 删除源日记文件
+                    const deleteResults = [];
+                    for (const diaryUrl of (operation.sourceDiaries || [])) {
+                        const diaryPath = _urlToFilePath(diaryUrl);
+                        try {
+                            await fs.unlink(diaryPath);
+                            deleteResults.push({ path: diaryUrl, deleted: true });
+                            // 更新向量库
+                            if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
+                                try { await vectorDBManager.removeDocument(diaryPath); } catch (e) { /* ignore */ }
+                            }
+                        } catch (e) {
+                            deleteResults.push({ path: diaryUrl, deleted: false, error: e.message });
+                        }
+                    }
+                    result.deletedSources = deleteResults;
+                    break;
+                }
+
+                case 'delete': {
+                    const targetPath = _urlToFilePath(operation.targetDiary || '');
+                    try {
+                        await fs.unlink(targetPath);
+                        result.deleted = true;
+                        // 更新向量库
+                        if (vectorDBManager && typeof vectorDBManager.removeDocument === 'function') {
+                            try { await vectorDBManager.removeDocument(targetPath); } catch (e) { /* ignore */ }
+                        }
+                    } catch (e) {
+                        operation.status = 'error';
+                        operation.error = `删除日记失败: ${e.message}`;
+                        operation.reviewedAt = new Date().toISOString();
+                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                        return res.status(500).json({ error: operation.error });
+                    }
+                    break;
+                }
+
+                case 'insight': {
+                    // 用 DailyNoteWrite 插件创建梦感悟日记
+                    const maidName = operation.suggestedMaid || dreamLog.agentName || '未知';
+                    const dateStr = operation.suggestedDate || new Date().toISOString().split('T')[0];
+
+                    try {
+                        const writeResult = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify({
+                            maidName: `[${maidName}的梦]${maidName}`,
+                            dateString: dateStr,
+                            contentText: operation.insightContent || ''
+                        }));
+                        result.newDiary = writeResult;
+                    } catch (e) {
+                        operation.status = 'error';
+                        operation.error = `创建梦感悟失败: ${e.message}`;
+                        operation.reviewedAt = new Date().toISOString();
+                        await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+                        return res.status(500).json({ error: operation.error });
+                    }
+                    break;
+                }
+
+                default:
+                    return res.status(400).json({ error: `不支持的操作类型: ${operation.type}` });
+            }
+
+            operation.status = 'approved';
+            operation.reviewedAt = new Date().toISOString();
+            operation.result = result;
+            await fs.writeFile(filePath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+            res.json({ status: 'success', message: `操作 ${opId} 已批准并执行。`, operation });
+
+        } catch (error) {
+            console.error('[AdminAPI] Error processing dream operation:', error);
+            res.status(500).json({ error: 'Failed to process operation', details: error.message });
+        }
+    });
+
+    // 辅助: file:/// URL 转本地路径
+    function _urlToFilePath(fileUrl) {
+        if (fileUrl.startsWith('file:///')) {
+            return fileUrl.replace('file:///', '').replace(/\//g, path.sep);
+        }
+        return fileUrl;
+    }
+    // --- End AgentDream API ---
     return adminApiRouter;
 };

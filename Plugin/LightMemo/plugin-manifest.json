@@ -19,26 +19,26 @@
       "default": "已整理,夜伽,MusicDiary"
     },
     "RerankUrl": {
-        "type": "string",
-        "description": "Rerank服务的URL，如果需要使用Rerank功能则必须提供。",
-        "default": ""
+      "type": "string",
+      "description": "Rerank服务的URL，如果需要使用Rerank功能则必须提供。",
+      "default": ""
     },
     "RerankApi": {
-        "type": "string",
-        "description": "Rerank服务的API密钥。",
-        "default": ""
+      "type": "string",
+      "description": "Rerank服务的API密钥。",
+      "default": ""
     },
     "RerankModel": {
-        "type": "string",
-        "description": "Rerank服务的模型名称。",
-        "default": ""
+      "type": "string",
+      "description": "Rerank服务的模型名称。",
+      "default": ""
     }
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "SearchRAG",
-        "description": "调用此工具在RAG知识库（日记）中进行轻量级搜索。\n参数:\n- query (字符串, 必需): 用于向量搜索的查询内容。\n- maid (字符串, 可选): AI自己的署名，用于在非全局搜索模式下定位相关日记本。如果提供了 folder 参数，则此参数会被忽略。\n- folder (字符串, 可选): 指定搜索的日记文件夹名称（如“小冰的知识”）。如果提供此参数，将只在该文件夹中搜索并忽略 maid 过滤。\n- k (数字, 可选, 默认5): 返回的结果数量。\n- rerank (布尔, 可选, 默认false): 是否启用Rerank。如果为true，将以2倍k值搜索，然后重排并返回k个结果。\n- search_all_knowledge_bases (布尔, 可选, 默认false): 是否搜索所有知识库。如果为false，则先根据maid或folder找到相关日记本再进行搜索；如果为true，则直接在所有（未被屏蔽的）日记本中搜索。\n- tag_boost (数字, 可选, 默认0.5): TagMemo增强因子，取值范围0-1。设置为0则禁用。该功能通过查询向量关联的标签来增强搜索的相关性。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\nfolder:「始」小冰的知识「末」,\nquery:「始」关于上次项目会议的讨论内容「末」,\nk:「始」3「末」,\nrerank:「始」true「末」,\nsearch_all_knowledge_bases:「始」false「末」,\ntag_boost:「始」0.6「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "调用此工具在RAG知识库（日记）中进行轻量级搜索。\n参数:\n- query (字符串, 必需): 用于向量搜索的查询内容。\n- maid (字符串, 可选): AI自己的署名，用于在非全局搜索模式下定位相关日记本。如果提供了 folder 参数，则此参数会被忽略。\n- folder (字符串, 可选): 指定搜索的日记文件夹名称（如“小冰的知识”）。如果提供此参数，将只在该文件夹中搜索并忽略 maid 过滤。\n- k (数字, 可选, 默认5): 返回的结果数量。\n- rerank (布尔, 可选, 默认false): 是否启用Rerank。如果为true，将以2倍k值搜索，然后重排并返回k个结果。\n- search_all_knowledge_bases (布尔, 可选, 默认false): 是否搜索所有知识库。如果为false，则先根据maid或folder找到相关日记本再进行搜索；如果为true，则直接在所有（未被屏蔽的）日记本中搜索。\n- tag_boost (数字, 可选, 默认0.5): TagMemo增强因子，取值范围0-1。设置为0则禁用。该功能通过查询向量关联的标签来增强搜索的相关性。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\nfolder:「始」小冰的知识「末」,\nquery:「始」关于上次项目会议的讨论内容「末」,\nk:「始」3「末」,\nrerank:「始」true「末」,\nsearch_all_knowledge_bases:「始」false「末」,\ntag_boost:「始」0.6「末」\n当在query字段里使用[音乐检索]时，会自动搜索MusicDiary文件夹中的音乐，此时Tagmemo和Rerank参数的开关依旧有效。\n<<<[END_TOOL_REQUEST]>>>",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」LightMemo「末」,\nfolder:「始」小冰的知识「末」,\nquery:「始」我昨天学到了什么新知识「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]

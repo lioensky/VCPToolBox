@@ -16,6 +16,12 @@ const path = require('path');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 
+// 🌟 核心修复：彻底解放 Node.js 默认的全局连接池限制，防止底层网络排队导致 AdminPanel 死锁
+const http = require('http');
+const https = require('https');
+http.globalAgent.maxSockets = 10000;
+https.globalAgent.maxSockets = 10000;
+
 // 初始化日志记录器
 const logger = require('./modules/logger.js');
 logger.initializeServerLogger();
@@ -1029,7 +1035,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     pluginManager,
     logger.getServerLogPath, // Pass the getter function
     knowledgeBaseManager, // Pass the knowledgeBaseManager instance
-    AGENT_DIR // Pass the Agent directory path
+    AGENT_DIR, // Pass the Agent directory path
+    cachedEmojiLists
 );
 
 // 新增：引入 VCP 论坛 API 路由

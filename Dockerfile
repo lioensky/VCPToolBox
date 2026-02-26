@@ -25,7 +25,7 @@ RUN apk add --no-cache \
   python3-dev \
   linux-headers \
   libffi-dev \
-  openssl-dev
+  openssl-dev \ffmpeg
 
 # 在 npm install 之前设置环境变量，跳过 puppeteer 的 chromium 下载
 ARG PUPPETEER_SKIP_DOWNLOAD=true
@@ -95,8 +95,8 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
   jpeg-dev \
   zlib-dev \
   freetype-dev \
-  libffi
-
+  libffi \
+ffmpeg
 # 设置 PYTHONPATH 环境变量，让 Python 能找到我们安装的依赖
 ENV PYTHONPATH=/usr/src/app/pydeps
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser

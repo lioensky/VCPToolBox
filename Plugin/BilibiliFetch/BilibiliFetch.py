@@ -16,10 +16,25 @@ import io
 from functools import reduce
 from hashlib import md5
 import urllib.parse
-
+import subprocess
+import shutil
 # --- Logging Setup ---
 # Log to stderr to avoid interfering with stdout communication
 # Use a custom handler to ensure UTF-8 output even on Windows
+def get_ffmpeg_path():
+    """查找 ffmpeg：项目内置 → 系统 PATH"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # BilibiliFetch.py 在 Plugin/BilibiliFetch/ 下，往上3层到项目根
+    project_root = os.path.join(script_dir, '..', '..', '..')
+    candidates = [
+        os.path.join(project_root, 'VCPChat', 'bin', 'ffmpeg.exe'),
+        os.path.join(project_root, 'VCPToolBox', 'bin', 'ffmpeg.exe'),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+    return 'ffmpeg'
+
 class UTF8StreamHandler(logging.StreamHandler):
     def emit(self, record):
         try:
@@ -101,17 +116,49 @@ def getWbiKeys(headers: dict) -> tuple[str, str]:
 
 # --- Helper Functions ---
 
-def extract_bvid(video_input: str) -> str | None:
-    """Extracts BV ID from URL or direct input."""
+def extract_bvid_and_page(video_input: str) -> 'tuple[str | None, int]':
+    """Extracts BV ID and page number from URL or direct input."""
+    bvid = None
+    page = 1
     match = re.search(r'bilibili\.com/video/(BV[a-zA-Z0-9]+)', video_input, re.IGNORECASE)
     if match:
-        return match.group(1)
-    match = re.match(r'^(BV[a-zA-Z0-9]+)$', video_input, re.IGNORECASE)
-    if match:
-        return match.group(1)
+        bvid = match.group(1)
+        page_match = re.search(r'[?&]p=(\d+)', video_input)
+        if page_match:
+            page = int(page_match.group(1))
+    else:
+        match = re.match(r'^(BV[a-zA-Z0-9]+)$', video_input, re.IGNORECASE)
+        if match:
+            bvid = match.group(1)
+    return bvid, page
+
+
+def get_cid_for_page(bvid: str, page: int, headers: dict) -> str | None:
+    """Fetches CID for a specific page of a multi-part video via pagelist API."""
+    try:
+        logging.info(f"Fetching CID for BVID: {bvid}, page: {page}")
+        resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
+        data = resp.json()
+        if data.get('code') == 0 and data.get('data'):
+            pl = data['data']
+            idx = page - 1
+            if 0 <= idx < len(pl):
+                logging.info(f"Found CID {pl[idx]['cid']} for page {page}")
+                return str(pl[idx]['cid'])
+            else:
+                logging.warning(f"Page {page} out of range, using page 1")
+                return str(pl[0]['cid']) if pl else None
+    except Exception as e:
+        logging.error(f"Error fetching CID for page {page}: {e}")
     return None
 
-def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None) -> str:
+
+def extract_bvid(video_input: str) -> str | None:
+    """Legacy wrapper for backward compatibility."""
+    bvid, _ = extract_bvid_and_page(video_input)
+    return bvid
+
+def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str | None = None, target_cid: str | None = None) -> str:
     """
     Fetches subtitle JSON for a given BVID, allowing language selection.
     Tries multiple sources:
@@ -151,6 +198,12 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
     except Exception as e:
         logging.warning(f"Step 1: Error fetching via View API: {e}")
 
+   # --- Step 1.5: Override CID for multi-part video ---
+    if target_cid:
+        logging.info(f"Overriding CID with target_cid: {target_cid}")
+        cid = target_cid
+        subtitles_from_apis = []
+
     # --- Step 2: Get CID from Pagelist (if View API failed to provide CID) ---
     if not cid:
         try:
@@ -159,7 +212,7 @@ def get_subtitle_json_string(bvid: str, user_cookie: str | None, lang_code: str 
             page_data = page_resp.json()
             if page_data.get('code') == 0 and page_data.get('data'):
                 cid = str(page_data['data'][0]['cid'])
-                logging.info(f"Step 2: Found CID via pagelist: {cid}")
+                logging.info(f"Step 2: Found CID via pagelist fallback: {cid}")
         except Exception as e:
             logging.error(f"Step 2: Error fetching pagelist: {e}")
 
@@ -343,6 +396,87 @@ def fetch_videoshot(bvid: str, aid: str, cid: str, headers: dict) -> dict:
     except Exception as e:
         logging.error(f"Error fetching videoshot: {e}")
     return {}
+    
+def get_video_stream_url(bvid: str, cid: str, headers: dict) -> tuple:
+    """通过 playurl API 获取视频流地址（取最高画质）"""
+    try:
+        params = {
+            'bvid': bvid,
+            'cid': cid,
+            'fnval': 16,
+            'qn': 127,
+            'fourk': 1
+        }
+        resp = requests.get(
+            "https://api.bilibili.com/x/player/playurl",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+        data = resp.json()
+        if data.get('code') == 0:
+            dash = data.get('data', {}).get('dash', {})
+            videos = dash.get('video', [])
+            if videos:
+                best = sorted(
+                    videos,
+                    key=lambda v: v.get('bandwidth', 0),
+                    reverse=True
+                )[0]
+                url = best.get('baseUrl') or best.get('base_url')
+                w = best.get('width', 0)
+                h = best.get('height', 0)
+                logging.info(f"Best stream: {w}x{h}, bw={best.get('bandwidth')}")
+                return url, w, h
+    except Exception as e:
+        logging.error(f"Error getting video stream URL: {e}")
+    return None, 0, 0
+
+
+def fetch_hd_snapshot(bvid: str, cid: str, timestamp: float, img_dir: str, headers: dict) -> str | None:
+    """用 ffmpeg 从视频流中抽取指定时间点的高清帧"""
+    ffmpeg_cmd = get_ffmpeg_path()
+    if ffmpeg_cmd == 'ffmpeg' and not shutil.which('ffmpeg'):
+        logging.warning("ffmpeg not found, cannot fetch HD snapshot")
+        return None
+
+    stream_url, w, h = get_video_stream_url(bvid, cid, headers)
+    if not stream_url:
+        logging.warning("Failed to get video stream URL")
+        return None
+
+    out_path = os.path.join(
+        img_dir,
+        f"hd_snapshot_{bvid}_{int(timestamp)}s.jpg"
+    )
+    referer = f"https://www.bilibili.com/video/{bvid}/"
+    user_agent = headers.get('User-Agent', 'Mozilla/5.0')
+
+    cmd = [
+        ffmpeg_cmd, '-y',
+        '-headers', f"Referer: {referer}\r\nUser-Agent: {user_agent}\r\n",
+        '-ss', str(timestamp),
+        '-i', stream_url,
+        '-frames:v', '1',
+        '-q:v', '2',
+        out_path
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.exists(out_path):
+            size = os.path.getsize(out_path)
+            logging.info(f"HD snapshot saved: {out_path} ({w}x{h}, {size}B)")
+            return out_path
+        else:
+            stderr = result.stderr.decode('utf-8', errors='ignore')[:300]
+            logging.error(f"ffmpeg failed (rc={result.returncode}): {stderr}")
+    except subprocess.TimeoutExpired:
+        logging.error("ffmpeg timed out after 30s")
+    except Exception as e:
+        logging.error(f"Error running ffmpeg: {e}")
+    return None
+
 
 def fetch_pbp(cid: str, aid: str = None, bvid: str = None) -> str:
     """获取高能进度条数据并返回弹幕最集中的时间点"""
@@ -425,7 +559,7 @@ def get_accessible_url(local_path: str) -> str:
     # Fallback to file URI if env vars are missing or error occurs
     return "file:///" + local_path.replace("\\", "/")
 
-def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True) -> dict:
+def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, danmaku_num: int = 0, comment_num: int = 0, snapshot_at_times: list | None = None, need_subs: bool = True, need_pbp: bool = True, hd_snapshot: bool = False) -> dict:
     """
     Enhanced version of process_bilibili_url that handles short URLs, fetches danmaku/comments, snapshots, and PBP.
     Returns a dictionary suitable for VCP multimodal output.
@@ -434,9 +568,10 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
     resolved_url = resolve_short_url(video_input)
     
     # 2. Extract BVID
-    bvid = extract_bvid(resolved_url)
+    bvid, page = extract_bvid_and_page(resolved_url)
     if not bvid:
         return f"无法从输入提取 BV 号: {video_input}"
+    logging.info(f"Extracted BVID: {bvid}, Page: {page}")
 
     user_cookie = os.environ.get('BILIBILI_COOKIE')
     headers = {
@@ -460,14 +595,24 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             video_title = data.get('title')
             video_author = data.get('owner', {}).get('name')
             logging.info(f"Found AID: {aid}, CID: {cid}, Title: {video_title}, Author: {video_author} via View API")
+            # Override CID for multi-part videos
+            if page > 1:
+                page_cid = get_cid_for_page(bvid, page, headers)
+                if page_cid:
+                    cid = page_cid
+                    logging.info(f"Overrode CID to {cid} for page {page}")
         else:
             # Fallback to pagelist for CID if view API fails
             logging.warning(f"View API failed (code {view_data.get('code')}), attempting pagelist for CID")
             page_resp = requests.get(PAGELIST_API_URL, params={'bvid': bvid}, headers=headers, timeout=10)
             page_data = page_resp.json()
             if page_data.get('code') == 0 and page_data.get('data'):
-                cid = str(page_data['data'][0]['cid'])
-                logging.info(f"Found CID via pagelist fallback: {cid}")
+                idx = page - 1 if page > 0 else 0
+                if idx < len(page_data['data']):
+                    cid = str(page_data['data'][idx]['cid'])
+                else:
+                    cid = str(page_data['data'][0]['cid'])
+                logging.info(f"Found CID via pagelist fallback: {cid} (page {page})")
     except Exception as e:
         logging.error(f"Error getting video info: {e}")
 
@@ -528,63 +673,73 @@ def process_bilibili_enhanced(video_input: str, lang_code: str | None = None, da
             for t in snapshot_at_times:
                 try:
                     t_val = float(t)
-                    # Find closest index
-                    closest_idx = 0
-                    min_diff = float('inf')
-                    for i, timestamp in enumerate(index_list):
-                        diff = abs(timestamp - t_val)
-                        if diff < min_diff:
-                            min_diff = diff
-                            closest_idx = i
-                    
-                    actual_timestamp = index_list[closest_idx]
-                    
-                    # Calculate sprite sheet and position
-                    img_x_len = shot_data.get('img_x_len', 10)
-                    img_y_len = shot_data.get('img_y_len', 10)
-                    img_x_size = shot_data.get('img_x_size', 160)
-                    img_y_size = shot_data.get('img_y_size', 90)
-                    per_sheet = img_x_len * img_y_len
-                    
-                    sheet_idx = closest_idx // per_sheet
-                    pos_in_sheet = closest_idx % per_sheet
-                    row = pos_in_sheet // img_x_len
-                    col = pos_in_sheet % img_x_len
-                    
-                    if sheet_idx < len(image_urls):
-                        img_url = image_urls[sheet_idx]
-                        if img_url.startswith('//'):
-                            img_url = 'https:' + img_url
-                        
-                        # Download and crop
-                        if sheet_idx not in sheet_cache:
-                            logging.info(f"Downloading sprite sheet: {img_url}")
-                            img_resp = requests.get(img_url, timeout=15)
-                            sheet_cache[sheet_idx] = Image.open(io.BytesIO(img_resp.content))
-                        
-                        sheet_img = sheet_cache[sheet_idx]
-                        left = col * img_x_size
-                        top = row * img_y_size
-                        right = left + img_x_size
-                        bottom = top + img_y_size
-                        
-                        cropped_img = sheet_img.crop((left, top, right, bottom))
-                        
-                        # Save cropped image
-                        img_filename = f"snapshot_{bvid}_{actual_timestamp}s.jpg"
-                        img_path = os.path.join(img_dir, img_filename)
-                        cropped_img.save(img_path, "JPEG")
-                        
-                        # Use VCP accessible URL for local path
+                    img_path = None
+
+                    # 优先尝试 ffmpeg 高清抽帧
+                    if hd_snapshot and cid:
+                        img_path = fetch_hd_snapshot(bvid, cid, t_val, img_dir, headers)
+
+                    # 降级到雪碧图裁切
+                    if not img_path and shot_data and shot_data.get('image'):
+                        # Find closest index
+                        closest_idx = 0
+                        min_diff = float('inf')
+                        for i, timestamp in enumerate(index_list):
+                            diff = abs(timestamp - t_val)
+                            if diff < min_diff:
+                                min_diff = diff
+                                closest_idx = i
+
+                        actual_timestamp = index_list[closest_idx]
+
+                        # Calculate sprite sheet and position
+                        img_x_len = shot_data.get('img_x_len', 10)
+                        img_y_len = shot_data.get('img_y_len', 10)
+                        img_x_size = shot_data.get('img_x_size', 160)
+                        img_y_size = shot_data.get('img_y_size', 90)
+                        per_sheet = img_x_len * img_y_len
+
+                        sheet_idx = closest_idx // per_sheet
+                        pos_in_sheet = closest_idx % per_sheet
+                        row = pos_in_sheet // img_x_len
+                        col = pos_in_sheet % img_x_len
+
+                        if sheet_idx < len(image_urls):
+                            img_url = image_urls[sheet_idx]
+                            if img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+
+                            if sheet_idx not in sheet_cache:
+                                logging.info(f"Downloading sprite sheet: {img_url}")
+                                img_resp = requests.get(img_url, timeout=15)
+                                sheet_cache[sheet_idx] = Image.open(io.BytesIO(img_resp.content))
+
+                            sheet_img = sheet_cache[sheet_idx]
+                            left = col * img_x_size
+                            top = row * img_y_size
+                            right = left + img_x_size
+                            bottom = top + img_y_size
+
+                            cropped_img = sheet_img.crop((left, top, right, bottom))
+
+                            img_filename = f"snapshot_{bvid}_{actual_timestamp}s.jpg"
+                            img_path = os.path.join(img_dir, img_filename)
+                            cropped_img.save(img_path, "JPEG")
+
+                    if img_path:
                         accessible_url = get_accessible_url(img_path)
-                        
                         images_to_add.append({
                             "type": "image_url",
                             "image_url": {"url": accessible_url}
                         })
-                        snapshot_text += f"- 时间点 {t_val}s (实际匹配 {actual_timestamp}s) 的快照已保存并附加: {img_filename}\n"
+                        mode_label = "HD" if hd_snapshot and "hd_snapshot" in os.path.basename(img_path) else "雪碧图"
+                        snapshot_text += f"- 时间点 {t_val}s 的快照已保存 [{mode_label}]: {os.path.basename(img_path)}\n"
+                    else:
+                        snapshot_text += f"- 时间点 {t_val}s 的快照获取失败\n"
+
                 except Exception as e:
                     logging.error(f"Error processing snapshot time {t}: {e}")
+                    snapshot_text += f"- 时间点 {t}s 处理出错: {e}\n"
         else:
             # Provide info about available snapshots
             if index_list:
@@ -773,13 +928,23 @@ def process_bilibili_url(video_input: str, lang_code: str | None = None) -> str:
         logging.info(f"Subtitle language preference passed as argument: {lang_code}")
 
 
-    bvid = extract_bvid(video_input)
+    bvid, page = extract_bvid_and_page(video_input)
     if not bvid:
         logging.error(f"Invalid input: Could not extract BV ID from '{video_input}'.")
-        return "" # Return empty string on invalid input
+        return ""
+
+    target_cid = None
+    if page > 1:
+        _h = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': f'{BILIBILI_VIDEO_BASE_URL}{bvid}/',
+        }
+        if user_cookie:
+            _h['Cookie'] = user_cookie
+        target_cid = get_cid_for_page(bvid, page, _h)
 
     try:
-        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie, lang_code)
+        subtitle_json_string = get_subtitle_json_string(bvid, user_cookie, lang_code, target_cid=target_cid)
 
         # Process the subtitle JSON string to extract plain text
         try:
@@ -851,8 +1016,12 @@ def handle_single_request(data: dict):
         need_pbp = data.get('need_pbp', True)
         if isinstance(need_pbp, str):
             need_pbp = need_pbp.lower() != 'false'
+            
+        hd_snapshot = data.get('hd_snapshot', False)
+        if isinstance(hd_snapshot, str):
+            hd_snapshot = hd_snapshot.lower() in ('true', '1', 'yes')
 
-        return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp)
+        return process_bilibili_enhanced(url, lang_code=lang, danmaku_num=danmaku_num, comment_num=comment_num, snapshot_at_times=snapshot_at_times, need_subs=need_subs, need_pbp=need_pbp, hd_snapshot=hd_snapshot)
 
 if __name__ == "__main__":
     input_data_raw = sys.stdin.read()

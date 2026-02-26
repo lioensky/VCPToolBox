@@ -48,8 +48,9 @@ class NonStreamHandler {
       const parsedJson = JSON.parse(aiResponseText);
       const message = parsedJson.choices?.[0]?.message;
       if (message) {
-        // 同时收集推理内容和普通内容
-        fullContentFromAI = (message.reasoning_content || '') + (message.content || '');
+        // 默认隐藏非流式思维链（HIDE_NONSTREAM_REASONING=true），避免 Gemini 等模型的推理内容泄露到正文
+        const hideReasoning = (process.env.HIDE_NONSTREAM_REASONING || 'true').toLowerCase() !== 'false';
+        fullContentFromAI = (hideReasoning ? '' : (message.reasoning_content || '')) + (message.content || '');
       } else {
         fullContentFromAI = '';
       }
@@ -85,7 +86,7 @@ class NonStreamHandler {
           try {
             const result = await toolExecutor.execute(toolCall, clientIp);
             const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
-            
+
             if (isError) {
               archeryErrorContents.push({
                 type: 'text',
@@ -115,10 +116,10 @@ class NonStreamHandler {
             });
           }
           currentMessagesForNonStreamLoop.push(...assistantMessages);
-          
+
           const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
           currentMessagesForNonStreamLoop.push({ role: 'user', content: errorPayload });
-          
+
           const recursionAiResponse = await fetchWithRetry(
             `${apiUrl}/v1/chat/completions`,
             {
@@ -129,7 +130,7 @@ class NonStreamHandler {
             },
             { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
           );
-          
+
           if (recursionAiResponse.ok) {
             const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
             const recursionBuffer = Buffer.from(recursionArrayBuffer);
@@ -175,26 +176,26 @@ class NonStreamHandler {
           const toolCall = normalCalls[i];
           const result = toolResults[i];
           const forceThisOne = !shouldShowVCP && toolCall.markHistory;
-          
+
           if (shouldShowVCP || forceThisOne) {
             const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
             if (vcpText) conversationHistoryForClient.push(vcpText);
           }
         }
 
-        const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (k, v) => 
+        const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (k, v) =>
           (k === 'url' || k === 'image_url') && typeof v === 'string' && v.startsWith('data:') ? "[Omitted]" : v
         );
 
         if (RAGMemoRefresh) {
-          currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, { 
-            lastAiMessage: currentAIContentForLoop, 
-            toolResultsText: toolResultsTextForRAG 
+          currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, {
+            lastAiMessage: currentAIContentForLoop,
+            toolResultsText: toolResultsTextForRAG
           }, pluginManager, DEBUG_MODE);
         }
 
         const hasImage = combinedToolResultsForAI.some(item => item.type === 'image_url');
-        const finalToolPayloadForAI = hasImage 
+        const finalToolPayloadForAI = hasImage
           ? [{ type: 'text', text: `<!-- VCP_TOOL_PAYLOAD -->\nResults:` }, ...combinedToolResultsForAI]
           : `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsTextForRAG}`;
 

@@ -404,35 +404,64 @@ function formatWeatherInfo(
     return '[天气信息获取失败]';
   }
 
-  let result = '';
+  // --- Prepare Weather Warning Detail (Always shown if exists) ---
+  let warningDetailStr = '';
+  if (weatherWarning && weatherWarning.length > 0) {
+    warningDetailStr += '⚠️【天气预警详情】\n';
+    weatherWarning.forEach(warning => {
+      warningDetailStr += `\n标题: ${warning.title}\n`;
+      warningDetailStr += `发布时间: ${new Date(warning.pubTime).toLocaleString('zh-CN', { timeZone: DEFAULT_TIMEZONE })}\n`;
+      warningDetailStr += `级别: ${warning.severityColor || '未知'}\n`;
+      warningDetailStr += `类型: ${warning.typeName}\n`;
+      warningDetailStr += `内容: ${warning.text}\n`;
+    });
+    warningDetailStr += '--------------------\n';
+  }
+
+  // --- Block 0.0: Current Data (Air Quality & Warnings only) ---
+  let currentStr = warningDetailStr;
+  currentStr += '【实时概况】\n';
+  if (airQuality) {
+    currentStr += `空气质量: ${airQuality.category} (AQI ${airQuality.aqi}), PM2.5: ${airQuality.pm2p5}\n`;
+  }
+
+  // --- Block 0.35: Short Forecast (Next 3 Days) + Current ---
+  let shortStr = currentStr + '\n【3日预报】\n';
+  if (forecast && forecast.length >= 3) {
+    for (let i = 0; i < 3; i++) {
+      const day = forecast[i];
+      shortStr += `${day.fxDate}: 白天${day.textDay}/夜间${day.textNight}, 气温${day.tempMin}~${day.tempMax}℃\n`;
+    }
+  } else if (forecast && forecast.length > 0) {
+    shortStr += `预报可用天数不足3天\n`;
+  } else {
+    shortStr += `天气预报获取失败。\n`;
+  }
+
+  // --- Block 0.5: Full Detailed Forecast ---
+  let fullStr = '';
 
   // Add Air Quality section
-  result += '【实时空气质量】\n';
+  fullStr += '【实时空气质量】\n';
   if (airQuality) {
-    result += `空气质量指数 (AQI): ${airQuality.aqi}\n`;
-    result += `主要污染物: ${airQuality.primary === 'NA' ? '无' : airQuality.primary}\n`;
-    result += `空气质量等级: ${airQuality.category}\n`;
-    result += `PM2.5 浓度: ${airQuality.pm2p5} μg/m³\n`;
+    fullStr += `空气质量指数 (AQI): ${airQuality.aqi}\n`;
+    fullStr += `主要污染物: ${airQuality.primary === 'NA' ? '无' : airQuality.primary}\n`;
+    fullStr += `空气质量等级: ${airQuality.category}\n`;
+    fullStr += `PM2.5 浓度: ${airQuality.pm2p5} μg/m³\n`;
   } else {
-    result += '空气质量信息获取失败。\n';
+    fullStr += '空气质量信息获取失败。\n';
   }
 
   // Add Weather Warning section
-  result += '\n【天气预警】\n';
+  fullStr += '\n【天气预警】\n';
   if (weatherWarning && weatherWarning.length > 0) {
-    weatherWarning.forEach(warning => {
-      result += `\n标题: ${warning.title}\n`;
-      result += `发布时间: ${new Date(warning.pubTime).toLocaleString('zh-CN', { timeZone: DEFAULT_TIMEZONE })}\n`;
-      result += `级别: ${warning.severityColor || '未知'}\n`;
-      result += `类型: ${warning.typeName}\n`;
-      result += `内容: ${warning.text}\n`;
-    });
+    fullStr += warningDetailStr;
   } else {
-    result += '当前无天气预警信息。\n';
+    fullStr += '当前无天气预警信息。\n';
   }
 
   // Add 24-hour Forecast section
-  result += '\n【未来24小时天气预报】\n';
+  fullStr += '\n【未来24小时天气预报】\n';
   if (hourlyForecast && hourlyForecast.length > 0) {
     // Use interval and count from config
     for (
@@ -447,56 +476,66 @@ function formatWeatherInfo(
           minute: '2-digit',
           timeZone: DEFAULT_TIMEZONE,
         });
-        result += `\n时间: ${time}\n`;
-        result += `天气: ${hour.text}\n`;
-        result += `温度: ${hour.temp}℃\n`;
-        result += `风向: ${hour.windDir}\n`;
-        result += `风力: ${hour.windScale}级\n`;
-        result += `湿度: ${hour.humidity}%\n`;
-        result += `降水概率: ${hour.pop}%\n`;
-        result += `降水量: ${hour.precip}毫米\n`;
+        fullStr += `\n时间: ${time}\n`;
+        fullStr += `天气: ${hour.text}\n`;
+        fullStr += `温度: ${hour.temp}℃\n`;
+        fullStr += `风向: ${hour.windDir}\n`;
+        fullStr += `风力: ${hour.windScale}级\n`;
+        fullStr += `湿度: ${hour.humidity}%\n`;
+        fullStr += `降水概率: ${hour.pop}%\n`;
+        fullStr += `降水量: ${hour.precip}毫米\n`;
       }
     }
   } else {
-    result += '未来24小时天气预报获取失败。\n';
+    fullStr += '未来24小时天气预报获取失败。\n';
   }
 
   // Keep N-day Forecast section
-  result += `\n【未来${forecastDays}日天气预报】\n`;
+  fullStr += `\n【未来${forecastDays}日天气预报】\n`;
   if (forecast && forecast.length > 0) {
     forecast.forEach(day => {
-      result += `\n日期: ${day.fxDate}\n`;
-      result += `白天: ${day.textDay} (图标: ${day.iconDay}), 最高温: ${day.tempMax}℃, 风向: ${day.windDirDay}, 风力: ${day.windScaleDay}级\n`;
-      result += `夜间: ${day.textNight} (图标: ${day.iconNight}), 最低温: ${day.tempMin}℃, 风向: ${day.windDirNight}, 风力: ${day.windScaleNight}级\n`;
-      result += `湿度: ${day.humidity}%\n`;
-      result += `降水: ${day.precip}毫米\n`;
-      result += `紫外线指数: ${day.uvIndex}\n`;
+      fullStr += `\n日期: ${day.fxDate}\n`;
+      fullStr += `白天: ${day.textDay} (图标: ${day.iconDay}), 最高温: ${day.tempMax}℃, 风向: ${day.windDirDay}, 风力: ${day.windScaleDay}级\n`;
+      fullStr += `夜间: ${day.textNight} (图标: ${day.iconNight}), 最低温: ${day.tempMin}℃, 风向: ${day.windDirNight}, 风力: ${day.windScaleNight}级\n`;
+      fullStr += `湿度: ${day.humidity}%\n`;
+      fullStr += `降水: ${day.precip}毫米\n`;
+      fullStr += `紫外线指数: ${day.uvIndex}\n`;
     });
   } else {
-    result += `\n未来${forecastDays}日天气预报获取失败。\n`;
+    fullStr += `\n未来${forecastDays}日天气预报获取失败。\n`;
   }
 
   // Add Moon Phase section
-  result += '\n【今日月相】\n';
+  fullStr += '\n【今日月相】\n';
   if (moonPhase && moonPhase.moonPhase && moonPhase.moonPhase.length > 0) {
     const phase = moonPhase.moonPhase[0];
-    result += `月相: ${phase.name}\n`;
-    result += `月升时间: ${moonPhase.moonrise || '无'}\n`;
-    result += `月落时间: ${moonPhase.moonset || '无'}\n`;
+    fullStr += `月相: ${phase.name}\n`;
+    fullStr += `月升时间: ${moonPhase.moonrise || '无'}\n`;
+    fullStr += `月落时间: ${moonPhase.moonset || '无'}\n`;
   } else {
-    result += '今日月相信息获取失败。\n';
+    fullStr += '今日月相信息获取失败。\n';
   }
 
   // Add Solar Angle section
-  result += '\n【太阳角度】\n';
+  fullStr += '\n【太阳角度】\n';
   if (solarAngle) {
-    result += `太阳高度角: ${solarAngle.solarElevationAngle}°\n`;
-    result += `太阳方位角: ${solarAngle.solarAzimuthAngle}°\n`;
+    fullStr += `太阳高度角: ${solarAngle.solarElevationAngle}°\n`;
+    fullStr += `太阳方位角: ${solarAngle.solarAzimuthAngle}°\n`;
   } else {
-    result += '太阳角度信息获取失败。\n';
+    fullStr += '太阳角度信息获取失败。\n';
   }
 
-  return result.trim();
+  const outputObj = {
+    vcp_dynamic_fold: true,
+    plugin_description: "天气预报插件，提供各个城市及地区的实时天气、未来数天预报、空气质量预警与生活日出日落太阳位置",
+    fold_blocks: [
+      { threshold: 0.5, content: fullStr.trim() },
+      { threshold: 0.35, content: shortStr.trim() },
+      { threshold: 0.0, content: currentStr.trim() }
+    ]
+  };
+
+  return JSON.stringify(outputObj, null, 2);
 }
 
 // --- End QWeather API Functions ---
@@ -690,9 +729,8 @@ async function main() {
       process.exit(0); // Exit 0 because we are providing data, albeit stale.
     } else {
       // API failed AND no cache available
-      const errorMessage = `[天气API请求失败且无可用缓存: ${
-        apiResult.error ? apiResult.error.message.substring(0, 100) : '未知错误'
-      }]`;
+      const errorMessage = `[天气API请求失败且无可用缓存: ${apiResult.error ? apiResult.error.message.substring(0, 100) : '未知错误'
+        }]`;
       console.error(`[WeatherReporter] ${errorMessage}`);
       process.stdout.write(errorMessage); // Output error to stdout so Plugin.js can use it as placeholder
       process.exit(1); // Exit 1 to indicate to Plugin.js that the update truly failed to produce a usable value.

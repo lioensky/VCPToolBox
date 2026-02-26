@@ -32,8 +32,8 @@ VCPTavern 是一个强大的消息预处理插件，专为 VCP 系统设计。�
         ```text
         [系统提示:]
         当前时间：{{Date}} {{Time}}
-        距离上次见面已过去：{{TimeSinceLastChat}}
-        （上次见面时间：{{LastChatTime}}）
+        {{TimeSinceLastChat}}
+        {{LastChatTime}}
         ```
 
 ### 2. 激活预设
@@ -64,8 +64,8 @@ VCPTavern 是一个强大的消息预处理插件，专为 VCP 系统设计。�
 | `{{Date}}` | 当前日期 | `2026/2/14` |
 | `{{Time}}` | 当前时间 | `16:30:00` |
 | `{{Today}}` | 当前星期 | `星期六` |
-| `{{TimeSinceLastChat}}` | 距离上次对话的时间间隔 | `3天5小时` 或 `刚刚` |
-| `{{LastChatTime}}` | 上次对话的具体时间点 | `2026/2/11 10:00:00` |
+| `{{TimeSinceLastChat}}` | 距离上次对话的完整描述 | `距离上次对话已过去 3天5小时` (首次对话时为空) |
+| `{{LastChatTime}}` | 上次对话的时间点描述 | `上次对话时间：2026/2/11 10:00:00` (首次对话时为空) |
 
 ### 身份识别机制 (Identity Recognition)
 
