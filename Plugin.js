@@ -688,37 +688,40 @@ class PluginManager {
         }
 
         // --- 预先拉取所有的异地文件，将其透明化 ---
-        const resolveArgsUrls = async (obj) => {
-            if (!obj || typeof obj !== 'object') return;
-            for (const key of Object.keys(obj)) {
-                const val = obj[key];
-                if (typeof val === 'string') {
-                    if (val.startsWith('file://')) {
-                        if (this.debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${val}`);
-                        obj[key] = await FileFetcherServer.resolveFileUrl(val, requestIp);
-                    } else if (val.includes('file://')) {
-                        const fileRegex = /file:\/\/[^\s"'()\]]+/g;
-                        const matches = val.match(fileRegex);
-                        if (matches) {
-                            let newVal = val;
-                            for (const matchUrl of matches) {
-                                if (this.debugMode) console.log(`[PluginManager] Intercepted embedded file URL in args: ${matchUrl}`);
-                                const resolvedUrl = await FileFetcherServer.resolveFileUrl(matchUrl, requestIp);
-                                newVal = newVal.split(matchUrl).join(resolvedUrl); // replaceAll fallback
+        // 逻辑漏洞修复：如果是分布式插件，则不进行预拉取，直接透传 file:// 协议，由分布式端自行处理
+        if (!plugin.isDistributed) {
+            const resolveArgsUrls = async (obj) => {
+                if (!obj || typeof obj !== 'object') return;
+                for (const key of Object.keys(obj)) {
+                    const val = obj[key];
+                    if (typeof val === 'string') {
+                        if (val.startsWith('file://')) {
+                            if (this.debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${val}`);
+                            obj[key] = await FileFetcherServer.resolveFileUrl(val, requestIp);
+                        } else if (val.includes('file://')) {
+                            const fileRegex = /file:\/\/[^\s"'()\]]+/g;
+                            const matches = val.match(fileRegex);
+                            if (matches) {
+                                let newVal = val;
+                                for (const matchUrl of matches) {
+                                    if (this.debugMode) console.log(`[PluginManager] Intercepted embedded file URL in args: ${matchUrl}`);
+                                    const resolvedUrl = await FileFetcherServer.resolveFileUrl(matchUrl, requestIp);
+                                    newVal = newVal.split(matchUrl).join(resolvedUrl); // replaceAll fallback
+                                }
+                                obj[key] = newVal;
                             }
-                            obj[key] = newVal;
                         }
+                    } else if (typeof val === 'object' && val !== null) {
+                        await resolveArgsUrls(val);
                     }
-                } else if (typeof val === 'object' && val !== null) {
-                    await resolveArgsUrls(val);
                 }
-            }
-        };
+            };
 
-        try {
-            await resolveArgsUrls(pluginSpecificArgs);
-        } catch (resolveError) {
-            throw new Error(JSON.stringify({ plugin_error: `Failed to pre-fetch files: ${resolveError.message}` }));
+            try {
+                await resolveArgsUrls(pluginSpecificArgs);
+            } catch (resolveError) {
+                throw new Error(JSON.stringify({ plugin_error: `Failed to pre-fetch files: ${resolveError.message}` }));
+            }
         }
         // --- 透明化处理结束 ---
 
