@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         OpenWebUI HTML Auto-Render（遮点挪）
+// @name         OpenWebUI HTML Auto-Render(遮点挪)
 // @namespace    http(s)://your.openwebui.url/*
-// @version      0.5.0
-// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.0: iframe 右上角加入“复制/保存”悬浮按钮，支持复制为图像/保存到本地；html2canvas 运行时动态加载，便于非油猴环境拆分复用。
+// @version      0.5.3
+// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.3: 截图引擎替换为 dom-to-image-more（SVG foreignObject），特效100%保真；智能内容区域检测，精确截取卡片区；圆角保留。
 // @author       B3000Kcn & DBL1F7E5
-// @match        *://*/*
+// @match        http(s)://your.openwebui.url/*
 // @grant        GM_addStyle
 // @run-at       document-idle
 // ==/UserScript==
@@ -27,15 +27,14 @@
         FAST_PROBE_INTERVAL: 150,
         FAST_PROBE_MAX: 15,
 
-        // v0.5.0: 截图/复制/保存工具栏
-        HTML2CANVAS_CDN: 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
-        HTML2CANVAS_LOAD_TIMEOUT_MS: 12000,
-        CAPTURE_MAX_CANVAS_DIM: 16384, // 常见浏览器 canvas 单边上限（不同实现略有差异）
-        CAPTURE_MAX_SCALE: 3,          // 桌面尽量清晰；移动端会自动降到 2
-        CAPTURE_TRIM_ALPHA_THRESHOLD: 8, // 导出时裁切透明边缘：alpha 阈值
-        CAPTURE_TRIM_PADDING: 2,         // 裁切后保留像素边距，避免切掉抗锯齿
-        TOAST_MS: 1600,
+        // v0.5.3: dom-to-image-more (SVG foreignObject 截图引擎)
+        DOMTOIMAGE_CDN: 'https://cdn.jsdelivr.net/npm/dom-to-image-more@3/dist/dom-to-image-more.min.js',
+        DOMTOIMAGE_LOAD_TIMEOUT_MS: 12000,
 
+        //截图分辨率倍率(2=2x高清, 3=3x超清; 触屏设备自动降1级)
+        CAPTURE_SCALE: 3,
+
+        TOAST_MS: 1600,
         DEBUG: true,
     };
 
@@ -43,7 +42,7 @@
         if (CONFIG.DEBUG) console.log('[遮点挪]', ...args);
     }
 
-    // ========== CSS 注入（兼容油猴/非油猴） ==========
+    // ========== CSS 注入(兼容油猴/非油猴) ==========
 
     function addStyle(cssText) {
         try {
@@ -134,10 +133,8 @@
         .vcp-html-jailbroken {
             border: none !important;
             background: transparent !important;
-            box-shadow: none !important;
-            padding: 0 !important;
-            margin: 16px 0 8px 0 !important;
-            min-height: auto !important;
+            box-shadow: none !important;padding: 0 !important;
+            margin: 16px 0 8px 0 !important;min-height: auto !important;
             overflow: visible !important;
         }
         .vcp-html-jailbroken,
@@ -157,8 +154,7 @@
             padding: 0 !important;
             border: none !important;
             background: transparent !important;
-            min-height: auto !important;
-        }
+            min-height: auto !important;}
         .vcp-html-jailbroken .language-html > *:not(.vcp-html-placeholder):not(.vcp-html-iframe-wrapper):not(div[id^="code-textarea-"]) {
             display: none !important;
         }
@@ -190,7 +186,7 @@
             overflow: hidden;
         }
 
-        /* ===== v0.5.0: iframe 右上角工具栏 ===== */
+        /* ===== v0.5.0+: iframe 右上角工具栏 ===== */
         .vcp-iframe-toolbar {
             position: absolute;
             top: 8px;
@@ -201,7 +197,7 @@
             opacity: 0;
             transform: translateY(-2px);
             transition: opacity 120ms ease, transform 120ms ease;
-            pointer-events: none; /* 默认不抢焦点，hover 时再开启 */
+            pointer-events: none;
         }
         .vcp-html-iframe-wrapper:hover .vcp-iframe-toolbar {
             opacity: 1;
@@ -209,7 +205,6 @@
             pointer-events: auto;
         }
         @media (hover: none) {
-            /* 触屏设备：默认隐藏，点击 wrapper 切换显示 */
             .vcp-iframe-toolbar {
                 opacity: 0;
                 transform: translateY(-2px);
@@ -271,83 +266,126 @@
         }
     `);
 
-    // ========== v0.5.0: html2canvas 动态加载 ==========
-    // 油猴沙箱隔离说明：
-    // Firefox Tampermonkey/Violentmonkey 的脚本运行在 moz-extension:// 沙箱中，
-    // 通过 document.createElement('script') 注入的库会挂到页面 window 而非沙箱 window。
-    // 因此需要通过 unsafeWindow（油猴提供）或页面 window 来访问。
+    // ========== dom-to-image-more 动态加载 (顶层页面) ==========
 
-    let html2canvasPromise = null;
+    let domToImagePromise = null;
 
-    /** 从所有可能的全局对象上查找 html2canvas */
-    function findHtml2Canvas() {
-        // 1. 当前作用域 window（非油猴环境 / 油猴 @grant none 模式）
-        if (typeof window.html2canvas === 'function') return window.html2canvas;
-        // 2. 油猴 unsafeWindow（沙箱模式下页面真实 window）
-        try { if (typeof unsafeWindow !== 'undefined' && typeof unsafeWindow.html2canvas === 'function') return unsafeWindow.html2canvas; } catch (_) {}
-        // 3. globalThis 兜底
-        try { if (typeof globalThis !== 'undefined' && typeof globalThis.html2canvas === 'function') return globalThis.html2canvas; } catch (_) {}
+    function findDomToImage() {
+        if (typeof window.domtoimage === 'object' && window.domtoimage) return window.domtoimage;
+        try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow.domtoimage) return unsafeWindow.domtoimage; } catch (_) {}
+        try { if (typeof globalThis !== 'undefined' && globalThis.domtoimage) return globalThis.domtoimage; } catch (_) {}
         return null;
     }
 
-    function ensureHtml2CanvasLoaded() {
-        const existing = findHtml2Canvas();
+    function ensureDomToImageLoaded() {
+        const existing = findDomToImage();
         if (existing) return Promise.resolve(existing);
-        if (html2canvasPromise) return html2canvasPromise;
+        if (domToImagePromise) return domToImagePromise;
 
-        html2canvasPromise = new Promise((resolve, reject) => {
-            // 检查是否已有注入的 script 标签（避免重复注入）
-            const existingTag = document.querySelector('script[data-vcp-html2canvas="1"]');
+        domToImagePromise = new Promise((resolve, reject) => {
+            const existingTag = document.querySelector('script[data-vcp-domtoimage="1"]');
             if (existingTag) {
-                // 标签存在但函数还没挂上，可能正在加载，轮询等待
                 let polls = 0;
                 const poll = () => {
-                    const fn = findHtml2Canvas();
+                    const fn = findDomToImage();
                     if (fn) return resolve(fn);
-                    if (++polls > 40) return reject(new Error('html2canvas poll timeout'));
+                    if (++polls > 40) return reject(new Error('dom-to-image-more poll timeout'));
                     setTimeout(poll, 300);
                 };
-                poll();
-                return;
+                poll();return;
             }
 
             const script = document.createElement('script');
             script.async = true;
-            script.src = CONFIG.HTML2CANVAS_CDN;
-            script.setAttribute('data-vcp-html2canvas', '1');
+            script.src = CONFIG.DOMTOIMAGE_CDN;
+            script.setAttribute('data-vcp-domtoimage', '1');
 
-            const timeout = setTimeout(() => {
-                reject(new Error('html2canvas load timeout'));
-            }, CONFIG.HTML2CANVAS_LOAD_TIMEOUT_MS);
+            const timeout = setTimeout(() => reject(new Error('dom-to-image-more load timeout')), CONFIG.DOMTOIMAGE_LOAD_TIMEOUT_MS);
 
             script.onload = () => {
                 clearTimeout(timeout);
-                // 注入的脚本挂到页面 window，需要通过 unsafeWindow 或轮询获取
                 let polls = 0;
                 const poll = () => {
-                    const fn = findHtml2Canvas();
+                    const fn = findDomToImage();
                     if (fn) {
-                        log('html2canvas 加载成功');
+                        log('dom-to-image-more(顶层) 加载成功');
                         return resolve(fn);
                     }
-                    if (++polls > 20) return reject(new Error('html2canvas loaded but not found on any window'));
+                    if (++polls > 20) return reject(new Error('dom-to-image-more loaded but not found on any window'));
                     setTimeout(poll, 100);
                 };
                 poll();
             };
             script.onerror = () => {
                 clearTimeout(timeout);
-                reject(new Error('html2canvas load error'));
+                reject(new Error('dom-to-image-more load error'));
             };
 
             (document.head || document.documentElement).appendChild(script);
         }).catch((err) => {
-            // 允许后续重试
-            html2canvasPromise = null;
+            domToImagePromise = null;
             throw err;
         });
 
-        return html2canvasPromise;
+        return domToImagePromise;
+    }
+
+    // ========== v0.5.3: 优先在 iframe 自己的 window 内加载 dom-to-image-more ==========
+
+    function ensureDomToImageLoadedInWindow(win, doc) {
+        return new Promise((resolve, reject) => {
+            try {
+                if (win && typeof win.domtoimage === 'object' && win.domtoimage) return resolve(win.domtoimage);} catch (_) { /* ignore */ }
+
+            if (!win || !doc) {
+                reject(new Error('no iframe window/doc'));
+                return;
+            }
+
+            const existing = doc.querySelector('script[data-vcp-domtoimage="1"]');
+            if (!existing) {
+                const script = doc.createElement('script');
+                script.async = true;
+                script.src = CONFIG.DOMTOIMAGE_CDN;
+                script.setAttribute('data-vcp-domtoimage', '1');
+
+                const timeout = setTimeout(() => reject(new Error('iframe dom-to-image-more load timeout')), CONFIG.DOMTOIMAGE_LOAD_TIMEOUT_MS);
+
+                script.onload = () => {
+                    clearTimeout(timeout);
+                    let polls = 0;
+                    const poll = () => {
+                        try {
+                            if (typeof win.domtoimage === 'object' && win.domtoimage) {
+                                log('dom-to-image-more(iframe) 加载成功');
+                                return resolve(win.domtoimage);
+                            }
+                        } catch (_) { /* ignore */ }
+                        if (++polls > 30) return reject(new Error('iframe dom-to-image-more loaded but not found'));
+                        setTimeout(poll, 100);
+                    };
+                    poll();
+                };
+                script.onerror = () => {
+                    clearTimeout(timeout);
+                    reject(new Error('iframe dom-to-image-more load error'));
+                };
+
+                (doc.head || doc.documentElement).appendChild(script);
+                return;
+            }
+
+            // script已存在：轮询等对象出现
+            let polls = 0;
+            const poll = () => {
+                try {
+                    if (typeof win.domtoimage === 'object' && win.domtoimage) return resolve(win.domtoimage);
+                } catch (_) { /* ignore */ }
+                if (++polls > 60) return reject(new Error('iframe dom-to-image-more poll timeout'));
+                setTimeout(poll, 100);
+            };
+            poll();
+        });
     }
 
     function showToast(wrapper, message) {
@@ -360,15 +398,11 @@
                 wrapper.appendChild(toast);
             }
             toast.textContent = message;
-            // 重触发动画
             toast.classList.remove('vcp-show');
-            // eslint-disable-next-line no-unused-expressions
             toast.offsetHeight;
             toast.classList.add('vcp-show');
 
-            setTimeout(() => {
-                toast.classList.remove('vcp-show');
-            }, CONFIG.TOAST_MS);
+            setTimeout(() => toast.classList.remove('vcp-show'), CONFIG.TOAST_MS);
         } catch (_) { /* ignore */ }
     }
 
@@ -398,12 +432,9 @@
                 const doc = iframe.contentDocument;
                 if (doc && doc.readyState === 'complete') {
                     cleanup();
-                    resolve();
-                    return;
+                    resolve();return;
                 }
-            } catch (_) {
-                // 访问被拒绝的情况交给后续 capture 处理
-            }
+            } catch (_) {}
 
             iframe.addEventListener('load', onLoad, { once: true });
         });
@@ -417,219 +448,108 @@
         }
     }
 
-    function canvasToBlob(canvas, type = 'image/png', quality) {
-        return new Promise((resolve, reject) => {
+    // ========== v0.5.3: 智能内容区域检测 ==========
+
+    function findCaptureTarget(doc) {
+        const body = doc.body;
+        if (!body) return doc.documentElement || body;
+
+        const view = doc.defaultView;
+        if (!view) return body;
+
+        // 过滤出可见的、有内容的子元素
+        const visible = Array.from(body.children).filter(el => {
+            //跳过非内容元素
+            const tag = el.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'META' || tag === 'NOSCRIPT') return false;
+
+            // 跳过隐藏元素
             try {
-                canvas.toBlob((blob) => {
-                    if (blob) resolve(blob);
-                    else reject(new Error('toBlob returned null (canvas may be tainted)'));
-                }, type, quality);
-            } catch (e) {
-                reject(e);
-            }
+                const s = view.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden') return false;
+            } catch (_) { return false; }
+
+            // 跳过零尺寸元素
+            if (el.offsetWidth <= 0 && el.offsetHeight <= 0) return false;
+
+            return true;
         });
-    }
 
-    // v0.5.0+: 导出时只保留“有内容的部分”
-    // 通过扫描 alpha 裁切掉四周透明留白（同时能消除透明圆角）
-    function trimTransparentEdges(canvas, alphaThreshold = 8, padding = 2) {
-        try {
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            if (!ctx) return canvas;
-
-            const w = canvas.width;
-            const h = canvas.height;
-            if (w <= 2 || h <= 2) return canvas;
-
-            const img = ctx.getImageData(0, 0, w, h);
-            const data = img.data;
-
-            const rowHasInk = (y) => {
-                const rowStart = y * w * 4;
-                for (let x = 0; x < w; x++) {
-                    const a = data[rowStart + x * 4 + 3];
-                    if (a > alphaThreshold) return true;
-                }
-                return false;
-            };
-
-            const colHasInk = (x) => {
-                const colOffset = x * 4 + 3;
-                for (let y = 0; y < h; y++) {
-                    const a = data[y * w * 4 + colOffset];
-                    if (a > alphaThreshold) return true;
-                }
-                return false;
-            };
-
-            let top = 0;
-            while (top < h && !rowHasInk(top)) top++;
-
-            let bottom = h - 1;
-            while (bottom >= 0 && !rowHasInk(bottom)) bottom--;
-
-            if (top >= bottom) return canvas; // 全透明或几乎无内容
-
-            let left = 0;
-            while (left < w && !colHasInk(left)) left++;
-
-            let right = w - 1;
-            while (right >= 0 && !colHasInk(right)) right--;
-
-            // padding 防止切掉抗锯齿边缘
-            top = Math.max(0, top - padding);
-            left = Math.max(0, left - padding);
-            right = Math.min(w - 1, right + padding);
-            bottom = Math.min(h - 1, bottom + padding);
-
-            const outW = right - left + 1;
-            const outH = bottom - top + 1;
-
-            if (outW <= 0 || outH <= 0) return canvas;
-            if (outW === w && outH === h) return canvas;
-
-            const out = document.createElement('canvas');
-            out.width = outW;
-            out.height = outH;
-            const outCtx = out.getContext('2d');
-            if (!outCtx) return canvas;
-
-            outCtx.drawImage(canvas, left, top, outW, outH, 0, 0, outW, outH);
-            return out;
-        } catch (e) {
-            log('trimTransparentEdges failed:', e);
-            return canvas;
+        if (visible.length === 1) {
+            // 最常见场景：body 下只有一个卡片容器
+            // 直接截取它→ 精确到卡片边缘，body padding 自然排除，圆角保留
+            log('findCaptureTarget: 单容器模式, 精确截取', visible[0].tagName, visible[0].className || '');
+            return visible[0];
         }
+
+        if (visible.length === 0) {
+            log('findCaptureTarget: 无可见子元素, 回退 body');
+            return body;
+        }
+
+        // 多个可见子元素 → 截取 body
+        log('findCaptureTarget: 多容器(', visible.length, '个), 截取 body');
+        return body;
     }
 
-    async function captureIframeToCanvas(wrapper) {
+    // ========== v0.5.3: 截取 iframe 内容为Blob ==========
+
+    async function captureIframeToBlob(wrapper) {
         const iframe = wrapper && wrapper.querySelector && wrapper.querySelector('iframe');
         if (!iframe) throw new Error('iframe not found');
 
-        // 尽量等 iframe ready（对自建 iframe 友好）
-        try {
-            await waitForIframeReady(iframe, 6000);
-        } catch (_) { /* ignore */ }
+        try { await waitForIframeReady(iframe,6000); } catch (_) {}
 
         const doc = getIframeDocument(iframe);
         if (!doc) throw new Error('cannot access iframe document (sandbox/origin?)');
 
-        const root = doc.documentElement;
-        const body = doc.body;
-        const view = doc.defaultView || window;
-
-        // v0.5.1（行为仍属于 v0.5.0 的补丁）：
-        // 为“导出图片”临时注入 reset CSS，去掉我们 wrapIncompleteHtml 带来的 padding，
-        // 并尽可能移除圆角/边距（只影响导出，不影响页面展示；导出后立即移除）
-        let resetStyle = null;
+        // 优先在 iframe 内加载 dom-to-image-more（确保样式计算在同一 window 上下文）
+        let dti = null;
         try {
-            resetStyle = doc.createElement('style');
-            resetStyle.setAttribute('data-vcp-capture-reset', '1');
-            resetStyle.textContent = `
-                html, body {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    border-radius: 0 !important;
-                }
-                html, body {
-                    background: transparent !important;
-                }
-            `;
-            (doc.head || root || body).appendChild(resetStyle);
+            dti = await ensureDomToImageLoadedInWindow(iframe.contentWindow, doc);
         } catch (e) {
-            log('capture: inject reset style failed:', e);
+            log('iframe 内加载 dom-to-image-more 失败，fallback 顶层:', e);
+            dti = await ensureDomToImageLoaded();
         }
 
+        // 智能选择截取目标：有内容才算卡片区
+        const target = findCaptureTarget(doc);
+
+        //使用 scrollWidth/scrollHeight 防止内容被裁切（解决右边/下边被吃掉的问题）
+        const contentWidth = Math.max(target.offsetWidth || 0, target.scrollWidth || 0, target.clientWidth || 0);
+        const contentHeight = Math.max(target.offsetHeight || 0, target.scrollHeight || 0, target.clientHeight || 0);
+
+        // 高分辨率缩放：触屏设备降1 级避免内存压力
+        let scale = CONFIG.CAPTURE_SCALE;
         try {
-            // 强制一次 layout，确保尺寸计算反映 reset CSS
-            try { if (root) root.getBoundingClientRect(); } catch (_) {}
-
-            const width = Math.max(
-                root ? root.scrollWidth : 0,
-                root ? root.clientWidth : 0,
-                body ? body.scrollWidth : 0,
-                body ? body.clientWidth : 0,
-                1
-            );
-            const height = Math.max(
-                root ? root.scrollHeight : 0,
-                root ? root.clientHeight : 0,
-                body ? body.scrollHeight : 0,
-                body ? body.clientHeight : 0,
-                1
-            );
-
-            // 提高清晰度：桌面尽量用更高 scale；触屏/移动端自动降到 2，避免内存爆炸
-            const maxDim = CONFIG.CAPTURE_MAX_CANVAS_DIM;
-            const maxScaleByDim = Math.min(maxDim / width, maxDim / height);
-
-            let maxScale = CONFIG.CAPTURE_MAX_SCALE;
-            try {
-                const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-                const noHover = window.matchMedia && window.matchMedia('(hover: none)').matches;
-                if (coarse || noHover) maxScale = Math.min(maxScale, 2);
-            } catch (_) { /* ignore */ }
-
-            const scale = Math.max(1, Math.min(maxScale, maxScaleByDim));
-
-            const html2canvas = await ensureHtml2CanvasLoaded();
-
-            // Debug：确认 padding/radius 来源（用于验证“边距/圆角来自 iframe 内部样式”这个假设）
-            try {
-                if (view && body) {
-                    const csBody = view.getComputedStyle(body);
-                    const csHtml = root ? view.getComputedStyle(root) : null;
-                    log('capture styles:', {
-                        bodyMargin: csBody.margin,
-                        bodyPadding: csBody.padding,
-                        bodyRadius: csBody.borderRadius,
-                        htmlMargin: csHtml ? csHtml.margin : '',
-                        htmlPadding: csHtml ? csHtml.padding : '',
-                        htmlRadius: csHtml ? csHtml.borderRadius : '',
-                    });
-                }
-            } catch (_) { /* ignore */ }
-
-            log('capture: width=', width, 'height=', height, 'scale=', scale);
-
-            // 注意：如果 iframe 内含跨域图片，canvas 可能 taint，toBlob 会失败（浏览器安全策略）
-            const canvas = await html2canvas(body || root, {
-                backgroundColor: null,
-                useCORS: true,
-                allowTaint: false,
-                logging: !!CONFIG.DEBUG,
-                scale,
-                width,
-                height,
-                windowWidth: width,
-                windowHeight: height,
-                scrollX: 0,
-                scrollY: 0,
-            });
-
-            // Debug：角落 alpha（如果出现圆角裁切，四角 alpha 往往会变小/为0）
-            try {
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    const w = canvas.width;
-                    const h = canvas.height;
-                    const alphaAt = (x, y) => ctx.getImageData(x, y, 1, 1).data[3];
-                    log('capture corner alpha:', {
-                        tl: alphaAt(0, 0),
-                        tr: alphaAt(Math.max(0, w - 1), 0),
-                        bl: alphaAt(0, Math.max(0, h - 1)),
-                        br: alphaAt(Math.max(0, w - 1), Math.max(0, h - 1)),
-                    });
-                }
-            } catch (_) { /* ignore */ }
-
-            return canvas;
-        } finally {
-            if (resetStyle && resetStyle.parentNode) {
-                resetStyle.parentNode.removeChild(resetStyle);
+            if (window.matchMedia && window.matchMedia('(hover: none)').matches) {
+                scale = Math.max(1, scale - 1);
             }
-        }
+        } catch (_) {}
+
+        log('capture: target=', target.tagName, (target.className || ''),
+            'size=', contentWidth, 'x', contentHeight, 'scale=', scale);
+
+        // dom-to-image-more 高DPI 标准方案:
+        //   style.transform: scale(N) →内容放大 N 倍
+        //   style.width/height: 固定原始尺寸防止 reflow
+        //   width/height: 输出canvas 尺寸 = 原始 × N
+        const blob = await dti.toBlob(target, {
+            width: contentWidth * scale,
+            height: contentHeight * scale,
+            style: {
+                'transform': 'scale(' + scale + ')',
+                'transform-origin': 'top left',
+                'width': contentWidth + 'px',
+                'height': contentHeight + 'px',},
+        });
+
+        if (!blob) throw new Error('dom-to-image-more toBlob returned null');
+
+        return blob;
     }
+
+    // ========== 下载/复制 ==========
 
     async function downloadPngBlob(blob, filename) {
         const url = URL.createObjectURL(blob);
@@ -647,7 +567,7 @@
         if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') {
             throw new Error('Clipboard API not available');
         }
-        const item = new ClipboardItem({ 'image/png': blob });
+        const item = new ClipboardItem({'image/png': blob });
         await navigator.clipboard.write([item]);
     }
 
@@ -657,23 +577,18 @@
         btn.textContent = '复制中';
 
         try {
-            const canvas = await captureIframeToCanvas(wrapper);
-            const trimmed = trimTransparentEdges(canvas, CONFIG.CAPTURE_TRIM_ALPHA_THRESHOLD, CONFIG.CAPTURE_TRIM_PADDING);
-            const blob = await canvasToBlob(trimmed, 'image/png');
+            const blob = await captureIframeToBlob(wrapper);
             await copyImageBlobToClipboard(blob);
             showToast(wrapper, '已复制');
         } catch (e) {
-            // 移动端/部分环境下写剪贴板不稳定：降级为下载
             log('copy failed, fallback to download:', e);
             try {
-                const canvas = await captureIframeToCanvas(wrapper);
-                const trimmed = trimTransparentEdges(canvas, CONFIG.CAPTURE_TRIM_ALPHA_THRESHOLD, CONFIG.CAPTURE_TRIM_PADDING);
-                const blob = await canvasToBlob(trimmed, 'image/png');
+                const blob = await captureIframeToBlob(wrapper);
                 await downloadPngBlob(blob, `html-preview-${Date.now()}.png`);
-                showToast(wrapper, '剪贴板不可用，已保存到本地');
+                showToast(wrapper, '剪贴板不可用,已保存到本地');
             } catch (e2) {
                 log('fallback download failed:', e2);
-                showToast(wrapper, '复制失败（可能含跨域资源）');
+                showToast(wrapper, '复制失败: ' + (e2.message || e2));
             }
         } finally {
             btn.disabled = false;
@@ -687,14 +602,12 @@
         btn.textContent = '保存中';
 
         try {
-            const canvas = await captureIframeToCanvas(wrapper);
-            const trimmed = trimTransparentEdges(canvas, CONFIG.CAPTURE_TRIM_ALPHA_THRESHOLD, CONFIG.CAPTURE_TRIM_PADDING);
-            const blob = await canvasToBlob(trimmed, 'image/png');
+            const blob = await captureIframeToBlob(wrapper);
             await downloadPngBlob(blob, `html-preview-${Date.now()}.png`);
             showToast(wrapper, '已保存');
         } catch (e) {
             log('save failed:', e);
-            showToast(wrapper, '保存失败（可能含跨域资源）');
+            showToast(wrapper, '保存失败: ' + (e.message || e));
         } finally {
             btn.disabled = false;
             btn.textContent = oldText;
@@ -728,16 +641,12 @@
 
         bar.appendChild(btnCopy);
         bar.appendChild(btnSave);
-
         wrapper.appendChild(bar);
 
-        // 触屏设备：点击 wrapper 切换工具栏显隐
-        // 仅在 (hover: none) 环境下生效，桌面端靠 CSS :hover 控制
         try {
             const isTouch = window.matchMedia && window.matchMedia('(hover: none)').matches;
             if (isTouch) {
                 wrapper.addEventListener('click', (e) => {
-                    // 如果点击的是工具栏按钮本身，不 toggle（让按钮事件正常处理）
                     if (e.target.closest('.vcp-iframe-toolbar')) return;
                     wrapper.classList.toggle('vcp-toolbar-visible');
                 });
@@ -758,7 +667,7 @@
             placeholders: [],
             cmContents: [],
             phase: 'collecting',
-            btnObserver: null,       // 监听 Action 按钮出现
+            btnObserver: null,
             cancelToken: 0,
             expectedBlocks: null,
             pendingSplitBlocks: null,
@@ -802,10 +711,7 @@
         const blocks = [];
         let match;
         while ((match = regex.exec(srcdoc)) !== null) {
-            blocks.push({
-                index: parseInt(match[1]),
-                html: match[2].trim()
-            });
+            blocks.push({ index: parseInt(match[1]), html: match[2].trim() });
         }
         blocks.sort((a, b) => a.index - b.index);
         return blocks;
@@ -829,6 +735,7 @@ ${html}
     function createIframeFromHtml(html) {
         const wrapper = document.createElement('div');
         wrapper.className = 'vcp-html-iframe-wrapper';
+
         const iframe = document.createElement('iframe');
         iframe.setAttribute('srcdoc', html);
         iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-downloads');
@@ -849,7 +756,6 @@ ${html}
                     if (h > 0) iframe.style.height = h + 'px';
                 };
                 resizeToContent();
-                // 延迟二次测量：等字体/布局稳定后再校准高度，消除首个气泡滚动条
                 setTimeout(resizeToContent, 50);
                 setTimeout(resizeToContent, 200);
                 const ro = new ResizeObserver(resizeToContent);
@@ -864,29 +770,25 @@ ${html}
         return wrapper;
     }
 
-    // ========== 快速路径（刷新/历史消息） ==========
+    // ========== 快速路径(刷新/历史消息) ==========
 
     function tryFastPath(msgContainer, blocks) {
         return new Promise((resolve) => {
-            // 快速路径核心改进：如果 Action 按钮已存在，说明消息已完成
             const btn = findActionBtn(msgContainer);
             if (!btn) {
-                // 按钮不存在 = 可能是流式中，走正常流程
-                log('快速路径: Action 按钮不存在, 走正常流程');
+                log('快速路径: Action按钮不存在, 走正常流程');
                 resolve(false);
                 return;
             }
 
-            // 按钮已存在，先检查是否已有 iframe（之前点过 Action）
             const iframe = findIframe(msgContainer);
             if (iframe) {
-                log('快速路径: iframe 已存在, 尝试拆分搬运');
+                log('快速路径: iframe 已存在,尝试拆分搬运');
                 const success = doFastSplit(msgContainer, blocks, iframe);
                 resolve(success);
                 return;
             }
 
-            // 按钮存在但没有 iframe：直接点击按钮，然后等 iframe 出现
             log('快速路径: Action 按钮已存在, 直接点击');
             btn.click();
 
@@ -916,15 +818,14 @@ ${html}
         const splitBlocks = parseSrcdocBlocks(srcdoc);
 
         if (splitBlocks.length > 0 && splitBlocks.length > blocks.length) {
-            log('快速路径: 母文档块数', splitBlocks.length, '大于 DOM 块数', blocks.length, '，放弃快速路径');
+            log('快速路径: 母文档块数', splitBlocks.length, '大于 DOM 块数', blocks.length, ',放弃快速路径');
             return false;
         }
 
-        if (splitBlocks.length > 0 && splitBlocks.length === blocks.length) {
+        if (splitBlocks.length >0 && splitBlocks.length === blocks.length) {
             log('快速路径: srcdoc 拆分成功,', splitBlocks.length, '个块');
             for (let i = 0; i < blocks.length; i++) {
-                applyJailbreak(blocks[i]);
-                if (!blocks[i].querySelector('.vcp-html-iframe-wrapper')) {
+                applyJailbreak(blocks[i]);if (!blocks[i].querySelector('.vcp-html-iframe-wrapper')) {
                     const wrapper = createIframeFromHtml(wrapIncompleteHtml(splitBlocks[i].html));
                     blocks[i].appendChild(wrapper);
                 }
@@ -940,7 +841,7 @@ ${html}
                 blocks[0].appendChild(wrapper);
             }
         } else {
-            log('快速路径: 无分隔标记或数量不匹配, 回退到 CM 源码自渲染');
+            log('快速路径: 无分隔标记或数量不匹配, 回退到 CM源码自渲染');
             for (const block of blocks) {
                 applyJailbreak(block);
                 if (!block.querySelector('.vcp-html-iframe-wrapper')) {
@@ -957,15 +858,12 @@ ${html}
         }
 
         const embedsContainer = findEmbedsContainer(msgContainer);
-        if (embedsContainer) {
-            embedsContainer.classList.add('vcp-html-embeds-emptied');
-        }
+        if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
+
         markAsRendered(msgContainer);
         log('快速路径: 完成');
         return true;
     }
-
-    // ========== finalize（用 pendingSplitBlocks 完成拆分定位） ==========
 
     function tryFinalizeWithPending(task) {
         if (task.phase !== 'collecting') return false;
@@ -980,13 +878,10 @@ ${html}
             const html = wrapIncompleteHtml(task.pendingSplitBlocks[i].html);
             const wrapper = createIframeFromHtml(html);
             task.blocks[i].insertBefore(wrapper, task.placeholders[i]);
-            task.placeholders[i].remove();
-        }
+            task.placeholders[i].remove();}
 
         const embedsContainer = findEmbedsContainer(task.msgContainer);
-        if (embedsContainer) {
-            embedsContainer.classList.add('vcp-html-embeds-emptied');
-        }
+        if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
 
         markAsRendered(task.msgContainer);
         task.phase = 'done';
@@ -996,7 +891,7 @@ ${html}
         return true;
     }
 
-    // ========== 第一步: 遮（消息级收集） ==========
+    // ========== 第一步: 遮(消息级收集) ==========
 
     function phase1_cover(langContainer) {
         if (processedBlocks.has(langContainer)) return;
@@ -1004,7 +899,7 @@ ${html}
 
         const msgContainer = findMsgContainer(langContainer);
         if (!msgContainer) {
-            log('遮: 找不到消息容器, 跳过');
+            log('遮: 找不到消息容器,跳过');
             return;
         }
 
@@ -1015,12 +910,10 @@ ${html}
 
         const task = getOrCreateTask(msgContainer);
 
-        // v0.3.1 保留: 晚到块重入任务并回滚到 collecting
         if (task.phase !== 'collecting') {
             log('遮: 任务已在', task.phase, '阶段, 新块重入任务并回滚到 collecting');
             cancelInFlight(task, 'late block rejoin');
-            task.phase = 'collecting';
-        }
+            task.phase = 'collecting';}
 
         const blockIndex = task.blocks.length;
         task.blocks.push(langContainer);
@@ -1043,28 +936,22 @@ ${html}
 
         log('遮: 注册块', blockIndex, '到消息任务, 当前共', task.blocks.length, '块');
 
-        // 尝试 finalize（防止"先拿到母文档再补块"的竞态）
         if (tryFinalizeWithPending(task)) return;
 
-        // v0.4.0 核心: 检查 Action 按钮是否已存在
         const existingBtn = findActionBtn(msgContainer);
         if (existingBtn) {
-            // 按钮已存在 = 消息已完成，立即触发
             log('遮: Action 按钮已存在, 立即触发');
             triggerAction(task);
             return;
         }
 
-        // 按钮不存在 = 流式进行中，启动按钮监听
         startBtnWatch(task);
     }
 
-    // ========== v0.4.0 核心: Action 按钮出现监听 ==========
+    // ========== Action 按钮出现监听 ==========
 
     function startBtnWatch(task) {
         if (task.phase !== 'collecting') return;
-
-        // 已有监听器在跑，不重复创建
         if (task.btnObserver) return;
 
         log('启动 Action 按钮监听');
@@ -1080,22 +967,17 @@ ${html}
                 log('Action 按钮出现! 立即触发');
                 cleanupBtnWatch(task);
 
-                // v0.3.1 保留: 若缺块则不触发
                 if (needMoreBlocks(task)) {
                     log('按钮出现但仍缺块: 期望', task.expectedBlocks, '当前', task.blocks.length);
                     return;
                 }
 
                 if (tryFinalizeWithPending(task)) return;
-
                 triggerAction(task);
             }
         });
 
-        task.btnObserver.observe(task.msgContainer, {
-            childList: true,
-            subtree: true,
-        });
+        task.btnObserver.observe(task.msgContainer, { childList: true, subtree: true });
     }
 
     function cleanupBtnWatch(task) {
@@ -1105,13 +987,13 @@ ${html}
         }
     }
 
-    // ========== 第二步: 点（统一触发 Action） ==========
+    // ========== 第二步: 点(统一触发 Action) ==========
 
     function triggerAction(task) {
         if (task.phase !== 'collecting') return;
 
         if (needMoreBlocks(task)) {
-            log('点: 检测到仍缺块（期望', task.expectedBlocks, '当前', task.blocks.length, '），延迟点击');
+            log('点: 检测到仍缺块(期望', task.expectedBlocks, '当前', task.blocks.length,'),延迟点击');
             startBtnWatch(task);
             return;
         }
@@ -1126,7 +1008,6 @@ ${html}
             if (statusText) statusText.textContent = '正在渲染预览...';
         }
 
-        // 先检查 iframe 是否已存在（刷新场景：后端保留了 Action 结果）
         const iframe = findIframe(task.msgContainer);
         if (iframe) {
             log('点: iframe 已存在, 跳过点击直接搬运');
@@ -1135,22 +1016,20 @@ ${html}
             return;
         }
 
-        // iframe 不在，但可能正在异步渲染中（刷新时 Action 按钮先于 iframe 出现）
-        // 先短暂探测 iframe，避免不必要地重新点击 Action
         probeIframeThenClick(task, token);
     }
 
-    /** 短暂探测 iframe 是否即将出现；超时后才真正点击 Action */
     function probeIframeThenClick(task, token) {
         let probes = 0;
-        const maxProbes = CONFIG.FAST_PROBE_MAX; // 150ms × 15 = 最多等 2.25s
+        const maxProbes = CONFIG.FAST_PROBE_MAX;
+
         const probe = () => {
             if (task.cancelToken !== token) return;
             if (task.phase !== 'clicking') return;
 
             const iframe = findIframe(task.msgContainer);
             if (iframe) {
-                log('点: 探测到 iframe 已存在（刷新场景）, 跳过点击直接搬运');
+                log('点: 探测到 iframe 已存在(刷新场景), 跳过点击直接搬运');
                 task.phase = 'moving';
                 doSplitAndMove(task, iframe, token);
                 return;
@@ -1159,10 +1038,10 @@ ${html}
                 setTimeout(probe, CONFIG.FAST_PROBE_INTERVAL);
                 return;
             }
-            // 探测超时：iframe 确实不存在，需要点击 Action
             log('点: 探测超时, iframe 不存在, 执行点击');
             doClick(task, token);
         };
+
         probe();
     }
 
@@ -1182,7 +1061,7 @@ ${html}
                 phase3_moveIframe(task, token);
             } else {
                 retries++;
-                if (retries % 10 === 0) log('点: 等待 Action 按钮... 重试', retries, '间隔', Math.round(interval) + 'ms');
+                if (retries % 10 === 0) log('点: 等待 Action 按钮...重试', retries, '间隔', Math.round(interval) +'ms');
                 interval = Math.min(interval * CONFIG.RETRY_BACKOFF, CONFIG.RETRY_MAX_INTERVAL);
                 setTimeout(tryClick, interval);
             }
@@ -1191,7 +1070,7 @@ ${html}
         tryClick();
     }
 
-    // ========== 第三步: 挪（拆分 + 分别定位） ==========
+    // ========== 第三步:挪(拆分 + 分别定位) ==========
 
     function phase3_moveIframe(task, token) {
         let interval = CONFIG.MOVE_RETRY_INTERVAL;
@@ -1222,9 +1101,8 @@ ${html}
         const srcdoc = iframe.getAttribute('srcdoc') || '';
         const splitBlocks = parseSrcdocBlocks(srcdoc);
 
-        // v0.3.1 保留: 若母文档块数 > DOM 块数，回滚收集
         if (splitBlocks.length > 0 && splitBlocks.length > task.blocks.length) {
-            log('挪: 母文档块数', splitBlocks.length, '大于 DOM 块数', task.blocks.length, '→ 回滚到 collecting 等 DOM 追上');
+            log('挪: 母文档块数', splitBlocks.length, '大于 DOM 块数', task.blocks.length, '→ 回滚到 collecting等DOM 追上');
             task.expectedBlocks = splitBlocks.length;
             task.pendingSplitBlocks = splitBlocks;
 
@@ -1247,8 +1125,7 @@ ${html}
                 const wrapper = createIframeFromHtml(html);
                 task.blocks[i].insertBefore(wrapper, task.placeholders[i]);
                 task.placeholders[i].remove();
-            }
-        } else if (task.blocks.length === 1) {
+            }} else if (task.blocks.length === 1) {
             log('挪: 单气泡模式, 直接搬运');
             const wrapper = document.createElement('div');
             wrapper.className = 'vcp-html-iframe-wrapper';
@@ -1257,7 +1134,7 @@ ${html}
             task.blocks[0].insertBefore(wrapper, task.placeholders[0]);
             task.placeholders[0].remove();
         } else {
-            log('挪: 拆分失败 (srcdoc块数:', splitBlocks.length, ', DOM块数:', task.blocks.length, '), 回退 CM 自渲染');
+            log('挪: 拆分失败 (srcdoc块数:', splitBlocks.length, ', DOM块数:', task.blocks.length,'), 回退CM 自渲染');
             for (let i = 0; i < task.blocks.length; i++) {
                 const cm = task.cmContents[i];
                 if (cm) {
@@ -1272,9 +1149,7 @@ ${html}
         }
 
         const embedsContainer = findEmbedsContainer(task.msgContainer);
-        if (embedsContainer) {
-            embedsContainer.classList.add('vcp-html-embeds-emptied');
-        }
+        if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
 
         markAsRendered(task.msgContainer);
         task.phase = 'done';
@@ -1285,17 +1160,16 @@ ${html}
 
     // ========== MutationObserver ==========
 
-    let initialScanDone = false; // 初始扫描完成前，MO 不处理块
+    let initialScanDone = false;
 
     function scanForHtmlBlocks() {
-        if (!initialScanDone) return; // 等 initialScan 跑完再接管
+        if (!initialScanDone) return;
         const containers = document.querySelectorAll(CONFIG.CODE_SELECTOR);
         for (const el of containers) {
             if (!processedBlocks.has(el)) {
                 if (el.querySelector('.cm-content')) {
                     phase1_cover(el);
-                }
-            }
+                }}
         }
     }
 
@@ -1327,9 +1201,7 @@ ${html}
             }
         }
 
-        initialScanDone = true;
-        // 初始扫描完成后，立即补扫一次（捕获扫描期间 MO 漏掉的新块）
-        scanForHtmlBlocks();
+        initialScanDone = true;scanForHtmlBlocks();
     }
 
     const observer = new MutationObserver((mutations) => {
@@ -1345,12 +1217,8 @@ ${html}
         if (hasNewNodes) scanForHtmlBlocks();
     });
 
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
-
+    observer.observe(document.body, { childList: true, subtree: true });
     initialScan();
 
-    log('脚本已启动 v0.5.0（复制/保存工具栏 + html2canvas 动态加载）');
+    log('脚本已启动 v0.5.3(截图引擎: dom-to-image-more SVG foreignObject | 智能内容区域检测 | 圆角保留)');
 })();
