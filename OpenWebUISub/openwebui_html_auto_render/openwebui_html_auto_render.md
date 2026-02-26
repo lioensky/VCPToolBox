@@ -2,7 +2,7 @@
 
 此文档记录 OpenWebUI HTML Live Preview 系列脚本的技术说明与版本变更历史。
 
-本项目由两个部分组成：
+本项目由三个部分组成：
 1. OpenWebUI Action 函数（Python，服务端）—— 负责从模型回复中提取 HTML 并通过 `HTMLResponse` 渲染到 iframe。v0.3.0 起支持多代码块合并渲染（用 `<section data-vcp-block>` 分隔）。
 2. 油猴脚本（JavaScript，客户端）—— 负责在聊天流中自动检测 HTML 代码块，触发 Action 渲染，并将 iframe 原位替换到代码块位置（"遮点挪"）。v0.3.0 起支持多气泡拆分定位。
 
@@ -57,10 +57,10 @@
 
 ## OpenWebUI HTML Auto-Render（遮点挪）油猴脚本
 
-- 文件：`openwebui_html_auto_render/openwebui_html_auto_render_0.5.0.js`
+- 文件：`openwebui_html_auto_render/openwebui_html_auto_render_0.5.3.js`
 - 类型：Tampermonkey 用户脚本（兼容非油猴环境，CSS/JS 可拆分复用）
-- 依赖：Action 函数 v0.3.0+（需要 `data-vcp-block` 分隔标记支持多气泡拆分）
-- 外部依赖：html2canvas 1.4.1（运行时从 jsDelivr CDN 动态加载，用于截图导出）
+- 依赖：Action函数 v0.3.0+（需要 `data-vcp-block` 分隔标记支持多气泡拆分）
+- 外部依赖：dom-to-image-more v3（运行时从 jsDelivr CDN 动态加载，SVG foreignObject 截图引擎）
 - 作者：B3000Kcn & DBL1F7E5
 
 ### 工作原理（"遮点挪"三步模型 — 多气泡版）
@@ -133,16 +133,29 @@ v0.3.0 将处理粒度从"代码块级独立流程"提升为"消息级协调流�
 | `RETRY_MAX_INTERVAL` | 2000 | 重试间隔上限（ms） |
 | `FAST_PROBE_INTERVAL` | 150 | 快速路径探测间隔（ms） |
 | `FAST_PROBE_MAX` | 15 | 快速路径最大探测次数 |
-| `HTML2CANVAS_CDN` | jsDelivr URL | html2canvas 动态加载地址 |
-| `HTML2CANVAS_LOAD_TIMEOUT_MS` | 12000 | html2canvas 加载超时（ms） |
-| `CAPTURE_MAX_CANVAS_DIM` | 16384 | canvas 单边像素上限 |
-| `CAPTURE_MAX_SCALE` | 3 | 截图缩放倍率上限（桌面；触屏自动降到 2） |
-| `CAPTURE_TRIM_ALPHA_THRESHOLD` | 8 | 透明边缘裁切 alpha 阈值 |
-| `CAPTURE_TRIM_PADDING` | 2 | 裁切后保留像素边距（防抗锯齿丢失） |
+| `DOMTOIMAGE_CDN` | jsDelivr URL | dom-to-image-more v3 动态加载地址 |
+| `DOMTOIMAGE_LOAD_TIMEOUT_MS` | 12000 | dom-to-image-more 加载超时（ms） |
+| `CAPTURE_SCALE` | 3 | 截图分辨率倍率（3x 超清；触屏设备自动降为 2x） |
 | `TOAST_MS` | 1600 | toast 提示显示时长（ms） |
 | `DEBUG` | true | 是否输出调试日志 |
 
 ### CHANGELOG
+
+#### v0.5.3（2026-02-26）
+- 截图引擎更换：html2canvas → dom-to-image-more v3（SVG foreignObject 方案）。- 根因：html2canvas 在 JS 中重新实现 CSS渲染，复杂特效（backdrop-filter、mix-blend-mode、CSS 变量、渐变、动画等）无法完整还原，导致导出图"特效不全"。
+  - 新方案：dom-to-image-more 将 DOM 序列化为 SVG foreignObject，由浏览器自身渲染引擎绘制，CSS 特效 100% 保真。
+- 智能内容区域检测（`findCaptureTarget`）：遍历 body 直接子元素，过滤掉 SCRIPT/STYLE/LINK/META/NOSCRIPT 及隐藏/零尺寸元素。单可见子元素→精确截取该元素（卡片区）；多可见子元素→截取 body；无可见子元素→回退 body。"有内容才算卡片区"。
+- 内容裁切修复：使用 `Math.max(offsetWidth, scrollWidth, clientWidth)` 三取最大值作为截取尺寸，显式传入 dom-to-image-more 的 width/height 参数，防止 overflow 内容右边/下边被吃掉。
+- 高分辨率输出：新增 `CAPTURE_SCALE: 3`（3x 超清），通过 `style.transform: scale(N)` + canvas尺寸=原始×N 的标准高DPI 方案。触屏设备自动降为 2x 避免内存压力。
+- 圆角保留：不再对导出图做任何 border-radius 重置，保持 iframe 中看到的原始圆角效果。
+- 代码清理：移除 html2canvas 全部相关代码（~200 行），包括 `html2canvasPromise`、`findHtml2Canvas()`、`ensureHtml2CanvasLoaded()`、`ensureHtml2CanvasLoadedInWindow()`、`waitFontsReady()`、`canvasToBlob()`、`trimTransparentEdges()`、`captureIframeToCanvas()`、`CAPTURE_RESET_CSS` 及所有 html2canvas CONFIG 常量。
+- 此版本为当前稳定版。
+
+#### v0.5.2（2026-02-26）
+- 截图导出风格策略调整：导出时保留卡片背景与视觉特效（不再强制透明背景），使导出图更接近用户在 iframe 中看到的实际风格。
+- 在导出克隆文档中仅移除外层圆角/去边框：`CAPTURE_RESET_CSS` 仅对 `html, body` 设置 `border-radius: 0` 与 `border: none`，保留卡片内部组件的圆角与视觉层次。
+- 继续沿用 v0.5.1 的 onclone 方案：仅修改 html2canvas 克隆文档，不触碰真实 iframe DOM，避免复制/保存时页面抽搐。
+- 此版本为当前稳定版。
 
 #### v0.5.0（2026-02-23）
 - 新增"复制/保存"悬浮工具栏：每个渲染出的 iframe 右上角显示"复制"和"保存"按钮，桌面端 hover 时浮现，触屏设备点击 iframe 区域切换工具栏显隐（不再常显，避免遮挡内容）。
