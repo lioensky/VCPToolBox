@@ -110,7 +110,7 @@ async function fetchFile(fileUrl, requestIp) {
     if (!serverId) {
         throw new Error(`根据IP [${requestIp}] 未找到任何已知的分布式服务器。`);
     }
-    
+
     console.log(`[FileFetcherServer] 确定文件来源服务器为: ${serverId} (IP: ${requestIp})。正在请求文件...`);
 
     try {
@@ -143,5 +143,61 @@ async function fetchFile(fileUrl, requestIp) {
         throw new Error(`通过 WebSocket 从服务器 ${serverId} 请求文件时发生错误: ${e.message}`);
     }
 }
+/**
+ * 解析并确保文件存在于本地。
+ * 如果本地路径存在，直接返回原始 URL。
+ * 如果不存在，触发 fetchFile 获取缓存，并返回指向缓存的 file:// URL。
+ * @param {string} fileUrl 文件的 URL (file://...)
+ * @param {string} requestIp 发起原始请求的客户端 IP
+ * @returns {Promise<string>} 返回最终的本地可用 file:// URL
+ */
+async function resolveFileUrl(fileUrl, requestIp) {
+    if (!fileUrl.startsWith('file://')) {
+        return fileUrl; // 非 file 协议原样返回
+    }
 
-module.exports = { initialize, fetchFile };
+    let filePath;
+    try {
+        filePath = fileURLToPath(fileUrl);
+    } catch (e) {
+        console.warn(`[FileFetcherServer] Invalid local file URL: ${fileUrl}`);
+        return fileUrl;
+    }
+
+    try {
+        // 尝试判断此文件的实体是否存在于这个本地文件系统上
+        await fs.access(filePath);
+        return fileUrl; // 本地存在，直接返回给插件读取
+    } catch (err) {
+        // 本地不存在，说明是跨服务器调用的文件，触发拉取机制！
+        console.log(`[FileFetcherServer] ${filePath} not found locally, initiating pre-fetch...`);
+
+        try {
+            // 调用 fetchFile 将文件写到 CACHE_DIR
+            const { buffer, mimeType } = await fetchFile(fileUrl, requestIp);
+
+            // fetchFile 内部的缓存逻辑用原始 fileUrl 的 sha256 建立缓存文件
+            const cacheKey = crypto.createHash('sha256').update(fileUrl).digest('hex');
+            let originalExtension = '';
+            try {
+                const pathname = new URL(fileUrl).pathname;
+                originalExtension = path.extname(pathname);
+            } catch (e) { }
+
+            const cachedFilePath = path.join(CACHE_DIR, cacheKey + originalExtension);
+
+            // 构造指向此缓存文件的 file URL
+            // node 中的 URL.pathToFileURL 可以构造平台无关的 file:// 字符串
+            const cachedUrl = require('url').pathToFileURL(cachedFilePath).href;
+            console.log(`[FileFetcherServer] Pre-fetched file wrapped to local cache url: ${cachedUrl}`);
+            return cachedUrl;
+
+        } catch (fetchError) {
+            console.error(`[FileFetcherServer] Pre-fetch failed for ${fileUrl}: ${fetchError.message}`);
+            // 获取失败的话仍然先抛出错误，终止本次插件调用。这比让插件自己抛出要干净。
+            throw new Error(`[Pre-Fetch Error] 远程文件获取失败: ${fetchError.message}`);
+        }
+    }
+}
+
+module.exports = { initialize, fetchFile, resolveFileUrl };

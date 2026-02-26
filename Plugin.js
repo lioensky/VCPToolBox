@@ -687,6 +687,41 @@ class PluginManager {
             // delete pluginSpecificArgs.maid;
         }
 
+        // --- 预先拉取所有的异地文件，将其透明化 ---
+        const resolveArgsUrls = async (obj) => {
+            if (!obj || typeof obj !== 'object') return;
+            for (const key of Object.keys(obj)) {
+                const val = obj[key];
+                if (typeof val === 'string') {
+                    if (val.startsWith('file://')) {
+                        if (this.debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${val}`);
+                        obj[key] = await FileFetcherServer.resolveFileUrl(val, requestIp);
+                    } else if (val.includes('file://')) {
+                        const fileRegex = /file:\/\/[^\s"'()\]]+/g;
+                        const matches = val.match(fileRegex);
+                        if (matches) {
+                            let newVal = val;
+                            for (const matchUrl of matches) {
+                                if (this.debugMode) console.log(`[PluginManager] Intercepted embedded file URL in args: ${matchUrl}`);
+                                const resolvedUrl = await FileFetcherServer.resolveFileUrl(matchUrl, requestIp);
+                                newVal = newVal.split(matchUrl).join(resolvedUrl); // replaceAll fallback
+                            }
+                            obj[key] = newVal;
+                        }
+                    }
+                } else if (typeof val === 'object' && val !== null) {
+                    await resolveArgsUrls(val);
+                }
+            }
+        };
+
+        try {
+            await resolveArgsUrls(pluginSpecificArgs);
+        } catch (resolveError) {
+            throw new Error(JSON.stringify({ plugin_error: `Failed to pre-fetch files: ${resolveError.message}` }));
+        }
+        // --- 透明化处理结束 ---
+
         try {
             let resultFromPlugin;
             if (plugin.isDistributed) {
@@ -749,54 +784,7 @@ class PluginManager {
                         resultFromPlugin = pluginOutput.result;
                     }
                 } else {
-                    // 检查是否是文件未找到的特定错误
-                    if (pluginOutput.code === 'FILE_NOT_FOUND_LOCALLY' && pluginOutput.fileUrl && requestIp) {
-                        if (this.debugMode) console.log(`[PluginManager] Plugin '${toolName}' reported local file not found. Attempting to fetch via FileFetcherServer...`);
-
-                        try {
-                            const { buffer, mimeType } = await FileFetcherServer.fetchFile(pluginOutput.fileUrl, requestIp);
-                            const base64Data = buffer.toString('base64');
-                            const dataUri = `data:${mimeType};base64,${base64Data}`;
-
-                            if (this.debugMode) console.log(`[PluginManager] Successfully fetched file as data URI. Retrying plugin call...`);
-
-                            // 新的重试逻辑：精确替换失败的参数
-                            const newToolArgs = { ...toolArgs };
-                            const failedParam = pluginOutput.failedParameter; // e.g., "image_url1"
-
-                            if (failedParam && newToolArgs[failedParam]) {
-                                // 删除旧的 file:// url 参数
-                                delete newToolArgs[failedParam];
-
-                                // 添加新的 base64 参数。我们使用一个新的键来避免命名冲突，
-                                // 并且让插件知道这是一个已经处理过的 base64 数据。
-                                // e.g., "image_base64_1"
-                                // 关键修复：确保正确地从 "image_url_1" 提取出 "1"
-                                const paramIndex = failedParam.replace('image_url_', '');
-                                const newParamKey = `image_base64_${paramIndex}`;
-                                newToolArgs[newParamKey] = dataUri;
-
-                                if (this.debugMode) console.log(`[PluginManager] Retrying with '${failedParam}' replaced by '${newParamKey}'.`);
-
-                            } else {
-                                // 旧的后备逻辑，用于兼容单个 image_url 的情况
-                                delete newToolArgs.image_url;
-                                newToolArgs.image_base64 = dataUri;
-                                if (this.debugMode) console.log(`[PluginManager] 'failedParameter' not specified. Falling back to replacing 'image_url' with 'image_base64'.`);
-                            }
-
-                            // 直接返回重试调用的结果
-                            return await this.processToolCall(toolName, newToolArgs, requestIp);
-
-                        } catch (fetchError) {
-                            throw new Error(JSON.stringify({
-                                plugin_error: `Plugin reported local file not found, but remote fetch failed: ${fetchError.message}`,
-                                original_plugin_error: pluginOutput.error
-                            }));
-                        }
-                    } else {
-                        throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
-                    }
+                    throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
                 }
             }
 
