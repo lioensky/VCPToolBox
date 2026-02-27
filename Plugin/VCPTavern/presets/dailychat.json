@@ -22,10 +22,10 @@
       "id": "rule-1768242054809",
       "name": "新规则",
       "enabled": true,
-      "type": "relative",
+      "type": "embed",
       "content": {
         "role": "user",
-        "content": "[系统提示:]\n——VCP系统广播通知栏——\n工具调用宁缺毋滥，注重思路:\n1.日记关联：分析用户意图与过往日记的关联，注意时效性\n2.VCPTool调用后立即终止回复，等待真实结果（VCPToolPayLoad/VCP调用结果信息汇总）返回后再进行后续二次回复。请勿臆造工具调用结果。\n3.距离上次聊天{{TimeSinceLastChat}} \n——以上系统提示由VCP系统广播发出(而非用户)，以下为用户内容——"
+        "content": "[系统通知]\n——VCP系统广播通知栏——\n工具调用宁缺毋滥，注重思路:\n1.日记关联：分析用户意图与过往日记的关联，注意时效性\n2.VCPTool调用后立即结束/终止回复，等待真实结果（VCPToolPayLoad/VCP调用结果信息汇总）返回后再进行后续二次回复。请勿自行输出/编造/臆造工具调用结果。\n3.{{TimeSinceLastChat}} \n——以上系统提示由VCP系统广播发出(而非用户)，以下为用户内容——\n[系统通知结束]"
       },
       "ui": {
         "textareaWidth": "",

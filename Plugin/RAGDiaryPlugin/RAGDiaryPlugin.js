@@ -620,6 +620,15 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 移除系统追加在用户消息末尾的“系统通知”部分，避免将其混入向量化。
+     */
+    _stripSystemNotification(text) {
+        if (!text || typeof text !== 'string') return text;
+        // 匹配从[系统通知]到[系统通知结束]的整个块，可能包含前后空白
+        return text.replace(/\[系统通知\][\s\S]*?\[系统通知结束\]/g, '').trim();
+    }
+
+    /**
      * 🌟 V4.1 新增：上下文日记去重 - 提取前缀索引
      * 扫描所有 assistant 消息中的 DailyNote create 工具调用，
      * 提取 Content 字段的前 80 个字符作为去重索引。
@@ -897,7 +906,7 @@ class RAGDiaryPlugin {
                 const content = typeof m.content === 'string'
                     ? m.content
                     : (Array.isArray(m.content) ? m.content.find(p => p.type === 'text')?.text : '') || '';
-                return !content.startsWith('[系统邀请指令:]') && !content.startsWith('[系统提示:]');
+                return !content.startsWith('[系统邀请指令:]') && !content.trim().startsWith('[系统提示:]无内容');
             });
             const lastAiMessageIndex = messages.findLastIndex(m => m.role === 'assistant');
 
@@ -921,11 +930,12 @@ class RAGDiaryPlugin {
             // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签和emoji
             if (userContent) {
                 const originalUserContent = userContent;
+                userContent = this._stripSystemNotification(userContent); // ✅ 净化追加的系统提示框
                 userContent = this._stripHtml(userContent);
                 userContent = this._stripEmoji(userContent);
                 userContent = this._stripToolMarkers(userContent); // ✅ 新增：净化工具调用噪音
                 if (originalUserContent.length !== userContent.length) {
-                    console.log('[RAGDiaryPlugin] User content was sanitized (HTML + Emoji removed).');
+                    console.log('[RAGDiaryPlugin] User content was sanitized (SystemNotification + HTML + Emoji removed).');
                 }
             }
             if (aiContent) {
@@ -1801,7 +1811,7 @@ class RAGDiaryPlugin {
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([
-            sanitizedUserContent ? this.getSingleEmbeddingCached(sanitizedUserContent) : null,
+            sanitizedUserContent ? this.getSingleEmbeddingCached(this._stripSystemNotification(sanitizedUserContent)) : null,
             sanitizedAiContent ? this.getSingleEmbeddingCached(sanitizedAiContent) : null,
             sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent) : null
         ]);
@@ -2813,8 +2823,8 @@ class RAGDiaryPlugin {
      * ✅ 带缓存的向量化方法（替代原 getSingleEmbedding）
      */
     async getSingleEmbeddingCached(text) {
-        if (!text) {
-            console.error('[RAGDiaryPlugin] getSingleEmbeddingCached was called with no text.');
+        if (!text || !text.trim()) {
+            // 这是正常情况（如系统初始化或纯工具调用），无需报错
             return null;
         }
 
