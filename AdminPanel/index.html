@@ -403,6 +403,10 @@
                 <span class="server-title">VCPToolBox</span>
             </div>
             <div class="header-actions">
+                <button id="animation-toggle-button" class="theme-button">
+                    <span class="material-symbols-outlined">animation</span>
+                    关闭动画
+                </button>
                 <button id="restart-server-button" class="restart-button">
                     <span class="material-symbols-outlined">restart_alt</span>
                     重启服务器
@@ -787,7 +791,8 @@
                         <option value="">全部类型</option>
                     </select>
                     <label for="placeholder-filter-keyword">关键字：</label>
-                    <input type="text" id="placeholder-filter-keyword" class="placeholder-filter-input" placeholder="搜索占位符名称或预览…">
+                    <input type="text" id="placeholder-filter-keyword" class="placeholder-filter-input"
+                        placeholder="搜索占位符名称或预览…">
                 </div>
                 <div id="placeholder-viewer-list" class="placeholder-viewer-list">
                     <!-- 占位符列表由 placeholder-viewer.js 渲染 -->
@@ -797,17 +802,24 @@
                     <div class="placeholder-detail-modal-content">
                         <div class="placeholder-detail-modal-header">
                             <h3 id="placeholder-detail-title"></h3>
-                            <button type="button" class="placeholder-detail-modal-close" aria-label="关闭">&times;</button>
+                            <button type="button" class="placeholder-detail-modal-close"
+                                aria-label="关闭">&times;</button>
                         </div>
                         <div class="placeholder-detail-tabs" role="tablist">
-                            <button type="button" class="placeholder-detail-tab active" role="tab" aria-selected="true" data-tab="raw">原始文本</button>
-                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false" data-tab="markdown">Markdown 渲染</button>
-                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false" data-tab="json">JSON 格式化</button>
+                            <button type="button" class="placeholder-detail-tab active" role="tab" aria-selected="true"
+                                data-tab="raw">原始文本</button>
+                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false"
+                                data-tab="markdown">Markdown 渲染</button>
+                            <button type="button" class="placeholder-detail-tab" role="tab" aria-selected="false"
+                                data-tab="json">JSON 格式化</button>
                         </div>
                         <div id="placeholder-detail-body" class="placeholder-detail-modal-body">
-                            <div id="placeholder-detail-panel-raw" class="placeholder-detail-panel active" role="tabpanel"></div>
-                            <div id="placeholder-detail-panel-markdown" class="placeholder-detail-panel" role="tabpanel"></div>
-                            <div id="placeholder-detail-panel-json" class="placeholder-detail-panel" role="tabpanel"></div>
+                            <div id="placeholder-detail-panel-raw" class="placeholder-detail-panel active"
+                                role="tabpanel"></div>
+                            <div id="placeholder-detail-panel-markdown" class="placeholder-detail-panel"
+                                role="tabpanel"></div>
+                            <div id="placeholder-detail-panel-json" class="placeholder-detail-panel" role="tabpanel">
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1295,6 +1307,10 @@
                 }
 
                 function animate() {
+                    if (canvas.style.display === 'none') {
+                        requestAnimationFrame(animate);
+                        return;
+                    }
                     ctx.clearRect(0, 0, width, height);
                     particles.forEach(p => {
                         p.update();
@@ -1359,6 +1375,45 @@
                 animate();
             }
         });
+
+        // --- 动画开关逻辑 ---
+        const animationToggleButton = document.getElementById('animation-toggle-button');
+        let animationsEnabled = localStorage.getItem('animationsEnabled') !== 'false';
+
+        function applyAnimationsState(enabled) {
+            animationsEnabled = enabled;
+            localStorage.setItem('animationsEnabled', enabled);
+
+            const solarSystemBg = document.querySelector('.solar-system-bg');
+            if (solarSystemBg) {
+                solarSystemBg.style.display = enabled ? '' : 'none';
+            }
+
+            const canvas = document.getElementById('vcp-animation-canvas');
+            if (canvas) {
+                canvas.style.display = enabled ? '' : 'none';
+            }
+
+            const logo = document.getElementById('vcp-logo-main');
+            if (logo) {
+                logo.style.animation = enabled ? '' : 'none';
+                logo.style.filter = enabled ? '' : 'drop-shadow(0 0 4px var(--highlight-text))';
+            }
+
+            if (animationToggleButton) {
+                animationToggleButton.innerHTML = enabled ?
+                    '<span class="material-symbols-outlined">animation</span>关闭动画' :
+                    '<span class="material-symbols-outlined">animation</span>开启动画';
+            }
+        }
+
+        if (animationToggleButton) {
+            animationToggleButton.addEventListener('click', () => {
+                applyAnimationsState(!animationsEnabled);
+            });
+        }
+
+        applyAnimationsState(animationsEnabled);
 
         // 移动端菜单切换逻辑
         const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
