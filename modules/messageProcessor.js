@@ -69,26 +69,69 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             return fallbackBlock.content;
         }
 
-        // 提取最后一个 User 的消息作为核心比对内容
+        // 提取最后一个 User 和 AI 的消息作为核心比对内容 (原子级复刻 RAGDiaryPlugin 逻辑以命中向量缓存)
         const contextMessages = context.messages || [];
-        let lastUserText = '';
-        for (let i = contextMessages.length - 1; i >= 0; i--) {
-            if (contextMessages[i].role === 'user') {
-                const msgContent = contextMessages[i].content;
-                lastUserText = typeof msgContent === 'string'
-                    ? msgContent
-                    : (Array.isArray(msgContent) ? (msgContent.find(p => p.type === 'text')?.text || '') : '');
-                if (lastUserText) break;
-            }
+
+        const lastUserMessageIndex = contextMessages.findLastIndex(m => {
+            if (m.role !== 'user') return false;
+            const content = typeof m.content === 'string'
+                ? m.content
+                : (Array.isArray(m.content) ? (m.content.find(p => p.type === 'text')?.text || '') : '');
+            return !content.startsWith('[系统邀请指令:]') && !content.trim().startsWith('[系统提示:]无内容');
+        });
+        const lastAiMessageIndex = contextMessages.findLastIndex(m => m.role === 'assistant');
+
+        let userContent = '';
+        let aiContent = null;
+
+        if (lastUserMessageIndex > -1) {
+            const m = contextMessages[lastUserMessageIndex];
+            userContent = typeof m.content === 'string'
+                ? m.content
+                : (Array.isArray(m.content) ? (m.content.find(p => p.type === 'text')?.text || '') : '');
         }
 
-        if (!lastUserText) {
+        if (lastAiMessageIndex > -1) {
+            const m = contextMessages[lastAiMessageIndex];
+            aiContent = typeof m.content === 'string'
+                ? m.content
+                : (Array.isArray(m.content) ? (m.content.find(p => p.type === 'text')?.text || '') : '');
+        }
+
+        if (!userContent) {
             if (context.DEBUG_MODE) console.log(`[DynamicFold] 未找到 User 文本消息，返回基础内容 (${placeholderKey})`);
             return fallbackBlock.content;
         }
 
-        // 获取当前会话上下文向量
-        const userVector = await ragPlugin.getSingleEmbeddingCached(lastUserText);
+        // 调用 RAGDiaryPlugin 的清理方法，确保文本与 RAG 插件完全一致 (命中缓存的关键)
+        if (typeof ragPlugin._stripSystemNotification === 'function') {
+            if (userContent) {
+                const originalUserContent = userContent;
+                userContent = ragPlugin._stripSystemNotification(userContent);
+                userContent = ragPlugin._stripHtml(userContent);
+                userContent = ragPlugin._stripEmoji(userContent);
+                userContent = ragPlugin._stripToolMarkers(userContent);
+                if (context.DEBUG_MODE && originalUserContent.length !== userContent.length) {
+                    console.log('[DynamicFold] User content was sanitized (SystemNotification + HTML + Emoji removed).');
+                }
+            }
+        }
+        if (aiContent && typeof ragPlugin._stripHtml === 'function') {
+            const originalAiContent = aiContent;
+            aiContent = ragPlugin._stripHtml(aiContent);
+            aiContent = ragPlugin._stripEmoji(aiContent);
+            aiContent = ragPlugin._stripToolMarkers(aiContent);
+            if (context.DEBUG_MODE && originalAiContent.length !== aiContent.length) {
+                console.log('[DynamicFold] AI content was sanitized (HTML + Emoji removed).');
+            }
+        }
+
+        const combinedQueryForDisplay = aiContent
+            ? `[AI]: ${aiContent}\n[User]: ${userContent}`
+            : userContent;
+
+        // 获取当前会话上下文向量 (此时将完美命中 RAGDiaryPlugin 的 embeddingCache)
+        const userVector = await ragPlugin.getSingleEmbeddingCached(combinedQueryForDisplay);
         if (!userVector) {
             if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取用户上下文向量失败，返回基础内容 (${placeholderKey})`);
             return fallbackBlock.content;
