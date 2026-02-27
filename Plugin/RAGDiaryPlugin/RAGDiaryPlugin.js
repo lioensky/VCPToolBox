@@ -2677,7 +2677,7 @@ class RAGDiaryPlugin {
                 if (error.response) {
                     console.error(`[RAGDiaryPlugin] Embedding API call failed with status ${status}: ${JSON.stringify(error.response.data)}`);
                 } else if (error.request) {
-                    console.error('[RAGDiaryPlugin] Embedding API call made but no response received:', error.request);
+                    console.error('[RAGDiaryPlugin] Embedding API call made but no response received:', error.message);
                 } else {
                     console.error('[RAGDiaryPlugin] An error occurred while setting up the embedding request:', error.message);
                 }
