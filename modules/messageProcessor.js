@@ -243,6 +243,11 @@ async function replaceOtherVariables(text, model, role, context) {
         const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, entry] of staticPlaceholderValues.entries()) {
+                // 修复上下文折叠漏洞：如果当前文本压根没有这个占位符，直接跳过，避免触发不必要的向量化和计算
+                if (!processedText.includes(placeholder)) {
+                    continue;
+                }
+
                 const placeholderRegex = new RegExp(placeholder.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g');
 
                 let valueToInject = entry;
