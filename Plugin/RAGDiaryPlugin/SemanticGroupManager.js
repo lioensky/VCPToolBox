@@ -43,7 +43,7 @@ class SemanticGroupManager {
 
             if (areDifferent) {
                 console.log('[SemanticGroup] .edit.json 与主文件核心内容不同，正在执行智能合并...');
-                
+
                 // 智能合并：使用 edit.json 的词元，保留 main.json 的 vector_id 等元数据
                 const newMainData = this._mergeGroupData(editData, mainData);
 
@@ -58,9 +58,9 @@ class SemanticGroupManager {
                 return;
             }
             if (error instanceof SyntaxError) {
-                 console.error('[SemanticGroup] 解析 .edit.json 文件时出错，请检查JSON格式:', error);
+                console.error('[SemanticGroup] 解析 .edit.json 文件时出错，请检查JSON格式:', error);
             } else {
-                 console.error('[SemanticGroup] 同步 .edit.json 文件时出错:', error);
+                console.error('[SemanticGroup] 同步 .edit.json 文件时出错:', error);
             }
         }
     }
@@ -97,7 +97,7 @@ class SemanticGroupManager {
             const editAutoLearned = [...(editGroup.auto_learned || [])].sort();
             const mainAutoLearned = [...(mainGroup.auto_learned || [])].sort();
             if (JSON.stringify(editAutoLearned) !== JSON.stringify(mainAutoLearned)) return true;
-            
+
             // 比较权重
             if ((editGroup.weight || 1.0) !== (mainGroup.weight || 1.0)) return true;
         }
@@ -113,7 +113,7 @@ class SemanticGroupManager {
         }
 
         const newMainData = JSON.parse(JSON.stringify(mainData)); // 深拷贝主数据作为基础
-        
+
         // 1. 更新 config
         newMainData.config = editData.config || {};
 
@@ -136,7 +136,7 @@ class SemanticGroupManager {
                 newMainGroups[groupName] = editGroup;
             }
         }
-        
+
         newMainData.groups = newMainGroups;
         return newMainData;
     }
@@ -159,7 +159,7 @@ class SemanticGroupManager {
                     const vectorId = crypto.randomUUID();
                     const vectorPath = path.join(this.vectorsDirPath, `${vectorId}.json`);
                     await fs.writeFile(vectorPath, JSON.stringify(group.vector));
-                    
+
                     this.groupVectorCache.set(groupName, group.vector);
                     group.vector_id = vectorId;
                     delete group.vector; // 从主配置中删除向量
@@ -169,8 +169,8 @@ class SemanticGroupManager {
                         const vectorPath = path.join(this.vectorsDirPath, `${group.vector_id}.json`);
                         const vectorData = await fs.readFile(vectorPath, 'utf-8');
                         this.groupVectorCache.set(groupName, JSON.parse(vectorData));
-                    } catch (vecError) {
-                        console.error(`[SemanticGroup] 加载组 "${groupName}" 的向量文件失败 (ID: ${group.vector_id}):`, vecError);
+                    } catch (error) {
+                        console.error(`[SemanticGroupManager] ❌ 更新向量缓存失败 (${groupName}):`, error.message);
                         // 如果向量文件丢失，清除ID以便重新计算
                         delete group.vector_id;
                         needsResave = true;
@@ -213,16 +213,16 @@ class SemanticGroupManager {
                 config: this.config,
                 groups: groupsToSave
             };
-            
+
             // 1. 写入临时文件
             await fs.writeFile(tempFilePath, JSON.stringify(dataToSave, null, 2), 'utf-8');
-            
+
             // 2. 成功后，重命名临时文件以原子方式替换原文件
             await fs.rename(tempFilePath, this.groupsFilePath);
-            
+
             console.log('[SemanticGroup] 语义组配置已通过原子写入操作更新并保存。');
         } catch (error) {
-            console.error('[SemanticGroup] 保存语义组配置文件失败:', error);
+            console.error('[SemanticGroupManager] ❌ 保存语义组配置失败:', error.message);
             // 如果出错，尝试清理临时文件
             try {
                 await fs.unlink(tempFilePath);
@@ -255,7 +255,7 @@ class SemanticGroupManager {
                         console.log(`[SemanticGroup] 已删除孤立的向量文件: ${vectorId}.json`);
                     } catch (unlinkError) {
                         if (unlinkError.code !== 'ENOENT') {
-                             console.error(`[SemanticGroup] 删除向量文件 ${vectorId}.json 失败:`, unlinkError);
+                            console.error(`[SemanticGroup] 删除向量文件 ${vectorId}.json 失败:`, unlinkError);
                         }
                     }
                 }
@@ -273,14 +273,14 @@ class SemanticGroupManager {
     // ============ 核心功能：组激活 ============
     detectAndActivateGroups(text) {
         const activatedGroups = new Map();
-        
+
         for (const [groupName, groupData] of Object.entries(this.groups)) {
             // 如果 auto_learned 不存在，提供一个空数组作为后备
             const autoLearnedWords = groupData.auto_learned || [];
             const allWords = [...groupData.words, ...autoLearnedWords];
-            
+
             const matchedWords = allWords.filter(word => this.flexibleMatch(text, word));
-            
+
             if (matchedWords.length > 0) {
                 const activationStrength = matchedWords.length / allWords.length;
                 activatedGroups.set(groupName, {
@@ -288,11 +288,11 @@ class SemanticGroupManager {
                     matchedWords: matchedWords,
                     allWords: allWords
                 });
-                
+
                 this.updateGroupStats(groupName);
             }
         }
-        
+
         return activatedGroups;
     }
 
@@ -326,7 +326,7 @@ class SemanticGroupManager {
         for (const [groupName, groupData] of Object.entries(this.groups)) {
             const autoLearnedWords = groupData.auto_learned || [];
             const allWords = [...groupData.words, ...autoLearnedWords];
-            
+
             if (allWords.length === 0) {
                 if (groupData.vector_id) {
                     console.log(`[SemanticGroup] 组 "${groupName}" 词元为空，正在清理旧向量...`);
@@ -362,18 +362,18 @@ class SemanticGroupManager {
                     // If a vector existed before (even with a different ID), we should clean it up.
                     // This case is mostly for when words change.
                     if (groupData.vector_id) {
-                         try {
+                        try {
                             const oldVectorPath = path.join(this.vectorsDirPath, `${groupData.vector_id}.json`);
                             await fs.unlink(oldVectorPath);
-                         } catch (e) {
+                        } catch (e) {
                             if (e.code !== 'ENOENT') console.error(`[SemanticGroup] 删除旧向量文件失败: ${e.message}`);
-                         }
+                        }
                     }
 
                     const vectorId = crypto.randomUUID();
                     const vectorPath = path.join(this.vectorsDirPath, `${vectorId}.json`);
                     await fs.writeFile(vectorPath, JSON.stringify(vector), 'utf-8');
-                    
+
                     this.groupVectorCache.set(groupName, vector);
                     this.groups[groupName].vector_id = vectorId;
                     this.groups[groupName].words_hash = currentWordsHash;
@@ -383,7 +383,7 @@ class SemanticGroupManager {
                 }
             }
         }
-        
+
         if (changesMade) {
             console.log('[SemanticGroup] 检测到向量变更，正在保存主配置文件...');
             await this.saveGroups();
@@ -401,7 +401,7 @@ class SemanticGroupManager {
             console.log('[SemanticGroup] 未提供预计算向量，正在为原始查询生成新向量...');
             queryVector = await this.ragPlugin.getSingleEmbedding(originalQuery);
         }
-        
+
         if (!queryVector) {
             console.error('[SemanticGroup] 查询向量无效，无法进行增强。');
             return null;
@@ -410,20 +410,20 @@ class SemanticGroupManager {
         if (activatedGroups.size === 0) {
             return queryVector;
         }
-        
+
         const vectors = [queryVector];
         const weights = [1.0]; // 原始查询权重
-        
+
         for (const [groupName, data] of activatedGroups) {
             const groupVector = this.groupVectorCache.get(groupName);
             if (groupVector) {
                 vectors.push(groupVector);
                 // 权重可以根据激活强度和组的全局权重调整
                 const groupWeight = (this.groups[groupName].weight || 1.0) * data.strength;
-                weights.push(groupWeight); 
+                weights.push(groupWeight);
             }
         }
-        
+
         if (vectors.length === 1) {
             return queryVector; // 没有有效的组向量被添加
         }
@@ -435,10 +435,10 @@ class SemanticGroupManager {
 
     weightedAverageVectors(vectors, weights) {
         if (!vectors || vectors.length === 0) return null;
-        
+
         const dim = vectors[0].length;
         const result = new Array(dim).fill(0);
-        
+
         let totalWeight = 0;
         for (let i = 0; i < vectors.length; i++) {
             if (!vectors[i] || vectors[i].length !== dim) continue; // 跳过无效向量
@@ -448,13 +448,13 @@ class SemanticGroupManager {
                 result[j] += vectors[i][j] * weight;
             }
         }
-        
+
         if (totalWeight === 0) return vectors[0]; // 如果总权重为0，返回原始向量
 
         for (let j = 0; j < dim; j++) {
             result[j] /= totalWeight;
         }
-        
+
         return result;
     }
 }

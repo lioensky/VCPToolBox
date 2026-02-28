@@ -18,47 +18,47 @@ class MetaThinkingManager {
         this._loadPromise = (async () => {
             // --- 加载元思考链配置 ---
             try {
-            const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
-            const metaChainData = await fs.readFile(metaChainPath, 'utf-8');
-            this.metaThinkingChains = JSON.parse(metaChainData);
-            console.log(`[MetaThinkingManager] 成功加载元思考链配置，包含 ${Object.keys(this.metaThinkingChains.chains || {}).length} 个链定义。`);
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.log('[MetaThinkingManager] 未找到 meta_thinking_chains.json，元思考功能将不可用。');
-            } else {
-                console.error('[MetaThinkingManager] 加载元思考链配置时发生错误:', error);
-            }
-            this.metaThinkingChains = { chains: {} };
-        }
-
-        // --- 加载并缓存元思考链主题向量 ---
-        try {
-            const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
-            const metaChainCachePath = path.join(__dirname, 'meta_chain_vector_cache.json');
-            const currentMetaChainHash = await this.ragPlugin._getFileHash(metaChainPath);
-
-            if (currentMetaChainHash) {
-                let cache = null;
-                try {
-                    const cacheData = await fs.readFile(metaChainCachePath, 'utf-8');
-                    cache = JSON.parse(cacheData);
-                } catch (e) {
-                    // Cache not found or corrupt
-                }
-
-                if (cache && cache.sourceHash === currentMetaChainHash) {
-                    console.log('[MetaThinkingManager] 元思考链主题向量缓存有效，从磁盘加载...');
-                    this.metaChainThemeVectors = cache.vectors;
-                    console.log(`[MetaThinkingManager] 成功从缓存加载 ${Object.keys(this.metaChainThemeVectors).length} 个主题向量。`);
+                const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
+                const metaChainData = await fs.readFile(metaChainPath, 'utf-8');
+                this.metaThinkingChains = JSON.parse(metaChainData);
+                console.log(`[MetaThinkingManager] 成功加载元思考链配置，包含 ${Object.keys(this.metaThinkingChains.chains || {}).length} 个链定义。`);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    console.log('[MetaThinkingManager] 未找到 meta_thinking_chains.json，元思考功能将不可用。');
                 } else {
-                    if (this.metaThinkingChains.chains && Object.keys(this.metaThinkingChains.chains).length > 0) {
-                         console.log('[MetaThinkingManager] 元思考链配置已更新或缓存无效，正在重建主题向量...');
-                         await this._buildAndSaveMetaChainThemeCache(currentMetaChainHash, metaChainCachePath);
+                    console.error('[MetaThinkingManager] 加载元思考链配置时发生错误:', error.message);
+                }
+                this.metaThinkingChains = { chains: {} };
+            }
+
+            // --- 加载并缓存元思考链主题向量 ---
+            try {
+                const metaChainPath = path.join(__dirname, 'meta_thinking_chains.json');
+                const metaChainCachePath = path.join(__dirname, 'meta_chain_vector_cache.json');
+                const currentMetaChainHash = await this.ragPlugin._getFileHash(metaChainPath);
+
+                if (currentMetaChainHash) {
+                    let cache = null;
+                    try {
+                        const cacheData = await fs.readFile(metaChainCachePath, 'utf-8');
+                        cache = JSON.parse(cacheData);
+                    } catch (e) {
+                        // Cache not found or corrupt
+                    }
+
+                    if (cache && cache.sourceHash === currentMetaChainHash) {
+                        console.log('[MetaThinkingManager] 元思考链主题向量缓存有效，从磁盘加载...');
+                        this.metaChainThemeVectors = cache.vectors;
+                        console.log(`[MetaThinkingManager] 成功从缓存加载 ${Object.keys(this.metaChainThemeVectors).length} 个主题向量。`);
+                    } else {
+                        if (this.metaThinkingChains.chains && Object.keys(this.metaThinkingChains.chains).length > 0) {
+                            console.log('[MetaThinkingManager] 元思考链配置已更新或缓存无效，正在重建主题向量...');
+                            await this._buildAndSaveMetaChainThemeCache(currentMetaChainHash, metaChainCachePath);
+                        }
                     }
                 }
-            }
-        } catch (error) {
-            console.error('[MetaThinkingManager] 加载或构建元思考链主题向量时发生错误:', error);
+            } catch (error) {
+                console.error('[MetaThinkingManager] 加载或构建元思考链主题向量时发生错误:', error.message);
             }
         })();
 
@@ -70,7 +70,7 @@ class MetaThinkingManager {
         this.metaChainThemeVectors = {}; // 清空旧的内存缓存
 
         const chainNames = Object.keys(this.metaThinkingChains.chains || {});
-        
+
         for (const chainName of chainNames) {
             // 关键：跳过 'default' 主题，因为它不是自动切换的目标
             if (chainName === 'default') {
@@ -104,7 +104,7 @@ class MetaThinkingManager {
      * 处理VCP元思考链 - 递归向量增强的多阶段推理
      */
     async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
-        
+
         // 🌟 兜底：如果配置尚未加载，先执行加载
         if (!this.metaThinkingChains.chains || Object.keys(this.metaThinkingChains.chains).length === 0) {
             console.log(`[MetaThinkingManager] 检测到配置未就绪，正在触发兜底加载...`);
@@ -138,9 +138,9 @@ class MetaThinkingManager {
                 console.log(`[MetaThinkingManager][Auto] 相似度未达到阈值，使用默认主题: ${finalChainName}`);
             }
         }
-        
+
         console.log(`[MetaThinkingManager] 开始处理元思考链: ${finalChainName}`);
-        
+
         // 获取思维链配置
         const chainConfig = this.metaThinkingChains.chains[finalChainName];
         if (!chainConfig || !chainConfig.clusters || !chainConfig.kSequence) {
@@ -150,7 +150,7 @@ class MetaThinkingManager {
 
         const chain = chainConfig.clusters;
         const finalKSequence = [...chainConfig.kSequence]; // 复制数组避免修改原配置
-        
+
         if (!Array.isArray(chain) || chain.length === 0) {
             console.error(`[MetaThinkingManager] 思维链簇定义为空: ${finalChainName}`);
             return `[错误: "${finalChainName}"思维链簇定义为空]`;
@@ -221,13 +221,13 @@ class MetaThinkingManager {
             const clusterName = chain[i];
             // 使用配置文件中定义的k序列
             const k = finalKSequence[i];
-            
+
             try {
                 // 使用当前查询向量搜索当前簇
                 const searchResults = await this.ragPlugin.vectorDBManager.search(clusterName, currentQueryVector, k);
-                
+
                 if (!searchResults || searchResults.length === 0) {
-                    console.warn(`[MetaThinkingManager] 阶段${i+1}未找到结果，使用原始查询向量继续`);
+                    console.warn(`[MetaThinkingManager] 阶段${i + 1}未找到结果，使用原始查询向量继续`);
                     chainResults.push({
                         clusterName,
                         stage: i + 1,
@@ -260,7 +260,7 @@ class MetaThinkingManager {
                         if (!vector) {
                             vector = await this.ragPlugin.vectorDBManager.getVectorByText(clusterName, result.text);
                         }
-                        
+
                         if (vector) {
                             // 确保 vector 是数组格式
                             const vectorArray = Array.isArray(vector) ? vector : (typeof vector === 'string' ? JSON.parse(vector) : Object.values(vector));
@@ -280,7 +280,7 @@ class MetaThinkingManager {
                     }
                 }
             } catch (error) {
-                console.error(`[MetaThinkingManager] 处理簇"${clusterName}"时发生错误:`, error);
+                console.error(`[MetaThinkingManager] 处理簇"${clusterName}"时发生错误:`, error.message);
                 chainResults.push({
                     clusterName,
                     stage: i + 1,
@@ -352,7 +352,7 @@ class MetaThinkingManager {
      */
     _formatMetaThinkingResults(chainResults, chainName, activatedGroups, isAutoMode = false) {
         let content = `\n[--- VCP元思考链: "${chainName}" ${isAutoMode ? '(Auto模式)' : ''} ---]\n`;
-        
+
         if (activatedGroups && activatedGroups.size > 0) {
             content += `[语义组增强: `;
             const groupNames = [];
@@ -375,7 +375,7 @@ class MetaThinkingManager {
             } else {
                 content += '\n';
             }
-            
+
             if (stageResult.error) {
                 content += `  [错误: ${stageResult.error}]\n`;
             } else if (stageResult.results.length === 0) {

@@ -86,7 +86,7 @@ class AIMemoHandler {
             // 1. 收集所有日记文件（基于文件级别，而非合并后的字符串）
             const allDiaryFiles = [];
             const loadedDiaries = [];
-            
+
             for (const dbName of dbNames) {
                 const files = await this._getDiaryFiles(dbName);
                 if (files.length === 0) {
@@ -122,8 +122,8 @@ class AIMemoHandler {
             if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
                 try {
                     this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
-                } catch (broadcastError) {
-                    console.error('[AIMemoHandler] VCP Info broadcast failed:', broadcastError);
+                } catch (e) {
+                    console.error('[MetaThinkingManager] Cache hit broadcast failed:', e.message);
                 }
             }
 
@@ -177,18 +177,18 @@ class AIMemoHandler {
      */
     async _processSingleAggregated(dbNames, diaryFiles, userContent, aiContent, combinedQueryForDisplay) {
         console.log(`[AIMemoHandler] 单次聚合处理 ${dbNames.length} 个日记本，共 ${diaryFiles.length} 个文件`);
-        
+
         // 将所有文件内容合并
         const knowledgeBase = this._combineFiles(diaryFiles);
         const prompt = this._buildPrompt(knowledgeBase, userContent, aiContent);
         const aiResponse = await this._callAIModel(prompt);
-        
+
         if (!aiResponse) {
             return '[AI模型调用失败]';
         }
 
         const extractedMemories = this._extractMemories(aiResponse);
-        
+
         const content = `[跨库联合检索: ${dbNames.join(' + ')}]\n${extractedMemories}`;
         const vcpInfo = {
             type: 'AI_MEMO_RETRIEVAL',
@@ -209,10 +209,10 @@ class AIMemoHandler {
      */
     async _processBatchedAggregated(dbNames, diaryFiles, userContent, aiContent, combinedQueryForDisplay) {
         console.log(`[AIMemoHandler] 分批聚合处理 ${dbNames.length} 个日记本，共 ${diaryFiles.length} 个文件`);
-        
+
         const batches = this._splitFilesIntoBatches(diaryFiles);
         console.log(`[AIMemoHandler] 文件分割为 ${batches.length} 个批次`);
-        
+
         // 打印每个批次的统计信息
         batches.forEach((batch, idx) => {
             const batchTokens = batch.reduce((sum, f) => sum + f.tokens, 0);
@@ -225,7 +225,7 @@ class AIMemoHandler {
             const promises = batchGroup.map((batch, idx) =>
                 this._processBatch(batch, userContent, aiContent, i + idx + 1, batches.length)
             );
-            
+
             const groupResults = await Promise.all(promises);
             batchResults.push(...groupResults);
         }
@@ -266,11 +266,11 @@ class AIMemoHandler {
      */
     async _processBatch(batchFiles, userContent, aiContent, batchIndex, totalBatches) {
         console.log(`[AIMemoHandler] Processing batch ${batchIndex}/${totalBatches} (${batchFiles.length} files)`);
-        
+
         const knowledgeBase = this._combineFiles(batchFiles);
         const prompt = this._buildPrompt(knowledgeBase, userContent, aiContent);
         const aiResponse = await this._callAIModel(prompt);
-        
+
         if (!aiResponse) {
             console.warn(`[AIMemoHandler] Batch ${batchIndex} failed, returning empty`);
             return '';
@@ -285,10 +285,10 @@ class AIMemoHandler {
     async _getDiaryFiles(dbName) {
         const projectBasePath = process.env.PROJECT_BASE_PATH;
         const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
-        
+
         const characterDirPath = path.join(dailyNoteRootPath, dbName);
         const files = [];
-        
+
         try {
             const fileList = await fs.readdir(characterDirPath);
             const relevantFiles = fileList.filter(file => {
@@ -315,7 +315,7 @@ class AIMemoHandler {
                 console.error(`[AIMemoHandler] 读取目录失败 ${characterDirPath}:`, dirError.message);
             }
         }
-        
+
         return files;
     }
 
@@ -326,7 +326,7 @@ class AIMemoHandler {
         const FIXED_OVERHEAD = 10000; // 固定预留10k给提示词和上下文
         const maxTokensPerBatch = this.config.maxTokensPerBatch - FIXED_OVERHEAD;
         const batches = [];
-        
+
         let currentBatch = [];
         let currentTokens = 0;
 
@@ -366,9 +366,9 @@ class AIMemoHandler {
      */
     _mergeBatchResults(results) {
         // 过滤掉空结果和"未找到"结果
-        const validResults = results.filter(r => 
-            r && 
-            !r.includes('[[未找到相关记忆]]') && 
+        const validResults = results.filter(r =>
+            r &&
+            !r.includes('[[未找到相关记忆]]') &&
             !r.includes('[[知识库为空]]')
         );
 
@@ -399,11 +399,11 @@ class AIMemoHandler {
         const blocks = [];
         const regex = /\[\[([\s\S]*?)\]\]/g;
         let match;
-        
+
         while ((match = regex.exec(text)) !== null) {
             blocks.push(`[[${match[1]}]]`);
         }
-        
+
         return blocks;
     }
 
@@ -412,16 +412,16 @@ class AIMemoHandler {
      */
     _buildPrompt(knowledgeBase, userContent, aiContent) {
         const now = dayjs().tz(DEFAULT_TIMEZONE);
-        
+
         let prompt = this.promptTemplate;
-        
+
         // 替换占位符
         prompt = prompt.replace(/\{\{knowledge_base\}\}/g, knowledgeBase);
         prompt = prompt.replace(/\{\{current_user_prompt\}\}/g, userContent || '');
         prompt = prompt.replace(/\{\{last_assistant_response\}\}/g, aiContent || '[无AI回复]');
         prompt = prompt.replace(/\{\{Date\}\}/g, now.format('YYYY-MM-DD'));
         prompt = prompt.replace(/\{\{Time\}\}/g, now.format('HH:mm:ss'));
-        
+
         return prompt;
     }
 
@@ -435,7 +435,7 @@ class AIMemoHandler {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 console.log(`[AIMemoHandler] Calling AI model (attempt ${attempt}/${maxRetries})...`);
-                
+
                 const response = await axios.post(
                     `${this.config.url}v1/chat/completions`,
                     {
@@ -474,7 +474,7 @@ class AIMemoHandler {
 
             } catch (error) {
                 const status = error.response?.status;
-                
+
                 if ((status === 500 || status === 503 || error.code === 'ECONNABORTED') && attempt < maxRetries) {
                     console.warn(`[AIMemoHandler] AI call failed (${status || error.code}). Retrying in ${retryDelay}ms...`);
                     await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -482,13 +482,13 @@ class AIMemoHandler {
                 }
 
                 if (error.response) {
-                    console.error(`[AIMemoHandler] AI API error (${status}):`, error.response.data);
+                    console.error(`[AIMemoHandler] AI API error (${error.response.status}): ${error.message}`);
                 } else if (error.request) {
                     console.error('[AIMemoHandler] No response from AI API:', error.message);
                 } else {
                     console.error('[AIMemoHandler] Error setting up AI request:', error.message);
                 }
-                
+
                 return null;
             }
         }
