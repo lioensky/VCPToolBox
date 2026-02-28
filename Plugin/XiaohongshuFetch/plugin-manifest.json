@@ -1,0 +1,25 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "XiaohongshuFetch",
+  "version": "3.0.0",
+  "displayName": "小红书爬虫",
+  "description": "用于抓取小红书图文/视频笔记内容的专属爬虫。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python XiaohongshuFetch.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 45000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "fetch",
+        "description": "抓取小红书笔记内容。参数: url (字符串, 必需) - 小红书笔记的完整URL链接。"
+      }
+    ]
+  }
+}
