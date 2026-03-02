@@ -1,0 +1,72 @@
+{
+  "_comment": "GitOperator 仓库配置档示例 — 复制为 repos.json 并填入实际值",
+
+  "defaultProfile": "vcp-server",
+
+  "profiles": {
+
+    "vcp-server": {
+      "_comment": "VCPServer 主仓库 — fork 自 RyanLiuCN/VCPServer",
+      "localPath": "../../",
+      "push": {
+        "remote": "origin",
+        "url": "https://github.com/你的用户名/VCPServer.git",
+        "branch": "main"
+      },
+      "pull": {
+        "remote": "upstream",
+        "url": "https://github.com/RyanLiuCN/VCPServer.git",
+        "branch": "main"
+      },
+      "credentials": {
+        "email": "your-email@example.com",
+        "username": "你的用户名",
+        "token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "mergeStrategy": "merge"
+    },
+
+    "my-plugin": {
+      "_comment": "示例: 独立插件仓库 (无上游，只推自己的 origin)",
+      "localPath": "../../Plugin/MyAwesomePlugin",
+      "push": {
+        "remote": "origin",
+        "url": "https://github.com/你的用户名/MyAwesomePlugin.git",
+        "branch": "main"
+      },
+      "pull": {
+        "_comment": "没有上游仓库时留空即可，Pull 指令会自动使用 push 配置",
+        "remote": "origin",
+        "url": "",
+        "branch": "main"
+      },
+      "credentials": {
+        "email": "your-email@example.com",
+        "username": "你的用户名",
+        "token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "mergeStrategy": "merge"
+    },
+
+    "vcpchat-client": {
+      "_comment": "示例: VCPChat 客户端仓库 (使用绝对路径 + rebase 策略)",
+      "localPath": "D:/Projects/VCPChat",
+      "push": {
+        "remote": "origin",
+        "url": "https://github.com/你的用户名/VCPChat.git",
+        "branch": "dev"
+      },
+      "pull": {
+        "remote": "upstream",
+        "url": "https://github.com/RyanLiuCN/VCPChat.git",
+        "branch": "main"
+      },
+      "credentials": {
+        "email": "your-email@example.com",
+        "username": "你的用户名",
+        "token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "mergeStrategy": "rebase"
+    }
+  }
+}
