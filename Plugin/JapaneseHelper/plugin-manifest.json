@@ -1,0 +1,72 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "JapaneseHelper",
+  "displayName": "日语学习助手",
+  "version": "2.6.3",
+  "description": "日语学习增强插件。支持句子解析、查词消歧、语法讲解、JLPT标注、测验判题、SRS复习、错题本、学习会话、词典管理、数据导入导出与健康检查。",
+  "author": "Nova",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python JapaneseHelper.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "REQUEST_TIMEOUT": "number",
+    "JISHO_API_ENABLED": "boolean",
+    "SUDACHI_SPLIT_MODE": "string",
+    "USER_LEXICON_PATH": "string",
+    "DOMAIN_LEXICON_PATH": "string",
+    "ENABLE_ADAPTIVE_SESSION": "boolean",
+    "ONLINE_DICT_MODE": "string",
+    "ONLINE_DICT_TIMEOUT": "number",
+    "ONLINE_DICT_GLOBAL_TIMEOUT": "number",
+    "ONLINE_DICT_RETRY": "number",
+    "ONLINE_CACHE_TTL_SEC": "number",
+    "ONLINE_PROVIDER_ORDER": "string",
+    "JOTOBA_API_ENABLED": "boolean",
+    "ONLINE_CACHE_MAX_ITEMS": "number",
+    "ONLINE_CACHE_FLUSH_INTERVAL_SEC": "number",
+    "ONLINE_CACHE_STALE_IF_ERROR_SEC": "number",
+    "ONLINE_CACHE_LOCK_TIMEOUT_SEC": "number",
+    "ONLINE_DICT_BACKOFF_BASE_SEC": "number",
+    "ONLINE_DICT_BACKOFF_MAX_SEC": "number",
+    "ONLINE_PROVIDER_CB_FAIL_THRESHOLD": "number",
+    "ONLINE_PROVIDER_CB_COOLDOWN_SEC": "number",
+    "ONLINE_PROVIDER_CB_HALFOPEN_PROB": "number",
+    "ONLINE_PROVIDER_STATE_FLUSH_INTERVAL_SEC": "number",
+    "OBSERVABILITY_LOG_PATH": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "JapaneseHelperCore",
+        "description": "日语学习主入口。通过 command 指定子功能。\n\n参数:\n- command (字符串, 必需): 功能指令。\n- text (字符串, 可选): 句子或文本输入。\n- word (字符串, 可选): 单词输入。\n- 其他参数按具体 command 传入。\n\n支持的 command:\nanalyze_sentence, add_furigana, grammar_explain, particle_check, rewrite_sentence, lookup_word, lookup_word_json, jlpt_tag, extract_vocab, phrase_pattern, pitch_accent, conjugate_verb, quiz_generate, quiz_check, quiz_check_batch, minimal_pair_quiz, error_explain, srs_schedule, fsrs_schedule, wrongbook_add, wrongbook_list, wrongbook_stats, wrongbook_clear, study_session_start, study_session_submit, progress_report, lexicon_add, lexicon_list, lexicon_reload, import_export_data, health_check。\n\n调用示例:\ntool_name=JapaneseHelper, command=analyze_sentence, text=昨日友達と映画を見に行きました。",
+        "example": "tool_name=JapaneseHelper, command=analyze_sentence, text=昨日友達と映画を見に行きました。"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperLookup",
+        "description": "查词与消歧。支持本地词典+在线并联查询、race/aggregate模式、上下文轻量消歧。\n\n参数:\n- command (字符串, 必需): lookup_word 或 lookup_word_json\n- word (字符串, 必需): 要查询的词\n- context/context_text/sentence (字符串, 可选): 上下文\n- use_parallel_online (布尔值, 可选): 是否启用在线并联\n- force_online (布尔值, 可选): 是否强制在线查询\n- online_mode (字符串, 可选): race 或 aggregate\n\n调用示例:\ntool_name=JapaneseHelper, command=lookup_word, word=利害関係者, use_parallel_online=true, force_online=true, online_mode=aggregate",
+        "example": "tool_name=JapaneseHelper, command=lookup_word_json, word=勉強, context=私は毎日日本語を勉強しています。"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperQuizBatch",
+        "description": "批量判题。用于一次性判定多题答案，支持参数别名。\n\n参数:\n- command (字符串, 必需): quiz_check_batch\n- answers 或 user_answers (字符串, 必需): 用户答案列表（逗号分隔）\n- expected_answers 或 correct_answers (字符串, 必需): 标准答案列表（逗号分隔）\n- readings (字符串, 可选): 读音列表（逗号分隔）\n\n调用示例:\ntool_name=JapaneseHelper, command=quiz_check_batch, answers=昨日,日本語,行く, expected_answers=昨日,日本語,行く, readings=きのう,にほんご,いく",
+        "example": "tool_name=JapaneseHelper, command=quiz_check_batch, answers=昨日,日本語,行く, expected_answers=昨日,日本語,行く, readings=きのう,にほんご,いく"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperStudySession",
+        "description": "学习会话。可启动自适应抽题会话并提交结算。\n\n参数:\n- command (字符串, 必需): study_session_start 或 study_session_submit\n- text (字符串, 可选): 学习语料\n- count (数字, 可选): 抽题数量\n- adaptive (布尔值, 可选): 是否自适应抽题\n\n调用示例:\ntool_name=JapaneseHelper, command=study_session_start, text=私は毎日日本語を勉強しています。, count=5, adaptive=true",
+        "example": "tool_name=JapaneseHelper, command=study_session_start, text=私は毎日日本語を勉強しています。, count=5, adaptive=true"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperDataAndHealth",
+        "description": "数据管理与健康检查。\n\n参数:\n- command (字符串, 必需): import_export_data 或 health_check\n- action (字符串, 可选): import/export（用于 import_export_data）\n- dataset (字符串, 可选): all/wrongbook/lexicon/session\n- format (字符串, 可选): json/csv\n\n调用示例:\ntool_name=JapaneseHelper, command=import_export_data, action=export, dataset=all, format=json",
+        "example": "tool_name=JapaneseHelper, command=health_check"
+      }
+    ]
+  }
+}
