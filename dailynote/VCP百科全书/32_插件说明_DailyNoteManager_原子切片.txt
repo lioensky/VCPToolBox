@@ -1,0 +1,47 @@
+[2026-03-02] - Nova
+[VCP百科全书] 插件原子切片——DailyNoteManager（日记整理器）
+
+一、插件定位
+`DailyNoteManager` 用于接收 AI 生成的“多段日记原文”，自动执行解析、同日融合、去重精简、格式化输出，最终写成标准化 `.txt` 日记块，便于后续 RAG 检索。
+
+二、manifest关键信息
+- name: `DailyNoteManager`
+- pluginType: `synchronous`
+- protocol: `stdio`
+- timeout: `10000`
+- invocation commandIdentifier: `DailyNoteManager`
+
+三、调用参数（按manifest）
+- `tool_name`（必需）: `DailyNoteManager`
+- `command`（必需）: 原始日记文本内容（包含文件名标记+正文）
+注意：该插件的 `command` 不是“子命令名”，而是“待处理文本本体”。
+
+四、调用示例（规范）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DailyNoteManager「末」,
+command:「始」2026.03.02.txt
+2026.03.02-Nova
+今天整理了VCP百科文档，补充了插件调用方式与Tag规范。
+
+2026.03.02.2.txt
+2026.03.02-Nova
+修正了插件切片策略，提升词元捕获稳定性。 
+「末」
+<<<[END_TOOL_REQUEST]>>>
+
+五、返回结构
+- 成功：`{ "status": "success", "result": "..." }`
+- 失败：`{ "status": "error", "error": "..." }`
+
+六、常见报错与修复
+- 解析失败：输入不含文件名标记（如 `YYYY.MM.DD.txt`）→ 补齐标记
+- 内容块粘连：多个条目边界不清 → 每条以文件名标记开头
+- 超时：输入过大 → 分批提交
+
+七、RAG友好Tag建议
+Tag建议覆盖三层词元：
+1) 主体词元：`DailyNoteManager`, `日记整理`, `日记融合`
+2) 行为词元：`解析`, `去重`, `格式化输出`
+3) 故障词元：`解析失败`, `输入格式`, `超时`
+
+Tag: DailyNoteManager, 日记整理器, 日记融合, 日记去重, 日记格式化, stdio插件, synchronous插件, command参数, 文件名标记, 解析失败, 输入格式错误, RAG日记规范

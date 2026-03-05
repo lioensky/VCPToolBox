@@ -1,0 +1,141 @@
+[2026-03-03] - Agent-A
+[VCP百科全书] ChatTencentcos - 腾讯云对象存储聊天插件
+
+一、插件基本信息
+1. 插件名称：ChatTencentcos / 腾讯云COS聊天插件
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：简化的腾讯云对象存储插件，支持文件上传下载
+
+二、功能定位
+ChatTencentcos是一个专为聊天场景设计的腾讯云COS（对象存储）简化版插件。它提供文件上传和下载功能，支持自动压缩大文件、文件夹打包上传，以及基于Agent权限的文件夹访问控制。适用于AI Agent需要与云存储交互的场景，如备份数据、共享文件、存档聊天记录等。
+
+三、配置参数
+1. TENCENTCLOUD_SECRET_ID (string, 必需)
+   - 腾讯云密钥ID，建议使用环境变量配置
+   - 无默认值
+
+2. TENCENTCLOUD_SECRET_KEY (string, 必需)
+   - 腾讯云密钥Key，建议使用环境变量配置
+   - 无默认值
+
+3. COS_BUCKET_NAME (string, 可选)
+   - 腾讯云COS存储桶名称
+   - 默认值：test-111113652
+
+4. COS_REGION (string, 可选)
+   - 腾讯云COS存储桶所在地域
+   - 默认值：ap-hongkong
+
+5. AGENT_PARENT_DIR (string, 可选)
+   - AgentAI操作文件夹的父目录名称
+   - 默认值：VCPAgentAI
+
+6. AGENT_FOLDERS_CONFIG (string, 可选)
+   - AgentAI操作文件夹配置，格式：文件夹名:上传权限:列出权限:下载权限:删除权限:复制和移动权限
+   - 默认值：agent-data:true:true:true:true:false,agent-temp:true:true:true:true:true,agent-readonly:false:true:false:false:false
+
+7. PLUGIN_PORT (number, 可选)
+   - 插件监听端口
+   - 默认值：9786
+
+8. COMPRESS_THRESHOLD_MB (number, 可选)
+   - 文件大小超过此值（MB）时自动压缩为zip上传
+   - 默认值：100
+
+四、调用命令列表
+
+1. upload_file - 上传文件到腾讯云COS
+   功能描述：上传本地文件或文件夹到腾讯云COS，支持自动压缩大文件
+   参数列表：
+   - local_path (string, 必需): 本地文件或文件夹路径
+   - cos_folder (string, 必需): 目标COS文件夹名称（如agent-data、agent-temp等）
+   - remote_filename (string, 可选): 远程文件名，如不提供则使用本地文件名
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」ChatTencentcos「末」,
+   command:「始」upload_file「末」,
+   local_path:「始」/path/to/local/file.txt「末」,
+   cos_folder:「始」agent-data「末」,
+   remote_filename:「始」backup_file.txt「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回上传成功确认，包含远程文件路径和URL
+
+2. download_file - 从腾讯云COS下载文件
+   功能描述：从腾讯云COS下载文件到本地
+   参数列表：
+   - cos_key (string, 必需): COS文件键，格式为 VCPAgentAI/文件夹名/文件名
+   - local_path (string, 可选): 本地保存路径，如不提供则保存到默认下载目录
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」ChatTencentcos「末」,
+   command:「始」download_file「末」,
+   cos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,
+   local_path:「始」/path/to/save/file.txt「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回下载成功确认，包含本地文件路径
+
+五、使用示例
+
+示例1：上传单个文件到agent-data文件夹
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ChatTencentcos「末」,
+command:「始」upload_file「末」,
+local_path:「始」D:/data/report.txt「末」,
+cos_folder:「始」agent-data「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：上传文件并指定远程文件名
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ChatTencentcos「末」,
+command:「始」upload_file「末」,
+local_path:「始」D:/backup/archive.zip「末」,
+cos_folder:「始」agent-temp「末」,
+remote_filename:「始」2026-03-03_backup.zip「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：下载文件到本地
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ChatTencentcos「末」,
+command:「始」download_file「末」,
+cos_key:「始」VCPAgentAI/agent-data/backup_file.txt「末」,
+local_path:「始」D:/downloads/restored_file.txt「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：上传大文件夹（自动压缩）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ChatTencentcos「末」,
+command:「始」upload_file「末」,
+local_path:「始」D:/large_project「末」,
+cos_folder:「始」agent-data「末」,
+remote_filename:「始」project_backup.zip「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 权限控制机制：
+   - 每个文件夹有独立的权限配置（上传、列出、下载、删除、复制移动）
+   - agent-readonly文件夹仅允许列出和下载，不允许上传或删除
+   - agent-temp文件夹允许所有操作
+
+2. 文件大小限制：
+   - 超过COMPRESS_THRESHOLD_MB（默认100MB）的文件会自动压缩为zip格式上传
+   - 压缩后的文件名会自动添加.zip扩展名
+
+3. 腾讯云凭证：
+   - TENCENTCLOUD_SECRET_ID和TENCENTCLOUD_SECRET_KEY必须正确配置
+   - 建议使用环境变量而非硬编码在config.env中
+
+4. COS路径格式：
+   - 所有文件在COS中的完整路径为：VCPAgentAI/文件夹名/文件名
+   - 下载时必须提供完整的cos_key
+
+5. 网络超时：
+   - 通信超时设置为30秒，大文件上传可能超时，建议分割上传
+
+七、关联插件
+- FileOperator：本地文件操作，可配合使用进行文件预处理
+- DistImageServer：分布式图床服务，可用于存储生成的图片
+
+Tag: 腾讯云, 对象存储, COS, 文件上传下载, 云存储, 备份恢复, 权限控制

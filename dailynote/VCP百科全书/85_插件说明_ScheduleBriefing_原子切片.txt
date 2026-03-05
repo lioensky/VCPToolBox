@@ -1,0 +1,36 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——ScheduleBriefing（原子切片）
+
+一、插件身份
+- name: ScheduleBriefing
+- displayName: 用户日程简报
+- pluginType: static
+- command: 无（自动触发）
+
+二、核心能力
+- 每小时自动清理过期日程，并提取下一个日程供AI参考。
+- 以自动注入/后台服务方式提供能力，不要求直接命令调用。
+
+三、占位符与注入点
+- systemPromptPlaceholders: {{VCPNextSchedule}}
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+
+触发示例：在系统提示词中引用该插件占位符，等待周期刷新后自动注入。
+
+示例1 - 在系统提示词中使用占位符：
+系统提示词包含：{{VCPNextSchedule}}
+插件会自动在每个小时刷新时，将下一个日程信息注入到该占位符位置。
+
+示例2 - 查询下一个日程：
+AI可以在对话中引用"下一个日程是什么"，系统会自动返回通过{{VCPNextSchedule}}注入的日程信息。
+
+Tag: ScheduleBriefing, static, 静态注入, 记忆管理, {{VCPNextSchedule}}

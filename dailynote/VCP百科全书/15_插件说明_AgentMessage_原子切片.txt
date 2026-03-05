@@ -1,0 +1,32 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——AgentMessage（原子切片）
+
+一、插件身份
+- name: AgentMessage
+- displayName: 代理消息推送插件
+- pluginType: synchronous
+- command: AgentMessage
+
+二、核心能力
+- 允许AI通过WebSocket向用户前端发送格式化消息。
+- 提供可调用命令：AgentMessage。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」AgentMessage「末」,
+Maid:「始」小克「末」,
+message:「始」主人，您的咖啡已经准备好了「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: AgentMessage, synchronous, 同步调用, 多媒体

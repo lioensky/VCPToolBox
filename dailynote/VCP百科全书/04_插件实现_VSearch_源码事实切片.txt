@@ -1,0 +1,27 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件实现——VSearch（源码事实切片）
+
+一、源码锚点
+- manifest: Plugin/VSearch/plugin-manifest.json
+- entry: Plugin/VSearch/VSearch.js
+- 关键函数: main(request), callSearchModel(topic, keyword, showURL)
+
+二、行为事实（代码级）
+- 必填参数是 SearchTopic 与 Keywords，缺失即返回错误。
+- Keywords 支持分隔符：英文逗号、中文逗号、换行。
+- ShowURL 支持布尔 true 或字符串 'true' 两种打开方式。
+- 执行模型为分批并发：按 CONCURRENCY 切块，逐块 Promise.all 并发检索。
+
+三、输出结构
+- 统一输出标题“VSearch 检索报告”。
+- 每个关键词单独成段，结构为“### 关键词: ... + 搜索结果”。
+
+四、调用示例（源码对齐）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VSearch「末」,
+SearchTopic:「始」TagMemo 浪潮RAG工程实践「末」,
+Keywords:「始」TagMemo V5, 语义分段, 相控阵去重「末」,
+ShowURL:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: VSearch, VSearch.js, SearchTopic, Keywords, ShowURL, 分批并发, Promise.all, 检索报告, 同步调用, 信息获取

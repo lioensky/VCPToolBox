@@ -1,0 +1,56 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——Randomness（原子切片）
+
+一、插件身份
+- name: Randomness
+- displayName: 随机事件生成器
+- pluginType: synchronous
+- command: createDeck, createCustomDeck, drawFromDeck, resetDeck, destroyDeck, queryDeck, getCards, rollDice, drawTarot, castRunes, selectFromList, getRandomDateTime
+
+二、核心能力
+- 一个多功能后端插件，用于生成各种可信的随机事件。支持无状态的单次随机事件（如抽牌、掷骰）和有状态的、可持久化的牌堆管理（创建、抽取、重置、销毁），适用于需要连续操作的场景。
+- 提供可调用命令：createDeck、createCustomDeck、drawFromDeck、resetDeck、destroyDeck、queryDeck、getCards、rollDice、drawTarot、castRunes、selectFromList、getRandomDateTime。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+创建牌堆:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Randomness「末」,
+command:「始」createDeck「末」,
+deck_name:「始」my_deck「末」,
+deck_type:「始」standard_52「末」
+<<<[END_TOOL_REQUEST]>>>
+
+从牌堆抽牌:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Randomness「末」,
+command:「始」drawFromDeck「末」,
+deck_id:「始」deck_123「末」,
+count:「始」5「末」
+<<<[END_TOOL_REQUEST]>>>
+
+掷骰子:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Randomness「末」,
+command:「始」rollDice「末」,
+dice_spec:「始」2d6+3「末」
+<<<[END_TOOL_REQUEST]>>>
+
+抽塔罗牌:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Randomness「末」,
+command:「始」drawTarot「末」,
+count:「始」3「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: Randomness, synchronous, 同步调用, 多媒体, createDeck, createCustomDeck, drawFromDeck, resetDeck, destroyDeck, multi-command

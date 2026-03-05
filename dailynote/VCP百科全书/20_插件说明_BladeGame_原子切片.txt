@@ -1,0 +1,127 @@
+[2026-03-03] - Agent-A
+[VCP百科全书] BladeGame (华山论剑) - 回合制武侠博弈游戏插件
+
+一、插件基本信息
+1. 插件名称：BladeGame / 华山论剑
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：manifest中未标注，代码最新更新于2024-12-16
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：AI与用户进行回合制武侠对战博弈游戏
+
+二、功能定位
+BladeGame是一个交互式武侠对战游戏插件，AI角色（女仆）与用户通过GUI界面进行实时回合制博弈。双方管理生命值(HP)和剑气(Energy)，通过选择不同招式进行攻防对抗。游戏采用"高级攻击打断低级攻击"的核心机制，支持蓄势、斩击、轻霜踏雪、寒梅逐鹿、回光无影等武功招式，以及御剑格挡、太极两仪等防御手段。
+
+适用场景：
+- AI角色娱乐互动
+- 用户与AI的休闲对战
+- 测试AI的策略决策能力
+
+三、配置参数
+本插件无config.env配置文件，所有参数硬编码在源代码中。
+
+游戏核心参数（位于blade_controller.py）：
+- 初始HP：5点
+- 初始Energy：0点
+- 最大HP：6点（受回血技能影响可超出初始值）
+- 最大Energy：6点
+
+四、调用命令列表
+
+1. StartGame - 开始新游戏
+   功能描述：初始化游戏状态并启动独立GUI窗口
+   参数列表：
+   - maid (string, 必需): AI角色的名字，如"猫娘小克"
+   - difficulty (string, 可选): 难度描述
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」BladeGame「末」,
+   command:「始」StartGame「末」,
+   maid:「始」猫娘小克「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回游戏启动确认信息，包含初始状态（双方5血0气）
+
+2. PlayTurn - 执行回合动作
+   功能描述：在用户完成GUI输入后，执行AI的回合动作并结算
+   参数列表：
+   - action (string, 必需): AI采取的动作，可选值：
+     * Charge (蓄势): 消耗0气，获得1气
+     * Slash (斩击): 消耗0气，造成1伤害
+     * LightStep (轻霜踏雪): 消耗1气，造成2伤害
+     * PlumBlossom (寒梅逐鹿): 消耗2气，造成4伤害并回复1血
+     * Flash (回光无影): 消耗3气，造成9伤害
+     * Block (御剑格挡): 消耗0气，减少4点受到的伤害
+     * Taiji (太极两仪): 消耗0气，完全防御回光无影
+   - reason (string, 可选): 采取该行动的战术思考
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」BladeGame「末」,
+   command:「始」PlayTurn「末」,
+   action:「始」Charge「末」,
+   reason:「始」我需要积攒剑气来释放大招。「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回回合结算结果，包含双方造成的伤害、回复量、当前状态；如果用户未准备好，返回SYSTEM_WAIT提示
+
+五、使用示例
+
+示例1：开始一局新游戏
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」BladeGame「末」,
+command:「始」StartGame「末」,
+maid:「始」小克「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：第一回合选择蓄势积攒剑气
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」BladeGame「末」,
+command:「始」PlayTurn「末」,
+action:「始」Charge「末」,
+reason:「始」开局先蓄势，为后续大招做准备。「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：释放高伤害技能
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」BladeGame「末」,
+command:「始」PlayTurn「末」,
+action:「始」Flash「末」,
+reason:「始」剑气已满，使用回光无影一击必杀！「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：防御对方大招
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」BladeGame「末」,
+command:「始」PlayTurn「末」,
+action:「始」Taiji「末」,
+reason:「始」预判对方要使用回光无影，使用太极两仪化解。「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 游戏流程限制：
+   - 必须先调用StartGame启动游戏，才能使用PlayTurn
+   - PlayTurn必须等待用户在GUI点击"User Ready"后才能生效
+   - 如果用户未准备，调用PlayTurn会返回SYSTEM_WAIT提示
+
+2. 能量检查机制：
+   - 如果AI选择的动作能量不足，系统会自动强制转为Charge（蓄势）
+   - AI能量最大值限制为6点
+
+3. 战斗机制规则：
+   - 高级攻击(level高)可以打断低级攻击
+   - 同级攻击互相抵消（但寒梅逐鹿的回血效果仍生效）
+   - 御剑格挡可减少4点受到的伤害（最低为0）
+   - 太极两仪可完全防御回光无影（使其伤害变为0）
+   - 寒梅逐鹿造成伤害的同时回复1点HP
+
+4. GUI依赖：
+   - 游戏依赖独立的Python GUI进程（blade_gui.py）
+   - Windows下使用DETACHED_PROCESS标志使GUI独立于主进程
+   - 游戏状态存储在game_state.json文件中
+
+5. 安全提示：
+   - AI的决策内容对用户是隐藏的（用户无法看到AI输入的指令）
+   - 每回合结束后AI应隐藏自己的决策思路
+
+七、关联插件
+- 无直接关联插件
+
+Tag: 游戏插件, 武侠对战, 回合制博弈, GUI交互, 娱乐互动, 华山论剑

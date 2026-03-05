@@ -1,0 +1,56 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——MIDITranslator（原子切片）
+
+一、插件身份
+- name: MIDITranslator
+- displayName: MIDI翻译器
+- pluginType: hybridservice
+- command: list_midi_files, parse_midi, generate_midi, validate_dsl, validate_dsl_with_details, extract_events, list_output_files
+
+二、核心能力
+- 一个高性能的MIDI文件解析与生成插件，可以从midi-input目录读取MIDI文件并解析为DSL格式，也可以从DSL生成MIDI文件到midi-output目录。核心引擎由Rust编写，确保性能与安全。提供DSL语法验证、事件提取和双向转换测试等功能。
+- 提供可调用命令：list_midi_files、parse_midi、generate_midi、validate_dsl、validate_dsl_with_details、extract_events、list_output_files。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+列出 MIDI 文件:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MIDITranslator「末」,
+command:「始」list_midi_files「末」,
+maidname:「始」AI-Assistant「末」
+<<<[END_TOOL_REQUEST]>>>
+
+解析 MIDI 文件:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MIDITranslator「末」,
+command:「始」parse_midi「末」,
+fileName:「始」twinkle.mid「末」,
+maidname:「始」AI-Assistant「末」
+<<<[END_TOOL_REQUEST]>>>
+
+生成 MIDI 文件:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MIDITranslator「末」,
+command:「始」generate_midi「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480\nTrack0: [c4,0.0,100,ch0] [~c4,4.0,ch0]「末」,
+outputFileName:「始」generated.mid「末」
+<<<[END_TOOL_REQUEST]>>>
+
+验证 DSL 语法:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MIDITranslator「末」,
+command:「始」validate_dsl「末」,
+dslContent:「始」Timeline: [0-1920]120|4/4|TPB480\nTrack0: [c4,0.0,100,ch0]「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: MIDITranslator, hybridservice, 混合服务, 多媒体, list_midi_files, parse_midi, generate_midi, validate_dsl, validate_dsl_with_details, multi-command
