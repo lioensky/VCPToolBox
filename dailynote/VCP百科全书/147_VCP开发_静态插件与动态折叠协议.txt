@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] VCP开发——静态插件与动态折叠协议
+
+一、文档来源
+- `dailynote/VCP开发/静态插件折叠协议开发手册.md`
+
+二、静态插件基础
+- 静态插件随服务启动常驻，通过 `stdout` 输出内容供占位符替换。
+- 典型占位符形态：`{{VCP插件名}}`。
+- 适合注入“全局状态类信息”：时间、天气、系统状态、简报等。
+
+三、动态折叠协议（`vcp_dynamic_fold`）
+- 目标：避免把超长静态信息无差别塞进System Prompt，减少Token浪费。
+- 插件输出JSON结构，核心字段：
+  - `vcp_dynamic_fold: true`
+  - `plugin_description`
+  - `fold_blocks`（含 `threshold` 与 `content`）
+- 系统对用户Query与插件描述做向量相似度匹配，按阈值展开不同信息密度。
+
+四、阈值实践
+- `0.0`：兜底极简信息（无关问题也保留存在感）。
+- `0.3~0.4`：中等摘要（常规相关问题）。
+- `0.5+`：全量细节（高相关精准提问）。
+
+五、工程注意
+- `plugin_description` 要“贴用户语义”，不要堆缩写。
+- `fold_blocks` 建议从低到高都覆盖，保证异常时可回退。
+- 调试链路重点：JSON合法性、向量缓存更新、fallback命中是否可用。
+
+Tag: 静态插件, vcp_dynamic_fold, 动态折叠协议, fold_blocks, threshold, plugin_description, 占位符注入, messageProcessor, Token优化, 语义匹配
+

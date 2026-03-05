@@ -1,0 +1,93 @@
+[2026-03-03] - Nova
+[VCP百科全书] 插件说明——SunoGen（原子切片）修正版
+
+一、插件身份
+- name: `SunoGen`
+- displayName: `Suno AI 音乐生成`
+- pluginType: `synchronous`
+- protocol: `stdio`
+- 入口: `node SunoGen.mjs`
+- 超时: `360000ms`
+- 版本: `0.1.0`
+
+二、配置参数（configSchema）
+- `SunoKey`（字符串）：Suno API密钥
+- `SunoApiBaseUrl`（字符串）：Suno API基础URL
+
+三、核心命令与参数
+
+command: `generate_song`
+
+**模式一：自定义歌词创作（Custom Mode）**
+必需参数：
+- `prompt`（字符串）：歌词内容，可包含 [Verse], [Chorus] 等标记
+- `tags`（字符串）：音乐风格标签，多个用逗号分隔，如 'pop, acoustic, upbeat'
+- `title`（字符串）：歌曲标题
+
+可选参数：
+- `mv`（字符串）：模型版本，可选 'chirp-v3-0', 'chirp-v3-5', 'chirp-v4'，默认 'chirp-v4'
+- `make_instrumental`（布尔）：是否生成纯音乐
+
+调用示例：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+prompt:「始」[Verse 1]\nSunlight on my face\nA gentle, warm embrace「末」,
+tags:「始」acoustic, pop, happy「末」,
+title:「始」Sunny Days「末」,
+mv:「始」chirp-v4「末」
+<<<[END_TOOL_REQUEST]>>>
+
+**模式二：灵感描述创作（Inspiration Mode）**
+必需参数：
+- `gpt_description_prompt`（字符串）：对歌曲的整体描述
+
+可选参数：
+- `prompt`（字符串）：可选的歌词提示
+- `tags`（字符串）：可选的风格标签
+- `title`（字符串）：可选的歌曲标题
+- `mv`（字符串）：模型版本
+
+调用示例：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+gpt_description_prompt:「始」一首关于星空和梦想的安静钢琴曲「末」
+<<<[END_TOOL_REQUEST]>>>
+
+**模式三：继续生成已有歌曲（Continuation Mode）**
+必需参数：
+- `task_id`（字符串）：要继续的歌曲的任务ID
+- `continue_at`（数字）：从歌曲的哪个时间点开始继续，单位秒
+- `continue_clip_id`（字符串）：要继续的歌曲片段的ID
+
+调用示例：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+task_id:「始」your_previous_task_id「末」,
+continue_at:「始」60「末」,
+continue_clip_id:「始」your_previous_clip_id「末」
+<<<[END_TOOL_REQUEST]>>>
+
+四、返回格式
+- 成功：`{"status":"success","result":{"audio_url":"...","title":"...","style_tags":"...","image_url":"..."},"messageForAI":"..."}`
+- 失败：`{"status":"error","error":"..."}`
+
+五、重要提示
+- 歌曲生成通常需要 10-30 秒，有时更长
+- 请在使用工具后告知用户任务已提交，需要耐心等待
+- 获取音频链接后，请使用 HTML `<audio>` 标签呈现给用户
+
+六、常见错误
+- 缺少必需参数（prompt/tags/title 或 gpt_description_prompt）
+- 参数格式错误（如 tags 不是字符串）
+- API密钥无效或过期
+- 网络超时（生成时间较长）
+
+七、RAG标签建议（TagMemo V5）
+主体词元：SunoGen, Suno AI, 音乐生成, 歌曲创作
+动作词元：generate_song, prompt, tags, title, gpt_description_prompt, mv, make_instrumental, continue_at
+故障词元：缺少参数, API密钥无效, 超时, 网络错误
+
+Tag: SunoGen, generate_song, 音乐生成, 自定义歌词, 灵感创作, 继续生成, prompt, tags, title, gpt_description_prompt, mv, 修正版

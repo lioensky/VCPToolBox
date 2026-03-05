@@ -1,0 +1,91 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Memomodules - 记忆管理中心模块
+
+一、模块基本信息
+1. 模块名称：Memomodules / 记忆管理中心模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供Agent日记管理中心，支持文件夹组织、日记编辑、搜索、批量操作
+
+二、功能定位
+Memomodules是VCPChat的记忆管理中心，为Agent提供日记管理功能。支持按文件夹组织日记、Markdown编辑、实时预览、全局/文件夹搜索、批量编辑、隐藏文件夹管理等功能。
+
+三、核心功能
+1. 日记管理：
+   - 创建新日记
+   - 编辑日记内容
+   - 删除日记
+   - 日记搜索
+
+2. 文件夹组织：
+   - 文件夹列表显示
+   - 文件夹拖拽排序
+   - 隐藏/显示文件夹
+   - 文件夹管理
+
+3. 编辑功能：
+   - Markdown编辑器
+   - 实时预览
+   - KaTeX数学公式支持
+   - 自动保存
+
+4. 搜索功能：
+   - 文件夹内搜索
+   - 全局搜索
+   - 搜索范围切换
+
+5. 批量操作：
+   - 批量编辑模式
+   - 多选日记
+   - 批量删除
+
+6. 主题适配：
+   - 亮色/暗色主题
+   - 实时主题切换
+
+四、主要文件结构
+- memo.js：核心逻辑（1005行）
+- memo.html：UI布局
+- memo.css：样式定义
+
+五、关键API接口
+1. window.electronAPI.loadSettings()
+   - 获取全局设置（包括VCP服务器URL）
+
+2. window.electronAPI.loadForumConfig()
+   - 获取论坛配置（用于认证）
+
+3. window.electronAPI.loadMemoConfig()
+   - 获取Memo配置（隐藏文件夹、排序）
+
+4. window.electronAPI.saveMemoConfig(config)
+   - 保存Memo配置
+
+5. HTTP API（通过Basic Auth）：
+   - GET /admin_api/memo/folders - 获取文件夹列表
+   - GET /admin_api/memo/list - 获取日记列表
+   - POST /admin_api/memo/create - 创建日记
+   - PUT /admin_api/memo/update - 更新日记
+   - DELETE /admin_api/memo/delete - 删除日记
+
+六、使用场景
+1. Agent日记记录：记录Agent的思考过程
+2. 知识积累：保存重要信息和知识
+3. 任务追踪：记录任务进度和完成情况
+4. 创意灵感：保存创意想法
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 依赖 Marked.js：Markdown渲染
+- 依赖 KaTeX：数学公式渲染
+- 集成 VCPChat主题系统
+
+八、注意事项
+1. 需要配置VCP服务器URL
+2. 需要论坛模块的登录凭据
+3. 支持Markdown格式
+4. 支持KaTeX数学公式
+5. 文件夹可拖拽排序
+
+Tag: 日记管理, 记忆中心, Markdown编辑, 文件夹组织, 搜索功能, 批量操作

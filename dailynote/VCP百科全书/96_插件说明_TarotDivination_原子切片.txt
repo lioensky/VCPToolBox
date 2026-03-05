@@ -1,0 +1,53 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——TarotDivination（原子切片）
+
+一、插件身份
+- name: TarotDivination
+- displayName: 塔罗占卜
+- pluginType: synchronous
+- command: draw_single_card, draw_three_card_spread, draw_celtic_cross, get_celestial_data
+
+二、核心能力
+- 一个融合天文、环境与内在起源的塔罗牌占卜插件，支持多种牌阵与起源选择。
+- 提供可调用命令：draw_single_card、draw_three_card_spread、draw_celtic_cross、get_celestial_data。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+单张牌占卜:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」TarotDivination「末」,
+command:「始」draw_single_card「末」,
+origin:「始」celestial「末」
+<<<[END_TOOL_REQUEST]>>>
+
+三张牌阵:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」TarotDivination「末」,
+command:「始」draw_three_card_spread「末」,
+origin:「始」environmental「末」
+<<<[END_TOOL_REQUEST]>>>
+
+凯尔特十字牌阵:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」TarotDivination「末」,
+command:「始」draw_celtic_cross「末」,
+origin:「始」intrinsic「末」
+<<<[END_TOOL_REQUEST]>>>
+
+获取天文数据:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」TarotDivination「末」,
+command:「始」get_celestial_data「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: TarotDivination, synchronous, 同步调用, draw_single_card, draw_three_card_spread, draw_celtic_cross, get_celestial_data

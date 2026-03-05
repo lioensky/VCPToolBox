@@ -1,0 +1,84 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Notemodules - 笔记模块
+
+一、模块基本信息
+1. 模块名称：Notemodules / 笔记模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供本地和网络笔记管理，支持Markdown编辑、文件夹组织、搜索、多选操作
+
+二、功能定位
+Notemodules是VCPChat的笔记模块，提供本地和网络笔记管理功能。支持创建Markdown/文本笔记、文件夹组织、拖拽排序、搜索、多选删除、实时预览等功能。
+
+三、核心功能
+1. 笔记管理：
+   - 创建Markdown笔记
+   - 创建文本笔记
+   - 编辑笔记
+   - 删除笔记
+
+2. 文件夹组织：
+   - 创建文件夹
+   - 文件夹展开/折叠
+   - 拖拽排序
+   - 文件夹删除
+
+3. 编辑功能：
+   - Markdown编辑器
+   - 实时预览
+   - 自动保存
+   - 标题编辑
+
+4. 搜索功能：
+   - 笔记搜索
+   - 文件夹搜索
+   - 实时搜索
+
+5. 多选操作：
+   - 多选笔记
+   - 批量删除
+   - 批量移动
+
+6. 显示功能：
+   - 编辑/预览切换
+   - Markdown渲染
+   - 文件夹树形显示
+
+四、主要文件结构
+- notes.js：核心逻辑（60KB）
+- notes.html：UI布局
+- notes.css：样式定义
+
+五、关键API接口
+1. 笔记操作：
+   - createNote(title, type)：创建笔记
+   - saveNote(noteId, content)：保存笔记
+   - deleteNote(noteId)：删除笔记
+   - updateNoteTitle(noteId, title)：更新标题
+
+2. 文件夹操作：
+   - createFolder(folderName)：创建文件夹
+   - deleteFolder(folderId)：删除文件夹
+   - moveNote(noteId, folderId)：移动笔记
+
+3. 搜索：
+   - searchNotes(query)：搜索笔记
+
+六、使用场景
+1. 快速记录：记录临时想法和笔记
+2. 知识整理：组织和管理知识库
+3. 项目文档：编写项目相关文档
+4. 学习笔记：记录学习内容
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 支持Markdown渲染
+
+八、注意事项
+1. 支持本地和网络笔记树
+2. 支持拖拽排序
+3. 支持多选操作
+4. 自动保存功能
+
+Tag: 笔记管理, Markdown编辑, 文件夹组织, 搜索功能, 多选操作, 实时预览

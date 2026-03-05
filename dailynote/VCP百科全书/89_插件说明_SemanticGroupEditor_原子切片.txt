@@ -1,0 +1,41 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——SemanticGroupEditor（原子切片）
+
+一、插件身份
+- name: SemanticGroupEditor
+- displayName: 语义组编辑器
+- pluginType: synchronous
+- command: QueryGroups, UpdateGroups
+
+二、核心能力
+- 一个用于查询和更新RAG知识库中语义词元组的插件。
+- 提供可调用命令：QueryGroups、UpdateGroups。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+查询语义组:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SemanticGroupEditor「末」,
+command:「始」QueryGroups「末」,
+query:「始」authentication「末」
+<<<[END_TOOL_REQUEST]>>>
+
+更新语义组:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SemanticGroupEditor「末」,
+command:「始」UpdateGroups「末」,
+group_id:「始」group_123「末」,
+updates:「始」{"keywords": ["login", "signin"]}「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: SemanticGroupEditor, synchronous, 同步调用, QueryGroups, UpdateGroups

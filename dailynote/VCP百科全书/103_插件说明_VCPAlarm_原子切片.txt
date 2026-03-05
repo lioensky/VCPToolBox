@@ -1,0 +1,94 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] VCPAlarm / VCP闹钟插件 - 后台进程定时提醒
+
+一、插件基本信息
+1. 插件名称：VCPAlarm / VCP闹钟插件
+2. 插件类型：同步(synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：启动独立后台进程实现定时闹钟提醒
+
+二、功能定位
+VCPAlarm是一个通过启动独立后台进程来实现定时提醒的闹钟插件。它解析自然语言描述的时间（如"5分钟后"、"晚上10点30分"），在指定时间触发一个带有声音和视觉效果的弹窗提醒。
+
+核心能力：
+- 支持相对时间（15分钟后、1小时后）和绝对时间（22:30、晚上10点）两种描述方式
+- 使用dateparser库智能解析自然语言时间
+- 后台独立进程运行，不阻塞主程序
+- 弹窗包含动态视觉效果（呼吸动画）、当前时间和日期显示
+- 支持自定义音频文件（MP3格式）和背景图片
+- 自动适配日间/夜间主题（6:00-18:00为浅色主题，其余为深色主题）
+
+适用场景：定时休息提醒、会议提醒、任务截止提醒等需要强提醒的场景。
+
+三、配置参数
+配置文件路径：Plugin/VCPAlarm/config.env
+
+该插件configSchema为空对象，无必需配置项。所有资源路径由代码自动推断：
+- run_alarm.py：后台执行脚本（与set_alarm.py同目录）
+- AlarmRing.mp3：闹钟铃声（与set_alarm.py同目录）
+- VCPAgent.png：弹窗背景图片（与set_alarm.py同目录）
+
+四、调用命令列表
+
+【主命令】SetAlarm - 设置闹钟
+
+功能描述：设置一个定时闹钟，到达指定时间后弹出带声音和动画的提醒窗口。
+
+参数列表：
+| 参数名 | 类型 | 是否必需 | 默认值 | 说明 |
+|--------|------|----------|--------|------|
+| time_description | string | 是 | 无 | 对闹钟时间的自然语言描述，支持相对时间（如"5分钟后"）或绝对时间（如"晚上10点30分"、"22:30"） |
+
+完整调用格式：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」15分钟后提醒我喝水「末」
+<<<[END_TOOL_REQUEST]>>>
+
+返回值说明：
+- 成功：{"status": "success", "result": "好的，您的闹钟已经设定成功。时间：15分钟后提醒我喝水"}
+- 失败：{"status": "error", "error": "错误信息描述"}
+
+五、使用示例
+
+示例1：设置相对时间闹钟（5分钟后）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」5分钟后「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：设置具体时间点（晚上10点半）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」晚上10点30分「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：设置带描述的提醒
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」1小时后开会提醒「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：设置精确时间格式
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」22:45「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+1. 依赖Python第三方库：dateparser、pygame、Pillow，需提前安装
+2. 仅支持Windows系统（使用subprocess.DETACHED_PROCESS标志）
+3. 弹窗使用tkinter创建，需要图形界面环境
+4. 时间解析失败时会返回错误，不会设置闹钟
+5. 如果指定时间已过去，会输出警告并不设置闹钟
+6. 后台进程独立于主程序，即使主程序退出闹钟仍会触发
+7. 超时时间为10000毫秒（10秒），但闹钟实际在后台异步运行
+8. 音频播放使用pygame.mixer，需要声卡支持
+9. 弹窗可拖动，点击"关闭闹钟"按钮停止铃声并关闭窗口
+
+七、关联插件
+- WaitingForUrReply：可在闹钟触发前等待用户确认
+- VCPEverything：可用于查找和管理闹钟相关的音频/图片资源
+
+Tag: 闹钟, 定时提醒, 后台进程, 时间管理, 弹窗通知, 语音提醒, 同步插件, dateparser

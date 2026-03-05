@@ -1,0 +1,38 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——UrlFetch（原子切片）
+
+一、插件身份
+- name: `UrlFetch`
+- displayName: `URL 内容获取插件`
+- pluginType: `synchronous`
+- 主要命令：`UrlFetch`
+
+二、支持模式
+- `text`（默认）：网页文本/链接抽取
+- `snapshot`：整页长截图
+- `image`：图片下载并返回Base64
+- `file://`：本地文本或图片读取
+
+三、配置重点
+- `FETCH_PROXY_PORT`：可选代理端口
+- Cookies三种配置路径（多站点/单站点）
+- 依赖目标站点可访问性与权限状态
+
+四、常见用途
+- 网页内容抓取、长文预处理、图像拉取、受限页面访问。
+- 可作为RAG前置“抓取-清洗-入库”工具。
+
+五、排障提示
+- 404/403优先排查Cookie是否过期。
+- 连接失败看代理配置与证书链。
+- 解析不全看模式选择和页面动态加载特性。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」UrlFetch「末」,
+command:「始」UrlFetch「末」,
+url:「始」https://example.com/news「末」,
+mode:「始」text「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: UrlFetch, 网页抓取, snapshot, image模式, file协议读取, FETCH_PROXY_PORT, Cookies配置, Base64图片, 内容抽取, RAG预处理

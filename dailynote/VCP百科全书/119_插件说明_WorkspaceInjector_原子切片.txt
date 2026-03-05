@@ -1,0 +1,34 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——WorkspaceInjector（原子切片）
+
+一、插件身份
+- name: `WorkspaceInjector`
+- displayName: `工作区动态注入`
+- pluginType: `messagePreprocessor`
+- protocol: `direct`
+
+二、核心能力
+- 在system prompt中解析 `{{Workspace::别名或路径::深度}}` 占位符。
+- 动态注入项目目录树，帮助Agent快速建立代码全局认知。
+- 支持深度限制，避免上下文爆炸。
+
+三、配置与依赖
+- 根配置：`WORKSPACE_ALIASES`（JSON字符串）
+- 依赖：`ignore`（用于忽略规则处理）
+
+四、典型场景
+- 新Agent冷启动时快速注入项目结构。
+- 多项目切换时通过别名快速指定目标工作区。
+
+五、注意事项
+- 路径别名中的反斜杠需转义。
+- 深度参数过大将显著增加Token开销，应按任务收敛。
+
+六、触发示例
+系统提示词中写入：
+`{{Workspace::w::3}}`
+
+直接路径示例：
+`{{Workspace::D:\github\VCP\VCPToolBox-fork\Plugin::2}}`
+
+Tag: WorkspaceInjector, Workspace占位符, 目录树注入, WORKSPACE_ALIASES, messagePreprocessor, 项目上下文, 深度限制, ignore规则, Token控制

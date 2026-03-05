@@ -1,0 +1,81 @@
+[2026-03-02] - Nova
+[VCP百科全书] 插件说明——SciCalculator（科学计算器）原子切片
+
+一、插件身份与运行方式
+- manifest 名称：`SciCalculator`
+- 显示名：`科学计算器`
+- 类型：`synchronous`（`stdio`）
+- 入口：`python calculator.py`
+- 超时：`15000ms`
+- commandIdentifier：`SciCalculatorRequest`
+- 依赖：`sympy`、`scipy`、`numpy`（Python >= 3.7）
+
+二、核心能力（按 manifest + 实现）
+1) 基础运算
+- `+ - * / // % **`，支持一元正负号。
+- 支持 `^` 自动预处理为 `**`。
+
+2) 常量与数学函数
+- 常量：`pi`、`e`
+- 函数：`sin/cos/tan`、`asin/acos/atan`、`sinh/cosh/tanh`、`asinh/acosh/atanh`、`sqrt`、`root(x,n)`、`log`、`exp`、`abs`、`ceil`、`floor`。
+
+3) 统计与概率
+- 描述统计：`mean`、`median`、`mode`、`variance`、`stdev`
+- 分布相关：`norm_pdf(x, mean, std)`、`norm_cdf(x, mean, std)`
+- 假设检验：`t_test([data], mu)`（返回 p 值）
+- 置信区间：`confidence_interval([data], confidence_level)`
+
+4) 微积分与误差
+- 定积分：`integral('expr', lower, upper)`
+- 不定积分：`integral('expr')`（返回 LaTeX）
+- 支持变量名：`integral('expr', 't', lower, upper)`
+- 误差传递：`error_propagation('expr', {'var': (value, error), ...})`
+- 符号积分失败时会回退 `quad` 数值积分。
+
+三、调用方式（示例）
+基础计算：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SciCalculator「末」,
+expression:「始」(2+3)*sqrt(49)-10/2「末」
+<<<[END_TOOL_REQUEST]>>>
+
+统计计算：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SciCalculator「末」,
+expression:「始」mean([2,4,4,4,5,5,7,9]) + stdev([2,4,4,4,5,5,7,9])「末」
+<<<[END_TOOL_REQUEST]>>>
+
+定积分：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SciCalculator「末」,
+expression:「始」integral('exp(-x**2)', '-inf', 'inf')「末」
+<<<[END_TOOL_REQUEST]>>>
+
+不定积分：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SciCalculator「末」,
+expression:「始」integral('sin(x)')「末」
+<<<[END_TOOL_REQUEST]>>>
+
+误差传递：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」SciCalculator「末」,
+expression:「始」error_propagation('x*y', {'x':(2.0,0.1), 'y':(3.0,0.2)})「末」
+<<<[END_TOOL_REQUEST]>>>
+
+四、返回格式与状态
+- 成功：`{"status":"success","result":"###计算结果：...###，请将结果转告用户"}`
+- 失败：`{"status":"error","error":"..."}`
+
+五、常见报错与修复
+- `SciCalculator Plugin Error: No expression provided.`：未传 expression。
+- `Syntax Error: Invalid mathematical expression`：括号/语法错误。
+- `Input Error: Unsupported variable or constant`：使用了未支持变量。
+- `Error: Division by zero.`
+
+六、RAG标签建议（TagMemo V5）
+主体词元：SciCalculator, 科学计算器, 数学表达式, SymPy  
+动作词元：expression, integral, t_test, confidence_interval, error_propagation  
+故障词元：timeout, 语法错误, 未传expression, 除零错误
+
+Tag: SciCalculator, 科学计算器, expression, integral, t_test, confidence_interval, error_propagation, SymPy, 数值计算, 统计检验, 定积分, 不定积分, 超时排查

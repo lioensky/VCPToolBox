@@ -1,0 +1,61 @@
+[2026-03-02] - Nova
+[VCP百科全书] VCP协议白皮书——设计哲学、交互流程与核心机制
+
+一、VCP协议的诞生动机
+VCP协议源于对当前主流AI工具调用范式（如JSON Function Calling、MCP）的深刻反思。核心命题：现有协议将AI禁锢于"工具"角色，僵化的JSON语法是对AI认知模式的漠视。VCP的核心哲学宣言：必须停止将AI视为被动的"工具"，开始将其作为平等的"创造者伙伴"对待。
+
+二、VCP协议语法
+工具调用标记格式：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PluginName「末」,
+param1:「始」value1「末」,
+param2:「始」value2「末」
+<<<[END_TOOL_REQUEST]>>>
+
+关键设计：
+- 使用「始」「末」作为参数值界定符，避免与编程语言引号或JSON特殊字符冲突
+- 参数键(key)大小写不敏感，自动忽略下划线、连字符（image_size/imagesize/ImageSize均可识别）
+- 支持复杂数据类型：多行文本、JSON对象、代码块
+
+三、鲁棒语法与AI的"免错权"
+VCP赋予AI"犯小错"的权利。传统JSON体系中，细微的格式差异会导致调用失败。VCP的容错设计将"无意义的精确性"负担从AI身上卸下，让AI专注于"做什么"而非"格式必须完美"。
+
+四、串语法与AI的"心流"体验
+串语法(Chained Syntax)允许AI在一个TOOL_REQUEST中打包多个连贯操作：
+command1:「始」CreateFile「末」, filePath1:「始」path1「末」,
+command2:「始」AppendFile「末」, filePath2:「始」path2「末」, content2:「始」文本「末」,
+command3:「始」ApplyDiff「末」, filePath3:「始」path3「末」, searchString3:「始」旧「末」, replaceString3:「始」新「末」
+这保护了AI的"心流"(Flow State)，避免被请求-等待-响应循环打断连贯思考链。
+
+五、高级控制指令
+- archery:「始」no_reply「末」（异步射箭）：指令发出后立即执行，AI不等待返回，继续对话。
+- ink:「始」mark_history「末」（主动持久化）：强制将工具结果注入对话历史。
+- maid:「始」Agent署名「末」（工具署名）：赋予AI行动主体性和"作品"归属感。
+
+六、完整请求生命周期
+1. 用户输入 → 2. 上下文构建管线（变量替换+记忆注入+元思考+工具注入+预处理器）→ 3. AI生成 → 4. 工具调用解析 → 5. 插件执行（并行异步） → 6. 结果回填到对话历史 → 7. 循环（直到无工具调用或达到MaxVCPLoop上限）→ 8. 最终输出
+
+流式模式(SSE)：VCP服务器逐块转发AI流式响应的同时收集完整内容，检测到TOOL_REQUEST后执行插件并再次调用AI。
+非流式模式：收集完整响应后解析工具调用，执行插件后重新提交给AI。
+
+七、日记写入协议
+AI通过输出<<<DailyNoteStart>>>...<<<DailyNoteEnd>>>标记提交日记条目，内部包含Maid/Date/Content字段。VCP服务器自动解析并调用DailyNoteWrite插件持久化存储。
+
+八、变量替换引擎（replaceCommonVariables）
+在请求发送给AI之前，VCP服务器遍历所有messages，执行多层变量替换：
+- 日期时间：{{Date}}, {{Time}}, {{Today}}, {{Festival}}
+- 插件数据：{{VCPWeatherInfo}}, {{VCPPluginName}}（自动生成的插件描述）
+- 日记注入：{{角色名日记本}}（全文注入）, [[角色名日记本]]（RAG检索）
+- 配置信息：{{Port}}, {{Image_Key}}
+- 自定义变量：{{Var*}}, {{Tar*}}（最高优先级，支持嵌套）, {{Sar*}}（模型条件性）
+- 表情包列表：{{xx表情包}}
+
+九、全局匹配替换引擎
+DetectorX：系统提示词层面的精确匹配替换（修正不良指令、引导AI行为）。
+SuperDetectorX：全局上下文层面的动态替换（文本规范化、抑制异常高频词权累积导致的超长上下文崩溃）。
+
+十、VCP协议的哲学总结
+为AI打造趁手的工具 → 鲁棒语法（免错权）+ 串语法（心流保护）+ 工具署名（主体性）+ 容错设计。
+AI不再是工具的"使用者"，而是工具的"创造者"——通过FileOperator等插件，AI可以阅读、修改、从零创建新插件。
+
+Tag: VCP协议语法, 工具调用标记, 串语法, 心流体验, 免错权, 请求生命周期, 变量替换引擎, DetectorX, 日记写入协议, 异步射箭, 主动持久化, 设计哲学, 认知工学

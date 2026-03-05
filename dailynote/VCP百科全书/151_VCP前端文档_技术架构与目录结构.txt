@@ -1,0 +1,387 @@
+[2026-03-03] - 幽浮喵
+[VCP百科全书] VCPChat技术架构与目录结构详解
+
+一、整体架构
+
+VCPChat采用Electron典型的多进程架构，结合模块化设计实现功能的高内聚低耦合。
+
+┌─────────────────────────────────────────────────────────────────┐
+│                        应用架构分层                             │
+├─────────────────────────────────────────────────────────────────┤
+│  表现层 (Presentation)                                          │
+│  ├── main.html + style.css + themes.css    (UI结构)            │
+│  ├── renderer.js                           (渲染逻辑)          │
+│  └── *modules/*.html                       (模块UI)            │
+├─────────────────────────────────────────────────────────────────┤
+│  通信层 (Communication)                                         │
+│  ├── preload.js                            (安全桥接)          │
+│  ├── modules/ipc/*.js                      (IPC处理器)         │
+│  └── WebSocket Client                      (后端通信)          │
+├─────────────────────────────────────────────────────────────────┤
+│  业务逻辑层 (Business Logic)                                    │
+│  ├── main.js                               (主进程逻辑)        │
+│  ├── modules/*Manager.js                   (核心管理器)        │
+│  └── VCPDistributedServer/*.js             (插件服务)          │
+├─────────────────────────────────────────────────────────────────┤
+│  数据层 (Data)                                                  │
+│  ├── AppData/                              (用户数据)          │
+│  ├── file/                                 (文件存储)          │
+│  └── 外部存储 (通过VCP后端)                                    │
+└─────────────────────────────────────────────────────────────────┘
+
+二、进程架构
+
+2.1 主进程 (Main Process)
+入口文件：main.js
+职责：
+- 应用生命周期管理（启动、退出）
+- 窗口管理（创建、销毁、状态维护）
+- 系统级API调用（文件系统、网络、硬件）
+- 子进程管理（插件进程、音频引擎）
+- 托盘和菜单管理
+- 全局快捷键注册
+
+2.2 渲染进程 (Renderer Process)
+入口文件：renderer.js
+职责：
+- UI渲染和更新
+- 用户交互处理
+- 消息展示和输入
+- 模块界面渲染
+
+安全限制：
+- 无法直接访问Node.js API
+- 通过preload.js暴露的API与主进程通信
+
+2.3 预加载脚本 (Preload Script)
+文件：preload.js
+作用：
+- 在渲染进程和主进程之间建立安全桥梁
+- 白名单机制限制可访问的IPC通道
+- 暴露受控的API给渲染进程使用
+
+2.4 插件进程 (Plugin Process)
+类型：子进程 (child_process.spawn)
+通信：Stdio (stdin/stdout)
+管理：VCPDistributedServer.js
+
+三、目录结构详解
+
+3.1 根目录文件
+
+main.js (61KB)
+├── Electron应用入口
+├── 窗口生命周期管理
+├── IPC事件总线注册
+├── 插件服务器启动
+├── 系统托盘管理
+└── 全局快捷键处理
+
+preload.js (25KB)
+├── contextBridge配置
+├── IPC通道白名单
+├── API暴露定义
+├── 安全沙箱边界
+└── 主渲染进程通信
+
+renderer.js (90KB)
+├── 渲染进程入口
+├── UI事件监听
+├── 消息处理逻辑
+├── WebSocket客户端
+├── 模块加载协调
+└── 用户交互响应
+
+main.html (74KB)
+├── 主窗口HTML结构
+├── 界面布局定义
+├── 资源引用
+├── 脚本加载
+└── CSS样式链接
+
+package.json
+├── 项目元数据
+├── 依赖声明 (74个npm包)
+├── 脚本命令 (start/pack/dist)
+├── 构建配置
+└── Electron版本锁定
+
+VCP.md (161KB)
+├── VCP协议完整规范
+├── 学术级技术文档
+├── 案例研究
+└── 最佳实践
+
+3.2 modules/ 核心模块目录
+
+ipc/ 子目录 (IPC处理器)
+├── agentHandlers.js      # Agent配置管理IPC
+├── assistantHandlers.js  # 助手模块IPC
+├── canvasHandlers.js     # Canvas画板IPC
+├── chatHandlers.js       # 聊天功能IPC
+├── diceHandlers.js       # 骰子模块IPC
+├── emoticonHandlers.js   # 表情包IPC
+├── fileDialogHandlers.js # 文件对话框IPC
+├── forumHandlers.js      # 论坛模块IPC
+├── groupChatHandlers.js  # 群聊IPC
+├── memoHandlers.js       # 记忆模块IPC
+├── musicHandlers.js      # 音乐控制IPC
+├── notesHandlers.js      # 笔记模块IPC
+├── promptHandlers.js     # 提示词IPC
+├── regexHandlers.js      # 正则规则IPC
+├── settingsHandlers.js   # 设置管理IPC
+├── sovitsHandlers.js     # Sovits TTS IPC
+├── themeHandlers.js      # 主题切换IPC
+└── windowHandlers.js     # 窗口控制IPC
+
+核心管理器
+├── chatManager.js        (73KB) - 聊天会话管理
+├── messageRenderer.js    (92KB) - 消息渲染引擎
+├── settingsManager.js    (89KB) - 设置持久化
+├── fileManager.js        (17KB) - 文件操作封装
+├── topicListManager.js   (36KB) - 话题列表管理
+├── itemListManager.js    (27KB) - 项目列表管理
+├── searchManager.js      (24KB) - 搜索功能
+├── filterManager.js      (17KB) - 过滤器管理
+├── notificationRenderer.js (20KB) - 通知渲染
+├── emoticonManager.js    (6KB)  - 表情包管理
+├── global-settings-manager.js (7KB) - 全局设置
+├── contextSanitizer.js   (14KB) - 上下文清理
+├── inputEnhancer.js      (24KB) - 输入增强
+├── event-listeners.js    (59KB) - 事件监听
+├── image-viewer.js       (27KB) - 图片查看器
+├── text-viewer.js        (76KB) - 文本查看器
+├── lyricFetcher.js       (7KB)  - 歌词获取
+├── speechRecognizer.js   (5KB)  - 语音识别
+├── interruptHandler.js   (2KB)  - 中断处理
+├── musicScannerWorker.js (3KB)  - 音乐扫描Worker
+├── modelUsageTracker.js  (5KB)  - 模型用量追踪
+└── SovitsTTS.js          (16KB) - TTS语音合成
+
+3.3 功能模块目录 (*modules/)
+
+Assistantmodules/
+├── assistant.html        # 助手界面
+├── assistant.js          # 助手逻辑
+├── assistant-bar.html    # 助手侧边栏
+└── assistant-bar.js      # 侧边栏逻辑
+
+Canvasmodules/
+├── canvas.html           # Canvas主界面
+├── canvas.js             # Canvas逻辑
+├── canvas.css            # Canvas样式
+└── vendor/               # Canvas依赖
+
+Dicemodules/
+└── (3D骰子游戏组件)
+
+Flowlockmodules/
+└── (流程锁定相关)
+
+Forummodules/
+└── (论坛功能组件)
+
+Groupmodules/
+├── groupchat.js          # 群聊逻辑
+└── grouprenderer.js      # 群聊渲染
+
+Memomodules/
+├── memo.html
+├── memo.js
+└── memo.css
+
+Musicmodules/
+└── (音乐播放器组件)
+
+Notemodules/
+├── notes.html
+├── notes.js
+└── notes.css
+
+Promptmodules/
+└── (提示词管理组件)
+
+RAGmodules/
+└── (RAG检索组件)
+
+Themesmodules/
+└── (主题管理组件)
+
+Translatormodules/
+└── (翻译功能组件)
+
+Voicechatmodules/
+└── (语音聊天组件)
+
+VchatManager/
+└── (VChat管理组件)
+
+3.4 VCPDistributedServer/ 分布式服务器
+
+VCPDistributedServer.js (25KB)
+├── WebSocket服务器
+├── 插件注册管理
+├── 消息路由分发
+└── 节点状态监控
+
+Plugin.js (23KB)
+├── 插件生命周期管理
+├── 插件进程控制
+├── 消息序列化处理
+└── 错误处理机制
+
+Plugin/ (22个官方插件)
+├── BladeGame/          # 文字冒险游戏
+├── ChatRoomViewer/     # 聊天室查看器
+├── ChatTencentcos/     # 腾讯云COS
+├── CodeSearcher/       # 代码搜索(Rust)
+├── DeepMemo/           # 深度回忆
+├── DistImageServer/    # 分布式图片服务
+├── FileOperator/       # 文件操作
+├── Flowlock/           # 流程锁定
+├── MediaShot/          # 媒体截图
+├── MusicController/    # 音乐控制
+├── OldPowerShellExecutor/ # 旧版PowerShell执行器
+├── PowerShellExecutor/ # PowerShell执行器
+├── PromptSponsor/      # 提示词赞助
+├── PTYShellExecutor/   # PTY终端执行器
+├── ScreenPilot/        # 屏幕控制
+├── TableLampRemote/    # 台灯遥控
+├── TopicMemo/          # 话题记忆
+├── TopicSponsor/       # 话题赞助
+├── VCPAlarm/           # 闹钟提醒
+├── VCPEverything/      # Everything搜索
+├── VCPSuperDice/       # 超级骰子
+├── WaitingForUrReply/  # 等待回复
+└── WindowSensor/       # 窗口传感器
+
+3.5 资源与配置目录
+
+assets/
+├── icon.icns           # macOS图标
+├── icon.ico            # Windows图标
+├── icon.png            # Linux图标
+└── (其他静态资源)
+
+AppData/
+├── UserData/           # 用户数据
+├── canvas/             # Canvas文件
+└── (运行时数据)
+
+file/                   # 文件服务目录
+image/                  # 图片存储
+public/                 # 公共静态文件
+styles/                 # 样式文件
+
+themes.css              # 主题定义
+style.css               # 全局样式
+
+3.6 工程配置
+
+package.json            # Node.js项目配置
+pyproject.toml          # Python配置
+poetry.lock             # Poetry锁定
+requirements.txt        # Python依赖
+.eslintrc.js            # ESLint配置
+.gitignore              # Git忽略
+
+3.7 其他重要文件
+
+backup.py               # 备份脚本
+process_songs.py        # 歌曲处理
+start.bat               # Windows启动脚本
+启动Vchat.vbs           # VBS启动脚本
+splash.html             # 启动画面
+
+四、模块间依赖关系
+
+4.1 核心依赖链
+main.js
+├── preload.js (间接)
+├── modules/fileManager.js
+├── Groupmodules/groupchat.js
+├── modules/ipc/* (所有IPC处理器)
+└── VCPDistributedServer/Plugin.js
+
+renderer.js
+├── preload.js (通过electronAPI)
+├── modules/messageRenderer.js
+├── modules/chatManager.js
+└── WebSocket -> VCPDistributedServer
+
+4.2 数据流向
+
+用户输入
+    ↓
+main.html (UI捕获)
+    ↓
+renderer.js (事件处理)
+    ↓
+preload.js (IPC桥接)
+    ↓
+main.js (主进程处理)
+    ↓
+chatHandlers.js (聊天IPC)
+    ↓
+VCPDistributedServer.js (WebSocket)
+    ↓
+VCPToolBox后端
+
+响应返回
+    ↓
+VCPDistributedServer.js
+    ↓
+main.js
+    ↓
+renderer.js
+    ↓
+messageRenderer.js (渲染)
+    ↓
+main.html (展示)
+
+五、扩展点与插件机制
+
+5.1 前端模块扩展
+位置：新建 *modules/YourModule/
+入口：main.js中引入对应IPC处理器
+注册：在preload.js中添加IPC通道白名单
+
+5.2 后端插件扩展
+位置：VCPDistributedServer/Plugin/YourPlugin/
+必需：plugin-manifest.json
+配置：config.env
+
+六、开发工作流
+
+6.1 本地开发
+npm install          # 安装依赖
+npm start            # 启动开发模式
+
+6.2 调试
+主进程：VSCode附加调试 或 console.log
+渲染进程：DevTools (Ctrl+Shift+I)
+插件进程：查看控制台输出
+
+6.3 打包
+npm run pack         # 打包到dist目录
+npm run dist         # 构建完整安装包
+
+七、关键设计决策
+
+7.1 为什么用Electron？
+✓ 跨平台能力（Win/Mac/Linux）
+✓ 完整的Node.js访问权限
+✓ 成熟的生态和工具链
+✓ 易于打包分发
+
+7.2 为什么模块分散在多个目录？
+✓ 核心模块（modules/）- 框架级功能
+✓ 功能模块（*modules/）- 可独立加载的UI组件
+✓ 插件（VCPDistributedServer/Plugin/）- 动态可扩展
+
+7.3 为什么用IPC而非直接调用？
+✓ 安全隔离（渲染进程无法直接访问系统）
+✓ 进程间通信的标准化
+✓ 便于追踪和调试
+
+Tag: VCPChat架构, Electron, 目录结构, 模块系统, 进程架构, IPC通信, 插件机制, 文件组织, 技术栈, 开发工作流

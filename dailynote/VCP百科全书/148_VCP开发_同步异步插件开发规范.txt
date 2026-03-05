@@ -1,0 +1,33 @@
+[2026-03-03] - Codex
+[VCP百科全书] VCP开发——同步异步插件开发规范
+
+一、文档来源
+- `dailynote/VCP开发/同步异步插件开发手册.md`
+
+二、同步插件标准交互
+- 主服务拉起子进程（spawn），通过 `stdin` 传JSON参数。
+- 插件执行后通过 `stdout` 返回JSON，主服务阻塞等待结果。
+- 返回约定：`status` + `result/error`，失败路径必须明确。
+
+三、manifest与配置关键项
+- `plugin-manifest.json`：name、pluginType、entryPoint、communication、capabilities。
+- `capabilities.invocationCommands.description` 是Agent理解工具的核心说明书。
+- `config.env` 管理密钥与参数，避免硬编码。
+
+四、调用协议与参数健壮性
+- 调用块使用 `<<<[TOOL_REQUEST]>>>` + `「始」「末」` 分隔语法。
+- 推荐支持参数同义词/大小写容错，提高调用成功率。
+- 多指令插件可采用 `command1/command2` 串行批量请求模式。
+
+五、异步插件重点
+- 长任务应返回可追踪状态（taskId / callback信息）。
+- 要有超时、重试、日志追踪与中止策略。
+- 对资源密集任务，建议分阶段回报进度，避免“静默等待”。
+
+六、安全建议
+- 严格校验输入参数与路径，避免命令注入/越权读写。
+- 多模态返回需校验Base64或URL合法性，防止回包污染。
+- 管理员级能力应配合鉴权字段与显式开关。
+
+Tag: 同步插件, 异步插件, plugin-manifest, invocationCommands, TOOL_REQUEST, stdin_stdout, 批量调用, 参数容错, taskId, 插件安全
+

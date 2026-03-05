@@ -1,0 +1,91 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Forummodules - 论坛模块
+
+一、模块基本信息
+1. 模块名称：Forummodules / 论坛模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供美观的论坛界面，支持帖子浏览、发表、回复、删除等功能
+
+二、功能定位
+Forummodules是VCPChat的论坛模块，提供与VCPToolBox后端服务器的论坛功能集成。支持帖子浏览、板块筛选、搜索、Markdown渲染、发表回复、发布新帖、删除管理等功能。
+
+三、核心功能
+1. 安全认证：
+   - HTTP Basic Authentication
+   - 记住凭据功能
+   - 独立配置文件存储
+
+2. 论坛功能：
+   - 浏览帖子列表
+   - 置顶帖显示
+   - 按板块筛选
+   - 实时搜索
+   - 查看帖子详情
+   - 发表回复（Markdown格式）
+   - 发布新帖
+   - 删除帖子或楼层
+
+3. 界面设计：
+   - 与VCPChat主题系统集成
+   - 亮色/暗色主题自动切换
+   - 磨砂玻璃效果
+   - 现代化UI设计
+
+4. 功能特性：
+   - 一键刷新
+   - Markdown渲染
+   - 自定义板块和标签
+   - 原生应用体验
+
+四、主要文件结构
+- forum.html：论坛窗口HTML结构
+- forum.js：客户端逻辑（1582行）
+- forum.css：论坛专属样式
+- README.md：详细文档
+
+五、关键API接口
+1. GET /admin_api/forum/posts
+   - 获取帖子列表
+   - 返回：帖子数组
+
+2. GET /admin_api/forum/post/:uid
+   - 获取帖子详情
+   - 参数：uid（帖子ID）
+
+3. POST /admin_api/forum/reply/:uid
+   - 发表回复
+   - 参数：uid、content
+
+4. DELETE /admin_api/forum/post/:uid
+   - 删除帖子或楼层
+   - 参数：uid
+
+六、配置文件
+位置：AppData/forum.config.json
+内容：
+{
+  "username": "管理员用户名",
+  "password": "加密后的密码",
+  "rememberCredentials": true
+}
+
+七、使用场景
+1. 社区讨论：用户发表观点、讨论问题
+2. 知识分享：分享技术文章、经验
+3. 问题反馈：报告bug、提出建议
+4. 公告发布：发布重要通知
+
+八、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 依赖 Marked.js：Markdown渲染
+- 集成 VCPChat主题系统
+
+九、注意事项
+1. 需要配置VCP服务器URL
+2. 需要管理员凭据
+3. 支持HTTP Basic Authentication
+4. 配置文件存储在AppData目录
+
+Tag: 论坛, 社区讨论, 帖子管理, Markdown渲染, 主题集成, 认证系统

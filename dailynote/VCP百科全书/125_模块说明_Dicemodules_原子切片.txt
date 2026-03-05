@@ -1,0 +1,84 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Dicemodules - 超级骰子模块
+
+一、模块基本信息
+1. 模块名称：Dicemodules / 超级骰子模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供3D骰子投掷功能，支持复杂表达式和主题适配
+
+二、功能定位
+Dicemodules是VCPChat的骰子投掷模块，基于@3d-dice/dice-box库提供3D骰子投掷功能。支持标准骰子表达式（如2d6+3、1d20）、复合表达式、主题切换、AI指令投掷等功能。
+
+三、核心功能
+1. 3D骰子投掷：
+   - 基于@3d-dice/dice-box库
+   - 支持标准骰子表达式（XdY+Z格式）
+   - 支持复合表达式（如2d6+1d20）
+   - 实时3D动画效果
+
+2. 用户交互：
+   - 输入框输入骰子表达式
+   - 点击投掷按钮或按Enter键投掷
+   - 实时显示投掷结果
+
+3. 主题适配：
+   - 亮色/暗色主题切换
+   - 自动更新骰子颜色方案
+   - 主题变化实时响应
+
+4. AI集成：
+   - 接收来自主进程的AI投掷请求
+   - 支持自定义颜色配置
+   - 投掷完成后回传结果
+
+四、主要文件结构
+- dice.html：UI布局（输入框、投掷按钮、3D容器）
+- dice.js：核心逻辑（骰子初始化、投掷、主题、AI集成）
+- dice.css：样式定义
+- assets/：骰子资源文件
+
+五、关键API接口
+1. DiceBox初始化配置：
+   - container: "#dice-canvas-container"
+   - assetPath: "/assets/dice-box/"
+   - theme: "default"
+   - scale: 6
+
+2. window.electronAPI.onThemeUpdated(callback)
+   - 监听主题变化
+
+3. window.electronAPI.getCurrentTheme()
+   - 获取当前主题
+
+4. window.electronAPI.onRollDice(notation, options)
+   - 接收AI投掷请求
+   - 参数：notation（骰子表达式）、options（配置）
+
+5. window.electronAPI.sendDiceRollComplete(results)
+   - 发送投掷结果到主进程
+
+6. Box.roll(notations)
+   - 执行骰子投掷
+
+7. Box.updateConfig(config)
+   - 更新骰子配置
+
+六、使用场景
+1. 手动投掷：用户输入表达式后点击投掷
+2. AI投掷：AI指令触发自动投掷
+3. 游戏支持：RPG游戏中的骰子投掷
+4. 主题适配：根据系统主题自动调整骰子外观
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 依赖 @3d-dice/dice-box：3D骰子库
+
+八、注意事项
+1. 支持复合表达式（用+分割）
+2. 主题颜色默认值：亮色#8b4513、暗色#ff4785
+3. 投掷完成后自动回传结果
+4. 支持Enter键快速投掷
+
+Tag: 骰子投掷, 3D动画, 游戏模块, 主题适配, AI集成, 表达式解析
