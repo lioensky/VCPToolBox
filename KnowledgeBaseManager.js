@@ -39,6 +39,9 @@ class KnowledgeBaseManager {
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
+            // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
+            indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
+            indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
 
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
@@ -57,6 +60,8 @@ class KnowledgeBaseManager {
 
         this.db = null;
         this.diaryIndices = new Map();
+        this.diaryIndexLastUsed = new Map(); // 🌟 记录每个索引的最后使用时间
+        this.idleSweepTimer = null;
         this.tagIndex = null;
         this.watcher = null;
         this.initialized = false;
@@ -130,6 +135,7 @@ class KnowledgeBaseManager {
         this._startWatcher();
         await this.loadRagParams();
         this._startRagParamsWatcher();
+        this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
 
         this.initialized = true;
         console.log('[KnowledgeBase] ✅ System Ready');
@@ -209,6 +215,8 @@ class KnowledgeBaseManager {
 
     // 🏭 索引工厂
     async _getOrLoadDiaryIndex(diaryName) {
+        // 🌟 每次访问都刷新最后使用时间
+        this.diaryIndexLastUsed.set(diaryName, Date.now());
         if (this.diaryIndices.has(diaryName)) {
             return this.diaryIndices.get(diaryName);
         }
@@ -1365,12 +1373,64 @@ class KnowledgeBaseManager {
         }
     }
 
+    // 🌟 启动空闲索引定期扫描
+    _startIdleSweep() {
+        if (this.idleSweepTimer) return;
+        this.idleSweepTimer = setInterval(() => {
+            this._evictIdleIndices();
+        }, this.config.indexIdleSweepInterval);
+        // 允许 Node 进程在没有其他活跃事件时自然退出
+        if (this.idleSweepTimer.unref) this.idleSweepTimer.unref();
+        console.log(`[KnowledgeBase] 🧹 Idle index sweep started (TTL: ${Math.round(this.config.indexIdleTTL / 60000)}min, interval: ${Math.round(this.config.indexIdleSweepInterval / 60000)}min)`);
+    }
+
+    // 🌟 扫描并卸载空闲超时的索引
+    _evictIdleIndices() {
+        const now = Date.now();
+        const ttl = this.config.indexIdleTTL;
+        let evictedCount = 0;
+
+        for (const [diaryName, lastUsed] of this.diaryIndexLastUsed) {
+            if (now - lastUsed < ttl) continue;
+            if (!this.diaryIndices.has(diaryName)) {
+                // 时间戳残留（索引已不在内存中），清理即可
+                this.diaryIndexLastUsed.delete(diaryName);
+                continue;
+            }
+
+            // 先保存到磁盘，再从内存中移除
+            try {
+                // 如果有待保存的计时器，先取消它并立即保存
+                if (this.saveTimers.has(diaryName)) {
+                    clearTimeout(this.saveTimers.get(diaryName));
+                    this.saveTimers.delete(diaryName);
+                }
+                this._saveIndexToDisk(diaryName);
+                this.diaryIndices.delete(diaryName);
+                this.diaryIndexLastUsed.delete(diaryName);
+                evictedCount++;
+                console.log(`[KnowledgeBase] 🧹 Evicted idle index: "${diaryName}" (idle ${Math.round((now - lastUsed) / 60000)}min)`);
+            } catch (e) {
+                console.error(`[KnowledgeBase] ❌ Failed to evict index "${diaryName}":`, e.message);
+            }
+        }
+
+        if (evictedCount > 0) {
+            console.log(`[KnowledgeBase] 🧹 Idle sweep complete: evicted ${evictedCount} index(es), ${this.diaryIndices.size} remaining in memory.`);
+        }
+    }
+
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
         await this.watcher?.close();
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;
+        }
+        // 🌟 停止空闲扫描
+        if (this.idleSweepTimer) {
+            clearInterval(this.idleSweepTimer);
+            this.idleSweepTimer = null;
         }
 
         // 确保所有待保存的索引都被写入磁盘
