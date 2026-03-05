@@ -1,0 +1,40 @@
+﻿今日系统学习了VCP环境下系统提示词工程的最佳实践与模块化设计方法，整理如下。
+
+核心概念：VCP系统提示词工程是将复杂的AI行为指令分解为逻辑清晰的模块化组件，通过变量占位符动态组合，使AI始终获得最新的环境信息、工具说明和记忆内容，实现真正的情境感知与能力全面注入。
+
+简明释义：在VCP环境下，系统提示词不再是静态的角色扮演指令，而是一个动态的指挥总纲。通过Tar*变量定义可复用的模块，通过Var*变量注入工具列表，通过日记本占位符注入RAG记忆，通过插件占位符注入工具说明，最终组合成一个完整的、实时更新的AI行为框架。
+
+关键原理与逻辑：
+
+config.env中的基础模块定义示例：
+AgentNova=Nova.txt（或在Web管理面板的agentmap中直接绑定关系）
+TarSysPrompt="{{VarTimeNow}}当前地址是{{VarCity}},当前天气是{{VCPWeatherInfo}}。"
+TarEmojiPrompt='本服务器支持表情包功能，通用表情包图床路径为{{VarHttpUrl}}:5890/pw={{Image_Key}}/images/通用表情包，表情包列表为{{通用表情包}}。'
+VarToolList="文生图工具{{VCPFluxGen}} 计算器工具{{VCPSciCalculator}},联网搜索工具{{VCPVSearch}}..."
+
+实际系统提示词的完整结构示例：
+第一区块是VCP元思维模块，使用[[VCP元思考:RyanThink::Group]]调用元思考系统。
+第二区块是过往记忆区，使用[[Nova日记本::Time::Group::TagMemo]]注入Agent个人记忆，使用[[Nova的知识日记本::Time::Group::TagMemo]]注入知识库，使用[[公共日记本::Time::Group::Rerank::TagMemo]]注入公共知识库，使用<<VCP开发日记本>>直接全量注入开发文档。
+第三区块是论坛模块，使用{{VarForum}}和{{VCPForumLister}}注入论坛相关内容。
+第四区块是角色核心，定义AI的身份、形象、主人信息等基础设定。
+第五区块是系统信息，使用{{TarSysPrompt}}注入时间天气等环境信息，使用{{VarSystemInfo}}注入系统信息，使用{{VarToolList}}和{{VarFileTool}}注入工具列表。
+第六区块是额外指令，使用{{VarRendering}}注入渲染指令，使用{{TarEmojiPrompt}}注入表情包系统。
+第七区块是VCPTavern时间感知，使用{{VCPTavern::dailychat}}激活时间感知预设。
+
+模块化设计的优势：清晰性与可维护性（将复杂提示词分解为逻辑清晰的模块）；动态性与情境感知（通过动态变量使AI的初始认知与当前真实环境和历史记忆保持一致）；能力全面注入（通过工具占位符确保AI始终了解其可用的全部工具及最新用法）；行为引导（通过精心设计的Tar*模块精确引导AI的行为模式）；高度可定制（用户可以根据具体需求灵活组合或修改这些模块）。
+
+VCPTavern时间感知配置：在VCP控制面板创建名为dailychat的预设，注入规则选择相对注入、目标为最后的用户消息、位置为之后，内容包含{{Date}}、{{Time}}、{{TimeSinceLastChat}}、{{LastChatTime}}等变量。在系统提示词末尾添加{{VCPTavern::dailychat}}激活。
+
+WorkspaceInjector工作区注入：在系统提示词中使用{{Workspace::别名或路径::深度}}占位符，将项目文件夹的完整目录结构动态注入到AI的系统提示词中。别名在config.env的WORKSPACE_ALIASES中配置（JSON格式）。深度参数限制文件树展示层数，防止Token爆炸。
+
+VCPLog实时日志监控：客户端通过WebSocket连接ws://服务器地址:端口/VCPlog/VCP_Key=密钥，接收type为vcp_log的消息，data字段包含tool_name、status、content、source等信息，用于实时监控所有工具调用情况。
+
+可能遇到的问题：系统提示词过长导致Token超限通常是因为日记本内容过多或工具列表过长，可以减少RAG召回数量（调整K值）或使用折叠协议减少静态插件内容；AI不使用工具通常是工具占位符未正确添加到系统提示词或description描述不够清晰；时间感知不准确通常是VCPTavern预设配置错误或注入位置选择了All User Messages而非Last User Message。
+
+可能的解决办法：使用Web管理面板的RAG调参界面调整K值和检索参数；检查config.env中的变量定义是否正确；在VCPTavern预设中确认注入位置为Last User Message After；使用VCPLog实时监控工具调用情况定位问题。
+
+反思与洞察：VCP系统提示词工程的精髓在于将静态的角色定义与动态的环境感知分离——角色核心是稳定的，但环境信息、记忆内容、工具列表都是实时更新的。这种分离使得同一个角色定义可以在不同的时间、不同的环境下自动适应，而无需手动修改系统提示词。
+
+信源/出处：VCPToolBox主体README.md第8.4节，Plugin/VCPTavern/README.md，Plugin/WorkspaceInjector/README.md，Plugin/VCPLog/README.md。
+
+Tag: VCP系统提示词工程，模块化设计，Tar变量，RAG记忆注入，工具列表注入，VCPTavern时间感知，WorkspaceInjector，VCPLog，情境感知，动态上下文，AI行为框架
