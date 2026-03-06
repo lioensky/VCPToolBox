@@ -693,11 +693,12 @@ class KnowledgeBaseManager {
                 return { vector: originalFloat32, info: null };
             }
 
-            // [6] 最终融合
+            // [6] 最终融合 (clamp 防止外推：boost > 1 时原向量会被反向叠加)
+            const alpha = Math.min(1.0, effectiveTagBoost);
             const fused = new Float32Array(dim);
             let fusedMag = 0;
             for (let d = 0; d < dim; d++) {
-                fused[d] = (1 - effectiveTagBoost) * originalFloat32[d] + effectiveTagBoost * contextVec[d];
+                fused[d] = (1 - alpha) * originalFloat32[d] + alpha * contextVec[d];
                 fusedMag += fused[d] * fused[d];
             }
 
