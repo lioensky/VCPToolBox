@@ -255,17 +255,30 @@ class ContextVectorManager {
 
     /**
      * 计算语义宽度指数 S
-     * 核心思想：向量的模长反映了语义的确定性/强度
+     * 核心思想：L2归一化后 Σv_i² = 1，v_i² 构成概率分布，
+     * 用归一化熵衡量能量的分散程度。
+     * S ≈ 1 → 能量均匀分布，语义宽泛
+     * S ≈ 0 → 能量集中少数维度，语义精准
+     *
+     * @param {Array|Float32Array} vector - L2归一化向量
+     * @returns {number} S ∈ [0, 1]
      */
     computeSemanticWidth(vector) {
         if (!vector) return 0;
-        let sumSq = 0;
-        for (let i = 0; i < vector.length; i++) {
-            sumSq += vector[i] * vector[i];
+        const dim = vector.length;
+
+        // v_i^2 构成概率分布 (L2归一化 => Σv_i² = 1)
+        let entropy = 0;
+        for (let i = 0; i < dim; i++) {
+            const p = vector[i] * vector[i];
+            if (p > 1e-12) {
+                entropy -= p * Math.log(p);
+            }
         }
-        const magnitude = Math.sqrt(sumSq);
-        const spreadFactor = 1.2; // 可调参数
-        return magnitude * spreadFactor;
+
+        // 归一化到 [0, 1]：均匀分布时熵最大 = log(dim)
+        const maxEntropy = Math.log(dim);
+        return maxEntropy > 0 ? entropy / maxEntropy : 0;
     }
 
     /**
