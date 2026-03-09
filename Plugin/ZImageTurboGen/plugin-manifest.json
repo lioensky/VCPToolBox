@@ -1,0 +1,29 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ZImageTurboGen",
+  "version": "1.0.0",
+  "displayName": "Z-Image-Turbo AI 绘图",
+  "description": "调用 Gitee Z-Image-Turbo 接口进行文本生成图片 (每日免费 100 张)。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ZImageTurboGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "ZIMAGE_API_KEY": "string(可选)，如果留空则使用内置体验密钥"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "【文生图】调用此工具使用 Gitee 提供的 Z-Image-Turbo 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nsize:「始」(可选) 图片分辨率，默认 1024x1024。格式为\"宽x高\"。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到生成的图片可访问URL，请直接为用户以 Markdown 或 HTML `<img>` 标签展示。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一只戴着宇航员头盔的猫，背景是太空「末」,\nsize:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+import fs from 'fs/promises';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+
+// --- Configuration ---
+const API_KEY = process.env.ZIMAGE_API_KEY || "apikey(填自己的密钥)";
+const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
+const SERVER_PORT = process.env.SERVER_PORT;
+const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
+const VAR_HTTP_URL = process.env.VarHttpUrl;
+
+const API_ENDPOINT = 'https://ai.gitee.com/v1/images/generations';
+
+// --- Helper Functions ---
+
+function isValidArgs(args) {
+    if (!args || typeof args !== 'object' || !args.command) return false;
+    if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
+    if (args.command !== 'GenerateImage') return false;
+    if (args.size && !/^\d+x\d+$/.test(args.size)) return false;
+    return true;
+}
+
+async function processApiRequest(args) {
+    if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
+        throw new Error("Plugin Error: Missing one or more required environment variables (PROJECT_BASE_PATH, SERVER_PORT, etc).");
+    }
+    if (!isValidArgs(args)) {
+        throw new Error(`Plugin Error: Invalid arguments provided: ${JSON.stringify(args)}.`);
+    }
+
+    const payload = {
+        model: "Z-Image-Turbo",
+        prompt: args.prompt,
+        n: 1,
+    };
+
+    if (args.size) {
+        payload.size = args.size;
+    }
+
+    // Use native fetch (available in Node 18+)
+    const response = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${API_KEY}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(120000),
+    });
+
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`API request failed with status ${response.status}: ${errorBody}`);
+    }
+
+    const responseJson = await response.json();
+
+    // Gitee API returns data in format: { data: [{ b64_json: "...", type: "image/png" }], created: ... }
+    // Also support url-based responses for future compatibility
+    const responseData = responseJson?.data?.[0] || responseJson?.images?.[0];
+    if (!responseData) {
+        throw new Error("Plugin Error: No image data in API response. Response: " + JSON.stringify(responseJson));
+    }
+
+    let imageBuffer;
+    let imageMimeType;
+
+    if (responseData.b64_json) {
+        // API returned base64 encoded image directly
+        imageBuffer = Buffer.from(responseData.b64_json, 'base64');
+        imageMimeType = responseData.type || 'image/png';
+    } else if (responseData.url) {
+        // API returned a URL to download
+        const imageResponse = await fetch(responseData.url, {
+            signal: AbortSignal.timeout(60000),
+        });
+        if (!imageResponse.ok) {
+            throw new Error(`Failed to download image from URL: ${responseData.url}`);
+        }
+        const arrayBuf = await imageResponse.arrayBuffer();
+        imageBuffer = Buffer.from(arrayBuf);
+        imageMimeType = imageResponse.headers.get('content-type') || 'image/png';
+    } else {
+        throw new Error("Plugin Error: API response contains neither b64_json nor url. Response: " + JSON.stringify(responseJson));
+    }
+
+    // Determine file extension from mime type
+    const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+    const imageExtension = extMap[imageMimeType] || 'png';
+
+    const generatedFileName = `${uuidv4()}.${imageExtension}`;
+    const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'zimageturbogen');
+    const localImagePath = path.join(imageDir, generatedFileName);
+
+    await fs.mkdir(imageDir, { recursive: true });
+    await fs.writeFile(localImagePath, imageBuffer);
+
+    const relativePathForUrl = path.join('zimageturbogen', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+
+    const base64Image = imageBuffer.toString('base64');
+
+    return {
+        content: [
+            {
+                type: 'text',
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 可访问URL: ${accessibleImageUrl}`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: {
+            url: accessibleImageUrl
+        }
+    };
+}
+
+async function main() {
+    try {
+        const inputChunks = [];
+        for await (const chunk of process.stdin) {
+            inputChunks.push(chunk);
+        }
+        const inputData = inputChunks.join('');
+        if (!inputData.trim()) {
+            throw new Error("No input data received from stdin.");
+        }
+        const parsedArgs = JSON.parse(inputData);
+        const result = await processApiRequest(parsedArgs);
+        console.log(JSON.stringify({ status: "success", result }));
+    } catch (e) {
+        let detailedError = e.message || "Unknown error";
+        if (e.response && e.response.data) {
+            detailedError += ` - API Response: ${JSON.stringify(e.response.data)}`;
+        }
+        console.log(JSON.stringify({ status: "error", error: `ZImageTurboGen Plugin Error: ${detailedError}` }));
+        process.exit(1);
+    }
+}
+
+main();
