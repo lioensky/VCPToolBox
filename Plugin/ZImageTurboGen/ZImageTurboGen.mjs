@@ -19,6 +19,10 @@ function isValidArgs(args) {
     if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
     if (args.command !== 'GenerateImage') return false;
     if (args.size && !/^\d+x\d+$/.test(args.size)) return false;
+    if (args.num_inference_steps !== undefined) {
+        const steps = parseInt(args.num_inference_steps, 10);
+        if (isNaN(steps) || steps < 1 || steps > 50) return false;
+    }
     return true;
 }
 
@@ -38,6 +42,17 @@ async function processApiRequest(args) {
 
     if (args.size) {
         payload.size = args.size;
+    }
+
+    if (args.negative_prompt && typeof args.negative_prompt === 'string' && args.negative_prompt.trim()) {
+        payload.negative_prompt = args.negative_prompt.trim();
+    }
+
+    if (args.num_inference_steps !== undefined) {
+        const steps = parseInt(args.num_inference_steps, 10);
+        if (!isNaN(steps)) {
+            payload.num_inference_steps = steps;
+        }
     }
 
     // Use native fetch (available in Node 18+)
@@ -107,7 +122,7 @@ async function processApiRequest(args) {
         content: [
             {
                 type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 可访问URL: ${accessibleImageUrl}`
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}${args.negative_prompt ? `\n- 负面提示词: ${args.negative_prompt}` : ''}${payload.num_inference_steps ? `\n- 推理步数: ${payload.num_inference_steps}` : ''}\n- 可访问URL: ${accessibleImageUrl}`
             },
             {
                 type: 'image_url',
