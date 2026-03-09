@@ -21,7 +21,7 @@ function isValidArgs(args) {
     if (args.size && !/^\d+x\d+$/.test(args.size)) return false;
     if (args.num_inference_steps !== undefined) {
         const steps = parseInt(args.num_inference_steps, 10);
-        if (isNaN(steps) || steps < 1 || steps > 50) return false;
+        if (isNaN(steps) || steps < 4 || steps > 25) return false;
     }
     return true;
 }
@@ -48,12 +48,10 @@ async function processApiRequest(args) {
         payload.negative_prompt = args.negative_prompt.trim();
     }
 
-    if (args.num_inference_steps !== undefined) {
-        const steps = parseInt(args.num_inference_steps, 10);
-        if (!isNaN(steps)) {
-            payload.num_inference_steps = steps;
-        }
-    }
+    const steps = args.num_inference_steps !== undefined
+        ? Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 8))
+        : 8;
+    payload.num_inference_steps = steps;
 
     // Use native fetch (available in Node 18+)
     const response = await fetch(API_ENDPOINT, {
@@ -122,7 +120,7 @@ async function processApiRequest(args) {
         content: [
             {
                 type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}${args.negative_prompt ? `\n- 负面提示词: ${args.negative_prompt}` : ''}${payload.num_inference_steps ? `\n- 推理步数: ${payload.num_inference_steps}` : ''}\n- 可访问URL: ${accessibleImageUrl}`
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}${args.negative_prompt ? `\n- 负面提示词: ${args.negative_prompt}` : ''}\n- 推理步数: ${payload.num_inference_steps}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
             },
             {
                 type: 'image_url',
