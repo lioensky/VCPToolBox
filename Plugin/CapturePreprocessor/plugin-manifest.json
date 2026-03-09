@@ -3,8 +3,8 @@
   "name": "CapturePreprocessor",
   "version": "1.0.0",
   "displayName": "捕获预处理器",
-  "description": "一个预处理插件，用于检测和替换消息中的截图和摄像头捕获占位符，如 {{VCPScreenShot}} 和 {{VCPCameraCapture}}。",
-  "author": "Gemini",
+  "description": "预消息处理器: 检测 {{VCPScreenShot}}, {{VCPScreenShot:窗口标题}} 和 {{VCPCameraCapture}} 占位符。通过 /v1/human/tool 透明调用分布式 ScreenPilot 获取截图，注入为即时视觉上下文。",
+  "author": "VCPToolBox",
   "pluginType": "messagePreprocessor",
   "entryPoint": {
     "type": "nodejs",
@@ -14,15 +14,10 @@
     "protocol": "direct"
   },
   "configSchema": {
-    "PLACEHOLDER_SCREENSHOT_MODE": {
+    "MONITOR_TIMEOUT_MS": {
       "type": "string",
-      "description": "控制 {{VCPScreenShot}} 占位符的行为。可选值: full_analysis, direct_to_ai, capture_only。",
-      "default": "full_analysis"
-    },
-    "PLACEHOLDER_CAMERA_MODE": {
-      "type": "string",
-      "description": "控制 {{VCPCameraCapture}} 占位符的行为。可选值: full_analysis, direct_to_ai, capture_only。",
-      "default": "full_analysis"
+      "description": "调用分布式 ScreenPilot 的超时时间（毫秒）",
+      "default": "30000"
     }
   }
 }

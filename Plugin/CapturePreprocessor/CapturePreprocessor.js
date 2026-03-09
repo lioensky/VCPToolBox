@@ -1,77 +1,85 @@
-const { spawn } = require('child_process');
+const http = require('http');
 const path = require('path');
 const fs = require('fs').promises;
-const dotenv = require('dotenv');
 
 let vcpConfig = {};
 let vcpProjectBasePath = '';
+let serverPort = '8080';
+let serverKey = '';
 
-async function executePythonPluginWithPerfectEnvironment(pluginName, params, processingMode) {
-    return new Promise(async (resolve, reject) => {
-        const basePath = vcpProjectBasePath || path.join(__dirname, '..', '..');
-        const pluginDir = path.join(basePath, 'Plugin', pluginName);
-        const scriptName = pluginName === 'PyScreenshot' ? 'screenshot.py' : 'capture.py';
-        const scriptPath = path.join(pluginDir, scriptName);
-
-        const finalEnv = { ...process.env };
-
-        for (const key in vcpConfig) {
-            if (vcpConfig.hasOwnProperty(key) && vcpConfig[key] !== undefined) {
-                finalEnv[key] = String(vcpConfig[key]);
-            }
+/**
+ * 通过 /v1/human/tool 端点调用分布式 ScreenPilot
+ * @param {Object} params ScreenPilot 的参数
+ * @returns {Promise<Object>} 包含 base64 图片结果的数据对象
+ */
+function callScreenPilot(params) {
+    return new Promise((resolve, reject) => {
+        if (!serverKey) {
+            return reject(new Error('VCP Server API Key is missing.'));
         }
 
-        try {
-            const targetPluginConfigPath = path.join(pluginDir, 'config.env');
-            const targetPluginConfigContent = await fs.readFile(targetPluginConfigPath, 'utf-8');
-            const targetPluginEnv = dotenv.parse(targetPluginConfigContent);
-            for (const key in targetPluginEnv) {
-                if (targetPluginEnv.hasOwnProperty(key)) {
-                    finalEnv[key] = targetPluginEnv[key];
-                }
-            }
-        } catch (e) {
-            if (e.code !== 'ENOENT') {
-                console.warn(`[CapturePreprocessor] Could not read config.env for ${pluginName}: ${e.message}`);
-            }
+        const timeoutMs = parseInt(vcpConfig.MONITOR_TIMEOUT_MS || '30000', 10);
+
+        let toolRequestBody = `<<<[TOOL_REQUEST]>>>
+tool_name:「始」ScreenPilot「末」,
+command:「始」ScreenCapture「末」`;
+
+        if (params.windowTitle) {
+            toolRequestBody += `,\nwindowTitle:「始」${params.windowTitle}「末」`;
         }
 
-        finalEnv.PROJECT_BASE_PATH = basePath;
-        if (process.env.PORT) finalEnv.SERVER_PORT = process.env.PORT;
-        if (vcpConfig.IMAGESERVER_IMAGE_KEY) finalEnv.IMAGESERVER_IMAGE_KEY = vcpConfig.IMAGESERVER_IMAGE_KEY;
-        if (process.env.Key) finalEnv.Key = process.env.Key;
-        finalEnv.PYTHONIOENCODING = 'utf-8';
-        finalEnv.PROCESSING_MODE = processingMode;
+        toolRequestBody += `\n<<<[END_TOOL_REQUEST]>>>`;
 
-        const pythonProcess = spawn('python', [scriptPath], { cwd: pluginDir, env: finalEnv, shell: true, windowsHide: true });
+        const options = {
+            hostname: '127.0.0.1',
+            port: serverPort,
+            path: '/v1/human/tool',
+            method: 'POST',
+            timeout: timeoutMs,
+            headers: {
+                'Content-Type': 'text/plain;charset=UTF-8',
+                'Authorization': `Bearer ${serverKey}`,
+                'Content-Length': Buffer.byteLength(toolRequestBody)
+            }
+        };
 
-        let stdoutData = '';
-        let stderrData = '';
+        const req = http.request(options, (res) => {
+            let data = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
 
-        pythonProcess.stdout.on('data', (data) => { stdoutData += data.toString(); });
-        pythonProcess.stderr.on('data', (data) => { stderrData += data.toString(); });
-
-        pythonProcess.on('close', (code) => {
-            if (code === 0) {
-                try {
-                    const parsed = JSON.parse(stdoutData);
-                    if (parsed.status === 'success') {
-                        resolve(parsed.result);
-                    } else {
-                        reject(new Error(parsed.error?.message || 'Python script reported an error.'));
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try {
+                        const parsed = JSON.parse(data);
+                        resolve(parsed);
+                    } catch (e) {
+                        reject(new Error(`Failed to parse response: ${e.message}. Raw: ${data.substring(0, 100)}`));
                     }
-                } catch (e) {
-                    reject(new Error('Failed to parse Python script output: ' + e.message));
+                } else {
+                    let errorMessage = `HTTP Error ${res.statusCode}`;
+                    try {
+                        const parsed = JSON.parse(data);
+                        errorMessage = parsed.error || parsed.plugin_error || parsed.plugin_execution_error || errorMessage;
+                    } catch (e) { }
+                    reject(new Error(errorMessage));
                 }
-            } else {
-                reject(new Error(`Script ${scriptName} exited with code ${code}: ${stderrData}`));
-            }
+            });
         });
 
-        pythonProcess.on('error', (err) => reject(new Error('Failed to start Python script: ' + err.message)));
+        req.on('error', (e) => {
+            reject(new Error(`Request failed: ${e.message}`));
+        });
 
-        pythonProcess.stdin.write(JSON.stringify(params));
-        pythonProcess.stdin.end();
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error(`ScreenPilot request timed out after ${timeoutMs}ms.`));
+        });
+
+        req.write(toolRequestBody);
+        req.end();
     });
 }
 
@@ -85,7 +93,8 @@ class CapturePreprocessor {
             return messages;
         }
 
-        const placeholderRegex = /{{\s*(VCPCameraCapture|VCPScreenShot)(?:\((\d+)\))?\s*}}/g;
+        // 新正则支持 {{VCPScreenShot}}, {{VCPScreenShot:窗口标题}} 和 {{VCPCameraCapture(N)}}
+        const placeholderRegex = /{{\s*(VCPScreenShot(?::([^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
         const matches = [...systemPrompt.content.matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
@@ -94,35 +103,51 @@ class CapturePreprocessor {
 
         // --- Parallel Execution Logic ---
         const captureTasks = [];
-        let screenshotNeeded = false;
-        let cameraCaptureNeeded = false;
+        const seenTargets = new Set(); // 防止对同一个窗口截获多次
 
         for (const match of matches) {
-            const command = match[1];
-            if (command === 'VCPScreenShot' && !screenshotNeeded) {
-                screenshotNeeded = true;
-                captureTasks.push({
-                    name: 'PyScreenshot',
-                    params: {},
-                    mode: currentConfig.PLACEHOLDER_SCREENSHOT_MODE || 'full_analysis'
-                });
-            }
-            if (command === 'VCPCameraCapture' && !cameraCaptureNeeded) {
-                cameraCaptureNeeded = true;
-                const cameraIndexStr = match[2];
-                captureTasks.push({
-                    name: 'PyCameraCapture',
-                    params: { camera_index: cameraIndexStr ? parseInt(cameraIndexStr, 10) : 0 },
-                    mode: currentConfig.PLACEHOLDER_CAMERA_MODE || 'full_analysis'
-                });
+            const fullMatch = match[1];
+
+            if (fullMatch.startsWith('VCPScreenShot')) {
+                const windowTitle = match[2] ? match[2].trim() : null;
+                const taskKey = windowTitle ? `screen_${windowTitle}` : 'screen_full';
+
+                if (!seenTargets.has(taskKey)) {
+                    seenTargets.add(taskKey);
+                    captureTasks.push({
+                        type: 'screen',
+                        params: windowTitle ? { windowTitle } : {}
+                    });
+                }
+            } else if (fullMatch.startsWith('VCPCameraCapture')) {
+                const cameraIndex = match[3] ? parseInt(match[3], 10) : 0;
+                const taskKey = `camera_${cameraIndex}`;
+
+                if (!seenTargets.has(taskKey)) {
+                    seenTargets.add(taskKey);
+                    captureTasks.push({
+                        type: 'camera',
+                        cameraIndex: cameraIndex
+                    });
+                }
             }
         }
 
-        const promises = captureTasks.map(task => 
-            executePythonPluginWithPerfectEnvironment(task.name, task.params, task.mode)
-                .then(result => ({ name: task.name, status: 'success', data: result }))
-                .catch(e => ({ name: task.name, status: 'error', message: e.message }))
-        );
+        const promises = captureTasks.map(task => {
+            if (task.type === 'screen') {
+                return callScreenPilot(task.params)
+                    .then(result => ({ type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'success', data: result }))
+                    .catch(e => ({ type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'error', message: e.message }));
+            } else {
+                // 目前分布式架构仅接管了屏幕截图，未开发分布式的摄像头工具。
+                return Promise.resolve({
+                    type: 'camera',
+                    index: task.cameraIndex,
+                    status: 'error',
+                    message: "Distributed VCPCameraCapture is not yet implemented."
+                });
+            }
+        });
 
         const settledResults = await Promise.all(promises);
 
@@ -140,7 +165,8 @@ class CapturePreprocessor {
                     userContent.push(...result.data.content);
                 }
             } else {
-                userContent.push({ type: 'text', text: `[Capture Error for ${result.name}: ${result.message}]` });
+                const taskName = result.type === 'screen' ? `ScreenShot(${result.title})` : `CameraCapture(${result.index})`;
+                userContent.push({ type: 'text', text: `[Capture Error for ${taskName}: ${result.message}]` });
             }
         }
 
@@ -169,7 +195,12 @@ class CapturePreprocessor {
         } else {
             vcpProjectBasePath = path.join(__dirname, '..', '..');
         }
-        console.log('[CapturePreprocessor] Initialized with parallel execution logic.');
+
+        // Caching PORT and Key for the internal HTTP requests
+        if (initialConfig.PORT) serverPort = initialConfig.PORT;
+        if (initialConfig.Key) serverKey = initialConfig.Key;
+
+        console.log('[CapturePreprocessor] Initialized as distributed facade using ScreenPilot.');
     }
 }
 
