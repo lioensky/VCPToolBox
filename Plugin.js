@@ -871,6 +871,10 @@ class PluginManager {
         if (imageServerKey) {
             additionalEnv.IMAGESERVER_IMAGE_KEY = imageServerKey;
         }
+        const fileServerKey = this.getResolvedPluginConfigValue('ImageServer', 'File_Key');
+        if (fileServerKey) {
+            additionalEnv.IMAGESERVER_FILE_KEY = fileServerKey;
+        }
 
         // Pass CALLBACK_BASE_URL and PLUGIN_NAME to asynchronous plugins
         if (plugin.pluginType === 'asynchronous') {

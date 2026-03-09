@@ -2,6 +2,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 // --- Load environment variables ---
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
@@ -11,6 +12,12 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env') 
 const DEBUG_MODE = (process.env.DebugMode || "false").toLowerCase() === "true";
 const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
+
+// ImageServer 相关配置（由 Plugin.js 自动注入）
+const SERVER_PORT = process.env.SERVER_PORT;
+const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
+const IMAGESERVER_FILE_KEY = process.env.IMAGESERVER_FILE_KEY;
+const VAR_HTTP_URL = process.env.VarHttpUrl;
 
 // Config for 'create' command
 const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt";
@@ -71,7 +78,7 @@ function isPathWithinBase(targetPath, basePath) {
     const resolvedBase = path.resolve(basePath);
     // 确保目标路径以基础路径开头（加 sep 防止 /base123 匹配 /base）
     return resolvedTarget === resolvedBase ||
-           resolvedTarget.startsWith(resolvedBase + path.sep);
+        resolvedTarget.startsWith(resolvedBase + path.sep);
 }
 
 // --- Tag Processing Functions (for 'create' command) ---
@@ -137,6 +144,117 @@ async function processTags(contentText, externalTag) {
     }
 }
 
+// --- Local File URL Processing ---
+/**
+ * 将内容中的 file:// 本地路径转换为 ImageServer 内网 URL。
+ * 同时处理 Markdown 图片 ![alt](file://...) 和普通链接 [text](file://...)。
+ * 需要 PROJECT_BASE_PATH、SERVER_PORT、IMAGESERVER_IMAGE_KEY/FILE_KEY、VarHttpUrl 环境变量。
+ * 如果缺少这些变量，则原样返回内容。
+ * @param {string} content - 日记内容
+ * @returns {Promise<string>} 替换后的内容
+ */
+/**
+ * 清理文件名，使其适合用于 URL（去除特殊字符，保留语义）。
+ * @param {string} name - 原始文件名（不含扩展名）
+ * @returns {string} 清理后的文件名
+ */
+function sanitizeServerFilename(name) {
+    return name
+        .replace(/[\\/:*?"<>|]/g, '_') // Windows 非法字符
+        .replace(/\s+/g, '_')           // 空格转下划线
+        .replace(/_+/g, '_')            // 合并连续下划线
+        .replace(/^_+|_+$/g, '')        // 去除首尾下划线
+        .substring(0, 80)               // 限制长度，避免路径过长
+        || 'file';
+}
+
+async function processLocalFiles(content) {
+    if (!projectBasePath || !SERVER_PORT || !VAR_HTTP_URL) {
+        debugLog('processLocalFiles: 缺少必要的环境变量（PROJECT_BASE_PATH/SERVER_PORT/VarHttpUrl），跳过转换。');
+        return content;
+    }
+
+    let result = content;
+
+    // 1. 处理 Markdown 图片: ![alt](file://...)
+    if (IMAGESERVER_IMAGE_KEY) {
+        const imageRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+        const imageMatches = [...result.matchAll(imageRegex)];
+
+        for (const match of imageMatches) {
+            const fullMatch = match[0];
+            const altText = match[1];
+            const fileUrl = match[2];
+
+            try {
+                // 将 file:// URL 转为本地路径（兼容 Windows）
+                let filePath = fileUrl.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
+                filePath = filePath.replace(/\//g, path.sep);
+
+                const buffer = await fs.readFile(filePath);
+                const ext = path.extname(filePath).toLowerCase() || '.png';
+                const baseName = sanitizeServerFilename(path.basename(filePath, path.extname(filePath)));
+                const generatedFileName = `${crypto.randomBytes(4).toString('hex')}_${baseName}${ext}`;
+                const destDir = path.join(projectBasePath, 'image', 'dailynote');
+                await fs.mkdir(destDir, { recursive: true });
+                await fs.writeFile(path.join(destDir, generatedFileName), buffer);
+
+                const serverUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/dailynote/${generatedFileName}`;
+                result = result.replace(fullMatch, `![${altText}](${serverUrl})`);
+                debugLog(`processLocalFiles: 图片已转换 ${fileUrl} -> ${serverUrl}`);
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    debugLog(`processLocalFiles: 图片文件不存在，跳过: ${fileUrl}`);
+                } else {
+                    console.error(`[DailyNote] processLocalFiles: 读取图片文件失败 ${fileUrl}: ${e.message}`);
+                }
+            }
+        }
+    } else {
+        debugLog('processLocalFiles: 未配置 IMAGESERVER_IMAGE_KEY，跳过图片转换。');
+    }
+
+    // 2. 处理普通文件链接: [text](file://...)
+    //    注意：使用负向前瞻 (?<!!) 排除已处理的图片语法
+    if (IMAGESERVER_FILE_KEY) {
+        const fileRegex = /(?<!!)\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
+        const fileMatches = [...result.matchAll(fileRegex)];
+
+        for (const match of fileMatches) {
+            const fullMatch = match[0];
+            const linkText = match[1];
+            const fileUrl = match[2];
+
+            try {
+                let filePath = fileUrl.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
+                filePath = filePath.replace(/\//g, path.sep);
+
+                const buffer = await fs.readFile(filePath);
+                const ext = path.extname(filePath).toLowerCase() || '.bin';
+                const baseName = sanitizeServerFilename(path.basename(filePath, path.extname(filePath)));
+                const generatedFileName = `${crypto.randomBytes(4).toString('hex')}_${baseName}${ext}`;
+                const destDir = path.join(projectBasePath, 'file', 'dailynote');
+                await fs.mkdir(destDir, { recursive: true });
+                await fs.writeFile(path.join(destDir, generatedFileName), buffer);
+
+                const serverUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_FILE_KEY}/files/dailynote/${generatedFileName}`;
+                result = result.replace(fullMatch, `[${linkText}](${serverUrl})`);
+                debugLog(`processLocalFiles: 文件已转换 ${fileUrl} -> ${serverUrl}`);
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    debugLog(`processLocalFiles: 文件不存在，跳过: ${fileUrl}`);
+                } else {
+                    console.error(`[DailyNote] processLocalFiles: 读取文件失败 ${fileUrl}: ${e.message}`);
+                }
+            }
+        }
+    } else {
+        debugLog('processLocalFiles: 未配置 IMAGESERVER_FILE_KEY，跳过普通文件转换。');
+    }
+
+    return result;
+}
+
 // --- 'create' Command Logic ---
 async function handleCreateCommand(args) {
     // 兼容 'Date'/'dateString', 'Content'/'contentText', 和 'maid'/'maidName' (case-insensitive for maid)
@@ -151,7 +269,9 @@ async function handleCreateCommand(args) {
     }
 
     try {
-        const processedContent = await processTags(contentText, tag);
+        // 先将 file:// 本地路径转换为 ImageServer 内网 URL
+        const fileConvertedContent = await processLocalFiles(contentText);
+        const processedContent = await processTags(fileConvertedContent, tag);
         debugLog('Content after tag processing (length):', processedContent.length);
 
         const trimmedMaidName = maid.trim();
@@ -197,7 +317,7 @@ async function handleCreateCommand(args) {
 
         const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
         const fileExtension = `.${CONFIGURED_EXTENSION}`;
-        
+
         let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
         let filePath = path.join(dirPath, finalFileName);
         let counter = 1;
@@ -249,7 +369,7 @@ async function handleUpdateCommand(args) {
     try {
         let modificationDone = false;
         let modifiedFilePath = null;
-        
+
         // 构建搜索顺序：优先文件夹 + 其他所有文件夹
         const priorityDirs = [];  // 优先搜索的文件夹
         const otherDirs = [];     // 其他文件夹
@@ -267,10 +387,10 @@ async function handleUpdateCommand(args) {
                 // 格式: [小克的知识]小克 -> 优先在 "小克的知识" 文件夹找
                 const priorityFolder = sanitizePathComponent(match[1]);
                 debugLog(`Maid specifies priority folder (sanitized): '${priorityFolder}'`);
-                
+
                 for (const dirEntry of allDirs) {
                     const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
-                    
+
                     // 安全检查：确保路径在 dailyNoteRootPath 内
                     if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
                         debugLog(`Skipping unsafe directory during update: ${dirPath}`);
@@ -283,7 +403,7 @@ async function handleUpdateCommand(args) {
                         otherDirs.push({ name: dirEntry.name, path: dirPath });
                     }
                 }
-                
+
                 if (priorityDirs.length === 0) {
                     debugLog(`Priority folder '${priorityFolder}' not found, will search all folders.`);
                 }
@@ -291,7 +411,7 @@ async function handleUpdateCommand(args) {
                 // 格式: 小克 -> 优先在以 "小克" 开头的文件夹找
                 const sanitizedMaid = sanitizePathComponent(maid);
                 debugLog(`Maid specified: '${maid}' (sanitized: '${sanitizedMaid}'). Prioritizing directories starting with this name.`);
-                
+
                 for (const dirEntry of allDirs) {
                     const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
 
