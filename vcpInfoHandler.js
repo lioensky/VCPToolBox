@@ -97,10 +97,10 @@ function formatVcpInfoToText(toolName, status, pluginResult) {
     const readableContent = extractReadableText(pluginResult);
     const statusIcon = status === 'success' ? '✅' : '❌';
 
-    const textBlock = `\n<<<[ROLE_DIVIDE_USER]>>>\n[[VCP调用结果信息汇总:\n- 工具名称: ${toolName}\n- 执行状态: ${statusIcon} ${status.toUpperCase()}\n- 返回内容: ${readableContent}\nVCP调用结果结束]]\n<<<[END_ROLE_DIVIDE_USER]>>>\n`;
+    const textBlock = `[[VCP调用结果信息汇总:\n- 工具名称: ${toolName}\n- 执行状态: ${statusIcon} ${status.toUpperCase()}\n- 返回内容: ${readableContent}\nVCP调用结果结束]]`;
 
     // 在前后添加换行符，使其在聊天流中作为独立的块出现
-    return `${textBlock}`;
+    return `\n${textBlock}\n`;
 }
 
 /**

@@ -319,15 +319,38 @@ class StreamHandler {
       const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
-      // VCP 信息展示
+      // VCP 信息展示 - 批量包裹为单个 USER 角色
+      let hasStartedUserBlock = false;
       for (let i = 0; i < normalCalls.length; i++) {
         const toolCall = normalCalls[i];
         const result = toolResults[i];
         const forceThisOne = !shouldShowVCP && toolCall.markHistory;
 
         if ((shouldShowVCP || forceThisOne) && !res.writableEnded && !res.destroyed) {
+          if (!hasStartedUserBlock && enableRoleDivider) {
+             try {
+                // start the user block
+                res.write(`data: ${JSON.stringify({
+                  id: `chatcmpl-vcp-start-${Date.now()}`,
+                  object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: "\n<<<[ROLE_DIVIDE_USER]>>>\n" }, finish_reason: null }]
+                })}\n\n`);
+                hasStartedUserBlock = true;
+             } catch (e) {}
+          }
           vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
         }
+      }
+      
+      if (hasStartedUserBlock && !res.writableEnded && !res.destroyed && enableRoleDivider) {
+         try {
+            // close the user block
+            res.write(`data: ${JSON.stringify({
+              id: `chatcmpl-vcp-end-${Date.now()}`,
+              object: "chat.completion.chunk",
+              choices: [{ index: 0, delta: { content: "\n<<<[END_ROLE_DIVIDE_USER]>>>\n" }, finish_reason: null }]
+            })}\n\n`);
+         } catch(e) {}
       }
 
       // RAG 刷新

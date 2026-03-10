@@ -171,7 +171,8 @@ class NonStreamHandler {
         const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
         if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
-        // VCP 信息展示
+        // VCP 信息展示 - 批量包裹为单个 USER 角色
+        let hasStartedUserBlock = false;
         for (let i = 0; i < normalCalls.length; i++) {
           const toolCall = normalCalls[i];
           const result = toolResults[i];
@@ -179,8 +180,18 @@ class NonStreamHandler {
 
           if (shouldShowVCP || forceThisOne) {
             const vcpText = vcpInfoHandler.streamVcpInfo(null, originalBody.model, toolCall.name, result.success ? 'success' : 'error', result.raw || result.error, abortController);
-            if (vcpText) conversationHistoryForClient.push(vcpText);
+            if (vcpText) {
+              if (!hasStartedUserBlock && enableRoleDivider) {
+                conversationHistoryForClient.push('\n<<<[ROLE_DIVIDE_USER]>>>\n');
+                hasStartedUserBlock = true;
+              }
+              conversationHistoryForClient.push(vcpText);
+            }
           }
+        }
+        
+        if (hasStartedUserBlock && enableRoleDivider) {
+           conversationHistoryForClient.push('\n<<<[END_ROLE_DIVIDE_USER]>>>\n');
         }
 
         const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (k, v) =>
