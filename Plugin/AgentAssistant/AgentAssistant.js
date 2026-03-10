@@ -266,19 +266,58 @@ async function processToolCall(args) {
 
     // Handle querying a delegation status
     if (query_delegation) {
-        if (!activeDelegations.has(query_delegation)) {
-            return { status: "error", error: `未能找到委托任务 (ID: ${query_delegation})。任务可能已经结束或ID无效。` };
-        }
-        const state = activeDelegations.get(query_delegation);
-        return {
-            status: "success",
-            result: {
-                content: [{
-                    type: "text",
-                    text: `委托任务 (ID: ${query_delegation}) 的当前状态为: ${state.status}。被委托 Agent: ${state.agentName}。已执行轮数: ${state.currentRound}/${DELEGATION_MAX_ROUNDS}。运行时长: ${Math.round((Date.now() - state.startTime) / 1000)}s。`
-                }]
+        if (activeDelegations.has(query_delegation)) {
+            const state = activeDelegations.get(query_delegation);
+            return {
+                status: "success",
+                result: {
+                    content: [{
+                        type: "text",
+                        text: `委托任务 (ID: ${query_delegation}) 仍在进行中。当前状态: ${state.status}。被委托 Agent: ${state.agentName}。已执行轮数: ${state.currentRound}/${DELEGATION_MAX_ROUNDS}。已运行时长: ${Math.round((Date.now() - state.startTime) / 1000)}s。`
+                    }]
+                }
+            };
+        } else {
+            // Check if the result file already exists signaling completion
+            try {
+                // Check long-term persistence MD file first
+                const agentNameMatch = query_delegation.match(/^aa-delegation-\d+-([a-f0-9]+)$/); // Best effort, although we don't know agent name exactly from ID alone. Wait, we can regex it from the file names if we list dir, but better just check JSON first.
+                const jsonFilePath = path.join(__dirname, '..', '..', 'VCPAsyncResults', `AgentAssistant-${query_delegation}.json`);
+
+                let completionMsg = "";
+
+                if (fs.existsSync(jsonFilePath)) {
+                    completionMsg = `委托任务 (ID: ${query_delegation}) 已在此前处理完毕！相关的完成报告已经被保存到系统中。\n这个结果会在您的所有上下文中动态生效，您可以直接认为该任务已经完成。`;
+                }
+
+                // Also check if we have the MD file
+                const docsDir = path.join(__dirname, '..', '..', 'file', 'document', 'AgentTask');
+                if (fs.existsSync(docsDir)) {
+                    const files = fs.readdirSync(docsDir);
+                    const matchedFile = files.find(f => f.includes(query_delegation) && f.endsWith('.md'));
+                    if (matchedFile) {
+                        const mdContent = fs.readFileSync(path.join(docsDir, matchedFile), 'utf-8');
+                        completionMsg = `委托任务 (ID: ${query_delegation}) 已经完成！\n\n文件已永久归档至: \`file/document/AgentTask/${matchedFile}\`\n\n**文档内容速览:**\n\n${mdContent}`;
+                    }
+                }
+
+                if (completionMsg) {
+                    return {
+                        status: "success",
+                        result: {
+                            content: [{
+                                type: "text",
+                                text: completionMsg
+                            }]
+                        }
+                    };
+                }
+            } catch (err) {
+                // Ignore file access errors
             }
-        };
+
+            return { status: "error", error: `未能找到委托任务 (ID: ${query_delegation})。系统内存中已不存在此任务且未查询到完成记录，可能是遇到错误崩溃或ID无效。` };
+        }
     }
 
     if (!agent_name || !prompt) {
@@ -583,7 +622,45 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
     } finally {
         activeSessionLocks.delete(lockKey);
         activeDelegations.delete(delegationId);
-        await sendDelegationCallback(delegationId, completionStatus, finalReport || "未知错误导致无报告", agentConfig.baseName);
+
+        const secureReport = finalReport || "未知错误导致无报告";
+
+        // Save to AgentTask Document Directory
+        await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
+
+        await sendDelegationCallback(delegationId, completionStatus, secureReport, agentConfig.baseName);
+    }
+}
+
+/**
+ * Archives the completed task report as a Markdown file.
+ */
+async function archiveDelegationReport(delegationId, agentName, status, report, taskPrompt) {
+    try {
+        const docDir = path.join(__dirname, '..', '..', 'file', 'document', 'AgentTask');
+        // Ensure directory exists
+        if (!fs.existsSync(docDir)) {
+            fs.mkdirSync(docDir, { recursive: true });
+        }
+
+        const fileName = `${agentName}_${delegationId}.md`;
+        const filePath = path.join(docDir, fileName);
+
+        const now = new Date();
+        const dateString = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+        const fileContent = `# 委托任务归档报告: ${delegationId}\n\n` +
+            `- **执行者:** ${agentName}\n` +
+            `- **生成时间:** ${dateString}\n` +
+            `- **任务状态:** ${status}\n\n` +
+            `## 原始委托要求\n\n> ${String(taskPrompt).split('\n').join('\n> ')}\n\n` +
+            `---\n\n` +
+            `## 最终执行结果\n\n${report}\n`;
+
+        fs.writeFileSync(filePath, fileContent, 'utf-8');
+        if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Archived report to ${filePath}`);
+    } catch (e) {
+        console.error(`[AgentAssistant Delegation] Failed to archive report file for ${delegationId}:`, e.message);
     }
 }
 
