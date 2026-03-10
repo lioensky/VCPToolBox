@@ -276,7 +276,7 @@ class LightMemoPlugin {
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
             const hasCore = Array.isArray(core_tags) && core_tags.length > 0;
-            console.log(`[LightMemo] Applying TagMemo V3 boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
+            console.log(`[LightMemo] Applying TagMemo V6 boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
 
             // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
             const boostResult = this.vectorDBManager.applyTagBoost(
@@ -294,10 +294,10 @@ class LightMemoPlugin {
                     const matched = tagBoostInfo.matchedTags || [];
                     const coreMatched = tagBoostInfo.coreTagsMatched || [];
                     if (coreMatched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V3 Spotlight: [${coreMatched.join(', ')}]`);
+                        console.log(`[LightMemo] TagMemo V6 Spotlight: [${coreMatched.join(', ')}]`);
                     }
                     if (matched.length > 0) {
-                        console.log(`[LightMemo] TagMemo V3 Matched: [${matched.slice(0, 5).join(', ')}]`);
+                        console.log(`[LightMemo] TagMemo V6 Matched: [${matched.slice(0, 5).join(', ')}]`);
                     }
                 }
             }

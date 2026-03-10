@@ -338,8 +338,8 @@ class KnowledgeBaseManager {
         try {
             let searchVecFloat;
             if (tagBoost > 0) {
-                // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V3)
-                const boostResult = this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+                // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V6)
+                const boostResult = this._applyTagBoostV6(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
             } else {
@@ -399,7 +399,7 @@ class KnowledgeBaseManager {
         let tagInfo = null;
 
         if (tagBoost > 0) {
-            const boostResult = this._applyTagBoostV3(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
+            const boostResult = this._applyTagBoostV6(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
             searchVecFloat = boostResult.vector;
             tagInfo = boostResult.info;
         } else {
@@ -450,9 +450,9 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating 增强版
+     * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating + LIF Spike Propagation (V6)
      */
-    _applyTagBoostV3(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
+    _applyTagBoostV6(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
         const debug = true;
         const originalFloat32 = vector instanceof Float32Array ? vector : new Float32Array(vector);
         const dim = originalFloat32.length;
@@ -489,9 +489,9 @@ class KnowledgeBaseManager {
             const dynamicCoreBoostFactor = coreRange[0] + (coreMetric * (coreRange[1] - coreRange[0]));
 
             if (debug) {
-                console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
-                console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
-                console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
+                console.log(`[TagMemo-V6] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
+                console.log(`[TagMemo-V6] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
+                console.log(`[TagMemo-V6] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
             }
 
             // [4] 收集金字塔中的所有 Tags 并应用“世界观门控”与“语言补偿”
@@ -556,32 +556,104 @@ class KnowledgeBaseManager {
                 });
             });
 
-            // [4.5] 逻辑分支拉回 (Logic Pull-back)
-            // 利用共现矩阵拉回与第一梯队 Tag 强相关的逻辑词
+            // [4.5] 仿脑认知扩散 (Spike Propagation / Lif-Router)
+            // 🔧 最终形态：融合工程鲁棒性与真实拓扑涌现
             if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
-                // 🌟 增强逻辑拉回：从前 5 个高权重标签中拉回关联词，且增加拉回深度
-                const topTags = allTags.slice(0, 5);
-                topTags.forEach(parentTag => {
-                    const related = this.tagCooccurrenceMatrix.get(parentTag.id);
-                    if (related) {
-                        // 找回前 4 个最相关的关联词（提升高频实体的召回机会）
-                        const sortedRelated = Array.from(related.entries())
-                            .sort((a, b) => b[1] - a[1])
-                            .slice(0, 4);
+                // 1. 初始注入：Query 命中的种子 Tags 及其初始"膜电位" 
+                const activeNodes = new Map();
+                allTags.forEach(t => {
+                    activeNodes.set(t.id, t.adjustedWeight);
+                });
 
-                        sortedRelated.forEach(([relId, weight]) => {
-                            if (!seenTagIds.has(relId)) {
-                                // 仅记录 ID，稍后统一批量查询
-                                allTags.push({
-                                    id: relId,
-                                    adjustedWeight: parentTag.adjustedWeight * 0.5, // 关联词权重减半
-                                    isPullback: true
-                                });
-                                seenTagIds.add(relId);
-                            }
+                const MAX_HOPS = 2;                 // 两跳扩散，兼顾深度与性能
+                const FIRING_THRESHOLD = 0.10;      // 提高触发门槛，抑制微弱噪音
+                const DECAY_FACTOR = 0.3;           // 极强的突触衰减，防止能量无限放大
+                const MAX_EMERGENT_NODES = 50;      // 🔧 老工程师的智慧：涌现节点总数强截断
+                const MAX_NEIGHBORS_PER_NODE = 20;  // 限制单节点扇出
+
+                // 2. 迭代扩散网络
+                for (let hop = 0; hop < MAX_HOPS; hop++) {
+                    const nextWave = new Map();
+
+                    for (const [nodeId, energy] of activeNodes.entries()) {
+                        // 🌟 莱恩/小克原则：所有节点，只要达到电位阈值，都可以向下放电！这就是拓扑涟漪！
+                        if (energy < FIRING_THRESHOLD) continue;
+
+                        const synapses = this.tagCooccurrenceMatrix.get(nodeId);
+                        if (!synapses) continue;
+
+                        // 提取前 N 个最强相关突触
+                        const sortedSynapses = Array.from(synapses.entries())
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, MAX_NEIGHBORS_PER_NODE);
+
+                        // 脉冲传递
+                        for (const [neighborId, coocWeight] of sortedSynapses) {
+                            const injectedCurrent = energy * coocWeight * DECAY_FACTOR;
+                            
+                            // 🔧 老工程师的智慧：微电流直接丢弃，极大缩减 Map 大小与计算量
+                            if (injectedCurrent < 0.01) continue; 
+
+                            const accumulated = nextWave.get(neighborId) || 0;
+                            nextWave.set(neighborId, accumulated + injectedCurrent);
+                        }
+                    }
+
+                    // 3. 将新一波激发的电流叠加到全局激活总图中
+                    let propagated = false;
+                    for (const [nid, newEnergy] of nextWave.entries()) {
+                        const oldEnergy = activeNodes.get(nid) || 0;
+                        activeNodes.set(nid, oldEnergy + newEnergy);
+
+                        if (newEnergy > 0.01) {
+                            propagated = true;
+                        }
+                    }
+
+                    if (!propagated) break;
+                }
+
+                // 4. 将涌现出来的高电位节点，重新塞回到 allTags
+                const allTagsMap = new Map();
+                allTags.forEach(t => allTagsMap.set(t.id, t));
+
+                const newAllTags = [];
+                const emergentCandidates = [];
+                seenTagIds.clear();
+
+                for (const [nid, emergentEnergy] of activeNodes.entries()) {
+                    if (allTagsMap.has(nid)) {
+                        // 原始就有这个 Tag (种子节点)
+                        const existingTag = allTagsMap.get(nid);
+                        // 🌟 小克的精妙细节：取 max，防止种子被双向/循环共现不合理膨胀
+                        existingTag.adjustedWeight = Math.max(existingTag.adjustedWeight, emergentEnergy);
+                        newAllTags.push(existingTag);
+                        seenTagIds.add(nid);
+                    } else {
+                        // 纯粹因为拓扑传导「涌现」出来的关联节点
+                        emergentCandidates.push({
+                            id: nid,
+                            adjustedWeight: emergentEnergy,
+                            isPullback: true // 涌现节点标记
                         });
                     }
+                }
+                
+                // 🔧 老工程师的智慧：只保留能量最高的 Top-K 涌现节点，防止污染下游去重阶段的语义空间
+                emergentCandidates.sort((a, b) => b.adjustedWeight - a.adjustedWeight);
+                const topEmergent = emergentCandidates.slice(0, MAX_EMERGENT_NODES);
+                topEmergent.forEach(t => {
+                    newAllTags.push(t);
+                    seenTagIds.add(t.id);
                 });
+
+                if (debug && topEmergent.length > 0) {
+                    console.log(`[TagMemo-V6 Spike] Seeds=${allTagsMap.size}, Emergent=${topEmergent.length} (capped from ${emergentCandidates.length}), Total=${newAllTags.length}`);
+                }
+                
+                // 将 allTags 指向经历过脉冲洗礼的完整网络
+                allTags.length = 0;
+                allTags.push(...newAllTags);
             }
 
             // [4.6] 核心 Tag 补全 (确保聚光灯不遗漏)
@@ -612,7 +684,7 @@ class KnowledgeBaseManager {
                             }
                         });
                     } catch (e) {
-                        console.warn('[TagMemo-V3] Failed to supplement core tags:', e.message);
+                        console.warn('[TagMemo-V6] Failed to supplement core tags:', e.message);
                     }
                 }
             }
@@ -736,7 +808,7 @@ class KnowledgeBaseManager {
             };
 
         } catch (e) {
-            console.error('[KnowledgeBase] TagMemo V3 CRITICAL FAIL:', e);
+            console.error('[KnowledgeBase] TagMemo V6 CRITICAL FAIL:', e);
             return { vector: originalFloat32, info: null };
         }
     }
@@ -748,8 +820,8 @@ class KnowledgeBaseManager {
      * @returns {{vector: Float32Array, info: object|null}} - 返回增强后的向量和调试信息
      */
     applyTagBoost(vector, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
-        // 🚀 升级：默认使用 V3 增强算法，提供更深层的语义关联和噪音抑制
-        return this._applyTagBoostV3(vector, tagBoost, coreTags, coreBoostFactor);
+        // 🚀 升级：默认使用 V6 增强算法 (LIF Spike Propagation)，提供真正的认知拓扑涌现
+        return this._applyTagBoostV6(vector, tagBoost, coreTags, coreBoostFactor);
     }
 
     /**

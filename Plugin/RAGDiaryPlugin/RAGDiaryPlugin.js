@@ -1938,7 +1938,7 @@ class RAGDiaryPlugin {
 
         // ✅ 🌟 原子级复刻 LightMemo 流程：利用 applyTagBoost 预先感应语义 Tag
         // 逻辑：不再使用 Jieba 提取关键词，也不使用简单的 searchSimilarTags。
-        // 而是直接调用 V3 引擎的 applyTagBoost，让残差金字塔（ResidualPyramid）从向量中感应出最匹配的标签。
+        // 而是直接调用 V6 (Spike) 引擎的 applyTagBoost，让残差金字塔（ResidualPyramid）从向量中感应出最匹配的标签。
         // 这才是 LightMemo 能够返回“完美标签”的真正原因。
         let coreTagsForSearch = [];
         if (tagWeight !== null && this.vectorDBManager.applyTagBoost) {
