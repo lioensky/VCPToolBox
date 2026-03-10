@@ -1898,6 +1898,11 @@ class RAGDiaryPlugin {
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
         const useRerank = modifiers.includes('::Rerank');
+        
+        // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]:[minScore]:[whitelistTags]
+        // 示例：::TimeDecay30:0.5:Wiki,技巧
+        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?::(\d+\.?\d*))?(?::([\w,]+))?/);
+        const useTimeDecay = !!timeDecayMatch;
 
         // ✅ 新增：解析TagMemo修饰符和权重
         const tagMemoMatch = modifiers.match(/::TagMemo([\d.]+)/);
@@ -2109,6 +2114,83 @@ class RAGDiaryPlugin {
 
             // ✅ 统一添加 source 标识，防止 VCP Info 显示 unknown
             finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: 'rag' }));
+
+            // 🌟 V5.2: 时间衰减重排 (Time Decay Reranking)
+            if (useTimeDecay && finalResultsForBroadcast.length > 0) {
+                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]:[minScore]:[targetTags]
+                const localHalfLife = timeDecayMatch[1] ? parseInt(timeDecayMatch[1]) : null;
+                const localMinScore = timeDecayMatch[2] ? parseFloat(timeDecayMatch[2]) : null;
+                const localTargets = timeDecayMatch[3] ? timeDecayMatch[3].split(',') : [];
+
+                const globalDecayConfig = this.ragParams?.RAGDiaryPlugin?.timeDecay || { halfLifeDays: 30, minScore: 0.5 };
+                const halfLife = localHalfLife ?? globalDecayConfig.halfLifeDays ?? 30;
+                const minScore = localMinScore ?? globalDecayConfig.minScore ?? 0.5;
+                
+                const now = dayjs();
+
+                console.log(`[RAGDiaryPlugin] ⏳ Applying Time Decay (Half-life: ${halfLife} days, MinScore: ${minScore}, Targets: ${localTargets.length > 0 ? localTargets.join(',') : 'ALL'})...`);
+
+                finalResultsForBroadcast = finalResultsForBroadcast.map(result => {
+                    // 0. 检查精准打击目标：如果指定了目标标签，则只有包含目标标签的条目才执行衰减
+                    if (localTargets.length > 0) {
+                        const isTarget = localTargets.some(tag => {
+                            // 1. 匹配向量库结构化标签
+                            if (result.matchedTags && result.matchedTags.includes(tag)) return true;
+                            
+                            // 2. 匹配文本中的标签格式 (支持 #Tag, 【Tag】, 以及姐姐文件里的 Tag: ..., Tag, ...)
+                            const text = result.text;
+                            const tagPattern = new RegExp(`(?:#|【|Tag:.*\\b|\\b)${tag}(?:\\b|】|,)`, 'i');
+                            return tagPattern.test(text);
+                        });
+
+                        if (!isTarget) {
+                            // 不在衰减名单内，保持原分
+                            return result;
+                        }
+                    }
+
+                    // 1. 尝试从文本中提取日期 [YYYY-MM-DD]
+                    let dateStr = null;
+                    const textDateMatch = result.text.match(/\[(\d{4}-\d{2}-\d{2})\]/);
+                    if (textDateMatch) {
+                        dateStr = textDateMatch[1];
+                    } else {
+                        // 2. 回退：尝试从文件名或路径中提取日期
+                        const pathSource = result.sourceFile || result.fullPath || '';
+                        const pathDateMatch = pathSource.match(/(\d{4}[-.]\d{2}[-.]\d{2})/);
+                        if (pathDateMatch) {
+                            dateStr = pathDateMatch[1].replace(/\./g, '-');
+                        }
+                    }
+
+                    if (!dateStr) return result;
+
+                    const entryDate = dayjs(dateStr);
+                    if (!entryDate.isValid()) return result;
+
+                    const diffDays = Math.max(0, now.diff(entryDate, 'day'));
+                    // Score = Score * 0.5 ^ (days / halfLife)
+                    const decayFactor = Math.pow(0.5, diffDays / halfLife);
+                    const originalScore = result.rerank_score ?? result.score ?? 0;
+                    const newScore = originalScore * decayFactor;
+
+                    return {
+                        ...result,
+                        score: newScore,
+                        original_score: originalScore,
+                        decay_factor: decayFactor,
+                        diff_days: diffDays
+                    };
+                });
+
+                // 重新按衰减后的分数排序
+                finalResultsForBroadcast.sort((a, b) => (b.score || 0) - (a.score || 0));
+                
+                // 过滤掉分数过低的结果
+                if (minScore > 0) {
+                    finalResultsForBroadcast = finalResultsForBroadcast.filter(r => (r.score || 0) >= minScore);
+                }
+            }
 
             if (useGroup) {
                 retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
