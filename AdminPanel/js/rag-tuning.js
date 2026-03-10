@@ -28,6 +28,12 @@ const PARAM_METADATA = {
             "meaning": "标签截断的上下限范围。",
             "logic": "用于控制标签截断的动态调整空间。",
             "range": "建议区间: 0.5 ~ 0.9"
+        },
+        "timeDecay": {
+            "name": "时间衰减控制",
+            "meaning": "实现“近因效应”，让越久的记忆权重衰减越快。",
+            "logic": "halfLifeDays (半衰期)：记忆分数减半的天数。支持精准衰减：::TimeDecay[天数]:[最小分数]:[目标Tags]，仅包含目标标签的内容（如Box）才会衰减，其余（如Wiki）保持原分。",
+            "range": "建议区间: 半衰期 15~90 天；最小分数 0.5。此处仅作为全局回退值。"
         }
     },
     "KnowledgeBaseManager": {
