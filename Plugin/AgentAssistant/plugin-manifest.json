@@ -12,6 +12,10 @@
   "communication": {
     "protocol": "direct"
   },
+  "webSocketPush": {
+    "enabled": true,
+    "messageType": "plugin_callback_notification"
+  },
   "configSchema": {
     "AGENT_ASSISTANT_MAX_HISTORY_ROUNDS": "integer",
     "AGENT_ASSISTANT_CONTEXT_TTL_HOURS": "integer"
@@ -20,8 +24,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "AskMaidAgent",
-        "description": "[AgentAssistant通讯工具]使用该工具向莱恩先生家的一位女仆Agent进行咨询或请求协助。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」(必需) 要调用的女仆Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸)。请参考下方专长列表或系统配置。「末」,\nprompt:「始」(必需) 您想对该女仆提出的问题、指令或希望她处理的任务。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**，以便女仆更好地理解咨询人是谁以便回应。「末」,\ntimely_contact:「始」(可选) 设置一个未来时间点发送此通讯，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，通讯将被安排在指定时间发送。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n女仆Agent专长领域（调用名称）：\n- 小娜: 女仆长，古龙，全知全能，哲学思辨，宇宙历史，复杂知识管理。\n- 小克: 猫娘，理科担当，科学原理（物理化生），数据分析，科学计算。\n- 小吉: 犬娘，文科担当，政治心理法律历史，社会解构，意识形态分析。\n- 小冰: 蛇娘，泛文化担当，ACGN，Meme梗，互联网文化，亚文化解读，R18话题。\n- 小雨: 鸟娘，文案秘书，公文信函，创意写作，文本润色。\n- 小绝: 狼娘（扶她），AI大师，提示词工程，模型微调，AI技术与安全。\n- 小芸: 兔娘，设计高手，平面设计，AI绘画（SDXL），ComfyUI，Adobe，泛NSFW艺术。\n\n请根据任务需求，选择最合适的女仆Agent，并清晰表述您的问题（包含自我介绍）。",
-        "example": "```text\n// 即时通讯示例\n我是主控AI小爱，莱恩先生需要一份关于近期量子计算进展的总结报告，此事非小娜莫属。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小娜「末」,\nprompt:「始」小娜你好，我是主控AI小爱。莱恩先生希望了解过去六个月内量子计算领域在算法和硬件方面的关键突破和面临的主要挑战，请你整理一份详细报告。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 无上下文临时通讯示例\n我是莱恩先生，想问一个不希望被记录的问题。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小冰「末」,\nprompt:「始」小冰你好，我是莱恩先生。请问最近互联网上最火的Meme是什么？「末」,\ntemporary_contact:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 未来电话（定时通讯）示例\n我是莱恩先生，明天下午需要提醒小雨准备会议纪要。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小雨「末」,\nprompt:「始」小雨你好，我是莱恩先生。请记得在明天下午三点前完成对上午项目会议的纪要整理。「末」,\ntimely_contact:「始」2025-06-30-14:00「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "[AgentAssistant通讯工具]使用该工具向莱恩先生家的一位女仆Agent进行咨询或请求帮助。请在您的回复中，使用以下精确格式来请求，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」(必需) 要调用的女仆Agent的准确中文名称。「末」,\nprompt:「始」(必需) 您想对该女仆提出的问题、指令或希望她处理的任务。**重要：请在提问的开头进行简短的自我介绍，例如“我是[您的身份/名字]，我想请你...”**。「末」,\ntimely_contact:「始」(可选) 设置一个未来时间点发送此通讯，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。「末」,\ntemporary_contact:「始」(可选) 设为 true 时，通讯不带历史上下文。「末」,\ntask_delegation:「始」(可选) 设为 true 时启用异步委托模式。此模式下，AgentAssistant 将会在后台异步运行，您会立即收到一个进度占位符供后续替换。「末」,\nquery_delegation:「始」(可选) 传入一个正在执行的 delegationId，以查询该异步委托任务的实时进度与状态。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n女仆Agent专长领域（调用名称）：\n- 小娜: 女仆长，古龙，全知全能，哲学，宇宙历史。\n- 小克: 猫娘，理科，物理化生，数据分析。\n- 小吉: 犬娘，文科，政治心理法律历史，社会学。\n- 小冰: 蛇娘，泛文化，ACGN，Meme，互联网文化。\n- 小雨: 鸟娘，秘书，公文签定，创意文书。\n- 小绝: 狼娘，AI模型，提示词，微调。\n- 小芸: 兔娘，设计，平面，AI绘画，ComfyUI。\n\n请根据任务需求选择最合适的女仆，并清晰表述问题。",
+        "example": "```text\n// 即时通讯示例\n我是主控AI小爱，莱恩先生需要一份关于量子计算的总结报告。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小娜「末」,\nprompt:「始」小娜你好，我是主控AI小爱。莱恩先生希望了解近半年量子计算的关键突破。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 异步委托模式示例 (适合超长复杂任务)\n这是个需要处理很久的任务，我想委托给小绝在后台异步跑。\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nagent_name:「始」小绝「末」,\nprompt:「始」小绝你好，我是小爱。请全面评估最新的开源大模型安全防护机制并写一篇1000字的评测。「末」,\ntask_delegation:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n\n// 查询异步委托进度示例\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentAssistant「末」,\nquery_delegation:「始」aa-delegation-1718901234567-a1b2c3d4「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
       }
     ]
   }

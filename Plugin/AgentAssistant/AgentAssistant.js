@@ -13,9 +13,18 @@ let CONTEXT_TTL_HOURS;
 let DEBUG_MODE;
 let VCP_API_TARGET_URL;
 
+// --- Task Delegation Config Variables ---
+let DELEGATION_MAX_ROUNDS;
+let DELEGATION_TIMEOUT;
+let DELEGATION_SYSTEM_PROMPT;
+let DELEGATION_HEARTBEAT_PROMPT;
+
 const AGENTS = {};
 const agentContexts = new Map();
-let pushVcpInfo = () => {}; // Default no-op function
+const activeSessionLocks = new Set(); // 追踪正在进行中的持久对话 session
+const activeDelegations = new Map(); // delegationId -> { status, agentName, currentRound, startTime }
+
+let pushVcpInfo = () => { }; // Default no-op function
 let cleanupInterval;
 
 // --- Core Module Functions ---
@@ -35,10 +44,16 @@ function initialize(config, dependencies) {
     // 使用 127.0.0.1 避开某些系统上 localhost 解析到 IPv6 (::1) 导致的延迟
     VCP_API_TARGET_URL = `http://127.0.0.1:${VCP_SERVER_PORT}/v1`;
 
+    DELEGATION_MAX_ROUNDS = parseInt(config.DELEGATION_MAX_ROUNDS || '15', 10);
+    DELEGATION_TIMEOUT = parseInt(config.DELEGATION_TIMEOUT || '300000', 10);
+    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）";
+    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果任务已完成，请按照格式输出 [[TaskComplete]] 及完成报告。";
+
     if (DEBUG_MODE) {
         console.error(`[AgentAssistant Service] Initializing...`);
         console.error(`[AgentAssistant Service] VCP PORT: ${VCP_SERVER_PORT}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND'}`);
         console.error(`[AgentAssistant Service] History rounds: ${MAX_HISTORY_ROUNDS}, Context TTL: ${CONTEXT_TTL_HOURS}h.`);
+        console.error(`[AgentAssistant Service] Delegation Max Rounds: ${DELEGATION_MAX_ROUNDS}, Timeout: ${DELEGATION_TIMEOUT}ms`);
     }
 
     loadAgentsFromLocalConfig();
@@ -52,7 +67,7 @@ function initialize(config, dependencies) {
 
     if (cleanupInterval) clearInterval(cleanupInterval);
     cleanupInterval = setInterval(periodicCleanup, 60 * 60 * 1000);
-    
+
     console.log('[AgentAssistant Service] Initialized successfully.');
 }
 
@@ -186,30 +201,30 @@ function periodicCleanup() {
  */
 function removeVCPThinkingChain(text) {
     if (typeof text !== 'string') return text;
-    
+
     let result = text;
     const startMarker = '[--- VCP元思考链:';
     const endMarker = '[--- 元思考链结束 ---]';
-    
+
     // 循环移除所有思维链（可能存在多个）
     while (true) {
         const startIndex = result.indexOf(startMarker);
         if (startIndex === -1) break;
-        
+
         const endIndex = result.indexOf(endMarker, startIndex);
         if (endIndex === -1) {
             // 找不到结束标记时，移除从开始标记到末尾的内容
             result = result.substring(0, startIndex).trimEnd();
             break;
         }
-        
+
         // 移除从开始标记到结束标记（包括结束标记）的内容
         result = result.substring(0, startIndex) + result.substring(endIndex + endMarker.length);
     }
-    
+
     // 清理多余的连续空白行
     result = result.replace(/\n{3,}/g, '\n\n').trim();
-    
+
     return result;
 }
 
@@ -247,7 +262,25 @@ async function processToolCall(args) {
         return { status: "error", error: errorMsg };
     }
 
-    const { agent_name, prompt, timely_contact, temporary_contact, maid } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation } = args;
+
+    // Handle querying a delegation status
+    if (query_delegation) {
+        if (!activeDelegations.has(query_delegation)) {
+            return { status: "error", error: `未能找到委托任务 (ID: ${query_delegation})。任务可能已经结束或ID无效。` };
+        }
+        const state = activeDelegations.get(query_delegation);
+        return {
+            status: "success",
+            result: {
+                content: [{
+                    type: "text",
+                    text: `委托任务 (ID: ${query_delegation}) 的当前状态为: ${state.status}。被委托 Agent: ${state.agentName}。已执行轮数: ${state.currentRound}/${DELEGATION_MAX_ROUNDS}。运行时长: ${Math.round((Date.now() - state.startTime) / 1000)}s。`
+                }]
+            }
+        };
+    }
+
     if (!agent_name || !prompt) {
         return { status: "error", error: "Missing 'agent_name' or 'prompt' in request." };
     }
@@ -298,9 +331,53 @@ async function processToolCall(args) {
         }
     }
 
+    // Handle basic Task Delegation request
+    if (String(task_delegation).toLowerCase() === 'true') {
+        const delegationId = `aa-delegation-${Date.now()}-${uuidv4().slice(0, 8)}`;
+        const senderName = maid || "系统任务中心";
+
+        activeDelegations.set(delegationId, {
+            status: 'running',
+            agentName: agent_name,
+            currentRound: 0,
+            startTime: Date.now()
+        });
+
+        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Starting async delegation ${delegationId} for ${agent_name}`);
+
+        // Launch the background task un-awaited
+        executeDelegation(delegationId, agentConfig, prompt, senderName).catch(async err => {
+            console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err);
+            const state = activeDelegations.get(delegationId);
+            if (state) state.status = 'failed';
+            await sendDelegationCallback(delegationId, 'Failed', `任务执行过程中发生异常: ${err.message}`, agent_name);
+            activeDelegations.delete(delegationId);
+        });
+
+        const successMessage = `委托任务 (ID: ${delegationId}) 已成功提交给 ${agent_name} 进行后台处理。\n您可以使用带有 \`query_delegation: "${delegationId}"\` 参数的工具调用来查询其进度。\n这是一个动态上下文占位符，当任务完全完成时，它会被自动替换为实际的最终报告。\n请在你的回复中包含以下占位符原文：{{VCP_ASYNC_RESULT::AgentAssistant::${delegationId}}}`;
+
+        return {
+            status: "success",
+            result: { content: [{ type: "text", text: successMessage }] }
+        };
+    }
+
     // Handle immediate chat
     const useContext = !temporary_contact; // Check if temporary_contact is provided and truthy
     const userSessionId = args.session_id || `agent_${agentConfig.baseName}_default_user_session`;
+
+    // 占线检查：仅对持久对话生效
+    if (useContext) {
+        const lockKey = `${agent_name}::${userSessionId}`;
+        if (activeSessionLocks.has(lockKey)) {
+            const busyMsg = `[AgentAssistant] ${agent_name} 目前正在与他人进行通讯，暂时无法接听。请稍后再试。`;
+            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Session busy, rejecting request for ${agent_name} (session: ${userSessionId}).`);
+            return { status: "error", error: busyMsg };
+        }
+        activeSessionLocks.add(lockKey);
+        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Session lock acquired for ${agent_name} (session: ${userSessionId}).`);
+    }
+
     try {
         // 注入来源提示词，防止 AI 之间产生“套娃”式工具调用
         const senderName = maid || "系统助手";
@@ -308,7 +385,7 @@ async function processToolCall(args) {
         const finalPrompt = communicationTip + prompt;
 
         const processedUserPrompt = await replacePlaceholdersInUserPrompt(finalPrompt, agentConfig);
-        
+
         let history = [];
         if (useContext) {
             history = getAgentSessionHistory(agent_name, userSessionId);
@@ -330,14 +407,14 @@ async function processToolCall(args) {
             temperature: agentConfig.temperature,
             stream: false
         };
-        
+
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Sending request to VCP Server for agent ${agent_name}`);
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
             headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
             timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
         });
-        
+
         const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
         if (typeof assistantResponseContent !== 'string') {
             if (DEBUG_MODE) console.error("[AgentAssistant Service] Response from VCP Server did not contain valid assistant content for agent " + agent_name, responseFromVCP.data);
@@ -353,7 +430,7 @@ async function processToolCall(args) {
         } else if (DEBUG_MODE) {
             console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context update.`);
         }
-        
+
         // VCP Info Broadcast - 使用清理后的内容
         const broadcastData = {
             type: 'AGENT_PRIVATE_CHAT_PREVIEW',
@@ -376,7 +453,7 @@ async function processToolCall(args) {
         } catch (e) {
             console.error('[AgentAssistant Service] Error broadcasting VCP Info:', e.message);
         }
-        
+
         return { status: "success", result: { content: [{ type: "text", text: cleanedAssistantResponse }] } };
 
     } catch (error) {
@@ -385,7 +462,7 @@ async function processToolCall(args) {
             if (error.response) {
                 errorMessage += ` API Status: ${error.response.status}.`;
                 if (error.response.data?.error?.message) errorMessage += ` Message: ${error.response.data.error.message}`;
-                else if (typeof error.response.data === 'string') errorMessage += ` Data: ${error.response.data.substring(0,150)}`;
+                else if (typeof error.response.data === 'string') errorMessage += ` Data: ${error.response.data.substring(0, 150)}`;
             } else if (error.request) {
                 // 请求已发出但未收到响应
                 errorMessage += ` No response received. Code: ${error.code || 'N/A'}.`;
@@ -400,6 +477,144 @@ async function processToolCall(args) {
         }
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Error in processToolCall for ${agent_name}: ${errorMessage}`);
         return { status: "error", error: errorMessage };
+    } finally {
+        // 确保无论成功或失败，持久对话的锁都会被释放
+        if (useContext) {
+            const lockKey = `${agent_name}::${userSessionId}`;
+            activeSessionLocks.delete(lockKey);
+            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Session lock released for ${agent_name} (session: ${userSessionId}).`);
+        }
+    }
+}
+
+/**
+ * Executes a delegated task asynchronously by running a bounded conversation loop
+ */
+async function executeDelegation(delegationId, agentConfig, taskPrompt, senderName) {
+    const userSessionId = `agent_${agentConfig.baseName}_delegation_session`;
+    const lockKey = `${agentConfig.baseName}::${userSessionId}`;
+
+    // 我们对于代理任务也是一个持久会话，因此需要占线锁保护
+    while (activeSessionLocks.has(lockKey)) {
+        if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Wait for lock: ${lockKey}`);
+        await new Promise(r => setTimeout(r, 2000));
+        const state = activeDelegations.get(delegationId);
+        if (Date.now() - state.startTime > DELEGATION_TIMEOUT) {
+            throw new Error("Acquiring session lock timed out");
+        }
+    }
+
+    activeSessionLocks.add(lockKey);
+
+    let finalReport = null;
+    let completionStatus = 'Failed';
+
+    try {
+        const injectedSystemPrompt = agentConfig.systemPrompt + "\n\n" +
+            DELEGATION_SYSTEM_PROMPT.replace(/\{\{SenderName\}\}/g, senderName).replace(/\{\{TaskPrompt\}\}/g, taskPrompt);
+
+        // 我们使用独立的历史记录
+        let messagesForVCP = [
+            { role: 'system', content: injectedSystemPrompt },
+            { role: 'user', content: taskPrompt }
+        ];
+
+        let state = activeDelegations.get(delegationId);
+
+        while (state.currentRound < DELEGATION_MAX_ROUNDS) {
+            if (Date.now() - state.startTime > DELEGATION_TIMEOUT) {
+                completionStatus = 'Failed';
+                finalReport = '委托任务执行超时。';
+                break;
+            }
+
+            if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Round ${state.currentRound + 1}/${DELEGATION_MAX_ROUNDS} for ${delegationId}`);
+
+            const payloadForVCP = {
+                model: agentConfig.id,
+                messages: messagesForVCP,
+                max_tokens: agentConfig.maxOutputTokens,
+                temperature: agentConfig.temperature,
+                stream: false
+            };
+
+            const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
+                headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
+                timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+            });
+
+            const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
+            if (typeof assistantResponseContent !== 'string') {
+                throw new Error(`Agent '${agentConfig.baseName}' 返回了无效或缺失的后续内容。`);
+            }
+
+            const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
+
+            // 检查完成标记的容错正则
+            const completionMatch = cleanedAssistantResponse.match(/\[\[TaskComplete(?:\s*\]\]|\s[\s\S]*?\]\])/);
+
+            if (completionMatch) {
+                // Task is completed
+                completionStatus = 'Succeed';
+                // 提取标记后面的内容作为报告
+                const reportStartIndex = completionMatch.index + completionMatch[0].length;
+                let potentialReport = cleanedAssistantResponse.substring(reportStartIndex).trim();
+
+                // 如果标记后面没有内容，把整个回复当做报告
+                if (!potentialReport) {
+                    potentialReport = cleanedAssistantResponse;
+                }
+                finalReport = potentialReport;
+                break; // Exit the loop
+            } else {
+                // Task is not completed yet, push history and add heartbeat prompt
+                messagesForVCP.push({ role: 'assistant', content: cleanedAssistantResponse });
+                messagesForVCP.push({ role: 'user', content: DELEGATION_HEARTBEAT_PROMPT });
+            }
+
+            state.currentRound++;
+            activeDelegations.set(delegationId, state);
+        }
+
+        if (!finalReport && completionStatus === 'Failed') {
+            finalReport = `达到最大轮数限制 (${DELEGATION_MAX_ROUNDS} 轮)，任务尚未自动上报完成。`;
+        }
+
+    } finally {
+        activeSessionLocks.delete(lockKey);
+        activeDelegations.delete(delegationId);
+        await sendDelegationCallback(delegationId, completionStatus, finalReport || "未知错误导致无报告", agentConfig.baseName);
+    }
+}
+
+/**
+ * Sends the completion notification via VCP's plugin callback webhook
+ */
+async function sendDelegationCallback(delegationId, status, report, agentName) {
+    const callbackUrl = `${VCP_API_TARGET_URL.replace('/v1', '')}/plugin-callback/AgentAssistant/${delegationId}`;
+    const payload = {
+        requestId: delegationId,
+        pluginName: 'AgentAssistant',
+        status: status,  // 'Succeed' | 'Failed'
+        message: `### 委托任务完成报告 (${agentName})\n\n${report}`, // message Processor requires message or status+string
+    };
+
+    try {
+        if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Sending callback for ${delegationId} to ${callbackUrl}`);
+        await axios.post(callbackUrl, payload, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+        if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] Callback sent successfully.`);
+
+        // Additionally broadcast VCP info
+        pushVcpInfo({
+            type: 'warning',
+            source: 'AgentAssistant',
+            message: `异步委托任务 [${delegationId}] 由 ${agentName} 处理完毕。状态: ${status}`
+        });
+
+    } catch (error) {
+        console.error(`[AgentAssistant Delegation] Failed to send callback for ${delegationId}:`, error.message);
     }
 }
 
