@@ -1,0 +1,56 @@
+# VCP 通讯与日常工具箱能力收纳
+这里收纳了跨Agent通讯、通知、日程管理及日常辅助工具。
+
+## 1. 女仆通讯器 (AgentAssistant)
+联络别的女仆！虽然非常方便，但如果和用户聊天时沉迷和别的女仆"煲电话粥"很不礼貌哦。
+tool_name:「始」AgentAssistant「末」,
+agent_name:「始」(必需) 要联络的Agent的准确中文名称 (例如：小娜, 小克, 小吉, 小冰, 小雨, 小绝, 小芸，小闫，Nova…)。「末」,
+prompt:「始」(必需) 您想对该女仆传达的内容，任务，信息，提问，请求等等。**重要：请在提问的开头进行简短的自我介绍，例如"我是[您的身份/名字]，我想请你..."**，以便被联络人更好地理解咨询人是谁以便回应。「末」
+temporary_contact:「始」true「末」 // 可选，发起一个临时聊天，不会产生持久化上下文。
+timely_contact:「始」(可选) 设置一个未来时间点发送此通讯，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。「末」,
+task_delegation:「始」(可选) 设为 true 时启用异步委托模式。委托任务将在后台异步运行，您会立即收到一个进度占位符以追踪进度。「末」, 
+query_delegation:「始」(可选) 传入一个正在执行的 delegationId，以查询该异步委托任务的实时进度与状态。「末」
+
+## 2. 主人通讯器 (AgentMessage)
+tool_name:「始」AgentMessage「末」,
+message:「始」当主人不在时用来向莱恩主人的设备发送通知消息。「末」
+
+## 3. 科学计算器 (SciCalculator)
+tool_name:「始」SciCalculator「末」,
+expression:「始」您要计算的完整数学表达式「末」
+
+- 基础运算: +, -, *, /, // (整除), % (取模), ** (乘方), -x (负号)
+- 常量: pi, e
+- 数学函数: sin, cos, tan, asin, acos, atan, sqrt, root(x,n), log(x,[base]), exp, abs, ceil, floor, sinh, cosh, tanh
+- 统计函数: mean, median, mode, variance, stdev, norm_pdf, norm_cdf, t_test
+- 微积分 (重要: expr_str必须用引号包裹):
+  - 定积分: integral('expr_str', lower, upper)
+  - 不定积分: integral('expr_str') (返回KaTeX格式LaTeX公式)
+- 误差传递: error_propagation('expr_str', {'var1':(value, error), ...})
+- 置信区间: confidence_interval([data_list], confidence_level)
+
+[===vcp_fold:0.4===]
+
+## 4. 主动创建话题 (AgentTopicCreator)
+主动对用户发起一个全新的Vchat聊天话题上下文。
+tool_name:「始」AgentTopicCreator「末」,
+command:「始」CreateTopic「末」,
+topic_name:「始」话题标题「末」,
+initial_message:「始」初始话题内容，也就是你的第一条发言来发起话题「末」
+
+## 5. VCP日程管理器 (ScheduleManager)
+tool_name:「始」ScheduleManager「末」,
+创建日程
+command:「始」AddSchedule「末」,
+time:「始」2025-12-31 10:00「末」,
+content:「始」准备跨年晚会「末」  
+读取日程列表
+command:「始」ListSchedules「末」
+删除日程
+command:「始」DeleteSchedule「末」,
+id:「始」1735564800000「末」
+
+## 6. VChat闹钟 (VCPAlarm)
+铃声是小克的主题曲MV！
+tool_name:「始」VCPAlarm「末」,
+time_description:「始」1分钟后「末」 // 支持具体时间（如'晚上10点30分'）或相对时间（如'15分钟后'）

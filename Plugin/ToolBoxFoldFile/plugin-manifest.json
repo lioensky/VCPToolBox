@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "FileToolBox",
+  "version": "1.0.0",
+  "displayName": "文件工具箱",
+  "description": "该收纳箱收纳了各种物理文件操作相关的工具，用于动态向 Agent 提供说明。",
+  "author": "System",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node toolbox-fold.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPFileToolBox}}",
+        "description": "基于上下文相关性动态展开或折叠的 VCP 文件工具箱说明文档集合。"
+      }
+    ]
+  },
+  "refreshIntervalCron": "*/5 * * * *"
+}
