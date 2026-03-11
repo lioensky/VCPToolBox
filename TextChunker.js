@@ -83,6 +83,10 @@ function forceSplitLongText(text, maxTokens, overlapTokens) {
     const chunks = [];
     const tokens = encoding.encode(text);
     
+    // Safety check to prevent infinite loop
+    const safeOverlap = Math.min(overlapTokens, Math.max(0, maxTokens - 1));
+    const decoder = new TextDecoder('utf-8');
+    
     let start = 0;
     while (start < tokens.length) {
         let end = Math.min(start + maxTokens, tokens.length);
@@ -90,7 +94,7 @@ function forceSplitLongText(text, maxTokens, overlapTokens) {
         // 尝试在合适的位置断开（避免在词汇中间断开）
         if (end < tokens.length) {
             const chunkTokens = tokens.slice(start, end);
-            let chunkText = encoding.decode(chunkTokens);
+            let chunkText = decoder.decode(chunkTokens);
             
             // 尝试在标点符号或空白处断开
             const breakPoints = ['\n', '。', '！', '？', '，', '；', '：', ' ', '\t'];
@@ -103,21 +107,27 @@ function forceSplitLongText(text, maxTokens, overlapTokens) {
                 }
             }
             
+            let finalChunkText = chunkText;
             if (bestBreakPoint > 0) {
-                chunkText = chunkText.substring(0, bestBreakPoint);
-                const newTokens = encoding.encode(chunkText);
-                end = start + newTokens.length;
+                const candidateText = chunkText.substring(0, bestBreakPoint);
+                const newTokens = encoding.encode(candidateText);
+                
+                // Prevent infinite loop: only accept the breakpoint if it provides meaningful progress
+                if (newTokens.length > safeOverlap || newTokens.length === (end - start)) {
+                    finalChunkText = candidateText;
+                    end = start + newTokens.length;
+                }
             }
             
-            chunks.push(chunkText.trim());
+            chunks.push(finalChunkText.trim());
         } else {
             // 最后一块
             const chunkTokens = tokens.slice(start);
-            chunks.push(encoding.decode(chunkTokens).trim());
+            chunks.push(decoder.decode(chunkTokens).trim());
         }
         
-        // 计算下一个起始位置（考虑重叠）
-        start = Math.max(start + 1, end - overlapTokens);
+        // 计算下一个起始位置（考虑重叠），确保 start 至少向前推进 1 步，即使 end 没有发生变化
+        start = Math.max(start + 1, end - safeOverlap);
     }
     
     return chunks.filter(chunk => chunk.length > 0);
