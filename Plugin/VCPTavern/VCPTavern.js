@@ -198,7 +198,25 @@ class VCPTavern {
             return messages;
         }
 
-        systemMessage.content = systemMessage.content.replace(triggerRegex, '').trim();
+        // 构建全局正则，清除所有同名占位符（含可选 SessionID 部分）
+        const escapedPreset = presetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const globalCleanupRegex = new RegExp(`\\{\\{VCPTavern::${escapedPreset}(?:::[^}]*)?\\}\\}`, 'g');
+
+        // 从 system message 中移除所有重复的同名占位符
+        systemMessage.content = systemMessage.content.replace(globalCleanupRegex, '').trim();
+
+        // 扫描所有其他消息，清除残留的同名占位符
+        for (const msg of messages) {
+            if (msg === systemMessage) continue;
+            if (typeof msg.content === 'string') {
+                const cleaned = msg.content.replace(globalCleanupRegex, '');
+                if (cleaned !== msg.content) {
+                    msg.content = cleaned.trim();
+                    if (this.debugMode) console.log(`[VCPTavern] 已清除 ${msg.role} 消息中的重复占位符 {{VCPTavern::${presetName}}}`);
+                }
+            }
+        }
+
         if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
 
         // --- 计算时间间隔逻辑 ---

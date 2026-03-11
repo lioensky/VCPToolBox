@@ -70,7 +70,39 @@ async function ensureAgentDirectory() {
         }
     }
 }
-const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
+
+// TVStxt 目录路径初始化
+let TVS_DIR;
+
+function resolveTvsDir() {
+    const configPath = process.env.TVSTXT_DIR_PATH;
+
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, 'TVStxt');
+    }
+
+    const normalizedPath = path.normalize(configPath.trim());
+    const absolutePath = path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, normalizedPath);
+
+    return absolutePath;
+}
+
+TVS_DIR = resolveTvsDir();
+
+// 确保 TVStxt 目录存在
+async function ensureTvsDirectory() {
+    try {
+        await fs.mkdir(TVS_DIR, { recursive: true });
+        console.log(`[Server] TVStxt directory: ${TVS_DIR}`);
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            console.error(`[Server] Failed to create TVStxt directory: ${TVS_DIR}`);
+        }
+    }
+}
+
 const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
@@ -1014,7 +1046,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     logger.getServerLogPath, // Pass the getter function
     knowledgeBaseManager, // Pass the knowledgeBaseManager instance
     AGENT_DIR, // Pass the Agent directory path
-    cachedEmojiLists
+    cachedEmojiLists,
+    TVS_DIR // Pass the TVStxt directory path
 );
 
 // 新增：引入 VCP 论坛 API 路由
@@ -1187,6 +1220,8 @@ async function startServer() {
 
     // 确保 Agent 目录存在
     await ensureAgentDirectory();
+    // 确保 TVStxt 目录存在
+    await ensureTvsDirectory();
 
     // 新增：加载模型重定向配置
     console.log('正在加载模型重定向配置...');
@@ -1201,6 +1236,7 @@ async function startServer() {
     console.log('Agent管理器初始化完成。');
 
     console.log('正在初始化TVS管理器...');
+    tvsManager.setTvsDir(TVS_DIR);
     tvsManager.initialize(DEBUG_MODE);
     console.log('TVS管理器初始化完成。');
 

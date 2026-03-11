@@ -7,8 +7,28 @@ const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai'; // 新增：用于控制 AI 报告的时间，默认回退到中国时区
-const AGENT_DIR = path.join(__dirname, '..', 'Agent');
-const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
+function resolveAgentDir() {
+    const configPath = process.env.AGENT_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, '..', 'Agent');
+    }
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, '..', normalizedPath);
+}
+const AGENT_DIR = resolveAgentDir();
+function resolveTvsDir() {
+    const configPath = process.env.TVSTXT_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, '..', 'TVStxt');
+    }
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, '..', normalizedPath);
+}
+const TVS_DIR = resolveTvsDir();
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
