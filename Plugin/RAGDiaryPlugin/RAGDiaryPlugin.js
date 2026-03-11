@@ -1149,14 +1149,16 @@ class RAGDiaryPlugin {
             if (aggregateInfo.isAggregate) {
                 // --- 聚合模式 ---
                 // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-                const shouldUseAIMemo = isAIMemoLicensed && modifiers.includes('::AIMemo');
+                const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
+                const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
 
                 if (shouldUseAIMemo) {
                     // AIMemo 聚合模式：将所有日记本名收集到 aiMemoRequests
-                    console.log(`[RAGDiaryPlugin] 🌟 聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}`);
+                    console.log(`[RAGDiaryPlugin] 🌟 聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                     for (const name of aggregateInfo.diaryNames) {
                         if (!processedDiaries.has(name)) {
-                            aiMemoRequests.push({ placeholder: placeholder, dbName: name });
+                            aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName });
                         }
                     }
                 } else {
@@ -1196,11 +1198,13 @@ class RAGDiaryPlugin {
             processedDiaries.add(dbName);
 
             // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-            const shouldUseAIMemo = isAIMemoLicensed && modifiers.includes('::AIMemo');
+            const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+            const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
+            const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
 
             if (shouldUseAIMemo) {
-                console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}". Overriding other RAG modes.`);
-                aiMemoRequests.push({ placeholder, dbName });
+                console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}"${presetName ? ` (预设: ${presetName})` : ''}. Overriding other RAG modes.`);
+                aiMemoRequests.push({ placeholder, dbName, presetName });
             } else {
                 // 标准 RAG 立即处理
                 processingPromises.push((async () => {
@@ -1336,12 +1340,15 @@ class RAGDiaryPlugin {
                         console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合模式: 通过阈值 (${maxSimilarity.toFixed(4)} >= ${avgThreshold.toFixed(4)})，开始检索...`);
 
                         // AIMemo 检查
-                        const shouldUseAIMemo = isAIMemoLicensed && modifiers.includes('::AIMemo');
+                        const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                        const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
+                        const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
+
                         if (shouldUseAIMemo) {
-                            console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}`);
+                            console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合AIMemo模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                             for (const name of aggregateInfo.diaryNames) {
                                 if (!processedDiaries.has(name)) {
-                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name });
+                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName });
                                 }
                             }
                             return { placeholder, content: '' };
@@ -1414,12 +1421,14 @@ class RAGDiaryPlugin {
 
                     if (finalSimilarity >= localThreshold) {
                         // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
-                        const shouldUseAIMemo = isAIMemoLicensed && modifiers.includes('::AIMemo');
+                        const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
+                        const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
+                        const presetName = aiMemoMatch ? aiMemoMatch[1] : null;
 
                         if (shouldUseAIMemo) {
-                            console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}" in hybrid mode. Similarity: ${finalSimilarity.toFixed(4)} >= ${localThreshold}`);
+                            console.log(`[RAGDiaryPlugin] AIMemo licensed and activated for "${dbName}" in hybrid mode${presetName ? ` (预设: ${presetName})` : ''}. Similarity: ${finalSimilarity.toFixed(4)} >= ${localThreshold}`);
                             // ✅ 修复：只有在阈值匹配时才收集 AIMemo 请求
-                            aiMemoRequests.push({ placeholder, dbName });
+                            aiMemoRequests.push({ placeholder, dbName, presetName });
                             return { placeholder, content: '' }; // ⚠️ AIMemo不缓存，因为聚合处理
                         } else {
                             // ✅ 混合模式也传递TagMemo参数
@@ -1469,11 +1478,13 @@ class RAGDiaryPlugin {
                 try {
                     // 聚合所有日记本名称
                     const dbNames = aiMemoRequests.map(r => r.dbName);
-                    console.log(`[RAGDiaryPlugin] 聚合处理日记本: ${dbNames.join(', ')}`);
+                    // 提取预设名称（假设同一批次使用相同的预设，或者取第一个）
+                    const presetName = aiMemoRequests[0].presetName;
+                    console.log(`[RAGDiaryPlugin] 聚合处理日记本: ${dbNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
 
                     // 调用聚合处理方法
                     const aggregatedResult = await this.aiMemoHandler.processAIMemoAggregated(
-                        dbNames, userContent, aiContent, combinedQueryForDisplay
+                        dbNames, userContent, aiContent, combinedQueryForDisplay, presetName
                     );
 
                     // 第一个返回完整结果，后续返回引用提示
