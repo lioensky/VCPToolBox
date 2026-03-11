@@ -14,9 +14,12 @@ const blockedManifestExtension = '.block';
 // 记录每个日志文件的 inode，用于检测日志轮转
 const logFileInodes = new Map();
 
-module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath, cachedEmojiLists) {
+module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath, cachedEmojiLists, tvsDirPath) {
     if (!agentDirPath || typeof agentDirPath !== 'string') {
         throw new Error('[AdminPanelRoutes] agentDirPath must be a non-empty string');
+    }
+    if (!tvsDirPath || typeof tvsDirPath !== 'string') {
+        throw new Error('[AdminPanelRoutes] tvsDirPath must be a non-empty string');
     }
 
     const adminApiRouter = express.Router();
@@ -997,7 +1000,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     // --- End Agent Files API ---
 
     // --- TVS Variable Files API ---
-    const TVS_FILES_DIR = path.join(__dirname, '..', 'TVStxt'); // 定义 TVS 文件目录
+    const TVS_FILES_DIR = tvsDirPath; // 使用传入的 TVS 文件目录
 
     // GET list of TVS .txt files
     adminApiRouter.get('/tvsvars', async (req, res) => {
@@ -2137,7 +2140,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     adminApiRouter.get('/tool-list-editor/check-file/:fileName', async (req, res) => {
         try {
             const fileName = req.params.fileName;
-            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const tvsTxtDir = tvsDirPath;
             const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
 
             try {
@@ -2158,7 +2161,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     adminApiRouter.post('/tool-list-editor/export/:fileName', async (req, res) => {
         try {
             const fileName = req.params.fileName;
-            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const tvsTxtDir = tvsDirPath;
             const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
 
             const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
@@ -2270,7 +2273,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             });
 
             await fs.writeFile(outputPath, output, 'utf-8');
-            res.json({ status: 'success', filePath: `TVStxt/${fileName}.txt` });
+            res.json({ status: 'success', filePath: `${path.basename(tvsTxtDir)}/${fileName}.txt` });
         } catch (error) {
             console.error('[AdminAPI] Error exporting to txt:', error);
             res.status(500).json({ error: 'Failed to export to txt', details: error.message });
