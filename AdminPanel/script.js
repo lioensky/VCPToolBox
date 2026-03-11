@@ -15,6 +15,7 @@ import { initializeVCPForum } from './js/forum.js';
 import { initializeScheduleManager } from './js/schedule-manager.js';
 import { initializeRAGTuning } from './js/rag-tuning.js';
 import { initializeDreamManager } from './js/dream-manager.js';
+import { initializeAgentScores } from './js/agent-scores.js';
 import { initializePlaceholderViewer } from './js/placeholder-viewer.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -125,6 +126,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         break;
                     case 'agent-assistant-config-section':
                         initializeAgentAssistantConfig();
+                        break;
+                    case 'agent-scores-section':
+                        initializeAgentScores();
                         break;
                     case 'tvs-files-editor-section':
                         initializeTvsFilesEditor();

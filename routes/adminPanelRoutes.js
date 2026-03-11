@@ -2522,6 +2522,22 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
         }
         return fileUrl;
     }
+    // --- AgentAssistant Scores API ---
+    adminApiRouter.get('/agent-assistant/scores', async (req, res) => {
+        const scoresFilePath = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'agent_scores.json');
+        try {
+            const content = await fs.readFile(scoresFilePath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.json({}); // Return empty if file doesn't exist yet
+            } else {
+                console.error('[AdminAPI] Error reading agent scores:', error);
+                res.status(500).json({ error: 'Failed to read agent scores', details: error.message });
+            }
+        }
+    });
+
     // --- End AgentDream API ---
     return adminApiRouter;
 };

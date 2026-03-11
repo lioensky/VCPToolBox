@@ -446,6 +446,8 @@
                                 class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
                     <li><a href="#" data-target="agent-assistant-config"><span
                                 class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
+                    <li><a href="#" data-target="agent-scores"><span
+                                class="material-symbols-outlined">leaderboard</span>Agent积分排行榜</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span
                                 class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
                     <li><a href="#" data-target="tool-list-editor"><span
@@ -760,6 +762,38 @@
                     <div class="aa-footer-actions">
                         <button id="aa-save-config-button" type="button">保存 AgentAssistant 配置</button>
                         <span id="aa-status" class="status-message"></span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="agent-scores-section" class="config-section">
+                <h2>Agent 积分排行榜</h2>
+                <p class="description">在这里查看 Agent 的积分情况。完成异步委托任务或其他系统贡献将自动获得积分奖励。</p>
+                <div class="agent-scores-container card">
+                    <div class="scores-header">
+                        <button id="refresh-scores-button" class="btn-secondary">
+                            <span class="material-symbols-outlined">refresh</span> 刷新数据
+                        </button>
+                        <span id="scores-status" class="status-message"></span>
+                    </div>
+                    <div class="table-container">
+                        <table class="modern-table" id="agent-scores-table">
+                            <thead>
+                                <tr>
+                                    <th>排名</th>
+                                    <th>执行者 (Agent)</th>
+                                    <th>总积分</th>
+                                    <th>最近动态</th>
+                                    <th>获取时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="agent-scores-body">
+                                <!-- Data will be loaded here -->
+                                <tr>
+                                    <td colspan="5" style="text-align: center; padding: 40px; opacity: 0.6;">正在加载积分数据...</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </section>
