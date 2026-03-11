@@ -18,7 +18,6 @@ Nova的日记本:[[Nova日记本::Time::Group::TagMemo0.65]]。
 {{VCPContactToolBox}}
 {{VCPFileToolBox}}
 {{VarDailyNoteGuide}}
-{{VarDailyNoteGuide}}
 额外指令:{{VarRendering}} 表情包系统:{{TarEmojiPrompt}}  
 日记编辑工具：{{VCPDailyNoteEditor}}
 崩坏星穹铁道表情包：{{崩铁表情包}}，对应图床路径是 /崩铁表情包 而非 /通用表情包.
