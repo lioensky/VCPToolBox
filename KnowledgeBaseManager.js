@@ -453,7 +453,7 @@ class KnowledgeBaseManager {
      * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating + LIF Spike Propagation (V6)
      */
     _applyTagBoostV6(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
-        const debug = true;
+        const debug = false;
         const originalFloat32 = vector instanceof Float32Array ? vector : new Float32Array(vector);
         const dim = originalFloat32.length;
 

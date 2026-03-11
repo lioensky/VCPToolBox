@@ -1661,7 +1661,6 @@ class RAGDiaryPlugin {
 
                 const sim = this.cosineSimilarity(queryVector, diaryVec);
                 diaryScores.push({ name, similarity: sim });
-                console.log(`[RAGDiaryPlugin]   → "${name}" 相似度: ${sim.toFixed(4)}`);
             } catch (e) {
                 console.error(`[RAGDiaryPlugin] 聚合模式: 获取 "${name}" 向量时出错:`, e.message);
                 // 不崩溃，继续处理其他日记本
@@ -1694,11 +1693,9 @@ class RAGDiaryPlugin {
             };
         });
 
-        // 日志输出分配结果
-        console.log(`[RAGDiaryPlugin] 🌟 K 分配结果:`);
-        kAllocations.forEach(a => {
-            console.log(`[RAGDiaryPlugin]   → "${a.name}": sim=${a.similarity.toFixed(4)}, weight=${(a.weight * 100).toFixed(1)}%, k=${a.k}`);
-        });
+        // 日志输出分配结果（简化）
+        console.log(`[RAGDiaryPlugin] K分配: ${kAllocations.map(a => `"${a.name}"(k=${a.k})`).join(', ')}`);
+
 
         // --- Step 3: 并行调用各日记本的检索 ---
         // 🛡️ 去除 modifiers 中的 kMultiplier，防止 _processRAGPlaceholder 内部再次乘以 kMultiplier
@@ -1893,7 +1890,6 @@ class RAGDiaryPlugin {
         }
 
         // 3️⃣ 缓存未命中，执行原有逻辑
-        console.log(`[RAGDiaryPlugin] 缓存未命中，执行RAG检索...`);
 
         const kMultiplier = this._extractKMultiplier(modifiers);
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
@@ -1960,7 +1956,7 @@ class RAGDiaryPlugin {
                     const rawTags = boostResult.info.matchedTags;
                     // 🌟 应用截断技术规避尾部噪音
                     coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
-                    console.log(`[RAGDiaryPlugin] 🌟 原子级复刻成功！感应到核心 Tag: [${coreTagsForSearch.join(', ')}]${rawTags.length > coreTagsForSearch.length ? ` (从 ${rawTags.length} 个截断)` : ''}`);
+                    console.log(`[RAGDiaryPlugin] TagBoost: ${coreTagsForSearch.length}个核心Tag${rawTags.length > coreTagsForSearch.length ? ` (从${rawTags.length}截断)` : ''}`);
                 }
             } catch (e) {
                 console.warn('[RAGDiaryPlugin] Failed to sense tags via applyTagBoost:', e.message);
@@ -1975,7 +1971,6 @@ class RAGDiaryPlugin {
             const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
             const kTime = Math.max(1, finalK - kSemantic);
 
-            console.log(`[RAGDiaryPlugin] 🌟 Time-Aware Balanced Mode: Total K=${finalK} (Semantic=${kSemantic}, Time=${kTime})`);
 
             // 1. 语义路召回
             let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kSemantic + dedupBuffer, tagWeight, coreTagsForSearch);
@@ -2551,7 +2546,6 @@ class RAGDiaryPlugin {
             return documents.slice(0, originalK);
         }
 
-        console.log(`[RAGDiaryPlugin] Rerank processing ${batches.length} batches with truncated query (${queryTokens} tokens)`);
 
         let allRerankedDocs = [];
         let failedBatches = 0;
@@ -2665,11 +2659,8 @@ class RAGDiaryPlugin {
             const finalDocs = allRerankedDocs.slice(0, originalK);
             const successRate = ((batches.length - failedBatches) / batches.length * 100).toFixed(1);
 
-            // 详细日志：展示每条文档的双路排位和融合结果
-            console.log(`[RAGDiaryPlugin] 🌟 Rerank+ (RRF) 完成: ${finalDocs.length}篇文档 (α=${alpha}, 成功率: ${successRate}%)`);
-            finalDocs.forEach((doc, idx) => {
-                console.log(`  [RRF #${idx + 1}] rrf=${doc.rrf_score?.toFixed(6)} | retrieval_rank=${doc.retrieval_rank} | rerank_rank=${doc.rerank_rank} | rerank_score=${doc.rerank_score?.toFixed(4) ?? 'N/A'} | vec_score=${doc.score?.toFixed(4) ?? 'N/A'}`);
-            });
+            // 注意: RRF详细日志已精简
+            console.log(`[RAGDiaryPlugin] Rerank+(RRF): ${finalDocs.length}篇 (α=${alpha}, 成功率${successRate}%)`);
 
             return finalDocs;
         } else {
@@ -2910,7 +2901,10 @@ class RAGDiaryPlugin {
             timestamp: Date.now()
         });
 
-        console.log(`[RAGDiaryPlugin] 缓存已保存 (当前: ${this.queryResultCache.size}/${this.maxCacheSize})`);
+        // 每10次保存才输出一次日志，减少噪音
+        if (this.queryResultCache.size % 10 === 0) {
+            console.log(`[RAGDiaryPlugin] 缓存: ${this.queryResultCache.size}/${this.maxCacheSize}`);
+        }
     }
 
     /**
@@ -2966,7 +2960,6 @@ class RAGDiaryPlugin {
         if (cached) {
             const now = Date.now();
             if (now - cached.timestamp <= this.embeddingCacheTTL) {
-                console.log(`[RAGDiaryPlugin] ✅ 向量缓存命中 (键: ${cacheKey.substring(0, 8)}...)`);
                 return cached.vector;
             } else {
                 // 过期，删除
@@ -2975,7 +2968,6 @@ class RAGDiaryPlugin {
         }
 
         // 缓存未命中，调用API
-        console.log(`[RAGDiaryPlugin] 向量缓存未命中，调用Embedding API...`);
         const vector = await this.getSingleEmbedding(text);
 
         if (vector) {
