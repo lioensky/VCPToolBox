@@ -338,8 +338,21 @@ class LightMemoPlugin {
         let finalResults = hybridScored.slice(0, k);
 
         // --- 第三阶段：Rerank（可选） ---
-        if (rerank && finalResults.length > 0) {
-            finalResults = await this._rerankDocuments(actualQuery, finalResults, k);
+        // 🌟 Rerank+ (RRF): rerank 参数支持 true/false/"rrf"/"rrf0.7" 四种形式
+        // "rrf" = RRF融合(α=0.5), "rrf0.7" = RRF融合(α=0.7, Reranker占70%权重)
+        const useRerank = rerank === true || (typeof rerank === 'string' && rerank.toLowerCase().startsWith('rrf'));
+        let rrfOptions = null;
+        if (typeof rerank === 'string' && rerank.toLowerCase().startsWith('rrf')) {
+            const alphaMatch = rerank.match(/rrf(\d+\.?\d*)/i);
+            const alpha = alphaMatch ? Math.min(1.0, Math.max(0.0, parseFloat(alphaMatch[1]))) : 0.5;
+            rrfOptions = { alpha };
+            console.log(`[LightMemo] 🌟 Rerank+ (RRF) 模式启用: α=${alpha}`);
+        }
+
+        if (useRerank && finalResults.length > 0) {
+            // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
+            finalResults.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+            finalResults = await this._rerankDocuments(actualQuery, finalResults, k, rrfOptions);
         }
 
         return this.formatResults(finalResults, query);
@@ -414,7 +427,7 @@ class LightMemoPlugin {
         return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
     }
 
-    async _rerankDocuments(query, documents, originalK) {
+    async _rerankDocuments(query, documents, originalK, rrfOptions = null) {
         if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
             console.warn('[LightMemo] Rerank not configured. Skipping.');
             return documents.slice(0, originalK);
@@ -516,18 +529,48 @@ class LightMemoPlugin {
             }
         }
 
-        // 👇 修复：安全排序
-        allRerankedDocs.sort((a, b) => {
-            const scoreA = a.rerank_score ?? 0;
-            const scoreB = b.rerank_score ?? 0;
-            return scoreB - scoreA;
-        });
+        // 🌟 Rerank+ (RRF Fusion) 或标准 Rerank 排序
+        if (rrfOptions) {
+            // --- Reciprocal Rank Fusion (RRF) ---
+            const RRF_K = 60;
+            const alpha = rrfOptions.alpha ?? 0.5;
 
-        const finalDocs = allRerankedDocs.slice(0, originalK);
-        console.log(`[LightMemo] Rerank complete. Final scores:`,
-            finalDocs.map(d => (d.rerank_score || 0).toFixed(3)).join(', '));
+            // Step 1: 按 rerank_score 降序排列，赋予 rerank_rank (1-based)
+            allRerankedDocs.sort((a, b) => (b.rerank_score ?? -1) - (a.rerank_score ?? -1));
+            allRerankedDocs.forEach((doc, idx) => { doc.rerank_rank = idx + 1; });
 
-        return finalDocs;
+            // Step 2: 计算 RRF 融合分数
+            allRerankedDocs.forEach(doc => {
+                const retrievalRank = doc.retrieval_rank || allRerankedDocs.length;
+                const rerankRank = doc.rerank_rank;
+                doc.rrf_score = alpha * (1 / (RRF_K + rerankRank))
+                              + (1 - alpha) * (1 / (RRF_K + retrievalRank));
+            });
+
+            // Step 3: 按 RRF 融合分数降序排列
+            allRerankedDocs.sort((a, b) => b.rrf_score - a.rrf_score);
+
+            const finalDocs = allRerankedDocs.slice(0, originalK);
+            console.log(`[LightMemo] 🌟 Rerank+ (RRF) 完成: ${finalDocs.length}篇文档 (α=${alpha})`);
+            finalDocs.forEach((doc, idx) => {
+                console.log(`  [RRF #${idx + 1}] rrf=${doc.rrf_score?.toFixed(6)} | retrieval_rank=${doc.retrieval_rank} | rerank_rank=${doc.rerank_rank} | rerank_score=${doc.rerank_score?.toFixed(4) ?? 'N/A'} | hybrid_score=${doc.hybridScore?.toFixed(4) ?? 'N/A'}`);
+            });
+
+            return finalDocs;
+        } else {
+            // --- 标准 Rerank 排序（原有逻辑，不变） ---
+            allRerankedDocs.sort((a, b) => {
+                const scoreA = a.rerank_score ?? 0;
+                const scoreB = b.rerank_score ?? 0;
+                return scoreB - scoreA;
+            });
+
+            const finalDocs = allRerankedDocs.slice(0, originalK);
+            console.log(`[LightMemo] Rerank complete. Final scores:`,
+                finalDocs.map(d => (d.rerank_score || 0).toFixed(3)).join(', '));
+
+            return finalDocs;
+        }
     }
 
     /**

@@ -1898,7 +1898,12 @@ class RAGDiaryPlugin {
         const kMultiplier = this._extractKMultiplier(modifiers);
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
-        const useRerank = modifiers.includes('::Rerank');
+        // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
+        // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
+        const rerankPlusMatch = modifiers.match(/::Rerank\+(\d+\.?\d*)?/);
+        const useRerankPlus = !!rerankPlusMatch;
+        const rrfAlpha = useRerankPlus ? (rerankPlusMatch[1] ? Math.min(1.0, Math.max(0.0, parseFloat(rerankPlusMatch[1]))) : 0.5) : null;
+        const useRerank = modifiers.includes('::Rerank'); // 匹配 ::Rerank 和 ::Rerank+
 
         // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]|[minScore]|[whitelistTags]
         // 示例：::TimeDecay30|0.5|Wiki,技巧
@@ -2023,7 +2028,10 @@ class RAGDiaryPlugin {
 
             // 如果启用了 Rerank，对合并后的结果进行最终重排
             if (useRerank && finalResultsForBroadcast.length > 0) {
-                finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK);
+                // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
+                finalResultsForBroadcast.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+                const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
+                finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK, rrfOpts);
             }
 
             retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
@@ -2106,7 +2114,10 @@ class RAGDiaryPlugin {
                 let finalKForRerank = finalK;
                 // 如果是 Shotgun，我们可能希望最终结果稍微丰富一点点？不，保持用户设定的 k
 
-                finalResultsForBroadcast = await this._rerankDocuments(userContent, uniqueResults, finalKForRerank);
+                // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
+                uniqueResults.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+                const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
+                finalResultsForBroadcast = await this._rerankDocuments(userContent, uniqueResults, finalKForRerank, rrfOpts);
             } else {
                 // 如果没有 Rerank，按 score (或去重后的顺序) 截断
                 // 去重后的结果通常是按"残差贡献度"排序的，所以直接截断是合理的
@@ -2218,6 +2229,8 @@ class RAGDiaryPlugin {
                     useTime: useTime,
                     useGroup: useGroup,
                     useRerank: useRerank,
+                    useRerankPlus: useRerankPlus, // 🌟 Rerank+ (RRF) 模式标识
+                    rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
                     coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
@@ -2453,7 +2466,7 @@ class RAGDiaryPlugin {
         return Math.ceil(chineseChars * 1.5 + otherChars * 0.25);
     }
 
-    async _rerankDocuments(query, documents, originalK) {
+    async _rerankDocuments(query, documents, originalK, rrfOptions = null) {
         // JIT (Just-In-Time) check for configuration instead of relying on a startup flag
         if (!this.rerankConfig.url || !this.rerankConfig.apiKey || !this.rerankConfig.model) {
             console.warn('[RAGDiaryPlugin] Rerank called, but is not configured. Skipping.');
@@ -2625,17 +2638,53 @@ class RAGDiaryPlugin {
             }
         }
 
-        // 关键：在所有批次处理完后，根据 rerank_score 进行全局排序
-        allRerankedDocs.sort((a, b) => {
-            const scoreA = b.rerank_score ?? b.score ?? -1;
-            const scoreB = a.rerank_score ?? a.score ?? -1;
-            return scoreA - scoreB;
-        });
+        // 🌟 Rerank+ (RRF Fusion) 或标准 Rerank 排序
+        if (rrfOptions) {
+            // --- Reciprocal Rank Fusion (RRF) ---
+            // 核心思想：综合 TagMemo/向量检索的排位和 Reranker 精排的排位
+            // 公式：RRF(d) = α * 1/(K + rerank_rank) + (1-α) * 1/(K + retrieval_rank)
+            // K=60 是业界标准平滑常数，防止排位靠前的文档获得过大的分数优势
+            const RRF_K = 60;
+            const alpha = rrfOptions.alpha ?? 0.5;
 
-        const finalDocs = allRerankedDocs.slice(0, originalK);
-        const successRate = ((batches.length - failedBatches) / batches.length * 100).toFixed(1);
-        console.log(`[RAGDiaryPlugin] Rerank完成: ${finalDocs.length}篇文档 (成功率: ${successRate}%)`);
-        return finalDocs;
+            // Step 1: 按 rerank_score 降序排列，赋予 rerank_rank (1-based)
+            allRerankedDocs.sort((a, b) => (b.rerank_score ?? -1) - (a.rerank_score ?? -1));
+            allRerankedDocs.forEach((doc, idx) => { doc.rerank_rank = idx + 1; });
+
+            // Step 2: 计算 RRF 融合分数
+            allRerankedDocs.forEach(doc => {
+                const retrievalRank = doc.retrieval_rank || allRerankedDocs.length; // 无排位则视为末尾
+                const rerankRank = doc.rerank_rank;
+                doc.rrf_score = alpha * (1 / (RRF_K + rerankRank))
+                              + (1 - alpha) * (1 / (RRF_K + retrievalRank));
+            });
+
+            // Step 3: 按 RRF 融合分数降序排列
+            allRerankedDocs.sort((a, b) => b.rrf_score - a.rrf_score);
+
+            const finalDocs = allRerankedDocs.slice(0, originalK);
+            const successRate = ((batches.length - failedBatches) / batches.length * 100).toFixed(1);
+
+            // 详细日志：展示每条文档的双路排位和融合结果
+            console.log(`[RAGDiaryPlugin] 🌟 Rerank+ (RRF) 完成: ${finalDocs.length}篇文档 (α=${alpha}, 成功率: ${successRate}%)`);
+            finalDocs.forEach((doc, idx) => {
+                console.log(`  [RRF #${idx + 1}] rrf=${doc.rrf_score?.toFixed(6)} | retrieval_rank=${doc.retrieval_rank} | rerank_rank=${doc.rerank_rank} | rerank_score=${doc.rerank_score?.toFixed(4) ?? 'N/A'} | vec_score=${doc.score?.toFixed(4) ?? 'N/A'}`);
+            });
+
+            return finalDocs;
+        } else {
+            // --- 标准 Rerank 排序（原有逻辑，不变） ---
+            allRerankedDocs.sort((a, b) => {
+                const scoreA = b.rerank_score ?? b.score ?? -1;
+                const scoreB = a.rerank_score ?? a.score ?? -1;
+                return scoreA - scoreB;
+            });
+
+            const finalDocs = allRerankedDocs.slice(0, originalK);
+            const successRate = ((batches.length - failedBatches) / batches.length * 100).toFixed(1);
+            console.log(`[RAGDiaryPlugin] Rerank完成: ${finalDocs.length}篇文档 (成功率: ${successRate}%)`);
+            return finalDocs;
+        }
     }
 
     _cleanResultsForBroadcast(results) {
