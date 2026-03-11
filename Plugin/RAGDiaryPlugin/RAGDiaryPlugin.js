@@ -14,6 +14,7 @@ const AIMemoHandler = require('./AIMemoHandler.js'); // <--- 新增：引入AIMe
 const ContextVectorManager = require('./ContextVectorManager.js'); // <--- 新增：引入上下文向量管理器
 const { chunkText } = require('../../TextChunker.js'); // <--- 新增：引入文本分块器
 
+
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 const timezone = require('dayjs/plugin/timezone');
@@ -1898,10 +1899,10 @@ class RAGDiaryPlugin {
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
         const useRerank = modifiers.includes('::Rerank');
-        
-        // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]:[minScore]:[whitelistTags]
-        // 示例：::TimeDecay30:0.5:Wiki,技巧
-        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?::(\d+\.?\d*))?(?::([\w,]+))?/);
+
+        // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]|[minScore]|[whitelistTags]
+        // 示例：::TimeDecay30|0.5|Wiki,技巧
+        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\|(\d+\.?\d*))?(?:\|([\w,]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
         // ✅ 新增：解析TagMemo修饰符和权重
@@ -2117,7 +2118,7 @@ class RAGDiaryPlugin {
 
             // 🌟 V5.2: 时间衰减重排 (Time Decay Reranking)
             if (useTimeDecay && finalResultsForBroadcast.length > 0) {
-                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]:[minScore]:[targetTags]
+                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]|[minScore]|[targetTags]
                 const localHalfLife = timeDecayMatch[1] ? parseInt(timeDecayMatch[1]) : null;
                 const localMinScore = timeDecayMatch[2] ? parseFloat(timeDecayMatch[2]) : null;
                 const localTargets = timeDecayMatch[3] ? timeDecayMatch[3].split(',') : [];
@@ -2125,7 +2126,7 @@ class RAGDiaryPlugin {
                 const globalDecayConfig = this.ragParams?.RAGDiaryPlugin?.timeDecay || { halfLifeDays: 30, minScore: 0.5 };
                 const halfLife = localHalfLife ?? globalDecayConfig.halfLifeDays ?? 30;
                 const minScore = localMinScore ?? globalDecayConfig.minScore ?? 0.5;
-                
+
                 const now = dayjs();
 
                 console.log(`[RAGDiaryPlugin] ⏳ Applying Time Decay (Half-life: ${halfLife} days, MinScore: ${minScore}, Targets: ${localTargets.length > 0 ? localTargets.join(',') : 'ALL'})...`);
@@ -2136,7 +2137,7 @@ class RAGDiaryPlugin {
                         const isTarget = localTargets.some(tag => {
                             // 1. 匹配向量库结构化标签
                             if (result.matchedTags && result.matchedTags.includes(tag)) return true;
-                            
+
                             // 2. 匹配文本中的标签格式 (支持 #Tag, 【Tag】, 以及姐姐文件里的 Tag: ..., Tag, ...)
                             const text = result.text;
                             const tagPattern = new RegExp(`(?:#|【|Tag:.*\\b|\\b)${tag}(?:\\b|】|,)`, 'i');
@@ -2185,7 +2186,7 @@ class RAGDiaryPlugin {
 
                 // 重新按衰减后的分数排序
                 finalResultsForBroadcast.sort((a, b) => (b.score || 0) - (a.score || 0));
-                
+
                 // 过滤掉分数过低的结果
                 if (minScore > 0) {
                     finalResultsForBroadcast = finalResultsForBroadcast.filter(r => (r.score || 0) >= minScore);
