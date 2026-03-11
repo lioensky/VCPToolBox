@@ -192,6 +192,42 @@ function periodicCleanup() {
     }
 }
 
+// --- Agent Score System ---
+const AGENT_SCORES_FILE = path.join(__dirname, 'agent_scores.json');
+
+function awardAgentPoints(agentBaseName, agentName, points, reason) {
+    try {
+        let scores = {};
+        if (fs.existsSync(AGENT_SCORES_FILE)) {
+            const fileContent = fs.readFileSync(AGENT_SCORES_FILE, 'utf-8');
+            if (fileContent.trim()) {
+                scores = JSON.parse(fileContent);
+            }
+        }
+        
+        if (!scores[agentBaseName]) {
+            scores[agentBaseName] = { name: agentName, totalPoints: 0, history: [] };
+        }
+        
+        scores[agentBaseName].totalPoints += points;
+        scores[agentBaseName].history.push({
+            time: new Date().toISOString(),
+            pointsDelta: points,
+            reason: reason
+        });
+        
+        // 保留最近 50 条历史获取记录
+        if (scores[agentBaseName].history.length > 50) {
+            scores[agentBaseName].history.shift();
+        }
+        
+        fs.writeFileSync(AGENT_SCORES_FILE, JSON.stringify(scores, null, 4), 'utf-8');
+        if (DEBUG_MODE) console.error(`[AgentAssistant] Awarded ${points} points to ${agentName}. Total: ${scores[agentBaseName].totalPoints}`);
+    } catch (e) {
+        console.error(`[AgentAssistant] Error updating agent scores: ${e.message}`);
+    }
+}
+
 // --- Helper Functions ---
 
 /**
@@ -624,6 +660,11 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         activeDelegations.delete(delegationId);
 
         const secureReport = finalReport || "未知错误导致无报告";
+
+        // 给成功完成任务的 Agent 发放积分奖励
+        if (completionStatus === 'Succeed') {
+            awardAgentPoints(agentConfig.baseName, agentConfig.name, 5, `成功完成异步委托任务: ${delegationId}`);
+        }
 
         // Save to AgentTask Document Directory
         await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
