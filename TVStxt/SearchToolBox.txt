@@ -1,0 +1,66 @@
+# VCP 联网与搜索工具箱能力收纳
+这里收纳了 VCP 强大的联网检索、网页爬取及深度研究工具。
+
+## 1. 语义穿透联网检索 (VSearch)
+首选联网引擎。支持语义级检索范围与多关键词并发搜索，适合获取多角度观点。
+tool_name:「始」VSearch「末」,
+SearchTopic:「始」需要探讨的主题内容「末」,
+Keywords:「始」提供多个不同视角的搜索关键词，用逗号隔开「末」,
+ShowURL:「始」false「末」,//是否返回信源，默认false。
+ink:「始」mark_history「末」 //可选，是否将检索结果写入history.json
+
+## 2. 网页/文件内容爬取器 (UrlFetch)
+用于获取特定网页、在线文件或本地文件的文本/快照。
+tool_name:「始」UrlFetch「末」,
+url:「始」(必需) 网页/文件 URL (本地路径请以 file:// 开头)「末」, 
+mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照)「末」
+
+[===vcp_fold:0.3===]
+
+## 3. B站视频/内容爬虫 (BilibiliFetch)
+获取 B 站视频文本（TTS 转化）、弹幕、评论及高清快照。
+tool_name:「始」BilibiliFetch「末」,
+url:「始」(必需) 视频 URL (支持 b23.tv 短链接)「末」,
+lang:「始」(可选) 字幕语言，如 'ai-zh'「末」,
+danmaku_num:「始」(可选) 弹幕数量「末」,
+comment_num:「始」(可选) 评论数量「末」,
+snapshots:「始」(可选) 时间点截图，逗号分隔「末」,
+hd_snapshot:「始」true「末」, //是否调用 ffmpeg 获取超清截图
+need_subs:「始」true「末」, //是否获取字幕
+
+### 检索 B 站视频/UP主
+action:「始」search「末」,
+keyword:「始」搜索词「末」,
+search_type:「始」'video' 或 'bili_user'「末」
+
+### 调查 UP 主投稿列表
+action:「始」get_up_videos「末」,
+mid:「始」用户 ID「末」,
+pn:「始」1「末」
+
+[===vcp_fold:0.5===]
+
+## 4. 全能联网搜索 (TavilySearch)
+AI 专属搜索引擎。支持搜图和原始网页内容转化。
+tool_name:「始」TavilySearch「末」,
+query:「始」(必需) 搜索关键词「末」,
+topic:「始」general / news / finance「末」,
+search_depth:「始」advanced「末」, //语义搜索模式
+include_raw_content:「始」'markdown'「末」 //获取原始内容
+
+[===vcp_fold:0.7===]
+
+## 5. 深度信息研究插件 (FlashDeepSearch)
+进行多维度深度搜索，返回详实的学术研究报告。比较耗时。
+tool_name:「始」FlashDeepSearch「末」,
+SearchContent:「始」研究的主题内容「末」,  
+SearchBroadness:「始」7「末」 //搜索广度 5-20
+
+## 6. 通用搜索与反向搜图 (SerpSearch)
+基于 SerpAPI 的 DuckDuckGo 搜索与谷歌反向搜图。
+### 网页搜索 (DuckDuckGo)
+command:「始」duckduckgo_search「末」,
+q:「始」关键词「末」
+### 谷歌反向搜图
+command:「始」google_reverse_image_search「末」,
+image_url:「始」图片 URL (支持 file:// 或 https)「末」
