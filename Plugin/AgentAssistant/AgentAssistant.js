@@ -46,8 +46,8 @@ function initialize(config, dependencies) {
 
     DELEGATION_MAX_ROUNDS = parseInt(config.DELEGATION_MAX_ROUNDS || '15', 10);
     DELEGATION_TIMEOUT = parseInt(config.DELEGATION_TIMEOUT || '300000', 10);
-    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）";
-    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果任务已完成，请按照格式输出 [[TaskComplete]] 及完成报告。";
+    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
+    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
 
     if (DEBUG_MODE) {
         console.error(`[AgentAssistant Service] Initializing...`);
@@ -626,7 +626,8 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
             const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
 
             // 检查完成标记的容错正则
-            const completionMatch = cleanedAssistantResponse.match(/\[\[TaskComplete(?:\s*\]\]|\s[\s\S]*?\]\])/);
+            const completionMatch = cleanedAssistantResponse.match(/\[\[TaskComplete(?:\s*\]\]|\s[\s\S]*?\]\])/i);
+            const failureMatch = cleanedAssistantResponse.match(/\[\[TaskFailed(?:\s*\]\]|\s[\s\S]*?\]\])/i);
 
             if (completionMatch) {
                 // Task is completed
@@ -640,6 +641,19 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
                     potentialReport = cleanedAssistantResponse;
                 }
                 finalReport = potentialReport;
+                break; // Exit the loop
+            } else if (failureMatch) {
+                // Task is explicitly failed by the agent
+                completionStatus = 'Failed';
+                // 提取标记后面的内容作为报告
+                const reportStartIndex = failureMatch.index + failureMatch[0].length;
+                let potentialReport = cleanedAssistantResponse.substring(reportStartIndex).trim();
+
+                // 如果标记后面没有内容，把整个回复当做报告
+                if (!potentialReport) {
+                    potentialReport = cleanedAssistantResponse;
+                }
+                finalReport = "【Agent主动放弃任务】\n" + potentialReport;
                 break; // Exit the loop
             } else {
                 // Task is not completed yet, push history and add heartbeat prompt
