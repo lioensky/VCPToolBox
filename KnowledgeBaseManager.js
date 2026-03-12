@@ -1563,9 +1563,9 @@ class KnowledgeBaseManager {
         }
     }
 
-    // 🌟 TagMemo V7.3: 矩阵重建调度器 (优化：滑动窗口防抖 + 变动阈值)
+    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
     _scheduleMatrixRebuild(changeCount = 1) {
-        if (changeCount <= 0) return; // 无实际标签变动，不触发调度
+        if (changeCount <= 0) return; 
         
         this._accumulatedTagChanges += changeCount;
         
@@ -1576,24 +1576,29 @@ class KnowledgeBaseManager {
             threshold = Math.max(10, Math.min(200, Math.floor(totalTags * 0.01)));
         } catch (e) { /* ignore */ }
 
-        // 无论如何先清除旧计时器，实现“滑动窗口”防抖
-        if (this._matrixRebuildTimer) {
-            clearTimeout(this._matrixRebuildTimer);
-            this._matrixRebuildTimer = null;
-        }
-
+        // 仅在达到阈值后，才进入防抖逻辑（实现“大变动后的冷静期”）
         if (this._accumulatedTagChanges >= threshold) {
-            console.log(`[KnowledgeBase] 📈 Changes (${this._accumulatedTagChanges}) reached threshold (${threshold}). Rebuilding matrix now...`);
-            this._doMatrixRebuild();
-        } else {
-            // 滑动窗口防抖：变动较少时，等待 2 分钟无变动后再执行
-            const DEBOUNCE_WAIT = 120000; 
+            // 无论如何先清除旧计时器，实现“滑动窗口”防抖
+            if (this._matrixRebuildTimer) {
+                clearTimeout(this._matrixRebuildTimer);
+            }
+
+            // 设定 5 分钟（300,000ms）的冷却防抖
+            const COOLING_DELAY = 300000; 
             this._matrixRebuildTimer = setTimeout(() => {
-                console.log(`[KnowledgeBase] ⏲️ Rebuilding matrix after debounce (${this._accumulatedTagChanges} changes).`);
+                console.log(`[KnowledgeBase] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
                 this._doMatrixRebuild();
-            }, DEBOUNCE_WAIT);
+            }, COOLING_DELAY);
+            
             if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
+
+            // 仅在第一次开启计时器时提示
+            if (!this._matrixRebuildTimer._isLogged) {
+                console.log(`[KnowledgeBase] 🛡️ Threshold reached. Matrix rebuild scheduled after 5min of quiescence.`);
+                this._matrixRebuildTimer._isLogged = true;
+            }
         }
+        // 低于阈值时不执行任何操作，不计入倒计时。
     }
 
     async _doMatrixRebuild() {
@@ -1614,7 +1619,7 @@ class KnowledgeBaseManager {
         try {
             const dbPath = path.join(this.config.storePath, 'knowledge_base.sqlite');
             const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
-            console.log(`[KnowledgeBase] ✅ Rust precomputation complete: ${result.computed_count} computed, ${result.skipped_count} skipped in ${result.elapsed_ms.toFixed(2)}ms`);
+            console.log(`[KnowledgeBase] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
             
             // 重新加载结果
             this._loadIntrinsicResiduals();
