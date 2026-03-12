@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 
 // 默认的配置文件路径，放在 TVStxt 目录下方便手机端编辑
-const DOC_PATH = path.resolve(__dirname, '../../TVStxt/MediaToolBox.txt');
+const TVSTXT_DIR = process.env.TVSTXT_DIR_PATH || path.resolve(__dirname, '../../TVStxt');
+const DOC_PATH = path.resolve(TVSTXT_DIR, 'MediaToolBox.txt');
 // 匹配分隔符的正则表达式，支持任意阈值，例如 [===vcp_fold:0.5===]
 const FOLD_REGEX = /^\[===vcp_fold:\s*([0-9.]+)\s*===\]\s*$/m;
 
