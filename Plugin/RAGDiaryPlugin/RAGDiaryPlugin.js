@@ -2035,6 +2035,7 @@ class RAGDiaryPlugin {
 
         // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]|[minScore]|[whitelistTags]
         // 示例：::TimeDecay30|0.5|Wiki,技巧
+        // 注：此格式可能存在问题，须进一步观察影响
         const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\|(\d+\.?\d*))?(?:\|([\w,]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
@@ -2273,13 +2274,17 @@ class RAGDiaryPlugin {
                     // 0. 检查精准打击目标：如果指定了目标标签，则只有包含目标标签的条目才执行衰减
                     if (localTargets.length > 0) {
                         const isTarget = localTargets.some(tag => {
-                            // 1. 匹配向量库结构化标签
-                            if (result.matchedTags && result.matchedTags.includes(tag)) return true;
-
-                            // 2. 匹配文本中的标签格式 (支持 #Tag, 【Tag】, 以及姐姐文件里的 Tag: ..., Tag, ...)
-                            const text = result.text;
-                            const tagPattern = new RegExp(`(?:#|【|Tag:.*\\b|\\b)${tag}(?:\\b|】|,)`, 'i');
-                            return tagPattern.test(text);
+                            const lowerTag = tag.toLowerCase();
+                            // 1. 匹配向量库结构化标签 (支持部分匹配，如 "box" 匹配 "Box审计")
+                            if (result.matchedTags && result.matchedTags.some(t => t.toLowerCase().includes(lowerTag))) return true;
+                            
+                            // 2. 匹配文本内容 (更宽泛：只要文本包含该词即视为命中，支持中文无边界情况)
+                            const text = result.text.toLowerCase();
+                            if (text.includes(lowerTag)) return true;
+                            
+                            // 3. 回退：正则匹配 (保留对特定标签格式的敏感度)
+                            const tagPattern = new RegExp(`(?:#|【|Tag:.*|\\b)${tag}`, 'i');
+                            return tagPattern.test(result.text);
                         });
 
                         if (!isTarget) {
