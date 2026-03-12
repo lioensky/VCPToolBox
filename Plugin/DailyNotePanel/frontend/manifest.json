@@ -1,7 +1,7 @@
 {
   "name": "DailyNotePanel",
   "short_name": "DailyNote",
-  "version": "1.4.1",
+  "version": "2.0.0",
   "author": "B3000Kcn & DBL1F7E5",
   "start_url": "/AdminPanel/DailyNotePanel/",
   "display": "standalone",
