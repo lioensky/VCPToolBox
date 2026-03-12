@@ -3,7 +3,7 @@
   "name": "ContactToolBox",
   "version": "1.0.0",
   "displayName": "通讯工具箱",
-  "description": "该收纳箱收纳了各种通讯、社交、消息推送相关的工具，用于动态向 Agent 提供说明。",
+  "description": "该收纳箱收纳了各种通讯、社交、消息推送，话题管理，日程管理，日常小工具相关的工具，用于动态向 Agent 提供说明。",
   "author": "System",
   "pluginType": "static",
   "entryPoint": {

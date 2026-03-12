@@ -3,7 +3,7 @@
   "name": "SearchToolBox",
   "version": "1.0.0",
   "displayName": "搜索工具箱",
-  "description": "该收纳箱收纳了各种外部搜索与信息采集相关的工具，用于动态向 Agent 提供说明。",
+  "description": "该收纳箱收纳了各种外部搜索，联网信息查询，爬虫与信息采集相关的工具，用于动态向 Agent 提供说明。",
   "author": "System",
   "pluginType": "static",
   "entryPoint": {
