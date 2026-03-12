@@ -1563,34 +1563,36 @@ class KnowledgeBaseManager {
         }
     }
 
-    // 🌟 TagMemo V7.1: 矩阵重建调度器 (防抖 + 变动阈值)
+    // 🌟 TagMemo V7.3: 矩阵重建调度器 (优化：滑动窗口防抖 + 变动阈值)
     _scheduleMatrixRebuild(changeCount = 1) {
+        if (changeCount <= 0) return; // 无实际标签变动，不触发调度
+        
         this._accumulatedTagChanges += changeCount;
         
         // 动态计算 1% 阈值
-        let threshold = 50; // 默认
+        let threshold = 50; 
         try {
             const totalTags = this.db.prepare('SELECT COUNT(*) as count FROM tags').get()?.count || 0;
             threshold = Math.max(10, Math.min(200, Math.floor(totalTags * 0.01)));
         } catch (e) { /* ignore */ }
 
+        // 无论如何先清除旧计时器，实现“滑动窗口”防抖
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+            this._matrixRebuildTimer = null;
+        }
+
         if (this._accumulatedTagChanges >= threshold) {
-            if (this._matrixRebuildTimer) {
-                clearTimeout(this._matrixRebuildTimer);
-                this._matrixRebuildTimer = null;
-            }
             console.log(`[KnowledgeBase] 📈 Changes (${this._accumulatedTagChanges}) reached threshold (${threshold}). Rebuilding matrix now...`);
             this._doMatrixRebuild();
         } else {
-            // 防抖：变动较少时，延迟 2 分钟执行（除非期间变动达到了阈值）
-            if (!this._matrixRebuildTimer) {
-                const DEBOUNCE_WAIT = 120000; 
-                this._matrixRebuildTimer = setTimeout(() => {
-                    console.log(`[KnowledgeBase] ⏲️ Rebuilding matrix after debounce (${this._accumulatedTagChanges} changes).`);
-                    this._doMatrixRebuild();
-                }, DEBOUNCE_WAIT);
-                if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
-            }
+            // 滑动窗口防抖：变动较少时，等待 2 分钟无变动后再执行
+            const DEBOUNCE_WAIT = 120000; 
+            this._matrixRebuildTimer = setTimeout(() => {
+                console.log(`[KnowledgeBase] ⏲️ Rebuilding matrix after debounce (${this._accumulatedTagChanges} changes).`);
+                this._doMatrixRebuild();
+            }, DEBOUNCE_WAIT);
+            if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
         }
     }
 
@@ -1617,7 +1619,8 @@ class KnowledgeBaseManager {
             // 重新加载结果
             this._loadIntrinsicResiduals();
         } catch (e) {
-            console.error('[KnowledgeBase] ❌ Rust precomputation failed:', e);
+            console.error('[KnowledgeBase] ❌ Rust precomputation failed:', e.message || e);
+            if (e.stack) console.error(e.stack);
         }
     }
 

@@ -602,11 +602,10 @@ impl Task for IntrinsicResidualTask {
             for row in rows {
                 if let Ok((id, bytes)) = row {
                     if bytes.len() == dim * 4 {
-                        let vec: Vec<f32> = unsafe {
-                            std::slice::from_raw_parts(
-                                bytes.as_ptr() as *const f32, dim
-                            ).to_vec()
-                        };
+                        let vec: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                            .collect();
                         tag_vectors.insert(id, vec);
                     }
                 }
@@ -640,6 +639,7 @@ impl Task for IntrinsicResidualTask {
         let mut computed = 0u32;
         let mut skipped = 0u32;
         let mut results: Vec<(i64, f64, usize)> = Vec::new();
+        let max_neighbors = 100; // 🌟 V7.5: 限制邻居基数，防止 SVD 爆炸
 
         for (&tag_id, tag_vec) in &tag_vectors {
             let neighbors = match adjacency.get(&tag_id) {
@@ -647,10 +647,14 @@ impl Task for IntrinsicResidualTask {
                 None => { skipped += 1; continue; }
             };
 
-            // 收集有向量的邻居
-            let neighbor_vecs: Vec<&Vec<f32>> = neighbors.iter()
-                .filter_map(|nid| tag_vectors.get(nid))
-                .collect();
+            // 收集有向量的邻居，并限制数量
+            let mut neighbor_vecs: Vec<&Vec<f32>> = Vec::new();
+            for nid in neighbors {
+                if let Some(v) = tag_vectors.get(nid) {
+                    neighbor_vecs.push(v);
+                    if neighbor_vecs.len() >= max_neighbors { break; }
+                }
+            }
 
             if neighbor_vecs.len() < min_n {
                 skipped += 1;
@@ -700,28 +704,35 @@ impl Task for IntrinsicResidualTask {
             computed += 1;
         }
 
-        // 4. 写入 SQLite
+        // 4. 写入 SQLite (使用 Transaction 优化性能)
         if !results.is_empty() {
             let max_r = results.iter().map(|r| r.1).fold(0.0f64, f64::max);
             let min_r = results.iter().map(|r| r.1).fold(f64::MAX, f64::min);
             let range = max_r - min_r;
 
-            conn.execute("DELETE FROM tag_intrinsic_residuals", [])
+            let mut conn = conn; // 让 conn 可变以开始事务
+            let tx = conn.transaction()
+                .map_err(|e| Error::from_reason(format!("Transaction failed: {}", e)))?;
+
+            tx.execute("DELETE FROM tag_intrinsic_residuals", [])
                 .map_err(|e| Error::from_reason(format!("Clear failed: {}", e)))?;
 
-            let mut insert = conn.prepare(
-                "INSERT INTO tag_intrinsic_residuals (tag_id, residual_energy, neighbor_count) VALUES (?1, ?2, ?3)"
-            ).map_err(|e| Error::from_reason(format!("Prepare insert failed: {}", e)))?;
+            {
+                let mut insert = tx.prepare(
+                    "INSERT INTO tag_intrinsic_residuals (tag_id, residual_energy, neighbor_count) VALUES (?1, ?2, ?3)"
+                ).map_err(|e| Error::from_reason(format!("Prepare insert failed: {}", e)))?;
 
-            for (tag_id, raw_residual, n_count) in &results {
-                let normalized = if range > 1e-9 {
-                    0.5 + 1.5 * ((raw_residual - min_r) / range) // 归一化到 [0.5, 2.0]
-                } else {
-                    1.0
-                };
-                insert.execute(rusqlite::params![tag_id, normalized, *n_count as i64])
-                    .map_err(|e| Error::from_reason(format!("Insert failed: {}", e)))?;
+                for (tag_id, raw_residual, n_count) in &results {
+                    let normalized = if range > 1e-9 {
+                        0.5 + 1.5 * ((raw_residual - min_r) / range) // 归一化到 [0.5, 2.0]
+                    } else {
+                        1.0
+                    };
+                    insert.execute(rusqlite::params![tag_id, normalized, *n_count as i64])
+                        .map_err(|e| Error::from_reason(format!("Insert failed: {}", e)))?;
+                }
             }
+            tx.commit().map_err(|e| Error::from_reason(format!("Commit failed: {}", e)))?;
         }
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
