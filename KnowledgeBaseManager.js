@@ -526,9 +526,25 @@ class KnowledgeBaseManager {
             // [4] 收集金字塔中的所有 Tags 并应用“世界观门控”与“语言补偿”
             const allTags = [];
             const seenTagIds = new Set();
-            // 安全处理 coreTags，过滤非字符串
-            const safeCoreTags = Array.isArray(coreTags) ? coreTags.filter(t => typeof t === 'string') : [];
-            const coreTagSet = new Set(safeCoreTags.map(t => t.toLowerCase()));
+
+            // 🌟 莱恩的鲁棒分流法：鸭子类型分离输入参数
+            const coreTagStrings = [];
+            const hardGhostObjects = [];
+            const softGhostObjects = [];
+
+            if (Array.isArray(coreTags)) {
+                coreTags.forEach(t => {
+                    if (typeof t === 'string') {
+                        coreTagStrings.push(t.toLowerCase());
+                    } else if (t && t.name && t.vector) {
+                        // 如果带有向量，说明是幽灵对象，按 isCore 再次分流
+                        if (t.isCore) hardGhostObjects.push(t);
+                        else softGhostObjects.push(t);
+                    }
+                });
+            }
+            // 这个 Set 只管原生的字符串补全逻辑
+            const coreTagSet = new Set(coreTagStrings);
 
             // 🛡️ 防御性检查：确保 pyramid.levels 存在且为数组
             const levels = Array.isArray(pyramid.levels) ? pyramid.levels : [];
@@ -720,14 +736,49 @@ class KnowledgeBaseManager {
                 }
             }
 
+            // [4.7] 🎈 注入幽灵节点 (暗度陈仓)
+            let ghostIdCounter = -1; // 专属负数 ID
+            const ghostVectorMap = new Map();
+            // 获取当前基准权重
+            const maxBaseWeight = allTags.length > 0 ? Math.max(...allTags.map(t => t.adjustedWeight / 1.33)) : 1.0;
+
+            const injectGhosts = (ghosts, isCore) => {
+                ghosts.forEach(ghost => {
+                    const gid = ghostIdCounter--;
+                    // 1. 塞进 allTags 参与拓扑运算
+                    allTags.push({
+                        id: gid,
+                        name: ghost.name,
+                        adjustedWeight: maxBaseWeight * (isCore ? dynamicCoreBoostFactor : 1.0),
+                        isCore: isCore,
+                        isVirtual: true
+                    });
+                    // 2. 存入幽灵字典备用
+                    ghostVectorMap.set(gid, {
+                        id: gid,
+                        name: ghost.name,
+                        vector: ghost.vector // Float32Array 本体
+                    });
+                    seenTagIds.add(gid);
+                });
+            };
+
+            injectGhosts(hardGhostObjects, true);
+            injectGhosts(softGhostObjects, false);
+
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 
             // [5] 批量获取向量与名称 (性能优化：1次查询替代 N次循环查询)
-            const allTagIds = allTags.map(t => t.id);
-            const tagRows = this.db.prepare(
-                `SELECT id, name, vector FROM tags WHERE id IN (${allTagIds.map(() => '?').join(',')})`
-            ).all(...allTagIds);
+            const dbTagIds = allTags.filter(t => t.id > 0).map(t => t.id);
+            const tagRows = dbTagIds.length > 0
+                ? this.db.prepare(`SELECT id, name, vector FROM tags WHERE id IN (${dbTagIds.map(() => '?').join(',')})`).all(...dbTagIds)
+                : [];
             const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
+
+            // 🌟 终极闭环：把幽灵向量混入正规军的 Map 里！
+            for (const [gid, ghostData] of ghostVectorMap.entries()) {
+                tagDataMap.set(gid, ghostData);
+            }
 
             // [5.5] 语义去重 (Semantic Deduplication)
             // 目的：消除冗余标签（如“委内瑞拉局势”与“委内瑞拉危机”），为多样性腾出空间
