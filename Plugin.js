@@ -8,6 +8,7 @@ const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
+const ToolApprovalManager = require('./modules/toolApprovalManager');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -28,6 +29,8 @@ class PluginManager {
         this.isReloading = false;
         this.reloadTimeout = null;
         this.vectorDBManager = null; // 修复：不再自己创建，等待注入
+        this.toolApprovalManager = new ToolApprovalManager(path.join(__dirname, 'toolApprovalConfig.json'));
+        this.pendingApprovals = new Map(); // requestId -> { resolve, reject, timeoutId }
     }
 
     setWebSocketServer(wss) {
@@ -725,6 +728,52 @@ class PluginManager {
         }
         // --- 透明化处理结束 ---
 
+        // --- 人工审核逻辑 (新增) ---
+        if (this.toolApprovalManager.shouldApprove(toolName)) {
+            const requestId = `approve-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" requires manual approval. Request ID: ${requestId}`);
+
+            const approvalPromise = new Promise((resolve, reject) => {
+                const timeoutDuration = this.toolApprovalManager.getTimeoutMs();
+                const timeoutId = setTimeout(() => {
+                    if (this.pendingApprovals.has(requestId)) {
+                        this.pendingApprovals.delete(requestId);
+                        reject(new Error(JSON.stringify({ plugin_error: `Manual approval for "${toolName}" timed out after ${timeoutDuration / 60000} minutes.` })));
+                    }
+                }, timeoutDuration);
+
+                this.pendingApprovals.set(requestId, { resolve, reject, timeoutId });
+            });
+
+            // 发送审核请求到管理面板
+            if (this.webSocketServer) {
+                const approvalRequest = {
+                    type: 'tool_approval_request',
+                    data: {
+                        requestId,
+                        toolName,
+                        maid: maidNameFromArgs,
+                        args: pluginSpecificArgs,
+                        timestamp: _getFormattedLocalTimestamp()
+                    }
+                };
+                this.webSocketServer.broadcast(approvalRequest, 'VCPLog');
+                console.log(`[PluginManager] 🔔 正在等待工具调用人工审核: ${toolName} (ID: ${requestId})`);
+            } else {
+                this.pendingApprovals.delete(requestId);
+                throw new Error(JSON.stringify({ plugin_error: 'WebSocketServer not initialized, cannot request manual approval.' }));
+            }
+
+            try {
+                await approvalPromise;
+                if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
+            } catch (error) {
+                if (this.debugMode) console.warn(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) rejected: ${error.message}`);
+                throw error;
+            }
+        }
+        // --- 人工审核逻辑结束 ---
+
         try {
             let resultFromPlugin;
             if (plugin.isDistributed) {
@@ -1048,6 +1097,21 @@ class PluginManager {
                 }
             }
         });
+    }
+
+    handleApprovalResponse(requestId, approved) {
+        const approval = this.pendingApprovals.get(requestId);
+        if (approval) {
+            this.pendingApprovals.delete(requestId);
+            clearTimeout(approval.timeoutId);
+            if (approved) {
+                approval.resolve();
+            } else {
+                approval.reject(new Error(JSON.stringify({ plugin_error: 'Manual approval was REJECTED by user.' })));
+            }
+            return true;
+        }
+        return false;
     }
 
     initializeServices(app, adminApiRouter, projectBasePath) {

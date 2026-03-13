@@ -454,6 +454,8 @@
                                 class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span
                                 class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
+                    <li><a href="#" data-target="tool-approval-manager"><span
+                                class="material-symbols-outlined">verified_user</span>插件调用审核管理</a></li>
                     <li><a href="#" data-target="thinking-chains-editor"><span
                                 class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
                     <li><a href="#" data-target="schedule-manager"><span
@@ -763,6 +765,44 @@
                         <button id="aa-save-config-button" type="button">保存 AgentAssistant 配置</button>
                         <span id="aa-status" class="status-message"></span>
                     </div>
+                </div>
+            </section>
+
+            <section id="tool-approval-manager-section" class="config-section">
+                <h2>插件调用审核管理</h2>
+                <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
+                <div class="card">
+                    <form id="tool-approval-config-form">
+                        <div class="config-item">
+                            <label class="switch-container">
+                                <span>是否开启工具调用审核</span>
+                                <input type="checkbox" id="tool-approval-enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+                        <div class="config-item">
+                            <label class="switch-container">
+                                <span>是否开启所有工具调用审核</span>
+                                <input type="checkbox" id="tool-approval-approve-all">
+                                <span class="switch-slider"></span>
+                            </label>
+                            <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
+                        </div>
+                        <div class="config-item">
+                            <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
+                            <input type="number" id="tool-approval-timeout" min="1" max="60" value="5">
+                            <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
+                        </div>
+                        <div class="config-item">
+                            <label for="tool-approval-list">被审核工具名单 (每行一个工具名称)</label>
+                            <textarea id="tool-approval-list" rows="8" placeholder="例如：\nSciCalculator\nPowerShellExecutor"></textarea>
+                            <p class="aa-hint">当“开启所有工具调用审核”关闭时，仅对此名单中的工具进行审核。</p>
+                        </div>
+                        <div class="config-footer">
+                            <button type="submit" class="btn-primary">保存审核配置</button>
+                            <span id="tool-approval-status" class="status-message"></span>
+                        </div>
+                    </form>
                 </div>
             </section>
 

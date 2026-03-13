@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "timeoutMinutes": 5,
+  "approveAll": false,
+  "approvalList": [
+    "SciCalculator",
+    "PowerShellExecutor"
+  ]
+}

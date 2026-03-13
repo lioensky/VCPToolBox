@@ -302,7 +302,37 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
             res.status(500).json({ error: 'Failed to clear server log file', details: error.message });
         }
     });
-    // --- End Server Log API ---
+    // --- Tool Approval Config API ---
+    adminApiRouter.get('/tool-approval-config', async (req, res) => {
+        const configPath = path.join(__dirname, '..', 'toolApprovalConfig.json');
+        try {
+            const content = await fs.readFile(configPath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.json({ enabled: false, timeoutMinutes: 5, approveAll: false, approvalList: [] });
+            } else {
+                console.error('[AdminPanelRoutes API] Error reading tool approval config:', error);
+                res.status(500).json({ error: 'Failed to read tool approval config', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/tool-approval-config', async (req, res) => {
+        const { config } = req.body;
+        if (typeof config !== 'object' || config === null) {
+            return res.status(400).json({ error: 'Invalid configuration data. Object expected.' });
+        }
+        const configPath = path.join(__dirname, '..', 'toolApprovalConfig.json');
+        try {
+            await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            res.json({ success: true, message: '工具调用审核配置已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing tool approval config:', error);
+            res.status(500).json({ error: 'Failed to write tool approval config', details: error.message });
+        }
+    });
+    // --- End Tool Approval Config API ---
     // GET main config.env content (filtered)
     adminApiRouter.get('/config/main', async (req, res) => {
         try {
