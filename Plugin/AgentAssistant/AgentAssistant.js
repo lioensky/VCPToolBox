@@ -46,8 +46,8 @@ function initialize(config, dependencies) {
 
     DELEGATION_MAX_ROUNDS = parseInt(config.DELEGATION_MAX_ROUNDS || '15', 10);
     DELEGATION_TIMEOUT = parseInt(config.DELEGATION_TIMEOUT || '300000', 10);
-    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
-    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
+    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n[长执行任务优化机制]\n如果当前步骤涉及需要长时间等待的任务（如：视频生成、大型文件处理等），你可以在输出中包含 `[[NextHeartbeat::秒数]]` 占位符。系统将推迟下一次心跳（心跳即：再次唤醒你）的到来，在这段时间内不会产生额外的轮次和Token消耗。例如：如果你预计渲染需要3分钟，可以输出 `[[NextHeartbeat::180]]`。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
+    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果你在等待长执行任务，请根据需要输出 `[[NextHeartbeat::秒数]]` 进行推迟。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
 
     if (DEBUG_MODE) {
         console.error(`[AgentAssistant Service] Initializing...`);
@@ -658,6 +658,24 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
             } else {
                 // Task is not completed yet, push history and add heartbeat prompt
                 messagesForVCP.push({ role: 'assistant', content: cleanedAssistantResponse });
+
+                // 处理心跳延迟占位符: [[NextHeartbeat::秒数]]
+                const delayMatch = cleanedAssistantResponse.match(/\[\[NextHeartbeat::(\d+)\]\]/i);
+                if (delayMatch && delayMatch[1]) {
+                    const delaySeconds = parseInt(delayMatch[1], 10);
+                    if (!isNaN(delaySeconds) && delaySeconds > 0) {
+                        // 确保总延迟不超过剩余超时时间，避免永久挂起
+                        const elapsed = Date.now() - state.startTime;
+                        const remainingTimeout = DELEGATION_TIMEOUT - elapsed;
+                        const actualDelayMs = Math.min(delaySeconds * 1000, Math.max(0, remainingTimeout - 10000)); // 预留10s缓冲
+
+                        if (actualDelayMs > 0) {
+                            if (DEBUG_MODE) console.error(`[AgentAssistant Delegation] AI requested heartbeat delay: ${delaySeconds}s. Actual delay: ${Math.round(actualDelayMs / 1000)}s.`);
+                            await new Promise(resolve => setTimeout(resolve, actualDelayMs));
+                        }
+                    }
+                }
+
                 messagesForVCP.push({ role: 'user', content: DELEGATION_HEARTBEAT_PROMPT });
             }
 
