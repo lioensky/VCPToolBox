@@ -187,9 +187,7 @@ class NonStreamHandler {
           let logs = [];
           if (writeChatLog) {
             for (let i = 0; i < normalCalls.length; i++) {
-              const toolCall = normalCalls[i];
-              const result = toolResults[i];
-              logs.push({ tool: toolCall, result: result.content });
+              logs.push({ tool: normalCalls[i], result: toolResults[i]?.content });
             }
           }
           return logs;
