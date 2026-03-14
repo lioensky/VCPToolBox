@@ -15,6 +15,7 @@ class StreamHandler {
       apiKey,
       pluginManager,
       writeDebugLog,
+      writeChatLog,
       handleDiaryFromAIResponse,
       webSocketServer,
       DEBUG_MODE,
@@ -46,6 +47,7 @@ class StreamHandler {
     const maxRecursion = maxVCPLoopStream || 5;
     let currentAIContentForLoop = '';
     let currentAIRawDataForDiary = '';
+    const allContentForChatLog = [];
 
     // 辅助函数：处理 AI 响应流 (优化版：直通转发 + 后台解析)
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
@@ -187,6 +189,7 @@ class StreamHandler {
     let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
     currentAIContentForLoop = initialAIResponseData.content;
     currentAIRawDataForDiary = initialAIResponseData.raw;
+    if (writeChatLog) allContentForChatLog.push(initialAIResponseData.content);
     handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e =>
       console.error('[VCP Stream Loop] Error in initial diary handling:', e),
     );
@@ -293,6 +296,7 @@ class StreamHandler {
         if (nextAiAPIResponse.ok) {
           let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
           currentAIContentForLoop = nextAIResponseData.content;
+          if (writeChatLog) allContentForChatLog.push(nextAIResponseData.content);
           recursionDepth++;
           continue;
         }
@@ -401,6 +405,7 @@ class StreamHandler {
 
       let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
       currentAIContentForLoop = nextAIResponseData.content;
+      if (writeChatLog) allContentForChatLog.push(nextAIResponseData.content);
 
       // 记录日志
       handleDiaryFromAIResponse(nextAIResponseData.raw).catch(e =>
@@ -409,6 +414,8 @@ class StreamHandler {
 
       recursionDepth++;
     }
+
+    if (writeChatLog) writeChatLog(originalBody, allContentForChatLog.join(''));
 
     if (recursionDepth >= maxRecursion && !res.writableEnded && !res.destroyed) {
       try {

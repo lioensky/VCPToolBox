@@ -14,6 +14,7 @@ class NonStreamHandler {
       apiKey,
       pluginManager,
       writeDebugLog,
+      writeChatLog,
       handleDiaryFromAIResponse,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,
@@ -263,6 +264,7 @@ class NonStreamHandler {
       };
     }
 
+    if (writeChatLog) writeChatLog(originalBody, JSON.stringify(finalJsonResponse));
     if (!res.writableEnded && !res.destroyed) {
       res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
     }
