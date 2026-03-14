@@ -1508,7 +1508,14 @@ class RAGDiaryPlugin {
                             return { placeholder, content: '' };
                         }
 
-                        console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合模式: 通过阈值 (${maxSimilarity.toFixed(4)} >= ${avgThreshold.toFixed(4)})，开始检索...`);
+                        // 🌟 解析 Truncate 阈值并应用到聚合判断
+                        const truncateThreshold = this._extractTruncateThreshold(modifiers);
+                        if (truncateThreshold > 0 && maxSimilarity < truncateThreshold) {
+                            console.log(`[RAGDiaryPlugin] 《《》》聚合模式: 最高相似度 (${maxSimilarity.toFixed(4)}) 低于 Truncate 阈值 (${truncateThreshold.toFixed(4)})，跳过召回`);
+                            return { placeholder, content: '' };
+                        }
+
+                        console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合模式: 通过阈值 (${maxSimilarity.toFixed(4)} >= ${Math.max(avgThreshold, truncateThreshold).toFixed(4)})，开始检索...`);
 
                         // AIMemo 检查
                         const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
@@ -1591,7 +1598,10 @@ class RAGDiaryPlugin {
                     const enhancedSimilarity = enhancedVector ? this.cosineSimilarity(queryVector, enhancedVector) : 0;
                     const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
 
-                    if (finalSimilarity >= localThreshold) {
+                    // 🌟 解析 Truncate 阈值
+                    const truncateThreshold = this._extractTruncateThreshold(modifiers);
+
+                    if (finalSimilarity >= localThreshold && finalSimilarity >= truncateThreshold) {
                         // 核心逻辑：只有在许可证存在的情况下，::AIMemo才生效
                         const aiMemoMatch = modifiers.match(/::AIMemo(?::([\w-]+))?/);
                         const shouldUseAIMemo = isAIMemoLicensed && !!aiMemoMatch;
@@ -1767,6 +1777,12 @@ class RAGDiaryPlugin {
         return processedContent;
     }
 
+    _extractTruncateThreshold(modifiers) {
+        if (!modifiers) return 0;
+        const truncateMatch = modifiers.match(/::Truncate(\d+\.?\d*)/);
+        return truncateMatch ? parseFloat(truncateMatch[1]) : 0;
+    }
+
     _extractKMultiplier(modifiers) {
         const kMultiplierMatch = modifiers.match(/:(\d+\.?\d*)/);
         return kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
@@ -1853,7 +1869,10 @@ class RAGDiaryPlugin {
         const temperature = config.aggregateTemperature ?? 3.0;
         const minKPerDiary = config.aggregateMinK ?? 1;
 
-        console.log(`[RAGDiaryPlugin] 🌟 聚合检索启动: ${diaryNames.length} 个日记本, 总K=${totalK}, 温度=${temperature}`);
+        // 🌟 解析 Truncate 阈值
+        const truncateThreshold = this._extractTruncateThreshold(modifiers);
+
+        console.log(`[RAGDiaryPlugin] 🌟 聚合检索启动: ${diaryNames.length} 个日记本, 总K=${totalK}, 温度=${temperature}${truncateThreshold > 0 ? `, Truncate=${truncateThreshold}` : ''}`);
 
         // --- Step 1: 获取各日记本的代表向量并计算相似度 ---
         const diaryScores = [];
@@ -1960,6 +1979,9 @@ class RAGDiaryPlugin {
             console.log('[RAGDiaryPlugin] 聚合检索: 所有日记本均未返回结果。');
             return '';
         }
+
+        // 🛡️ 再一次全局截断检查（如果聚合结果的分数在底层已经被过滤，这里 aggregatedContent 已经会受影响）
+        // 但聚合结果是由多个单日记本检索组成的，单日记本内部已经应用了 Truncate
 
         console.log(`[RAGDiaryPlugin] 🌟 聚合检索完成: ${results.filter(r => r.success && r.content).length}/${diaryNames.length} 个日记本返回了结果`);
         return aggregatedContent;
@@ -2131,6 +2153,9 @@ class RAGDiaryPlugin {
         const tagMemoMatch = modifiers.match(/::TagMemo([\d.]+)/);
         // ✅ 改进：如果 modifiers 中没有指定权重，则使用动态计算的权重
         let tagWeight = tagMemoMatch ? parseFloat(tagMemoMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
+
+        // 🌟 解析 Truncate 阈值
+        const truncateThreshold = this._extractTruncateThreshold(modifiers);
 
         // TagMemo修饰符检测（静默）
 
@@ -2452,6 +2477,29 @@ class RAGDiaryPlugin {
                 retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
             } else {
                 retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
+            }
+        }
+
+        // 🌟 应用 Truncate 过滤逻辑
+        if (truncateThreshold > 0 && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
+            const beforeCount = finalResultsForBroadcast.length;
+            finalResultsForBroadcast = finalResultsForBroadcast.filter(r => {
+                const score = r.rerank_score ?? r.score ?? 0;
+                return score >= truncateThreshold;
+            });
+            const afterCount = finalResultsForBroadcast.length;
+            
+            if (beforeCount !== afterCount) {
+                console.log(`[RAGDiaryPlugin] Truncate applied: ${beforeCount} -> ${afterCount} items (Threshold: ${truncateThreshold})`);
+                
+                // 如果过滤后变为空，且原本有内容，需要重新生成内容
+                if (afterCount === 0) {
+                    retrievedContent = '';
+                } else if (useGroup) {
+                    retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
+                } else {
+                    retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
+                }
             }
         }
 
