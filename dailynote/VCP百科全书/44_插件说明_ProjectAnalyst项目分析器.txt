@@ -1,0 +1,72 @@
+今日学习了VCPToolBox新增的ProjectAnalyst插件，这是一个能够分析本地项目文件夹并生成详细报告的同步工具，支持快速分析和完整逐文件分析两种模式。
+
+核心概念：ProjectAnalyst（项目分析器）让AI能够对任意本地项目文件夹进行自动化分析，生成包含项目简介、文件树、逐文件代码分析的结构化报告，并支持通过分析ID进行后续的文件检索和关键词搜索。
+
+插件基本信息：插件名称ProjectAnalyst，类型synchronous同步插件，超时时间30秒，入口文件ProjectAnalyst.js（Node.js）。系统提示词占位符为{{VCPProjectAnalyst}}。
+
+简明释义：当AI需要理解一个陌生的代码项目时，可以用这个插件先做一次自动分析。快速分析模式只返回项目简介和文件目录树，几秒内完成；完整分析模式会逐文件阅读代码并生成每个文件的功能描述，适合深入理解大型项目。分析结果会被保存，后续可以通过分析ID随时查询、按文件路径检索或按关键词搜索。
+
+使用方法：分为三个命令：AnalyzeProject启动分析任务，QueryAnalysis查询分析结果，QueryProgress查询分析进度。AnalyzeProject需要提供directoryPath参数指定项目的本地绝对路径，可选参数fullAnalyze或full设为true启用完整逐文件分析。
+
+快速分析（只看项目简介和文件树）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」AnalyzeProject「末」,
+directoryPath:「始」C:\Projects\MyApp「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+完整逐文件分析：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」AnalyzeProject「末」,
+directoryPath:「始」C:\Projects\MyApp「末」,
+full:「始」true「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+查询分析结果（简要模式，默认只返回项目简介和文件树）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」QueryAnalysis「末」,
+analysisId:「始」MyApp-2026-03-14.19.30「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+按文件路径检索（查看某个特定文件的分析内容）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」QueryAnalysis「末」,
+analysisId:「始」MyApp-2026-03-14.19.30「末」,
+filePath:「始」src/main.js「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+按关键词检索（全文搜索分析报告）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」QueryAnalysis「末」,
+analysisId:「始」MyApp-2026-03-14.19.30「末」,
+keyword:「始」database「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+查询分析进度：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ProjectAnalyst「末」,
+command:「始」QueryProgress「末」,
+analysisId:「始」MyApp-2026-03-14.19.30「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 快速分析正常但完整分析超时——完整分析需要逐文件调用AI解析代码，大型项目可能需要很长时间。完整分析实际上是在后台异步执行的，超时不代表失败，可以用QueryProgress查询进度。
+2. directoryPath路径不存在——路径必须是VCP服务器本地的绝对路径，不支持远程路径。确认路径格式正确（Windows用反斜杠或双反斜杠）。
+3. 分析ID找不到——分析ID格式为"项目名-日期.时间"，例如MyApp-2026-03-14.19.30。分析结果存储在插件目录下，服务器重启不会丢失。
+4. filePath检索无结果——文件路径支持部分匹配，但路径格式需要与分析报告中的格式一致。建议先用默认查询看文件树确认路径格式。
+5. 完整分析报告过长占用大量Token——使用filePath或keyword参数进行精确检索，而不是full=true返回完整报告。
+
+可能的解决办法：
+1. 推荐工作流程：先用快速分析了解项目结构，再用filePath检索感兴趣的具体文件，避免一次性返回整个项目的完整分析。
+2. 对于超大型项目（数百文件），建议分析子目录而不是根目录。
+3. QueryAnalysis支持四种查询模式按优先级排列：文件检索（filePath）> 关键词检索（keyword）> 完整查询（full=true）> 简单查询（默认）。
+
+关联节点：VCP指令协议语法（调用格式）、ServerFileOperator文件操作（同类文件相关插件）、DeepWikiVCP（同类项目分析工具）。
+
+信源/出处：Plugin/ProjectAnalyst/plugin-manifest.json，Plugin/ProjectAnalyst/ProjectAnalyst.js。
+
+Tag: ProjectAnalyst，项目分析，代码分析，文件树，逐文件分析，分析ID，文件检索，关键词搜索，项目理解，代码库导航

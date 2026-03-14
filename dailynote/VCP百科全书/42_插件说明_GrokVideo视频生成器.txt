@@ -1,0 +1,58 @@
+今日学习了VCPToolBox新增的GrokVideoGen插件，这是一个基于Grok API的视频生成工具，支持文生视频、图生视频、视频续写和视频拼接四种模式。
+
+核心概念：GrokVideoGen是VCP的视频生成插件，通过调用Grok（xAI）的视频生成API，让AI能够根据文字描述生成视频、基于图片生成视频、对已有视频进行续写延伸、以及将多段视频拼接合并。
+
+插件基本信息：插件名称GrokVideoGen，类型synchronous同步插件，超时时间300秒（5分钟），入口文件video_handler.py（Python）。系统提示词占位符为{{VCPGrokVideoGen}}。支持WebSocket推送，生成状态会实时推送到VCPLog。
+
+简明释义：这个插件让AI具备了视频创作能力。用户描述一个场景，AI调用此工具就能生成对应的短视频。更强大的是视频续写功能——可以基于之前生成的视频继续创作，自动提取视频最后一帧作为起点延伸6秒新内容，实现连续叙事。
+
+配置项说明：在Plugin/GrokVideo/config.env中需要设置以下参数：GROK_API_KEY是xAI的API密钥；GROK_API_BASE是API端点地址；GrokVideoModelName是视频生成模型名称；VarHttpUrl是VCP服务器的外部访问地址（用于拼接视频URL）；IMAGESERVER_IMAGE_KEY是图片服务器的密钥（用于存储生成的视频文件）。
+
+使用方法：调用时必须提供prompt参数描述想要生成的视频内容。可选参数image_url用于图生视频模式，video_url用于视频续写模式（二选一）。视频生成需要较长时间，调用后系统会返回任务状态，生成完成后通过WebSocket推送结果。
+
+文生视频调用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」GrokVideoGen「末」,
+prompt:「始」一个赛博朋克风格的城市街道，下着雨，霓虹灯闪烁「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+图生视频调用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」GrokVideoGen「末」,
+image_url:「始」https://example.com/image.jpg「末」,
+prompt:「始」让画面中的人物缓缓转身微笑「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+视频续写调用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」GrokVideoGen「末」,
+video_url:「始」之前生成的视频URL.mp4「末」,
+prompt:「始」继续这个场景，镜头缓缓推进，一辆飞行汽车从远处驶来「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+视频拼接调用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」GrokVideoGen「末」,
+command:「始」concat「末」,
+video_url1:「始」第一个视频URL.mp4「末」,
+video_url2:「始」第二个视频URL.mp4「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 视频生成超时——Grok API响应慢或网络不稳定，默认超时300秒。视频生成本身就需要较长时间，这不一定是错误。
+2. API调用失败——GROK_API_KEY无效或GROK_API_BASE配置错误，检查Plugin/GrokVideo/config.env中的配置。
+3. 视频续写时提示视频URL无效——video_url必须是可公开访问的.mp4链接，确保VarHttpUrl配置正确且视频文件仍在服务器上。
+4. 拼接后的视频画面不连贯——拼接功能是简单的视频合并，不做内容衔接处理。如果需要连贯叙事，应使用视频续写模式而非拼接。
+5. 生成结果未推送到VCPLog——WebSocket连接断开，检查VCPLog是否正常连接到VCP服务器。
+
+可能的解决办法：
+1. 视频生成是异步任务，调用成功后告知用户耐心等待即可，结果会通过WebSocket推送到VCPLog。
+2. 确认xAI账户的API Key有效且有足够额度，Grok视频生成API可能需要付费订阅。
+3. 使用视频续写实现连续叙事时，建议每次续写的prompt都包含对前一段视频结尾场景的描述，帮助模型理解上下文。
+4. 拼接至少需要2个视频URL，可以继续添加video_url3、video_url4等更多视频。
+
+关联节点：VCP指令协议语法（调用格式）、WebSocket推送机制（生成状态通知）、VCPLog实时日志（接收生成结果）、图片服务器（视频文件存储）。
+
+信源/出处：Plugin/GrokVideo/plugin-manifest.json，Plugin/GrokVideo/video_handler.py。
+
+Tag: GrokVideoGen，视频生成，Grok API，xAI，文生视频，图生视频，视频续写，视频拼接，多媒体创作，WebSocket推送

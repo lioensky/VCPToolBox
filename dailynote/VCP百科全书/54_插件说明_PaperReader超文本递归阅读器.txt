@@ -1,0 +1,56 @@
+今日学习了VCPToolBox新增的PaperReader插件，这是一个超文本递归阅读引擎，能够将超长PDF文档转化为目标驱动的多分辨率自适应阅读流程，支持MinerU云端高保真解析。
+
+核心概念：PaperReader（超文本递归阅读器）V0.4版本是VCP的深度文档阅读引擎，提供从PDF解析到智能阅读的完整管线。核心创新在于统一的Read命令，自动执行Survey（骨架提取）→ Triage（分诊注意力分配）→ DeepDive/Skim（精读/扫读）→ Audit（去偏见审核）→ Synthesize（合成报告）的完整流程，智能决定哪些章节精读、哪些扫读、哪些跳过。
+
+插件基本信息：插件名称PaperReader，版本0.4.0，类型synchronous同步插件，超时时间1800秒（30分钟，因为处理大文档需要大量时间），入口文件PaperReader.js（Node.js）。系统提示词占位符为{{VCPPaperReader}}。
+
+简明释义：想象AI像一个经验丰富的研究者阅读论文——先快速翻一遍了解结构（Survey），然后判断哪些章节对当前目标最重要（Triage），重要章节精读、次要章节扫读、无关章节跳过（DeepDive/Skim），最后审核确保没有遗漏或偏见（Audit），再综合输出报告（Synthesize）。整个过程全自动，只需要提供PDF路径和阅读目标。
+
+配置项说明：MINERU_API_TOKEN是MinerU云端API Token（从mineru.net获取，不填则自动降级到pdf-parse）；PaperReaderModel是用于阅读总结的模型名称；PaperReaderChunkSize是目标chunk大小（默认2000 tokens）；PaperReaderOverlap是chunk重叠比例（默认0.15）；PaperReaderMaxOutputTokens是单次模型输出上限（默认12000）；PaperReaderBatchSize是Deep阅读分批chunk数（默认5）；PaperReaderMaxConcurrentLLM是进程级LLM最大并发数（默认5）；PaperReaderMaxChunks是单次最多处理chunk数（默认120，防止成本失控）；PaperReaderMaxAuditChunks是审核抽样最大chunk数（默认8）。
+
+使用方法：分为两步操作——先用IngestPDF解析PDF生成分块工件，再用Read命令执行自适应阅读。
+
+第一步：解析PDF：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PaperReader「末」,
+command:「始」IngestPDF「末」,
+filePath:「始」D:\\papers\\research_paper.pdf「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+第二步：自适应阅读（推荐方式，自动完成全流程）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PaperReader「末」,
+command:「始」Read「末」,
+paperId:「始」research_paper-20260314-abc「末」,
+goal:「始」理解核心方法和实验设计「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+针对已阅读文档进行检索式问答：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PaperReader「末」,
+command:「始」Query「末」,
+paperId:「始」research_paper-20260314-abc「末」,
+question:「始」这份文档的核心结论是什么？「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+其他命令：ReadSkeleton单独生成骨架地图（Read会自动调用，通常不需单独使用）；ReadDeep全量精读模式（V0.3兼容，无Triage/Audit，推荐使用Read替代）。
+
+可能遇到的问题：
+1. PDF解析失败——文件路径必须是VCP服务器本地的绝对路径。MinerU云端解析需要MINERU_API_TOKEN，未配置时自动降级到pdf-parse（解析质量较低，不保留公式/表格格式）。
+2. 阅读耗时过长——大文档（100+ chunks）可能需要数分钟甚至更长时间。超时时间设为30分钟已很充裕，耐心等待即可。
+3. 阅读成本过高——PaperReaderMaxChunks参数限制最多处理120个chunk，超长文档会被截断。可以调小此值控制成本。
+4. 阅读结果偏向某些章节——goal参数会影响Triage分诊策略，如果阅读目标描述不够明确，可能导致注意力分配不合理。建议goal尽量具体。
+5. IngestPDF成功但Read返回paperId不存在——检查IngestPDF返回的实际paperId，如果未自定义paperId则系统会自动生成，需使用返回的ID。
+
+可能的解决办法：
+1. 强烈建议配置MINERU_API_TOKEN以获取高保真解析（保留公式/表格/图片/多栏排版），MinerU免费额度通常够个人使用。
+2. 如果只需要快速了解论文概况而非深度阅读，可以先用ReadSkeleton只获取骨架地图，再决定是否需要完整Read。
+3. PaperReaderBatchSize越大速度越快但上下文递进越弱，推荐保持默认值5。
+4. 使用forceReread=true可以强制重新阅读（忽略缓存），适用于修改了goal后希望重新分诊的场景。
+5. Query命令使用树索引推理式检索，当索引不可用时降级到关键词匹配，返回答案会附带推理过程和引用来源。
+
+关联节点：PubMedSearch文献检索（获取PMID后用get_full_text获取PMC全文再用PaperReader深度阅读）、DeepWikiVCP文档抓取（同类文档处理工具）、VCP指令协议语法（调用格式）。
+
+信源/出处：Plugin/PaperReader/plugin-manifest.json（87行），Plugin/PaperReader/PaperReader.js。
+
+Tag: PaperReader，超文本阅读器，PDF解析，MinerU，自适应阅读，Triage分诊，骨架提取，去偏见审核，Rolling Context，深度阅读，学术论文
