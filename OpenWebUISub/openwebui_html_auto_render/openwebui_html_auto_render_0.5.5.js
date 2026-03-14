@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OpenWebUI HTML Auto-Render(遮点挪)
 // @namespace    http(s)://your.openwebui.url/*
-// @version      0.6.0
-// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.6.0: 优化流式闭合判定，防止提前渲染；彻底禁用自动点击 Action 按钮防止顶帖；修复多气泡追加逻辑。
+// @version      0.5.5
+// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.5: 引入“高度锚点(Anchor)”法实现无损回缩，解决滚动锁死与挤压留白。
 // @author       B3000Kcn & DBL1F7E5
 // @match        http(s)://your.openwebui.url/*
 // @grant        GM_addStyle
@@ -18,14 +18,6 @@
         IFRAME_SELECTOR: 'iframe[title="Embedded Content"]',
         EMBEDS_CONTAINER_PATTERN: /^.+-embeds-\d+$/,
         MSG_RENDERED_ATTR: 'data-vcp-html-rendered',
-
-        // v0.6.0: 直连 Action API（替代“等按钮出现后点击”）
-        ACTION_API_URL: '/api/chat/actions/html_live_preview',
-
-        // v0.6.0: 分段触发（每新增一个 HTML 块，只渲染一次；不对同一块反复刷新）
-        BLOCK_IDLE_CLOSE_MS: 1000,      // v0.6.0: 缩短静默判定时间(1600->1000)，提升响应速度
-        ENABLE_SEGMENT_API: true,       // 默认启用“分段触发 + API 直连”
-        API_DISABLE_ON_HTTP: [401, 403, 422], // 若触发这些 HTTP 状态码，自动禁用 API，改走本地渲染，避免刷请求
 
         CLICK_RETRY_INTERVAL: 200,
         MOVE_RETRY_INTERVAL: 150,
@@ -45,177 +37,13 @@
         TOAST_MS: 1600,
         DEBUG: true,
 
-        // v0.5.6: 废弃 1px 探针，改用锚点法实现无损回缩
+        // v0.5.5: 废弃 1px 探针，改用锚点法实现无损回缩
         ENABLE_SHRINK_PROBE: false,
         ANCHOR_ID: 'vcp-height-anchor',
     };
 
     function log(...args) {
         if (CONFIG.DEBUG) console.log('[遮点挪]', ...args);
-    }
-
-    // ========== v0.6.0: 分段触发 + 直连 Action API(最小侵入) ==========
-
-    const VCP_MODEL_SPY_KEY = '__vcpLastModelId';
-    const VCP_MODEL_GUESS_CACHE_KEY = '__vcpGuessedModelId';
-    const VCP_MODEL_SPY_INSTALLED = '__vcpModelSpyInstalled';
-    const VCP_PERSIST_MODEL_KEY = 'vcp_last_model_id';
-
-    function setLastModelId(modelId) {
-        try {
-            if (!modelId || typeof modelId !== 'string') return;
-            window[VCP_MODEL_SPY_KEY] = modelId;
-            try { localStorage.setItem(VCP_PERSIST_MODEL_KEY, modelId); } catch (_) { /* ignore */ }
-        } catch (_) { /* ignore */ }
-    }
-
-    function getLastModelId() {
-        try { if (typeof window[VCP_MODEL_SPY_KEY] === 'string' && window[VCP_MODEL_SPY_KEY]) return window[VCP_MODEL_SPY_KEY]; } catch (_) {}
-        return null;
-    }
-
-    function getPersistedModelId() {
-        try {
-            const v = localStorage.getItem(VCP_PERSIST_MODEL_KEY);
-            if (typeof v === 'string' && v) return v;
-        } catch (_) { /* ignore */ }
-        return null;
-    }
-
-    function guessModelIdFromStorageOnce() {
-        try {
-            if (typeof window[VCP_MODEL_GUESS_CACHE_KEY] === 'string') return window[VCP_MODEL_GUESS_CACHE_KEY] || null;
-        } catch (_) {}
-
-        let guessed = null;
-
-        // 轻量扫描：只尝试少量 key，避免卡顿
-        try {
-            const maxKeys = Math.min(30, localStorage.length);
-            for (let i = 0; i < maxKeys; i++) {
-                const key = localStorage.key(i);
-                if (!key) continue;
-                const val = localStorage.getItem(key);
-                if (!val || val.length > 20000) continue;
-                if (!val.includes('"model"') && !val.includes('"base_model"') && !val.includes('model')) continue;
-
-                // 1) 直接 JSON
-                if (val.trim().startsWith('{') || val.trim().startsWith('[')) {
-                    try {
-                        const obj = JSON.parse(val);
-                        const found = deepFindStringField(obj, ['model', 'base_model', 'base_model_id', 'baseModel', 'selectedModel']);
-                        if (found) { guessed = found; break; }
-                    } catch (_) { /* ignore */ }
-                }
-
-                // 2) 正则兜底
-                const m = val.match(/"model"\s*:\s*"([^"]+)"/i);
-                if (m && m[1]) { guessed = m[1]; break; }
-            }
-        } catch (_) { /* ignore */ }
-
-        try { window[VCP_MODEL_GUESS_CACHE_KEY] = guessed || ''; } catch (_) { /* ignore */ }
-        if (guessed) setLastModelId(guessed);
-        return guessed;
-    }
-
-    function deepFindStringField(obj, keys) {
-        try {
-            if (!obj) return null;
-            if (typeof obj === 'string') return null;
-            if (typeof obj !== 'object') return null;
-
-            if (Array.isArray(obj)) {
-                for (const it of obj) {
-                    const r = deepFindStringField(it, keys);
-                    if (r) return r;
-                }
-                return null;
-            }
-
-            for (const k of keys) {
-                if (typeof obj[k] === 'string' && obj[k]) return obj[k];
-            }
-
-            for (const k of Object.keys(obj)) {
-                const v = obj[k];
-                if (v && typeof v === 'object') {
-                    const r = deepFindStringField(v, keys);
-                    if (r) return r;
-                }
-            }
-        } catch (_) { /* ignore */ }
-        return null;
-    }
-
-    function installModelSpy() {
-        try {
-            if (window[VCP_MODEL_SPY_INSTALLED]) return;
-            window[VCP_MODEL_SPY_INSTALLED] = true;
-        } catch (_) { /* ignore */ }
-
-        const patch = (win) => {
-            try {
-                if (!win || typeof win.fetch !== 'function') return;
-                if (win.__vcpFetchPatched) return;
-                win.__vcpFetchPatched = true;
-
-                const origFetch = win.fetch.bind(win);
-                win.fetch = (input, init) => {
-                    try {
-                        const url = typeof input === 'string'
-                            ? input
-                            : (input && input.url ? input.url : '');
-                        const body = init && init.body;
-                        if (url && typeof url === 'string') {
-                            // 捕获聊天/completions 之类请求体里的 model
-                            if (url.includes('/api/chat') && typeof body === 'string' && body.includes('"model"')) {
-                                try {
-                                    const obj = JSON.parse(body);
-                                    if (obj && typeof obj.model === 'string' && obj.model) {
-                                        setLastModelId(obj.model);
-                                    }
-                                } catch (_) { /* ignore */ }
-                            }
-                        }
-                    } catch (_) { /* ignore */ }
-                    return origFetch(input, init);
-                };
-            } catch (_) { /* ignore */ }
-        };
-
-        patch(window);
-        try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow) patch(unsafeWindow); } catch (_) { /* ignore */ }
-
-        // 兜底：尝试从 localStorage 猜一次
-        guessModelIdFromStorageOnce();
-    }
-
-    installModelSpy();
-
-    function getModelIdBestEffort() {
-        return getLastModelId() || getPersistedModelId() || guessModelIdFromStorageOnce() || null;
-    }
-
-    function getChatIdBestEffort() {
-        try {
-            const m = (location && location.pathname ? location.pathname : '')
-                .match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-            return m ? m[0] : null;
-        } catch (_) {
-            return null;
-        }
-    }
-
-    function genId() {
-        try {
-            if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-        } catch (_) { /* ignore */ }
-        return 'vcp-' + Math.random().toString(16).slice(2) + '-' + Date.now();
-    }
-
-    function nowTs() {
-        return Math.floor(Date.now() / 1000);
     }
 
     // ========== CSS 注入(兼容油猴/非油猴) ==========
@@ -636,7 +464,7 @@
 
     /**
      * 测量文档内容的真实高度（锚点法 + 溢出扫描）
-     * v0.5.6: 废弃 1px 探针，改用 offsetTop 锚点测量以实现无损回缩
+     * v0.5.5: 废弃 1px 探针，改用 offsetTop 锚点测量以实现无损回缩
      */
     function measureDocContentHeight(doc) {
         if (!doc || !doc.body) return 0;
@@ -665,7 +493,7 @@
             const elements = doc.querySelectorAll('body > *:not(#' + CONFIG.ANCHOR_ID + ')');
             elements.forEach(el => {
                 if (el.offsetWidth <= 0 && el.offsetHeight <= 0) return;
-
+                
                 const rect = el.getBoundingClientRect();
                 const bottom = rect.bottom - bodyTop;
                 if (bottom > maxBottom) maxBottom = bottom;
@@ -701,7 +529,7 @@
             const finalH = measureDocContentHeight(doc);
             if (finalH <= 0) return;
 
-            // v0.5.6: 采用锚点法后，不再需要 1px 探针，直接平滑写回高度
+            // v0.5.5: 采用锚点法后，不再需要 1px 探针，直接平滑写回高度
             if (Math.abs(finalH - lastH) > 2) {
                 lastH = finalH;
                 iframe.style.height = finalH + 'px';
@@ -1040,24 +868,6 @@
             blocks: [],
             placeholders: [],
             cmContents: [],
-
-            // v0.6.0: 分段触发状态
-            blockClosed: [],         // 每个 block 是否判定“已结束”
-            renderedCount: 0,        // 已渲染完成的 block 数（前缀）
-            segmentToken: 0,         // 分段渲染代际 token（用于撤销/乱序保护）
-            apiInFlight: false,
-            apiAborter: null,
-            pendingRenderCount: 0,
-            apiDisabled: false,
-            messageFinished: false,  // Action 按钮出现视为“消息已结束/刷新态”
-
-            // 监听器
-            streamObserver: null,    // 监听 msgContainer 外部变化，用于判断“代码块结束”
-            blockObservers: [],      // 每个 cm-content 的 observer（用于 idle close）
-            blockIdleTimers: [],
-            segmentRetryTimer: null,
-
-            // legacy：保留旧链路（Action按钮点击 + embeds iframe 拆分搬运），作为兜底
             phase: 'collecting',
             btnObserver: null,
             cancelToken: 0,
@@ -1075,446 +885,6 @@
 
     function needMoreBlocks(task) {
         return typeof task.expectedBlocks === 'number' && task.blocks.length < task.expectedBlocks;
-    }
-
-    // ========== v0.6.0: 分段触发核心逻辑 ==========
-
-    function getLastUnclosedIndex(task) {
-        for (let i = task.blockClosed.length - 1; i >= 0; i--) {
-            if (!task.blockClosed[i]) return i;
-        }
-        return -1;
-    }
-
-    function getClosedPrefixCount(task) {
-        let n = 0;
-        for (; n < task.blockClosed.length; n++) {
-            if (!task.blockClosed[n]) break;
-        }
-        return n;
-    }
-
-    function setPlaceholderText(task, i, text) {
-        try {
-            const ph = task.placeholders[i];
-            if (!ph) return;
-            const statusText = ph.querySelector('.vcp-status-text');
-            if (statusText) statusText.textContent = text;
-        } catch (_) { /* ignore */ }
-    }
-
-    function ensureBlockObserver(task, i) {
-        if (!task || !task.cmContents || !task.cmContents[i]) return;
-        if (task.blockObservers[i]) return;
-
-        const cm = task.cmContents[i];
-
-        const scheduleIdleClose = () => {
-            try { if (task.blockIdleTimers[i]) clearTimeout(task.blockIdleTimers[i]); } catch (_) { /* ignore */ }
-            task.blockIdleTimers[i] = setTimeout(() => {
-                if (task.phase === 'done') return;
-                if (task.blockClosed[i]) return;
-
-                // idle close 兜底：适用于“末尾块 + 无后继内容”场景
-                const html = getCodeMirrorText(cm).trim();
-                if (!html) return;
-                closeBlock(task, i, 'idle-timeout');
-            }, CONFIG.BLOCK_IDLE_CLOSE_MS);
-        };
-
-        scheduleIdleClose();
-
-        try {
-            const mo = new MutationObserver(() => scheduleIdleClose());
-            mo.observe(cm, { childList: true, subtree: true, characterData: true });
-            task.blockObservers[i] = mo;
-        } catch (e) {
-            task.blockObservers[i] = null;
-        }
-    }
-
-    function cleanupTaskObservers(task) {
-        try {
-            if (task.streamObserver) {
-                task.streamObserver.disconnect();
-                task.streamObserver = null;
-            }
-        } catch (_) { /* ignore */ }
-
-        try {
-            if (Array.isArray(task.blockObservers)) {
-                task.blockObservers.forEach((mo) => {
-                    try { if (mo) mo.disconnect(); } catch (_) { /* ignore */ }
-                });
-            }
-        } catch (_) { /* ignore */ }
-
-        try {
-            if (Array.isArray(task.blockIdleTimers)) {
-                task.blockIdleTimers.forEach((t) => {
-                    try { if (t) clearTimeout(t); } catch (_) { /* ignore */ }
-                });
-            }
-        } catch (_) { /* ignore */ }
-
-        try {
-            if (task.apiAborter) {
-                task.apiAborter.abort();
-                task.apiAborter = null;
-            }
-        } catch (_) { /* ignore */ }
-
-        try {
-            if (task.segmentRetryTimer) {
-                clearTimeout(task.segmentRetryTimer);
-                task.segmentRetryTimer = null;
-            }
-        } catch (_) { /* ignore */ }
-    }
-
-    function ensureStreamObserver(task) {
-        if (!task || task.streamObserver) return;
-
-        task.streamObserver = new MutationObserver((mutations) => {
-            if (task.phase === 'done') return;
-
-            const lastOpen = getLastUnclosedIndex(task);
-            if (lastOpen >= 0) {
-                const activeBlock = task.blocks[lastOpen];
-
-                // v0.6.3: 极其保守的闭合判定，防止提前渲染
-                for (const m of mutations) {
-                    try {
-                        const t = m.target;
-                        const el = t.nodeType === 1 ? t : t.parentElement;
-                        if (!el) continue;
-
-                        // 忽略我们自己内部的变动
-                        if (el.closest && (el.closest('.vcp-html-placeholder') || el.closest('.vcp-html-iframe-wrapper'))) continue;
-
-                        // 如果变动发生在当前块内部，绝对不能关闭
-                        if (activeBlock && activeBlock.contains && activeBlock.contains(t)) continue;
-
-                        // 核心逻辑：检查变动节点是否在 activeBlock 之后
-                        const isFollowing = (activeBlock.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING);
-                        if (!isFollowing) continue;
-
-                        // 只有当“新增了非代码块的节点”且该节点在当前块“之后”时，才认为当前块已结束
-                        const hasRealNewNodeAfter = Array.from(m.addedNodes).some(n => {
-                            // 必须是文本节点（非空）或者是其他非 HTML 代码块的元素
-                            return (n.nodeType === 3 && n.textContent.trim().length > 0) ||
-                                   (n.nodeType === 1 && !n.closest('.language-html'));
-                        });
-
-                        // 或者 characterData 变动发生在块之后（代表后续文字在蹦字）
-                        const isCharFollowing = m.type === 'characterData' && t.textContent.trim().length > 0;
-
-                        if (hasRealNewNodeAfter || isCharFollowing) {
-                            closeBlock(task, lastOpen, 'content-after-block');
-                            break;
-                        }
-                    } catch (_) { /* ignore */ }
-                }
-            }
-
-            maybeFinalizeTask(task);
-        });
-
-        task.streamObserver.observe(task.msgContainer, { childList: true, subtree: true, characterData: true });
-    }
-
-    function closeBlock(task, i, reason) {
-        if (!task || task.phase === 'done') return;
-        if (task.blockClosed[i]) return;
-        task.blockClosed[i] = true;
-
-        log('分段: close block', i, 'reason=', reason);
-        setPlaceholderText(task, i, '检测到代码块结束，准备渲染…');
-
-        // block 关闭后，observer 与 idle timer 就没必要再续了
-        try {
-            if (task.blockObservers[i]) {
-                task.blockObservers[i].disconnect();
-                task.blockObservers[i] = null;
-            }
-        } catch (_) { /* ignore */ }
-        try {
-            if (task.blockIdleTimers[i]) {
-                clearTimeout(task.blockIdleTimers[i]);
-                task.blockIdleTimers[i] = null;
-            }
-        } catch (_) { /* ignore */ }
-
-        maybeQueueSegmentRender(task, 'closeBlock');
-    }
-
-    function buildAssistantContentFromBlocks(task, count) {
-        const parts = [];
-        for (let i = 0; i < count; i++) {
-            const cm = task.cmContents[i];
-            if (!cm) continue;
-            const html = getCodeMirrorText(cm).trim();
-            if (!html) continue;
-            parts.push('```html\n' + html + '\n```');
-        }
-        return parts.join('\n\n');
-    }
-
-    async function callActionApi(task, closedCount, signal) {
-        // 等一等 modelSpy 捕获（避免第一次 close 太快，model 还没写入）
-        let modelId = getModelIdBestEffort();
-        if (!modelId) {
-            for (let i = 0; i < 10 && !modelId; i++) {
-                await new Promise(r => setTimeout(r, 100));
-                modelId = getModelIdBestEffort();
-            }
-        }
-
-        const chatId = getChatIdBestEffort();
-        const assistantContent = buildAssistantContentFromBlocks(task, closedCount);
-        if (!assistantContent.trim()) throw new Error('assistantContent empty');
-
-        const body = {
-            model: modelId || 'unknown',
-            messages: [
-                { id: genId(), role: 'user', content: '(vcp auto) html_live_preview', timestamp: nowTs() },
-                { id: genId(), role: 'assistant', content: assistantContent, timestamp: nowTs() }
-            ],
-        };
-        if (chatId) body.chat_id = chatId;
-
-        const resp = await fetch(CONFIG.ACTION_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify(body),
-            signal,
-        });
-
-        const text = await resp.text();
-        if (!resp.ok) {
-            const err = new Error('Action API HTTP ' + resp.status);
-            err.status = resp.status;
-            err.body = text;
-            throw err;
-        }
-        return text;
-    }
-
-    function hasWrapper(blockEl) {
-        try { return !!(blockEl && blockEl.querySelector && blockEl.querySelector('.vcp-html-iframe-wrapper')); } catch (_) { return false; }
-    }
-
-    function renderRangeFromSplit(task, splitBlocks, from, to) {
-        const map = new Map();
-        for (const b of splitBlocks) map.set(b.index, b.html);
-
-        let advanced = from;
-
-        for (let i = from; i < to; i++) {
-            const blockEl = task.blocks[i];
-            if (i < task.renderedCount || hasWrapper(blockEl)) {
-                advanced = i + 1;
-                continue;
-            }
-
-            const ph = task.placeholders[i];
-            if (!ph || !ph.parentElement) break;
-
-            const raw = map.get(i);
-            if (!raw) {
-                setPlaceholderText(task, i, '等待 HTML 内容…');
-                break;
-            }
-
-            const wrapper = createIframeFromHtml(wrapIncompleteHtml(raw));
-            blockEl.insertBefore(wrapper, ph);
-            ph.remove();
-            task.placeholders[i] = null;
-
-            advanced = i + 1;
-        }
-
-        // 一旦我们成功渲染出任何块，就把 embeds 容器隐藏（避免用户手动点 Action 时顶到消息顶部）
-        if (advanced > from) {
-            const embedsContainer = findEmbedsContainer(task.msgContainer);
-            if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
-        }
-
-        return advanced;
-    }
-
-    function renderRangeFromCM(task, from, to) {
-        let advanced = from;
-
-        for (let i = from; i < to; i++) {
-            const blockEl = task.blocks[i];
-            if (i < task.renderedCount || hasWrapper(blockEl)) {
-                advanced = i + 1;
-                continue;
-            }
-
-            const ph = task.placeholders[i];
-            if (!ph || !ph.parentElement) break;
-
-            const cm = task.cmContents[i];
-            const html = cm ? getCodeMirrorText(cm).trim() : '';
-            if (!html) {
-                // 关键修复：渲染失败时不移除 placeholder，否则整块会“消失”
-                setPlaceholderText(task, i, '等待 HTML 内容…');
-                break;
-            }
-
-            const wrapper = createIframeFromHtml(wrapIncompleteHtml(html));
-            blockEl.insertBefore(wrapper, ph);
-            ph.remove();
-            task.placeholders[i] = null;
-
-            advanced = i + 1;
-        }
-
-        if (advanced > from) {
-            const embedsContainer = findEmbedsContainer(task.msgContainer);
-            if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
-        }
-
-        return advanced;
-    }
-
-    function maybeQueueSegmentRender(task, reason) {
-        if (!CONFIG.ENABLE_SEGMENT_API) return;
-
-        const closedPrefix = getClosedPrefixCount(task);
-        if (closedPrefix <= task.renderedCount) return;
-
-        if (task.apiInFlight) {
-            task.pendingRenderCount = Math.max(task.pendingRenderCount, closedPrefix);
-            return;
-        }
-
-        runSegmentRender(task, closedPrefix, reason);
-    }
-
-    function scheduleSegmentRetry(task, targetClosedCount, delayMs = 900) {
-        try {
-            if (!task || task.phase === 'done') return;
-            if (task.renderedCount >= targetClosedCount) return;
-            if (task.segmentRetryTimer) return;
-
-            task.segmentRetryTimer = setTimeout(() => {
-                try { task.segmentRetryTimer = null; } catch (_) { /* ignore */ }
-                if (task.phase === 'done') return;
-                maybeQueueSegmentRender(task, 'retry');
-            }, delayMs);
-        } catch (_) { /* ignore */ }
-    }
-
-    async function runSegmentRender(task, closedCount, reason) {
-        if (task.phase === 'done') return;
-
-        // 若已有重试 timer，说明我们正在“等 DOM/CM 稳定”，本轮渲染开始时清掉它
-        try {
-            if (task.segmentRetryTimer) {
-                clearTimeout(task.segmentRetryTimer);
-                task.segmentRetryTimer = null;
-            }
-        } catch (_) { /* ignore */ }
-
-        const before = task.renderedCount;
-
-        task.apiInFlight = true;
-        ++task.segmentToken;
-
-        for (let i = task.renderedCount; i < closedCount; i++) {
-            setPlaceholderText(task, i, task.apiDisabled ? '本地渲染中…' : 'API 渲染中…');
-        }
-
-        try {
-            if (!task.apiDisabled) {
-                try {
-                    if (task.apiAborter) {
-                        try { task.apiAborter.abort(); } catch (_) { /* ignore */ }
-                    }
-                    task.apiAborter = new AbortController();
-
-                    const htmlDoc = await callActionApi(task, closedCount, task.apiAborter.signal);
-                    const splitBlocks = parseSrcdocBlocks(htmlDoc);
-
-                    if (splitBlocks.length === closedCount) {
-                        const advanced = renderRangeFromSplit(task, splitBlocks, task.renderedCount, closedCount);
-                        task.renderedCount = Math.max(task.renderedCount, advanced);
-                    } else {
-                        log('分段: API 返回块数不匹配, split=', splitBlocks.length, 'expected=', closedCount, '→ CM 回退');
-                        const advanced = renderRangeFromCM(task, task.renderedCount, closedCount);
-                        task.renderedCount = Math.max(task.renderedCount, advanced);
-                    }
-                } catch (e) {
-                    const http = e && typeof e.status === 'number' ? e.status : null;
-                    log('分段: API 调用失败, status=', http, 'err=', e);
-
-                    if (http && Array.isArray(CONFIG.API_DISABLE_ON_HTTP) && CONFIG.API_DISABLE_ON_HTTP.includes(http)) {
-                        task.apiDisabled = true;
-                        log('分段: 检测到不可用 HTTP 状态, 禁用 API, 改走本地渲染');
-                    }
-
-                    const advanced = renderRangeFromCM(task, task.renderedCount, closedCount);
-                    task.renderedCount = Math.max(task.renderedCount, advanced);
-                }
-            } else {
-                const advanced = renderRangeFromCM(task, task.renderedCount, closedCount);
-                task.renderedCount = Math.max(task.renderedCount, advanced);
-            }
-
-            // 没渲染到目标：常见于 CM 尚未完全可读 / API 返回缺块 → 延迟重试
-            if (task.renderedCount < closedCount) {
-                scheduleSegmentRetry(task, closedCount);
-            }
-        } finally {
-            task.apiInFlight = false;
-
-            const pending = task.pendingRenderCount;
-            task.pendingRenderCount = 0;
-
-            if (pending && pending > task.renderedCount) {
-                // 若本轮有推进，立即追；否则延迟重试，避免 tight loop
-                if (task.renderedCount > before) {
-                    runSegmentRender(task, pending, 'pending');
-                    return;
-                }
-                scheduleSegmentRetry(task, pending);
-            }
-
-            maybeFinalizeTask(task);
-        }
-    }
-
-    function maybeFinalizeTask(task) {
-        if (task.phase === 'done') return;
-
-        const total = task.blocks.length;
-        if (total <= 0) return;
-
-        const closedPrefix = getClosedPrefixCount(task);
-        if (closedPrefix !== total) return;
-
-        if (task.renderedCount < total) {
-            maybeQueueSegmentRender(task, 'finalize');
-            return;
-        }
-
-        // v0.6.0: 更加保守的收口判定
-        // 如果 Action 按钮还没出现，说明消息可能还在流式生成（即使当前块都闭合了，后面可能还有文字或新块）
-        const btn = findActionBtn(task.msgContainer);
-        if (!btn) return;
-
-        const embedsContainer = findEmbedsContainer(task.msgContainer);
-        if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
-
-        markAsRendered(task.msgContainer);
-        task.phase = 'done';
-        cleanupTaskObservers(task);
-
-        log('分段: finalize done, total=', total);
     }
 
     // ========== 越狱 ==========
@@ -1586,38 +956,11 @@ ${html}
     }
 
     // ========== 快速路径(刷新/历史消息) ==========
-    // v0.6.0: 刷新/历史消息场景下，禁止“直接点击 Action”以免顶帖；
-    //         若 iframe 已存在则搬运；若不存在则 CM 本地渲染兜底。
-
-    function doFastRenderFromCMNoAction(msgContainer, blocks) {
-        log('快速路径: 无 iframe, 不点击 Action, 直接 CM 自渲染(避免顶帖)');
-        for (const block of blocks) {
-            applyJailbreak(block);
-            if (!block.querySelector('.vcp-html-iframe-wrapper')) {
-                const cm = block.querySelector('.cm-content');
-                if (cm) {
-                    const html = getCodeMirrorText(cm);
-                    if (html.trim()) {
-                        const wrapper = createIframeFromHtml(wrapIncompleteHtml(html));
-                        block.appendChild(wrapper);
-                    }
-                }
-            }
-        }
-
-        const embedsContainer = findEmbedsContainer(msgContainer);
-        if (embedsContainer) embedsContainer.classList.add('vcp-html-embeds-emptied');
-
-        markAsRendered(msgContainer);
-        log('快速路径: 完成(CM)');
-        return true;
-    }
 
     function tryFastPath(msgContainer, blocks) {
         return new Promise((resolve) => {
             const btn = findActionBtn(msgContainer);
             if (!btn) {
-                // 没有按钮：通常代表该消息仍在流式生成，交给正常流程（v0.6.0 分段触发）
                 log('快速路径: Action按钮不存在, 走正常流程');
                 resolve(false);
                 return;
@@ -1631,13 +974,14 @@ ${html}
                 return;
             }
 
-            // v0.6.0 修正：不在 fast path 里做“本地渲染兜底”，避免 hydration 未完成时越狱导致代码块消失
-            // 仅探测一小段时间是否会出现 iframe；探测不到就退回正常流程（由 phase1_cover 插入 placeholder 再稳态渲染）
+            log('快速路径: Action 按钮已存在, 直接点击');
+            btn.click();
+
             let probeCount = 0;
             const probeIframe = () => {
                 const iframeNow = findIframe(msgContainer);
                 if (iframeNow) {
-                    log('快速路径: 探测到 iframe 出现, 直接拆分搬运');
+                    log('快速路径: 点击后 iframe 出现');
                     const success = doFastSplit(msgContainer, blocks, iframeNow);
                     resolve(success);
                     return;
@@ -1647,9 +991,9 @@ ${html}
                     setTimeout(probeIframe, CONFIG.FAST_PROBE_INTERVAL);
                     return;
                 }
+                log('快速路径: 点击后 iframe 未出现, 走正常流程');
                 resolve(false);
             };
-
             probeIframe();
         });
     }
@@ -1746,13 +1090,8 @@ ${html}
         }
 
         if (msgContainer.getAttribute(CONFIG.MSG_RENDERED_ATTR) === 'true') {
-            // v0.6.0: 如果消息已标记完成但又出现了新块（流式追加），则重开任务
-            log('遮: 消息已标记渲染完成但发现新块, 重开任务');
-            msgContainer.removeAttribute(CONFIG.MSG_RENDERED_ATTR);
-            const oldTask = msgTasks.get(msgContainer);
-            if (oldTask && oldTask.phase === 'done') {
-                oldTask.phase = 'collecting';
-            }
+            log('遮: 消息已标记渲染完成, 跳过');
+            return;
         }
 
         const task = getOrCreateTask(msgContainer);
@@ -1781,26 +1120,18 @@ ${html}
         langContainer.appendChild(placeholder);
         task.placeholders.push(placeholder);
 
-        // v0.6.0: 分段触发状态
-        task.blockClosed.push(false);
-
         log('遮: 注册块', blockIndex, '到消息任务, 当前共', task.blocks.length, '块');
 
-        // 出现下一个 HTML 块 -> 上一个块必然 fence 已关闭
-        if (blockIndex > 0 && !task.blockClosed[blockIndex - 1]) {
-            closeBlock(task, blockIndex - 1, 'next-html-block');
-        }
+        if (tryFinalizeWithPending(task)) return;
 
         const existingBtn = findActionBtn(msgContainer);
         if (existingBtn) {
-            // 结束态/刷新态：仍然不点击 Action；但也不立即 close/finalize（避免 hydration 未完成时读不到 CM 内容）
-            // 只把它当作“优先本地渲染，避免刷 API”的提示。
-            task.apiDisabled = true;
+            log('遮: Action 按钮已存在, 立即触发');
+            triggerAction(task);
+            return;
         }
 
-        // 启动“块结束判定”（无论按钮是否存在）
-        ensureBlockObserver(task, blockIndex);
-        ensureStreamObserver(task);
+        startBtnWatch(task);
     }
 
     // ========== Action 按钮出现监听 ==========
@@ -1901,11 +1232,28 @@ ${html}
     }
 
     function doClick(task, token) {
-        // v0.6.0: 彻底禁用自动点击 Action 按钮，防止顶帖
-        log('点: 自动点击已禁用，等待 API 渲染或手动触发');
-        task.phase = 'collecting';
-        // 即使不点，我们也进入 phase3 轮询，这样如果你手动点了按钮，脚本能立刻接管生成的 iframe
-        phase3_moveIframe(task, token);
+        let interval = CONFIG.CLICK_RETRY_INTERVAL;
+        let retries = 0;
+
+        const tryClick = () => {
+            if (task.cancelToken !== token) return;
+            if (task.phase !== 'clicking') return;
+
+            const btn = findActionBtn(task.msgContainer);
+            if (btn) {
+                log('点: 找到 Action 按钮, 模拟点击');
+                btn.click();
+                task.phase = 'moving';
+                phase3_moveIframe(task, token);
+            } else {
+                retries++;
+                if (retries % 10 === 0) log('点: 等待 Action 按钮...重试', retries, '间隔', Math.round(interval) +'ms');
+                interval = Math.min(interval * CONFIG.RETRY_BACKOFF, CONFIG.RETRY_MAX_INTERVAL);
+                setTimeout(tryClick, interval);
+            }
+        };
+
+        tryClick();
     }
 
     // ========== 第三步:挪(拆分 + 分别定位) ==========
@@ -2008,14 +1356,7 @@ ${html}
             if (!processedBlocks.has(el)) {
                 if (el.querySelector('.cm-content')) {
                     phase1_cover(el);
-                }
-            }
-        }
-        // v0.6.0: 检查所有进行中的任务是否可以收口
-        for (const task of msgTasks.values()) {
-            if (task.phase !== 'done') {
-                maybeFinalizeTask(task);
-            }
+                }}
         }
     }
 
@@ -2051,26 +1392,20 @@ ${html}
     }
 
     const observer = new MutationObserver((mutations) => {
-        let shouldScan = false;
+        let hasNewNodes = false;
         for (const m of mutations) {
-            const t = m.target;
-            // v0.6.0: 排除掉对 placeholder 或 iframe 内部的修改（避免死循环）
-            try {
-                const el = t.nodeType === 1 ? t : t.parentElement;
-                if (el && el.closest && (el.closest('.vcp-html-placeholder') || el.closest('.vcp-html-iframe-wrapper'))) continue;
-            } catch (_) { /* ignore */ }
-
-            // 只要有节点增加，或者文本变动（流式输出），就尝试扫描
-            if (m.addedNodes.length > 0 || m.type === 'characterData') {
-                shouldScan = true;
+            if (m.target.closest && m.target.closest('.vcp-html-placeholder')) continue;
+            if (m.target.closest && m.target.closest('.vcp-html-iframe-wrapper')) continue;
+            if (m.addedNodes.length > 0) {
+                hasNewNodes = true;
                 break;
             }
         }
-        if (shouldScan) scanForHtmlBlocks();
+        if (hasNewNodes) scanForHtmlBlocks();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
     initialScan();
 
-    log('脚本已启动 v0.6.3(分段触发+直连Action API | 修复提前渲染 | 禁用自动点击防顶帖)');
+    log('脚本已启动 v0.5.5(高度锚点法无损回缩 | 修复滚动锁死与挤压留白 | 截图引擎: dom-to-image-more SVG foreignObject)');
 })();
