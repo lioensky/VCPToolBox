@@ -25,10 +25,10 @@ async function main() {
             const searchDepth = data.search_depth || 'basic'; // Default to 'basic'
             let maxResults = data.max_results || 10; // Default to 10
             const includeRawContent = data.include_raw_content;
-            const country = data.country; // 新增国家来源参数
+            const country = data.country?.trim().toLowerCase(); // 新增国家来源参数
             const startDate = data.start_date;
             const endDate = data.end_date;
-            const days = data.days;
+            const time_range = data.time_range;
 
             if (!query) {
                 throw new Error("Missing required argument: query");
@@ -75,16 +75,39 @@ async function main() {
                 searchOptions.include_raw_content = includeRawContent;
             }
 
-            if (country && country.trim()) {
-                // Tavily API 期望 ISO 3166-1 alpha-2 代码，例如 'us', 'cn'
+            if (country) {
+                // https://docs.tavily.com/documentation/api-reference/endpoint/search#body-country
                 // 确保只传递非空字符串
-                searchOptions.country = country.trim().toLowerCase();
+                const validCountry = [
+                    'afghanistan', 'albania', 'algeria', 'andorra', 'angola', 'argentina', 'armenia', 'australia', 'austria',
+                    'azerbaijan', 'bahamas', 'bahrain', 'bangladesh', 'barbados', 'belarus', 'belgium', 'belize', 'benin',
+                    'bhutan', 'bolivia', 'bosnia and herzegovina', 'botswana', 'brazil', 'brunei', 'bulgaria', 'burkina faso',
+                    'burundi', 'cambodia', 'cameroon', 'canada', 'cape verde', 'central african republic', 'chad', 'chile',
+                    'china', 'colombia', 'comoros', 'congo', 'costa rica', 'croatia', 'cuba', 'cyprus', 'czech republic',
+                    'denmark', 'djibouti', 'dominican republic', 'ecuador', 'egypt', 'el salvador', 'equatorial guinea', 'eritrea',
+                    'estonia', 'ethiopia', 'fiji', 'finland', 'france', 'gabon', 'gambia', 'georgia', 'germany', 'ghana', 'greece',
+                    'guatemala', 'guinea', 'haiti', 'honduras', 'hungary', 'iceland', 'india', 'indonesia', 'iran', 'iraq',
+                    'ireland', 'israel', 'italy', 'jamaica', 'japan', 'jordan', 'kazakhstan', 'kenya', 'kuwait', 'kyrgyzstan',
+                    'latvia', 'lebanon', 'lesotho', 'liberia', 'libya', 'liechtenstein', 'lithuania', 'luxembourg', 'madagascar',
+                    'malawi', 'malaysia', 'maldives', 'mali', 'malta', 'mauritania', 'mauritius', 'mexico', 'moldova', 'monaco',
+                    'mongolia', 'montenegro', 'morocco', 'mozambique', 'myanmar', 'namibia', 'nepal', 'netherlands', 'new zealand',
+                    'nicaragua', 'niger', 'nigeria', 'north korea', 'north macedonia', 'norway', 'oman', 'pakistan', 'panama',
+                    'papua new guinea', 'paraguay', 'peru', 'philippines', 'poland', 'portugal', 'qatar', 'romania', 'russia',
+                    'rwanda', 'saudi arabia', 'senegal', 'serbia', 'singapore', 'slovakia', 'slovenia', 'somalia', 'south africa',
+                    'south korea', 'south sudan', 'spain', 'sri lanka', 'sudan', 'sweden', 'switzerland', 'syria', 'taiwan',
+                    'tajikistan', 'tanzania', 'thailand', 'togo', 'trinidad and tobago', 'tunisia', 'turkey', 'turkmenistan',
+                    'uganda', 'ukraine', 'united arab emirates', 'united kingdom', 'united states', 'uruguay', 'uzbekistan',
+                    'venezuela', 'vietnam', 'yemen', 'zambia', 'zimbabwe'
+                ];
+                if (validCountry.includes(country)) {
+                    searchOptions.country = country;
+                }
             }
 
             // 检查日期参数，确保它们存在且非空，以避免潜在的 API 错误
-            // 根据错误日志，当 start_date 或 end_date 存在时，Tavily API 不允许同时设置 days 参数。
-            // @tavily/core 库可能存在默认设置 days 的行为，因此在这里显式地将其设为 null 来避免冲突。
-            // 优先处理 start_date 和 end_date。如果它们存在，则忽略 days 参数以避免冲突。
+            // 根据错误日志，当 start_date 或 end_date 存在时，Tavily API 不允许同时设置 time_range 参数。
+            // @tavily/core 库可能存在默认设置 time_range 的行为，因此在这里显式地将其设为 null 来避免冲突。
+            // 优先处理 start_date 和 end_date。如果它们存在，则忽略 time_range 参数以避免冲突。
             if (startDate || endDate) {
                 if (startDate && startDate.trim()) {
                     searchOptions.start_date = startDate.trim();
@@ -92,12 +115,12 @@ async function main() {
                 if (endDate && endDate.trim()) {
                     searchOptions.end_date = endDate.trim();
                 }
-                searchOptions.days = null; // 显式覆盖任何默认或传入的 days 值
-            } else if (days) {
-                // 仅在没有日期范围时才使用 days 参数
-                const daysInt = parseInt(days, 10);
-                if (!isNaN(daysInt) && daysInt > 0) {
-                    searchOptions.days = daysInt;
+                searchOptions.time_range = null; // 显式覆盖任何默认或传入的 time_range 值
+            } else if (time_range) {
+                // 仅在没有日期范围时才使用 time_range 参数
+                const validTimeRanges = ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'];
+                if (validTimeRanges.includes(time_range)) {
+                    searchOptions.time_range = time_range;
                 }
             }
 

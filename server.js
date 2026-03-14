@@ -150,6 +150,7 @@ const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
+const CHAT_LOG_ENABLED = (process.env.CHAT_LOG_ENABLED || "false").toLowerCase() === "true";
 const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
 const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：RAG日记刷新开关
@@ -211,6 +212,29 @@ async function writeDebugLog(filenamePrefix, data) {
             console.error(`写入调试日志失败: ${filePath}`, error);
         }
     }
+}
+
+// ChatLog：在 DebugLog/chat/YYYY-MM-DD/ 下记录每次 chat 的请求体与响应（仅当 CHAT_LOG_ENABLED 时有效）
+let writeChatLog;
+if (CHAT_LOG_ENABLED) {
+    const crypto = require('crypto');
+    writeChatLog = function (requestBody, logs) {
+        const now = dayjs().tz(DEFAULT_TIMEZONE);
+        const dateStr = now.format('YYYY-MM-DD');
+        const timeStr = now.format('HHmmss_SSS');
+        const id = (requestBody && (requestBody.requestId || requestBody.messageId)) || 'no-id';
+        const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const shortRandom = crypto.randomBytes(2).toString('hex');
+        const filename = `chat-${safeId}-${timeStr}-${shortRandom}.json`;
+        const chatDir = path.join(__dirname, 'DebugLog', 'chat', dateStr);
+        const filePath = path.join(chatDir, filename);
+        const payload = logs;
+        fs.mkdir(chatDir, { recursive: true })
+            .then(() => fs.writeFile(filePath, JSON.stringify(payload, null, 2)))
+            .catch(e => console.error('[ChatLog] 写入失败:', e));
+    };
+} else {
+    writeChatLog = undefined;
 }
 
 // 新增：加载IP黑名单
@@ -791,6 +815,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
     pluginManager,
     activeRequests,
     writeDebugLog,
+    writeChatLog,
     handleDiaryFromAIResponse,
     webSocketServer,
     DEBUG_MODE,

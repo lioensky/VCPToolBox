@@ -14,6 +14,7 @@ class NonStreamHandler {
       apiKey,
       pluginManager,
       writeDebugLog,
+      writeChatLog,
       handleDiaryFromAIResponse,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,
@@ -42,21 +43,27 @@ class NonStreamHandler {
     const responseBuffer = Buffer.from(firstArrayBuffer);
     const aiResponseText = responseBuffer.toString('utf-8');
     let firstResponseRawDataForClientAndDiary = aiResponseText;
+    let chatLogs = [];
 
     let fullContentFromAI = '';
-    try {
-      const parsedJson = JSON.parse(aiResponseText);
-      const message = parsedJson.choices?.[0]?.message;
-      if (message) {
-        // 默认隐藏非流式思维链（HIDE_NONSTREAM_REASONING=true），避免 Gemini 等模型的推理内容泄露到正文
-        const hideReasoning = (process.env.HIDE_NONSTREAM_REASONING || 'true').toLowerCase() !== 'false';
-        fullContentFromAI = (hideReasoning ? '' : (message.reasoning_content || '')) + (message.content || '');
-      } else {
-        fullContentFromAI = '';
+    const extractedMessage = (rawResponseText) => {
+      try {
+        const parsedJson = JSON.parse(rawResponseText);
+        return parsedJson.choices?.[0]?.message;
+      } catch (e) {
+        return null;
       }
-    } catch (e) {
+    };
+
+    const initMessage = extractedMessage(aiResponseText);
+    const hideReasoning = (process.env.HIDE_NONSTREAM_REASONING || 'true').toLowerCase() !== 'false';
+    if (initMessage) {
+      // 默认隐藏非流式思维链（HIDE_NONSTREAM_REASONING=true），避免 Gemini 等模型的推理内容泄露到正文
+      fullContentFromAI = (hideReasoning ? '' : (initMessage.reasoning_content || '')) + (initMessage.content || '');
+    } else {
       fullContentFromAI = aiResponseText;
     }
+    if (writeChatLog) chatLogs.push({ request: originalBody, response: initMessage || fullContentFromAI});
 
     let recursionDepth = 0;
     const maxRecursion = maxVCPLoopNonStream || 5;
@@ -82,7 +89,7 @@ class NonStreamHandler {
         const archeryErrorContents = [];
 
         // 执行 Archery 调用
-        await Promise.all(archeryCalls.map(async toolCall => {
+        const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
           try {
             const result = await toolExecutor.execute(toolCall, clientIp);
             const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
@@ -98,8 +105,10 @@ class NonStreamHandler {
                 if (vcpText) conversationHistoryForClient.push(vcpText);
               }
             }
+            return { tool: toolCall, result: result.content };
           } catch (e) {
             console.error(`[NonStream Archery Error] ${toolCall.name}:`, e);
+            return { tool: toolCall, result: [{ type: 'text', text: String(e.message) }] };
           }
         }));
 
@@ -135,13 +144,19 @@ class NonStreamHandler {
             const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
             const recursionBuffer = Buffer.from(recursionArrayBuffer);
             const recursionText = recursionBuffer.toString('utf-8');
-            try {
-              const recursionJson = JSON.parse(recursionText);
-              currentAIContentForLoop = '\n' + (recursionJson.choices?.[0]?.message?.content || '');
-            } catch (e) {
+            const recursionMessage = extractedMessage(recursionText);
+            if (recursionMessage) {
+              currentAIContentForLoop = '\n' + (recursionMessage.content || '');
+            } else {
               currentAIContentForLoop = '\n' + recursionText;
             }
-
+            if (writeChatLog) {
+              chatLogs.push({
+                request: currentMessagesForNonStreamLoop,
+                toolCalls: archeryLogs,
+                response: recursionMessage || recursionText,
+              });
+            }
             // 记录日志
             handleDiaryFromAIResponse(recursionText).catch(e =>
               console.error(`[VCP NonStream Loop] Error in diary handling for depth ${recursionDepth}:`, e),
@@ -168,6 +183,15 @@ class NonStreamHandler {
         currentMessagesForNonStreamLoop.push(...assistantMessages);
 
         const toolResults = await toolExecutor.executeAll(normalCalls, clientIp);
+        const normalCallLogs = (() => {
+          let logs = [];
+          if (writeChatLog) {
+            for (let i = 0; i < normalCalls.length; i++) {
+              logs.push({ tool: normalCalls[i], result: toolResults[i]?.content });
+            }
+          }
+          return logs;
+        })();
         const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
         if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 
@@ -228,11 +252,18 @@ class NonStreamHandler {
         const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
         const recursionBuffer = Buffer.from(recursionArrayBuffer);
         const recursionText = recursionBuffer.toString('utf-8');
-        try {
-          const recursionJson = JSON.parse(recursionText);
-          currentAIContentForLoop = '\n' + (recursionJson.choices?.[0]?.message?.content || '');
-        } catch (e) {
+        const recursionMessage = extractedMessage(recursionText);
+        if (recursionMessage) {
+          currentAIContentForLoop = '\n' + (recursionMessage.content || '');
+        } else {
           currentAIContentForLoop = '\n' + recursionText;
+        }
+        if (writeChatLog) {
+          chatLogs.push({
+            request: currentMessagesForNonStreamLoop,
+            toolCalls: [ ...archeryLogs, ...normalCallLogs ],
+            response: recursionMessage || recursionText,
+          });
         }
 
         // 记录日志
@@ -263,6 +294,7 @@ class NonStreamHandler {
       };
     }
 
+    if (writeChatLog) writeChatLog(originalBody, chatLogs);
     if (!res.writableEnded && !res.destroyed) {
       res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
     }
