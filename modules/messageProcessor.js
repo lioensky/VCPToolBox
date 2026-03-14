@@ -36,7 +36,10 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     let processedText = String(text);
 
     // 通用正则表达式，匹配所有 {{...}} 格式的占位符
-    const placeholderRegex = /\{\{([a-zA-Z0-9_:]+)\}\}/g;
+    // CJK Radicals Supplement - Ideographic Description Characters 0x2E80 - 0x2FFF
+    // Hiragana - CJK Unified Ideographs 0x3040 - 0x9FFF
+    // 跳过标点符号 CJK Symbols and Punctuation 0x3000 - 0x303F
+    const placeholderRegex = /\{\{([a-zA-Z0-9_:\u2e80-\u2fff\u3040-\u9fff]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
 
     // 提取所有潜在的别名（去除 "agent:" 前缀）
