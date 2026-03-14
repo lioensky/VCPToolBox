@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OpenWebUI HTML Auto-Render(遮点挪)
 // @namespace    http(s)://your.openwebui.url/*
-// @version      0.5.3
-// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.3: 截图引擎替换为 dom-to-image-more（SVG foreignObject），特效100%保真；智能内容区域检测，精确截取卡片区；圆角保留。
+// @version      0.5.5
+// @description  自动将 HTML 代码块原位渲染为 iframe 预览。v0.5.5: 引入“高度锚点(Anchor)”法实现无损回缩，解决滚动锁死与挤压留白。
 // @author       B3000Kcn & DBL1F7E5
 // @match        http(s)://your.openwebui.url/*
 // @grant        GM_addStyle
@@ -36,6 +36,10 @@
 
         TOAST_MS: 1600,
         DEBUG: true,
+
+        // v0.5.5: 废弃 1px 探针，改用锚点法实现无损回缩
+        ENABLE_SHRINK_PROBE: false,
+        ANCHOR_ID: 'vcp-height-anchor',
     };
 
     function log(...args) {
@@ -178,6 +182,9 @@
             margin: 8px 0;
             border-radius: 8px;
             overflow: hidden;
+
+            /* v0.5.5: 防止滚动锚定(Scroll Anchoring)在高度频繁变化时“锁死”滚动位置 */
+            overflow-anchor: none;
         }
         .vcp-html-iframe-wrapper iframe {
             width: 100%;
@@ -448,6 +455,181 @@
         }
     }
 
+    // ========== v0.5.5: iframe 高度自适应(可回缩 + 可增长) ==========
+
+    const VCP_AUTO_HEIGHT_KEY = '__vcpAutoHeight';
+    const VCP_AUTO_HEIGHT_ENSURED_KEY = '__vcpAutoHeightEnsured';
+    const VCP_AUTO_HEIGHT_RESIZE_BOUND_KEY = '__vcpAutoHeightResizeBound';
+    const VCP_CAPTURING_KEY = '__vcpCapturing';
+
+    /**
+     * 测量文档内容的真实高度（锚点法 + 溢出扫描）
+     * v0.5.5: 废弃 1px 探针，改用 offsetTop 锚点测量以实现无损回缩
+     */
+    function measureDocContentHeight(doc) {
+        if (!doc || !doc.body) return 0;
+
+        // 1. 确保高度锚点存在（放在 body 最后）
+        let anchor = doc.getElementById(CONFIG.ANCHOR_ID);
+        if (!anchor) {
+            anchor = doc.createElement('div');
+            anchor.id = CONFIG.ANCHOR_ID;
+            // clear:both 确保它在所有浮动元素下方
+            // pointer-events:none 确保不干扰交互
+            anchor.style.cssText = 'clear:both; height:1px; margin-top:-1px; visibility:hidden; pointer-events:none;';
+            doc.body.appendChild(anchor);
+        }
+
+        // 2. 基础高度：锚点的偏移位置
+        // offsetTop 是相对于父容器的，不受 iframe 视口高度(clientHeight)的 clamp 限制
+        let baseHeight = anchor.offsetTop + anchor.offsetHeight;
+
+        // 3. 扫描深层溢出容器（处理 absolute/fixed 或内部滚动元素）
+        let maxBottom = baseHeight;
+        const bodyTop = doc.body.getBoundingClientRect().top;
+
+        try {
+            // 扫描直接子元素，处理那些可能超出锚点位置的特殊布局
+            const elements = doc.querySelectorAll('body > *:not(#' + CONFIG.ANCHOR_ID + ')');
+            elements.forEach(el => {
+                if (el.offsetWidth <= 0 && el.offsetHeight <= 0) return;
+                
+                const rect = el.getBoundingClientRect();
+                const bottom = rect.bottom - bodyTop;
+                if (bottom > maxBottom) maxBottom = bottom;
+
+                // 如果元素内部有滚动条，累加其溢出部分
+                if (el.scrollHeight > el.clientHeight) {
+                    const extra = el.scrollHeight - el.clientHeight;
+                    maxBottom = Math.max(maxBottom, bottom + extra);
+                }
+            });
+        } catch (_) { /* ignore */ }
+
+        return Math.ceil(maxBottom);
+    }
+
+    function bindAutoHeight(iframe) {
+        if (!iframe) return null;
+        if (iframe[VCP_AUTO_HEIGHT_KEY]) return iframe[VCP_AUTO_HEIGHT_KEY];
+
+        let lastH = 0;
+        let raf = 0;
+        let ro = null;
+
+        function measureAndApply(reason) {
+            // 截图/复制保存期间：高度测量容易被 dom-to-image-more 的临时布局影响，直接跳过
+            try {
+                if (iframe && iframe[VCP_CAPTURING_KEY]) return;
+            } catch (_) { /* ignore */ }
+
+            const doc = getIframeDocument(iframe);
+            if (!doc) return;
+
+            const finalH = measureDocContentHeight(doc);
+            if (finalH <= 0) return;
+
+            // v0.5.5: 采用锚点法后，不再需要 1px 探针，直接平滑写回高度
+            if (Math.abs(finalH - lastH) > 2) {
+                lastH = finalH;
+                iframe.style.height = finalH + 'px';
+                // log('autoHeight set', finalH, reason);
+            }
+        }
+
+        function schedule(reason) {
+            if (raf) return;
+            raf = requestAnimationFrame(() => {
+                raf = 0;
+                try {
+                    maybeBindObserver();
+                    measureAndApply(reason);
+                } catch (_) { /* ignore */ }
+            });
+        }
+
+        function maybeBindObserver() {
+            if (ro) return;
+
+            const doc = getIframeDocument(iframe);
+            if (!doc || !doc.documentElement) return;
+
+            try {
+                ro = new ResizeObserver(() => schedule('ResizeObserver'));
+                ro.observe(doc.documentElement);
+                if (doc.body) ro.observe(doc.body);
+            } catch (_) {
+                ro = null;
+            }
+
+            // v0.5.5: iframe 宽度变化（页面挤压/恢复）不一定触发 RO（尤其是固定高度容器场景）
+            // 直接监听 iframe 内 window 的 resize，强制重算高度
+            try {
+                const win = iframe.contentWindow;
+                if (win && !iframe[VCP_AUTO_HEIGHT_RESIZE_BOUND_KEY]) {
+                    iframe[VCP_AUTO_HEIGHT_RESIZE_BOUND_KEY] = true;
+                    win.addEventListener('resize', () => schedule('iframe resize'), { passive: true });
+                }
+            } catch (_) { /* ignore */ }
+        }
+
+        // 首次尝试绑定 RO（若 iframe 尚未 load，后续 schedule 会再次尝试）
+        maybeBindObserver();
+
+        const api = {
+            schedule,
+            destroy: () => {
+                try { if (ro) ro.disconnect(); } catch (_) { /* ignore */ }
+                try { if (raf) cancelAnimationFrame(raf); } catch (_) { /* ignore */ }
+                iframe[VCP_AUTO_HEIGHT_KEY] = null;
+            }
+        };
+
+        iframe[VCP_AUTO_HEIGHT_KEY] = api;
+
+        // 初次测量 + 两次延迟测量（兼容字体/布局迟到）
+        schedule('bind');
+        setTimeout(() => schedule('bind+50'), 50);
+        setTimeout(() => schedule('bind+200'), 200);
+
+        return api;
+    }
+
+    function ensureAutoHeight(iframe) {
+        if (!iframe) return;
+        if (iframe[VCP_AUTO_HEIGHT_ENSURED_KEY]) return;
+        iframe[VCP_AUTO_HEIGHT_ENSURED_KEY] = true;
+
+        const bind = () => {
+            const api = bindAutoHeight(iframe);
+            if (api && api.schedule) api.schedule('ensure');
+        };
+
+        // 已加载：立即绑定；未加载：等 load
+        try {
+            const doc = getIframeDocument(iframe);
+            if (doc && doc.readyState === 'complete') {
+                bind();
+                return;
+            }
+        } catch (_) { /* ignore */ }
+
+        iframe.addEventListener('load', () => bind(), { once: true });
+
+        // 保险：异步再试一次（处理已 load 但 readyState 未同步的极端时序）
+        setTimeout(bind, 0);
+    }
+
+    function scheduleAutoHeightForWrapper(wrapper, reason) {
+        try {
+            const iframe = wrapper && wrapper.querySelector && wrapper.querySelector('iframe');
+            if (!iframe) return;
+            ensureAutoHeight(iframe);
+            const api = iframe[VCP_AUTO_HEIGHT_KEY];
+            if (api && api.schedule) api.schedule(reason || 'manual');
+        } catch (_) { /* ignore */ }
+    }
+
     // ========== v0.5.3: 智能内容区域检测 ==========
 
     function findCaptureTarget(doc) {
@@ -576,6 +758,9 @@
         btn.disabled = true;
         btn.textContent = '复制中';
 
+        const iframe = wrapper && wrapper.querySelector ? wrapper.querySelector('iframe') : null;
+        try { if (iframe) iframe[VCP_CAPTURING_KEY] = true; } catch (_) { /* ignore */ }
+
         try {
             const blob = await captureIframeToBlob(wrapper);
             await copyImageBlobToClipboard(blob);
@@ -591,8 +776,15 @@
                 showToast(wrapper, '复制失败: ' + (e2.message || e2));
             }
         } finally {
+            try { if (iframe) iframe[VCP_CAPTURING_KEY] = false; } catch (_) { /* ignore */ }
+
             btn.disabled = false;
             btn.textContent = oldText;
+
+            // v0.5.5: 复制后延迟多次校准，确保截图引擎的临时布局影响退场
+            scheduleAutoHeightForWrapper(wrapper, 'after copy');
+            setTimeout(() => scheduleAutoHeightForWrapper(wrapper, 'after copy+50'), 50);
+            setTimeout(() => scheduleAutoHeightForWrapper(wrapper, 'after copy+200'), 200);
         }
     }
 
@@ -600,6 +792,9 @@
         const oldText = btn.textContent;
         btn.disabled = true;
         btn.textContent = '保存中';
+
+        const iframe = wrapper && wrapper.querySelector ? wrapper.querySelector('iframe') : null;
+        try { if (iframe) iframe[VCP_CAPTURING_KEY] = true; } catch (_) { /* ignore */ }
 
         try {
             const blob = await captureIframeToBlob(wrapper);
@@ -609,8 +804,15 @@
             log('save failed:', e);
             showToast(wrapper, '保存失败: ' + (e.message || e));
         } finally {
+            try { if (iframe) iframe[VCP_CAPTURING_KEY] = false; } catch (_) { /* ignore */ }
+
             btn.disabled = false;
             btn.textContent = oldText;
+
+            // v0.5.5: 保存后延迟多次校准，确保截图引擎的临时布局影响退场
+            scheduleAutoHeightForWrapper(wrapper, 'after save');
+            setTimeout(() => scheduleAutoHeightForWrapper(wrapper, 'after save+50'), 50);
+            setTimeout(() => scheduleAutoHeightForWrapper(wrapper, 'after save+200'), 200);
         }
     }
 
@@ -745,25 +947,8 @@ ${html}
         iframe.style.display = 'block';
         iframe.style.overflow = 'hidden';
 
-        iframe.addEventListener('load', () => {
-            try {
-                const doc = iframe.contentDocument || iframe.contentWindow.document;
-                const resizeToContent = () => {
-                    const h = Math.max(
-                        doc.documentElement ? doc.documentElement.scrollHeight : 0,
-                        doc.body ? doc.body.scrollHeight : 0
-                    );
-                    if (h > 0) iframe.style.height = h + 'px';
-                };
-                resizeToContent();
-                setTimeout(resizeToContent, 50);
-                setTimeout(resizeToContent, 200);
-                const ro = new ResizeObserver(resizeToContent);
-                ro.observe(doc.documentElement);
-            } catch (e) {
-                iframe.style.height = '400px';
-            }
-        });
+        // v0.5.5: 自适应高度（可增长 + 可回缩；含 iframe 内 window resize 触发）
+        ensureAutoHeight(iframe);
 
         wrapper.appendChild(iframe);
         attachToolbar(wrapper);
@@ -837,6 +1022,7 @@ ${html}
                 const wrapper = document.createElement('div');
                 wrapper.className = 'vcp-html-iframe-wrapper';
                 wrapper.appendChild(iframe);
+                ensureAutoHeight(iframe);
                 attachToolbar(wrapper);
                 blocks[0].appendChild(wrapper);
             }
@@ -1130,6 +1316,7 @@ ${html}
             const wrapper = document.createElement('div');
             wrapper.className = 'vcp-html-iframe-wrapper';
             wrapper.appendChild(iframe);
+            ensureAutoHeight(iframe);
             attachToolbar(wrapper);
             task.blocks[0].insertBefore(wrapper, task.placeholders[0]);
             task.placeholders[0].remove();
@@ -1220,5 +1407,5 @@ ${html}
     observer.observe(document.body, { childList: true, subtree: true });
     initialScan();
 
-    log('脚本已启动 v0.5.3(截图引擎: dom-to-image-more SVG foreignObject | 智能内容区域检测 | 圆角保留)');
+    log('脚本已启动 v0.5.5(高度锚点法无损回缩 | 修复滚动锁死与挤压留白 | 截图引擎: dom-to-image-more SVG foreignObject)');
 })();
