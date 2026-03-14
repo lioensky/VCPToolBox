@@ -218,17 +218,17 @@ async function writeDebugLog(filenamePrefix, data) {
 let writeChatLog;
 if (CHAT_LOG_ENABLED) {
     const crypto = require('crypto');
-    writeChatLog = function (requestPayload, responsePayload) {
+    writeChatLog = function (requestBody, logs) {
         const now = dayjs().tz(DEFAULT_TIMEZONE);
         const dateStr = now.format('YYYY-MM-DD');
         const timeStr = now.format('HHmmss_SSS');
-        const id = (requestPayload && (requestPayload.requestId || requestPayload.messageId)) || 'no-id';
+        const id = (requestBody && (requestBody.requestId || requestBody.messageId)) || 'no-id';
         const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
         const shortRandom = crypto.randomBytes(2).toString('hex');
         const filename = `chat-${safeId}-${timeStr}-${shortRandom}.json`;
         const chatDir = path.join(__dirname, 'DebugLog', 'chat', dateStr);
         const filePath = path.join(chatDir, filename);
-        const payload = { request: requestPayload, response: responsePayload };
+        const payload = logs;
         fs.mkdir(chatDir, { recursive: true })
             .then(() => fs.writeFile(filePath, JSON.stringify(payload, null, 2)))
             .catch(e => console.error('[ChatLog] 写入失败:', e));

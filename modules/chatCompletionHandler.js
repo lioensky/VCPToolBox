@@ -683,7 +683,13 @@ class ChatCompletionHandler {
             }
           }
 
-          if (writeChatLog) writeChatLog(originalBody, { error: true, status: upstreamStatus, body: errorBodyText });
+          if (writeChatLog) {
+            writeChatLog(originalBody,
+              [ {
+                request: originalBody,
+                response: { error: true, status: upstreamStatus, body: errorBodyText }
+              } ]);
+          }
           // We are done with this request. Return early.
           return;
         }
@@ -782,7 +788,13 @@ class ChatCompletionHandler {
           // Non-streaming failure
           res.status(500).json({ error: 'Internal Server Error', details: error.message });
         }
-        if (writeChatLog) writeChatLog(originalBody, { error: true, message: error.message });
+        if (writeChatLog) {
+          writeChatLog(originalBody,
+            [ {
+              request: originalBody,
+              response: { error: true, message: error.message }
+            } ]);
+        }
       } else if (!res.writableEnded) {
         // Headers already sent (error during streaming loop)
         console.error(

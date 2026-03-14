@@ -47,7 +47,7 @@ class StreamHandler {
     const maxRecursion = maxVCPLoopStream || 5;
     let currentAIContentForLoop = '';
     let currentAIRawDataForDiary = '';
-    const allContentForChatLog = [];
+    let chatLogs = [];
 
     // 辅助函数：处理 AI 响应流 (优化版：直通转发 + 后台解析)
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
@@ -58,7 +58,18 @@ class StreamHandler {
         let sseLineBuffer = '';
         let streamAborted = false;
         let keepAliveTimer = null;
+        let message = { content: '', reasoning_content: '' };
 
+        const appendDelta = (delta) => {
+          if (delta && delta.content) {
+            collectedContentThisTurn += delta.content;
+            message.content += delta.content;
+          }
+          if (delta && delta.reasoning_content) {
+            collectedContentThisTurn += delta.reasoning_content;
+            message.reasoning_content += delta.reasoning_content;
+          }
+        };
         // 🌟 核心修复：注入 SSE 幽灵心跳保活，防止上游卡顿时浏览器假死
         keepAliveTimer = setInterval(() => {
           if (!res.writableEnded && !res.destroyed) {
@@ -76,7 +87,7 @@ class StreamHandler {
           if (DEBUG_MODE) console.log('[Stream Abort] Abort signal received, stopping stream processing.');
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
           if (aiResponse.body && !aiResponse.body.destroyed) aiResponse.body.destroy();
-          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
+          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
         };
 
         if (abortController?.signal) {
@@ -119,10 +130,7 @@ class StreamHandler {
                 try {
                   const parsedData = JSON.parse(jsonData);
                   const delta = parsedData.choices?.[0]?.delta;
-                  if (delta) {
-                    if (delta.content) collectedContentThisTurn += delta.content;
-                    if (delta.reasoning_content) collectedContentThisTurn += delta.reasoning_content;
-                  }
+                  appendDelta(delta);
                 } catch (e) { }
               }
             }
@@ -152,24 +160,21 @@ class StreamHandler {
                 try {
                   const parsedData = JSON.parse(jsonData);
                   const delta = parsedData.choices?.[0]?.delta;
-                  if (delta) {
-                    if (delta.content) collectedContentThisTurn += delta.content;
-                    if (delta.reasoning_content) collectedContentThisTurn += delta.reasoning_content;
-                  }
+                  appendDelta(delta);
                 } catch (e) { }
               }
             }
           }
 
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
-          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
+          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
         });
 
         aiResponse.body.on('error', streamError => {
           if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
           if (streamAborted || streamError.name === 'AbortError' || streamError.type === 'aborted') {
-            resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
+            resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
             return;
           }
           console.error('Error reading AI response stream:', streamError);
@@ -189,7 +194,7 @@ class StreamHandler {
     let initialAIResponseData = await processAIResponseStreamHelper(firstAiAPIResponse, true);
     currentAIContentForLoop = initialAIResponseData.content;
     currentAIRawDataForDiary = initialAIResponseData.raw;
-    if (writeChatLog) allContentForChatLog.push(initialAIResponseData.content);
+    if (writeChatLog) chatLogs.push({ request: originalBody, response: initialAIResponseData.message });
     handleDiaryFromAIResponse(currentAIRawDataForDiary).catch(e =>
       console.error('[VCP Stream Loop] Error in initial diary handling:', e),
     );
@@ -240,7 +245,7 @@ class StreamHandler {
       const archeryErrorContents = [];
 
       // 执行 Archery 调用
-      await Promise.all(archeryCalls.map(async toolCall => {
+      const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
         try {
           const result = await toolExecutor.execute(toolCall, clientIp);
           const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
@@ -256,8 +261,10 @@ class StreamHandler {
           if ((shouldShowVCP || forceThisOne) && !res.writableEnded && (isError || forceThisOne)) {
             vcpInfoHandler.streamVcpInfo(res, originalBody.model, result.success ? 'success' : 'error', toolCall.name, result.raw || result.error, abortController);
           }
+          return { tool: toolCall, result: result.content };
         } catch (e) {
           console.error(`[VCP Stream Loop Archery Error] ${toolCall.name}:`, e);
+          return { tool: toolCall, result: [{ type: 'text', text: String(e.message) }] };
         }
       }));
 
@@ -296,7 +303,13 @@ class StreamHandler {
         if (nextAiAPIResponse.ok) {
           let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
           currentAIContentForLoop = nextAIResponseData.content;
-          if (writeChatLog) allContentForChatLog.push(nextAIResponseData.content);
+          if (writeChatLog) {
+            chatLogs.push({
+              request: { messages: currentMessagesForLoop },
+              toolCalls: archeryLogs,
+              response: nextAIResponseData.message,
+            });
+          }
           recursionDepth++;
           continue;
         }
@@ -322,6 +335,18 @@ class StreamHandler {
       const toolResults = await toolExecutor.executeAll(normalCalls, clientIp);
       const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
+
+      const normalCallLogs = (() => {
+        let logs = [];
+        if (writeChatLog) {
+          for (let i = 0; i < normalCalls.length; i++) {
+            const toolCall = normalCalls[i];
+            const result = toolResults[i];
+            logs.push({ tool: toolCall, result: result.content });
+          }
+        }
+        return logs;
+      })();
 
       // VCP 信息展示 - 批量包裹为单个 USER 角色
       let hasStartedUserBlock = false;
@@ -405,7 +430,13 @@ class StreamHandler {
 
       let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
       currentAIContentForLoop = nextAIResponseData.content;
-      if (writeChatLog) allContentForChatLog.push(nextAIResponseData.content);
+      if (writeChatLog) {
+        chatLogs.push({
+          request: { messages: currentMessagesForLoop },
+          toolCalls: [ ...archeryLogs, ...normalCallLogs ],
+          response: nextAIResponseData.message,
+        });
+      }
 
       // 记录日志
       handleDiaryFromAIResponse(nextAIResponseData.raw).catch(e =>
@@ -413,9 +444,9 @@ class StreamHandler {
       );
 
       recursionDepth++;
-    }
+    } // toolcall loop end
 
-    if (writeChatLog) writeChatLog(originalBody, allContentForChatLog.join(''));
+    if (writeChatLog) writeChatLog(originalBody, chatLogs);
 
     if (recursionDepth >= maxRecursion && !res.writableEnded && !res.destroyed) {
       try {
