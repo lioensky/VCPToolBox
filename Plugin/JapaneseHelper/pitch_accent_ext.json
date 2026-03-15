@@ -1,0 +1,212 @@
+{
+  "日本": {
+    "reading": "にほん",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "地区读法有差异"
+  },
+  "中国": {
+    "reading": "ちゅうごく",
+    "accent_type": "中高",
+    "accent": "③",
+    "note": "常见东京式"
+  },
+  "暑い": {
+    "reading": "あつい",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "常见型"
+  },
+  "寒い": {
+    "reading": "さむい",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "雨": {
+    "reading": "あめ",
+    "accent_type": "头高",
+    "accent": "①",
+    "note": "与飴同音异调需区分"
+  },
+  "飴": {
+    "reading": "あめ",
+    "accent_type": "平板",
+    "accent": "②",
+    "note": "与雨对照"
+  },
+  "橋": {
+    "reading": "はし",
+    "accent_type": "头高",
+    "accent": "①",
+    "note": "与箸・端对照"
+  },
+  "箸": {
+    "reading": "はし",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "同音对照"
+  },
+  "端": {
+    "reading": "はし",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "同音对照"
+  },
+  "今日": {
+    "reading": "きょう",
+    "accent_type": "头高",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "明日": {
+    "reading": "あした",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "地域差异存在"
+  },
+  "昨日": {
+    "reading": "きのう",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "常见型"
+  },
+  "学校": {
+    "reading": "がっこう",
+    "accent_type": "平板",
+    "accent": "②",
+    "note": "常见型"
+  },
+  "先生": {
+    "reading": "せんせい",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "学生": {
+    "reading": "がくせい",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "勉強": {
+    "reading": "べんきょう",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "日本語": {
+    "reading": "にほんご",
+    "accent_type": "平板",
+    "accent": "④",
+    "note": "常见型"
+  },
+  "時間": {
+    "reading": "じかん",
+    "accent_type": "中高",
+    "accent": "②",
+    "note": "常见型"
+  },
+  "仕事": {
+    "reading": "しごと",
+    "accent_type": "平板",
+    "accent": "②",
+    "note": "常见型"
+  },
+  "電車": {
+    "reading": "でんしゃ",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "電話": {
+    "reading": "でんわ",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "病院": {
+    "reading": "びょういん",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "会社": {
+    "reading": "かいしゃ",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "旅行": {
+    "reading": "りょこう",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "料理": {
+    "reading": "りょうり",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "映画": {
+    "reading": "えいが",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "音楽": {
+    "reading": "おんがく",
+    "accent_type": "中高",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "図書館": {
+    "reading": "としょかん",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "難しい": {
+    "reading": "むずかしい",
+    "accent_type": "平板",
+    "accent": "④",
+    "note": "常见型"
+  },
+  "簡単": {
+    "reading": "かんたん",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "問題": {
+    "reading": "もんだい",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "答案": {
+    "reading": "こたえ",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "復習": {
+    "reading": "ふくしゅう",
+    "accent_type": "平板",
+    "accent": "③",
+    "note": "常见型"
+  },
+  "単語": {
+    "reading": "たんご",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  },
+  "文法": {
+    "reading": "ぶんぽう",
+    "accent_type": "平板",
+    "accent": "①",
+    "note": "常见型"
+  }
+}

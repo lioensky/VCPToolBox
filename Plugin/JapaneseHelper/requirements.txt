@@ -1,3 +1,53 @@
+# JapaneseHelper unified requirements (full feature, no downgrade)
+# Consolidated from requirements.txt + requirements.optional.txt
+
 requests>=2.31.0
 sudachipy>=0.6.8,<0.7
 sudachidict_core>=20230110
+jaconv>=0.3.4
+neologdn>=0.5.4
+budoux>=0.7.0
+pykakasi>=2.2.1
+emoji>=1.0,<2
+janome>=0.5.0
+
+# Heavy syntax / parsing
+spacy>=3.8.0
+ginza>=5.2.0
+ja_ginza>=5.2.0
+
+# Better sentence split
+ja-sentence-segmenter>=0.0.2
+
+# Better romaji
+# NOTE:
+# cutlet pulls fugashi -> MeCab and conflicts with NoMeCab install profile.
+# The runtime can fall back to pykakasi/jaconv for romaji generation.
+# cutlet>=0.5.0
+
+# Style detector (です・ます / である)
+# NOTE:
+# analyze-desumasu-dearu is a JavaScript/npm package (textlint-ja/analyze-desumasu-dearu),
+# not a Python package published on PyPI, so pip installation will fail.
+# The Python runtime already treats this backend as optional and falls back to rule-based style detection.
+# analyze-desumasu-dearu>=0.0.7
+
+# Rich conjugation utilities (活用推导增强)
+PyKatsuyou>=1.1.1
+
+# Orthographic variation normalization (表記揺れ)
+yurenizer>=0.2.2; python_version >= "3.11"
+
+# Numeric-kanji conversion helper
+kanjize>=1.6.1
+
+# Optional sentiment backend
+# NOTE:
+# oseti depends on a MeCab-based pipeline and is excluded in NoMeCab profile.
+# oseti>=0.4.3.1
+
+# Optional pitch/accent
+# NOTE:
+# marine-plus pulls torch, which currently has no matching distribution in this musllinux Python 3.12 docker environment.
+# The plugin can run without pitch/accent backend.
+# marine-plus>=0.0.6.post3

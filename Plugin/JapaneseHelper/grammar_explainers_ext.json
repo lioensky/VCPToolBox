@@ -1,0 +1,291 @@
+[
+  {
+    "id": "comparative_yori_ext",
+    "pattern": "より",
+    "title": "〜より（比较）",
+    "jlpt": "N5",
+    "meaning": "用于比较，表示“A 比 B 更…”。",
+    "structure": "A は B より + 形容词/状态",
+    "pitfall": "注意比较对象顺序。",
+    "example": "この店はあの店より安い。"
+  },
+  {
+    "id": "i_adj_negative_ext",
+    "pattern": "くない|くありません",
+    "title": "い形容词否定（〜くない）",
+    "jlpt": "N5",
+    "meaning": "い形容词的否定形式。",
+    "structure": "い形容词词干 + くない / くありません",
+    "pitfall": "×暑いない → ○暑くない",
+    "example": "今日は暑くないです。"
+  },
+  {
+    "id": "polite_negative_ext",
+    "pattern": "ないです|ません|ありません",
+    "title": "礼貌否定表达",
+    "jlpt": "N5",
+    "meaning": "在礼貌体中表达否定。",
+    "structure": "〜ないです / 〜ません / 〜ありません",
+    "pitfall": "口语多用ないです，正式场景多用ません。",
+    "example": "その本は高くないです。"
+  },
+  {
+    "id": "te_iru_ext",
+    "pattern": "ている|でいる",
+    "title": "〜ている（进行/状态）",
+    "jlpt": "N5",
+    "meaning": "表示动作进行中或结果状态持续。",
+    "structure": "动词て形 + いる",
+    "pitfall": "并非总是进行时，也可能是状态。",
+    "example": "窓が開いている。"
+  },
+  {
+    "id": "tara_cond_ext",
+    "pattern": "たら",
+    "title": "〜たら（条件）",
+    "jlpt": "N4",
+    "meaning": "表示假定条件或时间先后。",
+    "structure": "普通形过去式 + ら",
+    "pitfall": "后项常为说话人意志/请求。",
+    "example": "雨が降ったら、出かけない。"
+  },
+  {
+    "id": "nagara_ext",
+    "pattern": "ながら",
+    "title": "〜ながら（一边…一边…）",
+    "jlpt": "N4",
+    "meaning": "两个动作同时进行。",
+    "structure": "动词ます形去ます + ながら",
+    "pitfall": "主语通常一致。",
+    "example": "音楽を聞きながら勉強する。"
+  },
+  {
+    "id": "tsumori_da_ext",
+    "pattern": "つもり",
+    "title": "〜つもりだ（打算）",
+    "jlpt": "N4",
+    "meaning": "表示计划、意图。",
+    "structure": "动词辞书形/ない形 + つもりだ",
+    "pitfall": "与实际执行可能不一致。",
+    "example": "来年日本へ留学するつもりだ。"
+  },
+  {
+    "id": "you_ni_naru_ext",
+    "pattern": "ようになる",
+    "title": "〜ようになる（变化结果）",
+    "jlpt": "N3",
+    "meaning": "表示能力或习惯发生变化。",
+    "structure": "动词辞书形/ない形 + ようになる",
+    "pitfall": "强调结果变化，不强调过程。",
+    "example": "日本語が話せるようになった。"
+  },
+  {
+    "id": "you_ni_suru_ext",
+    "pattern": "ようにする",
+    "title": "〜ようにする（努力做到）",
+    "jlpt": "N3",
+    "meaning": "表示有意识地养成习惯或努力。",
+    "structure": "动词辞书形/ない形 + ようにする",
+    "pitfall": "与ようになる区分：前者主观努力，后者结果变化。",
+    "example": "毎日運動するようにしている。"
+  },
+  {
+    "id": "node_reason_ext",
+    "pattern": "ので",
+    "title": "〜ので（原因）",
+    "jlpt": "N4",
+    "meaning": "表示客观、礼貌的原因理由。",
+    "structure": "普通形 + ので",
+    "pitfall": "语气通常比から更柔和。",
+    "example": "時間がないので、先に失礼します。"
+  },
+  {
+    "id": "noni_contrast_ext",
+    "pattern": "のに",
+    "title": "〜のに（转折/落差）",
+    "jlpt": "N3",
+    "meaning": "表示与预期不符的结果。",
+    "structure": "普通形 + のに",
+    "pitfall": "常带说话人情绪（遗憾/不满）。",
+    "example": "勉強したのに、試験に落ちた。"
+  },
+  {
+    "id": "hazu_da_ext",
+    "pattern": "はずだ",
+    "title": "〜はずだ（按理应当）",
+    "jlpt": "N3",
+    "meaning": "基于依据作出高可能推断。",
+    "structure": "普通形 + はずだ",
+    "pitfall": "主观确信但非绝对断定。",
+    "example": "彼はもう着いたはずだ。"
+  },
+  {
+    "id": "kamoshirenai_ext",
+    "pattern": "かもしれない",
+    "title": "〜かもしれない（可能）",
+    "jlpt": "N3",
+    "meaning": "表示可能性（不确定）。",
+    "structure": "普通形 + かもしれない",
+    "pitfall": "确信度低于だろう/に違いない。",
+    "example": "明日は雪が降るかもしれない。"
+  },
+  {
+    "id": "wake_dewa_nai_ext",
+    "pattern": "わけではない|訳ではない",
+    "title": "〜わけではない（部分否定）",
+    "jlpt": "N3",
+    "meaning": "并不是说…（非全面否定）。",
+    "structure": "普通形 + わけではない",
+    "pitfall": "不等于“完全不是”。",
+    "example": "嫌いなわけではない。"
+  },
+  {
+    "id": "nai_koto_wa_nai_ext",
+    "pattern": "ないことはない|なくはない",
+    "title": "〜ないことはない（双重否定）",
+    "jlpt": "N3",
+    "meaning": "并非完全不…（委婉肯定）。",
+    "structure": "动词ない形 + ことはない / 形容词く + なくはない",
+    "pitfall": "语气是保留式肯定。",
+    "example": "行かないことはない。"
+  },
+  {
+    "id": "toha_kagiranai_ext",
+    "pattern": "とは限らない|と[はわ]かぎらない",
+    "title": "〜とは限らない（未必）",
+    "jlpt": "N2",
+    "meaning": "不一定总是如此。",
+    "structure": "普通形 + とは限らない",
+    "pitfall": "并非“绝对不会”，只是“未必”。",
+    "example": "高い物が良いとは限らない。"
+  },
+  {
+    "id": "ni_chigainai_ext",
+    "pattern": "に違いない|にちがいない",
+    "title": "〜に違いない（一定）",
+    "jlpt": "N2",
+    "meaning": "基于线索作高确信推断。",
+    "structure": "普通形 + に違いない",
+    "pitfall": "语气较强，不宜证据不足时滥用。",
+    "example": "彼は来るに違いない。"
+  },
+  {
+    "id": "beki_da_ext",
+    "pattern": "べきだ",
+    "title": "〜べきだ（应当）",
+    "jlpt": "N2",
+    "meaning": "表示义务、道德上的应当。",
+    "structure": "动词辞书形 + べきだ（する→するべきだ）",
+    "pitfall": "语气较硬，注意场景。",
+    "example": "約束は守るべきだ。"
+  },
+  {
+    "id": "ni_tsuite_ext",
+    "pattern": "について",
+    "title": "〜について（关于）",
+    "jlpt": "N3",
+    "meaning": "表示主题“关于…”。",
+    "structure": "名词 + について",
+    "pitfall": "书面、口语都常见。",
+    "example": "日本文化について研究している。"
+  },
+  {
+    "id": "ni_totte_ext",
+    "pattern": "にとって",
+    "title": "〜にとって（对…来说）",
+    "jlpt": "N3",
+    "meaning": "从某立场看。",
+    "structure": "名词 + にとって",
+    "pitfall": "后项常接评价。",
+    "example": "これは私にとって大切な経験だ。"
+  },
+  {
+    "id": "ni_yotte_ext",
+    "pattern": "によって",
+    "title": "〜によって（根据/由于/被动施事）",
+    "jlpt": "N3",
+    "meaning": "表示依据、原因或被动动作施事者。",
+    "structure": "名词 + によって",
+    "pitfall": "语义多义，需依上下文判定。",
+    "example": "人によって考え方が違う。"
+  },
+  {
+    "id": "to_omou_ext",
+    "pattern": "と思う",
+    "title": "〜と思う（我认为）",
+    "jlpt": "N4",
+    "meaning": "表达主观判断、想法。",
+    "structure": "普通形 + と思う",
+    "pitfall": "时态、礼貌体呼应要一致。",
+    "example": "明日は晴れると思う。"
+  },
+  {
+    "id": "te_shimau_ext",
+    "pattern": "てしまう|でしまう",
+    "title": "〜てしまう（完了/遗憾）",
+    "jlpt": "N3",
+    "meaning": "表示动作完成，或遗憾语气。",
+    "structure": "动词て形 + しまう",
+    "pitfall": "口语常缩约为ちゃう/じゃう。",
+    "example": "宿題を忘れてしまった。"
+  },
+  {
+    "id": "tokoro_da_ext",
+    "pattern": "ところだ",
+    "title": "〜ところだ（正要/正在/刚）",
+    "jlpt": "N3",
+    "meaning": "表示动作时间阶段。",
+    "structure": "辞书形/ている/た + ところだ",
+    "pitfall": "三种接续分别对应“正要/正在/刚刚”。",
+    "example": "今から出かけるところだ。"
+  },
+  {
+    "id": "nishitewa_ext",
+    "pattern": "にしては",
+    "title": "〜にしては（就…而言）",
+    "jlpt": "N2",
+    "meaning": "以某标准看，结果出乎意料。",
+    "structure": "名词/普通形 + にしては",
+    "pitfall": "后项多接评价且有反差。",
+    "example": "彼は初心者にしては上手だ。"
+  },
+  {
+    "id": "you_ni_manner_ext2",
+    "pattern": "ように(?!なる|する)",
+    "title": "〜ように（比喻/方式）",
+    "jlpt": "N4",
+    "meaning": "表示“像…一样”或“以…方式”。",
+    "structure": "普通形 + ように",
+    "pitfall": "和「ようになる/ようにする」区分：本项偏“方式/比喻”。",
+    "example": "鳥のように空を飛びたい。"
+  },
+  {
+    "id": "koto_nominalization_ext2",
+    "pattern": "こと(。|、|$)",
+    "title": "〜こと（名词化）",
+    "jlpt": "N4",
+    "meaning": "把前面的谓语内容名词化，表示“…这件事”。",
+    "structure": "普通形 + こと",
+    "pitfall": "与「の」名词化语感不同：こと更偏抽象/一般。",
+    "example": "日本語を勉強することは楽しい。"
+  },
+  {
+    "id": "nado_listing_ext2",
+    "pattern": "など",
+    "title": "〜など（列举）",
+    "jlpt": "N5",
+    "meaning": "表示“…等等”，非穷尽列举。",
+    "structure": "名词 + など",
+    "pitfall": "常带“举例而非全部”的语气。",
+    "example": "ピアノやギターなどを練習する。"
+  },
+  {
+    "id": "nado_de_means_ext2",
+    "pattern": "などで",
+    "title": "〜などで（范围/手段补充）",
+    "jlpt": "N4",
+    "meaning": "表示“在…等范围内/通过…等手段”。",
+    "structure": "名词 + などで",
+    "pitfall": "和「などを」「などに」的格助词功能要分清。",
+    "example": "会議では資料や図表などで説明した。"
+  }]

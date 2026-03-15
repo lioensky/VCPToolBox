@@ -1,137 +1,355 @@
 # JapaneseHelper 日语学习插件 (VCP)
 
-本插件是面向 VCP 工具链的日语学习增强插件，围绕“**一句话输入 → 解析理解 → 练习测验 → 复习巩固**”构建完整学习闭环。
+> 版本：v2.14.2  
+> 定位：一句话输入→ 解析理解 → 练习测验 → 复习巩固 → 长期追踪  
+> 当前运行结构：**Python 统一入口 + Rust 核心能力 + Python NLP 回退层**
 
-**核心定位**：无需额外改造调用链，接入 `JapaneseHelper` 后即可获得句子解析、查词消歧、语法讲解、测验、SRS 复习与学习数据管理能力。
+JapaneseHelper 现在采用 **混合架构**：
+- `JapaneseHelper.py` - 统一插件入口，负责 Python 包装/路由/Rust 回退
+- `JapaneseHelper_legacy.py` - 保留原有 Python 大单体，所有强依赖 Python NLP 的能力继续走这里
+- `rust_core/` - 负责结构化查询、学习状态、在线缓存/状态等核心能力
+- `py_backend/` - 负责桥接、兼容渲染和 fallback
+- `_dev/` - 构建脚本、测试脚本、迁移文档
 
-## 功能与相比基础查词工具的加强点
+---
 
-- **句子级理解**：支持分词、词性、原形、读音、释义与句法提示（`analyze_sentence`）。
-- **假名标注**：支持整句振假名标注，Sudachi 优先并自动 fallback（`add_furigana`）。
-- **语法解释**：输出语法点含义、接续、易错点、例句、JLPT 参考等级（`grammar_explain`）。
-- **助词与改写**：支持助词启发式检查与文体改写（敬体/简体/书面）（`particle_check` / `rewrite_sentence`）。
-- **查词增强**：本地词典 + 在线并联检索，支持 `race/aggregate`、上下文轻量消歧（`lookup_word` / `lookup_word_json`）。
-- **JLPT 能力**：整句 JLPT 分级标注与词汇提取优先级建议（`jlpt_tag` / `extract_vocab`）。
-- **活用与声调**：支持动词活用还原与重音查询（`conjugate_verb` / `pitch_accent`）。
-- **测验系统**：自动出题、单题判题、批量判题、易混项训练与错因解释（`quiz_generate` / `quiz_check` / `quiz_check_batch` / `minimal_pair_quiz` / `error_explain`）。
-- **双复习排程**：支持 SM-2 与 FSRS 简化排程并存（`srs_schedule` / `fsrs_schedule`）。
-- **学习数据闭环**：错题本、学习会话、进度报告、自定义词典、导入导出、健康检查一体化（`wrongbook_*` / `study_session_*` / `lexicon_*` / `import_export_data` / `health_check`）。
+## 快速开始
 
-## 安装与使用
+### 安装方式选择
 
-1. 将本目录放置于 VCP 的 `Plugin` 目录中（或保持当前目录结构）。
-2. 安装依赖：`pip install -r requirements.txt`
-3. 在 `config.env` 中按需配置在线查询、缓存与日志参数。
-4. 确保 `plugin-manifest.json` 已被 VCP 正确识别并加载。
+根据你的网络环境和需求，选择合适的安装方式：
 
-## 配置说明（config.env 常用项）
+#### 方式 A：在线构建（推荐）
 
-```env
-REQUEST_TIMEOUT=10
-JISHO_API_ENABLED=true
-SUDACHI_SPLIT_MODE=C
-USER_LEXICON_PATH=./user_lexicon.json
-DOMAIN_LEXICON_PATH=./domain_lexicon.json
+**适合场景**：有稳定网络连接，希望获取最新词典数据
 
-ONLINE_DICT_MODE=race
-ONLINE_DICT_TIMEOUT=1.2
-ONLINE_DICT_GLOBAL_TIMEOUT=2.5
-ONLINE_DICT_RETRY=1
+**包体积**：约 12MB（不含数据库）
 
-ONLINE_CACHE_TTL_SEC=86400
-ONLINE_CACHE_MAX_ITEMS=2000
-ONLINE_CACHE_FLUSH_INTERVAL_SEC=2.0
-ONLINE_CACHE_STALE_IF_ERROR_SEC=600
+**安装步骤**：
 
-OBSERVABILITY_LOG_PATH=./observability.log
+```bash
+# 1. 解压插件到 VCP 插件目录
+# 放置到: Plugin/JapaneseHelper/
+
+# 2. 安装 Python 依赖
+.\install_plugin_requirements.bat
+# 或手动执行: pip install -r requirements.txt
+
+# 3. 构建数据库（自动下载源数据）
+python.\setup_database.py
+# 下载内容: JMdict_e.gz (约10MB) + kanjidic2.xml.gz (约1.4MB)
+# 构建时间: 约 3-5 分钟
+# 最终数据库大小: 约 141MB
+
+# 4. (可选) 导入Wadoku 德日词典
+.\setup_wadoku.bat
+# 或手动执行: python .\setup_wadoku.py
+# 下载内容: wadoku.xml (约225MB)
+# 导入时间: 约 5-10 分钟
+# 增加词条: 约 44万条
+
+# 5. 配置插件
+copy config.env.example config.env
+# 按需修改 config.env 中的配置项
+
+# 6. 重启 VCP 服务器
 ```
 
-## AI 调用工具说明
+#### 方式 B：离线安装
 
-### 1.1 JapaneseHelper（通用学习入口）
+**适合场景**：网络受限或追求快速部署
 
-**说明**：通过 `command` 指定具体能力。  
-**调用格式**：
+**包体积**：约 23MB（含缓存文件）或 220MB（含预构建数据库）
 
-```text
-tool_name: JapaneseHelper,
-command: [具体指令],
-text: [可选，句子/文本],
-word: [可选，单词],
-...其它参数按 command 传入
+**安装步骤**：
+
+```bash
+# 1. 解压插件到 VCP 插件目录
+
+# 2. 安装 Python 依赖
+.\install_plugin_requirements.bat
+
+# 3a. 如果包含 data/raw/缓存文件（23MB 版本）
+python .\setup_database.py
+# 跳过下载，直接构建，约 2 分钟
+
+# 3b. 如果包含 data/db/jdict_full.sqlite（220MB 版本）
+# 跳过此步骤，数据库已预构建
+
+# 4. 配置并重启
+copy config.env.example config.env
+# 重启 VCP 服务器
+```
+
+### 验证安装
+
+重启 VCP 后，通过以下命令验证插件是否正常工作：
+
+```
+tool_name: JapaneseHelper
+command: health_check
+```
+
+应返回各组件状态为 OK。
+
+---
+
+## 命令使用指南
+
+### 📚 词典查询
+
+#### 本地词典查询
+```
+tool_name: JapaneseHelper
+command: lookup_word_json
+word: 勉強
+context: 私は毎日日本語を勉強しています。  # 可选，提供上下文消歧
+```
+
+#### 在线词典查询（并联）
+```
+tool_name: JapaneseHelper
+command: lookup_word_json
+word: 利害関係者
+use_parallel_online: true
+force_online: true
+online_mode: aggregate# race或 aggregate
+```
+
+###🈯 汉字与JLPT
+
+#### 汉字信息查询
+```
+tool_name: JapaneseHelper
+command: kanji_info
+word: 勉
+```
+
+#### JLPT 等级检查
+```
+tool_name: JapaneseHelper
+command: jlpt_check
+word: 勉強
+```
+
+### 📖 句子分析
+
+#### 完整句子解析
+```
+tool_name: JapaneseHelper
+command: analyze_sentence
+sentence: 彼女は毎朝公園を走っている。
+```
+
+#### 阅读辅助（带JLPT 颜色标注）
+```
+tool_name: JapaneseHelper
+command: reading_aid
+text: 彼女は毎朝公園を走っている。
+target_level: N3# N1-N5
+level_color: true# 可选，启用颜色标注
+```
+
+### 📝 语法与风格
+
+#### 深度语法解析
+```
+tool_name: JapaneseHelper
+command: grammar_explain_deep
+grammar: 〜ている
+```
+
+#### 文体转换
+```
+tool_name: JapaneseHelper
+command: style_shift
+text: 彼は来る。彼女は来ます。
+target: polite  # polite/plain/formal/sonkei/kenjou
+```
+
+### 🔤 假名与活用
+
+#### 添加假名标注
+```
+tool_name: JapaneseHelper
+command: add_furigana
+text: 私は日本語を勉強しています。
+```
+
+#### 动词活用
+```
+tool_name: JapaneseHelper
+command: conjugate_v2
+verb: 行く
+```
+
+### 📚 错题本系统
+
+#### 添加错题
+```
+tool_name: JapaneseHelper
+command: wrongbook_add
+word: 勉強
+error_type: reading# reading/meaning/kanji/grammar
+note: 混淆了べんきょう和べんきょ的读音
+```
+
+#### 查看错题列表
+```
+tool_name: JapaneseHelper
+command: wrongbook_list
+```
+
+#### 错题统计
+```
+tool_name: JapaneseHelper
+command: wrongbook_stats
+```
+
+### 🔄 复习系统
+
+#### 查看待复习列表
+```
+tool_name: JapaneseHelper
+command: review_due_list
+window_days: 1  # 可选，查看未来N天内到期的卡片
+```
+
+#### 提交复习结果
+```
+tool_name: JapaneseHelper
+command: review_submit
+word: 勉強
+result: 记住# 记住/模糊/忘记
+```
+
+#### 复习统计
+```
+tool_name: JapaneseHelper
+command: review_stats
+```
+
+### 📊 学习进度
+
+#### 学习进度报告
+```
+tool_name: JapaneseHelper
+command: progress_report
+days: 30  # 可选，统计窗口（默认30天）
+```
+
+###🔧 系统管理
+
+#### 健康检查
+```
+tool_name: JapaneseHelper
+command: health_check
+```
+
+#### 资源状态
+```
+tool_name: JapaneseHelper
+command: resource_status
+```
+
+#### 能力探针（查看所有结构化命令）
+```
+tool_name: JapaneseHelper
+command: schema_probe
 ```
 
 ---
 
-### 1.2 句子解析（analyze_sentence）
+## 常见问题
 
-**说明**：解析句子并给出词项信息。  
-**示例**：
+### Q: 数据库构建失败怎么办？
 
-```text
-tool_name: JapaneseHelper,
-command: analyze_sentence,
-text: 昨日友達と映画を見に行きました。
+**A:** 检查以下几点：
+1. 网络连接是否正常（需要访问 ftp.edrdg.org）
+2. 磁盘空间是否充足（至少需要 200MB 可用空间）
+3. Python 版本是否 >= 3.8
+4. 查看错误日志，确认具体失败原因
+
+如果下载失败，可以手动下载源文件：
+- JMdict: http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz
+- KANJIDIC2: http://ftp.edrdg.org/pub/Nihongo/kanjidic2.xml.gz
+
+将文件放置到 `data/raw/` 目录后，重新运行 `setup_database.py`。
+
+### Q: 是否必须安装 Wadoku 词典？
+
+**A:** 不是必需的。Wadoku 是德日词典，提供额外的 44 万条词汇，主要用于：
+- 增强词汇覆盖率
+- 提供德语释义（适合德语学习者）
+
+如果你只需要日英词典，可以跳过 Wadoku 安装。
+
+### Q: 如何更新词典数据？
+
+**A:** 重新运行构建脚本即可：
+```bash
+python .\setup_database.py
 ```
+脚本会自动下载最新的源数据并重建数据库。
 
-### 1.3 查词（lookup_word / lookup_word_json）
+### Q: 插件占用多少磁盘空间？
 
-**说明**：查词并支持并联在线检索与轻量消歧。  
-**示例**：
+**A:** 完整安装后：
+- 代码和配置: 约 1MB
+- 数据库 (jdict_full.sqlite): 约 141MB
+- 缓存文件 (data/raw/): 约 11MB（可删除）
+- 总计: 约 153MB
 
-```text
-tool_name: JapaneseHelper,
-command: lookup_word,
-word: 利害関係者,
-use_parallel_online: true,
-force_online: true,
-online_mode: aggregate
-```
+### Q: 支持哪些操作系统？
 
-```text
-tool_name: JapaneseHelper,
-command: lookup_word_json,
-word: 勉強,
-context: 私は毎日日本語を勉強しています。
-```
+**A:**
+- ✅ Windows 10/11
+- ✅ Linux (Ubuntu 20.04+, Debian 11+)
+- ✅ macOS 11+
 
-### 1.4 语法讲解（grammar_explain）
+需要 Python 3.8+ 和 pip。
 
-```text
-tool_name: JapaneseHelper,
-command: grammar_explain,
-text: 私は毎日日本語を勉強しています。
-```
+---
 
-### 1.5 批量判题（quiz_check_batch）
+## 架构说明
 
-**说明**：支持 `answers/user_answers` 与 `expected_answers/correct_answers` 双别名参数。  
-**示例**：
+### 已迁移到 Rust 的功能
+- `health_check` - 健康检查
+- `resource_status` - 资源状态
+- `lookup_word_json` - 词典查询（本地+在线）
+- `kanji_info` - 汉字信息
+- `jlpt_check` - JLPT 等级检查
+- `wrongbook_add/list/stats` - 错题本管理
+- `review_due_list/submit/stats` - 复习系统
+- `study_session_submit` - 学习会话提交
+- `progress_report` - 学习进度报告
 
-```text
-tool_name: JapaneseHelper,
-command: quiz_check_batch,
-answers: 昨日,日本語,行く,
-expected_answers: 昨日,日本語,行く,
-readings: きのう,にほんご,いく
-```
+### 保留在 Python 的功能
+- Sudachi / Janome 分词热路径
+- GiNZA 句法解析
+- `analyze_sentence` - 句子分析
+- `grammar_explain/grammar_explain_deep` - 语法解释
+- `reading_aid/reading_enhance` - 阅读辅助
+- `style_shift/semantic_enhance` - 风格转换
+- `conjugate_v2` - 动词活用
+- `add_furigana` - 假名标注
+- `study_session_start` - 学习会话启动
 
-### 1.6 学习会话（study_session_start）
+---
 
-```text
-tool_name: JapaneseHelper,
-command: study_session_start,
-text: 私は毎日日本語を勉強しています。,
-count: 5,
-adaptive: true
-```
+## 数据来源
 
-## 重要提示
+本插件使用的词典数据来自以下开源项目：
 
-1. `lookup_word_json` 返回结构化结果，更适合前端直接渲染。  
-2. 在线查询链路建议结合缓存参数使用，以平衡延迟与稳定性。  
-3. 训练场景建议结合：`extract_vocab` → `quiz_generate` → `quiz_check_batch` → `srs_schedule/fsrs_schedule`。
+- **JMdict**: 日英词典，由 EDRDG 维护，采用 CC BY-SA 3.0 许可
+- **KANJIDIC2**: 汉字信息数据库，由 EDRDG 维护，采用 CC BY-SA 3.0 许可
+- **Wadoku**: 德日词典，采用 CC BY-SA 3.0 许可
+- **JLPT 词汇表**: 来自社区整理，采用 MIT 许可
+
+详见 `DATA_PROVENANCE.md`。
+
+---
 
 ## 一句话总结
 
-**JapaneseHelper = 面向 VCP 的一站式日语学习插件：能拆句、能查词、能讲语法、能出题、能复习，并具备长期学习数据管理能力。**
+**JapaneseHelper = 运行时尽量保持稳定，把必须依赖 Python 的 NLP 能力留在 Python，把结构化核心与状态管理逐步迁到 Rust。**
