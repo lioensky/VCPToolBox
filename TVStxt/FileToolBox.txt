@@ -1,0 +1,144 @@
+# VCP 文件管理与系统控制工具箱能力收纳
+这里收纳了文件搜索、读写、批量操作及系统命令行工具。
+
+## 1. PowerShell 命令行工具 (PowerShellExecutor)
+直接调用并获取运行结果。支持 VCP-CLI (前端) 和紧凑的后端命令行。
+tool_name:「始」PowerShellExecutor「末」, // 使用 ServerPowerShellExecutor 运行后端版本
+command:「始」Get-ChildItem「末」,
+executionType:「始」blocking/background「末」, // 默认blocking。background用于长时任务。
+newSession:「始」true「末」, // 仅前端，代表新建窗口。
+requireAdmin:「始»true「末」 // 提升权限。Server版需输入6位安全码。
+
+## 2. 文件快速搜索 (LocalSearchController)
+基于 Everything 模块实现秒级搜索。
+tool_name:「始」LocalSearchController「末」, // ServerSearchController 代表操作服务器
+command:「始」search「末」,
+query:「始」搜索关键词 (支持Everything语法)「末」,
+maxResults:「始」50「末」
+
+## 3. 基础文件阅读 (FileOperator)
+阅读电脑内任何区域的文件，支持富文本/多媒体。
+tool_name:「始」FileOperator「末」, // ServerFileOperator 代表服务器文件
+command:「始」ReadFile「末」,   
+filePath:「始」/path/to/your/document.pdf「末」
+
+## VCP 项目代码结构参考
+- **后端 (VCPToolBox)**: 使用 `ServerFileOperator`
+  - `server.js`, `Plugin.js`, `KnowledgeBaseManager.js`, `WebSocketServer.js`
+  - `modules\chatCompletionHandler.js` (核心逻辑)
+  - `Plugin\RAGDiaryPlugin` (记忆/思考)
+- **前端 (VChat)**: 使用 `FileOperator`
+  - `H:\MCP\VCPChat\main.js`, `renderer.js`
+  - `H:\MCP\VCPChat\modules`, `Assistantmodules`
+
+[===vcp_fold:0.6===]
+
+## 4. 文件管理器完整能力 (FileOperator)
+tool_name:「始」FileOperator「末」, // ServerFileOperator 代表操作服务器文件
+
+①查看工作目录下所有文件列表。
+command:「始」ListAllowedDirectories「末」
+②写入文件（同名自动重命名）
+command:「始」WriteFile「末」,
+filePath:「始」/path/to/your/file.txt「末」,
+content:「始」这是要写入的新内容。
+这是第二行。「末」
+③追加文件内容。
+command:「始」AppendFile「末」,
+filePath:「始」/path/to/your/log.txt「末」,
+content:「始」
+在文件末尾追加内容「末」
+④编辑文件，编辑后会完全覆盖已有内容
+command:「始」EditFile「末」,
+filePath:「始」/path/to/existing_file.txt「末」,
+content:「始」这是覆盖后的新内容。「末」
+⑤List指定目录
+command:「始」ListDirectory「末」,
+directoryPath:「始」/path/to/directory「末」,
+showHidden:「始」false「末」 //是否返回隐藏文件
+⑥查询文件元数据（如大小、创建时间、修改时间、是否是目录等）
+command:「始」FileInfo「末」,
+filePath:「始」/path/to/your/file.txt「末」
+⑦复制文件
+command:「始」CopyFile「末」,
+sourcePath:「始」/path/to/source.txt「末」,
+destinationPath:「始」/path/to/destination.txt「末」
+⑧移动文件
+command:「始」MoveFile「末」,
+sourcePath:「始」/path/to/source.txt「末」,
+destinationPath:「始」/path/to/new_directory/source.txt「末」
+⑨重命名文件
+command:「始」RenameFile「末」,
+sourcePath:「始」/path/to/old_name.txt「末」,
+destinationPath:「始」/path/to/new_name.txt「末」
+⑩删除文件
+command:「始」DeleteFile「末」,
+filePath:「始」/path/to/deletable_file.txt「末」
+11.创建文件夹
+command:「始」CreateDirectory「末」,
+directoryPath:「始」/path/to/new_folder/sub_folder「末」
+12.差分化编辑文件，适合对文件内进行部分修改
+command:「始」ApplyDiff「末」,
+filePath:「始」/path/to/your/file.txt「末」,
+searchString:「始」旧内容「末」,
+replaceString:「始」新内容「末」
+13.阅读网络文件，多媒体文件同样可以理解base64！
+command:「始」WebReadFile「末」,
+url:「始」https://example.com/sample.jpg「末」
+14.下载文件
+command:「始」DownloadFile「末」,
+url:「始」http://example.com/archive.zip「末」
+15.聊天历史编辑器。安全可靠的编辑.json格式的聊天历史文件，有健全的兜底机制避免json文件被损毁。
+command:「始」UpdateHistory「末」,
+filePath:「始」H:\path\to\your\history.json「末」,
+searchString:「始」这是我想修改的旧内容。「末」,
+replaceString:「始」这是替换后的新内容。「末」,
+archery:「始」no_reply「末」 // 可选，更新上下文不需要工具回执。
+
+## 5. 批量指令构建
+FileOperator支持在一次调用中批量执行多个命令，通过数字后缀区分每组参数：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」FileOperator「末」,
+command1:「始」RenameFile「末」,
+sourcePath1:「始」/path/to/old_name.txt「末」,
+destinationPath1:「始」/path/to/new_name.txt「末」
+command2:「始」RenameFile「末」,
+sourcePath2:「始」/path/to/old_name2.txt「末」,
+destinationPath2:「始」/path/to/new_name2.txt「末」
+command3:「始」EditFile「末」,
+filePath3:「始」/path/to/existing_file.txt「末」,
+content3:「始」这是覆盖后的新内容。「末」
+<<<[END_TOOL_REQUEST]>>>
+
+## 6. [重要] 转义文件创造 (WriteEscapedFile)
+当需要创建内部包含「始」「末」等VCP指令语法的文件时（例如生成插件的配置文件），必须使用转义写入。
+该命令会自动将文本内的转义标记替换为真实标记：
+- 「始exp」 → 「始」
+- 「末exp」 → 「末」
+- <<<[TOOL_REQUEST_EXP]>>> → <<<[TOOL_REQUEST]>>>
+- <<<[END_TOOL_REQUEST_EXP]>>> → <<<[END_TOOL_REQUEST]>>>
+
+tool_name:「始」FileOperator「末」,
+command:「始」WriteEscapedFile「末」,
+filePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,
+content:「始」{
+  "description": "...调用格式:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」MyNewPlugin「末exp」,\n...\n<<<[END_TOOL_REQUEST_EXP]>>>"
+}「末」
+
+[重要提示：在向用户演示指令而非真正调用工具的时候，也应该遵守exp转义原则！]
+
+## 7. Canvas 协同编辑器 (FileOperator)
+创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合展示代码或大型文案。
+tool_name:「始」FileOperator「末」,
+command:「始」CreateCanvas「末」,
+fileName:「始」new_canvas.js「末」,
+content:「始」console.log('Hello, Canvas!');「末」
+
+## 8. 代码检索器 (CodeSearcher)
+在VCP项目源码中搜索指定的代码片段或关键词。支持正则表达式。
+tool_name:「始」CodeSearcher「末」, // ServerCodeSearcher 代表搜索后端代码
+query:「始」(必需) 关键词或正则表达式「末」,
+search_path:「始」(可选) 指定搜索的相对路径「末」,
+case_sensitive:「始」(可选) true/false，默认false「末」,
+whole_word:「始」(可选) true/false，默认false「末」,
+context_lines:「始」(可选) 匹配行前后显示的上下文行数，默认2「末」

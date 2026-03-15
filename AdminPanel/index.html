@@ -446,12 +446,16 @@
                                 class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
                     <li><a href="#" data-target="agent-assistant-config"><span
                                 class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
+                    <li><a href="#" data-target="agent-scores"><span
+                                class="material-symbols-outlined">leaderboard</span>Agent积分排行榜</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span
                                 class="material-symbols-outlined">data_object</span>高级变量编辑器</a></li>
                     <li><a href="#" data-target="tool-list-editor"><span
                                 class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span
                                 class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
+                    <li><a href="#" data-target="tool-approval-manager"><span
+                                class="material-symbols-outlined">verified_user</span>插件调用审核管理</a></li>
                     <li><a href="#" data-target="thinking-chains-editor"><span
                                 class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
                     <li><a href="#" data-target="schedule-manager"><span
@@ -760,6 +764,76 @@
                     <div class="aa-footer-actions">
                         <button id="aa-save-config-button" type="button">保存 AgentAssistant 配置</button>
                         <span id="aa-status" class="status-message"></span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="tool-approval-manager-section" class="config-section">
+                <h2>插件调用审核管理</h2>
+                <p class="description">在此管理工具调用的审核机制。开启后，特定的工具调用将需要通过管理面板进行人工确认。</p>
+                <div class="card">
+                    <form id="tool-approval-config-form">
+                        <div class="config-item">
+                            <label class="switch-container">
+                                <span>是否开启工具调用审核</span>
+                                <input type="checkbox" id="tool-approval-enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+                        <div class="config-item">
+                            <label class="switch-container">
+                                <span>是否开启所有工具调用审核</span>
+                                <input type="checkbox" id="tool-approval-approve-all">
+                                <span class="switch-slider"></span>
+                            </label>
+                            <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
+                        </div>
+                        <div class="config-item">
+                            <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
+                            <input type="number" id="tool-approval-timeout" min="1" max="60" value="5">
+                            <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
+                        </div>
+                        <div class="config-item">
+                            <label for="tool-approval-list">被审核工具名单 (每行一个工具名称)</label>
+                            <textarea id="tool-approval-list" rows="8" placeholder="例如：\nSciCalculator\nPowerShellExecutor"></textarea>
+                            <p class="aa-hint">当“开启所有工具调用审核”关闭时，仅对此名单中的工具进行审核。</p>
+                        </div>
+                        <div class="config-footer">
+                            <button type="submit" class="btn-primary">保存审核配置</button>
+                            <span id="tool-approval-status" class="status-message"></span>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <section id="agent-scores-section" class="config-section">
+                <h2>Agent 积分排行榜</h2>
+                <p class="description">在这里查看 Agent 的积分情况。完成异步委托任务或其他系统贡献将自动获得积分奖励。</p>
+                <div class="agent-scores-container card">
+                    <div class="scores-header">
+                        <button id="refresh-scores-button" class="btn-secondary">
+                            <span class="material-symbols-outlined">refresh</span> 刷新数据
+                        </button>
+                        <span id="scores-status" class="status-message"></span>
+                    </div>
+                    <div class="table-container">
+                        <table class="modern-table" id="agent-scores-table">
+                            <thead>
+                                <tr>
+                                    <th>排名</th>
+                                    <th>执行者 (Agent)</th>
+                                    <th>总积分</th>
+                                    <th>最近动态</th>
+                                    <th>获取时间</th>
+                                </tr>
+                            </thead>
+                            <tbody id="agent-scores-body">
+                                <!-- Data will be loaded here -->
+                                <tr>
+                                    <td colspan="5" style="text-align: center; padding: 40px; opacity: 0.6;">正在加载积分数据...</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </section>

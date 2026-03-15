@@ -1,0 +1,37 @@
+﻿今日系统学习了VCP同步插件的完整开发规范，整理如下。
+
+核心概念：VCP同步插件是一种外部可执行程序或脚本，被主服务按需调用以执行特定任务。主服务启动插件进程、发送数据、等待执行完成并返回结果，整个过程是阻塞式的。
+
+简明释义：同步插件适用于执行时间较短（秒级）的任务，如搜索、计算、文件操作、图片生成等。插件通过标准输入（stdin）接收JSON参数，通过标准输出（stdout）返回JSON结果，可以用Python、Node.js、Go、Rust等任何支持标准输入输出的语言实现。
+
+关键原理与逻辑：
+
+plugin-manifest.json是插件的身份证，核心字段包括：name（插件唯一英文标识符，AI调用时tool_name的值来源于此）、displayName（显示名称）、pluginType（必须为synchronous）、entryPoint.command（启动命令，如python script.py或node script.js）、communication.protocol（必须为stdio）、communication.timeout（超时时间毫秒）。
+
+capabilities.invocationCommands定义AI如何调用插件，是最重要的部分。description字段的内容会组合成占位符（如{{VCPEchoPlugin}}）插入到AI的系统提示词中，AI完全依赖此处的描述来理解工具能做什么、如何调用、参数是什么。description必须清晰、准确、详尽，并包含完整的调用格式示例。
+
+configSchema定义插件需要的配置项，这些配置项由插件目录下的config.env文件提供，通过环境变量传递给插件进程（Node.js用process.env.KEY，Python用os.environ['KEY']获取）。
+
+插件本体的核心模式：从stdin读取JSON字符串参数，解析JSON，执行核心逻辑，构建响应JSON，打印到stdout。
+
+同步插件的标准返回格式：{"status": "success"或"error", "result": "成功时返回的字符串内容或JSON对象", "error": "失败时返回的错误信息字符串", "messageForAI": "可选，给AI的额外提示信息", "base64": "可选，返回的Base64编码数据"}。
+
+多模态返回格式：当需要返回图片等多媒体数据时，result字段是一个对象，其content属性是一个数组，数组中每个元素带有type字段（text或image_url），image_url类型的url字段使用Data URI格式（data:image/png;base64,xxx）。
+
+多指令插件：通过在stdin的JSON中读取command字段，使用switch语句分发到不同的处理函数。invocationCommands数组中可以有多个命令对象，每个对象有自己的command字段和description。
+
+参数鲁棒性处理：建议在插件内部处理参数同义词和大小写问题，例如同时检查args.resolution和args.size，使用args_lower = {k.lower(): v for k, v in args.items()}处理大小写。
+
+管理员权限验证：在plugin-manifest.json根级别添加requiresAdmin:true启用验证机制，主服务会将解密后的验证码注入环境变量DECRYPTED_AUTH_CODE，插件内部需要将用户提供的requireAdmin参数与DECRYPTED_AUTH_CODE进行比对。
+
+使用方法：在Plugin/目录下创建插件文件夹，编写plugin-manifest.json和插件脚本，在系统提示词中添加{{VCP插件名}}占位符，重启服务器（大部分插件支持热加载，约1秒延迟）。
+
+可能遇到的问题：插件未被加载通常是plugin-manifest.json格式错误或pluginType字段值不正确。AI调用失败通常是description字段中的调用格式示例不够清晰，或参数名与插件实际接收的参数名不匹配。返回数据乱码通常是编码问题，确保stdout输出为UTF-8编码。Python插件在Windows上可能需要设置sys.stdout.reconfigure(encoding='utf-8')。
+
+可能的解决办法：查看VCPLog插件的实时日志定位错误；检查plugin-manifest.json的JSON格式是否合法（可用在线JSON验证工具）；确认entryPoint.command中的命令在服务器环境中可以直接执行；对于Python插件，确认python命令指向正确的Python版本。
+
+反思与洞察：同步插件的设计哲学是最小化复杂度——插件只需要关心自己的核心逻辑，所有的调用管理、参数解析、结果注入都由VCP框架负责。这使得开发一个功能完备的VCP插件只需要几十行代码。
+
+信源/出处：dailynote/VCP开发/同步异步插件开发手册.md第1-4节，Plugin/SciCalculator/、Plugin/FileOperator/为参考实现。
+
+Tag: VCP同步插件，plugin-manifest.json，stdio协议，invocationCommands，configSchema，多模态返回，多指令插件，参数鲁棒性，管理员权限，热加载，插件开发

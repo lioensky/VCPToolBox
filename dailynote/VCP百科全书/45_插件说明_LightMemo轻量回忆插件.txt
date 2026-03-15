@@ -1,0 +1,62 @@
+今日学习了VCPToolBox新增的LightMemo插件，这是一个允许AI主动搜索RAG知识库的轻量级回忆工具，作为系统级DeepMemo上下文自动检索的补充。
+
+核心概念：LightMemo（轻量回忆插件）让AI能够在对话中主动发起对日记和知识库的向量搜索，而不是被动依赖系统的自动RAG注入。它支持指定搜索范围、时间范围过滤、Rerank重排序、RRF融合排序和TagMemo增强等高级检索功能。
+
+插件基本信息：插件名称LightMemo，类型hybridservice混合服务插件，入口文件LightMemo.js（Node.js，直接调用协议）。系统提示词占位符为{{VCPLightMemo}}。
+
+简明释义：系统级的RAG占位符（如[[Nova日记本::Time::Rerank]]）是在每轮对话时自动执行的被动检索，AI无法控制搜索什么。LightMemo则是AI的"主动回忆"能力——当AI觉得需要查找某条记忆时，可以主动调用这个工具，精确指定搜索关键词、目标日记本、时间范围等参数，相当于AI拥有了一个随时可用的记忆搜索引擎。
+
+配置项说明：在Plugin/LightMemo/config.env中可设置EXCLUDED_FOLDERS（屏蔽的日记文件夹，用逗号分隔，默认"已整理,夜伽,MusicDiary"）、RerankUrl/RerankApi/RerankModel（Rerank服务配置，可选）。
+
+使用方法：调用SearchRAG命令，必须提供query参数作为搜索内容。query中支持嵌入时间范围约束语法，如[2025-04-11~2025-05-12]限定日期范围，[2026-02-14]限定单日。可选参数folder指定搜索的日记文件夹名称，maid指定AI署名用于定位关联日记本，k控制返回结果数量（默认5），rerank控制重排序模式，search_all_knowledge_bases控制是否搜索全部知识库，tag_boost控制TagMemo增强因子。
+
+基础搜索（在指定文件夹中搜索）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」LightMemo「末」,
+folder:「始」小冰的知识「末」,
+query:「始」关于上次项目会议的讨论内容「末」,
+k:「始」3「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+带时间范围的搜索：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」LightMemo「末」,
+folder:「始」Nova日记本「末」,
+query:「始」[2026-02-01~2026-03-01] 辉宝主人最近一个月聊过的话题「末」,
+k:「始」5「末」,
+rerank:「始」true「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+全局搜索（搜索所有知识库，启用RRF融合排序和TagMemo增强）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」LightMemo「末」,
+query:「始」VCP插件开发规范和manifest结构「末」,
+k:「始」5「末」,
+rerank:「始」rrf0.7「末」,
+search_all_knowledge_bases:「始」true「末」,
+tag_boost:「始」0.6「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+音乐检索（在query中使用[音乐检索]特殊语法）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」LightMemo「末」,
+query:「始」[音乐检索] 轻柔的钢琴曲「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 搜索结果为空——folder名称拼写错误或该文件夹下没有已向量化的日记内容。使用search_all_knowledge_bases=true可以跨所有知识库搜索。
+2. 搜索结果不相关——query描述过于笼统，建议使用更具体的关键词。启用tag_boost可以通过TagMemo标签关联增强相关性。
+3. Rerank功能不可用——Plugin/LightMemo/config.env中未配置RerankUrl/RerankApi/RerankModel。Rerank依赖外部Rerank API服务。
+4. 时间范围过滤无效——时间语法必须写在query参数值内部，格式为[YYYY-MM-DD~YYYY-MM-DD]或[YYYY-MM-DD]，方括号不能省略。
+5. EXCLUDED_FOLDERS中的文件夹仍然被搜索到——检查config.env中的屏蔽列表格式，多个文件夹名称用英文逗号分隔。
+
+可能的解决办法：
+1. rerank参数支持四种值：false（禁用）、true（标准Rerank）、"rrf"（RRF融合排序）、"rrf0.7"（RRF融合，α=0.7表示Reranker占70%权重）。推荐使用rrf模式获得最佳效果。
+2. tag_boost取值范围0到1，设为0禁用TagMemo增强，默认0.5。对于技术文档类搜索建议调高到0.6-0.8。
+3. 如果不确定日记文件夹名称，可以先不指定folder和maid，设search_all_knowledge_bases=true搜索全部。
+
+关联节点：RAGDiaryPlugin（底层RAG引擎）、TagMemo浪潮算法（tag_boost增强的底层）、Rerank重排序（rerank参数的底层）、RRF倒数秩融合（rrf模式的底层）、日记系统使用规范（搜索目标）、VCP指令协议语法（调用格式）。
+
+信源/出处：Plugin/LightMemo/plugin-manifest.json，Plugin/LightMemo/LightMemo.js。
+
+Tag: LightMemo，轻量回忆，主动搜索，RAG检索，时间范围过滤，TagMemo增强，Rerank，RRF融合，知识库搜索，向量检索，音乐检索

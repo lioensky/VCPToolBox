@@ -1,0 +1,50 @@
+今日学习了VCPToolBox近期新增的工具调用安全审核机制（ToolApprovalManager）和RAG聚合检索系统（Aggregate Retrieval），前者为工具执行增加了人工审批门禁，后者允许单个占位符同时检索多个日记本并智能分配召回配额。
+
+核心概念：ToolApprovalManager是一个基于JSON配置的工具调用审批管理器，支持热重载配置，可以控制哪些工具允许自动执行、哪些需要等待用户确认。聚合检索是RAGDiaryPlugin V5版本的多日记本并行检索协议，通过管道符语法和Softmax归一化实现智能K值分配。
+
+简明释义：安全审核的逻辑很简单——AI想调用某个工具时，系统先查审批名单，名单上的工具直接放行，不在名单上的需要用户手动批准，超时未批准则自动取消。聚合检索的逻辑是把多个日记本的名字用竖线连起来写在一个占位符里，系统自动计算每个日记本与当前对话的相关度，相关度高的多分配召回名额，低的少分配。
+
+关键原理与逻辑：
+
+第一，ToolApprovalManager的核心实现在modules/toolApprovalManager.js中，总共86行代码。它在启动时读取tool_approval_config.json配置文件，配置结构包含三个关键字段：enabled布尔值控制整体开关，approveAll布尔值控制是否跳过审批直接放行所有工具，approvalList数组列出允许自动执行的工具名称白名单。shouldApprove(toolName)方法的判断逻辑是：如果enabled为false则全部放行；如果approveAll为true则全部放行；否则检查toolName是否在approvalList中，在则放行，不在则需要人工审批。getTimeoutMs()方法返回配置中的审批超时毫秒数，超时后工具调用自动取消。
+
+第二，配置热重载通过chokidar文件监听器实现。ToolApprovalManager在初始化时使用chokidar.watch监听tool_approval_config.json文件的变更事件，当用户通过管理面板或直接编辑配置文件修改审批规则时，系统自动重新加载配置，无需重启服务。
+
+第三，聚合检索的语法格式是在RAG占位符中使用管道符分隔多个日记本名称。系统通过_parseAggregateSyntax函数（RAGDiaryPlugin.js第1703-1737行）解析管道符，识别出多个子日记本名称，然后进入_processAggregateRetrieval函数（第1747-1880行）处理聚合逻辑。
+
+第四，聚合检索的K值分配使用Softmax归一化算法。系统首先计算总K值totalK = dynamicK × kMultiplier，然后对每个子日记本计算其与当前查询向量的余弦相似度。这些相似度值经过Softmax函数归一化后变成概率分布，每个日记本按概率比例分配K配额。温度参数temperature可配置，默认值为1.0，温度越高分配越均匀，温度越低越倾向于把所有配额集中给最相关的日记本。具体计算是K_i = Math.round(totalK × weight_i)，最后确保每个参与的日记本至少分配到1个K值。
+
+第五，聚合检索的结果合并策略是将所有子日记本的检索结果汇总到一个池中，按分数排序后统一进行后续的TimeDecay时间衰减和Rerank重排序处理。
+
+使用方法：安全审核方面，编辑项目根目录下的tool_approval_config.json文件即可控制审批策略，配置修改后自动热重载无需重启。将enabled设为true启用审核，将常用安全工具名称添加到approvalList数组中实现自动放行，不在名单中的工具调用会弹出审批提示。聚合检索方面，在系统提示词的RAG占位符中使用管道符语法连接多个日记本名称即可。
+
+聚合检索占位符语法示例：
+
+单日记本标准RAG，K倍率1.5：[[Nova日记本::1.5::Time::Rerank]]
+
+多日记本聚合RAG，K倍率1.2，启用时间加权：[[Nova日记本|VCPreadme日记本::1.2::Time]]
+
+三日记本聚合RAG，完整修饰符：[[Nova日记本|VCPreadme日记本|工作日志::1.5::Time::Rerank]]
+
+K倍率位置无要求，以下三种写法等价：[[Nova日记本::0.5::Time::Rerank]]、[[Nova日记本::Time::0.5::Rerank]]、[[Nova日记本::Time::Rerank::0.5]]
+
+可能遇到的问题：
+1. 工具审批弹窗不出现——ToolApprovalManager的enabled字段为false，或approveAll为true导致全部自动放行，检查tool_approval_config.json中的配置。
+2. 工具调用超时自动取消——用户未在审批超时时间内响应，AI会收到超时取消的提示并可能重新尝试调用。超时时间由配置中的timeoutMs字段控制。
+3. 聚合检索中某个日记本无结果——日记本名称拼写错误或该日记本对应的向量索引不存在，该子日记本会被静默跳过，不影响其他日记本的正常检索。
+4. 聚合检索结果偏向某一个日记本——当前对话主题与该日记本高度相关，Softmax分配了过多K配额给它。可以调高温度参数使分配更均匀。
+5. 热重载不生效——chokidar监听器异常，尝试重启VCP服务。检查tool_approval_config.json文件格式是否为合法JSON。
+
+可能的解决办法：
+1. 通过AdminPanel管理面板可以图形化管理审批配置，无需手动编辑JSON文件。
+2. 建议将VSearch、DailyNote等常用安全工具加入approvalList白名单，避免频繁审批打断对话流。
+3. 聚合检索的日记本名称必须与dailynote目录下的子目录名完全一致（区分大小写），建议先在AdminPanel中确认日记本列表。
+4. 如需均匀分配K值给各日记本，可在RAGDiaryPlugin的参数配置中调高Softmax温度值，或手动为每个日记本单独写一个RAG占位符。
+
+关联节点：ToolApprovalManager工具审批、chokidar文件热监听、RAGDiaryPlugin聚合检索、Softmax归一化、K值动态分配、管道符语法、多日记本并行检索、tool_approval_config.json、AdminPanel管理面板。
+
+反思与洞察：安全审核机制虽然简单（86行代码），但填补了VCP在工具调用安全层面的重要空白。聚合检索的Softmax K分配是一个优雅的设计，它把"哪个知识库更重要"的判断从硬编码变成了语义驱动的动态决策，这与VCP一贯的"让数据自己说话"的自适应哲学高度一致。
+
+信源出处：modules/toolApprovalManager.js全文86行，Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js第1703-1737行_parseAggregateSyntax、第1747-1880行_processAggregateRetrieval。
+
+Tag: 工具审批，ToolApprovalManager，安全门禁，热重载，chokidar，聚合检索，管道符语法，Softmax归一化，K值分配，多日记本检索，温度参数，权限控制

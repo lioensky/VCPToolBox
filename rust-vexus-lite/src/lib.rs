@@ -43,6 +43,14 @@ pub struct ProjectResult {
     pub total_energy: f64,
 }
 
+#[napi(object)]
+pub struct IntrinsicResidualResult {
+    pub tag_count: u32,
+    pub computed_count: u32,
+    pub skipped_count: u32,
+    pub elapsed_ms: f64,
+}
+
 /// 统计信息
 #[napi(object)]
 pub struct VexusStats {
@@ -541,6 +549,204 @@ impl VexusIndex {
             entropy,
             total_energy,
         })
+    }
+
+    /// 预计算任务：矩阵内生残差 (TagMemo V7)
+    #[napi]
+    pub fn compute_intrinsic_residuals(
+        &self,
+        db_path: String,
+        max_svd_rank: Option<u32>,
+        min_neighbors: Option<u32>,
+    ) -> AsyncTask<IntrinsicResidualTask> {
+        AsyncTask::new(IntrinsicResidualTask {
+            db_path,
+            dimensions: self.dimensions,
+            max_svd_rank: max_svd_rank.unwrap_or(8),
+            min_neighbors: min_neighbors.unwrap_or(3),
+        })
+    }
+}
+
+pub struct IntrinsicResidualTask {
+    db_path: String,
+    dimensions: u32,
+    max_svd_rank: u32,
+    min_neighbors: u32,
+}
+
+impl Task for IntrinsicResidualTask {
+    type Output = IntrinsicResidualResult;
+    type JsValue = IntrinsicResidualResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use std::time::Instant;
+        let start = Instant::now();
+        let dim = self.dimensions as usize;
+        let max_k = self.max_svd_rank as usize;
+        let min_n = self.min_neighbors as usize;
+
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB open failed: {}", e)))?;
+
+        // 1. 加载所有 Tag 向量
+        let mut tag_vectors: std::collections::HashMap<i64, Vec<f32>> = 
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
+                .map_err(|e| Error::from_reason(format!("Prepare failed: {}", e)))?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            }).map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
+
+            for row in rows {
+                if let Ok((id, bytes)) = row {
+                    if bytes.len() == dim * 4 {
+                        let vec: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                            .collect();
+                        tag_vectors.insert(id, vec);
+                    }
+                }
+            }
+        }
+
+        // 2. 加载有向共现矩阵（或回退到无向共现信息以进行空间估计）
+        // 🔑 策略：直接从 SQLite 读取 file_tags 来构建临时的邻居关系
+        let mut adjacency: std::collections::HashMap<i64, Vec<i64>> = 
+            std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT ft1.tag_id, ft2.tag_id 
+                 FROM file_tags ft1 
+                 JOIN file_tags ft2 ON ft1.file_id = ft2.file_id AND ft1.tag_id != ft2.tag_id"
+            ).map_err(|e| Error::from_reason(format!("Adjacency query failed: {}", e)))?;
+            
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            }).map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
+
+            for row in rows {
+                if let Ok((src, tgt)) = row {
+                    adjacency.entry(src).or_insert_with(Vec::new).push(tgt);
+                }
+            }
+        }
+
+        // 3. 对每个 Tag 计算内生残差
+        let tag_count = tag_vectors.len() as u32;
+        let mut computed = 0u32;
+        let mut skipped = 0u32;
+        let mut results: Vec<(i64, f64, usize)> = Vec::new();
+        let max_neighbors = 100; // 🌟 V7.5: 限制邻居基数，防止 SVD 爆炸
+
+        for (&tag_id, tag_vec) in &tag_vectors {
+            let neighbors = match adjacency.get(&tag_id) {
+                Some(n) => n,
+                None => { skipped += 1; continue; }
+            };
+
+            // 收集有向量的邻居，并限制数量
+            let mut neighbor_vecs: Vec<&Vec<f32>> = Vec::new();
+            for nid in neighbors {
+                if let Some(v) = tag_vectors.get(nid) {
+                    neighbor_vecs.push(v);
+                    if neighbor_vecs.len() >= max_neighbors { break; }
+                }
+            }
+
+            if neighbor_vecs.len() < min_n {
+                skipped += 1;
+                continue;
+            }
+
+            // 构建邻居矩阵 (n_neighbors × dim)
+            let n = neighbor_vecs.len();
+            let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
+            for v in &neighbor_vecs {
+                flat.extend_from_slice(v);
+            }
+
+            // SVD 分解
+            use nalgebra::DMatrix;
+            let matrix = DMatrix::from_row_slice(n, dim, &flat);
+            let svd = matrix.svd(false, true);
+
+            let v_t = match svd.v_t {
+                Some(ref vt) => vt,
+                None => { skipped += 1; continue; }
+            };
+
+            let k = std::cmp::min(max_k, std::cmp::min(n, dim));
+
+            // 计算 tag_vec 在前 k 个主成分上的投影
+            let mut projection = vec![0.0f64; dim];
+            for i in 0..k {
+                let mut dot = 0.0f64;
+                for d in 0..dim {
+                    dot += (tag_vec[d] as f64) * (v_t[(i, d)] as f64);
+                }
+                for d in 0..dim {
+                    projection[d] += dot * (v_t[(i, d)] as f64);
+                }
+            }
+
+            // 残差 = 原始向量 - 投影
+            let mut residual_sq = 0.0f64;
+            for d in 0..dim {
+                let diff = (tag_vec[d] as f64) - projection[d];
+                residual_sq += diff * diff;
+            }
+            let residual_energy = residual_sq.sqrt();
+
+            results.push((tag_id, residual_energy, n));
+            computed += 1;
+        }
+
+        // 4. 写入 SQLite (使用 Transaction 优化性能)
+        if !results.is_empty() {
+            let max_r = results.iter().map(|r| r.1).fold(0.0f64, f64::max);
+            let min_r = results.iter().map(|r| r.1).fold(f64::MAX, f64::min);
+            let range = max_r - min_r;
+
+            let mut conn = conn; // 让 conn 可变以开始事务
+            let tx = conn.transaction()
+                .map_err(|e| Error::from_reason(format!("Transaction failed: {}", e)))?;
+
+            tx.execute("DELETE FROM tag_intrinsic_residuals", [])
+                .map_err(|e| Error::from_reason(format!("Clear failed: {}", e)))?;
+
+            {
+                let mut insert = tx.prepare(
+                    "INSERT INTO tag_intrinsic_residuals (tag_id, residual_energy, neighbor_count) VALUES (?1, ?2, ?3)"
+                ).map_err(|e| Error::from_reason(format!("Prepare insert failed: {}", e)))?;
+
+                for (tag_id, raw_residual, n_count) in &results {
+                    let normalized = if range > 1e-9 {
+                        0.5 + 1.5 * ((raw_residual - min_r) / range) // 归一化到 [0.5, 2.0]
+                    } else {
+                        1.0
+                    };
+                    insert.execute(rusqlite::params![tag_id, normalized, *n_count as i64])
+                        .map_err(|e| Error::from_reason(format!("Insert failed: {}", e)))?;
+                }
+            }
+            tx.commit().map_err(|e| Error::from_reason(format!("Commit failed: {}", e)))?;
+        }
+
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+        Ok(IntrinsicResidualResult {
+            tag_count,
+            computed_count: computed,
+            skipped_count: skipped,
+            elapsed_ms: elapsed,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
     }
 }
 

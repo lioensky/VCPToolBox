@@ -3,7 +3,11 @@
     "noise_penalty": 0.05,
     "tagWeightRange": [0.05, 0.45],
     "tagTruncationBase": 0.6,
-    "tagTruncationRange": [0.5, 0.9]
+    "tagTruncationRange": [0.5, 0.9],
+    "timeDecay": {
+      "halfLifeDays": 30,
+      "minScore": 0.5
+    }
   },
   "KnowledgeBaseManager": {
     "activationMultiplier": [0.5, 1.5],

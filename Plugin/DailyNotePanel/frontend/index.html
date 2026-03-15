@@ -16,6 +16,25 @@
         <h1 class="sidebar-title">日记本</h1>
         <button id="toggle-sidebar" class="icon-button" title="折叠/展开">≡</button>
       </div>
+      <div
+        id="workbench-entry"
+        class="notebook-item workbench-entry"
+        title="进入/退出工作台"
+        role="button"
+        tabindex="0"
+      >
+        <div class="notebook-dot"></div>
+        <span class="notebook-name">工作台</span>
+      </div>
+      <div
+        id="workbench-mini-entry"
+        class="notebook-mini-item workbench-mini-entry"
+        title="进入/退出工作台"
+        role="button"
+        tabindex="0"
+      >
+        📋
+      </div>
       <div id="notebook-list" class="notebook-list">
         <!-- 日记本列表（全模式） -->
       </div>
@@ -43,8 +62,11 @@
             />
           </div>
           <div class="top-bar-right">
-            <button id="bulk-toggle-button" class="icon-button" title="批量选择删除">
-              ✔
+            <button id="bulk-move-button" class="icon-button" title="批量选择转移">
+              ⇄
+            </button>
+            <button id="bulk-delete-button" class="icon-button" title="批量选择删除">
+              🗑
             </button>
           </div>
         </div>
@@ -73,18 +95,50 @@
 
       <!-- 内容区：卡片流 / 编辑器 / 设置 -->
       <section id="cards-view" class="cards-view">
-        <!-- 卡片流区 -->
-        <div id="cards-container" class="cards-container">
-          <!-- 日记卡片将动态渲染到这里 -->
-        </div>
-        <!-- 分页/提示 -->
-        <div id="cards-footer" class="cards-footer">
-          <span id="cards-status" class="status-text"></span>
-          <div class="pagination">
-            <button id="prev-page" class="secondary-button pagination-button" type="button">上一页</button>
-            <span id="page-info" class="status-text"></span>
-            <button id="next-page" class="secondary-button pagination-button" type="button">下一页</button>
-          </div>
+        <div id="cards-layout" class="cards-layout">
+          <section id="cards-pane" class="cards-pane">
+            <div id="cards-container" class="cards-container">
+              <!-- 日记卡片将动态渲染到这里 -->
+            </div>
+            <div id="cards-footer" class="cards-footer">
+              <span id="cards-status" class="status-text"></span>
+              <div class="pagination">
+                <button id="prev-page" class="secondary-button pagination-button" type="button">上一页</button>
+                <span id="page-info" class="status-text"></span>
+                <button id="next-page" class="secondary-button pagination-button" type="button">下一页</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="workbench-editor-pane" class="workbench-pane workbench-editor-pane hidden">
+            <div class="workbench-pane-header">
+              <div class="workbench-pane-header-main">
+                <span id="workbench-filename" class="workbench-filename">未打开日记</span>
+                <span id="workbench-dirty-indicator" class="workbench-dirty-indicator hidden">未保存</span>
+              </div>
+              <button id="workbench-save-button" class="primary-button" type="button" disabled>保存</button>
+            </div>
+            <div id="workbench-editor-empty" class="workbench-empty">
+              点击左侧卡片，在这里开始编辑
+            </div>
+            <textarea
+              id="workbench-editor-textarea"
+              class="workbench-editor-textarea hidden"
+              spellcheck="false"
+            ></textarea>
+          </section>
+
+          <section id="workbench-preview-pane" class="workbench-pane workbench-preview-pane hidden">
+            <div class="workbench-pane-header">
+              <div class="workbench-pane-header-main">
+                <span class="workbench-pane-title">预览</span>
+              </div>
+            </div>
+            <div id="workbench-preview-empty" class="workbench-empty">
+              Markdown 预览会显示在这里
+            </div>
+            <div id="workbench-preview" class="workbench-preview hidden"></div>
+          </section>
         </div>
       </section>
 
@@ -180,8 +234,45 @@
         </div>
       </div>
     </div>
+
+    <!-- 转移确认弹窗 -->
+    <div id="move-modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2 class="modal-title">确认转移</h2>
+        <p class="modal-subtitle">
+          将转移 <span id="move-count" class="modal-count move-count">0</span> 条日记：
+        </p>
+        <div id="move-list" class="modal-list">
+          <!-- 待转移日记名称列表，支持滚动 -->
+        </div>
+        <label class="modal-field" for="move-target-select">
+          <span class="modal-field-label">目标日记本</span>
+          <select id="move-target-select" class="modal-select"></select>
+        </label>
+        <div id="move-target-hint" class="modal-hint"></div>
+        <div class="modal-footer">
+          <button id="move-cancel" type="button" class="secondary-button">取消</button>
+          <button id="move-confirm" type="button" class="primary-button">确认转移</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 未保存修改确认弹窗 -->
+    <div id="unsaved-modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2 class="modal-title">放弃未保存修改？</h2>
+        <p id="unsaved-modal-message" class="modal-subtitle">
+          当前日记还有未保存修改，确认离开并放弃这些内容吗？
+        </p>
+        <div class="modal-footer">
+          <button id="unsaved-cancel" type="button" class="secondary-button">继续编辑</button>
+          <button id="unsaved-confirm" type="button" class="primary-button modal-danger">放弃修改</button>
+        </div>
+      </div>
+    </div>
   </div>
 
+  <script src="/AdminPanel/marked.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

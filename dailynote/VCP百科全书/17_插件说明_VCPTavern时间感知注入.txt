@@ -1,0 +1,49 @@
+今日系统整理了VCPTavern（VCP上下文注入器）插件的完整使用说明，作为客服知识库。
+
+核心概念：VCPTavern是一个强大的消息预处理插件（hybridservice类型），允许用户通过预设规则动态地向AI对话中注入系统提示、时间感知信息和其他上下文数据，核心价值是赋予AI真实的时间观念和会话记忆能力。
+
+插件基本信息：插件名称VCPTavern，类型hybridservice混合服务插件，入口文件VCPTavern.js，通信协议direct（直接集成到服务器进程中）。触发方式：在系统提示词中添加{{VCPTavern::预设名}}占位符激活对应预设。无需在系统提示词中添加{{VCPVCPTavern}}工具说明占位符，直接用触发词激活即可。
+
+核心功能：
+动态消息注入——支持在对话的不同位置注入自定义内容，包括System Prompt前/后、最后一条用户消息前/后（Last User Message Before/After）、所有用户消息前/后（All User Messages Before/After）、以及深度注入（Depth Injection，将内容插入到聊天记录的特定深度）。
+
+智能时间感知——时间固化机制：配合Last User Message注入位置，只有最新消息会带上当前时间，历史消息保持过去状态，完美解决时间线收束问题。会话记忆：自动记录上次对话时间，让AI知道距离上次见面过去了多久。双锚点身份识别：即使所有角色共用同一个预设，插件也能通过角色名和话题哈希自动区分不同角色和话题，互不干扰。
+
+可用变量：{{Date}}（当前日期，如2026/2/28）、{{Time}}（当前时间，如16:30:00）、{{Today}}（当前星期，如星期六）、{{TimeSinceLastChat}}（距离上次对话的时间间隔，如3天5小时或刚刚）、{{LastChatTime}}（上次对话的具体时间点，如2026/2/11 10:00:00）。
+
+使用方法：
+
+第一步，在VCP控制面板的VCPTavern插件页面（或直接编辑Plugin/VCPTavern/presets/目录下的JSON文件）创建预设。推荐配置：预设名称dailychat，注入规则选择相对注入（Relative）、目标为最后的用户消息（Last User Message）、位置为之后（After），内容填写：
+[系统提示:]
+当前时间：{{Date}} {{Time}}
+距离上次见面已过去：{{TimeSinceLastChat}}
+（上次见面时间：{{LastChatTime}}）
+
+第二步，在AI角色卡的System Prompt或World Info的最前方添加触发词：{{VCPTavern::dailychat}}
+
+第三步，享受对话。首次对话AI会知道这是第一次见面；重逢时AI会感叹好久不见；连续对话时AI会知道这是刚刚才说过的话。
+
+身份识别机制：显式ID（最高优先级）使用{{VCPTavern::预设名::自定义ID}}语法，强制指定当前会话ID，不同ID之间时间互不干扰，适合为每个角色绑定独立会话。自动识别（双锚点机制）：角色锚点自动从System Prompt中提取Name:xxx或Char:xxx字段，话题锚点自动计算第一条用户消息的哈希值，切换角色或开启新话题时自动识别为新会话。
+
+会话数据存储在Plugin/VCPTavern/access_logs.json文件中（自动生成，请勿手动修改）。
+
+可能遇到的问题：
+1. 时间注入到历史消息（所有历史消息都显示当前时间）——注入位置选择了All User Messages而非Last User Message，修改预设的注入目标为Last User Message After。
+2. 不同角色的时间互相干扰——双锚点自动识别失败，建议使用显式ID语法{{VCPTavern::dailychat::角色名}}为每个角色绑定独立会话ID。
+3. 预设不生效（触发词无响应）——检查触发词拼写是否与预设名完全一致（区分大小写）；检查Plugin/VCPTavern/presets/目录下是否存在对应的JSON配置文件。
+4. TimeSinceLastChat显示不准确——access_logs.json中的记录损坏，可以删除该文件重置所有会话记录（会丢失所有角色的上次见面时间）。
+5. 插件不兼容某些前端——VCPTavern完美兼容VChat和SillyTavern，其他前端可能需要确认消息格式是否符合VCP标准。
+6. 深度注入位置不对——Depth Injection的深度值从0开始计数，0表示最新消息，数值越大表示越早的历史消息，需要根据实际对话长度调整。
+
+可能的解决办法：
+1. 在Web管理面板的VCPTavern插件页面可视化编辑预设，比直接编辑JSON文件更直观。
+2. 使用显式ID语法是解决多角色时间干扰问题的最可靠方法。
+3. 如果需要为同一角色的不同话题维护独立时间线，可以在触发词中加入话题标识：{{VCPTavern::dailychat::角色名_话题}}。
+4. 注入内容支持所有VCP系统变量（{{Date}}、{{Time}}等），可以在注入内容中组合使用多个变量构建丰富的上下文信息。
+5. 如果access_logs.json文件损坏导致插件报错，直接删除该文件，插件会在下次对话时自动重新创建。
+
+关联节点：系统提示词工程示例（VCPTavern在完整提示词中的位置）、通用变量占位符系统（可用变量列表）、VCP指令协议语法（hybridservice插件类型说明）。
+
+信源/出处：Plugin/VCPTavern/plugin-manifest.json，Plugin/VCPTavern/README.md，Plugin/VCPTavern/VCPTavern.js。
+
+Tag: VCPTavern，时间感知，上下文注入，消息预处理，hybridservice，Last User Message，TimeSinceLastChat，双锚点识别，会话记忆，显式ID，预设配置，AI时间观念，时间线收束

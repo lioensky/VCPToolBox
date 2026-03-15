@@ -7,8 +7,28 @@ const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai'; // 新增：用于控制 AI 报告的时间，默认回退到中国时区
-const AGENT_DIR = path.join(__dirname, '..', 'Agent');
-const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
+function resolveAgentDir() {
+    const configPath = process.env.AGENT_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, '..', 'Agent');
+    }
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, '..', normalizedPath);
+}
+const AGENT_DIR = resolveAgentDir();
+function resolveTvsDir() {
+    const configPath = process.env.TVSTXT_DIR_PATH;
+    if (!configPath || typeof configPath !== 'string' || configPath.trim() === '') {
+        return path.join(__dirname, '..', 'TVStxt');
+    }
+    const normalizedPath = path.normalize(configPath.trim());
+    return path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(__dirname, '..', normalizedPath);
+}
+const TVS_DIR = resolveTvsDir();
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
@@ -16,7 +36,10 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     let processedText = String(text);
 
     // 通用正则表达式，匹配所有 {{...}} 格式的占位符
-    const placeholderRegex = /\{\{([a-zA-Z0-9_:]+)\}\}/g;
+    // CJK Radicals Supplement - Ideographic Description Characters 0x2E80 - 0x2FFF
+    // Hiragana - CJK Unified Ideographs 0x3040 - 0x9FFF
+    // 跳过标点符号 CJK Symbols and Punctuation 0x3000 - 0x303F
+    const placeholderRegex = /\{\{([a-zA-Z0-9_:\u2e80-\u2fff\u3040-\u9fff]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
 
     // 提取所有潜在的别名（去除 "agent:" 前缀）

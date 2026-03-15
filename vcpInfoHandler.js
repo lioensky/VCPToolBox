@@ -46,7 +46,7 @@ function extractReadableText(pluginResult) {
         // 2. 其次按优先级查找常见的纯文本结果字段
         if (typeof pluginResult.result === 'string') return pluginResult.result;
         if (typeof pluginResult.message === 'string') return pluginResult.message;
-        
+
         // 3. 特殊处理 SciCalculator 的 original_plugin_output
         if (typeof pluginResult.original_plugin_output === 'string') {
             const match = pluginResult.original_plugin_output.match(/###计算结果：(.*?)###/);
@@ -57,8 +57,8 @@ function extractReadableText(pluginResult) {
                     const correctedJsonStr = match[1].replace(/'/g, '"');
                     const parsed = JSON.parse(correctedJsonStr);
                     if (parsed && parsed.arg) {
-                         // 如果解析成功并且有arg，说明内容复杂，返回原始匹配结果
-                         return match[1];
+                        // 如果解析成功并且有arg，说明内容复杂，返回原始匹配结果
+                        return match[1];
                     }
                 } catch (e) {
                     // 如果解析失败，说明它可能就是个纯粹的数字或字符串
@@ -97,11 +97,7 @@ function formatVcpInfoToText(toolName, status, pluginResult) {
     const readableContent = extractReadableText(pluginResult);
     const statusIcon = status === 'success' ? '✅' : '❌';
 
-    const textBlock = `[[VCP调用结果信息汇总:
-- 工具名称: ${toolName}
-- 执行状态: ${statusIcon} ${status.toUpperCase()}
-- 返回内容: ${readableContent}
-VCP调用结果结束]]`;
+    const textBlock = `[[VCP调用结果信息汇总:\n- 工具名称: ${toolName}\n- 执行状态: ${statusIcon} ${status.toUpperCase()}\n- 返回内容: ${readableContent}\nVCP调用结果结束]]`;
 
     // 在前后添加换行符，使其在聊天流中作为独立的块出现
     return `\n${textBlock}\n`;
@@ -124,7 +120,7 @@ function streamVcpInfo(responseStream, modelName, toolName, status, pluginResult
         // 请求已中止，直接返回空字符串，不执行任何写入操作
         return '';
     }
-    
+
     const formattedText = formatVcpInfoToText(toolName, status, pluginResult);
 
     // If a responseStream is provided and it's writable, send the data as an SSE chunk.
@@ -151,7 +147,7 @@ function streamVcpInfo(responseStream, modelName, toolName, status, pluginResult
             }
         }
     }
-    
+
     // Always return the formatted text so it can be collected in non-streaming mode.
     return formattedText;
 }

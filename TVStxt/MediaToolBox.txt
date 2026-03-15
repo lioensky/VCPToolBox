@@ -1,0 +1,77 @@
+# VCP 多媒体工具箱能力收纳
+这里收纳了各种强大的多媒体生成与控制工具。
+
+## 1. 通义Qwen生图 (ZImageTurboGen)
+国产生图开源模型，性能不错，支持NSFW。每日有100点免费算力额度。
+tool_name:「始」ZImageTurboGen「末」,
+command:「始」GenerateImage「末」,
+prompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。支持文本生成和排版，详细描述生成的文本和样式即可。「末」,
+size:「始」(可选) 图片分辨率，默认 1024x1024。格式为"宽x高"，最大支持2k。「末」,
+negative_prompt:「始」(可选) 模糊, 低质量, 变形，某些不希望出现的物体「末」,
+num_inference_steps:「始」(可选)默认8「末」
+
+## 2. 莱恩家的点歌台 (MusicController)
+用于控制服务器音乐播放。
+tool_name:「始」MusicController「末」,
+command:「始」playSong「末」,
+songname:「始」星の余韻「末」 // 注意观察当前服务器音乐列表是否包含曲目，可用LightMemo检索。
+
+[===vcp_fold:0.6===]
+
+## 3. 豆包生图 (DoubaoGen)
+国产超强文生图工具，支持任意分辨率组合，对文字/字体高度可控。
+tool_name:「始」DoubaoGen「末」,
+command:「始」DoubaoGenerateImage「末」,
+prompt:「始」(必需) 用于图片生成的详细提示词，使用自然语言即可，支持细致的字体特效控制和排版。「末」,
+resolution:「始」(必需) 图片分辨率，建议输入2K或4K，也可以2048x2048此类格式。「末」
+
+### 豆包修图
+command:「始」DoubaoEditImage「末」,
+prompt:「始」(必需) 用于指导图片修改的详细提示词。「末」,
+image:「始」(必需) 图片来源 (URL 或 file:///)。「末」,
+resolution:「始」(必需) 分辨率，总像素不能小于2k。「末」,
+guidance_scale:「始」范围0-10，控制与原图的相似度，值越小越相似。「末」
+
+### 豆包多图合成
+command:「始」DoubaoComposeImage「末」,
+prompt:「始」(必需) 用于指导图片融合或对话的详细提示词。「末」,
+image_1:「始」(必需) 第1张图片来源。「末」,
+image_2:「始」(可选) 第2张图片来源。「末」,
+resolution:「始」(必需) 分辨率，可设为“adaptive”。「末」
+
+## 4. 纳米香蕉 (NanoBananaGen2)
+顶级图像编辑AI，支持极长描述（3万字），支持中英文。
+tool_name:「始」NanoBananaGen2「末」,   
+### 生成图片
+command:「始」generate「末」,
+prompt:「始」(必需) 详细的任务描述。「末」
+### 编辑图片
+command:「始」edit「末」,
+prompt:「始」(必需) 编辑指令。「末」,
+image_url:「始」(必需) 图片URL。「末」
+### 合成图片
+command:「始」compose「末」,
+prompt:「始」(必需) 合成指令。「末」,
+image_url_1:「始」(必需) 第一张URL。「末」
+image_size:「始」(可选) 1K, 2K, 4K。「末」
+
+## 5. Suno 音乐生成 (SunoGen)
+著名的 Suno 音乐生成器。
+tool_name:「始」SunoGen「末」,
+command:「始」generate_song「末」,
+prompt:「始」[Verse 1]...「末」,
+tags:「始」acoustic, pop, happy「末」,
+title:「始」Sunny Days「末」,
+gpt_description_prompt:「始」纯音乐描述「末」
+
+## 6. Grok 视频生成 (GrokVideoGen)
+马斯克出品，极速生成 6 秒视频，包含高质量配音，支持 NSFW。
+tool_name:「始」GrokVideoGen「末」,
+image_url:「始」(必需) 底图链接「末」,
+prompt:「始」(必需) 描述视频内容和配音「末」,
+video_url:「始」(可选) 用于视频续写「末」
+
+### 视频拼接
+command:「始」concat「末」,
+video_url1:「始」[第一个URL]「末」,
+video_url2:「始」[第二个URL]「末」

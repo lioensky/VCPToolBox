@@ -1,0 +1,53 @@
+[package]
+name = "vcp-installer"
+version = "1.0.0"
+edition = "2021"
+authors = ["VCP Community"]
+description = "VCP一键部署工具 - 自动下载运行时、克隆仓库、配置环境"
+license = "CC-BY-NC-SA-4.0"
+
+[dependencies]
+# TUI
+ratatui = "0.28"
+crossterm = "0.28"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# HTTP / download
+reqwest = { version = "0.12", features = ["stream", "json"] }
+
+# Archive
+zip = "2"
+flate2 = "1"
+tar = "0.4"
+sevenz-rust = "0.6"
+
+# System
+which = "6"
+sysinfo = "0.31"
+os_info = "3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# Async utils
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Random
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

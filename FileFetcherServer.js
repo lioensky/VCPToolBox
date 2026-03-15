@@ -199,9 +199,9 @@ async function resolveFileUrl(fileUrl, requestIp) {
                 return cachedUrl;
 
             } catch (fetchError) {
-                console.error(`[FileFetcherServer] Pre-fetch failed for ${fileUrl}: ${fetchError.message}`);
-                // 获取失败的话仍然先抛出错误，终止本次插件调用。这比让插件自己抛出要干净。
-                throw new Error(`[Pre-Fetch Error] 远程文件获取失败: ${fetchError.message}`);
+                console.warn(`[FileFetcherServer] Pre-fetch failed for ${fileUrl}, falling back to original URL: ${fetchError.message}`);
+                // 获取失败不再抛出错误，而是原样返回原始 URL，让插件/工具自行处理
+                return fileUrl;
             }
         }
     }

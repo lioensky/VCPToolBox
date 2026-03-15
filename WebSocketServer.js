@@ -286,6 +286,16 @@ function initialize(httpServer, config) {
                             ws.send(JSON.stringify({ type: 'command_result', data: { requestId: parsedMessage.data.requestId, status: 'error', error: 'No active Chrome browser extension found.' }}));
                         }
                     }
+                } else if (parsedMessage.type === 'tool_approval_response') {
+                    const { requestId, approved } = parsedMessage.data;
+                    if (pluginManager) {
+                        const success = pluginManager.handleApprovalResponse(requestId, approved);
+                        if (serverConfig.debugMode) {
+                            console.log(`[WebSocketServer] Approval response for ${requestId}: ${approved ? 'APPROVED' : 'REJECTED'}. Handled: ${success}`);
+                        }
+                    }
+                } else if (ws.clientType === 'AdminPanel') {
+                    // 保持原有的 AdminPanel 逻辑，如果将来有其他 AdminPanel 专用消息
                 } else {
                     // 未来处理其他客户端类型的消息
                 }
@@ -538,6 +548,7 @@ function broadcastToAdminPanel(data) {
             clientWs.send(messageString);
         }
     });
+    console.log(`[WebSocketServer] Broadcasted to ${adminPanelClients.size} Admin Panel clients.`);
     if (serverConfig.debugMode) {
         writeLog(`Broadcasted to Admin Panel: ${messageString.substring(0, 200)}...`);
     }

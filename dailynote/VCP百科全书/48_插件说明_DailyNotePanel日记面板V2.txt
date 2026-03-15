@@ -1,0 +1,28 @@
+今日学习了VCPToolBox新增的DailyNotePanel插件，这是一个服务型（service）路由胶水插件，为VCP管理面板集成了全新的日记本管理界面。
+
+核心概念：DailyNotePanelRouter（日记面板路由胶水插件）通过PluginManager在主服务上注册DailyNotePanel的静态页面端点和dailynote API端点，为用户提供一个图形化的日记本管理界面，可以直接在浏览器中浏览、编辑和管理所有日记本内容。
+
+插件基本信息：插件名称DailyNotePanelRouter，版本1.0.1，类型service服务型插件，入口文件index.js（Node.js，直接调用协议）。这是一个后台服务插件，不提供AI工具调用接口，而是为AdminPanel管理面板提供前端页面路由。
+
+简明释义：以前管理日记内容需要直接操作文件系统或通过AI工具调用。DailyNotePanel提供了一个Web界面，用户可以在浏览器中像使用笔记应用一样浏览和编辑日记本的内容，支持Markdown格式预览、文件夹导航等功能。它作为AdminPanel的子页面嵌入，通过路由胶水插件与VCP主服务集成。
+
+配置项说明：DebugMode布尔值控制调试日志输出；PanelPathPrefix控制面板页面的URL前缀（默认/AdminPanel/DailyNotePanel）；ApiPathPrefix控制后端API的URL前缀（默认/AdminPanel/dailynote_api）。
+
+使用方法：插件加载后，在浏览器中访问VCP服务器地址加上面板路径前缀即可打开日记面板界面。例如如果VCP运行在localhost:5000，则访问http://localhost:5000/AdminPanel/DailyNotePanel。面板界面中可以浏览dailynote目录下的所有子文件夹（日记本），点击进入查看日记切片列表，支持在线编辑和预览。
+
+可能遇到的问题：
+1. 访问面板路径返回404——插件未正确加载，检查Plugin/DailyNotePanel/目录下的plugin-manifest.json是否存在（非.block后缀）。
+2. 面板页面空白或加载失败——静态资源路由未正确注册，查看VCP启动日志中是否有DailyNotePanelRouter的加载确认信息。
+3. API请求被拒绝——未通过AdminPanel的登录认证，DailyNotePanel的API共享AdminPanel的认证机制，需要先登录管理面板。
+4. 编辑保存失败——目标日记文件权限问题（特别是Docker环境下），确认dailynote目录的读写权限。
+
+可能的解决办法：
+1. 在AdminPanel首页的插件列表中确认DailyNotePanelRouter显示为已加载状态。
+2. 如果需要修改面板路径前缀，编辑Plugin/DailyNotePanel/config.env中的PanelPathPrefix和ApiPathPrefix值。
+3. Docker环境下如果遇到权限问题，确认docker-compose.yml中dailynote目录的bind mount配置正确。
+
+关联节点：AdminPanel管理面板（父级界面）、dailynote目录（数据源）、日记系统使用规范（日记本的数据格式）、service服务型插件（插件类型说明）。
+
+信源/出处：Plugin/DailyNotePanel/plugin-manifest.json，Plugin/DailyNotePanel/index.js。
+
+Tag: DailyNotePanel，日记面板，管理界面，AdminPanel，路由胶水，service插件，日记本管理，Web界面，在线编辑

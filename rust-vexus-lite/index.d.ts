@@ -32,6 +32,12 @@ export interface ProjectResult {
   entropy: number
   totalEnergy: number
 }
+export interface IntrinsicResidualResult {
+  tagCount: number
+  computedCount: number
+  skippedCount: number
+  elapsedMs: number
+}
 /** 统计信息 */
 export interface VexusStats {
   totalVectors: number
@@ -75,4 +81,6 @@ export declare class VexusIndex {
   computeHandshakes(query: Buffer, flattenedTags: Buffer, nTags: number): HandshakeResult
   /** 高性能 EPA 投影 */
   project(vector: Buffer, flattenedBasis: Buffer, meanVector: Buffer, k: number): ProjectResult
+  /** 预计算任务：矩阵内生残差 (TagMemo V7) */
+  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
 }
