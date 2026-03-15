@@ -855,13 +855,16 @@ async function readPost(args) {
     });
   }
 
-  // 处理视频
+  // 处理视频（与图片相同方式，完整base64传入模型）
   const videosToProcess = allVideoUrls.slice(0, MAX_VIDEOS);
   for (const vidUrl of videosToProcess) {
     try {
       const result = await downloadMediaToBase64(vidUrl, 'video');
       if (result.success && result.dataUrl) {
-        contentParts.push({ type: 'text', text: `\n🎬 [视频已下载压缩转base64，大小: ${Math.round(result.dataUrl.length / 1024)}KB]\ndata URL: ${result.dataUrl.substring(0, 80)}...` });
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: result.dataUrl }
+        });
       } else {
         contentParts.push({ type: 'text', text: `[视频下载失败: ${vidUrl} - ${result.error || '未知错误'}]` });
       }
@@ -873,13 +876,16 @@ async function readPost(args) {
     contentParts.push({ type: 'text', text: `\n[注意: 帖子共含${allVideoUrls.length}个视频，仅处理前${MAX_VIDEOS}个]` });
   }
 
-  // 处理音频
+  // 处理音频（与图片相同方式，完整base64传入模型）
   const audiosToProcess = allAudioUrls.slice(0, MAX_AUDIOS);
   for (const audUrl of audiosToProcess) {
     try {
       const result = await downloadMediaToBase64(audUrl, 'audio');
       if (result.success && result.dataUrl) {
-        contentParts.push({ type: 'text', text: `\n🎵 [音频已下载压缩转base64，大小: ${Math.round(result.dataUrl.length / 1024)}KB]\ndata URL: ${result.dataUrl.substring(0, 80)}...` });
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: result.dataUrl }
+        });
       } else {
         contentParts.push({ type: 'text', text: `[音频下载失败: ${audUrl} - ${result.error || '未知错误'}]` });
       }
