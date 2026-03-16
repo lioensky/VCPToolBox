@@ -6,6 +6,7 @@ import { initializeDashboard, stopDashboardUpdates } from './js/dashboard.js';
 import { initializeDailyNotesManager } from './js/notes-manager.js';
 import { initializeAgentManager } from './js/agent-manager.js';
 import { initializeAgentAssistantConfig } from './js/agent-assistant-config.js';
+import { initializeToolboxManager } from './js/toolbox-manager.js';
 import { initializeTvsFilesEditor } from './js/tvs-editor.js';
 import { initializeServerLogViewer, stopServerLogUpdates } from './js/log-viewer.js';
 import { initializePreprocessorOrderManager } from './js/preprocessor-manager.js';
@@ -130,6 +131,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         break;
                     case 'agent-scores-section':
                         initializeAgentScores();
+                        break;
+                    case 'toolbox-manager-section':
+                        initializeToolboxManager();
                         break;
                     case 'tvs-files-editor-section':
                         initializeTvsFilesEditor();
