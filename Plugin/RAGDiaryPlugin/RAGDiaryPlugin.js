@@ -2152,10 +2152,10 @@ class RAGDiaryPlugin {
         const rrfAlpha = useRerankPlus ? (rerankPlusMatch[1] ? Math.min(1.0, Math.max(0.0, parseFloat(rerankPlusMatch[1]))) : 0.5) : null;
         const useRerank = modifiers.includes('::Rerank'); // 匹配 ::Rerank 和 ::Rerank+
 
-        // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]|[minScore]|[whitelistTags]
-        // 示例：::TimeDecay30|0.5|Wiki,技巧
-        // 注：此格式可能存在问题，须进一步观察影响
-        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\|(\d+\.?\d*))?(?:\|([\w,]+))?/);
+        // ✅ 解析 TimeDecay 参数：::TimeDecay[halfLife]/[minScore]/[whitelistTags]
+        // 示例：::TimeDecay30/0.5/box归档
+        // 统一使用 / 分隔符
+        const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([\w,]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
         // ✅ 新增：解析TagMemo修饰符和权重
@@ -2403,7 +2403,7 @@ class RAGDiaryPlugin {
 
             // 🌟 V5.2: 时间衰减重排 (Time Decay Reranking)
             if (useTimeDecay && finalResultsForBroadcast.length > 0) {
-                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]|[minScore]|[targetTags]
+                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]/[minScore]/[targetTags]
                 const localHalfLife = timeDecayMatch[1] ? parseInt(timeDecayMatch[1]) : null;
                 const localMinScore = timeDecayMatch[2] ? parseFloat(timeDecayMatch[2]) : null;
                 const localTargets = timeDecayMatch[3] ? timeDecayMatch[3].split(',') : [];
@@ -2416,6 +2416,7 @@ class RAGDiaryPlugin {
 
                 console.log(`[RAGDiaryPlugin] ⏳ Applying Time Decay (Half-life: ${halfLife} days, MinScore: ${minScore}, Targets: ${localTargets.length > 0 ? localTargets.join(',') : 'ALL'})...`);
 
+                let decayCount = 0;
                 finalResultsForBroadcast = finalResultsForBroadcast.map(result => {
                     // 0. 检查精准打击目标：如果指定了目标标签，则只有包含目标标签的条目才执行衰减
                     if (localTargets.length > 0) {
@@ -2439,17 +2440,24 @@ class RAGDiaryPlugin {
                         }
                     }
 
-                    // 1. 尝试从文本中提取日期 [YYYY-MM-DD]
+                    // 1. 优化日期提取逻辑：支持多种格式 [YYYY-MM-DD], YYYY.MM.DD, YYYY-MM-DD
                     let dateStr = null;
-                    const textDateMatch = result.text.match(/\[(\d{4}-\d{2}-\d{2})\]/);
+                    // 优先匹配 [YYYY-MM-DD] 或 [YYYY.MM.DD]
+                    const textDateMatch = result.text.match(/\[(\d{4}[-./]\d{2}[-./]\d{2})\]/);
                     if (textDateMatch) {
-                        dateStr = textDateMatch[1];
+                        dateStr = textDateMatch[1].replace(/[./]/g, '-');
                     } else {
-                        // 2. 回退：尝试从文件名或路径中提取日期
-                        const pathSource = result.sourceFile || result.fullPath || '';
-                        const pathDateMatch = pathSource.match(/(\d{4}[-.]\d{2}[-.]\d{2})/);
-                        if (pathDateMatch) {
-                            dateStr = pathDateMatch[1].replace(/\./g, '-');
+                        // 尝试匹配开头的日期行
+                        const firstLineMatch = result.text.split('\n')[0].match(/^\[?(\d{4}[-./]\d{2}[-./]\d{2})\]?/);
+                        if (firstLineMatch) {
+                            dateStr = firstLineMatch[1].replace(/[./]/g, '-');
+                        } else {
+                            // 2. 回退：尝试从文件名或路径中提取日期
+                            const pathSource = result.sourceFile || result.fullPath || '';
+                            const pathDateMatch = pathSource.match(/(\d{4}[-.]\d{2}[-.]\d{2})/);
+                            if (pathDateMatch) {
+                                dateStr = pathDateMatch[1].replace(/\./g, '-');
+                            }
                         }
                     }
 
@@ -2464,6 +2472,12 @@ class RAGDiaryPlugin {
                     const originalScore = result.rerank_score ?? result.score ?? 0;
                     const newScore = originalScore * decayFactor;
 
+                    decayCount++;
+                    // 记录详细衰减日志（仅针对前几个结果或显著衰减）
+                    if (decayCount <= 5) {
+                        console.log(`[RAGDiaryPlugin][Decay] Date: ${dateStr}, Age: ${diffDays}d, Factor: ${decayFactor.toFixed(4)}, Score: ${originalScore.toFixed(4)} -> ${newScore.toFixed(4)}`);
+                    }
+
                     return {
                         ...result,
                         score: newScore,
@@ -2472,6 +2486,7 @@ class RAGDiaryPlugin {
                         diff_days: diffDays
                     };
                 });
+                console.log(`[RAGDiaryPlugin] ⏳ Time Decay applied to ${decayCount} items.`);
 
                 // 重新按衰减后的分数排序
                 finalResultsForBroadcast.sort((a, b) => (b.score || 0) - (a.score || 0));

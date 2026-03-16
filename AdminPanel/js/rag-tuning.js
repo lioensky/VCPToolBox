@@ -32,7 +32,7 @@ const PARAM_METADATA = {
         "timeDecay": {
             "name": "时间衰减控制",
             "meaning": "实现“近因效应”，让越久的记忆权重衰减越快。",
-            "logic": "halfLifeDays (半衰期)：记忆分数减半的天数。支持精准衰减：::TimeDecay[天数]:[最小分数]:[目标Tags]，仅包含目标标签的内容（如Box）才会衰减，其余（如Wiki）保持原分。",
+            "logic": "halfLifeDays (半衰期)：记忆分数减半的天数。支持精准衰减：::TimeDecay[天数]/[最小分数]/[目标Tags]，仅包含目标标签的内容（如Box）才会衰减，其余（如Wiki）保持原分。",
             "range": "建议区间: 半衰期 15~90 天；最小分数 0.5。此处仅作为全局回退值。"
         },
         "mainSearchWeights": {
