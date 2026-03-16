@@ -1090,9 +1090,17 @@ class RAGDiaryPlugin {
                 ? `[AI]: ${aiContent}\n[User]: ${userContent}`
                 : userContent;
 
-            console.log(`[RAGDiaryPlugin] 🌟 原子级复刻 LightMemo 流程：对完整上下文进行统一向量化...`);
-            // ✅ 关键修复：不再分开向量化再平均，而是直接对合并后的上下文进行向量化，确保语义重心与 LightMemo 完全一致
-            const queryVector = await this.getSingleEmbeddingCached(combinedQueryForDisplay);
+            console.log(`[RAGDiaryPlugin] 🌟 恢复加权平均向量逻辑：分别向量化用户和AI意图...`);
+            // 🌟 恢复加权平均逻辑，并支持从 rag_params 动态读取权重
+            const config = this.ragParams?.RAGDiaryPlugin || {};
+            const mainWeights = config.mainSearchWeights || [0.7, 0.3]; // 默认 用户0.7 : AI 0.3
+
+            const [userVector, aiVector] = await Promise.all([
+                userContent ? this.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
+                aiContent ? this.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+            ]);
+
+            const queryVector = this._getWeightedAverageVector([userVector, aiVector], mainWeights);
 
             if (!queryVector) {
                 // 检查是否是系统提示导致的空内容（这是正常情况）
@@ -2054,10 +2062,11 @@ class RAGDiaryPlugin {
             sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent) : null
         ]);
 
-        // 3. 按 0.5:0.35:0.15 权重合并向量
+        // 3. 按动态权重合并向量
+        const config = this.ragParams?.RAGDiaryPlugin || {};
+        const weights = config.refreshWeights || [0.5, 0.35, 0.15];
         const vectors = [userVector, aiVector, toolVector];
-        const weights = [0.5, 0.35, 0.15];
-        console.log('[VCP Refresh] 合并用户、AI意图和工具结果向量 (权重 0.5 : 0.35 : 0.15)');
+        console.log(`[VCP Refresh] 合并用户、AI意图和工具结果向量 (权重 ${weights.join(' : ')})`);
         const queryVector = this._getWeightedAverageVector(vectors, weights);
 
         if (!queryVector) {

@@ -149,12 +149,16 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             }
         }
 
-        const combinedQueryForDisplay = aiContent
-            ? `[AI]: ${aiContent}\n[User]: ${userContent}`
-            : userContent;
+        // 🌟 对齐 RAGDiaryPlugin 的加权平均逻辑以命中缓存
+        const config = ragPlugin.ragParams?.RAGDiaryPlugin || {};
+        const mainWeights = config.mainSearchWeights || [0.7, 0.3];
 
-        // 获取当前会话上下文向量 (此时将完美命中 RAGDiaryPlugin 的 embeddingCache)
-        const userVector = await ragPlugin.getSingleEmbeddingCached(combinedQueryForDisplay);
+        const [uVec, aVec] = await Promise.all([
+            userContent ? ragPlugin.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
+            aiContent ? ragPlugin.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+        ]);
+
+        const userVector = ragPlugin._getWeightedAverageVector([uVec, aVec], mainWeights);
         if (!userVector) {
             if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取用户上下文向量失败，返回基础内容 (${placeholderKey})`);
             return fallbackBlock.content;

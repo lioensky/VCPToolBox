@@ -270,9 +270,12 @@ class MetaThinkingManager {
 
                     if (resultVectors.length > 0) {
                         const avgResultVector = this._getAverageVector(resultVectors);
+                        const config = this.ragPlugin.ragParams?.RAGDiaryPlugin || {};
+                        const metaWeights = config.metaThinkingWeights || [0.8, 0.2];
+                        
                         currentQueryVector = this.ragPlugin._getWeightedAverageVector(
                             [queryVector, avgResultVector],
-                            [0.8, 0.2]
+                            metaWeights
                         );
                     } else {
                         console.warn(`[MetaThinkingManager] 无法获取结果向量，中断递归`);
