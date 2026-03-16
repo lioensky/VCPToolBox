@@ -965,6 +965,7 @@ body {
     font-weight: 800;
     letter-spacing: -0.02em;
     background: linear-gradient(135deg, var(--primary-text) 0%, var(--highlight-text) 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
@@ -1421,7 +1422,9 @@ button[type="submit"]:hover {
 .message-popup.error { background-color: var(--danger-color); color: white; }
 
 /* Styles for Agent and TVS file editors to ensure textarea fills space */
-#agent-files-editor-section.active-section, #tvs-files-editor-section.active-section {
+#agent-files-editor-section.active-section,
+#tvs-files-editor-section.active-section,
+#toolbox-manager-section.active-section {
     display: flex;
     flex-direction: column;
     height: 100%; /* Make section take full height */
@@ -1432,7 +1435,9 @@ button[type="submit"]:hover {
     margin-bottom: 15px;
 }
 
-#agent-file-content-editor, #tvs-file-content-editor {
+#agent-file-content-editor,
+#tvs-file-content-editor,
+#toolbox-file-content-editor {
     flex-grow: 1; /* Allow textarea to grow and fill available space */
     width: 100%;
     min-height: 400px; /* Set a reasonable minimum height */
@@ -1475,7 +1480,8 @@ button[type="submit"]:hover {
 /* --- Styles for Main Editor Textareas --- */
 #note-content-editor,
 #agent-file-content-editor,
-#tvs-file-content-editor {
+#tvs-file-content-editor,
+#toolbox-file-content-editor {
     background-color: var(--input-bg);
     color: var(--primary-text);
     border: 1px solid var(--border-color);
@@ -1490,7 +1496,8 @@ button[type="submit"]:hover {
 
 #note-content-editor:focus,
 #agent-file-content-editor:focus,
-#tvs-file-content-editor:focus {
+#tvs-file-content-editor:focus,
+#toolbox-file-content-editor:focus {
     outline: none;
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
@@ -1849,7 +1856,8 @@ html[data-theme='light'] .delete-group-btn {
     flex-shrink: 0;
 }
 
-#agent-map-list {
+#agent-map-list,
+#toolbox-map-list {
     overflow-y: auto;
     padding-right: 10px; /* For scrollbar */
     display: flex;
@@ -1857,9 +1865,10 @@ html[data-theme='light'] .delete-group-btn {
     gap: 15px;
 }
 
-.agent-map-entry {
+.agent-map-entry,
+.toolbox-map-entry {
     display: grid;
-    grid-template-columns: 1fr auto 1fr auto auto;
+    grid-template-columns: 1fr 1fr 1.5fr auto auto;
     gap: 12px;
     align-items: center;
     padding: 18px;
@@ -1868,12 +1877,14 @@ html[data-theme='light'] .delete-group-btn {
     border: 1px solid var(--border-color);
     transition: all 0.2s ease;
 }
-.agent-map-entry:hover {
+.agent-map-entry:hover,
+.toolbox-map-entry:hover {
     border-color: var(--highlight-text);
     transform: scale(1.01);
 }
 
-.agent-name-input, .agent-file-select {
+.agent-name-input, .agent-file-select,
+.toolbox-alias-input, .toolbox-file-select, .toolbox-description-input {
     padding: 8px 12px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -1882,33 +1893,39 @@ html[data-theme='light'] .delete-group-btn {
     font-size: 0.9em;
 }
 
-.agent-name-input:focus, .agent-file-select:focus {
+.agent-name-input:focus, .agent-file-select:focus,
+.toolbox-alias-input:focus, .toolbox-file-select:focus, .toolbox-description-input:focus {
     outline: none;
     border-color: var(--highlight-text);
 }
 
-.edit-agent-file-btn, .delete-agent-map-btn {
+.edit-agent-file-btn, .delete-agent-map-btn,
+.edit-toolbox-file-btn, .delete-toolbox-map-btn {
     padding: 8px 12px;
     font-size: 0.85em;
 }
 
-.delete-agent-map-btn {
+.delete-agent-map-btn, .delete-toolbox-map-btn {
     background-color: var(--danger-color);
     color: white;
 }
-html[data-theme='light'] .delete-agent-map-btn {
+html[data-theme='light'] .delete-agent-map-btn,
+html[data-theme='light'] .delete-toolbox-map-btn {
     color: white;
 }
-.delete-agent-map-btn:hover {
+.delete-agent-map-btn:hover,
+.delete-toolbox-map-btn:hover {
     background-color: var(--danger-hover-bg);
 }
 
-#editing-agent-file-display {
+#editing-agent-file-display,
+#editing-toolbox-file-display {
     font-weight: 600;
     color: var(--secondary-text);
 }
 
-.agent-file-editor #agent-file-content-editor {
+.agent-file-editor #agent-file-content-editor,
+.agent-file-editor #toolbox-file-content-editor {
     flex-grow: 1;
     resize: none; /* Disable manual resize in this layout */
 }
@@ -3175,6 +3192,7 @@ html[data-theme='light'] .delete-theme-btn {
         white-space: normal;
         overflow: visible;
         text-overflow: unset;
+        line-clamp: 3;
         -webkit-line-clamp: 3;
         display: -webkit-box;
         -webkit-box-orient: vertical;

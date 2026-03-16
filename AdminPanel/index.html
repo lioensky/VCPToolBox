@@ -444,6 +444,8 @@
                                 class="material-symbols-outlined">casino</span>VCPTavern预设编辑</a></li>
                     <li><a href="#" data-target="agent-files-editor"><span
                                 class="material-symbols-outlined">smart_toy</span>Agent管理器</a></li>
+                    <li><a href="#" data-target="toolbox-manager"><span
+                                class="material-symbols-outlined">inventory_2</span>Toolbox管理器</a></li>
                     <li><a href="#" data-target="agent-assistant-config"><span
                                 class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
                     <li><a href="#" data-target="agent-scores"><span
@@ -695,6 +697,35 @@
                         </div>
                         <textarea id="agent-file-content-editor" spellcheck="false"
                             placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt 文件..."></textarea>
+                    </div>
+                </div>
+            </section>
+
+            <section id="toolbox-manager-section" class="config-section">
+                <h2>Toolbox 管理器</h2>
+                <p class="description">维护 toolbox_map.json（alias→file+description），并编辑 TVStxt 下映射文件内容。</p>
+                <div class="agent-manager-container">
+                    <div class="agent-map-editor">
+                        <h3>Toolbox 映射表</h3>
+                        <div class="agent-map-controls">
+                            <button id="add-toolbox-map-entry-button">添加新 Toolbox</button>
+                            <button id="create-toolbox-file-button">新建 Toolbox 文件</button>
+                            <button id="save-toolbox-map-button">保存 Toolbox 映射表</button>
+                            <span id="toolbox-map-status" class="status-message"></span>
+                        </div>
+                        <div id="toolbox-map-list">
+                            <!-- Toolbox map entries will be dynamically loaded here -->
+                        </div>
+                    </div>
+                    <div class="agent-file-editor">
+                        <h3>Toolbox 文件内容 (.txt/.md)</h3>
+                        <div class="agent-editor-controls">
+                            <span id="editing-toolbox-file-display">未选择文件</span>
+                            <button id="save-toolbox-file-button" disabled>保存文件</button>
+                            <span id="toolbox-file-status" class="status-message"></span>
+                        </div>
+                        <textarea id="toolbox-file-content-editor" spellcheck="false"
+                            placeholder="从左侧选择一个 Toolbox 以编辑其关联文件..."></textarea>
                     </div>
                 </div>
             </section>

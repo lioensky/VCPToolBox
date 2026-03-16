@@ -1,0 +1,11 @@
+{
+  "VCPFileToolBox": {
+    "file": "FileToolBox.txt",
+    "description": "文件/命令行/数据库/编程开发相关工具集合，根据上下文动态展开。"
+  },
+  "VCPMemoToolBox": {
+    "file": "MemoToolBox.txt",
+    "description": "记忆与回忆检索相关工具集合。"
+  },
+  "VCPSearchToolBox": "SearchToolBox.txt"
+}
