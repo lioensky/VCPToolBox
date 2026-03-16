@@ -106,6 +106,7 @@ async function ensureTvsDirectory() {
 const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
+const toolboxManager = require('./modules/toolboxManager.js');
 const messageProcessor = require('./modules/messageProcessor.js');
 const knowledgeBaseManager = require('./KnowledgeBaseManager.js'); // 新增：引入统一知识库管理器
 const pluginManager = require('./Plugin.js');
@@ -1264,6 +1265,11 @@ async function startServer() {
     tvsManager.setTvsDir(TVS_DIR);
     tvsManager.initialize(DEBUG_MODE);
     console.log('TVS管理器初始化完成。');
+
+    console.log('正在初始化Toolbox管理器...');
+    toolboxManager.setTvsDir(TVS_DIR);
+    await toolboxManager.initialize(DEBUG_MODE);
+    console.log('Toolbox管理器初始化完成。');
 
     // 🌟 关键修复：在监听端口前完成所有初始化
     await initialize(); // This loads plugins and initializes services

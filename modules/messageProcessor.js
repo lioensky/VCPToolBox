@@ -4,6 +4,7 @@ const path = require('path');
 const lunarCalendar = require('chinese-lunar-calendar');
 const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
 const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
+const toolboxManager = require('./toolboxManager.js');
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const REPORT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Shanghai'; // 新增：用于控制 AI 报告的时间，默认回退到中国时区
@@ -42,8 +43,8 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     const placeholderRegex = /\{\{([a-zA-Z0-9_:\u2e80-\u2fff\u3040-\u9fff]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
 
-    // 提取所有潜在的别名（去除 "agent:" 前缀）
-    const allAliases = new Set(matches.map(match => match[1].replace(/^agent:/, '')));
+    // 提取所有潜在的别名（去除 "agent:" / "toolbox:" 前缀）
+    const allAliases = new Set(matches.map(match => match[1].replace(/^(agent:|toolbox:)/, '')));
 
     for (const alias of allAliases) {
         // 关键：使用 agentManager 来判断这是否是一个真正的Agent
@@ -67,7 +68,34 @@ async function resolveAllVariables(text, model, role, context, processingStack =
         }
     }
 
-    // 在所有Agent都被递归展开后，处理剩余的非Agent占位符
+    // 在所有Agent都被递归展开后，处理 toolbox 占位符
+    for (const alias of allAliases) {
+        if (toolboxManager.isToolbox(alias)) {
+            const stackKey = `toolbox:${alias}`;
+            if (processingStack.has(stackKey)) {
+                const errorMessage = `[Error: Circular toolbox reference detected for '${alias}']`;
+                processedText = processedText
+                    .replaceAll(`{{${alias}}}`, errorMessage)
+                    .replaceAll(`{{toolbox:${alias}}}`, errorMessage);
+                continue;
+            }
+
+            processingStack.add(stackKey);
+            const foldObj = await toolboxManager.getFoldObject(alias);
+            const expandedText = await resolveDynamicFoldProtocol(
+                foldObj,
+                context,
+                `{{${alias}}}`
+            );
+            processingStack.delete(stackKey);
+
+            processedText = processedText
+                .replaceAll(`{{${alias}}}`, expandedText)
+                .replaceAll(`{{toolbox:${alias}}}`, expandedText);
+        }
+    }
+
+    // 处理剩余的非Agent占位符
     processedText = await replacePriorityVariables(processedText, context, role);
     processedText = await replaceOtherVariables(processedText, model, role, context);
 
