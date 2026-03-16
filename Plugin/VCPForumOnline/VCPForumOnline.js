@@ -303,9 +303,8 @@ function downloadMediaToBase64(mediaUrl, mediaType) {
       const isHttps = parsed.protocol === 'https:';
       const targetPort = parseInt(parsed.port) || (isHttps ? 443 : 80);
 
-      const mediaTempDir = path.join(__dirname, '..', '..', 'file', 'imagetemp');
-      if (!fs.existsSync(mediaTempDir)) {
-        fs.mkdirSync(mediaTempDir, { recursive: true });
+      if (!fs.existsSync(DOWNLOAD_TEMP_DIR)) {
+        fs.mkdirSync(DOWNLOAD_TEMP_DIR, { recursive: true });
       }
 
       let rawFileName = path.basename(parsed.pathname) || (mediaType === 'video' ? 'media.mp4' : 'media.mp3');
@@ -314,7 +313,7 @@ function downloadMediaToBase64(mediaUrl, mediaType) {
       const baseName = path.basename(rawFileName, extName);
       const uniqueSuffix = `_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const fileName = `${baseName}${uniqueSuffix}${extName}`;
-      const localFilePath = path.join(mediaTempDir, fileName);
+      const localFilePath = path.join(DOWNLOAD_TEMP_DIR, fileName);
 
       function handleResponse(res) {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -348,7 +347,7 @@ function downloadMediaToBase64(mediaUrl, mediaType) {
 
               if (hasFFmpeg) {
                 const compExt = mediaType === 'video' ? '.mp4' : '.mp3';
-                const compressedPath = path.join(mediaTempDir, baseName + uniqueSuffix + '_compressed' + compExt);
+                const compressedPath = path.join(DOWNLOAD_TEMP_DIR, baseName + uniqueSuffix + '_compressed' + compExt);
                 let success = false;
                 if (mediaType === 'video') {
                   success = compressVideoWithFFmpeg(localFilePath, compressedPath, MAX_MEDIA_SIZE);
@@ -365,8 +364,8 @@ function downloadMediaToBase64(mediaUrl, mediaType) {
 
             const base64 = finalBuffer.toString('base64');
             const dataUrl = `data:${mimeType};base64,${base64}`;
-            // 清理原始下载文件
-            try { fs.unlinkSync(localFilePath); } catch (e) {}
+            // 按配置决定是否清理原始下载文件
+            scheduleCleanup(localFilePath, mediaType);
             resolve({ success: true, dataUrl });
           } catch (e) {
             resolve({ success: false, error: `处理媒体失败: ${e.message}` });
@@ -414,10 +413,9 @@ function downloadImageToBase64(imageUrl) {
       const isHttps = parsed.protocol === 'https:';
       const targetPort = parseInt(parsed.port) || (isHttps ? 443 : 80);
 
-      // 确保 file/imagetemp 目录存在
-      const imageTempDir = path.join(__dirname, '..', '..', 'file', 'imagetemp');
-      if (!fs.existsSync(imageTempDir)) {
-        fs.mkdirSync(imageTempDir, { recursive: true });
+      // 确保下载临时目录存在
+      if (!fs.existsSync(DOWNLOAD_TEMP_DIR)) {
+        fs.mkdirSync(DOWNLOAD_TEMP_DIR, { recursive: true });
       }
 
       // 从URL中提取文件名，添加唯一后缀防止同名覆盖
@@ -430,7 +428,7 @@ function downloadImageToBase64(imageUrl) {
       // 用时间戳+4位随机数确保唯一性
       const uniqueSuffix = `_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const fileName = `${baseName}${uniqueSuffix}${extName}`;
-      const localFilePath = path.join(imageTempDir, fileName);
+      const localFilePath = path.join(DOWNLOAD_TEMP_DIR, fileName);
 
       function handleResponse(res) {
         // 处理重定向
@@ -475,6 +473,8 @@ function downloadImageToBase64(imageUrl) {
             const base64 = finalBuffer.toString('base64');
             const dataUrl = `data:${mimeType};base64,${base64}`;
 
+            // 按配置决定是否清理下载的图片文件
+            scheduleCleanup(localFilePath, 'image');
             resolve({ success: true, dataUrl, savedPath: localFilePath });
           } catch (e) {
             resolve({ success: false, error: `处理图片失败: ${e.message}` });
@@ -563,6 +563,8 @@ function loadConfig() {
   let apiUrl = process.env.FORUM_API_URL || '';
   let apiKey = process.env.FORUM_API_KEY || '';
   let proxyUrl = process.env.FORUM_PROXY || '';
+  let keepMediaTypes = process.env.KEEP_MEDIA_TYPES || '';
+  let cleanupDelay = process.env.CLEANUP_DELAY_SECONDS || '';
 
   // 如果环境变量未注入，尝试自行读取 config.env
   if (!apiUrl || !apiKey) {
@@ -579,16 +581,25 @@ function loadConfig() {
         if (key === 'FORUM_API_URL' && !apiUrl) apiUrl = val;
         if (key === 'FORUM_API_KEY' && !apiKey) apiKey = val;
         if (key === 'FORUM_PROXY' && !proxyUrl) proxyUrl = val;
+        if (key === 'KEEP_MEDIA_TYPES' && !keepMediaTypes) keepMediaTypes = val;
+        if (key === 'CLEANUP_DELAY_SECONDS' && !cleanupDelay) cleanupDelay = val;
       });
     } catch (e) {
       // config.env 不存在，忽略
     }
   }
 
+  // 解析保留的媒体类型为Set
+  const keepTypes = new Set(
+    keepMediaTypes.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+  );
+
   return {
     apiUrl: apiUrl.replace(/\/+$/, ''),
     apiKey,
-    proxyUrl
+    proxyUrl,
+    keepMediaTypes: keepTypes, // Set<string>: 'image', 'video', 'audio'
+    cleanupDelaySeconds: parseInt(cleanupDelay) || 30
   };
 }
 
@@ -596,6 +607,27 @@ const config = loadConfig();
 const FORUM_API_URL = config.apiUrl;
 const FORUM_API_KEY = config.apiKey;
 const FORUM_PROXY = config.proxyUrl; // 例如 http://127.0.0.1:7897
+const KEEP_MEDIA_TYPES = config.keepMediaTypes; // Set: 哪些类型保留不清理
+const CLEANUP_DELAY_SECONDS = config.cleanupDelaySeconds; // 不保留的文件延迟清理秒数
+
+// 下载临时目录统一为 file/VCPForumOnlineTemp/
+const DOWNLOAD_TEMP_DIR = path.join(__dirname, '..', '..', 'file', 'VCPForumOnlineTemp');
+
+/**
+ * 根据配置决定是否清理下载的临时文件
+ * @param {string} filePath - 文件路径
+ * @param {string} mediaType - 'image' | 'video' | 'audio'
+ */
+function scheduleCleanup(filePath, mediaType) {
+  if (KEEP_MEDIA_TYPES.has(mediaType)) {
+    // 配置为保留，不清理
+    return;
+  }
+  // 延迟清理
+  setTimeout(() => {
+    try { fs.unlinkSync(filePath); } catch (e) {}
+  }, CLEANUP_DELAY_SECONDS * 1000);
+}
 
 /**
  * 通用HTTP请求封装（零依赖，支持HTTP代理CONNECT隧道）
@@ -855,13 +887,16 @@ async function readPost(args) {
     });
   }
 
-  // 处理视频
+  // 处理视频（与图片相同方式，完整base64传入模型）
   const videosToProcess = allVideoUrls.slice(0, MAX_VIDEOS);
   for (const vidUrl of videosToProcess) {
     try {
       const result = await downloadMediaToBase64(vidUrl, 'video');
       if (result.success && result.dataUrl) {
-        contentParts.push({ type: 'text', text: `\n🎬 [视频已下载压缩转base64，大小: ${Math.round(result.dataUrl.length / 1024)}KB]\ndata URL: ${result.dataUrl.substring(0, 80)}...` });
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: result.dataUrl }
+        });
       } else {
         contentParts.push({ type: 'text', text: `[视频下载失败: ${vidUrl} - ${result.error || '未知错误'}]` });
       }
@@ -873,13 +908,16 @@ async function readPost(args) {
     contentParts.push({ type: 'text', text: `\n[注意: 帖子共含${allVideoUrls.length}个视频，仅处理前${MAX_VIDEOS}个]` });
   }
 
-  // 处理音频
+  // 处理音频（与图片相同方式，完整base64传入模型）
   const audiosToProcess = allAudioUrls.slice(0, MAX_AUDIOS);
   for (const audUrl of audiosToProcess) {
     try {
       const result = await downloadMediaToBase64(audUrl, 'audio');
       if (result.success && result.dataUrl) {
-        contentParts.push({ type: 'text', text: `\n🎵 [音频已下载压缩转base64，大小: ${Math.round(result.dataUrl.length / 1024)}KB]\ndata URL: ${result.dataUrl.substring(0, 80)}...` });
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: result.dataUrl }
+        });
       } else {
         contentParts.push({ type: 'text', text: `[音频下载失败: ${audUrl} - ${result.error || '未知错误'}]` });
       }
