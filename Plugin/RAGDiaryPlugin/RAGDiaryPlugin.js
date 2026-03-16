@@ -916,14 +916,14 @@ class RAGDiaryPlugin {
         if (!valveMatch) return true;
 
         const fullExpression = valveMatch[1];
-        
+
         // 1. 统计各角色消息数量
         const counts = messages.reduce((acc, msg) => {
             let role = 'User';
             const rawRole = String(msg.role).toLowerCase();
             if (rawRole === 'assistant') role = 'Assistant';
             else if (rawRole === 'system') role = 'System';
-            
+
             acc[role] = (acc[role] || 0) + 1;
             return acc;
         }, { User: 0, Assistant: 0, System: 0 });
@@ -931,17 +931,17 @@ class RAGDiaryPlugin {
         // 2. 解析与求值
         // 支持逻辑：& (AND), | (OR)
         // 优先级：单个条件 > & > |
-        
+
         const evaluateCondition = (cond) => {
             const match = cond.trim().match(/^@?(User|Assistant|System)(?:([<>]=?|=)(\d+))?$/i);
             if (!match) return true;
-            
+
             let [_, roleName, op, value] = match;
             roleName = roleName.charAt(0).toUpperCase() + roleName.slice(1).toLowerCase();
             const currentCount = counts[roleName] || 0;
 
             if (!op) return currentCount > 0;
-            
+
             const targetValue = parseInt(value);
             switch (op) {
                 case '<': return currentCount < targetValue;
@@ -1048,7 +1048,7 @@ class RAGDiaryPlugin {
                 while ((anchorMatch = anchorRegex.exec(aiContent)) !== null) {
                     const tagName = anchorMatch[2].trim();
                     if (Array.from(tagName).length > 25) continue; // 防幻觉截断
-                    
+
                     // 🌟 屏蔽示例标签
                     if (tagName === 'tag' || tagName === 'tag名称') continue;
 
@@ -1715,13 +1715,13 @@ class RAGDiaryPlugin {
             const placeholder = match[0];
             const dbName = match[1];
             const modifiers = match[2] || '';
-            
+
             console.log(`[RAGDiaryPlugin] Processing {{...}} placeholder: "${placeholder}", dbName: "${dbName}", modifiers: "${modifiers}"`);
 
             // 🌟 V4.2: RoleValve 检查 - 必须在所有其他检查之前执行
             const roleValveResult = this._evaluateRoleValve(modifiers, messages);
             console.log(`[RAGDiaryPlugin] RoleValve result for {{${dbName}}}: ${roleValveResult}`);
-            
+
             if (!roleValveResult) {
                 console.log(`[RAGDiaryPlugin] RoleValve blocked {{${dbName}}} retrieval. Adding empty content to processing queue.`);
                 // 关键修复：将空内容加入处理队列，确保占位符被替换
@@ -1769,12 +1769,12 @@ class RAGDiaryPlugin {
         console.log(`[RAGDiaryPlugin] Total processing promises: ${processingPromises.length}`);
         const results = await Promise.all(processingPromises);
         console.log(`[RAGDiaryPlugin] Total results to replace: ${results.length}`);
-        
+
         for (const result of results) {
             const beforeLength = processedContent.length;
             processedContent = processedContent.replace(result.placeholder, result.content);
             const afterLength = processedContent.length;
-            
+
             if (beforeLength === afterLength && result.placeholder.length > 0) {
                 console.warn(`[RAGDiaryPlugin] ⚠️ Placeholder not found in content: "${result.placeholder.substring(0, 50)}..."`);
             } else {
@@ -2218,14 +2218,14 @@ class RAGDiaryPlugin {
                     const rawTags = boostResult.info.matchedTags;
                     // 🌟 应用截断技术规避尾部噪音
                     coreTagsForSearch = this._truncateCoreTags(rawTags, tagTruncationRatio, metrics);
-                    
+
                     // 重新混入幽灵节点（因为 _truncateCoreTags 可能会把它们择出去，或者它们本身就是 Object）
                     // 实际上 applyTagBoost 返回的 matchedTags 主要是字符串 ID。
                     // 我们需要确保 ghostTags 始终在 coreTagsForSearch 中。
                     if (ghostTags.length > 0) {
                         coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
                     }
-                    
+
                     console.log(`[RAGDiaryPlugin] TagBoost: ${coreTagsForSearch.length}个核心Tag (含${ghostTags.length}个幽灵)`);
                 } else if (ghostTags.length > 0) {
                     // 如果 boost 没结果，至少保留幽灵节点
@@ -2244,17 +2244,19 @@ class RAGDiaryPlugin {
             return String(tag);
         });
 
+        let candidates = [];
+
         if (useTime && timeRanges && timeRanges.length > 0) {
             // --- 🌟 V5: 平衡双路召回 (Balanced Dual-Path Retrieval) ---
             // 目标：语义召回占 60%，时间召回占 40%，且时间召回也进行相关性排序
             const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
             const kTime = Math.max(1, finalK - kSemantic);
 
-
-            // 1. 语义路召回
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, kSemantic + dedupBuffer, tagWeight, coreTagsForSearch);
+            // 1. 语义路召回 (多取一些用于后续衰减/重排)
+            const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
-            ragResults = ragResults.slice(0, kSemantic).map(r => ({ ...r, source: 'rag' }));
+            ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
 
             // 2. 时间路召回 (带相关性排序)
             let timeFilePaths = [];
@@ -2262,104 +2264,52 @@ class RAGDiaryPlugin {
                 const files = await this._getTimeRangeFilePaths(dbName, timeRange);
                 timeFilePaths.push(...files);
             }
-            // 去重文件路径
             timeFilePaths = [...new Set(timeFilePaths)];
 
             let timeResults = [];
             if (timeFilePaths.length > 0) {
-                // 从数据库获取这些文件的所有分块及其向量
                 const timeChunks = await this.vectorDBManager.getChunksByFilePaths(timeFilePaths);
-
-                // 计算每个分块与当前查询向量的相似度
-                const scoredTimeChunks = timeChunks.map(chunk => {
+                timeResults = timeChunks.map(chunk => {
                     const sim = chunk.vector ? this.cosineSimilarity(finalQueryVector, Array.from(chunk.vector)) : 0;
-                    return {
-                        ...chunk,
-                        score: sim,
-                        source: 'time'
-                    };
+                    return { ...chunk, score: sim, source: 'time' };
                 });
-
-                // 按相似度排序并取前 kTime 个
-                scoredTimeChunks.sort((a, b) => b.score - a.score);
-                timeResults = scoredTimeChunks.slice(0, kTime);
-                console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range, selected top ${timeResults.length} by relevance.`);
+                console.log(`[RAGDiaryPlugin] Time path: Found ${timeChunks.length} chunks in range.`);
             }
 
-            // 3. 合并与去重
+            // 3. 合并与初步去重
             const allEntries = new Map();
-            // 语义路优先
             ragResults.forEach(r => allEntries.set(r.text.trim(), r));
-            // 时间路补充（如果内容不重复）
             timeResults.forEach(r => {
                 const trimmedText = r.text.trim();
                 if (!allEntries.has(trimmedText)) {
                     allEntries.set(trimmedText, r);
                 }
             });
-
-            finalResultsForBroadcast = Array.from(allEntries.values());
-
-            // 如果启用了 Rerank，对合并后的结果进行最终重排
-            if (useRerank && finalResultsForBroadcast.length > 0) {
-                // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
-                finalResultsForBroadcast.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
-                const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
-                finalResultsForBroadcast = await this._rerankDocuments(userContent, finalResultsForBroadcast, finalK, rrfOpts);
-            }
-
-            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
+            candidates = Array.from(allEntries.values());
 
         } else {
             // --- Standard path (no time filter) ---
-
             // 🌟 Tagmemo V4: Shotgun Query Implementation
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
-            // 仅在存在历史分段且未使用 Time 模式时启用霰弹枪 (Time 模式通常很精确)
             if (historySegments && historySegments.length > 0) {
-                // 限制: 最多取最近的 3 个分段，防止查询爆炸
                 const recentSegments = historySegments.slice(-3);
-
-                // 🌟 V5.1 新增：时间距离衰减惩罚 (Decay Multiplier)
-                // d 优先，a 末尾：越久远的分段权重越低
                 const decayFactor = 0.85;
-
                 recentSegments.forEach((seg, idx) => {
-                    // index 越大代表在 recentSegments 中越靠后，也就是离 current 越近
-                    // 比如 length=3 时，idx=2 是最近的(距离=1)，idx=0 是最远的(距离=3)
                     const distance = recentSegments.length - idx;
                     const weightMultiplier = Math.pow(decayFactor, distance);
-
-                    searchVectors.push({
-                        vector: seg.vector,
-                        type: `history_${idx}`,
-                        weight: weightMultiplier
-                    });
+                    searchVectors.push({ vector: seg.vector, type: `history_${idx}`, weight: weightMultiplier });
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches with decay weights...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
-                    // 每个向量都独立进行检索
-                    // 注意：这里我们复用 coreTagsForSearch，虽然它是基于当前 queryVector 生成的
-                    // 理想情况下应该为每个 segment 生成 coreTags，但为了性能暂且复用（假设上下文主题有一定的连续性）
-                    // 或者：对于 history segment，不使用 tag boost，仅纯向量检索? 
-                    // 决策：为了保持语义连贯，我们对 history segment 使用较小的 k (e.g. k/2) 和 默认 tagWeight
-
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
-
                     let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch);
-
-                    // 🌟 核心：把当前段落的时间权重乘到结果的分数上，实现近因效应
                     if (qv.weight !== 1.0) {
-                        results = results.map(r => ({
-                            ...r,
-                            score: r.score * qv.weight, // 惩罚较远历史的得分
-                            original_score: r.score // 保留原分数供排查
-                        }));
+                        results = results.map(r => ({ ...r, score: r.score * qv.weight, original_score: r.score }));
                     }
                     return results;
                 } catch (e) {
@@ -2370,138 +2320,67 @@ class RAGDiaryPlugin {
 
             const resultsArrays = await Promise.all(searchPromises);
             let flattenedResults = resultsArrays.flat();
-
-            // 🧹 V4.1: 上下文去重（在 SVD 去重之前先过滤掉与上下文工具调用重复的条目）
             flattenedResults = this._filterContextDuplicates(flattenedResults, contextDiaryPrefixes);
+            candidates = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
+        }
 
-            // 🌟 Tagmemo V4: Intelligent Deduplication
-            // 使用 KnowledgeBaseManager 提供的去重接口 (封装了 SVD + Residual)
-            const uniqueResults = await this.vectorDBManager.deduplicateResults(flattenedResults, finalQueryVector);
+        // --- 🌟 统一后置处理 (TimeDecay -> Rerank -> Truncate) ---
+
+        // 1. TimeDecay: 在截断前对全量结果应用衰减并重排
+        if (useTimeDecay && candidates.length > 0) {
+            const globalDecayConfig = this.ragParams?.RAGDiaryPlugin?.timeDecay || {};
+            candidates = this._applyTimeDecay(candidates, timeDecayMatch, globalDecayConfig);
+        }
+
+        // 2. Rerank & Merge: 对处理后的结果进行最终精排与合并
+        if (useTime && timeRanges && timeRanges.length > 0) {
+            // 🌟 V5.4: 在 Time 模式下，强制执行 60/40 分配，防止 TimeDecay 或高分语义结果导致时间轴逻辑失效
+            const kSemantic = Math.max(1, Math.ceil(finalK * 0.6));
+            const kTime = Math.max(1, finalK - kSemantic);
+
+            const semanticCandidates = candidates.filter(c => c.source === 'rag');
+            const timeCandidates = candidates.filter(c => c.source === 'time');
+
+            let finalSemantic = [];
+            let finalTime = [];
 
             if (useRerank) {
-                // Rerank 放在去重之后，节省 Rerank Token
-                // 注意：useRerank 逻辑中是先 rerank 再 slice(0, k)
-                // 这里我们去重后可能数量仍多于 k，需要 rerank 排序截断
-                // 但是 _rerankDocuments 会返回前 k 个。
-
-                // 为了让 Rerank 看到足够多的样本，我们先不截断，但去重已经大大减少了样本量
-                let finalKForRerank = finalK;
-                // 如果是 Shotgun，我们可能希望最终结果稍微丰富一点点？不，保持用户设定的 k
-
-                // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
-                uniqueResults.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+                // 分别对两路进行 Rerank（如果样本足够）
                 const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
-                finalResultsForBroadcast = await this._rerankDocuments(userContent, uniqueResults, finalKForRerank, rrfOpts);
-            } else {
-                // 如果没有 Rerank，按 score (或去重后的顺序) 截断
-                // 去重后的结果通常是按"残差贡献度"排序的，所以直接截断是合理的
-                finalResultsForBroadcast = uniqueResults.slice(0, finalK);
-            }
-
-            // ✅ 统一添加 source 标识，防止 VCP Info 显示 unknown
-            finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: 'rag' }));
-
-            // 🌟 V5.2: 时间衰减重排 (Time Decay Reranking)
-            if (useTimeDecay && finalResultsForBroadcast.length > 0) {
-                // 优先从修饰符解析局部参数，格式：::TimeDecay[halfLife]/[minScore]/[targetTags]
-                const localHalfLife = timeDecayMatch[1] ? parseInt(timeDecayMatch[1]) : null;
-                const localMinScore = timeDecayMatch[2] ? parseFloat(timeDecayMatch[2]) : null;
-                const localTargets = timeDecayMatch[3] ? timeDecayMatch[3].split(',') : [];
-
-                const globalDecayConfig = this.ragParams?.RAGDiaryPlugin?.timeDecay || { halfLifeDays: 30, minScore: 0.5 };
-                const halfLife = localHalfLife ?? globalDecayConfig.halfLifeDays ?? 30;
-                const minScore = localMinScore ?? globalDecayConfig.minScore ?? 0.5;
-
-                const now = dayjs();
-
-                console.log(`[RAGDiaryPlugin] ⏳ Applying Time Decay (Half-life: ${halfLife} days, MinScore: ${minScore}, Targets: ${localTargets.length > 0 ? localTargets.join(',') : 'ALL'})...`);
-
-                let decayCount = 0;
-                finalResultsForBroadcast = finalResultsForBroadcast.map(result => {
-                    // 0. 检查精准打击目标：如果指定了目标标签，则只有包含目标标签的条目才执行衰减
-                    if (localTargets.length > 0) {
-                        const isTarget = localTargets.some(tag => {
-                            const lowerTag = tag.toLowerCase();
-                            // 1. 匹配向量库结构化标签 (支持部分匹配，如 "box" 匹配 "Box审计")
-                            if (result.matchedTags && result.matchedTags.some(t => t.toLowerCase().includes(lowerTag))) return true;
-                            
-                            // 2. 匹配文本内容 (更宽泛：只要文本包含该词即视为命中，支持中文无边界情况)
-                            const text = result.text.toLowerCase();
-                            if (text.includes(lowerTag)) return true;
-                            
-                            // 3. 回退：正则匹配 (保留对特定标签格式的敏感度)
-                            const tagPattern = new RegExp(`(?:#|【|Tag:.*|\\b)${tag}`, 'i');
-                            return tagPattern.test(result.text);
-                        });
-
-                        if (!isTarget) {
-                            // 不在衰减名单内，保持原分
-                            return result;
-                        }
-                    }
-
-                    // 1. 优化日期提取逻辑：支持多种格式 [YYYY-MM-DD], YYYY.MM.DD, YYYY-MM-DD
-                    let dateStr = null;
-                    // 优先匹配 [YYYY-MM-DD] 或 [YYYY.MM.DD]
-                    const textDateMatch = result.text.match(/\[(\d{4}[-./]\d{2}[-./]\d{2})\]/);
-                    if (textDateMatch) {
-                        dateStr = textDateMatch[1].replace(/[./]/g, '-');
-                    } else {
-                        // 尝试匹配开头的日期行
-                        const firstLineMatch = result.text.split('\n')[0].match(/^\[?(\d{4}[-./]\d{2}[-./]\d{2})\]?/);
-                        if (firstLineMatch) {
-                            dateStr = firstLineMatch[1].replace(/[./]/g, '-');
-                        } else {
-                            // 2. 回退：尝试从文件名或路径中提取日期
-                            const pathSource = result.sourceFile || result.fullPath || '';
-                            const pathDateMatch = pathSource.match(/(\d{4}[-.]\d{2}[-.]\d{2})/);
-                            if (pathDateMatch) {
-                                dateStr = pathDateMatch[1].replace(/\./g, '-');
-                            }
-                        }
-                    }
-
-                    if (!dateStr) return result;
-
-                    const entryDate = dayjs(dateStr);
-                    if (!entryDate.isValid()) return result;
-
-                    const diffDays = Math.max(0, now.diff(entryDate, 'day'));
-                    // Score = Score * 0.5 ^ (days / halfLife)
-                    const decayFactor = Math.pow(0.5, diffDays / halfLife);
-                    const originalScore = result.rerank_score ?? result.score ?? 0;
-                    const newScore = originalScore * decayFactor;
-
-                    decayCount++;
-                    // 记录详细衰减日志（仅针对前几个结果或显著衰减）
-                    if (decayCount <= 5) {
-                        console.log(`[RAGDiaryPlugin][Decay] Date: ${dateStr}, Age: ${diffDays}d, Factor: ${decayFactor.toFixed(4)}, Score: ${originalScore.toFixed(4)} -> ${newScore.toFixed(4)}`);
-                    }
-
-                    return {
-                        ...result,
-                        score: newScore,
-                        original_score: originalScore,
-                        decay_factor: decayFactor,
-                        diff_days: diffDays
-                    };
-                });
-                console.log(`[RAGDiaryPlugin] ⏳ Time Decay applied to ${decayCount} items.`);
-
-                // 重新按衰减后的分数排序
-                finalResultsForBroadcast.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-                // 过滤掉分数过低的结果
-                if (minScore > 0) {
-                    finalResultsForBroadcast = finalResultsForBroadcast.filter(r => (r.score || 0) >= minScore);
+                // 语义路重排
+                if (semanticCandidates.length > 0) {
+                    finalSemantic = await this._rerankDocuments(userContent, semanticCandidates, kSemantic, rrfOpts);
                 }
-            }
-
-            if (useGroup) {
-                retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
+                // 时间路重排（时间路通常较少，如果不足 kTime 则全取）
+                if (timeCandidates.length > 0) {
+                    finalTime = await this._rerankDocuments(userContent, timeCandidates, kTime, rrfOpts);
+                }
             } else {
-                retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
+                semanticCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+                timeCandidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+                finalSemantic = semanticCandidates.slice(0, kSemantic);
+                finalTime = timeCandidates.slice(0, kTime);
             }
+            finalResultsForBroadcast = [...finalSemantic, ...finalTime];
+        } else if (useRerank && candidates.length > 0) {
+            candidates.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+            const rrfOpts = useRerankPlus ? { alpha: rrfAlpha } : null;
+            finalResultsForBroadcast = await this._rerankDocuments(userContent, candidates, finalK, rrfOpts);
+        } else {
+            // 默认按 score 排序并截断
+            candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+            finalResultsForBroadcast = candidates.slice(0, finalK);
+        }
+
+        // 统一添加 source 标识并格式化
+        finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
+
+        if (useTime && timeRanges && timeRanges.length > 0) {
+            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
+        } else if (useGroup) {
+            retrievedContent = this.formatGroupRAGResults(finalResultsForBroadcast, displayName, activatedGroups, metadata);
+        } else {
+            retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
         }
 
         // 🌟 应用 Truncate 过滤逻辑
@@ -2512,10 +2391,10 @@ class RAGDiaryPlugin {
                 return score >= truncateThreshold;
             });
             const afterCount = finalResultsForBroadcast.length;
-            
+
             if (beforeCount !== afterCount) {
                 console.log(`[RAGDiaryPlugin] Truncate applied: ${beforeCount} -> ${afterCount} items (Threshold: ${truncateThreshold})`);
-                
+
                 // 如果过滤后变为空，且原本有内容，需要重新生成内容
                 if (afterCount === 0) {
                     retrievedContent = '';
@@ -2772,6 +2651,140 @@ class RAGDiaryPlugin {
         return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
     }
 
+    /**
+     * 🌟 V5.3: 时间衰减重排 (Time Decay Reranking) - 独立方法
+     * 前置执行：在截断前对全量结果应用衰减并重排，确保新鲜记录能顶替旧记录。
+     *
+     * 日期提取优先级：
+     *   1. Tag: 行中的日期（AI 写日记时通常在 Tag 行附上日期，最可靠）
+     *   2. 文本中的 [YYYY-MM-DD] 括号日期
+     *   3. 文本首行的裸日期
+     *   4. 文件名/路径中的日期（最后回退）
+     *
+     * 目标标签匹配：精准匹配 Tag: 行，而非扫全文，避免误伤。
+     *
+     * @param {Array} results - 去重后的全量结果（未截断）
+     * @param {RegExpMatchArray} timeDecayMatch - ::TimeDecay 修饰符的正则匹配结果
+     * @param {object} globalDecayConfig - rag_params.json 中的全局衰减配置
+     * @returns {Array} 衰减并重排后的结果（已过滤低分，但未截断到 finalK）
+     */
+    _applyTimeDecay(results, timeDecayMatch, globalDecayConfig) {
+        if (!results || results.length === 0) return results;
+
+        const localHalfLife = timeDecayMatch[1] ? parseInt(timeDecayMatch[1]) : null;
+        const localMinScore = timeDecayMatch[2] ? parseFloat(timeDecayMatch[2]) : null;
+        const localTargets = timeDecayMatch[3]
+            ? timeDecayMatch[3].split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+            : [];
+
+        const halfLife = localHalfLife ?? globalDecayConfig?.halfLifeDays ?? 30;
+        const minScore = localMinScore ?? globalDecayConfig?.minScore ?? 0.5;
+        const now = dayjs();
+
+        console.log(`[RAGDiaryPlugin] ⏳ TimeDecay (前置): halfLife=${halfLife}d, minScore=${minScore}, targets=${localTargets.length > 0 ? localTargets.join(',') : 'ALL'}, 输入=${results.length}条`);
+
+        let decayCount = 0;
+        const decayed = results.map(result => {
+            // 🌟 如果是来自 ::Time 模式的时间路结果，跳过衰减，确保显式时间查询不失效
+            if (result.source === 'time') return result;
+
+            // --- 0. 目标标签匹配：精准匹配 Tag: 行 ---
+            if (localTargets.length > 0) {
+                let isTarget = false;
+
+                // 首要：从 Tag: 行精准匹配（AI 写日记时标签在此行）
+                const tagLineMatch = result.text.match(/Tag:\s*([^\n]+)/i);
+                if (tagLineMatch) {
+                    const tagLine = tagLineMatch[1].toLowerCase();
+                    isTarget = localTargets.some(tag => tagLine.includes(tag));
+                }
+
+                // 回退：匹配向量库结构化标签（支持部分匹配，如 "box" 匹配 "Box审计"）
+                if (!isTarget && result.matchedTags && Array.isArray(result.matchedTags)) {
+                    isTarget = localTargets.some(tag =>
+                        result.matchedTags.some(t => t.toLowerCase().includes(tag))
+                    );
+                }
+
+                if (!isTarget) return result; // 不在衰减名单，保持原分
+            }
+
+            // --- 1. 日期提取（优先级：Tag行 > [括号] > 首行 > 文件名）---
+            let dateStr = null;
+
+            // 首要：从 Tag: 行提取日期（格式如 "Tag: 2026-03-12, boxDecay"）
+            const tagLineForDate = result.text.match(/Tag:\s*([^\n]+)/i);
+            if (tagLineForDate) {
+                const tagDateMatch = tagLineForDate[1].match(/(\d{4}[-./]\d{2}[-./]\d{2})/);
+                if (tagDateMatch) {
+                    dateStr = tagDateMatch[1].replace(/[./]/g, '-');
+                }
+            }
+
+            // 次要：文本中的 [YYYY-MM-DD] 括号日期
+            if (!dateStr) {
+                const bracketMatch = result.text.match(/\[(\d{4}[-./]\d{2}[-./]\d{2})\]/);
+                if (bracketMatch) {
+                    dateStr = bracketMatch[1].replace(/[./]/g, '-');
+                }
+            }
+
+            // 再次：文本首行的裸日期
+            if (!dateStr) {
+                const firstLineMatch = result.text.split('\n')[0].match(/^\[?(\d{4}[-./]\d{2}[-./]\d{2})\]?/);
+                if (firstLineMatch) {
+                    dateStr = firstLineMatch[1].replace(/[./]/g, '-');
+                }
+            }
+
+            // 最后：文件名/路径中的日期
+            if (!dateStr) {
+                const pathSource = result.sourceFile || result.fullPath || '';
+                const pathDateMatch = pathSource.match(/(\d{4}[-.]\d{2}[-.]\d{2})/);
+                if (pathDateMatch) {
+                    dateStr = pathDateMatch[1].replace(/\./g, '-');
+                }
+            }
+
+            if (!dateStr) return result;
+
+            const entryDate = dayjs(dateStr);
+            if (!entryDate.isValid()) return result;
+
+            const diffDays = Math.max(0, now.diff(entryDate, 'day'));
+            const decayFactor = Math.pow(0.5, diffDays / halfLife);
+            const originalScore = result.rerank_score ?? result.score ?? 0;
+            const newScore = originalScore * decayFactor;
+
+            decayCount++;
+            if (decayCount <= 5) {
+                console.log(`[RAGDiaryPlugin][Decay] Date: ${dateStr}, Age: ${diffDays}d, Factor: ${decayFactor.toFixed(4)}, Score: ${originalScore.toFixed(4)} -> ${newScore.toFixed(4)}`);
+            }
+
+            return {
+                ...result,
+                score: newScore,
+                original_score: originalScore,
+                decay_factor: decayFactor,
+                diff_days: diffDays
+            };
+        });
+
+        console.log(`[RAGDiaryPlugin] ⏳ TimeDecay 完成: ${decayCount}条被衰减，重新排序中...`);
+
+        // 按衰减后的分数重新排序（这是关键：让新鲜记录自然浮上来）
+        decayed.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+        // 过滤低分（在截断之前过滤，确保最终 finalK 条都是高质量的）
+        if (minScore > 0) {
+            const filtered = decayed.filter(r => (r.score || 0) >= minScore);
+            console.log(`[RAGDiaryPlugin] ⏳ TimeDecay minScore过滤: ${decayed.length} -> ${filtered.length}条`);
+            return filtered;
+        }
+
+        return decayed;
+    }
+
     // Helper for token estimation
     _estimateTokens(text) {
         if (!text) return 0;
@@ -2971,7 +2984,7 @@ class RAGDiaryPlugin {
                 const retrievalRank = doc.retrieval_rank || allRerankedDocs.length; // 无排位则视为末尾
                 const rerankRank = doc.rerank_rank;
                 doc.rrf_score = alpha * (1 / (RRF_K + rerankRank))
-                              + (1 - alpha) * (1 / (RRF_K + retrievalRank));
+                    + (1 - alpha) * (1 / (RRF_K + retrievalRank));
             });
 
             // Step 3: 按 RRF 融合分数降序排列
