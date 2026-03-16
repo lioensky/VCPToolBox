@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "JapaneseHelper",
   "displayName": "日语学习助手",
-  "version": "2.6.3",
-  "description": "日语学习增强插件。支持句子解析、查词消歧、语法讲解、JLPT标注、测验判题、SRS复习、错题本、学习会话、词典管理、数据导入导出与健康检查。",
+  "version": "2.14.2",
+  "description": "日语学习增强插件（纯Python基础层 + optional增强层）。支持深度语法解析、动态句型识别（含部分活用补偿）、错题本分析推荐、复习调度、汉字查询、资源状态检查、JLPT统计（jlpt_stats）与可选 OJAD 声调接口。结构化接口支持 Lookup/KanjiInfo/JLPTCheck/ReadingAid/ParseTree/SchemaProbe。SemanticEnhance 默认使用 rule 风格判定，已修复礼貌体被误判为 mixed 的问题；SyntaxEnhance 默认 heuristic，可选 GiNZA 增强；ReadingEnhance 支持可选 romaji 后端。已补齐 SentenceSplit/ReadingEnhance/SyntaxEnhance/SemanticEnhance/TeachingAssetsStatus 五项分层命令。Romanize/Furigana 已修复促音拆裂与活用显示问题；已完成全命令回归与重复旧函数清理。",
   "author": "Nova",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -38,34 +38,87 @@
     "ONLINE_PROVIDER_CB_COOLDOWN_SEC": "number",
     "ONLINE_PROVIDER_CB_HALFOPEN_PROB": "number",
     "ONLINE_PROVIDER_STATE_FLUSH_INTERVAL_SEC": "number",
-    "OBSERVABILITY_LOG_PATH": "string"
+    "OBSERVABILITY_LOG_PATH": "string",
+    "OJAD_API_ENDPOINT": "string",
+    "OJAD_TIMEOUT_SEC": "number",
+    "GRAMMAR_DB_PATH": "string",
+    "PITCH_ACCENT_EXT_PATH": "string",
+    "FULL_DB_ENABLED": "boolean",
+    "JMDICT_FULL_DB_PATH": "string",
+    "KANJIDIC_FULL_DB_PATH": "string",
+    "FULL_DB_SQLITE_TIMEOUT": "number",
+    "GRAMMAR_FULL_DB_ENABLED": "boolean",
+    "WADOKU_DB_ENABLED": "boolean",
+    "OJAD_DB_ENABLED": "boolean",
+    "GRAMMAR_FULL_DB_PATH": "string",
+    "WADOKU_DB_PATH": "string",
+    "OJAD_DB_PATH": "string",
+    "FULL_DB_LEXICON_LOOKUP_ENABLED": "boolean",
+    "JMDICT_MINI_PATH": "string",
+    "KANJIDIC_MINI_PATH": "string",
+    "JLPT_DB_TIMEOUT_SEC": "number",
+    "JLPT_DB_CACHE_MAX": "number",
+    "STRUCTURED_DEFAULT_COMPACT": "boolean",
+    "READING_AID_COMPACT_TOKENS_DEFAULT": "boolean",
+    "PARSE_TREE_INCLUDE_MERMAID_DEFAULT": "boolean",
+    "SCHEMA_PROBE_ENABLED": "boolean"
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "JapaneseHelperCore",
-        "description": "日语学习主入口。通过 command 指定子功能。\n\n参数:\n- command (字符串, 必需): 功能指令。\n- text (字符串, 可选): 句子或文本输入。\n- word (字符串, 可选): 单词输入。\n- 其他参数按具体 command 传入。\n\n支持的 command:\nanalyze_sentence, add_furigana, grammar_explain, particle_check, rewrite_sentence, lookup_word, lookup_word_json, jlpt_tag, extract_vocab, phrase_pattern, pitch_accent, conjugate_verb, quiz_generate, quiz_check, quiz_check_batch, minimal_pair_quiz, error_explain, srs_schedule, fsrs_schedule, wrongbook_add, wrongbook_list, wrongbook_stats, wrongbook_clear, study_session_start, study_session_submit, progress_report, lexicon_add, lexicon_list, lexicon_reload, import_export_data, health_check。\n\n调用示例:\ntool_name=JapaneseHelper, command=analyze_sentence, text=昨日友達と映画を見に行きました。",
-        "example": "tool_name=JapaneseHelper, command=analyze_sentence, text=昨日友達と映画を見に行きました。"
+        "description": "日语学习主入口。通过 command 指定子功能。\\n\\n参数:\\n- command (字符串, 必需): 功能指令。\\n- text/sentence (字符串, 可选): 句子输入。\\n- word (字符串, 可选): 单词输入。\\n- grammar (字符串, 可选): 指定语法点。\\n- 其他参数按具体 command 传入。\\n\\n支持的 command:\\ntokenize, romanize, convert, normalize,\\nanalyze_sentence, lookup_word, lookup_word_json, add_furigana, conjugate_verb, conjugate_v2,\\njlpt_tag, grammar_explain, grammar_explain_deep, phrase_pattern, pitch_accent,\\nkanji_lookup, particle_check, style_check, style_shift, register_shift, rewrite_sentence,\\nquiz_generate, quiz_check, quiz_check_batch, minimal_pair_quiz,\\nwrongbook_add, wrongbook_list, wrongbook_stats, wrongbook_analyze, wrongbook_recommend, wrongbook_clear,\\nreview_due_list, review_submit, review_stats,\\nstudy_session_start, study_session_submit, progress_report,\\nlexicon_add, lexicon_list, lexicon_reload,\\nresource_status, resource_update, import_export_data, health_check, jlpt_stats。\\\\n结构化扩展：reading_aid_v2 / reading_aid_hybrid（含 oov_drill）。\\n\\n补充说明:\\n- phrase_pattern 支持动态句型规则与部分活用补偿。\\n- review_submit 支持 result=记住/模糊/忘记 语义输入。\\n\\n调用示例:\\ntool_name=JapaneseHelper, command=grammar_explain_deep, grammar=〜とは限らない\\ntool_name=JapaneseHelper, command=review_submit, word=勉強, result=记住\\ntool_name=JapaneseHelper, command=wrongbook_analyze, days=30\\\\ntool_name=JapaneseHelper, command=style_shift, text=彼は来る。彼女は来ます。, target=polite\\\\ntool_name=JapaneseHelper, command=conjugate_v2, verb=行く\\\\ntool_name=JapaneseHelper, command=reading_aid_v2, text=彼女は毎朝公園を走っている。, target_level=N3, oov_limit=5\n\n环境说明:\n- 默认采用 纯Python 配置（禁用 可选情感后端 路径）；情感分析走 hybrid(janome/sudachi) 规则融合。\n新增分层命令:\n- sentence_split\n- reading_enhance\n- syntax_enhance\n- semantic_enhance\n- teaching_assets_status",
+        "example": "tool_name=JapaneseHelper, command=grammar_explain_deep, grammar=〜に違いない"
       },
       {
         "commandIdentifier": "JapaneseHelperLookup",
-        "description": "查词与消歧。支持本地词典+在线并联查询、race/aggregate模式、上下文轻量消歧。\n\n参数:\n- command (字符串, 必需): lookup_word 或 lookup_word_json\n- word (字符串, 必需): 要查询的词\n- context/context_text/sentence (字符串, 可选): 上下文\n- use_parallel_online (布尔值, 可选): 是否启用在线并联\n- force_online (布尔值, 可选): 是否强制在线查询\n- online_mode (字符串, 可选): race 或 aggregate\n\n调用示例:\ntool_name=JapaneseHelper, command=lookup_word, word=利害関係者, use_parallel_online=true, force_online=true, online_mode=aggregate",
+        "description": "查词与消歧。支持本地词典+在线并联查询、race/aggregate 模式、上下文轻量消歧。\\n\\n参数:\\n- command (字符串, 必需): lookup_word 或 lookup_word_json\\n- word (字符串, 必需): 要查询的词\\n- context/context_text/sentence (字符串, 可选): 上下文\\n- use_parallel_online (布尔值, 可选): 是否启用在线并联\\n- force_online (布尔值, 可选): 是否强制在线查询\\n- online_mode (字符串, 可选): race 或 aggregate\\n\\n调用示例:\\ntool_name=JapaneseHelper, command=lookup_word, word=利害関係者, use_parallel_online=true, force_online=true, online_mode=aggregate",
         "example": "tool_name=JapaneseHelper, command=lookup_word_json, word=勉強, context=私は毎日日本語を勉強しています。"
       },
       {
         "commandIdentifier": "JapaneseHelperQuizBatch",
-        "description": "批量判题。用于一次性判定多题答案，支持参数别名。\n\n参数:\n- command (字符串, 必需): quiz_check_batch\n- answers 或 user_answers (字符串, 必需): 用户答案列表（逗号分隔）\n- expected_answers 或 correct_answers (字符串, 必需): 标准答案列表（逗号分隔）\n- readings (字符串, 可选): 读音列表（逗号分隔）\n\n调用示例:\ntool_name=JapaneseHelper, command=quiz_check_batch, answers=昨日,日本語,行く, expected_answers=昨日,日本語,行く, readings=きのう,にほんご,いく",
+        "description": "批量判题。用于一次性判定多题答案，支持参数别名。\\n\\n参数:\\n- command (字符串, 必需): quiz_check_batch\\n- answers 或 user_answers (字符串, 必需): 用户答案列表（逗号分隔）\\n- expected_answers 或 correct_answers (字符串, 必需): 标准答案列表（逗号分隔）\\n- readings (字符串, 可选): 读音列表（逗号分隔）\\n\\n调用示例:\\ntool_name=JapaneseHelper, command=quiz_check_batch, answers=昨日,日本語,行く, expected_answers=昨日,日本語,行く, readings=きのう,にほんご,いく",
         "example": "tool_name=JapaneseHelper, command=quiz_check_batch, answers=昨日,日本語,行く, expected_answers=昨日,日本語,行く, readings=きのう,にほんご,いく"
       },
       {
         "commandIdentifier": "JapaneseHelperStudySession",
-        "description": "学习会话。可启动自适应抽题会话并提交结算。\n\n参数:\n- command (字符串, 必需): study_session_start 或 study_session_submit\n- text (字符串, 可选): 学习语料\n- count (数字, 可选): 抽题数量\n- adaptive (布尔值, 可选): 是否自适应抽题\n\n调用示例:\ntool_name=JapaneseHelper, command=study_session_start, text=私は毎日日本語を勉強しています。, count=5, adaptive=true",
+        "description": "学习会话。可启动自适应抽题会话并提交结算。\\n\\n参数:\\n- command (字符串, 必需): study_session_start 或 study_session_submit\\n- text (字符串, 可选): 学习语料\\n- count (数字, 可选): 抽题数量\\n- adaptive (布尔值, 可选): 是否自适应抽题\\n\\n调用示例:\\ntool_name=JapaneseHelper, command=study_session_start, text=私は毎日日本語を勉強しています。, count=5, adaptive=true",
         "example": "tool_name=JapaneseHelper, command=study_session_start, text=私は毎日日本語を勉強しています。, count=5, adaptive=true"
       },
       {
         "commandIdentifier": "JapaneseHelperDataAndHealth",
-        "description": "数据管理与健康检查。\n\n参数:\n- command (字符串, 必需): import_export_data 或 health_check\n- action (字符串, 可选): import/export（用于 import_export_data）\n- dataset (字符串, 可选): all/wrongbook/lexicon/session\n- format (字符串, 可选): json/csv\n\n调用示例:\ntool_name=JapaneseHelper, command=import_export_data, action=export, dataset=all, format=json",
+        "description": "数据管理与健康检查。\\n\\n参数:\\n- command (字符串, 必需): import_export_data / health_check / resource_status / jlpt_stats\\n- action (字符串, 可选): import/export（用于 import_export_data）\\n- dataset (字符串, 可选): all/wrongbook/lexicon/session\\n- format (字符串, 可选): json/csv\\n\\n调用示例:\\ntool_name=JapaneseHelper, command=import_export_data, action=export, dataset=all, format=json",
         "example": "tool_name=JapaneseHelper, command=health_check"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperPhase2",
+        "description": "Phase2结构化接口。支持 command=Lookup/KanjiInfo/JLPTCheck/ReadingAid/ParseTree（兼容小写别名 lookup_struct/kanji_info/jlpt_check/reading_aid/parse_tree）。其中 Lookup/KanjiInfo/JLPTCheck/ReadingAid 返回JSON字符串；ParseTree 返回Mermaid图。",
+        "example": "tool_name=JapaneseHelper, command=ReadingAid, text=彼女は毎朝公園を走っている。, target_level=N3"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperPhase3",
+        "description": "Phase3增强：KanjiInfo 自动回退 full-db(kd_lex)；ReadingAid 支持 level_color 分层着色；ParseTree 升级为短语分组树（NP/VP/PP/ADVP/XP）。",
+        "example": "tool_name=JapaneseHelper, command=ReadingAid, text=彼女は毎朝公園を走っている。, target_level=N3, level_color=true"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperPhase4",
+        "description": "Phase4收口：structured命令统一meta.debug；Lookup支持compact/max_cards；ParseTree支持parse_tree_json直出结构化JSON。",
+        "example": "tool_name=JapaneseHelper, command=parse_tree_json, text=彼女は毎朝公園を走っている。"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperPhase5",
+        "description": "Phase5：SchemaProbe能力探针；ReadingAid支持compact_tokens；ParseTree JSON支持include_mermaid开关。",
+        "example": "tool_name=JapaneseHelper, command=SchemaProbe"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperPhase5Hotfix",
+        "description": "Phase5.1：配置与文档同步热修，确保SchemaProbe与结构化能力说明一致。",
+        "example": "tool_name=JapaneseHelper, command=SchemaProbe"
+      },
+      {
+        "commandIdentifier": "JapaneseHelperLayeredSuite",
+        "description": "六层补齐命令组（纯Python友好）。\n参数:\n- command: sentence_split | reading_enhance | syntax_enhance | semantic_enhance | teaching_assets_status\n- text/sentence/word: 依命令而定\n示例:\ntool_name=JapaneseHelper, command=sentence_split, text=彼女は毎朝公園を走っている。私は新しい語彙を増やしたい！\ntool_name=JapaneseHelper, command=teaching_assets_status",
+        "example": "tool_name=JapaneseHelper, command=semantic_enhance, text=今日はとても嬉しいです。"
       }
     ]
   }
