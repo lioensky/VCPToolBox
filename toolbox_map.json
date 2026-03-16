@@ -1,11 +1,22 @@
 {
   "VCPFileToolBox": {
     "file": "FileToolBox.txt",
-    "description": "文件/命令行/数据库/编程开发相关工具集合，根据上下文动态展开。"
+    "description": "该收纳箱收纳了各种命令行控制，文件操作相关，数据库管理，编程开发的工具，用于动态向 Agent 提供说明。"
   },
   "VCPMemoToolBox": {
     "file": "MemoToolBox.txt",
-    "description": "记忆与回忆检索相关工具集合。"
+    "description": "该收纳箱收纳了agent的记忆工具，用于agent日常记忆和回忆检索。"
   },
-  "VCPSearchToolBox": "SearchToolBox.txt"
+  "VCPMediaToolBox": {
+    "file": "MediaToolBox.txt",
+    "description": "该收纳箱收纳了各种多媒体处理，图片生成，视频生成和编辑，音乐生成相关的工具，用于动态向 Agent 提供说明。"
+  },
+  "VCSearchToolBox": {
+    "file": "SearchToolBox.txt",
+    "description": "该收纳箱收纳了各种外部搜索，联网信息查询，爬虫与信息采集相关的工具，用于动态向 Agent 提供说明。"
+  },
+  "VCPContactToolBox": {
+    "file": "ContactToolBox.txt",
+    "description": "该收纳箱收纳了各种通讯、社交、消息推送，话题管理，日程管理，日常小工具相关的工具，用于动态向 Agent 提供说明。"
+  }
 }
