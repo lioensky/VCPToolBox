@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { Worker } = require('worker_threads');
 
 /**
  * 日记本管理模块 (安全加固版)
@@ -59,36 +60,55 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         constructor(max) {
             this.max = max;
             this.current = 0;
-            this.queue = [];      // { resolve, reject, timer }
+            this.queue = [];      // { resolve, reject, timer, signal }
         }
 
         /**
-         * 获取一个槽位，超时自动拒绝
+         * 获取一个槽位，支持超时和 AbortSignal 立即释放
+         * @param {number} timeoutMs
+         * @param {AbortSignal} signal
          * @returns {Promise<void>}
          */
-        acquire(timeoutMs = 10000) {
+        acquire(timeoutMs = 10000, signal = null) {
+            if (signal?.aborted) return Promise.reject(new DOMException('Search aborted', 'AbortError'));
+
             // 有空位，立即获取
             if (this.current < this.max) {
                 this.current++;
                 return Promise.resolve();
             }
 
-            // 无空位，排队等待（带超时保护）
+            // 无空位，排队等待
             return new Promise((resolve, reject) => {
-                const entry = { resolve: null, reject: null, timer: null };
+                const entry = { resolve, reject, timer: null, signal };
 
-                entry.timer = setTimeout(() => {
-                    // 超时：从队列中移除自己
+                const cleanup = () => {
+                    if (entry.timer) clearTimeout(entry.timer);
+                    if (signal) signal.removeEventListener('abort', onAbort);
                     const idx = this.queue.indexOf(entry);
                     if (idx !== -1) this.queue.splice(idx, 1);
+                };
+
+                const onAbort = () => {
+                    cleanup();
+                    reject(new DOMException('Search queue wait aborted', 'AbortError'));
+                };
+
+                if (signal) {
+                    signal.addEventListener('abort', onAbort, { once: true });
+                }
+
+                entry.timer = setTimeout(() => {
+                    cleanup();
                     reject(new Error('Search queue wait timeout'));
                 }, timeoutMs);
 
                 entry.resolve = () => {
+                    if (signal) signal.removeEventListener('abort', onAbort);
                     clearTimeout(entry.timer);
                     resolve();
                 };
-
+                
                 this.queue.push(entry);
             });
         }
@@ -96,7 +116,6 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         /** 释放槽位，唤醒下一个等待者 */
         release() {
             if (this.queue.length > 0) {
-                // 直接把槽位转交给下一个等待者（不减 current）
                 const next = this.queue.shift();
                 next.resolve();
             } else {
@@ -114,6 +133,37 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
     }
 
     const searchSemaphore = new Semaphore(SEARCH_CONFIG.MAX_CONCURRENT);
+
+    // ══════════════════════════════════════════════════
+    //  目录缓存层
+    // ══════════════════════════════════════════════════
+    class DirectoryCache {
+        constructor(ttl = 10000) {
+            this.cache = new Map(); // path -> { entries, timestamp }
+            this.ttl = ttl;
+        }
+        async getReaddir(dirPath) {
+            const now = Date.now();
+            if (this.cache.has(dirPath)) {
+                const entry = this.cache.get(dirPath);
+                if (now - entry.timestamp < this.ttl) return entry.entries;
+            }
+            const entries = await fs.readdir(dirPath, { withFileTypes: true });
+            this.cache.set(dirPath, { entries, timestamp: now });
+            return entries;
+        }
+        invalidate(dirPath) {
+            if (dirPath) {
+                this.cache.delete(dirPath);
+                // 同时失效父目录可能也是必要的，但这里简单处理
+                const parent = path.dirname(dirPath);
+                if (parent !== dirPath) this.cache.delete(parent);
+            } else {
+                this.cache.clear();
+            }
+        }
+    }
+    const dirCache = new DirectoryCache(15000); // 15秒缓存
 
     // ══════════════════════════════════════════════════
     //  请求去重缓存
@@ -134,108 +184,111 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
      * @param {AbortSignal} signal
      */
     async function executeSearch(searchTerms, folder, signal) {
-        // ── 在每个 await 点都检查中止 ──
         const checkAbort = () => {
-            if (signal.aborted) {
-                throw new DOMException('Search aborted', 'AbortError');
-            }
+            if (signal.aborted) throw new DOMException('Search aborted', 'AbortError');
         };
 
         const matchedNotes = [];
         const visitedPaths = new Set();
-        let filesProcessed = 0;
+        let filesToScan = [];
 
-        // ---------- 确定搜索目录 ----------
+        // 1. 收集所有待扫描文件（利用目录缓存）
         let foldersToSearch = [];
-
         if (folder) {
             const specificPath = path.join(dailyNoteRootPath, folder);
-            if (!isPathSafe(specificPath, dailyNoteRootPath)) {
-                throw new Error('Path traversal detected');
-            }
-            if (await isSymlink(specificPath)) {
-                throw new Error('Cannot search in symbolic link folders');
-            }
-            checkAbort();
-            const stat = await fs.stat(specificPath);
-            if (!stat.isDirectory()) throw new Error(`'${folder}' is not a directory`);
+            if (!isPathSafe(specificPath, dailyNoteRootPath)) throw new Error('Path traversal detected');
             foldersToSearch.push({ name: folder, path: specificPath, depth: 0 });
         } else {
-            checkAbort();
-            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            const entries = await dirCache.getReaddir(dailyNoteRootPath);
             for (const entry of entries) {
-                if (!entry.isDirectory()) continue;
-                const p = path.join(dailyNoteRootPath, entry.name);
-                if (await isSymlink(p)) continue;
-                foldersToSearch.push({ name: entry.name, path: p, depth: 0 });
+                if (entry.isDirectory()) {
+                    foldersToSearch.push({ name: entry.name, path: path.join(dailyNoteRootPath, entry.name), depth: 0 });
+                }
             }
         }
 
-        // ---------- 遍历搜索 ----------
         for (const dir of foldersToSearch) {
             checkAbort();
-            if (matchedNotes.length >= SEARCH_CONFIG.MAX_RESULTS) break;
             if (dir.depth > SEARCH_CONFIG.MAX_DEPTH) continue;
-
-            // 循环检测
+            
             let realPath;
             try { realPath = await fs.realpath(dir.path); } catch { continue; }
             if (visitedPaths.has(realPath)) continue;
             visitedPaths.add(realPath);
 
-            let files;
-            try { files = await fs.readdir(dir.path); } catch { continue; }
+            let entries;
+            try { entries = await dirCache.getReaddir(dir.path); } catch { continue; }
 
-            const noteFiles = files.filter(f => {
-                const lower = f.toLowerCase();
-                return lower.endsWith('.txt') || lower.endsWith('.md');
-            });
-
-            for (const fileName of noteFiles) {
-                checkAbort();
-                if (matchedNotes.length >= SEARCH_CONFIG.MAX_RESULTS) break;
-
-                // ★ 关键：每处理 N 个文件，让出事件循环
-                filesProcessed++;
-                if (filesProcessed % SEARCH_CONFIG.YIELD_EVERY_N_FILES === 0) {
-                    await yieldToEventLoop();
-                    checkAbort(); // 让步回来再检查一次
-                }
-
-                const filePath = path.join(dir.path, fileName);
-                if (!isPathSafe(filePath, dailyNoteRootPath)) continue;
-                if (await isSymlink(filePath)) continue;
-
-                try {
-                    const stats = await fs.stat(filePath);
-                    if (stats.size > SEARCH_CONFIG.MAX_FILE_SIZE) continue;
-
-                    const content = await fs.readFile(filePath, 'utf-8');
-                    const lower = content.toLowerCase();
-
-                    if (searchTerms.every(t => lower.includes(t))) {
-                        matchedNotes.push({
-                            name: fileName,
-                            folderName: dir.name,
-                            lastModified: stats.mtime.toISOString(),
-                            preview:
-                                content.substring(0, SEARCH_CONFIG.PREVIEW_LENGTH).replace(/\n/g, ' ') +
-                                (content.length > SEARCH_CONFIG.PREVIEW_LENGTH ? '...' : ''),
-                        });
+            for (const entry of entries) {
+                const fullPath = path.join(dir.path, entry.name);
+                if (entry.isDirectory() && dir.depth < SEARCH_CONFIG.MAX_DEPTH) {
+                    foldersToSearch.push({ name: dir.name, path: fullPath, depth: dir.depth + 1 });
+                } else if (entry.isFile()) {
+                    const lower = entry.name.toLowerCase();
+                    if (lower.endsWith('.txt') || lower.endsWith('.md')) {
+                        try {
+                            const stats = await fs.stat(fullPath);
+                            if (stats.size <= SEARCH_CONFIG.MAX_FILE_SIZE) {
+                                filesToScan.push({
+                                    path: fullPath,
+                                    name: entry.name,
+                                    folderName: dir.name,
+                                    lastModified: stats.mtime.toISOString()
+                                });
+                            }
+                        } catch {}
                     }
-                } catch {
-                    // 单文件读取失败，跳过
                 }
             }
         }
 
+        if (filesToScan.length === 0) return [];
+
+        // 2. 使用 Worker Thread 进行并行搜索
+        // 将文件列表分块（如果文件很多），这里简单起见先用一个 Worker 处理所有文件
+        // 但为了防止单个 Worker 运行太久，我们可以限制文件数量或分块
+        const results = await new Promise((resolve, reject) => {
+            const worker = new Worker(path.join(__dirname, 'searchWorker.js'), {
+                workerData: {
+                    files: filesToScan,
+                    searchTerms,
+                    previewLength: SEARCH_CONFIG.PREVIEW_LENGTH
+                }
+            });
+
+            const onAbort = () => {
+                worker.terminate();
+                reject(new DOMException('Search aborted', 'AbortError'));
+            };
+
+            signal.addEventListener('abort', onAbort, { once: true });
+
+            worker.on('message', (data) => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(data);
+            });
+
+            worker.on('error', (err) => {
+                signal.removeEventListener('abort', onAbort);
+                reject(err);
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0) {
+                    signal.removeEventListener('abort', onAbort);
+                    reject(new Error(`Worker stopped with exit code ${code}`));
+                }
+            });
+        });
+
+        matchedNotes.push(...results);
         matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
 
         if (DEBUG_MODE) {
-            console.log(`[Search] Completed: ${filesProcessed} files scanned, ${matchedNotes.length} matches`);
+            console.log(`[Search] Completed: ${filesToScan.length} files scanned, ${matchedNotes.length} matches`);
         }
 
-        return matchedNotes;
+        return matchedNotes.slice(0, SEARCH_CONFIG.MAX_RESULTS);
     }
 
     // ══════════════════════════════════════════════════
@@ -278,7 +331,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         const searchPromise = (async () => {
             // 3a. 排队获取槽位（带超时）
             try {
-                await searchSemaphore.acquire(SEARCH_CONFIG.QUEUE_WAIT_TIMEOUT_MS);
+                await searchSemaphore.acquire(SEARCH_CONFIG.QUEUE_WAIT_TIMEOUT_MS, ac.signal);
             } catch (err) {
                 throw new Error('Too many concurrent searches, please retry later');
             }
@@ -541,6 +594,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         try {
             await fs.mkdir(targetFolderPath, { recursive: true });
             await fs.writeFile(filePath, content, 'utf-8');
+            dirCache.invalidate(targetFolderPath);
             res.json({ message: 'Saved successfully' });
         } catch (error) {
             res.status(500).json({ error: 'Failed to save file', details: error.message });
@@ -568,6 +622,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
 
         try {
             await fs.mkdir(targetFolderPath, { recursive: true });
+            dirCache.invalidate(targetFolderPath);
             for (const note of sourceNotes) {
                 if (note.folder.includes('..') || note.file.includes('..')) {
                     results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Invalid path' });
@@ -596,6 +651,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
                     }
                     
                     await fs.rename(sourceFilePath, destinationFilePath);
+                    dirCache.invalidate(path.dirname(sourceFilePath));
                     results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
                 } catch (error) {
                     if (error.code === 'ENOENT') {
@@ -629,6 +685,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
 
             try {
                 await fs.unlink(filePath);
+                dirCache.invalidate(path.dirname(filePath));
                 results.deleted.push(`${note.folder}/${note.file}`);
             } catch (error) {
                 results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
@@ -659,6 +716,8 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
             }
             
             await fs.rmdir(targetFolderPath);
+            dirCache.invalidate(dailyNoteRootPath);
+            dirCache.invalidate(targetFolderPath);
             res.json({ message: `Empty folder '${folderName}' has been deleted successfully.` });
         } catch (error) {
             if (error.code === 'ENOENT') {
