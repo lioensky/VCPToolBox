@@ -1,7 +1,7 @@
 {
   "VCPFileToolBox": {
     "file": "FileToolBox.txt",
-    "description": "该收纳箱收纳了各种命令行控制，文件操作相关，数据库管理，编程开发的工具，用于动态向 Agent 提供说明。"
+    "description": "该收纳箱收纳了各种命令行控制，文件操作相关，插件生成，主题管理，UI交互，数据库管理，编程开发的工具，用于动态向 Agent 提供说明。"
   },
   "VCPMemoToolBox": {
     "file": "MemoToolBox.txt",
@@ -13,7 +13,7 @@
   },
   "VCPSearchToolBox": {
     "file": "SearchToolBox.txt",
-    "description": "该收纳箱收纳了各种外部搜索，联网信息查询，爬虫与信息采集相关的工具，用于动态向 Agent 提供说明。"
+    "description": "该收纳箱收纳了各种外部搜索，联网信息查询，爬虫与信息采集，哔哩哔哩视频，youtube视频相关的工具，用于动态向 Agent 提供说明。"
   },
   "VCPContactToolBox": {
     "file": "ContactToolBox.txt",

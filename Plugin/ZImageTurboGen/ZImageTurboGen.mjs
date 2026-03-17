@@ -18,7 +18,9 @@ function isValidArgs(args) {
     if (!args || typeof args !== 'object' || !args.command) return false;
     if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
     if (args.command !== 'GenerateImage') return false;
-    if (args.size && !/^\d+x\d+$/.test(args.size)) return false;
+    
+    if (args.size && !/^\d+[:x]\d+$/.test(args.size)) return false;
+
     if (args.num_inference_steps !== undefined) {
         const steps = parseInt(args.num_inference_steps, 10);
         if (isNaN(steps) || steps < 4 || steps > 25) return false;
@@ -40,8 +42,37 @@ async function processApiRequest(args) {
         n: 1,
     };
 
+    // --- Size Optimization Logic ---
+    const allowedSizes = [
+        { w: 1024, h: 1024, str: '1024x1024' },
+        { w: 1024, h: 768, str: '1024x768' },
+        { w: 768, h: 1024, str: '768x1024' },
+        { w: 1024, h: 576, str: '1024x576' },
+        { w: 576, h: 1024, str: '576x1024' },
+        { w: 1024, h: 640, str: '1024x640' },
+        { w: 640, h: 1024, str: '640x1024' },
+        { w: 512, h: 512, str: '512x512' }
+    ];
+
     if (args.size) {
-        payload.size = args.size;
+        const [inputW, inputH] = args.size.split(/[:x]/).map(Number);
+        const inputRatio = inputW / inputH;
+        
+        // Find the size with the closest aspect ratio
+        let bestMatch = allowedSizes[0];
+        let minDiff = Math.abs((bestMatch.w / bestMatch.h) - inputRatio);
+
+        for (let i = 1; i < allowedSizes.length; i++) {
+            const ratio = allowedSizes[i].w / allowedSizes[i].h;
+            const diff = Math.abs(ratio - inputRatio);
+            if (diff < minDiff) {
+                minDiff = diff;
+                bestMatch = allowedSizes[i];
+            }
+        }
+        payload.size = bestMatch.str;
+    } else {
+        payload.size = '1024x1024';
     }
 
     if (args.negative_prompt && typeof args.negative_prompt === 'string' && args.negative_prompt.trim()) {

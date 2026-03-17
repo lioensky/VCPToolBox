@@ -21,7 +21,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "GenerateImage",
-        "description": "【文生图】调用此工具使用 Gitee 提供的 Z-Image-Turbo 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nsize:「始」(可选) 图片分辨率，默认 1024x1024。格式为\"宽x高\"。「末」,\nnegative_prompt:「始」(可选) 负面提示词，描述不希望在图片中出现的内容，例如 \"模糊, 低质量, 变形\"。「末」,\nnum_inference_steps:「始」(可选) 推理步数，整数，范围 1-50，步数越高质量越好但耗时更长，默认值为模型推荐步数（通常为 4-9）。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到生成的图片可访问URL，请直接为用户以 Markdown 或 HTML `<img>` 标签展示。",
+        "description": "【文生图】调用此工具使用 Gitee 提供的 Z-Image-Turbo 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nsize:「始」(可选) 图片分辨率或比例，默认 1024x1024。支持任意\"宽x高\"格式，系统会自动匹配最接近的支持比例（如 1:1, 4:3, 3:4, 16:9, 9:16 等）。「末」,\nnegative_prompt:「始」(可选) 负面提示词，描述不希望在图片中出现的内容，例如 \"模糊, 低质量, 变形\"。「末」,\nnum_inference_steps:「始」(可选) 推理步数，整数，范围 4-25，步数越高质量越好但耗时更长，默认值为 8。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到生成的图片可访问URL，请直接为用户以 Markdown 或 HTML `<img>` 标签展示。",
         "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一只戴着宇航员头盔的猫，背景是太空「末」,\nsize:「始」1024x1024「末」,\nnegative_prompt:「始」模糊, 低质量, 变形「末」,\nnum_inference_steps:「始」9「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
