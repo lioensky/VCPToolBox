@@ -226,12 +226,12 @@ function resolveAndNormalizePath(inputPath) {
   const trimmedParts = parts.map(part => part.trim());
   const sanitizedPath = path.join(...trimmedParts);
 
-  // 原样返回 Windows 绝对路径
-  if (/^[a-zA-Z]:[\\/]/.test(originalPath)) {
-    return path.win32.normalize(originalPath);
+  // 1. Handle absolute paths (e.g., C:\foo on Windows, /foo on Linux)
+  if (path.isAbsolute(originalPath)) {
+    return path.resolve(originalPath);
   }
 
-  // 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
+  // 2. 🔧 关键修改：幂等性保护 - 如果路径已经在 FileOperator 目录下，直接返回
   const resolvedInput = path.resolve(originalPath);
   const fileOperatorRoot = path.resolve(__dirname);
 
@@ -241,7 +241,9 @@ function resolveAndNormalizePath(inputPath) {
     return resolvedInput;
   }
 
-  // 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
+  // 3. 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
+  // 在 Windows 上，/foo 不是绝对路径，所以会进入此逻辑
+  // 在 Linux 上，/foo 是绝对路径，已在第 1 步处理
   if (originalPath.startsWith('/')) {
     const relativePath = originalPath.slice(1); // 去掉开头的 /
     return path.resolve(__dirname, relativePath);
