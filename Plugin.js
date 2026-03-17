@@ -702,7 +702,8 @@ class PluginManager {
                             if (this.debugMode) console.log(`[PluginManager] Intercepted file URL in args: ${val}`);
                             obj[key] = await FileFetcherServer.resolveFileUrl(val, requestIp);
                         } else if (val.includes('file://')) {
-                            const fileRegex = /file:\/\/[^\s"'()\]]+/g;
+                            // 优化正则表达式：增加对中文标点（），。？！）和换行符的排除，防止匹配过长导致解析失败
+                            const fileRegex = /file:\/\/[^\s"'()\]\}\>，。？！）\r\n]+/g;
                             const matches = val.match(fileRegex);
                             if (matches) {
                                 let newVal = val;
