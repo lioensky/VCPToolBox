@@ -1,5 +1,5 @@
 {
-  "name": "VCPToolBox",
+  "name": "vcptoolbox",
   "version": "7.1.2",
   "main": "Server.js",
   "scripts": {
