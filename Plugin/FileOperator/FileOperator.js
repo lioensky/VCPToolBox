@@ -156,11 +156,13 @@ function resolveAndNormalizePath(inputPath) {
   }
 
   // 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
+  /*
   if (originalPath.startsWith('/')) {
     const relativePath = originalPath.slice(1); // 去掉开头的 /
     return path.resolve(__dirname, relativePath);
   }
-
+  */  //修复linux下ServerFileOperator插件的路径bug
+  
   // 2. Handle absolute paths. Check originalPath as sanitizing might alter it.
   if (path.isAbsolute(originalPath)) {
     // On Windows, path.join(['', 'foo']) becomes '\\foo'.
