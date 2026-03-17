@@ -938,6 +938,10 @@
                         <input type="text" id="server-log-filter" placeholder="🔍 过滤日志内容...">
                         <span id="server-log-line-count">0 行</span>
                         <span id="server-log-status" class="status-message info">就绪</span>
+                        <div class="log-limit-controls" style="display: flex; align-items: center; gap: 8px;">
+                            <label for="server-log-limit" style="font-size: 0.9em; opacity: 0.8;">行数限制:</label>
+                            <input type="number" id="server-log-limit" min="100" max="100000" value="5000" style="width: 80px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--input-bg); color: var(--primary-text); font-size: 0.9em;">
+                        </div>
                         <button id="reverse-server-log-button" class="btn-secondary">🔃 倒序显示</button>
                         <button id="copy-server-log-button" class="btn-secondary">📋 复制</button>
                         <button id="clear-server-log-button" class="btn-secondary">🗑️ 清空</button>

@@ -10,7 +10,8 @@ class IncrementalLogViewer {
     constructor() {
         this.lastOffset = 0;           // 上次读取的文件位置
         this.logLines = [];             // 所有日志行缓存
-        this.maxLines = 5000;           // 最大保留行数（防内存溢出）
+        this.maxLines = 5000;           // 最大保留行数（支持通过 UI 设置）
+        this.storageKey = 'serverLogMaxLines';
         this.intervalId = null;
         this.isLoading = false;
         this.currentFilter = '';
@@ -29,6 +30,19 @@ class IncrementalLogViewer {
         console.log('Initializing Incremental Log Viewer...');
         this.stop(); // 清理旧的定时器
         this.cacheElements();
+        
+        // 从 localStorage 加载自定义限制
+        const savedLimit = localStorage.getItem(this.storageKey);
+        if (savedLimit) {
+            const parsed = parseInt(savedLimit, 10);
+            if (!isNaN(parsed) && parsed >= 10) {
+                this.maxLines = parsed;
+                if (this.elements.limitInput) {
+                    this.elements.limitInput.value = parsed;
+                }
+            }
+        }
+
         this.setupEventListeners();
         this.reset();
         
@@ -50,6 +64,7 @@ class IncrementalLogViewer {
             clearBtn: document.getElementById('clear-server-log-button'),
             reverseBtn: document.getElementById('reverse-server-log-button'),
             lineCount: document.getElementById('server-log-line-count'),
+            limitInput: document.getElementById('server-log-limit'),
         };
     }
 
@@ -102,7 +117,7 @@ class IncrementalLogViewer {
      * 设置事件监听器
      */
     setupEventListeners() {
-        const { content, filter, copyBtn, clearBtn, reverseBtn } = this.elements;
+        const { content, filter, copyBtn, clearBtn, reverseBtn, limitInput } = this.elements;
 
         // 复制按钮
         if (copyBtn && !copyBtn.dataset.listenerAttached) {
@@ -146,6 +161,39 @@ class IncrementalLogViewer {
             });
             content.dataset.scrollListenerAttached = 'true';
         }
+
+        // 行数限制输入
+        if (limitInput && !limitInput.dataset.listenerAttached) {
+            limitInput.addEventListener('change', (e) => {
+                this.updateMaxLines(e.target.value);
+            });
+            limitInput.dataset.listenerAttached = 'true';
+        }
+    }
+
+    /**
+     * 更新最大行数限制
+     */
+    updateMaxLines(newLimit) {
+        const val = parseInt(newLimit, 10);
+        if (isNaN(val) || val < 10) {
+            showMessage('行数必须是一个不小于 10 的数字', 'error');
+            return;
+        }
+        
+        this.maxLines = val;
+        localStorage.setItem(this.storageKey, val);
+        
+        // 如果当前缓存行数超过新限制，裁剪并重新渲染
+        if (this.logLines.length > this.maxLines) {
+            this.logLines = this.logLines.slice(-this.maxLines);
+            this.renderLog();
+            this.showStatus(`限制已更新为 ${val} 行`, 'success');
+        } else {
+            this.showStatus(`最大行数已设置为 ${val}`, 'success');
+        }
+        
+        this.updateLineCount();
     }
 
     /**
