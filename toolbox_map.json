@@ -11,7 +11,7 @@
     "file": "MediaToolBox.txt",
     "description": "该收纳箱收纳了各种多媒体处理，图片生成，视频生成和编辑，音乐生成相关的工具，用于动态向 Agent 提供说明。"
   },
-  "VCSearchToolBox": {
+  "VCPSearchToolBox": {
     "file": "SearchToolBox.txt",
     "description": "该收纳箱收纳了各种外部搜索，联网信息查询，爬虫与信息采集相关的工具，用于动态向 Agent 提供说明。"
   },
