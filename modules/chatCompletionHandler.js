@@ -5,6 +5,25 @@ const contextManager = require('./contextManager.js');
 const roleDivider = require('./roleDivider.js');
 const fs = require('fs').promises;
 const path = require('path');
+const http = require('http');
+const https = require('https');
+
+// 🌟 核心网络优化：引入防御性长连接池 (Keep-Alive Pool)
+// 解决 "-1s Socket Hang Up" 与上游代理秒断僵尸连接的问题
+const agentOptions = {
+  keepAlive: true,
+  keepAliveMsecs: 1000,     // 维持 Node.js 默认的 1s TCP 探针间隔
+  freeSocketTimeout: 8000,  // 绝杀机制：空闲 Socket 8 秒后主动销毁，防止复用到被上游代理 (如 Nginx) 静默杀死的僵尸连接
+  scheduling: 'lifo',       // 后进先出：永远优先复用刚刚才活跃过、最新鲜的热连接
+  maxSockets: 10000         // 维持全局高并发上限
+};
+const keepAliveHttpAgent = new http.Agent(agentOptions);
+const keepAliveHttpsAgent = new https.Agent(agentOptions);
+
+const getFetchAgent = function(_parsedURL) {
+  return _parsedURL.protocol === 'http:' ? keepAliveHttpAgent : keepAliveHttpsAgent;
+};
+
 const { getAuthCode } = require('./captchaDecoder');
 const ToolCallParser = require('./vcpLoop/toolCallParser');
 const ToolExecutor = require('./vcpLoop/toolExecutor');
@@ -133,6 +152,7 @@ async function fetchWithRetry(
     try {
       const response = await fetch(url, {
         ...options,
+        agent: getFetchAgent, // 注入防御性长连接池
         signal: attemptController.signal,
       });
       cleanup();

@@ -8,6 +8,23 @@ const router = express.Router();
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_Key;
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
+const http = require('http');
+const https = require('https');
+
+// 🌟 核心网络优化：引入防御性长连接池 (Keep-Alive Pool)
+const agentOptions = {
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  freeSocketTimeout: 8000,
+  scheduling: 'lifo',
+  maxSockets: 10000
+};
+const keepAliveHttpAgent = new http.Agent(agentOptions);
+const keepAliveHttpsAgent = new https.Agent(agentOptions);
+
+const getFetchAgent = function(_parsedURL) {
+  return _parsedURL.protocol === 'http:' ? keepAliveHttpAgent : keepAliveHttpsAgent;
+};
 
 const WHITELIST_IMAGE_MODELS = (process.env.WhitelistImageModel || '').split(',').map(m => m.trim()).filter(Boolean);
 const WHITELIST_EMBEDDING_MODELS = (process.env.WhitelistEmbeddingModel || '').split(',').map(m => m.trim()).filter(Boolean);
@@ -78,6 +95,7 @@ router.post('/v1/chat/completions', async (req, res) => {
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                 'Accept': req.headers['accept'] || 'application/json',
             },
+            agent: getFetchAgent, // 注入防御性长连接池
             body: JSON.stringify(modifiedBody),
         });
 
@@ -119,6 +137,7 @@ router.post('/v1/embeddings', async (req, res) => {
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                 'Accept': req.headers['accept'] || 'application/json',
             },
+            agent: getFetchAgent, // 注入防御性长连接池
             body: JSON.stringify(req.body),
         });
 
