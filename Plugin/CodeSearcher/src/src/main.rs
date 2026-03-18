@@ -48,6 +48,8 @@ struct InputArgs {
     whole_word: bool,
     #[serde(default = "default_context", deserialize_with = "deserialize_usize_from_string")]
     context_lines: usize,
+    #[serde(default, deserialize_with = "deserialize_bool_from_string")]
+    is_regex: bool,
 }
 
 fn default_context() -> usize { 2 }
@@ -176,7 +178,11 @@ fn main() {
 }
 
 fn build_regex(args: &InputArgs) -> Result<Regex, regex::Error> {
-    let mut pattern = regex::escape(&args.query);
+    let mut pattern = if args.is_regex {
+        args.query.clone()
+    } else {
+        regex::escape(&args.query)
+    };
 
     if args.whole_word {
         pattern = format!(r"\b{}\b", pattern);
