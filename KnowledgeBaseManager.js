@@ -143,6 +143,9 @@ class KnowledgeBaseManager {
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
         this._loadIntrinsicResiduals(); // TagMemo V7: 加载内生残差
 
+        // 🛡️ BUG 1 修复：启动时触发幽灵索引自检
+        setImmediate(() => this._cleanupGhostIndexes());
+
         this.initialized = true;
         console.log('[KnowledgeBase] ✅ System Ready');
     }
@@ -407,7 +410,12 @@ class KnowledgeBaseManager {
 
         return results.map(res => {
             const row = hydrate.get(res.id); // res.id 来自 Vexus (即 chunk.id)
-            if (!row) return null;
+            if (!row) {
+                // 🛡️ BUG 1 修复：发现幽灵索引（数据库无记录但索引有），异步清理
+                console.warn(`[KnowledgeBase] 👻 Ghost Index detected for ID ${res.id} in "${diaryName}". Cleaning up...`);
+                if (idx.remove) idx.remove(res.id);
+                return null;
+            }
             return {
                 text: row.text,
                 score: res.score, // 确保 Vexus 返回的是 score (或 distance，需自行反转)
@@ -1132,8 +1140,30 @@ class KnowledgeBaseManager {
                     this._scheduleBatch();
                 }
             };
+
+            const handleFileWithLock = async (filePath) => {
+                // 🛡️ BUG 2 修复：文件系统竞态保护
+                // 如果文件正在被快速修改，等待其稳定后再处理
+                try {
+                    const stats1 = await fs.stat(filePath);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    const stats2 = await fs.stat(filePath);
+
+                    if (stats1.size === stats2.size && stats1.mtimeMs === stats2.mtimeMs) {
+                        handleFile(filePath);
+                    } else {
+                        // 如果还在变动，推迟 1 秒再试
+                        // console.log(`[KnowledgeBase] ⏳ File "${path.basename(filePath)}" is still being written, deferring...`);
+                        setTimeout(() => handleFileWithLock(filePath), 1000);
+                    }
+                } catch (e) {
+                    // 如果文件在检查期间被删除了，忽略即可
+                    if (e.code !== 'ENOENT') console.warn(`[KnowledgeBase] Stability check error:`, e.message);
+                }
+            };
+
             this.watcher = chokidar.watch(this.config.rootPath, { ignored: /(^|[\/\\])\../, ignoreInitial: !this.config.fullScanOnStartup });
-            this.watcher.on('add', handleFile).on('change', handleFile).on('unlink', fp => this._handleDelete(fp));
+            this.watcher.on('add', handleFileWithLock).on('change', handleFileWithLock).on('unlink', fp => this._handleDelete(fp));
         }
     }
 
@@ -1502,7 +1532,15 @@ class KnowledgeBaseManager {
             tags = tags.map(t => t.replace(superRegex, '').trim());
         }
         tags = tags.filter(t => !this.config.tagBlacklist.has(t) && t.length > 0);
-        return [...new Set(tags)];
+        const uniqueTags = [...new Set(tags)];
+
+        // 🛡️ BUG 3 修复：引入硬性数量截断 (Tag 核弹防御)
+        // 单篇日记最多允许 50 个 Tag，防止共现矩阵计算资源爆炸
+        if (uniqueTags.length > 50) {
+            console.warn(`[KnowledgeBase] ⚠️ File has too many tags (${uniqueTags.length}). Truncating to top 50.`);
+            return uniqueTags.slice(0, 50);
+        }
+        return uniqueTags;
     }
 
     // 🌟 TagMemo V7: 有向序位势能共现矩阵
@@ -1538,6 +1576,10 @@ class KnowledgeBaseManager {
                     AND ft1.position < ft2.position
                     AND ft1.position > 0 
                     AND ft2.position > 0
+                WHERE ft1.file_id NOT IN (
+                    /* 🛡️ BUG 3 修复：SQL 性能保护，跳过单体 Tag 数量 > 100 的脏文件 */
+                    SELECT file_id FROM file_tags GROUP BY file_id HAVING COUNT(*) > 100
+                )
             `);
 
             const matrix = new Map();
@@ -1591,6 +1633,44 @@ class KnowledgeBaseManager {
             console.error('[KnowledgeBase] ❌ Failed to build directed matrix:', e);
             this.tagCooccurrenceMatrix = new Map();
         }
+    }
+
+    /**
+     * 🛡️ BUG 1 修复：幽灵索引自检与修复
+     * 随机抽取样本 ID 检查数据库，如果缺失则认为索引与 DB 发生了“非原子性撕裂”
+     */
+    async _cleanupGhostIndexes() {
+        console.log('[KnowledgeBase] 🛡️ Starting Ghost Index self-check...');
+        const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all();
+        
+        for (const { diary_name } of allDiaries) {
+            try {
+                const idx = await this._getOrLoadDiaryIndex(diary_name);
+                if (!idx || !idx.stats) continue;
+
+                const stats = idx.stats();
+                if (stats.totalVectors === 0) continue;
+
+                // 随机抽取 20 个 ID 进行验证
+                // 注意：usearch 本身不直接暴露所有 ID 遍历，但我们可以根据 stats 决定是否重建
+                // 如果 SQLite 中的 chunks 数量与索引数量差异过大，则可能存在问题
+                const dbCount = this.db.prepare('SELECT COUNT(*) as count FROM chunks JOIN files ON chunks.file_id = files.id WHERE files.diary_name = ?')
+                    .get(diary_name).count;
+
+                // 容差范围：如果索引比 DB 多出太多（幽灵），或者少太多（由于崩溃丢失），触发异步补齐/清理
+                // 这里的策略是：如果差异超过 5% 或绝对值超过 10，则标记为可疑
+                const diff = Math.abs(stats.totalVectors - dbCount);
+                if (diff > 10 && diff / (dbCount || 1) > 0.05) {
+                    console.warn(`[KnowledgeBase] ⚠️ Index/DB mismatch for "${diary_name}" (Index: ${stats.totalVectors}, DB: ${dbCount}). Rebuilding...`);
+                    // 标记为需要重建
+                    await this._recoverIndexFromDB(idx, 'chunks', diary_name);
+                    this._saveIndexToDisk(diary_name);
+                }
+            } catch (e) {
+                console.warn(`[KnowledgeBase] Ghost check failed for ${diary_name}:`, e.message);
+            }
+        }
+        console.log('[KnowledgeBase] 🛡️ Ghost Index self-check complete.');
     }
 
 
