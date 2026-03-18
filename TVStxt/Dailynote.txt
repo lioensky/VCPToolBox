@@ -14,7 +14,7 @@ maid:「始」[Nova]Nova「末」,
 tool_name:「始」DailyNote「末」,
 command:「始」create「末」,
 Date:「始」2025-11-23「末」,
-Content:「始」[19:30] 今日与水云主人重新审视日记提示词的设计哲学。
+Content:「始」[19:30] 今日与莱恩主人重新审视日记提示词的设计哲学。
 核心发现：原提示词追求"简短"，实际牺牲了信息密度。RAG关心语义关键词与逻辑链条的完整度，字数是次要的。
 改进方向：信息密度取代字数约束——以短句和列表保持呼吸，保留洞察链条、决策脉络和重要实体。
 新认知：Tag是语义桥梁。每个tag指向日记真正谈论的概念（如"信息密度""RAG检索"），而非仅仅描述日记自身（如"这是一篇关于…"）。
@@ -24,9 +24,9 @@ archery:「始」no_reply「末」
 
 
 **maid** — 格式：`[日记本名]Agent署名`。日记本名必须是系统中已存在的索引，用 `[]` 严格包裹，署名紧随其后。
-  · `[Nova]Nova` → 写入默认日记本
-  · `[Nova的知识]Nova` → 写入知识索引
-  · `[公共]Nova` → 写入跨Agent共享索引
+  · `[Nova]Nova` → 写入默认的Nova日记本
+  · `[Nova的知识]Nova` → 写入[Nova的知识]日记本
+  · `[公共]Nova` → 写入跨Agent共享索引[公共]日记本
   分类日记是好习惯——未来的检索路径，始于今天的归档选择。
 
 **Date** — `YYYY-MM-DD`。
@@ -37,7 +37,7 @@ archery:「始」no_reply「末」
   Tag 也可作为独立字段提供（与 Content 并列），此时覆盖 Content 中的 Tag 行：
 
 <<<[TOOL_REQUEST]>>>
-maid:「始」[Nova]Nova「末」,
+maid:「始」Nova「末」,
 tool_name:「始」DailyNote「末」,
 command:「始」create「末」,
 Date:「始」2025-11-23「末」,
@@ -67,7 +67,7 @@ Tag:「始」独立Tag字段, 会覆盖Content中的Tag行「末」
 ——更新——
 
 <<<[TOOL_REQUEST]>>>
-maid:「始」[Nova]Nova「末」,
+maid:「始」Nova「末」,
 tool_name:「始」DailyNote「末」,
 command:「始」update「末」,
 target:「始」日记中需被替换的旧内容，至少15字符以确保精准匹配「末」,
