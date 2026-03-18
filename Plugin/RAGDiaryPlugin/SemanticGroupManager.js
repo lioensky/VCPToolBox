@@ -356,7 +356,7 @@ class SemanticGroupManager {
                 }
 
                 const groupDescription = `${groupName}相关主题：${allWords.join(', ')}`;
-                const vector = await this.ragPlugin.getSingleEmbedding(groupDescription);
+                const vector = await this.ragPlugin.getSingleEmbeddingCached(groupDescription);
 
                 if (vector) {
                     // If a vector existed before (even with a different ID), we should clean it up.
@@ -399,7 +399,7 @@ class SemanticGroupManager {
 
         if (!queryVector) {
             console.log('[SemanticGroup] 未提供预计算向量，正在为原始查询生成新向量...');
-            queryVector = await this.ragPlugin.getSingleEmbedding(originalQuery);
+            queryVector = await this.ragPlugin.getSingleEmbeddingCached(originalQuery);
         }
 
         if (!queryVector) {

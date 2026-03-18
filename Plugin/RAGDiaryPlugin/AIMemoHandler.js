@@ -14,11 +14,11 @@ dayjs.extend(timezone);
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 
 class AIMemoHandler {
-    constructor(ragPlugin, cache) {
+    constructor(ragPlugin, cacheManager) {
         this.ragPlugin = ragPlugin;
         this.config = {};
         this.promptTemplate = '';
-        this.cache = cache; // ✅ 使用注入的缓存
+        this.cacheManager = cacheManager; // ✅ 使用注入的统一缓存管理器
         // 不在构造函数中调用 loadConfig，而是在主插件初始化时调用
     }
 
@@ -112,9 +112,9 @@ class AIMemoHandler {
 
             // --- 缓存机制 ---
             const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache);
-            const cached = this._getCache(cacheKey);
+            const cached = this.cacheManager.get('aiMemo', cacheKey);
             if (cached) {
-                console.log(`[AIMemoHandler] 命中缓存，直接返回结果。Key: ${cacheKey}`);
+                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aiMemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
                 if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
                     this.ragPlugin.pushVcpInfo({
                         ...cached.vcpInfo,
@@ -123,7 +123,7 @@ class AIMemoHandler {
                 }
                 return cached.content;
             }
-            console.log(`[AIMemoHandler] 未命中缓存，继续处理。Key: ${cacheKey}`);
+            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aiMemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
             // --- 缓存机制结束 ---
 
             // 1. 收集所有日记文件（基于文件级别，而非合并后的字符串）
@@ -170,7 +170,7 @@ class AIMemoHandler {
                 }
             }
 
-            this._setCache(cacheKey, resultObject);
+            this.cacheManager.set('aiMemo', cacheKey, resultObject);
             return resultObject.content;
 
         } catch (error) {
@@ -185,8 +185,13 @@ class AIMemoHandler {
         const sortedDbNames = [...dbNames].sort().join(',');
         // 如果没有预设内容，则使用默认配置的标识
         const presetPart = presetContentForCache || 'default_config';
-        const combined = `${sortedDbNames}|${userContent}|${aiContent}|${presetPart}`;
-        return crypto.createHash('sha256').update(combined).digest('hex');
+        
+        return this.cacheManager.generateKey({
+            dbNames: sortedDbNames,
+            user: userContent,
+            ai: aiContent,
+            preset: presetPart
+        });
     }
 
     async _loadPresetRaw(presetName) {
@@ -203,31 +208,6 @@ class AIMemoHandler {
         }
     }
 
-    _getCache(key) {
-        const entry = this.cache.get(key);
-        if (!entry) {
-            return null;
-        }
-
-        if (Date.now() - entry.timestamp > this.ragPlugin.aiMemoCacheTTL) {
-            console.log(`[AIMemoHandler] 缓存条目已过期，删除。Key: ${key}`);
-            this.cache.delete(key);
-            return null;
-        }
-
-        return entry.result;
-    }
-
-    _setCache(key, result) {
-        if (this.cache.size >= this.ragPlugin.aiMemoCacheMaxSize) {
-            // 删除最旧的条目 (Map an insertion order)
-            const oldestKey = this.cache.keys().next().value;
-            this.cache.delete(oldestKey);
-            console.log(`[AIMemoHandler] 缓存已满，删除最旧条目。Key: ${oldestKey}`);
-        }
-        this.cache.set(key, { result, timestamp: Date.now() });
-        console.log(`[AIMemoHandler] 结果已存入缓存。Key: ${key}`);
-    }
 
     // --- 缓存辅助方法结束 ---
 
