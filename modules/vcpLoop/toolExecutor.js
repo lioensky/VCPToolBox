@@ -12,8 +12,32 @@ class ToolExecutor {
    * 执行单个工具调用
    * @returns {Promise<{success: boolean, content: Array, error?: string, raw?: any}>}
    */
-  async execute(toolCall, clientIp) {
-    const { name, args } = toolCall;
+  async execute(toolCall, clientIp, contextMessages = []) {
+    const { name, args, river } = toolCall;
+
+    // 注入 river 上下文
+    if (this.debugMode) console.log(`[ToolExecutor] Processing tool: ${name}, river mode: ${river}`);
+    if (river === 'full') {
+      args.river_context = JSON.parse(JSON.stringify(contextMessages));
+    } else if (river === 'text') {
+      args.river_context = contextMessages.map(msg => {
+        const newMsg = { ...msg };
+        if (Array.isArray(newMsg.content)) {
+          const textParts = newMsg.content.filter(part => part.type === 'text');
+          if (textParts.length === 1) {
+            newMsg.content = textParts[0].text;
+          } else if (textParts.length > 1) {
+            newMsg.content = textParts.map(p => p.text).join('\n');
+          } else {
+            newMsg.content = '';
+          }
+        }
+        return newMsg;
+      });
+    }
+    if (this.debugMode && args.river_context) {
+      console.log(`[ToolExecutor] river_context injected: ${args.river_context.length} messages`);
+    }
 
     // 验证码校验
     if (this.vcpToolCode) {
@@ -30,6 +54,7 @@ class ToolExecutor {
 
     // 执行插件
     try {
+      if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
       const result = await this.pluginManager.processToolCall(name, args, clientIp);
       return this._processResult(name, result);
     } catch (error) {
@@ -40,9 +65,9 @@ class ToolExecutor {
   /**
    * 批量执行工具调用
    */
-  async executeAll(toolCalls, clientIp) {
+  async executeAll(toolCalls, clientIp, contextMessages = []) {
     return Promise.all(
-      toolCalls.map(tc => this.execute(tc, clientIp))
+      toolCalls.map(tc => this.execute(tc, clientIp, contextMessages))
     );
   }
 

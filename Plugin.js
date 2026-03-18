@@ -951,6 +951,8 @@ class PluginManager {
             if (this.debugMode) console.log(`[PluginManager executePlugin Internal] Attempting to spawn command: "${command}" with args: [${args.join(', ')}] in cwd: ${plugin.basePath}`);
 
             const pluginProcess = spawn(command, args, { cwd: plugin.basePath, shell: true, env: finalEnv, windowsHide: true });
+
+
             let outputBuffer = ''; // Buffer to accumulate data chunks
             let errorOutput = '';
             let processExited = false;

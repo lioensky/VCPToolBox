@@ -91,7 +91,7 @@ class NonStreamHandler {
         // 执行 Archery 调用
         const archeryLogs = await Promise.all(archeryCalls.map(async toolCall => {
           try {
-            const result = await toolExecutor.execute(toolCall, clientIp);
+            const result = await toolExecutor.execute(toolCall, clientIp, currentMessagesForNonStreamLoop);
             const isError = !result.success || (result.raw && this.context.isToolResultError(result.raw));
 
             if (isError) {
@@ -182,7 +182,7 @@ class NonStreamHandler {
         }
         currentMessagesForNonStreamLoop.push(...assistantMessages);
 
-        const toolResults = await toolExecutor.executeAll(normalCalls, clientIp);
+        const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForNonStreamLoop);
         const normalCallLogs = (() => {
           let logs = [];
           if (writeChatLog) {

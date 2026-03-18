@@ -1,0 +1,24 @@
+{
+  "name": "RiverTestPlugin",
+  "displayName": "River Context API Test",
+  "pluginType": "synchronous",
+  "version": "1.0.0",
+  "description": "专门用来测试 river:「始」text「末」 或 river:「始」full「末」 的同步插件",
+  "author": "Antigravity",
+  "entryPoint": {
+    "command": "node RiverTestPlugin.js",
+    "timeout": 30000
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "ExecuteTest",
+        "description": "测试 river 语法的命令",
+        "example": "river:「始」text「末」"
+      }
+    ]
+  }
+}
