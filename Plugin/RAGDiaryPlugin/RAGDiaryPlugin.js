@@ -3116,13 +3116,22 @@ class RAGDiaryPlugin {
             // ✅ 新增：包含Tag相关信息（如果存在）
             if (r.originalScore !== undefined) cleaned.originalScore = r.originalScore;
             if (r.tagMatchScore !== undefined) cleaned.tagMatchScore = r.tagMatchScore;
+            
+            let finalTags = [];
             if (r.matchedTags && Array.isArray(r.matchedTags)) {
-                cleaned.matchedTags = r.matchedTags.map(t => {
+                finalTags = r.matchedTags.map(t => {
                     if (typeof t === 'string') return t;
                     if (t && t.name) return t.name;
                     return String(t);
                 });
             }
+            if (r.source === 'time' && !finalTags.includes('time')) {
+                finalTags.push('time');
+            }
+            if (finalTags.length > 0) {
+                cleaned.matchedTags = finalTags;
+            }
+            
             if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
             if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
             // 🛡️ 确保 coreTagsMatched 是纯字符串数组 (脱水处理)
