@@ -673,6 +673,33 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 🌟 统一内容净化器 - 确保 RAGDiaryPlugin 和 messageProcessor 向量化请求完全一致
+     * @param {string} content 原始文本
+     * @param {string} role 角色 ('user' 或 'assistant')
+     * @returns {string} 净化后的文本
+     */
+    sanitizeForEmbedding(content, role) {
+        if (!content || typeof content !== 'string') return '';
+
+        let processed = content;
+
+        // 1. 角色特定预处理
+        if (role === 'user') {
+            processed = this._stripSystemNotification(processed);
+        } else if (role === 'assistant') {
+            const anchorRegex = /\[@(!)?([^\]]+)\]/g;
+            processed = processed.replace(anchorRegex, '');
+        }
+
+        // 2. 通用净化流程 (顺序必须严格一致)
+        processed = this._stripHtml(processed);
+        processed = this._stripEmoji(processed);
+        processed = this._stripToolMarkers(processed);
+
+        return processed.trim();
+    }
+
+    /**
      * 🌟 V4.1 新增：上下文日记去重 - 提取前缀索引
      * 扫描所有 assistant 消息中的 DailyNote create 工具调用，
      * 提取 Content 字段的前 80 个字符作为去重索引。
@@ -1033,10 +1060,7 @@ class RAGDiaryPlugin {
             // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签和emoji
             if (userContent) {
                 const originalUserContent = userContent;
-                userContent = this._stripSystemNotification(userContent); // ✅ 净化追加的系统提示框
-                userContent = this._stripHtml(userContent);
-                userContent = this._stripEmoji(userContent);
-                userContent = this._stripToolMarkers(userContent); // ✅ 新增：净化工具调用噪音
+                userContent = this.sanitizeForEmbedding(userContent, 'user');
                 if (originalUserContent.length !== userContent.length) {
                     console.log('[RAGDiaryPlugin] User content was sanitized (SystemNotification + HTML + Emoji removed).');
                 }
@@ -1048,7 +1072,9 @@ class RAGDiaryPlugin {
             let anchorMatch;
 
             if (aiContent) {
-                while ((anchorMatch = anchorRegex.exec(aiContent)) !== null) {
+                // 在净化之前提取锚点信息
+                let tempAiContent = aiContent;
+                while ((anchorMatch = anchorRegex.exec(tempAiContent)) !== null) {
                     const tagName = anchorMatch[2].trim();
                     if (Array.from(tagName).length > 25) continue; // 防幻觉截断
 
@@ -1058,8 +1084,6 @@ class RAGDiaryPlugin {
                     if (anchorMatch[1]) hardTagNames.push(tagName);
                     else softTagNames.push(tagName);
                 }
-                // 净化文本，不让标记本身污染向量空间
-                aiContent = aiContent.replace(anchorRegex, '').trim();
 
                 // 🌟 修复 1：必须将净化后的文本同步回原始 messages 数组！否则 Tag 会永远污染历史上下文
                 if (lastAiMessageIndex > -1) {
@@ -1073,9 +1097,7 @@ class RAGDiaryPlugin {
                 }
 
                 const originalAiContent = aiContent;
-                aiContent = this._stripHtml(aiContent);
-                aiContent = this._stripEmoji(aiContent);
-                aiContent = this._stripToolMarkers(aiContent); // ✅ 新增：净化工具调用噪音
+                aiContent = this.sanitizeForEmbedding(aiContent, 'assistant');
                 if (originalAiContent.length !== aiContent.length) {
                     console.log('[RAGDiaryPlugin] AI content was sanitized (HTML + Emoji removed).');
                 }
@@ -2082,8 +2104,8 @@ class RAGDiaryPlugin {
         const { lastAiMessage, toolResultsText } = contextData;
 
         // 1. 分别净化用户、AI 和工具的内容
-        const sanitizedUserContent = this._stripToolMarkers(this._stripEmoji(this._stripHtml(originalUserQuery || '')));
-        const sanitizedAiContent = this._stripToolMarkers(this._stripEmoji(this._stripHtml(lastAiMessage || '')));
+        const sanitizedUserContent = this.sanitizeForEmbedding(originalUserQuery || '', 'user');
+        const sanitizedAiContent = this.sanitizeForEmbedding(lastAiMessage || '', 'assistant');
 
         // [优化] 处理工具结果：先清理 Base64，再将 JSON 转换为 Markdown 以减少向量噪音
         let toolContentForVector = '';
@@ -2115,7 +2137,7 @@ class RAGDiaryPlugin {
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([
-            sanitizedUserContent ? this.getSingleEmbeddingCached(this._stripSystemNotification(sanitizedUserContent)) : null,
+            sanitizedUserContent ? this.getSingleEmbeddingCached(sanitizedUserContent) : null,
             sanitizedAiContent ? this.getSingleEmbeddingCached(sanitizedAiContent) : null,
             sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent) : null
         ]);

@@ -154,26 +154,36 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             return fallbackBlock.content;
         }
 
-        // 调用 RAGDiaryPlugin 的清理方法，确保文本与 RAG 插件完全一致 (命中缓存的关键)
-        if (typeof ragPlugin._stripSystemNotification === 'function') {
+        // 调用 RAGDiaryPlugin 的统一净化方法，确保文本与 RAG 插件完全一致 (命中缓存的关键)
+        if (typeof ragPlugin.sanitizeForEmbedding === 'function') {
             if (userContent) {
                 const originalUserContent = userContent;
-                userContent = ragPlugin._stripSystemNotification(userContent);
-                userContent = ragPlugin._stripHtml(userContent);
-                userContent = ragPlugin._stripEmoji(userContent);
-                userContent = ragPlugin._stripToolMarkers(userContent);
+                userContent = ragPlugin.sanitizeForEmbedding(userContent, 'user');
                 if (context.DEBUG_MODE && originalUserContent.length !== userContent.length) {
-                    console.log('[DynamicFold] User content was sanitized (SystemNotification + HTML + Emoji removed).');
+                    console.log('[DynamicFold] User content was sanitized via unified sanitizer.');
                 }
             }
-        }
-        if (aiContent && typeof ragPlugin._stripHtml === 'function') {
-            const originalAiContent = aiContent;
-            aiContent = ragPlugin._stripHtml(aiContent);
-            aiContent = ragPlugin._stripEmoji(aiContent);
-            aiContent = ragPlugin._stripToolMarkers(aiContent);
-            if (context.DEBUG_MODE && originalAiContent.length !== aiContent.length) {
-                console.log('[DynamicFold] AI content was sanitized (HTML + Emoji removed).');
+            if (aiContent) {
+                const originalAiContent = aiContent;
+                aiContent = ragPlugin.sanitizeForEmbedding(aiContent, 'assistant');
+                if (context.DEBUG_MODE && originalAiContent.length !== aiContent.length) {
+                    console.log('[DynamicFold] AI content was sanitized via unified sanitizer.');
+                }
+            }
+        } else {
+            // 后备逻辑：如果插件版本较旧，尝试使用旧的私有方法
+            if (typeof ragPlugin._stripSystemNotification === 'function') {
+                if (userContent) {
+                    userContent = ragPlugin._stripSystemNotification(userContent);
+                    userContent = ragPlugin._stripHtml(userContent);
+                    userContent = ragPlugin._stripEmoji(userContent);
+                    userContent = ragPlugin._stripToolMarkers(userContent);
+                }
+            }
+            if (aiContent && typeof ragPlugin._stripHtml === 'function') {
+                aiContent = ragPlugin._stripHtml(aiContent);
+                aiContent = ragPlugin._stripEmoji(aiContent);
+                aiContent = ragPlugin._stripToolMarkers(aiContent);
             }
         }
 
