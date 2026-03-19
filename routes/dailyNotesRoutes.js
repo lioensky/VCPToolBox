@@ -728,5 +728,38 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         }
     });
 
+    // POST /associative-discovery - 联想追溯
+    router.post('/associative-discovery', async (req, res) => {
+        const { sourceFilePath, k, range, tagBoost } = req.body;
+
+        if (!sourceFilePath) {
+            return res.status(400).json({ error: 'sourceFilePath is required' });
+        }
+
+        // 安全检查
+        const fullPath = path.join(dailyNoteRootPath, sourceFilePath);
+        if (!isPathSafe(fullPath, dailyNoteRootPath)) {
+            return res.status(403).json({ error: 'Invalid file path' });
+        }
+
+        try {
+            const associativeDiscovery = require('../modules/associativeDiscovery');
+            const result = await associativeDiscovery.discover({
+                sourceFilePath,
+                k: parseInt(k) || 10,
+                range: Array.isArray(range) ? range : [],
+                tagBoost: parseFloat(tagBoost) || 0.15
+            });
+
+            res.json(result);
+        } catch (error) {
+            console.error('[AssociativeDiscovery] Error:', error);
+            res.status(500).json({ 
+                error: '联想追溯失败', 
+                details: error.message 
+            });
+        }
+    });
+
     return router;
 };

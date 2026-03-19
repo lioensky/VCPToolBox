@@ -235,6 +235,7 @@ function renderNoteCard(note, folderName) {
         <p class="note-card-preview">${note.preview || `修改于: ${new Date(note.lastModified).toLocaleString()}`}</p>
         <div class="note-card-actions">
             <button class="edit-note-btn">编辑</button>
+            <button class="discovery-note-btn">联想</button>
         </div>
     `;
     card.insertBefore(checkbox, card.firstChild);
@@ -242,6 +243,11 @@ function renderNoteCard(note, folderName) {
     card.querySelector('.edit-note-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         openNoteForEditing(folderName, note.name);
+    });
+
+    card.querySelector('.discovery-note-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        openDiscoveryModal(folderName, note.name);
     });
 
     card.addEventListener('click', (e) => {
@@ -593,3 +599,148 @@ async function saveRagTagsConfigHandler() {
         showMessage(`保存RAG-Tags配置失败: ${error.message}`, 'error');
     }
 }
+
+// --- Associative Discovery Functions ---
+
+let discoverySourceFile = null;
+
+async function openDiscoveryModal(folderName, fileName) {
+    const modal = document.getElementById('associative-discovery-modal');
+    const title = document.getElementById('discovery-modal-title');
+    const chipsContainer = document.getElementById('discovery-range-chips');
+    const kSlider = document.getElementById('discovery-k-slider');
+    const kDisplay = document.getElementById('discovery-k-display');
+    const startBtn = document.getElementById('start-discovery-btn');
+    const resultsList = document.getElementById('discovery-results-list');
+    const loader = document.getElementById('discovery-loader');
+    const warning = document.getElementById('discovery-warning');
+    const closeBtn = document.getElementById('close-discovery-modal');
+    const backdrop = document.getElementById('discovery-modal-backdrop');
+
+    if (!modal) return;
+
+    discoverySourceFile = `${folderName}/${fileName}`;
+    title.textContent = `联想追溯: ${fileName}`;
+    resultsList.innerHTML = '';
+    loader.style.display = 'none';
+    warning.style.display = 'none';
+    
+    // 初始化 K 值
+    if (kSlider) {
+        kSlider.value = 50;
+        kDisplay.textContent = '50';
+        kSlider.oninput = () => kDisplay.textContent = kSlider.value;
+    }
+
+    // 加载文件夹并生成芯片
+    if (chipsContainer) {
+        chipsContainer.innerHTML = '';
+        try {
+            const data = await apiFetch('/admin_api/dailynotes/folders');
+            if (data.folders) {
+                data.folders.forEach(f => {
+                    const chip = document.createElement('div');
+                    chip.className = 'folder-chip';
+                    chip.textContent = f;
+                    chip.onclick = () => chip.classList.toggle('active');
+                    chipsContainer.appendChild(chip);
+                });
+            }
+        } catch (e) {
+            console.error('Failed to load folders for discovery:', e);
+        }
+    }
+
+    // 绑定按钮事件
+    if (startBtn) startBtn.onclick = performDiscovery;
+    if (closeBtn) closeBtn.onclick = () => modal.classList.remove('show');
+    if (backdrop) backdrop.onclick = () => modal.classList.remove('show');
+
+    modal.classList.add('show');
+}
+
+async function performDiscovery() {
+    const loader = document.getElementById('discovery-loader');
+    const resultsList = document.getElementById('discovery-results-list');
+    const warning = document.getElementById('discovery-warning');
+    const kSetting = document.getElementById('discovery-k-slider');
+    
+    if (!loader || !resultsList) return;
+
+    const k = kSetting ? kSetting.value : 50;
+    const range = Array.from(document.querySelectorAll('.folder-chip.active')).map(c => c.textContent);
+
+    resultsList.innerHTML = '';
+    loader.style.display = 'flex';
+    warning.style.display = 'none';
+
+    try {
+        const data = await apiFetch(`/admin_api/dailynotes/associative-discovery`, {
+            method: 'POST',
+            body: JSON.stringify({
+                sourceFilePath: discoverySourceFile,
+                k: parseInt(k),
+                range: range
+            })
+        });
+
+        loader.style.display = 'none';
+        
+        if (data.warning) {
+            warning.textContent = data.warning;
+            warning.style.display = 'block';
+        }
+
+        if (data.results && data.results.length > 0) {
+            renderDiscoveryResults(data.results);
+        } else {
+            resultsList.innerHTML = '<p style="text-align:center;color:var(--secondary-text);margin-top:20px;">未发现相关的记忆节点。</p>';
+        }
+    } catch (e) {
+        loader.style.display = 'none';
+        console.error('Discovery failed:', e);
+        showMessage(`联想失败: ${e.message}`, 'error');
+    }
+}
+
+function renderDiscoveryResults(results) {
+    const list = document.getElementById('discovery-results-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    results.forEach(res => {
+        const card = document.createElement('div');
+        card.className = 'discovery-result-card';
+        
+        const scorePercent = Math.min(Math.round(res.score * 100), 100);
+        
+        card.innerHTML = `
+            <div class="result-header">
+                <span class="result-filename">${res.name}</span>
+                <span class="result-score-tag">Match: ${scorePercent}%</span>
+            </div>
+            <div class="result-score-bar-container">
+                <div class="result-score-bar" style="width: 0%"></div>
+            </div>
+            <div class="result-tags">
+                ${res.matchedTags ? res.matchedTags.slice(0, 5).map(t => `<span class="result-tag">#${t}</span>`).join('') : ''}
+            </div>
+            <div class="result-preview">${Array.isArray(res.chunks) ? res.chunks.join(' ... ') : ''}</div>
+        `;
+
+        card.onclick = () => {
+            const parts = res.path.split(/[/\\]/);
+            const folder = parts[0];
+            const file = parts[parts.length - 1];
+            document.getElementById('associative-discovery-modal').classList.remove('show');
+            openNoteForEditing(folder, file);
+        };
+
+        list.appendChild(card);
+        
+        setTimeout(() => {
+            const bar = card.querySelector('.result-score-bar');
+            if (bar) bar.style.width = `${scorePercent}%`;
+        }, 50);
+    });
+}

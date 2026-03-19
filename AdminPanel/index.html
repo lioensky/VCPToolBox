@@ -1349,6 +1349,45 @@
     <div id="message-popup" class="message-popup"></div>
 
     <script type="module" src="script.js"></script>
+    <!-- Associative Discovery Modal -->
+    <div id="associative-discovery-modal" class="placeholder-detail-modal">
+        <div class="placeholder-detail-modal-backdrop" id="discovery-modal-backdrop"></div>
+        <div class="placeholder-detail-modal-content" style="max-width: 800px;">
+            <div class="placeholder-detail-modal-header">
+                <h3 id="discovery-modal-title">联想追溯: </h3>
+                <button class="placeholder-detail-modal-close" id="close-discovery-modal">&times;</button>
+            </div>
+            <div class="placeholder-detail-modal-body">
+                <div class="discovery-config-panel">
+                    <div class="config-row">
+                        <label for="discovery-k-slider">联想深度 (K=50):</label>
+                        <input type="range" id="discovery-k-slider" min="5" max="100" step="5" value="50">
+                        <span id="discovery-k-display">50</span>
+                    </div>
+                    <div class="config-row">
+                        <label>联想范围 (不选则为全局):</label>
+                        <div id="discovery-range-chips" class="folder-chips-container">
+                            <!-- 文件夹芯片将动态加载 -->
+                        </div>
+                    </div>
+                    <div class="config-actions">
+                        <button id="start-discovery-btn" class="primary-btn">开始联想</button>
+                    </div>
+                </div>
+                <div id="discovery-results-area" class="discovery-results-area">
+                    <div id="discovery-loader" class="loader-container" style="display: none;">
+                        <div class="vcp-spinner"></div>
+                        <p>正在跨维度连接语义节点...</p>
+                    </div>
+                    <div id="discovery-warning" class="status-message warning" style="display: none;"></div>
+                    <div id="discovery-results-list" class="discovery-results-list">
+                        <!-- 结果将动态加载 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const canvas = document.getElementById('vcp-animation-canvas');
