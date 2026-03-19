@@ -201,3 +201,5 @@ rust-vexus-lite/target/
 
 # ==== 分布式开发 ====
 VCPDistributedServer
+# XiaohongshuFetch config
+Plugin/XiaohongshuFetch/config.env
