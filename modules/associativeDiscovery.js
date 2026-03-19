@@ -22,20 +22,26 @@ class AssociativeDiscovery {
      */
     async discover(params) {
         const { sourceFilePath, k = 10, range = [], tagBoost = 0.15 } = params;
+        
+        // 1. 归一化路径 (处理 Windows/Linux 分隔符差异)
+        const normalizedSourcePath = path.normalize(sourceFilePath);
+        console.log(`[AssociativeDiscovery] Checking file: ${normalizedSourcePath} (original: ${sourceFilePath})`);
 
         // 1. 获取源文件内容与元数据
-        const fullSourcePath = path.join(this.kbm.config.rootPath, sourceFilePath);
+        const fullSourcePath = path.join(this.kbm.config.rootPath, normalizedSourcePath);
         let content;
         try {
             content = await fs.readFile(fullSourcePath, 'utf-8');
         } catch (e) {
+            console.error(`[AssociativeDiscovery] Failed to read source file: ${fullSourcePath}`, e);
             throw new Error(`无法读取源文件: ${e.message}`);
         }
 
         // 2. 检查该文件是否已在向量索引中
-        const fileInDb = await this._checkFileIndexed(sourceFilePath);
+        const fileInDb = await this._checkFileIndexed(normalizedSourcePath);
         let warning = null;
         if (!fileInDb) {
+            console.log(`[AssociativeDiscovery] Warning: File not found in DB: ${normalizedSourcePath}`);
             warning = "⚠️ 该文件位于屏蔽目录或尚未被扫描，将使用即时向量化进行联想。";
         }
 
@@ -71,10 +77,14 @@ class AssociativeDiscovery {
         const fileMap = new Map();
         
         for (const res of searchResults) {
+            // 统一使用正斜杠处理路径
+            const normalizedResPath = res.fullPath.replace(/\\/g, '/');
+            const normalizedSourcePath = sourceFilePath.replace(/\\/g, '/');
+            
             // 排除源文件自身
-            if (res.fullPath === sourceFilePath || path.basename(res.fullPath) === path.basename(sourceFilePath)) continue;
+            if (normalizedResPath === normalizedSourcePath) continue;
 
-            const filePath = res.fullPath;
+            const filePath = normalizedResPath;
             if (!fileMap.has(filePath)) {
                 fileMap.set(filePath, {
                     path: filePath,
@@ -111,7 +121,7 @@ class AssociativeDiscovery {
             .slice(0, k);
 
         return {
-            source: sourceFilePath,
+            source: sourceFilePath.replace(/\\/g, '/'),
             warning,
             results: finalResults,
             metadata: {
