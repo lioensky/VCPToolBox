@@ -211,4 +211,19 @@ async function getEmbeddingsBatch(texts, config) {
     return finalResults; // 🛡️ 长度严格等于 texts.length，失败位置为 null
 }
 
-module.exports = { getEmbeddingsBatch };
+/**
+ * 余弦相似度计算（公共版本）
+ * 供 toolExecutor / messageProcessor / 其他模块复用
+ */
+function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
+}
+
+module.exports = { getEmbeddingsBatch, cosineSimilarity };
