@@ -23,35 +23,41 @@ class AssociativeDiscovery {
     async discover(params) {
         const { sourceFilePath, k = 10, range = [], tagBoost = 0.15 } = params;
         
-        // 1. 归一化路径 (处理 Windows/Linux 分隔符差异)
-        const normalizedSourcePath = path.normalize(sourceFilePath);
-        console.log(`[AssociativeDiscovery] Checking file: ${normalizedSourcePath} (original: ${sourceFilePath})`);
+        // 1. 归一化路径 (统一使用正斜杠进行逻辑处理)
+        const normalizedSourcePath = sourceFilePath.replace(/\\/g, '/');
+        console.log(`[AssociativeDiscovery] Checking file: ${normalizedSourcePath}`);
 
-        // 1. 获取源文件内容与元数据
-        const fullSourcePath = path.join(this.kbm.config.rootPath, normalizedSourcePath);
-        let content;
-        try {
-            content = await fs.readFile(fullSourcePath, 'utf-8');
-        } catch (e) {
-            console.error(`[AssociativeDiscovery] Failed to read source file: ${fullSourcePath}`, e);
-            throw new Error(`无法读取源文件: ${e.message}`);
-        }
-
-        // 2. 检查该文件是否已在向量索引中
-        const fileInDb = await this._checkFileIndexed(normalizedSourcePath);
+        // 2. 检查该文件是否已在向量索引中并尝试获取已有向量
+        let seedVector = null;
         let warning = null;
-        if (!fileInDb) {
-            console.log(`[AssociativeDiscovery] Warning: File not found in DB: ${normalizedSourcePath}`);
-            warning = "⚠️ 该文件位于屏蔽目录或尚未被扫描，将使用即时向量化进行联想。";
-        }
+        
+        // 使用归一化后的路径去数据库查找 (内部会处理斜杠差异)
+        const existingVector = await this._getFileVectorFromDb(normalizedSourcePath);
+        if (existingVector) {
+            seedVector = existingVector;
+            console.log(`[AssociativeDiscovery] Using existing vector from DB for: ${normalizedSourcePath}`);
+        } else {
+            console.log(`[AssociativeDiscovery] File not found in DB or no vector: ${normalizedSourcePath}`);
+            warning = "⚠️ 该文件尚未被扫描或位于屏蔽目录，将使用即时向量化。";
+            
+            // 获取源文件内容进行即时向量化
+            const fullSourcePath = path.join(this.kbm.config.rootPath, normalizedSourcePath);
+            let content;
+            try {
+                content = await fs.readFile(fullSourcePath, 'utf-8');
+            } catch (e) {
+                console.error(`[AssociativeDiscovery] Failed to read source file: ${fullSourcePath}`, e);
+                throw new Error(`无法读取源文件: ${e.message}`);
+            }
 
-        // 3. 获取源文件向量 (如果文件很大，取前 2000 字作为种子)
-        const seedText = content.substring(0, 2000);
-        const [seedVector] = await getEmbeddingsBatch([seedText], {
-            apiKey: this.kbm.config.apiKey,
-            apiUrl: this.kbm.config.apiUrl,
-            model: this.kbm.config.model
-        });
+            const seedText = content.substring(0, 2000);
+            const [vector] = await getEmbeddingsBatch([seedText], {
+                apiKey: this.kbm.config.apiKey,
+                apiUrl: this.kbm.config.apiUrl,
+                model: this.kbm.config.model
+            });
+            seedVector = vector;
+        }
 
         if (!seedVector) {
             throw new Error("文件向量化失败，请检查 API 配置。");
@@ -134,14 +140,48 @@ class AssociativeDiscovery {
     }
 
     /**
-     * 检查文件是否已被索引
+     * 从数据库获取文件的已有向量
      */
-    async _checkFileIndexed(relPath) {
+    async _getFileVectorFromDb(relPath) {
         try {
-            const row = this.kbm.db.prepare("SELECT id FROM files WHERE path = ?").get(relPath);
-            return !!row;
+            // 1. 准备路径变体以兼容不同系统的存储格式 (并确保能命中数据库索引)
+            const variants = [
+                relPath,                        // 原始路径
+                relPath.replace(/\\/g, '/'),    // 强制正斜杠 (Linux/Web 风格)
+                relPath.replace(/\//g, '\\')    // 强制反斜杠 (Windows 风格)
+            ];
+            
+            // 去重
+            const uniqueVariants = [...new Set(variants)];
+            
+            let fileRow = null;
+            const stmt = this.kbm.db.prepare("SELECT id FROM files WHERE path = ?");
+            
+            // 依次尝试，直到命中索引
+            for (const variant of uniqueVariants) {
+                fileRow = stmt.get(variant);
+                if (fileRow) {
+                    console.log(`[AssociativeDiscovery] DB hit with variant: ${variant}`);
+                    break;
+                }
+            }
+
+            if (!fileRow) return null;
+
+            // 2. 获取该文件的第一个分片的向量 (作为种子向量)
+            const chunkRow = this.kbm.db.prepare("SELECT vector FROM chunks WHERE file_id = ? ORDER BY chunk_index ASC LIMIT 1").get(fileRow.id);
+            if (!chunkRow || !chunkRow.vector) return null;
+
+            // 3. 解析向量 (SQLite 存储为 BLOB/Buffer)
+            const floatArray = new Float32Array(
+                chunkRow.vector.buffer,
+                chunkRow.vector.byteOffset,
+                chunkRow.vector.byteLength / 4
+            );
+            return Array.from(floatArray);
         } catch (e) {
-            return false;
+            console.error(`[AssociativeDiscovery] DB error: ${e.message}`);
+            return null;
         }
     }
 }
