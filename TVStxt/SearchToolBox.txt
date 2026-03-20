@@ -4,9 +4,10 @@
 ## 1. 语义穿透联网检索 (VSearch)
 首选联网引擎。支持语义级检索范围与多关键词并发搜索，适合获取多角度观点。
 tool_name:「始」VSearch「末」,
-SearchTopic:「始」需要探讨的主题内容「末」,
-Keywords:「始」提供多个不同视角的搜索关键词，用逗号隔开「末」,
-ShowURL:「始」false「末」,//是否返回信源，默认false。
+SearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,
+Keywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,
+SearchMode:「始」grounding「末」,  //三个模式，'grounding' (Gemini-Google搜索-快),  'tavily' (claude-Tavily搜索-中速)，'grok' (Grok推理级搜索-缓慢),默认grouding
+ShowURL:「始」false「末」,
 ink:「始」mark_history「末」 //可选，是否将检索结果写入history.json
 
 ## 2. 网页/文件内容爬取器 (UrlFetch)
@@ -14,6 +15,9 @@ ink:「始」mark_history「末」 //可选，是否将检索结果写入history
 tool_name:「始」UrlFetch「末」,
 url:「始」(必需) 网页/文件 URL (本地路径请以 file:// 开头)「末」, 
 mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照)「末」
+
+额外小技巧，使用JinaAPI讲HTML转化为MD格式 例如 https://r.jina.ai/https://www.bilibili.com 格式，可以把任意网页以MD文档的方式请求。
+
 
 [===vcp_fold:0.3===]
 
