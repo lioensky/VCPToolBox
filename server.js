@@ -1,7 +1,8 @@
 // server.js
 const express = require('express');
-const dotenv = require('dotenv');
-dotenv.config({ path: 'config.env' });
+const path = require('path');
+const { loadEnvCascade } = require('./envLoader');
+loadEnvCascade(path.join(__dirname, 'config.env'));
 const schedule = require('node-schedule');
 const lunarCalendar = require('chinese-lunar-calendar');
 const dayjs = require('dayjs');
@@ -12,7 +13,6 @@ dayjs.extend(timezone);
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 const fs = require('fs').promises; // fs.promises for async operations
-const path = require('path');
 const { Writable } = require('stream');
 const fsSync = require('fs'); // Renamed to fsSync for clarity with fs.promises
 

@@ -1,7 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
-const dotenv = require('dotenv');
 const axios = require('axios');
+const { parseEnvCascade } = require('../../envLoader');
 // 在 CJS 环境中，__dirname 是全局可用的。
 
 // --- 全局变量和配置 ---
@@ -25,8 +25,7 @@ async function initialize(config, services) { // 移除了 export
     try {
         // 主动读取主服务器根目录的config.env
         const rootEnvPath = path.resolve(__dirname, '../../config.env');
-        const rootEnvContent = await fs.readFile(rootEnvPath, 'utf-8');
-        const rootConfig = dotenv.parse(rootEnvContent);
+        const rootConfig = parseEnvCascade(rootEnvPath).env;
         serverConfig = { ...config, ...rootConfig }; // 合并传入的config和主动读取的config
         
         // 确保File_Key也被正确加载
@@ -39,8 +38,7 @@ async function initialize(config, services) { // 移除了 export
         }
         // 加载插件本地配置
         const pluginEnvPath = path.join(__dirname, 'config.env');
-        const pluginEnvContent = await fs.readFile(pluginEnvPath, 'utf-8');
-        pluginConfig = dotenv.parse(pluginEnvContent);
+        pluginConfig = parseEnvCascade(pluginEnvPath).env;
         await fs.mkdir(meetingsDir, { recursive: true }); // 确保会议目录存在
         await loadMeetingsFromFiles();
         console.log('[MagiAgent] Plugin initialized successfully by reading root config.');

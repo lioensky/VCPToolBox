@@ -1,8 +1,9 @@
 // routes/specialModelRouter.js
 const express = require('express');
-const dotenv = require('dotenv');
+const path = require('path');
+const { loadEnvCascade } = require('../envLoader');
 
-dotenv.config({ path: 'config.env' });
+loadEnvCascade(path.join(__dirname, '..', 'config.env'));
 
 const router = express.Router();
 const API_URL = process.env.API_URL;

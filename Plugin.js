@@ -3,12 +3,12 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
 const schedule = require('node-schedule');
-const dotenv = require('dotenv'); // Ensures dotenv is available
 const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
 const ToolApprovalManager = require('./modules/toolApprovalManager');
+const { parseEnvCascade } = require('./envLoader');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -464,12 +464,11 @@ class PluginManager {
                         if (this.plugins.has(manifest.name)) continue;
 
                         manifest.basePath = pluginPath;
-                        manifest.pluginSpecificEnvConfig = {};
                         try {
-                            const pluginEnvContent = await fs.readFile(path.join(pluginPath, 'config.env'), 'utf-8');
-                            manifest.pluginSpecificEnvConfig = dotenv.parse(pluginEnvContent);
+                            manifest.pluginSpecificEnvConfig = parseEnvCascade(path.join(pluginPath, 'config.env')).env;
                         } catch (envError) {
-                            if (envError.code !== 'ENOENT') console.warn(`[PluginManager] Error reading config.env for ${manifest.name}:`, envError.message);
+                            manifest.pluginSpecificEnvConfig = {};
+                            console.warn(`[PluginManager] Error reading config.env for ${manifest.name}:`, envError.message);
                         }
 
                         this.plugins.set(manifest.name, manifest);

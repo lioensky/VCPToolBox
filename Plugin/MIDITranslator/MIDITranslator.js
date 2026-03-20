@@ -2,10 +2,11 @@
 import { createRequire } from 'module';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import dotenv from 'dotenv';
+import envLoader from '../../envLoader.js';
 
 const require = createRequire(import.meta.url);
 const { MidiQuantizer } = require('./midi_quantizer.node');
+const { parseEnvCascade } = envLoader;
 
 let serverConfig = {};
 let pluginConfig = {};  // 新增：插件配置存储
@@ -53,8 +54,10 @@ async function initialize(config, services) {
         // --- 新增：加载插件配置 ---
         const pluginEnvPath = path.join(__dirname, 'config.env');
         try {
-            const pluginEnvContent = await fs.readFile(pluginEnvPath, 'utf-8');
-            pluginConfig = dotenv.parse(pluginEnvContent);
+        pluginConfig = parseEnvCascade(pluginEnvPath).env;
+        if (Object.keys(pluginConfig).length === 0) {
+            throw Object.assign(new Error('config.env not found'), { code: 'ENOENT' });
+        }
             console.log('[MIDITranslator] 配置加载成功:', {
                 outputMode: pluginConfig.OUTPUT_MODE || 'default',
                 outputPath: getOutputDirectory()

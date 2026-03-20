@@ -3,9 +3,9 @@
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
-const dotenv = require('dotenv');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const { parseEnvCascade } = require('../../envLoader');
 
 // --- State and Config Variables ---
 let VCP_SERVER_PORT;
@@ -115,15 +115,14 @@ function loadDreamConfig() {
     const configEnvPath = path.join(__dirname, 'config.env');
     let envConfig = {};
 
-    if (fs.existsSync(configEnvPath)) {
-        try {
-            const content = fs.readFileSync(configEnvPath, { encoding: 'utf8' });
-            envConfig = dotenv.parse(content);
-        } catch (e) {
-            console.error(`[AgentDream] Error parsing config.env: ${e.message}`);
-            return;
-        }
-    } else {
+    try {
+        envConfig = parseEnvCascade(configEnvPath).env;
+    } catch (e) {
+        console.error(`[AgentDream] Error parsing config.env: ${e.message}`);
+        return;
+    }
+
+    if (Object.keys(envConfig).length === 0) {
         if (DEBUG_MODE) console.error('[AgentDream] config.env not found, using defaults.');
         console.warn('[AgentDream] ⚠️ config.env 未找到，梦系统处于休眠状态。请复制 config.env.example 为 config.env 以启用。');
         return;

@@ -1,5 +1,6 @@
 // TextChunker.js
-require('dotenv').config({ path: './config.env' });
+const { loadEnvCascade } = require('./envLoader');
+loadEnvCascade('./config.env');
 const { get_encoding } = require("@dqbd/tiktoken"); // 假设您已安装 tiktoken 用于精确计算
 const encoding = get_encoding("cl100k_base"); // gpt-4, gpt-3.5, embedding models 常用
 

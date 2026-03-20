@@ -1,15 +1,14 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const dotenv = require('dotenv');
 const crypto = require('crypto');
+const { parseEnvCascade } = require('../../envLoader');
 
 // 加载配置
 const configPath = path.join(__dirname, 'config.env');
 let config = {};
 try {
-    const envContent = require('fs').readFileSync(configPath, 'utf-8');
-    config = dotenv.parse(envContent);
+    config = parseEnvCascade(configPath).env;
     log('成功加载 config.env 文件。');
 } catch (error) {
     if (error.code === 'ENOENT') {

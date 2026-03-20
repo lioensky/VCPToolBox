@@ -2,7 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs'); // 用于同步操作
 const path = require('path');
 const { spawn } = require('child_process');
-const dotenv = require('dotenv');
+const { parseEnvCascade } = require('../../envLoader');
 
 const DB_DIR = path.join(__dirname, 'database');
 const FILE_CACHE_DIR = path.join(__dirname, 'file_cache');
@@ -11,8 +11,7 @@ const FILE_CACHE_DIR = path.join(__dirname, 'file_cache');
 const configPath = path.join(__dirname, 'config.env');
 let config = {};
 try {
-    const envContent = fsSync.readFileSync(configPath, 'utf-8');
-    config = dotenv.parse(envContent);
+    config = parseEnvCascade(configPath).env;
 } catch (error) {
     // 配置文件不存在时使用环境变量
     config = {};

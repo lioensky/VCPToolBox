@@ -19,9 +19,10 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { existsSync } = require('fs');
+const { loadEnvCascade } = require('./envLoader');
 
 // 加载环境变量（独立应用配置）
-require('dotenv').config({ path: path.join(__dirname, 'config.env') });
+loadEnvCascade(path.join(__dirname, 'config.env'));
 
 // --- 配置 ---
 const TAG_MODEL = process.env.TagModel || 'gemini-2.5-flash-preview-09-2025-thinking';

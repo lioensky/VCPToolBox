@@ -7,6 +7,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { parseEnvCascade } = require('../../envLoader');
 
 // ============================================
 // 路径常量
@@ -42,21 +43,13 @@ function loadConfig() {
 
   // Fallback: 从 VCPForumOnline/config.env 读取
   try {
-    const content = fs.readFileSync(FORUM_CONFIG_PATH, 'utf-8');
-    content.split('\n').forEach(line => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) return;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx === -1) return;
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (key === 'FORUM_API_URL' && !config.forumApiUrl) config.forumApiUrl = val;
-      if (key === 'FORUM_API_KEY' && !config.forumApiKey) config.forumApiKey = val;
-      if (key === 'FORUM_PROXY' && !config.forumProxy) config.forumProxy = val;
-      if (key === 'ENABLE_PATROL' && !process.env.ENABLE_PATROL) config.enablePatrol = val === 'true';
-      if (key === 'PATROL_HOURS' && !process.env.PATROL_HOURS) config.patrolHours = val;
-      if (key === 'PATROL_AGENT' && !process.env.PATROL_AGENT) config.patrolAgent = val;
-    });
+    const forumEnv = parseEnvCascade(FORUM_CONFIG_PATH).env;
+    if (!config.forumApiUrl) config.forumApiUrl = forumEnv.FORUM_API_URL || '';
+    if (!config.forumApiKey) config.forumApiKey = forumEnv.FORUM_API_KEY || '';
+    if (!config.forumProxy) config.forumProxy = forumEnv.FORUM_PROXY || '';
+    if (!process.env.ENABLE_PATROL && typeof forumEnv.ENABLE_PATROL !== 'undefined') config.enablePatrol = forumEnv.ENABLE_PATROL === 'true';
+    if (!process.env.PATROL_HOURS) config.patrolHours = forumEnv.PATROL_HOURS || config.patrolHours;
+    if (!process.env.PATROL_AGENT) config.patrolAgent = forumEnv.PATROL_AGENT || config.patrolAgent;
   } catch (e) {
     console.log('[Patrol] 无法读取论坛配置: ' + FORUM_CONFIG_PATH);
   }
@@ -65,17 +58,9 @@ function loadConfig() {
   if (!config.vcpKey) {
     try {
       const rootEnv = path.join(PROJECT_BASE_PATH, 'config.env');
-      const content = fs.readFileSync(rootEnv, 'utf-8');
-      content.split('\n').forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) return;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx === -1) return;
-        const key = trimmed.slice(0, eqIdx).trim();
-        const val = trimmed.slice(eqIdx + 1).trim();
-        if (key === 'Key' && !config.vcpKey) config.vcpKey = val;
-        if (key === 'PORT' && config.vcpPort === '8080') config.vcpPort = val;
-      });
+      const rootConfig = parseEnvCascade(rootEnv).env;
+      if (!config.vcpKey) config.vcpKey = rootConfig.Key || '';
+      if (config.vcpPort === '8080' && rootConfig.PORT) config.vcpPort = rootConfig.PORT;
     } catch (e) {}
   }
 

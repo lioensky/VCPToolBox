@@ -1,9 +1,9 @@
 // AgentAssistant.js (Service Module)
 const fs = require('fs');
 const path = require('path');
-const dotenv = require('dotenv');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const { parseEnvCascade } = require('../../envLoader');
 
 // --- State and Config Variables ---
 let VCP_SERVER_PORT;
@@ -89,15 +89,14 @@ function loadAgentsFromLocalConfig() {
     const pluginConfigEnvPath = path.join(__dirname, 'config.env');
     let pluginLocalEnvConfig = {};
 
-    if (fs.existsSync(pluginConfigEnvPath)) {
-        try {
-            const fileContent = fs.readFileSync(pluginConfigEnvPath, { encoding: 'utf8' });
-            pluginLocalEnvConfig = dotenv.parse(fileContent);
-        } catch (e) {
-            console.error(`[AgentAssistant Service] Error parsing plugin's local config.env (${pluginConfigEnvPath}): ${e.message}.`);
-            return;
-        }
-    } else {
+    try {
+        pluginLocalEnvConfig = parseEnvCascade(pluginConfigEnvPath).env;
+    } catch (e) {
+        console.error(`[AgentAssistant Service] Error parsing plugin's local config.env (${pluginConfigEnvPath}): ${e.message}.`);
+        return;
+    }
+
+    if (Object.keys(pluginLocalEnvConfig).length === 0) {
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Plugin's local config.env not found at: ${pluginConfigEnvPath}.`);
         return;
     }

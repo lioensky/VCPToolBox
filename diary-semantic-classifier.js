@@ -17,9 +17,9 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
 const Database = require('better-sqlite3');
-const dotenv = require('dotenv');
 const { program } = require('commander');
 const crypto = require('crypto');
+const { loadEnvCascade } = require('./envLoader');
 
 // 尝试加载 Rust Vexus 引擎 (用于重建索引)
 let VexusIndex;
@@ -31,7 +31,7 @@ try {
 }
 
 // 加载环境变量
-dotenv.config({ path: path.join(__dirname, 'config.env') });
+loadEnvCascade(path.join(__dirname, 'config.env'));
 
 // 引入 Embedding 工具
 const { getEmbeddingsBatch } = require('./EmbeddingUtils');

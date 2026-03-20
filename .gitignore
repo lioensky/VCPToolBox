@@ -141,7 +141,9 @@ dist
 # 所有插件的实际 config.env（保留 .example）
 config.env
 config.env.local
+config.local.env
 **/config.env
+**/config.local.env
 !**/config.env.example
 
 # 有 .example 对应的运行时配置
