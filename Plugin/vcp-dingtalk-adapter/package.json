@@ -1,0 +1,17 @@
+{
+  "name": "vcp-dingtalk-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 node --watch src/index.js"
+  },
+  "dependencies": {
+    "dingtalk-stream": "^2.1.5",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}

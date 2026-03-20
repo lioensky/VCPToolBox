@@ -548,6 +548,11 @@ app.use((req, res, next) => {
         return next();
     }
 
+    // Skip bearer token check for internal endpoints (they have their own auth)
+    if (req.path.startsWith('/internal/')) {
+        return next();
+    }
+
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
         return res.status(401).json({ error: 'Unauthorized (Bearer token required)' });
@@ -872,6 +877,218 @@ app.post('/v1/chatvcp/completions', async (req, res) => {
             res.status(500).json({ error: "A fatal internal error occurred." });
         } else if (!res.writableEnded) {
             res.end();
+        }
+    }
+});
+
+// ChannelBridge B1 端点：供外部 Channel Adapter（如钉钉、企微）直接调用，
+// 携带 agentId 与多轮消息，走完整 VCP 工具链后返回纯文本 JSON 响应。
+
+// 限流配置
+const CHANNEL_BRIDGE_RATE_LIMIT_WINDOW_MS = 1000; // 1秒窗口
+const CHANNEL_BRIDGE_RATE_LIMIT_MAX_REQUESTS = 10; // 每秒最多10个请求
+const CHANNEL_BRIDGE_MAX_BODY_SIZE = 1024 * 1024; // 1MB 请求体限制
+const CHANNEL_BRIDGE_MAX_CAPTURE_SIZE = 512 * 1024; // 512KB 响应捕获限制
+const channelBridgeRateLimiter = new Map(); // IP -> { count, windowStart }
+
+// 定期清理限流器（每分钟）
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, data] of channelBridgeRateLimiter.entries()) {
+        if (now - data.windowStart > 60000) {
+            channelBridgeRateLimiter.delete(ip);
+        }
+    }
+}, 60000).unref();
+
+app.post('/internal/channel-ingest', async (req, res) => {
+    try {
+        // ── 0. 限流检查 ───────────────────────────────────────────────────────
+        let clientIp = req.ip;
+        if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+            clientIp = clientIp.substr(7);
+        }
+        
+        const now = Date.now();
+        const rateInfo = channelBridgeRateLimiter.get(clientIp) || { count: 0, windowStart: now };
+        
+        // 如果窗口过期，重置计数
+        if (now - rateInfo.windowStart > CHANNEL_BRIDGE_RATE_LIMIT_WINDOW_MS) {
+            rateInfo.count = 0;
+            rateInfo.windowStart = now;
+        }
+        
+        rateInfo.count++;
+        channelBridgeRateLimiter.set(clientIp, rateInfo);
+        
+        if (rateInfo.count > CHANNEL_BRIDGE_RATE_LIMIT_MAX_REQUESTS) {
+            console.warn(`[ChannelBridge] Rate limit exceeded for IP: ${clientIp}`);
+            return res.status(429).json({ error: 'Too Many Requests', retryAfter: 1 });
+        }
+
+        // ── 1. 鉴权 ──────────────────────────────────────────────────────────
+        const authHeader = req.headers['authorization'] || '';
+        const bridgeKey = req.headers['x-channel-bridge-key'] || '';
+        const bridgeServerKey = process.env.Key || '';
+        const isAuthed = authHeader === `Bearer ${bridgeServerKey}` || bridgeKey === bridgeServerKey;
+        if (!isAuthed) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        // ── 2. 解析 payload（带大小限制）─────────────────────────────────────
+        const body = req.body;
+        
+        // 检查请求体大小
+        const bodySize = JSON.stringify(body).length;
+        if (bodySize > CHANNEL_BRIDGE_MAX_BODY_SIZE) {
+            console.warn(`[ChannelBridge] Request body too large: ${bodySize} bytes from IP: ${clientIp}`);
+            return res.status(413).json({ error: 'Payload Too Large', maxSize: CHANNEL_BRIDGE_MAX_BODY_SIZE });
+        }
+        if (!body || typeof body !== 'object') {
+            return res.status(400).json({ error: 'Request body must be JSON.' });
+        }
+
+        const agentId   = body.agentId || body.agent_id || '';
+        const model     = (body.vcpConfig && body.vcpConfig.runtimeOverrides && body.vcpConfig.runtimeOverrides.model)
+                          || process.env.API_Model || 'gpt-4o';
+        const apiKey    = (body.vcpConfig && body.vcpConfig.runtimeOverrides && body.vcpConfig.runtimeOverrides.apiKey)
+                          || process.env.API_KEY || '';
+        const apiBase   = (body.vcpConfig && body.vcpConfig.runtimeOverrides && body.vcpConfig.runtimeOverrides.baseURL)
+                          || process.env.API_URL || '';
+        const messages  = Array.isArray(body.messages) ? body.messages : [];
+        const sessionKey = (body.topicControl && body.topicControl.bindingKey) || body.sessionKey || null;
+
+        if (!agentId) {
+            return res.status(400).json({ error: 'Missing required field: agentId' });
+        }
+
+        // 构造完整消息列表：系统消息使用 {{agentId}} 占位符，由 messageProcessor 展开
+        const syntheticMessages = [
+            { role: 'system', content: `{{${agentId}}}` },
+            ...messages
+        ];
+
+        // ── 3. 构造代理请求 ───────────────────────────────────────────────────
+        // 伪造一个 Express req/res 对，让 chatCompletionHandler 正常工作
+        const fakeBody = {
+            model,
+            messages: syntheticMessages,
+            stream: false,
+            // 透传 sessionKey 供 RAG / 上下文隔离使用
+            ...(sessionKey ? { externalSessionKey: sessionKey } : {}),
+            // 运行时覆盖参数（chatCompletionHandler 会优先读取这些值）
+            ...(apiKey ? { apiKeyOverride: apiKey } : {}),
+            ...(apiBase ? { apiBaseOverride: apiBase } : {}),
+        };
+
+        // 覆盖 req 字段（chatCompletionHandler 读取 req.body）
+        const origBody    = req.body;
+        const origHeaders = req.headers;
+        req.body    = fakeBody;
+        // 保持原始 headers 不变，覆盖参数已通过 fakeBody 传递
+
+        // ── 4. 用 Writable 拦截 chatCompletionHandler 的输出 ──────────────────
+        let capturedData = '';
+        const origWrite  = res.write.bind(res);
+        const origEnd    = res.end.bind(res);
+        const origStatus = res.status.bind(res);
+        const origJson   = res.json.bind(res);
+        const origSet    = res.set ? res.set.bind(res) : () => {};
+        const origHeader = res.header ? res.header.bind(res) : () => {};
+        const origType   = res.type ? res.type.bind(res) : () => {};
+        let bridgeStatusCode = 200;
+        let bridgeFinished   = false;
+
+        res.status = (code) => { bridgeStatusCode = code; return res; };
+        res.set    = () => res;
+        res.header = () => res;
+        res.type   = () => res;
+        res.setHeader = () => {};
+        res.write  = (chunk) => { if (chunk) capturedData += chunk.toString(); return true; };
+        res.json   = (obj)   => {
+            capturedData += JSON.stringify(obj);
+            bridgeFinished = true;
+            return res;
+        };
+        res.end    = (chunk) => {
+            if (chunk) capturedData += chunk.toString();
+            bridgeFinished = true;
+        };
+
+        // ── 5. 执行处理 ───────────────────────────────────────────────────────
+        try {
+            await chatCompletionHandler.handle(req, res, false);
+        } finally {
+            // 恢复原始 req/res 方法
+            req.body    = origBody;
+            req.headers = origHeaders;
+            res.write   = origWrite;
+            res.end     = origEnd;
+            res.status  = origStatus;
+            res.json    = origJson;
+            res.set     = origSet;
+            res.header  = origHeader;
+            res.type    = origType;
+        }
+
+        // ── 6. 解析捕获的输出，提取 AI 回复文本 ──────────────────────────────
+        let replyText = '';
+        const rawOutput = capturedData.trim();
+
+        // 尝试解析 SSE 流
+        if (rawOutput.includes('data: ')) {
+            for (const line of rawOutput.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith('data: ')) continue;
+                const jsonStr = trimmed.slice(6).trim();
+                if (jsonStr === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(jsonStr);
+                    replyText += parsed.choices?.[0]?.delta?.content
+                               || parsed.choices?.[0]?.message?.content
+                               || '';
+                } catch (_) { /* ignore malformed SSE lines */ }
+            }
+        }
+
+        // 尝试解析普通 JSON（非流）
+        if (!replyText) {
+            try {
+                const parsed = JSON.parse(rawOutput);
+                // 兼容错误响应直接透传
+                if (parsed.error) {
+                    return res.status(bridgeStatusCode || 502).json({ error: parsed.error });
+                }
+                replyText = parsed.choices?.[0]?.message?.content
+                          || parsed.choices?.[0]?.delta?.content
+                          || '';
+            } catch (_) {
+                // 不是 JSON，直接使用原始输出
+                replyText = rawOutput;
+            }
+        }
+
+        if (DEBUG_MODE) {
+            console.log(`[ChannelBridge] agentId=${agentId} reply length=${replyText.length}`);
+        }
+
+        // ── 7. 返回结构化响应给 Channel Adapter ──────────────────────────────
+        return res.status(200).json({
+            reply: {
+                text:    replyText,
+                content: replyText,
+            },
+            meta: {
+                agentId,
+                model,
+                sessionKey: sessionKey || null,
+            }
+        });
+
+    } catch (e) {
+        console.error('[ChannelBridge] Fatal error in /internal/channel-ingest:', e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Internal Server Error', details: e.message });
         }
     }
 });

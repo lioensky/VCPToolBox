@@ -323,8 +323,8 @@ class ChatCompletionHandler {
 
   async handle(req, res, forceShowVCP = false) {
     const {
-      apiUrl,
-      apiKey,
+      apiUrl: defaultApiUrl,
+      apiKey: defaultApiKey,
       modelRedirectHandler,
       pluginManager,
       activeRequests,
@@ -349,6 +349,10 @@ class ChatCompletionHandler {
       chinaModel1, // 新增
       chinaModel1Cot, // 新增
     } = this.config;
+
+    // 支持运行时覆盖 API URL 和 API Key（供 /internal/channel-ingest 等内部桥接端点使用）
+    const apiUrl = req.body.apiBaseOverride || req.headers['x-override-api-base'] || defaultApiUrl;
+    const apiKey = req.body.apiKeyOverride || req.headers['x-override-api-key'] || defaultApiKey;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
 

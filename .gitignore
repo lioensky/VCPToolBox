@@ -205,3 +205,4 @@ rust-vexus-lite/target/
 VCPDistributedServer
 # XiaohongshuFetch config
 Plugin/XiaohongshuFetch/config.env
+nul
