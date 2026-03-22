@@ -470,6 +470,8 @@
                                 class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li><a href="#" data-target="placeholder-viewer"><span
                                 class="material-symbols-outlined">view_list</span>占位符查看器</a></li>
+                    <li><a href="#" data-target="plugin-installer"><span
+                                class="material-symbols-outlined">extension</span>插件安装器</a></li>
                     <li class="nav-category" id="plugins-category">———— 插 件 管 理 ————</li>
                     <!-- 插件列表将动态生成在这里 -->
                 </ul>
@@ -582,6 +584,32 @@
                 <div class="activity-chart-container">
                     <h3>服务器活跃度</h3>
                     <canvas id="activity-chart-canvas"></canvas>
+                </div>
+            </section>
+
+            <section id="plugin-installer-section" class="config-section">
+                <h2>插件安装器</h2>
+                <p class="description">第一版支持从当前服务器本机路径安装插件 zip，也支持把插件卸载到 <code>Plugin/.trash</code>。这一版暂不自动执行 <code>npm install</code> 或 <code>pip install</code>。</p>
+                <div class="card">
+                    <form id="plugin-installer-form">
+                        <div class="config-item">
+                            <label for="plugin-installer-zip-path">插件 zip 本机路径</label>
+                            <input type="text" id="plugin-installer-zip-path" placeholder="例如：C:\Plugins\MyPlugin.zip 或 /opt/plugins/MyPlugin.zip">
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit">安装插件</button>
+                        </div>
+                    </form>
+                </div>
+                <div class="card">
+                    <h3>安装结果</h3>
+                    <div id="plugin-installer-summary" style="display: none;"></div>
+                </div>
+                <div class="card">
+                    <h3>可恢复的已卸载插件</h3>
+                    <div id="plugin-trash-list">
+                        <p class="description">正在加载回收站...</p>
+                    </div>
                 </div>
             </section>
 

@@ -1,7 +1,7 @@
 // AdminPanel/script.js
 import { apiFetch, showMessage, checkAuthStatus } from './js/utils.js';
 import { parseEnvToList, buildEnvString, createFormGroup, createCommentOrEmptyElement } from './js/config.js';
-import { loadPluginList, loadPluginConfig } from './js/plugins.js';
+import { loadPluginList, loadPluginConfig, initializePluginInstaller } from './js/plugins.js';
 import { initializeDashboard, stopDashboardUpdates } from './js/dashboard.js';
 import { initializeDailyNotesManager } from './js/notes-manager.js';
 import { initializeAgentManager } from './js/agent-manager.js';
@@ -286,6 +286,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      */
     async function loadInitialData() {
         try {
+            initializePluginInstaller();
             await loadBaseConfig();
             await loadPluginList();
             const firstLink = pluginNavList.querySelector('a');

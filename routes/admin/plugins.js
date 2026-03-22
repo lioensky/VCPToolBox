@@ -1,20 +1,261 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
+const execFileAsync = promisify(execFile);
+
+function sanitizeFolderName(name) {
+    return String(name || 'plugin')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .replace(/\.+$/g, '')
+        .trim() || 'plugin';
+}
+
+function quotePowerShell(value) {
+    return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function pathExists(targetPath) {
+    try {
+        await fs.access(targetPath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function extractZipArchive(zipPath, destinationPath) {
+    if (process.platform === 'win32') {
+        const command = `Expand-Archive -LiteralPath ${quotePowerShell(zipPath)} -DestinationPath ${quotePowerShell(destinationPath)} -Force`;
+        await execFileAsync('powershell.exe', ['-NoProfile', '-Command', command]);
+        return;
+    }
+
+    await execFileAsync('unzip', ['-o', zipPath, '-d', destinationPath]);
+}
+
+async function findManifestFiles(rootPath) {
+    const results = [];
+    const stack = [rootPath];
+
+    while (stack.length > 0) {
+        const currentPath = stack.pop();
+        const entries = await fs.readdir(currentPath, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '__pycache__') {
+                continue;
+            }
+
+            const absPath = path.join(currentPath, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(absPath);
+            } else if (entry.isFile() && entry.name === manifestFileName) {
+                results.push(absPath);
+            }
+        }
+    }
+
+    return results;
+}
+
+async function discoverPluginFromExtractedArchive(extractRoot) {
+    const manifestFiles = await findManifestFiles(extractRoot);
+    if (manifestFiles.length === 0) {
+        throw new Error('Zip 中未找到 plugin-manifest.json。');
+    }
+    if (manifestFiles.length > 1) {
+        throw new Error('Zip 中检测到多个 plugin-manifest.json，第一版安装器暂不支持多插件包。');
+    }
+
+    const manifestPath = manifestFiles[0];
+    const pluginRoot = path.dirname(manifestPath);
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+
+    if (!manifest.name || !manifest.pluginType || !manifest.entryPoint) {
+        throw new Error('plugin-manifest.json 缺少必要字段：name / pluginType / entryPoint。');
+    }
+
+    return { manifest, manifestPath, pluginRoot };
+}
+
+async function findPluginFolderByName(pluginDir, pluginName) {
+    const pluginFolders = await fs.readdir(pluginDir, { withFileTypes: true });
+
+    for (const folder of pluginFolders) {
+        if (!folder.isDirectory() || folder.name === '.trash') continue;
+
+        const pluginPath = path.join(pluginDir, folder.name);
+        const manifestPath = path.join(pluginPath, manifestFileName);
+        const blockedManifestPath = manifestPath + blockedManifestExtension;
+
+        for (const candidate of [manifestPath, blockedManifestPath]) {
+            try {
+                const manifestContent = await fs.readFile(candidate, 'utf-8');
+                const manifest = JSON.parse(manifestContent);
+                if (manifest.name === pluginName) {
+                    return { pluginPath, manifest, manifestPath, blockedManifestPath, folderName: folder.name };
+                }
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    console.warn(`[AdminPanelRoutes] Failed to inspect plugin folder ${folder.name}:`, error.message);
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+async function readPluginManifestFromFolder(pluginPath) {
+    const manifestPath = path.join(pluginPath, manifestFileName);
+    const blockedManifestPath = manifestPath + blockedManifestExtension;
+
+    for (const candidatePath of [manifestPath, blockedManifestPath]) {
+        try {
+            const manifestContent = await fs.readFile(candidatePath, 'utf-8');
+            return {
+                manifest: JSON.parse(manifestContent),
+                manifestPath: candidatePath,
+                isBlocked: candidatePath.endsWith(blockedManifestExtension),
+            };
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                throw error;
+            }
+        }
+    }
+
+    return null;
+}
+
+function parseTrashFolderName(folderName) {
+    const match = String(folderName || '').match(/^(\d+)__(.+)$/);
+    if (!match) {
+        return {
+            removedAt: null,
+            originalFolderName: folderName,
+        };
+    }
+
+    const removedAt = Number.parseInt(match[1], 10);
+    return {
+        removedAt: Number.isFinite(removedAt) ? removedAt : null,
+        originalFolderName: match[2] || folderName,
+    };
+}
+
+function resolvePathInside(baseDir, childName) {
+    const resolvedBase = path.resolve(baseDir);
+    const resolvedPath = path.resolve(baseDir, childName);
+
+    if (resolvedPath !== resolvedBase && !resolvedPath.startsWith(`${resolvedBase}${path.sep}`)) {
+        throw new Error('Invalid path.');
+    }
+
+    return resolvedPath;
+}
+
+async function listTrashedPlugins(pluginDir) {
+    const trashRoot = path.join(pluginDir, '.trash');
+    if (!(await pathExists(trashRoot))) {
+        return [];
+    }
+
+    const trashFolders = await fs.readdir(trashRoot, { withFileTypes: true });
+    const results = [];
+
+    for (const folder of trashFolders) {
+        if (!folder.isDirectory()) continue;
+
+        const trashedPath = path.join(trashRoot, folder.name);
+        try {
+            const manifestInfo = await readPluginManifestFromFolder(trashedPath);
+            if (!manifestInfo?.manifest?.name) {
+                continue;
+            }
+
+            const { removedAt, originalFolderName } = parseTrashFolderName(folder.name);
+            results.push({
+                trashedFolderName: folder.name,
+                originalFolderName,
+                removedAt,
+                pluginName: manifestInfo.manifest.name,
+                displayName: manifestInfo.manifest.displayName || manifestInfo.manifest.name,
+                version: manifestInfo.manifest.version || '',
+                pluginType: manifestInfo.manifest.pluginType || '',
+                isBlocked: manifestInfo.isBlocked,
+            });
+        } catch (error) {
+            console.warn(`[AdminPanelRoutes] Failed to inspect trashed plugin ${folder.name}:`, error.message);
+        }
+    }
+
+    return results.sort((a, b) => (b.removedAt || 0) - (a.removedAt || 0));
+}
+
+async function detectInstallRequirements(pluginRoot) {
+    const checks = [
+        { fileName: 'package.json', type: 'npm', message: '检测到 package.json，需要时请手动执行 npm install。' },
+        { fileName: 'requirements.txt', type: 'pip', message: '检测到 requirements.txt，需要时请手动执行 pip install -r requirements.txt。' },
+        { fileName: 'pyproject.toml', type: 'python', message: '检测到 pyproject.toml，请确认该插件需要的 Python 依赖已安装。' },
+    ];
+    const dependencyHints = [];
+
+    for (const check of checks) {
+        if (await pathExists(path.join(pluginRoot, check.fileName))) {
+            dependencyHints.push({
+                type: check.type,
+                file: check.fileName,
+                message: check.message,
+            });
+        }
+    }
+
+    return dependencyHints;
+}
+
+async function buildInstallWarningsLegacy(pluginRoot) {
+    const warnings = [];
+    const packageJsonPath = path.join(pluginRoot, 'package.json');
+    const requirementsPath = path.join(pluginRoot, 'requirements.txt');
+
+    return Promise.all([
+        pathExists(packageJsonPath),
+        pathExists(requirementsPath),
+    ]).then(([hasPackageJson, hasRequirements]) => {
+        if (hasPackageJson) {
+            warnings.push('检测到 package.json。第一版不会自动执行 npm install，如有需要请手动安装插件依赖。');
+        }
+        if (hasRequirements) {
+            warnings.push('检测到 requirements.txt。第一版不会自动执行 pip install，如有需要请手动安装 Python 依赖。');
+        }
+        return warnings;
+    });
+}
+
+async function buildInstallWarnings(pluginRoot) {
+    const dependencyHints = await detectInstallRequirements(pluginRoot);
+    return {
+        warnings: dependencyHints.map((hint) => hint.message),
+        dependencyHints,
+    };
+}
 
 module.exports = function(options) {
     const router = express.Router();
     const { pluginManager, DEBUG_MODE } = options;
     const PREPROCESSOR_ORDER_FILE = path.join(__dirname, '..', '..', 'preprocessor_order.json');
+    const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
 
     // GET plugin list
     router.get('/plugins', async (req, res) => {
         try {
             const pluginDataMap = new Map();
-            const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
 
             const loadedPlugins = Array.from(pluginManager.plugins.values());
             for (const p of loadedPlugins) {
@@ -86,11 +327,65 @@ module.exports = function(options) {
         }
     });
 
+    router.post('/plugins/install-local-zip', async (req, res) => {
+        const zipPath = req.body?.zipPath;
+
+        if (typeof zipPath !== 'string' || !zipPath.trim()) {
+            return res.status(400).json({ error: 'Invalid request body. Expected { zipPath: string }.' });
+        }
+
+        const normalizedZipPath = path.resolve(zipPath.trim());
+        const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'vcptoolbox-plugin-install-'));
+
+        try {
+            const stats = await fs.stat(normalizedZipPath);
+            if (!stats.isFile()) {
+                return res.status(400).json({ error: '指定的 zipPath 不是文件。' });
+            }
+            if (path.extname(normalizedZipPath).toLowerCase() !== '.zip') {
+                return res.status(400).json({ error: '第一版安装器目前只支持 .zip 文件。' });
+            }
+
+            await extractZipArchive(normalizedZipPath, tempRoot);
+            const { manifest, pluginRoot } = await discoverPluginFromExtractedArchive(tempRoot);
+            const existingPlugin = await findPluginFolderByName(PLUGIN_DIR, manifest.name);
+            if (existingPlugin) {
+                return res.status(409).json({ error: `插件 ${manifest.name} 已存在，请先卸载旧版本。` });
+            }
+
+            const destinationFolderName = sanitizeFolderName(
+                pluginRoot === tempRoot ? manifest.name : path.basename(pluginRoot)
+            );
+            const destinationPath = path.join(PLUGIN_DIR, destinationFolderName);
+
+            if (await pathExists(destinationPath)) {
+                return res.status(409).json({ error: `目标目录 ${destinationFolderName} 已存在，请先清理后再安装。` });
+            }
+
+            await fs.cp(pluginRoot, destinationPath, { recursive: true, force: false });
+
+            const { warnings, dependencyHints } = await buildInstallWarnings(destinationPath);
+            await pluginManager.loadPlugins();
+
+            return res.json({
+                message: `插件 ${manifest.name} 已安装并完成热加载。`,
+                pluginName: manifest.name,
+                installedPath: destinationPath,
+                warnings,
+                dependencyHints,
+            });
+        } catch (error) {
+            console.error('[AdminPanelRoutes] Error installing plugin from local zip:', error);
+            return res.status(500).json({ error: `安装插件失败: ${error.message}` });
+        } finally {
+            await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
     // Toggle plugin status
     router.post('/plugins/:pluginName/toggle', async (req, res) => {
         const pluginName = req.params.pluginName;
         const { enable } = req.body;
-        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
 
         if (typeof enable !== 'boolean') {
             return res.status(400).json({ error: 'Invalid request body. Expected { enable: boolean }.' });
@@ -179,12 +474,94 @@ module.exports = function(options) {
         }
     });
 
+    router.post('/plugins/:pluginName/uninstall', async (req, res) => {
+        const pluginName = req.params.pluginName;
+
+        try {
+            const pluginInfo = await findPluginFolderByName(PLUGIN_DIR, pluginName);
+            if (!pluginInfo) {
+                return res.status(404).json({ error: `Plugin '${pluginName}' not found.` });
+            }
+
+            const trashRoot = path.join(PLUGIN_DIR, '.trash');
+            await fs.mkdir(trashRoot, { recursive: true });
+
+            const trashedFolderName = `${Date.now()}__${sanitizeFolderName(pluginInfo.folderName)}`;
+            const trashedPath = path.join(trashRoot, trashedFolderName);
+
+            await fs.rename(pluginInfo.pluginPath, trashedPath);
+            await pluginManager.loadPlugins();
+
+            return res.json({
+                message: `插件 ${pluginName} 已卸载，原目录已移动到 Plugin/.trash。`,
+                trashedPath,
+            });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes] Error uninstalling plugin ${pluginName}:`, error);
+            return res.status(500).json({ error: `卸载插件 ${pluginName} 时出错`, details: error.message });
+        }
+    });
+
+    router.get('/plugins/trash', async (req, res) => {
+        try {
+            const trashedPlugins = await listTrashedPlugins(PLUGIN_DIR);
+            return res.json(trashedPlugins);
+        } catch (error) {
+            console.error('[AdminPanelRoutes] Error listing trashed plugins:', error);
+            return res.status(500).json({ error: `Failed to list trashed plugins: ${error.message}` });
+        }
+    });
+
+    router.post('/plugins/trash/:trashedFolderName/restore', async (req, res) => {
+        const trashedFolderName = path.basename(req.params.trashedFolderName || '');
+        const trashRoot = path.join(PLUGIN_DIR, '.trash');
+
+        if (!trashedFolderName) {
+            return res.status(400).json({ error: 'Invalid trashed plugin folder name.' });
+        }
+
+        try {
+            const trashedPath = resolvePathInside(trashRoot, trashedFolderName);
+            const manifestInfo = await readPluginManifestFromFolder(trashedPath);
+            if (!manifestInfo?.manifest?.name) {
+                return res.status(404).json({ error: 'Trashed plugin manifest not found.' });
+            }
+
+            const existingPlugin = await findPluginFolderByName(PLUGIN_DIR, manifestInfo.manifest.name);
+            if (existingPlugin) {
+                return res.status(409).json({ error: `插件 ${manifestInfo.manifest.name} 已存在，请先卸载或重命名现有插件。` });
+            }
+
+            const { originalFolderName } = parseTrashFolderName(trashedFolderName);
+            const restoredFolderName = sanitizeFolderName(originalFolderName || manifestInfo.manifest.name);
+            const restoredPath = resolvePathInside(PLUGIN_DIR, restoredFolderName);
+
+            if (await pathExists(restoredPath)) {
+                return res.status(409).json({ error: `目标目录 ${restoredFolderName} 已存在，请先处理后再恢复。` });
+            }
+
+            await fs.rename(trashedPath, restoredPath);
+            await pluginManager.loadPlugins();
+
+            return res.json({
+                message: `插件 ${manifestInfo.manifest.name} 已从回收站恢复。`,
+                pluginName: manifestInfo.manifest.name,
+                restoredPath,
+            });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ error: 'Trashed plugin folder not found.' });
+            }
+
+            console.error(`[AdminPanelRoutes] Error restoring trashed plugin ${trashedFolderName}:`, error);
+            return res.status(500).json({ error: `恢复插件失败: ${error.message}` });
+        }
+    });
+
     // Update plugin description
     router.post('/plugins/:pluginName/description', async (req, res) => {
         const pluginName = req.params.pluginName;
         const { description } = req.body;
-        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
-
         if (typeof description !== 'string') {
             return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
         }
@@ -243,8 +620,6 @@ module.exports = function(options) {
     router.post('/plugins/:pluginName/config', async (req, res) => {
         const pluginName = req.params.pluginName;
         const { content } = req.body;
-        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
-
         if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid content format. String expected.' });
         }
@@ -295,8 +670,6 @@ module.exports = function(options) {
     router.post('/plugins/:pluginName/commands/:commandIdentifier/description', async (req, res) => {
         const { pluginName, commandIdentifier } = req.params;
         const { description } = req.body;
-        const PLUGIN_DIR = path.join(__dirname, '..', '..', 'Plugin');
-
         if (typeof description !== 'string') {
             return res.status(400).json({ error: 'Invalid request body. Expected { description: string }.' });
         }

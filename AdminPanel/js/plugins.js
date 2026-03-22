@@ -5,6 +5,172 @@ import { parseEnvToList, buildEnvStringForPlugin, createFormGroup, createComment
 const API_BASE_URL = '/admin_api';
 let originalPluginConfigs = {}; // Store original parsed entries for each plugin
 
+function renderPluginInstallerSummary(result = null) {
+    const summary = document.getElementById('plugin-installer-summary');
+    if (!summary) return;
+
+    if (!result) {
+        summary.innerHTML = '';
+        summary.style.display = 'none';
+        return;
+    }
+
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    const dependencyHints = Array.isArray(result.dependencyHints) ? result.dependencyHints : [];
+    const detailHtml = dependencyHints.length > 0
+        ? dependencyHints.map((hint) => `<li><code>${hint.file}</code> - ${hint.message}</li>`).join('')
+        : warnings.map((warning) => `<li>${warning}</li>`).join('');
+
+    summary.innerHTML = `
+        <div class="config-item">
+            <strong>${result.message || '插件操作已完成。'}</strong>
+            ${warnings.length > 0 ? `<p>检测到以下依赖提示：</p><ul>${detailHtml}</ul>` : '<p>这次安装没有检测到额外依赖提示。</p>'}
+        </div>
+    `;
+    summary.style.display = 'block';
+}
+
+function formatTrashTimestamp(value) {
+    if (!value) return '未知时间';
+
+    const date = new Date(Number(value));
+    if (Number.isNaN(date.getTime())) return '未知时间';
+    return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+async function restoreTrashedPluginLegacy(trashedFolderName) {
+    return restoreTrashedPlugin(trashedFolderName);
+    if (!confirm(`确定要恢复插件 "${displayName}" 吗？恢复后会重新加载插件列表。`)) {
+        return;
+    }
+
+    const result = await apiFetch(`${API_BASE_URL}/plugins/trash/${encodeURIComponent(trashedFolderName)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({})
+    });
+
+    showMessage(result?.message || '插件已恢复。', 'success', 5000);
+    await loadPluginList();
+    await loadPluginTrashList();
+
+    const restoredLink = document.querySelector(`a[data-plugin-name="${result?.pluginName || ''}"]`);
+    if (restoredLink) {
+        restoredLink.click();
+    }
+}
+
+async function restoreTrashedPlugin(trashedFolderName) {
+    const result = await apiFetch(`${API_BASE_URL}/plugins/trash/${encodeURIComponent(trashedFolderName)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({})
+    });
+
+    showMessage(result?.message || '插件已恢复。', 'success', 5000);
+    await loadPluginList();
+    await loadPluginTrashList();
+
+    const restoredLink = document.querySelector(`a[data-plugin-name="${result?.pluginName || ''}"]`);
+    if (restoredLink) {
+        restoredLink.click();
+    }
+}
+
+async function loadPluginTrashList() {
+    const trashList = document.getElementById('plugin-trash-list');
+    if (!trashList) return;
+
+    try {
+        const trashedPlugins = await apiFetch(`${API_BASE_URL}/plugins/trash`);
+        if (!Array.isArray(trashedPlugins) || trashedPlugins.length === 0) {
+            trashList.innerHTML = '<p class="description">回收站当前是空的。</p>';
+            return;
+        }
+
+        trashList.innerHTML = '';
+        trashedPlugins.forEach((plugin) => {
+            const item = document.createElement('div');
+            item.className = 'config-item';
+
+            const title = document.createElement('div');
+            title.innerHTML = `<strong>${plugin.displayName || plugin.pluginName}</strong> <span class="plugin-original-name">(${plugin.pluginName})</span>`;
+            item.appendChild(title);
+
+            const meta = document.createElement('p');
+            meta.className = 'description';
+            meta.textContent = `原目录: ${plugin.originalFolderName || '-'} | 删除时间: ${formatTrashTimestamp(plugin.removedAt)}${plugin.version ? ` | 版本: ${plugin.version}` : ''}`;
+            item.appendChild(meta);
+
+            const actions = document.createElement('div');
+            actions.className = 'form-actions';
+
+            const restoreButton = document.createElement('button');
+            restoreButton.type = 'button';
+            restoreButton.textContent = '恢复插件';
+            restoreButton.addEventListener('click', async () => {
+                if (!confirm(`确定要恢复插件 "${plugin.displayName || plugin.pluginName}" 吗？恢复后会重新加载插件列表。`)) {
+                    return;
+                }
+                restoreButton.disabled = true;
+                try {
+                    await restoreTrashedPlugin(plugin.trashedFolderName);
+                } catch (error) {
+                    console.error(`Failed to restore trashed plugin ${plugin.trashedFolderName}:`, error);
+                    restoreButton.disabled = false;
+                }
+            });
+
+            actions.appendChild(restoreButton);
+            item.appendChild(actions);
+            trashList.appendChild(item);
+        });
+    } catch (error) {
+        console.error('Failed to load trashed plugins:', error);
+        trashList.innerHTML = `<p class="error-message">加载回收站失败: ${error.message}</p>`;
+    }
+}
+
+export function initializePluginInstaller() {
+    const form = document.getElementById('plugin-installer-form');
+    const input = document.getElementById('plugin-installer-zip-path');
+    if (!form || !input || form.dataset.boundInstaller === 'true') return;
+
+    renderPluginInstallerSummary(null);
+    loadPluginTrashList().catch((error) => console.error('Failed to initialize plugin trash list:', error));
+    form.dataset.boundInstaller = 'true';
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const zipPath = input.value.trim();
+        if (!zipPath) {
+            showMessage('请输入插件 zip 的本机路径。', 'error');
+            return;
+        }
+
+        try {
+            const result = await apiFetch(`${API_BASE_URL}/plugins/install-local-zip`, {
+                method: 'POST',
+                body: JSON.stringify({ zipPath })
+            });
+
+            const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+            renderPluginInstallerSummary(result);
+            showMessage(result?.message || '插件安装成功。', warnings.length > 0 ? 'info' : 'success', 5000);
+            if (warnings.length > 0) {
+                warnings.forEach((warning) => showMessage(warning, 'info', 6000));
+            }
+
+            input.value = '';
+            await loadPluginList();
+            await loadPluginTrashList();
+            const installedLink = document.querySelector(`a[data-plugin-name="${result?.pluginName || ''}"]`);
+            if (installedLink) {
+                installedLink.click();
+            }
+        } catch (error) {
+            console.error('Failed to install plugin from local zip:', error);
+        }
+    });
+}
+
 /**
  * 加载插件列表并填充侧边栏导航。
  */
@@ -150,6 +316,41 @@ function createPluginConfigSection(plugin, container) {
     });
 
     pluginControlsDiv.appendChild(toggleButton);
+
+    const uninstallButton = document.createElement('button');
+    uninstallButton.type = 'button';
+    uninstallButton.textContent = '卸载插件';
+    uninstallButton.classList.add('toggle-plugin-button');
+    uninstallButton.style.backgroundColor = '#8f2d2d';
+    uninstallButton.style.marginLeft = '8px';
+
+    if (plugin.isDistributed) {
+        uninstallButton.disabled = true;
+        uninstallButton.title = '分布式插件由远端节点提供，不能在这里直接卸载。';
+    } else {
+        uninstallButton.addEventListener('click', async () => {
+            if (!confirm(`确定要卸载插件 "${displayName}" 吗？第一版会把插件目录移动到 Plugin/.trash。`)) {
+                return;
+            }
+
+            uninstallButton.disabled = true;
+            try {
+                const result = await apiFetch(`${API_BASE_URL}/plugins/${plugin.manifest.name}/uninstall`, {
+                    method: 'POST',
+                    body: JSON.stringify({})
+                });
+                showMessage(result?.message || '插件已卸载。', 'success', 5000);
+                await loadPluginList();
+                await loadPluginTrashList();
+                document.querySelector('a[data-target="plugin-installer"]')?.click();
+            } catch (error) {
+                console.error(`Failed to uninstall plugin ${plugin.manifest.name}:`, error);
+                uninstallButton.disabled = false;
+            }
+        });
+    }
+
+    pluginControlsDiv.appendChild(uninstallButton);
     pluginSection.appendChild(pluginControlsDiv);
 
     const form = document.createElement('form');
