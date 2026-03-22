@@ -55,6 +55,7 @@ class ToolCallParser {
     let isArchery = false;
     let markHistory = false;
     let river = null;
+    let vref = null;
     let match;
 
     while ((match = paramRegex.exec(blockContent)) !== null) {
@@ -69,12 +70,14 @@ class ToolCallParser {
         markHistory = trimmedValue === 'mark_history';
       } else if (key === 'river') {
         river = trimmedValue;
+      } else if (key === 'vref') {
+        vref = trimmedValue;
       } else {
         args[key] = trimmedValue;
       }
     }
 
-    return toolName ? { name: toolName, args, archery: isArchery, markHistory, river } : null;
+    return toolName ? { name: toolName, args, archery: isArchery, markHistory, river, vref } : null;
   }
 
   /**
