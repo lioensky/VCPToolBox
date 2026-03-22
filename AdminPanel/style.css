@@ -797,6 +797,65 @@ body {
 }
 
 
+/* News Card Styles */
+.news-card {
+    min-height: 240px;
+}
+
+.news-container {
+    height: 160px;
+    overflow: hidden;
+    position: relative;
+    mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+}
+
+.news-scroller {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.news-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background: var(--accent-bg);
+    border-radius: 14px;
+    text-decoration: none;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid transparent;
+}
+
+.news-item:hover {
+    background: var(--tertiary-bg);
+    border-color: var(--highlight-text);
+    transform: translateX(6px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.news-item .news-source {
+    font-size: 0.7em;
+    font-weight: 800;
+    color: var(--highlight-text);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    opacity: 0.8;
+}
+
+.news-item .news-title {
+    font-size: 0.9em;
+    color: var(--primary-text);
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+@keyframes scroll-news {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(calc(-50% - 6px)); } /* 6px is half of gap */
+}
+
 /* Weather Card Styles */
 .weather-card {
     background: linear-gradient(135deg, var(--secondary-bg) 0%, var(--tertiary-bg) 100%);

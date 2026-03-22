@@ -22,6 +22,7 @@ export function initializeDashboard() {
     }
     updateDashboardData();
     updateWeatherData();
+    updateDailyHotNews();
     initializeCalendarWidget();
     
     updateActivityChart().then(() => {
@@ -31,6 +32,7 @@ export function initializeDashboard() {
     monitorIntervalId = setInterval(() => {
         updateDashboardData();
         updateWeatherData();
+        updateDailyHotNews();
         initializeCalendarWidget();
         updateActivityChart().then(() => {
              drawActivityChart();
@@ -278,6 +280,49 @@ async function updateWeatherData() {
     } catch (error) {
         console.error('Failed to update weather data:', error);
         if (weatherText) weatherText.textContent = '加载失败';
+    }
+}
+
+/**
+ * 更新每日热榜数据。
+ */
+async function updateDailyHotNews() {
+    const newsScroller = document.getElementById('news-scroller');
+    if (!newsScroller) return;
+
+    try {
+        const response = await apiFetch(`${API_BASE_URL}/dailyhot`, {}, false);
+        if (response.success && response.data.length > 0) {
+            // Check if content actually changed to avoid restarting animation unnecessarily
+            const currentItemCount = newsScroller.querySelectorAll('.news-item').length;
+            if (currentItemCount === response.data.length * 2) return; 
+
+            newsScroller.innerHTML = '';
+            
+            // 为了实现无缝滚动，我们需要复制一份数据
+            const allItems = [...response.data, ...response.data];
+            
+            allItems.forEach(item => {
+                const itemEl = document.createElement('a');
+                itemEl.className = 'news-item';
+                itemEl.href = item.url;
+                itemEl.target = '_blank';
+                itemEl.innerHTML = `
+                    <span class="news-source">${item.source}</span>
+                    <span class="news-title">${item.title}</span>
+                `;
+                newsScroller.appendChild(itemEl);
+            });
+
+            // 计算动画时长：每个条目约 4 秒
+            const duration = response.data.length * 4;
+            newsScroller.style.animation = `scroll-news ${duration}s linear infinite`;
+        } else {
+            newsScroller.innerHTML = '<p style="text-align: center; padding: 20px; opacity: 0.6;">暂无热榜数据。</p>';
+        }
+    } catch (error) {
+        console.error('Failed to update daily hot news:', error);
+        newsScroller.innerHTML = `<p class="error-message">加载热榜失败: ${error.message}</p>`;
     }
 }
 
