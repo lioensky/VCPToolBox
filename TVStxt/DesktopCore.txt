@@ -25,3 +25,4 @@ replace:「始」<span style="font-size:52px;">22°C</span>「末」
 <<<[DESKTOP_PUSH_END]>>>
 ```
 创建的widget直接运行在内存中，当用户选择收藏widget对应挂件会被持久化储存。
+被收藏的widget储存于H:\MCP\VCPChat\AppData\DesktopWidgets目录，被储存的Widget允许调用同目录下的内部外挂js文件，且支持访问vchat应用群所有依赖，ipc。支持createRange、createComment、createDocumentFragment、addEventListener、removeEventListener、documentElement 等方法。
