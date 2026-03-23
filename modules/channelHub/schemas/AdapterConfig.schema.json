@@ -1,0 +1,300 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "AdapterConfig.schema.json",
+  "title": "AdapterConfig",
+  "description": "ChannelHub 适配器配置 Schema - 定义平台适配器的完整配置结构",
+  "type": "object",
+  "required": ["adapterId", "channel", "name", "credentials", "status"],
+  "properties": {
+    "adapterId": {
+      "type": "string",
+      "description": "适配器唯一标识符，格式: channel_timestamp_randomId",
+      "pattern": "^[a-z]+_[0-9]+_[a-z0-9]+$",
+      "examples": ["dingtalk_1699012345678_abc123"]
+    },
+    "channel": {
+      "type": "string",
+      "description": "平台类型",
+      "enum": ["dingtalk", "wecom", "feishu", "qq", "wechat", "discord", "slack", "telegram"]
+    },
+    "name": {
+      "type": "string",
+      "description": "适配器显示名称",
+      "minLength": 1,
+      "maxLength": 100,
+      "examples": ["钉钉机器人-生产环境"]
+    },
+    "description": {
+      "type": "string",
+      "description": "适配器描述",
+      "maxLength": 500
+    },
+    "credentials": {
+      "type": "object",
+      "description": "平台凭证配置",
+      "oneOf": [
+        {
+          "properties": {
+            "type": { "const": "dingtalk" },
+            "appKey": { "type": "string" },
+            "appSecret": { "type": "string" },
+            "agentId": { "type": "string" }
+          },
+          "required": ["appKey", "appSecret"]
+        },
+        {
+          "properties": {
+            "type": { "const": "wecom" },
+            "corpId": { "type": "string" },
+            "agentId": { "type": "string" },
+            "secret": { "type": "string" },
+            "token": { "type": "string" },
+            "encodingAESKey": { "type": "string" }
+          },
+          "required": ["corpId", "secret"]
+        },
+        {
+          "properties": {
+            "type": { "const": "feishu" },
+            "appId": { "type": "string" },
+            "appSecret": { "type": "string" },
+            "encryptKey": { "type": "string" },
+            "verificationToken": { "type": "string" }
+          },
+          "required": ["appId", "appSecret"]
+        },
+        {
+          "properties": {
+            "type": { "const": "qq" },
+            "appId": { "type": "string" },
+            "appSecret": { "type": "string" },
+            "token": { "type": "string" }
+          },
+          "required": ["appId", "appSecret"]
+        },
+        {
+          "properties": {
+            "type": { "const": "wechat" },
+            "appId": { "type": "string" },
+            "appSecret": { "type": "string" },
+            "token": { "type": "string" },
+            "encodingAESKey": { "type": "string" }
+          },
+          "required": ["appId", "appSecret"]
+        },
+        {
+          "properties": {
+            "type": { "const": "telegram" },
+            "botToken": { "type": "string" }
+          },
+          "required": ["botToken"]
+        },
+        {
+          "properties": {
+            "type": { "const": "discord" },
+            "botToken": { "type": "string" },
+            "applicationId": { "type": "string" },
+            "publicKey": { "type": "string" }
+          },
+          "required": ["botToken"]
+        },
+        {
+          "properties": {
+            "type": { "const": "slack" },
+            "botToken": { "type": "string" },
+            "appToken": { "type": "string" },
+            "signingSecret": { "type": "string" }
+          },
+          "required": ["botToken", "signingSecret"]
+        }
+      ]
+    },
+    "webhook": {
+      "type": "object",
+      "description": "Webhook 配置",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Webhook 路径",
+          "examples": ["/webhook/dingtalk/abc123"]
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST"],
+          "default": "POST"
+        },
+        "ipWhitelist": {
+          "type": "array",
+          "description": "IP 白名单",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "description": "适配器状态",
+      "enum": ["active", "inactive", "error", "pending", "migrating"],
+      "default": "pending"
+    },
+    "healthCheck": {
+      "type": "object",
+      "description": "健康检查配置",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "interval": {
+          "type": "integer",
+          "description": "检查间隔（秒）",
+          "minimum": 10,
+          "maximum": 3600,
+          "default": 60
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "超时时间（秒）",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
+        },
+        "lastCheck": {
+          "type": "string",
+          "format": "date-time",
+          "description": "上次检查时间"
+        },
+        "lastStatus": {
+          "type": "string",
+          "enum": ["healthy", "unhealthy", "unknown"]
+        },
+        "consecutiveFailures": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        }
+      }
+    },
+    "sessionBinding": {
+      "type": "object",
+      "description": "会话绑定配置",
+      "properties": {
+        "defaultAgentId": {
+          "type": "string",
+          "description": "默认绑定的 Agent ID"
+        },
+        "bindingMode": {
+          "type": "string",
+          "description": "绑定模式",
+          "enum": ["auto", "manual", "hybrid"],
+          "default": "auto"
+        },
+        "sessionTTL": {
+          "type": "integer",
+          "description": "会话 TTL（秒）",
+          "minimum": 60,
+          "default": 86400
+        }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "description": "速率限制配置",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "maxRequestsPerMinute": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60
+        },
+        "maxRequestsPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000
+        }
+      }
+    },
+    "retryPolicy": {
+      "type": "object",
+      "description": "重试策略配置",
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 3
+        },
+        "initialDelay": {
+          "type": "integer",
+          "description": "初始延迟（毫秒）",
+          "minimum": 100,
+          "default": 1000
+        },
+        "maxDelay": {
+          "type": "integer",
+          "description": "最大延迟（毫秒）",
+          "minimum": 1000,
+          "default": 30000
+        },
+        "backoffMultiplier": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "平台能力配置",
+      "properties": {
+        "supportsText": { "type": "boolean", "default": true },
+        "supportsImage": { "type": "boolean", "default": false },
+        "supportsAudio": { "type": "boolean", "default": false },
+        "supportsVideo": { "type": "boolean", "default": false },
+        "supportsFile": { "type": "boolean", "default": false },
+        "supportsCard": { "type": "boolean", "default": false },
+        "supportsMarkdown": { "type": "boolean", "default": false },
+        "supportsQuickReply": { "type": "boolean", "default": false },
+        "supportsTypingIndicator": { "type": "boolean", "default": false },
+        "maxTextLength": { "type": "integer", "default": 4096 },
+        "maxImageSize": { "type": "integer", "description": "最大图片大小（字节）" },
+        "maxFileSize": { "type": "integer", "description": "最大文件大小（字节）" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "元数据",
+      "additionalProperties": true,
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdBy": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "default": "1.0.0"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

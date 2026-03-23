@@ -1,0 +1,9 @@
+{
+  "$schema": "../modules/channelHub/schemas/SessionBinding.schema.json",
+  "bindings": [],
+  "metadata": {
+    "version": "1.0.0",
+    "lastUpdated": "2026-03-22T00:00:00.000Z",
+    "description": "ChannelHub Session Bindings - Maps external platform conversations to internal VCP sessions"
+  }
+}

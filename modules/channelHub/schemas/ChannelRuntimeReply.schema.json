@@ -1,0 +1,340 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "ChannelRuntimeReply.schema.json",
+  "title": "ChannelRuntimeReply",
+  "description": "B2协议：运行时回复结构，支持多部件消息、工具事件和话题元数据",
+  "type": "object",
+  "required": ["version", "replyId", "adapterId", "channel", "timestamp"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "2.0",
+      "description": "协议版本号，B2协议固定为2.0"
+    },
+    "replyId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "回复唯一标识符"
+    },
+    "adapterId": {
+      "type": "string",
+      "description": "发送回复的适配器ID"
+    },
+    "channel": {
+      "$ref": "#/definitions/ChannelType",
+      "description": "目标渠道类型"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "回复生成时间（ISO 8601格式）"
+    },
+    "inReplyTo": {
+      "type": "string",
+      "description": "原事件ID，用于回复追踪"
+    },
+    "session": {
+      "$ref": "#/definitions/SessionInfo",
+      "description": "会话信息"
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReplyPart"
+      },
+      "description": "多部件消息内容"
+    },
+    "toolEvents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ToolEvent"
+      },
+      "description": "工具事件列表（如正在调用、调用完成等）"
+    },
+    "topic": {
+      "$ref": "#/definitions/TopicMetadata",
+      "description": "话题元数据（用于多轮对话上下文）"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "扩展元数据"
+    }
+  },
+  "definitions": {
+    "ChannelType": {
+      "type": "string",
+      "enum": ["dingtalk", "wecom", "feishu", "qq", "wechat", "web", "api"],
+      "description": "支持的渠道类型"
+    },
+    "SessionInfo": {
+      "type": "object",
+      "required": ["bindingKey", "externalSessionKey"],
+      "properties": {
+        "bindingKey": {
+          "type": "string",
+          "description": "会话绑定键（如：tenantId:agentId）"
+        },
+        "externalSessionKey": {
+          "type": "string",
+          "description": "外部平台的会话标识"
+        },
+        "internalSessionKey": {
+          "type": "string",
+          "description": "内部VCP会话标识"
+        }
+      }
+    },
+    "ReplyPart": {
+      "type": "object",
+      "required": ["type", "content"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "markdown", "image", "audio", "video", "file", "card", "action", "location"],
+          "description": "部件类型"
+        },
+        "content": {
+          "type": "string",
+          "description": "部件内容（文本、Markdown、URL等）"
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "媒体类型（如image/png, audio/mp3）"
+        },
+        "size": {
+          "type": "integer",
+          "description": "文件大小（字节）"
+        },
+        "width": {
+          "type": "integer",
+          "description": "图片/视频宽度"
+        },
+        "height": {
+          "type": "integer",
+          "description": "图片/视频高度"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "音频/视频时长（秒）"
+        },
+        "thumbnail": {
+          "type": "string",
+          "description": "缩略图URL"
+        },
+        "card": {
+          "$ref": "#/definitions/CardContent",
+          "description": "卡片内容（当type=card时）"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ActionItem"
+          },
+          "description": "交互按钮列表（当type=action时）"
+        },
+        "location": {
+          "$ref": "#/definitions/LocationContent",
+          "description": "位置信息（当type=location时）"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "部件扩展元数据"
+        }
+      }
+    },
+    "CardContent": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "卡片标题"
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "卡片副标题"
+        },
+        "cover": {
+          "type": "string",
+          "description": "卡片封面图片URL"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CardSection"
+          },
+          "description": "卡片内容区域"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ActionItem"
+          },
+          "description": "卡片交互按钮"
+        },
+        "template": {
+          "type": "string",
+          "description": "卡片模板ID（用于平台特定模板）"
+        }
+      }
+    },
+    "CardSection": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "image", "fields", "divider"],
+          "description": "区域类型"
+        },
+        "text": {
+          "type": "string",
+          "description": "文本内容（当type=text时）"
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "图片URL（当type=image时）"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": { "type": "string" },
+              "value": { "type": "string" }
+            }
+          },
+          "description": "字段列表（当type=fields时）"
+        }
+      }
+    },
+    "ActionItem": {
+      "type": "object",
+      "required": ["type", "label"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["button", "link", "callback", "select"],
+          "description": "动作类型"
+        },
+        "label": {
+          "type": "string",
+          "description": "按钮显示文本"
+        },
+        "url": {
+          "type": "string",
+          "description": "跳转URL（当type=link时）"
+        },
+        "callbackData": {
+          "type": "string",
+          "description": "回调数据（当type=callback时）"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": { "type": "string" },
+              "value": { "type": "string" }
+            }
+          },
+          "description": "选项列表（当type=select时）"
+        },
+        "style": {
+          "type": "string",
+          "enum": ["default", "primary", "danger", "warning"],
+          "description": "按钮样式"
+        }
+      }
+    },
+    "LocationContent": {
+      "type": "object",
+      "required": ["latitude", "longitude"],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90,
+          "description": "纬度"
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180,
+          "description": "经度"
+        },
+        "name": {
+          "type": "string",
+          "description": "位置名称"
+        },
+        "address": {
+          "type": "string",
+          "description": "详细地址"
+        }
+      }
+    },
+    "ToolEvent": {
+      "type": "object",
+      "required": ["type", "toolName"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["tool_call_start", "tool_call_end", "tool_error"],
+          "description": "工具事件类型"
+        },
+        "toolName": {
+          "type": "string",
+          "description": "工具名称"
+        },
+        "toolCallId": {
+          "type": "string",
+          "description": "工具调用ID"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "工具参数"
+        },
+        "result": {
+          "type": ["string", "object"],
+          "description": "工具返回结果"
+        },
+        "error": {
+          "type": "string",
+          "description": "错误信息（当type=tool_error时）"
+        },
+        "duration": {
+          "type": "integer",
+          "description": "执行耗时（毫秒）"
+        }
+      }
+    },
+    "TopicMetadata": {
+      "type": "object",
+      "properties": {
+        "topicId": {
+          "type": "string",
+          "description": "话题ID"
+        },
+        "parentId": {
+          "type": "string",
+          "description": "父话题ID（用于话题分支）"
+        },
+        "title": {
+          "type": "string",
+          "description": "话题标题"
+        },
+        "summary": {
+          "type": "string",
+          "description": "话题摘要"
+        },
+        "turnCount": {
+          "type": "integer",
+          "description": "对话轮次"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

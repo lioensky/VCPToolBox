@@ -3,6 +3,75 @@ const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
 
+/**
+ * 验证 messages 数组中的 tool_calls 和 tool 消息格式是否正确
+ * 从 chatCompletionHandler.js 导出的验证逻辑副本，用于 VCP 循环中的 API 调用验证
+ */
+function validateToolCallsInLoop(messages, debugMode = false) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { valid: true };
+  }
+  
+  const errors = [];
+  const allToolCallIds = new Set();
+  const toolCallIdLocations = new Map();
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc.id) {
+          allToolCallIds.add(tc.id);
+          toolCallIdLocations.set(tc.id, { msgIndex: i, toolCallId: tc.id });
+        }
+      }
+    }
+  }
+  
+  const usedToolCallIds = new Set();
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    
+    if (msg.role === 'tool') {
+      const toolCallId = msg.tool_call_id;
+      
+      if (!toolCallId) {
+        errors.push(`消息[${i}] role: "tool" 缺少必需的 "tool_call_id" 字段`);
+        continue;
+      }
+      
+      if (!allToolCallIds.has(toolCallId)) {
+        errors.push(`消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 在任何 assistant 消息的 tool_calls 中都找不到`);
+        continue;
+      }
+      
+      const location = toolCallIdLocations.get(toolCallId);
+      if (location.msgIndex >= i) {
+        errors.push(`消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 对应的 assistant 消息位于 tool 消息之后`);
+        continue;
+      }
+      
+      if (usedToolCallIds.has(toolCallId)) {
+        errors.push(`消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 已被之前的 tool 消息使用过`);
+        continue;
+      }
+      
+      usedToolCallIds.add(toolCallId);
+    }
+  }
+  
+  const valid = errors.length === 0;
+  
+  if (!valid) {
+    console.error('[ToolCallsValidator Loop] 验证失败:', errors);
+  } else if (debugMode) {
+    console.log('[ToolCallsValidator Loop] 验证通过 ✓');
+  }
+  
+  return { valid, errors };
+}
+
 class StreamHandler {
   constructor(context) {
     this.context = context;
@@ -283,6 +352,22 @@ class StreamHandler {
               choices: [{ index: 0, delta: { content: '\n' }, finish_reason: null }],
             })}\n\n`);
           } catch (e) { }
+        }
+
+        // 验证消息队列（Archery 错误处理后）
+        if (DEBUG_MODE) {
+          console.log(`[VCP Loop Depth ${recursionDepth}] Messages before API call (Archery error path):`);
+          console.log(JSON.stringify(currentMessagesForLoop.map((m, i) => ({
+            index: i,
+            role: m.role,
+            hasToolCalls: !!(m.tool_calls && m.tool_calls.length > 0),
+            toolCallId: m.tool_call_id,
+            contentPreview: typeof m.content === 'string' ? m.content.substring(0, 100) + '...' : '[non-string content]'
+          })), null, 2));
+        }
+        const validationResultArchery = validateToolCallsInLoop(currentMessagesForLoop, DEBUG_MODE);
+        if (!validationResultArchery.valid) {
+          console.error(`[VCP Loop] ❌ 消息队列验证失败 (Archery error path) at depth ${recursionDepth}:`, validationResultArchery.errors);
         }
 
         const nextAiAPIResponse = await fetchWithRetry(

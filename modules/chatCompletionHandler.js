@@ -31,6 +31,201 @@ const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
 
 /**
+ * 验证 messages 数组中的 tool_calls 和 tool 消息格式是否正确
+ * OpenAI API 要求:
+ * 1. 每一条 role: "tool" 的消息之前，紧挨着一条包含对应 tool_calls 的 role: "assistant" 消息
+ * 2. tool 消息中的 tool_call_id 与前序 tool_calls 中的 ID 完全一致
+ *
+ * @param {Array} messages - 要验证的消息数组
+ * @param {boolean} debugMode - 是否输出调试日志
+ * @returns {{valid: boolean, errors: Array<string>, warnings: Array<string>}}
+ */
+function validateToolCallsMessages(messages, debugMode = false) {
+  const errors = [];
+  const warnings = [];
+  
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { valid: true, errors: [], warnings: [] };
+  }
+  
+  // 收集所有 assistant 消息中的 tool_call_id
+  const allToolCallIds = new Set();
+  const toolCallIdLocations = new Map(); // id -> {msgIndex, inArray}
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc.id) {
+          allToolCallIds.add(tc.id);
+          toolCallIdLocations.set(tc.id, { msgIndex: i, toolCallId: tc.id });
+        }
+      }
+    }
+  }
+  
+  // 记录已使用的 tool_call_id（防止重复使用）
+  const usedToolCallIds = new Set();
+  
+  // 记录最近一个包含 tool_calls 的 assistant 消息索引
+  let lastAssistantWithToolCallsIndex = -1;
+  let pendingToolCallIds = []; // 最近 assistant 消息中等待响应的 tool_call_id
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    
+    // 处理 assistant 消息
+    if (msg.role === 'assistant') {
+      if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        lastAssistantWithToolCallsIndex = i;
+        pendingToolCallIds = msg.tool_calls
+          .filter(tc => tc.id)
+          .map(tc => tc.id);
+        
+        if (debugMode) {
+          console.log(`[ToolCallsValidator] 消息[${i}] assistant 包含 ${pendingToolCallIds.length} 个 tool_calls: ${pendingToolCallIds.join(', ')}`);
+        }
+      } else {
+        // assistant 消息没有 tool_calls，清空待响应列表
+        pendingToolCallIds = [];
+      }
+    }
+    
+    // 处理 tool 消息
+    if (msg.role === 'tool') {
+      const toolCallId = msg.tool_call_id;
+      
+      // 检查1: tool 消息必须有 tool_call_id
+      if (!toolCallId) {
+        errors.push({
+          index: i,
+          message: `消息[${i}] role: "tool" 缺少必需的 "tool_call_id" 字段`
+        });
+        continue;
+      }
+      
+      // 检查2: tool_call_id 必须存在于某个 assistant 消息的 tool_calls 中
+      if (!allToolCallIds.has(toolCallId)) {
+        errors.push({
+          index: i,
+          message: `消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 在任何 assistant 消息的 tool_calls 中都找不到`
+        });
+        continue;
+      }
+      
+      // 检查3: tool 消息之前必须有包含该 tool_call_id 的 assistant 消息
+      const location = toolCallIdLocations.get(toolCallId);
+      if (location.msgIndex >= i) {
+        errors.push({
+          index: i,
+          message: `消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 对应的 assistant 消息在位置[${location.msgIndex}]，位于 tool 消息之后`
+        });
+        continue;
+      }
+      
+      // 检查4: tool 消息应该紧随对应的 assistant 消息之后（警告级别）
+      // 中间可以穿插其他消息（如其他 tool 响应），但最好保持顺序
+      if (location.msgIndex !== lastAssistantWithToolCallsIndex) {
+        warnings.push({
+          index: i,
+          message: `消息[${i}] tool 消息对应的 assistant 消息在[${location.msgIndex}]，但最近的 assistant 消息在[${lastAssistantWithToolCallsIndex}]。可能存在顺序问题。`
+        });
+      }
+      
+      // 检查5: tool_call_id 不应该被重复使用
+      if (usedToolCallIds.has(toolCallId)) {
+        errors.push({
+          index: i,
+          message: `消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 已被之前的 tool 消息使用过`
+        });
+        continue;
+      }
+      
+      // 检查6: 该 tool_call_id 是否在最近一个 assistant 消息的待响应列表中
+      if (pendingToolCallIds.length > 0 && !pendingToolCallIds.includes(toolCallId)) {
+        warnings.push({
+          index: i,
+          message: `消息[${i}] tool 消息的 tool_call_id="${toolCallId}" 不在最近 assistant 消息[${lastAssistantWithToolCallsIndex}]的待响应列表中`
+        });
+      }
+      
+      usedToolCallIds.add(toolCallId);
+      
+      if (debugMode) {
+        console.log(`[ToolCallsValidator] 消息[${i}] tool 响应 tool_call_id="${toolCallId}" ✓`);
+      }
+    }
+  }
+  
+  // 检查7: 是否有未响应的 tool_calls（警告级别）
+  const unrespondedIds = [...allToolCallIds].filter(id => !usedToolCallIds.has(id));
+  if (unrespondedIds.length > 0) {
+    warnings.push({
+      index: -1,
+      message: `以下 tool_call_id 没有对应的 tool 响应: ${unrespondedIds.join(', ')}`
+    });
+  }
+  
+  const valid = errors.length === 0;
+  
+  if (debugMode || !valid) {
+    console.log(`[ToolCallsValidator] 验证结果: ${valid ? '✓ 通过' : '✗ 失败'}, 错误: ${errors.length}, 警告: ${warnings.length}`);
+    if (errors.length > 0) {
+      console.error('[ToolCallsValidator] 错误详情:', JSON.stringify(errors, null, 2));
+    }
+    if (warnings.length > 0 && debugMode) {
+      console.warn('[ToolCallsValidator] 警告详情:', JSON.stringify(warnings, null, 2));
+    }
+  }
+  
+  return { valid, errors, warnings };
+}
+
+/**
+ * 打印完整的 messages 数组，用于调试
+ * @param {Array} messages - 消息数组
+ * @param {string} label - 标签
+ * @param {boolean} verbose - 是否输出完整内容
+ */
+function printMessagesDebug(messages, label = 'Messages', verbose = false) {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`[${label}] 共 ${messages?.length || 0} 条消息`);
+  console.log('='.repeat(60));
+  
+  if (!Array.isArray(messages)) {
+    console.log('  (非数组或为空)');
+    return;
+  }
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const role = msg.role || 'unknown';
+    let contentPreview = '';
+    
+    if (msg.tool_calls) {
+      const tcIds = msg.tool_calls.map(tc => tc.id || '?').join(', ');
+      contentPreview = `[tool_calls: ${tcIds}]`;
+    } else if (msg.tool_call_id) {
+      contentPreview = `[tool_call_id: ${msg.tool_call_id}]`;
+    } else if (typeof msg.content === 'string') {
+      contentPreview = verbose ? msg.content : msg.content.slice(0, 100) + (msg.content.length > 100 ? '...' : '');
+    } else if (Array.isArray(msg.content)) {
+      contentPreview = `[${msg.content.length} parts]`;
+    }
+    
+    console.log(`  [${i}] ${role}: ${contentPreview}`);
+    
+    if (verbose && msg.tool_calls) {
+      console.log(`       tool_calls 详情:`);
+      for (const tc of msg.tool_calls) {
+        console.log(`         - id: ${tc.id}, type: ${tc.type}, function: ${tc.function?.name || '?'}`);
+      }
+    }
+  }
+  console.log('='.repeat(60) + '\n');
+}
+
+/**
  * 检测工具返回结果是否为错误
  * @param {any} result - 工具返回的结果
  * @returns {boolean} - 是否为错误结果
@@ -619,6 +814,39 @@ class ChatCompletionHandler {
 
       originalBody.messages = processedMessages;
       await writeDebugLog('LogOutputAfterProcessing', originalBody);
+
+      // === 🔍 消息队列验证：在调用上游 API 之前检查 tool_calls 和 tool 消息格式 ===
+      // 打印完整的消息数组（仅在 DEBUG_MODE 时）
+      if (DEBUG_MODE) {
+        printMessagesDebug(originalBody.messages, '发送给上游 API 的消息队列', false);
+      }
+      
+      // 验证 tool_calls 和 tool 消息格式
+      const validationResult = validateToolCallsMessages(originalBody.messages, DEBUG_MODE);
+      
+      if (!validationResult.valid) {
+        console.error('[ToolCallsValidator] ❌ 消息队列验证失败，存在严重格式错误！');
+        console.error('[ToolCallsValidator] 这可能导致上游 API 返回 400 错误或工具调用失败。');
+        
+        // 打印完整的错误信息
+        for (const err of validationResult.errors) {
+          console.error(`  - 消息[${err.index}]: ${err.message}`);
+        }
+        
+        // 即使验证失败也继续发送请求，让上游 API 返回具体错误（便于调试）
+        // 但在 DEBUG_MODE 下打印更详细的上下文
+        if (DEBUG_MODE) {
+          printMessagesDebug(originalBody.messages, '验证失败的消息队列（详细）', true);
+        }
+      } else if (validationResult.warnings.length > 0 && DEBUG_MODE) {
+        console.warn('[ToolCallsValidator] ⚠️ 消息队列验证通过，但存在警告：');
+        for (const warn of validationResult.warnings) {
+          console.warn(`  - ${warn.message}`);
+        }
+      } else if (DEBUG_MODE) {
+        console.log('[ToolCallsValidator] ✓ 消息队列验证通过');
+      }
+      // === 🔍 消息队列验证结束 ===
 
       const willStreamResponse = isOriginalRequestStreaming;
 

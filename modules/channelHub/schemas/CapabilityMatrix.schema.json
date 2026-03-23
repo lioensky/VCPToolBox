@@ -1,0 +1,349 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "CapabilityMatrix.schema.json",
+  "title": "CapabilityMatrix",
+  "description": "Schema for platform capability matrix - defines what each platform supports and degradation strategies",
+  "type": "object",
+  "required": ["channel", "capabilities", "limits", "degradation"],
+  "properties": {
+    "channel": {
+      "type": "string",
+      "enum": ["dingtalk", "wecom", "feishu", "qq", "wechat"],
+      "description": "Platform channel type"
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Supported capabilities",
+      "properties": {
+        "supportsText": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether text messages are supported"
+        },
+        "supportsMarkdown": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether markdown formatting is supported"
+        },
+        "supportsHtml": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether HTML content is supported"
+        },
+        "supportsImage": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether image messages are supported"
+        },
+        "supportsVideo": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether video messages are supported"
+        },
+        "supportsAudio": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether audio messages are supported"
+        },
+        "supportsFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether file attachments are supported"
+        },
+        "supportsCard": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether card/interactive messages are supported"
+        },
+        "supportsButton": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether interactive buttons are supported"
+        },
+        "supportsForm": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether form inputs are supported"
+        },
+        "supportsLocation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether location sharing is supported"
+        },
+        "supportsReply": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether reply-to-message is supported"
+        },
+        "supportsForward": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether message forwarding is supported"
+        },
+        "supportsQuote": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether quote/reference messages are supported"
+        },
+        "supportsMention": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether @mentions are supported"
+        },
+        "supportsEmoji": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether emoji are supported"
+        },
+        "supportsRichText": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether rich text formatting (bold, italic, etc.) is supported"
+        },
+        "supportsTyping": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether typing indicators are supported"
+        },
+        "supportsReadStatus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether read receipts are supported"
+        },
+        "supportsEdit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether message editing is supported"
+        },
+        "supportsDelete": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether message deletion is supported"
+        },
+        "supportsRecall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether message recall/undo is supported"
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "description": "Platform limits and constraints",
+      "properties": {
+        "maxTextLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum text message length"
+        },
+        "maxTitleLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum card title length"
+        },
+        "maxDescriptionLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum card description length"
+        },
+        "maxImageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum image file size in bytes"
+        },
+        "maxVideoSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum video file size in bytes"
+        },
+        "maxFileSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum file attachment size in bytes"
+        },
+        "maxCardButtons": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of buttons per card"
+        },
+        "maxCardSections": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of sections per card"
+        },
+        "maxMentions": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of @mentions per message"
+        },
+        "maxAttachments": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of attachments per message"
+        },
+        "supportedImageFormats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Supported image formats (e.g., ['jpg', 'png', 'gif'])"
+        },
+        "supportedVideoFormats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Supported video formats (e.g., ['mp4', 'mov'])"
+        },
+        "supportedAudioFormats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Supported audio formats (e.g., ['mp3', 'wav', 'amr'])"
+        },
+        "rateLimitPerSecond": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum messages per second"
+        },
+        "rateLimitPerMinute": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum messages per minute"
+        }
+      },
+      "additionalProperties": true
+    },
+    "degradation": {
+      "type": "object",
+      "description": "Degradation strategies for unsupported content",
+      "properties": {
+        "imageStrategy": {
+          "type": "string",
+          "enum": ["link", "description", "skip", "thumbnail"],
+          "default": "link",
+          "description": "How to handle images when not supported: link=provide URL, description=alt text only, skip=omit, thumbnail=convert to thumbnail"
+        },
+        "videoStrategy": {
+          "type": "string",
+          "enum": ["link", "description", "skip", "thumbnail"],
+          "default": "link",
+          "description": "How to handle videos when not supported"
+        },
+        "audioStrategy": {
+          "type": "string",
+          "enum": ["link", "description", "skip"],
+          "default": "link",
+          "description": "How to handle audio when not supported"
+        },
+        "cardStrategy": {
+          "type": "string",
+          "enum": ["text", "link", "skip", "simplify"],
+          "default": "text",
+          "description": "How to handle cards when not supported: text=convert to plain text, link=provide link, skip=omit, simplify=use simplified format"
+        },
+        "buttonStrategy": {
+          "type": "string",
+          "enum": ["text", "link", "skip", "numbered"],
+          "default": "text",
+          "description": "How to handle buttons when not supported: text=show as text, link=show as links, skip=omit, numbered=show as numbered list"
+        },
+        "markdownStrategy": {
+          "type": "string",
+          "enum": ["strip", "plaintext", "html"],
+          "default": "strip",
+          "description": "How to handle markdown when not supported: strip=remove formatting, plaintext=convert to plain text, html=convert to HTML if supported"
+        },
+        "emojiStrategy": {
+          "type": "string",
+          "enum": ["keep", "strip", "replace"],
+          "default": "keep",
+          "description": "How to handle emoji when not supported: keep=as-is, strip=remove, replace=use text alternatives"
+        },
+        "mentionStrategy": {
+          "type": "string",
+          "enum": ["name", "skip", "link"],
+          "default": "name",
+          "description": "How to handle @mentions when not supported: name=show name only, skip=omit, link=provide profile link"
+        },
+        "oversizedTextStrategy": {
+          "type": "string",
+          "enum": ["truncate", "split", "link"],
+          "default": "truncate",
+          "description": "How to handle text exceeding max length: truncate=cut off, split=send multiple messages, link=provide full text via link"
+        }
+      },
+      "additionalProperties": true
+    },
+    "features": {
+      "type": "object",
+      "description": "Additional platform-specific features",
+      "properties": {
+        "oauth2": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether OAuth2 authentication is supported"
+        },
+        "webhookSignature": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether webhook signature verification is supported"
+        },
+        "encryptedMessaging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether end-to-end encryption is supported"
+        },
+        "botApi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether bot API is available"
+        },
+        "groupSupport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether group chats are supported"
+        },
+        "channelSupport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether channels/broadcasts are supported"
+        },
+        "temporaryMessages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether self-destructing messages are supported"
+        }
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the capability matrix",
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Schema version (semver)"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Who last updated this matrix"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Additional notes about platform capabilities"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

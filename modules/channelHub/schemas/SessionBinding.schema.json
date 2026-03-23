@@ -1,0 +1,275 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vcp.local/schemas/SessionBinding.schema.json",
+  "title": "SessionBinding",
+  "description": "VCP ChannelHub 会话绑定数据结构 - 管理外部平台会话与 VCP 内部会话的映射关系",
+
+  "definitions": {
+    "BindingKey": {
+      "type": "string",
+      "description": "绑定键，格式: {channel}:{externalConversationId}",
+      "pattern": "^[a-z]+:[a-zA-Z0-9_\\-:]+$",
+      "examples": ["dingtalk:conv_12345", "wecom:group_67890"]
+    },
+
+    "ExternalSessionKey": {
+      "type": "string",
+      "description": "外部平台会话标识",
+      "minLength": 1,
+      "maxLength": 256
+    },
+
+    "VcpSessionId": {
+      "type": "string",
+      "description": "VCP 内部会话 ID (UUID)",
+      "format": "uuid"
+    },
+
+    "BindingState": {
+      "type": "string",
+      "enum": ["active", "paused", "expired", "released"],
+      "description": "绑定状态: active-活跃, paused-暂停, expired-已过期, released-已释放"
+    },
+
+    "BindingContext": {
+      "type": "object",
+      "description": "绑定上下文信息",
+      "properties": {
+        "bindingSource": {
+          "type": "string",
+          "description": "绑定来源: auto(自动绑定), manual(手动绑定), inherit(继承绑定)"
+        },
+        "bindTrigger": {
+          "type": "string",
+          "description": "触发绑定的原始事件类型"
+        },
+        "originalMessageId": {
+          "type": "string",
+          "description": "触发绑定的原始消息 ID"
+        },
+        "adapterVersion": {
+          "type": "string",
+          "description": "创建绑定时适配器版本"
+        },
+        "protocolVersion": {
+          "type": "string",
+          "description": "创建绑定时协议版本"
+        }
+      }
+    },
+
+    "SessionMetadata": {
+      "type": "object",
+      "description": "会话元数据",
+      "properties": {
+        "conversationType": {
+          "type": "string",
+          "enum": ["private", "group", "chatroom"],
+          "description": "会话类型: private-私聊, group-群聊, chatroom-聊天室"
+        },
+        "participantCount": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "参与者数量"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "会话所有者/群主 ID"
+        },
+        "admins": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "管理员 ID 列表"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "外部会话创建时间"
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "最后活跃时间"
+        }
+      }
+    },
+
+    "AgentAssignment": {
+      "type": "object",
+      "description": "Agent 分配信息",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "description": "分配的 Agent ID"
+        },
+        "runtimeEndpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Agent Runtime 端点 URL"
+        },
+        "assignedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "分配时间"
+        },
+        "assignedBy": {
+          "type": "string",
+          "description": "分配方式: auto-routing, manual, sticky"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50,
+          "description": "会话优先级"
+        }
+      },
+      "required": ["agentId", "runtimeEndpoint", "assignedAt"]
+    },
+
+    "TTLConfig": {
+      "type": "object",
+      "description": "TTL 配置",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否启用 TTL"
+        },
+        "idleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "default": 3600,
+          "description": "空闲超时时间(秒)，默认 1 小时"
+        },
+        "maxLifetimeSeconds": {
+          "type": "integer",
+          "minimum": 300,
+          "default": 86400,
+          "description": "最大生命周期(秒)，默认 24 小时"
+        },
+        "extendOnActivity": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否在活动时延长 TTL"
+        }
+      }
+    }
+  },
+
+  "type": "object",
+  "properties": {
+    "bindingKey": {
+      "$ref": "#/definitions/BindingKey",
+      "description": "绑定键 (主键)"
+    },
+
+    "externalSessionKey": {
+      "$ref": "#/definitions/ExternalSessionKey",
+      "description": "外部平台会话标识"
+    },
+
+    "vcpSessionId": {
+      "$ref": "#/definitions/VcpSessionId",
+      "description": "VCP 内部会话 ID"
+    },
+
+    "adapterId": {
+      "type": "string",
+      "description": "适配器实例 ID"
+    },
+
+    "channel": {
+      "type": "string",
+      "enum": ["dingtalk", "wecom", "feishu", "qq", "wechat", "telegram", "discord", "slack"],
+      "description": "平台渠道类型"
+    },
+
+    "state": {
+      "$ref": "#/definitions/BindingState",
+      "default": "active"
+    },
+
+    "context": {
+      "$ref": "#/definitions/BindingContext",
+      "description": "绑定上下文"
+    },
+
+    "sessionMetadata": {
+      "$ref": "#/definitions/SessionMetadata",
+      "description": "会话元数据"
+    },
+
+    "agentAssignment": {
+      "$ref": "#/definitions/AgentAssignment",
+      "description": "Agent 分配信息"
+    },
+
+    "ttl": {
+      "$ref": "#/definitions/TTLConfig",
+      "description": "TTL 配置"
+    },
+
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "绑定创建时间"
+    },
+
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "最后更新时间"
+    },
+
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "绑定过期时间"
+    },
+
+    "lastActivityAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "最后活动时间"
+    },
+
+    "activityCount": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "活动计数"
+    },
+
+    "messageCount": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "消息计数"
+    },
+
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "自定义标签"
+    },
+
+    "customData": {
+      "type": "object",
+      "description": "自定义扩展数据",
+      "additionalProperties": true
+    }
+  },
+
+  "required": [
+    "bindingKey",
+    "externalSessionKey",
+    "vcpSessionId",
+    "adapterId",
+    "channel",
+    "state",
+    "createdAt"
+  ],
+
+  "additionalProperties": false
+}

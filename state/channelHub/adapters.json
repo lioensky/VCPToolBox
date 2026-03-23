@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "ChannelHub 已注册适配器状态存储",
+  "adapters": [],
+  "metadata": {
+    "version": "1.0.0",
+    "lastUpdated": null,
+    "created": "${ISO_DATE}"
+  }
+}

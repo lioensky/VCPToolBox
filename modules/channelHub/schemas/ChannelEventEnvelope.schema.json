@@ -1,0 +1,307 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "ChannelEventEnvelope.schema.json",
+  "title": "ChannelEventEnvelope",
+  "description": "B2协议标准入站事件信封结构 - ChannelHub统一事件协议",
+  "type": "object",
+  "required": [
+    "version",
+    "eventId",
+    "adapterId",
+    "channel",
+    "eventType",
+    "client",
+    "sender",
+    "session",
+    "payload",
+    "runtime"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "B2",
+      "description": "协议版本，固定为B2"
+    },
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "事件唯一标识符，UUID v4格式"
+    },
+    "adapterId": {
+      "type": "string",
+      "description": "处理此事件的适配器实例ID"
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["dingtalk", "wecom", "feishu", "qq", "wechat"],
+      "description": "来源渠道类型"
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "message.text",
+        "message.image",
+        "message.audio",
+        "message.video",
+        "message.file",
+        "message.card",
+        "message.location",
+        "message.sticker",
+        "message.reply",
+        "message.edit",
+        "message.recall",
+        "event.subscribe",
+        "event.unsubscribe",
+        "event.enter_session",
+        "event.exit_session",
+        "event.click",
+        "event.menu",
+        "event.file_upload",
+        "system.heartbeat",
+        "system.error"
+      ],
+      "description": "事件类型"
+    },
+    "client": {
+      "type": "object",
+      "description": "客户端环境信息",
+      "properties": {
+        "platform": {
+          "type": "string",
+          "description": "客户端平台 (ios/android/web/desktop/miniapp)"
+        },
+        "version": {
+          "type": "string",
+          "description": "客户端版本"
+        },
+        "locale": {
+          "type": "string",
+          "description": "客户端语言设置"
+        },
+        "timezone": {
+          "type": "string",
+          "description": "客户端时区"
+        },
+        "userAgent": {
+          "type": "string",
+          "description": "客户端User-Agent"
+        }
+      }
+    },
+    "sender": {
+      "type": "object",
+      "required": ["userId"],
+      "description": "发送者身份信息",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "平台用户ID"
+        },
+        "userName": {
+          "type": "string",
+          "description": "用户名称"
+        },
+        "userAvatar": {
+          "type": "string",
+          "format": "uri",
+          "description": "用户头像URL"
+        },
+        "userType": {
+          "type": "string",
+          "enum": ["user", "admin", "bot", "system"],
+          "default": "user",
+          "description": "用户类型"
+        },
+        "department": {
+          "type": "string",
+          "description": "部门名称 (企业微信/钉钉)"
+        },
+        "extra": {
+          "type": "object",
+          "description": "扩展用户属性"
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": ["sessionId"],
+      "description": "会话信息",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "平台会话ID"
+        },
+        "sessionType": {
+          "type": "string",
+          "enum": ["private", "group", "channel"],
+          "description": "会话类型"
+        },
+        "sessionName": {
+          "type": "string",
+          "description": "群聊/频道名称"
+        },
+        "bindingKey": {
+          "type": "string",
+          "description": "VCP会话绑定键，用于匹配内部会话"
+        },
+        "externalSessionKey": {
+          "type": "string",
+          "description": "外部平台会话唯一标识"
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "事件载荷，结构根据eventType变化",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "文本消息内容"
+            },
+            "mentions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "userId": { "type": "string" },
+                  "userName": { "type": "string" }
+                }
+              },
+              "description": "@提及列表"
+            },
+            "replyTo": {
+              "type": "string",
+              "description": "回复的消息ID"
+            }
+          }
+        },
+        {
+          "properties": {
+            "mediaId": {
+              "type": "string",
+              "description": "媒体文件ID"
+            },
+            "mediaUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "媒体文件URL"
+            },
+            "mediaType": {
+              "type": "string",
+              "enum": ["image", "audio", "video", "file"],
+              "description": "媒体类型"
+            },
+            "mimeType": {
+              "type": "string",
+              "description": "MIME类型"
+            },
+            "size": {
+              "type": "integer",
+              "description": "文件大小(字节)"
+            },
+            "width": {
+              "type": "integer",
+              "description": "图片/视频宽度"
+            },
+            "height": {
+              "type": "integer",
+              "description": "图片/视频高度"
+            },
+            "duration": {
+              "type": "integer",
+              "description": "音频/视频时长(秒)"
+            },
+            "thumbnailUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "缩略图URL"
+            },
+            "fileName": {
+              "type": "string",
+              "description": "原始文件名"
+            }
+          }
+        },
+        {
+          "properties": {
+            "cardType": {
+              "type": "string",
+              "description": "卡片类型"
+            },
+            "cardData": {
+              "type": "object",
+              "description": "卡片结构数据"
+            },
+            "actions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "label": { "type": "string" },
+                  "value": { "type": "string" }
+                }
+              },
+              "description": "卡片按钮动作"
+            }
+          }
+        },
+        {
+          "properties": {
+            "latitude": {
+              "type": "number",
+              "description": "纬度"
+            },
+            "longitude": {
+              "type": "number",
+              "description": "经度"
+            },
+            "title": {
+              "type": "string",
+              "description": "位置标题"
+            },
+            "address": {
+              "type": "string",
+              "description": "位置地址"
+            }
+          }
+        }
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "description": "运行时上下文",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "description": "目标Agent ID (运行时填充)"
+        },
+        "conversationId": {
+          "type": "string",
+          "description": "VCP内部会话ID (运行时填充)"
+        },
+        "traceId": {
+          "type": "string",
+          "description": "全链路追踪ID"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "事件时间戳"
+        },
+        "b1Compat": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否来自B1兼容层转换"
+        }
+      }
+    },
+    "raw": {
+      "type": "object",
+      "description": "原始平台数据，用于调试和审计"
+    }
+  },
+  "additionalProperties": true
+}

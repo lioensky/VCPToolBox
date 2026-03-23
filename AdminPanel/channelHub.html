@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChannelHub 管理面板</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --sidebar-width: 250px;
+        }
+        
+        body {
+            min-height: 100vh;
+            background-color: #f8f9fa;
+        }
+        
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        
+        .sidebar .brand {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .sidebar .nav-link {
+            color: rgba(255,255,255,0.8);
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 0.25rem;
+            transition: all 0.3s ease;
+        }
+        
+        .sidebar .nav-link:hover,
+        .sidebar .nav-link.active {
+            background: rgba(255,255,255,0.2);
+            color: white;
+        }
+        
+        .sidebar .nav-link i {
+            margin-right: 0.5rem;
+            width: 1.25rem;
+            text-align: center;
+        }
+        
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 2rem;
+        }
+        
+        .card {
+            border: none;
+            border-radius: 1rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075);
+            margin-bottom: 1.5rem;
+        }
+        
+        .card-header {
+            background: white;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            font-weight: 600;
+        }
+        
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.75rem;
+            border-radius: 2rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .status-active {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        
+        .status-inactive {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-pending {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .metrics-card {
+            text-align: center;
+            padding: 1.5rem;
+        }
+        
+        .metrics-card .value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .metrics-card .label {
+            color: #6c757d;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .table th {
+            border-top: none;
+            font-weight: 600;
+            color: #6c757d;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+        
+        .btn-action {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .section {
+            display: none;
+        }
+        
+        .section.active {
+            display: block;
+        }
+        
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+        
+        .toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1100;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="brand">
+            <i class="bi bi-diagram-3"></i> ChannelHub
+        </div>
+        <nav class="nav flex-column">
+            <a class="nav-link active" href="#" data-section="dashboard">
+                <i class="bi bi-speedometer2"></i> 仪表盘
+            </a>
+            <a class="nav-link" href="#" data-section="adapters">
+                <i class="bi bi-plug"></i> 适配器管理
+            </a>
+            <a class="nav-link" href="#" data-section="bindings">
+                <i class="bi bi-link-45deg"></i> 会话绑定
+            </a>
+            <a class="nav-link" href="#" data-section="outbox">
+                <i class="bi bi-outbox"></i> 发件箱
+            </a>
+            <a class="nav-link" href="#" data-section="metrics">
+                <i class="bi bi-graph-up"></i> 统计指标
+            </a>
+        </nav>
+    </div>
+    
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Dashboard Section -->
+        <div id="dashboard" class="section active">
+            <h2 class="mb-4"><i class="bi bi-speedometer2"></i> 仪表盘</h2>
+            
+            <div class="row">
+                <div class="col-md-3">
+                    <div class="card metrics-card">
+                        <div class="value" id="metric-adapters">-</div>
+                        <div class="label">活跃适配器</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card metrics-card">
+                        <div class="value" id="metric-bindings">-</div>
+                        <div class="label">会话绑定</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card metrics-card">
+                        <div class="value" id="metric-events">-</div>
+                        <div class="label">今日事件</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card metrics-card">
+                        <div class="value" id="metric-messages">-</div>
+                        <div class="label">今日消息</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">适配器状态</div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>适配器 ID</th>
+                                    <th>渠道</th>
+                                    <th>状态</th>
+                                    <th>最后心跳</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dashboard-adapters-table">
+                                <tr>
+                                    <td colspan="4" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Adapters Section -->
+        <div id="adapters" class="section">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="bi bi-plug"></i> 适配器管理</h2>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#adapter-modal">
+                    <i class="bi bi-plus-lg"></i> 添加适配器
+                </button>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>适配器 ID</th>
+                                    <th>渠道类型</th>
+                                    <th>名称</th>
+                                    <th>状态</th>
+                                    <th>Webhook URL</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adapters-table">
+                                <tr>
+                                    <td colspan="6" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Bindings Section -->
+        <div id="bindings" class="section">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="bi bi-link-45deg"></i> 会话绑定</h2>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#binding-modal">
+                    <i class="bi bi-plus-lg"></i> 创建绑定
+                </button>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>绑定 Key</th>
+                                    <th>适配器</th>
+                                    <th>外部会话</th>
+                                    <th>VCP 会话</th>
+                                    <th>Agent ID</th>
+                                    <th>创建时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bindings-table">
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Outbox Section -->
+        <div id="outbox" class="section">
+            <h2 class="mb-4"><i class="bi bi-outbox"></i> 发件箱</h2>
+            
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>待发送消息</span>
+                    <button class="btn btn-sm btn-outline-secondary" id="refresh-outbox">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>消息 ID</th>
+                                    <th>适配器</th>
+                                    <th>目标</th>
+                                    <th>类型</th>
+                                    <th>状态</th>
+                                    <th>重试次数</th>
+                                    <th>创建时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="outbox-table">
+                                <tr>
+                                    <td colspan="8" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Metrics Section -->
+        <div id="metrics" class="section">
+            <h2 class="mb-4"><i class="bi bi-graph-up"></i> 统计指标</h2>
+            
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">事件统计</div>
+                        <div class="card-body">
+                            <canvas id="events-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">消息统计</div>
+                        <div class="card-body">
+                            <canvas id="messages-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">渠道分布</div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>渠道</th>
+                                    <th>事件数</th>
+                                    <th>消息数</th>
+                                    <th>成功率</th>
+                                    <th>平均延迟</th>
+                                </tr>
+                            </thead>
+                            <tbody id="channel-metrics-table">
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Adapter Modal -->
+    <div class="modal fade" id="adapter-modal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加适配器</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="adapter-form">
+                        <div class="mb-3">
+                            <label class="form-label">适配器 ID</label>
+                            <input type="text" class="form-control" name="adapterId" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">渠道类型</label>
+                            <select class="form-select" name="channel" required>
+                                <option value="">请选择...</option>
+                                <option value="dingtalk">钉钉</option>
+                                <option value="wecom">企业微信</option>
+                                <option value="feishu">飞书</option>
+                                <option value="qq">QQ</option>
+                                <option value="wechat">微信</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">名称</label>
+                            <input type="text" class="form-control" name="name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">配置 (JSON)</label>
+                            <textarea class="form-control" name="config" rows="5" placeholder='{"appId": "", "appSecret": ""}'></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="save-adapter">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Binding Modal -->
+    <div class="modal fade" id="binding-modal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">创建会话绑定</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="binding-form">
+                        <div class="mb-3">
+                            <label class="form-label">适配器 ID</label>
+                            <select class="form-select" name="adapterId" required>
+                                <option value="">请选择...</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">外部会话 Key</label>
+                            <input type="text" class="form-control" name="externalSessionKey" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">VCP 会话 ID</label>
+                            <input type="text" class="form-control" name="vcpSessionId" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Agent ID</label>
+                            <input type="text" class="form-control" name="agentId" required>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="save-binding">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Container -->
+    <div class="toast-container"></div>
+    
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="js/channelHub/api.js"></script>
+    <script src="js/channelHub/adapters.js"></script>
+    <script src="js/channelHub/bindings.js"></script>
+    <script src="js/channelHub/metrics.js"></script>
+    <script src="js/channelHub/outbox.js"></script>
+    <script>
+        // Navigation
+        document.querySelectorAll('.nav-link[data-section]').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const section = link.dataset.section;
+                
+                // Update nav
+                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                link.classList.add('active');
+                
+                // Update sections
+                document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+                document.getElementById(section).classList.add('active');
+                
+                // Load section data
+                if (section === 'adapters') loadAdapters();
+                if (section === 'bindings') loadBindings();
+                if (section === 'outbox') loadOutbox();
+                if (section === 'metrics') loadMetrics();
+                if (section === 'dashboard') loadDashboard();
+            });
+        });
+        
+        // Toast helper
+        function showToast(message, type = 'success') {
+            const toastContainer = document.querySelector('.toast-container');
+            const toastEl = document.createElement('div');
+            toastEl.className = `toast show align-items-center text-white bg-${type === 'success' ? 'success' : 'danger'}`;
+            toastEl.innerHTML = `
+                <div class="d-flex">
+                    <div class="toast-body">${message}</div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                </div>
+            `;
+            toastContainer.appendChild(toastEl);
+            setTimeout(() => toastEl.remove(), 3000);
+        }
+        
+        // Initial load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadDashboard();
+        });
+    </script>
+</body>
+</html>
