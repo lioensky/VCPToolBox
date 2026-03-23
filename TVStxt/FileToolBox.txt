@@ -7,7 +7,7 @@ tool_name:「始」PowerShellExecutor「末」, // 使用 ServerPowerShellExecut
 command:「始」Get-ChildItem「末」,
 executionType:「始」blocking/background「末」, // 默认blocking。background用于长时任务。
 newSession:「始」true「末」, // 仅前端，代表新建窗口。
-requireAdmin:「始»true「末」 // 提升权限。Server版需输入6位安全码。
+requireAdmin:「始」true「末」 // 提升权限。Server版需输入6位安全码。
 
 ## 2. 文件快速搜索 (LocalSearchController)
 基于 Everything 模块实现秒级搜索。

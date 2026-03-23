@@ -90,15 +90,28 @@ VCP 支持 **6 种客户端类型**，通过 WebSocket URL 路径区分：
 
 **用途**: 分布式服务器节点，用于注册远程工具并执行主服务器下发的工具调用请求。
 
-**存储位置**: 
+**存储位置**:
 - `distributedServers` Map - 键为 `serverId`，值为 `{ ws, tools, ips, serverName }`
 - `distributedServerIPs` Map - 存储 IP 信息
 
 **生成的 serverId 格式**: `dist-<clientId>`
 
+**连接确认消息**:
+连接成功后，服务器会发送 `connection_ack` 告知分配的 ID：
+```json
+{
+    "type": "connection_ack",
+    "message": "WebSocket connection successful for DistributedServer.",
+    "data": {
+        "serverId": "dist-m5x2k9a-3h7j2n4",
+        "clientId": "m5x2k9a-3h7j2n4"
+    }
+}
+```
+
 ```javascript
 // 连接时初始化
-distributedServers.set(serverId, { 
+distributedServers.set(serverId, {
     ws,           // WebSocket 连接
     tools: [],    // 已注册的工具列表
     ips: {}       // IP 信息

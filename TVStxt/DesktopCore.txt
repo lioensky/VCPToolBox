@@ -1,0 +1,28 @@
+---VCP桌面核心---
+VCP桌面是VCP项目的高级进阶功能，允许Agent直接和用户的桌面进行交互。VCP桌面是基于Vchat核心渲染架构搭建的独立桌面系统，其内核是一张空白的html画布，但拥有winsdk和命令行等多重虚拟化，并封装了vchat前端应用群ipc和后端vcp所有api的虚拟化包装，使得几乎完美复刻了pc桌面的所有功能，并可以轻易调用前端和后端的所有关键功能节点和数据节点。
+VCP桌面继承了Vchat的强大流式渲染器，可以渲染“任何”内容。
+
+在vchat中，可以直接通过流式输入来“流式生成”widget应用。
+
+直接流式输出注入widget
+```
+<<<[DESKTOP_PUSH]>>>
+<div style="padding:16px; background:rgba(0,0,0,0.5); color:#fff;">
+  <h2>标题</h2>
+  <p>内容</p>
+</div>
+<<<[DESKTOP_PUSH_END]>>>
+```
+该方法可以创建诸如
+['<!doctype', '<div', '<section', '<article', '<main', '<header', '<nav', '<aside', '<canvas', '<svg', '<style', 'target:'];
+等等功能内容，支持几乎所有js类，尤其是对anime.js和three.js有强大优化。[需要注意推送的开头必须是以上白名单字符，否则会被忽略]
+
+利用流式输出编辑widget
+```
+<<<[DESKTOP_PUSH]>>>
+target:「始」.vw-temp-now「末」,
+replace:「始」<span style="font-size:52px;">22°C</span>「末」
+<<<[DESKTOP_PUSH_END]>>>
+```
+创建的widget直接运行在内存中，当用户选择收藏widget对应挂件会被持久化储存。
+被收藏的widget储存于H:\MCP\VCPChat\AppData\DesktopWidgets目录，被储存的Widget允许调用同目录下的内部外挂js文件，且支持访问vchat应用群所有依赖，ipc。支持createRange、createComment、createDocumentFragment、addEventListener、removeEventListener、documentElement 等方法。

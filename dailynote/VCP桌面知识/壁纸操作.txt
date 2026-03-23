@@ -1,0 +1,26 @@
+# 调用工具推送壁纸 
+功能: 推送壁纸到用户的VCPdesktop桌面。支持多种壁纸来源：
+1. 直接URL（http/https）：推送网络图片或视频作为壁纸。
+2. 本地文件URL（file:///...）：推送本地图片、视频或HTML文件作为壁纸。
+3. HTML内容：直接传入一段HTML代码，系统会将其保存为HTML文件并作为动态壁纸加载（适合粒子效果、shader动画等）。
+
+壁纸类型会根据文件扩展名或内容自动检测：图片(jpg/png/gif/webp/svg)、视频(mp4/webm)、HTML动态壁纸(html/htm)。
+
+参数:
+- wallpaperSource (字符串, 必需): 壁纸来源。可以是：
+  - HTTP/HTTPS URL (如 https://example.com/bg.jpg)
+  - 本地文件 file:// URL (如 file:///C:/wallpapers/bg.png)
+  - 完整的HTML代码（以 <!DOCTYPE 或 <html 开头时会被识别为HTML内容）
+调用格式:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DesktopRemote「末」,
+command:「始」SetWallpaper「末」,
+wallpaperSource:「始」https://example.com/beautiful-landscape.jpg「末」
+<<<[END_TOOL_REQUEST]>>>
+
+创建HTML动态壁纸示例:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DesktopRemote「末」,
+command:「始」SetWallpaper「末」,
+wallpaperSource:「始」<!DOCTYPE html><html><head><style>body{margin:0;overflow:hidden;background:#000}canvas{display:block}</style></head><body><canvas id="c"></canvas><script>/* 粒子动画代码 */</script></body></html>「末」
+<<<[END_TOOL_REQUEST]>>>

@@ -3,6 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const { tavily } = require('@tavily/core');
 
 // --- 1. 初始化与配置加载 ---
 const configPath = path.resolve(__dirname, './config.env');
@@ -141,7 +142,8 @@ ${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如
         log(`[Grounding] 正在搜索关键词: "${keyword}"...`);
         const response = await axios.post(API_URL, payload, {
             headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-            timeout: 180000 // 3分钟超时
+            timeout: 180000, // 3分钟超时
+            proxy: false  // 禁用代理，代理仅用于 URL 重定向解析
         });
         let content = response.data.choices[0].message.content;
 
@@ -238,7 +240,8 @@ ${keywordList.map((kw, i) => `${i + 1}. ${kw}`).join('\n')}
         const response = await axios.post(API_URL, payload, {
             headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
             responseType: 'stream',
-            timeout: 300000
+            timeout: 300000,
+            proxy: false  // 禁用代理，代理仅用于 URL 重定向解析
         });
 
         return new Promise((resolve, reject) => {
@@ -272,41 +275,84 @@ ${keywordList.map((kw, i) => `${i + 1}. ${kw}`).join('\n')}
 };
 
 /**
- * Tavily 模式 (并发搜索 + 单次整体总结)
+ * 从逗号分隔的 key 列表中随机选取一个
  */
-const callTavilyMode = async (topic, keywordList, serverPort, serverKey) => {
+const pickRandomKey = (keyStr) => {
+    if (!keyStr) return null;
+    if (keyStr.includes(',')) {
+        const keys = keyStr.split(',').map(k => k.trim()).filter(k => k);
+        return keys.length > 0 ? keys[Math.floor(Math.random() * keys.length)] : null;
+    }
+    return keyStr.trim();
+};
+
+/**
+ * 直接调用 Tavily SDK 执行单次搜索
+ */
+const callTavilySearch = async (query, tavilyKeyStr) => {
+    const apiKey = pickRandomKey(tavilyKeyStr);
+    if (!apiKey) {
+        throw new Error('TavilyKey 未配置，请在根目录 config.env 中设置 TavilyKey。');
+    }
+
+    const tvly = tavily({ apiKey });
+    const response = await tvly.search(query, {
+        search_depth: 'advanced',
+        topic: 'general',
+        max_results: 10,
+        include_answer: false,
+        include_images: false,
+    });
+
+    // 转换为 Markdown 格式
+    let markdown = '';
+    if (response.results && response.results.length > 0) {
+        response.results.forEach((item, index) => {
+            markdown += `${index + 1}. **[${item.title}](${item.url})**\n`;
+            if (item.content) {
+                markdown += `   ${item.content}\n\n`;
+            }
+        });
+    } else {
+        markdown = '未找到相关搜索结果。\n';
+    }
+    return markdown;
+};
+
+/**
+ * Tavily 模式 (直接调用 Tavily SDK 并发搜索 + 单次整体总结)
+ */
+const callTavilyMode = async (topic, keywordList, tavilyKeyStr) => {
+    // === 阶段1: 并发搜索 ===
+    let combinedResults = '';
     try {
-        log(`[Tavily] 正在并发获取 ${keywordList.length} 个关键词的搜索结果...`);
+        log(`[Tavily] 阶段1/2: 正在并发获取 ${keywordList.length} 个关键词的搜索结果 (直接调用 Tavily API)...`);
 
-        // 1. 并发调用 TavilySearch 插件
         const searchPromises = keywordList.map(async (kw) => {
-            const toolRequest = `<<<[TOOL_REQUEST]>>>
-tool_name:「始」TavilySearch「末」,
-query:「始」${kw}「末」,
-topic:「始」general「末」,
-search_depth:「始」advanced「末」
-<<<[END_TOOL_REQUEST]>>>`;
-
             try {
-                const resp = await axios.post(`http://127.0.0.1:${serverPort}/v1/human/tool`, toolRequest, {
-                    headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Authorization': `Bearer ${serverKey}` },
-                    timeout: 120000
-                });
-                const toolData = resp.data;
-                const result = (typeof toolData === 'object' && toolData.result) ? toolData.result : JSON.stringify(toolData);
-                return `### 关键词: ${kw}\n${result}\n`;
+                const result = await callTavilySearch(kw, tavilyKeyStr);
+                log(`[Tavily] 关键词 "${kw}" 搜索成功`);
+                return `### 关键词: ${kw}\n${result}`;
             } catch (e) {
+                log(`[Tavily] 关键词 "${kw}" 搜索失败: ${e.message}`);
                 return `### 关键词: ${kw}\n[搜索失败]: ${e.message}\n`;
             }
         });
 
         const allSearchResults = await Promise.all(searchPromises);
-        const combinedResults = allSearchResults.join('\n---\n');
+        combinedResults = allSearchResults.join('\n---\n');
+        log(`[Tavily] 阶段1/2 完成: 搜索结果总长度 ${combinedResults.length} 字符`);
+    } catch (searchError) {
+        log(`[Tavily] 阶段1 搜索整体失败: ${searchError.message}`);
+        return `[Tavily 搜索阶段失败] 错误原因: ${searchError.message}`;
+    }
 
-        // 2. 使用总结模型进行单次深度整合
-        log(`[Tavily] 正在使用 ${TAVILY_MODEL} 进行全量总结...`);
+    // === 阶段2: 模型总结 ===
+    try {
+        const summaryModel = TAVILY_MODEL || "claude-sonnet-4-6";
+        log(`[Tavily] 阶段2/2: 正在使用 ${summaryModel} 通过 ${API_URL} 进行全量总结...`);
         const summaryPayload = {
-            model: TAVILY_MODEL || "claude-sonnet-4-6",
+            model: summaryModel,
             messages: [
                 {
                     role: 'system',
@@ -316,19 +362,26 @@ search_depth:「始」advanced「末」
                 },
                 { role: 'user', content: `原始搜索结果汇总如下：\n\n${combinedResults}` }
             ],
-            max_tokens: 8000
+            max_tokens: TOKENS
         };
 
-        const summaryResponse = await axios.post(API_URL, summaryPayload, {
+        const summaryAxiosConfig = {
             headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
-            timeout: 180000
-        });
+            timeout: 180000,
+            proxy: false  // 显式禁用代理，避免环境变量残留干扰
+        };
 
+        const summaryResponse = await axios.post(API_URL, summaryPayload, summaryAxiosConfig);
+
+        log(`[Tavily] 阶段2/2 完成: 总结成功`);
         return summaryResponse.data.choices[0].message.content;
+    } catch (summaryError) {
+        const statusCode = summaryError.response?.status || 'N/A';
+        const errorDetail = summaryError.response?.data ? JSON.stringify(summaryError.response.data).substring(0, 500) : summaryError.message;
+        log(`[Tavily] 阶段2 总结失败 (HTTP ${statusCode}): ${errorDetail}`);
 
-    } catch (error) {
-        log(`[Tavily] 全量处理失败: ${error.message}`);
-        return `[Tavily 模式失败] 错误原因: ${error.message}`;
+        // 总结失败时，回退返回原始搜索结果而不是完全失败
+        return `[总结阶段失败 (HTTP ${statusCode}): ${summaryError.message}]\n\n**以下为原始搜索结果（未经整合）：**\n\n${combinedResults}`;
     }
 };
 
@@ -354,18 +407,19 @@ async function main(request) {
     }
 
     if (SearchMode === 'tavily') {
-        // Tavily 模式：并发搜索 + 单次总结
-        let serverPort = 6005;
-        let serverKey = '';
+        // Tavily 模式：直接调用 Tavily SDK 并发搜索 + 单次总结
+        let tavilyKeyStr = '';
         try {
             const rootEnvContent = await fs.readFile(rootConfigPath, 'utf8');
             const rootEnv = dotenv.parse(rootEnvContent);
-            serverPort = rootEnv.PORT || 6005;
-            serverKey = rootEnv.Key || '';
+            tavilyKeyStr = rootEnv.TavilyKey || '';
         } catch (e) {
             log(`读取根目录配置失败: ${e.message}`);
         }
-        const result = await callTavilyMode(SearchTopic, keywordList, serverPort, serverKey);
+        if (!tavilyKeyStr) {
+            return sendResponse({ status: "error", error: "Tavily 模式需要在根目录 config.env 中配置 TavilyKey。" });
+        }
+        const result = await callTavilyMode(SearchTopic, keywordList, tavilyKeyStr);
         return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Tavily]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
     }
 

@@ -1,0 +1,38 @@
+## 桌面挂件 API（VCPdesktop Widget Sandbox）
+
+当你需要在桌面画布上创建交互式挂件时，使用 <<<[DESKTOP_PUSH]>>> 语法输出 HTML/CSS/JS。
+你的脚本在沙箱中执行，以下 API 自动可用：
+
+### document（已代理到 Shadow DOM）
+- document.querySelector/querySelectorAll/getElementById → 在 widget 内部查找
+- document.createElement/createTextNode → 正常创建元素
+
+### vcpAPI（后端数据访问，自动认证）
+- vcpAPI.weather() → 获取天气数据
+- vcpAPI.fetch('/admin_api/任意端点') → 通用后端 API（Basic Auth）
+- vcpAPI.post(messages, options) → 标准 OpenAI 兼容 chat completion 请求（Bearer Token，安全代理，widget 无需知道 URL 和 API Key）
+
+天气数据结构：
+{
+  city, hourly: [{fxTime, temp, text, icon, humidity, windDir, windScale}],
+  daily: [{fxDate, tempMin, tempMax, textDay, iconDay}],
+  airQuality: {aqi, category, pm2p5},
+  warning: [{title, text}]
+}
+
+### musicAPI（音乐播放器控制）
+- musicAPI.getState() → 获取播放状态
+  返回: {is_playing, file_path, position_secs, duration_secs, volume, ...}
+- musicAPI.play() → 播放
+- musicAPI.pause() → 暂停  
+- musicAPI.seek(秒数) → 跳转
+- musicAPI.setVolume(0-100) → 设置音量
+- musicAPI.send('music-remote-command', 'next') → 下一首
+- musicAPI.send('music-remote-command', 'previous') → 上一首
+
+vcpAPI.post() 参数说明：
+- messages: OpenAI 格式消息数组 [{role: "system", content: "..."}, {role: "user", content: "..."}]
+- options.model: 模型名称（如 "gemini-3-flash-preview"）
+- options.temperature: 温度参数（0-2）
+- options.max_tokens: 最大输出 token 数
+- 返回: {success, content, usage, raw, error}

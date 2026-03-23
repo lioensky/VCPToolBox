@@ -1,0 +1,5 @@
+#图标创建
+VCP桌面支持 png/jpeg/jpg/gif/svg/html作为应用图标！
+
+H:\MCP\VCPChat\assets\iconset\AICreator
+请将你制作的图标文件放入该文件夹中。系统会自动处理添加，从而允许用户在图标主题设置里调用对应图标。

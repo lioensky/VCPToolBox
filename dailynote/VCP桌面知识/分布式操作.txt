@@ -1,0 +1,54 @@
+## 在分布式里(非Vchat)创建插件
+
+功能: 在用户的VCPdesktop桌面上创建一个新的挂件(widget)。你可以传入完整的HTML代码，系统会在桌面画布上渲染该挂件。支持指定初始位置、尺寸，并可选择是否自动收藏。
+
+这是最灵活的桌面交互方式，适合创建：天气挂件、时钟、待办事项、数据可视化面板、小游戏、动画效果等任何基于HTML的交互式内容。
+
+挂件运行在Shadow DOM沙箱中，脚本通过安全包装执行。挂件内可以使用以下API：
+- `document.querySelector/getElementById` 等 DOM 操作（作用域限定在挂件内部）
+- `vcpAPI.fetch(endpoint, opts)` - 调用VCP后端API
+- `vcpAPI.weather()` - 获取天气数据
+- `musicAPI.play/pause/getState/setVolume/seek` - 控制音乐播放
+
+参数:
+- htmlContent (字符串, 必需): 挂件的完整HTML代码。可以包含 <style> 和 <script> 标签。
+- x (数字, 可选): 挂件左上角的X坐标（像素），默认100。
+- y (数字, 可选): 挂件左上角的Y坐标（像素），默认100。
+- width (数字, 可选): 挂件初始宽度（像素），默认320。挂件会根据内容自动调整。
+- height (数字, 可选): 挂件初始高度（像素），默认200。挂件会根据内容自动调整。
+- widgetId (字符串, 可选): 自定义挂件ID。默认自动生成。
+- autoSave (布尔, 可选): 是否自动将挂件收藏到侧栏，默认false。
+- saveName (字符串, 可选): 收藏名称（仅当autoSave为true时有效）。
+- scriptFiles (数组, 可选): 外部脚本文件列表。当挂件的JS逻辑较复杂时，可以将JS代码拆分为独立文件，而不是全部内联在htmlContent中。每个元素是一个对象，包含 fileName（文件名，默认 'app.js'）和 content（JS代码内容）。使用此参数时，htmlContent中应通过 <script src="文件名"> 引用这些文件。系统会自动将文件保存到挂件的收藏目录中，并将相对路径转换为绝对路径以确保正确加载。注意：使用scriptFiles时会自动启用autoSave（因为外部文件需要持久化存储）。
+
+调用示例 - 创建一个简单时钟挂件:
+tool_name:「始」DesktopRemote「末」,
+command:「始」CreateWidget「末」,
+htmlContent:「始」<div style="font-family:monospace;font-size:48px;color:#0ff;text-align:center;padding:20px;background:#111;border-radius:12px"><span id="clock">00:00:00</span></div><script>setInterval(()=>{const d=new Date();document.getElementById('clock').textContent=d.toLocaleTimeString()},1000)</script>「末」,
+x:「始」200「末」,
+y:「始」150「末」
+
+调用示例 - 创建并自动收藏:
+tool_name:「始」DesktopRemote「末」,
+command:「始」CreateWidget「末」,
+htmlContent:「始」<div style="padding:16px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-radius:12px;font-size:18px">Hello Desktop!</div>「末」,
+autoSave:「始」true「末」,
+saveName:「始」问候挂件「末」
+
+调用示例 - 使用外部app.js创建复杂挂件（推荐用于复杂JS逻辑）:
+tool_name:「始」DesktopRemote「末」,
+command:「始」CreateWidget「末」,
+htmlContent:「始」<div id="app"><canvas id="canvas" width="300" height="200"></canvas></div><style>#canvas{border:1px solid #333;border-radius:8px}</style><script src="app.js"></script>「末」,
+scriptFiles:「始」const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = '#0ff';
+ctx.fillRect(10, 10, 100, 100);
+ctx.fillStyle = '#f0f';
+ctx.fillRect(50, 50, 100, 100);「末」,
+saveName:「始」画布挂件「末」
+
+# 精细化改造已有插件的方法
+
+阅读widget日志可以了解所有当前widget运行时
+H:\MCP\VCPChat\AppData\DesktopWidgets\CATALOG.md
+然后使用本地版本的FileOperator进行对应操作

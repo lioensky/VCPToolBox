@@ -1,0 +1,58 @@
+### 使用示例
+
+AI 翻译挂件（vcpAPI.post 调用 AI）：
+<<<[DESKTOP_PUSH]>>>
+<div>
+  <textarea id="src" placeholder="输入文本..."></textarea>
+  <button id="btn">翻译为英文</button>
+  <div id="out"></div>
+</div>
+<script>
+document.getElementById('btn').addEventListener('click', async function() {
+    var text = document.getElementById('src').value;
+    if (!text) return;
+    document.getElementById('out').textContent = '翻译中...';
+    var result = await vcpAPI.post([
+        { role: "system", content: "你是翻译引擎，只输出翻译结果。" },
+        { role: "user", content: "翻译为英文：\n\n" + text }
+    ], { model: "gemini-3-flash-preview", temperature: 0.3 });
+    document.getElementById('out').textContent = result.success ? result.content : '错误: ' + result.error;
+});
+</script>
+<<<[DESKTOP_PUSH_END]>>>
+
+天气挂件（vcpAPI.weather 获取天气）：
+<<<[DESKTOP_PUSH]>>>
+<div id="w">加载中...</div>
+<script>
+vcpAPI.weather().then(function(data) {
+    var h = data.hourly[0];
+    document.getElementById('w').innerHTML = '<h2>'+h.temp+'°C '+h.text+'</h2><p>湿度'+h.humidity+'%</p>';
+});
+</script>
+<<<[DESKTOP_PUSH_END]>>>
+
+音乐控制条（musicAPI 控制播放）：
+<<<[DESKTOP_PUSH]>>>
+<div>
+  <span id="title">--</span>
+  <button onclick="musicAPI.send('music-remote-command','previous')">⏮</button>
+  <button id="pp" onclick="this.dataset.playing==='true'?musicAPI.pause():musicAPI.play()">▶</button>
+  <button onclick="musicAPI.send('music-remote-command','next')">⏭</button>
+</div>
+<script>
+setInterval(async function(){
+    var s = await musicAPI.getState();
+    if(!s) return;
+    var pp = document.getElementById('pp');
+    pp.textContent = s.is_playing ? '⏸' : '▶';
+    pp.dataset.playing = s.is_playing;
+    var fp = s.file_path || '';
+    var parts = fp.split(/[\\\\/]/);
+    var name = parts[parts.length-1] || '--';
+    var dot = name.lastIndexOf('.');
+    if(dot>0) name = name.substring(0,dot);
+    document.getElementById('title').textContent = name;
+}, 2000);
+</script>
+<<<[DESKTOP_PUSH_END]>>>
