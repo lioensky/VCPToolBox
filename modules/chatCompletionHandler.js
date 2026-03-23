@@ -509,7 +509,7 @@ class ChatCompletionHandler {
 
       // 🔒 顺序处理消息（非并发），确保 agent/toolbox 的"首次展开"语义正确
       // 如果使用 Promise.all 并发，多条消息可能同时展开同一个 agent，违反"只展开一个"的约束
-      const processedMessages = [];
+      let processedMessages = [];
       for (const msg of tavernProcessedMessages) {
         const newMessage = JSON.parse(JSON.stringify(msg));
         if (newMessage.content && typeof newMessage.content === 'string') {
