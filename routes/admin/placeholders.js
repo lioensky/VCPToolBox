@@ -200,7 +200,7 @@ module.exports = function(options) {
     });
 
     // GET placeholder detail
-    router.get('/detail', async (req, res) => {
+    router.get('/placeholders/detail', async (req, res) => {
         try {
             const type = req.query.type;
             let name = req.query.name;
