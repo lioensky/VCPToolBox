@@ -152,7 +152,8 @@ tag-processor-config.env
 
 # ===== 运行时数据 / 缓存 =====
 DebugLog/
-dailynote/
+dailynote/*
+!dailynote/VCP桌面知识/
 ip_blacklist.json
 /VectorStore
 
