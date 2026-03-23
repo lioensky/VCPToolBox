@@ -32,7 +32,7 @@
 
 vcpAPI.post() 参数说明：
 - messages: OpenAI 格式消息数组 [{role: "system", content: "..."}, {role: "user", content: "..."}]
-- options.model: 模型名称（如 "gemini-2.5-flash-preview"）
+- options.model: 模型名称（如 "gemini-3-flash-preview"）
 - options.temperature: 温度参数（0-2）
 - options.max_tokens: 最大输出 token 数
 - 返回: {success, content, usage, raw, error}
