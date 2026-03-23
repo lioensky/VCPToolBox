@@ -21,11 +21,11 @@
 
 VCPToolBox 前端生态由三个核心组件构成：
 
-| 组件 | 类型 | 主要功能 | 技术栈 |
-|------|------|----------|--------|
-| AdminPanel | 内嵌静态前端 | 服务器管理、配置、监控 | 原生 JS/CSS、EasyMDE |
-| VCPChrome | Chrome 扩展 | 浏览器控制、页面信息采集 | Manifest V3、Service Worker |
-| OpenWebUISub | 用户脚本 | 前端增强、VCP 协议渲染 | Tampermonkey/Greasemonkey |
+| 组件         | 类型         | 主要功能                 | 技术栈                      |
+| ------------ | ------------ | ------------------------ | --------------------------- |
+| AdminPanel   | 内嵌静态前端 | 服务器管理、配置、监控   | 原生 JS/CSS、EasyMDE        |
+| VCPChrome    | Chrome 扩展  | 浏览器控制、页面信息采集 | Manifest V3、Service Worker |
+| OpenWebUISub | 用户脚本     | 前端增强、VCP 协议渲染   | Tampermonkey/Greasemonkey   |
 
 ### 架构图
 
@@ -106,83 +106,83 @@ AdminPanel/
 
 ```javascript
 // 模块导入
-import { apiFetch, showMessage, checkAuthStatus } from './js/utils.js';
-import { loadPluginList, loadPluginConfig } from './js/plugins.js';
-import { initializeDashboard, stopDashboardUpdates } from './js/dashboard.js';
+import { apiFetch, showMessage, checkAuthStatus } from "./js/utils.js";
+import { loadPluginList, loadPluginConfig } from "./js/plugins.js";
+import { initializeDashboard, stopDashboardUpdates } from "./js/dashboard.js";
 // ... 其他模块
 
 // API 基础路径
-const API_BASE_URL = '/admin_api';
+const API_BASE_URL = "/admin_api";
 
 // 导航路由
 function navigateTo(dataTarget) {
-    // 停止可能正在运行的定时器
-    stopDashboardUpdates();
-    stopServerLogUpdates();
-    
-    // 根据 sectionId 初始化对应的模块
-    switch (sectionIdToActivate) {
-        case 'dashboard-section':
-            initializeDashboard();
-            break;
-        case 'daily-notes-manager-section':
-            initializeDailyNotesManager();
-            break;
-        // ... 其他模块
-    }
+  // 停止可能正在运行的定时器
+  stopDashboardUpdates();
+  stopServerLogUpdates();
+
+  // 根据 sectionId 初始化对应的模块
+  switch (sectionIdToActivate) {
+    case "dashboard-section":
+      initializeDashboard();
+      break;
+    case "daily-notes-manager-section":
+      initializeDailyNotesManager();
+      break;
+    // ... 其他模块
+  }
 }
 ```
 
 #### 2.3.2 工具函数 (`js/utils.js`)
 
-| 函数 | 用途 |
-|------|------|
-| `apiFetch(url, options, showLoader)` | 封装的 fetch 请求，自动处理认证失效跳转 |
-| `showMessage(message, type, duration)` | 消息弹窗显示 |
-| `showLoading(show)` | 加载覆盖层控制 |
-| `checkAuthStatus()` | 验证当前认证状态 |
+| 函数                                   | 用途                                    |
+| -------------------------------------- | --------------------------------------- |
+| `apiFetch(url, options, showLoader)`   | 封装的 fetch 请求，自动处理认证失效跳转 |
+| `showMessage(message, type, duration)` | 消息弹窗显示                            |
+| `showLoading(show)`                    | 加载覆盖层控制                          |
+| `checkAuthStatus()`                    | 验证当前认证状态                        |
 
 ```javascript
 // apiFetch 核心实现
 export async function apiFetch(url, options = {}, showLoader = true) {
-    const defaultHeaders = { 'Content-Type': 'application/json' };
-    options.headers = { ...defaultHeaders, ...options.headers };
-    options.credentials = options.credentials || 'same-origin';
-    
-    const response = await fetch(url, options);
-    if (response.status === 401) {
-        window.location.href = '/AdminPanel/login.html';
-        return new Promise(() => {}); // 中断后续逻辑
-    }
-    // ... 错误处理与响应解析
+  const defaultHeaders = { "Content-Type": "application/json" };
+  options.headers = { ...defaultHeaders, ...options.headers };
+  options.credentials = options.credentials || "same-origin";
+
+  const response = await fetch(url, options);
+  if (response.status === 401) {
+    window.location.href = "/AdminPanel/login.html";
+    return new Promise(() => {}); // 中断后续逻辑
+  }
+  // ... 错误处理与响应解析
 }
 ```
 
 #### 2.3.3 仪表盘 (`js/dashboard.js`)
 
-| 功能 | API 端点 | 更新频率 |
-|------|----------|----------|
-| CPU/内存监控 | `/admin_api/system-monitor/system/resources` | 5s |
-| PM2 进程状态 | `/admin_api/system-monitor/pm2/processes` | 5s |
-| 用户认证码 | `/admin_api/user-auth-code` | 5s |
-| 天气预报 | `/admin_api/weather` | 5s |
-| 日程挂件 | 本地数据 | 5s |
-| 活动图表 | `/admin_api/server-log` | 5s |
+| 功能         | API 端点                                     | 更新频率 |
+| ------------ | -------------------------------------------- | -------- |
+| CPU/内存监控 | `/admin_api/system-monitor/system/resources` | 5s       |
+| PM2 进程状态 | `/admin_api/system-monitor/pm2/processes`    | 5s       |
+| 用户认证码   | `/admin_api/user-auth-code`                  | 5s       |
+| 天气预报     | `/admin_api/weather`                         | 5s       |
+| 日程挂件     | 本地数据                                     | 5s       |
+| 活动图表     | `/admin_api/server-log`                      | 5s       |
 
 ### 2.4 API 通信
 
 所有 AdminPanel API 请求都通过 `/admin_api` 前缀：
 
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/check-auth` | GET | 验证认证状态 |
-| `/config/main` | GET/POST | 读取/保存全局配置 |
-| `/server-log` | GET | 获取服务器日志 |
-| `/server/restart` | POST | 重启服务器 |
-| `/user-auth-code` | GET | 获取用户认证码 |
-| `/weather` | GET | 获取天气数据 |
-| `/system-monitor/*` | GET | 系统监控数据 |
-| `/forum/*` | * | 论坛相关操作 |
+| 端点                | 方法     | 用途              |
+| ------------------- | -------- | ----------------- |
+| `/check-auth`       | GET      | 验证认证状态      |
+| `/config/main`      | GET/POST | 读取/保存全局配置 |
+| `/server-log`       | GET      | 获取服务器日志    |
+| `/server/restart`   | POST     | 重启服务器        |
+| `/user-auth-code`   | GET      | 获取用户认证码    |
+| `/weather`          | GET      | 获取天气数据      |
+| `/system-monitor/*` | GET      | 系统监控数据      |
+| `/forum/*`          | \*       | 论坛相关操作      |
 
 ### 2.5 主题系统
 
@@ -191,21 +191,21 @@ export async function apiFetch(url, options = {}, showLoader = true) {
 ```css
 /* style.css 中的核心变量 */
 :root {
-    --primary-color: #8ab4f8;
-    --background-color: #0d0d0d;
-    --background-color-light: #1a1a1a;
-    --text-color-primary: #e5e7eb;
-    --text-color-secondary: #9ca3af;
-    --border-color: #333333;
+  --primary-color: #8ab4f8;
+  --background-color: #0d0d0d;
+  --background-color-light: #1a1a1a;
+  --text-color-primary: #e5e7eb;
+  --text-color-secondary: #9ca3af;
+  --border-color: #333333;
 }
 
 [data-theme="light"] {
-    --primary-color: #1a73e8;
-    --background-color: #ffffff;
-    --background-color-light: #f9fafb;
-    --text-color-primary: #1f2937;
-    --text-color-secondary: #6b7280;
-    --border-color: #e5e7eb;
+  --primary-color: #1a73e8;
+  --background-color: #ffffff;
+  --background-color-light: #f9fafb;
+  --text-color-primary: #1f2937;
+  --text-color-secondary: #6b7280;
+  --border-color: #e5e7eb;
 }
 ```
 
@@ -219,13 +219,13 @@ export async function apiFetch(url, options = {}, showLoader = true) {
 
 ```javascript
 // 登录验证（后端 routes/adminPanelRoutes.js）
-adminApiRouter.get('/check-auth', (req, res) => {
-    // 通过 HTTP Basic Auth 或 Session Cookie 验证
-    if (isAuthenticated) {
-        res.status(200).json({ authenticated: true });
-    } else {
-        res.status(401).json({ authenticated: false });
-    }
+adminApiRouter.get("/check-auth", (req, res) => {
+  // 通过 HTTP Basic Auth 或 Session Cookie 验证
+  if (isAuthenticated) {
+    res.status(200).json({ authenticated: true });
+  } else {
+    res.status(401).json({ authenticated: false });
+  }
 });
 ```
 
@@ -259,53 +259,56 @@ VCPChrome/
 
 ```json
 {
-    "manifest_version": 3,
-    "name": "VCP Chrome Control",
-    "version": "1.0.0",
-    "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。",
-    
-    "permissions": [
-        "storage",      // 存储配置和状态
-        "activeTab",    // 访问当前标签页
-        "scripting"     // 动态脚本注入
-    ],
-    
-    "host_permissions": [
-        "<all_urls>"    // 访问所有网站
-    ],
-    
-    "background": {
-        "service_worker": "background.js"  // Manifest V3 后台脚本
-    },
-    
-    "action": {
-        "default_popup": "popup.html",
-        "default_icon": { /* ... */ }
-    },
-    
-    "content_scripts": [
-        {
-            "matches": ["<all_urls>"],
-            "js": ["content_script.js"]
-        }
-    ]
+  "manifest_version": 3,
+  "name": "VCP Chrome Control",
+  "version": "1.0.0",
+  "description": "连接到VCP服务器，允许AI代理与您的浏览器交互。",
+
+  "permissions": [
+    "storage", // 存储配置和状态
+    "activeTab", // 访问当前标签页
+    "scripting" // 动态脚本注入
+  ],
+
+  "host_permissions": [
+    "<all_urls>" // 访问所有网站
+  ],
+
+  "background": {
+    "service_worker": "background.js" // Manifest V3 后台脚本
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      /* ... */
+    }
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content_script.js"]
+    }
+  ]
 }
 ```
 
 ### 3.4 权限说明
 
-| 权限 | 用途 | 风险等级 |
-|------|------|----------|
-| `storage` | 存储服务器URL、VCP_Key、监控状态 | 低 |
-| `activeTab` | 访问当前活动标签页内容 | 中 |
-| `scripting` | 动态注入 content_script | 中 |
-| `<all_urls>` | 在所有网站运行 content_script | 高 |
+| 权限         | 用途                              | 风险等级 |
+| ------------ | --------------------------------- | -------- |
+| `storage`    | 存储服务器 URL、VCP_Key、监控状态 | 低       |
+| `activeTab`  | 访问当前活动标签页内容            | 中       |
+| `scripting`  | 动态注入 content_script           | 中       |
+| `<all_urls>` | 在所有网站运行 content_script     | 高       |
 
 ### 3.5 核心组件
 
 #### 3.5.1 Background Service Worker (`background.js`)
 
 **核心职责**：
+
 - WebSocket 连接管理
 - 消息路由（Chrome ↔ VCP 服务器）
 - 标签页事件监听
@@ -314,36 +317,39 @@ VCPChrome/
 ```javascript
 // WebSocket 连接
 function connect() {
-    const serverUrlToUse = result.serverUrl || 'ws://localhost:8088';
-    const keyToUse = result.vcpKey || 'your_secret_key';
-    const fullUrl = `${serverUrlToUse}/vcp-chrome-observer/VCP_Key=${keyToUse}`;
-    
-    ws = new WebSocket(fullUrl);
-    
-    ws.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        if (message.type === 'command') {
-            // 处理服务器指令
-            handleCommand(message.data);
-        }
-    };
+  const serverUrlToUse = result.serverUrl || "ws://localhost:8088";
+  const keyToUse = result.vcpKey || "your_secret_key";
+  const fullUrl = `${serverUrlToUse}/vcp-chrome-observer/VCP_Key=${keyToUse}`;
+
+  ws = new WebSocket(fullUrl);
+
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === "command") {
+      // 处理服务器指令
+      handleCommand(message.data);
+    }
+  };
 }
 
 // 消息监听
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.type === 'PAGE_INFO_UPDATE') {
-        // 转发页面信息到服务器
-        ws.send(JSON.stringify({
-            type: 'pageInfoUpdate',
-            data: { markdown: request.data.markdown }
-        }));
-    }
+  if (request.type === "PAGE_INFO_UPDATE") {
+    // 转发页面信息到服务器
+    ws.send(
+      JSON.stringify({
+        type: "pageInfoUpdate",
+        data: { markdown: request.data.markdown },
+      })
+    );
+  }
 });
 ```
 
 #### 3.5.2 Content Script (`content_script.js`)
 
 **核心职责**：
+
 - 页面内容转换为 Markdown
 - 可交互元素标记与定位
 - 命令执行（点击、输入）
@@ -379,10 +385,10 @@ function findElement(target) {
     // 策略1: vcp-id 精确匹配
     let element = document.querySelector(`[vcp-id="${target}"]`);
     if (element) return element;
-    
+
     // 策略2: ARIA 标签匹配
     element = document.querySelector(`[aria-label="${target}"]`);
-    
+
     // 策略3-9: XPath、CSS选择器、模糊文本、name、id、placeholder、title
     // ...
     return element;
@@ -408,21 +414,22 @@ function findElement(target) {
 
 **消息类型**：
 
-| 类型 | 方向 | 用途 |
-|------|------|------|
-| `PAGE_INFO_UPDATE` | Content → Background | 页面信息更新 |
+| 类型                       | 方向                 | 用途         |
+| -------------------------- | -------------------- | ------------ |
+| `PAGE_INFO_UPDATE`         | Content → Background | 页面信息更新 |
 | `REQUEST_PAGE_INFO_UPDATE` | Background → Content | 请求页面更新 |
-| `FORCE_PAGE_UPDATE` | Background → Content | 强制刷新页面 |
-| `EXECUTE_COMMAND` | Background → Content | 执行命令 |
-| `COMMAND_RESULT` | Content → Background | 命令执行结果 |
-| `CLEAR_STATE` | Background → Content | 清除状态 |
-| `GET_STATUS` | Popup → Background | 获取连接状态 |
-| `TOGGLE_CONNECTION` | Popup → Background | 切换连接 |
-| `TOGGLE_MONITORING` | Popup → Background | 切换监控 |
+| `FORCE_PAGE_UPDATE`        | Background → Content | 强制刷新页面 |
+| `EXECUTE_COMMAND`          | Background → Content | 执行命令     |
+| `COMMAND_RESULT`           | Content → Background | 命令执行结果 |
+| `CLEAR_STATE`              | Background → Content | 清除状态     |
+| `GET_STATUS`               | Popup → Background   | 获取连接状态 |
+| `TOGGLE_CONNECTION`        | Popup → Background   | 切换连接     |
+| `TOGGLE_MONITORING`        | Popup → Background   | 切换监控     |
 
 ### 3.7 安装与配置
 
 1. **加载扩展**：
+
    - 打开 `chrome://extensions/`
    - 启用「开发者模式」
    - 点击「加载已解压的扩展程序」
@@ -444,11 +451,11 @@ OpenWebUISub 包含多个 Tampermonkey/Greasemonkey 用户脚本，用于在 Ope
 
 ### 4.2 脚本列表
 
-| 脚本 | 用途 |
-|------|------|
-| `VCP_DailyNote_SidePanel.user.js` | 侧边栏嵌入 VCP 日记面板 |
-| `OpenWebUI VCP Tool Call Display Enhancer.user.js` | VCP 工具调用可视化渲染 |
-| `OpenWebUI Force HTML Image Renderer with Lightbox.user.js` | 图片渲染增强与灯箱效果 |
+| 脚本                                                        | 用途                    |
+| ----------------------------------------------------------- | ----------------------- |
+| `VCP_DailyNote_SidePanel.user.js`                           | 侧边栏嵌入 VCP 日记面板 |
+| `OpenWebUI VCP Tool Call Display Enhancer.user.js`          | VCP 工具调用可视化渲染  |
+| `OpenWebUI Force HTML Image Renderer with Lightbox.user.js` | 图片渲染增强与灯箱效果  |
 
 ### 4.3 Metadata 格式
 
@@ -473,12 +480,12 @@ OpenWebUISub 包含多个 Tampermonkey/Greasemonkey 用户脚本，用于在 Ope
 
 **关键指令说明**：
 
-| 指令 | 用途 |
-|------|------|
-| `@match` | 脚本匹配的 URL 模式 |
-| `@connect` | 允许跨域请求的域名 |
-| `@grant` | 声明使用的 GM_* API |
-| `@run-at` | 脚本注入时机 |
+| 指令       | 用途                     |
+| ---------- | ------------------------ |
+| `@match`   | 脚本匹配的 URL 模式      |
+| `@connect` | 允许跨域请求的域名       |
+| `@grant`   | 声明使用的 GM\_\* API    |
+| `@run-at`  | 脚本注入时机             |
 | `@require` | 外部依赖（如 marked.js） |
 
 ### 4.4 VCP Tool Call Display Enhancer
@@ -492,20 +499,20 @@ OpenWebUISub 包含多个 Tampermonkey/Greasemonkey 用户脚本，用于在 Ope
 
 ```html
 <div class="vcp-tool-card" data-status="running|done">
-    <div class="vcp-header">
-        <div class="vcp-title">
-            <span>⚙️</span>
-            <span>VCP Tool Call:</span>
-            <span class="vcp-name-text">PluginName</span>
-        </div>
-        <button class="vcp-btn copy-btn">Copy</button>
+  <div class="vcp-header">
+    <div class="vcp-title">
+      <span>⚙️</span>
+      <span>VCP Tool Call:</span>
+      <span class="vcp-name-text">PluginName</span>
     </div>
-    <div class="vcp-body">
-        <div class="vcp-table-grid">
-            <div class="vcp-key">参数名</div>
-            <div class="vcp-val">参数值</div>
-        </div>
+    <button class="vcp-btn copy-btn">Copy</button>
+  </div>
+  <div class="vcp-body">
+    <div class="vcp-table-grid">
+      <div class="vcp-key">参数名</div>
+      <div class="vcp-val">参数值</div>
     </div>
+  </div>
 </div>
 ```
 
@@ -530,6 +537,7 @@ const toolNameRegex = /tool_name:\s*「始」(.*?)「末」/;
 #### 4.5.1 架构设计
 
 采用「特洛伊木马」模式：
+
 1. 通过 `GM_xmlhttpRequest` 下载面板 HTML/CSS/JS
 2. 使用 `srcdoc` 将内容注入 iframe
 3. 劫持 iframe 内的 `fetch` 实现跨域代理
@@ -537,37 +545,38 @@ const toolNameRegex = /tool_name:\s*「始」(.*?)「末」/;
 ```javascript
 // 跨域代理注入
 async function startProxyInjection() {
-    // 1. 挂载代理到 unsafeWindow
-    targetWindow.__VCP_FETCH_PROXY__ = async (url, options) => {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: options.method || "GET",
-                url: url,
-                headers: {
-                    ...(options.headers || {}),
-                    "Authorization": "Basic " + btoa(AUTH_USER + ":" + AUTH_PASS),
-                    "Content-Type": "application/json"
-                },
-                data: options.body,
-                onload: (res) => resolve({
-                    ok: res.status >= 200 && res.status < 300,
-                    status: res.status,
-                    json: () => Promise.resolve(JSON.parse(res.responseText))
-                })
-            });
-        });
-    };
-    
-    // 2. 下载静态资源
-    let html = await download(PANEL_URL);
-    let cssContent = await download(baseUrl + "style.css");
-    let jsContent = await download(baseUrl + "script.js");
-    
-    // 3. 组装 srcdoc HTML（内联 CSS 和 JS）
-    const finalHtml = `<!DOCTYPE html>...`;
-    
-    // 4. 初始化 UI
-    initUI(finalHtml);
+  // 1. 挂载代理到 unsafeWindow
+  targetWindow.__VCP_FETCH_PROXY__ = async (url, options) => {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: options.method || "GET",
+        url: url,
+        headers: {
+          ...(options.headers || {}),
+          Authorization: "Basic " + btoa(AUTH_USER + ":" + AUTH_PASS),
+          "Content-Type": "application/json",
+        },
+        data: options.body,
+        onload: (res) =>
+          resolve({
+            ok: res.status >= 200 && res.status < 300,
+            status: res.status,
+            json: () => Promise.resolve(JSON.parse(res.responseText)),
+          }),
+      });
+    });
+  };
+
+  // 2. 下载静态资源
+  let html = await download(PANEL_URL);
+  let cssContent = await download(baseUrl + "style.css");
+  let jsContent = await download(baseUrl + "script.js");
+
+  // 3. 组装 srcdoc HTML（内联 CSS 和 JS）
+  const finalHtml = `<!DOCTYPE html>...`;
+
+  // 4. 初始化 UI
+  initUI(finalHtml);
 }
 ```
 
@@ -577,10 +586,10 @@ async function startProxyInjection() {
 // 配置区域
 const PANEL_URL = "https://your.vcptoolbox.url:port/AdminPanel/DailyNotePanel/";
 const PANEL_WIDTH = "260px";
-const PANEL_ZOOM = 0.8;           // 缩放比例
-const SIDEBAR_WIDTH = "51px";     // 切掉的侧边栏宽度
-const BUTTON_BOTTOM = "20px";     // 按钮距底部距离
-const DEFAULT_VIEW = "stream";    // 默认视图
+const PANEL_ZOOM = 0.8; // 缩放比例
+const SIDEBAR_WIDTH = "51px"; // 切掉的侧边栏宽度
+const BUTTON_BOTTOM = "20px"; // 按钮距底部距离
+const DEFAULT_VIEW = "stream"; // 默认视图
 
 // 鉴权信息
 const AUTH_USER = "xxxxxxx";
@@ -599,30 +608,30 @@ const AUTH_PASS = "xxxxxxxxxxxxxxxxxx";
 
 ```javascript
 const VCP_CONFIG = {
-    BASE_URL: "https://aaa.bbb.ccc",
-    KEY: "xxxxxxxxxxxxxxxxxxxxxxxxx"
+  BASE_URL: "https://aaa.bbb.ccc",
+  KEY: "xxxxxxxxxxxxxxxxxxxxxxxxx",
 };
 
 function fixVcpUrl(originalSrc) {
-    const anchor = "/images/";
-    const index = originalSrc.indexOf(anchor);
-    if (index === -1) return originalSrc;
-    
-    const pathPart = originalSrc.substring(index);
-    let cleanBase = VCP_CONFIG.BASE_URL.replace(/\/+$/, "");
-    return `${cleanBase}/pw=${VCP_CONFIG.KEY}${pathPart}`;
+  const anchor = "/images/";
+  const index = originalSrc.indexOf(anchor);
+  if (index === -1) return originalSrc;
+
+  const pathPart = originalSrc.substring(index);
+  let cleanBase = VCP_CONFIG.BASE_URL.replace(/\/+$/, "");
+  return `${cleanBase}/pw=${VCP_CONFIG.KEY}${pathPart}`;
 }
 ```
 
 ### 4.7 Tampermonkey 兼容性
 
-| API | Tampermonkey | Violentmonkey | Greasemonkey 4 |
-|-----|--------------|---------------|----------------|
-| `GM_addStyle` | ✅ | ✅ | ❌ |
-| `GM_xmlhttpRequest` | ✅ | ✅ | ✅ |
-| `GM_setValue/getValue` | ✅ | ✅ | ✅ |
-| `unsafeWindow` | ✅ | ✅ | ⚠️ 有限 |
-| `GM_registerMenuCommand` | ✅ | ✅ | ❌ |
+| API                      | Tampermonkey | Violentmonkey | Greasemonkey 4 |
+| ------------------------ | ------------ | ------------- | -------------- |
+| `GM_addStyle`            | ✅           | ✅            | ❌             |
+| `GM_xmlhttpRequest`      | ✅           | ✅            | ✅             |
+| `GM_setValue/getValue`   | ✅           | ✅            | ✅             |
+| `unsafeWindow`           | ✅           | ✅            | ⚠️ 有限        |
+| `GM_registerMenuCommand` | ✅           | ✅            | ❌             |
 
 ---
 
@@ -632,32 +641,34 @@ function fixVcpUrl(originalSrc) {
 
 #### 5.1.1 认证方式
 
-| 端点类型 | 认证方式 | 说明 |
-|----------|----------|------|
-| `/admin_api/*` | HTTP Basic Auth + Cookie | 管理面板专用 |
-| `/v1/*` | Bearer Token (VCP_Key) | AI 对话 API |
-| `/dailynote_api/*` | Bearer Token | 日记操作 API |
+| 端点类型           | 认证方式                 | 说明         |
+| ------------------ | ------------------------ | ------------ |
+| `/admin_api/*`     | HTTP Basic Auth + Cookie | 管理面板专用 |
+| `/v1/*`            | Bearer Token (VCP_Key)   | AI 对话 API  |
+| `/dailynote_api/*` | Bearer Token             | 日记操作 API |
 
 #### 5.1.2 请求格式
 
 ```javascript
 // 标准 API 请求
-fetch('/admin_api/config/main', {
-    method: 'GET',
-    headers: {
-        'Content-Type': 'application/json'
-    },
-    credentials: 'same-origin'  // 携带 Cookie
+fetch("/admin_api/config/main", {
+  method: "GET",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  credentials: "same-origin", // 携带 Cookie
 });
 
 // 带认证的请求
-fetch('/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer YOUR_VCP_KEY'
-    },
-    body: JSON.stringify({ /* ... */ })
+fetch("/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: "Bearer YOUR_VCP_KEY",
+  },
+  body: JSON.stringify({
+    /* ... */
+  }),
 });
 ```
 
@@ -682,14 +693,14 @@ fetch('/v1/chat/completions', {
 
 #### 5.2.1 连接路径
 
-| 路径 | 客户端类型 | 用途 |
-|------|------------|------|
-| `/VCPlog/VCP_Key=xxx` | VCPLog | 日志推送 |
-| `/vcpinfo/VCP_Key=xxx` | VCPInfo | 信息推送 |
-| `/vcp-chrome-observer/VCP_Key=xxx` | ChromeObserver | 浏览器观察 |
-| `/vcp-chrome-control/VCP_Key=xxx` | ChromeControl | 浏览器控制 |
-| `/vcp-admin-panel/VCP_Key=xxx` | AdminPanel | 管理面板实时更新 |
-| `/vcp-distributed-server/VCP_Key=xxx` | DistributedServer | 分布式节点 |
+| 路径                                  | 客户端类型        | 用途             |
+| ------------------------------------- | ----------------- | ---------------- |
+| `/VCPlog/VCP_Key=xxx`                 | VCPLog            | 日志推送         |
+| `/vcpinfo/VCP_Key=xxx`                | VCPInfo           | 信息推送         |
+| `/vcp-chrome-observer/VCP_Key=xxx`    | ChromeObserver    | 浏览器观察       |
+| `/vcp-chrome-control/VCP_Key=xxx`     | ChromeControl     | 浏览器控制       |
+| `/vcp-admin-panel/VCP_Key=xxx`        | AdminPanel        | 管理面板实时更新 |
+| `/vcp-distributed-server/VCP_Key=xxx` | DistributedServer | 分布式节点       |
 
 #### 5.2.2 消息格式
 
@@ -763,8 +774,8 @@ param2:「始」value2「末」
 
 #### 5.3.2 高级控制指令
 
-| 指令 | 用途 |
-|------|------|
+| 指令                          | 用途                 |
+| ----------------------------- | -------------------- |
 | `archery:「始」no_reply「末」 | 异步射箭，不等待结果 |
 | `ink:「始」mark_history「末」 | 强制持久化到对话历史 |
 
@@ -772,7 +783,7 @@ param2:「始」value2「末」
 
 ```
 <<<[TOOL_REQUEST]>>>
-tool_name:「始」FileOperator「末」,
+tool_name:「始」PluginName「末」,
 
 command1:「始」CreateFile「末」,
 filePath1:「始」/path/to/file.txt「末」,
@@ -782,6 +793,8 @@ filePath2:「始」/path/to/file.txt「末」,
 content2:「始」要追加的内容「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
+
+> 说明：这里的 `tool_name` 仅为协议示意。实际调用时必须填写后端真实注册名，例如 `ServerFileOperator`、`ServerSearchController`。
 
 ---
 
@@ -834,8 +847,8 @@ services:
   vcptoolbox:
     build: .
     ports:
-      - "5890:5890"      # HTTP API
-      - "8088:8088"      # WebSocket
+      - "5890:5890" # HTTP API
+      - "8088:8088" # WebSocket
     volumes:
       - ./config.env:/app/config.env
       - ./dailynote:/app/dailynote
@@ -848,10 +861,10 @@ services:
 
 ### 7.1 认证安全
 
-| 组件 | 认证方式 | 安全建议 |
-|------|----------|----------|
-| AdminPanel | HTTP Basic Auth | 使用强密码，启用 HTTPS |
-| VCPChrome | VCP_Key | 定期更换密钥，限制 IP |
+| 组件         | 认证方式        | 安全建议               |
+| ------------ | --------------- | ---------------------- |
+| AdminPanel   | HTTP Basic Auth | 使用强密码，启用 HTTPS |
+| VCPChrome    | VCP_Key         | 定期更换密钥，限制 IP  |
 | OpenWebUISub | HTTP Basic Auth | 不要在脚本中硬编码凭据 |
 
 ### 7.2 敏感信息保护
@@ -881,24 +894,28 @@ AdminPanel 作为静态资源托管，后端应配置适当的 CSP：
 
 ```javascript
 // server.js
-app.use('/AdminPanel', express.static(adminPanelPath, {
+app.use(
+  "/AdminPanel",
+  express.static(adminPanelPath, {
     setHeaders: (res) => {
-        res.setHeader('Content-Security-Policy', 
-            "default-src 'self'; " +
-            "script-src 'self' 'unsafe-inline'; " +
-            "style-src 'self' 'unsafe-inline';"
-        );
-    }
-}));
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'self'; " +
+          "script-src 'self' 'unsafe-inline'; " +
+          "style-src 'self' 'unsafe-inline';"
+      );
+    },
+  })
+);
 ```
 
 ### 7.5 VCPChrome 权限风险
 
-| 权限 | 风险 | 缓解措施 |
-|------|------|----------|
+| 权限         | 风险               | 缓解措施           |
+| ------------ | ------------------ | ------------------ |
 | `<all_urls>` | 可访问所有网站数据 | 仅在需要时启用监控 |
-| `scripting` | 可注入任意脚本 | 审查扩展代码 |
-| `activeTab` | 可读取当前页面 | 敏感页面禁用扩展 |
+| `scripting`  | 可注入任意脚本     | 审查扩展代码       |
+| `activeTab`  | 可读取当前页面     | 敏感页面禁用扩展   |
 
 ### 7.6 日志安全
 
@@ -929,9 +946,9 @@ A: 检查 `@connect` 指令是否包含目标域名。
 
 ### B. 版本历史
 
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| 1.0 | 2026-02-13 | 初始文档 |
+| 版本 | 日期       | 变更     |
+| ---- | ---------- | -------- |
+| 1.0  | 2026-02-13 | 初始文档 |
 
 ---
 

@@ -29,7 +29,7 @@
     "invocationCommands": [
       {
         "command": "search",
-        "description": "功能: 在整台计算机上快速搜索文件，返回文件路径列表。\n重要提示: 此工具的搜索结果(文件路径)可以作为 FileOperator 插件的输入参数，以读取或操作这些文件。\n参数:\n- query (字符串, 必需): 搜索关键词。支持 Everything 的高级搜索语法 (例如: \"path:D:\\videos\\ *.mp4 size:>1gb\")。\n- maxResults (数字, 可选, 默认100): 返回的最大结果数量。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」LocalSearchController「末」,\ncommand:「始」search「末」,\nquery:「始」VCP a.txt「末」,\nmaxResults:「始」50「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 在整台计算机上快速搜索文件，返回文件路径列表。\n重要提示: 此工具的搜索结果(文件路径)可以作为 ServerFileOperator 插件的输入参数，以读取或操作这些文件。\n参数:\n- query (字符串, 必需): 搜索关键词。支持 Everything 的高级搜索语法 (例如: \"path:D:\\videos\\ *.mp4 size:>1gb\")。\n- maxResults (数字, 可选, 默认100): 返回的最大结果数量。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerSearchController「末」,\ncommand:「始」search「末」,\nquery:「始」VCP a.txt「末」,\nmaxResults:「始」50「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

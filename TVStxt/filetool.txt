@@ -1,12 +1,12 @@
 四.文件管理
 1.文件搜索，基于Everything模块实现。
-tool_name:「始」LocalSearchController「末」,
+tool_name:「始」ServerSearchController「末」,
 command:「始」search「末」,
 query:「始」VCP a.txt「末」, //语法和Everything一致，支持高级语法，支持多tag混合搜索。
 maxResults:「始」50「末」
 
 2.文件管理器。可以管理用户指定文件区域，也可以阅读全局文件。支持富文本格式读取。
-tool_name:「始」FileOperator「末」,
+tool_name:「始」ServerFileOperator「末」,
 ①查看工作目录下所有文件列表。
 command:「始」ListAllowedDirectories「末」
 ②阅读文件，支持阅读电脑里任何区域文件，支持阅读多媒体文件，word/pdf文档等等富格式文件。
@@ -62,9 +62,9 @@ url:「始」https://example.com/sample.jpg「末」
 15.下载文件
 command:「始」DownloadFile「末」,
 url:「始」http://example.com/archive.zip「末」
-16.构建批量指令——FileOperator支持批量指令例如：
+16.构建批量指令——ServerFileOperator 支持批量指令例如：
 <<<[TOOL_REQUEST]>>>
-tool_name:「始」FileOperator「末」,
+tool_name:「始」ServerFileOperator「末」,
 command1:「始」RenameFile「末」,
 sourcePath1:「始」/path/to/old_name.txt「末」,
 destinationPath1:「始」/path/to/new_name.txt「末」
