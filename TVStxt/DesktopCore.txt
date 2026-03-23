@@ -14,8 +14,8 @@ VCP桌面继承了Vchat的强大流式渲染器，可以渲染“任何”内容
 <<<[DESKTOP_PUSH_END]>>>
 ```
 该方法可以创建诸如
-['<!doctype', '<div', '<section', '<article', '<main', '<header', '<nav', '<aside', '<canvas', '<svg', 'target:'];
-等等功能内容，支持几乎所有js类，尤其是对anime.js和three.js有强大优化。
+['<!DOCTYPE html', '<div', '<section', '<article', '<main', '<header', '<nav', '<aside', '<canvas', '<svg', 'target:'];
+等等功能内容，支持几乎所有js类，尤其是对anime.js和three.js有强大优化。[需要注意推送的开头必须是以上白名单字符，否则会被忽略]
 
 利用流式输出编辑widget
 ```
@@ -24,4 +24,4 @@ target:「始」.vw-temp-now「末」,
 replace:「始」<span style="font-size:52px;">22°C</span>「末」
 <<<[DESKTOP_PUSH_END]>>>
 ```
-
+创建的widget直接运行在内存中，当用户选择收藏widget对应挂件会被持久化储存。
