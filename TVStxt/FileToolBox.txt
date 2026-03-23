@@ -85,9 +85,11 @@ replaceString:「始」新内容「末」
 13.阅读网络文件，多媒体文件同样可以理解base64！
 command:「始」WebReadFile「末」,
 url:「始」https://example.com/sample.jpg「末」
-14.下载文件
+14.下载文件（支持自定义保存路径和文件名）
 command:「始」DownloadFile「末」,
-url:「始」http://example.com/archive.zip「末」
+url:「始」http://example.com/archive.zip「末」,
+downloadDir:「始」(可选) 自定义下载目录绝对路径「末」,
+fileName:「始」(可选) 自定义保存文件名，如 my_file.zip「末」
 15.聊天历史编辑器。安全可靠的编辑.json格式的聊天历史文件，有健全的兜底机制避免json文件被损毁。
 command:「始」UpdateHistory「末」,
 filePath:「始」H:\path\to\your\history.json「末」,
