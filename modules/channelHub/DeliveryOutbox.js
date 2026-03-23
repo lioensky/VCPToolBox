@@ -249,6 +249,72 @@ class DeliveryOutbox extends EventEmitter {
     return this._findJob(jobId);
   }
 
+  async listJobs(filter = {}) {
+    if (this.store?.queryOutbox) {
+      return this.store.queryOutbox(filter);
+    }
+
+    let jobs = [...this.queue, ...this.deadLetterQueue];
+    if (filter.status) {
+      jobs = jobs.filter((job) => job.status === filter.status);
+    }
+    if (filter.adapterId) {
+      jobs = jobs.filter((job) => job.adapterId === filter.adapterId);
+    }
+    return jobs.slice(filter.offset || 0, (filter.offset || 0) + (filter.limit || 100));
+  }
+
+  async countJobs(filter = {}) {
+    const jobs = await this.listJobs({ ...filter, offset: 0, limit: Number.MAX_SAFE_INTEGER });
+    return jobs.length;
+  }
+
+  async getJob(jobId) {
+    const job = this.getStatus(jobId);
+    if (job) {
+      return job;
+    }
+
+    if (!this.store?.queryOutbox) {
+      return null;
+    }
+
+    const records = await this.store.queryOutbox({
+      limit: Number.MAX_SAFE_INTEGER
+    });
+    return records.find((item) => item.jobId === jobId) || null;
+  }
+
+  async cancelJob(jobId) {
+    return this.cancel(jobId);
+  }
+
+  async retryJob(jobId) {
+    const deadLetterJob = this.deadLetterQueue.find((item) => item.jobId === jobId);
+    if (deadLetterJob) {
+      return this.replayDeadLetter(jobId);
+    }
+
+    let queued = this._findJob(jobId);
+    if (!queued) {
+      queued = await this.getJob(jobId);
+    }
+    if (!queued) {
+      throw new DeliveryError(`浠诲姟涓嶅瓨鍦? ${jobId}`);
+    }
+
+    if (!this._findJob(jobId)) {
+      this._insertByPriority(queued);
+    }
+
+    queued.status = DELIVERY_STATUS.PENDING;
+    queued.nextRetryAt = null;
+    queued.failedAt = null;
+    queued.finalError = null;
+    await this._persistJob(queued);
+    return queued;
+  }
+
   /**
    * 获取队列统计
    * @returns {Object}
@@ -259,15 +325,17 @@ class DeliveryOutbox extends EventEmitter {
       processing: 0,
       delivered: 0,
       failed: this.deadLetterQueue.length,
-      total: this.queue.length
+      deadLetter: this.deadLetterQueue.length,
+      cancelled: 0,
+      total: this.queue.length + this.deadLetterQueue.length
     };
-    
+
     for (const job of this.queue) {
       if (stats[job.status] !== undefined) {
         stats[job.status]++;
       }
     }
-    
+
     return stats;
   }
 
@@ -449,7 +517,12 @@ class DeliveryOutbox extends EventEmitter {
    */
   async _persistJob(job) {
     if (this.store) {
-      await this.store.updateOutboxJob(job);
+      try {
+        await this.store.updateOutboxJob(job.jobId, job);
+      } catch (e) {
+        // 如果更新失败（例如任务不存在于 JSONL），追加新记录
+        await this.store.appendOutboxJob(job);
+      }
     }
   }
 
@@ -461,12 +534,33 @@ class DeliveryOutbox extends EventEmitter {
     if (!this.store) return;
     
     try {
-      const jobs = await this.store.getPendingOutboxJobs();
+      const jobs = await this.store.queryOutbox({
+        limit: Number.MAX_SAFE_INTEGER
+      });
       
       for (const job of jobs) {
-        if (job.status === DELIVERY_STATUS.FAILED) {
-          this.deadLetterQueue.push(job);
-        } else {
+        if (!job?.jobId) {
+          continue;
+        }
+
+        if (job.status === DELIVERY_STATUS.DELIVERED || job.status === DELIVERY_STATUS.CANCELLED) {
+          continue;
+        }
+
+        if (job.status === DELIVERY_STATUS.FAILED || job.status === DELIVERY_STATUS.DEAD_LETTER) {
+          if (!this.deadLetterQueue.some((item) => item.jobId === job.jobId)) {
+            this.deadLetterQueue.push(job);
+          }
+          continue;
+        }
+
+        if (job.status === DELIVERY_STATUS.PROCESSING) {
+          job.status = DELIVERY_STATUS.PENDING;
+          job.nextRetryAt = null;
+          await this._persistJob(job);
+        }
+
+        if (!this.queue.some((item) => item.jobId === job.jobId)) {
           this._insertByPriority(job);
         }
       }

@@ -1,0 +1,79 @@
+﻿{
+  "manifestVersion": "1.0.0",
+  "name": "OneBotAdapter",
+  "version": "1.0.0",
+  "displayName": "QQ OneBot Adapter",
+  "description": "QQ bot adapter for OneBot/NapCat/LLOneBot implementations via ChannelHub B2.",
+  "author": "VCP",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node src/index.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "ONEBOT_HTTP_URL": {
+      "type": "string",
+      "description": "OneBot HTTP API URL, for example http://127.0.0.1:3000",
+      "default": "http://127.0.0.1:3000"
+    },
+    "ONEBOT_ACCESS_TOKEN": {
+      "type": "string",
+      "description": "OneBot access token",
+      "default": ""
+    },
+    "ONEBOT_WS_URL": {
+      "type": "string",
+      "description": "OneBot WebSocket URL, for example ws://127.0.0.1:3001",
+      "default": ""
+    },
+    "ONEBOT_WS_PORT": {
+      "type": "number",
+      "description": "Reverse WebSocket listen port for OneBot, 0 disables it",
+      "default": 0
+    },
+    "VCP_CHANNEL_HUB_URL": {
+      "type": "string",
+      "description": "VCP ChannelHub B2 event endpoint",
+      "default": "http://127.0.0.1:6010/internal/channel-hub/events"
+    },
+    "VCP_CHANNEL_BRIDGE_KEY": {
+      "type": "string",
+      "description": "VCP ChannelHub bridge key",
+      "default": ""
+    },
+    "VCP_AGENT_NAME": {
+      "type": "string",
+      "description": "Default agent name",
+      "default": "Nova"
+    },
+    "LOG_LEVEL": {
+      "type": "string",
+      "description": "Log level: debug, info, warn, error",
+      "default": "info"
+    }
+  },
+  "capabilities": {
+    "channelAdapter": {
+      "platform": "qq",
+      "protocol": "onebot",
+      "supportsB2": true,
+      "capabilities": {
+        "supportsText": true,
+        "supportsImage": true,
+        "supportsFile": false,
+        "supportsAudio": true,
+        "supportsCard": false,
+        "supportsActionCallback": false,
+        "supportsThread": false,
+        "supportsMention": true,
+        "supportsProactivePush": true,
+        "maxMessageLength": 5000,
+        "mediaUploadMode": "url"
+      }
+    }
+  }
+}

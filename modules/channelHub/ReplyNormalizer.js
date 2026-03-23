@@ -7,7 +7,7 @@
  * - 兼容文本回复和未来结构化富回复
  * - 统一填充 meta、usage、topic
  * 
- * 设计文档：CHANNEL_MIDDLEWARE_DESIGN.md 第 6.2.16 节
+ * 设计文档：docs/interaction-middleware/CHANNEL_MIDDLEWARE_DESIGN.md 第 6.2.16 节
  */
 
 const { createRequestId } = require('./utils');

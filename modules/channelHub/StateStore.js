@@ -151,8 +151,17 @@ class StateStore {
    */
   async saveAdapters(data) {
     const filePath = path.join(this.stateDir, 'adapters.json');
-    data.lastUpdated = Date.now();
-    await writeJsonFile(filePath, data);
+    const payload = Array.isArray(data)
+      ? {
+          version: CHANNEL_HUB_STATE_VERSION,
+          adapters: Object.fromEntries(data.filter(item => item?.adapterId).map(item => [item.adapterId, item])),
+          lastUpdated: Date.now()
+        }
+      : {
+          ...data,
+          lastUpdated: Date.now()
+        };
+    await writeJsonFile(filePath, payload);
   }
 
   // ==================== 身份映射管理 ====================
@@ -252,9 +261,21 @@ class StateStore {
     // 反转并过滤
     allRecords.reverse();
     
+    const seenBindingKeys = new Set();
+
     for (const record of allRecords) {
+      if (record.bindingKey) {
+        if (seenBindingKeys.has(record.bindingKey)) continue;
+        seenBindingKeys.add(record.bindingKey);
+      }
+
       if (filter.bindingKey && record.bindingKey !== filter.bindingKey) continue;
-      if (filter.channel && record.channel !== filter.channel) continue;
+      if (filter.channel && record.channel !== filter.channel && record.platform !== filter.channel) continue;
+      if (filter.platform && record.platform !== filter.platform) continue;
+      if (filter.adapterId && record.adapterId !== filter.adapterId) continue;
+      if (filter.agentId && record.agentId !== filter.agentId) continue;
+      if (filter.userId && record.userId !== filter.userId) continue;
+      if (filter.deleted !== undefined && Boolean(record.deleted) !== Boolean(filter.deleted)) continue;
       
       results.push(record);
       if (results.length >= (filter.limit || 100)) break;
@@ -347,11 +368,26 @@ class StateStore {
     }
     
     allRecords.reverse();
-    
+
+    const offset = filter.offset || 0;
+    let skipped = 0;
+
+    const seenJobIds = new Set();
+
     for (const record of allRecords) {
+      if (record.jobId) {
+        if (seenJobIds.has(record.jobId)) continue;
+        seenJobIds.add(record.jobId);
+      }
+
       if (filter.status && record.status !== filter.status) continue;
       if (filter.adapterId && record.adapterId !== filter.adapterId) continue;
-      
+
+      if (skipped < offset) {
+        skipped += 1;
+        continue;
+      }
+
       results.push(record);
       if (results.length >= (filter.limit || 100)) break;
     }

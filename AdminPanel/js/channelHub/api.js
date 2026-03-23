@@ -7,7 +7,7 @@ const ChannelHubAPI = (function() {
     'use strict';
 
     // API基础路径配置
-    const API_BASE = '/api/admin/channelHub';
+    const API_BASE = '/admin_api/channelHub';
 
     /**
      * 发起API请求
@@ -419,18 +419,154 @@ const ChannelHubAPI = (function() {
         }
     };
 
+    function parseQueryLike(input) {
+        if (!input) return {};
+        if (typeof input === 'string') {
+            return Object.fromEntries(new URLSearchParams(input));
+        }
+        return input;
+    }
+
+    function formatDate(value) {
+        if (!value) return '-';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN');
+    }
+
     // 导出公共API
-    return {
+    const api = {
         Adapter: AdapterAPI,
+        adapters: AdapterAPI,
         Binding: BindingAPI,
+        bindings: BindingAPI,
         Metrics: MetricsAPI,
+        metrics: MetricsAPI,
         Outbox: OutboxAPI,
+        outbox: OutboxAPI,
         Identity: IdentityAPI,
+        identities: IdentityAPI,
         Capability: CapabilityAPI,
+        capabilities: CapabilityAPI,
         Health: HealthAPI,
-        APIError
+        health: HealthAPI,
+        APIError,
+        formatDate,
+
+        async getAdapters() {
+            return AdapterAPI.list();
+        },
+
+        async getBindings(filters = {}) {
+            return BindingAPI.list(parseQueryLike(filters));
+        },
+
+        async createBinding(binding) {
+            return request('/bindings', {
+                method: 'POST',
+                body: JSON.stringify(binding)
+            });
+        },
+
+        async updateBinding(bindingId, binding) {
+            return request(`/bindings/${encodeURIComponent(bindingId)}`, {
+                method: 'PUT',
+                body: JSON.stringify(binding)
+            });
+        },
+
+        async deleteBinding(bindingId) {
+            return BindingAPI.delete(bindingId);
+        },
+
+        async getOutboxMessages(filters = {}) {
+            const response = await OutboxAPI.list(filters);
+            return {
+                success: response.success,
+                data: {
+                    messages: response.data || [],
+                    pagination: response.pagination || {
+                        page: filters.page || 1,
+                        totalPages: 1,
+                        total: Array.isArray(response.data) ? response.data.length : 0
+                    }
+                }
+            };
+        },
+
+        async getOutboxStats() {
+            return request('/outbox/stats');
+        },
+
+        async retryOutboxMessage(messageId) {
+            return OutboxAPI.retry(messageId);
+        },
+
+        async deleteOutboxMessage(messageId) {
+            return request(`/outbox/${encodeURIComponent(messageId)}`, {
+                method: 'DELETE'
+            });
+        },
+
+        async retryOutboxMessages(ids = []) {
+            const results = await Promise.all(ids.map((id) => OutboxAPI.retry(id)));
+            return {
+                success: true,
+                data: {
+                    retried: results.length
+                }
+            };
+        },
+
+        async deleteOutboxMessages(ids = []) {
+            const results = await Promise.all(ids.map((id) => request(`/outbox/${encodeURIComponent(id)}`, {
+                method: 'DELETE'
+            })));
+            return {
+                success: true,
+                data: {
+                    deleted: results.length
+                }
+            };
+        },
+
+        async getMetrics(options = {}) {
+            const response = await request('/metrics');
+            const metrics = response.data || {};
+            const byChannelEntries = Object.entries(metrics.byChannel || {});
+
+            return {
+                success: response.success,
+                data: {
+                    totalEvents: metrics.eventsReceived || 0,
+                    successRate: metrics.eventsReceived ? (metrics.eventsProcessed || 0) / metrics.eventsReceived : 0,
+                    avgLatency: metrics.avgProcessingTimeMs || 0,
+                    activeAdapters: 0,
+                    byChannel: byChannelEntries.map(([channel, stat]) => ({
+                        channel,
+                        eventCount: stat.eventsReceived || 0,
+                        successRate: stat.eventsReceived ? (stat.eventsProcessed || 0) / stat.eventsReceived : 0,
+                        avgLatency: stat.avgLatencyMs || 0,
+                        errorCount: stat.eventsFailed || 0
+                    })),
+                    byEventType: [],
+                    recentErrors: []
+                }
+            };
+        },
+
+        async getAuditLogs(filters = {}) {
+            const params = new URLSearchParams(filters);
+            const query = params.toString() ? `?${params.toString()}` : '';
+            return request(`/audit-logs${query}`);
+        }
     };
+
+    return api;
 })();
+
+if (typeof window !== 'undefined') {
+    window.ChannelHubAPI = ChannelHubAPI;
+}
 
 // 如果在Node.js环境，导出模块
 if (typeof module !== 'undefined' && module.exports) {

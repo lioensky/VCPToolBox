@@ -368,6 +368,8 @@ class AuditLogger {
   async queryLogs(query = {}) {
     const results = [];
     const limit = query.limit || 100;
+    const offset = query.offset || 0;
+    let skipped = 0;
     
     const files = await fs.readdir(this.logDir);
     const logFiles = files
@@ -394,12 +396,18 @@ class AuditLogger {
           
           // 应用过滤条件
           if (query.traceId && entry.traceId !== query.traceId) continue;
+          if (query.adapterId && entry.adapterId !== query.adapterId) continue;
           if (query.channel && entry.channel !== query.channel) continue;
           if (query.agentId && entry.agentId !== query.agentId) continue;
           if (query.type && entry.type !== query.type) continue;
           if (query.startTime && new Date(entry.timestamp) < query.startTime) continue;
           if (query.endTime && new Date(entry.timestamp) > query.endTime) continue;
-          
+
+          if (skipped < offset) {
+            skipped += 1;
+            continue;
+          }
+
           results.push(entry);
         } catch (e) {
           // 跳过解析错误的行
@@ -408,6 +416,28 @@ class AuditLogger {
     }
     
     return results;
+  }
+
+  async query(filter = {}) {
+    return this.queryLogs({
+      traceId: filter.requestId,
+      adapterId: filter.adapterId,
+      channel: filter.channel,
+      agentId: filter.agentId,
+      type: filter.eventType,
+      startTime: filter.startTime,
+      endTime: filter.endTime,
+      limit: filter.limit,
+      offset: filter.offset
+    });
+  }
+
+  async count(filter = {}) {
+    const records = await this.query({
+      ...filter,
+      limit: Number.MAX_SAFE_INTEGER
+    });
+    return records.length;
   }
 
   /**

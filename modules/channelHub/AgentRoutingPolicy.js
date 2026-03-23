@@ -171,6 +171,15 @@ class AgentRoutingPolicy {
     this.routingRules = { ...this.routingRules, ...rules };
   }
 
+  async listPolicies() {
+    return this.routingRules;
+  }
+
+  async setPolicy(policyConfig) {
+    this.setRoutingRules(policyConfig);
+    return this.routingRules;
+  }
+
   /**
    * 设置 agent 配置
    * @param {string} agentId - Agent ID

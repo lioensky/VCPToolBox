@@ -14,25 +14,56 @@ const CHANNEL_EVENT_VERSION = '2.0';
  * 出站任务状态枚举
  */
 const OUTBOX_STATUS = {
-  PENDING: 'pending',         // 等待处理
-  PROCESSING: 'processing',   // 处理中
-  DELIVERED: 'delivered',     // 已投递
-  FAILED: 'failed',           // 投递失败
-  DEAD_LETTER: 'dead_letter', // 死信
-  CANCELLED: 'cancelled'      // 已取消
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  DELIVERED: 'delivered',
+  FAILED: 'failed',
+  DEAD_LETTER: 'dead_letter',
+  CANCELLED: 'cancelled'
+};
+
+/**
+ * 投递状态（DeliveryOutbox 使用，与 OUTBOX_STATUS 保持一致）
+ */
+const DELIVERY_STATUS = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  DELIVERED: 'delivered',
+  FAILED: 'failed',
+  DEAD_LETTER: 'dead_letter',
+  CANCELLED: 'cancelled'
+};
+
+/**
+ * 适配器状态枚举
+ */
+const ADAPTER_STATUS = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  ERROR: 'error',
+  INITIALIZING: 'initializing'
+};
+
+/**
+ * 任务优先级枚举
+ */
+const PRIORITY = {
+  HIGH: 1,
+  NORMAL: 5,
+  LOW: 10
 };
 
 /**
  * 审计事件类型
  */
 const AUDIT_TYPES = {
-  INGRESS: 'ingress',           // 入站事件
-  ROUTE: 'route',               // 路由决策
-  RUNTIME: 'runtime',           // 运行时调用
-  DELIVERY: 'delivery',         // 投递
-  ERROR: 'error',               // 错误
-  RETRY: 'retry',               // 重试
-  DEDUP_HIT: 'dedup_hit'        // 去重命中
+  INGRESS: 'ingress',
+  ROUTE: 'route',
+  RUNTIME: 'runtime',
+  DELIVERY: 'delivery',
+  ERROR: 'error',
+  RETRY: 'retry',
+  DEDUP_HIT: 'dedup_hit'
 };
 
 /**
@@ -64,17 +95,26 @@ const DEFAULT_RETRY_POLICY = {
  */
 const DEFAULT_CAPABILITY_PROFILE = {
   supportsText: true,
+  supportsMarkdown: false,
   supportsImage: false,
   supportsFile: false,
   supportsAudio: false,
+  supportsVideo: false,
   supportsCard: false,
   supportsActionCallback: false,
   supportsThread: false,
   supportsMention: false,
   supportsProactivePush: false,
   maxMessageLength: 4096,
+  maxImageSize: 10 * 1024 * 1024,
+  maxFileSize: 10 * 1024 * 1024,
   mediaUploadMode: 'none'
 };
+
+/**
+ * 去重缓存 TTL（毫秒）
+ */
+const DEDUP_TTL_MS = 300000; // 5分钟
 
 /**
  * 状态目录名称
@@ -90,9 +130,32 @@ const PLATFORMS = {
   DINGTALK: 'dingtalk',
   WECOM: 'wecom',
   FEISHU: 'feishu',
+  LARK: 'lark',
   QQ: 'qq',
   WECHAT: 'wechat',
   ONEBOT: 'onebot'
+};
+
+/**
+ * 平台标识别名（兼容 CapabilityDowngrader 等模块使用 CHANNELS）
+ */
+const CHANNELS = PLATFORMS;
+
+/**
+ * 能力标志位名称（兼容别名）
+ */
+const CAPABILITY_FLAGS = {
+  TEXT: 'supportsText',
+  MARKDOWN: 'supportsMarkdown',
+  IMAGE: 'supportsImage',
+  FILE: 'supportsFile',
+  AUDIO: 'supportsAudio',
+  VIDEO: 'supportsVideo',
+  CARD: 'supportsCard',
+  ACTION_CALLBACK: 'supportsActionCallback',
+  THREAD: 'supportsThread',
+  MENTION: 'supportsMention',
+  PROACTIVE_PUSH: 'supportsProactivePush'
 };
 
 /**
@@ -108,8 +171,8 @@ const CONVERSATION_TYPES = {
  * 桥接协议版本
  */
 const BRIDGE_VERSIONS = {
-  B1: '1.0',  // 旧版 channel-ingest
-  B2: '2.0'   // 新版 channel-hub/events
+  B1: '1.0',
+  B2: '2.0'
 };
 
 module.exports = {
@@ -119,12 +182,18 @@ module.exports = {
   
   // 状态枚举
   OUTBOX_STATUS,
+  DELIVERY_STATUS,
+  ADAPTER_STATUS,
+  PRIORITY,
   AUDIT_TYPES,
   CHANNEL_EVENT_TYPES,
   
   // 默认配置
   DEFAULT_RETRY_POLICY,
   DEFAULT_CAPABILITY_PROFILE,
+  
+  // 去重
+  DEDUP_TTL_MS,
   
   // 目录名
   STATE_DIRNAME,
@@ -133,6 +202,10 @@ module.exports = {
   
   // 平台标识
   PLATFORMS,
+  CHANNELS,
+  
+  // 能力标志
+  CAPABILITY_FLAGS,
   
   // 会话类型
   CONVERSATION_TYPES,

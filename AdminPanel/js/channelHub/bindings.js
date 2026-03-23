@@ -385,6 +385,10 @@ const BindingsManager = {
     }
 };
 
+if (typeof window !== 'undefined') {
+    window.BindingsManager = BindingsManager;
+}
+
 // 导出
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = BindingsManager;

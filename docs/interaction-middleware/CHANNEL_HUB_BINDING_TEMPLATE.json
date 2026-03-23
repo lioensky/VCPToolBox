@@ -1,0 +1,17 @@
+{
+  "bindingKey": "qq:group:123456789",
+  "adapterId": "qq-main",
+  "externalSessionKey": "group:123456789",
+  "conversationId": "topic-qq-group-123456789",
+  "agentId": "agent-default",
+  "channel": "qq",
+  "platform": "qq",
+  "conversationType": "group",
+  "userId": "",
+  "topicId": "topic-qq-group-123456789",
+  "isActive": true,
+  "metadata": {
+    "remark": "replace-with-note",
+    "source": "manual-admin-binding"
+  }
+}

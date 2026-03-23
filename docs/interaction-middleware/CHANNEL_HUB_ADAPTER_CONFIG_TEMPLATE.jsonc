@@ -1,0 +1,139 @@
+{
+  // 适配器回调地址。
+  // 一般用于平台把事件推送到适配器服务，再由适配器转发给 ChannelHub。
+  "webhookUrl": "http://127.0.0.1:8080/callback",
+
+  // 适配器自身服务的基础地址。
+  // 如果你的适配器还需要主动请求平台或暴露管理接口，可以保留这个字段。
+  "baseUrl": "http://127.0.0.1:3000",
+
+  // 平台鉴权令牌。不同平台语义不同，按实际渠道填写。
+  "token": "replace-with-token",
+
+  // 平台签名或验签密钥。
+  "secret": "replace-with-secret",
+
+  // 平台应用 ID。
+  "appId": "replace-with-app-id",
+
+  // 平台应用密钥。
+  "appSecret": "replace-with-app-secret",
+
+  // 钉钉等平台常见字段，可选。
+  "robotCode": "",
+
+  // 飞书、企微等平台可能需要的租户或企业标识，可选。
+  "tenantKey": "",
+
+  "verification": {
+    // 是否启用入站验签。
+    "enabled": true,
+
+    // 签名头名称。
+    "signatureHeader": "x-signature",
+
+    // 时间戳头名称。
+    "timestampHeader": "x-timestamp",
+
+    // 随机串头名称。
+    "nonceHeader": "x-nonce",
+
+    // 请求体摘要算法。
+    "bodyDigest": "sha256"
+  },
+
+  "network": {
+    // 请求超时时间，单位毫秒。
+    "timeoutMs": 10000,
+
+    // 失败后的最大重试次数。
+    "maxRetries": 3,
+
+    // 每次重试之间的间隔，单位毫秒。
+    "retryDelayMs": 1000,
+
+    // 如需走代理，在这里填写代理地址；没有就留空。
+    "proxyUrl": "",
+
+    // 是否启用长连接。
+    "keepAlive": true
+  },
+
+  "headers": {
+    // 适配器对外请求时附带的额外请求头。
+    "x-channel-source": "channelhub"
+  },
+
+  "routing": {
+    // 该适配器默认落到哪个 Agent。
+    "defaultAgentId": "agent-default",
+
+    // 默认会话或话题 ID，可选。
+    "defaultConversationId": "topic-default",
+
+    // 发送失败时是否进入 outbox 重试队列。
+    "fallbackToOutbox": true
+  },
+
+  "capabilities": {
+    // 是否支持纯文本。
+    "text": true,
+
+    // 是否支持 markdown。
+    "markdown": true,
+
+    // 是否支持图片。
+    "image": false,
+
+    // 是否支持文件。
+    "file": false,
+
+    // 是否支持音频。
+    "audio": false,
+
+    // 是否支持视频。
+    "video": false,
+
+    // 是否支持“正在输入”状态。
+    "typing": false,
+
+    // 是否支持撤回。
+    "recall": false
+  },
+
+  "sender": {
+    // 机器人发送方展示名。
+    "displayName": "ChannelHub Bot",
+
+    // 机器人头像，可选。
+    "avatarUrl": ""
+  },
+
+  "observability": {
+    // 是否打开调试模式。
+    "debug": false,
+
+    // 日志级别，如 info / warn / error / debug。
+    "logLevel": "info",
+
+    // 是否启用审计记录。
+    "auditEnabled": true,
+
+    // 是否启用指标采集。
+    "metricsEnabled": true
+  },
+
+  "security": {
+    // 允许访问的 IP 白名单。留空表示不限制。
+    "ipWhitelist": [],
+
+    // 允许的来源列表。按实际跨域需求填写。
+    "allowedOrigins": [],
+
+    // 是否允许不安全 TLS。生产环境通常应为 false。
+    "allowInsecureTls": false
+  },
+
+  // 自定义扩展区。项目内若有额外约定，可统一放这里。
+  "custom": {}
+}

@@ -1,0 +1,9 @@
+{"_init":true,"version":"1.0.0","createdAt":1774237052772}
+{"sessionId":"test_session_001","channel":"qq","bindingKey":"test:binding:key","createdAt":1774237052775,"_timestamp":1774237052775}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774237374913,"_timestamp":1774237374913}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774237506326,"_timestamp":1774237506326}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774237506326,"_timestamp":1774252720681,"deleted":true,"deletedAt":1774252720681}
+{"sessionId":"test_session_001","channel":"qq","bindingKey":"test:binding:key","createdAt":1774237052775,"_timestamp":1774252722950,"deleted":true,"deletedAt":1774252722950}
+{"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"1","agentId":"1","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252735385,"deleted":false,"_timestamp":1774252735385}
+{"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"123","agentId":"12","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252899592,"deleted":false,"_timestamp":1774252899592,"rebindAt":1774252899592}
+{"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"123","agentId":"12","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252899592,"deleted":true,"_timestamp":1774262070339,"rebindAt":1774252899592,"deletedAt":1774262070339}

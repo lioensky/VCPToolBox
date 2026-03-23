@@ -209,6 +209,7 @@ export function createVcpClient({
   bridgeUrl = '',
   bridgeKey = '',
   useBridge = true,
+  bridgeVersion = 'b1', // 'b1' | 'b2'
 
   baseUrl,
   chatPath = '/v1/chat/completions',
@@ -220,6 +221,7 @@ export function createVcpClient({
   logger = console,
 }) {
   const endpoint = joinUrl(baseUrl, chatPath);
+  const isB2 = String(bridgeVersion || 'b1').toLowerCase() === 'b2';
 
   async function sendViaBridge({
     agentName = defaultAgentName,
@@ -230,6 +232,19 @@ export function createVcpClient({
   }) {
     const requestId = `dt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+    // B2 模式：使用 ChannelEventEnvelope 格式
+    if (isB2) {
+      return sendViaBridgeB2({
+        agentName,
+        agentDisplayName,
+        externalSessionKey,
+        message,
+        metadata,
+        requestId,
+      });
+    }
+
+    // B1 模式：使用旧版格式（兼容 channel-ingest）
     const payload = {
       channel: 'dingtalk',
       agentId: agentName,
@@ -310,6 +325,127 @@ export function createVcpClient({
       agentId: agentName,
       agentDisplayName,
       externalSessionKey,
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+
+      if (bridgeKey) {
+        headers['x-channel-bridge-key'] = bridgeKey;
+      }
+
+      const resp = await fetch(bridgeUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      const data = await parseResponse(resp);
+      logRawResponse(data, logger);
+
+      if (!resp.ok) {
+        throw new Error(
+          `Bridge HTTP ${resp.status}: ${
+            typeof data === 'string' ? data : JSON.stringify(data)
+          }`
+        );
+      }
+
+      return data;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`Bridge request timeout after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // B2 模式专用发送函数
+  async function sendViaBridgeB2({
+    agentName,
+    agentDisplayName,
+    externalSessionKey,
+    message,
+    metadata,
+    requestId,
+  }) {
+    const bindingKey = externalSessionKey || `dingtalk:${metadata.chatType || 'single'}:${metadata.conversationId || ''}:${metadata.userId || 'anonymous'}`;
+
+    const payload = {
+      version: '2.0',
+      eventId: requestId,
+      adapterId: 'dingtalk-adapter',
+      channel: 'dingtalk',
+      eventType: 'message.created',
+      occurredAt: Date.now(),
+      requestId,
+      target: {
+        agentId: agentName,
+        itemType: 'agent',
+        itemId: agentName,
+      },
+      client: {
+        clientType: 'dingtalk',
+        conversationId: metadata.conversationId || '',
+        conversationType: metadata.chatType === 'group' ? 'group' : 'single',
+        messageId: metadata.messageId || requestId,
+      },
+      sender: {
+        userId: metadata.userId || '',
+        nick: metadata.senderNick || '',
+        corpId: metadata.senderCorpId || '',
+        isAdmin: Boolean(metadata.isAdmin),
+      },
+      session: {
+        bindingKey,
+        externalSessionKey: bindingKey,
+        currentTopicId: metadata.topicId || null,
+        allowCreateTopic: true,
+        allowSwitchTopic: true,
+      },
+      payload: {
+        messages: [
+          {
+            role: 'user',
+            content: Array.isArray(message)
+              ? message
+              : [{ type: 'text', text: String(message || '') }],
+          },
+        ],
+      },
+      runtime: {
+        stream: false,
+        model: model || agentName || defaultAgentName || 'Nova',
+        overrides: {
+          apiKey,
+          apiBase: baseUrl,
+          timeoutMs,
+          model: model || agentName || defaultAgentName || 'Nova',
+        },
+      },
+      metadata: {
+        platform: 'dingtalk',
+        robotCode: metadata.robotCode,
+        sessionWebhook: metadata.sessionWebhook,
+        sessionWebhookExpiredTime: metadata.sessionWebhookExpiredTime,
+        conversationTitle: metadata.conversationTitle,
+        agentDisplayName,
+      },
+    };
+
+    logger.info('[vcpClient:B2] bridge request =>', {
+      bridgeUrl,
+      eventId: requestId,
+      agentId: agentName,
+      bindingKey,
     });
 
     const controller = new AbortController();

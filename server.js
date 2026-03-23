@@ -115,6 +115,11 @@ const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServ
 const FileFetcherServer = require('./FileFetcherServer.js'); // 引入新的 FileFetcherServer 模块
 const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信息处理器
 const basicAuth = require('basic-auth');
+
+// ChannelHub 模块导入
+const { ChannelHubService } = require('./modules/channelHub/ChannelHubService');
+const channelHubAdminRoutes = require('./routes/admin/channelHub');
+const channelHubInternalRoutes = require('./routes/internal/channelHub');
 const cors = require('cors'); // 引入 cors 模块
 
 const BLACKLIST_FILE = path.join(__dirname, 'ip_blacklist.json');
@@ -1384,6 +1389,57 @@ async function initialize() {
     // 挂载 VCP 论坛 API 路由
     app.use('/admin_api/forum', forumApiRoutes);
     console.log('服务类插件初始化完成，管理面板 API 路由和 VCP 论坛 API 路由已挂载。');
+
+    // --- 新增：ChannelHub 初始化 ---
+    console.log('开始初始化 ChannelHub 服务...');
+    try {
+        // 1. 创建 RuntimeGateway（runtimeBridge：对接 chatCompletionHandler）
+        const RuntimeGatewayClass = require('./modules/channelHub/RuntimeGateway');
+        const runtimeGateway = new RuntimeGatewayClass({
+            chatCompletionHandler,
+            pluginManager,
+            config: {
+                defaultTimeout: parseInt(process.env.CHANNEL_HUB_TIMEOUT) || 60000,
+                maxRetries: 3
+            },
+            debugMode: DEBUG_MODE
+        });
+
+        // 2. 创建 ChannelHubService（注入 runtimeBridge 和 dataDir）
+        const channelHubDataDir = path.join(__dirname, 'state', 'channelHub');
+        const channelHubService = new ChannelHubService({
+            dataDir: channelHubDataDir,
+            runtimeBridge: runtimeGateway,
+            debugMode: DEBUG_MODE,
+            logger: {
+                info:  (...args) => console.log('[ChannelHub]', ...args),
+                warn:  (...args) => console.warn('[ChannelHub]', ...args),
+                error: (...args) => console.error('[ChannelHub]', ...args),
+                debug: DEBUG_MODE ? (...args) => console.log('[ChannelHub:DEBUG]', ...args) : () => {}
+            }
+        });
+
+        // 3. 初始化（内部会自动初始化所有子模块）
+        await channelHubService.initialize();
+        console.log('ChannelHub 服务初始化完成。');
+
+        // 4. 初始化路由（只需注入 channelHubService，子模块从 service 拿）
+        channelHubAdminRoutes.initialize(channelHubService);
+        channelHubInternalRoutes.initialize({ channelHubService });
+
+        // 5. 挂载路由
+        app.use('/admin_api/channelHub', channelHubAdminRoutes.router);
+        app.use('/internal/channelHub', channelHubInternalRoutes.router);
+        app.use('/internal/channel-hub', channelHubInternalRoutes.router);
+        app.use('/internal', channelHubInternalRoutes.router);
+        console.log('ChannelHub 路由已挂载: /admin_api/channelHub, /internal/channelHub');
+
+    } catch (channelHubError) {
+        console.error('[Server] ChannelHub 初始化失败:', channelHubError.message);
+        console.error('[Server] ChannelHub 错误堆栈:', channelHubError.stack);
+        // 不阻止服务器启动，ChannelHub 功能降级不可用
+    }
+    // --- ChannelHub 初始化结束 ---
 
     // --- 新增：通用依赖注入 ---
     // 在所有服务都初始化完毕后，再执行依赖注入，确保 VCPLog 等服务已准备就绪。

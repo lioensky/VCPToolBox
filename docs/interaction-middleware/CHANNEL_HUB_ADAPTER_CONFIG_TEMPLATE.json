@@ -1,0 +1,58 @@
+{
+  "webhookUrl": "http://127.0.0.1:8080/callback",
+  "baseUrl": "http://127.0.0.1:3000",
+  "token": "replace-with-token",
+  "secret": "replace-with-secret",
+  "appId": "replace-with-app-id",
+  "appSecret": "replace-with-app-secret",
+  "robotCode": "",
+  "tenantKey": "",
+  "verification": {
+    "enabled": true,
+    "signatureHeader": "x-signature",
+    "timestampHeader": "x-timestamp",
+    "nonceHeader": "x-nonce",
+    "bodyDigest": "sha256"
+  },
+  "network": {
+    "timeoutMs": 10000,
+    "maxRetries": 3,
+    "retryDelayMs": 1000,
+    "proxyUrl": "",
+    "keepAlive": true
+  },
+  "headers": {
+    "x-channel-source": "channelhub"
+  },
+  "routing": {
+    "defaultAgentId": "agent-default",
+    "defaultConversationId": "topic-default",
+    "fallbackToOutbox": true
+  },
+  "capabilities": {
+    "text": true,
+    "markdown": true,
+    "image": false,
+    "file": false,
+    "audio": false,
+    "video": false,
+    "typing": false,
+    "recall": false
+  },
+  "sender": {
+    "displayName": "ChannelHub Bot",
+    "avatarUrl": ""
+  },
+  "observability": {
+    "debug": false,
+    "logLevel": "info",
+    "auditEnabled": true,
+    "metricsEnabled": true
+  },
+  "security": {
+    "ipWhitelist": [],
+    "allowedOrigins": [],
+    "allowInsecureTls": false
+  },
+  "custom": {}
+}

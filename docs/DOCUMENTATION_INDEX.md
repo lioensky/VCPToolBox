@@ -16,9 +16,9 @@
 
 ### Channel Middleware Docs
 
-- [CHANNEL_MIDDLEWARE_DESIGN.md](./CHANNEL_MIDDLEWARE_DESIGN.md) - VCPToolBox 作为多端接入中间层的能力分析、短板、补强项与目标架构
-- [CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md](./CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md) - ChannelHub 的实施计划、目标目录、接口、状态模型、分阶段推进与 B1 到 B2 迁移方案
-- [CHANNEL_MIDDLEWARE_FILE_TODOS.md](./CHANNEL_MIDDLEWARE_FILE_TODOS.md) - ChannelHub 逐文件 TODO 清单，细化到每个模块、路由、schema 和 AdminPanel 文件的职责、导出方法与完成标准
+- [CHANNEL_MIDDLEWARE_DESIGN.md](./interaction-middleware/CHANNEL_MIDDLEWARE_DESIGN.md) - VCPToolBox 作为多端接入中间层的能力分析、短板、补强项与目标架构
+- [CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md](./interaction-middleware/CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md) - ChannelHub 的实施计划、目标目录、接口、状态模型、分阶段推进与 B1 到 B2 迁移方案
+- [CHANNEL_MIDDLEWARE_FILE_TODOS.md](./interaction-middleware/CHANNEL_MIDDLEWARE_FILE_TODOS.md) - ChannelHub 逐文件 TODO 清单，细化到每个模块、路由、schema 和 AdminPanel 文件的职责、导出方法与完成标准
 
 ---
 

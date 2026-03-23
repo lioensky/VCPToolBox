@@ -1,0 +1,51 @@
+{
+  // 绑定主键。
+  // 建议保持稳定且可读，常见格式：
+  //   qq:group:123456789
+  //   dingtalk:group:cidxxxx
+  //   wecom:external:session-001
+  "bindingKey": "qq:group:123456789",
+
+  // 对应的适配器 ID，必须能在“适配器管理”里找到。
+  "adapterId": "qq-main",
+
+  // 外部平台的会话标识。
+  // 一般填群 ID、频道 ID、会话 ID 或业务约定的组合键。
+  "externalSessionKey": "group:123456789",
+
+  // VCP 内部会话 ID。
+  // 如果你希望某个外部会话固定路由到一个内部会话，就填这里。
+  "conversationId": "topic-qq-group-123456789",
+
+  // 该绑定默认命中的 Agent。
+  "agentId": "agent-default",
+
+  // 渠道类型，建议与适配器所属平台一致。
+  "channel": "qq",
+
+  // 平台名。很多时候与 channel 相同，保留是为了兼容后续扩展。
+  "platform": "qq",
+
+  // 会话类型。
+  // 常见值：group / private / channel / thread
+  "conversationType": "group",
+
+  // 发送者用户 ID。
+  // 如果绑定粒度是“用户级”而不是“群级”，可填写；否则可留空。
+  "userId": "",
+
+  // VCP 内部 topic ID，可与 conversationId 保持一致。
+  "topicId": "topic-qq-group-123456789",
+
+  // 是否启用该绑定。
+  "isActive": true,
+
+  // 扩展元数据。
+  "metadata": {
+    // 给维护者看的备注。
+    "remark": "replace-with-note",
+
+    // 标记这条绑定是怎么来的，例如手工创建、自动生成、迁移导入等。
+    "source": "manual-admin-binding"
+  }
+}

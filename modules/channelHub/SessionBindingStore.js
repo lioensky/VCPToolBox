@@ -129,15 +129,21 @@ class SessionBindingStore {
    */
   async bindSession(record) {
     const bindingKey = record.bindingKey;
+    const existing = this.cache.get(bindingKey);
+    const merged = {
+      ...existing,
+      ...record,
+      bindingKey,
+      createdAt: existing?.createdAt || record.createdAt || nowTimestamp(),
+      updatedAt: nowTimestamp(),
+      deleted: false
+    };
     
     // 更新持久化
-    await this.stateStore.appendSession({
-      ...record,
-      updatedAt: nowTimestamp()
-    });
+    await this.stateStore.appendSession(merged);
     
     // 更新缓存
-    this.cache.set(bindingKey, record);
+    this.cache.set(bindingKey, merged);
     
     if (this.debugMode) {
       console.log(`[SessionBindingStore] Session bound: ${bindingKey}`);
@@ -159,7 +165,9 @@ class SessionBindingStore {
     const updated = {
       ...existing,
       ...patch,
-      rebindAt: nowTimestamp()
+      rebindAt: nowTimestamp(),
+      updatedAt: nowTimestamp(),
+      deleted: false
     };
     
     // 追加新记录（不覆盖历史）
@@ -206,6 +214,59 @@ class SessionBindingStore {
     
     // 从持久化存储查
     return await this.stateStore.querySessions(filter);
+  }
+
+  /**
+   * 向后兼容：admin 路由使用的列表接口
+   */
+  async list(filter = {}) {
+    return this.queryBindings({
+      deleted: false,
+      ...filter
+    });
+  }
+
+  /**
+   * 向后兼容：admin 路由使用的详情接口
+   */
+  async get(bindingKey) {
+    const cached = this.getBinding(bindingKey);
+    if (cached && !cached.deleted) {
+      return cached;
+    }
+    const records = await this.queryBindings({ bindingKey, limit: 1 });
+    return records.find(record => !record.deleted) || null;
+  }
+
+  async findByExternal(adapterId, externalSessionKey) {
+    const records = await this.queryBindings({
+      adapterId,
+      deleted: false,
+      limit: Number.MAX_SAFE_INTEGER
+    });
+
+    return records.find((record) => record.externalSessionKey === externalSessionKey) || null;
+  }
+
+  /**
+   * 向后兼容：admin 路由使用的删除接口
+   * 这里采用写入 tombstone 的方式，避免破坏历史记录
+   */
+  async delete(bindingKey) {
+    const existing = await this.get(bindingKey);
+    if (!existing) {
+      return false;
+    }
+
+    const tombstone = {
+      ...existing,
+      deleted: true,
+      deletedAt: nowTimestamp()
+    };
+
+    await this.stateStore.appendSession(tombstone);
+    this.cache.delete(bindingKey);
+    return true;
   }
 
   /**

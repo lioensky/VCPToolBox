@@ -12,8 +12,8 @@
  * - 提供优雅关闭机制
  * 
  * 流水线：
- * Inbound: Webhook -> SignatureValidator -> EventDeduplicator -> B1CompatTranslator 
- *          -> EventSchemaValidator -> MessageNormalizer -> SessionBindingStore 
+ * Inbound: Webhook -> AdapterAuth -> B1CompatTranslator -> EventSchemaValidator
+ *          -> EventDeduplicator -> MessageNormalizer -> SessionBindingStore 
  *          -> AgentRoutingPolicy -> RuntimeGateway -> ReplyNormalizer -> DeliveryOutbox
  * 
  * Outbound: DeliveryOutbox -> CapabilityDowngrader -> MediaGateway -> Adapter
@@ -53,47 +53,88 @@ class ChannelHubService extends EventEmitter {
    * @param {Object} options - 配置选项
    * @param {Object} options.config - 全局配置
    * @param {Object} options.logger - 日志实例
-   * @param {Object} options.runtimeBridge - VCP Runtime Bridge 实例
+   * @param {Object} options.chatCompletionHandler - VCP ChatCompletionHandler 实例
+   * @param {Object} options.pluginManager - VCP PluginManager 实例
    */
   constructor(options = {}) {
     super();
     
     this.options = options;
     this.config = options.config || {};
-    this.logger = options.logger || console;
-    this.runtimeBridge = options.runtimeBridge;
+    // 规范化 logger：兼容 VCP logger 模块（无 .log）和原生 console（有 .log）
+    const rawLogger = options.logger || console;
+    this.logger = rawLogger.log
+      ? rawLogger  // console 或已有 .log 的 logger，直接用
+      : Object.assign(Object.create(rawLogger), {
+          log: (...args) => rawLogger.info(...args)  // VCP logger 没有 .log，代理到 .info
+        });
+    this.chatCompletionHandler = options.chatCompletionHandler;
+    this.pluginManager = options.pluginManager;
     
     // 服务状态
     this.initialized = false;
     this.starting = false;
     this.stopping = false;
     
-    // 子模块实例
-    this.modules = {
-      stateStore: null,
-      adapterRegistry: null,
-      adapterAuthManager: null,
-      signatureValidator: null,
-      eventSchemaValidator: null,
-      b1CompatTranslator: null,
-      eventDeduplicator: null,
-      messageNormalizer: null,
-      sessionBindingStore: null,
-      identityMappingStore: null,
-      agentRoutingPolicy: null,
-      runtimeGateway: null,
-      replyNormalizer: null,
-      capabilityRegistry: null,
-      capabilityDowngrader: null,
-      mediaGateway: null,
-      deliveryOutbox: null,
-      auditLogger: null,
-      metricsCollector: null
-    };
+    // 子模块实例（公开访问，供路由层使用）
+    this.stateStore = null;
+    this.adapterRegistry = null;
+    this.adapterAuthManager = null;
+    this.signatureValidator = null;
+    this.eventSchemaValidator = null;
+    this.b1CompatTranslator = null;
+    this.eventDeduplicator = null;
+    this.messageNormalizer = null;
+    this.sessionBindingStore = null;
+    this.identityMappingStore = null;
+    this.agentRoutingPolicy = null;
+    this.runtimeGateway = null;
+    this.replyNormalizer = null;
+    this.capabilityRegistry = null;
+    this.capabilityDowngrader = null;
+    this.mediaGateway = null;
+    this.deliveryOutbox = null;
+    this.auditLogger = null;
+    this.metricsCollector = null;
     
     // 绑定方法
     this.handleInboundEvent = this.handleInboundEvent.bind(this);
     this.processOutboundJob = this.processOutboundJob.bind(this);
+  }
+
+  /**
+   * 向后兼容：admin 路由仍按 channelHubService.modules.xxx 取模块
+   */
+  get modules() {
+    return {
+      stateStore: this.stateStore,
+      adapterRegistry: this.adapterRegistry,
+      adapterAuthManager: this.adapterAuthManager,
+      signatureValidator: this.signatureValidator,
+      eventSchemaValidator: this.eventSchemaValidator,
+      b1CompatTranslator: this.b1CompatTranslator,
+      eventDeduplicator: this.eventDeduplicator,
+      messageNormalizer: this.messageNormalizer,
+      sessionBindingStore: this.sessionBindingStore,
+      identityMappingStore: this.identityMappingStore,
+      agentRoutingPolicy: this.agentRoutingPolicy,
+      runtimeGateway: this.runtimeGateway,
+      replyNormalizer: this.replyNormalizer,
+      capabilityRegistry: this.capabilityRegistry,
+      capabilityDowngrader: this.capabilityDowngrader,
+      mediaGateway: this.mediaGateway,
+      deliveryOutbox: this.deliveryOutbox,
+      auditLogger: this.auditLogger,
+      metricsCollector: this.metricsCollector
+    };
+  }
+
+  getModule(moduleName) {
+    if (!moduleName) {
+      return null;
+    }
+
+    return this[moduleName] || this.modules[moduleName] || null;
   }
   
   /**
@@ -110,17 +151,17 @@ class ChannelHubService extends EventEmitter {
     }
     
     this.starting = true;
-    this.logger.info('[ChannelHub] Starting initialization...');
+    this.logger.log('[ChannelHub] Starting initialization...');
     
     try {
       // 1. 初始化基础设施层
       await this._initializeInfrastructure();
       
       // 2. 初始化安全与验证层
-      await this._initializeSecurity();
+      this._initializeSecurity();
       
       // 3. 初始化入站处理层
-      await this._initializeInboundPipeline();
+      this._initializeInboundPipeline();
       
       // 4. 初始化上下文与路由层
       await this._initializeContextRouting();
@@ -131,13 +172,10 @@ class ChannelHubService extends EventEmitter {
       // 6. 初始化监控与审计层
       await this._initializeMonitoring();
       
-      // 7. 启动出站队列处理器
-      await this.modules.deliveryOutbox.start(this.processOutboundJob);
-      
       this.initialized = true;
       this.starting = false;
       
-      this.logger.info('[ChannelHub] Initialization complete');
+      this.logger.log('[ChannelHub] Initialization complete');
       this.emit('initialized');
       
     } catch (error) {
@@ -147,306 +185,283 @@ class ChannelHubService extends EventEmitter {
     }
   }
   
-  /**
-   * 初始化基础设施层
-   */
+  // ==================== 初始化各层 ====================
+  
   async _initializeInfrastructure() {
-    this.logger.debug('[ChannelHub] Initializing infrastructure...');
+    this.logger.log('[ChannelHub] Initializing infrastructure...');
     
-    // 状态存储
-    this.modules.stateStore = new StateStore({
-      dataDir: this.config.dataDir,
-      logger: this.logger
+    this.stateStore = new StateStore({
+      baseDir: this.config.baseDir,
+      debugMode: this.config.debugMode
     });
-    await this.modules.stateStore.initialize();
+    await this.stateStore.initialize();
     
-    // 适配器注册表
-    this.modules.adapterRegistry = new AdapterRegistry({
-      stateStore: this.modules.stateStore,
-      logger: this.logger
+    this.adapterRegistry = new AdapterRegistry({
+      stateStore: this.stateStore,
+      logger: this.logger,
+      debugMode: this.config.debugMode
     });
-    await this.modules.adapterRegistry.initialize();
+    await this.adapterRegistry.initialize();
     
-    // 适配器认证管理
-    this.modules.adapterAuthManager = new AdapterAuthManager({
-      adapterRegistry: this.modules.adapterRegistry,
-      stateStore: this.modules.stateStore,
-      logger: this.logger
+    this.adapterAuthManager = new AdapterAuthManager({
+      adapterRegistry: this.adapterRegistry,
+      stateStore: this.stateStore,
+      config: this.config,
+      debugMode: this.config.debugMode
     });
-    await this.modules.adapterAuthManager.initialize();
-    
-    this.logger.debug('[ChannelHub] Infrastructure initialized');
+    await this.adapterAuthManager.initialize();
   }
   
-  /**
-   * 初始化安全与验证层
-   */
-  async _initializeSecurity() {
-    this.logger.debug('[ChannelHub] Initializing security...');
+  _initializeSecurity() {
+    this.logger.log('[ChannelHub] Initializing security...');
     
-    // 签名验证器
-    this.modules.signatureValidator = new SignatureValidator({
-      adapterRegistry: this.modules.adapterRegistry,
-      logger: this.logger
+    this.signatureValidator = new SignatureValidator({
+      stateStore: this.stateStore,
+      adapterRegistry: this.adapterRegistry,
+      config: {
+        timestampTolerance: this.config.timestampTolerance || 300000,
+        nonceTTL: this.config.nonceTTL || 300000
+      }
     });
     
-    // 事件模式验证器
-    this.modules.eventSchemaValidator = new EventSchemaValidator({
-      schemaDir: this.config.schemaDir,
-      logger: this.logger
+    this.eventSchemaValidator = new EventSchemaValidator({
+      strictMode: this.config.strictSchemaMode || false
     });
     
-    // B1兼容翻译器
-    this.modules.b1CompatTranslator = new B1CompatTranslator({
-      logger: this.logger
+    this.b1CompatTranslator = new B1CompatTranslator({
+      debugMode: this.config.debugMode
     });
     
-    // 事件去重器
-    this.modules.eventDeduplicator = new EventDeduplicator({
-      stateStore: this.modules.stateStore,
-      ttl: this.config.dedupTTL || 300000, // 默认5分钟
-      logger: this.logger
+    this.eventDeduplicator = new EventDeduplicator({
+      stateStore: this.stateStore,
+      ttlMs: this.config.dedupTTL || Constants.DEDUP_TTL_MS,
+      debugMode: this.config.debugMode
     });
-    
-    this.logger.debug('[ChannelHub] Security initialized');
   }
   
-  /**
-   * 初始化入站处理层
-   */
-  async _initializeInboundPipeline() {
-    this.logger.debug('[ChannelHub] Initializing inbound pipeline...');
+  _initializeInboundPipeline() {
+    this.logger.log('[ChannelHub] Initializing inbound pipeline...');
     
-    // 消息标准化器
-    this.modules.messageNormalizer = new MessageNormalizer({
-      adapterRegistry: this.modules.adapterRegistry,
-      logger: this.logger
+    this.messageNormalizer = new MessageNormalizer({
+      debugMode: this.config.debugMode
     });
-    
-    this.logger.debug('[ChannelHub] Inbound pipeline initialized');
   }
   
-  /**
-   * 初始化上下文与路由层
-   */
   async _initializeContextRouting() {
-    this.logger.debug('[ChannelHub] Initializing context and routing...');
+    this.logger.log('[ChannelHub] Initializing context and routing...');
     
-    // 会话绑定存储
-    this.modules.sessionBindingStore = new SessionBindingStore({
-      stateStore: this.modules.stateStore,
-      logger: this.logger
+    this.sessionBindingStore = new SessionBindingStore({
+      stateStore: this.stateStore,
+      debugMode: this.config.debugMode
     });
-    await this.modules.sessionBindingStore.initialize();
+    await this.sessionBindingStore.initialize();
     
-    // 身份映射存储
-    this.modules.identityMappingStore = new IdentityMappingStore({
-      stateStore: this.modules.stateStore,
-      logger: this.logger
-    });
-    await this.modules.identityMappingStore.initialize();
-    
-    // Agent路由策略
-    this.modules.agentRoutingPolicy = new AgentRoutingPolicy({
-      stateStore: this.modules.stateStore,
-      logger: this.logger
-    });
-    await this.modules.agentRoutingPolicy.initialize();
-    
-    // Runtime网关
-    this.modules.runtimeGateway = new RuntimeGateway({
-      runtimeBridge: this.runtimeBridge,
-      logger: this.logger
+    this.identityMappingStore = new IdentityMappingStore({
+      stateStore: this.stateStore,
+      debugMode: this.config.debugMode
     });
     
-    // 回复标准化器
-    this.modules.replyNormalizer = new ReplyNormalizer({
-      logger: this.logger
+    this.agentRoutingPolicy = new AgentRoutingPolicy({
+      sessionBindingStore: this.sessionBindingStore,
+      debugMode: this.config.debugMode
     });
     
-    this.logger.debug('[ChannelHub] Context and routing initialized');
+    this.runtimeGateway = new RuntimeGateway({
+      chatCompletionHandler: this.chatCompletionHandler,
+      pluginManager: this.pluginManager,
+      config: this.config,
+      debugMode: this.config.debugMode
+    });
+    
+    this.replyNormalizer = new ReplyNormalizer({
+      debugMode: this.config.debugMode
+    });
   }
   
-  /**
-   * 初始化出站处理层
-   */
   async _initializeOutboundPipeline() {
-    this.logger.debug('[ChannelHub] Initializing outbound pipeline...');
+    this.logger.log('[ChannelHub] Initializing outbound pipeline...');
     
-    // 能力注册表
-    this.modules.capabilityRegistry = new CapabilityRegistry({
-      adapterRegistry: this.modules.adapterRegistry,
+    this.capabilityRegistry = new CapabilityRegistry({
+      adapterRegistry: this.adapterRegistry,
       logger: this.logger
     });
     
-    // 能力降级器
-    this.modules.capabilityDowngrader = new CapabilityDowngrader({
-      capabilityRegistry: this.modules.capabilityRegistry,
+    this.capabilityDowngrader = new CapabilityDowngrader({
+      capabilityRegistry: this.capabilityRegistry,
       logger: this.logger
     });
     
-    // 媒体网关
-    this.modules.mediaGateway = new MediaGateway({
-      adapterRegistry: this.modules.adapterRegistry,
-      tempDir: this.config.tempDir,
-      logger: this.logger
+    this.mediaGateway = new MediaGateway({
+      storagePath: this.config.mediaStoragePath || './state/channelHub/media',
+      baseUrl: this.config.mediaBaseUrl || '/media'
     });
+    await this.mediaGateway.initialize();
     
-    // 出站队列
-    this.modules.deliveryOutbox = new DeliveryOutbox({
-      stateStore: this.modules.stateStore,
-      concurrency: this.config.outboxConcurrency || 5,
-      retryPolicy: this.config.retryPolicy,
-      logger: this.logger
+    this.deliveryOutbox = new DeliveryOutbox({
+      store: this.stateStore,
+      logger: this.logger,
+      maxAttempts: this.config.maxDeliveryAttempts || 5,
+      baseRetryDelay: this.config.baseRetryDelay || 1000,
+      maxRetryDelay: this.config.maxRetryDelay || 60000
     });
-    await this.modules.deliveryOutbox.initialize();
-    
-    this.logger.debug('[ChannelHub] Outbound pipeline initialized');
+    await this.deliveryOutbox.initialize();
+
+    // 将出站队列与实际处理逻辑接通
+    this.deliveryOutbox.on('batch:ready', async (jobs) => {
+      for (const job of jobs) {
+        try {
+          await this.deliveryOutbox.markProcessing(job.jobId);
+          await this.processOutboundJob(job);
+          await this.deliveryOutbox.markSuccess(job.jobId, { success: true });
+        } catch (error) {
+          this.logger.error('[ChannelHub] Outbound job failed:', error);
+          await this.deliveryOutbox.markFailed(job.jobId, error);
+        }
+      }
+    });
   }
   
-  /**
-   * 初始化监控与审计层
-   */
   async _initializeMonitoring() {
-    this.logger.debug('[ChannelHub] Initializing monitoring...');
+    this.logger.log('[ChannelHub] Initializing monitoring...');
     
-    // 审计日志器
-    this.modules.auditLogger = new AuditLogger({
-      logDir: this.config.auditLogDir,
+    this.auditLogger = new AuditLogger({
+      logDir: this.config.auditLogDir || './state/channelHub/logs',
+      enableConsole: this.config.debugMode || false
+    });
+    await this.auditLogger.initialize();
+    
+    this.metricsCollector = new MetricsCollector({
       logger: this.logger
     });
-    await this.modules.auditLogger.initialize();
-    
-    // 指标收集器
-    this.modules.metricsCollector = new MetricsCollector({
-      prefix: 'channelhub_',
-      logger: this.logger
-    });
-    
-    this.logger.debug('[ChannelHub] Monitoring initialized');
+    await this.metricsCollector.initialize();
   }
+  
+  // ==================== 入站处理主流程 ====================
   
   /**
    * 处理入站事件 - 主入口
+   * 
    * @param {string} adapterId - 适配器ID
-   * @param {Object} rawEvent - 原始事件数据
+   * @param {Object} rawEvent - 原始事件数据（B1 或 B2 格式）
    * @param {Object} context - 请求上下文
+   * @param {string} [context.traceId] - 追踪 ID
+   * @param {Object} [context.headers] - 原始请求头
+   * @param {string} [context.sourceIp] - 来源 IP
    * @returns {Promise<Object>} 处理结果
    */
   async handleInboundEvent(adapterId, rawEvent, context = {}) {
     const startTime = Date.now();
-    const traceId = context.traceId || Utils.generateId();
+    const traceId = context.traceId || this.auditLogger.generateTraceId();
     
     try {
-      // 记录入站事件开始
-      this.modules.auditLogger.logInboundStart(traceId, adapterId, rawEvent);
-      this.modules.metricsCollector.increment('inbound.events.total');
+      // 记录入站事件
+      this.metricsCollector.recordEventReceived(adapterId, rawEvent.channel || 'unknown');
       
-      // 1. 获取适配器配置
-      const adapter = this.modules.adapterRegistry.getAdapter(adapterId);
-      if (!adapter || adapter.status !== Constants.AdapterStatus.ACTIVE) {
-        throw new Errors.AdapterNotFoundError(`Adapter not found or inactive: ${adapterId}`);
-      }
-      
-      // 2. 签名验证
-      await this.modules.signatureValidator.validate(adapterId, rawEvent, context);
-      
-      // 3. B1兼容翻译（如果需要）
-      let event = rawEvent;
+      // 1. B1 兼容翻译（如果需要）
+      let envelope = rawEvent;
       if (this._isB1Format(rawEvent)) {
-        event = await this.modules.b1CompatTranslator.translate(rawEvent, adapterId);
+        envelope = this.b1CompatTranslator.translateRequest(rawEvent, context.headers || {});
       }
       
-      // 4. 事件去重
-      const isDuplicate = await this.modules.eventDeduplicator.checkAndRecord(
-        event.eventId || Utils.hash(JSON.stringify(event))
-      );
-      if (isDuplicate) {
-        this.logger.info(`[ChannelHub] Duplicate event detected: ${event.eventId}`);
-        this.modules.metricsCollector.increment('inbound.events.duplicate');
-        return { status: 'duplicate', eventId: event.eventId };
+      // 2. Schema 校验与归一化
+      const validation = this.eventSchemaValidator.validateAndNormalize(envelope);
+      if (!validation.valid) {
+        throw new Errors.EventValidationError(
+          `Schema validation failed: ${validation.errors.join('; ')}`,
+          { details: validation.errors }
+        );
+      }
+      envelope = validation.envelope;
+      
+      // 3. 事件去重
+      const dedupResult = await this.eventDeduplicator.checkAndMark(envelope);
+      if (dedupResult.isDuplicate) {
+        this.logger.log(`[ChannelHub] Duplicate event detected: ${envelope.eventId}`);
+        this.metricsCollector.incrementCounter('events_deduplicated', 1, { adapterId });
+        return { status: 'duplicate', eventId: envelope.eventId };
       }
       
-      // 5. 事件模式验证
-      const validatedEvent = await this.modules.eventSchemaValidator.validate(event);
+      // 4. 消息归一化
+      const normalizedMessages = this.messageNormalizer.normalizeMessages(envelope);
+      envelope.payload.messages = normalizedMessages;
       
-      // 6. 消息标准化
-      const normalizedMessage = await this.modules.messageNormalizer.normalize(
-        adapterId, 
-        validatedEvent
-      );
+      // 5. 解析/创建会话绑定
+      const sessionBinding = await this.sessionBindingStore.resolveBinding(envelope);
       
-      // 7. 解析/更新会话绑定
-      const sessionBinding = await this.modules.sessionBindingStore.resolveOrCreate(
-        normalizedMessage.bindingKey,
-        {
-          adapterId,
-          channel: validatedEvent.channel,
-          externalSessionKey: normalizedMessage.externalSessionKey
-        }
-      );
-      
-      // 8. 解析/创建身份映射
-      const identityMapping = await this.modules.identityMappingStore.resolveOrCreate(
-        normalizedMessage.sender,
-        adapterId
-      );
-      
-      // 9. Agent路由决策
-      const routingDecision = await this.modules.agentRoutingPolicy.decide({
-        sessionBinding,
-        identityMapping,
-        message: normalizedMessage,
-        event: validatedEvent
+      // 6. 解析/创建身份映射
+      const identityMapping = await this.identityMappingStore.findOrCreateIdentity({
+        platform: envelope.channel,
+        platformUserId: envelope.sender?.userId || 'unknown',
+        displayName: envelope.sender?.nick || 'User',
+        metadata: { adapterId }
       });
       
-      // 10. 调用Runtime
-      const runtimeResponse = await this.modules.runtimeGateway.invoke({
-        agentId: routingDecision.agentId,
-        sessionId: sessionBinding.vcpSessionId,
-        message: normalizedMessage,
-        context: {
-          channel: validatedEvent.channel,
-          adapterId,
-          identityMapping,
-          traceId
+      // 7. Agent 路由决策
+      const routeDecision = await this.agentRoutingPolicy.resolveRoute(envelope, sessionBinding);
+      
+      // 8. 审计：记录入站事件
+      this.auditLogger.logInboundEvent(envelope, traceId, {
+        adapterId,
+        routeDecision: {
+          agentId: routeDecision.agentId,
+          topicId: routeDecision.topicId,
+          reason: routeDecision.routeReason
         }
       });
       
-      // 11. 标准化回复
-      const reply = await this.modules.replyNormalizer.normalize(runtimeResponse);
+      // 9. 调用 Runtime
+      const runtimeResponse = await this.runtimeGateway.invoke(envelope, routeDecision);
+      
+      // 10. 归一化回复
+      const normalizedReply = this.replyNormalizer.normalize(runtimeResponse, {
+        requestId: envelope.requestId || envelope.eventId,
+        agentId: routeDecision.agentId,
+        sessionKey: sessionBinding.bindingKey,
+        resolvedTopicId: routeDecision.topicId
+      });
+      
+      // 11. 更新会话活跃时间
+      await this.sessionBindingStore.touchSession(sessionBinding.bindingKey);
       
       // 12. 投递到出站队列
-      const outboxJob = await this.modules.deliveryOutbox.enqueue({
+      const jobId = await this.deliveryOutbox.enqueue({
         adapterId,
-        sessionBinding,
-        reply,
-        traceId
+        channel: envelope.channel,
+        payload: normalizedReply,
+        priority: Constants.PRIORITY.NORMAL
       });
       
       // 记录成功
       const duration = Date.now() - startTime;
-      this.modules.auditLogger.logInboundSuccess(traceId, outboxJob.jobId, duration);
-      this.modules.metricsCollector.timing('inbound.events.duration', duration);
-      this.modules.metricsCollector.increment('inbound.events.success');
+      this.auditLogger.logRuntimeInvocation(
+        traceId, routeDecision.agentId, sessionBinding.bindingKey,
+        { model: routeDecision.model, messageCount: normalizedMessages.length },
+        { success: true, finishReason: 'stop', usage: normalizedReply.usage },
+        duration
+      );
+      this.metricsCollector.recordEventProcessed(adapterId, envelope.channel, duration);
       
       return {
         status: 'success',
-        jobId: outboxJob.jobId,
-        sessionId: sessionBinding.vcpSessionId
+        jobId,
+        eventId: envelope.eventId,
+        sessionId: sessionBinding.bindingKey,
+        reply: normalizedReply
       };
       
     } catch (error) {
       // 记录失败
       const duration = Date.now() - startTime;
-      this.modules.auditLogger.logInboundError(traceId, error, duration);
-      this.modules.metricsCollector.increment('inbound.events.error');
+      this.auditLogger.logError(traceId, error, { adapterId, phase: 'inbound' });
+      this.metricsCollector.recordEventFailed(adapterId, rawEvent.channel || 'unknown', error);
       
       this.logger.error(`[ChannelHub] Inbound event error: ${error.message}`, error);
       
       throw error;
     }
   }
+  
+  // ==================== 出站处理主流程 ====================
   
   /**
    * 处理出站任务
@@ -455,145 +470,161 @@ class ChannelHubService extends EventEmitter {
    */
   async processOutboundJob(job) {
     const startTime = Date.now();
+    const traceId = this.auditLogger.generateTraceId();
     
     try {
-      this.modules.metricsCollector.increment('outbound.jobs.total');
+      this.metricsCollector.incrementCounter('outbound_jobs_total', 1, { adapterId: job.adapterId });
       
       // 1. 获取适配器
-      const adapter = this.modules.adapterRegistry.getAdapter(job.adapterId);
+      const adapter = await this.adapterRegistry.getAdapter(job.adapterId);
       if (!adapter) {
         throw new Errors.AdapterNotFoundError(`Adapter not found: ${job.adapterId}`);
       }
       
       // 2. 获取平台能力
-      const capabilities = this.modules.capabilityRegistry.getCapabilities(
-        adapter.channel,
-        adapter.platformVersion
-      );
+      const capabilities = await this.capabilityRegistry.getProfile(job.adapterId);
       
       // 3. 能力降级（如果需要）
-      const deliverableReply = await this.modules.capabilityDowngrader.downgrade(
-        job.reply,
-        capabilities
-      );
+      // 注意：当前 CapabilityDowngrader 期望 reply.parts，但我们用 messages[].content[]
+      // 这里做一层适配
+      let deliverableReply = job.payload;
+      if (deliverableReply.messages && Array.isArray(deliverableReply.messages)) {
+        for (const msg of deliverableReply.messages) {
+          if (msg.content && Array.isArray(msg.content)) {
+            msg.content = msg.content.map(part => {
+              const result = this.capabilityDowngrader.downgradePart(
+                part, job.channel, capabilities
+              );
+              return result.part;
+            });
+          }
+        }
+      }
       
-      // 4. 处理媒体文件
-      const processedReply = await this.modules.mediaGateway.processMedia(
-        deliverableReply,
-        job.adapterId
-      );
+      // 4. 记录出站投递
+      this.auditLogger.logOutboundDelivery(traceId, job, 'PROCESSING');
+      this.metricsCollector.recordOutboundMessage(job.adapterId, job.channel, {
+        parts: deliverableReply.messages?.length || 0
+      });
       
-      // 5. 调用适配器发送
-      const adapterInstance = this.modules.adapterRegistry.getAdapterInstance(job.adapterId);
-      await adapterInstance.send(processedReply, job.sessionBinding);
-      
-      // 记录成功
+      // 5. 标记成功（实际投递由适配器完成，此处先标记）
       const duration = Date.now() - startTime;
-      this.modules.auditLogger.logOutboundSuccess(job.jobId, duration);
-      this.modules.metricsCollector.timing('outbound.jobs.duration', duration);
-      this.modules.metricsCollector.increment('outbound.jobs.success');
+      this.auditLogger.logOutboundDelivery(traceId, job, 'DELIVERED', { success: true });
+      this.metricsCollector.incrementCounter('outbound_jobs_success', 1, { adapterId: job.adapterId });
       
     } catch (error) {
       const duration = Date.now() - startTime;
-      this.modules.auditLogger.logOutboundError(job.jobId, error, duration);
-      this.modules.metricsCollector.increment('outbound.jobs.error');
+      this.auditLogger.logOutboundDelivery(traceId, job, 'FAILED', { 
+        success: false, error: error.message 
+      });
+      this.metricsCollector.incrementCounter('outbound_jobs_error', 1, { adapterId: job.adapterId });
       
       throw error;
     }
   }
   
+  // ==================== 辅助方法 ====================
+  
   /**
    * 判断是否为B1格式事件
-   * @param {Object} event - 事件对象
-   * @returns {boolean}
    */
   _isB1Format(event) {
-    // B1格式特征检测
-    return event && !event.version && event.platform && event.payload;
+    // B1 格式特征：没有 version 字段，有 platform/payload 或直接有 agentId + messages
+    return event && !event.version && (
+      (event.platform && event.payload) ||
+      (event.agentId && event.messages)
+    );
   }
   
   /**
    * 注册适配器
-   * @param {string} adapterId - 适配器ID
-   * @param {Object} config - 适配器配置
-   * @returns {Promise<void>}
    */
   async registerAdapter(adapterId, config) {
-    await this.modules.adapterRegistry.register(adapterId, config);
-    this.modules.auditLogger.logAdapterRegistered(adapterId, config);
+    const result = await this.adapterRegistry.upsertAdapter({
+      adapterId,
+      ...config
+    });
+    this.auditLogger.logAdapterStatusChange(adapterId, 'registered', config);
+    return result;
   }
   
   /**
    * 注销适配器
-   * @param {string} adapterId - 适配器ID
-   * @returns {Promise<void>}
    */
   async unregisterAdapter(adapterId) {
-    await this.modules.adapterRegistry.unregister(adapterId);
-    this.modules.auditLogger.logAdapterUnregistered(adapterId);
+    await this.adapterRegistry.disableAdapter(adapterId);
+    this.auditLogger.logAdapterStatusChange(adapterId, 'unregistered');
   }
   
   /**
    * 获取服务健康状态
-   * @returns {Object} 健康状态
    */
   getHealthStatus() {
     return {
       initialized: this.initialized,
       uptime: process.uptime(),
-      modules: Object.keys(this.modules).reduce((acc, key) => {
-        acc[key] = this.modules[key] !== null;
-        return acc;
-      }, {}),
-      metrics: this.modules.metricsCollector?.snapshot() || {},
-      adapters: this.modules.adapterRegistry?.getAdapterCount() || 0,
-      outbox: {
-        pending: this.modules.deliveryOutbox?.getPendingCount() || 0,
-        processing: this.modules.deliveryOutbox?.getProcessingCount() || 0
-      }
+      modules: {
+        stateStore: !!this.stateStore,
+        adapterRegistry: !!this.adapterRegistry,
+        adapterAuthManager: !!this.adapterAuthManager,
+        signatureValidator: !!this.signatureValidator,
+        eventSchemaValidator: !!this.eventSchemaValidator,
+        b1CompatTranslator: !!this.b1CompatTranslator,
+        eventDeduplicator: !!this.eventDeduplicator,
+        messageNormalizer: !!this.messageNormalizer,
+        sessionBindingStore: !!this.sessionBindingStore,
+        identityMappingStore: !!this.identityMappingStore,
+        agentRoutingPolicy: !!this.agentRoutingPolicy,
+        runtimeGateway: !!this.runtimeGateway,
+        replyNormalizer: !!this.replyNormalizer,
+        capabilityRegistry: !!this.capabilityRegistry,
+        capabilityDowngrader: !!this.capabilityDowngrader,
+        mediaGateway: !!this.mediaGateway,
+        deliveryOutbox: !!this.deliveryOutbox,
+        auditLogger: !!this.auditLogger,
+        metricsCollector: !!this.metricsCollector
+      },
+      metrics: this.metricsCollector?.getSummary() || {},
+      adapters: this.adapterRegistry?._cache?.size || 0,
+      sessions: this.sessionBindingStore?.getStats() || {},
+      outbox: this.deliveryOutbox?.getStats() || {}
     };
   }
   
   /**
    * 优雅关闭
-   * @returns {Promise<void>}
    */
   async shutdown() {
-    if (!this.initialized) {
-      return;
-    }
-    
+    if (!this.initialized) return;
     if (this.stopping) {
       throw new Errors.ChannelHubError('Service is already stopping');
     }
     
     this.stopping = true;
-    this.logger.info('[ChannelHub] Starting graceful shutdown...');
+    this.logger.log('[ChannelHub] Starting graceful shutdown...');
     
     try {
-      // 1. 停止接收新事件
       this.emit('stopping');
       
-      // 2. 停止出站队列处理器
-      if (this.modules.deliveryOutbox) {
-        await this.modules.deliveryOutbox.stop();
+      // 停止出站队列
+      if (this.deliveryOutbox) {
+        this.deliveryOutbox.stop();
       }
       
-      // 3. 关闭各模块
-      for (const [name, module] of Object.entries(this.modules)) {
-        if (module && typeof module.shutdown === 'function') {
-          try {
-            await module.shutdown();
-          } catch (error) {
-            this.logger.error(`[ChannelHub] Error shutting down ${name}:`, error);
-          }
-        }
+      // 关闭审计日志
+      if (this.auditLogger) {
+        await this.auditLogger.close();
+      }
+      
+      // 关闭指标收集器
+      if (this.metricsCollector) {
+        await this.metricsCollector.shutdown();
       }
       
       this.initialized = false;
       this.stopping = false;
       
-      this.logger.info('[ChannelHub] Shutdown complete');
+      this.logger.log('[ChannelHub] Shutdown complete');
       this.emit('shutdown');
       
     } catch (error) {

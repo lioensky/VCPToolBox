@@ -3,93 +3,52 @@
  * 
  * ChannelHub Internal Routes - 平台 Webhook 回调处理
  * 
- * Responsibility:
- * - 接收各平台的 Webhook 回调
- * - 处理签名验证、事件解析、转发到 ChannelHubService
- * - 支持 B1 兼容层（对接现有 /internal/channel-ingest）
- * 
  * Routes:
- * - POST /internal/channelHub/webhook/:channel - 统一 Webhook 入口
- * - POST /internal/channelHub/dingtalk/callback - 钉钉回调
- * - POST /internal/channelHub/wecom/callback - 企业微信回调
- * - POST /internal/channelHub/feishu/callback - 飞书回调
- * - POST /internal/channelHub/qq/callback - QQ 回调
- * - POST /internal/channelHub/wechat/callback - 微信回调
- * - POST /internal/channelHub/b1/ingest - B1 兼容层入口
+ * - GET  /health                    - 健康检查
+ * - POST /webhook/:channel          - 统一 Webhook 入口
+ * - POST /dingtalk/callback         - 钉钉回调
+ * - POST /wecom/callback            - 企业微信回调
+ * - POST /feishu/callback           - 飞书回调
+ * - POST /qq/callback               - QQ 回调
+ * - POST /wechat/callback           - 微信回调
+ * - POST /b1/ingest                 - B1 兼容层入口
  * 
- * Exports:
- * - Router (Express Router instance)
+ * 挂载方式（在 server.js 中）:
+ *   const channelHubRoutes = require('./routes/internal/channelHub');
+ *   channelHubRoutes.initialize({ channelHubService });
+ *   app.use('/internal/channelHub', channelHubRoutes.router);
  */
 
 const express = require('express');
 const router = express.Router();
+const { toHttpResponse } = require('../../modules/channelHub/errors');
 
-// Module imports (will be properly wired during implementation)
-// const ChannelHubService = require('../../modules/channelHub/ChannelHubService');
-// const SignatureValidator = require('../../modules/channelHub/SignatureValidator');
-// const B1CompatTranslator = require('../../modules/channelHub/B1CompatTranslator');
-// const EventDeduplicator = require('../../modules/channelHub/EventDeduplicator');
-// const EventSchemaValidator = require('../../modules/channelHub/EventSchemaValidator');
-// const AuditLogger = require('../../modules/channelHub/AuditLogger');
-
-// Placeholder for service instances
+// 服务实例引用
 let channelHubService = null;
-let signatureValidator = null;
-let b1CompatTranslator = null;
-let eventDeduplicator = null;
-let eventSchemaValidator = null;
-let auditLogger = null;
 
 /**
- * Initialize route dependencies
- * @param {Object} services - Service instances
- * @param {ChannelHubService} services.channelHubService - Main service
- * @param {SignatureValidator} services.signatureValidator - Signature validator
- * @param {B1CompatTranslator} services.b1CompatTranslator - B1 translator
- * @param {EventDeduplicator} services.eventDeduplicator - Deduplicator
- * @param {EventSchemaValidator} services.eventSchemaValidator - Schema validator
- * @param {AuditLogger} services.auditLogger - Audit logger
+ * 初始化路由依赖
+ * @param {Object} services
+ * @param {import('../../modules/channelHub/ChannelHubService').ChannelHubService} services.channelHubService
  */
 function initialize(services) {
   channelHubService = services.channelHubService;
-  signatureValidator = services.signatureValidator;
-  b1CompatTranslator = services.b1CompatTranslator;
-  eventDeduplicator = services.eventDeduplicator;
-  eventSchemaValidator = services.eventSchemaValidator;
-  auditLogger = services.auditLogger;
 }
 
 // ============================================================
-// Middleware: Request Logger
+// Middleware: 请求追踪
 // ============================================================
-function requestLogger(req, res, next) {
+function requestTracer(req, res, next) {
   const startTime = Date.now();
-  const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const traceId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
-  req.requestId = requestId;
-  req.startTime = startTime;
+  req._traceId = traceId;
+  req._startTime = startTime;
   
-  // Log incoming request
-  if (auditLogger) {
-    auditLogger.logInbound({
-      requestId,
-      method: req.method,
-      path: req.path,
-      channel: req.params.channel,
-      headers: req.headers,
-      bodySize: JSON.stringify(req.body).length
-    });
-  }
-  
-  // Response finish hook
   res.on('finish', () => {
     const duration = Date.now() - startTime;
-    if (auditLogger) {
-      auditLogger.logResponse({
-        requestId,
-        statusCode: res.statusCode,
-        duration
-      });
+    if (duration > 5000) {
+      console.warn(`[ChannelHub] Slow request: ${req.method} ${req.path} took ${duration}ms`);
     }
   });
   
@@ -97,26 +56,85 @@ function requestLogger(req, res, next) {
 }
 
 // ============================================================
-// Middleware: Signature Validator Factory
+// Middleware: 服务可用性检查
+// ============================================================
+function serviceGuard(req, res, next) {
+  if (!channelHubService || !channelHubService.initialized) {
+    return res.status(503).json({
+      ok: false,
+      error: {
+        code: 'SERVICE_NOT_INITIALIZED',
+        message: 'ChannelHubService is not available'
+      }
+    });
+  }
+  next();
+}
+
+// ============================================================
+// Middleware: 适配器鉴权
+// ============================================================
+async function adapterAuthMiddleware(req, res, next) {
+  if (!channelHubService?.adapterAuthManager) {
+    return next();
+  }
+  
+  try {
+    const result = await channelHubService.adapterAuthManager.authenticate(
+      req.headers,
+      req.ip
+    );
+    
+    if (!result.authenticated) {
+      return res.status(401).json({
+        ok: false,
+        error: {
+          code: 'AUTH_FAILED',
+          message: result.error || 'Authentication failed'
+        }
+      });
+    }
+    
+    req._adapterId = result.adapterId;
+    next();
+  } catch (error) {
+    console.error('[ChannelHub] Auth middleware error:', error);
+    return res.status(500).json({
+      ok: false,
+      error: { code: 'AUTH_ERROR', message: error.message }
+    });
+  }
+}
+
+// ============================================================
+// Middleware: 签名验证工厂
 // ============================================================
 function createSignatureMiddleware(channel) {
   return async function signatureMiddleware(req, res, next) {
-    if (!signatureValidator) {
-      console.warn('[ChannelHub] SignatureValidator not initialized, skipping validation');
+    const validator = channelHubService?.signatureValidator;
+    if (!validator) {
       return next();
     }
     
     try {
-      const isValid = await signatureValidator.validate(channel, {
-        headers: req.headers,
-        body: req.body,
-        rawBody: req.rawBody || JSON.stringify(req.body)
-      });
+      const adapterId = req._adapterId || req.headers['x-channel-adapter-id'] || `${channel}-default`;
+      const adapter = await channelHubService.adapterRegistry.getAdapter(adapterId);
       
-      if (!isValid) {
+      if (!adapter) {
+        return next();
+      }
+      
+      const rawBody = req.rawBody || JSON.stringify(req.body);
+      const result = await validator.validate(adapter, req.headers, rawBody);
+      
+      if (!result.valid) {
         return res.status(401).json({
-          error: 'Invalid signature',
-          channel
+          ok: false,
+          error: {
+            code: 'SIGNATURE_INVALID',
+            message: result.reason || 'Invalid signature',
+            channel
+          }
         });
       }
       
@@ -124,28 +142,37 @@ function createSignatureMiddleware(channel) {
     } catch (error) {
       console.error(`[ChannelHub] Signature validation error for ${channel}:`, error);
       return res.status(500).json({
-        error: 'Signature validation failed',
-        message: error.message
+        ok: false,
+        error: { code: 'SIGNATURE_ERROR', message: error.message }
       });
     }
   };
 }
 
 // ============================================================
-// Middleware: Event Deduplication
+// Middleware: 事件去重
 // ============================================================
 async function deduplicationMiddleware(req, res, next) {
-  if (!eventDeduplicator) {
+  const deduplicator = channelHubService?.eventDeduplicator;
+  if (!deduplicator) {
     return next();
   }
   
   try {
-    const eventId = req.body.eventId || req.headers['x-event-id'];
+    const eventId = req.body?.eventId || req.headers['x-event-id'];
     if (eventId) {
-      const isDuplicate = await eventDeduplicator.check(eventId);
-      if (isDuplicate) {
+      const miniEnvelope = {
+        adapterId: req._adapterId || req.headers['x-channel-adapter-id'] || 'unknown',
+        eventId,
+        channel: req.params?.channel || req.body?.channel || 'unknown',
+        client: { messageId: req.body?.client?.messageId }
+      };
+      
+      const result = await deduplicator.checkAndMark(miniEnvelope);
+      if (result.isDuplicate) {
         return res.status(200).json({
-          success: true,
+          ok: true,
+          status: 'duplicate',
           message: 'Duplicate event ignored',
           eventId
         });
@@ -154,199 +181,202 @@ async function deduplicationMiddleware(req, res, next) {
     next();
   } catch (error) {
     console.error('[ChannelHub] Deduplication error:', error);
-    next(); // Continue on dedup error
+    next();
   }
 }
 
 // ============================================================
-// Main Webhook Handler
+// 统一 Webhook 处理器
 // ============================================================
 async function handleWebhook(req, res) {
-  const { channel } = req.params;
-  
-  if (!channelHubService) {
-    return res.status(503).json({
-      error: 'Service not initialized',
-      message: 'ChannelHubService is not available'
-    });
-  }
+  const channel = req.params?.channel || req.body?.channel || 'unknown';
+  const adapterId = req._adapterId || req.headers['x-channel-adapter-id'] || `${channel}-default`;
   
   try {
-    // Parse and normalize the event
-    const adapter = channelHubService.getAdapter(channel);
-    if (!adapter) {
-      return res.status(400).json({
-        error: 'Unknown channel',
-        channel
+    // URL 验证请求（各平台通用）
+    if (req.body?.type === 'url_verification') {
+      return res.status(200).json({
+        challenge: req.body.challenge || req.body.token
       });
     }
     
-    // Handle URL verification (common for messaging platforms)
-    if (req.body && (req.body.type === 'url_verification' || req.body.msg_signature)) {
-      return handleUrlVerification(req, res, channel, adapter);
-    }
-    
-    // Build event envelope
-    const envelope = await adapter.parseWebhook({
-      headers: req.headers,
-      body: req.body,
-      rawBody: req.rawBody
-    });
-    
-    // Validate schema
-    if (eventSchemaValidator) {
-      const validation = eventSchemaValidator.validate(envelope);
-      if (!validation.valid) {
-        console.error('[ChannelHub] Schema validation failed:', validation.errors);
-        return res.status(400).json({
-          error: 'Invalid event schema',
-          details: validation.errors
-        });
+    // 调用 ChannelHubService 主流程
+    const result = await channelHubService.handleInboundEvent(
+      adapterId,
+      req.body,
+      {
+        traceId: req._traceId,
+        headers: req.headers,
+        sourceIp: req.ip
       }
+    );
+    
+    // 如果是 B1 格式请求且有 reply，返回 B1 格式回复
+    if (result.reply && channelHubService.b1CompatTranslator) {
+      const b1Reply = channelHubService.b1CompatTranslator.translateReply(result.reply);
+      return res.status(200).json({
+        ok: true,
+        ...result,
+        ...b1Reply
+      });
     }
     
-    // Process through service
-    const result = await channelHubService.processEvent(envelope);
-    
-    // Return success
-    res.status(200).json({
-      success: true,
-      eventId: envelope.eventId,
-      result
-    });
+    res.status(200).json({ ok: true, ...result });
     
   } catch (error) {
     console.error(`[ChannelHub] Webhook processing error for ${channel}:`, error);
-    res.status(500).json({
-      error: 'Processing failed',
-      message: error.message
-    });
+    const httpResponse = toHttpResponse(error);
+    res.status(httpResponse.status).json(httpResponse.body);
   }
 }
 
 // ============================================================
-// URL Verification Handler
+// B2 Events 入口
 // ============================================================
-async function handleUrlVerification(req, res, channel, adapter) {
+async function handleEvents(req, res) {
+  const adapterId =
+    req._adapterId ||
+    req.headers['x-channel-adapter-id'] ||
+    req.body?.adapterId ||
+    'unknown-adapter';
+
   try {
-    const challenge = await adapter.handleUrlVerification(req.body);
-    res.status(200).send(challenge);
-  } catch (error) {
-    console.error(`[ChannelHub] URL verification failed for ${channel}:`, error);
-    res.status(400).json({
-      error: 'URL verification failed',
-      message: error.message
+    const result = await channelHubService.handleInboundEvent(
+      adapterId,
+      req.body,
+      {
+        traceId: req._traceId,
+        headers: req.headers,
+        sourceIp: req.ip
+      }
+    );
+
+    return res.status(200).json({
+      ok: true,
+      requestId: req.body?.requestId || result.eventId,
+      ...result
     });
+  } catch (error) {
+    console.error('[ChannelHub] B2 events error:', error);
+    const httpResponse = toHttpResponse(error);
+    return res.status(httpResponse.status).json(httpResponse.body);
   }
 }
 
 // ============================================================
-// B1 Compatibility Layer
+// B1 兼容层处理器
 // ============================================================
 async function handleB1Ingest(req, res) {
-  if (!b1CompatTranslator) {
-    return res.status(503).json({
-      error: 'B1 compatibility layer not available'
-    });
-  }
+  const adapterId = req._adapterId || req.headers['x-channel-adapter-id'] || 'b1-compat';
   
   try {
-    // Translate B1 format to B2 envelope
-    const envelope = await b1CompatTranslator.translate(req.body);
+    const result = await channelHubService.handleInboundEvent(
+      adapterId,
+      req.body,
+      {
+        traceId: req._traceId,
+        headers: req.headers,
+        sourceIp: req.ip
+      }
+    );
     
-    // Process through service
-    const result = await channelHubService.processEvent(envelope);
+    if (result.reply && channelHubService.b1CompatTranslator) {
+      const b1Reply = channelHubService.b1CompatTranslator.translateReply(result.reply);
+      return res.status(200).json({
+        ok: true,
+        eventId: result.eventId,
+        ...b1Reply
+      });
+    }
     
-    res.status(200).json({
-      success: true,
-      eventId: envelope.eventId,
-      result
-    });
+    res.status(200).json({ ok: true, ...result });
     
   } catch (error) {
     console.error('[ChannelHub] B1 ingest error:', error);
-    res.status(500).json({
-      error: 'B1 ingest failed',
-      message: error.message
-    });
+    const httpResponse = toHttpResponse(error);
+    res.status(httpResponse.status).json(httpResponse.body);
   }
 }
 
 // ============================================================
-// Health Check
+// 路由定义
 // ============================================================
+
+// 健康检查
 router.get('/health', (req, res) => {
+  if (!channelHubService) {
+    return res.status(503).json({
+      status: 'unavailable',
+      service: 'channelHub',
+      timestamp: new Date().toISOString()
+    });
+  }
+  
   res.status(200).json({
     status: 'healthy',
     service: 'channelHub',
     timestamp: new Date().toISOString(),
-    components: {
-      channelHubService: channelHubService ? 'initialized' : 'not initialized',
-      signatureValidator: signatureValidator ? 'initialized' : 'not initialized',
-      eventDeduplicator: eventDeduplicator ? 'initialized' : 'not initialized',
-      auditLogger: auditLogger ? 'initialized' : 'not initialized'
-    }
+    ...channelHubService.getHealthStatus()
   });
 });
 
-// ============================================================
-// Route Definitions
-// ============================================================
-
-// Generic webhook endpoint
+// 统一 Webhook 入口
 router.post('/webhook/:channel',
-  requestLogger,
-  deduplicationMiddleware,
-  handleWebhook
+  requestTracer, serviceGuard, adapterAuthMiddleware, deduplicationMiddleware, handleWebhook
 );
 
-// Channel-specific endpoints with signature validation
+// B2 标准事件入口
+router.post('/events',
+  requestTracer, serviceGuard, adapterAuthMiddleware, deduplicationMiddleware, handleEvents
+);
+
+// 平台专用端点
 router.post('/dingtalk/callback',
-  requestLogger,
-  createSignatureMiddleware('dingtalk'),
-  deduplicationMiddleware,
+  requestTracer, serviceGuard, adapterAuthMiddleware,
+  createSignatureMiddleware('dingtalk'), deduplicationMiddleware,
+  (req, res, next) => { req.params = { ...req.params, channel: 'dingtalk' }; next(); },
   handleWebhook
 );
 
 router.post('/wecom/callback',
-  requestLogger,
-  createSignatureMiddleware('wecom'),
-  deduplicationMiddleware,
+  requestTracer, serviceGuard, adapterAuthMiddleware,
+  createSignatureMiddleware('wecom'), deduplicationMiddleware,
+  (req, res, next) => { req.params = { ...req.params, channel: 'wecom' }; next(); },
   handleWebhook
 );
 
 router.post('/feishu/callback',
-  requestLogger,
-  createSignatureMiddleware('feishu'),
-  deduplicationMiddleware,
+  requestTracer, serviceGuard, adapterAuthMiddleware,
+  createSignatureMiddleware('feishu'), deduplicationMiddleware,
+  (req, res, next) => { req.params = { ...req.params, channel: 'feishu' }; next(); },
   handleWebhook
 );
 
 router.post('/qq/callback',
-  requestLogger,
-  createSignatureMiddleware('qq'),
-  deduplicationMiddleware,
+  requestTracer, serviceGuard, adapterAuthMiddleware,
+  createSignatureMiddleware('qq'), deduplicationMiddleware,
+  (req, res, next) => { req.params = { ...req.params, channel: 'qq' }; next(); },
   handleWebhook
 );
 
 router.post('/wechat/callback',
-  requestLogger,
-  createSignatureMiddleware('wechat'),
-  deduplicationMiddleware,
+  requestTracer, serviceGuard, adapterAuthMiddleware,
+  createSignatureMiddleware('wechat'), deduplicationMiddleware,
+  (req, res, next) => { req.params = { ...req.params, channel: 'wechat' }; next(); },
   handleWebhook
 );
 
-// B1 compatibility layer
+// B1 兼容层
 router.post('/b1/ingest',
-  requestLogger,
-  deduplicationMiddleware,
-  handleB1Ingest
+  requestTracer, serviceGuard, adapterAuthMiddleware, deduplicationMiddleware, handleB1Ingest
+);
+
+// 历史兼容别名
+router.post('/channel-ingest',
+  requestTracer, serviceGuard, adapterAuthMiddleware, deduplicationMiddleware, handleB1Ingest
 );
 
 // ============================================================
-// Exports
+// 导出
 // ============================================================
-module.exports = {
-  router,
-  initialize
-};
+module.exports = { router, initialize };

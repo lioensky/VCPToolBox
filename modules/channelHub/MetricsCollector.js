@@ -435,6 +435,26 @@ class MetricsCollector extends EventEmitter {
             byAdapter
         };
     }
+
+    /**
+     * 向后兼容：admin 路由使用的扁平快照
+     */
+    snapshot() {
+        const summary = this.getSummary({
+            since: Date.now() - 60 * 60 * 1000
+        });
+
+        return {
+            'inbound.events.total': summary.totalEvents || 0,
+            'inbound.events.success': summary.totalProcessed || 0,
+            'inbound.events.error': summary.totalFailed || 0,
+            'inbound.events.duplicate': this.getCounter('events_deduplicated') || 0,
+            'inbound.events.duration': summary.avgLatencyMs || 0,
+            'outbound.jobs.total': this.getCounter('outbound_jobs_total') || 0,
+            'outbound.jobs.success': this.getCounter('outbound_jobs_success') || 0,
+            'outbound.jobs.error': this.getCounter('outbound_jobs_error') || 0
+        };
+    }
     
     /**
      * 获取时间序列数据

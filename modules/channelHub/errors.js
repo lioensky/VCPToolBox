@@ -265,6 +265,7 @@ module.exports = {
   RuntimeGatewayError,
   DeliveryError,
   MediaGatewayError,
+  MediaError: MediaGatewayError, // 别名，兼容 MediaGateway.js 的 import
   AdapterNotFoundError,
   SessionBindingError,
   CapabilityDowngradeError,

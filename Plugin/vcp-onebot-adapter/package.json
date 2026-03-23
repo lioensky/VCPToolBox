@@ -1,0 +1,28 @@
+{
+  "name": "vcp-onebot-adapter",
+  "version": "1.0.0",
+  "description": "VCP ChannelHub adapter for QQ via OneBot protocol (go-cqhttp, NapCat, LLOneBot)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "vcp",
+    "onebot",
+    "qq",
+    "adapter",
+    "chatbot"
+  ],
+  "author": "VCPToolBox",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

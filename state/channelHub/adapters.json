@@ -1,10 +1,92 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "ChannelHub 已注册适配器状态存储",
-  "adapters": [],
-  "metadata": {
-    "version": "1.0.0",
-    "lastUpdated": null,
-    "created": "${ISO_DATE}"
-  }
+  "version": "1.0.0",
+  "adapters": {
+    "dingtalk-adapter-01": {
+      "adapterId": "dingtalk-adapter-01",
+      "channel": "dingtalk",
+      "name": "钉钉机器人",
+      "config": {
+        "appId": "dingmj164t5osptvlcba",
+        "appSecret": "L70BzLfc-_jcJ41lvrCtA8V5UMjwJSoKy4Q95Dg8lOJsAZdNKvtkief6v2OuV2nC",
+        "appKey": "dingmj164t5osptvlcba",
+        "bridgeUrl": "http://127.0.0.1:6010/internal/channel-ingest",
+        "useBridge": false,
+        "debugRawEvent": true,
+        "debugRawResponse": false,
+        "debugRichReply": false,
+        "bridgeKey": "MCPEyzazglkN1lYqlDQvRfcruOZvTpuySBbmZq",
+        "sdkPackage": "dingtalk-stream",
+        "defaultAgentId": "_Agent_1774012317730_1774012317730",
+        "defaultAgentDisplayName": "动力猛兽",
+        "baseUrl": "http://127.0.0.1:6005",
+        "chatPath": "/v1/chat/completions",
+        "apiKey": "sk-0U5zfsKcnqrwK1cY2Z8a9yaW483OzzKFEl00eohiumauNoJI",
+        "model": "AL-kimi-k2.5",
+        "timeoutMs": 120000
+      },
+      "status": "inactive",
+      "createdAt": "2026-03-23T07:41:30.265Z",
+      "updatedAt": "2026-03-23T10:39:25.617Z",
+      "capabilityProfile": {
+        "supportsText": true,
+        "supportsMarkdown": false,
+        "supportsImage": false,
+        "supportsFile": false,
+        "supportsAudio": false,
+        "supportsVideo": false,
+        "supportsCard": false,
+        "supportsActionCallback": false,
+        "supportsThread": false,
+        "supportsMention": false,
+        "supportsProactivePush": false,
+        "maxMessageLength": 4096,
+        "maxImageSize": 10485760,
+        "maxFileSize": 10485760,
+        "mediaUploadMode": "none"
+      },
+      "priority": 100
+    },
+    "onebot-qq-main": {
+      "adapterId": "onebot-qq-main",
+      "channel": "qq",
+      "name": "QQ机器人小秋",
+      "config": {
+        "onebotWsUrl": "ws://127.0.0.1:3001",
+        "channelHubUrl": "http://127.0.0.1:6010/internal/channel-hub/events",
+        "bridgeKey": "aSDwqD8G99jnqdSD4",
+        "agentName": "_Agent_1774241046101_1774241046101",
+        "agentDisplayName": "小秋",
+        "supportsImage": true,
+        "supportsFile": false,
+        "supportsAudio": true,
+        "maxMessageLength": 4500,
+        "timeoutMs": 120000,
+        "retryCount": 3,
+        "retryIntervalMs": 1000,
+        "sessionTimeoutHours": 24
+      },
+      "status": "inactive",
+      "createdAt": "2026-03-23T10:49:54.771Z",
+      "updatedAt": "2026-03-23T10:49:54.771Z",
+      "capabilityProfile": {
+        "supportsText": true,
+        "supportsMarkdown": false,
+        "supportsImage": false,
+        "supportsFile": false,
+        "supportsAudio": false,
+        "supportsVideo": false,
+        "supportsCard": false,
+        "supportsActionCallback": false,
+        "supportsThread": false,
+        "supportsMention": false,
+        "supportsProactivePush": false,
+        "maxMessageLength": 4096,
+        "maxImageSize": 10485760,
+        "maxFileSize": 10485760,
+        "mediaUploadMode": "none"
+      },
+      "priority": 100
+    }
+  },
+  "lastUpdated": 1774262994771
 }

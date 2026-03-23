@@ -179,7 +179,8 @@ class B1CompatTranslator {
       // 尝试从 client 信息构建
       const channel = body.channel || 'unknown';
       const convId = client.conversationId || client.conversationid || 'unknown';
-      const userId = sender?.userId || 'unknown';
+      const senderObj = body.sender || {};
+      const userId = senderObj.userId || senderObj.senderId || senderObj.staffId || 'unknown';
       bindingKey = `${channel}:${client.conversationType || 'chat'}:${convId}:${userId}`;
     }
 

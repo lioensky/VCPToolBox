@@ -10,7 +10,8 @@
 (function(global) {
     'use strict';
 
-    const { ChannelHubAPI } = global.ChannelHubAPI || {};
+    const ChannelHubAPI = global.ChannelHubAPI;
+    const adapterApi = ChannelHubAPI?.adapters || ChannelHubAPI?.Adapter;
 
     /**
      * Adapter Management UI Controller
@@ -38,7 +39,7 @@
          */
         async loadAdapters() {
             try {
-                const response = await ChannelHubAPI.adapters.list();
+                const response = await adapterApi.list();
                 this.adapters = response.data || [];
             } catch (error) {
                 console.error('Failed to load adapters:', error);
@@ -241,6 +242,21 @@
                 refreshBtn.addEventListener('click', () => this.refresh());
             }
 
+            const saveBtn = document.getElementById('save-adapter');
+            if (saveBtn && !saveBtn.dataset.bound) {
+                saveBtn.dataset.bound = 'true';
+                saveBtn.addEventListener('click', () => this.saveAdapter());
+            }
+
+            const form = document.getElementById('adapter-form');
+            if (form && !form.dataset.bound) {
+                form.dataset.bound = 'true';
+                form.addEventListener('submit', (event) => {
+                    event.preventDefault();
+                    this.saveAdapter();
+                });
+            }
+
             // Tab buttons
             const tabs = document.querySelectorAll('.detail-tabs .tab');
             tabs.forEach(tab => {
@@ -315,7 +331,7 @@
             content.innerHTML = '<div class="loading">加载中...</div>';
 
             try {
-                const response = await ChannelHubAPI.adapters.getHealth(this.selectedAdapter.adapterId);
+                const response = await adapterApi.health(this.selectedAdapter.adapterId);
                 const health = response.data;
 
                 content.innerHTML = `
@@ -370,7 +386,7 @@
             content.innerHTML = '<div class="loading">加载中...</div>';
 
             try {
-                const response = await ChannelHubAPI.adapters.getMetrics(this.selectedAdapter.adapterId);
+                const response = await ChannelHubAPI?.Metrics?.byAdapter(this.selectedAdapter.adapterId);
                 const metrics = response.data;
 
                 content.innerHTML = `
@@ -414,7 +430,8 @@
             content.innerHTML = '<div class="loading">加载中...</div>';
 
             try {
-                const response = await ChannelHubAPI.adapters.getLogs(this.selectedAdapter.adapterId, { limit: 100 });
+                const response = await global.fetch(`/admin_api/channelHub/audit-logs?adapterId=${encodeURIComponent(this.selectedAdapter.adapterId)}&limit=100`)
+                    .then(r => r.json());
                 const logs = response.data || [];
 
                 content.innerHTML = `
@@ -448,8 +465,83 @@
          * Show add adapter dialog
          */
         showAddAdapterDialog() {
-            // TODO: Implement dialog
-            console.log('Show add adapter dialog');
+            // Clear form
+            const form = document.getElementById('adapter-form');
+            if (form) form.reset();
+            
+            // Show modal using Bootstrap
+            const modal = new bootstrap.Modal(document.getElementById('adapter-modal'));
+            modal.show();
+        }
+
+        /**
+         * Save adapter (create or update)
+         */
+        async saveAdapter() {
+            const form = document.getElementById('adapter-form');
+            if (!form) return;
+
+            const formData = new FormData(form);
+            const config = {
+                adapterId: formData.get('adapterId')?.trim(),
+                channel: formData.get('channel')?.trim(),
+                name: formData.get('name')?.trim(),
+                config: this.parseConfig(formData.get('config'))
+            };
+
+            // Validate
+            if (!config.adapterId) {
+                showToast('适配器 ID 不能为空', 'danger');
+                return;
+            }
+            if (!config.channel) {
+                showToast('渠道类型不能为空', 'danger');
+                return;
+            }
+            if (!config.name) {
+                showToast('名称不能为空', 'danger');
+                return;
+            }
+
+            try {
+                // Check if adapter exists (for update)
+                const existing = this.adapters.find(a => a.adapterId === config.adapterId);
+                
+                if (existing) {
+                    // Update existing
+                    await adapterApi.update(config.adapterId, config);
+                    showToast('适配器已更新', 'success');
+                } else {
+                    // Create new
+                    await adapterApi.create(config);
+                    showToast('适配器已创建', 'success');
+                }
+
+                // Close modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('adapter-modal'));
+                if (modal) modal.hide();
+
+                // Refresh list
+                await this.refresh();
+
+            } catch (error) {
+                console.error('Failed to save adapter:', error);
+                showToast(`保存失败：${error.message}`, 'danger');
+            }
+        }
+
+        /**
+         * Parse config JSON string
+         */
+        parseConfig(configStr) {
+            if (!configStr || configStr.trim() === '') {
+                return {};
+            }
+            try {
+                return JSON.parse(configStr);
+            } catch (e) {
+                throw new Error('配置必须是有效的 JSON 格式');
+            }
         }
 
         /**
@@ -472,7 +564,7 @@
             }
 
             try {
-                await ChannelHubAPI.adapters.delete(this.selectedAdapter.adapterId);
+                await adapterApi.delete(this.selectedAdapter.adapterId);
                 this.adapters = this.adapters.filter(a => a.adapterId !== this.selectedAdapter.adapterId);
                 this.selectedAdapter = null;
                 this.render();
@@ -581,5 +673,129 @@
     // Export to global
     global.AdapterManager = AdapterManager;
     global.adapterManager = null;
+
+    function renderStatusBadge(status) {
+        const statusClass = {
+            active: 'status-active',
+            inactive: 'status-inactive',
+            pending: 'status-pending',
+            error: 'status-error',
+            disabled: 'status-inactive'
+        }[status] || 'status-inactive';
+        return `<span class="status-badge ${statusClass}">${status || 'inactive'}</span>`;
+    }
+
+    function renderAdaptersTable(adapters) {
+        const tbody = document.getElementById('adapters-table');
+        if (!tbody) return;
+
+        if (!Array.isArray(adapters) || adapters.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center text-muted">暂无适配器</td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = adapters.map((adapter) => `
+            <tr>
+                <td>${adapter.adapterId || '-'}</td>
+                <td>${adapter.channel || '-'}</td>
+                <td>${adapter.name || '-'}</td>
+                <td>${renderStatusBadge(adapter.status)}</td>
+                <td><code>${adapter.config?.webhookUrl || '-'}</code></td>
+                <td>
+                    <button type="button" class="btn btn-sm btn-outline-danger btn-delete-adapter" data-adapter-id="${adapter.adapterId}">
+                        删除
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        tbody.querySelectorAll('.btn-delete-adapter').forEach((button) => {
+            button.addEventListener('click', async () => {
+                const adapterId = button.dataset.adapterId;
+                if (!adapterId) return;
+                if (!confirm(`确定删除适配器 "${adapterId}" 吗？`)) return;
+
+                try {
+                    await adapterApi.delete(adapterId);
+                    showToast('适配器已删除', 'success');
+                    await global.loadAdapters();
+                } catch (error) {
+                    console.error('Failed to delete adapter:', error);
+                    showToast(`删除失败：${error.message}`, 'danger');
+                }
+            });
+        });
+    }
+
+    global.loadAdapters = async function loadAdapters() {
+        if (!adapterApi) {
+            console.error('ChannelHub adapter API is not available');
+            showToast('适配器 API 未初始化', 'danger');
+            return;
+        }
+
+        try {
+            const response = await adapterApi.list();
+            const adapters = response.data || [];
+            renderAdaptersTable(adapters);
+        } catch (error) {
+            console.error('Failed to load adapters:', error);
+            showToast(`加载适配器失败：${error.message}`, 'danger');
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const saveBtn = document.getElementById('save-adapter');
+        if (saveBtn && !saveBtn.dataset.globalBound) {
+            saveBtn.dataset.globalBound = 'true';
+            saveBtn.addEventListener('click', async () => {
+                const form = document.getElementById('adapter-form');
+                if (!form) return;
+
+                const formData = new FormData(form);
+                const configText = formData.get('config');
+                let parsedConfig = {};
+
+                try {
+                    parsedConfig = configText && String(configText).trim()
+                        ? JSON.parse(String(configText))
+                        : {};
+                } catch (error) {
+                    showToast(`配置 JSON 无效：${error.message}`, 'danger');
+                    return;
+                }
+
+                const payload = {
+                    adapterId: String(formData.get('adapterId') || '').trim(),
+                    channel: String(formData.get('channel') || '').trim(),
+                    name: String(formData.get('name') || '').trim(),
+                    config: parsedConfig
+                };
+
+                if (!payload.adapterId || !payload.channel || !payload.name) {
+                    showToast('请完整填写适配器 ID、渠道类型和名称', 'danger');
+                    return;
+                }
+
+                try {
+                    await adapterApi.create(payload);
+                    showToast('适配器已创建', 'success');
+
+                    const modalEl = document.getElementById('adapter-modal');
+                    const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+                    if (modal) modal.hide();
+                    form.reset();
+                    await global.loadAdapters();
+                } catch (error) {
+                    console.error('Failed to save adapter:', error);
+                    showToast(`保存失败：${error.message}`, 'danger');
+                }
+            });
+        }
+    });
 
 })(typeof window !== 'undefined' ? window : global);

@@ -31,13 +31,17 @@ class IdentityMappingStore {
    * @returns {Promise<Object|null>} - 身份记录
    */
   async getIdentity(key) {
-    // TODO: 实现身份查询逻辑
-    // 1. 从 identity-map.json 中查询
-    // 2. 支持 platform + platformUserId 组合键查询
+    const data = await this.stateStore.getIdentityMap();
+    const mappings = Object.values(data.mappings || {});
+    const record = mappings.find((item) => {
+      if (key.id && item.id === key.id) return true;
+      return item.platform === key.platform && item.platformUserId === key.platformUserId;
+    });
+
     if (this.debugMode) {
       console.log('[IdentityMappingStore] getIdentity called with key:', key);
     }
-    return null;
+    return record || null;
   }
 
   /**
@@ -51,24 +55,47 @@ class IdentityMappingStore {
    * @returns {Promise<Object>} - 创建的身份记录
    */
   async linkIdentity(record) {
-    // TODO: 实现身份链接逻辑
-    // 1. 检查是否已存在
-    // 2. 创建映射记录
-    // 3. 写入 identity-map.json
+    const existing = await this.getIdentity({
+      id: record.id,
+      platform: record.platform,
+      platformUserId: record.platformUserId
+    });
+
+    if (existing) {
+      const updated = {
+        ...existing,
+        ...record,
+        updatedAt: nowTimestamp()
+      };
+
+      const data = await this.stateStore.getIdentityMap();
+      data.mappings = data.mappings || {};
+      data.mappings[updated.id] = updated;
+      await this.stateStore.saveIdentityMap(data);
+      return updated;
+    }
+
     const identityRecord = {
       id: createRequestId('identity'),
+      adapterId: record.adapterId || null,
       platform: record.platform,
       platformUserId: record.platformUserId,
       internalUserId: record.internalUserId,
       displayName: record.displayName,
       metadata: record.metadata || {},
       linkedAt: nowTimestamp(),
-      linkedBy: record.linkedBy || 'system'
+      linkedBy: record.linkedBy || 'system',
+      updatedAt: nowTimestamp()
     };
     
     if (this.debugMode) {
       console.log('[IdentityMappingStore] linkIdentity created:', identityRecord.id);
     }
+
+    const data = await this.stateStore.getIdentityMap();
+    data.mappings = data.mappings || {};
+    data.mappings[identityRecord.id] = identityRecord;
+    await this.stateStore.saveIdentityMap(data);
     
     return identityRecord;
   }
@@ -79,11 +106,24 @@ class IdentityMappingStore {
    * @returns {Promise<boolean>} - 是否成功
    */
   async unlinkIdentity(key) {
-    // TODO: 实现身份解链逻辑
+    const data = await this.stateStore.getIdentityMap();
+    const mappings = data.mappings || {};
+    const target = Object.entries(mappings).find(([id, item]) => {
+      if (key.id && id === key.id) return true;
+      return item.platform === key.platform && item.platformUserId === key.platformUserId;
+    });
+
     if (this.debugMode) {
       console.log('[IdentityMappingStore] unlinkIdentity called for:', key);
     }
-    return false;
+
+    if (!target) {
+      return false;
+    }
+
+    delete mappings[target[0]];
+    await this.stateStore.saveIdentityMap(data);
+    return true;
   }
 
   /**
@@ -94,11 +134,26 @@ class IdentityMappingStore {
    * @returns {Promise<Array>} - 身份记录列表
    */
   async queryIdentities(filter = {}) {
-    // TODO: 实现身份查询逻辑
+    const data = await this.stateStore.getIdentityMap();
+    let mappings = Object.values(data.mappings || {});
+
+    if (filter.adapterId) {
+      mappings = mappings.filter((item) => item.adapterId === filter.adapterId);
+    }
+    if (filter.platform) {
+      mappings = mappings.filter((item) => item.platform === filter.platform);
+    }
+    if (filter.externalId) {
+      mappings = mappings.filter((item) => item.platformUserId === filter.externalId);
+    }
+    if (filter.internalUserId) {
+      mappings = mappings.filter((item) => item.internalUserId === filter.internalUserId);
+    }
+
     if (this.debugMode) {
       console.log('[IdentityMappingStore] queryIdentities called with filter:', filter);
     }
-    return [];
+    return mappings;
   }
 
   /**
@@ -108,17 +163,30 @@ class IdentityMappingStore {
    * @returns {Promise<Object>} - 合并结果
    */
   async mergeIdentities(targetInternalUserId, sourceIdentityIds) {
-    // TODO: 实现身份合并逻辑
-    // 1. 验证所有源身份存在
-    // 2. 将所有源身份的 internalUserId 更新为目标
-    // 3. 记录合并历史
+    const data = await this.stateStore.getIdentityMap();
+    const mappings = data.mappings || {};
+    let merged = 0;
+
+    for (const sourceIdentityId of sourceIdentityIds) {
+      if (!mappings[sourceIdentityId]) continue;
+      mappings[sourceIdentityId] = {
+        ...mappings[sourceIdentityId],
+        internalUserId: targetInternalUserId,
+        mergedAt: nowTimestamp(),
+        updatedAt: nowTimestamp()
+      };
+      merged += 1;
+    }
+
+    await this.stateStore.saveIdentityMap(data);
+
     if (this.debugMode) {
       console.log('[IdentityMappingStore] mergeIdentities called:', {
         targetInternalUserId,
         sourceIdentityIds
       });
     }
-    return { merged: 0 };
+    return { merged };
   }
 
   /**
@@ -127,9 +195,6 @@ class IdentityMappingStore {
    * @returns {Promise<Object>} - 身份记录
    */
   async findOrCreateIdentity(platformUserInfo) {
-    // TODO: 实现查找或创建逻辑
-    // 1. 尝试查找现有身份
-    // 2. 不存在则创建新的内部用户ID
     const existing = await this.getIdentity({
       platform: platformUserInfo.platform,
       platformUserId: platformUserInfo.platformUserId
@@ -140,11 +205,21 @@ class IdentityMappingStore {
     }
     
     return this.linkIdentity({
+      adapterId: platformUserInfo.adapterId,
       platform: platformUserInfo.platform,
       platformUserId: platformUserInfo.platformUserId,
+      internalUserId: platformUserInfo.internalUserId || createRequestId('user'),
       displayName: platformUserInfo.displayName,
       metadata: platformUserInfo.metadata
     });
+  }
+
+  async list(filter = {}) {
+    return this.queryIdentities(filter);
+  }
+
+  async delete(id) {
+    return this.unlinkIdentity({ id });
   }
 }
 

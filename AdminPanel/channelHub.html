@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -156,6 +156,11 @@
             right: 1rem;
             z-index: 1100;
         }
+
+        #adapter-modal .modal-dialog,
+        #binding-modal .modal-dialog {
+            max-width: min(1000px, 96vw);
+        }
     </style>
 </head>
 <body>
@@ -166,19 +171,19 @@
         </div>
         <nav class="nav flex-column">
             <a class="nav-link active" href="#" data-section="dashboard">
-                <i class="bi bi-speedometer2"></i> 仪表盘
-            </a>
+                <i class="bi bi-speedometer2"></i> 仪表盘</a>
             <a class="nav-link" href="#" data-section="adapters">
-                <i class="bi bi-plug"></i> 适配器管理
-            </a>
+                <i class="bi bi-plug"></i> 适配器管理</a>
             <a class="nav-link" href="#" data-section="bindings">
                 <i class="bi bi-link-45deg"></i> 会话绑定
             </a>
             <a class="nav-link" href="#" data-section="outbox">
-                <i class="bi bi-outbox"></i> 发件箱
-            </a>
+                <i class="bi bi-outbox"></i> 发件箱</a>
             <a class="nav-link" href="#" data-section="metrics">
                 <i class="bi bi-graph-up"></i> 统计指标
+            </a>
+            <a class="nav-link" href="#" data-section="audit">
+                <i class="bi bi-clock-history"></i> 审计追踪
             </a>
         </nav>
     </div>
@@ -245,8 +250,7 @@
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2><i class="bi bi-plug"></i> 适配器管理</h2>
                 <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#adapter-modal">
-                    <i class="bi bi-plus-lg"></i> 添加适配器
-                </button>
+                    <i class="bi bi-plus-lg"></i> 添加适配器</button>
             </div>
             
             <div class="card">
@@ -393,14 +397,104 @@
                 </div>
             </div>
         </div>
+        
+        <!-- Audit Section -->
+        <div id="audit" class="section">
+            <h2 class="mb-4"><i class="bi bi-clock-history"></i> 审计追踪</h2>
+            
+            <div class="card mb-3">
+                <div class="card-body">
+                    <form id="audit-filter-form" class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Request ID</label>
+                            <input type="text" class="form-control" name="requestId" placeholder="输入 Request ID">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">适配器</label>
+                            <select class="form-select" name="adapterId">
+                                <option value="">全部</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">事件类型</label>
+                            <select class="form-select" name="eventType">
+                                <option value="">全部</option>
+                                <option value="ingress">入站</option>
+                                <option value="route">路由</option>
+                                <option value="runtime">运行时</option>
+                                <option value="delivery">投递</option>
+                                <option value="error">错误</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">开始时间</label>
+                            <input type="datetime-local" class="form-control" name="startTime">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">结束时间</label>
+                            <input type="datetime-local" class="form-control" name="endTime">
+                        </div>
+                        <div class="col-md-1 d-flex align-items-end">
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>审计日志</span>
+                    <button class="btn btn-sm btn-outline-secondary" id="refresh-audit">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th>Request ID</th>
+                                    <th>适配器</th>
+                                    <th>事件类型</th>
+                                    <th>状态</th>
+                                    <th>耗时</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="audit-table">
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Pagination -->
+                    <nav id="audit-pagination" class="d-flex justify-content-between align-items-center">
+                        <span class="text-muted" id="audit-total-count">共 0 条记录</span>
+                        <ul class="pagination pagination-sm mb-0">
+                            <li class="page-item disabled" id="audit-prev-page">
+                                <a class="page-link" href="#">上一页</a>
+                            </li>
+                            <li class="page-item disabled" id="audit-next-page">
+                                <a class="page-link" href="#">下一页</a>
+                            </li>
+                        </ul>
+                    </nav>
+                </div>
+            </div>
+        </div>
     </div>
     
     <!-- Adapter Modal -->
     <div class="modal fade" id="adapter-modal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-xl">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">添加适配器</h5>
+                    <h5 class="modal-title" id="adapter-modal-title">添加适配器</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -426,7 +520,15 @@
                         </div>
                         <div class="mb-3">
                             <label class="form-label">配置 (JSON)</label>
-                            <textarea class="form-control" name="config" rows="5" placeholder='{"appId": "", "appSecret": ""}'></textarea>
+                            <div class="d-flex gap-2 mb-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="apply-dingtalk-preset">钉钉模板</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="apply-qq-preset">QQ 模板</button>
+                            </div>
+                            <div class="form-text mb-2">钉钉和 QQ 会显示固定配置项，直接在输入框里填写值即可；其他渠道仍使用原始 JSON。</div>
+                            <div id="adapter-config-fields" class="mb-3"></div>
+                            <div id="adapter-config-raw-wrapper">
+                                <textarea class="form-control" name="config" rows="5" placeholder='{"appId": "", "appSecret": ""}'></textarea>
+                            </div>
                         </div>
                     </form>
                 </div>
@@ -440,31 +542,43 @@
     
     <!-- Binding Modal -->
     <div class="modal fade" id="binding-modal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-xl">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">创建会话绑定</h5>
+                    <h5 class="modal-title" id="binding-modal-title">创建会话绑定</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="binding-form">
                         <div class="mb-3">
+                            <label class="form-label">快速模板</label>
+                            <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="apply-dingtalk-binding-preset">钉钉绑定模板</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="apply-qq-binding-preset">QQ 绑定模板</button>
+                            </div>
+                            <div class="form-text">模板会自动填入推荐的外部会话 Key、VCP 会话 ID、Agent ID，并尝试匹配适配器。</div>
+                        </div>
+                        <div class="mb-3">
                             <label class="form-label">适配器 ID</label>
                             <select class="form-select" name="adapterId" required>
                                 <option value="">请选择...</option>
                             </select>
+                            <div class="form-text">选择这条绑定所属的适配器。这里必须能和“适配器管理”页里的某个适配器 ID 对上。</div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">外部会话 Key</label>
-                            <input type="text" class="form-control" name="externalSessionKey" required>
+                            <input type="text" class="form-control" name="externalSessionKey" placeholder="例如：dingtalk:group:cidxxxx:staffxxxx 或 qq:group:123456789:987654321" required>
+                            <div class="form-text">填外部平台里的稳定会话标识。常见格式：钉钉用 <code>dingtalk:group:会话ID:用户ID</code>，QQ 用 <code>qq:group:群号:用户号</code>。</div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">VCP 会话 ID</label>
-                            <input type="text" class="form-control" name="vcpSessionId" required>
+                            <input type="text" class="form-control" name="vcpSessionId" placeholder="例如：topic-dingtalk-group-cidxxxx 或 topic-qq-group-123456789" required>
+                            <div class="form-text">填 VCP 内部会话 ID。这个值用于把外部会话稳定映射到同一个内部会话。</div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Agent ID</label>
-                            <input type="text" class="form-control" name="agentId" required>
+                            <input type="text" class="form-control" name="agentId" placeholder="例如：Nova 或真实 Agent ID" required>
+                            <div class="form-text">填系统里真实存在的 Agent 名称或 ID，不要只填展示名。若不确定，可先用当前默认 Agent。</div>
                         </div>
                     </form>
                 </div>
@@ -482,36 +596,9 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="js/channelHub/api.js"></script>
-    <script src="js/channelHub/adapters.js"></script>
-    <script src="js/channelHub/bindings.js"></script>
-    <script src="js/channelHub/metrics.js"></script>
-    <script src="js/channelHub/outbox.js"></script>
+    <script src="js/channelHub/api.unified.js"></script>
+    <script src="js/channelHub/page.unified.js"></script>
     <script>
-        // Navigation
-        document.querySelectorAll('.nav-link[data-section]').forEach(link => {
-            link.addEventListener('click', (e) => {
-                e.preventDefault();
-                const section = link.dataset.section;
-                
-                // Update nav
-                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-                link.classList.add('active');
-                
-                // Update sections
-                document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-                document.getElementById(section).classList.add('active');
-                
-                // Load section data
-                if (section === 'adapters') loadAdapters();
-                if (section === 'bindings') loadBindings();
-                if (section === 'outbox') loadOutbox();
-                if (section === 'metrics') loadMetrics();
-                if (section === 'dashboard') loadDashboard();
-            });
-        });
-        
-        // Toast helper
         function showToast(message, type = 'success') {
             const toastContainer = document.querySelector('.toast-container');
             const toastEl = document.createElement('div');
@@ -525,11 +612,12 @@
             toastContainer.appendChild(toastEl);
             setTimeout(() => toastEl.remove(), 3000);
         }
-        
-        // Initial load
+
         document.addEventListener('DOMContentLoaded', () => {
-            loadDashboard();
+            window.ChannelHubPage.init();
         });
     </script>
 </body>
 </html>
+
+

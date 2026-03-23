@@ -64,11 +64,18 @@ class AdapterRegistry {
     
     try {
       // 从状态存储加载适配器列表
-      const adapters = await this.stateStore.getAdapters();
+      const data = await this.stateStore.getAdapters();
       
-      if (adapters && Array.isArray(adapters)) {
-        for (const adapter of adapters) {
-          this._cache.set(adapter.adapterId, adapter);
+      // StateStore.getAdapters() 返回 { version, adapters: {...}, lastUpdated }
+      // adapters 字段是对象（adapterId -> config），也兼容数组格式
+      if (data && data.adapters) {
+        const adapterEntries = Array.isArray(data.adapters) 
+          ? data.adapters 
+          : Object.values(data.adapters);
+        for (const adapter of adapterEntries) {
+          if (adapter && adapter.adapterId) {
+            this._cache.set(adapter.adapterId, adapter);
+          }
         }
       }
       
@@ -150,6 +157,27 @@ class AdapterRegistry {
   }
 
   /**
+   * 更新适配器配置
+   * @param {string} adapterId
+   * @param {Object} updates
+   * @returns {Promise<AdapterConfig>}
+   */
+  async updateAdapter(adapterId, updates) {
+    await this._ensureInitialized();
+
+    const existing = this._cache.get(adapterId);
+    if (!existing) {
+      throw new Error(`Adapter not found: ${adapterId}`);
+    }
+
+    return this.upsertAdapter({
+      ...existing,
+      ...updates,
+      adapterId
+    });
+  }
+
+  /**
    * 启用适配器
    * @param {string} adapterId
    */
@@ -188,6 +216,22 @@ class AdapterRegistry {
   }
 
   /**
+   * 注销适配器
+   * @param {string} adapterId
+   */
+  async unregister(adapterId) {
+    await this._ensureInitialized();
+
+    if (!this._cache.has(adapterId)) {
+      throw new Error(`Adapter not found: ${adapterId}`);
+    }
+
+    this._cache.delete(adapterId);
+    await this._persist();
+    this.logger.log('[AdapterRegistry] Unregistered adapter:', adapterId);
+  }
+
+  /**
    * 获取适配器能力矩阵
    * @param {string} adapterId
    * @returns {Object}
@@ -212,6 +256,15 @@ class AdapterRegistry {
   async supports(adapterId, capabilityName) {
     const profile = await this.getCapabilityProfile(adapterId);
     return profile[capabilityName] === true;
+  }
+
+  /**
+   * 获取适配器运行时实例
+   * 当前尚未接入真实实例注册，先返回 null 供管理面板兼容使用
+   * @returns {null}
+   */
+  getAdapterInstance() {
+    return null;
   }
 
   /**

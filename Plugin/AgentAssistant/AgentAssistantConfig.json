@@ -1,0 +1,70 @@
+{
+  "maxHistoryRounds": 7,
+  "contextTtlHours": 24,
+  "globalSystemPrompt": "",
+  "agents": [
+    {
+      "baseName": "",
+      "chineseName": "动力猛兽",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{动力猛兽}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"动力猛兽\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "诺宝",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{诺宝}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"诺宝\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "小秋",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{小秋}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"小秋\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "Metis",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{Metis}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"Metis\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "Aemeath",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{Aemeath}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"Aemeath\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "Nova",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{Nova}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"Nova\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    },
+    {
+      "baseName": "",
+      "chineseName": "ThemeMaidCoco",
+      "modelId": "AL-kimi-k2.5",
+      "systemPrompt": "{{ThemeMaidCoco}}",
+      "maxOutputTokens": 8000,
+      "temperature": 0.7,
+      "description": "基于已注册 Agent \"ThemeMaidCoco\" 创建的助手，请补充模型 ID 和更详细的说明。"
+    }
+  ]
+}
