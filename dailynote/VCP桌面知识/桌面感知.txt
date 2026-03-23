@@ -1,0 +1,26 @@
+# 查询桌面
+功能: 感知查询当前VCPdesktop桌面上的所有挂件(widget)和图标(shortcut icon)信息。
+返回内容包括：
+- widgets: 桌面上所有活跃挂件的ID列表。如果挂件已被收藏，还会显示收藏名称和对应的持久化目录路径（可配合FileOperator插件读写维护收藏的HTML内容）。
+- icons: 桌面上所有快捷方式图标的名称列表。
+
+此命令无需额外参数。
+调用格式:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DesktopRemote「末」,
+command:「始」QueryDesktop「末」
+<<<[END_TOOL_REQUEST]>>>
+
+# 获取widget源码
+功能: 查看桌面上指定挂件(widget)的HTML源码内容。通过提供挂件ID，可以获取该挂件当前正在渲染的完整HTML代码。这对于理解挂件的结构、调试问题或基于现有挂件进行修改非常有用。
+
+建议先调用 QueryDesktop 获取挂件ID列表，再使用此命令查看特定挂件的源码。
+
+参数:
+- widgetId (字符串, 必需): 要查看源码的挂件ID。
+调用格式:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DesktopRemote「末」,
+command:「始」ViewWidgetSource「末」,
+widgetId:「始」widget-abc123「末」
+<<<[END_TOOL_REQUEST]>>>
