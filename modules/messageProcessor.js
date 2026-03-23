@@ -55,6 +55,22 @@ async function resolveAllVariables(text, model, role, context, processingStack =
         for (const alias of allAliases) {
             // 关键：使用 agentManager 来判断这是否是一个真正的Agent
             if (agentManager.isAgent(alias)) {
+                // 🔒 灵魂级安全：Agent 占位符在整个上下文中只允许展开一个
+                // 如果已有其他 Agent 被展开，当前 Agent 占位符静默移除（替换为空串）
+                if (context.expandedAgentName !== undefined && context.expandedAgentName !== null) {
+                    if (context.expandedAgentName !== alias) {
+                        // 已有不同的 Agent 被展开，静默移除当前占位符
+                        if (context.DEBUG_MODE) {
+                            console.log(`[AgentGuard] Agent '${alias}' 被拒绝展开：上下文中已展开 '${context.expandedAgentName}'，仅允许一个 Agent`);
+                        }
+                        processedText = processedText.replaceAll(`{{${alias}}}`, '').replaceAll(`{{agent:${alias}}}`, '');
+                        continue;
+                    }
+                    // 同名 Agent 在后续消息中重复出现，也静默移除（首次已展开）
+                    processedText = processedText.replaceAll(`{{${alias}}}`, '').replaceAll(`{{agent:${alias}}}`, '');
+                    continue;
+                }
+
                 if (processingStack.has(alias)) {
                     console.error(`[AgentManager] Circular dependency detected! Stack: [${[...processingStack].join(' -> ')} -> ${alias}]`);
                     const errorMessage = `[Error: Circular agent reference detected for '${alias}']`;
@@ -71,12 +87,27 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                 // 替换两种可能的Agent占位符格式
                 processedText = processedText.replaceAll(`{{${alias}}}`, resolvedAgentContent);
                 processedText = processedText.replaceAll(`{{agent:${alias}}}`, resolvedAgentContent);
+
+                // 标记此 Agent 已被展开，后续消息中的任何 Agent 占位符都将被忽略
+                context.expandedAgentName = alias;
             }
         }
 
         // 在所有Agent都被递归展开后，处理 toolbox 占位符
         for (const alias of allAliases) {
             if (toolboxManager.isToolbox(alias)) {
+                // 🔒 Toolbox 去重：每种 toolbox 在整个上下文中只展开一次
+                // 同名 toolbox 在后续消息中重复出现时静默移除
+                if (context.expandedToolboxes && context.expandedToolboxes.has(alias)) {
+                    if (context.DEBUG_MODE) {
+                        console.log(`[ToolboxGuard] Toolbox '${alias}' 已在之前的消息中展开，跳过重复展开`);
+                    }
+                    processedText = processedText
+                        .replaceAll(`{{${alias}}}`, '')
+                        .replaceAll(`{{toolbox:${alias}}}`, '');
+                    continue;
+                }
+
                 const stackKey = `toolbox:${alias}`;
                 if (processingStack.has(stackKey)) {
                     const errorMessage = `[Error: Circular toolbox reference detected for '${alias}']`;
@@ -98,6 +129,11 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                 processedText = processedText
                     .replaceAll(`{{${alias}}}`, expandedText)
                     .replaceAll(`{{toolbox:${alias}}}`, expandedText);
+
+                // 标记此 Toolbox 已展开
+                if (context.expandedToolboxes) {
+                    context.expandedToolboxes.add(alias);
+                }
             }
         }
     }
