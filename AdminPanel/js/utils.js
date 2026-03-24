@@ -94,3 +94,20 @@ export async function apiFetch(url, options = {}, showLoader = true) {
         if (showLoader) showLoading(false);
     }
 }
+
+/**
+ * 转义 HTML 字符串以防止注入。
+ * @param {string} str - 需要转义的字符串
+ * @returns {string} - 转义后的字符串
+ */
+export function escapeHTML(str) {
+    if (!str) return '';
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return str.toString().replace(/[&<>"']/g, function(m) { return map[m]; });
+}

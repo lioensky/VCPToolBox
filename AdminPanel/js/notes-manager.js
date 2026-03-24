@@ -1,5 +1,5 @@
 // AdminPanel/js/notes-manager.js
-import { apiFetch, showMessage } from './utils.js';
+import { apiFetch, showMessage, escapeHTML } from './utils.js';
 
 const API_BASE_URL = '/admin_api';
 
@@ -231,8 +231,8 @@ function renderNoteCard(note, folderName) {
     });
 
     card.innerHTML = `
-        <p class="note-card-filename">${note.name}</p>
-        <p class="note-card-preview">${note.preview || `修改于: ${new Date(note.lastModified).toLocaleString()}`}</p>
+        <p class="note-card-filename">${escapeHTML(note.name)}</p>
+        <p class="note-card-preview">${escapeHTML(note.preview) || `修改于: ${new Date(note.lastModified).toLocaleString()}`}</p>
         <div class="note-card-actions">
             <button class="edit-note-btn">编辑</button>
             <button class="discovery-note-btn">联想</button>
@@ -240,15 +240,21 @@ function renderNoteCard(note, folderName) {
     `;
     card.insertBefore(checkbox, card.firstChild);
 
-    card.querySelector('.edit-note-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        openNoteForEditing(folderName, note.name);
-    });
+    const editBtn = card.querySelector('.edit-note-btn');
+    if (editBtn) {
+        editBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openNoteForEditing(folderName, note.name);
+        });
+    }
 
-    card.querySelector('.discovery-note-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        openDiscoveryModal(folderName, note.name);
-    });
+    const discoveryBtn = card.querySelector('.discovery-note-btn');
+    if (discoveryBtn) {
+        discoveryBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openDiscoveryModal(folderName, note.name);
+        });
+    }
 
     card.addEventListener('click', (e) => {
         if (e.target !== checkbox && !e.target.closest('.note-card-actions')) {
@@ -716,16 +722,16 @@ function renderDiscoveryResults(results) {
         
         card.innerHTML = `
             <div class="result-header">
-                <span class="result-filename">${res.name}</span>
+                <span class="result-filename">${escapeHTML(res.name)}</span>
                 <span class="result-score-tag">Match: ${scorePercent}%</span>
             </div>
             <div class="result-score-bar-container">
                 <div class="result-score-bar" style="width: 0%"></div>
             </div>
             <div class="result-tags">
-                ${res.matchedTags ? res.matchedTags.slice(0, 5).map(t => `<span class="result-tag">#${t}</span>`).join('') : ''}
+                ${res.matchedTags ? res.matchedTags.slice(0, 5).map(t => `<span class="result-tag">#${escapeHTML(t)}</span>`).join('') : ''}
             </div>
-            <div class="result-preview">${Array.isArray(res.chunks) ? res.chunks.join(' ... ') : ''}</div>
+            <div class="result-preview">${Array.isArray(res.chunks) ? res.chunks.map(chunk => escapeHTML(chunk)).join(' ... ') : ''}</div>
         `;
 
         card.onclick = () => {
