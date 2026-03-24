@@ -161,6 +161,33 @@
         #binding-modal .modal-dialog {
             max-width: min(1000px, 96vw);
         }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-item {
+            background: #f8f9fa;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .stat-label {
+            display: block;
+            color: #6c757d;
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-value {
+            display: block;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #667eea;
+        }
     </style>
 </head>
 <body>
@@ -179,6 +206,10 @@
             </a>
             <a class="nav-link" href="#" data-section="outbox">
                 <i class="bi bi-outbox"></i> 发件箱</a>
+            <a class="nav-link" href="#" data-section="dead-letter">
+                <i class="bi bi-exclamation-triangle"></i> 死信管理</a>
+            <a class="nav-link" href="#" data-section="media">
+                <i class="bi bi-folder"></i> 媒体网关</a>
             <a class="nav-link" href="#" data-section="metrics">
                 <i class="bi bi-graph-up"></i> 统计指标
             </a>
@@ -349,7 +380,144 @@
                 </div>
             </div>
         </div>
-        
+
+        <!-- Dead Letter Section -->
+        <div id="dead-letter" class="section">
+            <h2 class="mb-4"><i class="bi bi-exclamation-triangle"></i> 死信管理</h2>
+
+            <div class="row mb-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>死信统计</span>
+                            <div>
+                                <button class="btn btn-sm btn-primary" id="dead-letter-refresh">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                                <button class="btn btn-sm btn-warning" id="dead-letter-cleanup">
+                                    <i class="bi bi-trash"></i> 清理过期
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-grid" id="dead-letter-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">总死信数</span>
+                                    <span class="stat-value" id="dl-total">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">已过期</span>
+                                    <span class="stat-value" id="dl-expired">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">最早过期</span>
+                                    <span class="stat-value" id="dl-oldest">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">最新过期</span>
+                                    <span class="stat-value" id="dl-newest">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>死信列表</span>
+                    <div>
+                        <button class="btn btn-sm btn-success" id="dead-letter-retry-all">
+                            <i class="bi bi-arrow-repeat"></i> 批量重试
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" id="dl-select-all"></th>
+                                <th>ID</th>
+                                <th>适配器</th>
+                                <th>错误信息</th>
+                                <th>失败次数</th>
+                                <th>过期时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dead-letter-table">
+                            <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Media Gateway Section -->
+        <div id="media" class="section">
+            <h2 class="mb-4"><i class="bi bi-folder"></i> 媒体网关</h2>
+
+            <div class="row mb-4">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>媒体文件统计</span>
+                            <div>
+                                <button class="btn btn-sm btn-primary" id="media-refresh">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                                <button class="btn btn-sm btn-danger" id="media-cleanup">
+                                    <i class="bi bi-trash"></i> 清理过期
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-grid" id="media-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">总文件数</span>
+                                    <span class="stat-value" id="media-total">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">图片</span>
+                                    <span class="stat-value" id="media-image">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">音频</span>
+                                    <span class="stat-value" id="media-audio">-</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">文件</span>
+                                    <span class="stat-value" id="media-file">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">媒体文件列表</div>
+                <div class="card-body">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>文件名</th>
+                                <th>类型</th>
+                                <th>适配器</th>
+                                <th>大小</th>
+                                <th>上传时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="media-table">
+                            <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- Metrics Section -->
         <div id="metrics" class="section">
             <h2 class="mb-4"><i class="bi bi-graph-up"></i> 统计指标</h2>
@@ -597,6 +765,8 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="js/channelHub/api.unified.js"></script>
+    <script src="js/channelHub/deadLetter.js"></script>
+    <script src="js/channelHub/mediaGateway.js"></script>
     <script src="js/channelHub/page.unified.js"></script>
     <script>
         function showToast(message, type = 'success') {

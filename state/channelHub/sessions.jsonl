@@ -7,3 +7,7 @@
 {"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"1","agentId":"1","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252735385,"deleted":false,"_timestamp":1774252735385}
 {"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"123","agentId":"12","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252899592,"deleted":false,"_timestamp":1774252899592,"rebindAt":1774252899592}
 {"adapterId":"dingtalk-adapter-01","externalSessionKey":"1","conversationId":"123","agentId":"12","bindingKey":"dingtalk-adapter-01:1","isActive":true,"createdAt":1774252735385,"updatedAt":1774252899592,"deleted":true,"_timestamp":1774262070339,"rebindAt":1774252899592,"deletedAt":1774262070339}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774330142526,"_timestamp":1774330142527}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774330157683,"_timestamp":1774330157683}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774330491506,"_timestamp":1774330491506}
+{"bindingKey":"test:session:123","channel":"qq","agentId":"Nova","timestamp":1774330549309,"_timestamp":1774330549309}

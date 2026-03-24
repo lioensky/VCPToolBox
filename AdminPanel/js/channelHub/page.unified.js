@@ -189,6 +189,12 @@
             if (section === 'adapters') await this.loadAdapters();
             if (section === 'bindings') await this.loadBindings();
             if (section === 'outbox') await this.loadOutbox();
+            if (section === 'dead-letter') {
+                if (window.DeadLetterUI) DeadLetterUI.init();
+            }
+            if (section === 'media') {
+                if (window.MediaGatewayUI) MediaGatewayUI.init();
+            }
             if (section === 'metrics') await this.loadMetrics();
             if (section === 'audit') await this.loadAudit();
         },

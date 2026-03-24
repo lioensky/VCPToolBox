@@ -1,10 +1,12 @@
 # VCPToolBox 多端接入中间层逐文件 TODO 清单
 
-**版本:** Draft 1.0  
-**创建日期:** 2026-03-23  
-**关联文档:**  
-- [CHANNEL_MIDDLEWARE_DESIGN.md](./CHANNEL_MIDDLEWARE_DESIGN.md)  
+**版本:** 1.1 (2026-03-24 更新)
+**创建日期:** 2026-03-23
+**当前进度:** 约 80%
+**关联文档:**
+- [CHANNEL_MIDDLEWARE_DESIGN.md](./CHANNEL_MIDDLEWARE_DESIGN.md)
 - [CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md](./CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md)
+- [VCP_INTERACTION_MIDDLEWARE_TARGET.md](./VCP_INTERACTION_MIDDLEWARE_TARGET.md)
 
 ---
 
@@ -1222,19 +1224,20 @@ window.ChannelHubPage = {
 
 ## 6. 推荐第一批开发文件
 
+**状态：✅ 已全部完成**
+
 如果现在开始真正落代码，最推荐先写下面 8 个文件：
 
-1. `modules/channelHub/constants.js`
-2. `modules/channelHub/errors.js`
-3. `modules/channelHub/utils.js`
-4. `modules/channelHub/StateStore.js`
-5. `modules/channelHub/AdapterRegistry.js`
-6. `modules/channelHub/EventSchemaValidator.js`
-7. `modules/channelHub/B1CompatTranslator.js`
-8. `modules/channelHub/ChannelHubService.js`
+1. ✅ `modules/channelHub/constants.js`
+2. ✅ `modules/channelHub/errors.js`
+3. ✅ `modules/channelHub/utils.js`
+4. ✅ `modules/channelHub/StateStore.js`
+5. ✅ `modules/channelHub/AdapterRegistry.js`
+6. ✅ `modules/channelHub/EventSchemaValidator.js`
+7. ✅ `modules/channelHub/B1CompatTranslator.js`
+8. ✅ `modules/channelHub/ChannelHubService.js`
 
 原因：
-
 - 这 8 个文件能先把协议、状态和总入口固定下来
 - 后续 `RuntimeGateway`、`DeliveryOutbox`、AdminPanel 都能在这个骨架上往前接
 

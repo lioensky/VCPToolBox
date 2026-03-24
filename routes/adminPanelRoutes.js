@@ -66,5 +66,8 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     mount('/', 'dream');              // Handles /dream-logs/*, /dream-operation/*
     mount('/', 'dailyNotes');         // Wrapper for existing dailyNotesRoutes (Handles /dailynotes/*)
 
+    // 注意: channelHub 和 mediaGateway 路由已在 server.js 中单独挂载
+    // 路径: /admin_api/channelHub, /admin_api/mediaGateway
+
     return adminApiRouter;
 };

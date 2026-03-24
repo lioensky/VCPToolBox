@@ -7,6 +7,7 @@ module.exports = function(options) {
     const { agentDirPath } = options;
     const AGENT_FILES_DIR = agentDirPath;
     const AGENT_MAP_FILE = path.join(__dirname, '..', '..', 'agent_map.json');
+    const CURRENT_AGENT_FILE = path.join(__dirname, '..', '..', 'current_agent.json');
 
     // GET agent map
     router.get('/agents/map', async (req, res) => {
@@ -103,6 +104,87 @@ module.exports = function(options) {
             res.json({ message: `Agent file '${decodedFileName}' saved successfully.` });
         } catch (error) {
             res.status(500).json({ error: 'Failed to save agent file', details: error.message });
+        }
+    });
+
+    // ===== Agent Activation API =====
+    // GET /agents/active - Get currently active agent
+    router.get('/agents/active', async (req, res) => {
+        try {
+            let currentAgent = { name: null, file: null };
+            try {
+                const content = await fs.readFile(CURRENT_AGENT_FILE, 'utf-8');
+                currentAgent = JSON.parse(content);
+            } catch (e) {
+                // File doesn't exist, return default
+                if (e.code !== 'ENOENT') console.warn('[Agent] Failed to read current_agent.json:', e.message);
+            }
+
+            // Also read agent_map to get full list
+            let agentMap = {};
+            try {
+                const mapContent = await fs.readFile(AGENT_MAP_FILE, 'utf-8');
+                agentMap = JSON.parse(mapContent);
+            } catch (e) {
+                // ignore
+            }
+
+            res.json({
+                active: currentAgent.name,
+                activeFile: currentAgent.file,
+                availableAgents: Object.keys(agentMap)
+            });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to get active agent', details: error.message });
+        }
+    });
+
+    // POST /agents/activate - Activate a specific agent
+    router.post('/agents/activate', async (req, res) => {
+        const { name, file } = req.body;
+
+        if (!name || typeof name !== 'string') {
+            return res.status(400).json({ error: 'Agent name is required' });
+        }
+
+        try {
+            // Validate agent exists in agent_map
+            let agentMap = {};
+            try {
+                const mapContent = await fs.readFile(AGENT_MAP_FILE, 'utf-8');
+                agentMap = JSON.parse(mapContent);
+            } catch (e) {
+                // ignore
+            }
+
+            // If file not specified, try to find in map
+            let targetFile = file;
+            if (!targetFile && agentMap[name]) {
+                targetFile = agentMap[name];
+            } else if (!targetFile) {
+                // Check if name is actually a filename
+                targetFile = name;
+            }
+
+            // Validate file exists
+            const filePath = path.join(AGENT_FILES_DIR, targetFile.replace(/\//g, path.sep));
+            try {
+                await fs.access(filePath);
+            } catch (e) {
+                return res.status(404).json({ error: `Agent file not found: ${targetFile}` });
+            }
+
+            // Save current agent
+            const currentAgent = { name, file: targetFile, activatedAt: new Date().toISOString() };
+            await fs.writeFile(CURRENT_AGENT_FILE, JSON.stringify(currentAgent, null, 2), 'utf-8');
+
+            res.json({
+                message: `Agent '${name}' activated successfully`,
+                active: name,
+                activeFile: targetFile
+            });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to activate agent', details: error.message });
         }
     });
 

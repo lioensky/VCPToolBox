@@ -1,12 +1,13 @@
 /**
  * DeliveryOutbox - 出站消息队列管理器
- * 
+ *
  * 职责：
  * - 管理出站消息队列（FIFO + 优先级）
  * - 提供消息重试机制（指数退避）
  * - 处理死信队列（Dead Letter Queue）
  * - 跟踪消息投递状态
  * - 支持批量投递优化
+ * - 自动死信清理和告警
  */
 
 const { EventEmitter } = require('events');
@@ -38,24 +39,40 @@ class DeliveryOutbox extends EventEmitter {
    * @param {number} options.baseRetryDelay - 基础重试延迟（毫秒）
    * @param {number} options.maxRetryDelay - 最大重试延迟（毫秒）
    * @param {number} options.batchSize - 批量处理大小
+   * @param {number} options.deadLetterRetentionDays - 死信保留天数（默认7天）
+   * @param {boolean} options.enableDeadLetterAutoCleanup - 启用死信自动清理
+   * @param {boolean} options.enableDeadLetterNotification - 启用死信告警
+   * @param {Function} options.onDeadLetter - 死信产生时的回调
    */
   constructor(options = {}) {
     super();
-    
+
     this.store = options.store;
     this.logger = options.logger || console;
     this.maxAttempts = options.maxAttempts || 5;
     this.baseRetryDelay = options.baseRetryDelay || 1000;
     this.maxRetryDelay = options.maxRetryDelay || 60000;
     this.batchSize = options.batchSize || 10;
-    
+
+    // 死信配置
+    this.deadLetterRetentionDays = options.deadLetterRetentionDays || 7;
+    this.enableDeadLetterAutoCleanup = options.enableDeadLetterAutoCleanup !== false;
+    this.enableDeadLetterNotification = options.enableDeadLetterNotification !== false;
+    this.onDeadLetter = options.onDeadLetter || null;
+
+    // 重试策略配置
+    this.retryStrategy = options.retryStrategy || 'exponential';
+    this.enableJitter = options.enableJitter !== false; // 默认启用
+    this.enableSmartRetry = options.enableSmartRetry !== false; // 默认启用
+
     // 内存队列
     this.queue = [];
     this.deadLetterQueue = [];
-    
+
     // 处理状态
     this.isProcessing = false;
     this.processTimer = null;
+    this.cleanupTimer = null;
   }
 
   /**
@@ -65,7 +82,125 @@ class DeliveryOutbox extends EventEmitter {
     // 从持久化存储恢复未完成任务
     await this._restorePendingJobs();
     this._startProcessing();
+
+    // 启动死信自动清理（每天检查一次）
+    if (this.enableDeadLetterAutoCleanup) {
+      this._startDeadLetterCleanup();
+    }
+
     this.logger.info('[DeliveryOutbox] 初始化完成');
+  }
+
+  /**
+   * 启动死信自动清理
+   * @private
+   */
+  _startDeadLetterCleanup() {
+    // 每天凌晨 3 点执行清理
+    const scheduleNextCleanup = () => {
+      const now = new Date();
+      let nextRun = new Date(now);
+      nextRun.setHours(3, 0, 0, 0);
+
+      if (nextRun <= now) {
+        nextRun.setDate(nextRun.getDate() + 1);
+      }
+
+      const delay = nextRun.getTime() - now.getTime();
+
+      this.cleanupTimer = setTimeout(async () => {
+        await this._cleanupExpiredDeadLetters();
+        scheduleNextCleanup();
+      }, delay);
+
+      this.logger.debug(`[DeliveryOutbox] 死信清理任务计划在 ${nextRun.toISOString()} 执行`);
+    };
+
+    scheduleNextCleanup();
+  }
+
+  /**
+   * 清理过期死信
+   * @private
+   */
+  async _cleanupExpiredDeadLetters() {
+    const now = Date.now();
+    const retentionMs = this.deadLetterRetentionDays * 24 * 60 * 60 * 1000;
+    const toRemove = [];
+
+    for (let i = this.deadLetterQueue.length - 1; i >= 0; i--) {
+      const job = this.deadLetterQueue[i];
+      const jobTime = job.failedAt ? new Date(job.failedAt).getTime() : 0;
+
+      if (now - jobTime > retentionMs) {
+        toRemove.push(job);
+        this.deadLetterQueue.splice(i, 1);
+      }
+    }
+
+    if (toRemove.length > 0) {
+      this.logger.info(`[DeliveryOutbox] 自动清理 ${toRemove.length} 个过期死信`);
+
+      // 触发告警通知
+      if (this.enableDeadLetterNotification && this.onDeadLetter) {
+        try {
+          await this.onDeadLetter({
+            type: 'auto_cleanup',
+            count: toRemove.length,
+            jobs: toRemove.map(j => ({ jobId: j.jobId, channel: j.channel, error: j.finalError }))
+          });
+        } catch (e) {
+          this.logger.warn('[DeliveryOutbox] 死信告警回调失败:', e.message);
+        }
+      }
+
+      this.emit('deadLetter:cleanup', { removed: toRemove.length });
+    }
+  }
+
+  /**
+   * 获取死信统计信息
+   * @returns {Object}
+   */
+  getDeadLetterStats() {
+    const now = Date.now();
+    const retentionMs = this.deadLetterRetentionDays * 24 * 60 * 60 * 1000;
+
+    const stats = {
+      total: this.deadLetterQueue.length,
+      byChannel: {},
+      byError: {},
+      expiredCount: 0,
+      oldest: null,
+      newest: null
+    };
+
+    for (const job of this.deadLetterQueue) {
+      // 按渠道统计
+      const channel = job.channel || 'unknown';
+      stats.byChannel[channel] = (stats.byChannel[channel] || 0) + 1;
+
+      // 按错误类型统计
+      const errorKey = job.finalError?.substring(0, 50) || 'unknown';
+      stats.byError[errorKey] = (stats.byError[errorKey] || 0) + 1;
+
+      // 检查过期
+      if (job.failedAt) {
+        const jobTime = new Date(job.failedAt).getTime();
+        if (now - jobTime > retentionMs) {
+          stats.expiredCount++;
+        }
+
+        if (!stats.oldest || jobTime < new Date(stats.oldest).getTime()) {
+          stats.oldest = job.failedAt;
+        }
+        if (!stats.newest || jobTime > new Date(stats.newest).getTime()) {
+          stats.newest = job.failedAt;
+        }
+      }
+    }
+
+    return stats;
   }
 
   /**
@@ -200,25 +335,34 @@ class DeliveryOutbox extends EventEmitter {
     if (!job) {
       throw new DeliveryError(`任务不存在: ${jobId}`);
     }
-    
+
     job.errors.push({
       attempt: job.attempts,
       error: error.message,
+      errorCode: error.code || null,
       timestamp: new Date().toISOString()
     });
-    
+
+    // 如果启用智能重试，检查错误类型决定是否重试
+    if (this.enableSmartRetry && !this._shouldRetry(error)) {
+      // 不可重试的错误，直接移入死信队列
+      this.logger.warn(`[DeliveryOutbox] 任务错误不支持重试，直接移入死信: ${jobId}, error: ${error.message}`);
+      await this._moveToDeadLetter(job, error);
+      return;
+    }
+
     // 检查是否超过最大重试次数
     if (job.attempts >= job.maxAttempts) {
       await this._moveToDeadLetter(job, error);
     } else {
-      // 计算下次重试时间（指数退避）
-      const delay = this._calculateRetryDelay(job.attempts);
+      // 计算下次重试时间（使用配置的策略）
+      const delay = this._calculateRetryDelay(job.attempts, this.retryStrategy);
       job.status = DELIVERY_STATUS.PENDING;
       job.nextRetryAt = new Date(Date.now() + delay).toISOString();
-      
+
       await this._persistJob(job);
       this.emit('job:retry', job);
-      this.logger.warn(`[DeliveryOutbox] 任务将在 ${delay}ms 后重试: ${jobId}`);
+      this.logger.warn(`[DeliveryOutbox] 任务将在 ${Math.round(delay/1000)}秒 后重试 (策略: ${this.retryStrategy}, 尝试 ${job.attempts + 1}/${job.maxAttempts}): ${jobId}`);
     }
   }
 
@@ -369,22 +513,76 @@ class DeliveryOutbox extends EventEmitter {
     if (index === -1) {
       throw new DeliveryError(`死信任务不存在: ${jobId}`);
     }
-    
+
     const job = this.deadLetterQueue.splice(index, 1)[0];
-    
+
     // 重置任务状态
     job.status = DELIVERY_STATUS.PENDING;
     job.attempts = 0;
     job.errors = [];
     job.nextRetryAt = null;
+    job.failedAt = null;
+    job.finalError = null;
     job.replayCount = (job.replayCount || 0) + 1;
-    
+
     // 重新入队
     this._insertByPriority(job);
     await this._persistJob(job);
-    
+
     this.emit('job:replayed', job);
     this.logger.info(`[DeliveryOutbox] 死信任务已重放: ${jobId}`);
+  }
+
+  /**
+   * 手动清理过期死信
+   * @param {number} [retentionDays] - 自定义保留天数
+   * @returns {Promise<number>} 清理数量
+   */
+  async manualCleanup(retentionDays = null) {
+    const days = retentionDays || this.deadLetterRetentionDays;
+    const retentionMs = days * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const toRemove = [];
+
+    for (let i = this.deadLetterQueue.length - 1; i >= 0; i--) {
+      const job = this.deadLetterQueue[i];
+      const jobTime = job.failedAt ? new Date(job.failedAt).getTime() : 0;
+
+      if (now - jobTime > retentionMs) {
+        toRemove.push(job);
+        this.deadLetterQueue.splice(i, 1);
+      }
+    }
+
+    this.logger.info(`[DeliveryOutbox] 手动清理 ${toRemove.length} 个过期死信 (保留 ${days} 天)`);
+    this.emit('deadLetter:manual_cleanup', { removed: toRemove.length, retentionDays: days });
+
+    return toRemove.length;
+  }
+
+  /**
+   * 批量重试死信（按渠道）
+   * @param {string} channel - 渠道过滤
+   * @param {number} limit - 最大重试数量
+   * @returns {Promise<number>} 重试数量
+   */
+  async batchReplayByChannel(channel, limit = 10) {
+    const toReplay = this.deadLetterQueue
+      .filter(job => !channel || job.channel === channel)
+      .slice(0, limit);
+
+    let replayed = 0;
+    for (const job of toReplay) {
+      try {
+        await this.replayDeadLetter(job.jobId);
+        replayed++;
+      } catch (e) {
+        this.logger.warn(`[DeliveryOutbox] 重放死信失败: ${job.jobId}`, e.message);
+      }
+    }
+
+    this.logger.info(`[DeliveryOutbox] 批量重放死信: ${replayed}/${toReplay.length}`);
+    return replayed;
   }
 
   /**
@@ -404,6 +602,10 @@ class DeliveryOutbox extends EventEmitter {
     if (this.processTimer) {
       clearTimeout(this.processTimer);
       this.processTimer = null;
+    }
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = null;
     }
   }
 
@@ -440,13 +642,131 @@ class DeliveryOutbox extends EventEmitter {
   /**
    * 计算重试延迟
    * @param {number} attempt - 尝试次数
+   * @param {string} strategy - 退避策略: 'exponential', 'linear', 'fibonacci'
    * @returns {number} 延迟毫秒数
    * @private
    */
-  _calculateRetryDelay(attempt) {
-    // 指数退避：baseDelay * 2^(attempt-1)
-    const delay = this.baseRetryDelay * Math.pow(2, attempt - 1);
+  _calculateRetryDelay(attempt, strategy = 'exponential') {
+    let delay;
+
+    switch (strategy) {
+      case 'linear':
+        // 线性退避：baseDelay * attempt
+        delay = this.baseRetryDelay * attempt;
+        break;
+
+      case 'fibonacci':
+        // 斐波那契退避
+        delay = this.baseRetryDelay * this._fibonacci(attempt);
+        break;
+
+      case 'exponential':
+      default:
+        // 指数退避：baseDelay * 2^(attempt-1)
+        delay = this.baseRetryDelay * Math.pow(2, attempt - 1);
+        break;
+    }
+
+    // 添加随机抖动（±25%），防止惊群效应
+    const jitterFactor = 0.75 + Math.random() * 0.5;
+    delay = delay * jitterFactor;
+
     return Math.min(delay, this.maxRetryDelay);
+  }
+
+  /**
+   * 斐波那契数列计算
+   * @param {number} n - 第n项
+   * @returns {number}
+   * @private
+   */
+  _fibonacci(n) {
+    if (n <= 1) return 1;
+    let a = 1, b = 1;
+    for (let i = 2; i <= n; i++) {
+      const temp = a + b;
+      a = b;
+      b = temp;
+    }
+    return b;
+  }
+
+  /**
+   * 根据错误类型判断是否应该重试
+   * @param {Error} error - 错误对象
+   * @returns {boolean}
+   * @private
+   */
+  _shouldRetry(error) {
+    const nonRetryableErrors = [
+      'INVALID_REQUEST',
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'VALIDATION_ERROR'
+    ];
+
+    // 检查错误码
+    if (error.code && nonRetryableErrors.includes(error.code)) {
+      return false;
+    }
+
+    // 检查错误消息中的关键词
+    const message = (error.message || '').toLowerCase();
+    const nonRetryablePatterns = [
+      'invalid request',
+      'unauthorized',
+      'forbidden',
+      'not found',
+      'validation error',
+      'invalid parameter'
+    ];
+
+    for (const pattern of nonRetryablePatterns) {
+      if (message.includes(pattern)) {
+        return false;
+      }
+    }
+
+    // 网络错误、超时等应该重试
+    const retryablePatterns = [
+      'timeout',
+      'econnrefused',
+      'enetunreach',
+      'socket',
+      'network',
+      '503',
+      '502',
+      '504'
+    ];
+
+    for (const pattern of retryablePatterns) {
+      if (message.includes(pattern)) {
+        return true;
+      }
+    }
+
+    // 默认重试
+    return true;
+  }
+
+  /**
+   * 配置重试策略
+   * @param {Object} options
+   * @param {string} options.strategy - 退避策略
+   * @param {boolean} options.enableJitter - 是否启用抖动
+   * @param {boolean} options.enableSmartRetry - 是否启用智能重试（根据错误类型）
+   */
+  configureRetryStrategy(options = {}) {
+    if (options.strategy) {
+      this.retryStrategy = options.strategy;
+    }
+    if (typeof options.enableJitter === 'boolean') {
+      this.enableJitter = options.enableJitter;
+    }
+    if (typeof options.enableSmartRetry === 'boolean') {
+      this.enableSmartRetry = options.enableSmartRetry;
+    }
   }
 
   /**
@@ -501,13 +821,31 @@ class DeliveryOutbox extends EventEmitter {
     job.status = DELIVERY_STATUS.FAILED;
     job.failedAt = new Date().toISOString();
     job.finalError = error.message;
-    
+
     this._removeJob(job.jobId);
     this.deadLetterQueue.push(job);
-    
+
     await this._persistJob(job);
+
     this.emit('job:dead', job);
     this.logger.error(`[DeliveryOutbox] 任务已进入死信队列: ${job.jobId}`);
+
+    // 触发死信告警
+    if (this.enableDeadLetterNotification && this.onDeadLetter) {
+      try {
+        await this.onDeadLetter({
+          type: 'job_dead',
+          jobId: job.jobId,
+          adapterId: job.adapterId,
+          channel: job.channel,
+          attempts: job.attempts,
+          error: error.message,
+          payload: job.payload ? { hasContent: true } : null
+        });
+      } catch (e) {
+        this.logger.warn('[DeliveryOutbox] 死信告警回调失败:', e.message);
+      }
+    }
   }
 
   /**

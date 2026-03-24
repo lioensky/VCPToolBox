@@ -1,0 +1,19 @@
+{
+  "name": "vcp-feishu-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VCPToolBox 飞书适配器 - 将飞书消息桥接到 VCP",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {}
+}

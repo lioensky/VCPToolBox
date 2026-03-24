@@ -1,0 +1,43 @@
+{
+    "name": "vcp-panel",
+    "displayName": "VCP Panel - Agent & Knowledge Base",
+    "description": "VCP控制面板 - Agent切换和知识库搜索",
+    "version": "1.0.0",
+    "publisher": "vcp",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "vcp-panel-container",
+                    "title": "VCP Panel"
+                }
+            ]
+        },
+        "views": {
+            "vcp-panel-container": [
+                {
+                    "type": "webview",
+                    "id": "vcp-panel-view",
+                    "name": "VCP Panel"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "vcp-panel.open",
+                "title": "打开VCP面板"
+            }
+        ]
+    },
+    "activationEvents": [
+        "onView:vcp-panel-view",
+        "onCommand:vcp-panel.open"
+    ],
+    "main": "extension.js"
+}

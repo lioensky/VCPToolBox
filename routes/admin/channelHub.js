@@ -82,8 +82,140 @@ function ensureService(req, res, next) {
   next();
 }
 
-// Apply service check to all routes
+// Apply service check to all routes (except health check)
 router.use(ensureService);
+
+// ============================================================================
+// Health Check Routes (无认证检查)
+// ============================================================================
+
+/**
+ * GET /admin_api/channelHub/health
+ * Get overall system health status
+ */
+router.get('/health', async (req, res) => {
+  try {
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      version: '2.0',
+      services: {},
+      metrics: {}
+    };
+
+    // 检查各模块状态
+    const modules = [
+      { name: 'stateStore', key: 'stateStore' },
+      { name: 'adapterRegistry', key: 'adapterRegistry' },
+      { name: 'sessionBindingStore', key: 'sessionBindingStore' },
+      { name: 'identityMappingStore', key: 'identityMappingStore' },
+      { name: 'deliveryOutbox', key: 'deliveryOutbox' },
+      { name: 'auditLogger', key: 'auditLogger' },
+      { name: 'metricsCollector', key: 'metricsCollector' }
+    ];
+
+    let allHealthy = true;
+
+    for (const mod of modules) {
+      try {
+        const module = getServiceModule(mod.key);
+        if (module && typeof module.initialize === 'function') {
+          // 模块已初始化
+          health.services[mod.name] = {
+            status: 'healthy',
+            initialized: true
+          };
+        } else {
+          health.services[mod.name] = {
+            status: 'unknown',
+            initialized: false
+          };
+        }
+      } catch (e) {
+        health.services[mod.name] = {
+          status: 'unhealthy',
+          error: e.message
+        };
+        allHealthy = false;
+      }
+    }
+
+    // 获取队列统计
+    try {
+      const outbox = getServiceModule('deliveryOutbox');
+      if (outbox) {
+        const stats = outbox.getQueueStats();
+        health.metrics.queue = stats;
+      }
+    } catch (e) {
+      health.metrics.queue = { error: e.message };
+    }
+
+    // 获取适配器统计
+    try {
+      const registry = getServiceModule('adapterRegistry');
+      if (registry) {
+        const adapters = await registry.listAdapters();
+        health.metrics.adapters = {
+          total: adapters.length,
+          active: adapters.filter(a => a.enabled).length,
+          inactive: adapters.filter(a => !a.enabled).length
+        };
+      }
+    } catch (e) {
+      health.metrics.adapters = { error: e.message };
+    }
+
+    health.status = allHealthy ? 'healthy' : 'degraded';
+
+    return ok(res, health);
+  } catch (error) {
+    return fail(res, error);
+  }
+});
+
+/**
+ * GET /admin_api/channelHub/health/ready
+ * 专门用于 Kubernetes 就绪探针
+ */
+router.get('/health/ready', async (req, res) => {
+  try {
+    // 检查核心模块是否就绪
+    const requiredModules = ['stateStore', 'adapterRegistry'];
+
+    for (const modName of requiredModules) {
+      const mod = getServiceModule(modName);
+      if (!mod) {
+        return res.status(503).json({
+          status: 'not_ready',
+          reason: `Module not available: ${modName}`
+        });
+      }
+    }
+
+    return res.status(200).json({
+      status: 'ready',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    return res.status(503).json({
+      status: 'not_ready',
+      reason: error.message
+    });
+  }
+});
+
+/**
+ * GET /admin_api/channelHub/health/live
+ * 专门用于 Kubernetes 存活探针
+ */
+router.get('/health/live', async (req, res) => {
+  // 只要服务进程还活着就返回 OK
+  return res.status(200).json({
+    status: 'alive',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ============================================================================
 // Adapter Management Routes
@@ -582,6 +714,63 @@ router.post('/outbox/cleanup', async (req, res) => {
 });
 
 // ============================================================================
+// Dead Letter Routes (enhanced)
+// ============================================================================
+
+/**
+ * GET /admin_api/channelHub/dead-letter/stats
+ * Get dead letter statistics
+ */
+router.get('/dead-letter/stats', async (req, res) => {
+  try {
+    const outbox = getServiceModule('deliveryOutbox');
+    if (typeof outbox.getDeadLetterStats === 'function') {
+      const stats = outbox.getDeadLetterStats();
+      return ok(res, stats);
+    }
+    return ok(res, { message: 'Dead letter stats not available' });
+  } catch (error) {
+    return fail(res, error);
+  }
+});
+
+/**
+ * POST /admin_api/channelHub/dead-letter/cleanup
+ * Manually cleanup expired dead letters
+ */
+router.post('/dead-letter/cleanup', async (req, res) => {
+  try {
+    const outbox = getServiceModule('deliveryOutbox');
+    const { retentionDays } = req.body || {};
+    if (typeof outbox.manualCleanup === 'function') {
+      const result = await outbox.manualCleanup(retentionDays);
+      return ok(res, result, 'Dead letter cleanup completed');
+    }
+    return fail(res, 'Cleanup not available', 400);
+  } catch (error) {
+    return fail(res, error);
+  }
+});
+
+/**
+ * POST /admin_api/channelHub/dead-letter/retry-channel
+ * Batch retry dead letters by channel
+ */
+router.post('/dead-letter/retry-channel', async (req, res) => {
+  try {
+    const outbox = getServiceModule('deliveryOutbox');
+    const { channel, limit } = req.body || {};
+    if (typeof outbox.batchReplayByChannel === 'function') {
+      const result = await outbox.batchReplayByChannel(channel, limit);
+      return ok(res, result, `Retried ${result.replayed} dead letters`);
+    }
+    return fail(res, 'Batch retry not available', 400);
+  } catch (error) {
+    return fail(res, error);
+  }
+});
+
+// ============================================================================
 // Monitoring Routes
 // ============================================================================
 
@@ -989,3 +1178,14 @@ module.exports = {
   router,
   initialize
 };
+
+// ============================================================================
+// MediaGateway Admin Routes (挂载在 /admin_api/mediaGateway)
+// ============================================================================
+
+/**
+ * 注意: MediaGateway 路由需要单独在主服务器中挂载
+ * 建议在 server.js 中添加:
+ * const mediaGatewayAdmin = require('./routes/admin/mediaGateway')(mediaGatewayInstance);
+ * app.use('/admin_api/mediaGateway', mediaGatewayAdmin);
+ */

@@ -46,46 +46,38 @@
       },
       "priority": 100
     },
-    "onebot-qq-main": {
-      "adapterId": "onebot-qq-main",
-      "channel": "qq",
-      "name": "QQ机器人小秋",
+    "wecom-main": {
+      "adapterId": "wecom-main",
+      "channel": "wecom",
+      "name": "企业微信适配器",
       "config": {
-        "onebotWsUrl": "ws://127.0.0.1:3001",
+        "corpId": "your_corp_id",
+        "agentId": "your_agent_id",
+        "callbackUrl": "http://your-domain.com:6090/webhook",
         "channelHubUrl": "http://127.0.0.1:6010/internal/channel-hub/events",
-        "bridgeKey": "aSDwqD8G99jnqdSD4",
-        "agentName": "_Agent_1774241046101_1774241046101",
-        "agentDisplayName": "小秋",
-        "supportsImage": true,
-        "supportsFile": false,
-        "supportsAudio": true,
-        "maxMessageLength": 4500,
-        "timeoutMs": 120000,
-        "retryCount": 3,
-        "retryIntervalMs": 1000,
-        "sessionTimeoutHours": 24
+        "bridgeKey": "your_adapter_secret"
       },
       "status": "inactive",
-      "createdAt": "2026-03-23T10:49:54.771Z",
-      "updatedAt": "2026-03-23T10:49:54.771Z",
+      "createdAt": "2026-03-24T00:00:00.000Z",
+      "updatedAt": "2026-03-24T00:00:00.000Z",
       "capabilityProfile": {
         "supportsText": true,
         "supportsMarkdown": false,
-        "supportsImage": false,
-        "supportsFile": false,
+        "supportsImage": true,
+        "supportsFile": true,
         "supportsAudio": false,
         "supportsVideo": false,
-        "supportsCard": false,
-        "supportsActionCallback": false,
+        "supportsCard": true,
+        "supportsActionCallback": true,
         "supportsThread": false,
-        "supportsMention": false,
-        "supportsProactivePush": false,
+        "supportsMention": true,
+        "supportsProactivePush": true,
         "maxMessageLength": 4096,
         "maxImageSize": 10485760,
-        "maxFileSize": 10485760,
-        "mediaUploadMode": "none"
+        "maxFileSize": 20971520,
+        "mediaUploadMode": "platform"
       },
-      "priority": 100
+      "priority": 50
     }
   },
   "lastUpdated": 1774262994771

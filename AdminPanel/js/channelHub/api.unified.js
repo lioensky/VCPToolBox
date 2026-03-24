@@ -187,6 +187,22 @@ const ChannelHubAPI = (function () {
         },
         stats() {
             return request('/outbox/stats');
+        },
+        // 死信增强 API
+        deadLetterStats() {
+            return request('/dead-letter/stats');
+        },
+        deadLetterCleanup(retentionDays) {
+            return request('/dead-letter/cleanup', {
+                method: 'POST',
+                body: JSON.stringify({ retentionDays })
+            });
+        },
+        retryChannel(channel, limit) {
+            return request('/dead-letter/retry-channel', {
+                method: 'POST',
+                body: JSON.stringify({ channel, limit })
+            });
         }
     };
 

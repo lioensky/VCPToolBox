@@ -1,0 +1,22 @@
+{
+  "name": "vcp-wecom-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VCPToolBox 企业微信适配器 - 将企业微信消息桥接到 VCP",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "crypto": "^1.0.1",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}

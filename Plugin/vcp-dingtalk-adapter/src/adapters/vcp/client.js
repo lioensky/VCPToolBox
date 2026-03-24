@@ -221,7 +221,19 @@ export function createVcpClient({
   logger = console,
 }) {
   const endpoint = joinUrl(baseUrl, chatPath);
-  const isB2 = String(bridgeVersion || 'b1').toLowerCase() === 'b2';
+  // 默认使用 B2 协议
+  const bridgeVersionEnv = process.env.VCP_CHANNEL_HUB_VERSION;
+  const isB2 = bridgeVersionEnv
+    ? String(bridgeVersionEnv).toLowerCase() === 'b2'
+    : false; // 默认 b1 以保持向后兼容
+
+  // B2 适配器配置
+  const adapterId = process.env.VCP_ADAPTER_ID || 'dingtalk-stream';
+
+  // B2 模式下，自动调整 bridgeUrl 到正确的 endpoint
+  const b2BridgeUrl = isB2
+    ? bridgeUrl.replace(/(\/internal\/channel-ingest)$/, '/internal/channel-hub/events')
+    : bridgeUrl;
 
   async function sendViaBridge({
     agentName = defaultAgentName,
@@ -234,6 +246,7 @@ export function createVcpClient({
 
     // B2 模式：使用 ChannelEventEnvelope 格式
     if (isB2) {
+      logger.info('[vcpClient] Using B2 protocol (ChannelEventEnvelope)');
       return sendViaBridgeB2({
         agentName,
         agentDisplayName,
@@ -382,7 +395,7 @@ export function createVcpClient({
     const payload = {
       version: '2.0',
       eventId: requestId,
-      adapterId: 'dingtalk-adapter',
+      adapterId: adapterId,
       channel: 'dingtalk',
       eventType: 'message.created',
       occurredAt: Date.now(),
@@ -442,7 +455,7 @@ export function createVcpClient({
     };
 
     logger.info('[vcpClient:B2] bridge request =>', {
-      bridgeUrl,
+      bridgeUrl: b2BridgeUrl,
       eventId: requestId,
       agentId: agentName,
       bindingKey,
@@ -454,13 +467,14 @@ export function createVcpClient({
     try {
       const headers = {
         'Content-Type': 'application/json',
+        'x-channel-adapter-id': adapterId,
       };
 
       if (bridgeKey) {
         headers['x-channel-bridge-key'] = bridgeKey;
       }
 
-      const resp = await fetch(bridgeUrl, {
+      const resp = await fetch(b2BridgeUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),

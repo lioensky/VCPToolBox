@@ -491,9 +491,13 @@ async function testAdapterConfigs() {
     const adaptersJsonPath = './state/channelHub/adapters.json';
     if (fs.existsSync(adaptersJsonPath)) {
       const adaptersJson = JSON.parse(fs.readFileSync(adaptersJsonPath, 'utf-8'));
-      assert(Array.isArray(adaptersJson.adapters), 'adapters.json adapters 是数组');
-      
-      const qqAdapter = adaptersJson.adapters.find(a => a.adapterId === 'onebot-qq');
+      // adapters 可能是数组或对象
+      const adapters = Array.isArray(adaptersJson.adapters)
+        ? adaptersJson.adapters
+        : Object.values(adaptersJson.adapters || {});
+      assert(adapters.length > 0, 'adapters.json 包含适配器数据');
+
+      const qqAdapter = adapters.find(a => a.adapterId === 'onebot-qq');
       if (qqAdapter) {
         assert(qqAdapter.channel === 'qq', '已注册的 QQ 适配器 channel 正确');
         log('green', '  ✓ QQ 适配器已在 adapters.json 中注册');

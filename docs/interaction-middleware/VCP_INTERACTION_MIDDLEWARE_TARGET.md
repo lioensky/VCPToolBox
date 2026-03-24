@@ -1,13 +1,54 @@
 # VCP 交互中间层目标架构
 
-**版本：** Draft 1.0  
-**创建日期：** 2026-03-23  
-**适用范围：** VCPToolBox 作为多平台、多 Agent、多工具、多终端之间的统一交互中间层  
+**版本：** 1.2 (2026-03-24 更新)
+**创建日期：** 2026-03-23
+**当前进度：** 约 85%
+**适用范围：** VCPToolBox 作为多平台、多 Agent、多工具、多终端之间的统一交互中间层
 **关联文档：**
 
 - `docs/interaction-middleware/CHANNEL_MIDDLEWARE_DESIGN.md`
 - `docs/interaction-middleware/CHANNEL_MIDDLEWARE_IMPLEMENTATION_PLAN.md`
 - `docs/interaction-middleware/ASTRBOT_QQ_VS_CHANNELHUB.md`
+
+---
+
+## 当前实现状态
+
+### ✅ 已完成功能
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| ChannelHub 核心服务 | ✅ | ChannelHubService.js 完整实现 |
+| 适配器注册中心 | ✅ | AdapterRegistry.js - 适配器管理 |
+| 适配器鉴权 | ✅ | AdapterAuthManager.js - per-adapter 密钥 + 轮换 |
+| 签名验证 | ✅ | SignatureValidator.js - 钉钉/企微/飞书签名 |
+| 事件去重 | ✅ | EventDeduplicator.js - 幂等处理 |
+| 会话绑定 | ✅ | SessionBindingStore.js - bindingKey 管理 |
+| 身份映射 | ✅ | IdentityMappingStore.js - 用户身份映射 |
+| 运行时网关 | ✅ | RuntimeGateway.js - 对接 ChatCompletionHandler |
+| 回复标准化 | ✅ | ReplyNormalizer.js - 统一回复格式 |
+| 能力降级 | ✅ | CapabilityDowngrader.js - 平台能力适配 |
+| 投递队列 | ✅ | DeliveryOutbox.js - 出站任务管理 |
+| 审计日志 | ✅ | AuditLogger.js - 全链路审计 |
+| 指标收集 | ✅ | MetricsCollector.js - 监控指标 |
+| B1 兼容层 | ✅ | B1CompatTranslator.js - 旧接口兼容 |
+| 死信自动处理 | ✅ | 自动重试 + 指数退避 + 自动清理 |
+| 媒体网关增强 | ✅ | 签名URL + 远程缓存 + 缩略图生成 |
+| AdminPanel API | ✅ | channelHub.js + mediaGateway.js 路由 |
+
+### ✅ 已接入平台
+
+| 平台 | 适配器 | B2 协议 | 说明 |
+|------|--------|---------|------|
+| 钉钉 | vcp-dingtalk-adapter | ✅ | 完整支持 B2 |
+| 企业微信 | vcp-wecom-adapter | ✅ | 完整支持 B2 |
+| 飞书 | vcp-feishu-adapter | ✅ | 完整支持 B2 |
+| QQ (OneBot) | vcp-onebot-adapter | ✅ | 完整支持 B2 (WebSocket) |
+
+### ⚠️ 待完善
+
+1. **压力测试** - 高并发场景测试
+2. **生产环境验证** - 实际部署测试
 
 ---
 

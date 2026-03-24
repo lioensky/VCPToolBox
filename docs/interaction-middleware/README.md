@@ -2,7 +2,31 @@
 
 这一组文档统一归档到 `docs/interaction-middleware/`，作为 VCP 交互中间层专题目录。
 
-建议阅读顺序：
+## 当前进度
+
+**总体进度：约 90%** (2026-03-24 更新)
+
+### ✅ 已完成
+
+- ChannelHub 核心服务 (Phase 1-4)
+- 钉钉/企微/飞书/QQ 适配器 B2 协议支持
+- per-adapter 密钥管理与轮换
+- 会话绑定与身份映射
+- 审计与投递队列
+- 死信自动处理（自动重试策略、指数退避、自动清理）
+- 媒体网关增强（签名URL、远程缓存、缩略图）
+- AdminPanel API（channelHub + mediaGateway 路由）
+- 前端运维页面（适配器/绑定/发件箱/死信/媒体/指标/审计）
+- 健康检查端点
+
+### ⚠️ 进行中
+
+- 压力测试
+- 高并发场景验证
+
+---
+
+## 建议阅读顺序
 
 1. `VCP_INTERACTION_MIDDLEWARE_TARGET.md`
 2. `VCP_INTERACTION_MIDDLEWARE_SCHEMA.md`
@@ -18,6 +42,15 @@
 - `CHANNEL_HUB_ADAPTER_CONFIG_TEMPLATE.jsonc`
 - `CHANNEL_HUB_BINDING_TEMPLATE.json`
 - `CHANNEL_HUB_BINDING_TEMPLATE.jsonc`
+
+## 已接入适配器
+
+| 适配器 | 路径 | 协议 |
+|--------|------|------|
+| 钉钉 | Plugin/vcp-dingtalk-adapter | B2 |
+| 企业微信 | Plugin/vcp-wecom-adapter | B2 |
+| 飞书 | Plugin/vcp-feishu-adapter | B2 |
+| QQ (OneBot) | Plugin/vcp-onebot-adapter | B2 |
 
 说明：
 
