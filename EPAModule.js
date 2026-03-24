@@ -87,9 +87,9 @@ class EPAModule {
                 }
 
                 const result = this.config.vexusIndex.project(
-                    Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength),
-                    Buffer.from(flattenedBasis.buffer, flattenedBasis.byteOffset, flattenedBasis.byteLength),
-                    Buffer.from(this.basisMean.buffer, this.basisMean.byteOffset, this.basisMean.byteLength),
+                    vec,
+                    flattenedBasis,
+                    this.basisMean,
                     K
                 );
 

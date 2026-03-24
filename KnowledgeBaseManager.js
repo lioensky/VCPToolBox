@@ -363,19 +363,18 @@ class KnowledgeBaseManager {
             if (stats.totalVectors === 0) return [];
         } catch (e) { }
 
-        // 🛠️ 修复 1: 安全的 Buffer 转换
-        let searchBuffer;
+        // 🛠️ 修复 1: 安全的 Float32Array 转换
+        let searchVecFloat;
         let tagInfo = null;
 
         try {
-            let searchVecFloat;
             if (tagBoost > 0) {
                 // 🌟 TagMemo 逻辑回归：应用 Tag 增强 (强制使用 V6)
                 const boostResult = this._applyTagBoostV6(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
             } else {
-                searchVecFloat = new Float32Array(vector);
+                searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
             }
 
             // ⚠️ 维度检查
@@ -383,17 +382,14 @@ class KnowledgeBaseManager {
                 console.error(`[KnowledgeBase] Dimension mismatch! Expected ${this.config.dimension}, got ${searchVecFloat.length}`);
                 return [];
             }
-
-            // ⚠️ 使用 byteOffset 和 byteLength 确保 Buffer 视图正确
-            searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
         } catch (err) {
-            console.error(`[KnowledgeBase] Buffer conversion failed: ${err.message}`);
+            console.error(`[KnowledgeBase] Vector processing failed: ${err.message}`);
             return [];
         }
 
         let results = [];
         try {
-            results = idx.search(searchBuffer, k);
+            results = idx.search(searchVecFloat, k);
         } catch (e) {
             // 🛠️ 修复 2: 详细的错误日志
             console.error(`[KnowledgeBase] Vexus search failed for "${diaryName}":`, e.message || e);
@@ -409,10 +405,12 @@ class KnowledgeBaseManager {
         `);
 
         return results.map(res => {
-            const row = hydrate.get(res.id); // res.id 来自 Vexus (即 chunk.id)
+            // 🛠️ 修复：res.id 现在是 BigInt (i64)，需要转换为 Number 以匹配 SQLite 查询
+            const chunkId = Number(res.id);
+            const row = hydrate.get(chunkId);
             if (!row) {
                 // 🛡️ BUG 1 修复：发现幽灵索引（数据库无记录但索引有），异步清理
-                console.warn(`[KnowledgeBase] 👻 Ghost Index detected for ID ${res.id} in "${diaryName}". Cleaning up...`);
+                console.warn(`[KnowledgeBase] 👻 Ghost Index detected for ID ${chunkId} in "${diaryName}". Cleaning up...`);
                 if (idx.remove) idx.remove(res.id);
                 return null;
             }
@@ -440,10 +438,8 @@ class KnowledgeBaseManager {
             searchVecFloat = boostResult.vector;
             tagInfo = boostResult.info;
         } else {
-            searchVecFloat = new Float32Array(vector);
+            searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
         }
-
-        const searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
 
         const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all();
 
@@ -452,7 +448,7 @@ class KnowledgeBaseManager {
                 const idx = await this._getOrLoadDiaryIndex(diary_name);
                 const stats = idx.stats ? idx.stats() : { totalVectors: 1 };
                 if (stats.totalVectors === 0) return [];
-                return idx.search(searchBuffer, k);
+                return idx.search(searchVecFloat, k);
             } catch (e) {
                 console.error(`[KnowledgeBase] Vexus search error in parallel global search (${diary_name}):`, e);
                 return [];
@@ -472,7 +468,8 @@ class KnowledgeBaseManager {
         `);
 
         return topK.map(res => {
-            const row = hydrate.get(res.id);
+            const chunkId = Number(res.id);
+            const row = hydrate.get(chunkId);
             return row ? {
                 text: row.text,
                 score: res.score,
@@ -1104,14 +1101,14 @@ class KnowledgeBaseManager {
         if (!queryVec) return [];
 
         try {
-            const searchVecFloat = new Float32Array(queryVec);
-            const searchBuffer = Buffer.from(searchVecFloat.buffer, searchVecFloat.byteOffset, searchVecFloat.byteLength);
-            const results = this.tagIndex.search(searchBuffer, k);
+            const searchVecFloat = queryVec instanceof Float32Array ? queryVec : new Float32Array(queryVec);
+            const results = this.tagIndex.search(searchVecFloat, k);
 
             // 需要 hydrate tag 名称
             const hydrate = this.db.prepare("SELECT name FROM tags WHERE id = ?");
             return results.map(r => {
-                const row = hydrate.get(r.id);
+                const tagId = Number(r.id);
+                const row = hydrate.get(tagId);
                 return row ? { tag: row.name, score: r.score } : null;
             }).filter(Boolean);
         } catch (e) {
@@ -1287,11 +1284,12 @@ class KnowledgeBaseManager {
 
                 newTags.forEach((t, i) => {
                     if (!tagVectors[i]) return; // 🛡️ 跳过向量化失败的 tag
-                    const vecBuf = Buffer.from(new Float32Array(tagVectors[i]).buffer);
+                    const vecFloat = new Float32Array(tagVectors[i]);
+                    const vecBuf = Buffer.from(vecFloat.buffer, vecFloat.byteOffset, vecFloat.byteLength);
                     insertTag.run(t, vecBuf);
                     const id = getTagId.get(t).id;
                     tagCache.set(t, { id, vector: vecBuf });
-                    tagUpdates.push({ id, vec: vecBuf });
+                    tagUpdates.push({ id, vec: vecFloat });
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
@@ -1341,9 +1339,10 @@ class KnowledgeBaseManager {
                         doc.chunks.forEach((txt, i) => {
                             const meta = metaMap.get(`${doc.relPath}:${i}`);
                             if (meta && meta.vector) { // 🛡️ null 向量的 chunk 自然被跳过，不会写入错误数据
-                                const vecBuf = Buffer.from(new Float32Array(meta.vector).buffer);
+                                const vecFloat = new Float32Array(meta.vector);
+                                const vecBuf = Buffer.from(vecFloat.buffer, vecFloat.byteOffset, vecFloat.byteLength);
                                 const r = addChunk.run(fileId, i, txt, vecBuf);
-                                updates.get(dName).push({ id: r.lastInsertRowid, vec: vecBuf });
+                                updates.get(dName).push({ id: r.lastInsertRowid, vec: vecFloat });
                             }
                         });
 
@@ -1562,46 +1561,49 @@ class KnowledgeBaseManager {
                 tagCounts.set(row.file_id, row.tag_count);
             }
 
-            // Step 2: 有向共现查询
+            // Step 2: 逐文件处理共现关系，规避 SQL Join 爆炸风险
             const stmt = this.db.prepare(`
-                SELECT 
-                    ft1.tag_id as source_tag,
-                    ft2.tag_id as target_tag,
-                    ft1.position as pos1,
-                    ft2.position as pos2,
-                    ft1.file_id as file_id
-                FROM file_tags ft1
-                JOIN file_tags ft2 
-                    ON ft1.file_id = ft2.file_id 
-                    AND ft1.position < ft2.position
-                    AND ft1.position > 0 
-                    AND ft2.position > 0
-                WHERE ft1.file_id NOT IN (
-                    /* 🛡️ BUG 3 修复：SQL 性能保护，跳过单体 Tag 数量 > 100 的脏文件 */
-                    SELECT file_id FROM file_tags GROUP BY file_id HAVING COUNT(*) > 100
-                )
+                SELECT file_id, tag_id, position
+                FROM file_tags
+                WHERE position > 0
+                ORDER BY file_id, position ASC
             `);
 
             const matrix = new Map();
+            let currentFileId = -1;
+            let fileTags = [];
+
+            const processFileGroup = (tags, fid) => {
+                const n = tags.length;
+                if (n < 2 || n > 100) return; // 🛡️ 性能保护：跳过孤立点或超大脏文件
+
+                for (let i = 0; i < n; i++) {
+                    for (let j = i + 1; j < n; j++) {
+                        const t1 = tags[i];
+                        const t2 = tags[j];
+
+                        // 计算序位势能 (基于 position 的衰减)
+                        const phi1 = n > 1 ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t1.pos - 1) / (n - 1) : PHI_MAX;
+                        const phi2 = n > 1 ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t2.pos - 1) / (n - 1) : PHI_MAX;
+                        const weight = phi1 * phi2;
+
+                        // 有向边：source → target (i < j 保证了顺序)
+                        if (!matrix.has(t1.id)) matrix.set(t1.id, new Map());
+                        const targetMap = matrix.get(t1.id);
+                        targetMap.set(t2.id, (targetMap.get(t2.id) || 0) + weight);
+                    }
+                }
+            };
 
             for (const row of stmt.iterate()) {
-                const n = tagCounts.get(row.file_id) || 1;
-                
-                // 计算序位势能
-                const phi1 = n > 1 
-                    ? PHI_MAX - (PHI_MAX - PHI_MIN) * (row.pos1 - 1) / (n - 1)
-                    : PHI_MAX;
-                const phi2 = n > 1 
-                    ? PHI_MAX - (PHI_MAX - PHI_MIN) * (row.pos2 - 1) / (n - 1)
-                    : PHI_MAX;
-
-                const weight = phi1 * phi2;
-
-                // 有向边：source → target
-                if (!matrix.has(row.source_tag)) matrix.set(row.source_tag, new Map());
-                const existing = matrix.get(row.source_tag).get(row.target_tag) || 0;
-                matrix.get(row.source_tag).set(row.target_tag, existing + weight);
+                if (row.file_id !== currentFileId) {
+                    if (fileTags.length > 0) processFileGroup(fileTags, currentFileId);
+                    currentFileId = row.file_id;
+                    fileTags = [];
+                }
+                fileTags.push({ id: row.tag_id, pos: row.position });
             }
+            if (fileTags.length > 0) processFileGroup(fileTags, currentFileId);
 
             // Step 3: 处理旧数据（position = 0 的回退为无向等权重）
             const legacyStmt = this.db.prepare(`

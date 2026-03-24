@@ -47,10 +47,10 @@ class ResidualPyramid {
 
         for (let level = 0; level < this.config.maxLevels; level++) {
             // 1. 搜索当前残差向量的最近 Tags
-            const searchBuffer = Buffer.from(currentResidual.buffer, currentResidual.byteOffset, currentResidual.byteLength);
             let tagResults;
             try {
-                tagResults = this.tagIndex.search(searchBuffer, this.config.topK);
+                // 🚀 优化：直接传递 Float32Array，利用 napi-rs 的零拷贝特性
+                tagResults = this.tagIndex.search(currentResidual, this.config.topK);
             } catch (e) {
                 console.warn(`[Residual] Search failed at level ${level}:`, e.message);
                 break;
@@ -59,7 +59,8 @@ class ResidualPyramid {
             if (!tagResults || tagResults.length === 0) break;
 
             // 2. 获取Tag详细信息 (向量)
-            const tagIds = tagResults.map(r => r.id);
+            // 🛠️ 修复：Rust 返回的 id 是 BigInt，需转换为 Number 以匹配 SQLite 查询和后续比较
+            const tagIds = tagResults.map(r => Number(r.id));
             const rawTags = this._getTagVectors(tagIds);
             if (rawTags.length === 0) break;
 
@@ -84,7 +85,8 @@ class ResidualPyramid {
             pyramid.levels.push({
                 level,
                 tags: rawTags.map((t, i) => {
-                    const res = tagResults.find(r => r.id === t.id);
+                    // 🛠️ 修复：BigInt 与 Number 的比较
+                    const res = tagResults.find(r => Number(r.id) === t.id);
                     // 估算该 Tag 在本层解释中的贡献度 (基于其在正交基中的投影分量)
                     // 这是一个近似值，因为 Gram-Schmidt 对顺序敏感，但这比单纯的 softmax 准确
                     return {
@@ -136,8 +138,8 @@ class ResidualPyramid {
                 }
 
                 const result = this.tagIndex.computeOrthogonalProjection(
-                    Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength),
-                    Buffer.from(flattenedTags.buffer, flattenedTags.byteOffset, flattenedTags.byteLength),
+                    vector,
+                    flattenedTags,
                     n
                 );
 
@@ -221,8 +223,8 @@ class ResidualPyramid {
                 }
 
                 const result = this.tagIndex.computeHandshakes(
-                    Buffer.from(query.buffer, query.byteOffset, query.byteLength),
-                    Buffer.from(flattenedTags.buffer, flattenedTags.byteOffset, flattenedTags.byteLength),
+                    query,
+                    flattenedTags,
                     n
                 );
 

@@ -10,7 +10,7 @@ use rusqlite::Connection;
 /// 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
 #[napi(object)]
 pub struct SearchResult {
-    pub id: u32,   // 对应 SQLite 中的 chunks.id 或 tags.id
+    pub id: i64,   // 对应 SQLite 中的 chunks.id 或 tags.id
     pub score: f64,
 }
 
@@ -57,7 +57,7 @@ pub struct VexusStats {
     pub total_vectors: u32,
     pub dimensions: u32,
     pub capacity: u32,
-    pub memory_usage: u32,
+    pub memory_usage: f64,
 }
 
 /// 核心索引结构 (无状态，只存向量)
@@ -152,16 +152,11 @@ impl VexusIndex {
 
     /// 单个添加 (JS 循环调用)
     #[napi]
-    pub fn add(&self, id: u32, vector: Buffer) -> Result<()> {
+    pub fn add(&self, id: i64, vector: Float32Array) -> Result<()> {
         let index = self.index.write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
 
-        let vec_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                vector.as_ptr() as *const f32,
-                vector.len() / std::mem::size_of::<f32>(),
-            )
-        };
+        let vec_slice: &[f32] = &vector;
 
         if vec_slice.len() != self.dimensions as usize {
             return Err(Error::from_reason(format!(
@@ -174,7 +169,8 @@ impl VexusIndex {
         // 自动扩容检查
         if index.size() + 1 >= index.capacity() {
              let new_cap = (index.capacity() as f64 * 1.5) as usize;
-             let _ = index.reserve(new_cap);
+             index.reserve(new_cap)
+                .map_err(|e| Error::from_reason(format!("Auto-expand failed: {:?}", e)))?;
         }
 
         index
@@ -186,19 +182,14 @@ impl VexusIndex {
 
     /// 批量添加 (更高效，建议未来 JS 改用此接口)
     #[napi]
-    pub fn add_batch(&self, ids: Vec<u32>, vectors: Buffer) -> Result<()> {
+    pub fn add_batch(&self, ids: Vec<i64>, vectors: Float32Array) -> Result<()> {
         let index = self.index.write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
 
         let count = ids.len();
         let dim = self.dimensions as usize;
         
-        let vec_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                vectors.as_ptr() as *const f32,
-                vectors.len() / std::mem::size_of::<f32>(),
-            )
-        };
+        let vec_slice: &[f32] = &vectors;
 
         if vec_slice.len() != count * dim {
              return Err(Error::from_reason("Batch size mismatch".to_string()));
@@ -207,14 +198,15 @@ impl VexusIndex {
         // 预扩容
         if index.size() + count >= index.capacity() {
             let new_cap = ((index.size() + count) as f64 * 1.5) as usize;
-            let _ = index.reserve(new_cap);
+            index.reserve(new_cap)
+                .map_err(|e| Error::from_reason(format!("Batch auto-expand failed: {:?}", e)))?;
         }
 
         for (i, id) in ids.iter().enumerate() {
             let start = i * dim;
             let v = &vec_slice[start..start+dim];
             // remove + add = update (usearch 行为)
-            // let _ = index.remove(*id as u64); 
+            // let _ = index.remove(*id as u64);
             index.add(*id as u64, v)
                 .map_err(|e| Error::from_reason(format!("Batch add failed idx {}: {:?}", i, e)))?;
         }
@@ -224,16 +216,11 @@ impl VexusIndex {
 
     /// 搜索
     #[napi]
-    pub fn search(&self, query: Buffer, k: u32) -> Result<Vec<SearchResult>> {
+    pub fn search(&self, query: Float32Array, k: u32) -> Result<Vec<SearchResult>> {
         let index = self.index.read()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
 
-        let query_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                query.as_ptr() as *const f32,
-                query.len() / std::mem::size_of::<f32>(),
-            )
-        };
+        let query_slice: &[f32] = &query;
 
         // 🔥🔥🔥【新增】维度安全检查 🔥🔥🔥
         if query_slice.len() != self.dimensions as usize {
@@ -253,8 +240,8 @@ impl VexusIndex {
         
         for (key, &dist) in matches.keys.iter().zip(matches.distances.iter()) {
             results.push(SearchResult {
-                id: *key as u32,
-                score: 1.0 - dist as f64, // L2sq 距离转相似度分数 (近似)
+                id: *key as i64,
+                score: 1.0 / (1.0 + dist as f64), // L2sq 距离转相似度分数
             });
         }
 
@@ -263,7 +250,7 @@ impl VexusIndex {
 
     /// 删除 (按 ID)
     #[napi]
-    pub fn remove(&self, id: u32) -> Result<()> {
+    pub fn remove(&self, id: i64) -> Result<()> {
         let index = self.index.write()
             .map_err(|e| Error::from_reason(format!("Lock failed: {}", e)))?;
         
@@ -283,7 +270,7 @@ impl VexusIndex {
             total_vectors: index.size() as u32,
             dimensions: self.dimensions,
             capacity: index.capacity() as u32,
-            memory_usage: index.memory_usage() as u32,
+            memory_usage: index.memory_usage() as f64,
         })
     }
 
@@ -309,17 +296,12 @@ impl VexusIndex {
     /// n: 向量数量
     /// max_k: 最大保留的主成分数量
     #[napi]
-    pub fn compute_svd(&self, flattened_vectors: Buffer, n: u32, max_k: u32) -> Result<SvdResult> {
+    pub fn compute_svd(&self, flattened_vectors: Float32Array, n: u32, max_k: u32) -> Result<SvdResult> {
         let dim = self.dimensions as usize;
         let n = n as usize;
         let max_k = max_k as usize;
 
-        let vec_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                flattened_vectors.as_ptr() as *const f32,
-                flattened_vectors.len() / std::mem::size_of::<f32>(),
-            )
-        };
+        let vec_slice: &[f32] = &flattened_vectors;
 
         if vec_slice.len() != n * dim {
             return Err(Error::from_reason(format!(
@@ -364,19 +346,15 @@ impl VexusIndex {
     #[napi]
     pub fn compute_orthogonal_projection(
         &self,
-        vector: Buffer,
-        flattened_tags: Buffer,
+        vector: Float32Array,
+        flattened_tags: Float32Array,
         n_tags: u32,
     ) -> Result<OrthogonalProjectionResult> {
         let dim = self.dimensions as usize;
         let n = n_tags as usize;
 
-        let query: &[f32] = unsafe {
-            std::slice::from_raw_parts(vector.as_ptr() as *const f32, vector.len() / 4)
-        };
-        let tags_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(flattened_tags.as_ptr() as *const f32, flattened_tags.len() / 4)
-        };
+        let query: &[f32] = &vector;
+        let tags_slice: &[f32] = &flattened_tags;
 
         if query.len() != dim || tags_slice.len() != n * dim {
             return Err(Error::from_reason("Dimension mismatch".to_string()));
@@ -439,16 +417,12 @@ impl VexusIndex {
 
     /// 高性能握手分析
     #[napi]
-    pub fn compute_handshakes(&self, query: Buffer, flattened_tags: Buffer, n_tags: u32) -> Result<HandshakeResult> {
+    pub fn compute_handshakes(&self, query: Float32Array, flattened_tags: Float32Array, n_tags: u32) -> Result<HandshakeResult> {
         let dim = self.dimensions as usize;
         let n = n_tags as usize;
 
-        let q: &[f32] = unsafe {
-            std::slice::from_raw_parts(query.as_ptr() as *const f32, query.len() / 4)
-        };
-        let tags: &[f32] = unsafe {
-            std::slice::from_raw_parts(flattened_tags.as_ptr() as *const f32, flattened_tags.len() / 4)
-        };
+        let q: &[f32] = &query;
+        let tags: &[f32] = &flattened_tags;
 
         let mut magnitudes = Vec::with_capacity(n);
         let mut directions = Vec::with_capacity(n * dim);
@@ -489,23 +463,17 @@ impl VexusIndex {
     #[napi]
     pub fn project(
         &self,
-        vector: Buffer,
-        flattened_basis: Buffer,
-        mean_vector: Buffer,
+        vector: Float32Array,
+        flattened_basis: Float32Array,
+        mean_vector: Float32Array,
         k: u32,
     ) -> Result<ProjectResult> {
         let dim = self.dimensions as usize;
         let k = k as usize;
 
-        let vec: &[f32] = unsafe {
-            std::slice::from_raw_parts(vector.as_ptr() as *const f32, vector.len() / 4)
-        };
-        let basis_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(flattened_basis.as_ptr() as *const f32, flattened_basis.len() / 4)
-        };
-        let mean: &[f32] = unsafe {
-            std::slice::from_raw_parts(mean_vector.as_ptr() as *const f32, mean_vector.len() / 4)
-        };
+        let vec: &[f32] = &vector;
+        let basis_slice: &[f32] = &flattened_basis;
+        let mean: &[f32] = &mean_vector;
 
         if vec.len() != dim || basis_slice.len() != k * dim || mean.len() != dim {
             return Err(Error::from_reason("Dimension mismatch".to_string()));
@@ -612,24 +580,51 @@ impl Task for IntrinsicResidualTask {
             }
         }
 
-        // 2. 加载有向共现矩阵（或回退到无向共现信息以进行空间估计）
-        // 🔑 策略：直接从 SQLite 读取 file_tags 来构建临时的邻居关系
-        let mut adjacency: std::collections::HashMap<i64, Vec<i64>> = 
+        // 2. 加载共现矩阵以构建邻居关系
+        // 🛡️ 优化：避免大表自连接导致的笛卡尔积爆炸。采用逐文件读取并在 Rust 侧构建邻接关系。
+        let mut adjacency: std::collections::HashMap<i64, std::collections::HashSet<i64>> =
             std::collections::HashMap::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT ft1.tag_id, ft2.tag_id 
-                 FROM file_tags ft1 
-                 JOIN file_tags ft2 ON ft1.file_id = ft2.file_id AND ft1.tag_id != ft2.tag_id"
-            ).map_err(|e| Error::from_reason(format!("Adjacency query failed: {}", e)))?;
+                "SELECT file_id, tag_id FROM file_tags ORDER BY file_id"
+            ).map_err(|e| Error::from_reason(format!("Prepare adjacency query failed: {}", e)))?;
             
             let rows = stmt.query_map([], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            }).map_err(|e| Error::from_reason(format!("Query failed: {}", e)))?;
+            }).map_err(|e| Error::from_reason(format!("Execute adjacency query failed: {}", e)))?;
+
+            let mut current_file_id = -1;
+            let mut file_tags = Vec::with_capacity(64);
 
             for row in rows {
-                if let Ok((src, tgt)) = row {
-                    adjacency.entry(src).or_insert_with(Vec::new).push(tgt);
+                if let Ok((fid, tid)) = row {
+                    if fid != current_file_id {
+                        if !file_tags.is_empty() {
+                            // 限制单文件 Tag 数量，防止 O(N^2) 爆炸 (与 JS 侧 100 的限制保持一致)
+                            if file_tags.len() <= 100 {
+                                for i in 0..file_tags.len() {
+                                    for j in 0..file_tags.len() {
+                                        if i != j {
+                                            adjacency.entry(file_tags[i]).or_default().insert(file_tags[j]);
+                                        }
+                                    }
+                                }
+                            }
+                            file_tags.clear();
+                        }
+                        current_file_id = fid;
+                    }
+                    file_tags.push(tid);
+                }
+            }
+            // 处理最后一个文件
+            if !file_tags.is_empty() && file_tags.len() <= 100 {
+                for i in 0..file_tags.len() {
+                    for j in 0..file_tags.len() {
+                        if i != j {
+                            adjacency.entry(file_tags[i]).or_default().insert(file_tags[j]);
+                        }
+                    }
                 }
             }
         }
@@ -794,19 +789,17 @@ impl Task for RecoverTask {
         // 定义处理单行的闭包
         let mut process_row = |id: i64, vector_bytes: Vec<u8>| {
              if vector_bytes.len() == expected_byte_len {
-                let vec_slice: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        vector_bytes.as_ptr() as *const f32,
-                        self.dimensions as usize,
-                    )
-                };
+                let vec_slice: Vec<f32> = vector_bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                    .collect();
                 
                 if index.size() + 1 >= index.capacity() {
                     let new_cap = (index.capacity() as f64 * 1.5) as usize;
-                    let _ = index.reserve(new_cap);
+                    let _ = index.reserve(new_cap); // AsyncTask 中 reserve 失败暂不中断，因为是后台恢复
                 }
 
-                if index.add(id as u64, vec_slice).is_ok() {
+                if index.add(id as u64, &vec_slice).is_ok() {
                     count += 1;
                 }
             } else {

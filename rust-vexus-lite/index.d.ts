@@ -57,11 +57,11 @@ export declare class VexusIndex {
   /** 保存索引到磁盘 */
   save(indexPath: string): void
   /** 单个添加 (JS 循环调用) */
-  add(id: number, vector: Buffer): void
+  add(id: number, vector: Float32Array): void
   /** 批量添加 (更高效，建议未来 JS 改用此接口) */
-  addBatch(ids: Array<number>, vectors: Buffer): void
+  addBatch(ids: Array<number>, vectors: Float32Array): void
   /** 搜索 */
-  search(query: Buffer, k: number): Array<SearchResult>
+  search(query: Float32Array, k: number): Array<SearchResult>
   /** 删除 (按 ID) */
   remove(id: number): void
   /** 获取当前索引状态 */
@@ -74,13 +74,13 @@ export declare class VexusIndex {
    * n: 向量数量
    * max_k: 最大保留的主成分数量
    */
-  computeSvd(flattenedVectors: Buffer, n: number, maxK: number): SvdResult
+  computeSvd(flattenedVectors: Float32Array, n: number, maxK: number): SvdResult
   /** 高性能 Gram-Schmidt 正交投影 */
-  computeOrthogonalProjection(vector: Buffer, flattenedTags: Buffer, nTags: number): OrthogonalProjectionResult
+  computeOrthogonalProjection(vector: Float32Array, flattenedTags: Float32Array, nTags: number): OrthogonalProjectionResult
   /** 高性能握手分析 */
-  computeHandshakes(query: Buffer, flattenedTags: Buffer, nTags: number): HandshakeResult
+  computeHandshakes(query: Float32Array, flattenedTags: Float32Array, nTags: number): HandshakeResult
   /** 高性能 EPA 投影 */
-  project(vector: Buffer, flattenedBasis: Buffer, meanVector: Buffer, k: number): ProjectResult
+  project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
   computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
 }
