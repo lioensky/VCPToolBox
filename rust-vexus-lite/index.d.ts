@@ -58,7 +58,11 @@ export declare class VexusIndex {
   save(indexPath: string): void
   /** 单个添加 (JS 循环调用) */
   add(id: number, vector: Float32Array): void
-  /** 批量添加 (更高效，建议未来 JS 改用此接口) */
+  /**
+   * 批量添加 (FFI 优化版)
+   * 注意：这目前是一个“伪批量”实现，主要通过减少 JS/Rust 跨界调用开销来提速。
+   * 内部依然是逐条 add，但避免了多次获取写锁的开销。
+   */
   addBatch(ids: Array<number>, vectors: Float32Array): void
   /** 搜索 */
   search(query: Float32Array, k: number): Array<SearchResult>
