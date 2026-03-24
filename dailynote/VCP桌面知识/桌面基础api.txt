@@ -12,6 +12,9 @@
 - vcpAPI.fetch('/admin_api/任意端点') → 通用后端 API（Basic Auth）
 - vcpAPI.post(messages, options) → 标准 OpenAI 兼容 chat completion 请求（Bearer Token，安全代理，widget 无需知道 URL 和 API Key）
 
+## 关于系统提示词 
+{{agent:Nova}}或者{{agent:XiaoKe}}、{{agent:XiaoJi}}等拼音名代表各自的灵魂占位符，
+
 天气数据结构：
 {
   city, hourly: [{fxTime, temp, text, icon, humidity, windDir, windScale}],

@@ -1,5 +1,22 @@
-#图标创建
+# 应用图标创建
 VCP桌面支持 png/jpeg/jpg/gif/svg/html作为应用图标！
 
 H:\MCP\VCPChat\assets\iconset\AICreator
 请将你制作的图标文件放入该文件夹中。系统会自动处理添加，从而允许用户在图标主题设置里调用对应图标。
+
+查询用户有哪些应用
+tool_name:「始」DesktopRemote「末」,
+command:「始」QueryDock「末」
+显示为`可见: ❌`代表放在收纳开始菜单里未添加到桌面或dock。
+
+开发规范：
+1. **容器尺寸**：图标渲染区域约 100x100 像素，设计时以 80x80 的 `.icon-wrap` 为外框，内部主体控制在 52~60px 左右，确保留有呼吸边距。
+2. **禁用 Canvas + JS 绘图**：图标渲染器沙箱对 `<canvas>` + `requestAnimationFrame` 支持有限，会导致图标不工作。
+3. **推荐技术栈**：纯 HTML + CSS `@keyframes` 动画 + SVG 矢量图形。零 JS 依赖，兼容性最强。
+4. **背景透明**：`body { background: transparent; }`，图标需要无底色融入桌面。
+5. **动画性能**：优先使用 `transform`、`opacity`、`filter` 等 GPU 加速属性做动画，避免触发重排。图标体积小，动画帧率不宜过高。
+6. **结构模板**：
+   - `<body>` 居中 flex 布局
+   - `.icon-wrap` 80x80 容器
+   - 内部用 SVG 绘制复杂形状（如盾牌、Logo），用 CSS 做发光/呼吸/粒子等动效
+   - `drop-shadow` 实现外发光，`@keyframes` 控制脉冲节奏
