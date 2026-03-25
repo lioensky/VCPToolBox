@@ -1,5 +1,6 @@
 // Plugin.js
 const fs = require('fs').promises;
+const EventEmitter = require('events');
 const path = require('path');
 const { spawn } = require('child_process');
 const schedule = require('node-schedule');
@@ -14,8 +15,9 @@ const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
 
-class PluginManager {
+class PluginManager extends EventEmitter {
     constructor() {
+        super();
         this.plugins = new Map(); // 存储所有插件（本地和分布式）
         this.staticPlaceholderValues = new Map();
         this.scheduledJobs = new Map();
@@ -650,13 +652,21 @@ class PluginManager {
     // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
     getVCPLogFunctions() {
         const vcpLogModule = this.getServiceModule('VCPLog');
-        if (vcpLogModule) {
-            return {
-                pushVcpLog: vcpLogModule.pushVcpLog,
-                pushVcpInfo: vcpLogModule.pushVcpInfo
-            };
-        }
-        return { pushVcpLog: () => { }, pushVcpInfo: () => { } };
+        const self = this;
+        return {
+            pushVcpLog: (data) => {
+                if (vcpLogModule && typeof vcpLogModule.pushVcpLog === 'function') {
+                    vcpLogModule.pushVcpLog(data);
+                }
+                self.emit('vcp_log', data);
+            },
+            pushVcpInfo: (data) => {
+                if (vcpLogModule && typeof vcpLogModule.pushVcpInfo === 'function') {
+                    vcpLogModule.pushVcpInfo(data);
+                }
+                self.emit('vcp_info', data);
+            }
+        };
     }
 
     async processToolCall(toolName, toolArgs, requestIp = null) {

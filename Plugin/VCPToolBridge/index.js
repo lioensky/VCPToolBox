@@ -8,6 +8,7 @@ class VCPToolBridge {
         this.config = {};
         this.debugMode = false;
         this.isHooked = false;
+        this.taskToClientMap = new Map(); // taskId -> serverId
     }
 
     /**
@@ -16,10 +17,69 @@ class VCPToolBridge {
     async initialize(config, dependencies) {
         this.config = config;
         this.debugMode = config.DebugMode === true;
-        // 注意：在 VCP 的 initialize 流程中，dependencies 可能包含 vcpLogFunctions 等
         this.log = dependencies.vcpLogFunctions || { pushVcpLog: () => { }, pushVcpInfo: () => { } };
 
-        if (this.debugMode) console.log('[VCPToolBridge] Initialized.');
+        // 拿到核心 PluginManager 实例
+        try {
+            this.pluginManager = require('../../Plugin.js');
+            this.setupEventListeners();
+        } catch (e) {
+            console.error('[VCPToolBridge] Failed to load PluginManager for event listening:', e.message);
+        }
+
+        if (this.debugMode) console.log('[VCPToolBridge] Initialized with Event Listeners.');
+    }
+
+    /**
+     * 设置核心事件监听
+     */
+    setupEventListeners() {
+        if (!this.pluginManager) return;
+
+        // 1. 监听进度日志 (vcp_log / vcp_info)
+        const forwardLog = (type, data) => {
+            if (this.config.Bridge_Enabled === false) return;
+            
+            const taskId = data.job_id || data.taskId;
+            const serverId = this.taskToClientMap.get(taskId);
+            
+            if (serverId && this.wss) {
+                if (this.debugMode) console.log(`[VCPToolBridge] 📡 Forwarding ${type} for task ${taskId} to ${serverId}`);
+                this.wss.sendMessageToClient(serverId.replace('dist-', ''), {
+                    type: 'vcp_tool_status',
+                    data: {
+                        ...data,
+                        bridgeType: type
+                    }
+                });
+            }
+        };
+
+        this.pluginManager.on('vcp_log', (data) => forwardLog('log', data));
+        this.pluginManager.on('vcp_info', (data) => forwardLog('info', data));
+
+        // 2. 监听异步回调结果 (plugin_async_callback)
+        this.pluginManager.on('plugin_async_callback', (info) => {
+            if (this.config.Bridge_Enabled === false) return;
+
+            const { taskId, data } = info;
+            const serverId = this.taskToClientMap.get(taskId);
+
+            if (serverId && this.wss) {
+                if (this.debugMode) console.log(`[VCPToolBridge] ✅ Forwarding async result for task ${taskId} to ${serverId}`);
+                this.wss.sendMessageToClient(serverId.replace('dist-', ''), {
+                    type: 'vcp_tool_result',
+                    data: {
+                        requestId: taskId, // 对应 AIO 的请求 ID
+                        status: 'success',
+                        result: data
+                    }
+                });
+                
+                // 任务完成，清理映射
+                this.taskToClientMap.delete(taskId);
+            }
+        });
     }
 
     /**
@@ -158,6 +218,13 @@ class VCPToolBridge {
 
         try {
             const result = await pluginManager.processToolCall(toolName, toolArgs);
+
+            // 如果是异步任务（返回了 taskId），记录映射关系
+            // 这样当 vcp_log 或 plugin_async_callback 事件触发时，我们知道发回给谁
+            if (result && result.taskId) {
+                if (this.debugMode) console.log(`[VCPToolBridge] 📝 Registered async task mapping: ${result.taskId} -> ${serverId}`);
+                this.taskToClientMap.set(result.taskId, serverId);
+            }
 
             this.wss.sendMessageToClient(serverId.replace('dist-', ''), {
                 type: 'vcp_tool_result',
