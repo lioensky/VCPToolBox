@@ -1,0 +1,42 @@
+{
+  "name": "VCPToolBridge",
+  "displayName": "VCP 工具桥接器",
+  "description": "提供 VCP 原生工具向外部（如 AIO Hub）导出的桥接能力，支持元数据同步与远程执行。",
+  "version": "1.0.0",
+  "author": "Gugu_Kilo",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "index.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "hasApiRoutes": true,
+  "configSchema": {
+    "Bridge_Enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否启用桥接功能"
+    },
+    "Excluded_Tools": {
+      "type": "string",
+      "default": "VCPLog,VCPInfo,VCPToolBridge",
+      "description": "不导出的工具黑名单（调用名，逗号分隔）"
+    },
+    "Excluded_Display_Keywords": {
+      "type": "string",
+      "default": "[AIO]",
+      "description": "不导出的显示名称关键词（逗号分隔，包含即排除）"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "GetStatus",
+        "description": "获取桥接器运行状态",
+        "example": "{\"command\": \"GetStatus\"}"
+      }
+    ]
+  }
+}

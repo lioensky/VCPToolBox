@@ -189,7 +189,7 @@ function initialize(httpServer, config) {
                     console.log(`[WebSocketServer] Received message from ${ws.clientId} (${ws.clientType}): ${messageString.substring(0, 300)}...`);
                 }
                 if (ws.clientType === 'DistributedServer') {
-                    handleDistributedServerMessage(ws.serverId, parsedMessage);
+                    module.exports.handleDistributedServerMessage(ws.serverId, parsedMessage);
                 } else if (ws.clientType === 'ChromeObserver') {
                     if (parsedMessage.type === 'heartbeat') {
                         // 收到心跳包，发送确认
@@ -562,7 +562,7 @@ module.exports = {
     broadcastToAdminPanel, // 导出给管理面板的广播函数
     sendMessageToClient,
     executeDistributedTool,
+    handleDistributedServerMessage,
     findServerByIp,
     shutdown
-
 };
