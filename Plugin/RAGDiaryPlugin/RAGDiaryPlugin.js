@@ -1167,7 +1167,8 @@ class RAGDiaryPlugin {
             // 3. 循环处理每个识别到的 system 消息
             const newMessages = JSON.parse(JSON.stringify(messages));
             const globalProcessedDiaries = new Set(); // 在最外层维护一个 Set
-            for (const index of targetSystemMessageIndices) {
+            // 🌟 优化：并发处理所有目标 system 消息，显著提升多日记本场景下的 Rerank 速度
+            await Promise.all(targetSystemMessageIndices.map(async (index) => {
                 console.log(`[RAGDiaryPlugin] Processing system message at index: ${index}`);
                 const systemMessage = newMessages[index];
 
@@ -1193,7 +1194,7 @@ class RAGDiaryPlugin {
                 );
 
                 newMessages[index].content = processedContent;
-            }
+            }));
 
             // 🌟 V7: 处理收集到的多模态附件
             if (collectedAttachments.length > 0) {
@@ -2535,12 +2536,11 @@ class RAGDiaryPlugin {
                     tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
                 };
 
-                // 🛡️ 安全序列化检查
+                // 🛡️ 优化：移除冗余的 JSON 序列化，直接推送对象以减少 CPU 阻塞
                 try {
-                    const safeData = JSON.parse(JSON.stringify(vcpInfoData));
-                    this.pushVcpInfo(safeData);
+                    this.pushVcpInfo(vcpInfoData);
                 } catch (innerError) {
-                    console.error('[RAGDiaryPlugin] VCPInfo broadcast or serialization failed:', innerError.message || innerError);
+                    console.error('[RAGDiaryPlugin] VCPInfo broadcast failed:', innerError.message || innerError);
                     // 降级广播：只发送核心元数据
                     try {
                         this.pushVcpInfo({
