@@ -1,6 +1,7 @@
 const http = require('http');
 const path = require('path');
 const fs = require('fs').promises;
+const { spawn } = require('child_process');
 
 let vcpConfig = {};
 let vcpProjectBasePath = '';
@@ -84,6 +85,77 @@ ocr:「始」false「末」`;
     });
 }
 
+/**
+ * 使用 ffmpeg 将图片分辨率降低一半
+ * @param {string} base64WithPrefix 带有 MIME 前缀的 base64 字符串
+ * @returns {Promise<string>} 处理后的带有 MIME 前缀的 base64 字符串
+ */
+function resizeImageHalf(base64WithPrefix) {
+    return new Promise((resolve, reject) => {
+        const matches = base64WithPrefix.match(/^data:([^;]+);base64,(.+)$/);
+        if (!matches) {
+            return reject(new Error('Invalid base64 format'));
+        }
+
+        const mimeType = matches[1];
+        const base64Data = matches[2];
+        let inputBuffer = Buffer.from(base64Data, 'base64');
+
+        const ffmpeg = spawn('ffmpeg', [
+            '-i', 'pipe:0',
+            '-vf', 'scale=iw/2:ih/2',
+            '-f', 'image2pipe',
+            '-vcodec', mimeType.includes('png') ? 'png' : 'mjpeg',
+            'pipe:1'
+        ]);
+
+        let outputChunks = [];
+        let errorData = '';
+
+        const timeout = setTimeout(() => {
+            ffmpeg.kill('SIGKILL');
+            reject(new Error('ffmpeg process timed out'));
+        }, 15000); // 15秒超时
+
+        ffmpeg.stdout.on('data', (chunk) => {
+            outputChunks.push(chunk);
+        });
+
+        ffmpeg.stderr.on('data', (chunk) => {
+            errorData += chunk.toString();
+        });
+
+        const cleanup = () => {
+            clearTimeout(timeout);
+            inputBuffer = null;
+            outputChunks = null;
+        };
+
+        ffmpeg.on('error', (err) => {
+            cleanup();
+            reject(new Error(`ffmpeg spawn error: ${err.message}`));
+        });
+
+        ffmpeg.on('close', (code) => {
+            if (code === 0) {
+                const finalBuffer = Buffer.concat(outputChunks);
+                const resizedBase64 = finalBuffer.toString('base64');
+                resolve(`data:${mimeType};base64,${resizedBase64}`);
+            } else {
+                reject(new Error(`ffmpeg failed with code ${code}: ${errorData}`));
+            }
+            cleanup();
+        });
+
+        ffmpeg.stdin.on('error', (err) => {
+            console.error(`[CapturePreprocessor] stdin error: ${err.message}`);
+        });
+
+        ffmpeg.stdin.write(inputBuffer);
+        ffmpeg.stdin.end();
+    });
+}
+
 class CapturePreprocessor {
     async processMessages(messages, requestConfig = {}) {
         const currentConfig = { ...vcpConfig, ...requestConfig };
@@ -94,8 +166,8 @@ class CapturePreprocessor {
             return messages;
         }
 
-        // 新正则支持 {{VCPScreenShot}}, {{VCPScreenShot:窗口标题}} 和 {{VCPCameraCapture(N)}}
-        const placeholderRegex = /{{\s*(VCPScreenShot(?::([^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
+        // 新正则支持 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口}} 和 {{VCPCameraCapture(N)}}
+        const placeholderRegex = /{{\s*(VCPScreenShotMini(?::([^}]+))?|VCPScreenShot(?::([^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
         const matches = [...systemPrompt.content.matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
@@ -110,18 +182,21 @@ class CapturePreprocessor {
             const fullMatch = match[1];
 
             if (fullMatch.startsWith('VCPScreenShot')) {
-                const windowTitle = match[2] ? match[2].trim() : null;
-                const taskKey = windowTitle ? `screen_${windowTitle}` : 'screen_full';
+                const isMini = fullMatch.startsWith('VCPScreenShotMini');
+                // 如果是 Mini，windowTitle 在 match[2]；如果是标准，在 match[3]
+                const windowTitle = isMini ? (match[2] ? match[2].trim() : null) : (match[3] ? match[3].trim() : null);
+                const taskKey = `${isMini ? 'mini_' : ''}${windowTitle ? `screen_${windowTitle}` : 'screen_full'}`;
 
                 if (!seenTargets.has(taskKey)) {
                     seenTargets.add(taskKey);
                     captureTasks.push({
                         type: 'screen',
+                        isMini: isMini,
                         params: windowTitle ? { windowTitle } : {}
                     });
                 }
             } else if (fullMatch.startsWith('VCPCameraCapture')) {
-                const cameraIndex = match[3] ? parseInt(match[3], 10) : 0;
+                const cameraIndex = match[4] ? parseInt(match[4], 10) : 0;
                 const taskKey = `camera_${cameraIndex}`;
 
                 if (!seenTargets.has(taskKey)) {
@@ -137,7 +212,23 @@ class CapturePreprocessor {
         const promises = captureTasks.map(task => {
             if (task.type === 'screen') {
                 return callScreenPilot(task.params)
-                    .then(result => ({ type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'success', data: result }))
+                    .then(async result => {
+                        let finalData = result;
+                        if (task.isMini && result && Array.isArray(result.content)) {
+                            // 遍历内容，对 image_url 进行处理
+                            for (let i = 0; i < result.content.length; i++) {
+                                const item = result.content[i];
+                                if (item.type === 'image_url' && item.image_url && typeof item.image_url.url === 'string') {
+                                    try {
+                                        item.image_url.url = await resizeImageHalf(item.image_url.url);
+                                    } catch (e) {
+                                        console.error(`[CapturePreprocessor] Resize failed: ${e.message}`);
+                                    }
+                                }
+                            }
+                        }
+                        return { type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'success', data: finalData, isMini: task.isMini };
+                    })
                     .catch(e => ({ type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'error', message: e.message }));
             } else {
                 // 目前分布式架构仅接管了屏幕截图，未开发分布式的摄像头工具。
