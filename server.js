@@ -1124,6 +1124,13 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
         return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
     }
 
+    // 🚀 核心导出点：通过 pluginManager 广播回调数据
+    pluginManager.emit('plugin_async_callback', {
+        pluginName,
+        taskId,
+        data: callbackData
+    });
+
     // 2. WebSocket push (existing logic)
     if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
         const targetClientType = pluginManifest.webSocketPush.targetClientType || null;
