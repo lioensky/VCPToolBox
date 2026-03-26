@@ -22,7 +22,8 @@ function callScreenPilot(params) {
 
         let toolRequestBody = `<<<[TOOL_REQUEST]>>>
 tool_name:「始」ScreenPilot「末」,
-command:「始」ScreenCapture「末」`;
+command:「始」ScreenCapture「末」,
+ocr:「始」false「末」`;
 
         if (params.windowTitle) {
             toolRequestBody += `,\nwindowTitle:「始」${params.windowTitle}「末」`;
