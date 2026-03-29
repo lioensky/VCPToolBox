@@ -263,22 +263,32 @@ class KnowledgeBaseManager {
     async _loadOrBuildIndex(fileName, capacity, tableType, filterDiaryName = null) {
         const idxPath = path.join(this.config.storePath, `index_${fileName}.usearch`);
         let idx;
+        let fileNotFound = false;
+
         try {
             if (fsSync.existsSync(idxPath)) {
                 idx = VexusIndex.load(idxPath, null, this.config.dimension, capacity);
             } else {
-                // 💡 核心修复：如果索引文件不存在，说明是首次创建。
-                // 此时不应从数据库恢复，因为调用者（_flushBatch）正准备写入初始数据。
-                // 从数据库恢复的逻辑只适用于启动时加载或文件损坏后的重建。
+                // 💡 核心修复：如果索引文件不存在，且不是 global_tags（它在 initialize 中有专属的异步恢复逻辑），
+                // 则需要触发从数据库恢复，否则索引将保持为空。
                 console.log(`[KnowledgeBase] Index file not found for ${fileName}, creating a new empty one.`);
                 idx = new VexusIndex(this.config.dimension, capacity);
+                fileNotFound = true;
             }
         } catch (e) {
             console.error(`[KnowledgeBase] Index load error (${fileName}): ${e.message}`);
             console.warn(`[KnowledgeBase] Rebuilding index ${fileName} from DB as a fallback...`);
             idx = new VexusIndex(this.config.dimension, capacity);
             await this._recoverIndexFromDB(idx, tableType, filterDiaryName);
+            return idx;
         }
+
+        // 如果文件不存在且是分片索引，触发自动同步恢复
+        if (fileNotFound && fileName !== 'global_tags') {
+            console.log(`[KnowledgeBase] 🔄 Auto-recovering missing index ${fileName} from DB...`);
+            await this._recoverIndexFromDB(idx, tableType, filterDiaryName);
+        }
+
         return idx;
     }
 
