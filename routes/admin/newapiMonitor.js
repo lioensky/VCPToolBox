@@ -26,30 +26,10 @@ function normalizeBaseUrl(baseUrl) {
     return baseUrl.trim().replace(/\/+$/, '');
 }
 
-function normalizeCookieFromSetCookie(setCookieHeader) {
-    if (!Array.isArray(setCookieHeader) || setCookieHeader.length === 0) {
-        return '';
-    }
-    return setCookieHeader
-        .map((cookieItem) => String(cookieItem).split(';')[0].trim())
-        .filter(Boolean)
-        .join('; ');
-}
-
 function buildError(message, status = 500) {
     const error = new Error(message);
     error.status = status;
     return error;
-}
-
-function shouldRefreshSession(status, message) {
-    if (status === 401 || status === 403) {
-        return true;
-    }
-    if (typeof message !== 'string' || !message.trim()) {
-        return false;
-    }
-    return /unauthorized|forbidden|session|登录|未登录|权限|auth/i.test(message);
 }
 
 function getModelNameFromQuery(query) {
@@ -125,19 +105,16 @@ function sortModelItems(items) {
 }
 
 class NewApiMonitorClient {
-    constructor({ baseUrl, sessionCookie, username, password, timeoutMs, debugMode, apiUserId }) {
+    constructor({ baseUrl, accessToken, timeoutMs, debugMode, apiUserId }) {
         this.baseUrl = normalizeBaseUrl(baseUrl);
-        this.staticSessionCookie = typeof sessionCookie === 'string' ? sessionCookie.trim() : '';
-        this.username = typeof username === 'string' ? username.trim() : '';
-        this.password = typeof password === 'string' ? password : '';
+        this.accessToken = typeof accessToken === 'string' ? accessToken.trim() : '';
         this.timeoutMs = safeNumber(timeoutMs, DEFAULT_TIMEOUT_MS);
         this.debugMode = Boolean(debugMode);
         this.apiUserId = typeof apiUserId === 'string' ? apiUserId.trim() : '';
-        this.cachedSessionCookie = '';
     }
 
     get isConfigured() {
-        return Boolean(this.baseUrl) && Boolean(this.staticSessionCookie || (this.username && this.password));
+        return Boolean(this.baseUrl) && Boolean(this.accessToken) && Boolean(this.apiUserId);
     }
 
     debugLog(...args) {
@@ -146,99 +123,31 @@ class NewApiMonitorClient {
         }
     }
 
-    buildAuthHeaders(sessionCookie) {
-        const headers = {
-            Cookie: sessionCookie
+    buildAuthHeaders() {
+        return {
+            'Authorization': this.accessToken,
+            'New-Api-User': this.apiUserId
         };
-        if (this.apiUserId) {
-            headers['New-Api-User'] = this.apiUserId;
-        }
-        return headers;
     }
 
-    async login() {
-        if (!this.baseUrl) {
-            throw buildError('未配置 NEWAPI_MONITOR_BASE_URL。', 503);
-        }
-        if (!this.username || !this.password) {
-            throw buildError('未配置 NewAPI 自动登录账号，请设置 NEWAPI_MONITOR_USERNAME 和 NEWAPI_MONITOR_PASSWORD，或直接提供 NEWAPI_MONITOR_SESSION_COOKIE。', 503);
-        }
-
-        this.debugLog('Attempting login with username/password.');
-
-        const response = await axios({
-            url: `${this.baseUrl}/api/user/login`,
-            method: 'POST',
-            timeout: this.timeoutMs,
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            data: {
-                username: this.username,
-                password: this.password
-            },
-            validateStatus: () => true
-        });
-
-        const responseBody = response.data || {};
-        if (responseBody && responseBody.data && responseBody.data.require_2fa) {
-            throw buildError('NewAPI 管理员账户启用了 2FA，无法自动登录。请改为配置 NEWAPI_MONITOR_SESSION_COOKIE。', 503);
-        }
-        if (response.status >= 400 || responseBody.success !== true) {
-            throw buildError(`NewAPI 登录失败：${responseBody.message || response.statusText || 'unknown error'}`, 502);
-        }
-
-        const cookieHeader = normalizeCookieFromSetCookie(response.headers['set-cookie']);
-        if (!cookieHeader) {
-            throw buildError('NewAPI 登录成功，但没有返回可用的 session cookie。', 502);
-        }
-
-        this.cachedSessionCookie = cookieHeader;
-        this.debugLog('Login succeeded and session cookie cached.');
-        return this.cachedSessionCookie;
-    }
-
-    async getSessionCookie(forceRefresh = false) {
-        if (this.staticSessionCookie) {
-            return this.staticSessionCookie;
-        }
-        if (!forceRefresh && this.cachedSessionCookie) {
-            return this.cachedSessionCookie;
-        }
-        this.cachedSessionCookie = '';
-        return this.login();
-    }
-
-    async request(path, { method = 'GET', params = {}, retryOnAuthFailure = true } = {}) {
+    async request(path, { method = 'GET', params = {} } = {}) {
         if (!this.isConfigured) {
-            throw buildError('NewAPI 监控未配置。请设置 NEWAPI_MONITOR_BASE_URL，并提供 session cookie 或管理员账号密码。', 503);
+            throw buildError('NewAPI 监控未配置。请设置 NEWAPI_MONITOR_BASE_URL、NEWAPI_MONITOR_ACCESS_TOKEN 和 NEWAPI_MONITOR_API_USER_ID。', 503);
         }
 
-        const sessionCookie = await this.getSessionCookie(false);
+        this.debugLog('Request:', method, path);
+
         const response = await axios({
             url: `${this.baseUrl}${path}`,
             method,
             params,
             timeout: this.timeoutMs,
-            headers: this.buildAuthHeaders(sessionCookie),
+            headers: this.buildAuthHeaders(),
             validateStatus: () => true
         });
 
         const responseBody = response.data || {};
         const responseMessage = typeof responseBody.message === 'string' ? responseBody.message : '';
-
-        if (response.status === 401 && /New-Api-User/i.test(responseMessage)) {
-            if (!this.apiUserId) {
-                throw buildError('目标 NewAPI 实例要求请求头 New-Api-User，请配置 NEWAPI_MONITOR_API_USER_ID。', 503);
-            }
-            throw buildError(`NewAPI New-Api-User 校验失败：${responseMessage}`, 502);
-        }
-
-        if (shouldRefreshSession(response.status, responseMessage) && retryOnAuthFailure && !this.staticSessionCookie) {
-            this.debugLog('Session may be expired. Refreshing session and retrying request.', path);
-            await this.getSessionCookie(true);
-            return this.request(path, { method, params, retryOnAuthFailure: false });
-        }
 
         if (response.status >= 400) {
             throw buildError(`请求 NewAPI 失败（${response.status}）：${responseMessage || response.statusText || path}`, 502);
@@ -291,9 +200,7 @@ class NewApiMonitorClient {
 function createMonitorClient(debugMode) {
     return new NewApiMonitorClient({
         baseUrl: process.env.NEWAPI_MONITOR_BASE_URL,
-        sessionCookie: process.env.NEWAPI_MONITOR_SESSION_COOKIE,
-        username: process.env.NEWAPI_MONITOR_USERNAME,
-        password: process.env.NEWAPI_MONITOR_PASSWORD,
+        accessToken: process.env.NEWAPI_MONITOR_ACCESS_TOKEN,
         timeoutMs: process.env.NEWAPI_MONITOR_TIMEOUT_MS,
         debugMode,
         apiUserId: process.env.NEWAPI_MONITOR_API_USER_ID
