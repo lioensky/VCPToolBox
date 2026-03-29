@@ -395,6 +395,17 @@ const adminAuth = (req, res, next) => {
         // 验证登录的端点也需要特殊处理（允许无凭据时返回401而不是重定向）
         const isVerifyEndpoint = req.path === '/admin_api/verify-login';
 
+        // ========== 新增：只读仪表板接口白名单（不计入登录失败次数）==========
+        const readOnlyDashboardPaths = [
+            '/admin_api/system-monitor',
+            '/admin_api/newapi-monitor',
+            '/admin_api/server-log',
+            '/admin_api/user-auth-code',
+            '/admin_api/weather'
+        ];
+        const isReadOnlyPath = readOnlyDashboardPaths.some(path => req.path.startsWith(path));
+        // ========== 新增结束 ==========
+
         if (publicPaths.includes(req.path)) {
             return next(); // 直接放行登录页面相关资源
         }
@@ -420,9 +431,9 @@ const adminAuth = (req, res, next) => {
             return; // 停止进一步处理
         }
 
-        // 2. 检查IP是否被临时封禁
+        // 2. 检查IP是否被临时封禁（仅对非只读接口生效）
         const blockInfo = tempBlocks.get(clientIp);
-        if (blockInfo && Date.now() < blockInfo.expires) {
+        if (blockInfo && Date.now() < blockInfo.expires && !isReadOnlyPath) {
             console.warn(`[AdminAuth] Blocked login attempt from IP: ${clientIp}. Block expires at ${new Date(blockInfo.expires).toLocaleString()}.`);
             const timeLeft = Math.ceil((blockInfo.expires - Date.now()) / 1000 / 60);
             res.setHeader('Retry-After', Math.ceil((blockInfo.expires - Date.now()) / 1000)); // In seconds
@@ -463,8 +474,8 @@ const adminAuth = (req, res, next) => {
 
         // 4. 验证凭据
         if (!credentials || credentials.name !== ADMIN_USERNAME || credentials.pass !== ADMIN_PASSWORD) {
-            // 认证失败，处理登录尝试计数
-            if (clientIp) {
+            // 认证失败，处理登录尝试计数（仅对非只读接口计数）
+            if (clientIp && !isReadOnlyPath) {
                 const now = Date.now();
                 let attemptInfo = loginAttempts.get(clientIp) || { count: 0, firstAttempt: now };
 
@@ -1123,13 +1134,6 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
         // Still attempt to acknowledge the callback if possible, but log error
         return res.status(404).json({ status: "error", message: "Plugin not found, but callback noted." });
     }
-
-    // 🚀 核心导出点：通过 pluginManager 广播回调数据
-    pluginManager.emit('plugin_async_callback', {
-        pluginName,
-        taskId,
-        data: callbackData
-    });
 
     // 2. WebSocket push (existing logic)
     if (pluginManifest.webSocketPush && pluginManifest.webSocketPush.enabled) {
