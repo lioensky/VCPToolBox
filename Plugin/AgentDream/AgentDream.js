@@ -34,6 +34,7 @@ let knowledgeBaseManager = null;
 let pushVcpInfo = () => { };
 let dailyNoteRootPath = '';
 const dreamContexts = new Map(); // agentName -> { timestamp, history }
+let dreamWaveEngine = null;
 
 // --- 自动做梦调度状态 ---
 let dreamSchedulerTimer = null;
@@ -59,8 +60,12 @@ function initialize(config, dependencies) {
     try {
         knowledgeBaseManager = require('../../KnowledgeBaseManager');
         if (DEBUG_MODE) console.error('[AgentDream] KnowledgeBaseManager loaded.');
+        
+        const DreamWaveEngine = require('./DreamWaveEngine');
+        dreamWaveEngine = new DreamWaveEngine(knowledgeBaseManager);
+        if (DEBUG_MODE) console.error('[AgentDream] DreamWaveEngine loaded.');
     } catch (e) {
-        console.error('[AgentDream] ❌ Failed to load KnowledgeBaseManager:', e.message);
+        console.error('[AgentDream] ❌ Failed to load dependencies:', e.message);
     }
 
     // 计算 dailynote 路径
@@ -209,27 +214,51 @@ async function triggerDream(agentName) {
     });
 
     try {
-        // Step 1: 稀疏采样种子日记
-        const seedDiaries = await _sampleSeedDiaries(agentName);
-        if (seedDiaries.length === 0) {
-            console.log(`[AgentDream] ⚠️ No diaries found for ${agentName}, aborting dream.`);
-            return { status: 'error', error: `${agentName} 没有可用的日记，无法入梦。` };
+        // Step 1: 记忆涟漪浪潮生成
+        if (!dreamWaveEngine) {
+            return { status: 'error', error: 'DreamWaveEngine 未初始化，无法生成梦境。' };
         }
-        if (DEBUG_MODE) console.error(`[AgentDream] Sampled ${seedDiaries.length} seed diaries for ${agentName}`);
+        
+        const dreamTree = await dreamWaveEngine.generateDreamWave(agentName);
+        
+        if (!dreamTree.recent || dreamTree.recent.seeds.length === 0) {
+            console.log(`[AgentDream] ⚠️ No recent diaries found for ${agentName}, aborting dream.`);
+            return { status: 'error', error: `${agentName} 近期没有可用的日记触发梦境。` };
+        }
+        
+        if (DEBUG_MODE) console.error(`[AgentDream] Dream wave generated for ${agentName}`);
 
-        // Step 2: TagMemo 联想召回
-        const associations = await _recallAssociations(agentName, seedDiaries);
+        const allSeeds = [
+            ...(dreamTree.recent?.seeds || []),
+            ...(dreamTree.mid?.seeds || [])
+        ];
+        
+        const allAssociations = [
+            ...(dreamTree.recent?.resonanceL1 || []),
+            ...(dreamTree.recent?.cascadeL2 || []),
+            ...(dreamTree.mid?.cascadeL1 || []),
+            ...(dreamTree.deep?.recalls || [])
+        ];
 
-        // 广播: 联想完成
+        // 广播: 联想完成 (适应新结构，同时向前兼容 VCPInfo UI 的数组格式)
         _broadcastDream('AGENT_DREAM_ASSOCIATIONS', agentName, dreamId, {
-            seedCount: seedDiaries.length,
-            associationCount: associations.length,
-            seeds: seedDiaries.map(s => ({ file: path.basename(s.filePath), snippet: s.content.substring(0, 80) + '...' })),
-            associations: associations.map(a => ({ file: path.basename(a.fullPath || ''), score: a.score?.toFixed(3) }))
+            seedCount: allSeeds.length,
+            associationCount: allAssociations.length,
+            recentSeedsCount: dreamTree.recent?.seeds?.length || 0,
+            midSeedsCount: dreamTree.mid?.seeds?.length || 0,
+            deepRecallsCount: dreamTree.deep?.recalls?.length || 0,
+            seeds: allSeeds.map(s => ({ 
+                file: path.basename(s.filePath || s.fullPath || ''), 
+                snippet: (s._safeText || s.content || '').substring(0, 80) + '...'
+            })),
+            associations: allAssociations.map(a => ({ 
+                file: path.basename(a.filePath || a.fullPath || ''), 
+                score: (a.score || 0).toFixed(3)
+            }))
         });
 
-        // Step 3: 组装梦提示词
-        const dreamPrompt = await _assembleDreamPrompt(agentName, seedDiaries, associations);
+        // Step 2: 组装梦提示词
+        const dreamPrompt = await _assembleDreamPrompt(agentName, dreamTree);
 
         // Step 4: 调用 VCP API 进行梦对话
         const dreamSessionId = `dream_${agentName}_${dreamId}`;
@@ -281,28 +310,19 @@ async function triggerDream(agentName) {
 
         // 广播: 梦叙述产出
         _broadcastDream('AGENT_DREAM_NARRATIVE', agentName, dreamId, {
+            message: cleanedNarrative,
             narrative: cleanedNarrative
         });
 
         console.log(`[AgentDream] 🌙 Dream narrative received for ${agentName} (${cleanedNarrative.length} chars)`);
 
-        // 持久化梦记录 JSON（包含完整梦叙事、种子、联想）
+        // 持久化梦记录 JSON（包含完整梦叙事、记忆树）
         const dreamSessionLog = {
             dreamId: dreamId,
             agentName: agentName,
             timestamp: new Date().toISOString(),
             dreamNarrative: cleanedNarrative,
-            seedDiaries: seedDiaries.map(s => ({
-                filePath: s.filePath,
-                contentSnippet: s.content.substring(0, 300) + (s.content.length > 300 ? '...' : '')
-            })),
-            associations: associations.map(a => ({
-                fullPath: a.fullPath,
-                score: a.score,
-                source: a.source,
-                diaryName: a.diaryName,
-                textSnippet: (a.text || '').substring(0, 200) + ((a.text || '').length > 200 ? '...' : '')
-            })),
+            dreamTree: dreamTree,
             operations: [] // 后续 processToolCall 会追加
         };
         const sessionLogFileName = `${agentName}_${_getDateStr()}_${dreamId.split('-').pop()}.json`;
@@ -319,8 +339,6 @@ async function triggerDream(agentName) {
             dreamId: dreamId,
             agentName: agentName,
             narrative: cleanedNarrative,
-            seedDiaries: seedDiaries.map(s => s.filePath),
-            associations: associations.map(a => ({ fullPath: a.fullPath, score: a.score })),
             dreamLogFile: sessionLogFileName,
             result: { content: [{ type: 'text', text: cleanedNarrative }] }
         };
@@ -344,235 +362,16 @@ async function triggerDream(agentName) {
     }
 }
 
-// =========================================================================
-// 种子日记稀疏采样
-// =========================================================================
 
-/**
- * 自适应稀疏采样 - 从 agent 的日记目录中采样种子日记
- * 对于活跃 agent，窗口期短但日记多；对于不活跃 agent，自动扩大窗口
- */
-async function _sampleSeedDiaries(agentName) {
-    const diaryDir = path.join(dailyNoteRootPath, agentName);
-    let allFiles = [];
-
-    try {
-        const entries = await fsPromises.readdir(diaryDir, { withFileTypes: true });
-        // 支持子目录下的日记 (浅层)
-        for (const entry of entries) {
-            if (entry.isFile() && /\.(txt|md)$/i.test(entry.name)) {
-                const fullPath = path.join(diaryDir, entry.name);
-                allFiles.push(fullPath);
-            } else if (entry.isDirectory()) {
-                try {
-                    const subEntries = await fsPromises.readdir(path.join(diaryDir, entry.name));
-                    for (const subFile of subEntries) {
-                        if (/\.(txt|md)$/i.test(subFile)) {
-                            allFiles.push(path.join(diaryDir, entry.name, subFile));
-                        }
-                    }
-                } catch (e) { /* 忽略无法读取的子目录 */ }
-            }
-        }
-    } catch (e) {
-        if (e.code === 'ENOENT') {
-            if (DEBUG_MODE) console.error(`[AgentDream] Diary directory not found: ${diaryDir}`);
-            return [];
-        }
-        throw e;
-    }
-
-    if (allFiles.length === 0) return [];
-
-    // 获取所有文件的修改时间
-    const filesWithStats = await Promise.all(allFiles.map(async (f) => {
-        try {
-            const stat = await fsPromises.stat(f);
-            return { filePath: f, mtime: stat.mtimeMs };
-        } catch (e) {
-            return null;
-        }
-    }));
-    const validFiles = filesWithStats.filter(Boolean).sort((a, b) => b.mtime - a.mtime);
-
-    if (validFiles.length === 0) return [];
-
-    // 自适应窗口：从最近开始，逐步扩大日期窗口直到有足够日记
-    const now = Date.now();
-    const maxRangeMs = DREAM_CONFIG.associationMaxRangeDays * 24 * 60 * 60 * 1000;
-    const targetSeedCount = Math.floor(Math.random() * (DREAM_CONFIG.seedCountMax - DREAM_CONFIG.seedCountMin + 1)) + DREAM_CONFIG.seedCountMin;
-
-    // 逐步扩大窗口: 7天 → 30天 → 90天 → maxRange
-    const windowSteps = [7, 30, 90, DREAM_CONFIG.associationMaxRangeDays];
-    let candidatePool = [];
-
-    for (const windowDays of windowSteps) {
-        const windowMs = windowDays * 24 * 60 * 60 * 1000;
-        candidatePool = validFiles.filter(f => (now - f.mtime) <= windowMs);
-        if (candidatePool.length >= targetSeedCount) break;
-    }
-
-    // 如果窗口扩大到最大仍然不够，就用全部
-    if (candidatePool.length === 0) candidatePool = validFiles;
-
-    // 随机采样
-    const shuffled = candidatePool.sort(() => Math.random() - 0.5);
-    const selected = shuffled.slice(0, Math.min(targetSeedCount, shuffled.length));
-
-    // 读取内容
-    const seeds = await Promise.all(selected.map(async (f) => {
-        try {
-            const content = await fsPromises.readFile(f.filePath, 'utf-8');
-            return { filePath: f.filePath, content, mtime: f.mtime };
-        } catch (e) {
-            return null;
-        }
-    }));
-
-    return seeds.filter(Boolean);
-}
-
-// =========================================================================
-// TagMemo 联想召回
-// =========================================================================
-
-/**
- * 使用 TagMemo 系统从个人和公共日记索引中召回联想日记
- * 个人:公共 ≈ 3:1
- */
-async function _recallAssociations(agentName, seedDiaries) {
-    if (!knowledgeBaseManager) return [];
-
-    const totalK = DREAM_CONFIG.recallK;
-    const ratio = DREAM_CONFIG.personalPublicRatio;
-    const personalK = Math.ceil(totalK * ratio / (ratio + 1));
-    const publicK = totalK - personalK;
-
-    const allResults = [];
-    const seenPaths = new Set(seedDiaries.map(s => s.filePath)); // 用于去重
-
-    // 构建所有需要搜索的个人日记索引名称
-    // 例如: "小克", "小克的知识" 等
-    const personalDiaryNames = _getPersonalDiaryNames(agentName);
-    // 公共索引名称
-    const publicDiaryNames = _getPublicDiaryNames();
-
-    for (const seed of seedDiaries) {
-        try {
-            // 将种子日记内容向量化
-            const embeddingConfig = {
-                apiKey: process.env.API_Key,
-                apiUrl: process.env.API_URL,
-                model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001'
-            };
-
-            // 使用 getEmbeddingsBatch 接口
-            const { getEmbeddingsBatch } = require('../../EmbeddingUtils');
-            const seedText = seed.content.substring(0, 2000); // 截断过长内容
-            const [seedVector] = await getEmbeddingsBatch([seedText], embeddingConfig);
-
-            if (!seedVector) continue;
-
-            // 搜索个人索引
-            const perKPerIndex = Math.max(3, Math.ceil(personalK / personalDiaryNames.length));
-            for (const diaryName of personalDiaryNames) {
-                try {
-                    const results = await knowledgeBaseManager.search(
-                        diaryName, seedVector, perKPerIndex, DREAM_CONFIG.tagBoost
-                    );
-                    for (const r of results) {
-                        if (r.fullPath && !seenPaths.has(r.fullPath)) {
-                            seenPaths.add(r.fullPath);
-                            allResults.push({ ...r, source: 'personal', diaryName });
-                        }
-                    }
-                } catch (e) {
-                    if (DEBUG_MODE) console.error(`[AgentDream] Search error for "${diaryName}":`, e.message);
-                }
-            }
-
-            // 搜索公共索引
-            const pubKPerIndex = Math.max(2, Math.ceil(publicK / publicDiaryNames.length));
-            for (const diaryName of publicDiaryNames) {
-                try {
-                    const results = await knowledgeBaseManager.search(
-                        diaryName, seedVector, pubKPerIndex, DREAM_CONFIG.tagBoost
-                    );
-                    for (const r of results) {
-                        if (r.fullPath && !seenPaths.has(r.fullPath)) {
-                            seenPaths.add(r.fullPath);
-                            allResults.push({ ...r, source: 'public', diaryName });
-                        }
-                    }
-                } catch (e) {
-                    if (DEBUG_MODE) console.error(`[AgentDream] Search error for "${diaryName}":`, e.message);
-                }
-            }
-        } catch (e) {
-            console.error(`[AgentDream] Embedding error for seed diary:`, e.message);
-        }
-    }
-
-    // 按分数排序后截取 totalK
-    allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-    // K补偿: 如果去重后数量不足 totalK，放宽约束
-    let finalResults = allResults.slice(0, totalK);
-
-    if (DEBUG_MODE) {
-        const personalCount = finalResults.filter(r => r.source === 'personal').length;
-        const publicCount = finalResults.filter(r => r.source === 'public').length;
-        console.error(`[AgentDream] Associations: ${personalCount} personal + ${publicCount} public = ${finalResults.length} total`);
-    }
-
-    return finalResults;
-}
-
-/**
- * 获取一个 agent 相关的所有个人日记索引名称
- * 例如: ["小克", "小克的知识", ...]
- */
-function _getPersonalDiaryNames(agentName) {
-    const names = [agentName];
-    // 扫描 dailynote 目录，查找包含 agentName 的子目录
-    try {
-        const dirs = fs.readdirSync(dailyNoteRootPath, { withFileTypes: true });
-        for (const dir of dirs) {
-            if (dir.isDirectory() && dir.name.includes(agentName) && dir.name !== agentName) {
-                names.push(dir.name);
-            }
-        }
-    } catch (e) { /* ignore */ }
-    return names;
-}
-
-/**
- * 获取公共日记索引名称
- * 例如: ["公共", "公共的知识", ...]
- */
-function _getPublicDiaryNames() {
-    const names = [];
-    try {
-        const dirs = fs.readdirSync(dailyNoteRootPath, { withFileTypes: true });
-        for (const dir of dirs) {
-            if (dir.isDirectory() && dir.name.startsWith('公共')) {
-                names.push(dir.name);
-            }
-        }
-    } catch (e) { /* ignore */ }
-    // 兜底：至少搜索 "公共"
-    if (names.length === 0) names.push('公共');
-    return names;
-}
 
 // =========================================================================
 // 梦提示词组装
 // =========================================================================
 
 /**
- * 读取 dreampost.txt 模板并填充占位符
+ * 读取 dreampost.txt 模板并使用新的四段式上下文填充
  */
-async function _assembleDreamPrompt(agentName, seedDiaries, associations) {
+async function _assembleDreamPrompt(agentName, dreamTree) {
     // 读取模板
     const templatePath = path.join(__dirname, 'dreampost.txt');
     let template = '';
@@ -580,26 +379,53 @@ async function _assembleDreamPrompt(agentName, seedDiaries, associations) {
         template = await fsPromises.readFile(templatePath, 'utf-8');
     } catch (e) {
         console.error(`[AgentDream] Failed to read dreampost.txt: ${e.message}`);
-        template = '你正在做梦。你想起了以下记忆：\n{{日记联想组合占位符}}';
+        template = '你正在做梦。\n{{DreamTreeBlock}}';
     }
 
-    // 组装日记内容
+    // 组装日记内容序列
     const diarySegments = [];
 
-    // 种子日记
-    diarySegments.push('=== 你今天想起的记忆 ===');
-    for (const seed of seedDiaries) {
-        const fileUrl = `file:///${seed.filePath.replace(/\\/g, '/')}`;
-        diarySegments.push(`[LocalURL: ${fileUrl}]\n${seed.content}\n`);
+    // ================= 1. 近期碎片 =================
+    if (dreamTree.recent && dreamTree.recent.seeds.length > 0) {
+        diarySegments.push('=== 你今天脑海中闪过的微小片段（近期） ===');
+        for (const item of dreamTree.recent.seeds) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[LocalURL: ${fileUrl}]\n${item._safeText}\n`);
+        }
     }
 
-    // 联想日记
-    if (associations.length > 0) {
-        diarySegments.push('=== 由此联想到的记忆碎片 ===');
-        for (const assoc of associations) {
-            const fileUrl = assoc.fullPath ? `file:///${assoc.fullPath.replace(/\\/g, '/')}` : '[路径未知]';
-            const sourceLabel = assoc.source === 'personal' ? '个人记忆' : '公共记忆';
-            diarySegments.push(`[${sourceLabel}] [LocalURL: ${fileUrl}] [相似度: ${(assoc.score || 0).toFixed(3)}]\n${assoc.text}\n`);
+    // ================= 2. 桥梁共振与下探 =================
+    if (dreamTree.recent && (dreamTree.recent.resonanceL1.length > 0 || dreamTree.recent.cascadeL2.length > 0)) {
+        diarySegments.push('=== 这些片段不知为何，唤醒了你记忆中的某些关联脉络（共振桥梁） ===');
+        for (const item of dreamTree.recent.resonanceL1) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[核心共振记忆] [LocalURL: ${fileUrl}]\n${item._safeText}\n`);
+        }
+        for (const item of dreamTree.recent.cascadeL2) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[顺藤摸瓜的延展] [LocalURL: ${fileUrl}]\n${item._safeText}\n`);
+        }
+    }
+
+    // ================= 3. 中期回音 =================
+    if (dreamTree.mid && (dreamTree.mid.seeds.length > 0 || dreamTree.mid.cascadeL1.length > 0)) {
+        diarySegments.push('=== 恍惚间，几个月前的一些记忆也浮现了出来（中期） ===');
+        for (const item of dreamTree.mid.seeds) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[中期记忆] [LocalURL: ${fileUrl}]\n${item._safeText}\n`);
+        }
+        for (const item of dreamTree.mid.cascadeL1) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[中期记忆的涟漪] [LocalURL: ${fileUrl}]\n${item._safeText}\n`);
+        }
+    }
+
+    // ================= 4. 深邃浪潮 =================
+    if (dreamTree.deep && dreamTree.deep.recalls.length > 0) {
+        diarySegments.push('=== 在梦的最深处，这些所有思绪的交汇，指向了被你遗忘在深处的记忆（长远） ===');
+        for (const item of dreamTree.deep.recalls) {
+            const fileUrl = `file:///${(item.filePath||item.fullPath||'').replace(/\\/g, '/')}`;
+            diarySegments.push(`[深渊中的召唤] [LocalURL: ${fileUrl}]\n${item._safeText}\n`);
         }
     }
 
@@ -619,7 +445,8 @@ async function _assembleDreamPrompt(agentName, seedDiaries, associations) {
         .replace(/\{\{Month\}\}/g, monthNames[now.getMonth()])
         .replace(/\{\{Day\}\}/g, String(now.getDate()))
         .replace(/\{\{TimeOfDay\}\}/g, timeOfDay)
-        .replace(/\{\{DiaryAssociations\}\}/g, diaryBlock)
+        .replace(/\{\{DreamTreeBlock\}\}/g, diaryBlock)
+        .replace(/\{\{DiaryAssociations\}\}/g, diaryBlock) // 兼容旧模板占位符
         .replace(/\{\{MaidName\}\}/g, agentName)
         .replace(/\{\{Date\}\}/g, `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`)
         .replace(/\{\{Time\}\}/g, `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`);
@@ -637,9 +464,13 @@ async function _assembleDreamPrompt(agentName, seedDiaries, associations) {
  * @returns {Promise<object>} 操作结果
  */
 async function processToolCall(args) {
-    // 检查是否是 triggerDream 入口
-    if (args.action === 'triggerDream' && args.agent_name) {
-        return await triggerDream(args.agent_name);
+    // 检查是否是 triggerDream 入口 (兼容各种键名和前后空格)
+    const triggerCmd = (args.action || args.command || args.command1 || '').trim();
+    if (triggerCmd === 'triggerDream') {
+        const agentName = (args.agent_name || args.maid || '').trim();
+        if (agentName) {
+            return await triggerDream(agentName);
+        }
     }
 
     // 兼容单指令不带数字后缀的情况: command → command1

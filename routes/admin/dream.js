@@ -6,7 +6,7 @@ module.exports = function(options) {
     const router = express.Router();
     const { pluginManager, vectorDBManager } = options;
     const PROJECT_BASE_PATH = path.join(__dirname, '..', '..');
-    const DREAM_LOGS_DIR = path.join(PROJECT_BASE_PATH, 'Plugin', 'AgentDream', 'logs');
+    const DREAM_LOGS_DIR = path.join(PROJECT_BASE_PATH, 'Plugin', 'AgentDream', 'dream_logs');
 
     // 辅助: file:/// URL 转本地路径
     function _urlToFilePath(fileUrl) {
@@ -24,13 +24,45 @@ module.exports = function(options) {
         return fileUrl;
     }
 
-    // GET /dream-logs - 获取所有梦境日志文件列表
+    // GET /dream-logs - 获取所有梦境日志文件列表（含简要元数据）
     router.get('/dream-logs', async (req, res) => {
         try {
             await fs.mkdir(DREAM_LOGS_DIR, { recursive: true });
             const files = await fs.readdir(DREAM_LOGS_DIR);
-            const logFiles = files.filter(f => f.endsWith('.json'));
-            res.json({ logs: logFiles });
+            const jsonFiles = files.filter(f => f.endsWith('.json'));
+
+            const logs = [];
+            for (const filename of jsonFiles) {
+                try {
+                    const filePath = path.join(DREAM_LOGS_DIR, filename);
+                    const content = await fs.readFile(filePath, 'utf-8');
+                    const data = JSON.parse(content);
+                    const ops = data.operations || [];
+                    
+                    logs.push({
+                        filename: filename,
+                        agentName: data.agentName || '未知',
+                        timestamp: data.timestamp || '',
+                        operationCount: ops.length,
+                        pendingCount: ops.filter(o => o.status === 'pending_review').length,
+                        operationSummary: ops.map(o => ({ 
+                            type: o.type, 
+                            status: o.status 
+                        }))
+                    });
+                } catch (e) {
+                    console.error(`[AdminAPI] Skip corrupted log file ${filename}:`, e.message);
+                }
+            }
+
+            // 按时间倒序排列
+            logs.sort((a, b) => {
+                const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                return timeB - timeA;
+            });
+
+            res.json({ logs });
         } catch (error) {
             console.error('[AdminAPI] Error listing dream logs:', error);
             res.status(500).json({ error: 'Failed to list dream logs', details: error.message });
@@ -51,10 +83,11 @@ module.exports = function(options) {
         }
     });
 
-    // POST /dream-operation/:opId/reviewed - 标记并处理 AgentDream 操作
-    router.post('/dream-operation/:opId/reviewed', async (req, res) => {
+    // POST /dream-logs/:filename/operations/:opId - 标记并处理 AgentDream 操作
+    router.post('/dream-logs/:filename/operations/:opId', async (req, res) => {
         const opId = req.params.opId;
-        const { action, filename } = req.body; // action: 'approve' or 'reject'
+        const filename = req.params.filename;
+        const { action } = req.body; // action: 'approve' or 'reject'
 
         if (!filename || !filename.endsWith('.json')) {
             return res.status(400).json({ error: 'Invalid filename.' });
