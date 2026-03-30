@@ -34,6 +34,7 @@
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) | TagMemo算法、EPA模块、残差金字塔、向量索引 | ⭐⭐⭐ |
+| [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) | 上下文向量引力场公开接口、插件间向量共享机制 | ⭐⭐⭐ |
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) | AdminPanel、VCPChrome、OpenWebUISub架构与集成 | ⭐⭐ |
@@ -56,6 +57,7 @@
 |------|----------|
 | 理解系统启动流程 | [ARCHITECTURE.md](./ARCHITECTURE.md) § 启动序列 |
 | 开发新插件 | [PLUGIN_ECOSYSTEM.md](./PLUGIN_ECOSYSTEM.md) § Manifest Schema |
+| 插件间共享向量能力 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) § 快速接入指南 |
 | 修改配置参数 | [CONFIGURATION.md](./CONFIGURATION.md) § 配置语义总表 |
 | 添加新API端点 | [API_ROUTES.md](./API_ROUTES.md) § 路由挂载流程 |
 | 优化RAG检索 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § TagMemo算法 |
