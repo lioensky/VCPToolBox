@@ -564,13 +564,29 @@ class PluginManager extends EventEmitter {
                         dependencies.vectorDBManager = this.vectorDBManager;
                     }
 
-                    // --- LightMemo 特殊依赖注入 ---
+                    // --- 🌟 ContextBridge 通用依赖注入 ---
+                    // 任何在 manifest 中声明 "requiresContextBridge": true 的插件都能获得 RAG 上下文向量接口
+                    if (manifest.requiresContextBridge) {
+                        const ragPluginModule = this.messagePreprocessors.get('RAGDiaryPlugin');
+                        if (ragPluginModule && typeof ragPluginModule.getContextBridge === 'function') {
+                            dependencies.contextBridge = ragPluginModule.getContextBridge();
+                            if (this.debugMode) console.log(`[PluginManager] 🌟 Injected ContextBridge into ${manifest.name}.`);
+                        } else {
+                            console.warn(`[PluginManager] Plugin "${manifest.name}" requires ContextBridge, but RAGDiaryPlugin is not available.`);
+                        }
+                    }
+
+                    // --- LightMemo 特殊依赖注入（向后兼容 + ContextBridge） ---
                     if (manifest.name === 'LightMemo') {
                         const ragPluginModule = this.messagePreprocessors.get('RAGDiaryPlugin');
                         if (ragPluginModule && ragPluginModule.vectorDBManager && typeof ragPluginModule.getSingleEmbedding === 'function') {
                             dependencies.vectorDBManager = ragPluginModule.vectorDBManager;
                             dependencies.getSingleEmbedding = ragPluginModule.getSingleEmbedding.bind(ragPluginModule);
-                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager and getSingleEmbedding into LightMemo.`);
+                            // 同时注入 ContextBridge（如果 LightMemo 未在 manifest 中声明，也主动注入）
+                            if (!dependencies.contextBridge && typeof ragPluginModule.getContextBridge === 'function') {
+                                dependencies.contextBridge = ragPluginModule.getContextBridge();
+                            }
+                            if (this.debugMode) console.log(`[PluginManager] Injected VectorDBManager, getSingleEmbedding and ContextBridge into LightMemo.`);
                         } else {
                             console.error(`[PluginManager] Critical dependency failure: RAGDiaryPlugin or its components not available for LightMemo injection.`);
                         }

@@ -3496,6 +3496,189 @@ class RAGDiaryPlugin {
         return null;
     }
 
+    //####################################################################################
+    //## 🌟 ContextBridge - 上下文向量引力场公开只读接口
+    //####################################################################################
+
+    /**
+     * 🌟 ContextBridge: 暴露上下文向量引力场的只读查询接口
+     * 供其他插件通过 PluginManager 依赖注入使用
+     *
+     * 设计原则：
+     * 1. 只读 — Object.freeze 防止外部修改内部状态
+     * 2. 懒计算 — 聚合向量按需计算，不预先生成
+     * 3. 安全 — 所有方法都有空值保护，不会因调用方传入无效参数而崩溃
+     *
+     * 使用方式：
+     *   在 plugin-manifest.json 中声明 "requiresContextBridge": true
+     *   然后在 initialize(config, dependencies) 中通过 dependencies.contextBridge 获取
+     *
+     * @returns {Readonly<Object>} 冻结的只读接口对象
+     */
+    getContextBridge() {
+        const self = this;
+        const BRIDGE_VERSION = '1.0';
+
+        return Object.freeze({
+            /** 接口版本号，用于未来兼容性检查 */
+            version: BRIDGE_VERSION,
+
+            // ═══════════════════════════════════════════════════
+            // 上下文向量查询
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 获取当前会话的衰减聚合上下文向量
+             * 近期楼层权重更高，远期楼层指数衰减
+             * @param {string} [role='assistant'] - 'assistant' 或 'user'
+             * @returns {Float32Array|null} 聚合后的向量，无数据时返回 null
+             */
+            getAggregatedVector(role = 'assistant') {
+                return self.contextVectorManager.aggregateContext(role);
+            },
+
+            /**
+             * 获取所有历史 AI 输出的向量列表（按时间顺序）
+             * @returns {Array<Float32Array>} 向量数组，可能为空
+             */
+            getHistoryAssistantVectors() {
+                return self.contextVectorManager.getHistoryAssistantVectors();
+            },
+
+            /**
+             * 获取所有历史用户输入的向量列表（按时间顺序）
+             * @returns {Array<Float32Array>} 向量数组，可能为空
+             */
+            getHistoryUserVectors() {
+                return self.contextVectorManager.getHistoryUserVectors();
+            },
+
+            /**
+             * 获取语义分段后的主题向量列表
+             * 将连续的、高相似度的消息归并为一个段落 (Segment/Topic)
+             * @param {Array} messages - 消息列表
+             * @param {number} [similarityThreshold=0.70] - 分段阈值
+             * @returns {Array<{vector: Float32Array, text: string, roles: string[], range: [number, number], count: number}>}
+             */
+            getContextSegments(messages, similarityThreshold) {
+                if (!Array.isArray(messages)) return [];
+                return self.contextVectorManager.segmentContext(messages, similarityThreshold);
+            },
+
+            // ═══════════════════════════════════════════════════
+            // EPA 指标计算
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 计算向量的逻辑深度指数 L
+             * L ≈ 1 → 能量集中在少数维度，逻辑聚焦
+             * L ≈ 0 → 能量分散，逻辑模糊
+             * @param {Array|Float32Array} vector - 输入向量
+             * @returns {number} L ∈ [0, 1]
+             */
+            computeLogicDepth(vector) {
+                if (!vector) return 0;
+                return self.contextVectorManager.computeLogicDepth(vector);
+            },
+
+            /**
+             * 计算向量的语义宽度指数 S
+             * S ≈ 1 → 能量均匀分布，语义宽泛
+             * S ≈ 0 → 能量集中少数维度，语义精准
+             * @param {Array|Float32Array} vector - L2归一化向量
+             * @returns {number} S ∈ [0, 1]
+             */
+            computeSemanticWidth(vector) {
+                if (!vector) return 0;
+                return self.contextVectorManager.computeSemanticWidth(vector);
+            },
+
+            // ═══════════════════════════════════════════════════
+            // 向量化工具
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 带缓存的单文本向量化（缓存未命中时会触发 Embedding API）
+             * @param {string} text - 要向量化的文本
+             * @returns {Promise<Array<number>|null>} 向量数组或 null
+             */
+            async embedText(text) {
+                if (!text || typeof text !== 'string' || !text.trim()) return null;
+                return self.getSingleEmbeddingCached(text);
+            },
+
+            /**
+             * 带缓存的批量向量化（缓存未命中时会触发 Embedding API）
+             * @param {string[]} texts - 要向量化的文本数组
+             * @returns {Promise<Array<Array<number>|null>>} 向量数组，失败位置为 null
+             */
+            async embedBatch(texts) {
+                if (!Array.isArray(texts) || texts.length === 0) return [];
+                return self.getBatchEmbeddingsCached(texts);
+            },
+
+            /**
+             * 仅从内存缓存获取向量（不触发 API，适合高频调用场景）
+             * @param {string} text - 要查询的文本
+             * @returns {Array<number>|null} 缓存中的向量或 null
+             */
+            getEmbeddingFromCache(text) {
+                if (!text || typeof text !== 'string') return null;
+                return self._getEmbeddingFromCacheOnly(text);
+            },
+
+            // ═══════════════════════════════════════════════════
+            // 文本处理工具
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 统一内容净化器 - 移除 HTML、Emoji、工具调用标记等噪音
+             * 确保向量化输入的一致性
+             * @param {string} content - 原始文本
+             * @param {string} role - 角色 ('user' 或 'assistant')
+             * @returns {string} 净化后的文本
+             */
+            sanitize(content, role) {
+                return self.sanitizeForEmbedding(content, role);
+            },
+
+            // ═══════════════════════════════════════════════════
+            // 向量数学工具
+            // ═══════════════════════════════════════════════════
+
+            /**
+             * 余弦相似度计算
+             * @param {Array|Float32Array} vecA - 向量 A
+             * @param {Array|Float32Array} vecB - 向量 B
+             * @returns {number} 相似度 ∈ [-1, 1]，无效输入返回 0
+             */
+            cosineSimilarity(vecA, vecB) {
+                return self.cosineSimilarity(vecA, vecB);
+            },
+
+            /**
+             * 加权平均向量计算
+             * @param {Array<Array<number>>} vectors - 向量数组
+             * @param {Array<number>} weights - 对应权重数组
+             * @returns {Array<number>|null} 加权平均向量或 null
+             */
+            weightedAverage(vectors, weights) {
+                if (!Array.isArray(vectors) || !Array.isArray(weights)) return null;
+                return self._getWeightedAverageVector(vectors, weights);
+            },
+
+            /**
+             * 多向量平均值计算
+             * @param {Array<Array<number>>} vectors - 向量数组
+             * @returns {Array<number>|null} 平均向量或 null
+             */
+            averageVector(vectors) {
+                if (!Array.isArray(vectors)) return null;
+                return self._getAverageVector(vectors);
+            }
+        });
+    }
+
     shutdown() {
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
