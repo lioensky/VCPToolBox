@@ -17,28 +17,34 @@ if (fs.existsSync(mainEnvPath)) {
     dotenv.config({ path: mainEnvPath });
 }
 
+const knowledgeBaseManager = require('../../KnowledgeBaseManager');
 const AgentDream = require('./AgentDream.js');
 
-// 初始化插件
-const config = {
-    PORT: process.env.PORT || 5555,
-    Key: process.env.Key || '',
-    DebugMode: 'true'
-};
-
-AgentDream.initialize(config, {
-    vcpLogFunctions: {
-        pushVcpInfo: (data) => {
-            console.log(`\n📡 [VCPInfo Broadcast] type: ${data.type}`);
-            console.log(JSON.stringify(data, null, 2).substring(0, 500));
-            if (JSON.stringify(data).length > 500) console.log('...(truncated for console)');
-            console.log('');
-        }
+async function main() {
+    if (!knowledgeBaseManager.initialized) {
+        console.log('🧠 正在初始化 KnowledgeBaseManager...\n');
+        await knowledgeBaseManager.initialize();
+        console.log('✅ KnowledgeBaseManager 初始化完成\n');
     }
-});
 
-// 触发梦境
-(async () => {
+    // 初始化插件
+    const config = {
+        PORT: process.env.PORT || 5555,
+        Key: process.env.Key || '',
+        DebugMode: 'true'
+    };
+
+    AgentDream.initialize(config, {
+        vcpLogFunctions: {
+            pushVcpInfo: (data) => {
+                console.log(`\n📡 [VCPInfo Broadcast] type: ${data.type}`);
+                console.log(JSON.stringify(data, null, 2).substring(0, 500));
+                if (JSON.stringify(data).length > 500) console.log('...(truncated for console)');
+                console.log('');
+            }
+        }
+    });
+
     try {
         console.log(`\n⏳ 开始入梦流程...\n`);
         const result = await AgentDream.triggerDream(agentName);
@@ -60,4 +66,6 @@ AgentDream.initialize(config, {
         console.error(e.stack);
     }
     process.exit(0);
-})();
+}
+
+main();
