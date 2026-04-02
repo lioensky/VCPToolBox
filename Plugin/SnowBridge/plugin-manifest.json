@@ -1,0 +1,67 @@
+{
+  "name": "SnowBridge",
+  "displayName": "Snow 工具桥接器",
+  "description": "为 Snow CLI 导出 VCP 原生工具，提供工具清单同步、远程执行与取消控制。",
+  "version": "2.1.0",
+  "author": "Gugu_Kilo",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "index.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "hasApiRoutes": true,
+  "configSchema": {
+    "Bridge_Enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否启用桥接功能"
+    },
+    "Excluded_Tools": {
+      "type": "string",
+      "default": "VCPLog,VCPInfo,VCPToolBridge,SnowBridge",
+      "description": "不导出的工具黑名单（调用名，逗号分隔）"
+    },
+    "Excluded_Display_Keywords": {
+      "type": "string",
+      "default": "[AIO]",
+      "description": "不导出的显示名称关键词（逗号分隔，包含即排除）"
+    },
+    "Allowed_Tools": {
+      "type": "string",
+      "default": "",
+      "description": "允许导出的工具白名单（插件调用名，逗号分隔，留空表示按黑名单规则导出全部）"
+    },
+    "Require_Snow_Request_Headers": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否要求 bridge 请求在 data.requestHeaders 中显式携带 Snow 来源元数据。开启后，请求必须满足固定契约：x-snow-client=snow-cli、x-snow-protocol=function-calling、x-snow-channel=bridge-ws。"
+    },
+    "Allowed_Snow_Tool_Modes": {
+      "type": "string",
+      "default": "bridge,hybrid",
+      "description": "允许的 x-snow-tool-mode 白名单（逗号分隔）。默认接受 bridge 与 hybrid；local 会被拒绝。"
+    },
+    "Bridge_Access_Token": {
+      "type": "string",
+      "default": "",
+      "description": "可选的桥接器访问令牌。配置后，客户端必须在桥接消息中携带 accessToken。"
+    },
+    "Rate_Limit_Per_Minute": {
+      "type": "integer",
+      "default": 60,
+      "description": "每个桥接客户端每分钟允许发起的请求上限（manifest/execute/cancel 共享）"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "GetStatus",
+        "description": "获取桥接器运行状态",
+        "example": "{\"command\": \"GetStatus\"}"
+      }
+    ]
+  }
+}
