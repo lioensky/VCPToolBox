@@ -1,0 +1,40 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ComfyCloudGen",
+  "displayName": "Comfy Cloud 云端图像/视频生成",
+  "version": "0.4.0",
+  "description": "通过Comfy Cloud云端GPU生成图像或视频。数据驱动架构，自动匹配模型生态，支持895+云端模型。三种模式：auto(默认)、template、raw。",
+  "author": "Rosa",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ComfyCloudGen.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "configSchema": {
+    "COMFY_REFRESH_TOKEN": {
+      "type": "string",
+      "description": "Firebase refresh token for Comfy Cloud authentication"
+    },
+    "COMFY_FIREBASE_API_KEY": {
+      "type": "string",
+      "description": "Firebase API key"
+    },
+    "COMFY_PROXY": {
+      "type": "string",
+      "description": "HTTPS proxy address, e.g. http://127.0.0.1:7897"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "通过Comfy Cloud云端GPU生成图像或视频。\n三种模式：\n- auto(默认): 传unet或checkpoint模型名，自动匹配生态和最佳参数\n- template: 传workflow模板名，加载已有模板+覆盖参数\n- raw: 传workflow_json完整工作流JSON直接提交\n\n参数列表：\n- prompt (string, auto/template必需): 英文正面提示词\n- negative_prompt (string, 可选): 英文负面提示词\n- unet (string, 可选): UNet模型文件名，触发auto模式\n- checkpoint (string, 可选): Checkpoint模型文件名，触发auto模式\n- workflow (string, 可选): 模板名称，触发template模式\n- workflow_json (string, 可选): 完整工作流JSON，触发raw模式\n- steps (number, 可选): 采样步数\n- cfg (number, 可选): CFG引导强度\n- sampler (string, 可选): 采样器名称\n- scheduler (string, 可选): 调度器名称\n- width (number, 可选): 图像宽度，默认1024\n- height (number, 可选): 图像高度，默认1024\n- seed (number, 可选): 随机种子，-1为随机\n- lora (string, 可选): LoRA模型文件名\n- lora_strength (number, 可选): LoRA强度，默认0.8\n- weight_dtype (string, 可选): UNet精度\n- num_frames (number, 可选): 视频帧数\n- fps (number, 可选): 视频帧率\n- save_as (string, 可选): 保存工作流到缓存\n- load_cached (string, 可选): 从缓存加载工作流",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ComfyCloudGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」a beautiful anime girl with pink hair, masterpiece quality「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

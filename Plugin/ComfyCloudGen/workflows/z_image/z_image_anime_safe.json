@@ -1,0 +1,102 @@
+{
+  "10": {
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "CLIP加载器" }
+  },
+  "11": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": { "title": "VAE加载器" }
+  },
+  "12": {
+    "inputs": {
+      "unet_name": "z_image_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Z-Image Base" }
+  },
+  "13": {
+    "inputs": {
+      "lora_name": "zimage-new_anime_core.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": ["12", 0],
+      "clip": ["10", 0]
+    },
+    "class_type": "LoraLoader",
+    "_meta": { "title": "LoRA - 新动漫核心风格 (0.4)" }
+  },
+  "14": {
+    "inputs": {
+      "shift": 3,
+      "model": ["13", 0]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": { "title": "AuraFlow" }
+  },
+  "20": {
+    "inputs": {
+      "text": "A beautiful anime girl with long flowing pink hair and crystal blue eyes, wearing a dark elegant evening gown with silver embroidery, standing on a rooftop terrace at sunset, city skyline behind her, wind gently blowing her hair, warm golden light, masterpiece quality, detailed anime art style",
+      "clip": ["13", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "正面提示词" }
+  },
+  "21": {
+    "inputs": {
+      "text": "low quality, blurry, deformed, ugly, watermark",
+      "clip": ["13", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "负面提示词" }
+  },
+  "30": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": { "title": "空Latent 1024x1024" }
+  },
+  "50": {
+    "inputs": {
+      "seed": 42,
+      "steps": 28,
+      "cfg": 4,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": ["14", 0],
+      "positive": ["20", 0],
+      "negative": ["21", 0],
+      "latent_image": ["30", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": { "title": "K采样器" }
+  },
+  "60": {
+    "inputs": {
+      "samples": ["50", 0],
+      "vae": ["11", 0]
+    },
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE解码" }
+  },
+  "70": {
+    "inputs": {
+      "filename_prefix": "z-image-anime",
+      "images": ["60", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": { "title": "保存图像" }
+  }
+}
