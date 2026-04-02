@@ -687,8 +687,9 @@ class RAGDiaryPlugin {
         if (role === 'user') {
             processed = this._stripSystemNotification(processed);
         } else if (role === 'assistant') {
-            const anchorRegex = /\[@(!)?([^\]]+)\]/g;
-            processed = processed.replace(anchorRegex, '');
+            // 🌟 V4.3 修改：不再从向量化文本中剔除 @tag，将其视为正常上下文语义的一部分
+            // const anchorRegex = /\[@(!)?([^\]]+)\]/g;
+            // processed = processed.replace(anchorRegex, '');
         }
 
         // 2. 通用净化流程 (顺序必须严格一致)
@@ -1085,7 +1086,8 @@ class RAGDiaryPlugin {
                     else softTagNames.push(tagName);
                 }
 
-                // 🌟 修复 1：必须将净化后的文本同步回原始 messages 数组！否则 Tag 会永远污染历史上下文
+                // 🌟 V4.3 修改：不再从原始消息中擦除 @tag，允许 AI 在后续上下文中看到自己生成的标签以维持思想连贯性
+                /*
                 if (lastAiMessageIndex > -1) {
                     const aiMsg = messages[lastAiMessageIndex];
                     if (typeof aiMsg.content === 'string') {
@@ -1095,6 +1097,7 @@ class RAGDiaryPlugin {
                         if (textPart) textPart.text = textPart.text.replace(anchorRegex, '').trim();
                     }
                 }
+                */
 
                 const originalAiContent = aiContent;
                 aiContent = this.sanitizeForEmbedding(aiContent, 'assistant');
