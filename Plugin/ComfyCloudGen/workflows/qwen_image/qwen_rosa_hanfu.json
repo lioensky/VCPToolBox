@@ -1,0 +1,146 @@
+{
+  "1": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b.safetensors",
+      "type": "qwen_image"
+    },
+    "_meta": {
+      "title": "CLIPLoader (Qwen VL 7B)"
+    }
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2512_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "UNETLoader (Qwen Image)"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "4": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "qwen-hyperdetailed_illustration.safetensors",
+      "strength_model": 0.65,
+      "strength_clip": 0.5,
+      "model": [
+        "2",
+        0
+      ],
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoRA Hyperdetailed Illustration"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, ultra detailed illustration, 1girl, beautiful anime girl with long flowing pink hair adorned with golden kanzashi hair ornaments and small white flowers, crystal clear blue eyes with detailed iris reflections, wearing an exquisite layered traditional Chinese hanfu in soft cream white and pale sakura pink, intricate golden thread floral embroidery on wide flowing sleeves, delicate silk ribbon sash at the waist, standing gracefully on an arched stone bridge over a tranquil koi pond, surrounded by blooming cherry blossom trees in full spring, petals drifting gently in the warm breeze, soft golden hour sunlight filtering through the branches casting dappled shadows, distant misty mountains and a traditional pavilion in the background, watercolor-like atmospheric perspective, dreamy pastel color palette with touches of gold, serene peaceful expression with a gentle smile",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "CLIP Positive (via LoRA)"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "low quality, worst quality, blurry, deformed, ugly, bad anatomy, extra limbs, extra fingers, mutated hands, watermark, signature, text, logo, oversaturated, flat shading, simple background, 3d render, realistic photo, western style",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "CLIP Negative (via LoRA)"
+    }
+  },
+  "7": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1536,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent 2:3 Portrait"
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 20260402,
+      "steps": 35,
+      "cfg": 5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "QwenImage_Rosa_Hanfu",
+      "images": [
+        "9",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "SaveImage"
+    }
+  }
+}

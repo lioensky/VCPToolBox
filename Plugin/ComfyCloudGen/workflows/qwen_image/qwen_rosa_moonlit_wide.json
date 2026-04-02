@@ -1,0 +1,127 @@
+{
+  "1": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b.safetensors",
+      "type": "qwen_image"
+    },
+    "_meta": {
+      "title": "CLIPLoader (Qwen 7B)"
+    }
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2512_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "UNETLoader (Qwen 2512)"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader (Qwen)"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, ultra detailed anime illustration, panoramic wide shot, 1girl, beautiful girl with long flowing pink hair blowing in the night wind and luminous crystal blue eyes reflecting moonlight, wearing an elegant midnight blue silk hanfu with silver constellation embroidery and flowing translucent sleeves, sitting at the edge of an ancient stone pavilion overlooking a vast moonlit lake, full moon hanging low over the water casting a shimmering silver path across the still surface, fireflies dancing among the lotus flowers below, distant mountain silhouettes fading into layers of blue mist, hanging silk lanterns casting warm amber glow contrasting with cool moonlight, scattered cherry blossom petals on the stone floor, a guqin zither resting beside her, atmospheric depth with foreground lotus leaves and background mountains, dreamy ethereal color palette of deep blues and soft silvers with warm golden accents, studio ghibli inspired lighting",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CLIP Positive"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "low quality, worst quality, blurry, deformed, ugly, bad anatomy, extra limbs, extra fingers, mutated hands, watermark, signature, text, logo, oversaturated, flat shading, simple background, 3d render, realistic photo, western style, chibi, super deformed, sketch, lineart",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CLIP Negative"
+    }
+  },
+  "6": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 1536,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent 3:2 Wide"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 77420402,
+      "steps": 35,
+      "cfg": 5,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "2",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "5",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "Qwen_Rosa_Moonlit",
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "SaveImage"
+    }
+  }
+}
