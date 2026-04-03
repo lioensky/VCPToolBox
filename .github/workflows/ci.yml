@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x] # 您可以根据项目需求调整 Node.js 版本
+        node-version: [20.x] # 仅保留 Node 20, 移除 18.x
 
     steps:
     - name: Checkout code
