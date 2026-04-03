@@ -1,0 +1,320 @@
+{
+  "_doc": "模型生态定义。pipeline拓扑由PipelineFactory硬编码，这里只定义每个生态的差异化参数。detect数组用于前缀匹配模型文件名。variants继承父级参数并覆盖差异项。",
+  "_version": "0.4.0",
+
+  "ecosystems": [
+    {
+      "id": "z_image",
+      "name": "Z-Image (阿里通义)",
+      "detect": ["z_image"],
+      "loader": "unet",
+      "pipeline": "ucv_auraflow",
+      "clip": "qwen_3_4b.safetensors",
+      "clip_type": "lumina2",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 25, "cfg": 4,
+        "sampler_name": "res_multistep", "scheduler": "simple",
+        "shift": 3
+      },
+      "variants": [
+        {
+          "detect": ["z_image_turbo"],
+          "defaults": { "steps": 8, "cfg": 2 }
+        }
+      ]
+    },
+    {
+      "id": "flux1",
+      "name": "Flux.1 (BFL)",
+      "detect": ["flux1-", "flux1_"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "clip_l.safetensors",
+      "clip_type": "flux",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 20, "cfg": 1,
+        "sampler_name": "euler", "scheduler": "simple"
+      },
+      "variants": [
+        {
+          "detect": ["flux1-schnell"],
+          "defaults": { "steps": 4 }
+        }
+      ]
+    },
+    {
+      "id": "flux2",
+      "name": "Flux 2 (BFL)",
+      "detect": ["flux2-", "flux-2-", "flux2_"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "mistral_3_small_flux2_bf16.safetensors",
+      "clip_type": "flux2",
+      "vae": "flux2-vae.safetensors",
+      "defaults": {
+        "steps": 20, "cfg": 3.5,
+        "sampler_name": "euler", "scheduler": "simple"
+      },
+      "variants": [
+        {
+          "detect": ["flux-2-klein-4b"],
+          "clip": "qwen_3_4b.safetensors"
+        },
+        {
+          "detect": ["flux-2-klein-9b"],
+          "clip": "qwen_3_8b.safetensors"
+        },
+        {
+          "detect": ["flux-2-klein-base-4b"],
+          "clip": "qwen_3_4b.safetensors"
+        },
+        {
+          "detect": ["flux-2-klein-base-9b"],
+          "clip": "qwen_3_8b.safetensors"
+        }
+      ]
+    },
+    {
+      "id": "qwen_image",
+      "name": "Qwen-Image (阿里通义)",
+      "detect": ["qwen_image"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "qwen_2.5_vl_7b.safetensors",
+      "clip_type": "qwen_image",
+      "vae": "qwen_image_vae.safetensors",
+      "defaults": {
+        "steps": 30, "cfg": 5,
+        "sampler_name": "euler", "scheduler": "simple"
+      },
+      "variants": [
+        {
+          "detect": ["qwen_image_edit"],
+          "defaults": { "steps": 50 }
+        },
+        {
+          "detect": ["qwen_image_layered"],
+          "vae": "qwen_image_layered_vae.safetensors"
+        }
+      ]
+    },
+    {
+      "id": "chroma",
+      "name": "Chroma",
+      "detect": ["chroma", "Chroma"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "t5xxl_fp16.safetensors",
+      "clip_type": "chroma",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 20, "cfg": 1,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "hidream",
+      "name": "HiDream",
+      "detect": ["hidream"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "clip_l_hidream.safetensors",
+      "clip_type": "hidream",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 28, "cfg": 5,
+        "sampler_name": "euler", "scheduler": "normal"
+      }
+    },
+    {
+      "id": "hunyuan_video",
+      "name": "HunyuanVideo",
+      "detect": ["hunyuan_video", "hunyuanvideo"],
+      "loader": "unet",
+      "pipeline": "wan_video",
+      "clip": "llama_3.1_8b_instruct_fp8_scaled.safetensors",
+      "clip_type": "hunyuan_video",
+      "vae": "hunyuan_video_vae_bf16.safetensors",
+      "sampler_class": "HunyuanVideoSampler",
+      "defaults": {
+        "steps": 30, "cfg": 6,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "ltx_video",
+      "name": "LTX Video",
+      "detect": ["ltx-", "ltx_", "LTX"],
+      "loader": "unet",
+      "pipeline": "ltx_video",
+      "clip": "gemma_3_12B_it_fp8_scaled.safetensors",
+      "clip_type": "ltx",
+      "vae": "LTX2_video_vae_bf16.safetensors",
+      "defaults": {
+        "steps": 30, "cfg": 3,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "wan_video",
+      "name": "Wan 2.1/2.2 Video",
+      "detect": ["wan2", "Wan2", "Wan_2", "wan_2"],
+      "loader": "unet",
+      "pipeline": "wan_video",
+      "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_type": "wan",
+      "vae": "wan_2.1_vae.safetensors",
+      "sampler_class": "WanVideoSampler",
+      "defaults": {
+        "steps": 30, "cfg": 6,
+        "sampler_name": "uni_pc_bh2", "scheduler": "beta"
+      },
+      "variants": [
+        {
+          "detect": ["wan2.2", "Wan2_2", "Wan2.2", "wan2_2"],
+          "vae": "wan_2.1_vae.safetensors"
+        }
+      ]
+    },
+    {
+      "id": "longcat",
+      "name": "LongCat Image",
+      "detect": ["longcat"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "qwen_3_4b.safetensors",
+      "clip_type": "longcat_image",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 25, "cfg": 4,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "ovis",
+      "name": "Ovis Image",
+      "detect": ["ovis"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "ovis_2.5.safetensors",
+      "clip_type": "ovis",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 25, "cfg": 4,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "omnigen2",
+      "name": "OmniGen2",
+      "detect": ["omnigen2"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "qwen_2.5_vl_7b.safetensors",
+      "clip_type": "omnigen2",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 30, "cfg": 5,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "sdxl",
+      "name": "SDXL / Illustrious / Pony",
+      "detect": ["Juggernaut", "realvisxl", "Illustrious-XL", "pony-diffusion", "sd3.5"],
+      "loader": "checkpoint",
+      "pipeline": "checkpoint",
+      "defaults": {
+        "steps": 30, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "normal"
+      }
+    },
+    {
+      "id": "sd15",
+      "name": "SD 1.5",
+      "detect": ["dreamshaper", "majicmix", "realismBy", "awpainting", "cardosAnime", "japanese", "512-inpainting", "sd15-", "interiordesign", "architecture", "dreamCreation", "NetaYume", "iclight"],
+      "loader": "checkpoint",
+      "pipeline": "checkpoint",
+      "defaults": {
+        "steps": 25, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "normal",
+        "width": 512, "height": 512
+      }
+    },
+    {
+      "id": "cosmos",
+      "name": "Cosmos",
+      "detect": ["cosmos"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "t5xxl_fp16.safetensors",
+      "clip_type": "sd3",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 30, "cfg": 7,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "mochi",
+      "name": "Mochi Video",
+      "detect": ["mochi"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "t5xxl_fp16.safetensors",
+      "clip_type": "mochi",
+      "vae": "mochi_vae.safetensors",
+      "defaults": {
+        "steps": 30, "cfg": 4.5,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "newbie",
+      "name": "NewBie Image",
+      "detect": ["NewBie"],
+      "loader": "unet",
+      "pipeline": "ucv",
+      "clip": "qwen_3_4b.safetensors",
+      "clip_type": "lumina2",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 25, "cfg": 4,
+        "sampler_name": "res_multistep", "scheduler": "simple"
+      }
+    },
+    {
+      "id": "ace_step",
+      "name": "ACE-Step (音乐)",
+      "detect": ["ace_step", "acestep"],
+      "loader": "checkpoint",
+      "pipeline": "checkpoint",
+      "defaults": {
+        "steps": 50, "cfg": 3,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    }
+  ],
+
+  "fallback": {
+    "unet": {
+      "pipeline": "ucv",
+      "clip": "clip_l.safetensors",
+      "clip_type": "sd3",
+      "vae": "ae.safetensors",
+      "defaults": {
+        "steps": 20, "cfg": 1,
+        "sampler_name": "euler", "scheduler": "simple"
+      }
+    },
+    "checkpoint": {
+      "pipeline": "checkpoint",
+      "defaults": {
+        "steps": 30, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "normal"
+      }
+    }
+  }
+}
