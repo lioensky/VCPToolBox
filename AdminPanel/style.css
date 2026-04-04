@@ -2010,11 +2010,22 @@ html[data-theme='light'] .delete-toolbox-map-btn {
     pointer-events: none;
 }
 
-.aa-global-settings {
+.aa-global-settings,
+.aa-delegation-settings {
     background-color: var(--tertiary-bg);
     border-radius: 10px;
     padding: 18px 20px;
     border: 1px solid var(--border-color);
+}
+
+.aa-delegation-settings {
+    margin-top: 16px;
+}
+
+.aa-delegation-settings h3 {
+    margin-top: 0;
+    margin-bottom: 4px;
+    font-size: 1.1em;
 }
 
 .aa-global-settings h3 {

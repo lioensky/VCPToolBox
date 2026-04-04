@@ -58,6 +58,11 @@ async function loadAgentAssistantConfig() {
     const contextTtlInput = document.getElementById('aa-context-ttl');
     const globalSystemPromptInput = document.getElementById('aa-global-system-prompt');
 
+    const delegationMaxRoundsInput = document.getElementById('aa-delegation-max-rounds');
+    const delegationTimeoutInput = document.getElementById('aa-delegation-timeout');
+    const delegationSystemPromptInput = document.getElementById('aa-delegation-system-prompt');
+    const delegationHeartbeatPromptInput = document.getElementById('aa-delegation-heartbeat-prompt');
+
     if (statusSpan) {
         statusSpan.textContent = '正在加载 AgentAssistant 配置...';
         statusSpan.className = 'status-message info';
@@ -77,6 +82,19 @@ async function loadAgentAssistantConfig() {
         }
         if (globalSystemPromptInput) {
             globalSystemPromptInput.value = data.globalSystemPrompt || '';
+        }
+
+        if (delegationMaxRoundsInput) {
+            delegationMaxRoundsInput.value = data.delegationMaxRounds ?? 15;
+        }
+        if (delegationTimeoutInput) {
+            delegationTimeoutInput.value = data.delegationTimeout != null ? Math.round(data.delegationTimeout / 1000) : 300;
+        }
+        if (delegationSystemPromptInput) {
+            delegationSystemPromptInput.value = data.delegationSystemPrompt || '';
+        }
+        if (delegationHeartbeatPromptInput) {
+            delegationHeartbeatPromptInput.value = data.delegationHeartbeatPrompt || '';
         }
 
         if (Array.isArray(data.agents) && data.agents.length > 0) {
@@ -143,7 +161,6 @@ function addAgentCard(agent) {
     const cardsContainer = document.getElementById('aa-agent-cards-container');
     if (!cardsContainer) return;
 
-    // 如果之前是“暂无”提示，先清空
     if (cardsContainer.children.length === 1 && cardsContainer.firstElementChild.tagName === 'P') {
         cardsContainer.innerHTML = '';
     }
@@ -190,9 +207,28 @@ function addAgentCard(agent) {
     const body = document.createElement('div');
     body.className = 'aa-agent-card-body';
 
-    // 模型与描述
-    const row1 = document.createElement('div');
-    row1.className = 'aa-row';
+    // baseName + 模型 ID
+    const row0 = document.createElement('div');
+    row0.className = 'aa-row';
+
+    const baseNameGroup = document.createElement('div');
+    baseNameGroup.className = 'aa-field-group';
+    const baseNameLabel = document.createElement('label');
+    baseNameLabel.textContent = '内部标识符（BaseName）';
+    const baseNameInput = document.createElement('input');
+    baseNameInput.type = 'text';
+    baseNameInput.className = 'aa-agent-basename-input';
+    baseNameInput.placeholder = '例如：NOVA、RESEARCH_HELPER（仅限英文大写和下划线）';
+    baseNameInput.value = agent.baseName || '';
+    baseNameInput.addEventListener('input', () => {
+        baseNameInput.value = baseNameInput.value.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+    });
+    const baseNameHint = document.createElement('p');
+    baseNameHint.className = 'aa-hint';
+    baseNameHint.textContent = '用于 config.env 中的键名前缀，仅允许大写字母、数字和下划线。留空则自动生成。';
+    baseNameGroup.appendChild(baseNameLabel);
+    baseNameGroup.appendChild(baseNameInput);
+    baseNameGroup.appendChild(baseNameHint);
 
     const modelGroup = document.createElement('div');
     modelGroup.className = 'aa-field-group';
@@ -210,8 +246,12 @@ function addAgentCard(agent) {
     modelGroup.appendChild(modelInput);
     modelGroup.appendChild(modelHint);
 
+    row0.appendChild(baseNameGroup);
+    row0.appendChild(modelGroup);
+
+    // 角色说明
     const descGroup = document.createElement('div');
-    descGroup.className = 'aa-field-group';
+    descGroup.className = 'aa-field-group aa-field-group-full';
     const descLabel = document.createElement('label');
     descLabel.textContent = '角色说明（给使用 AgentAssistant 插件的 AI 看的描述）';
     const descInput = document.createElement('textarea');
@@ -221,9 +261,6 @@ function addAgentCard(agent) {
     descInput.value = agent.description || '';
     descGroup.appendChild(descLabel);
     descGroup.appendChild(descInput);
-
-    row1.appendChild(modelGroup);
-    row1.appendChild(descGroup);
 
     // 系统提示词
     const promptGroup = document.createElement('div');
@@ -289,7 +326,8 @@ function addAgentCard(agent) {
     row2.appendChild(tokensGroup);
     row2.appendChild(tempGroup);
 
-    body.appendChild(row1);
+    body.appendChild(row0);
+    body.appendChild(descGroup);
     body.appendChild(promptGroup);
     body.appendChild(row2);
 
@@ -310,7 +348,6 @@ function handleAddFromExisting() {
         return;
     }
 
-    // 检查是否已存在同名助手
     const existingNames = Array.from(
         cardsContainer.querySelectorAll('.aa-agent-name-input')
     ).map(input => input.value.trim());
@@ -320,11 +357,12 @@ function handleAddFromExisting() {
         return;
     }
 
+    const autoBaseName = alias.toUpperCase().replace(/[^A-Z0-9_]/g, '');
+
     addAgentCard({
-        baseName: '',
+        baseName: autoBaseName || '',
         chineseName: alias,
         modelId: '',
-        // 默认把系统提示词设置成 {{Alias}}，方便与 Agent 文本联动
         systemPrompt: `{{${alias}}}`,
         maxOutputTokens: 8000,
         temperature: 0.7,
@@ -341,6 +379,11 @@ async function saveAgentAssistantConfig() {
     const contextTtlInput = document.getElementById('aa-context-ttl');
     const globalSystemPromptInput = document.getElementById('aa-global-system-prompt');
 
+    const delegationMaxRoundsInput = document.getElementById('aa-delegation-max-rounds');
+    const delegationTimeoutInput = document.getElementById('aa-delegation-timeout');
+    const delegationSystemPromptInput = document.getElementById('aa-delegation-system-prompt');
+    const delegationHeartbeatPromptInput = document.getElementById('aa-delegation-heartbeat-prompt');
+
     if (!cardsContainer || !maxHistoryInput || !contextTtlInput) return;
 
     const cards = Array.from(cardsContainer.querySelectorAll('.aa-agent-card'));
@@ -349,12 +392,19 @@ async function saveAgentAssistantConfig() {
     const contextTtlHours = parseInt(contextTtlInput.value, 10);
     const globalSystemPrompt = globalSystemPromptInput ? globalSystemPromptInput.value : '';
 
+    const delegationMaxRounds = delegationMaxRoundsInput ? parseInt(delegationMaxRoundsInput.value, 10) : undefined;
+    const delegationTimeoutRaw = delegationTimeoutInput ? parseInt(delegationTimeoutInput.value, 10) : undefined;
+    const delegationTimeout = delegationTimeoutRaw != null && !Number.isNaN(delegationTimeoutRaw) ? delegationTimeoutRaw * 1000 : undefined;
+    const delegationSystemPrompt = delegationSystemPromptInput ? delegationSystemPromptInput.value : undefined;
+    const delegationHeartbeatPrompt = delegationHeartbeatPromptInput ? delegationHeartbeatPromptInput.value : undefined;
+
     const agents = [];
     const usedNames = new Set();
+    const usedBaseNames = new Set();
 
     for (const card of cards) {
-        const baseName = card.dataset.baseName || '';
         const nameInput = card.querySelector('.aa-agent-name-input');
+        const baseNameInput = card.querySelector('.aa-agent-basename-input');
         const modelInput = card.querySelector('.aa-agent-model-input');
         const systemTextarea = card.querySelector('.aa-agent-system-input');
         const tokensInput = card.querySelector('.aa-agent-max-tokens-input');
@@ -363,8 +413,8 @@ async function saveAgentAssistantConfig() {
 
         const chineseName = nameInput ? nameInput.value.trim() : '';
         const modelId = modelInput ? modelInput.value.trim() : '';
+        let baseName = baseNameInput ? baseNameInput.value.trim() : '';
 
-        // 允许空卡存在，但保存时会忽略没有填写名称或模型ID的卡
         if (!chineseName && !modelId) {
             continue;
         }
@@ -388,6 +438,13 @@ async function saveAgentAssistantConfig() {
         }
         usedNames.add(chineseName);
 
+        if (baseName && usedBaseNames.has(baseName)) {
+            showMessage(`内部标识符 "${baseName}" 重复，请修改后再保存。`, 'error');
+            baseNameInput && baseNameInput.focus();
+            return;
+        }
+        if (baseName) usedBaseNames.add(baseName);
+
         const maxOutputTokens = parseInt(tokensInput && tokensInput.value, 10);
         const temperature = parseFloat(tempInput && tempInput.value);
 
@@ -407,22 +464,28 @@ async function saveAgentAssistantConfig() {
         statusSpan.className = 'status-message info';
     }
 
+    const payload = {
+        maxHistoryRounds,
+        contextTtlHours,
+        globalSystemPrompt,
+        agents
+    };
+
+    if (delegationMaxRounds != null && !Number.isNaN(delegationMaxRounds)) payload.delegationMaxRounds = delegationMaxRounds;
+    if (delegationTimeout != null && !Number.isNaN(delegationTimeout)) payload.delegationTimeout = delegationTimeout;
+    if (delegationSystemPrompt != null) payload.delegationSystemPrompt = delegationSystemPrompt;
+    if (delegationHeartbeatPrompt != null) payload.delegationHeartbeatPrompt = delegationHeartbeatPrompt;
+
     try {
         await apiFetch(`${API_BASE_URL}/agent-assistant/config`, {
             method: 'POST',
-            body: JSON.stringify({
-                maxHistoryRounds,
-                contextTtlHours,
-                globalSystemPrompt,
-                agents
-            })
+            body: JSON.stringify(payload)
         });
         showMessage('AgentAssistant 配置已保存。', 'success');
         if (statusSpan) {
             statusSpan.textContent = '保存成功。';
             statusSpan.className = 'status-message success';
         }
-        // 重新加载一次，确保界面与实际文件完全同步
         await loadAgentAssistantConfig();
     } catch (error) {
         if (statusSpan) {
@@ -431,5 +494,3 @@ async function saveAgentAssistantConfig() {
         }
     }
 }
-
-

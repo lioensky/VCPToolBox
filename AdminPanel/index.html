@@ -782,6 +782,53 @@
                         </div>
                     </div>
 
+                    <div class="aa-delegation-settings">
+                        <h3>异步委托模式配置</h3>
+                        <p class="aa-hint" style="margin-bottom: 12px;">
+                            委托模式允许将长时间运行的任务交给 Agent 在后台自主执行。以下参数控制委托的执行边界。
+                        </p>
+                        <div class="aa-global-grid">
+                            <div class="aa-global-item">
+                                <label for="aa-delegation-max-rounds">
+                                    最大循环轮数
+                                </label>
+                                <input type="number" id="aa-delegation-max-rounds" min="1" max="100" step="1" placeholder="例如：15">
+                                <p class="aa-hint">
+                                    委托任务的最大对话轮数，防止死循环。
+                                </p>
+                            </div>
+                            <div class="aa-global-item">
+                                <label for="aa-delegation-timeout">
+                                    最长执行时间（秒）
+                                </label>
+                                <input type="number" id="aa-delegation-timeout" min="30" max="3600" step="1" placeholder="例如：300">
+                                <p class="aa-hint">
+                                    委托任务超过此时间后将自动终止。
+                                </p>
+                            </div>
+                        </div>
+                        <div class="aa-global-item-full">
+                            <label for="aa-delegation-system-prompt">
+                                委托任务系统提示词（可选）
+                            </label>
+                            <textarea id="aa-delegation-system-prompt" rows="4"
+                                placeholder="自定义委托模式下注入给 Agent 的系统提示词。可用变量：{{SenderName}}、{{TaskPrompt}}"></textarea>
+                            <p class="aa-hint">
+                                留空则使用内置默认提示词。支持 <code>{{SenderName}}</code> 和 <code>{{TaskPrompt}}</code> 占位符。
+                            </p>
+                        </div>
+                        <div class="aa-global-item-full">
+                            <label for="aa-delegation-heartbeat-prompt">
+                                委托心跳提示词（可选）
+                            </label>
+                            <textarea id="aa-delegation-heartbeat-prompt" rows="2"
+                                placeholder="委托任务进行中，每轮追加给 Agent 的催促提示词。"></textarea>
+                            <p class="aa-hint">
+                                留空则使用内置默认提示词。每个心跳轮次会自动附加此提示以推动任务继续执行。
+                            </p>
+                        </div>
+                    </div>
+
                     <div class="aa-agents-header">
                         <h3>已配置的 Agent 助手</h3>
                         <div class="aa-agents-actions">

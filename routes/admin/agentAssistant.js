@@ -17,6 +17,10 @@ module.exports = function(options) {
             maxHistoryRounds: parseInt(envConfig.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS || '7', 10),
             contextTtlHours: parseInt(envConfig.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10),
             globalSystemPrompt: envConfig.AGENT_ALL_SYSTEM_PROMPT || '',
+            delegationMaxRounds: parseInt(envConfig.DELEGATION_MAX_ROUNDS || '15', 10),
+            delegationTimeout: parseInt(envConfig.DELEGATION_TIMEOUT || '300000', 10),
+            delegationSystemPrompt: envConfig.DELEGATION_SYSTEM_PROMPT || '',
+            delegationHeartbeatPrompt: envConfig.DELEGATION_HEARTBEAT_PROMPT || '',
             agents: []
         };
 
@@ -49,27 +53,40 @@ module.exports = function(options) {
     function mapJsonToEnv(json, existingEnv) {
         const newEnv = { ...existingEnv };
 
-        // 更新全局设置
+        // 先清理旧的 AGENT_* 键，防止删除 Agent 后残留
+        const preservedKeys = new Set([
+            'AGENT_ALL_SYSTEM_PROMPT',
+            'AGENT_ASSISTANT_MAX_HISTORY_ROUNDS',
+            'AGENT_ASSISTANT_CONTEXT_TTL_HOURS',
+        ]);
+        for (const key in newEnv) {
+            if (key.startsWith('AGENT_') && !preservedKeys.has(key)) {
+                delete newEnv[key];
+            }
+        }
+
+        // 清理完毕后设置全局配置，确保不被清理循环误删
         newEnv.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS = json.maxHistoryRounds;
         newEnv.AGENT_ASSISTANT_CONTEXT_TTL_HOURS = json.contextTtlHours;
         newEnv.AGENT_ALL_SYSTEM_PROMPT = json.globalSystemPrompt;
 
-        // 清理旧的 Agent 键，防止删除 Agent 后残留
-        for (const key in newEnv) {
-            if (key.startsWith('AGENT_')) {
-                // 排除全局提示词键，因为它会被重新赋值
-                if (key !== 'AGENT_ALL_SYSTEM_PROMPT') {
-                    delete newEnv[key];
-                }
-            }
-        }
+        // 委托模式配置
+        if (json.delegationMaxRounds != null) newEnv.DELEGATION_MAX_ROUNDS = json.delegationMaxRounds;
+        if (json.delegationTimeout != null) newEnv.DELEGATION_TIMEOUT = json.delegationTimeout;
+        if (json.delegationSystemPrompt != null) newEnv.DELEGATION_SYSTEM_PROMPT = json.delegationSystemPrompt;
+        if (json.delegationHeartbeatPrompt != null) newEnv.DELEGATION_HEARTBEAT_PROMPT = json.delegationHeartbeatPrompt;
 
         // 重新注入 Agent 配置
+        const usedBaseNames = new Set();
         if (Array.isArray(json.agents)) {
             json.agents.forEach(agent => {
-                let baseName = agent.baseName || agent.chineseName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
-                if (!baseName) baseName = 'UNKNOWN';
-                
+                let baseName = sanitizeBaseName(agent.baseName) || sanitizeBaseName(agent.chineseName) || '';
+
+                if (!baseName || usedBaseNames.has(baseName)) {
+                    baseName = (baseName || 'AGENT') + '_' + Date.now().toString(36).toUpperCase();
+                }
+                usedBaseNames.add(baseName);
+
                 newEnv[`AGENT_${baseName}_MODEL_ID`] = agent.modelId;
                 newEnv[`AGENT_${baseName}_CHINESE_NAME`] = agent.chineseName;
                 newEnv[`AGENT_${baseName}_SYSTEM_PROMPT`] = agent.systemPrompt;
@@ -83,18 +100,90 @@ module.exports = function(options) {
     }
 
     /**
-     * 将对象转换为 Dotenv 文本格式
+     * 将任意名称转为合法的 env baseName（仅保留 ASCII 字母数字和下划线）
+     * 如果输入是纯非 ASCII 文本，返回空字符串以便调用方兜底处理
+     */
+    function sanitizeBaseName(name) {
+        if (!name) return '';
+        const sanitized = String(name).toUpperCase().replace(/[^A-Z0-9_]/g, '').replace(/^_+|_+$/g, '');
+        return sanitized || '';
+    }
+
+    /**
+     * 将对象转换为带分区注释的 Dotenv 文本格式
      */
     function serializeEnv(envObj) {
-        return Object.entries(envObj)
-            .map(([key, value]) => {
-                if (typeof value === 'string' && (value.includes('\n') || value.includes('"'))) {
-                    // 处理包含引号或换行的字符串
-                    return `${key}="${value.replace(/"/g, '\\"')}"`;
+        const lines = [];
+        const globalKeys = [];
+        const delegationKeys = [];
+        const agentGroups = new Map(); // baseName -> [key, ...]
+        const otherKeys = [];
+
+        for (const key of Object.keys(envObj)) {
+            if (key === 'AGENT_ASSISTANT_MAX_HISTORY_ROUNDS' || key === 'AGENT_ASSISTANT_CONTEXT_TTL_HOURS' || key === 'AGENT_ALL_SYSTEM_PROMPT') {
+                globalKeys.push(key);
+            } else if (key.startsWith('DELEGATION_')) {
+                delegationKeys.push(key);
+            } else if (key.startsWith('AGENT_')) {
+                const match = key.match(/^AGENT_([A-Z0-9_]+?)_(MODEL_ID|CHINESE_NAME|SYSTEM_PROMPT|MAX_OUTPUT_TOKENS|TEMPERATURE|DESCRIPTION)$/i);
+                if (match) {
+                    const baseName = match[1];
+                    if (!agentGroups.has(baseName)) agentGroups.set(baseName, []);
+                    agentGroups.get(baseName).push(key);
+                } else {
+                    otherKeys.push(key);
                 }
-                return `${key}=${value}`;
-            })
-            .join('\n');
+            } else {
+                otherKeys.push(key);
+            }
+        }
+
+        lines.push('# AgentAssistant 插件配置（由管理面板自动生成）');
+        lines.push('# --------------------------------------------------');
+        lines.push('');
+
+        if (globalKeys.length > 0) {
+            lines.push('# 全局会话设置');
+            globalKeys.forEach(k => lines.push(formatEnvLine(k, envObj[k])));
+            lines.push('');
+        }
+
+        if (otherKeys.length > 0) {
+            otherKeys.forEach(k => lines.push(formatEnvLine(k, envObj[k])));
+            lines.push('');
+        }
+
+        let agentIndex = 1;
+        for (const [baseName, keys] of agentGroups) {
+            const chineseNameKey = `AGENT_${baseName}_CHINESE_NAME`;
+            const displayName = envObj[chineseNameKey] || baseName;
+            lines.push(`# Agent ${agentIndex}: ${displayName} (${baseName})`);
+            keys.sort((a, b) => {
+                const order = ['MODEL_ID', 'CHINESE_NAME', 'SYSTEM_PROMPT', 'MAX_OUTPUT_TOKENS', 'TEMPERATURE', 'DESCRIPTION'];
+                const suffixA = a.replace(`AGENT_${baseName}_`, '');
+                const suffixB = b.replace(`AGENT_${baseName}_`, '');
+                return order.indexOf(suffixA) - order.indexOf(suffixB);
+            });
+            keys.forEach(k => lines.push(formatEnvLine(k, envObj[k])));
+            lines.push('');
+            agentIndex++;
+        }
+
+        if (delegationKeys.length > 0) {
+            lines.push('# --- 异步委托模式 (Task Delegation) 配置 ---');
+            delegationKeys.forEach(k => lines.push(formatEnvLine(k, envObj[k])));
+            lines.push('');
+        }
+
+        return lines.join('\n');
+    }
+
+    function formatEnvLine(key, value) {
+        const strValue = String(value ?? '');
+        if (strValue.includes('\n') || strValue.includes('"') || strValue.includes("'")) {
+            return `${key}="${strValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        }
+        return `${key}=${strValue}`;
     }
 
     router.get('/agent-assistant/config', async (req, res) => {
