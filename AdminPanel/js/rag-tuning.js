@@ -61,6 +61,60 @@ const PARAM_METADATA = {
             "logic": "缩放值调高：对对话中的“新信息”反应更剧烈，检索结果迅速转向新出现的关键词；缩放值调低：算法更迟钝，倾向于维持长期语义重心。",
             "range": "建议区间: 基础值 0.2~0.8；缩放值 1.0~2.5"
         },
+        "spikeRouting": {
+            "name": "虫洞脉冲路由 (V7)",
+            "meaning": "控制认知拓扑网络中电信号传播的路径、动量和虫洞触发。",
+            "logic": "V7 核心引擎，负责处理节点动量衰减与穿透。",
+            "range": "包含 8 个子参数，见下方详细说明。"
+        },
+        "spikeRouting.maxSafeHops": {
+            "name": "最高安全跳数",
+            "meaning": "限制网络中任何一条脉冲路径绝对能够行进的最大边数，作为防止图环路死循环的最终安全阀。",
+            "logic": "设得过低（如 1 或 2）会截断虫洞的长距穿透；设得过高但在 baseMomentum 用尽前也是无害的，但如果触发了连续虫洞，可能会导致算力消耗。",
+            "range": "建议区间: 3 ~ 6 (整数)"
+        },
+        "spikeRouting.maxEmergentNodes": {
+            "name": "极值截断节点数",
+            "meaning": "在经历了所有脉冲扩散后，最终允许“涌现”并重新注入召回阶段的无搜索源标签上限（防止污染搜索空间）。",
+            "logic": "按聚合能量排序后的 Top K 截断。调大增加多样性，调小增加纯净度。",
+            "range": "建议区间: 10 ~ 100 (默认 50)"
+        },
+        "spikeRouting.maxNeighborsPerNode": {
+            "name": "最大突触扇出",
+            "meaning": "任何节点向下放电时，最多向关联最紧密的 N 个邻居传播。",
+            "logic": "决定了网络的“宽度”与“发散规模”。调大找得多但杂点多且慢。",
+            "range": "建议区间: 10 ~ 40 (默认 20)"
+        },
+        "spikeRouting.baseMomentum": {
+            "name": "初始起跳动量 (TTL)",
+            "meaning": "查询命中原始种子标签时赋予的传播点数 (Time-to-Live)。",
+            "logic": "常规传播每次扣除 1.0 点动量。设为 2.0 意味着稠密区只能传两步。如果你希望它只能传一步就枯竭，设置 1.0。虫洞跳跃不扣除该点数。",
+            "range": "建议区间: 1.0 ~ 5.0"
+        },
+        "spikeRouting.tensionThreshold": {
+            "name": "触发虫洞张力阈值",
+            "meaning": "张力 = 边权 (coocWeight) * 目标节点的残差 (neighborResidual)。当目标节点新颖度极高时达到该阈值。",
+            "logic": "这个参数最关键。调高(>1.5)会导致极难触发跨域跳跃，算法变成乖宝宝；调低(<0.6)会导致遍地都是虫洞，系统过度脑补、疯狂漂移发散。",
+            "range": "建议区间: 0.5 ~ 3.0 (高风险参数)"
+        },
+        "spikeRouting.firingThreshold": {
+            "name": "底层放电阈值",
+            "meaning": "节点能够向下传递电波所需的最低内部能量门槛。",
+            "logic": "防止末端极其微弱的信号继续占用算力做无意义衍生。",
+            "range": "建议区间: 0.05 ~ 0.20"
+        },
+        "spikeRouting.baseDecay": {
+            "name": "常规稠密区衰减",
+            "meaning": "在相同话题的同质化集群内传播时，能量的折损倍率（保留比例）。",
+            "logic": "数值越小衰减越快（0.25指剩下25%）。为了压制稠密区的无限回声，必须设得很低（< 0.4）。代表“剥削 (Exploitation)”。",
+            "range": "建议区间: 0.10 ~ 0.40"
+        },
+        "spikeRouting.wormholeDecay": {
+            "name": "特权虫洞区衰减",
+            "meaning": "脉冲刺透语义屏障进入高新颖度、高残差节点时采取的衰减策略（保留比例）。",
+            "logic": "数值设定应明显高于 baseDecay。让这股冲破稠密陷阱的脉冲保留大部分能量。代表“探索 (Exploration)”。",
+            "range": "建议区间: 0.60 ~ 0.90"
+        },
         "dynamicBoostRange": {
             "name": "动态增强修正",
             "meaning": "后端根据 EPA（逻辑深度/共振）分析结果，对前端传入权重的二次修正。",
@@ -148,6 +202,12 @@ function renderParams(container, params) {
         groupEl.appendChild(gridContainer);
 
         for (const [key, value] of Object.entries(groupParams)) {
+            let metaKey = key;
+            if (groupName === 'KnowledgeBaseManager' && typeof value === 'object' && value !== null && key !== 'languageCompensator') {
+                // 原有的嵌套逻辑保持，但对于 spikeRouting 内部的渲染已经在 handleSave 等逻辑中处理
+                // 这里我们要修改的是 renderParams 循环内部对 subKey 的元数据关联
+            }
+
             const meta = PARAM_METADATA[groupName]?.[key] || { name: key };
             const itemEl = document.createElement('div');
             itemEl.className = 'param-item';
@@ -186,16 +246,50 @@ function renderParams(container, params) {
                 inputRow.appendChild(rangeContainer);
             } else if (typeof value === 'object' && value !== null) {
                 const subGroup = document.createElement('div');
-                subGroup.className = 'param-nested-group';
+                subGroup.className = 'param-nested-group-grid';
                 
                 for (const [subKey, subVal] of Object.entries(value)) {
+                    const subMetaKey = `${key}.${subKey}`;
+                    const subMeta = PARAM_METADATA[groupName]?.[subMetaKey] || { name: subKey };
+                    
+                    // 智能推断步长与范围
+                    let min = 0, max = 100, step = 1;
+                    if (subKey.toLowerCase().includes('decay') || subKey.toLowerCase().includes('threshold')) {
+                        min = 0; max = subKey.includes('tension') ? 5 : 1; step = 0.01;
+                    } else if (subKey.toLowerCase().includes('hops') || subKey.toLowerCase().includes('nodes') || subKey.toLowerCase().includes('neighbors')) {
+                        min = 1; max = subKey.includes('nodes') ? 200 : 20; step = 1;
+                    } else if (subKey.toLowerCase().includes('momentum')) {
+                        min = 1; max = 10; step = 0.1;
+                    }
+
                     const subItem = document.createElement('div');
-                    subItem.className = 'sub-param-item';
+                    subItem.className = 'sub-param-card';
                     subItem.innerHTML = `
-                        <label>${subKey}</label>
-                        <input type="number" step="0.001" value="${subVal}"
-                               data-group="${groupName}" data-key="${key}" data-subkey="${subKey}">
+                        <div class="sub-param-header">
+                            <span class="sub-param-name">${subKey}</span>
+                            <span class="sub-param-label">${subMeta.name}</span>
+                            ${subMeta.meaning ? `<div class="sub-param-help" title="${subMeta.meaning}\n\n建议区间：${subMeta.range || 'N/A'}">
+                                <span class="material-symbols-outlined">help_outline</span>
+                            </div>` : ''}
+                        </div>
+                        <div class="sub-param-controls">
+                            <input type="range" class="sub-range-slider" min="${min}" max="${max}" step="${step}" value="${subVal}">
+                            <input type="number" class="sub-number-input" step="${step}" value="${subVal}"
+                                   data-group="${groupName}" data-key="${key}" data-subkey="${subKey}">
+                        </div>
                     `;
+
+                    // 双向绑定逻辑
+                    const slider = subItem.querySelector('.sub-range-slider');
+                    const numberInput = subItem.querySelector('.sub-number-input');
+                    
+                    slider.addEventListener('input', (e) => {
+                        numberInput.value = e.target.value;
+                    });
+                    numberInput.addEventListener('input', (e) => {
+                        slider.value = e.target.value;
+                    });
+
                     subGroup.appendChild(subItem);
                 }
                 inputRow.appendChild(subGroup);

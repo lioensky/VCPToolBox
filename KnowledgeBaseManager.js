@@ -607,62 +607,84 @@ class KnowledgeBaseManager {
             });
 
             // [4.5] 仿脑认知扩散 (Spike Propagation / Lif-Router)
-            // 🔧 最终形态：融合工程鲁棒性与真实拓扑涌现
+            // 🔧 重构 V7：动量与残差张力驱动的虫洞跃迁 (Wormhole Routing)
             if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
-                // 1. 初始注入：Query 命中的种子 Tags 及其初始"膜电位" 
-                const activeNodes = new Map();
+                const srConfig = config.spikeRouting || {};
+                const MAX_SAFE_HOPS = srConfig.maxSafeHops ?? 4;
+                const BASE_MOMENTUM = srConfig.baseMomentum ?? 2.0;
+                const FIRING_THRESHOLD = srConfig.firingThreshold ?? 0.10;
+                const BASE_DECAY = srConfig.baseDecay ?? 0.25;
+                const WORMHOLE_DECAY = srConfig.wormholeDecay ?? 0.70;
+                const TENSION_THRESHOLD = srConfig.tensionThreshold ?? 1.0;
+                const MAX_EMERGENT_NODES = srConfig.maxEmergentNodes ?? 50;
+                const MAX_NEIGHBORS_PER_NODE = srConfig.maxNeighborsPerNode ?? 20;
+
+                // 1. 初始注入：带有“动量(TTL)”的脉冲发射器
+                let activeSpikes = new Map();      // id -> { energy, momentum }
+                const accumulatedEnergy = new Map(); // id -> energySum 全局能量累加器
+                
                 allTags.forEach(t => {
-                    activeNodes.set(t.id, t.adjustedWeight);
+                    activeSpikes.set(t.id, { energy: t.adjustedWeight, momentum: BASE_MOMENTUM });
+                    accumulatedEnergy.set(t.id, t.adjustedWeight);
                 });
 
-                const MAX_HOPS = 2;                 // 两跳扩散，兼顾深度与性能
-                const FIRING_THRESHOLD = 0.10;      // 提高触发门槛，抑制微弱噪音
-                const DECAY_FACTOR = 0.3;           // 极强的突触衰减，防止能量无限放大
-                const MAX_EMERGENT_NODES = 50;      // 🔧 老工程师的智慧：涌现节点总数强截断
-                const MAX_NEIGHBORS_PER_NODE = 20;  // 限制单节点扇出
+                // 2. 迭代扩散网络 (基于动量与张力驱动)
+                for (let hop = 0; hop < MAX_SAFE_HOPS; hop++) {
+                    const nextSpikes = new Map();
+                    let propagated = false;
 
-                // 2. 迭代扩散网络
-                for (let hop = 0; hop < MAX_HOPS; hop++) {
-                    const nextWave = new Map();
-
-                    for (const [nodeId, energy] of activeNodes.entries()) {
-                        // 🌟 莱恩/小克原则：所有节点，只要达到电位阈值，都可以向下放电！这就是拓扑涟漪！
-                        if (energy < FIRING_THRESHOLD) continue;
+                    for (const [nodeId, spike] of activeSpikes.entries()) {
+                        if (spike.energy < FIRING_THRESHOLD || spike.momentum < 0) continue;
 
                         const synapses = this.tagCooccurrenceMatrix.get(nodeId);
                         if (!synapses) continue;
 
-                        // 提取前 N 个最强相关突触
                         const sortedSynapses = Array.from(synapses.entries())
                             .sort((a, b) => b[1] - a[1])
                             .slice(0, MAX_NEIGHBORS_PER_NODE);
 
-                        // 脉冲传递
                         for (const [neighborId, coocWeight] of sortedSynapses) {
-                            // TagMemo V7: 利用内生残差作为节点增益
-                            const nodeResidual = this.tagIntrinsicResiduals?.get(nodeId) ?? 1.0;
-                            const injectedCurrent = energy * coocWeight * DECAY_FACTOR * nodeResidual;
+                            // TagMemo V7: Wormhole Routing
+                            // 张力 = 目标节点的残差新颖度 * 边权重
+                            const neighborResidual = this.tagIntrinsicResiduals?.get(neighborId) ?? 1.0;
+                            const tension = coocWeight * neighborResidual;
                             
-                            // 🔧 老工程师的智慧：微电流直接丢弃，极大缩减 Map 大小与计算量
-                            if (injectedCurrent < 0.01) continue; 
+                            // 虫洞判定
+                            const isWormhole = tension >= TENSION_THRESHOLD;
+                            
+                            // 能量衰减与动量消耗策略
+                            const decayFactor = isWormhole ? WORMHOLE_DECAY : BASE_DECAY;
+                            const momentumCost = isWormhole ? 0 : 1.0; // 穿越虫洞豁免动量消耗
 
-                            const accumulated = nextWave.get(neighborId) || 0;
-                            nextWave.set(neighborId, accumulated + injectedCurrent);
+                            const injectedCurrent = spike.energy * coocWeight * decayFactor;
+                            
+                            if (injectedCurrent < 0.01) continue;
+                            
+                            const nextMomentum = spike.momentum - momentumCost;
+                            if (nextMomentum < 0 && !isWormhole) continue; // 动量耗尽且非虫洞，则停止传播
+
+                            // 聚合到达同一节点的脉冲
+                            const existing = nextSpikes.get(neighborId);
+                            if (existing) {
+                                existing.energy += injectedCurrent;
+                                existing.momentum = Math.max(existing.momentum, nextMomentum); // 继承最优动量
+                            } else {
+                                nextSpikes.set(neighborId, { energy: injectedCurrent, momentum: nextMomentum });
+                            }
                         }
                     }
 
                     // 3. 将新一波激发的电流叠加到全局激活总图中
-                    let propagated = false;
-                    for (const [nid, newEnergy] of nextWave.entries()) {
-                        const oldEnergy = activeNodes.get(nid) || 0;
-                        activeNodes.set(nid, oldEnergy + newEnergy);
-
-                        if (newEnergy > 0.01) {
-                            propagated = true;
-                        }
+                    for (const [nid, newSpike] of nextSpikes.entries()) {
+                        const currentSum = accumulatedEnergy.get(nid) || 0;
+                        accumulatedEnergy.set(nid, currentSum + newSpike.energy);
+                        if (newSpike.energy > 0.01) propagated = true;
                     }
 
                     if (!propagated) break;
+                    
+                    // 下一跳的火种
+                    activeSpikes = nextSpikes;
                 }
 
                 // 4. 将涌现出来的高电位节点，重新塞回到 allTags
@@ -673,7 +695,7 @@ class KnowledgeBaseManager {
                 const emergentCandidates = [];
                 seenTagIds.clear();
 
-                for (const [nid, emergentEnergy] of activeNodes.entries()) {
+                for (const [nid, emergentEnergy] of accumulatedEnergy.entries()) {
                     if (allTagsMap.has(nid)) {
                         // 原始就有这个 Tag (种子节点)
                         const existingTag = allTagsMap.get(nid);
@@ -691,7 +713,7 @@ class KnowledgeBaseManager {
                     }
                 }
                 
-                // 🔧 老工程师的智慧：只保留能量最高的 Top-K 涌现节点，防止污染下游去重阶段的语义空间
+                // 🔧 涌现节点强截断
                 emergentCandidates.sort((a, b) => b.adjustedWeight - a.adjustedWeight);
                 const topEmergent = emergentCandidates.slice(0, MAX_EMERGENT_NODES);
                 topEmergent.forEach(t => {
@@ -700,7 +722,7 @@ class KnowledgeBaseManager {
                 });
 
                 if (debug && topEmergent.length > 0) {
-                    console.log(`[TagMemo-V6 Spike] Seeds=${allTagsMap.size}, Emergent=${topEmergent.length} (capped from ${emergentCandidates.length}), Total=${newAllTags.length}`);
+                    console.log(`[TagMemo-V7 Spike] Seeds=${allTagsMap.size}, Emergent=${topEmergent.length} (capped from ${emergentCandidates.length}), Total=${newAllTags.length}`);
                 }
                 
                 // 将 allTags 指向经历过脉冲洗礼的完整网络

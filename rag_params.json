@@ -13,6 +13,16 @@
     "metaThinkingWeights": [0.8, 0.2]
   },
   "KnowledgeBaseManager": {
+    "spikeRouting": {
+      "maxSafeHops": 4,
+      "baseMomentum": 2.0,
+      "firingThreshold": 0.10,
+      "baseDecay": 0.25,
+      "wormholeDecay": 0.70,
+      "tensionThreshold": 1.0,
+      "maxEmergentNodes": 50,
+      "maxNeighborsPerNode": 20
+    },
     "activationMultiplier": [0.5, 1.5],
     "dynamicBoostRange": [0.3, 2.0],
     "coreBoostRange": [1.20, 1.40],

@@ -4099,3 +4099,111 @@ input:checked + .switch-slider:before {
 .primary-btn:active {
     transform: translateY(0);
 }
+
+/* --- RAG Tuning UI Revamp (Driver Cockpit Mode) --- */
+.param-nested-group-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 20px;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    margin-top: 15px;
+}
+
+.sub-param-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 16px;
+    transition: all 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.sub-param-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--highlight-text);
+    transform: translateY(-4px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+.sub-param-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    position: relative;
+}
+
+.sub-param-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+    color: var(--secondary-text);
+}
+
+.sub-param-label {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--primary-text);
+}
+
+.sub-param-help {
+    margin-left: auto;
+    cursor: help;
+    color: var(--highlight-text);
+    opacity: 0.6;
+}
+
+.sub-param-help:hover {
+    opacity: 1;
+}
+
+.sub-param-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+/* Custom Range Slider Styling */
+.sub-range-slider {
+    flex-grow: 1;
+    -webkit-appearance: none;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    outline: none;
+}
+
+.sub-range-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--highlight-text);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 10px var(--primary-color-translucent);
+    transition: transform 0.1s ease;
+}
+
+.sub-range-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+.sub-number-input {
+    width: 70px;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    color: var(--highlight-text);
+    font-size: 0.9em;
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.sub-number-input:focus {
+    border-color: var(--highlight-text);
+    outline: none;
+}
