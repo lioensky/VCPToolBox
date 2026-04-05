@@ -65,7 +65,7 @@ class VCPTavern {
             if (systemMsg && systemMsg.content) {
                 // 匹配 Name: xxx, Char: xxx, 角色: xxx 等常见格式
                 // 忽略大小写，取第一行非空内容
-                const nameMatch = systemMsg.content.match(/(?:Name|Char|Character|姓名|角色)\s*[:：]\s*([^\n\r]+)/i);
+                const nameMatch = systemMsg.content.match(/(?:Name|Char|Character|姓名|角色)\s*[:：]\s*([^\n\r]+)/i) || systemMsg.content.match(/\{\{agent:(\w+)\}\}/i);
                 if (nameMatch && nameMatch[1]) {
                     charId = nameMatch[1].trim();
                 } else {
