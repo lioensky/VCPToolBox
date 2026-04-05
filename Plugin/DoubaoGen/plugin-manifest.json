@@ -11,10 +11,12 @@
     "command": "node DoubaoGen.js"
   },
   "communication": {
-    "protocol": "stdio"
+    "protocol": "stdio",
+    "timeout": 150000
   },
   "configSchema": {
-    "VOLCENGINE_API_KEY": "string"
+    "VOLCENGINE_API_KEY": "string",
+    "DebugMode": "boolean"
   },
   "capabilities": {
     "invocationCommands": [
