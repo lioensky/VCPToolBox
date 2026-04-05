@@ -16,7 +16,7 @@ function resolveTvsDir() {
     : path.resolve(__dirname, '..', normalizedPath);
 }
 
-const FOLD_REGEX = /^\[===vcp_fold:\s*([0-9.]+)\s*===\]\s*$/m;
+const FOLD_REGEX = /^\[===vcp_fold:\s*([0-9.]+)(?:\s*::desc:\s*(.*?)\s*)?===\]\s*$/;
 
 class ToolboxManager {
   constructor() {
@@ -133,7 +133,7 @@ class ToolboxManager {
       if (cached && cached.mtimeMs === stat.mtimeMs) {
         return {
           ...cached.foldObj,
-          plugin_description: item.description || cached.foldObj.plugin_description || ''
+          plugin_description: item.description || cached.foldObj.plugin_description || `Toolbox ${alias}`
         };
       }
 
@@ -142,6 +142,7 @@ class ToolboxManager {
 
       const foldObj = {
         vcp_dynamic_fold: true,
+        dynamic_fold_strategy: 'toolbox_block_similarity',
         plugin_description: item.description || `Toolbox ${alias}`,
         fold_blocks
       };
@@ -161,7 +162,7 @@ class ToolboxManager {
     if (typeof rawValue === 'string') {
       return {
         file: rawValue,
-        description: `Toolbox ${alias}`
+        description: ''
       };
     }
 
@@ -170,7 +171,7 @@ class ToolboxManager {
         file: rawValue.file,
         description: typeof rawValue.description === 'string' && rawValue.description.trim()
           ? rawValue.description.trim()
-          : `Toolbox ${alias}`
+          : ''
       };
     }
 
@@ -190,68 +191,57 @@ class ToolboxManager {
   _parseFoldBlocks(content) {
     const blocks = [];
     let currentThreshold = 0.0;
+    let currentDescription = '';
     let currentContent = [];
+    let hasOpenedFoldBlock = false;
 
     const lines = String(content || '').split('\n');
     for (const line of lines) {
       const match = line.match(FOLD_REGEX);
       if (match) {
-        if (currentContent.length > 0 || currentThreshold === 0.0) {
+        if (hasOpenedFoldBlock || currentContent.length > 0) {
           blocks.push({
             threshold: currentThreshold,
+            description: currentDescription,
             content: currentContent.join('\n').trim()
           });
         }
 
         currentThreshold = parseFloat(match[1]);
         if (Number.isNaN(currentThreshold)) currentThreshold = 0.0;
+        currentDescription = typeof match[2] === 'string' ? match[2].trim() : '';
         currentContent = [];
+        hasOpenedFoldBlock = true;
       } else {
         currentContent.push(line);
       }
     }
 
-    if (currentContent.length > 0) {
+    if (hasOpenedFoldBlock || currentContent.length > 0) {
       blocks.push({
         threshold: currentThreshold,
+        description: currentDescription,
         content: currentContent.join('\n').trim()
       });
     }
 
-    const uniqueThresholds = [...new Set(blocks.map(b => b.threshold))].sort((a, b) => b - a);
-
-    if (uniqueThresholds.length === 0) {
-      uniqueThresholds.push(0.0);
-      blocks.push({ threshold: 0.0, content: '配置文件中未找到有效内容。' });
+    const validBlocks = blocks.filter(block => block && typeof block.content === 'string');
+    if (validBlocks.length === 0) {
+      return [{ threshold: 0.0, description: '', content: '配置文件中未找到有效内容。' }];
     }
 
-    const foldBlocks = [];
-    for (const t of uniqueThresholds) {
-      const includedBlocks = blocks.filter(b => b.threshold <= t);
-      const hiddenBlocksCount = blocks.filter(b => b.threshold > t).length;
-
-      let combinedContent = includedBlocks
-        .map(b => b.content)
-        .filter(Boolean)
-        .join('\n\n---\n\n');
-
-      if (hiddenBlocksCount > 0) {
-        combinedContent += `\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
-      }
-
-      foldBlocks.push({ threshold: t, content: combinedContent });
-    }
-
-    return foldBlocks;
+    return validBlocks;
   }
 
   _buildErrorFoldObject(errorMessage, alias, description = '') {
     return {
       vcp_dynamic_fold: true,
+      dynamic_fold_strategy: 'toolbox_block_similarity',
       plugin_description: description || `Toolbox ${alias}`,
       fold_blocks: [
         {
           threshold: 0.0,
+          description: '',
           content: `[ToolboxManager] ${errorMessage}`
         }
       ]

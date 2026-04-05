@@ -151,10 +151,11 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         return `[无效的动态折叠数据结构: ${placeholderKey}]`;
     }
 
-    // 按阈值降序排序 (0.7, 0.5, 0.0)
-    const blocks = [...foldObj.fold_blocks].sort((a, b) => b.threshold - a.threshold);
-    // 最低阈值区块作为后备 (Fallback)
-    const fallbackBlock = blocks[blocks.length - 1];
+    const blocks = foldObj.fold_blocks
+        .filter(block => block && typeof block.content === 'string');
+    const blocksByThreshold = [...blocks].sort((a, b) => (b.threshold || 0) - (a.threshold || 0));
+    const fallbackBlock = [...blocksByThreshold].reverse().find(block => block.content)
+        || { threshold: 0.0, content: '' };
 
     try {
         const ragPlugin = context.pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
@@ -163,9 +164,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             return fallbackBlock.content;
         }
 
-        // 提取最后一个 User 和 AI 的消息作为核心比对内容 (原子级复刻 RAGDiaryPlugin 逻辑以命中向量缓存)
         const contextMessages = context.messages || [];
-
         const lastUserMessageIndex = contextMessages.findLastIndex(m => {
             if (m.role !== 'user') return false;
             const content = typeof m.content === 'string'
@@ -197,7 +196,6 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             return fallbackBlock.content;
         }
 
-        // 调用 RAGDiaryPlugin 的统一净化方法，确保文本与 RAG 插件完全一致 (命中缓存的关键)
         if (typeof ragPlugin.sanitizeForEmbedding === 'function') {
             if (userContent) {
                 const originalUserContent = userContent;
@@ -214,7 +212,6 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
                 }
             }
         } else {
-            // 后备逻辑：如果插件版本较旧，尝试使用旧的私有方法
             if (typeof ragPlugin._stripSystemNotification === 'function') {
                 if (userContent) {
                     userContent = ragPlugin._stripSystemNotification(userContent);
@@ -230,7 +227,6 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             }
         }
 
-        // 🌟 对齐 RAGDiaryPlugin 的加权平均逻辑以命中缓存
         const config = ragPlugin.ragParams?.RAGDiaryPlugin || {};
         const mainWeights = config.mainSearchWeights || [0.7, 0.3];
 
@@ -245,53 +241,128 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             return fallbackBlock.content;
         }
 
-        // 计算插件描述向量 (使用 KBM 的 SQLite 持久化缓存)
-        const descText = foldObj.plugin_description || placeholderKey;
-        let descVector = null;
-        if (ragPlugin.vectorDBManager && typeof ragPlugin.vectorDBManager.getPluginDescriptionVector === 'function') {
-            descVector = await ragPlugin.vectorDBManager.getPluginDescriptionVector(
-                descText,
-                // 必须绑定 this 到 ragPlugin 避免上下文丢失
-                ragPlugin.getSingleEmbeddingCached.bind(ragPlugin)
-            );
-        } else {
-            // 后备：没有 SQLite 时使用自带内存缓存
-            descVector = await ragPlugin.getSingleEmbeddingCached(descText);
-        }
+        const vectorCache = new Map();
+        const getDescriptionVector = async (descriptionText) => {
+            const key = String(descriptionText || '').trim();
+            if (!key) return null;
+            if (vectorCache.has(key)) return vectorCache.get(key);
 
-        if (!descVector) {
-            if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取插件描述向量失败，返回基础内容 (${placeholderKey})`);
+            let descVector = null;
+            if (ragPlugin.vectorDBManager && typeof ragPlugin.vectorDBManager.getPluginDescriptionVector === 'function') {
+                descVector = await ragPlugin.vectorDBManager.getPluginDescriptionVector(
+                    key,
+                    ragPlugin.getSingleEmbeddingCached.bind(ragPlugin)
+                );
+            } else {
+                descVector = await ragPlugin.getSingleEmbeddingCached(key);
+            }
+            vectorCache.set(key, descVector);
+            return descVector;
+        };
+
+        const cosineSimilarity = (vectorA, vectorB) => {
+            if (!vectorA || !vectorB) return 0;
+            let dotProduct = 0;
+            let normA = 0;
+            let normB = 0;
+            const len = Math.min(vectorA.length, vectorB.length);
+            for (let i = 0; i < len; i++) {
+                dotProduct += vectorA[i] * vectorB[i];
+                normA += vectorA[i] * vectorA[i];
+                normB += vectorB[i] * vectorB[i];
+            }
+            return (normA === 0 || normB === 0)
+                ? 0
+                : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        };
+
+        const toolboxBlockStrategy = foldObj.dynamic_fold_strategy === 'toolbox_block_similarity';
+
+        let pluginSimilarity = null;
+        const getPluginSimilarity = async () => {
+            if (pluginSimilarity != null) return pluginSimilarity;
+            const descText = foldObj.plugin_description || placeholderKey;
+            const descVector = await getDescriptionVector(descText);
+            if (!descVector) {
+                if (context.DEBUG_MODE) console.log(`[DynamicFold] 获取插件描述向量失败，返回基础内容 (${placeholderKey})`);
+                pluginSimilarity = 0;
+                return pluginSimilarity;
+            }
+            pluginSimilarity = cosineSimilarity(descVector, userVector);
+            if (context.DEBUG_MODE) {
+                console.log(`[DynamicFold] ${placeholderKey} 上下文相似度: ${pluginSimilarity.toFixed(3)} (目标区块数: ${blocks.length})`);
+            }
+            return pluginSimilarity;
+        };
+
+        if (!toolboxBlockStrategy) {
+            const sim = await getPluginSimilarity();
+            for (const block of blocksByThreshold) {
+                const threshold = Number.isFinite(Number(block.threshold)) ? Number(block.threshold) : 0;
+                if (sim >= threshold) {
+                    if (context.DEBUG_MODE) console.log(`[DynamicFold] ${placeholderKey} 命中阈值 >= ${threshold}，展开相关内容。`);
+                    return block.content;
+                }
+            }
             return fallbackBlock.content;
         }
 
-        // 计算余弦相似度
-        let dotProduct = 0;
-        let normA = 0;
-        let normB = 0;
-        const len = Math.min(descVector.length, userVector.length);
-        for (let i = 0; i < len; i++) {
-            dotProduct += descVector[i] * userVector[i];
-            normA += descVector[i] * descVector[i];
-            normB += userVector[i] * userVector[i];
-        }
-        const sim = (normA === 0 || normB === 0) ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        const getThreshold = (block) => Number.isFinite(Number(block.threshold)) ? Number(block.threshold) : 0;
+        const includedContents = [];
+        let hiddenBlocksCount = 0;
 
-        if (context.DEBUG_MODE) {
-            console.log(`[DynamicFold] ${placeholderKey} 上下文相似度: ${sim.toFixed(3)} (目标区块数: ${blocks.length})`);
-        }
-
-        // 匹配折叠阈值
-        for (const block of blocks) {
-            if (sim >= block.threshold) {
-                if (context.DEBUG_MODE) console.log(`[DynamicFold] ${placeholderKey} 命中阈值 >= ${block.threshold}，展开相关内容。`);
-                return block.content;
+        const legacyBlocks = blocks.filter(block => !(typeof block.description === 'string' && block.description.trim()));
+        let activeLegacyBlocks = new Set();
+        if (legacyBlocks.length > 0) {
+            const legacySim = await getPluginSimilarity();
+            const matchedLegacyBlocks = legacyBlocks.filter(block => legacySim >= getThreshold(block));
+            if (matchedLegacyBlocks.length > 0) {
+                activeLegacyBlocks = new Set(matchedLegacyBlocks);
+            } else {
+                const minLegacyThreshold = legacyBlocks.reduce((min, block) => Math.min(min, getThreshold(block)), Infinity);
+                activeLegacyBlocks = new Set(legacyBlocks.filter(block => getThreshold(block) <= minLegacyThreshold));
             }
         }
 
-        return fallbackBlock.content;
+        for (const block of blocks) {
+            const threshold = getThreshold(block);
+            const description = typeof block.description === 'string' ? block.description.trim() : '';
+            const content = block.content;
+
+            if (!description) {
+                if (activeLegacyBlocks.has(block)) {
+                    includedContents.push(content);
+                } else {
+                    hiddenBlocksCount += 1;
+                }
+                continue;
+            }
+
+            const descVector = await getDescriptionVector(description);
+            const sim = cosineSimilarity(descVector, userVector);
+            if (context.DEBUG_MODE) {
+                console.log(`[DynamicFold] ${placeholderKey} 区块描述相似度: ${sim.toFixed(3)} / 阈值 ${threshold.toFixed(3)} / 描述 ${description}`);
+            }
+
+            if (sim >= threshold) {
+                includedContents.push(content);
+            } else {
+                hiddenBlocksCount += 1;
+            }
+        }
+
+        let combinedContent = includedContents.filter(Boolean).join('\n\n---\n\n');
+        if (!combinedContent) {
+            combinedContent = fallbackBlock.content;
+        }
+
+        if (hiddenBlocksCount > 0) {
+            combinedContent += `\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
+        }
+
+        return combinedContent;
     } catch (e) {
         console.error(`[DynamicFold] 处理动态折叠时发生异常 (${placeholderKey}):`, e.message);
-        // 如果出错或者拿不到索引，安全回退到最精简内容
         return fallbackBlock.content;
     }
 }
