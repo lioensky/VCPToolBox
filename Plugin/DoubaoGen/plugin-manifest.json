@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "DoubaoGen",
-  "displayName": "Doubao 风格图片生成器",
-  "version": "0.1.0",
-  "description": "通过火山方舟 API 使用 Doubao Seedream 3.0 模型生成具有特定风格的图片。",
+  "displayName": "火山引擎图像生成器",
+  "version": "2.0.0",
+  "description": "基于火山引擎 API 的图像生成插件，支持文生图、图生图、多图融合、组图生成，以及动态模型发现。",
   "author": "B3000Kcn",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -12,18 +12,41 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 150000
+    "timeout": 300000
   },
   "configSchema": {
-    "VOLCENGINE_API_KEY": "string",
-    "DebugMode": "boolean"
+    "VOLCENGINE_API_KEY": {
+      "type": "string",
+      "description": "火山引擎API密钥，支持逗号分隔多个密钥",
+      "required": true
+    },
+    "SEEDREAM_MODEL_ID": {
+      "type": "string",
+      "description": "默认模型ID（可通过 list_models 命令查询可用模型）",
+      "default": "doubao-seedream-5-0-260128"
+    },
+    "DEFAULT_WATERMARK": {
+      "type": "boolean",
+      "description": "是否默认添加水印",
+      "default": false
+    },
+    "DEFAULT_RESPONSE_FORMAT": {
+      "type": "string",
+      "description": "默认返回格式：url 或 b64_json",
+      "default": "url"
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "description": "调试模式",
+      "default": false
+    }
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "DoubaoGenerateImage",
-        "description": "调用此工具通过火山方舟 API 的 Doubao Seedream 3.0 模型生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\nprompt:「始」(必需) 用于图片生成的详细【英文】提示词。「末」,\nresolution:「始」(必需) 图片分辨率，可选值：「1024x1024」、「864x1152」、「1152x864」、「1280x720」、「720x1280」、「832x1248」、「1248x832」、「1512x648」。「末」\n(可选参数：seed:「始」整数种子「末」 - 通常省略以使用随机种子)\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当此工具执行完毕后，您将收到包含以下信息的结果：\n1. 生成图片的公开访问URL。\n2. 图片在服务器上的存储相对路径 (例如：image/DoubaoGen/图片名.png)。\n3. 图片的文件名。\n请在您的最终回复中，使用返回的【图片URL】为用户生成一个HTML的 `<img>` 标签来直接展示图片，例如：`<img src=\"[此处填写图片URL]\" alt=\"[此处可填写部分prompt作为描述]\" width=\"300\">`。请确保替换占位符，并可调整 `width` 属性（建议200-500像素）。同时，也可以附带图片的直接URL链接。",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, standing on a neon-lit city rooftop at night, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "description": "火山引擎图像生成器，支持多种生成模式和动态模型选择。\n\n支持的功能：\n1. 文生图(generate)：通过文字描述生成图像\n2. 图生图(edit)：基于参考图片生成新图像\n3. 多图融合(compose)：融合多张图片创造新图像\n4. 组图生成(group)：生成连续的多张图片\n5. 模型列表(list_models)：查询可用的图像生成模型\n\n调用参数：\n- command: (必需) 指令类型：'generate'/'edit'/'compose'/'group'/'list_models'\n- prompt: (generate/edit/compose/group必需) 图像生成的提示词\n- model: (可选) 指定使用的模型ID，可先用list_models查询可用模型\n- resolution: (可选) 图片分辨率，默认'1024x1024'\n  推荐尺寸：1024x1024, 1152x864, 864x1152, 1280x720, 720x1280, 2048x2048, 2560x1440, 1440x2560\n- image: (edit/compose必需) 参考图片URL/Base64/file://路径\n  单张图片：字符串格式；多张图片：数组格式（最多10张）\n- max_images: (group可选) 组图数量，1-15，默认4\n- seed: (可选) 随机种子，-1表示随机\n- guidance_scale: (可选) 提示词相关性，1-10\n- watermark: (可选) 是否添加水印\n\n调用示例：\n\n查询可用模型：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」list_models「末」\n<<<[END_TOOL_REQUEST]>>>\n\n文生图：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>\n\n指定模型生成：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」generate「末」,\nmodel:「始」doubao-seedream-3-0-t2i-250415「末」,\nprompt:「始」未来城市夜景「末」\n<<<[END_TOOL_REQUEST]>>>\n\n图生图：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」edit「末」,\nprompt:「始」将这只猫变成卡通风格「末」,\nimage:「始」https://example.com/cat.jpg「末」\n<<<[END_TOOL_REQUEST]>>>\n\n多图融合：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」compose「末」,\nprompt:「始」融合这些元素创造梦幻场景「末」,\nimage:「始」[\"url1\", \"url2\", \"url3\"]「末」\n<<<[END_TOOL_REQUEST]>>>\n\n组图生成：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」group「末」,\nprompt:「始」猫咪的一天：早上起床、吃饭、玩耍、睡觉「末」,\nmax_images:「始」4「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n当生成成功后，返回结果中包含图片的可访问URL和本地存储路径。请使用返回的URL展示图片给用户。如果配置了b64_json返回格式，AI可以直接看到生成的图片内容。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DoubaoGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」A majestic cat warrior in futuristic armor, standing on a neon-lit city rooftop at night, cyberpunk style.「末」,\nresolution:「始」1024x1024「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
