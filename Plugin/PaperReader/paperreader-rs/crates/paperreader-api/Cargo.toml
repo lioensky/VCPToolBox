@@ -1,0 +1,14 @@
+[package]
+name = "paperreader-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+paperreader-domain = { path = "../paperreader-domain" }
+paperreader-application = { path = "../paperreader-application" }

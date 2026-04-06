@@ -1,0 +1,20 @@
+[package]
+name = "paperreader-application"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+paperreader-domain = { path = "../paperreader-domain" }
+paperreader-ingestion = { path = "../paperreader-ingestion" }
+paperreader-reading = { path = "../paperreader-reading" }
+paperreader-retrieval = { path = "../paperreader-retrieval" }
+paperreader-corpus = { path = "../paperreader-corpus" }
+paperreader-orchestrator = { path = "../paperreader-orchestrator" }
+paperreader-workspace = { path = "../paperreader-workspace" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
