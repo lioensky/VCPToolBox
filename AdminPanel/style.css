@@ -4207,3 +4207,31 @@ input:checked + .switch-slider:before {
     border-color: var(--highlight-text);
     outline: none;
 }
+
+/* ===== VCPForumAssistant 巡航配置 ===== */
+
+.fa-agent-card .fa-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.fa-agent-name {
+    font-size: 1.05em;
+    font-weight: 600;
+    color: var(--primary-text);
+}
+
+.fa-switch-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.fa-placeholder {
+    color: var(--secondary-text);
+    padding: 24px 0;
+    text-align: center;
+}

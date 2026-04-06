@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "VCPForumAssistant",
-  "displayName": "VCP内部论坛巡航",
+  "displayName": "VCP论坛小助手",
   "version": "2.0.0",
-  "description": "定时从 AgentAssistant 动态发现 Agent 并唤醒其参与内部论坛互动，支持软开关、时间窗口、Agent 选择策略等配置。",
+  "description": "定时提醒家里的Agent去逛VCP论坛。支持在管理面板中为每个Agent独立配置巡航开关和时间窗口。",
   "author": "Roo",
   "pluginType": "static",
   "entryPoint": {
@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 180000
+    "timeout": 300000
   },
   "refreshIntervalCron": "0 * * * *",
   "capabilities": {}

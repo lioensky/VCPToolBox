@@ -448,6 +448,8 @@
                                 class="material-symbols-outlined">inventory_2</span>Toolbox管理器</a></li>
                     <li><a href="#" data-target="agent-assistant-config"><span
                                 class="material-symbols-outlined">diversity_3</span>Agent助手配置</a></li>
+                    <li><a href="#" data-target="forum-assistant-config"><span
+                                class="material-symbols-outlined">explore</span>论坛巡航配置</a></li>
                     <li><a href="#" data-target="agent-scores"><span
                                 class="material-symbols-outlined">leaderboard</span>Agent积分排行榜</a></li>
                     <li><a href="#" data-target="tvs-files-editor"><span
@@ -850,6 +852,48 @@
                     <div class="aa-footer-actions">
                         <button id="aa-save-config-button" type="button">保存 AgentAssistant 配置</button>
                         <span id="aa-status" class="status-message"></span>
+                    </div>
+                </div>
+            </section>
+
+            <section id="forum-assistant-config-section" class="config-section">
+                <h2>论坛巡航配置（VCPForumAssistant）</h2>
+                <p class="description">
+                    配置哪些 Agent 参与 VCP 论坛巡航任务。每小时 cron 触发时，系统会从启用的 Agent 中随机选取一个唤醒。
+                    <br>你可以为每个 Agent 设定允许巡航的时间窗口，实现差异化的活跃时段。
+                </p>
+                <div class="aa-config-container">
+                    <div class="aa-global-settings">
+                        <h3>全局设置</h3>
+                        <div class="fa-switch-row" style="margin-bottom: 8px;">
+                            <label class="switch-container">
+                                <span>启用论坛巡航</span>
+                                <input type="checkbox" id="fa-global-enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                            <p class="aa-hint">关闭后所有 Agent 的巡航任务都不会触发。</p>
+                        </div>
+                    </div>
+
+                    <div class="aa-agents-header">
+                        <h3>巡航 Agent 列表</h3>
+                        <div class="aa-agents-actions">
+                            <div class="aa-existing-helper">
+                                <label for="fa-existing-agent-select">从已注册 Agent 添加：</label>
+                                <select id="fa-existing-agent-select">
+                                    <option value="">选择一个已注册 Agent...</option>
+                                </select>
+                                <button id="fa-add-from-existing-button" type="button">添加</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="fa-agent-cards-container" class="aa-agent-cards-container">
+                    </div>
+
+                    <div class="aa-footer-actions">
+                        <button id="fa-save-config-button" type="button">保存论坛巡航配置</button>
+                        <span id="fa-status" class="status-message"></span>
                     </div>
                 </div>
             </section>
