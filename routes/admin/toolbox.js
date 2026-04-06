@@ -43,6 +43,20 @@ module.exports = function(options) {
         return normalized;
     }
 
+    function serializeToolboxMap(normalizedMap) {
+        const serialized = {};
+        for (const [alias, value] of Object.entries(normalizedMap || {})) {
+            if (!value || typeof value !== 'object') continue;
+            const file = typeof value.file === 'string' ? value.file.replace(/\\/g, '/') : '';
+            const description = typeof value.description === 'string' ? value.description.trim() : '';
+            if (!file) continue;
+            serialized[alias] = description
+                ? { file, description }
+                : file;
+        }
+        return serialized;
+    }
+
     function buildFolderStructureFromFiles(files) {
         const root = {};
         for (const filePath of files) {
@@ -125,7 +139,7 @@ module.exports = function(options) {
                 }
                 validated[alias] = { file: file.replace(/\\/g, '/'), description: description || '' };
             }
-            await fs.writeFile(TOOLBOX_MAP_FILE, JSON.stringify(validated, null, 2), 'utf-8');
+            await fs.writeFile(TOOLBOX_MAP_FILE, JSON.stringify(serializeToolboxMap(validated), null, 2), 'utf-8');
             try {
                 const toolboxManager = require('../../modules/toolboxManager');
                 if (toolboxManager && typeof toolboxManager.loadMap === 'function') await toolboxManager.loadMap();

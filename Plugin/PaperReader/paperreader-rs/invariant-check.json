@@ -1,0 +1,74 @@
+{
+  "name": "PaperReader Business Invariant Checks",
+  "description": "业务不变量校验配置 - 确保代码正确且功能正确",
+  "version": "1.0.0",
+  "phases": [
+    {
+      "name": "Phase 0 - Foundation",
+      "crates": ["paperreader-domain", "paperreader-workspace", "paperreader-ingestion"],
+      "invariants": {
+        "domain": {
+          "critical": [
+            "INV-001: document_id cannot be empty",
+            "INV-002: title cannot be empty",
+            "INV-003: schema_version must be valid semver",
+            "INV-004: blocks must have unique block_id",
+            "INV-005: outline node_id must be unique",
+            "INV-EVIDENCE-001: ref_id cannot be empty",
+            "INV-EVIDENCE-002: document_id cannot be empty",
+            "INV-EVIDENCE-003: at least one of segment_id, block_id, or node_id must be specified",
+            "INV-EVIDENCE-004: text_snippet cannot be empty"
+          ],
+          "warning": [
+            "INV-006: canonical_text should match blocks content",
+            "INV-007: assets should reference valid blocks"
+          ]
+        },
+        "workspace": {
+          "critical": [
+            "INV-ART-001: artifact_type cannot be empty",
+            "INV-ART-002: schema_version must be valid semver",
+            "INV-RUN-001: run_id cannot be empty",
+            "INV-RUN-002: goal cannot be empty",
+            "INV-RUN-003: at least one of collection_id or document_ids must be specified",
+            "INV-BUDGET-002: token_used cannot exceed token_total",
+            "INV-BUDGET-003: llm_call_used cannot exceed llm_call_total",
+            "INV-BUDGET-004: wall_clock_used cannot exceed wall_clock_total",
+            "INV-MERGE-002: at least 2 input_node_ids required"
+          ],
+          "warning": [
+            "INV-RUN-006: updated_at should be >= created_at",
+            "INV-GRAPHSTATE-003: active_nodes and completed_nodes should not overlap"
+          ]
+        },
+        "ingestion": {
+          "critical": [
+            "Import source must be validated before submission",
+            "MinerU task state transitions must follow valid paths",
+            "NormalizedDocument must be produced from valid MinerURawResult",
+            "All errors must be structured with error_code, message, stage, retryable"
+          ]
+        }
+      }
+    }
+  ],
+  "codex_review_rules": {
+    "pre_commit": [
+      "Check all public functions have invariant validation where applicable",
+      "Verify error handling covers all error variants",
+      "Ensure no unwrap() or expect() in production code without justification",
+      "Validate that domain objects are constructed in valid state"
+    ],
+    "post_implementation": [
+      "Run cargo test to verify unit tests pass",
+      "Run cargo clippy to catch common issues",
+      "Verify all invariant tests are comprehensive",
+      "Check for proper documentation of business logic"
+    ]
+  },
+  "metrics": {
+    "coverage_threshold": 80,
+    "invariant_check_pass_rate": 100,
+    "test_pass_rate": 100
+  }
+}
