@@ -45,6 +45,12 @@ router.use((req, res, next) => {
         return next('router');
     }
 
+    // VCP 内部请求（如 AgentAssistant）需要经过 chatCompletionHandler 的完整 VCP Loop
+    // 处理（工具调用解析与执行），不能被 SpecialRouter 劫持为简单代理。
+    if (req.headers['x-vcp-internal'] === 'true') {
+        return next('router');
+    }
+
     // 对于 POST 请求，检查 model 属性。
     const model = req.body.model;
 

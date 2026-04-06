@@ -286,6 +286,37 @@ function parseAndValidateDate(dateString) {
     return date;
 }
 
+function _buildInjectedToolDescriptions(injectToolsStr) {
+    try {
+        const pluginManager = require('../../Plugin.js');
+        const toolNames = injectToolsStr.split(',').map(s => s.trim()).filter(Boolean);
+        const sections = [];
+
+        for (const toolName of toolNames) {
+            const plugin = pluginManager.getPlugin(toolName);
+            if (!plugin) {
+                console.warn(`[AgentAssistant] inject_tools: plugin "${toolName}" not found, skipped`);
+                continue;
+            }
+            const commands = plugin.capabilities?.invocationCommands;
+            if (!Array.isArray(commands) || commands.length === 0) {
+                console.warn(`[AgentAssistant] inject_tools: plugin "${toolName}" has no invocationCommands, skipped`);
+                continue;
+            }
+            let section = `=== ${plugin.displayName || toolName} 工具 ===\n`;
+            for (const cmd of commands) {
+                if (cmd.description) section += cmd.description + '\n\n';
+            }
+            sections.push(section.trim());
+        }
+
+        return sections.length > 0 ? sections.join('\n\n') : null;
+    } catch (e) {
+        console.error('[AgentAssistant] inject_tools error:', e.message);
+        return null;
+    }
+}
+
 /**
  * This is the main entry point for handling tool calls from PluginManager.
  * @param {object} args - The arguments for the tool call.
@@ -298,7 +329,7 @@ async function processToolCall(args) {
         return { status: "error", error: errorMsg };
     }
 
-    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools } = args;
 
     // Handle querying a delegation status
     if (query_delegation) {
@@ -456,7 +487,10 @@ async function processToolCall(args) {
     try {
         // 注入来源提示词，防止 AI 之间产生“套娃”式工具调用
         const senderName = maid || "系统助手";
-        const communicationTip = `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
+        const hasToolInstructions = prompt.includes('<<<[TOOL_REQUEST]>>>') || prompt.includes('<!-- HAS_TOOL_INSTRUCTIONS -->');
+        const communicationTip = hasToolInstructions
+            ? `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的系统任务联络。注意：你禁止通过调用AgentAssistant来回复此消息，但你应当积极使用消息中提及的其他工具（如VCPForum等）来完成任务。]\n\n`
+            : `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
         const finalPrompt = communicationTip + prompt;
 
         const processedUserPrompt = await replacePlaceholdersInUserPrompt(finalPrompt, agentConfig);
@@ -468,8 +502,17 @@ async function processToolCall(args) {
             console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context loading.`);
         }
 
+        let systemPromptForRequest = agentConfig.systemPrompt;
+        if (inject_tools) {
+            const toolDesc = _buildInjectedToolDescriptions(inject_tools);
+            if (toolDesc) {
+                systemPromptForRequest += '\n\n' + toolDesc;
+                if (DEBUG_MODE) console.log(`[AgentAssistant] Injected tool descriptions for: ${inject_tools}`);
+            }
+        }
+
         const messagesForVCP = [
-            { role: 'system', content: agentConfig.systemPrompt },
+            { role: 'system', content: systemPromptForRequest },
             { role: 'user', content: processedUserPrompt }
         ];
         if (history.length > 0) {
@@ -483,18 +526,22 @@ async function processToolCall(args) {
             stream: false
         };
 
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Sending request to VCP Server for agent ${agent_name}`);
+        console.log(`[AgentAssistant] Calling agent '${agent_name}' (model: ${agentConfig.id}, hasToolInstructions: ${hasToolInstructions})`);
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
-            headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
-            timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+            headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json', 'X-VCP-Internal': 'true' },
+            timeout: (parseInt(process.env.AGENT_ASSISTANT_API_TIMEOUT) || 300000)
         });
 
         const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
         if (typeof assistantResponseContent !== 'string') {
-            if (DEBUG_MODE) console.error("[AgentAssistant Service] Response from VCP Server did not contain valid assistant content for agent " + agent_name, responseFromVCP.data);
+            console.error(`[AgentAssistant] Agent '${agent_name}' returned invalid response.`, responseFromVCP.data?.choices?.[0]);
             return { status: "error", error: `Agent '${agent_name}' 从VCP服务器获取的响应无效或缺失内容。` };
         }
+
+        const responseLen = assistantResponseContent.length;
+        const hadToolCalls = assistantResponseContent.includes('<<<[TOOL_REQUEST]>>>');
+        console.log(`[AgentAssistant] Agent '${agent_name}' responded (length: ${responseLen}, containsToolCalls: ${hadToolCalls})`);
 
         // 移除 VCP 思维链内容
         const cleanedAssistantResponse = removeVCPThinkingChain(assistantResponseContent);
@@ -550,7 +597,7 @@ async function processToolCall(args) {
         } else if (error instanceof Error) {
             errorMessage += ` ${error.message}`;
         }
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Error in processToolCall for ${agent_name}: ${errorMessage}`);
+        console.error(`[AgentAssistant] Error for ${agent_name}: ${errorMessage}`);
         return { status: "error", error: errorMessage };
     } finally {
         // 确保无论成功或失败，持久对话的锁都会被释放
@@ -614,8 +661,8 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
             };
 
             const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
-                headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
-                timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+                headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json', 'X-VCP-Internal': 'true' },
+                timeout: (parseInt(process.env.AGENT_ASSISTANT_API_TIMEOUT) || 300000)
             });
 
             const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;

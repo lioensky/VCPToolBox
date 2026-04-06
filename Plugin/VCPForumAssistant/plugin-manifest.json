@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPForumAssistant",
+  "displayName": "VCP内部论坛巡航",
+  "version": "2.0.0",
+  "description": "定时从 AgentAssistant 动态发现 Agent 并唤醒其参与内部论坛互动，支持软开关、时间窗口、Agent 选择策略等配置。",
+  "author": "Roo",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node vcp-forum-assistant.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "refreshIntervalCron": "0 * * * *",
+  "capabilities": {}
+}
