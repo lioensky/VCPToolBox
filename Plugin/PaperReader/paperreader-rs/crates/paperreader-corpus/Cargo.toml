@@ -1,0 +1,10 @@
+[package]
+name = "paperreader-corpus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+paperreader-domain = { path = "../paperreader-domain" }
+serde = { workspace = true }
+chrono = { workspace = true }
+

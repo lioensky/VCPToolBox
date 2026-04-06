@@ -1,0 +1,14 @@
+[package]
+name = "paperreader-orchestrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+paperreader-domain = { path = "../paperreader-domain" }
+paperreader-workspace = { path = "../paperreader-workspace" }
+

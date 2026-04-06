@@ -1,0 +1,14 @@
+[package]
+name = "paperreader-ingestion"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
+paperreader-domain = { path = "../paperreader-domain" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+zip = "0.6"

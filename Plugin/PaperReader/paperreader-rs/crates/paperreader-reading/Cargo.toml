@@ -1,0 +1,11 @@
+[package]
+name = "paperreader-reading"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+paperreader-domain = { path = "../paperreader-domain" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
