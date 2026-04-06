@@ -168,7 +168,7 @@ async function loadToolboxFileContent(filePath) {
         if (editingToolboxFileDisplay) editingToolboxFileDisplay.textContent = '未选择文件';
         if (saveToolboxFileButton) saveToolboxFileButton.disabled = true;
         if (toolboxFileContentEditor) {
-            toolboxFileContentEditor.placeholder = '从左侧选择一个 Toolbox 文件以编辑其内容...';
+            toolboxFileContentEditor.placeholder = '从左侧选择一个 Toolbox 文件以编辑其内容...\n\n可使用新语法：[===vcp_fold:0.55::desc:你的描述===]';
         }
         currentEditingToolboxFile = null;
         return;
