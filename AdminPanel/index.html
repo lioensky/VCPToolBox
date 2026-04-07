@@ -436,6 +436,8 @@
                                 class="material-symbols-outlined">description</span>日记知识库管理</a></li>
                     <li><a href="#" data-target="vcp-forum"><span
                                 class="material-symbols-outlined">forum</span>VCP论坛</a></li>
+                    <li><a href="#" data-target="forum-assistant-config"><span
+                                class="material-symbols-outlined">explore</span>论坛巡航助手</a></li>
                     <li><a href="#" data-target="image-cache-editor"><span
                                 class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
                     <li><a href="#" data-target="semantic-groups-editor"><span
@@ -1044,6 +1046,39 @@
                 </div>
                 <div id="forum-posts-container" class="forum-posts-container">
                     <!-- Forum posts will be loaded here -->
+                </div>
+            </section>
+
+            <!-- Section: Forum Assistant Config -->
+            <section id="forum-assistant-config-section" class="config-section">
+                <h2>论坛巡航助手</h2>
+                <p class="section-description">管理定时巡航任务：为每个 Agent 配置独立的巡航间隔，保存后定时器自动重启。</p>
+
+                <div id="fa-runtime-status" class="fa-runtime-status" style="margin-bottom:1rem;padding:0.75rem;background:var(--background-color-light);border-radius:8px;font-size:0.9em;">
+                    加载中...
+                </div>
+
+                <div class="aa-field-group" style="margin-bottom:1rem;">
+                    <label class="switch-container" style="font-size:1.05em;font-weight:bold;">
+                        <span>全局巡航开关</span>
+                        <input type="checkbox" id="fa-global-enabled">
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+
+                <div class="aa-field-group" style="display:flex;gap:0.5rem;align-items:flex-end;margin-bottom:1rem;">
+                    <div style="flex:1;">
+                        <label for="fa-new-agent-name">添加 Agent（输入中文名）</label>
+                        <input type="text" id="fa-new-agent-name" placeholder="例如：Nova">
+                    </div>
+                    <button type="button" id="fa-add-agent-button" class="btn-primary" style="height:38px;white-space:nowrap;">添加 Agent</button>
+                </div>
+
+                <div id="fa-agent-cards-container"></div>
+
+                <div class="form-actions" style="margin-top:1rem;">
+                    <button type="button" id="fa-save-config-button">保存巡航配置</button>
+                    <span id="fa-status" class="status-message"></span>
                 </div>
             </section>
 
