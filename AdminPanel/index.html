@@ -437,7 +437,7 @@
                     <li><a href="#" data-target="vcp-forum"><span
                                 class="material-symbols-outlined">forum</span>VCP论坛</a></li>
                     <li><a href="#" data-target="forum-assistant-config"><span
-                                class="material-symbols-outlined">explore</span>论坛巡航助手</a></li>
+                                class="material-symbols-outlined">explore</span>任务巡航助手</a></li>
                     <li><a href="#" data-target="image-cache-editor"><span
                                 class="material-symbols-outlined">photo_library</span>多媒体Base64编辑器</a></li>
                     <li><a href="#" data-target="semantic-groups-editor"><span
@@ -1051,33 +1051,53 @@
 
             <!-- Section: Forum Assistant Config -->
             <section id="forum-assistant-config-section" class="config-section">
-                <h2>论坛巡航助手</h2>
-                <p class="section-description">管理定时巡航任务：为每个 Agent 配置独立的巡航间隔，保存后定时器自动重启。</p>
+                <h2>任务派发中心</h2>
+                <p class="section-description">统一管理论坛巡航任务、通用提示词任务与一次性任务。提示词模板可直接编辑，论坛类任务保留 <code>{{forum_post_list}}</code> 占位符预读取能力。</p>
 
-                <div id="fa-runtime-status" class="fa-runtime-status" style="margin-bottom:1rem;padding:0.75rem;background:var(--background-color-light);border-radius:8px;font-size:0.9em;">
-                    加载中...
-                </div>
-
-                <div class="aa-field-group" style="margin-bottom:1rem;">
-                    <label class="switch-container" style="font-size:1.05em;font-weight:bold;">
-                        <span>全局巡航开关</span>
-                        <input type="checkbox" id="fa-global-enabled">
-                        <span class="switch-slider"></span>
-                    </label>
-                </div>
-
-                <div class="aa-field-group" style="display:flex;gap:0.5rem;align-items:flex-end;margin-bottom:1rem;">
-                    <div style="flex:1;">
-                        <label for="fa-new-agent-name">添加 Agent（输入中文名）</label>
-                        <input type="text" id="fa-new-agent-name" placeholder="例如：Nova">
+                <div class="fa-dashboard-container">
+                    <div id="fa-runtime-status" class="fa-runtime-status">
+                        加载中...
                     </div>
-                    <button type="button" id="fa-add-agent-button" class="btn-primary" style="height:38px;white-space:nowrap;">添加 Agent</button>
+
+                    <div class="fa-global-controls card">
+                        <div class="aa-field-group">
+                            <label class="switch-container" style="font-size:1.05em;font-weight:bold;">
+                                <span>全局任务调度开关</span>
+                                <input type="checkbox" id="fa-global-enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                            <p class="aa-hint">开启后，系统将根据各任务的调度配置自动执行任务。</p>
+                        </div>
+                    </div>
                 </div>
 
-                <div id="fa-agent-cards-container"></div>
+                <div class="fa-quick-add-bar card">
+                    <div class="fa-quick-add-grid">
+                        <div class="aa-field-group">
+                            <label for="fa-new-task-name">新任务名称</label>
+                            <input type="text" id="fa-new-task-name" placeholder="例如：论坛巡航-可可">
+                        </div>
+                        <div class="aa-field-group">
+                            <label for="fa-new-task-type">任务类型</label>
+                            <select id="fa-new-task-type"></select>
+                        </div>
+                        <div class="fa-quick-actions">
+                            <button type="button" id="fa-add-task-button" class="btn-primary">
+                                <span class="material-symbols-outlined">add</span> 添加任务
+                            </button>
+                            <button type="button" id="fa-refresh-button" class="btn-secondary">
+                                <span class="material-symbols-outlined">refresh</span> 刷新状态
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-                <div class="form-actions" style="margin-top:1rem;">
-                    <button type="button" id="fa-save-config-button">保存巡航配置</button>
+                <div id="fa-task-cards-container" class="aa-agent-cards-container"></div>
+
+                <div class="form-actions fa-footer-actions">
+                    <button type="button" id="fa-save-config-button" class="btn-primary">
+                        <span class="material-symbols-outlined">save</span> 保存所有任务配置
+                    </button>
                     <span id="fa-status" class="status-message"></span>
                 </div>
             </section>

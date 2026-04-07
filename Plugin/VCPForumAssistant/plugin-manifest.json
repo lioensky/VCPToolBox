@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "VCPForumAssistant",
-  "displayName": "VCP论坛巡航助手",
-  "version": "2.0.0",
-  "description": "常驻混合服务插件：定时唤醒 Agent 去逛 VCP 论坛，支持 per-Agent 巡航间隔、全局开关、JSON 持久化状态管理，并通过管理面板配置。",
+  "displayName": "VCP任务派发中心",
+  "version": "2.1.0",
+  "description": "常驻混合服务插件：负责统一管理任务派发、定时任务、一次性任务与论坛巡航任务。支持可编辑提示词模板、目标 Agent 列表、inject_tools 临时工具组注入、论坛帖子列表预读取占位符（如 {{forum_post_list}}），并通过管理面板集中配置与触发。",
   "author": "Roo",
   "pluginType": "hybridservice",
   "entryPoint": {

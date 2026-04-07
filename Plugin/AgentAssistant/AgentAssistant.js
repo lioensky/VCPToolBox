@@ -286,6 +286,58 @@ function parseAndValidateDate(dateString) {
     return date;
 }
 
+function parseInjectTools(injectToolsRaw) {
+    if (!injectToolsRaw) return [];
+    if (Array.isArray(injectToolsRaw)) {
+        return injectToolsRaw.map(item => String(item || '').trim()).filter(Boolean);
+    }
+    return String(injectToolsRaw)
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+function buildTemporaryToolsSystemPrompt(injectToolsRaw) {
+    const toolNames = parseInjectTools(injectToolsRaw);
+    if (toolNames.length === 0) {
+        return '';
+    }
+
+    try {
+        const pluginManager = require('../../Plugin.js');
+        const descriptionsMap = pluginManager.getIndividualPluginDescriptions();
+        const sections = [];
+
+        for (const toolName of toolNames) {
+            const plugin = pluginManager.getPlugin(toolName);
+            const placeholderKey = `VCP${toolName}`;
+            const description = descriptionsMap && descriptionsMap.get(placeholderKey);
+
+            if (description) {
+                sections.push(`### ${plugin?.displayName || toolName} (${toolName})\n${description}`);
+            } else {
+                const fallbackDescription = plugin?.description
+                    ? `${plugin.description}\n\n[警告] 该工具缺少 invocationCommands 级别的详细描述，当前仅注入 manifest 描述。`
+                    : '[警告] 未找到该工具的详细描述信息，请谨慎使用。';
+                sections.push(`### ${plugin?.displayName || toolName} (${toolName})\n${fallbackDescription}`);
+            }
+        }
+
+        return [
+            '[临时工具组注入]',
+            '以下工具仅在本次通讯/委托中临时提供给你使用，不代表你的长期固定工具集。',
+            '请只在确实需要时调用这些工具，并优先依据下方工具说明中的格式与约束进行使用。',
+            '',
+            ...sections
+        ].join('\n');
+    } catch (error) {
+        if (DEBUG_MODE) {
+            console.error('[AgentAssistant Service] Failed to build temporary tools system prompt:', error.message);
+        }
+        return '';
+    }
+}
+
 /**
  * This is the main entry point for handling tool calls from PluginManager.
  * @param {object} args - The arguments for the tool call.
@@ -298,7 +350,7 @@ async function processToolCall(args) {
         return { status: "error", error: errorMsg };
     }
 
-    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools } = args;
 
     // Handle querying a delegation status
     if (query_delegation) {
@@ -410,6 +462,7 @@ async function processToolCall(args) {
     if (String(task_delegation).toLowerCase() === 'true') {
         const delegationId = `aa-delegation-${Date.now()}-${uuidv4().slice(0, 8)}`;
         const senderName = maid || "系统任务中心";
+        const temporaryToolsSystemPrompt = buildTemporaryToolsSystemPrompt(inject_tools);
 
         activeDelegations.set(delegationId, {
             status: 'running',
@@ -421,7 +474,7 @@ async function processToolCall(args) {
         if (DEBUG_MODE) console.error(`[AgentAssistant Service] Starting async delegation ${delegationId} for ${agent_name}`);
 
         // Launch the background task un-awaited
-        executeDelegation(delegationId, agentConfig, prompt, senderName).catch(async err => {
+        executeDelegation(delegationId, agentConfig, prompt, senderName, temporaryToolsSystemPrompt).catch(async err => {
             console.error(`[AgentAssistant Service] Background delegation task ${delegationId} failed:`, err);
             const state = activeDelegations.get(delegationId);
             if (state) state.status = 'failed';
@@ -468,8 +521,17 @@ async function processToolCall(args) {
             console.error(`[AgentAssistant Service] Temporary contact requested for ${agent_name}. Skipping context loading.`);
         }
 
+        const temporaryToolsSystemPrompt = buildTemporaryToolsSystemPrompt(inject_tools);
+        const finalSystemPrompt = temporaryToolsSystemPrompt
+            ? `${agentConfig.systemPrompt}\n\n${temporaryToolsSystemPrompt}`
+            : agentConfig.systemPrompt;
+
+        if (DEBUG_MODE && temporaryToolsSystemPrompt) {
+            console.error(`[AgentAssistant Service] Temporary tools injected for ${agent_name}: ${parseInjectTools(inject_tools).join(', ')}`);
+        }
+
         const messagesForVCP = [
-            { role: 'system', content: agentConfig.systemPrompt },
+            { role: 'system', content: finalSystemPrompt },
             { role: 'user', content: processedUserPrompt }
         ];
         if (history.length > 0) {
@@ -565,7 +627,7 @@ async function processToolCall(args) {
 /**
  * Executes a delegated task asynchronously by running a bounded conversation loop
  */
-async function executeDelegation(delegationId, agentConfig, taskPrompt, senderName) {
+async function executeDelegation(delegationId, agentConfig, taskPrompt, senderName, temporaryToolsSystemPrompt = '') {
     const userSessionId = `agent_${agentConfig.baseName}_delegation_session`;
     const lockKey = `${agentConfig.baseName}::${userSessionId}`;
 
@@ -585,8 +647,13 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
     let completionStatus = 'Failed';
 
     try {
-        const injectedSystemPrompt = agentConfig.systemPrompt + "\n\n" +
-            DELEGATION_SYSTEM_PROMPT.replace(/\{\{SenderName\}\}/g, senderName).replace(/\{\{TaskPrompt\}\}/g, taskPrompt);
+        const delegationPrompt = DELEGATION_SYSTEM_PROMPT
+            .replace(/\{\{SenderName\}\}/g, senderName)
+            .replace(/\{\{TaskPrompt\}\}/g, taskPrompt);
+
+        const injectedSystemPrompt = temporaryToolsSystemPrompt
+            ? `${agentConfig.systemPrompt}\n\n${temporaryToolsSystemPrompt}\n\n${delegationPrompt}`
+            : `${agentConfig.systemPrompt}\n\n${delegationPrompt}`;
 
         // 我们使用独立的历史记录
         let messagesForVCP = [
