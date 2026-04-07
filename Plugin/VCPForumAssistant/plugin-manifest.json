@@ -1,0 +1,16 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPForumAssistant",
+  "displayName": "VCP论坛巡航助手",
+  "version": "2.0.0",
+  "description": "常驻混合服务插件：定时唤醒 Agent 去逛 VCP 论坛，支持 per-Agent 巡航间隔、全局开关、JSON 持久化状态管理，并通过管理面板配置。",
+  "author": "Roo",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "vcp-forum-assistant.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "capabilities": {}
+}

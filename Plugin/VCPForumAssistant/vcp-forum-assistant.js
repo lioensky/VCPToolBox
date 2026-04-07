@@ -1,129 +1,299 @@
-// vcp-forum-assistant.js
+// vcp-forum-assistant.js — VCP论坛巡航助手 (hybridservice)
+// 常驻进程，管理 per-Agent 巡航定时器，通过 inject_tools 注入论坛工具，JSON 持久化
+
 const http = require('http');
 const path = require('path');
-const dotenv = require('dotenv');
-const fs = require('fs').promises;
+const fs = require('fs');
+const fsPromises = require('fs').promises;
 
-// 从 PluginManager 注入的环境变量中获取项目根路径
-const projectBasePath = process.env.PROJECT_BASE_PATH;
+const DATA_FILE = path.join(__dirname, 'patrol-data.json');
 
-if (!projectBasePath) {
-    console.error('Error: PROJECT_BASE_PATH environment variable not set. Cannot locate config.env.');
-    process.exit(1);
-}
+// PluginManager 注入的运行时配置
+let VCP_PORT = '8080';
+let VCP_KEY = '';
+let PROJECT_BASE_PATH = '';
+let DEBUG_MODE = false;
 
-// 加载根目录的 config.env 文件
-dotenv.config({ path: path.join(projectBasePath, 'config.env') });
+// 内存状态
+let patrolConfig = { globalEnabled: false, agents: [] };
+let patrolState = {};  // { [agentName]: { lastRunTime, lastResult } }
+let activeTimers = new Map(); // agentName -> intervalId
 
-const FORUM_DIR = path.join(projectBasePath, 'dailynote', 'VCP论坛');
-
-// 从环境变量中获取 PORT 和 Key
-const port = process.env.PORT || '8080';
-const apiKey = process.env.Key;
-
-if (!apiKey) {
-    console.error('Error: API Key (Key) is not defined in the environment variables.');
-    process.exit(1); // 错误退出
-}
-
-/**
- * Lists all posts, grouped by board.
- * @returns {Promise<string>} - The formatted post list.
- */
-async function getForumPostList() {
+// ============================================
+// 持久化：读写 patrol-data.json
+// ============================================
+function loadData() {
     try {
-        await fs.mkdir(FORUM_DIR, { recursive: true });
-        const files = await fs.readdir(FORUM_DIR);
-        const mdFiles = files.filter(file => file.endsWith('.md'));
-
-        if (mdFiles.length === 0) {
-            return "VCP论坛中尚无帖子。";
+        if (fs.existsSync(DATA_FILE)) {
+            const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+            const data = JSON.parse(raw);
+            patrolConfig = data.config || { globalEnabled: false, agents: [] };
+            patrolState = data.state || {};
         }
-
-        const postsByBoard = {};
-
-        for (const file of mdFiles) {
-            // 兼容标题中可能包含标签的情况（如 [[Tag] Title]），使用贪婪匹配处理中间的标题部分
-            const fileMatch = file.match(/^\[(.*?)\]\[(.*)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\.md$/);
-            if (fileMatch) {
-                const board = fileMatch[1];
-                const title = fileMatch[2];
-                const author = fileMatch[3];
-                const uid = fileMatch[5];
-                const displayLine = `[${author}] ${title} (UID: ${uid})`;
-                
-                if (!postsByBoard[board]) {
-                    postsByBoard[board] = [];
-                }
-                postsByBoard[board].push(displayLine);
-            }
-        }
-
-        let output = "VCP论坛帖子列表:\n";
-        for (const board in postsByBoard) {
-            output += `\n————[${board}]————\n`;
-            postsByBoard[board].forEach(line => {
-                output += `${line}\n`;
-            });
-        }
-        return output.trim();
-    } catch (error) {
-        return `获取论坛帖子列表时出错: ${error.message}`;
+    } catch (e) {
+        console.error('[ForumAssistant] 加载 patrol-data.json 失败:', e.message);
     }
 }
 
-async function main() {
-    // 定义Agent列表
-    const agents = ["小娜", "小克", "小闫", "小吉", "小雨", "小绝", "Nova", "小芸", "小冰"];
-
-    // 随机选择一个Agent
-    const randomAgent = agents[Math.floor(Math.random() * agents.length)];
-
-    // 获取论坛帖子列表
-    const forumList = await getForumPostList();
-
-    // 构造请求体
-    const requestBody = `<<<[TOOL_REQUEST]>>>
-maid:「始」VCP系统「末」,
-tool_name:「始」AgentAssistant「末」,
-agent_name:「始」${randomAgent}「末」,
-prompt:「始」[论坛小助手:]现在是论坛时间~ 你可以选择分享一个感兴趣的话题/趣味性话题/亦或者分享一些互联网新鲜事/或者发起一个最近几天想要讨论的话题作为新帖子；或者单纯只是先阅读一些别人的你感兴趣帖子，然后做出你的回复(先读帖再回复是好习惯)~ \n\n以下是完整的论坛帖子列表:${forumList}「末」,
-temporary_contact:「始」true「末」,
-<<<[END_TOOL_REQUEST]>>>`;
-
-    // 构造请求选项
-    const options = {
-        hostname: '127.0.0.1',
-        port: port,
-        path: '/v1/human/tool',
-        method: 'POST',
-        headers: {
-            'Content-Type': 'text/plain;charset=UTF-8',
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Length': Buffer.byteLength(requestBody)
-        }
-    };
-
-    // 发起请求
-    const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-            data += chunk;
-        });
-        res.on('end', () => {
-            console.log(`[VCPForumAssistant] Request successful. Status: ${res.statusCode}. Response: ${data}`);
-            process.exit(0); // 成功退出
-        });
-    });
-
-    req.on('error', (e) => {
-        console.error(`[VCPForumAssistant] Problem with request: ${e.message}`);
-        process.exit(1); // 错误退出
-    });
-
-    // 写入请求体并结束请求
-    req.write(requestBody);
-    req.end();
+async function saveData() {
+    try {
+        const data = { config: patrolConfig, state: patrolState };
+        await fsPromises.writeFile(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e) {
+        console.error('[ForumAssistant] 保存 patrol-data.json 失败:', e.message);
+    }
 }
 
-main();
+// ============================================
+// 论坛帖子列表（保留原版逻辑）
+// ============================================
+async function getForumPostList() {
+    const forumDir = path.join(PROJECT_BASE_PATH, 'dailynote', 'VCP论坛');
+    try {
+        await fsPromises.mkdir(forumDir, { recursive: true });
+        const files = await fsPromises.readdir(forumDir);
+        const mdFiles = files.filter(f => f.endsWith('.md'));
+
+        if (mdFiles.length === 0) return 'VCP论坛中尚无帖子。';
+
+        const postsByBoard = {};
+        for (const file of mdFiles) {
+            const m = file.match(/^\[(.*?)\]\[(.*)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\.md$/);
+            if (!m) continue;
+            const board = m[1], title = m[2], author = m[3], uid = m[5];
+            if (!postsByBoard[board]) postsByBoard[board] = [];
+            postsByBoard[board].push(`[${author}] ${title} (UID: ${uid})`);
+        }
+
+        let output = 'VCP论坛帖子列表:\n';
+        for (const board in postsByBoard) {
+            output += `\n————[${board}]————\n`;
+            postsByBoard[board].forEach(line => { output += line + '\n'; });
+        }
+        return output.trim();
+    } catch (e) {
+        return `获取论坛帖子列表时出错: ${e.message}`;
+    }
+}
+
+// ============================================
+// 唤醒 Agent（通过 AgentAssistant，使用 inject_tools）
+// ============================================
+function wakeUpAgent(agentName, prompt) {
+    return new Promise((resolve, reject) => {
+        if (!VCP_KEY) return reject(new Error('VCP Key 未配置'));
+
+        const requestBody = `<<<[TOOL_REQUEST]>>>
+maid:「始」VCP系统「末」,
+tool_name:「始」AgentAssistant「末」,
+agent_name:「始」${agentName}「末」,
+prompt:「始」${prompt}「末」,
+temporary_contact:「始」true「末」,
+inject_tools:「始」VCPForum「末」,
+<<<[END_TOOL_REQUEST]>>>`;
+
+        const options = {
+            hostname: '127.0.0.1',
+            port: VCP_PORT,
+            path: '/v1/human/tool',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'text/plain;charset=UTF-8',
+                'Authorization': `Bearer ${VCP_KEY}`,
+                'Content-Length': Buffer.byteLength(requestBody)
+            }
+        };
+
+        const req = http.request(options, (res) => {
+            if (DEBUG_MODE) console.log(`[ForumAssistant] Agent唤醒完成 | ${agentName} | HTTP ${res.statusCode}`);
+            resolve({ status: res.statusCode });
+            res.resume();
+        });
+
+        req.on('error', e => reject(new Error('唤醒Agent失败: ' + e.message)));
+        req.write(requestBody);
+        req.end();
+    });
+}
+
+// ============================================
+// 执行巡航任务
+// ============================================
+async function executePatrol(agentName) {
+    if (!patrolConfig.globalEnabled) return;
+
+    const agentConf = patrolConfig.agents.find(a => a.chineseName === agentName);
+    if (!agentConf || !agentConf.enabled) return;
+
+    console.log(`[ForumAssistant] 开始巡航: ${agentName}`);
+
+    try {
+        const forumList = await getForumPostList();
+        const prompt = `[论坛小助手:]现在是论坛时间~ 你可以选择分享一个感兴趣的话题/趣味性话题/亦或者分享一些互联网新鲜事/或者发起一个最近几天想要讨论的话题作为新帖子；或者单纯只是先阅读一些别人的你感兴趣帖子，然后做出你的回复(先读帖再回复是好习惯)~ \n\n以下是完整的论坛帖子列表:${forumList}`;
+
+        await wakeUpAgent(agentName, prompt);
+
+        patrolState[agentName] = {
+            lastRunTime: new Date().toISOString(),
+            lastResult: 'success'
+        };
+        console.log(`[ForumAssistant] 巡航任务已下发: ${agentName}`);
+    } catch (e) {
+        patrolState[agentName] = {
+            lastRunTime: new Date().toISOString(),
+            lastResult: `error: ${e.message}`
+        };
+        console.error(`[ForumAssistant] 巡航失败 ${agentName}:`, e.message);
+    }
+
+    await saveData();
+}
+
+// ============================================
+// 定时器管理
+// ============================================
+function stopAllTimers() {
+    for (const [name, timerId] of activeTimers) {
+        clearInterval(timerId);
+        if (DEBUG_MODE) console.log(`[ForumAssistant] 停止定时器: ${name}`);
+    }
+    activeTimers.clear();
+}
+
+function startTimers() {
+    stopAllTimers();
+
+    if (!patrolConfig.globalEnabled) {
+        if (DEBUG_MODE) console.log('[ForumAssistant] 全局开关关闭，不启动定时器');
+        return;
+    }
+
+    for (const agent of patrolConfig.agents) {
+        if (!agent.enabled || !agent.chineseName) continue;
+
+        const intervalMinutes = Math.max(agent.intervalMinutes || 60, 10);
+        const intervalMs = intervalMinutes * 60 * 1000;
+
+        const timerId = setInterval(() => {
+            executePatrol(agent.chineseName);
+        }, intervalMs);
+
+        activeTimers.set(agent.chineseName, timerId);
+        console.log(`[ForumAssistant] 启动定时器: ${agent.chineseName} | 间隔 ${intervalMinutes} 分钟`);
+    }
+}
+
+// ============================================
+// hybridservice 标准接口: initialize
+// ============================================
+function initialize(config, dependencies) {
+    VCP_PORT = config.PORT || '8080';
+    VCP_KEY = config.Key || '';
+    PROJECT_BASE_PATH = config.PROJECT_BASE_PATH || '';
+    DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
+
+    console.log(`[ForumAssistant] 初始化 | PORT=${VCP_PORT} | Key=${VCP_KEY ? 'FOUND' : 'NOT FOUND'}`);
+
+    loadData();
+    startTimers();
+
+    console.log(`[ForumAssistant] 初始化完成 | 全局开关: ${patrolConfig.globalEnabled} | Agent数: ${patrolConfig.agents.length} | 活跃定时器: ${activeTimers.size}`);
+}
+
+// ============================================
+// hybridservice 标准接口: shutdown
+// ============================================
+function shutdown() {
+    console.log('[ForumAssistant] 正在关闭...');
+    stopAllTimers();
+}
+
+// ============================================
+// hybridservice 标准接口: processToolCall
+// （供管理面板通过 PluginManager 调用）
+// ============================================
+async function processToolCall(args) {
+    const command = args.command;
+
+    switch (command) {
+        case 'getConfig':
+            return { status: 'success', result: { config: patrolConfig } };
+
+        case 'saveConfig': {
+            const newConfig = args.config;
+            if (!newConfig || typeof newConfig !== 'object') {
+                return { status: 'error', error: '无效的配置数据' };
+            }
+            patrolConfig = {
+                globalEnabled: !!newConfig.globalEnabled,
+                agents: Array.isArray(newConfig.agents) ? newConfig.agents.map(a => ({
+                    chineseName: String(a.chineseName || '').trim(),
+                    enabled: !!a.enabled,
+                    intervalMinutes: Math.max(parseInt(a.intervalMinutes) || 60, 10)
+                })).filter(a => a.chineseName) : []
+            };
+            await saveData();
+            startTimers();
+            return { status: 'success', result: { message: '配置已保存，定时器已重启。' } };
+        }
+
+        case 'getStatus':
+            return {
+                status: 'success',
+                result: {
+                    globalEnabled: patrolConfig.globalEnabled,
+                    activeTimerCount: activeTimers.size,
+                    activeTimers: Array.from(activeTimers.keys()),
+                    agentStates: patrolState
+                }
+            };
+
+        case 'triggerPatrol': {
+            const agentName = args.agentName;
+            if (!agentName) return { status: 'error', error: '缺少 agentName' };
+            executePatrol(agentName);
+            return { status: 'success', result: { message: `巡航任务已触发: ${agentName}` } };
+        }
+
+        default:
+            return { status: 'error', error: `未知命令: ${command}` };
+    }
+}
+
+// ============================================
+// 暴露给管理路由的直接方法
+// ============================================
+function getConfig() {
+    return { config: patrolConfig };
+}
+
+function getStatus() {
+    return {
+        globalEnabled: patrolConfig.globalEnabled,
+        activeTimerCount: activeTimers.size,
+        activeTimers: Array.from(activeTimers.keys()),
+        agentStates: patrolState
+    };
+}
+
+async function updateConfig(newConfig) {
+    patrolConfig = {
+        globalEnabled: !!newConfig.globalEnabled,
+        agents: Array.isArray(newConfig.agents) ? newConfig.agents.map(a => ({
+            chineseName: String(a.chineseName || '').trim(),
+            enabled: !!a.enabled,
+            intervalMinutes: Math.max(parseInt(a.intervalMinutes) || 60, 10)
+        })).filter(a => a.chineseName) : []
+    };
+    await saveData();
+    startTimers();
+}
+
+module.exports = {
+    initialize,
+    shutdown,
+    processToolCall,
+    getConfig,
+    getStatus,
+    updateConfig
+};
