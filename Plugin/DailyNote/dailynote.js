@@ -262,8 +262,9 @@ async function handleCreateCommand(args) {
     const dateString = args.dateString || args.Date;
     const contentText = args.contentText || args.Content;
     const tag = args.Tag || args.tag;
+    const fileName = args.fileName || args.FileName;
 
-    debugLog(`Processing 'create' for Maid: ${maid}, Date: ${dateString}`);
+    debugLog(`Processing 'create' for Maid: ${maid}, Date: ${dateString}, fileName: ${fileName}`);
     if (!maid || !dateString || !contentText) {
         return { status: "error", error: 'Invalid input for create: Missing maid/maidName, dateString/Date, or contentText/Content.' };
     }
@@ -315,7 +316,14 @@ async function handleCreateCommand(args) {
             };
         }
 
-        const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
+        // 可选字段：将 fileName 作为后缀拼接到时间戳文件名后
+        let sanitizedOptionalFileName = '';
+        if (typeof fileName === 'string' && fileName.trim()) {
+            sanitizedOptionalFileName = sanitizePathComponent(fileName.trim());
+        }
+
+        const fileNameSuffix = sanitizedOptionalFileName ? `-${sanitizedOptionalFileName}` : '';
+        const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}${fileNameSuffix}`;
         const fileExtension = `.${CONFIGURED_EXTENSION}`;
 
         let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;

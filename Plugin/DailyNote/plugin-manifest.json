@@ -18,7 +18,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "create",
-        "description": "“创建日记”: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径会根据maid中的[tag]自动归类。\n调用格式 (两种方式):\n1. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nContent:「始」今天我重构了DailyNote插件...\\nTag: VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "“创建日记”: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。可选提供fileName字段，作为文件名后缀追加到时间戳命名之后（例如：2026-04-08-05_11_20-测试日记创建功能）。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径会根据maid中的[tag]自动归类。\n调用格式 (两种方式):\n1. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...\\nTag: VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "maid",
@@ -30,6 +30,12 @@
             "name": "Date",
             "description": "日记的日期，格式建议为 YYYY-MM-DD。",
             "required": true,
+            "type": "string"
+          },
+          {
+            "name": "fileName",
+            "description": "可选文件名后缀，会追加到默认时间戳文件名后（例如：2026-04-08-05_11_20-测试日记创建功能）。",
+            "required": false,
             "type": "string"
           },
           {

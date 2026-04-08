@@ -320,8 +320,8 @@ async function processTagsInContent(contentText) {
 
 
 // --- Core Diary Writing Logic ---
-async function writeDiary(maidName, dateString, contentText) {
-    debugLog(`Processing diary write for Maid: ${maidName}, Date: ${dateString}`);
+async function writeDiary(maidName, dateString, contentText, fileName) {
+    debugLog(`Processing diary write for Maid: ${maidName}, Date: ${dateString}, fileName: ${fileName}`);
     if (!maidName || !dateString || !contentText) {
         throw new Error('Invalid input: Missing Maid, Date, or Content.');
     }
@@ -361,7 +361,15 @@ async function writeDiary(maidName, dateString, contentText) {
     const timeStringForFile = `${hours}_${minutes}_${seconds}`;
 
     const dirPath = path.join(dailyNoteRootPath, sanitizedFolderName);
-    const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
+
+    // 可选字段：将 fileName 作为后缀拼接到时间戳文件名后
+    let sanitizedOptionalFileName = '';
+    if (typeof fileName === 'string' && fileName.trim()) {
+        sanitizedOptionalFileName = sanitizePathComponent(fileName.trim());
+    }
+
+    const fileNameSuffix = sanitizedOptionalFileName ? `-${sanitizedOptionalFileName}` : '';
+    const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}${fileNameSuffix}`;
     const fileExtension = `.${CONFIGURED_EXTENSION}`;
     const finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
     const filePath = path.join(dirPath, finalFileName);
@@ -396,8 +404,9 @@ async function main() {
             }
             const diaryData = JSON.parse(inputData);
             const { maidName, dateString, contentText } = diaryData;
+            const fileName = diaryData.fileName || diaryData.FileName;
 
-            const savedFilePath = await writeDiary(maidName, dateString, contentText);
+            const savedFilePath = await writeDiary(maidName, dateString, contentText, fileName);
             sendOutput({ status: "success", message: `Diary saved to ${savedFilePath}` });
 
         } catch (error) {
