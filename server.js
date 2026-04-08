@@ -529,8 +529,16 @@ const adminAuth = (req, res, next) => {
 // This MUST come before serving static files to protect the panel itself.
 app.use(adminAuth);
 
-// Serve Admin Panel static files only after successful authentication.
-app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+// 🌟 AdminPanel 独立进程解耦：主进程不再直接提供 AdminPanel 页面
+// 访问主端口的 /AdminPanel 会被重定向到 PORT+1 的独立后台进程
+const ADMIN_PORT = parseInt(port) + 1;
+app.use('/AdminPanel', (req, res) => {
+    // 构建重定向 URL，保留原始路径和查询参数
+    const host = req.hostname;
+    const protocol = req.protocol;
+    const originalPath = req.originalUrl;
+    res.redirect(302, `${protocol}://${host}:${ADMIN_PORT}${originalPath}`);
+});
 
 
 // Image server logic is now handled by the ImageServer plugin.

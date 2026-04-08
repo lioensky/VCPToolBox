@@ -3,7 +3,10 @@
   "version": "7.1.2",
   "main": "Server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js",
+    "start:admin": "node adminServer.js",
+    "start:all": "node server.js & node adminServer.js"
   },
   "keywords": [],
   "author": "",

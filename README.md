@@ -852,11 +852,33 @@ pip install -r requirements.txt
 
 #### 启动服务器
 
-```bash
-node server.js
+**方式一：使用启动脚本（推荐，Windows）**
+
+双击 `start_server.bat`，会通过 PM2 依次启动主服务和管理面板：
+
+```
+vcp-main  → server.js      (主端口，如 5890)
+vcp-admin → adminServer.js  (主端口+1，如 5891)
 ```
 
-服务器将监听在 `config.env` 中配置的端口。
+**方式二：手动启动**
+
+```bash
+# 启动主聊天服务
+node server.js
+
+# 启动管理面板（独立进程，端口 = 主端口 + 1）
+node adminServer.js
+```
+
+**方式三：使用 PM2**
+
+```bash
+pm2 start server.js --name vcp-main
+pm2 start adminServer.js --name vcp-admin
+```
+
+服务器将监听在 `config.env` 中配置的端口，管理面板自动监听该端口 + 1。
 
 #### 使用 Docker Compose 运行（推荐）
 
@@ -1241,10 +1263,19 @@ VCP 内置了一个功能全面、界面直观的 Web 管理面板，是 VCP 系
 - **高级变量编辑器**：集中管理 `TVStxt/` 目录下的高级变量 `.txt` 文件
 - **VCPTavern 上下文注入器**：提供图形化界面，用于创建和管理 VCPTavern 预设
 
+### 独立进程架构
+
+VCP 管理面板运行在独立的 Node.js 进程中，监听 **主端口 + 1**（例如主服务 5890，面板 5891）。这一设计确保：
+
+- **聊天主链卡顿不影响面板**：即使主进程因上游 SSE stall 进入高延迟状态，管理面板仍可正常响应
+- **前端零改动**：访问主端口的 `/AdminPanel` 会自动 302 重定向到面板端口，旧书签和链接仍然有效
+- **轻量本地处理 + 智能代理**：大部分 admin API（系统监控、日志、配置文件读写、Agent/Toolbox/TVS 管理等）由面板进程本地处理；少数强依赖主进程运行态的接口（插件管理、梦境审批等）自动代理到主进程
+- **重启隔离**：面板点击"重启服务器"会通知主进程重启，面板自身保持运行
+
 ### 访问与登录
 
 - 在 `config.env` 中设置 `AdminUsername` 和 `AdminPassword`（默认为 `admin`, `123456`）
-- 访问 `http://<您的服务器IP或域名>:<端口>/AdminPanel`
+- 访问 `http://<您的服务器IP或域名>:<端口+1>/AdminPanel`（或通过主端口自动重定向）
 - 使用配置的凭据进行 HTTP Basic Auth 认证登录
 
 ---
