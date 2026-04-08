@@ -1096,7 +1096,14 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     knowledgeBaseManager, // Pass the knowledgeBaseManager instance
     AGENT_DIR, // Pass the Agent directory path
     cachedEmojiLists,
-    TVS_DIR // Pass the TVStxt directory path
+    TVS_DIR, // Pass the TVStxt directory path
+    (code = 1) => {
+        console.log(`[Server] Restart triggered from admin API (exit code: ${code}).`);
+        gracefulShutdown(code).catch(err => {
+            console.error('[Server] Fatal error during graceful restart:', err);
+            process.exit(code);
+        });
+    }
 );
 
 // 新增：引入 VCP 论坛 API 路由
@@ -1327,7 +1334,7 @@ startServer().catch(err => {
 });
 
 
-async function gracefulShutdown() {
+async function gracefulShutdown(exitCode = 0) {
     console.log('Initiating graceful shutdown...');
 
     if (taskScheduler) {
@@ -1342,6 +1349,10 @@ async function gracefulShutdown() {
         await pluginManager.shutdownAllPlugins();
     }
 
+    if (knowledgeBaseManager) {
+        await knowledgeBaseManager.shutdown();
+    }
+
     const serverLogWriteStream = logger.getLogWriteStream();
     if (serverLogWriteStream) {
         logger.originalConsoleLog('[Server] Closing server log file stream...');
@@ -1354,8 +1365,8 @@ async function gracefulShutdown() {
         await logClosePromise;
     }
 
-    console.log('Graceful shutdown complete. Exiting.');
-    process.exit(0);
+    console.log(`Graceful shutdown complete. Exiting with code ${exitCode}.`);
+    process.exit(exitCode);
 }
 
 process.on('SIGINT', gracefulShutdown);

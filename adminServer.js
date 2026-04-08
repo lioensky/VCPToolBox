@@ -240,7 +240,11 @@ const localOptions = {
     vectorDBManager: null,      // vectordb-status 会返回 503，由代理路径覆盖
     agentDirPath: AGENT_DIR,
     cachedEmojiLists: new Map(),
-    tvsDirPath: TVS_DIR
+    tvsDirPath: TVS_DIR,
+    triggerRestart: (code = 1) => {
+        console.log(`[AdminServer] Restarting admin process (exit code: ${code})...`);
+        setTimeout(() => process.exit(code), 500);
+    }
 };
 
 for (const moduleName of localModules) {

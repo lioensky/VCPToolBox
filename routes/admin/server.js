@@ -8,12 +8,13 @@ module.exports = function(options) {
 
     // POST to restart the server
     router.post('/server/restart', async (req, res) => {
-        res.json({ message: '服务器重启命令已发送。服务器正在关闭，如果由进程管理器（如 PM2）管理，它应该会自动重启。' });
+        const { triggerRestart } = options;
+        res.json({ message: '服务器重启命令已接纳。正在执行优雅关闭并请求进程管理器重启...' });
 
-        setTimeout(() => {
-            console.log('[AdminPanelRoutes] Received restart command. Shutting down...');
+        setTimeout(async () => {
+            console.log('[AdminPanelRoutes] Received restart command. Initiating shutdown...');
 
-            // 强制清除Node.js模块缓存
+            // 强制清除Node.js模块缓存（尽力而为）
             const moduleKeys = Object.keys(require.cache);
             moduleKeys.forEach(key => {
                 if (key.includes('TextChunker.js') || key.includes('VectorDBManager.js')) {
@@ -21,7 +22,23 @@ module.exports = function(options) {
                 }
             });
 
-            process.exit(1);
+            if (typeof triggerRestart === 'function') {
+                try {
+                    await triggerRestart(1); // 传 1 以确保 PM2 检测到状态变化并自动拉起
+                } catch (error) {
+                    console.error('[AdminPanelRoutes] Graceful shutdown failed, falling back to process.exit(1):', error);
+                    process.exit(1);
+                }
+            } else {
+                console.warn('[AdminPanelRoutes] No triggerRestart callback found. Falling back to process.exit(1).');
+                process.exit(1);
+            }
+            
+            // 最后的防御：如果 15 秒后还没退出，强行硬退出
+            setTimeout(() => {
+                console.error('[AdminPanelRoutes] Shutdown timed out. Force exiting...');
+                process.exit(1);
+            }, 15000).unref();
         }, 1000);
     });
 
