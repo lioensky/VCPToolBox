@@ -275,7 +275,8 @@ app.post('/admin_api/server/restart', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': req.headers.authorization || ''
+                    'Authorization': req.headers.authorization || '',
+                    'Cookie': req.headers.cookie || ''
                 },
                 timeout: 5000
             },
@@ -381,7 +382,8 @@ app.post('/admin_api/config/main/reload-notify', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': req.headers.authorization || ''
+                    'Authorization': req.headers.authorization || '',
+                    'Cookie': req.headers.cookie || ''
                 },
                 timeout: 10000
             },
