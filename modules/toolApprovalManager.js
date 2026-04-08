@@ -38,6 +38,14 @@ class ToolApprovalManager {
             this.watcher.close();
         }
         this.watcher = chokidar.watch(this.configPath, {
+            ignored: [
+                '**/node_modules/**',
+                '**/.git/**',
+                '**/dist/**',
+                '**/target/**',
+                '**/image/**',
+                '**/.*'
+            ],
             persistent: true,
             ignoreInitial: true
         });

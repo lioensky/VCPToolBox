@@ -85,7 +85,14 @@ class ToolboxManager {
       }
 
       this.tvsWatcher = chokidar.watch(this.tvsDir, {
-        ignored: /(^|[\/\\])\../,
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/dist/**',
+          '**/target/**',
+          '**/image/**',
+          '**/.*'
+        ],
         persistent: true,
         ignoreInitial: true,
       });

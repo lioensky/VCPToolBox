@@ -24,7 +24,14 @@ class TvsManager {
     watchFiles() {
         try {
             const watcher = chokidar.watch(TVS_DIR, {
-                ignored: /(^|[\/\\])\../, // ignore dotfiles
+                ignored: [
+                    '**/node_modules/**',
+                    '**/.git/**',
+                    '**/dist/**',
+                    '**/target/**',
+                    '**/image/**',
+                    '**/.*'
+                ],
                 persistent: true,
                 ignoreInitial: true, // Don't trigger 'add' events on startup
             });

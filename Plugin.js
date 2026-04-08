@@ -1327,12 +1327,15 @@ class PluginManager extends EventEmitter {
     startPluginWatcher() {
         if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
 
-        const pathsToWatch = [
-            path.join(PLUGIN_DIR, '**/plugin-manifest.json'),
-            path.join(PLUGIN_DIR, '**/plugin-manifest.json.block')
-        ];
-
-        const watcher = chokidar.watch(pathsToWatch, {
+        const watcher = chokidar.watch(PLUGIN_DIR, {
+            ignored: [
+                '**/node_modules/**',
+                '**/.git/**',
+                '**/dist/**',
+                '**/target/**',
+                '**/image/**',
+                '**/.*'
+            ],
             persistent: true,
             ignoreInitial: true, // Don't fire on initial scan
             awaitWriteFinish: {
@@ -1341,12 +1344,23 @@ class PluginManager extends EventEmitter {
             }
         });
 
-        watcher
-            .on('add', filePath => this.handlePluginManifestChange('add', filePath))
-            .on('change', filePath => this.handlePluginManifestChange('change', filePath))
-            .on('unlink', filePath => this.handlePluginManifestChange('unlink', filePath));
+        const filterManifest = (filePath) => {
+            const fileName = path.basename(filePath);
+            return fileName === 'plugin-manifest.json' || fileName === 'plugin-manifest.json.block';
+        };
 
-        console.log(`[PluginManager] Chokidar is now watching for manifest changes in: ${PLUGIN_DIR}`);
+        watcher
+            .on('add', filePath => {
+                if (filterManifest(filePath)) this.handlePluginManifestChange('add', filePath);
+            })
+            .on('change', filePath => {
+                if (filterManifest(filePath)) this.handlePluginManifestChange('change', filePath);
+            })
+            .on('unlink', filePath => {
+                if (filterManifest(filePath)) this.handlePluginManifestChange('unlink', filePath);
+            });
+
+        console.log(`[PluginManager] Chokidar is now watching ${PLUGIN_DIR} for manifest changes.`);
     }
 
     handlePluginManifestChange(eventType, filePath) {

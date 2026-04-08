@@ -176,7 +176,7 @@ async function main() {
                 command = commands.join('; ');
             }
             let executionType = args.executionType;
-            const requireAdmin = args.requireAdmin;
+            const toolPassword = args.tool_password || args.requireAdmin; // 兼容旧版 requireAdmin 参数
             let notice;
 
             if (!executionType) {
@@ -189,27 +189,22 @@ async function main() {
                 throw new Error('缺少必需参数: 必须提供 "command" 或 "command1", "command2", ... 等参数。');
             }
 
-            // 管理员模式验证
-            if (isAuthRequiredByConfig && !requireAdmin) {
-                throw new Error('此操作需要管理员授权，但未提供验证码 (requireAdmin)。');
+            // 验证码验证逻辑
+            if (isAuthRequiredByConfig && !toolPassword) {
+                throw new Error('此操作涉及敏感指令，需要验证码授权，但未提供 tool_password。');
             }
 
-            if (requireAdmin) {
+            if (toolPassword) {
                 const realCode = process.env.DECRYPTED_AUTH_CODE;
 
                 if (!realCode) {
-                    throw new Error('无法获取管理员验证码。请确保主服务器配置正确。');
+                    throw new Error('无法获取验证码。请确保主服务器配置正确。');
                 }
 
-                if (String(requireAdmin) !== realCode) {
-                    throw new Error('管理员验证码错误。');
+                if (String(toolPassword) !== realCode) {
+                    throw new Error('验证码错误。');
                 }
-
-                // 只有在确实匹配到需要管理员权限的指令时，才强制切换到 background
-                if (isAuthRequiredByConfig && executionType !== 'background') {
-                    notice = '检测到敏感指令，管理员模式请求被强制切换为 "background" 执行类型。';
-                    executionType = 'background';
-                }
+                // 移除原有的强制切换 background 的逻辑
             }
 
             if (executionType === 'background') {
@@ -220,14 +215,14 @@ async function main() {
                 // 启动一个可见的PowerShell窗口，但我们的脚本不等待它
                 executePowerShellCommand(finalCommand, 'background');
 
-                // 关键：现在我们等待轮询完成，而不是立即响应
+                // 关键：等待轮询完成
                 const output = await new Promise((resolve, reject) => {
                     let lastSize = -1;
                     let idleCycles = 0;
                     let totalWaitTime = 0;
                     const maxIdleCycles = 3; // 6秒无增长则认为结束
                     const pollingInterval = 2000; // 2秒
-                    const maxTotalWaitTime = 30000; // 最大等待30秒，防止死循环
+                    const maxTotalWaitTime = 45000; // 最大等待45秒（增加稳定性）
 
                     const intervalId = setInterval(async () => {
                         totalWaitTime += pollingInterval;
@@ -235,26 +230,29 @@ async function main() {
                             const stats = await fs.stat(tempFilePath).catch(() => null);
 
                             if (stats) {
-                                if (stats.size > lastSize) {
+                                if (stats.size > 0 && stats.size > lastSize) {
                                     lastSize = stats.size;
                                     idleCycles = 0;
-                                } else {
+                                } else if (stats.size > 0) {
                                     idleCycles++;
                                 }
-                            } else if (lastSize !== -1) {
-                                // 文件曾存在但现在消失了，说明进程结束
-                                idleCycles = maxIdleCycles;
+                                // 如果文件存在且 size > 0，开始进入空闲判定
                             }
 
-                            // 如果超过最大等待时间且文件仍未创建，或者满足空闲周期
-                            if (idleCycles >= maxIdleCycles || (lastSize === -1 && totalWaitTime >= maxTotalWaitTime)) {
+                            // 判定结束的条件：1. 超过空闲周期 2. 超过最大总等待时间 3. 文件被意外删除
+                            if (idleCycles >= maxIdleCycles || totalWaitTime >= maxTotalWaitTime) {
                                 clearInterval(intervalId);
+                                
+                                // 赋予最后一两秒的写入宽限期
+                                await new Promise(r => setTimeout(r, 1000));
+
                                 const fileBuffer = await fs.readFile(tempFilePath).catch(() => null);
-                                let fileContent = '未能读取到后台任务的输出。可能是命令启动失败或超时。';
-                                if (fileBuffer) {
-                                    // 尝试使用 utf8 读取，因为我们在 executePowerShellCommand 中设置了 UTF8 编码
+                                let fileContent = (totalWaitTime >= maxTotalWaitTime && lastSize === -1) 
+                                    ? '后台任务启动超时或无输出产生。' 
+                                    : '未能读取到后台任务输出。';
+
+                                if (fileBuffer && fileBuffer.length > 0) {
                                     fileContent = fileBuffer.toString('utf8');
-                                    // 如果看起来像乱码（包含很多空字符），尝试 utf16le
                                     if (fileContent.includes('\u0000')) {
                                         fileContent = fileBuffer.toString('utf16le');
                                     }

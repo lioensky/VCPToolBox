@@ -80,7 +80,14 @@ class AgentManager {
             }
 
             const watcher = chokidar.watch(this.agentDir, {
-                ignored: /(^|[\/\\])\../, // ignore dotfiles
+                ignored: [
+                    '**/node_modules/**',
+                    '**/.git/**',
+                    '**/dist/**',
+                    '**/target/**',
+                    '**/image/**',
+                    '**/.*' // ignore dotfiles
+                ],
                 persistent: true,
                 ignoreInitial: true,
             });

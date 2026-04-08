@@ -718,7 +718,24 @@ class KnowledgeBaseManager {
                 }
             };
 
-            this.watcher = chokidar.watch(this.config.rootPath, { ignored: /(^|[\/\\])\../, ignoreInitial: !this.config.fullScanOnStartup });
+            const ignoredPatterns = [
+                '**/node_modules/**',
+                '**/.git/**',
+                '**/dist/**',
+                '**/target/**',
+                '**/image/**',
+                '**/.*'
+            ];
+            if (Array.isArray(this.config.ignoreFolders)) {
+                this.config.ignoreFolders.forEach(folder => {
+                    if (folder) ignoredPatterns.push(`**/${folder}/**`);
+                });
+            }
+
+            this.watcher = chokidar.watch(this.config.rootPath, {
+                ignored: ignoredPatterns,
+                ignoreInitial: !this.config.fullScanOnStartup
+            });
             this.watcher.on('add', handleFileWithLock).on('change', handleFileWithLock).on('unlink', fp => this._handleDelete(fp));
         }
     }
