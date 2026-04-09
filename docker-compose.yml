@@ -4,6 +4,7 @@ services:
     container_name: vcptoolbox
     ports:
       - "6005:6005"
+      - "6006:6006"
     environment:
       # 使用宿主机环境变量 DEFAULT_TIMEZONE，如果未设置则回退到 Asia/Shanghai
       TZ: ${DEFAULT_TIMEZONE:-Asia/Shanghai}
@@ -30,6 +31,5 @@ services:
       # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的。添加pydeps兼容科学计算器依赖。
       - /usr/src/app/pydeps
       - /usr/src/app/node_modules
-    
-    # The command is defined in the Dockerfile's CMD instruction.
+    # 启动命令由 Dockerfile 中的 pm2-runtime + ecosystem.config.js 提供。
     restart: unless-stopped
