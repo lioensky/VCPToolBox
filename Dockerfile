@@ -49,8 +49,8 @@ RUN npm cache clean --force && npm install --registry=https://registry.npmmirror
 COPY requirements.txt ./
 # 在 Linux 环境下构建时，注释掉仅适用于 Windows 的 win10toast 包
 RUN sed -i '/^win10toast/s/^/#/' requirements.txt
-RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
-RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 # 复制所有源代码
 COPY . .
@@ -61,7 +61,7 @@ COPY . .
 RUN find Plugin -name requirements.txt -exec sh -c ' \
     for req_file do \
         echo ">>> Installing Python dependencies from $req_file"; \
-        pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r "$req_file" || \
+        pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://mirrors.aliyun.com/pypi/simple/ -r "$req_file" || \
             { echo "!!! Failed to install Python dependencies from $req_file"; exit 1; }; \
     done' sh {} +
 
