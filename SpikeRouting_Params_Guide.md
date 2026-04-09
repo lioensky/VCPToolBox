@@ -57,5 +57,5 @@
 
 ---
 **配置总结与调试建议**：
-当想要系统“更加感性、思维跳跃”时 => 适当调低 `tensionThreshold`，调高 `wormholeDecay` 与 `baseMomentum`。
+当想要让系统“更加感性、思维跳跃”时 => 适当调低 `tensionThreshold`，调高 `wormholeDecay` 与 `baseMomentum`。
 当想要系统“更加理性、紧抓核心”时 => 调高 `tensionThreshold`（封锁虫洞），调低 `baseMomentum`。
