@@ -3,7 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const { tavily } = require('@tavily/core');
+const { resolveSearchMode, resolveTavilySearchUrl, resolveTavilyKey } = require('./configResolver');
 
 // --- 1. 初始化与配置加载 ---
 const configPath = path.resolve(__dirname, './config.env');
@@ -17,6 +17,9 @@ const {
     VSearchModel: MODEL,
     GrokModel: GROK_MODEL,
     TavilyModel: TAVILY_MODEL,
+    TavilyBaseUrl: TAVILY_BASE_URL,
+    TavilyKey: PLUGIN_TAVILY_KEY,
+    DefaultSearchMode: DEFAULT_SEARCH_MODE,
     VSearchMaxToken: MAX_TOKENS,
     MaxConcurrent: MAX_CONCURRENT,
     HTTP_PROXY: PROXY
@@ -287,7 +290,9 @@ const pickRandomKey = (keyStr) => {
 };
 
 /**
- * 直接调用 Tavily SDK 执行单次搜索
+ * 直接调用 Tavily HTTP API 执行单次搜索。
+ * 当前仓库使用的 @tavily/core 版本未实际透传 apiBaseURL，
+ * 因此这里改为 axios 直连，确保第三方 Tavily 地址可用。
  */
 const callTavilySearch = async (query, tavilyKeyStr) => {
     const apiKey = pickRandomKey(tavilyKeyStr);
@@ -295,19 +300,30 @@ const callTavilySearch = async (query, tavilyKeyStr) => {
         throw new Error('TavilyKey 未配置，请在根目录 config.env 中设置 TavilyKey。');
     }
 
-    const tvly = tavily({ apiKey });
-    const response = await tvly.search(query, {
+    const searchUrl = resolveTavilySearchUrl(TAVILY_BASE_URL);
+    const response = await axios.post(searchUrl, {
+        query,
         search_depth: 'advanced',
         topic: 'general',
         max_results: 10,
         include_answer: false,
-        include_images: false,
+        include_images: false
+    }, {
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+        },
+        timeout: 60000,
+        proxy: false
     });
+
+    const data = response.data || {};
+    const results = Array.isArray(data.results) ? data.results : [];
 
     // 转换为 Markdown 格式
     let markdown = '';
-    if (response.results && response.results.length > 0) {
-        response.results.forEach((item, index) => {
+    if (results.length > 0) {
+        results.forEach((item, index) => {
             markdown += `${index + 1}. **[${item.title}](${item.url})**\n`;
             if (item.content) {
                 markdown += `   ${item.content}\n\n`;
@@ -386,8 +402,9 @@ const callTavilyMode = async (topic, keywordList, tavilyKeyStr) => {
 };
 
 async function main(request) {
-    const { SearchTopic, Keywords, ShowURL, SearchMode = 'grounding' } = request;
+    const { SearchTopic, Keywords, ShowURL, SearchMode } = request;
     const showURL = ShowURL === true || ShowURL === 'true';
+    const resolvedMode = resolveSearchMode(SearchMode, DEFAULT_SEARCH_MODE);
 
     if (!SearchTopic || !Keywords) {
         return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic 或 Keywords。" });
@@ -398,26 +415,29 @@ async function main(request) {
         return sendResponse({ status: "error", error: "未识别到有效的关键词。" });
     }
 
-    log(`启动 VSearch [模式: ${SearchMode}]。主题: "${SearchTopic}"，关键词数量: ${keywordList.length}`);
+    log(`启动 VSearch [模式: ${resolvedMode}]。主题: "${SearchTopic}"，关键词数量: ${keywordList.length}`);
 
-    if (SearchMode === 'grok') {
+    if (resolvedMode === 'grok') {
         // Grok 模式：单次请求处理所有关键词
         const result = await callGrokMode(SearchTopic, keywordList);
         return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Grok]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
     }
 
-    if (SearchMode === 'tavily') {
+    if (resolvedMode === 'tavily') {
         // Tavily 模式：直接调用 Tavily SDK 并发搜索 + 单次总结
         let tavilyKeyStr = '';
         try {
             const rootEnvContent = await fs.readFile(rootConfigPath, 'utf8');
             const rootEnv = dotenv.parse(rootEnvContent);
-            tavilyKeyStr = rootEnv.TavilyKey || '';
+            tavilyKeyStr = resolveTavilyKey({ TavilyKey: PLUGIN_TAVILY_KEY }, rootEnv);
         } catch (e) {
             log(`读取根目录配置失败: ${e.message}`);
         }
+        if (!tavilyKeyStr && PLUGIN_TAVILY_KEY) {
+            tavilyKeyStr = PLUGIN_TAVILY_KEY;
+        }
         if (!tavilyKeyStr) {
-            return sendResponse({ status: "error", error: "Tavily 模式需要在根目录 config.env 中配置 TavilyKey。" });
+            return sendResponse({ status: "error", error: "Tavily 模式需要在 Plugin/VSearch/config.env 或根目录 config.env 中配置 TavilyKey。" });
         }
         const result = await callTavilyMode(SearchTopic, keywordList, tavilyKeyStr);
         return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Tavily]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });

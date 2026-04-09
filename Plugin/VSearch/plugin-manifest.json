@@ -31,9 +31,17 @@
       "type": "string",
       "description": "Tavily模式下用于总结的模型名称 (建议使用 claude-3-5-sonnet-20240620)。"
     },
+    "TavilyBaseUrl": {
+      "type": "string",
+      "description": "Tavily 搜索 API 的基础地址。留空则使用 Tavily 官方默认地址。"
+    },
     "TavilyKey": {
       "type": "string",
       "description": "Tavily API Key (仅Tavily模式需要)。"
+    },
+    "DefaultSearchMode": {
+      "type": "string",
+      "description": "默认搜索模式。未显式传入 SearchMode 时生效，建议设为 tavily。"
     },
     "MaxConcurrent": {
       "type": "integer",
@@ -44,7 +52,7 @@
     "invocationCommands": [
       {
         "commandIdentifier": "VSearch",
-        "description": "执行语义级并发搜索。该工具会根据你提供的主题和关键词，并发调用搜索引擎并返回深度整合后的信息。\n参数:\n- SearchTopic (字符串, 必需): 检索的目标主题或研究背景，帮助AI理解搜索意图。\n- Keywords (字符串, 必需): 具体的检索关键词，多个关键词请用逗号或换行分隔。\n- SearchMode (字符串, 可选, 默认'grounding'): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,\nKeywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,\nSearchMode:「始」grounding「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "执行语义级并发搜索。该工具会根据你提供的主题和关键词，并发调用搜索引擎并返回深度整合后的信息。\n参数:\n- SearchTopic (字符串, 必需): 检索的目标主题或研究背景，帮助AI理解搜索意图。\n- Keywords (字符串, 必需): 具体的检索关键词，多个关键词请用逗号或换行分隔。\n- SearchMode (字符串, 可选, 默认读取 config.env 中的 DefaultSearchMode，未配置时默认 tavily): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,\nKeywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,\nSearchMode:「始」tavily「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
