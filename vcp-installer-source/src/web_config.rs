@@ -40,17 +40,21 @@ pub fn start_web_config(install_dir: &Path) -> Result<()> {
     println!("  ╚══════════════════════════════════════════╝");
     println!();
 
-    // 打开浏览器 (Windows)
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", &url])
-        .spawn();
-
     // 准备 HTML（替换动态占位符）
     let system_info = get_system_info();
     let vchat_path = install_dir.join("VCPChat").display().to_string();
     let html = CONFIG_PAGE_HTML
         .replace("{{SYSTEM_INFO}}", &system_info)
         .replace("{{VCHAT_PATH}}", &vchat_path);
+
+    // 延迟打开浏览器，确保 accept 循环已就绪
+    let url_clone = url.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", &url_clone])
+            .spawn();
+    });
 
     // 请求循环
     for stream in listener.incoming() {
@@ -59,8 +63,7 @@ pub fn start_web_config(install_dir: &Path) -> Result<()> {
                 match handle_request(&mut stream, &html, install_dir) {
                     Ok(should_exit) => {
                         if should_exit {
-                            println!("  [VCP] 配置完成，Web 服务关闭。");
-                            return Ok(());
+                            println!("  [VCP] 配置已保存。可关闭浏览器，按 Ctrl+C 退出。");
                         }
                     }
                     Err(e) => {
@@ -137,17 +140,28 @@ fn handle_request(
             // 执行配置生成
             match generate_all_config(install_dir, &fields) {
                 Ok(summary) => {
+                    let escaped = summary
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "<br>")
+                        .replace('\r', "")
+                        .replace('\t', "\\t");
                     let resp = format!(
                         r#"{{"success":true,"summary":"{}"}}"#,
-                        summary.replace('"', "\\\"").replace('\n', "<br>")
+                        escaped
                     );
                     write_http_response(stream, 200, "application/json", &resp)?;
-                    Ok(true) // 配置完成，退出服务
+                    Ok(false) // 配置已保存，但不退出服务，避免TCP RST导致前端Failed to fetch
                 }
                 Err(e) => {
+                    let err_escaped = format!("{:#}", e)
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', " ")
+                        .replace('\r', "");
                     let resp = format!(
                         r#"{{"success":false,"error":"{}"}}"#,
-                        format!("{:#}", e).replace('"', "\\\"")
+                        err_escaped
                     );
                     write_http_response(stream, 200, "application/json", &resp)?;
                     Ok(false) // 出错不退出，让用户修改重试

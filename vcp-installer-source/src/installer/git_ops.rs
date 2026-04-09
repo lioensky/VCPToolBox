@@ -75,6 +75,21 @@ pub fn git_pull(
 
     log_fn(&format!("[git] pull {}", repo_dir.display()));
 
+    // 丢弃本地修改（installer生成的bat等会覆盖仓库文件，导致pull冲突）
+    let reset = Command::new(git_exe)
+        .args(["checkout", "--", "."])
+        .current_dir(repo_dir)
+        .env("PATH", env_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    if let Ok(out) = &reset {
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            log_fn(&format!("[git] checkout -- . 警告: {}", err.trim()));
+        }
+    }
+
     let mut child = Command::new(git_exe)
         .args(["pull", "--ff-only"])
         .current_dir(repo_dir)

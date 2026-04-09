@@ -75,6 +75,10 @@ pub fn render(frame: &mut Frame, _app: &App) {
             "⚠ 镜像暂不可用，请确保稳定的网络环境",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )]),
+        Line::from(vec![Span::styled(
+            "⚠ 建议安装前关闭 Windows Defender 实时保护，避免干扰安装",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
 
         Line::from(vec![

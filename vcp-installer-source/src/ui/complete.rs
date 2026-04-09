@@ -112,6 +112,24 @@ pub fn render(frame: &mut Frame, app: &App) {
                 )));
             }
 
+            // npm 错误时显示 Windows Defender 提示
+            let has_npm_error = result.errors.iter().any(|e| e.contains("npm"));
+            if has_npm_error {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  💡 npm install 失败通常由 Windows Defender 实时防护导致",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  请临时关闭实时防护后重新运行安装程序：",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Windows 安全中心 > 病毒和威胁防护 > 管理设置 > 关闭实时保护",
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+
             lines.push(Line::from(""));
         }
 
