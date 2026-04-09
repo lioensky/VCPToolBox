@@ -6,6 +6,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { extractImageAndTextFromMessage } from './responseAdapter.mjs';
 
 // --- 1. 配置加载与初始化 ---
 
@@ -43,7 +44,7 @@ const {
     };
 })();
 
-const MODEL_NAME = 'hyb-Optimal/antigravity/gemini-3-pro-image';
+const MODEL_NAME = 'gemini-3-pro-image-preview';
 
 /**
  * 随机获取一个 API URL (实现随机均衡)
@@ -135,13 +136,13 @@ async function callApi(payload) {
         maxBodyLength: Infinity,
         maxContentLength: Infinity
     });
-    
+
     const message = response.data?.choices?.[0]?.message;
     if (!message) {
         const detailedError = `从 API 响应中未能提取到消息内容。收到的响应: ${JSON.stringify(response.data, null, 2)}`;
         throw new Error(detailedError);
     }
-    
+
     return message;
 }
 
@@ -152,24 +153,7 @@ async function callApi(payload) {
  * @returns {Promise<object>} - 格式化后的成功结果对象
  */
 async function processApiResponseAndSaveImage(message, originalArgs) {
-    // API 返回结构适配：
-    // 1. 优先从 message.content 中提取 Markdown 格式的 base64 图片
-    // 2. 备选方案：从 message.images 数组中获取
-    let textContent = message.content || '';
-    let imageUrl = null;
-
-    // 尝试从 content 中提取 base64 (格式如 ![...](data:image/xxx;base64,...))
-    const markdownImageRegex = /!\[.*?\]\((data:image\/\w+;base64,[\s\S]*?)\)/;
-    const match = textContent.match(markdownImageRegex);
-    
-    if (match) {
-        imageUrl = match[1];
-        // 移除 content 中的图片 Markdown，避免重复显示
-        textContent = textContent.replace(markdownImageRegex, '').trim();
-    } else if (message.images && Array.isArray(message.images) && message.images.length > 0) {
-        const imageData = message.images[0];
-        imageUrl = imageData?.image_url?.url;
-    }
+    const { textContent, imageUrl } = extractImageAndTextFromMessage(message);
 
     if (!imageUrl) {
         throw new Error(`API 未返回图片。这很可能是因为您的提示词触发了安全审核（Safety Filter），请检查提示词是否包含敏感内容。模型返回的文本内容为: ${textContent}`);
@@ -192,7 +176,7 @@ async function processApiResponseAndSaveImage(message, originalArgs) {
         imageBuffer = response.data;
         mimeType = response.headers['content-type'] || 'image/png';
     }
-    
+
     const extension = mimeType.split('/')[1] || 'png';
     const generatedFileName = `${uuidv4()}.${extension}`;
     const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'nanobananagen');
@@ -290,7 +274,7 @@ async function editImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
-    
+
     // 优先使用 image_base64, 其次是 image_url
     let imageUrlInput = args.image_base64 || args.image_url;
 
@@ -382,7 +366,7 @@ async function composeImage(args) {
 
     // 1. 找出有多少个图片参数 (使用处理过的 effectiveArgs)
     const imageKeys = Object.keys(effectiveArgs).filter(k => k.startsWith('image_url') || k.startsWith('image_base64'));
-    
+
     // 提取所有索引并找到最大值
     const indices = imageKeys.map(k => {
         const num = k.split('_').pop();
@@ -400,7 +384,7 @@ async function composeImage(args) {
     for (let i = 1; i <= maxIndex; i++) {
         const base64Key = `image_base64_${i}`;
         const urlKey = `image_url_${i}`;
-        
+
         // 优先使用 base64 参数，然后是 url 参数
         const imageInput = effectiveArgs[base64Key] || effectiveArgs[urlKey];
         const activeKey = effectiveArgs[base64Key] ? base64Key : urlKey;
@@ -507,7 +491,7 @@ async function main() {
             default:
                 throw new Error(`未知的命令: '${parsedArgs.command}'。请使用 'generate'、'edit' 或 'compose'。`);
         }
-        
+
         console.log(JSON.stringify({ status: "success", result: resultObject }));
 
     } catch (e) {
