@@ -151,6 +151,8 @@ const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
 
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
+const DIST_TOOL_DIAGNOSTICS_ENABLED = (process.env.DIST_TOOL_DIAGNOSTICS_ENABLED || "false").toLowerCase() === "true";
+const DIST_TOOL_DIAGNOSTICS_INTERVAL_MS = Number.parseInt(process.env.DIST_TOOL_DIAGNOSTICS_INTERVAL_MS || "60000", 10);
 const CHAT_LOG_ENABLED = (process.env.CHAT_LOG_ENABLED || "false").toLowerCase() === "true";
 const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
@@ -1316,7 +1318,12 @@ async function startServer() {
         // Initialize the new WebSocketServer
         if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
         const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
-        webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
+        webSocketServer.initialize(server, {
+            debugMode: DEBUG_MODE,
+            vcpKey: vcpKeyValue,
+            distToolDiagnosticsEnabled: DIST_TOOL_DIAGNOSTICS_ENABLED,
+            distToolDiagnosticsIntervalMs: Number.isFinite(DIST_TOOL_DIAGNOSTICS_INTERVAL_MS) ? DIST_TOOL_DIAGNOSTICS_INTERVAL_MS : 60000
+        });
 
         // --- 注入依赖 ---
         webSocketServer.setPluginManager(pluginManager);

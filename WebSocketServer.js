@@ -6,7 +6,9 @@ let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
 let serverConfig = {
     debugMode: false,
-    vcpKey: null
+    vcpKey: null,
+    distToolDiagnosticsEnabled: false,
+    distToolDiagnosticsIntervalMs: 60000
 };
 
 // 用于存储不同类型的客户端
@@ -18,6 +20,7 @@ const adminPanelClients = new Map(); // 新增：管理面板客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 const waitingControlClients = new Map(); // 新增：存储等待页面更新的ChromeControl客户端 (clientId -> requestId)
+let runtimeSnapshotInterval = null;
 
 function generateClientId() {
     // 用于生成客户端ID和请求ID
@@ -32,12 +35,51 @@ async function writeLog(message) {
     }
 }
 
+function emitDistToolLog(prefix, event, payload = {}) {
+    console.log(`${prefix} ${JSON.stringify({ event, ...payload })}`);
+}
+
+function emitRuntimeSnapshot(event = 'runtime_snapshot') {
+    if (!serverConfig.distToolDiagnosticsEnabled) {
+        return;
+    }
+
+    const snapshotAt = new Date().toISOString();
+    const payload = {
+        snapshotAt,
+        distributedServerCount: distributedServers.size,
+        pendingSize: pendingToolRequests.size,
+        chromeObserverCount: chromeObserverClients.size,
+        chromeControlCount: chromeControlClients.size,
+        adminPanelCount: adminPanelClients.size
+    };
+
+    emitDistToolLog('[DistToolRuntime]', event, payload);
+
+    if (pendingToolRequests.size >= 10) {
+        emitDistToolLog('[DistToolRuntime]', 'runtime_pressure_warning', {
+            ...payload,
+            warningAt: snapshotAt,
+            threshold: 10
+        });
+    }
+}
+
 function initialize(httpServer, config) {
     if (!httpServer) {
         console.error('[WebSocketServer] Cannot initialize without an HTTP server instance.');
         return;
     }
     serverConfig = { ...serverConfig, ...config };
+    if (runtimeSnapshotInterval) {
+        clearInterval(runtimeSnapshotInterval);
+        runtimeSnapshotInterval = null;
+    }
+    if (serverConfig.distToolDiagnosticsEnabled) {
+        runtimeSnapshotInterval = setInterval(() => {
+            emitRuntimeSnapshot();
+        }, serverConfig.distToolDiagnosticsIntervalMs);
+    }
 
     if (!serverConfig.vcpKey && serverConfig.debugMode) {
         console.warn('[WebSocketServer] VCP_Key not set. WebSocket connections will not be authenticated if default path is used.');
@@ -397,6 +439,10 @@ function shutdown() {
     if (serverConfig.debugMode) {
         console.log('[WebSocketServer] Shutting down...');
     }
+    if (runtimeSnapshotInterval) {
+        clearInterval(runtimeSnapshotInterval);
+        runtimeSnapshotInterval = null;
+    }
     if (wssInstance) {
         wssInstance.clients.forEach(client => {
             client.close();
@@ -429,8 +475,10 @@ function handleDistributedServerMessage(serverId, message) {
             if (serverEntry && message.data && Array.isArray(message.data.tools)) {
                 // 过滤掉内部工具，不让它们显示在插件列表中
                 const externalTools = message.data.tools.filter(t => t.name !== 'internal_request_file');
-                pluginManager.registerDistributedTools(serverId, externalTools);
+                const resolvedServerName = serverEntry.serverName || message.data.serverName || serverId;
+                pluginManager.registerDistributedTools(serverId, resolvedServerName, externalTools);
                 serverEntry.tools = externalTools.map(t => t.name);
+                serverEntry.serverName = resolvedServerName;
                 distributedServers.set(serverId, serverEntry);
                 writeLog(`Registered ${externalTools.length} external tools from server ${serverId}.`);
             }
@@ -471,12 +519,35 @@ function handleDistributedServerMessage(serverId, message) {
             const pending = pendingToolRequests.get(message.data.requestId);
             if (pending) {
                 clearTimeout(pending.timeout);
+                emitDistToolLog('[DistTool]', 'tool_result_received', {
+                    requestId: message.data.requestId,
+                    toolName: pending.toolName,
+                    serverIdOrName: pending.serverIdOrName,
+                    effectiveTimeout: pending.effectiveTimeout,
+                    pendingSize: pendingToolRequests.size,
+                    sentAt: pending.sentAt,
+                    receivedAt: new Date().toISOString()
+                });
                 if (message.data.status === 'success') {
                     pending.resolve(message.data.result);
                 } else {
                     pending.reject(new Error(message.data.error || 'Distributed tool execution failed.'));
                 }
                 pendingToolRequests.delete(message.data.requestId);
+                emitDistToolLog('[DistToolPending]', 'pending_request_removed', {
+                    requestId: message.data.requestId,
+                    toolName: pending.toolName,
+                    serverIdOrName: pending.serverIdOrName,
+                    removedAt: new Date().toISOString(),
+                    pendingSize: pendingToolRequests.size
+                });
+            } else {
+                emitDistToolLog('[DistToolPending]', 'unmatched_tool_result', {
+                    requestId: message.data.requestId,
+                    serverIdOrName: serverId,
+                    receivedAt: new Date().toISOString(),
+                    pendingSize: pendingToolRequests.size
+                });
             }
             break;
         default:
@@ -484,7 +555,7 @@ function handleDistributedServerMessage(serverId, message) {
     }
 }
 
-async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout) {
+async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeout, requestIdOverride) {
     // 优先从插件 manifest 获取超时设置
     const plugin = pluginManager.getPlugin(toolName);
     const defaultTimeout = plugin?.communication?.timeout || 60000;
@@ -506,7 +577,8 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
         throw new Error(`Distributed server ${serverIdOrName} is not connected or ready.`);
     }
 
-    const requestId = generateClientId();
+    const requestId = requestIdOverride || generateClientId();
+    const sentAt = new Date().toISOString();
     const payload = {
         type: 'execute_tool',
         data: {
@@ -519,12 +591,52 @@ async function executeDistributedTool(serverIdOrName, toolName, toolArgs, timeou
     return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
             pendingToolRequests.delete(requestId);
+            emitDistToolLog('[DistToolTimeout]', 'distributed_tool_timeout', {
+                requestId,
+                toolName,
+                serverIdOrName,
+                effectiveTimeout,
+                pendingSize: pendingToolRequests.size,
+                sentAt,
+                timedOutAt: new Date().toISOString()
+            });
+            emitDistToolLog('[DistToolPending]', 'pending_request_removed', {
+                requestId,
+                toolName,
+                serverIdOrName,
+                removedAt: new Date().toISOString(),
+                pendingSize: pendingToolRequests.size
+            });
             reject(new Error(`Request to distributed tool ${toolName} on server ${serverIdOrName} timed out after ${effectiveTimeout / 1000}s.`));
         }, effectiveTimeout);
 
-        pendingToolRequests.set(requestId, { resolve, reject, timeout: timeoutId });
+        pendingToolRequests.set(requestId, {
+            resolve,
+            reject,
+            timeout: timeoutId,
+            toolName,
+            serverIdOrName,
+            effectiveTimeout,
+            sentAt
+        });
+        emitDistToolLog('[DistToolPending]', 'pending_request_added', {
+            requestId,
+            toolName,
+            serverIdOrName,
+            effectiveTimeout,
+            pendingSize: pendingToolRequests.size,
+            sentAt
+        });
 
         server.ws.send(JSON.stringify(payload));
+        emitDistToolLog('[DistTool]', 'distributed_tool_sent', {
+            requestId,
+            toolName,
+            serverIdOrName,
+            effectiveTimeout,
+            pendingSize: pendingToolRequests.size,
+            sentAt
+        });
         writeLog(`Sent tool execution request ${requestId} for ${toolName} to server ${serverIdOrName}.`);
     });
 }

@@ -15,6 +15,10 @@ const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
 
+function logDistToolEvent(prefix, event, payload = {}) {
+    console.log(`${prefix} ${JSON.stringify({ event, ...payload })}`);
+}
+
 class PluginManager extends EventEmitter {
     constructor() {
         super();
@@ -690,6 +694,13 @@ class PluginManager extends EventEmitter {
         if (!plugin) {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
         }
+        const startedAt = new Date().toISOString();
+        const requestId = `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        const executionMode = plugin.isDistributed
+            ? 'distributed'
+            : (plugin.communication?.protocol === 'direct' ? 'direct' : 'stdio');
+        const pluginType = plugin.pluginType || 'unknown';
+        const protocol = plugin.communication?.protocol || 'unknown';
 
         // Helper function to generate a timestamp string
         const _getFormattedLocalTimestamp = () => {
@@ -802,6 +813,16 @@ class PluginManager extends EventEmitter {
         // --- 人工审核逻辑结束 ---
 
         try {
+            logDistToolEvent('[DistTool]', 'tool_call_started', {
+                requestId,
+                toolName,
+                executionMode,
+                isDistributed: Boolean(plugin.isDistributed),
+                pluginType,
+                protocol,
+                startedAt
+            });
+
             let resultFromPlugin;
             if (plugin.isDistributed) {
                 // --- 分布式插件调用逻辑 ---
@@ -809,7 +830,7 @@ class PluginManager extends EventEmitter {
                     throw new Error('[PluginManager] WebSocketServer is not initialized. Cannot call distributed tool.');
                 }
                 if (this.debugMode) console.log(`[PluginManager] Processing distributed tool call for: ${toolName} on server ${plugin.serverId}`);
-                resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs);
+                resultFromPlugin = await this.webSocketServer.executeDistributedTool(plugin.serverId, toolName, pluginSpecificArgs, undefined, requestId);
                 // 分布式工具的返回结果应该已经是JS对象了
             } else if (toolName === 'ChromeControl' && plugin.communication?.protocol === 'direct') {
                 // --- ChromeControl 特殊处理逻辑 ---
@@ -875,10 +896,35 @@ class PluginManager extends EventEmitter {
             }
             finalResultObject.timestamp = _getFormattedLocalTimestamp();
 
+            const finishedAt = new Date().toISOString();
+            logDistToolEvent('[DistTool]', 'tool_call_completed', {
+                requestId,
+                toolName,
+                executionMode,
+                isDistributed: Boolean(plugin.isDistributed),
+                pluginType,
+                protocol,
+                startedAt,
+                finishedAt,
+                durationMs: new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+            });
+
             return finalResultObject;
 
         } catch (e) {
             console.error(`[PluginManager processToolCall] Error during execution for plugin ${toolName}:`, e.message);
+            const failedAt = new Date().toISOString();
+            logDistToolEvent('[DistToolTimeout]', 'tool_call_failed', {
+                requestId,
+                toolName,
+                executionMode,
+                isDistributed: Boolean(plugin.isDistributed),
+                pluginType,
+                protocol,
+                startedAt,
+                failedAt,
+                durationMs: new Date(failedAt).getTime() - new Date(startedAt).getTime()
+            });
             let errorObject;
             try {
                 errorObject = JSON.parse(e.message);
@@ -1203,21 +1249,59 @@ class PluginManager extends EventEmitter {
         console.log('[PluginManager] Service plugins initialized.'); // Keep
     }
     // --- 新增分布式插件管理方法 ---
-    registerDistributedTools(serverId, tools) {
-        if (this.debugMode) console.log(`[PluginManager] Registering ${tools.length} tools from distributed server: ${serverId}`);
+    registerDistributedTools(serverId, serverName, tools) {
+        if (this.debugMode) console.log(`[PluginManager] Registering ${tools.length} tools from distributed server: ${serverId} (${serverName})`);
         for (const toolManifest of tools) {
             if (!toolManifest.name || !toolManifest.pluginType || !toolManifest.entryPoint) {
                 if (this.debugMode) console.warn(`[PluginManager] Invalid manifest from ${serverId} for tool '${toolManifest.name}'. Skipping.`);
                 continue;
             }
-            if (this.plugins.has(toolManifest.name)) {
-                if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing tool. Skipping.`);
+            const existingTool = this.plugins.get(toolManifest.name);
+            if (existingTool) {
+                if (!existingTool.isDistributed) {
+                    if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with an existing local tool. Skipping.`);
+                    continue;
+                }
+
+                if (existingTool.serverName === serverName) {
+                    const oldServerId = existingTool.serverId;
+                    existingTool.serverId = serverId;
+                    existingTool.serverName = serverName;
+                    existingTool.pluginType = toolManifest.pluginType;
+                    existingTool.entryPoint = toolManifest.entryPoint;
+                    existingTool.communication = toolManifest.communication;
+                    existingTool.description = toolManifest.description;
+                    existingTool.parameters = toolManifest.parameters;
+                    existingTool.required = toolManifest.required;
+                    existingTool.rawDescription = toolManifest.rawDescription;
+                    existingTool.mcpTool = toolManifest.mcpTool;
+                    if (toolManifest.inputSchema) {
+                        existingTool.inputSchema = toolManifest.inputSchema;
+                    }
+                    if (toolManifest.originalName) {
+                        existingTool.originalName = toolManifest.originalName;
+                    }
+                    if (!existingTool.displayName || !existingTool.displayName.startsWith('[云端] ')) {
+                        existingTool.displayName = `[云端] ${toolManifest.displayName || toolManifest.name}`;
+                    }
+                    logDistToolEvent('[DistTool]', 'distributed_tool_rebound', {
+                        toolName: toolManifest.name,
+                        serverName,
+                        oldServerId,
+                        newServerId: serverId,
+                        reboundAt: new Date().toISOString()
+                    });
+                    continue;
+                }
+
+                if (this.debugMode) console.warn(`[PluginManager] Distributed tool '${toolManifest.name}' from ${serverId} conflicts with distributed tool from ${existingTool.serverName || existingTool.serverId}. Skipping.`);
                 continue;
             }
 
             // 标记为分布式插件并存储其来源服务器ID
             toolManifest.isDistributed = true;
             toolManifest.serverId = serverId;
+            toolManifest.serverName = serverName;
 
             // 在显示名称前加上[云端]前缀
             toolManifest.displayName = `[云端] ${toolManifest.displayName || toolManifest.name}`;
@@ -1438,6 +1522,10 @@ pluginManager.getAllPlaceholderValues = function () {
         valuesMap.set(sanitizedKey, value || `[Placeholder ${sanitizedKey} has no value]`);
     }
     return valuesMap;
+};
+
+pluginManager.__createTestInstance = function () {
+    return new PluginManager();
 };
 
 module.exports = pluginManager;
