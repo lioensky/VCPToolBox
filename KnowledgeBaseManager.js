@@ -58,8 +58,8 @@ class KnowledgeBaseManager {
             persistTagIndex: (process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX || 'false').toLowerCase() === 'true',
             // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
             persistDefault: (process.env.KNOWLEDGEBASE_PERSIST_DEFAULT || 'false').toLowerCase() === 'true',
-            // 🌟 强制开启持久化的文件夹白名单
-            persistFolders: new Set((process.env.KNOWLEDGEBASE_PERSIST_FOLDERS || '').split(',').map(f => f.trim()).filter(Boolean)),
+            // 🌟 强制开启持久化的文件夹白名单 (支持中英文逗号)
+            persistFolders: new Set((process.env.KNOWLEDGEBASE_PERSIST_FOLDERS || '').split(/[,，]/).map(f => f.trim()).filter(Boolean)),
             ...config
         };
 
