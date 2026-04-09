@@ -5,6 +5,12 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { promises as fsp } from 'fs';
+import {
+    buildSunoApiRequest,
+    extractTaskId,
+    extractTrackFromRecordInfo,
+    getTaskStatusInfo
+} from './sunoApiAdapter.mjs';
 
 // Helper to get __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -23,11 +29,13 @@ if (!SUNO_API_KEY) {
 
 const SUNO_API_CONFIG = {
     // Read from process.env.SunoApiBaseUrl, fallback to a default if not set
-    BASE_URL: process.env.SunoApiBaseUrl || 'https://gemini.mtysp.top',
+    BASE_URL: process.env.SunoApiBaseUrl || 'https://api.sunoapi.org',
     ENDPOINTS: {
-        SUBMIT_MUSIC: '/suno/submit/music',
-        FETCH_TASK: '/suno/fetch/' // Append task_id
+        GENERATE: '/api/v1/generate',
+        EXTEND: '/api/v1/generate/extend',
+        FETCH_TASK: '/api/v1/generate/record-info'
     },
+    CALLBACK_URL: process.env.SunoCallbackUrl,
     POLLING_INTERVAL_MS: parseInt(process.env.SunoPollingIntervalMs || "5000", 10), // 5 seconds default
     MAX_POLLING_ATTEMPTS: parseInt(process.env.SunoMaxPollingAttempts || "60", 10), // 5 minutes max polling (5s * 60 = 300s) default
 };
@@ -106,53 +114,10 @@ async function handleGenerateMusicSunoApiCall(args) {
         throw new Error("Input parameters are invalid. Please check the requirements for 'prompt', 'tags', 'title' (for custom mode) OR 'gpt_description_prompt' (for inspiration mode) OR 'task_id', 'continue_at', 'continue_clip_id' (for continuation mode).");
     }
 
-    const payload = {
-        prompt: args.prompt, // Will be undefined if not provided, API should handle
-        tags: args.tags,     // Will be undefined if not provided
-        title: args.title,   // Will be undefined if not provided
-        mv: args.mv || "chirp-v4-5",
-        make_instrumental: args.make_instrumental || false,
-    };
-
-    if (args.gpt_description_prompt) {
-        payload.gpt_description_prompt = args.gpt_description_prompt;
-        // If gpt_description_prompt is used, other fields are optional.
-        // Remove them if they are empty strings to avoid potential API issues.
-        if (payload.prompt === "") delete payload.prompt;
-        if (payload.tags === "") delete payload.tags;
-        if (payload.title === "") delete payload.title;
-    } else if (args.task_id && args.continue_at !== undefined && args.continue_clip_id) {
-        payload.task_id = args.task_id;
-        payload.continue_at = args.continue_at;
-        payload.continue_clip_id = args.continue_clip_id;
-        // Remove other prompt-related fields if in continuation mode
-        delete payload.prompt;
-        delete payload.tags;
-        delete payload.title;
-        delete payload.gpt_description_prompt;
-    } else {
-        // Custom mode: prompt, tags, title are essential
-        if (!payload.prompt || !payload.tags || !payload.title) {
-            throw new Error("For custom mode (without gpt_description_prompt or continuation), 'prompt', 'tags', and 'title' are all required.");
-        }
-    }
-    
-    // Remove any top-level undefined properties from payload before sending
-    for (const key in payload) {
-        if (payload[key] === undefined) {
-            delete payload[key];
-        }
-    }
-
     try {
-        // 1. Submit music generation task
-        const submitResponse = await sunoApiAxiosInstance.post(SUNO_API_CONFIG.ENDPOINTS.SUBMIT_MUSIC, payload);
-
-        if (submitResponse.data.code !== "success" || typeof submitResponse.data.data !== 'string' || submitResponse.data.data.trim() === '') {
-            throw new Error(`Suno API submission failed: ${submitResponse.data.message || 'No task ID string returned or unexpected response structure.'} (Raw: ${JSON.stringify(submitResponse.data)})`);
-        }
-        const taskId = submitResponse.data.data.trim();
-
+        const request = buildSunoApiRequest(args, SUNO_API_CONFIG.CALLBACK_URL);
+        const submitResponse = await sunoApiAxiosInstance.post(request.endpoint, request.payload);
+        const taskId = extractTaskId(submitResponse.data);
 
         // 2. Poll for task status
         let attempts = 0;
@@ -160,45 +125,36 @@ async function handleGenerateMusicSunoApiCall(args) {
             attempts++;
             await new Promise(resolve => setTimeout(resolve, SUNO_API_CONFIG.POLLING_INTERVAL_MS));
 
-            const fetchResponse = await sunoApiAxiosInstance.get(`${SUNO_API_CONFIG.ENDPOINTS.FETCH_TASK}${taskId}`);
-            
-            if (fetchResponse.data.code !== "success" || !fetchResponse.data.data) {
-                // Continue polling if API indicates temporary issue or task not ready
-                if (attempts >= SUNO_API_CONFIG.MAX_POLLING_ATTEMPTS) {
-                     throw new Error(`Suno Task ${taskId} timed out after ${attempts} polling attempts. Last API message: ${fetchResponse.data.message || 'No data from API.'}`);
-                }
-                continue; 
-            }
+            const fetchResponse = await sunoApiAxiosInstance.get(SUNO_API_CONFIG.ENDPOINTS.FETCH_TASK, {
+                params: { taskId }
+            });
+            const statusInfo = getTaskStatusInfo(fetchResponse.data);
+            const track = extractTrackFromRecordInfo(fetchResponse.data);
 
-            const taskDetails = fetchResponse.data.data;
-
-            if (taskDetails.task_id !== taskId) {
-                // This is unusual, log and continue polling for a bit
-                if (attempts >= SUNO_API_CONFIG.MAX_POLLING_ATTEMPTS / 2) {
-                    throw new Error(`Polling for task ${taskId}: Mismatched task_id in response (${taskDetails.task_id}). Aborting.`);
+            if (statusInfo.taskId && statusInfo.taskId !== taskId) {
+                if (attempts >= Math.floor(SUNO_API_CONFIG.MAX_POLLING_ATTEMPTS / 2)) {
+                    throw new Error(`Polling for task ${taskId}: Mismatched taskId in response (${statusInfo.taskId}). Aborting.`);
                 }
                 continue;
             }
 
-            if (taskDetails.status === "COMPLETE" || (taskDetails.status === "IN_PROGRESS" && taskDetails.data && taskDetails.data.length > 0 && taskDetails.data[0].audio_url)) {
-                if (taskDetails.data && taskDetails.data.length > 0 && taskDetails.data[0].audio_url) {
-                    const audioData = taskDetails.data[0];
-
+            if (statusInfo.status === "SUCCESS" || ((statusInfo.status === "FIRST_SUCCESS" || statusInfo.status === "TEXT_SUCCESS") && track?.audioUrl)) {
+                if (track?.audioUrl) {
                     // Delegate the download to a separate process so it can continue after this process exits.
                     const downloaderPath = path.join(__dirname, 'Downloader.mjs');
-                    const child = spawn('node', [downloaderPath, audioData.audio_url, audioData.title || '', taskId], {
+                    const child = spawn('node', [downloaderPath, track.audioUrl, track.title || '', taskId], {
                         detached: true,
                         stdio: 'ignore'
                     });
                     child.unref();
 
                     // Immediately build and return the message for the user, without waiting for the download.
-                    let messageForUser = `Song generated! You can listen to it here: ${audioData.audio_url || 'N/A'}`;
+                    let messageForUser = `Song generated! You can listen to it here: ${track.audioUrl || 'N/A'}`;
                     
-                    if (audioData.title) messageForUser += `\nTitle: ${audioData.title || 'N/A'}`;
+                    if (track.title) messageForUser += `\nTitle: ${track.title || 'N/A'}`;
                     
-                    if (audioData.metadata?.tags) {
-                        let tagsDisplay = audioData.metadata.tags;
+                    if (track.tags) {
+                        let tagsDisplay = track.tags;
                         if (Array.isArray(tagsDisplay)) {
                             tagsDisplay = tagsDisplay.join(', ');
                         } else if (typeof tagsDisplay !== 'string') {
@@ -207,20 +163,18 @@ async function handleGenerateMusicSunoApiCall(args) {
                         messageForUser += `\nStyle: ${tagsDisplay}`;
                     }
                     
-                    if (audioData.image_url) messageForUser += `\nImage: ${audioData.image_url || 'N/A'}`;
+                    if (track.imageUrl) messageForUser += `\nImage: ${track.imageUrl || 'N/A'}`;
                     
                     messageForUser += `\nFile is being downloaded in the background.`;
 
                     // Directly return the fully formatted messageForUser string
                     return messageForUser;
-                } else if (taskDetails.status === "COMPLETE") { // Only throw if COMPLETE and no audio_url
-                    throw new Error(`Suno Task ${taskId} is COMPLETE but no audio_url was found.`);
+                } else if (statusInfo.status === "SUCCESS") {
+                    throw new Error(`Suno Task ${taskId} is SUCCESS but no audio URL was found.`);
                 }
-                // If IN_PROGRESS and no audio_url yet, continue polling (handled by loop)
-            } else if (taskDetails.status === "FAILED") {
-                throw new Error(`Suno Task ${taskId} failed: ${taskDetails.fail_reason || 'Unknown reason'}`);
+            } else if (statusInfo.status && statusInfo.status !== 'PENDING' && statusInfo.status !== 'TEXT_SUCCESS' && statusInfo.status !== 'FIRST_SUCCESS') {
+                throw new Error(`Suno Task ${taskId} failed: ${statusInfo.errorMessage || statusInfo.status}`);
             }
-            // If PENDING, SUBMITTED, or IN_PROGRESS without audio_url, continue polling
         }
         throw new Error(`Suno Task ${taskId} timed out after ${attempts} polling attempts.`);
 
