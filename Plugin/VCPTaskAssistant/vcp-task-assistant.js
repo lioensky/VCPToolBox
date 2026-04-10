@@ -300,14 +300,43 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
     task.meta.updatedAt = new Date().toISOString();
     await saveData();
 
+    let agentsToExecute = [...task.targets.agents];
+    let randomTag = null;
     try {
         const prompt = await buildTaskPrompt(task);
         if (!prompt.trim()) {
             throw new Error('任务提示词为空');
         }
 
+        // --- 随机逻辑处理 ---
+        const rIndex = agentsToExecute.findIndex(a => /^random(\d+)$/i.test(a));
+        if (rIndex !== -1) {
+            randomTag = agentsToExecute[rIndex];
+            const match = randomTag.match(/^random(\d+)$/i);
+            const n = parseInt(match[1], 10);
+            
+            // 过滤掉标签，剩下的是候选人
+            const candidates = agentsToExecute.filter((_, idx) => idx !== rIndex);
+            if (candidates.length > 0) {
+                const pickCount = Math.min(Math.max(1, n), candidates.length);
+                // Fisher-Yates Shuffle
+                for (let i = candidates.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+                }
+                agentsToExecute = candidates.slice(0, pickCount);
+            } else {
+                agentsToExecute = [];
+            }
+        }
+        // ------------------
+
         const dispatchResults = [];
-        for (const agentName of task.targets.agents) {
+        if (agentsToExecute.length === 0) {
+            throw new Error('经过随机过滤后没有可执行的 Agent');
+        }
+
+        for (const agentName of agentsToExecute) {
             const dispatchResult = await wakeUpAgent(agentName, prompt, task.dispatch);
             if (dispatchResult.status < 200 || dispatchResult.status >= 300) {
                 throw new Error(`Agent ${agentName} 收到异常响应: HTTP ${dispatchResult.status}`);
@@ -322,7 +351,7 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
         task.runtime.running = false;
         task.runtime.lastFinishTime = finishedAt.toISOString();
         task.runtime.lastDurationMs = finishedAt.getTime() - startedAt.getTime();
-        task.runtime.lastResult = `success (${dispatchResults.length} agents)`;
+        task.runtime.lastResult = `success (${dispatchResults.length} agents${randomTag ? ', picked from ' + randomTag : ''})`;
         task.runtime.successCount += 1;
         task.runtime.lastError = null;
         task.meta.updatedAt = finishedAt.toISOString();
@@ -337,14 +366,17 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
             finishedAt: finishedAt.toISOString(),
             durationMs: task.runtime.lastDurationMs,
             status: 'success',
-            agents: task.targets.agents,
+            agents: agentsToExecute, // 记录实际执行的人
+            originalAgents: task.targets.agents, // 保留原始配置参考
+            randomTag,
             message: task.runtime.lastResult
         });
 
         await saveData();
         return {
             success: true,
-            message: task.runtime.lastResult
+            message: task.runtime.lastResult,
+            executedAgents: agentsToExecute
         };
     } catch (e) {
         const finishedAt = new Date();
@@ -366,7 +398,9 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
             finishedAt: finishedAt.toISOString(),
             durationMs: task.runtime.lastDurationMs,
             status: 'error',
-            agents: task.targets.agents,
+            agents: agentsToExecute,
+            originalAgents: task.targets.agents,
+            randomTag,
             message: e.message
         });
 

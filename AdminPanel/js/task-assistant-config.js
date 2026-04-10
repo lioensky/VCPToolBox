@@ -428,6 +428,66 @@ function addTaskCard(task) {
     });
     targetAgentsContainer.append(targetAgentsSelect);
 
+    // --- 随机选取逻辑 (动态生成) ---
+    const randomSelect = createSelect('fa-task-random-select', [], '');
+    randomSelect.title = '设置随机执行人数';
+    randomSelect.style.marginLeft = '0.5rem';
+    randomSelect.style.width = 'auto';
+
+    function updateRandomSelectOptions() {
+        const text = targetAgentsInput.value || '';
+        const parts = text.split(',').map(s => s.trim()).filter(Boolean);
+        const candidates = parts.filter(p => !/^random(\d+)$/i.test(p));
+        const currentTag = parts.find(p => /^random(\d+)$/i.test(p)) || '';
+        
+        const count = candidates.length;
+        const previousVal = randomSelect.value || currentTag;
+
+        randomSelect.innerHTML = '';
+        const noneOpt = document.createElement('option');
+        noneOpt.value = '';
+        noneOpt.textContent = '不进行随机';
+        randomSelect.appendChild(noneOpt);
+
+        // 动态生成 1 到 N 的选项 (上限 30)
+        for (let i = 1; i <= Math.min(count, 30); i++) {
+            const opt = document.createElement('option');
+            opt.value = `random${i}`;
+            opt.textContent = `随机 ${i} 人`;
+            randomSelect.appendChild(opt);
+        }
+
+        // 恢复选中状态
+        if (currentTag && [...randomSelect.options].some(o => o.value === currentTag)) {
+            randomSelect.value = currentTag;
+        } else {
+            randomSelect.value = '';
+        }
+    }
+
+    randomSelect.addEventListener('change', () => {
+        let current = targetAgentsInput.value.trim();
+        let agents = current.split(',').map(s => s.trim()).filter(Boolean);
+        agents = agents.filter(a => !/^random(\d+)$/i.test(a));
+        if (randomSelect.value) {
+            agents.push(randomSelect.value);
+        }
+        targetAgentsInput.value = agents.join(', ');
+    });
+
+    // 监听输入框变化，实时更新下拉框选项
+    targetAgentsInput.addEventListener('input', updateRandomSelectOptions);
+    
+    // 初始化
+    updateRandomSelectOptions();
+    
+    targetAgentsContainer.append(randomSelect);
+
+    // 修改之前的快捷选择逻辑，增加同步调用
+    const originalSelectAdd = targetAgentsSelect.onchange; // 不好拿，直接在事件里加
+    targetAgentsSelect.addEventListener('change', updateRandomSelectOptions);
+    // ------------------
+
     body.appendChild(enabledRow);
 
     const row1 = document.createElement('div');
