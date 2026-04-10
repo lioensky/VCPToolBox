@@ -885,10 +885,9 @@
                             <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
                         </div>
                         <div class="config-item">
-                            <label for="tool-approval-list">被审核工具名单 (每行一个工具名称)</label>
-                            <textarea id="tool-approval-list" rows="8"
-                                placeholder="例如：\nSciCalculator\nPowerShellExecutor"></textarea>
-                            <p class="aa-hint">当“开启所有工具调用审核”关闭时，仅对此名单中的工具进行审核。</p>
+                            <label for="tool-approval-list">被审核工具名单 (每行一条规则)</label>
+                            <textarea id="tool-approval-list" rows="8" placeholder="例如：\nSciCalculator\nPowerShellExecutor:Get-ChildItem\nChromeBridge:open_url"></textarea>
+                            <p class="aa-hint">支持两种精确匹配规则：仅写工具名表示该工具所有调用都审核；写成 ToolName:Command 表示仅审核指定 command。若存在 command1、command2...，任一命中即进入审核。</p>
                         </div>
                         <div class="config-footer">
                             <button type="submit" class="btn-primary">保存审核配置</button>
