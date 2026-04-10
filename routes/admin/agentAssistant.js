@@ -13,14 +13,28 @@ module.exports = function(options) {
      * 将 Dotenv 格式对象映射为前端需要的 JSON 结构
      */
     function mapEnvToJson(envConfig) {
+        /**
+         * 辅助函数：自动修复可能存在的重复转义（历史遗留问题）
+         * 如果 dotenv 解析后仍然残留 \" 或 \\n 等，说明之前保存时格式受损
+         */
+        const fixEscaped = (val) => {
+            if (typeof val !== 'string') return val;
+            // 如果字符串中包含 \"，极大概率是上次保存时多转义了一层，或者 read 的时候没带引号
+            return val.replace(/\\"/g, '"')
+                      .replace(/\\'/g, "'")
+                      .replace(/\\\\/g, '\\')
+                      .replace(/\\n/g, '\n')
+                      .replace(/\\r/g, '\r');
+        };
+
         const json = {
             maxHistoryRounds: parseInt(envConfig.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS || '7', 10),
             contextTtlHours: parseInt(envConfig.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10),
-            globalSystemPrompt: envConfig.AGENT_ALL_SYSTEM_PROMPT || '',
+            globalSystemPrompt: fixEscaped(envConfig.AGENT_ALL_SYSTEM_PROMPT || ''),
             delegationMaxRounds: parseInt(envConfig.DELEGATION_MAX_ROUNDS || '15', 10),
             delegationTimeout: parseInt(envConfig.DELEGATION_TIMEOUT || '300000', 10),
-            delegationSystemPrompt: envConfig.DELEGATION_SYSTEM_PROMPT || '',
-            delegationHeartbeatPrompt: envConfig.DELEGATION_HEARTBEAT_PROMPT || '',
+            delegationSystemPrompt: fixEscaped(envConfig.DELEGATION_SYSTEM_PROMPT || ''),
+            delegationHeartbeatPrompt: fixEscaped(envConfig.DELEGATION_HEARTBEAT_PROMPT || ''),
             agents: []
         };
 
@@ -35,12 +49,12 @@ module.exports = function(options) {
         for (const baseName of agentBaseNames) {
             json.agents.push({
                 baseName: baseName,
-                chineseName: envConfig[`AGENT_${baseName}_CHINESE_NAME`] || '',
+                chineseName: fixEscaped(envConfig[`AGENT_${baseName}_CHINESE_NAME`] || ''),
                 modelId: envConfig[`AGENT_${baseName}_MODEL_ID`] || '',
-                systemPrompt: envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || '',
+                systemPrompt: fixEscaped(envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || ''),
                 maxOutputTokens: parseInt(envConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
                 temperature: parseFloat(envConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
-                description: envConfig[`AGENT_${baseName}_DESCRIPTION`] || ''
+                description: fixEscaped(envConfig[`AGENT_${baseName}_DESCRIPTION`] || '')
             });
         }
 
@@ -180,15 +194,16 @@ module.exports = function(options) {
 
     function formatEnvLine(key, value) {
         const strValue = String(value ?? '');
-        // 如果包含换行、回车、双引号、单引号、#号（注释符）、反斜杠或首尾空格，则使用双引号包裹
+        // 如果包含换行、回车、双引号、单引号、#号（注释符）、反斜杠或首尾空格，则使用双引号包裹并转义
         if (/[\n\r"\'#\\]/.test(strValue) || strValue.startsWith(' ') || strValue.endsWith(' ')) {
             const escaped = strValue
-                .replace(/\\/g, '\\\\') // 必须第一步转义反斜杠，防止二次转义
-                .replace(/"/g, '\\"')   // 转义双引号
-                .replace(/\n/g, '\\n')  // 将字面换行转为 \n 字符串
-                .replace(/\r/g, '\\r'); // 将字面回车转为 \r 字符串
+                .replace(/\\/g, '\\\\') // 1. 转义反斜杠
+                .replace(/"/g, '\\"')   // 2. 转义双引号
+                .replace(/\n/g, '\\n')  // 3. 将字面换行转为 \n 字符串
+                .replace(/\r/g, '\\r'); // 4. 将字面回车转为 \r 字符串
             return `${key}="${escaped}"`;
         }
+        // 对于纯文本，即便包含了引号也要小心处理，但在我们的逻辑里，只要有引号就一定会走上面的双引号包裹分支
         return `${key}=${strValue}`;
     }
 
