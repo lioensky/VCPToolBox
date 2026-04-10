@@ -53,7 +53,13 @@ class KnowledgeBaseManager {
             // 语言置信度补偿配置
             langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
             langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
-            langPenaltyCrossDomain: parseFloat(process.env.LANG_PENALTY_CROSS_DOMAIN) || 0.1,
+            // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
+            // 🌟 是否持久化全局 Tag 索引
+            persistTagIndex: (process.env.KNOWLEDGEBASE_PERSIST_TAG_INDEX || 'false').toLowerCase() === 'true',
+            // 🌟 是否默认持久化索引（建议 false，仅在内存重建以保证原子性）
+            persistDefault: (process.env.KNOWLEDGEBASE_PERSIST_DEFAULT || 'false').toLowerCase() === 'true',
+            // 🌟 强制开启持久化的文件夹白名单 (支持中英文逗号)
+            persistFolders: new Set((process.env.KNOWLEDGEBASE_PERSIST_FOLDERS || '').split(/[,，]/).map(f => f.trim()).filter(Boolean)),
             ...config
         };
 
@@ -90,22 +96,35 @@ class KnowledgeBaseManager {
 
         this._initSchema();
 
-        // 1. 初始化全局 Tag 索引 (异步恢复)
-        const tagIdxPath = path.join(this.config.storePath, 'index_global_tags.usearch');
+        // 1. 初始化全局 Tag 索引 (优先从磁盘加载或从 SQLite 重建)
         const tagCapacity = 50000;
-        try {
-            if (fsSync.existsSync(tagIdxPath)) {
+        const tagIdxPath = path.join(this.config.storePath, 'index_global_tags.usearch');
+        let indexReady = false;
+
+        // 全局 Tag 索引持久化判定：显式开关 OR 白名单包含 'global_tags'
+        const shouldPersistTags = this.config.persistTagIndex || this.config.persistFolders.has('global_tags');
+
+        if (shouldPersistTags && fsSync.existsSync(tagIdxPath)) {
+            try {
                 this.tagIndex = VexusIndex.load(tagIdxPath, null, this.config.dimension, tagCapacity);
-                console.log('[KnowledgeBase] ✅ Tag index loaded from disk.');
-            } else {
-                console.log('[KnowledgeBase] Tag index file not found, creating new one.');
-                this.tagIndex = new VexusIndex(this.config.dimension, tagCapacity);
-                this._recoverTagsAsync(); // Fire-and-forget
+                console.log('[KnowledgeBase] ✅ Global Tag Index loaded from disk.');
+                indexReady = true;
+            } catch (e) {
+                console.warn(`[KnowledgeBase] ⚠️ Failed to load tag index from disk: ${e.message}. Rebuilding...`);
             }
-        } catch (e) {
-            console.error(`[KnowledgeBase] Failed to load tag index: ${e.message}. Rebuilding in background.`);
+        }
+
+        if (!indexReady) {
+            console.log('[KnowledgeBase] 🚀 Building Global Tag Index from SQLite...');
             this.tagIndex = new VexusIndex(this.config.dimension, tagCapacity);
-            this._recoverTagsAsync(); // Fire-and-forget
+            try {
+                const count = await this.tagIndex.recoverFromSqlite(dbPath, 'tags', null);
+                console.log(`[KnowledgeBase] ✅ Global Tag Index ready. ${count} vectors indexed.`);
+                // 如果开启了持久化但文件不存在，则保存一次
+                if (shouldPersistTags) this._saveIndexToDisk('global_tags');
+            } catch (e) {
+                console.error(`[KnowledgeBase] ❌ Global Tag Index recovery failed: ${e.message}`);
+            }
         }
 
         // 2. 预热日记本名称向量缓存（同步阻塞，确保 RAG 插件启动即可用）
@@ -125,9 +144,6 @@ class KnowledgeBaseManager {
         this._startWatcher();
         this._startRagParamsWatcher();
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
-
-        // 🛡️ BUG 1 修复：启动时触发幽灵索引自检
-        setImmediate(() => this._cleanupGhostIndexes());
 
         this.initialized = true;
         console.log('[KnowledgeBase] ✅ System Ready');
@@ -236,10 +252,23 @@ class KnowledgeBaseManager {
         if (this.diaryIndices.has(diaryName)) {
             return this.diaryIndices.get(diaryName);
         }
-        console.log(`[KnowledgeBase] 📂 Lazy loading index for diary: "${diaryName}"`);
+
+        const shouldPersist = this.config.persistDefault || this.config.persistFolders.has(diaryName) || diaryName.endsWith('簇');
+        console.log(`[KnowledgeBase] 📂 Loading index for diary: "${diaryName}" (Persist: ${shouldPersist})`);
+        
         const safeName = crypto.createHash('md5').update(diaryName).digest('hex');
-        const idxName = `diary_${safeName}`;
-        const idx = await this._loadOrBuildIndex(idxName, 50000, 'chunks', diaryName);
+        const fileName = `diary_${safeName}`;
+        const capacity = 50000;
+
+        let idx;
+        if (shouldPersist) {
+            idx = await this._loadOrBuildIndex(fileName, capacity, 'chunks', diaryName);
+        } else {
+            // 🚀 核心改动：非持久化文件夹直接在内存重建
+            idx = new VexusIndex(this.config.dimension, capacity);
+            await this._recoverIndexFromDB(idx, 'chunks', diaryName);
+        }
+
         this.diaryIndices.set(diaryName, idx);
         return idx;
     }
@@ -278,22 +307,6 @@ class KnowledgeBaseManager {
         }
     }
 
-    async _recoverTagsAsync() {
-        console.log('[KnowledgeBase] 🚀 Starting background recovery of tag index via Rust...');
-        // 使用 setImmediate 将这个潜在的 CPU 密集型任务推迟到下一个事件循环
-        // 这样可以确保 initialize() 函数本身能够快速返回
-        setImmediate(async () => {
-            try {
-                const dbPath = path.join(this.config.storePath, 'knowledge_base.sqlite');
-                const count = await this.tagIndex.recoverFromSqlite(dbPath, 'tags', null);
-                console.log(`[KnowledgeBase] ✅ Background tag recovery complete. ${count} vectors indexed via Rust.`);
-                // 恢复完成后，保存一次索引以备下次直接加载
-                this._saveIndexToDisk('global_tags');
-            } catch (e) {
-                console.error('[KnowledgeBase] ❌ Background tag recovery failed:', e);
-            }
-        });
-    }
 
     // =========================================================================
     // 核心搜索接口 (修复版)
@@ -1060,8 +1073,14 @@ class KnowledgeBaseManager {
     }
 
     _scheduleIndexSave(name) {
+        // 判定该索引是否允许持久化
+        const shouldPersist = name === 'global_tags' 
+            ? (this.config.persistTagIndex || this.config.persistFolders.has('global_tags'))
+            : (this.config.persistDefault || this.config.persistFolders.has(name) || name.endsWith('簇'));
+
+        if (!shouldPersist) return; 
         if (this.saveTimers.has(name)) return;
-        const delay = name === 'global_tags' ? this.config.tagIndexSaveDelay : this.config.indexSaveDelay;
+        const delay = this.config.indexSaveDelay;
         const timer = setTimeout(() => {
             this._saveIndexToDisk(name);
             this.saveTimers.delete(name);
@@ -1070,13 +1089,18 @@ class KnowledgeBaseManager {
     }
 
     _saveIndexToDisk(name) {
+        const shouldPersist = name === 'global_tags' 
+            ? (this.config.persistTagIndex || this.config.persistFolders.has('global_tags'))
+            : (this.config.persistDefault || this.config.persistFolders.has(name) || name.endsWith('簇'));
+
+        if (!shouldPersist) return;
         try {
             if (name === 'global_tags') {
-                this.tagIndex.save(path.join(this.config.storePath, 'index_global_tags.usearch'));
+                if (this.tagIndex) this.tagIndex.save(path.join(this.config.storePath, 'index_global_tags.usearch'));
             } else {
                 const safeName = crypto.createHash('md5').update(name).digest('hex');
                 const idx = this.diaryIndices.get(name);
-                if (idx) {
+                if (idx && idx.save) {
                     idx.save(path.join(this.config.storePath, `index_diary_${safeName}.usearch`));
                 }
             }
@@ -1107,6 +1131,22 @@ class KnowledgeBaseManager {
             tags = tags.map(t => t.replace(superRegex, '').trim());
         }
         tags = tags.filter(t => !this.config.tagBlacklist.has(t) && t.length > 0);
+
+        // 🌟 Future-Proofing: 增强标签清洗
+        tags = tags.filter(t => {
+            // 1. 长度拦截 (中文>15, 英文>30)
+            const isChinese = /[\u4e00-\u9fa5]/.test(t);
+            if (isChinese && t.length > 15) return false;
+            if (!isChinese && t.length > 30) return false;
+
+            // 2. 日期噪音拦截 (正则表达式)
+            // 拦截包含 X年X月X日, X月X日, YYYY-MM-DD, YYYY.MM.DD 等模式的标签
+            const dateRegex = /(\d{4}年\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月|\d{1,2}月\d{1,2}日|\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{2}[-./]\d{1,2}[-./]\d{1,2}|\d{4}[-./]\d{1,2})/;
+            if (dateRegex.test(t)) return false;
+
+            return true;
+        });
+
         const uniqueTags = [...new Set(tags)];
 
         // 🛡️ BUG 3 修复：引入硬性数量截断 (Tag 核弹防御)

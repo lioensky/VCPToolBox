@@ -264,6 +264,12 @@ pub const CONFIG_PAGE_HTML: &str = r##"<!DOCTYPE html>
   <div class="header">
     <h1>&#x2728; VCP 配置向导</h1>
     <p>填写下方配置信息，完成后将自动生成 config.env 并链接前后端</p>
+    <div style="margin-top:12px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      <a href="https://www.vcptoolbox.com/" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">🌐 官网</a>
+      <a href="https://deepwiki.com/lioensky/VCPChat" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📖 VCPChat Wiki</a>
+      <a href="https://deepwiki.com/lioensky/VCPToolBox" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📖 VCPToolBox Wiki</a>
+      <a href="https://b23.tv/9r1Munu" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📺 作者B站</a>
+    </div>
   </div>
 
   <form id="configForm" autocomplete="off">
@@ -482,6 +488,15 @@ pub const CONFIG_PAGE_HTML: &str = r##"<!DOCTYPE html>
     <p style="margin-top:16px;color:var(--text-dim);font-size:13px;">
       现在可以关闭此页面，回到终端启动 VCP 服务。
     </p>
+    <p style="margin-top:10px;color:var(--text-dim);font-size:13px;">
+      💡 后续可使用记事本打开 VCPToolBox 目录下的 <code style="color:var(--accent);background:rgba(124,92,252,0.1);padding:2px 6px;border-radius:4px;">config.env</code> 文件修改配置。
+    </p>
+    <div style="margin-top:16px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      <a href="https://www.vcptoolbox.com/" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">🌐 官网</a>
+      <a href="https://deepwiki.com/lioensky/VCPChat" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📖 VCPChat Wiki</a>
+      <a href="https://deepwiki.com/lioensky/VCPToolBox" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📖 VCPToolBox Wiki</a>
+      <a href="https://b23.tv/9r1Munu" target="_blank" style="color:var(--accent);text-decoration:none;font-size:13px;">📺 作者B站</a>
+    </div>
   </div>
 </div>
 

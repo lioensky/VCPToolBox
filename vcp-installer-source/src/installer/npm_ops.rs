@@ -317,6 +317,63 @@ fn node_executable(node_dir: &Path) -> PathBuf {
     }
 }
 
+/// 全局安装 PM2 进程管理器（VCP 后端 PM2 双进程方案需要）
+/// 如果 PM2 已安装则跳过。
+pub fn npm_install_global_pm2(
+    node_dir: &Path,
+    env_path: &str,
+    log_fn: &dyn Fn(&str),
+) -> Result<()> {
+    // 检测 PM2 是否已安装（检查 node 全局目录下的 pm2.cmd / pm2）
+    let pm2_cmd = if cfg!(windows) {
+        node_dir.join("pm2.cmd")
+    } else {
+        node_dir.join("bin").join("pm2")
+    };
+
+    if pm2_cmd.exists() {
+        log_fn("[npm] PM2 已安装（portable），跳过");
+        return Ok(());
+    }
+
+    // 不做命令行兜底检测——系统PATH里的pm2对portable环境没用
+    // 必须装到node_dir下，start_server.bat的PATH才能找到
+
+    let npm_exe = npm_executable(node_dir);
+    if !npm_exe.exists() {
+        bail!("未找到 npm 入口文件: {}", npm_exe.display());
+    }
+
+    log_fn("[npm] 正在全局安装 PM2 进程管理器...");
+
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C")
+        .arg(&npm_exe)
+        .arg("install")
+        .arg("-g")
+        .arg("--prefix")
+        .arg(node_dir.to_string_lossy().as_ref())
+        .arg("pm2");
+    cmd.current_dir(node_dir)
+        .env("PATH", env_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| "启动 npm install -g pm2 失败")?;
+
+    stream_npm_output(&mut child, log_fn);
+
+    let status = child.wait().with_context(|| "等待 npm install -g pm2 完成失败")?;
+    if status.success() {
+        log_fn("[npm] PM2 安装完成");
+        Ok(())
+    } else {
+        bail!("npm install -g pm2 失败 (exit code: {:?})", status.code())
+    }
+}
+
 /// 实时读取 npm 子进程的 stdout 和 stderr。
 fn stream_npm_output(child: &mut std::process::Child, log_fn: &dyn Fn(&str)) {
     // npm 主要输出在 stderr（warn/error），也有 stdout

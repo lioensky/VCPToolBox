@@ -180,8 +180,14 @@ module.exports = function(options) {
 
     function formatEnvLine(key, value) {
         const strValue = String(value ?? '');
-        if (strValue.includes('\n') || strValue.includes('"') || strValue.includes("'")) {
-            return `${key}="${strValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        // 如果包含换行、回车、双引号、单引号、#号（注释符）、反斜杠或首尾空格，则使用双引号包裹
+        if (/[\n\r"\'#\\]/.test(strValue) || strValue.startsWith(' ') || strValue.endsWith(' ')) {
+            const escaped = strValue
+                .replace(/\\/g, '\\\\') // 必须第一步转义反斜杠，防止二次转义
+                .replace(/"/g, '\\"')   // 转义双引号
+                .replace(/\n/g, '\\n')  // 将字面换行转为 \n 字符串
+                .replace(/\r/g, '\\r'); // 将字面回车转为 \r 字符串
+            return `${key}="${escaped}"`;
         }
         return `${key}=${strValue}`;
     }

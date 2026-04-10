@@ -241,6 +241,28 @@ pub async fn run_installation(
         }
         step_idx += 1;
 
+        // 全局安装 PM2（VCP 后端 PM2 双进程方案需要）
+        {
+            let node_dir_clone = node_dir.clone();
+            let env_path_clone = env_path.clone();
+            let tx = progress_tx.clone();
+            let pm2_result = tokio::task::spawn_blocking(move || {
+                let log_fn = |msg: &str| {
+                    let _ = tx.blocking_send(ProgressEvent::Log(msg.to_string()));
+                };
+                npm_ops::npm_install_global_pm2(&node_dir_clone, &env_path_clone, &log_fn)
+            }).await;
+            match pm2_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    send_log(&progress_tx, &format!("⚠ PM2 安装失败: {}，后端将无法使用 PM2 双进程启动", e)).await;
+                }
+                Err(e) => {
+                    send_log(&progress_tx, &format!("⚠ PM2 安装任务异常: {}", e)).await;
+                }
+            }
+        }
+
         // 生成 config.env
         if toolbox_dir.exists() {
             run_sync_step(step_idx, &progress_tx, &mut errors, {
@@ -389,6 +411,10 @@ pub async fn run_installation(
                 if should_generate_frontend {
                     config_gen::generate_start_frontend_bat(&install_dir)?;
                 }
+
+                // 覆盖项目内部的启动脚本，注入 portable 运行时 PATH
+                // 解决：VCPToolBox/start_server.bat 找不到 runtimes 中的 node/git/python
+                config_gen::generate_inner_start_bat(&install_dir)?;
 
                 Ok(())
             }

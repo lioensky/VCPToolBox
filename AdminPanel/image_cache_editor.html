@@ -37,8 +37,15 @@
 <body>
 <div class="container">
     <div class="controls">
-        <button id="saveButton">保存更改到 multimodal_cache.json</button>
-        <!--  按钮暂时不加入主题切换，因为iframe内切换可能与外部不同步，由外部统一控制 -->
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="搜索翻译描述 (支持中文)...">
+            <button id="searchButton">搜索</button>
+        </div>
+        <div class="pagination-controls">
+            <button id="prevPage">上一页</button>
+            <span id="pageInfo">第 1 / 1 页</span>
+            <button id="nextPage">下一页</button>
+        </div>
     </div>
 
     <h2>多媒体缓存列表</h2>
@@ -48,28 +55,60 @@
 </div>
 
 <script>
-    let mediaCacheData = {};
+    let currentPage = 1;
+    let totalPages = 1;
+    let pageSize = 20;
+    let currentSearch = '';
+    let mediaItems = [];
+
     const mediaListDiv = document.getElementById('mediaList');
-    const saveButton = document.getElementById('saveButton');
+    const searchInput = document.getElementById('searchInput');
+    const searchButton = document.getElementById('searchButton');
+    const prevPageBtn = document.getElementById('prevPage');
+    const nextPageBtn = document.getElementById('nextPage');
+    const pageInfoSpan = document.getElementById('pageInfo');
 
-    saveButton.addEventListener('click', handleSave);
+    searchButton.addEventListener('click', () => {
+        currentSearch = searchInput.value.trim();
+        currentPage = 1;
+        loadMediaCache();
+    });
 
-    function guessMimeType(base64String) {
-        if (base64String.startsWith('/9j/')) return 'image/jpeg';
-        if (base64String.startsWith('iVBOR')) return 'image/png';
-        if (base64String.startsWith('R0lGOD')) return 'image/gif';
-        if (base64String.startsWith('UklGR')) return 'image/webp';
-        // Add basic audio/video guesses if needed, though relying on entry.mimeType is better
-        return 'application/octet-stream'; // Default for unknown
-    }
+    searchInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            currentSearch = searchInput.value.trim();
+            currentPage = 1;
+            loadMediaCache();
+        }
+    });
+
+    prevPageBtn.addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage--;
+            loadMediaCache();
+        }
+    });
+
+    nextPageBtn.addEventListener('click', () => {
+        if (currentPage < totalPages) {
+            currentPage++;
+            loadMediaCache();
+        }
+    });
 
     async function loadMediaCache() {
         try {
-            const response = await fetch('/admin_api/multimodal-cache'); // UPDATED API ENDPOINT
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            mediaCacheData = await response.json();
+            mediaListDiv.innerHTML = '<p>正在加载...</p>';
+            const url = `/admin_api/multimodal-cache?page=${currentPage}&pageSize=${pageSize}&search=${encodeURIComponent(currentSearch)}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            
+            const data = await response.json();
+            mediaItems = data.items;
+            totalPages = data.totalPages;
+            currentPage = data.page;
+            
+            updatePaginationUI();
             renderMediaList();
         } catch (error) {
             console.error("加载多媒体缓存失败:", error);
@@ -77,238 +116,199 @@
         }
     }
 
-    async function handleSave() {
-        if (Object.keys(mediaCacheData).length === 0) {
-            alert('没有数据可保存。');
-            return;
-        }
+    function updatePaginationUI() {
+        pageInfoSpan.textContent = `第 ${currentPage} / ${totalPages || 1} 页 (共 ${mediaItems.length} 条)`;
+        prevPageBtn.disabled = currentPage <= 1;
+        nextPageBtn.disabled = currentPage >= totalPages;
+    }
 
-        // Update mediaCacheData with current textarea values
-        const entries = mediaListDiv.getElementsByClassName('media-entry');
-        for (let i = 0; i < entries.length; i++) {
-            const entryDiv = entries[i];
-            const base64Key = entryDiv.dataset.base64Key;
-            const textarea = entryDiv.querySelector('textarea');
-            if (mediaCacheData[base64Key]) {
-                mediaCacheData[base64Key].description = textarea.value;
-            }
-        }
+    async function handleUpdate(hash, entryDiv) {
+        const textarea = entryDiv.querySelector('textarea');
+        const updateBtn = entryDiv.querySelector('.save-item-btn');
+        const description = textarea.value;
+
+        updateBtn.disabled = true;
+        const originalText = updateBtn.textContent;
+        updateBtn.textContent = '...';
 
         try {
-            const response = await fetch('/admin_api/multimodal-cache', { // UPDATED API ENDPOINT
+            const response = await fetch('/admin_api/multimodal-cache/update', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ data: mediaCacheData }) // Send the data object
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hash, description })
             });
 
             const result = await response.json();
-
             if (response.ok) {
-                alert(result.message || '多媒体缓存文件已成功保存。');
+                updateBtn.textContent = '已保存';
+                updateBtn.style.backgroundColor = '#2ecc71';
+                setTimeout(() => {
+                    updateBtn.textContent = originalText;
+                    updateBtn.style.backgroundColor = '';
+                    updateBtn.disabled = false;
+                }, 2000);
             } else {
-                alert('保存失败: ' + (result.error || '未知错误'));
-                console.error("保存多媒体缓存失败:", result);
+                alert('更新失败: ' + result.error);
+                updateBtn.disabled = false;
+                updateBtn.textContent = originalText;
             }
         } catch (error) {
-            alert('保存多媒体缓存时发生错误: ' + error.message);
-            console.error("保存错误:", error);
+            alert('请求错误: ' + error.message);
+            updateBtn.disabled = false;
+            updateBtn.textContent = originalText;
         }
     }
 
-    async function handleReidentify(base64Key, entryDiv) {
-        const reidentifyBtn = entryDiv.querySelector('.reidentify-btn');
-        const descriptionTextarea = entryDiv.querySelector('textarea');
-        const timestampElement = entryDiv.querySelector('h3'); // Assuming h3 contains the timestamp
-        const originalBtnText = reidentifyBtn.innerHTML;
-        const originalBtnTitle = reidentifyBtn.title;
-
-        reidentifyBtn.disabled = true;
-        reidentifyBtn.innerHTML = '...'; // Loading indicator
-        reidentifyBtn.title = '正在重新识别...';
-        reidentifyBtn.style.opacity = '0.6'; // Dim the button
-        reidentifyBtn.style.cursor = 'wait';
-
-        // Optional: Add a temporary status message
-        let statusSpan = entryDiv.querySelector('.reidentify-status');
-        if (!statusSpan) {
-            statusSpan = document.createElement('span');
-            statusSpan.className = 'reidentify-status';
-            statusSpan.style.fontSize = '0.8em';
-            statusSpan.style.marginLeft = '10px';
-            statusSpan.style.color = '#7aa1ff'; // Info color
-            descriptionTextarea.parentNode.insertBefore(statusSpan, descriptionTextarea);
-        }
-        statusSpan.textContent = '正在重新识别...';
-        statusSpan.style.color = '#7aa1ff';
+    async function handleDelete(hash, entryDiv) {
+        if (!confirm('确定要删除这个条目吗？')) return;
 
         try {
-            // Call the new backend API endpoint
-            const response = await fetch('/admin_api/multimodal-cache/reidentify', { // UPDATED API ENDPOINT
+            const response = await fetch(`/admin_api/multimodal-cache/${hash}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                entryDiv.remove();
+                if (mediaListDiv.children.length === 0 && totalPages > 1) {
+                    loadMediaCache(); // Reload page if it's now empty
+                }
+            } else {
+                const result = await response.json();
+                alert('删除失败: ' + result.error);
+            }
+        } catch (error) {
+            alert('请求错误: ' + error.message);
+        }
+    }
+
+
+    async function handleReidentify(hash, entryDiv) {
+        const reidentifyBtn = entryDiv.querySelector('.reidentify-btn');
+        const descriptionTextarea = entryDiv.querySelector('textarea');
+        const timestampElement = entryDiv.querySelector('h3');
+        const originalBtnText = reidentifyBtn.innerHTML;
+
+        reidentifyBtn.disabled = true;
+        reidentifyBtn.innerHTML = '...';
+
+        try {
+            const response = await fetch('/admin_api/multimodal-cache/reidentify', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ base64Key: base64Key })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hash: hash })
             });
 
             const result = await response.json();
 
             if (response.ok) {
-                // Update description and timestamp
                 descriptionTextarea.value = result.newDescription || '';
                 timestampElement.textContent = `时间戳: ${result.newTimestamp || 'N/A'}`;
-
-                // Update the mediaCacheData in memory as well
-                if (mediaCacheData[base64Key]) {
-                    mediaCacheData[base64Key].description = result.newDescription || '';
-                    mediaCacheData[base64Key].timestamp = result.newTimestamp || mediaCacheData[base64Key].timestamp; // Keep old timestamp if new one is missing
-                }
-
-
-                statusSpan.textContent = '重新识别成功!';
-                statusSpan.style.color = '#2ecc71'; // Success color
-                console.log(`Reidentified ${base64Key.substring(0, 20)}...:`, result.newDescription);
-
+                alert('媒体重新识别成功。');
             } else {
-                statusSpan.textContent = '重新识别失败: ' + (result.error || '未知错误');
-                statusSpan.style.color = '#e74c3c'; // Error color
-                console.error("重新识别失败:", result);
+                alert('重新识别失败: ' + (result.error || '未知错误'));
             }
         } catch (error) {
-            statusSpan.textContent = '重新识别时发生错误: ' + error.message;
-            statusSpan.style.color = '#e74c3c'; // Error color
-            console.error("重新识别错误:", error);
+            alert('错误: ' + error.message);
         } finally {
-            // Restore button state
             reidentifyBtn.disabled = false;
             reidentifyBtn.innerHTML = originalBtnText;
-            reidentifyBtn.title = originalBtnTitle;
-            reidentifyBtn.style.opacity = '1';
-            reidentifyBtn.style.cursor = 'pointer';
-
-            // Remove status message after a delay
-            setTimeout(() => {
-                if (statusSpan && statusSpan.parentNode) {
-                     statusSpan.parentNode.removeChild(statusSpan);
-                }
-            }, 5000); // Remove after 5 seconds
         }
     }
 
     function renderMediaList() {
-        mediaListDiv.innerHTML = ''; // 清空现有列表
+        mediaListDiv.innerHTML = '';
 
-        if (Object.keys(mediaCacheData).length === 0) {
-            mediaListDiv.innerHTML = '<p>缓存文件为空。</p>';
+        if (mediaItems.length === 0) {
+            mediaListDiv.innerHTML = '<p>没有匹配的缓存条目。</p>';
             return;
         }
 
-        const mediaKeys = Object.keys(mediaCacheData).reverse(); // 获取键并反转顺序
+        mediaItems.forEach(item => {
+            const entryDiv = document.createElement('div');
+            entryDiv.className = 'media-entry';
+            entryDiv.dataset.hash = item.hash;
 
-        for (const base64Key of mediaKeys) {
-            if (mediaCacheData.hasOwnProperty(base64Key)) {
-                const entry = mediaCacheData[base64Key];
-                
-                const entryDiv = document.createElement('div');
-                entryDiv.className = 'media-entry'; // Use a more generic class name
-                entryDiv.dataset.base64Key = base64Key; // 存储 key 用于保存
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'entry-actions';
 
-                const reidentifyBtn = document.createElement('span');
-                reidentifyBtn.className = 'reidentify-btn';
-                reidentifyBtn.innerHTML = '↻';
-                reidentifyBtn.title = '重新识别媒体描述';
-                reidentifyBtn.addEventListener('click', function(event) {
-                    event.stopPropagation();
-                    handleReidentify(base64Key, entryDiv);
-                });
-                entryDiv.appendChild(reidentifyBtn);
+            const reidentifyBtn = document.createElement('span');
+            reidentifyBtn.className = 'reidentify-btn action-icon';
+            reidentifyBtn.innerHTML = '↻';
+            reidentifyBtn.title = '重新识别';
+            reidentifyBtn.onclick = () => handleReidentify(item.hash, entryDiv);
+            actionsDiv.appendChild(reidentifyBtn);
 
-                const deleteBtn = document.createElement('span');
-                deleteBtn.className = 'delete-btn';
-                deleteBtn.innerHTML = '&times;';
-                deleteBtn.title = '删除此条目';
-                deleteBtn.addEventListener('click', function(event) {
-                    event.stopPropagation();
-                    if (!confirm(`确定要删除这个媒体条目吗？\nKey (部分): ${base64Key.substring(0,20)}...`)) {
-                        return;
-                    }
-                    if (mediaCacheData.hasOwnProperty(base64Key)) {
-                        delete mediaCacheData[base64Key];
-                    }
-                    entryDiv.remove();
-                    if (Object.keys(mediaCacheData).length === 0) {
-                        mediaListDiv.innerHTML = '<p>缓存文件为空或所有条目已删除。</p>';
-                    }
-                });
-                entryDiv.appendChild(deleteBtn);
+            const deleteBtn = document.createElement('span');
+            deleteBtn.className = 'delete-btn action-icon';
+            deleteBtn.innerHTML = '&times;';
+            deleteBtn.title = '删除';
+            deleteBtn.onclick = () => handleDelete(item.hash, entryDiv);
+            actionsDiv.appendChild(deleteBtn);
 
-                const title = document.createElement('h3');
-                title.textContent = `时间戳: ${entry.timestamp || 'N/A'}`;
-                entryDiv.appendChild(title);
+            entryDiv.appendChild(actionsDiv);
 
-                // --- DYNAMIC MEDIA ELEMENT CREATION ---
-                const mimeType = entry.mimeType || guessMimeType(base64Key);
-                let mediaElement;
+            const title = document.createElement('h3');
+            title.textContent = `时间戳: ${item.timestamp || 'N/A'}`;
+            entryDiv.appendChild(title);
 
-                if (mimeType.includes('image/')) {
-                    mediaElement = document.createElement('img');
-                    mediaElement.alt = '图像预览';
-                    mediaElement.addEventListener('click', function() {
-                        const modal = document.getElementById('mediaModal');
-                        const modalContent = document.getElementById('modalContent');
-                        if (modal && modalContent) {
-                            modalContent.innerHTML = ''; // Clear previous content
-                            const clone = this.cloneNode();
-                            clone.style.maxWidth = '90%';
-                            clone.style.maxHeight = '90vh';
-                            modalContent.appendChild(clone);
-                            modal.style.display = "block";
-                            document.body.style.overflow = 'hidden';
-                        }
-                    });
-                } else if (mimeType.includes('audio/')) {
-                    mediaElement = document.createElement('audio');
-                    mediaElement.controls = true;
-                } else if (mimeType.includes('video/')) {
-                    mediaElement = document.createElement('video');
-                    mediaElement.controls = true;
-                } else {
-                    mediaElement = document.createElement('div');
-                    mediaElement.className = 'unsupported-media';
-                    mediaElement.innerHTML = `<p>不支持的媒体类型</p><span>${mimeType}</span>`;
-                }
-                
-                if (mediaElement.tagName !== 'DIV') {
-                    mediaElement.src = `${mimeType}base64,${base64Key}`;
-                }
+            const mimeType = item.mimeType || 'image/jpeg';
+            let mediaElement;
 
-                mediaElement.onerror = function() {
-                    this.alt = '预览失败';
-                    this.style.display = 'none';
-                    const errorMsg = document.createElement('p');
-                    errorMsg.textContent = '媒体预览失败，可能是不支持的格式或损坏的数据。';
-                    errorMsg.style.color = 'red';
-                    entryDiv.insertBefore(errorMsg, this.nextSibling);
+            if (mimeType.includes('image/')) {
+                mediaElement = document.createElement('img');
+                mediaElement.onclick = function() {
+                    showPreview(this.src);
                 };
-                entryDiv.appendChild(mediaElement);
-                
-                const descriptionLabel = document.createElement('label');
-                descriptionLabel.textContent = '媒体描述 (可编辑):';
-                entryDiv.appendChild(descriptionLabel);
-
-                const descriptionTextarea = document.createElement('textarea');
-                descriptionTextarea.value = entry.description || '';
-                entryDiv.appendChild(descriptionTextarea);
-
-                const keyInfo = document.createElement('div');
-                keyInfo.className = 'base64-key';
-                keyInfo.textContent = `Base64 Key (部分): ${base64Key.substring(0, 30)}...`;
-                entryDiv.appendChild(keyInfo);
-
-                mediaListDiv.appendChild(entryDiv);
+            } else if (mimeType.includes('audio/')) {
+                mediaElement = document.createElement('audio');
+                mediaElement.controls = true;
+            } else if (mimeType.includes('video/')) {
+                mediaElement = document.createElement('video');
+                mediaElement.controls = true;
+            } else {
+                mediaElement = document.createElement('div');
+                mediaElement.className = 'unsupported-media';
+                mediaElement.innerHTML = `<p>不支持的媒体类型: ${mimeType}</p>`;
             }
+
+            if (mediaElement.tagName !== 'DIV') {
+                mediaElement.src = item.base64.startsWith('data:') ? item.base64 : `${mimeType};base64,${item.base64}`;
+            }
+            entryDiv.appendChild(mediaElement);
+
+            const descriptionLabel = document.createElement('label');
+            descriptionLabel.textContent = '媒体描述:';
+            entryDiv.appendChild(descriptionLabel);
+
+            const descriptionTextarea = document.createElement('textarea');
+            descriptionTextarea.value = item.description || '';
+            entryDiv.appendChild(descriptionTextarea);
+
+            const saveItemBtn = document.createElement('button');
+            saveItemBtn.className = 'save-item-btn';
+            saveItemBtn.textContent = '保存更改';
+            saveItemBtn.onclick = () => handleUpdate(item.hash, entryDiv);
+            entryDiv.appendChild(saveItemBtn);
+
+            const hashInfo = document.createElement('div');
+            hashInfo.className = 'base64-keyHash';
+            hashInfo.textContent = `Hash: ${item.hash}`;
+            entryDiv.appendChild(hashInfo);
+
+            mediaListDiv.appendChild(entryDiv);
+        });
+    }
+
+    function showPreview(src) {
+        const modal = document.getElementById('mediaModal');
+        const modalContent = document.getElementById('modalContent');
+        if (modal && modalContent) {
+            modalContent.innerHTML = '';
+            const img = document.createElement('img');
+            img.src = src;
+            modalContent.appendChild(img);
+            modal.style.display = "block";
+            document.body.style.overflow = 'hidden';
         }
     }
 

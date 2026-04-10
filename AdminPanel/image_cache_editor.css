@@ -19,12 +19,69 @@ body {
     border: 1px solid var(--border-color);
 }
 .controls {
-    margin-bottom: 20px;
-    padding-bottom: 20px;
+    margin-bottom: 25px;
+    padding-bottom: 25px;
     border-bottom: 1px solid var(--border-color);
     display: flex;
-    gap: 15px;
+    flex-wrap: wrap;
+    gap: 20px;
     align-items: center;
+    justify-content: space-between;
+}
+.search-box {
+    display: flex;
+    gap: 10px;
+    flex: 1;
+    min-width: 300px;
+}
+.search-box input {
+    flex: 1;
+    padding: 10px 15px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--input-bg);
+    color: var(--primary-text);
+    font-size: 0.95em;
+    transition: border-color 0.2s;
+}
+.search-box input:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+}
+.search-box button, .pagination-controls button {
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    background: var(--button-bg);
+    color: white;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+.search-box button:hover, .pagination-controls button:hover:not(:disabled) {
+    background: var(--button-hover-bg);
+    transform: translateY(-1px);
+}
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--accent-bg);
+    padding: 6px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+.pagination-controls span {
+    font-size: 0.9em;
+    font-weight: 600;
+    color: var(--secondary-text);
+    min-width: 100px;
+    text-align: center;
+}
+.pagination-controls button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--secondary-text);
 }
 button#saveButton {
     padding: 12px 22px;
@@ -120,15 +177,60 @@ h2 {
     border-color: var(--highlight-text);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--highlight-text) 25%, transparent);
 }
-.base64-key {
-    font-size: 0.8em;
+.base64-keyHash {
+    font-size: 0.75em;
     color: var(--secondary-text);
+    font-family: monospace;
     word-break: break-all;
-    margin-top: auto;
-    background-color: var(--tertiary-bg);
-    padding: 8px;
-    border-radius: 4px;
-    border: 1px dashed var(--border-color);
+    margin-top: 10px;
+    opacity: 0.6;
+}
+.save-item-btn {
+    margin-top: 10px;
+    padding: 8px 15px;
+    border-radius: 6px;
+    border: none;
+    background: #4CAF50;
+    color: white;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+.save-item-btn:hover {
+    background: #45a049;
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+.save-item-btn:disabled {
+    opacity: 0.7;
+    cursor: wait;
+}
+.entry-actions {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+}
+.action-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: white;
+    font-weight: bold;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    transition: all 0.2s;
+}
+.reidentify-btn { background-color: #2ecc71; font-size: 16px; }
+.delete-btn { background-color: var(--danger-color); font-size: 18px; }
+
+.action-icon:hover {
+    transform: scale(1.1);
 }
 p {
     color: var(--secondary-text);
