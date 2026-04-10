@@ -1,0 +1,43 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "MemoInboxAPI",
+  "version": "1.0.0",
+  "displayName": "Memo Inbox API",
+  "description": "Built on top of VCPToolBox diaries, ImageServer, and WebSocketServer.",
+  "author": "Codex",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "index.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "hasApiRoutes": true,
+  "configSchema": {
+    "MemoDiaryName": {
+      "type": "string",
+      "default": "MyMemos",
+      "description": "Memo diary namespace (folder under dailynote/)."
+    },
+    "MemoImageSubdir": {
+      "type": "string",
+      "default": "memo-inbox",
+      "description": "Relative image storage subdirectory under image/."
+    },
+    "MemoTaskResultTtlMinutes": {
+      "type": "integer",
+      "default": 1440,
+      "description": "Retention for completed task results."
+    },
+    "MemoMaidName": {
+      "type": "string",
+      "default": "MemoInbox",
+      "description": "Author signature in diary file header."
+    }
+  },
+  "capabilities": {
+    "invocationCommands": []
+  }
+}

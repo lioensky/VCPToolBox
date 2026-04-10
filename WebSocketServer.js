@@ -20,6 +20,8 @@ const adminPanelClients = new Map(); // 新增：管理面板客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 const waitingControlClients = new Map(); // 新增：存储等待页面更新的ChromeControl客户端 (clientId -> requestId)
+const pluginClientHandlers = new Map(); // 插件注册的自定义 WebSocket 客户端类型 pathRegex → { clientType, onConnect, onMessage, onClose }
+const pluginClients = new Map(); // 插件自定义客户端 clientId → { ws, clientType, handlerRef }
 let runtimeSnapshotInterval = null;
 
 function generateClientId() {
@@ -51,7 +53,8 @@ function emitRuntimeSnapshot(event = 'runtime_snapshot') {
         pendingSize: pendingToolRequests.size,
         chromeObserverCount: chromeObserverClients.size,
         chromeControlCount: chromeControlClients.size,
-        adminPanelCount: adminPanelClients.size
+        adminPanelCount: adminPanelClients.size,
+        pluginClientCount: pluginClients.size
     };
 
     emitDistToolLog('[DistToolRuntime]', event, payload);
@@ -134,9 +137,22 @@ function initialize(httpServer, config) {
             connectionKey = adminPanelMatch[1];
             writeLog(`Admin Panel client attempting to connect.`);
         } else {
-            writeLog(`WebSocket upgrade request for unhandled path: ${pathname}. Ignoring.`);
-            socket.destroy();
-            return;
+            // 检查插件注册的自定义客户端类型
+            let pluginHandlerMatched = false;
+            for (const [regex, handler] of pluginClientHandlers) {
+                const m = pathname.match(regex);
+                if (m && m[1]) {
+                    clientType = handler.clientType;
+                    connectionKey = m[1];
+                    pluginHandlerMatched = true;
+                    break;
+                }
+            }
+            if (!pluginHandlerMatched) {
+                writeLog(`WebSocket upgrade request for unhandled path: ${pathname}. Ignoring.`);
+                socket.destroy();
+                return;
+            }
         }
 
         if (serverConfig.vcpKey && connectionKey === serverConfig.vcpKey) {
@@ -184,8 +200,25 @@ function initialize(httpServer, config) {
                    adminPanelClients.set(clientId, ws);
                    writeLog(`Admin Panel client ${clientId} connected.`);
                 } else {
-                    clients.set(clientId, ws);
-                    writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
+                    // 检查是否是插件注册的自定义客户端类型
+                    let isPluginClient = false;
+                    for (const [, handler] of pluginClientHandlers) {
+                        if (handler.clientType === clientType) {
+                            pluginClients.set(clientId, { ws, clientType, handlerRef: handler });
+                            if (typeof handler.onConnect === 'function') {
+                                try { handler.onConnect(ws); } catch (e) {
+                                    console.error(`[WebSocketServer] Plugin onConnect error for ${clientType}:`, e);
+                                }
+                            }
+                            writeLog(`Plugin client ${clientId} (Type: ${clientType}) connected.`);
+                            isPluginClient = true;
+                            break;
+                        }
+                    }
+                    if (!isPluginClient) {
+                        clients.set(clientId, ws);
+                        writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
+                    }
                 }
                 
                 wssInstance.emit('connection', ws, request);
@@ -339,7 +372,13 @@ function initialize(httpServer, config) {
                 } else if (ws.clientType === 'AdminPanel') {
                     // 保持原有的 AdminPanel 逻辑，如果将来有其他 AdminPanel 专用消息
                 } else {
-                    // 未来处理其他客户端类型的消息
+                    // 插件注册的自定义客户端消息路由
+                    const pluginEntry = pluginClients.get(ws.clientId);
+                    if (pluginEntry && typeof pluginEntry.handlerRef.onMessage === 'function') {
+                        try { pluginEntry.handlerRef.onMessage(ws, parsedMessage); } catch (e) {
+                            console.error(`[WebSocketServer] Plugin onMessage error for ${ws.clientType}:`, e);
+                        }
+                    }
                 }
             } catch (e) {
                 console.error(`[WebSocketServer] Failed to parse message from client ${ws.clientId}:`, message.toString(), e);
@@ -365,7 +404,19 @@ function initialize(httpServer, config) {
               adminPanelClients.delete(ws.clientId);
               writeLog(`Admin Panel client ${ws.clientId} disconnected and removed.`);
            } else {
-               clients.delete(ws.clientId);
+               // 插件注册的自定义客户端断开处理
+               const pluginEntry = pluginClients.get(ws.clientId);
+               if (pluginEntry) {
+                   if (typeof pluginEntry.handlerRef.onClose === 'function') {
+                       try { pluginEntry.handlerRef.onClose(ws); } catch (e) {
+                           console.error(`[WebSocketServer] Plugin onClose error for ${ws.clientType}:`, e);
+                       }
+                   }
+                   pluginClients.delete(ws.clientId);
+                   writeLog(`Plugin client ${ws.clientId} (Type: ${ws.clientType}) disconnected.`);
+               } else {
+                   clients.delete(ws.clientId);
+               }
            }
             if (serverConfig.debugMode) {
                 console.log(`[WebSocketServer] Client ${ws.clientId} (${ws.clientType}) disconnected.`);
@@ -375,8 +426,11 @@ function initialize(httpServer, config) {
         ws.on('error', (error) => {
             console.error(`[WebSocketServer] Error with client ${ws.clientId}:`, error);
             writeLog(`WebSocket error for client ${ws.clientId}: ${error.message}`);
-            // 确保在出错时也从 clients Map 中移除
-            if(ws.clientId) clients.delete(ws.clientId);
+            // 确保在出错时也从对应的 Map 中移除（close 事件通常会紧随其后，做幂等处理）
+            if (ws.clientId) {
+                clients.delete(ws.clientId);
+                pluginClients.delete(ws.clientId);
+            }
         });
     });
 
@@ -420,11 +474,13 @@ function broadcastVCPInfo(data) {
 
 // 发送给特定客户端
 function sendMessageToClient(clientId, data) {
-   // Check all client maps
+   // Check all client maps (including plugin clients)
    const clientWs = clients.get(clientId) ||
                     (Array.from(distributedServers.values()).find(ds => ds.ws.clientId === clientId) || {}).ws ||
                     chromeObserverClients.get(clientId) ||
-                    chromeControlClients.get(clientId);
+                    chromeControlClients.get(clientId) ||
+                    adminPanelClients.get(clientId) ||
+                    (pluginClients.get(clientId) || {}).ws;
 
     if (clientWs && clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify(data));
@@ -654,7 +710,7 @@ function findServerByIp(ip) {
 function broadcastToAdminPanel(data) {
     if (!wssInstance) return;
     const messageString = JSON.stringify(data);
-    
+
     adminPanelClients.forEach(clientWs => {
         if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(messageString);
@@ -664,6 +720,87 @@ function broadcastToAdminPanel(data) {
     if (serverConfig.debugMode) {
         writeLog(`Broadcasted to Admin Panel: ${messageString.substring(0, 200)}...`);
     }
+}
+
+/**
+ * 注册插件自定义 WebSocket 客户端类型。
+ * 插件在 registerApiRoutes 阶段调用此方法，即可让外部客户端通过自定义路径接入。
+ *
+ * @param {RegExp} pathRegex - 路径匹配正则，必须包含一个捕获组用于提取 VCP_Key。
+ *                             例如：/^\/vcp-memo-inbox\/VCP_Key=(.+)$/
+ * @param {string} clientType - 客户端类型标识，例如 'MemoInboxClient'
+ * @param {object} handlers - 生命周期回调
+ * @param {function} [handlers.onConnect] - 连接建立后回调 (ws) => void
+ * @param {function} [handlers.onMessage] - 收到消息回调 (ws, parsedMessage) => void
+ * @param {function} [handlers.onClose] - 连接关闭回调 (ws) => void
+ */
+function registerPluginClientType(pathRegex, clientType, handlers = {}) {
+    if (!(pathRegex instanceof RegExp)) {
+        console.error(`[WebSocketServer] registerPluginClientType: pathRegex must be a RegExp instance.`);
+        return;
+    }
+    if (!clientType || typeof clientType !== 'string') {
+        console.error(`[WebSocketServer] registerPluginClientType: clientType must be a non-empty string.`);
+        return;
+    }
+    // 防止同一 clientType 重复注册，先清除旧的
+    for (const [existingRegex, existingHandler] of pluginClientHandlers) {
+        if (existingHandler.clientType === clientType) {
+            pluginClientHandlers.delete(existingRegex);
+            writeLog(`Plugin client type '${clientType}' was already registered, replacing.`);
+            break;
+        }
+    }
+    pluginClientHandlers.set(pathRegex, { clientType, ...handlers });
+    console.log(`[WebSocketServer] Plugin client type '${clientType}' registered.`);
+}
+
+/**
+ * 注销插件自定义 WebSocket 客户端类型，并断开该类型的所有已连接客户端。
+ *
+ * @param {string} clientType - 要注销的客户端类型标识
+ */
+function unregisterPluginClientType(clientType) {
+    for (const [regex, handler] of pluginClientHandlers) {
+        if (handler.clientType === clientType) {
+            pluginClientHandlers.delete(regex);
+            break;
+        }
+    }
+    // 收集要清理的客户端 ID，避免遍历中删除
+    const toRemove = [];
+    for (const [clientId, entry] of pluginClients) {
+        if (entry.clientType === clientType) {
+            toRemove.push(clientId);
+        }
+    }
+    for (const clientId of toRemove) {
+        const entry = pluginClients.get(clientId);
+        if (entry && entry.ws.readyState === WebSocket.OPEN) {
+            entry.ws.close(1000, 'Plugin client type unregistered');
+        }
+        pluginClients.delete(clientId);
+    }
+    console.log(`[WebSocketServer] Plugin client type '${clientType}' unregistered.`);
+}
+
+/**
+ * 向指定插件客户端类型的所有已连接客户端广播消息。
+ *
+ * @param {string} clientType - 目标客户端类型
+ * @param {object} data - 要发送的数据（将被 JSON.stringify）
+ */
+function broadcastToPluginClients(clientType, data) {
+    if (!wssInstance) return;
+    const messageString = JSON.stringify(data);
+    let count = 0;
+    for (const [, entry] of pluginClients) {
+        if (entry.clientType === clientType && entry.ws.readyState === WebSocket.OPEN) {
+            entry.ws.send(messageString);
+            count++;
+        }
+    }
+    writeLog(`Broadcasted to ${count} plugin clients of type '${clientType}'.`);
 }
 
 module.exports = {
@@ -676,5 +813,8 @@ module.exports = {
     executeDistributedTool,
     handleDistributedServerMessage,
     findServerByIp,
+    registerPluginClientType,
+    unregisterPluginClientType,
+    broadcastToPluginClients,
     shutdown
 };
