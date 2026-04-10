@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const schedule = require('node-schedule');
+const ForumEngine = require('./lib/forum-engine');
 
 const DATA_FILE = path.join(__dirname, 'task-center-data.json');
 const MIN_INTERVAL_MINUTES = 10;
@@ -21,6 +22,7 @@ let DEBUG_MODE = false;
 
 let taskCenterData = createDefaultData();
 let activeTimers = new Map();
+let forumEngine = null;
 
 function createDefaultData() {
     return {
@@ -187,39 +189,7 @@ async function saveData() {
     }
 }
 
-async function getForumPostList(maxPosts = 200) {
-    const forumDir = path.join(PROJECT_BASE_PATH, 'dailynote', 'VCP论坛');
-    try {
-        await fsPromises.mkdir(forumDir, { recursive: true });
-        const files = await fsPromises.readdir(forumDir);
-        const mdFiles = files.filter(f => f.endsWith('.md')).slice(0, maxPosts);
-
-        if (mdFiles.length === 0) return 'VCP论坛中尚无帖子。';
-
-        const postsByBoard = {};
-        for (const file of mdFiles) {
-            const m = file.match(/^\[(.*?)\]\[(.*)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\.md$/);
-            if (!m) continue;
-            const board = m[1];
-            const title = m[2];
-            const author = m[3];
-            const uid = m[5];
-            if (!postsByBoard[board]) postsByBoard[board] = [];
-            postsByBoard[board].push(`[${author}] ${title} (UID: ${uid})`);
-        }
-
-        let output = 'VCP论坛帖子列表:\n';
-        for (const board of Object.keys(postsByBoard)) {
-            output += `\n————[${board}]————\n`;
-            postsByBoard[board].forEach(line => {
-                output += `${line}\n`;
-            });
-        }
-        return output.trim();
-    } catch (e) {
-        return `获取论坛帖子列表时出错: ${e.message}`;
-    }
-}
+// Forum logic has been moved to lib/forum-engine.js
 
 function renderPromptTemplate(template, replacements) {
     let result = String(template || '');
@@ -282,8 +252,8 @@ async function buildTaskPrompt(task) {
         return String(task.payload.promptTemplate || '');
     }
 
-    const forumList = task.payload.includeForumPostList
-        ? await getForumPostList(task.payload.maxPosts)
+    const forumList = task.payload.includeForumPostList && forumEngine
+        ? await forumEngine.getSparsePostList(task.payload.maxPosts)
         : '';
     const placeholder = task.payload.forumListPlaceholder || '{{forum_post_list}}';
 
@@ -699,6 +669,8 @@ function initialize(config) {
     VCP_KEY = config.Key || '';
     PROJECT_BASE_PATH = config.PROJECT_BASE_PATH || '';
     DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
+
+    forumEngine = new ForumEngine(PROJECT_BASE_PATH);
 
     console.log(`[TaskAssistant] 初始化 | PORT=${VCP_PORT} | Key=${VCP_KEY ? 'FOUND' : 'NOT FOUND'}`);
     loadData()
