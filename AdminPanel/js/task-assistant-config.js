@@ -4,8 +4,8 @@ const API_BASE = '/admin_api';
 let listenersAttached = false;
 let cachedConfig = null;
 
-export async function initializeForumAssistantConfig() {
-    const section = document.getElementById('forum-assistant-config-section');
+export async function initializeTaskAssistantConfig() {
+    const section = document.getElementById('task-assistant-config-section');
     if (!section) return;
 
     if (!listenersAttached) {
@@ -57,7 +57,7 @@ async function loadConfig() {
     }
 
     try {
-        const data = await apiFetch(`${API_BASE}/forum-assistant/config`);
+        const data = await apiFetch(`${API_BASE}/task-assistant/config`);
         cachedConfig = data;
         const config = data.config || { globalEnabled: false, tasks: [] };
 
@@ -116,7 +116,7 @@ async function loadStatus() {
     if (!statusContainer) return;
 
     try {
-        const data = await apiFetch(`${API_BASE}/forum-assistant/status`);
+        const data = await apiFetch(`${API_BASE}/task-assistant/status`);
         let html = `<span class="fa-status-badge ${data.globalEnabled ? 'active' : 'inactive'}">${data.globalEnabled ? '运行中' : '已停止'}</span>`;
         html += ` | 活跃定时器: <strong>${data.activeTimerCount || 0}</strong>`;
         html += ` | 任务总数: <strong>${Array.isArray(data.tasks) ? data.tasks.length : 0}</strong>`;
@@ -256,7 +256,7 @@ function addTaskCard(task) {
         triggerBtn.disabled = true;
         triggerBtn.textContent = '发送中...';
         try {
-            await apiFetch(`${API_BASE}/forum-assistant/trigger`, {
+            await apiFetch(`${API_BASE}/task-assistant/trigger`, {
                 method: 'POST',
                 body: JSON.stringify({ taskId: task.id })
             });
@@ -299,6 +299,7 @@ function addTaskCard(task) {
 
     const scheduleSelect = createSelect('fa-task-schedule-mode', [
         { value: 'interval', label: '循环任务' },
+        { value: 'cron', label: 'CRON 定时' },
         { value: 'manual', label: '仅手动触发' },
         { value: 'once', label: '一次性任务' }
     ], task.schedule?.mode || 'interval');
@@ -325,9 +326,10 @@ function addTaskCard(task) {
     enableLabel.appendChild(slider);
     enabledRow.appendChild(enableLabel);
 
-    const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：论坛巡航-可可');
+    const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：巡航任务-可可');
     const targetAgentsInput = createTextInput('fa-task-targets-input', (task.targets?.agents || []).join(', '), '多个 Agent 用英文逗号分隔');
     const intervalInput = createNumberInput('fa-task-interval', task.schedule?.intervalMinutes || 60, '10');
+    const cronInput = createTextInput('fa-task-cron', task.schedule?.cronValue || '', '例如：0 0 * * * (每日凌晨)');
 
     const runAtInput = document.createElement('input');
     runAtInput.type = 'datetime-local';
@@ -390,9 +392,10 @@ function addTaskCard(task) {
     const row3 = document.createElement('div');
     row3.className = 'aa-row';
     row3.appendChild(createInputGroup('调度方式', scheduleSelect, '', false));
-    row3.appendChild(createInputGroup('循环间隔(分)', intervalInput, '最小10', false));
+    row3.appendChild(createInputGroup('循环间隔(分)', intervalInput, '仅循环任务生效', false));
     body.appendChild(row3);
 
+    body.appendChild(createInputGroup('CRON 表达式', cronInput, '支持标准 CRON 语法，仅 CRON 定时模式生效'));
     body.appendChild(createInputGroup('一次性执行时间', runAtInput, '仅一次性任务生效'));
     body.appendChild(createInputGroup('注入工具', injectToolsInput, '多个工具使用英文逗号分隔'));
     body.appendChild(createInputGroup('提示词模板', promptTextarea, '这里是核心编辑区，用户可自由编辑任务提示词。'));
@@ -419,8 +422,14 @@ function addTaskCard(task) {
 
     function syncScheduleVisibility() {
         const mode = scheduleSelect.value;
-        intervalInput.disabled = mode !== 'interval';
-        runAtInput.disabled = mode !== 'once';
+        intervalInput.disabled = (mode !== 'interval');
+        runAtInput.disabled = (mode !== 'once');
+        cronInput.disabled = (mode !== 'cron');
+
+        // 可选：动态调整父级容器显示
+        intervalInput.closest('.aa-field-group').style.opacity = (mode === 'interval' ? '1' : '0.5');
+        runAtInput.closest('.aa-field-group').style.opacity = (mode === 'once' ? '1' : '0.5');
+        cronInput.closest('.aa-field-group').style.opacity = (mode === 'cron' ? '1' : '0.5');
     }
 
     typeSelect.addEventListener('change', syncTypeVisibility);
@@ -499,6 +508,7 @@ function collectTasksFromDom() {
         const scheduleMode = card.querySelector('.fa-task-schedule-mode')?.value || 'interval';
         const intervalMinutes = parseInt(card.querySelector('.fa-task-interval')?.value, 10) || 60;
         const runAtValue = card.querySelector('.fa-task-run-at')?.value || '';
+        const cronValue = card.querySelector('.fa-task-cron')?.value.trim() || '';
         const targets = (card.querySelector('.fa-task-targets-input')?.value || '')
             .split(',')
             .map(item => item.trim())
@@ -521,7 +531,8 @@ function collectTasksFromDom() {
             schedule: {
                 mode: scheduleMode,
                 intervalMinutes,
-                runAt: scheduleMode === 'once' && runAtValue ? new Date(runAtValue).toISOString() : null
+                runAt: scheduleMode === 'once' && runAtValue ? new Date(runAtValue).toISOString() : null,
+                cronValue: scheduleMode === 'cron' ? cronValue : null
             },
             targets: { agents: targets },
             dispatch: {
@@ -564,7 +575,7 @@ async function saveConfig() {
     }
 
     try {
-        await apiFetch(`${API_BASE}/forum-assistant/config`, {
+        await apiFetch(`${API_BASE}/task-assistant/config`, {
             method: 'POST',
             body: JSON.stringify({
                 globalEnabled,

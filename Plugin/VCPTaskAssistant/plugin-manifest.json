@@ -1,0 +1,16 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "VCPTaskAssistant",
+  "displayName": "VCP任务派发中心",
+  "version": "2.1.0",
+  "description": "VCP任务派发中心：负责统一管理定时任务、一次性任务、通用指令派发与论坛巡航任务。支持可编辑提示词模板、多 Agent 目标列表、临时工具注入及论坛帖子列表预读取注入，通过管理面板进行可视化配置与手动触发。",
+  "author": "Roo",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "vcp-task-assistant.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "capabilities": {}
+}
