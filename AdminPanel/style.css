@@ -1748,9 +1748,35 @@ html[data-theme='dark'] .activity-chart-container {
 }
 
 #activity-chart-canvas {
-    width: 100%;
-    height: 150px; /* Adjust height as needed */
-    display: block;
+    width: 100% !important;
+    height: 300px !important;
+}
+
+/* --- Task Assistant Target Agent Enhancement --- */
+.fa-targets-input-wrap {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.fa-targets-input-wrap input {
+    flex-grow: 1;
+}
+
+.fa-task-targets-select {
+    width: 42px !important; /* Fixed width for the + button */
+    padding: 0 4px !important;
+    text-align: center;
+    cursor: pointer;
+    background-color: var(--button-bg);
+    color: white;
+    border-radius: 8px;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.fa-task-targets-select:hover {
+    background-color: var(--button-hover-bg);
 }
 
 /* --- Semantic Groups Editor Styles --- */

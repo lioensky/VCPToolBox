@@ -38,24 +38,19 @@ let cleanupInterval;
 function initialize(config, dependencies) {
     VCP_SERVER_PORT = config.PORT;
     VCP_SERVER_ACCESS_KEY = config.Key;
-    MAX_HISTORY_ROUNDS = parseInt(config.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS || '7', 10);
-    CONTEXT_TTL_HOURS = parseInt(config.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10);
     DEBUG_MODE = String(config.DebugMode || 'false').toLowerCase() === 'true';
     // 使用 127.0.0.1 避开某些系统上 localhost 解析到 IPv6 (::1) 导致的延迟
     VCP_API_TARGET_URL = `http://127.0.0.1:${VCP_SERVER_PORT}/v1`;
 
-    DELEGATION_MAX_ROUNDS = parseInt(config.DELEGATION_MAX_ROUNDS || '15', 10);
-    DELEGATION_TIMEOUT = parseInt(config.DELEGATION_TIMEOUT || '300000', 10);
-    DELEGATION_SYSTEM_PROMPT = config.DELEGATION_SYSTEM_PROMPT || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n[长执行任务优化机制]\n如果当前步骤涉及需要长时间等待的任务（如：视频生成、大型文件处理等），你可以在输出中包含 `[[NextHeartbeat::秒数]]` 占位符。系统将推迟下一次心跳（心跳即：再次唤醒你）的到来，在这段时间内不会产生额外的轮次和Token消耗。例如：如果你预计渲染需要3分钟，可以输出 `[[NextHeartbeat::180]]`。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
-    DELEGATION_HEARTBEAT_PROMPT = config.DELEGATION_HEARTBEAT_PROMPT || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果你在等待长执行任务，请根据需要输出 `[[NextHeartbeat::秒数]]` 进行推迟。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
-
     if (DEBUG_MODE) {
         console.error(`[AgentAssistant Service] Initializing...`);
         console.error(`[AgentAssistant Service] VCP PORT: ${VCP_SERVER_PORT}, VCP Key: ${VCP_SERVER_ACCESS_KEY ? 'FOUND' : 'NOT FOUND'}`);
-        console.error(`[AgentAssistant Service] History rounds: ${MAX_HISTORY_ROUNDS}, Context TTL: ${CONTEXT_TTL_HOURS}h.`);
-        console.error(`[AgentAssistant Service] Delegation Max Rounds: ${DELEGATION_MAX_ROUNDS}, Timeout: ${DELEGATION_TIMEOUT}ms`);
     }
 
+    // 优先执行迁移逻辑（如果需要从旧的 .env 迁移到 .json）
+    migrateEnvToJson();
+
+    // 加载配置
     loadAgentsFromLocalConfig();
 
     if (dependencies && dependencies.vcpLogFunctions && typeof dependencies.vcpLogFunctions.pushVcpInfo === 'function') {
@@ -83,64 +78,127 @@ function shutdown() {
 }
 
 /**
- * Loads agent definitions from the plugin's local config.env file.
+ * 迁移旧的 config.env 到 config.json（仅在 config.json 不存在时执行一次）
+ */
+function migrateEnvToJson() {
+    const jsonPath = path.join(__dirname, 'config.json');
+    const envPath = path.join(__dirname, 'config.env');
+
+    if (fs.existsSync(jsonPath)) return; // 已经存在，不需要迁移
+    if (!fs.existsSync(envPath)) return; // 没有任何配置文件，跳过
+
+    try {
+        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Starting migration from config.env into config.json...`);
+        const fileContent = fs.readFileSync(envPath, { encoding: 'utf8' });
+        const envConfig = dotenv.parse(fileContent);
+
+        const fixEscaped = (val) => {
+            if (typeof val !== 'string') return val;
+            return val.replace(/\\"/g, '"')
+                      .replace(/\\'/g, "'")
+                      .replace(/\\\\/g, '\\')
+                      .replace(/\\n/g, '\n')
+                      .replace(/\\r/g, '\r');
+        };
+
+        const configJson = {
+            maxHistoryRounds: parseInt(envConfig.AGENT_ASSISTANT_MAX_HISTORY_ROUNDS || '7', 10),
+            contextTtlHours: parseInt(envConfig.AGENT_ASSISTANT_CONTEXT_TTL_HOURS || '24', 10),
+            globalSystemPrompt: fixEscaped(envConfig.AGENT_ALL_SYSTEM_PROMPT || ''),
+            delegationMaxRounds: parseInt(envConfig.DELEGATION_MAX_ROUNDS || '15', 10),
+            delegationTimeout: parseInt(envConfig.DELEGATION_TIMEOUT || '300000', 10),
+            delegationSystemPrompt: fixEscaped(envConfig.DELEGATION_SYSTEM_PROMPT || ''),
+            delegationHeartbeatPrompt: fixEscaped(envConfig.DELEGATION_HEARTBEAT_PROMPT || ''),
+            agents: []
+        };
+
+        const agentBaseNames = new Set();
+        for (const key in envConfig) {
+            if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
+                const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
+                if (nameMatch && nameMatch[1]) agentBaseNames.add(nameMatch[1].toUpperCase());
+            }
+        }
+
+        for (const baseName of agentBaseNames) {
+            configJson.agents.push({
+                baseName: baseName,
+                chineseName: fixEscaped(envConfig[`AGENT_${baseName}_CHINESE_NAME`] || ''),
+                modelId: envConfig[`AGENT_${baseName}_MODEL_ID`] || '',
+                systemPrompt: fixEscaped(envConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || ''),
+                maxOutputTokens: parseInt(envConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
+                temperature: parseFloat(envConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
+                description: fixEscaped(envConfig[`AGENT_${baseName}_DESCRIPTION`] || '')
+            });
+        }
+
+        fs.writeFileSync(jsonPath, JSON.stringify(configJson, null, 4), 'utf-8');
+        console.log(`[AgentAssistant Service] Successfully migrated configuration to config.json. config.env can now be deleted.`);
+    } catch (e) {
+        console.error(`[AgentAssistant Service] Error during migration: ${e.message}`);
+    }
+}
+
+/**
+ * Loads agent definitions from the plugin's local config.json file.
  */
 function loadAgentsFromLocalConfig() {
-    const pluginConfigEnvPath = path.join(__dirname, 'config.env');
-    let pluginLocalEnvConfig = {};
+    const jsonPath = path.join(__dirname, 'config.json');
+    let config = {};
 
-    if (fs.existsSync(pluginConfigEnvPath)) {
+    if (fs.existsSync(jsonPath)) {
         try {
-            const fileContent = fs.readFileSync(pluginConfigEnvPath, { encoding: 'utf8' });
-            pluginLocalEnvConfig = dotenv.parse(fileContent);
+            const fileContent = fs.readFileSync(jsonPath, { encoding: 'utf8' });
+            config = JSON.parse(fileContent);
         } catch (e) {
-            console.error(`[AgentAssistant Service] Error parsing plugin's local config.env (${pluginConfigEnvPath}): ${e.message}.`);
+            console.error(`[AgentAssistant Service] Error parsing config.json: ${e.message}.`);
             return;
         }
     } else {
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Plugin's local config.env not found at: ${pluginConfigEnvPath}.`);
-        return;
+        if (DEBUG_MODE) console.error(`[AgentAssistant Service] config.json not found at: ${jsonPath}. Using defaults.`);
+        // 默认兜底配置
+        config = { maxHistoryRounds: 7, contextTtlHours: 24, agents: [] };
     }
 
-    const AGENT_ALL_SYSTEM_PROMPT = pluginLocalEnvConfig.AGENT_ALL_SYSTEM_PROMPT || "";
-    const agentBaseNames = new Set();
+    // 更新全局变量
+    MAX_HISTORY_ROUNDS = parseInt(config.maxHistoryRounds || '7', 10);
+    CONTEXT_TTL_HOURS = parseInt(config.contextTtlHours || '24', 10);
+    DELEGATION_MAX_ROUNDS = parseInt(config.delegationMaxRounds || '15', 10);
+    DELEGATION_TIMEOUT = parseInt(config.delegationTimeout || '300000', 10);
+    DELEGATION_SYSTEM_PROMPT = config.delegationSystemPrompt || "[异步委托模式]\n你当前正在接受来自 {{SenderName}} 的一项异步委托任务。请专注于完成以下委托内容，按照任务要求认真执行。你可以自由使用你所拥有的的所有工具来完成任务。\n\n[长执行任务优化机制]\n如果当前步骤涉及需要长时间等待的任务（如：视频生成、大型文件处理等），你可以在输出中包含 `[[NextHeartbeat::秒数]]` 占位符。系统将推迟下一次心跳（心跳即：再次唤醒你）的到来，在这段时间内不会产生额外的轮次和Token消耗。例如：如果你预计渲染需要3分钟，可以输出 `[[NextHeartbeat::180]]`。\n\n委托任务内容:\n{{TaskPrompt}}\n\n当你确认任务已经彻底完成后，请输出委托完成报告，格式如下:\n[[TaskComplete]]\n（此处写上你的任务完成报告，详细描述你完成了什么、执行过程和最终结果）\n\n如果你认为任务由于缺少工具、信息或其他原因【完全无法完成】，请输出失败报告，格式如下:\n[[TaskFailed]]\n（此处写上失败原因）";
+    DELEGATION_HEARTBEAT_PROMPT = config.delegationHeartbeatPrompt || "[系统提示:]当前委托任务仍在进行中。请继续执行你的委托任务。如果你在等待长执行任务，请根据需要输出 `[[NextHeartbeat::秒数]]` 进行推迟。如果任务已完成，请输出 [[TaskComplete]] 及完成报告。如果确认无法完成，请输出 [[TaskFailed]] 及失败原因。";
+
+    const AGENT_ALL_SYSTEM_PROMPT = config.globalSystemPrompt || "";
     Object.keys(AGENTS).forEach(key => delete AGENTS[key]); // Clear existing agents
 
-    for (const key in pluginLocalEnvConfig) {
-        if (key.startsWith('AGENT_') && key.endsWith('_MODEL_ID')) {
-            const nameMatch = key.match(/^AGENT_([A-Z0-9_]+)_MODEL_ID$/i);
-            if (nameMatch && nameMatch[1]) agentBaseNames.add(nameMatch[1].toUpperCase());
+    if (Array.isArray(config.agents)) {
+        for (const agent of config.agents) {
+            const { baseName, modelId, chineseName, systemPrompt, maxOutputTokens, temperature, description } = agent;
+
+            if (!modelId || !chineseName) {
+                if (DEBUG_MODE) console.error(`[AgentAssistant Service] Skipping agent ${baseName || chineseName}: Missing MODEL_ID or CHINESE_NAME.`);
+                continue;
+            }
+
+            const systemPromptTemplate = systemPrompt || `You are a helpful AI assistant named {{MaidName}}.`;
+            let finalSystemPrompt = systemPromptTemplate.replace(/\{\{MaidName\}\}/g, chineseName);
+            if (AGENT_ALL_SYSTEM_PROMPT) finalSystemPrompt += `\n\n${AGENT_ALL_SYSTEM_PROMPT}`;
+
+            AGENTS[chineseName] = {
+                id: modelId,
+                name: chineseName,
+                baseName: baseName || chineseName.toUpperCase(), // 兜底
+                systemPrompt: finalSystemPrompt,
+                maxOutputTokens: parseInt(maxOutputTokens || '40000', 10),
+                temperature: parseFloat(temperature || '0.7'),
+                description: description || `Assistant ${chineseName}.`,
+            };
+            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Loaded agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
         }
     }
 
-    if (DEBUG_MODE) console.error(`[AgentAssistant Service] Identified agent base names: ${[...agentBaseNames].join(', ') || 'None'}`);
-
-    for (const baseName of agentBaseNames) {
-        const modelId = pluginLocalEnvConfig[`AGENT_${baseName}_MODEL_ID`];
-        const chineseName = pluginLocalEnvConfig[`AGENT_${baseName}_CHINESE_NAME`];
-
-        if (!modelId || !chineseName) {
-            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Skipping agent ${baseName}: Missing MODEL_ID or CHINESE_NAME.`);
-            continue;
-        }
-
-        const systemPromptTemplate = pluginLocalEnvConfig[`AGENT_${baseName}_SYSTEM_PROMPT`] || `You are a helpful AI assistant named {{MaidName}}.`;
-        let finalSystemPrompt = systemPromptTemplate.replace(/\{\{MaidName\}\}/g, chineseName);
-        if (AGENT_ALL_SYSTEM_PROMPT) finalSystemPrompt += `\n\n${AGENT_ALL_SYSTEM_PROMPT}`;
-
-        AGENTS[chineseName] = {
-            id: modelId,
-            name: chineseName,
-            baseName: baseName,
-            systemPrompt: finalSystemPrompt,
-            maxOutputTokens: parseInt(pluginLocalEnvConfig[`AGENT_${baseName}_MAX_OUTPUT_TOKENS`] || '40000', 10),
-            temperature: parseFloat(pluginLocalEnvConfig[`AGENT_${baseName}_TEMPERATURE`] || '0.7'),
-            description: pluginLocalEnvConfig[`AGENT_${baseName}_DESCRIPTION`] || `Assistant ${chineseName}.`,
-        };
-        if (DEBUG_MODE) console.error(`[AgentAssistant Service] Loaded agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
-    }
-    if (Object.keys(AGENTS).length === 0 && DEBUG_MODE) {
-        console.error("[AgentAssistant Service] Warning: No agents were loaded.");
+    if (DEBUG_MODE) {
+        console.error(`[AgentAssistant Service] Config reloaded: ${Object.keys(AGENTS).length} agents loaded.`);
     }
 }
 
@@ -838,5 +896,6 @@ async function sendDelegationCallback(delegationId, status, report, agentName) {
 module.exports = {
     initialize,
     shutdown,
-    processToolCall
+    processToolCall,
+    reloadConfig: loadAgentsFromLocalConfig
 };

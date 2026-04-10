@@ -65,6 +65,30 @@ async function loadConfig() {
             globalSwitch.checked = !!config.globalEnabled;
         }
 
+        // --- 获取可用 Agent 列表以供建议 ---
+        try {
+            const agentData = await apiFetch(`${API_BASE}/agent-assistant/config`);
+            const datalist = document.getElementById('fa-available-agents-list');
+            if (agentData && Array.isArray(agentData.agents)) {
+                if (datalist) {
+                    datalist.innerHTML = '';
+                    agentData.agents.forEach(agent => {
+                        if (agent.chineseName) {
+                            const option = document.createElement('option');
+                            option.value = agent.chineseName;
+                            datalist.appendChild(option);
+                        }
+                    });
+                }
+                // 更新缓存在全局，以便 addTaskCard 获取
+                cachedConfig = cachedConfig || {};
+                cachedConfig.availableAgents = agentData.agents;
+            }
+        } catch (agentErr) {
+            console.warn('[TaskAssistant] Failed to fetch agent list for suggestions:', agentErr);
+        }
+        // ---------------------------------
+
         if (Array.isArray(config.tasks) && config.tasks.length > 0) {
             config.tasks.forEach(task => addTaskCard(task));
         } else if (container) {
@@ -217,6 +241,11 @@ function addTaskCard(task) {
     const container = document.getElementById('fa-task-cards-container');
     if (!container) return;
 
+    // 获取当前可用 Agent 以填充快选列表
+    const availableAgentOptions = (cachedConfig?.availableAgents || [])
+        .map(a => ({ value: a.chineseName, label: a.chineseName }));
+    const selectOptions = [{ value: '', label: '+' }, ...availableAgentOptions];
+
     const placeholder = container.querySelector('.fa-placeholder');
     if (placeholder) placeholder.remove();
 
@@ -328,6 +357,7 @@ function addTaskCard(task) {
 
     const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：巡航任务-可可');
     const targetAgentsInput = createTextInput('fa-task-targets-input', (task.targets?.agents || []).join(', '), '多个 Agent 用英文逗号分隔');
+    targetAgentsInput.setAttribute('list', 'fa-available-agents-list');
     const intervalInput = createNumberInput('fa-task-interval', task.schedule?.intervalMinutes || 60, '10');
     const cronInput = createTextInput('fa-task-cron', task.schedule?.cronValue || '', '例如：0 0 * * * (每日凌晨)');
 
@@ -375,6 +405,29 @@ function addTaskCard(task) {
     forumPayloadWrap.appendChild(createInputGroup('论坛列表占位符', forumPlaceholderInput, '提示词中出现该占位符时，会自动替换为论坛帖子列表。'));
     forumPayloadWrap.appendChild(createInputGroup('最大读取帖子数', maxPostsInput, '用于控制注入到提示词中的帖子条目数量。'));
 
+    const targetAgentsContainer = document.createElement('div');
+    targetAgentsContainer.className = 'fa-targets-input-wrap';
+    targetAgentsContainer.append(targetAgentsInput);
+
+    const targetAgentsSelect = createSelect('fa-task-targets-select', selectOptions, '');
+    targetAgentsSelect.title = '快选 Agent';
+    targetAgentsSelect.addEventListener('change', () => {
+        const val = targetAgentsSelect.value;
+        if (!val) return;
+        let current = targetAgentsInput.value.trim();
+        if (current) {
+            const agents = current.split(',').map(s => s.trim()).filter(Boolean);
+            if (!agents.includes(val)) {
+                agents.push(val);
+                targetAgentsInput.value = agents.join(', ');
+            }
+        } else {
+            targetAgentsInput.value = val;
+        }
+        targetAgentsSelect.value = '';
+    });
+    targetAgentsContainer.append(targetAgentsSelect);
+
     body.appendChild(enabledRow);
 
     const row1 = document.createElement('div');
@@ -385,7 +438,7 @@ function addTaskCard(task) {
 
     const row2 = document.createElement('div');
     row2.className = 'aa-row';
-    row2.appendChild(createInputGroup('目标 Agent', targetAgentsInput, '逗号分隔', false));
+    row2.appendChild(createInputGroup('目标 Agent', targetAgentsContainer, '可手动输入(逗号分隔)或点击 + 快选', false));
     row2.appendChild(createInputGroup('请求发送者', maidInput, '', false));
     body.appendChild(row2);
 
