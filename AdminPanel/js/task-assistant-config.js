@@ -355,6 +355,26 @@ function addTaskCard(task) {
     enableLabel.appendChild(slider);
     enabledRow.appendChild(enableLabel);
 
+    const delegationLabel = document.createElement('label');
+    delegationLabel.className = 'switch-container';
+    delegationLabel.style.marginLeft = '1rem';
+
+    const delegationText = document.createElement('span');
+    delegationText.textContent = '异步高级委托';
+
+    const delegationInput = document.createElement('input');
+    delegationInput.type = 'checkbox';
+    delegationInput.className = 'fa-task-delegation';
+    delegationInput.checked = !!task.dispatch?.taskDelegation;
+
+    const delegationSlider = document.createElement('span');
+    delegationSlider.className = 'switch-slider';
+
+    delegationLabel.appendChild(delegationText);
+    delegationLabel.appendChild(delegationInput);
+    delegationLabel.appendChild(delegationSlider);
+    enabledRow.appendChild(delegationLabel);
+
     const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：巡航任务-可可');
     const targetAgentsInput = createTextInput('fa-task-targets-input', (task.targets?.agents || []).join(', '), '多个 Agent 用英文逗号分隔');
     targetAgentsInput.setAttribute('list', 'fa-available-agents-list');
@@ -590,7 +610,7 @@ function buildFallbackTemplate(type) {
             enabled: true,
             schedule: { mode: 'manual', intervalMinutes: 60 },
             targets: { agents: [] },
-            dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统' },
+            dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
             payload: { promptTemplate: '', availablePlaceholders: [] }
         };
     }
@@ -600,7 +620,7 @@ function buildFallbackTemplate(type) {
         enabled: true,
         schedule: { mode: 'interval', intervalMinutes: 60 },
         targets: { agents: [] },
-        dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统' },
+        dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
         payload: {
             promptTemplate: '[论坛小助手:]现在是论坛时间~\n\n以下是完整的论坛帖子列表:\n{{forum_post_list}}',
             includeForumPostList: true,
@@ -635,6 +655,7 @@ function collectTasksFromDom() {
         const includeForumPostList = !!card.querySelector('.fa-task-include-forum-list')?.checked;
         const forumListPlaceholder = card.querySelector('.fa-task-forum-placeholder')?.value.trim() || '{{forum_post_list}}';
         const maxPosts = parseInt(card.querySelector('.fa-task-max-posts')?.value, 10) || 200;
+        const taskDelegation = !!card.querySelector('.fa-task-delegation')?.checked;
 
         const baseTask = {
             id: taskId.startsWith('draft_') ? undefined : taskId,
@@ -652,7 +673,8 @@ function collectTasksFromDom() {
                 injectTools,
                 maid,
                 temporaryContact: true,
-                channel: 'AgentAssistant'
+                channel: 'AgentAssistant',
+                taskDelegation
             }
         };
 

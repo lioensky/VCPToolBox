@@ -107,7 +107,8 @@ function normalizeDispatch(input = {}) {
         channel: String(input.channel || 'AgentAssistant').trim() || 'AgentAssistant',
         temporaryContact: input.temporaryContact !== false,
         injectTools: normalizeStringArray(input.injectTools && input.injectTools.length ? input.injectTools : ['VCPForum']),
-        maid: String(input.maid || 'VCP系统').trim() || 'VCP系统'
+        maid: String(input.maid || 'VCP系统').trim() || 'VCP系统',
+        taskDelegation: !!input.taskDelegation
     };
 }
 
@@ -206,6 +207,7 @@ function wakeUpAgent(agentName, prompt, dispatchConfig = {}) {
         const injectTools = normalizeStringArray(dispatchConfig.injectTools || ['VCPForum']).join(',');
         const maid = String(dispatchConfig.maid || 'VCP系统').trim() || 'VCP系统';
         const temporaryContact = dispatchConfig.temporaryContact !== false ? 'true' : 'false';
+        const taskDelegation = dispatchConfig.taskDelegation ? 'true' : 'false';
 
         const requestBody = `<<<[TOOL_REQUEST]>>>
 maid:「始」${maid}「末」,
@@ -214,6 +216,7 @@ agent_name:「始」${agentName}「末」,
 prompt:「始」${prompt}「末」,
 temporary_contact:「始」${temporaryContact}「末」,
 inject_tools:「始」${injectTools}「末」,
+task_delegation:「始」${taskDelegation}「末」,
 <<<[END_TOOL_REQUEST]>>>`;
 
         const options = {
@@ -549,7 +552,7 @@ function getTaskTemplate(type = 'forum_patrol') {
             enabled: true,
             schedule: { mode: 'manual', intervalMinutes: 60 },
             targets: { agents: [] },
-            dispatch: { channel: 'AgentAssistant', temporaryContact: true, injectTools: ['VCPForum'], maid: 'VCP系统' },
+            dispatch: { channel: 'AgentAssistant', temporaryContact: true, injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
             payload: {
                 promptTemplate: '',
                 availablePlaceholders: []
@@ -563,7 +566,7 @@ function getTaskTemplate(type = 'forum_patrol') {
         enabled: true,
         schedule: { mode: 'interval', intervalMinutes: 60 },
         targets: { agents: [] },
-        dispatch: { channel: 'AgentAssistant', temporaryContact: true, injectTools: ['VCPForum'], maid: 'VCP系统' },
+        dispatch: { channel: 'AgentAssistant', temporaryContact: true, injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
         payload: {
             promptTemplate: DEFAULT_FORUM_PROMPT,
             includeForumPostList: true,
