@@ -1,0 +1,37 @@
+{
+    "name": "ContextFoldingV2",
+    "displayName": "上下文语义折叠V2",
+    "version": "1.0.0",
+    "description": "基于向量语义相似度，对正文中远距离、低相关性的AI输出进行摘要折叠，减少Token消耗同时保留上下文连贯性。",
+    "author": "VCP",
+    "pluginType": "messagePreprocessor",
+    "entryPoint": {
+        "script": "ContextFoldingV2.js"
+    },
+    "communication": {
+        "protocol": "direct"
+    },
+    "requiresContextBridge": true,
+    "configSchema": {
+        "FOLDING_SUMMARY_MODEL": {
+            "type": "string",
+            "description": "用于生成折叠摘要的模型名称",
+            "default": "gemini-2.0-flash-lite"
+        },
+        "FOLDING_MIN_DEPTH": {
+            "type": "integer",
+            "description": "最低折叠触发深度（从最新AI回复往上数，此值之后的AI输出才可能被折叠）",
+            "default": 3
+        },
+        "FOLDING_SIMILARITY_LOW": {
+            "type": "number",
+            "description": "折叠触发的相似度下限（低于此值判定为无关）",
+            "default": 0.3
+        },
+        "FOLDING_SIMILARITY_HIGH": {
+            "type": "number",
+            "description": "折叠触发的相似度上限（动态K公式摇摆范围）",
+            "default": 0.5
+        }
+    }
+}

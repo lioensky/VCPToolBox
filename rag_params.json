@@ -1,4 +1,10 @@
 {
+  "ContextFoldingV2": {
+    "thresholdBase": 0.50,
+    "thresholdRange": [0.40, 0.60],
+    "lWeight": 0.05,
+    "sWeight": 0.05
+  },
   "RAGDiaryPlugin": {
     "noise_penalty": 0.05,
     "tagWeightRange": [0.05, 0.45],

@@ -4,6 +4,32 @@ let originalParams = null;
 
 // 参数元数据定义：包含中文名、物理意义、调优逻辑和建议区间
 const PARAM_METADATA = {
+    "ContextFoldingV2": {
+        "thresholdBase": {
+            "name": "折叠阈值基准",
+            "meaning": "上下文语义折叠V2的相似度判定基准线。相似度低于此值的远距离AI输出会被折叠为摘要。",
+            "logic": "调高（如0.60）：更激进地折叠，只有高度相关的内容才保留原文；调低（如0.40）：更保守，大部分内容保留原文。",
+            "range": "建议区间: 0.35 ~ 0.65"
+        },
+        "thresholdRange": {
+            "name": "折叠阈值动态范围",
+            "meaning": "阈值受逻辑深度(L)和语义宽度(S)调节后的上下限范围。",
+            "logic": "下限越低越保守（语义宽泛时保留更多）；上限越高越激进（逻辑聚焦时折叠更多）。",
+            "range": "建议区间: [0.30, 0.70]"
+        },
+        "lWeight": {
+            "name": "逻辑深度(L)系数",
+            "meaning": "逻辑深度对阈值的调节力度。L高表示对话逻辑聚焦，阈值会升高以更激进地折叠无关内容。",
+            "logic": "调高：L对阈值的影响更大，聚焦对话时折叠更激进；调低：L影响减弱，对话焦点变化不会显著改变折叠行为。",
+            "range": "建议区间: 0.02 ~ 0.15"
+        },
+        "sWeight": {
+            "name": "语义宽度(S)系数",
+            "meaning": "语义宽度对阈值的调节力度。S高表示对话语义宽泛，阈值会降低以保守保留更多上下文。",
+            "logic": "调高：S对阈值的影响更大，宽泛对话时折叠更保守；调低：S影响减弱，语义宽度变化不会显著改变折叠行为。",
+            "range": "建议区间: 0.02 ~ 0.15"
+        }
+    },
     "RAGDiaryPlugin": {
         "noise_penalty": {
             "name": "语义宽度惩罚",
@@ -327,14 +353,23 @@ async function handleSave(event) {
     const inputs = form.querySelectorAll('input');
     inputs.forEach(input => {
         const { group, key, subkey, index } = input.dataset;
+        // 跳过没有 data-group 的 input（如范围滑块 sub-range-slider）
+        if (!group || !key) return;
         const val = parseFloat(input.value);
+        if (isNaN(val)) return;
         
         if (subkey) {
-            newParams[group][key][subkey] = val;
+            if (newParams[group] && newParams[group][key]) {
+                newParams[group][key][subkey] = val;
+            }
         } else if (index !== undefined) {
-            newParams[group][key][parseInt(index)] = val;
+            if (newParams[group] && Array.isArray(newParams[group][key])) {
+                newParams[group][key][parseInt(index)] = val;
+            }
         } else {
-            newParams[group][key] = val;
+            if (newParams[group]) {
+                newParams[group][key] = val;
+            }
         }
     });
     
