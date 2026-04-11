@@ -1,7 +1,7 @@
 // rebuild_tagmemo_matrix.js
 // 功能：手动触发 TagMemo 共现矩阵重建 + Rust 内生残差预计算
 // 用法：node rebuild_tagmemo_matrix.js
-// 适用场景：服务器闲时离线维护，无需启动主服务
+// 适用场景：服务器闲时维护，可与主服务同时运行（SQLite WAL 安全）
 
 const path = require('path');
 const Database = require('better-sqlite3');
@@ -18,7 +18,6 @@ async function main() {
     console.log('=== 🧠 TagMemo 共现矩阵 & 内生残差 离线重建工具 ===\n');
 
     const dbPath = path.join(config.storePath, config.dbName);
-    const tagIdxPath = path.join(config.storePath, 'index_global_tags.usearch');
 
     if (!require('fs').existsSync(dbPath)) {
         console.error('❌ 数据库文件不存在:', dbPath);
@@ -28,26 +27,20 @@ async function main() {
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
 
+    // 前置信息
+    const tagCount = db.prepare('SELECT COUNT(*) as count FROM tags').get().count;
+    const fileTagCount = db.prepare('SELECT COUNT(*) as count FROM file_tags').get().count;
+    console.log(`📊 数据库概况：${tagCount} 个标签, ${fileTagCount} 条文件-标签关联\n`);
+
     // =========================================================================
-    // Step 1: 构建有向序位势能共现矩阵 (复刻 TagMemoEngine.buildDirectedCooccurrenceMatrix)
+    // Step 1: 构建有向序位势能共现矩阵
     // =========================================================================
     console.log('[Step 1/3] 🔗 构建有向共现矩阵...');
+    const step1Start = Date.now();
 
     const PHI_MAX = 0.9;
     const PHI_MIN = 0.5;
 
-    // 获取每篇日记的 Tag 数量
-    const tagCountStmt = db.prepare(`
-        SELECT file_id, COUNT(*) as tag_count
-        FROM file_tags
-        GROUP BY file_id
-    `);
-    const tagCounts = new Map();
-    for (const row of tagCountStmt.iterate()) {
-        tagCounts.set(row.file_id, row.tag_count);
-    }
-
-    // 逐文件处理有向共现
     const stmt = db.prepare(`
         SELECT file_id, tag_id, position
         FROM file_tags
@@ -122,16 +115,19 @@ async function main() {
         legacyEdges++;
     }
 
-    // 统计
     let totalEdges = 0;
     for (const targets of matrix.values()) totalEdges += targets.size;
 
-    console.log(`✅ 共现矩阵构建完成：${matrix.size} 个源节点, ${totalEdges} 条有向边, ${totalFiles} 个文件, ${legacyEdges} 条旧格式边`);
+    console.log(`✅ 共现矩阵构建完成 (${((Date.now() - step1Start) / 1000).toFixed(1)}s)`);
+    console.log(`   ${matrix.size} 个源节点, ${totalEdges} 条有向边, ${totalFiles} 个文件, ${legacyEdges} 条旧格式边`);
 
     // =========================================================================
-    // Step 2: Rust 内生残差预计算 (复刻 TagMemoEngine.recomputeIntrinsicResiduals)
+    // Step 2: Rust 内生残差预计算
+    // computeIntrinsicResiduals 直接从 SQLite 读取 tag 向量和邻接关系，
+    // 不需要 VexusIndex 中加载向量数据，只需要一个空壳实例来调用方法。
     // =========================================================================
     console.log('\n[Step 2/3] ⚡ 通过 Rust 引擎预计算内生残差...');
+    console.log('   (Rust 侧会独立读取 SQLite，对每个 tag 做邻居 SVD 分解，可能需要几十秒)');
 
     let VexusIndex;
     try {
@@ -142,29 +138,16 @@ async function main() {
         process.exit(1);
     }
 
-    // 加载或重建 Tag 索引
-    let tagIndex;
-    if (require('fs').existsSync(tagIdxPath)) {
-        try {
-            tagIndex = VexusIndex.load(tagIdxPath, null, config.dimension, 50000);
-            console.log('  📂 已从磁盘加载 Tag 索引');
-        } catch (e) {
-            console.warn('  ⚠️ 磁盘索引加载失败，从 SQLite 重建...');
-            tagIndex = new VexusIndex(config.dimension, 50000);
-            await tagIndex.recoverFromSqlite(dbPath, 'tags', null);
-        }
-    } else {
-        console.log('  📂 Tag 索引文件不存在，从 SQLite 重建...');
-        tagIndex = new VexusIndex(config.dimension, 50000);
-        await tagIndex.recoverFromSqlite(dbPath, 'tags', null);
-    }
+    // 只需要一个空壳实例来调用 computeIntrinsicResiduals
+    // 该方法内部自己打开 SQLite 连接读取数据，不依赖索引中的向量
+    const dummyIndex = new VexusIndex(config.dimension, 1);
 
-    // 调用 Rust 预计算
     try {
-        const result = await tagIndex.computeIntrinsicResiduals(dbPath);
+        const result = await dummyIndex.computeIntrinsicResiduals(dbPath);
         console.log(`✅ Rust 预计算完成：${result.computedCount} 个已计算, ${result.skippedCount} 个跳过, 耗时 ${result.elapsedMs.toFixed(1)}ms`);
     } catch (e) {
         console.error('❌ Rust 预计算失败:', e.message);
+        if (e.stack) console.error(e.stack);
     }
 
     // =========================================================================
@@ -172,17 +155,12 @@ async function main() {
     // =========================================================================
     console.log('\n[Step 3/3] 📊 验证结果...');
 
-    const tagCount = db.prepare('SELECT COUNT(*) as count FROM tags').get().count;
     const residualCount = db.prepare('SELECT COUNT(*) as count FROM tag_intrinsic_residuals').get().count;
-    const fileTagCount = db.prepare('SELECT COUNT(*) as count FROM file_tags').get().count;
-
     const avgResidual = db.prepare('SELECT AVG(residual_energy) as avg FROM tag_intrinsic_residuals').get().avg;
     const minResidual = db.prepare('SELECT MIN(residual_energy) as min FROM tag_intrinsic_residuals').get().min;
     const maxResidual = db.prepare('SELECT MAX(residual_energy) as max FROM tag_intrinsic_residuals').get().max;
 
-    console.log(`  标签总数:        ${tagCount}`);
-    console.log(`  文件-标签关联:   ${fileTagCount}`);
-    console.log(`  残差记录数:      ${residualCount} / ${tagCount} (${(residualCount / tagCount * 100).toFixed(1)}%)`);
+    console.log(`  残差记录数:      ${residualCount} / ${tagCount} (${(residualCount / tagCount * 100).toFixed(1)}% 覆盖)`);
     if (avgResidual !== null) {
         console.log(`  残差能量分布:    min=${minResidual.toFixed(3)}, avg=${avgResidual.toFixed(3)}, max=${maxResidual.toFixed(3)}`);
     }
@@ -191,7 +169,7 @@ async function main() {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`\n✨ 全部完成！总耗时 ${elapsed}s`);
-    console.log('💡 提示：重启主服务后，TagMemoEngine 会自动加载最新的残差数据。');
+    console.log('💡 主服务运行中会在下次 loadIntrinsicResiduals() 时自动读取新数据，或重启立即生效。');
 }
 
 main().catch(e => {
