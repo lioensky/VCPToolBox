@@ -477,11 +477,26 @@ class ContextFoldingV2 {
         }
 
         // 检测拒绝关键词（防止模型拒答被当作摘要）
+        // 策略：外部文本用 includes 严格检测，内部摘要仅用 startsWith 防止误伤合法内容
         const rejectKeywords = ['error', '无法', '抱歉', '对不起', 'sorry', 'cannot', 'unable'];
+
+        // 1) 检测摘要标记外部的文本（模型可能在格式标记外输出拒绝话语）
+        const outsideText = rawOutput.replace(match[0], '').trim().toLowerCase();
+        if (outsideText.length > 0) {
+            for (const keyword of rejectKeywords) {
+                if (outsideText.includes(keyword)) {
+                    console.warn(`[ContextFoldingV2] 验证失败[内容]: 摘要外部检测到拒绝关键词 "${keyword}"`);
+                    return null;
+                }
+            }
+        }
+
+        // 2) 检测摘要内部是否以拒绝关键词开头（纯拒答被包裹在格式标记中的情况）
+        //    仅 startsWith，避免误伤 "讨论了error处理"、"分析了无法连接的原因" 等合法摘要
         const lowerContent = summaryContent.toLowerCase();
         for (const keyword of rejectKeywords) {
-            if (lowerContent.includes(keyword)) {
-                console.warn(`[ContextFoldingV2] 验证失败[内容]: 检测到拒绝关键词 "${keyword}"`);
+            if (lowerContent.startsWith(keyword)) {
+                console.warn(`[ContextFoldingV2] 验证失败[内容]: 摘要以拒绝关键词开头 "${keyword}"`);
                 return null;
             }
         }
