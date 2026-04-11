@@ -471,7 +471,7 @@ class ContextFoldingV2 {
             console.warn('[ContextFoldingV2] 验证失败[内容]: 摘要过短');
             return null;
         }
-        if (summaryContent.length > 200) {
+        if (summaryContent.length > 1000) {
             console.warn(`[ContextFoldingV2] 验证失败[内容]: 摘要过长 (${summaryContent.length}字)`);
             return null;
         }
