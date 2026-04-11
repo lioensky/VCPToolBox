@@ -32,7 +32,8 @@ class ContextFoldingV2 {
             thresholdBase: 0.50,
             thresholdRange: [0.40, 0.60],
             lWeight: 0.05,
-            sWeight: 0.05
+            sWeight: 0.05,
+            contextWeights: [0.7, 0.3] // user : assistant 加权比例，与 RAGDiaryPlugin.mainSearchWeights 对齐
         };
         this._ragParamsWatcher = null;
 
@@ -324,10 +325,11 @@ class ContextFoldingV2 {
             sanitizedAi ? bridge.embedText(sanitizedAi) : null
         ]);
 
-        // 加权平均（user 0.7, AI 0.3）
+        // 加权平均（默认 user 0.7, AI 0.3，可通过 rag_params.json 的 ContextFoldingV2.contextWeights 调整）
+        const weights = this.hotParams.contextWeights || [0.7, 0.3];
         return bridge.weightedAverage(
             [userVec, aiVec].filter(Boolean),
-            userVec && aiVec ? [0.7, 0.3] : [1.0]
+            userVec && aiVec ? weights : [1.0]
         );
     }
 
