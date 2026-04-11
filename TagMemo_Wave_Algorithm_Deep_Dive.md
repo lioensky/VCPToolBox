@@ -228,33 +228,7 @@ KNN 搜索 → TagBoost 向量增强 → [V8] 测地线重排 → TimeDecay → 
 ```
 测地线重排位于 Rerank 之前，候选池不被截断，确保交叉编码器精排拥有完整的候选空间。
 
-## 11. V8.1 修正：Per-Chunk 真实标签归属
-V8.1 修正了一个自 V4 以来存在的 VCP Info 发包设计缺陷。
-
-### 11.1 问题
-`_searchSpecificIndex()` 和 `_searchAllIndices()` 的 hydration 步骤中，每条搜索结果被赋予的 `matchedTags` 来自 `applyTagBoost()` 返回的**查询级** `tagInfo.matchedTags`（48-77 个标签）——这是查询向量在浪潮引擎中激活的**所有**概念，而非该 chunk 自身的标签。
-
-这导致：
-- 所有结果的 `matchedTags` 完全相同
-- `uniqueMatchedTags` 永远等于 `matchedTags`（信息完全冗余）
-- 前端高亮时满屏都亮，无法区分哪条记忆与哪些标签真正相关
-
-### 11.2 修正方案
-将 hydration 中的标签来源从"查询级 tagInfo 覆盖"改为"per-chunk 真实标签查询"：
-1. Hydrate 时保留 `file_id`
-2. 批量 `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (...)`
-3. 每条结果的 `matchedTags` = 该 chunk 所属日记文件的 `Tag:` 行中实际写入的标签
-
-### 11.3 数据语义变化
-| 字段 | V4-V7 | V8.1+ |
-|:--|:--|:--|
-| 每条结果的 `matchedTags` | 查询激活的全部概念（48-77个，所有结果相同） | 该日记条目的真实标签（5-10个，各条不同） |
-| `uniqueMatchedTags` | = matchedTags（冗余） | 所有结果的去重并集（有信息量） |
-| 顶层 `coreTags` | 查询感应标签（不变） | 查询感应标签（不变） |
-
-查询级的"浪潮激活图"保留在 VCP Info 的顶层 `coreTags` 字段中，前端如需显示"浪潮引擎认为哪些概念被激活"，应使用该字段。
-
-## 12. 总结
+## 11. 总结
 从 V4 的线性检索，到 V6 的无向扩散，V7 的有向势能与虫洞路由，再到 V8 的测地线重排与 V8.1 的标签归属修正，TagMemo 算法不断逼近人类大脑的认知与联想本质。
 
 V8 证明了一个工程哲学：**最好的优化不是引入新计算，而是发现已有计算中被丢弃的宝藏**。Spike Propagation 的距离场本就是一张完整的"语义等高线图"，V8 只是教会系统在检索结束后回头看一眼这张图。
