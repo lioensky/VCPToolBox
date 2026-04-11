@@ -767,7 +767,7 @@ class PluginManager extends EventEmitter {
         // --- 透明化处理结束 ---
 
         // --- 人工审核逻辑 (新增) ---
-        if (this.toolApprovalManager.shouldApprove(toolName)) {
+        if (this.toolApprovalManager.shouldApprove(toolName, pluginSpecificArgs)) {
             const requestId = `approve-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
             if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" requires manual approval. Request ID: ${requestId}`);
 

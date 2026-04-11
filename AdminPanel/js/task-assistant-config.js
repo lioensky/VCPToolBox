@@ -4,8 +4,8 @@ const API_BASE = '/admin_api';
 let listenersAttached = false;
 let cachedConfig = null;
 
-export async function initializeForumAssistantConfig() {
-    const section = document.getElementById('forum-assistant-config-section');
+export async function initializeTaskAssistantConfig() {
+    const section = document.getElementById('task-assistant-config-section');
     if (!section) return;
 
     if (!listenersAttached) {
@@ -57,13 +57,37 @@ async function loadConfig() {
     }
 
     try {
-        const data = await apiFetch(`${API_BASE}/forum-assistant/config`);
+        const data = await apiFetch(`${API_BASE}/task-assistant/config`);
         cachedConfig = data;
         const config = data.config || { globalEnabled: false, tasks: [] };
 
         if (globalSwitch) {
             globalSwitch.checked = !!config.globalEnabled;
         }
+
+        // --- 获取可用 Agent 列表以供建议 ---
+        try {
+            const agentData = await apiFetch(`${API_BASE}/agent-assistant/config`);
+            const datalist = document.getElementById('fa-available-agents-list');
+            if (agentData && Array.isArray(agentData.agents)) {
+                if (datalist) {
+                    datalist.innerHTML = '';
+                    agentData.agents.forEach(agent => {
+                        if (agent.chineseName) {
+                            const option = document.createElement('option');
+                            option.value = agent.chineseName;
+                            datalist.appendChild(option);
+                        }
+                    });
+                }
+                // 更新缓存在全局，以便 addTaskCard 获取
+                cachedConfig = cachedConfig || {};
+                cachedConfig.availableAgents = agentData.agents;
+            }
+        } catch (agentErr) {
+            console.warn('[TaskAssistant] Failed to fetch agent list for suggestions:', agentErr);
+        }
+        // ---------------------------------
 
         if (Array.isArray(config.tasks) && config.tasks.length > 0) {
             config.tasks.forEach(task => addTaskCard(task));
@@ -116,7 +140,7 @@ async function loadStatus() {
     if (!statusContainer) return;
 
     try {
-        const data = await apiFetch(`${API_BASE}/forum-assistant/status`);
+        const data = await apiFetch(`${API_BASE}/task-assistant/status`);
         let html = `<span class="fa-status-badge ${data.globalEnabled ? 'active' : 'inactive'}">${data.globalEnabled ? '运行中' : '已停止'}</span>`;
         html += ` | 活跃定时器: <strong>${data.activeTimerCount || 0}</strong>`;
         html += ` | 任务总数: <strong>${Array.isArray(data.tasks) ? data.tasks.length : 0}</strong>`;
@@ -217,6 +241,11 @@ function addTaskCard(task) {
     const container = document.getElementById('fa-task-cards-container');
     if (!container) return;
 
+    // 获取当前可用 Agent 以填充快选列表
+    const availableAgentOptions = (cachedConfig?.availableAgents || [])
+        .map(a => ({ value: a.chineseName, label: a.chineseName }));
+    const selectOptions = [{ value: '', label: '+' }, ...availableAgentOptions];
+
     const placeholder = container.querySelector('.fa-placeholder');
     if (placeholder) placeholder.remove();
 
@@ -256,7 +285,7 @@ function addTaskCard(task) {
         triggerBtn.disabled = true;
         triggerBtn.textContent = '发送中...';
         try {
-            await apiFetch(`${API_BASE}/forum-assistant/trigger`, {
+            await apiFetch(`${API_BASE}/task-assistant/trigger`, {
                 method: 'POST',
                 body: JSON.stringify({ taskId: task.id })
             });
@@ -299,6 +328,7 @@ function addTaskCard(task) {
 
     const scheduleSelect = createSelect('fa-task-schedule-mode', [
         { value: 'interval', label: '循环任务' },
+        { value: 'cron', label: 'CRON 定时' },
         { value: 'manual', label: '仅手动触发' },
         { value: 'once', label: '一次性任务' }
     ], task.schedule?.mode || 'interval');
@@ -325,9 +355,31 @@ function addTaskCard(task) {
     enableLabel.appendChild(slider);
     enabledRow.appendChild(enableLabel);
 
-    const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：论坛巡航-可可');
+    const delegationLabel = document.createElement('label');
+    delegationLabel.className = 'switch-container';
+    delegationLabel.style.marginLeft = '1rem';
+
+    const delegationText = document.createElement('span');
+    delegationText.textContent = '异步高级委托';
+
+    const delegationInput = document.createElement('input');
+    delegationInput.type = 'checkbox';
+    delegationInput.className = 'fa-task-delegation';
+    delegationInput.checked = !!task.dispatch?.taskDelegation;
+
+    const delegationSlider = document.createElement('span');
+    delegationSlider.className = 'switch-slider';
+
+    delegationLabel.appendChild(delegationText);
+    delegationLabel.appendChild(delegationInput);
+    delegationLabel.appendChild(delegationSlider);
+    enabledRow.appendChild(delegationLabel);
+
+    const taskNameInput = createTextInput('fa-task-name-input', task.name || '', '例如：巡航任务-可可');
     const targetAgentsInput = createTextInput('fa-task-targets-input', (task.targets?.agents || []).join(', '), '多个 Agent 用英文逗号分隔');
+    targetAgentsInput.setAttribute('list', 'fa-available-agents-list');
     const intervalInput = createNumberInput('fa-task-interval', task.schedule?.intervalMinutes || 60, '10');
+    const cronInput = createTextInput('fa-task-cron', task.schedule?.cronValue || '', '例如：0 0 * * * (每日凌晨)');
 
     const runAtInput = document.createElement('input');
     runAtInput.type = 'datetime-local';
@@ -373,6 +425,89 @@ function addTaskCard(task) {
     forumPayloadWrap.appendChild(createInputGroup('论坛列表占位符', forumPlaceholderInput, '提示词中出现该占位符时，会自动替换为论坛帖子列表。'));
     forumPayloadWrap.appendChild(createInputGroup('最大读取帖子数', maxPostsInput, '用于控制注入到提示词中的帖子条目数量。'));
 
+    const targetAgentsContainer = document.createElement('div');
+    targetAgentsContainer.className = 'fa-targets-input-wrap';
+    targetAgentsContainer.append(targetAgentsInput);
+
+    const targetAgentsSelect = createSelect('fa-task-targets-select', selectOptions, '');
+    targetAgentsSelect.title = '快选 Agent';
+    targetAgentsSelect.addEventListener('change', () => {
+        const val = targetAgentsSelect.value;
+        if (!val) return;
+        let current = targetAgentsInput.value.trim();
+        if (current) {
+            const agents = current.split(',').map(s => s.trim()).filter(Boolean);
+            if (!agents.includes(val)) {
+                agents.push(val);
+                targetAgentsInput.value = agents.join(', ');
+            }
+        } else {
+            targetAgentsInput.value = val;
+        }
+        targetAgentsSelect.value = '';
+    });
+    targetAgentsContainer.append(targetAgentsSelect);
+
+    // --- 随机选取逻辑 (动态生成) ---
+    const randomSelect = createSelect('fa-task-random-select', [], '');
+    randomSelect.title = '设置随机执行人数';
+    randomSelect.style.marginLeft = '0.5rem';
+    randomSelect.style.width = 'auto';
+
+    function updateRandomSelectOptions() {
+        const text = targetAgentsInput.value || '';
+        const parts = text.split(',').map(s => s.trim()).filter(Boolean);
+        const candidates = parts.filter(p => !/^random(\d+)$/i.test(p));
+        const currentTag = parts.find(p => /^random(\d+)$/i.test(p)) || '';
+        
+        const count = candidates.length;
+        const previousVal = randomSelect.value || currentTag;
+
+        randomSelect.innerHTML = '';
+        const noneOpt = document.createElement('option');
+        noneOpt.value = '';
+        noneOpt.textContent = '不进行随机';
+        randomSelect.appendChild(noneOpt);
+
+        // 动态生成 1 到 N 的选项 (上限 30)
+        for (let i = 1; i <= Math.min(count, 30); i++) {
+            const opt = document.createElement('option');
+            opt.value = `random${i}`;
+            opt.textContent = `随机 ${i} 人`;
+            randomSelect.appendChild(opt);
+        }
+
+        // 恢复选中状态
+        if (currentTag && [...randomSelect.options].some(o => o.value === currentTag)) {
+            randomSelect.value = currentTag;
+        } else {
+            randomSelect.value = '';
+        }
+    }
+
+    randomSelect.addEventListener('change', () => {
+        let current = targetAgentsInput.value.trim();
+        let agents = current.split(',').map(s => s.trim()).filter(Boolean);
+        agents = agents.filter(a => !/^random(\d+)$/i.test(a));
+        if (randomSelect.value) {
+            agents.push(randomSelect.value);
+        }
+        targetAgentsInput.value = agents.join(', ');
+    });
+
+    // 监听输入框变化，实时更新下拉框选项
+    targetAgentsInput.addEventListener('input', updateRandomSelectOptions);
+    
+    // 初始化
+    updateRandomSelectOptions();
+    
+    targetAgentsContainer.append(randomSelect);
+
+    // 修改之前的快捷选择逻辑，增加同步调用
+    const originalSelectAdd = targetAgentsSelect.onchange; // 不好拿，直接在事件里加
+    targetAgentsSelect.addEventListener('change', updateRandomSelectOptions);
+    // ------------------
+
     body.appendChild(enabledRow);
 
     const row1 = document.createElement('div');
@@ -383,16 +518,17 @@ function addTaskCard(task) {
 
     const row2 = document.createElement('div');
     row2.className = 'aa-row';
-    row2.appendChild(createInputGroup('目标 Agent', targetAgentsInput, '逗号分隔', false));
+    row2.appendChild(createInputGroup('目标 Agent', targetAgentsContainer, '可手动输入(逗号分隔)或点击 + 快选', false));
     row2.appendChild(createInputGroup('请求发送者', maidInput, '', false));
     body.appendChild(row2);
 
     const row3 = document.createElement('div');
     row3.className = 'aa-row';
     row3.appendChild(createInputGroup('调度方式', scheduleSelect, '', false));
-    row3.appendChild(createInputGroup('循环间隔(分)', intervalInput, '最小10', false));
+    row3.appendChild(createInputGroup('循环间隔(分)', intervalInput, '仅循环任务生效', false));
     body.appendChild(row3);
 
+    body.appendChild(createInputGroup('CRON 表达式', cronInput, '支持标准 CRON 语法，仅 CRON 定时模式生效'));
     body.appendChild(createInputGroup('一次性执行时间', runAtInput, '仅一次性任务生效'));
     body.appendChild(createInputGroup('注入工具', injectToolsInput, '多个工具使用英文逗号分隔'));
     body.appendChild(createInputGroup('提示词模板', promptTextarea, '这里是核心编辑区，用户可自由编辑任务提示词。'));
@@ -419,8 +555,14 @@ function addTaskCard(task) {
 
     function syncScheduleVisibility() {
         const mode = scheduleSelect.value;
-        intervalInput.disabled = mode !== 'interval';
-        runAtInput.disabled = mode !== 'once';
+        intervalInput.disabled = (mode !== 'interval');
+        runAtInput.disabled = (mode !== 'once');
+        cronInput.disabled = (mode !== 'cron');
+
+        // 可选：动态调整父级容器显示
+        intervalInput.closest('.aa-field-group').style.opacity = (mode === 'interval' ? '1' : '0.5');
+        runAtInput.closest('.aa-field-group').style.opacity = (mode === 'once' ? '1' : '0.5');
+        cronInput.closest('.aa-field-group').style.opacity = (mode === 'cron' ? '1' : '0.5');
     }
 
     typeSelect.addEventListener('change', syncTypeVisibility);
@@ -468,7 +610,7 @@ function buildFallbackTemplate(type) {
             enabled: true,
             schedule: { mode: 'manual', intervalMinutes: 60 },
             targets: { agents: [] },
-            dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统' },
+            dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
             payload: { promptTemplate: '', availablePlaceholders: [] }
         };
     }
@@ -478,7 +620,7 @@ function buildFallbackTemplate(type) {
         enabled: true,
         schedule: { mode: 'interval', intervalMinutes: 60 },
         targets: { agents: [] },
-        dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统' },
+        dispatch: { injectTools: ['VCPForum'], maid: 'VCP系统', taskDelegation: false },
         payload: {
             promptTemplate: '[论坛小助手:]现在是论坛时间~\n\n以下是完整的论坛帖子列表:\n{{forum_post_list}}',
             includeForumPostList: true,
@@ -499,6 +641,7 @@ function collectTasksFromDom() {
         const scheduleMode = card.querySelector('.fa-task-schedule-mode')?.value || 'interval';
         const intervalMinutes = parseInt(card.querySelector('.fa-task-interval')?.value, 10) || 60;
         const runAtValue = card.querySelector('.fa-task-run-at')?.value || '';
+        const cronValue = card.querySelector('.fa-task-cron')?.value.trim() || '';
         const targets = (card.querySelector('.fa-task-targets-input')?.value || '')
             .split(',')
             .map(item => item.trim())
@@ -512,6 +655,7 @@ function collectTasksFromDom() {
         const includeForumPostList = !!card.querySelector('.fa-task-include-forum-list')?.checked;
         const forumListPlaceholder = card.querySelector('.fa-task-forum-placeholder')?.value.trim() || '{{forum_post_list}}';
         const maxPosts = parseInt(card.querySelector('.fa-task-max-posts')?.value, 10) || 200;
+        const taskDelegation = !!card.querySelector('.fa-task-delegation')?.checked;
 
         const baseTask = {
             id: taskId.startsWith('draft_') ? undefined : taskId,
@@ -521,14 +665,16 @@ function collectTasksFromDom() {
             schedule: {
                 mode: scheduleMode,
                 intervalMinutes,
-                runAt: scheduleMode === 'once' && runAtValue ? new Date(runAtValue).toISOString() : null
+                runAt: scheduleMode === 'once' && runAtValue ? new Date(runAtValue).toISOString() : null,
+                cronValue: scheduleMode === 'cron' ? cronValue : null
             },
             targets: { agents: targets },
             dispatch: {
                 injectTools,
                 maid,
                 temporaryContact: true,
-                channel: 'AgentAssistant'
+                channel: 'AgentAssistant',
+                taskDelegation
             }
         };
 
@@ -564,7 +710,7 @@ async function saveConfig() {
     }
 
     try {
-        await apiFetch(`${API_BASE}/forum-assistant/config`, {
+        await apiFetch(`${API_BASE}/task-assistant/config`, {
             method: 'POST',
             body: JSON.stringify({
                 globalEnabled,

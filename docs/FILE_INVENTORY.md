@@ -202,11 +202,11 @@
 
 | 插件目录 | 类型 | 职责 | 主要文件 |
 |---------|------|------|---------|
-| `AgentAssistant` | service | Agent通讯服务器 | AgentAssistant.js |
+| `AgentAssistant` | service | Agent通讯服务器 | AgentAssistant.js, config.json |
 | `AgentMessage` | synchronous | Agent消息推送 | AgentMessage.js |
 | `MagiAgent` | service | Magi三贤者系统 | - |
 | `VCPForum` | service | VCP论坛服务 | - |
-| `VCPForumAssistant` | static | 论坛小助手 | - |
+| `VCPTaskAssistant` | static | 论坛小助手 | - |
 
 ### 4.7 系统监控与Shell类 (5个)
 
@@ -306,7 +306,7 @@
 Plugin/FluxGen/config.env.example
 Plugin/ComfyUIGen/config.env.example
 Plugin/VideoGenerator/config.env.example
-Plugin/AgentAssistant/config.env.example
+Plugin/AgentAssistant/config.json
 Plugin/LinuxShellExecutor/config.env
 Plugin/PowerShellExecutor/config.env
 Plugin/FileOperator/config.env
