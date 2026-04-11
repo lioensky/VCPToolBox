@@ -256,7 +256,8 @@ class AgentManager {
      * 获取所有Agent文件和文件夹结构
      * @returns {Object} 包含文件列表和文件夹结构的对象
      */
-    getAllAgentFiles() {
+    async getAllAgentFiles() {
+        await this.scanAgentFiles();
         return {
             files: this.agentFiles,
             folderStructure: this.folderStructure
