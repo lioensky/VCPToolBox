@@ -2271,10 +2271,22 @@ class RAGDiaryPlugin {
         const timeDecayMatch = modifiers.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?(?:\/([\w,]+))?/);
         const useTimeDecay = !!timeDecayMatch;
 
-        // ✅ 新增：解析TagMemo修饰符和权重
-        const tagMemoMatch = modifiers.match(/::TagMemo([\d.]+)/);
-        // ✅ 改进：如果 modifiers 中没有指定权重，则使用动态计算的权重
-        let tagWeight = tagMemoMatch ? parseFloat(tagMemoMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
+        // 🌟 V8: 解析 TagMemo/TagMemo+ 修饰符
+        // ::TagMemo+  → 激活 TagMemo + 测地线重排（动态权重）
+        // ::TagMemo+0.3 → 激活 TagMemo(权重0.3) + 测地线重排
+        // ::TagMemo0.3 → 激活 TagMemo(权重0.3)，无测地线
+        // ::TagMemo → 激活 TagMemo（动态权重），无测地线
+        const useGeodesicRerank = /::TagMemo\+/.test(modifiers);
+        const tagMemoWeightMatch = modifiers.match(/::TagMemo\+?([\d.]+)/);
+        let tagWeight = tagMemoWeightMatch ? parseFloat(tagMemoWeightMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
+
+        // 🌟 V8: 构建 geodesicRerank 选项（传递给 search 的第 7 参数）
+        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        const geoOptions = useGeodesicRerank ? {
+            geodesicRerank: true,
+            geoAlpha: geoConfig.alpha ?? 0.3,
+            minGeoSamples: geoConfig.minGeoSamples ?? 4
+        } : undefined;
 
         // 🌟 解析 Truncate 阈值
         const truncateThreshold = this._extractTruncateThreshold(modifiers);
@@ -2367,7 +2379,7 @@ class RAGDiaryPlugin {
 
             // 1. 语义路召回 (多取一些用于后续衰减/重排)
             const searchK = useRerank ? Math.max(kSemantic * 2, 20) : kSemantic + 10;
-            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch);
+            let ragResults = await this.vectorDBManager.search(dbName, finalQueryVector, searchK + dedupBuffer, tagWeight, coreTagsForSearch, undefined, geoOptions);
             ragResults = this._filterContextDuplicates(ragResults, contextDiaryPrefixes);
             ragResults = ragResults.map(r => ({ ...r, source: 'rag' }));
 
@@ -2420,7 +2432,7 @@ class RAGDiaryPlugin {
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
                     const k = qv.type === 'current' ? kForSearch : Math.max(2, Math.round(kForSearch / 2));
-                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch);
+                    let results = await this.vectorDBManager.search(dbName, qv.vector, k, tagWeight, coreTagsForSearch, undefined, geoOptions);
                     if (qv.weight !== 1.0) {
                         results = results.map(r => ({ ...r, score: r.score * qv.weight, original_score: r.score }));
                     }
@@ -2548,6 +2560,8 @@ class RAGDiaryPlugin {
                     useRerank: useRerank,
                     useRerankPlus: useRerankPlus, // 🌟 Rerank+ (RRF) 模式标识
                     rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
+                    useGeodesicRerank: useGeodesicRerank, // 🌟 V8: 测地线重排标识
+                    geoAlpha: geoOptions?.geoAlpha, // 🌟 V8: 测地线混合权重
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
                     coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察

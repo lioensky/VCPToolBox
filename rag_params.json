@@ -19,6 +19,10 @@
     "metaThinkingWeights": [0.8, 0.2]
   },
   "KnowledgeBaseManager": {
+    "geodesicRerank": {
+      "alpha": 0.5,
+      "minGeoSamples": 4
+    },
     "spikeRouting": {
       "maxSafeHops": 4,
       "baseMomentum": 2.0,

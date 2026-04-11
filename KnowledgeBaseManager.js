@@ -312,7 +312,7 @@ class KnowledgeBaseManager {
     // 核心搜索接口 (修复版)
     // =========================================================================
 
-    async search(arg1, arg2, arg3, arg4, arg5, arg6) {
+    async search(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
         try {
             let diaryName = null;
             let queryVec = null;
@@ -320,6 +320,7 @@ class KnowledgeBaseManager {
             let tagBoost = 0;
             let coreTags = [];
             let coreBoostFactor = 1.33; // 默认 33% 提升
+            let options = null; // 🌟 V8: 扩展选项（geodesicRerank 等）
 
             if (typeof arg1 === 'string' && Array.isArray(arg2)) {
                 diaryName = arg1;
@@ -327,7 +328,13 @@ class KnowledgeBaseManager {
                 k = arg3 || 5;
                 tagBoost = arg4 || 0;
                 coreTags = arg5 || [];
-                coreBoostFactor = arg6 || 1.33;
+                // 🌟 V8: arg6 可以是 coreBoostFactor (number) 或 options (object)
+                if (typeof arg6 === 'object' && arg6 !== null && !Array.isArray(arg6)) {
+                    options = arg6;
+                } else {
+                    coreBoostFactor = arg6 || 1.33;
+                    options = (typeof arg7 === 'object' && arg7 !== null) ? arg7 : null;
+                }
             } else if (typeof arg1 === 'string') {
                 // 纯文本搜索暂略，通常插件会先向量化
                 return [];
@@ -340,9 +347,9 @@ class KnowledgeBaseManager {
             if (!queryVec) return [];
 
             if (diaryName) {
-                return await this._searchSpecificIndex(diaryName, queryVec, k, tagBoost, coreTags, coreBoostFactor);
+                return await this._searchSpecificIndex(diaryName, queryVec, k, tagBoost, coreTags, coreBoostFactor, options);
             } else {
-                return await this._searchAllIndices(queryVec, k, tagBoost, coreTags, coreBoostFactor);
+                return await this._searchAllIndices(queryVec, k, tagBoost, coreTags, coreBoostFactor, options);
             }
         } catch (e) {
             console.error('[KnowledgeBase] Search Error:', e);
@@ -350,7 +357,7 @@ class KnowledgeBaseManager {
         }
     }
 
-    async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
+    async _searchSpecificIndex(diaryName, vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33, options = null) {
         const idx = await this._getOrLoadDiaryIndex(diaryName);
 
         // 如果索引为空，直接返回
@@ -393,39 +400,100 @@ class KnowledgeBaseManager {
             return [];
         }
 
+        // 🌟 V8: 测地线重排（只重排，不截断）— 在 hydrate 之前执行
+        if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+            results = this.tagMemoEngine.geodesicRerank(results, {
+                alpha: options.geoAlpha,
+                minGeoSamples: options.minGeoSamples
+            });
+        }
+
         // Hydrate results
         const hydrate = this.db.prepare(`
-            SELECT c.content as text, f.path as sourceFile, f.updated_at
+            SELECT c.content as text, f.path as sourceFile, f.updated_at, f.id as file_id
             FROM chunks c
             JOIN files f ON c.file_id = f.id
             WHERE c.id = ?
         `);
 
-        return results.map(res => {
-            // 🛠️ 修复：res.id 现在是 BigInt (i64)，需要转换为 Number 以匹配 SQLite 查询
+        // 🛠️ V8.1 修复：per-chunk 标签关联（替代全局 tagInfo 覆盖）
+        const hydratedResults = [];
+        const fileIdsForTagLookup = new Map(); // chunkId → file_id
+
+        for (const res of results) {
             const chunkId = Number(res.id);
             const row = hydrate.get(chunkId);
             if (!row) {
-                // 🛡️ BUG 1 修复：发现幽灵索引（数据库无记录但索引有），异步清理
                 console.warn(`[KnowledgeBase] 👻 Ghost Index detected for ID ${chunkId} in "${diaryName}". Cleaning up...`);
                 if (idx.remove) idx.remove(res.id);
-                return null;
+                continue;
             }
-            return {
+            fileIdsForTagLookup.set(chunkId, row.file_id);
+            hydratedResults.push({
+                _chunkId: chunkId,
+                _fileId: row.file_id,
                 text: row.text,
-                score: res.score, // 确保 Vexus 返回的是 score (或 distance，需自行反转)
+                score: res.score,
+                original_knn_score: res.original_knn_score,
+                geo_score: res.geo_score,
+                normalized_geo: res.normalized_geo,
+                geo_hit_count: res.geo_hit_count,
                 sourceFile: path.basename(row.sourceFile),
                 fullPath: row.sourceFile,
-                matchedTags: tagInfo ? tagInfo.matchedTags : [],
+                // 🌟 V8.1: 查询级元数据保持不变
                 boostFactor: tagInfo ? tagInfo.boostFactor : 0,
-                tagMatchScore: tagInfo ? tagInfo.totalSpikeScore : 0, // ✅ 新增
-                tagMatchCount: tagInfo ? tagInfo.matchedTags.length : 0, // ✅ 新增
-                coreTagsMatched: tagInfo ? tagInfo.coreTagsMatched : [] // 🌟 新增：标记哪些核心 Tag 命中了
-            };
-        }).filter(Boolean);
+                tagMatchScore: tagInfo ? tagInfo.totalSpikeScore : 0,
+            });
+        }
+
+        // 🌟 V8.1: 批量查询 per-chunk 真实标签
+        if (hydratedResults.length > 0 && tagInfo) {
+            const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
+            if (uniqueFileIds.length > 0) {
+                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
+                const fileTagRows = this.db.prepare(
+                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
+                ).all(...uniqueFileIds);
+
+                // 构建 file_id → [tagName, ...] 映射
+                const fileTagNameMap = new Map();
+                for (const row of fileTagRows) {
+                    if (!fileTagNameMap.has(row.file_id)) fileTagNameMap.set(row.file_id, []);
+                    fileTagNameMap.get(row.file_id).push(row.name);
+                }
+
+                // 将查询级 coreTags 转为 Set（用于交叉匹配）
+                const queryCoreTags = new Set((tagInfo.coreTagsMatched || []).map(t => t.toLowerCase()));
+                const queryAllTags = new Set((tagInfo.matchedTags || []).map(t => t.toLowerCase()));
+
+                for (const r of hydratedResults) {
+                    const chunkRealTags = fileTagNameMap.get(r._fileId) || [];
+                    // 🌟 V8.1: per-chunk matchedTags = 该 chunk 文件的全部真实标签
+                    r.matchedTags = chunkRealTags;
+                    r.tagMatchCount = chunkRealTags.length;
+                    // per-chunk coreTagsMatched = 该 chunk 的标签 ∩ 查询的核心标签
+                    r.coreTagsMatched = chunkRealTags.filter(t => queryCoreTags.has(t.toLowerCase()));
+                }
+            }
+        } else {
+            // 无 TagMemo 模式：标签字段为空
+            for (const r of hydratedResults) {
+                r.matchedTags = [];
+                r.tagMatchCount = 0;
+                r.coreTagsMatched = [];
+            }
+        }
+
+        // 清理内部字段
+        for (const r of hydratedResults) {
+            delete r._chunkId;
+            delete r._fileId;
+        }
+
+        return hydratedResults;
     }
 
-    async _searchAllIndices(vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
+    async _searchAllIndices(vector, k, tagBoost, coreTags = [], coreBoostFactor = 1.33, options = null) {
         // 优化2：使用 Promise.all 并行搜索
         let searchVecFloat;
         let tagInfo = null;
@@ -457,27 +525,73 @@ class KnowledgeBaseManager {
 
         allResults.sort((a, b) => b.score - a.score);
 
+        // 🌟 V8: 测地线重排（只重排，不截断）— 对合并后的全局结果执行
+        if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+            allResults = this.tagMemoEngine.geodesicRerank(allResults, {
+                alpha: options.geoAlpha,
+                minGeoSamples: options.minGeoSamples
+            });
+        }
+
         const topK = allResults.slice(0, k);
 
         const hydrate = this.db.prepare(`
-            SELECT c.content as text, f.path as sourceFile
+            SELECT c.content as text, f.path as sourceFile, f.id as file_id
             FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.id = ?
         `);
 
-        return topK.map(res => {
+        // 🛠️ V8.1 修复：per-chunk 标签关联（与 _searchSpecificIndex 对称）
+        const hydratedResults = [];
+        for (const res of topK) {
             const chunkId = Number(res.id);
             const row = hydrate.get(chunkId);
-            return row ? {
+            if (!row) continue;
+            hydratedResults.push({
+                _fileId: row.file_id,
                 text: row.text,
                 score: res.score,
                 sourceFile: path.basename(row.sourceFile),
-                matchedTags: tagInfo ? tagInfo.matchedTags : [],
                 boostFactor: tagInfo ? tagInfo.boostFactor : 0,
                 tagMatchScore: tagInfo ? tagInfo.totalSpikeScore : 0,
-                tagMatchCount: tagInfo ? tagInfo.matchedTags.length : 0,
-                coreTagsMatched: tagInfo ? tagInfo.coreTagsMatched : []
-            } : null;
-        }).filter(Boolean);
+            });
+        }
+
+        // 🌟 V8.1: 批量查询 per-chunk 真实标签
+        if (hydratedResults.length > 0 && tagInfo) {
+            const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
+            if (uniqueFileIds.length > 0) {
+                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
+                const fileTagRows = this.db.prepare(
+                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
+                ).all(...uniqueFileIds);
+
+                const fileTagNameMap = new Map();
+                for (const row of fileTagRows) {
+                    if (!fileTagNameMap.has(row.file_id)) fileTagNameMap.set(row.file_id, []);
+                    fileTagNameMap.get(row.file_id).push(row.name);
+                }
+
+                const queryCoreTags = new Set((tagInfo.coreTagsMatched || []).map(t => t.toLowerCase()));
+                const queryAllTags = new Set((tagInfo.matchedTags || []).map(t => t.toLowerCase()));
+
+                for (const r of hydratedResults) {
+                    const chunkRealTags = fileTagNameMap.get(r._fileId) || [];
+                    // 🌟 V8.1: per-chunk matchedTags = 该 chunk 文件的全部真实标签
+                    r.matchedTags = chunkRealTags;
+                    r.tagMatchCount = chunkRealTags.length;
+                    r.coreTagsMatched = chunkRealTags.filter(t => queryCoreTags.has(t.toLowerCase()));
+                }
+            }
+        } else {
+            for (const r of hydratedResults) {
+                r.matchedTags = [];
+                r.tagMatchCount = 0;
+                r.coreTagsMatched = [];
+            }
+        }
+
+        for (const r of hydratedResults) { delete r._fileId; }
+        return hydratedResults;
     }
 
     /**
@@ -489,6 +603,18 @@ class KnowledgeBaseManager {
     applyTagBoost(vector, tagBoost, coreTags = [], coreBoostFactor = 1.33) {
         if (!this.tagMemoEngine) return { vector: vector instanceof Float32Array ? vector : new Float32Array(vector), info: null };
         return this.tagMemoEngine.applyTagBoost(vector, tagBoost, coreTags, coreBoostFactor);
+    }
+
+    /**
+     * 🌟 V8: 公共接口 — 测地线重排
+     * 代理到 TagMemoEngine.geodesicRerank()，供外部直接调用或测试
+     * @param {Array} candidates - 候选结果
+     * @param {object} options - { alpha, minGeoSamples }
+     * @returns {Array} 重排后的结果
+     */
+    geodesicRerank(candidates, options = {}) {
+        if (!this.tagMemoEngine) return candidates;
+        return this.tagMemoEngine.geodesicRerank(candidates, options);
     }
 
     /**

@@ -21,6 +21,8 @@ class TagMemoEngine {
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
+        // 🌟 V8: 距离场缓存（供测地线重排使用）
+        this.lastEnergyField = null;
     }
 
     async initialize() {
@@ -61,7 +63,10 @@ class TagMemoEngine {
         const dim = originalFloat32.length;
 
         try {
-            // [1] EPA 分析 (逻辑深度与共振) - 识别“你在哪个世界”
+            // 🌟 V8: 清空旧距离场，防止跨调用数据泄露
+            this.lastEnergyField = null;
+
+            // [1] EPA 分析 (逻辑深度与共振) - 识别"你在哪个世界"
             const epaResult = this.epa.project(originalFloat32);
             const resonance = this.epa.detectCrossDomainResonance(originalFloat32);
             const queryWorld = epaResult.dominantAxes[0]?.label || 'Unknown';
@@ -255,6 +260,9 @@ class TagMemoEngine {
                     // 下一跳的火种
                     activeSpikes = nextSpikes;
                 }
+
+                // 🌟 V8: 缓存距离场（供 geodesicRerank 使用）
+                this.lastEnergyField = accumulatedEnergy;
 
                 // 4. 将涌现出来的高电位节点，重新塞回到 allTags
                 const allTagsMap = new Map();
@@ -507,6 +515,127 @@ class TagMemoEngine {
             resonance: resonance.resonance,
             dominantAxes: projection.dominantAxes
         };
+    }
+
+    /**
+     * 🌟 V8: 测地线重排 (Geodesic Rerank)
+     * 复用 Spike Propagation 已计算的 accumulatedEnergy 距离场，
+     * 对 KNN 候选 chunk 做基于"地形贴地距离"的二次重排。
+     *
+     * 三层防御链：
+     *   L0: lastEnergyField 为空 → 整体退化（返回原数组）
+     *   L1: chunk 的 hitCount < minGeoSamples → 该 chunk 的 geoScore = 0
+     *   L2: 所有 chunk 的 maxGeo = 0 → 归一化跳过，全部走纯 KNN
+     *
+     * @param {Array<{id: BigInt|Number, score: Number}>} candidates - 原始 KNN 搜索结果
+     * @param {object} options - 配置项
+     * @param {number} [options.alpha=0.3] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)
+     * @param {number} [options.minGeoSamples=4] - 最小采样密度门槛
+     * @returns {Array} 重排后的完整数组（不截断）
+     */
+    geodesicRerank(candidates, options = {}) {
+        // L0: 距离场为空 → 整体退化
+        if (!this.lastEnergyField || this.lastEnergyField.size === 0) {
+            return candidates;
+        }
+        if (!candidates || candidates.length === 0) {
+            return candidates;
+        }
+
+        const alpha = Math.max(0, Math.min(1, options.alpha ?? 0.3));
+        const minGeoSamples = options.minGeoSamples ?? 4;
+
+        try {
+            // Step 1: 批量查询 chunk_id → file_id 映射（方案 A：自查映射）
+            const chunkIds = candidates.map(c => Number(c.id));
+            const chunkPlaceholders = chunkIds.map(() => '?').join(',');
+            const chunkFileRows = this.db.prepare(
+                `SELECT id, file_id FROM chunks WHERE id IN (${chunkPlaceholders})`
+            ).all(...chunkIds);
+            const chunkFileMap = new Map(chunkFileRows.map(r => [r.id, r.file_id]));
+
+            // Step 2: 收集所有需要查询的 file_ids，批量查询 file_id → tag_id[] 映射
+            const uniqueFileIds = [...new Set(chunkFileRows.map(r => r.file_id))];
+            const fileTagsMap = new Map(); // file_id → [tag_id, ...]
+
+            if (uniqueFileIds.length > 0) {
+                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
+                const fileTagRows = this.db.prepare(
+                    `SELECT file_id, tag_id FROM file_tags WHERE file_id IN (${filePlaceholders})`
+                ).all(...uniqueFileIds);
+
+                for (const row of fileTagRows) {
+                    if (!fileTagsMap.has(row.file_id)) {
+                        fileTagsMap.set(row.file_id, []);
+                    }
+                    fileTagsMap.get(row.file_id).push(row.tag_id);
+                }
+            }
+
+            // Step 3: 对每个候选计算 geoScore
+            const energyField = this.lastEnergyField;
+            let maxGeo = 0;
+            const geoData = candidates.map(c => {
+                const chunkId = Number(c.id);
+                const fileId = chunkFileMap.get(chunkId);
+                if (fileId === undefined) {
+                    return { candidate: c, geoScore: 0, hitCount: 0, totalEnergy: 0 };
+                }
+
+                const tagIds = fileTagsMap.get(fileId) || [];
+                let totalEnergy = 0;
+                let hitCount = 0;
+
+                for (const tid of tagIds) {
+                    const energy = energyField.get(tid);
+                    if (energy !== undefined) {
+                        totalEnergy += energy;
+                        hitCount++;
+                    }
+                }
+
+                // L1: 最小采样密度门槛
+                const geoScore = hitCount >= minGeoSamples
+                    ? totalEnergy / hitCount
+                    : 0; // 密度不足 → 放弃测地线评估，退化为纯 KNN
+
+                if (geoScore > maxGeo) maxGeo = geoScore;
+
+                return { candidate: c, geoScore, hitCount, totalEnergy };
+            });
+
+            // L2: 所有 chunk 的 maxGeo = 0 → 归一化跳过，全部走纯 KNN 排序
+            if (maxGeo === 0) {
+                return candidates;
+            }
+
+            // Step 4: 归一化并混合分数
+            const reranked = geoData.map(d => {
+                const normalizedGeo = d.geoScore / maxGeo; // [0, 1]
+                const knnScore = d.candidate.score || 0;
+                const finalScore = (1 - alpha) * knnScore + alpha * normalizedGeo;
+
+                return {
+                    ...d.candidate,
+                    score: finalScore,
+                    original_knn_score: knnScore,
+                    geo_score: d.geoScore,
+                    normalized_geo: normalizedGeo,
+                    geo_hit_count: d.hitCount
+                };
+            });
+
+            // Step 5: 按 finalScore 降序排列（只重排，不截断）
+            reranked.sort((a, b) => b.score - a.score);
+
+            console.log(`[TagMemo-V8 Geodesic] α=${alpha}, minSamples=${minGeoSamples}, candidates=${candidates.length}, maxGeo=${maxGeo.toFixed(4)}, reranked=${reranked.filter(r => r.geo_score > 0).length} with geo contribution`);
+
+            return reranked;
+
+        } catch (e) {
+            console.error('[TagMemoEngine] geodesicRerank failed, falling back to original order:', e.message);
+            return candidates;
+        }
     }
 
     // 🌟 TagMemo V7: 有向序位势能共现矩阵
