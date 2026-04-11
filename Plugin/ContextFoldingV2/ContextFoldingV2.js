@@ -422,7 +422,7 @@ class ContextFoldingV2 {
                     { role: 'system', content: this.summarySystemPrompt || '你是一个精确的文本摘要工具。你必须严格按照指定格式输出，不要输出任何其他内容。' },
                     { role: 'user', content: userPrompt }
                 ],
-                max_tokens: 200,
+                max_tokens: 8000,
                 temperature: 0.3
             }, {
                 headers: {
