@@ -51,7 +51,7 @@ module.exports = function(options) {
     router.get('/agents', async (req, res) => {
         try {
             await _agentScanReady; // 确保初始扫描已完成
-            const agentFilesData = agentManager.getAllAgentFiles();
+            const agentFilesData = await agentManager.getAllAgentFiles();
             res.json(agentFilesData);
         } catch (error) {
             res.status(500).json({ error: 'Failed to list agent files', details: error.message });
