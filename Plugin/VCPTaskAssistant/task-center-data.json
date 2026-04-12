@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "globalEnabled": false,
+  "settings": {
+    "maxHistory": 200
+  },
+  "tasks": [],
+  "history": []
+}
