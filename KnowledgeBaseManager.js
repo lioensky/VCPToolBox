@@ -328,12 +328,22 @@ class KnowledgeBaseManager {
                 k = arg3 || 5;
                 tagBoost = arg4 || 0;
                 coreTags = arg5 || [];
+
+                // 🌟 Wave v8: 解析 tagBoost 增强语法 (兼容字符串 "0.6+")
+                if (typeof tagBoost === 'string' && tagBoost.endsWith('+')) {
+                    tagBoost = parseFloat(tagBoost.slice(0, -1)) || 0;
+                    if (!options) options = {};
+                    options.geodesicRerank = true;
+                } else {
+                    tagBoost = parseFloat(tagBoost) || 0;
+                }
+
                 // 🌟 V8: arg6 可以是 coreBoostFactor (number) 或 options (object)
                 if (typeof arg6 === 'object' && arg6 !== null && !Array.isArray(arg6)) {
-                    options = arg6;
+                    options = { ...options, ...arg6 };
                 } else {
                     coreBoostFactor = arg6 || 1.33;
-                    options = (typeof arg7 === 'object' && arg7 !== null) ? arg7 : null;
+                    options = (typeof arg7 === 'object' && arg7 !== null) ? { ...options, ...arg7 } : options;
                 }
             } else if (typeof arg1 === 'string') {
                 // 纯文本搜索暂略，通常插件会先向量化
@@ -342,6 +352,15 @@ class KnowledgeBaseManager {
                 queryVec = arg1;
                 k = arg2 || 5;
                 tagBoost = arg3 || 0;
+
+                // 🌟 Wave v8: 全局搜索路径也解析 "0.6+" 语法
+                if (typeof tagBoost === 'string' && tagBoost.endsWith('+')) {
+                    tagBoost = parseFloat(tagBoost.slice(0, -1)) || 0;
+                    if (!options) options = {};
+                    options.geodesicRerank = true;
+                } else {
+                    tagBoost = parseFloat(tagBoost) || 0;
+                }
             }
 
             if (!queryVec) return [];

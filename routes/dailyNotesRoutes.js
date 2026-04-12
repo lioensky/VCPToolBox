@@ -744,11 +744,21 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
 
         try {
             const associativeDiscovery = require('../modules/associativeDiscovery');
+
+            // 🌟 Wave v8: tagBoost 支持 "0.6+" 语法，保留字符串透传到底层
+            let parsedTagBoost;
+            if (typeof tagBoost === 'string' && tagBoost.trim().endsWith('+')) {
+                // "0.6+" → 保留原始字符串交给 KBM.search 解析
+                parsedTagBoost = tagBoost.trim();
+            } else {
+                parsedTagBoost = parseFloat(tagBoost) || 0.15;
+            }
+
             const result = await associativeDiscovery.discover({
                 sourceFilePath,
                 k: parseInt(k) || 10,
                 range: Array.isArray(range) ? range : [],
-                tagBoost: parseFloat(tagBoost) || 0.15
+                tagBoost: parsedTagBoost
             });
 
             res.json(result);

@@ -144,10 +144,24 @@ class LightMemoPlugin {
         const {
             query, maid, folder, k = 5, rerank = false,
             search_all_knowledge_bases = false,
-            tag_boost = 0.5,
+            tag_boost: rawTagBoost = 0.5,
             core_tags = [],
             core_boost_factor = 1.33
         } = args;
+
+        // 🌟 Wave v8: 解析 tag_boost 的 "+" 后缀
+        // tag_boost:「始」0.6「末」  → 正常浪潮 (tagBoost=0.6, geodesic=false)
+        // tag_boost:「始」0.6+「末」 → 浪潮v8 (tagBoost=0.6, geodesic=true)
+        let useGeodesicRerank = false;
+        let tag_boost = rawTagBoost;
+        if (typeof rawTagBoost === 'string') {
+            if (rawTagBoost.endsWith('+')) {
+                useGeodesicRerank = true;
+                tag_boost = parseFloat(rawTagBoost.slice(0, -1)) || 0;
+            } else {
+                tag_boost = parseFloat(rawTagBoost) || 0;
+            }
+        }
 
         let isMusicSearch = false;
         let actualQuery = query || "";
@@ -276,7 +290,8 @@ class LightMemoPlugin {
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
             const hasCore = Array.isArray(core_tags) && core_tags.length > 0;
-            console.log(`[LightMemo] Applying TagMemo V6 boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
+            const waveLabel = useGeodesicRerank ? 'TagMemo+ (Wave v8)' : 'TagMemo V6';
+            console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
 
             // 即使 core_tags 为空，KBM 内部也会处理好默认逻辑
             const boostResult = this.vectorDBManager.applyTagBoost(
@@ -334,19 +349,77 @@ class LightMemoPlugin {
             };
         }).sort((a, b) => b.hybridScore - a.hybridScore);
 
+        // 🌟 Wave v8: 测地线重排 (Geodesic Rerank)
+        let rankedCandidates = hybridScored;
+        if (useGeodesicRerank && tag_boost > 0 && tagBoostInfo && this.vectorDBManager && this.vectorDBManager.geodesicRerank) {
+            console.log(`[LightMemo] 🌟 Wave v8: Applying geodesic rerank to ${hybridScored.length} candidates...`);
+
+            // geodesicRerank expects candidates with `id` (chunk ID) and `score` fields
+            const geoInput = hybridScored.map(c => ({
+                ...c,
+                id: c.label,  // label is chunk.id from SQLite
+                score: c.hybridScore || c.vectorScore || 0
+            }));
+
+            const geoConfig = this.vectorDBManager.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+            const reranked = this.vectorDBManager.geodesicRerank(geoInput, {
+                alpha: geoConfig.alpha ?? 0.3,
+                minGeoSamples: geoConfig.minGeoSamples ?? 4
+            });
+
+            // Map results back with geodesic metadata
+            rankedCandidates = reranked.map(r => ({
+                ...r,
+                hybridScore: r.score,
+                tagBoostInfo: tagBoostInfo,
+                waveV8: r.geo_score > 0
+            }));
+
+            const geoCount = rankedCandidates.filter(r => r.waveV8).length;
+            console.log(`[LightMemo] 🌟 Wave v8: Geodesic rerank complete. ${geoCount}/${rankedCandidates.length} candidates with geo contribution.`);
+        }
+
         // 取top K
-        let finalResults = hybridScored.slice(0, k);
+        let finalResults = rankedCandidates.slice(0, k);
 
         // --- 第三阶段：Rerank（可选） ---
-        // 🌟 Rerank+ (RRF): rerank 参数支持 true/false/"rrf"/"rrf0.7" 四种形式
-        // "rrf" = RRF融合(α=0.5), "rrf0.7" = RRF融合(α=0.7, Reranker占70%权重)
-        const useRerank = rerank === true || (typeof rerank === 'string' && rerank.toLowerCase().startsWith('rrf'));
+        // 🌟 Rerank+ (RRF): rerank 参数支持多种形式
+        //   false          → 不使用 Rerank
+        //   true           → 标准 Rerank（纯精排，无融合）
+        //   "rrf"          → RRF 融合 (α=0.5)
+        //   "rrf0.7"       → RRF 融合 (α=0.7, Reranker 占 70% 权重)
+        //   0.7 (数字)     → RRF 融合 (α=0.7)，等价于 "rrf0.7"
+        //   "0.7" (字符串) → RRF 融合 (α=0.7)，等价于 "rrf0.7"
+        let useRerank = false;
         let rrfOptions = null;
-        if (typeof rerank === 'string' && rerank.toLowerCase().startsWith('rrf')) {
-            const alphaMatch = rerank.match(/rrf(\d+\.?\d*)/i);
-            const alpha = alphaMatch ? Math.min(1.0, Math.max(0.0, parseFloat(alphaMatch[1]))) : 0.5;
-            rrfOptions = { alpha };
-            console.log(`[LightMemo] 🌟 Rerank+ (RRF) 模式启用: α=${alpha}`);
+
+        if (rerank === true) {
+            useRerank = true;
+        } else if (typeof rerank === 'number' && rerank > 0 && rerank <= 1.0) {
+            // 直接传数字 → RRF 融合
+            useRerank = true;
+            rrfOptions = { alpha: rerank };
+            console.log(`[LightMemo] 🌟 Rerank+ (RRF) 数字模式启用: α=${rerank}`);
+        } else if (typeof rerank === 'string') {
+            const lowerRerank = rerank.toLowerCase().trim();
+            if (lowerRerank.startsWith('rrf')) {
+                // "rrf" / "rrf0.7" 形式
+                useRerank = true;
+                const alphaMatch = lowerRerank.match(/rrf(\d+\.?\d*)/);
+                const alpha = alphaMatch ? Math.min(1.0, Math.max(0.0, parseFloat(alphaMatch[1]))) : 0.5;
+                rrfOptions = { alpha };
+                console.log(`[LightMemo] 🌟 Rerank+ (RRF) 模式启用: α=${alpha}`);
+            } else {
+                // 尝试解析为数字字符串 "0.7"
+                const numericAlpha = parseFloat(lowerRerank);
+                if (!isNaN(numericAlpha) && numericAlpha > 0 && numericAlpha <= 1.0) {
+                    useRerank = true;
+                    rrfOptions = { alpha: numericAlpha };
+                    console.log(`[LightMemo] 🌟 Rerank+ (RRF) 数字字符串模式启用: α=${numericAlpha}`);
+                } else if (lowerRerank === 'true') {
+                    useRerank = true;
+                }
+            }
         }
 
         if (useRerank && finalResults.length > 0) {
@@ -401,7 +474,9 @@ class LightMemoPlugin {
                 // 使用解构默认值，确保即使 tagBoostInfo 结构不完整也能安全运行
                 const { matchedTags = [], coreTagsMatched = [] } = r.tagBoostInfo;
                 if (matchedTags.length > 0 || coreTagsMatched.length > 0) {
-                    let boostLine = `    [TagMemo 增强: `;
+                    // 🌟 Wave v8: 根据是否有测地线贡献显示不同标签
+                    const memoLabel = r.waveV8 ? 'TagMemo+ v8' : 'TagMemo';
+                    let boostLine = `    [${memoLabel} 增强: `;
                     // 只有当确实命中了核心标签时，才显示 🌟 标志
                     if (coreTagsMatched.length > 0) {
                         boostLine += `🌟${coreTagsMatched.join(', ')} `;

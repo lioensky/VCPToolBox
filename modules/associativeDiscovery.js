@@ -14,11 +14,11 @@ class AssociativeDiscovery {
 
     /**
      * 执行联想追溯
-     * @param {Object} params 
+     * @param {Object} params
      * @param {string} params.sourceFilePath - 源文件相对路径 (相对于 dailynote 根目录)
      * @param {number} params.k - 联想深度 (召回数量)
      * @param {string[]} params.range - 联想范围 (文件夹名称列表，为空表示全局)
-     * @param {number} params.tagBoost - TagMemo 增强因子 (0~1)
+     * @param {number|string} params.tagBoost - TagMemo 增强因子 (0~1)。传入 "0.6+" 后缀可启用浪潮 v8 测地线重排
      */
     async discover(params) {
         const { sourceFilePath, k = 10, range = [], tagBoost = 0.15 } = params;
