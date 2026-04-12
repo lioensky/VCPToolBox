@@ -577,7 +577,7 @@ class RAGDiaryPlugin {
         const truncated = tags.slice(0, targetCount);
 
         if (truncated.length < tags.length) {
-            console.log(`[RAGDiaryPlugin][Truncation] ${tags.length} -> ${truncated.length} tags (Ratio: ${ratio.toFixed(2)}, L:${metrics.L.toFixed(2)}, S:${metrics.S.toFixed(2)})`);
+            console.log(`[RAGDiaryPlugin][Truncation] ${tags.length} -> ${truncated.length} tags (Ratio: ${ratio.toFixed(2)}, L:${(metrics?.L ?? 0).toFixed(2)}, S:${(metrics?.S ?? 0).toFixed(2)})`);
         }
         return truncated;
     }

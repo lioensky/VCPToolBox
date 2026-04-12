@@ -394,6 +394,8 @@ class DreamWaveEngine {
      * 对某篇向量在多个日记本索引中进行召回
      * 🔧 关键修复: Float32Array → Array.from() 以匹配 KnowledgeBaseManager.search() 签名
      * 🔧 署名过滤: 召回结果中排除非本人署名的公共日记
+     * 🌊 V8 升级: 测地线重排 — 过采样 2×k 候选，经 geodesicRerank 后截断回 k
+     *    tagBoost 使用 "0.6+" 语法触发 KnowledgeBaseManager 内置的测地线重排管线
      */
     async _recallForVector(agentName, vector, k) {
         if (!vector || !this.kb) return [];
@@ -401,13 +403,19 @@ class DreamWaveEngine {
         const indices = this._getSearchableIndexNames(agentName);
         let allResults = [];
 
+        // 🌊 V8 测地线重排: 过采样 2×k，让 geodesicRerank 有足够候选做地形感知排序
+        const oversampleK = k * 2;
+
         // 🔧 核心修复: KnowledgeBaseManager.search(diaryName, queryVec, k, tagBoost)
         // queryVec 必须是 Array (Array.isArray 检查)，不能是 Float32Array！
         const queryVecArray = Array.from(vector);
 
+        // 🌊 tagBoost = "0.6+" — 尾部 "+" 触发 V8 geodesicRerank 管线
+        const tagBoostWithGeodesic = '0.6+';
+
         for (const idxName of indices) {
             try {
-                const results = await this.kb.search(idxName, queryVecArray, k, 0.1);
+                const results = await this.kb.search(idxName, queryVecArray, oversampleK, tagBoostWithGeodesic);
                 if (results && results.length > 0) {
                     allResults = allResults.concat(results);
                 }
@@ -416,7 +424,7 @@ class DreamWaveEngine {
             }
         }
 
-        // 按分数排序
+        // 按分数排序（分数已包含测地线重排融合后的 finalScore）
         allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
         // 去重（按 fullPath）
@@ -507,7 +515,7 @@ class DreamWaveEngine {
             throw new Error("知识库未就绪，无法生成梦境浪潮");
         }
 
-        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮...`);
+        console.log(`[DreamWave] 🌊 开始为 ${agentName} 生成记忆涟漪浪潮 (V8 测地线重排已启用, tagBoost=0.6+, 过采样=2×k)...`);
 
         const buckets = await this._getTimelineBuckets(agentName);
 
@@ -535,10 +543,10 @@ class DreamWaveEngine {
 
             // 3/5/7 原则
             const k = this._determineK(content.length);
-            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → k=${k}`);
+            console.log(`[DreamWave]   种子 ${path.basename(seed.filePath)} (${content.length}字) → k=${k} (过采样${k * 2}→重排→${k})`);
 
             const recalls = await this._recallForVector(agentName, vector, k);
-            console.log(`[DreamWave]   → 召回 ${recalls.length} 条结果`);
+            console.log(`[DreamWave]   → 测地线重排后召回 ${recalls.length} 条结果`);
 
             // 收集命中计数，用于找共振桥梁
             const seedRelPath = path.relative(DAILY_NOTE_ROOT, seed.filePath).replace(/\\/g, '/');
