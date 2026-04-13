@@ -186,13 +186,7 @@ VITE_API_BASE_URL=/admin_api
 
 ## 文档索引
 
-- [架构总览](docs/ARCHITECTURE.md) - 系统架构和模块关系
-- [路由系统](docs/ROUTING.md) - 路由配置和导航
-- [平台层](docs/PLATFORM.md) - 认证、反馈、HTTP层
-- [API层](docs/API_LAYER.md) - 后端接口封装
-- [状态管理](docs/STATE_MANAGEMENT.md) - Pinia Store设计
-- [仪表盘系统](docs/DASHBOARD_SYSTEM.md) - 卡片式仪表盘
-- [组合式函数](src/composables/README.md) - 可复用逻辑
+- [组合式函数](src/composables/README.md) - 可复用组合式函数使用指南
 
 ## 贡献指南
 

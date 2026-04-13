@@ -37,6 +37,7 @@ coverage/
 # Documentation
 *.md
 !README.md
+!docs/**/*.md
 
 # Lint output
 lint-output.txt
