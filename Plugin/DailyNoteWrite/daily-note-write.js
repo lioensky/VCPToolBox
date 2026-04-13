@@ -138,17 +138,23 @@ function fixTagFormat(tagLine) {
  */
 function extractTagFromAIResponse(aiResponse) {
     debugLog('Extracting tag from AI response:', aiResponse);
-    
-    // 匹配 [[Tag: ...]] 格式
-    const match = aiResponse.match(/\[\[Tag:\s*(.+?)\]\]/i);
-    
-    if (match && match[1]) {
-        const tagContent = match[1].trim();
-        const result = 'Tag: ' + tagContent;
-        debugLog('Extracted tag:', result);
-        return result;
+
+    const responseText = String(aiResponse || '');
+
+    // 先移除模型的思考块，避免误命中格式说明中的 [[Tag: ...]]
+    const withoutThinkBlocks = responseText.replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+
+    // 提取所有候选 Tag 块，优先使用最后一个，通常更接近最终答案
+    const matches = Array.from(withoutThinkBlocks.matchAll(/\[\[Tag:\s*([^\]]+?)\]\]/gi));
+    if (matches.length > 0) {
+        const tagContent = matches[matches.length - 1][1].trim();
+        if (tagContent) {
+            const result = 'Tag: ' + tagContent;
+            debugLog('Extracted tag:', result);
+            return result;
+        }
     }
-    
+
     debugLog('No tag found in AI response');
     return null;
 }

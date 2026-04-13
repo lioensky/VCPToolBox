@@ -135,14 +135,36 @@ module.exports = {
 
     router.patch('/memos/:memoId', async (req, res) => {
       try {
-        const body = req.body || {};
-        if (body.content === undefined && body.tags === undefined) {
-          return memoError(res, ERROR_CODES.INVALID_REQUEST, 'content or tags is required', 400);
+        await runMemoUploadMiddleware(req, res);
+        const parsedBody = normalizeMemoBody(req.body || {});
+        const hasFiles = Array.isArray(req.files) && req.files.length > 0;
+        const hasPatchPayload =
+          parsedBody.content !== undefined ||
+          parsedBody.tags !== undefined ||
+          parsedBody.keepAttachmentUrls !== undefined ||
+          hasFiles;
+
+        if (!hasPatchPayload) {
+          return memoError(
+            res,
+            ERROR_CODES.INVALID_REQUEST,
+            'content, tags, keepAttachmentUrls or files is required',
+            400,
+          );
         }
 
+        const newAttachments = await collectMemoAttachments({
+          req,
+          body: parsedBody,
+          runtimeContext: state.runtimeContext,
+          memoId: req.params.memoId,
+        });
+
         const memo = await state.memoStore.update(req.params.memoId, {
-          content: body.content,
-          tags: body.tags,
+          content: parsedBody.content,
+          tags: parsedBody.tags,
+          keepAttachmentUrls: parsedBody.keepAttachmentUrls,
+          newAttachments,
         });
         return res.json(memo);
       } catch (error) {
@@ -499,6 +521,7 @@ function runMemoUploadMiddleware(req, res) {
 function normalizeMemoBody(body) {
   const normalized = { ...body };
   normalized.tags = parseMaybeJsonArray(body.tags);
+  normalized.keepAttachmentUrls = parseMaybeJsonArray(body.keepAttachmentUrls);
   normalized.imageUrls = parseMaybeJsonArray(body.imageUrls);
   normalized.imageBase64 = parseMaybeJsonArray(body.imageBase64);
   return normalized;
@@ -508,8 +531,11 @@ function parseMaybeJsonArray(value) {
   if (Array.isArray(value)) {
     return value;
   }
+  if (value === undefined || value === null) {
+    return undefined;
+  }
   if (typeof value !== 'string') {
-    return value || [];
+    return value;
   }
 
   const trimmed = value.trim();

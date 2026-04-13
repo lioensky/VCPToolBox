@@ -100,9 +100,13 @@ async function main() {
           targetDir,
           `2026-04-10-08_09_10-${args.fileName}.txt`,
         );
+        const tagLine =
+          toolName === 'DailyNote'
+            ? `Tag: ${args.Tag}`
+            : 'Tag: 自动标签';
         await fs.writeFile(
           targetFile,
-          `[2026-04-10] - MemoInbox\n${args.contentText}\nTag: 自动标签`,
+          `[2026-04-10] - MemoInbox\n${args.Content ?? args.contentText}\n${tagLine}`,
           'utf8',
         );
         return {
@@ -134,6 +138,26 @@ async function main() {
     assert.equal(createdMemo.attachments.length, 1);
     assert.deepEqual(createdMemo.tags, ['自动标签']);
 
+    const explicitMemo = await memoStore.create({
+      memoId: 'memo_explicit123',
+      content: '显式标签 memo',
+      source: 'api',
+      tags: ['显式标签', '去重验证'],
+    });
+
+    assert.equal(pluginCalls.length, 2);
+    assert.equal(pluginCalls[1].toolName, 'DailyNote');
+    assert.equal(pluginCalls[1].args.Tag, '显式标签, 去重验证');
+    assert.ok(!String(pluginCalls[1].args.Content).includes('Tag: 显式标签, 去重验证'));
+    assert.deepEqual(explicitMemo.tags, ['显式标签', '去重验证']);
+
+    const explicitMemoPath = path.join(
+      runtimeContext.memoRootPath,
+      '2026-04-10-08_09_10-memo_explicit123.txt',
+    );
+    const explicitRaw = await fs.readFile(explicitMemoPath, 'utf8');
+    assert.equal((explicitRaw.match(/^Tag:\s*/gm) || []).length, 1);
+
     const loadedMemo = await memoStore.getById(createdMemo.memoId);
     assert.equal(loadedMemo.memoId, createdMemo.memoId);
 
@@ -145,8 +169,9 @@ async function main() {
     assert.deepEqual(updatedMemo.tags, ['手动标签']);
 
     const listResult = await memoStore.list({ limit: 10 });
-    assert.equal(listResult.items.length, 1);
-    assert.equal(listResult.items[0].memoId, createdMemo.memoId);
+    assert.equal(listResult.items.length, 2);
+    assert.ok(listResult.items.some((item) => item.memoId === createdMemo.memoId));
+    assert.ok(listResult.items.some((item) => item.memoId === explicitMemo.memoId));
 
     await memoStore.softDelete(createdMemo.memoId);
     const trashed = await memoStore.listTrash();

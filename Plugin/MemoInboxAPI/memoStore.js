@@ -7,6 +7,7 @@ function createMemoStore({ runtimeContext, memoFormat }) {
 
   return {
     async create({ memoId = memoFormat.createMemoId(), content, source = 'api', tags = null, attachments = [], createdAt = new Date() }) {
+      const hasExplicitTags = Array.isArray(tags) && tags.length > 0;
       const toolContent = buildToolContent({
         content,
         attachments: attachments.map((item) => item.url),
@@ -15,10 +16,10 @@ function createMemoStore({ runtimeContext, memoFormat }) {
           source,
         },
         tags: Array.isArray(tags) ? tags : [],
-        includeTagLine: Array.isArray(tags) && tags.length > 0,
+        includeTagLine: !hasExplicitTags,
       });
 
-      const toolName = Array.isArray(tags) && tags.length > 0 ? 'DailyNote' : 'DailyNoteWrite';
+      const toolName = hasExplicitTags ? 'DailyNote' : 'DailyNoteWrite';
       const result = await callCreateTool({
         runtimeContext,
         toolName,
@@ -97,11 +98,12 @@ function createMemoStore({ runtimeContext, memoFormat }) {
         const current = await this.getById(memoId);
         const nextContent = patch.content ?? current.content;
         const nextTags = patch.tags ?? current.tags;
+        const nextAttachments = resolveUpdatedAttachments(current.attachments, patch);
         const nextRaw = memoFormat.formatMemoContent({
           createdAt: current.createdAt,
           maidName: current.header.maidName,
           content: nextContent,
-          attachments: current.attachments,
+          attachments: nextAttachments,
           metadata: current.meta,
           tags: nextTags,
         });
@@ -109,6 +111,11 @@ function createMemoStore({ runtimeContext, memoFormat }) {
         const tempFilePath = `${filePath}.tmp`;
         await fs.writeFile(tempFilePath, nextRaw, 'utf8');
         await fs.rename(tempFilePath, filePath);
+        await cleanupRemovedLocalAttachments({
+          runtimeContext,
+          previousAttachments: current.attachments,
+          nextAttachments,
+        });
         return readMemoFromFile({
           filePath,
           memoId,
@@ -242,6 +249,100 @@ function createMemoStore({ runtimeContext, memoFormat }) {
   }
 }
 
+function resolveUpdatedAttachments(currentAttachments, patch = {}) {
+  const previousAttachments = Array.isArray(currentAttachments) ? currentAttachments : [];
+  const hasKeepAttachmentUrls = patch.keepAttachmentUrls !== undefined;
+  const hasNewAttachments = Array.isArray(patch.newAttachments) && patch.newAttachments.length > 0;
+
+  if (!hasKeepAttachmentUrls && !hasNewAttachments) {
+    return previousAttachments;
+  }
+
+  const keptAttachments = hasKeepAttachmentUrls
+    ? normalizeAttachmentUrls(patch.keepAttachmentUrls)
+    : previousAttachments;
+  const appendedAttachments = hasNewAttachments
+    ? patch.newAttachments.map((attachment) => attachment.url).filter(Boolean)
+    : [];
+
+  return [...keptAttachments, ...appendedAttachments];
+}
+
+function normalizeAttachmentUrls(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
+async function cleanupRemovedLocalAttachments({
+  runtimeContext,
+  previousAttachments = [],
+  nextAttachments = [],
+}) {
+  const nextAttachmentSet = new Set(nextAttachments);
+  for (const attachmentUrl of previousAttachments) {
+    if (nextAttachmentSet.has(attachmentUrl)) {
+      continue;
+    }
+
+    const attachmentPath = resolveLocalAttachmentPath(runtimeContext, attachmentUrl);
+    if (!attachmentPath) {
+      continue;
+    }
+
+    await fs.rm(attachmentPath, { force: true });
+  }
+}
+
+function resolveLocalAttachmentPath(runtimeContext, attachmentUrl) {
+  const relativePath = extractMemoImageRelativePath(runtimeContext, attachmentUrl);
+  if (!relativePath) {
+    return null;
+  }
+
+  const rootPath = path.resolve(runtimeContext.memoImageRootPath);
+  const targetPath = path.resolve(rootPath, relativePath);
+  const relativeToRoot = path.relative(rootPath, targetPath);
+  if (
+    relativeToRoot.startsWith('..') ||
+    path.isAbsolute(relativeToRoot)
+  ) {
+    return null;
+  }
+
+  return targetPath;
+}
+
+function extractMemoImageRelativePath(runtimeContext, attachmentUrl) {
+  const normalizedUrl = String(attachmentUrl || '').trim();
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  const basePrefix = `/images/${runtimeContext.memoImageSubdir || 'memo-inbox'}/`;
+  const keyPrefix = runtimeContext.imageServerKey
+    ? `/pw=${runtimeContext.imageServerKey}${basePrefix}`
+    : null;
+  let matchedPrefix = null;
+
+  if (normalizedUrl.startsWith(basePrefix)) {
+    matchedPrefix = basePrefix;
+  } else if (keyPrefix && normalizedUrl.startsWith(keyPrefix)) {
+    matchedPrefix = keyPrefix;
+  }
+
+  if (!matchedPrefix) {
+    return null;
+  }
+
+  const relativePath = normalizedUrl.slice(matchedPrefix.length);
+  return relativePath.replace(/\//g, path.sep);
+}
+
 async function callCreateTool({
   runtimeContext,
   toolName,
@@ -355,6 +456,7 @@ async function readMemoFromFile({ filePath, memoId, deleted, memoFormat }) {
   const raw = await fs.readFile(filePath, 'utf8');
   const parsed = memoFormat.parseMemoContent(raw);
   const stat = await fs.stat(filePath);
+  const filename = path.basename(filePath);
 
   return {
     memoId,
@@ -363,11 +465,54 @@ async function readMemoFromFile({ filePath, memoId, deleted, memoFormat }) {
     attachments: parsed.attachments,
     tags: parsed.tags,
     meta: parsed.meta,
-    createdAt: new Date(stat.mtimeMs).toISOString(),
+    createdAt: resolveCreatedAt({ filename, parsedHeader: parsed.header, updatedAtMs: stat.mtimeMs }),
     updatedAt: new Date(stat.mtimeMs).toISOString(),
     deleted,
-    filename: path.basename(filePath),
+    filename,
   };
+}
+
+function resolveCreatedAt({ filename, parsedHeader, updatedAtMs }) {
+  const createdAtFromFilename = extractCreatedAtFromFilename(filename);
+  if (createdAtFromFilename) {
+    return createdAtFromFilename;
+  }
+
+  const createdAtFromHeader = extractCreatedAtFromHeader(parsedHeader);
+  if (createdAtFromHeader) {
+    return createdAtFromHeader;
+  }
+
+  return new Date(updatedAtMs).toISOString();
+}
+
+function extractCreatedAtFromFilename(filename) {
+  const match = String(filename || '').match(/^(\d{4}-\d{2}-\d{2})-(\d{2})_(\d{2})_(\d{2})-memo_[a-z0-9]+\.txt$/i);
+  if (!match) {
+    return null;
+  }
+
+  const [, datePart, hour, minute, second] = match;
+  const [year, month, day] = datePart.split('-').map((part) => Number(part));
+  const createdAt = new Date(year, month - 1, day, Number(hour), Number(minute), Number(second), 0);
+
+  if (Number.isNaN(createdAt.getTime())) {
+    return null;
+  }
+
+  return createdAt.toISOString();
+}
+
+function extractCreatedAtFromHeader(parsedHeader) {
+  const datePart = parsedHeader && typeof parsedHeader.date === 'string'
+    ? parsedHeader.date.trim()
+    : '';
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    return null;
+  }
+
+  return `${datePart}T00:00:00.000Z`;
 }
 
 function normalizeDate(value) {

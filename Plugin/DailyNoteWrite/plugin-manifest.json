@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 5000 
+    "timeout": 20000 
   },
   "capabilities": {},
   "configSchema": {
