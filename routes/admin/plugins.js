@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const { readPluginDashboardCards } = require('./lib/dashboardCards');
 
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
@@ -32,6 +33,7 @@ module.exports = function(options) {
                 pluginDataMap.set(p.name, {
                     name: p.name,
                     manifest: p,
+                    dashboardCards: readPluginDashboardCards(p.name, p),
                     enabled: true,
                     configEnvContent: configEnvContent,
                     isDistributed: p.isDistributed || false,
@@ -64,6 +66,7 @@ module.exports = function(options) {
                             pluginDataMap.set(manifest.name, {
                                 name: manifest.name,
                                 manifest: manifest,
+                                dashboardCards: readPluginDashboardCards(manifest.name, manifest),
                                 enabled: false,
                                 configEnvContent: configEnvContent,
                                 isDistributed: false,

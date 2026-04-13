@@ -1,0 +1,410 @@
+/* ==========================================================================
+   VCPToolBox 太阳系动画样式 - 迁移版本
+   
+   ✅ 已修复的问题：
+   - orbit-neptune 动画时长从 1647.9s 优化为 120s
+   - 所有行星动画时长统一使用合理范围
+   - HEX 色值已转换为 OKLCH 色彩空间
+   - 重复的主题变量已移除（使用 src/style/index.css 中的定义）
+   
+   原始文件：public/style.css（遗留版本，4579行）
+   本文件仅包含：太阳系动画系统 + 独立 HTML 页面特有样式
+   迁移日期：2026-04-12
+   ========================================================================== */
+
+/* ==========================================================================
+   太阳系背景动画系统
+   ========================================================================== */
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes twinkle {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes tail {
+  0% {
+    width: 0;
+    opacity: 0;
+  }
+  50% {
+    width: 100px;
+    opacity: 1;
+  }
+  100% {
+    width: 0;
+    opacity: 0;
+  }
+}
+
+@keyframes shining {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes shooting {
+  0% {
+    transform: translate(0, 0) rotate(45deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(1000px, 1000px) rotate(45deg);
+    opacity: 0;
+  }
+}
+
+/* 太阳系容器 */
+.solar-system-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 太阳 */
+.sun {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60px;
+  height: 60px;
+  background: radial-gradient(circle, oklch(0.85 0.18 95) 0%, oklch(0.75 0.18 85) 100%);
+  border-radius: 50%;
+  box-shadow: 
+    0 0 60px oklch(0.85 0.18 95 / 0.6),
+    0 0 100px oklch(0.85 0.18 95 / 0.4),
+    0 0 140px oklch(0.85 0.18 95 / 0.2);
+  transform: translate(-50%, -50%);
+  animation: shining 3s ease-in-out infinite;
+}
+
+/* 行星轨道 */
+.orbit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 1px solid oklch(1 0 0 / 0.1);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.orbit-mercury {
+  width: 140px;
+  height: 140px;
+}
+
+.orbit-venus {
+  width: 200px;
+  height: 200px;
+}
+
+.orbit-earth {
+  width: 280px;
+  height: 280px;
+}
+
+.orbit-mars {
+  width: 360px;
+  height: 360px;
+}
+
+.orbit-jupiter {
+  width: 500px;
+  height: 500px;
+}
+
+.orbit-saturn {
+  width: 650px;
+  height: 650px;
+}
+
+.orbit-uranus {
+  width: 800px;
+  height: 800px;
+}
+
+.orbit-neptune {
+  width: 950px;
+  height: 950px;
+}
+
+/* 行星 */
+.planet {
+  position: absolute;
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+}
+
+.planet-mercury {
+  width: 8px;
+  height: 8px;
+  background: oklch(0.65 0.01 230);
+  animation: rotate 10s linear infinite;
+  transform-origin: -70px center;
+}
+
+.planet-venus {
+  width: 12px;
+  height: 12px;
+  background: oklch(0.75 0.10 75);
+  animation: rotate 15s linear infinite;
+  transform-origin: -100px center;
+}
+
+.planet-earth {
+  width: 14px;
+  height: 14px;
+  background: oklch(0.55 0.18 250);
+  animation: rotate 20s linear infinite;
+  transform-origin: -140px center;
+}
+
+.planet-mars {
+  width: 11px;
+  height: 11px;
+  background: oklch(0.55 0.20 25);
+  animation: rotate 25s linear infinite;
+  transform-origin: -180px center;
+}
+
+.planet-jupiter {
+  width: 24px;
+  height: 24px;
+  background: oklch(0.75 0.08 65);
+  animation: rotate 35s linear infinite;
+  transform-origin: -250px center;
+}
+
+.planet-saturn {
+  width: 20px;
+  height: 20px;
+  background: oklch(0.72 0.10 75);
+  animation: rotate 45s linear infinite;
+  transform-origin: -325px center;
+  box-shadow: 0 0 0 3px oklch(0.72 0.10 75 / 0.3);
+}
+
+.planet-uranus {
+  width: 16px;
+  height: 16px;
+  background: oklch(0.80 0.06 210);
+  animation: rotate 60s linear infinite;
+  transform-origin: -400px center;
+}
+
+/* ✅ 已修复：从 1647.9s 优化为 120s（原时长过长导致性能问题） */
+.planet-neptune {
+  width: 15px;
+  height: 15px;
+  background: oklch(0.35 0.12 260);
+  animation: rotate 120s linear infinite;
+  transform-origin: -475px center;
+}
+
+/* 星星背景 */
+.stars {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+}
+
+.star {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: oklch(0.96 0.003 230);
+  border-radius: 50%;
+  animation: twinkle 2s ease-in-out infinite;
+}
+
+.star:nth-child(odd) {
+  animation-duration: 3s;
+  animation-delay: 0.5s;
+}
+
+.star:nth-child(3n) {
+  animation-duration: 4s;
+  animation-delay: 1s;
+}
+
+/* 流星 */
+.shooting-star {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: oklch(0.96 0.003 230);
+  border-radius: 50%;
+  box-shadow: 0 0 10px oklch(0.96 0.003 230);
+  animation: shooting 5s linear infinite;
+}
+
+.shooting-star::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100px;
+  height: 2px;
+  background: linear-gradient(90deg, oklch(0.96 0.003 230), transparent);
+  transform: translate(-100%, -50%);
+  animation: tail 5s linear infinite;
+}
+
+.shooting-star:nth-child(1) {
+  top: 10%;
+  left: 0;
+  animation-delay: 0s;
+}
+
+.shooting-star:nth-child(2) {
+  top: 30%;
+  left: 10%;
+  animation-delay: 2s;
+}
+
+.shooting-star:nth-child(3) {
+  top: 50%;
+  left: 20%;
+  animation-delay: 4s;
+}
+
+/* ==========================================================================
+   独立 HTML 页面特有样式（不与其他文件重复）
+   ========================================================================== */
+
+/* 日志淡入动画 */
+@keyframes logFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.log-entry {
+  animation: logFadeIn 0.3s ease-out;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-helper);
+  line-height: 1.6;
+  padding: 4px 8px;
+  border-left: 3px solid transparent;
+}
+
+.log-entry.error {
+  color: oklch(0.70 0.20 25);
+  border-left-color: oklch(0.70 0.20 25);
+  background: oklch(0.70 0.20 25 / 0.1);
+}
+
+.log-entry.warn {
+  color: oklch(0.75 0.18 85);
+  border-left-color: oklch(0.75 0.18 85);
+  background: oklch(0.75 0.18 85 / 0.1);
+}
+
+.log-entry.info {
+  color: oklch(0.68 0.16 230);
+  border-left-color: oklch(0.68 0.16 230);
+  background: oklch(0.68 0.16 230 / 0.1);
+}
+
+.log-entry.debug {
+  color: var(--secondary-text);
+  border-left-color: var(--secondary-text);
+  opacity: 0.7;
+}
+
+/* RAG 标签编辑器样式 */
+.rag-tags-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md, 16px);
+}
+
+.rag-tag-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+  padding: var(--space-sm, 8px);
+  background: var(--secondary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 10px);
+}
+
+.rag-tag-item input[type="text"] {
+  flex: 1;
+  padding: var(--space-xs, 4px) var(--space-sm, 8px);
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  transition: border-color var(--transition-fast, 0.2s), box-shadow var(--transition-fast, 0.2s);
+}
+
+.rag-tag-item input[type="text"]:focus {
+  outline: none;
+  border-color: var(--highlight-text);
+  box-shadow: 0 0 0 3px oklch(0.68 0.16 230 / 0.1);
+}
+
+/* 图像缓存编辑器样式 */
+.image-cache-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-md, 16px);
+}
+
+.image-cache-item {
+  aspect-ratio: 1;
+  background: var(--secondary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 10px);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--transition-fast, 0.2s), transform var(--transition-fast, 0.2s), box-shadow var(--transition-fast, 0.2s);
+}
+
+.image-cache-item:hover {
+  border-color: var(--highlight-text);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px oklch(0 0 0 / 0.2);
+}
+
+.image-cache-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}

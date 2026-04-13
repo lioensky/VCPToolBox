@@ -1,0 +1,43 @@
+{
+  "name": "admin-panel-vue",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "build:no-type-check": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "npm run lint:typography && eslint . --ext .vue,.ts",
+    "lint:typography": "node scripts/check-typography-guard.mjs",
+    "lint:fix": "eslint . --ext .vue,.ts --fix"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-sans-sc": "^5.2.10",
+    "@fontsource/material-symbols-outlined": "^5.2.35",
+    "dompurify": "^3.3.3",
+    "easymde": "^2.20.0",
+    "marked": "^12.0.2",
+    "pinia": "^3.0.4",
+    "pretext": "^0.3.0",
+    "vue": "^3.5.31",
+    "vue-router": "^5.0.4"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^25.5.0",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.5.0",
+    "esbuild": "^0.27.4",
+    "eslint": "^9.22.0",
+    "eslint-plugin-vue": "^10.0.0",
+    "rollup-plugin-visualizer": "^7.0.1",
+    "typescript": "^5.9.2",
+    "vite": "^8.0.3",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.2.6"
+  }
+}

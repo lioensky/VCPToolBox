@@ -1103,7 +1103,7 @@ form { display: flex; flex-direction: column; gap: 24px; }
 .form-actions { display: flex; gap: 15px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-color); }
 button, input[type="submit"] {
     padding: 10px 20px;
-    border: 1px solid transparent;
+    border: 1px solid var(--border-color);
     border-radius: 12px;
     cursor: pointer;
     font-size: 0.95em;
@@ -1132,6 +1132,57 @@ button[type="submit"] {
 button[type="submit"]:hover {
     background-color: var(--button-hover-bg);
     box-shadow: 0 6px 20px rgba(14, 165, 233, 0.23);
+}
+
+/* Utility button classes (used by multiple sections in index.html) */
+.btn-primary {
+    background-color: var(--button-bg);
+    color: white;
+    border-color: var(--button-bg);
+    box-shadow: 0 4px 14px rgba(14, 165, 233, 0.25);
+}
+
+.btn-primary:hover {
+    background-color: var(--button-hover-bg);
+    border-color: var(--button-hover-bg);
+}
+
+.btn-secondary {
+    background-color: var(--tertiary-bg);
+    color: var(--primary-text);
+    border-color: var(--border-color);
+}
+
+.btn-secondary:hover {
+    background-color: var(--accent-bg);
+    border-color: var(--highlight-text);
+}
+
+.btn-success {
+    background-color: var(--memory-color);
+    color: white;
+    border-color: var(--memory-color);
+}
+
+.btn-success:hover {
+    filter: brightness(0.95);
+}
+
+.btn-danger {
+    background-color: var(--danger-color);
+    color: white;
+    border-color: var(--danger-color);
+}
+
+.btn-danger:hover {
+    background-color: var(--danger-hover-bg);
+    border-color: var(--danger-hover-bg);
+}
+
+.btn-sm {
+    padding: 8px 14px;
+    font-size: 0.88em;
+    border-radius: 10px;
 }
  
 /* Danger Button Style */
