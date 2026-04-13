@@ -368,8 +368,9 @@ function buildTemporaryToolsSystemPrompt(injectToolsRaw) {
 
         for (const toolName of toolNames) {
             const plugin = pluginManager.getPlugin(toolName);
-            const placeholderKey = `VCP${toolName}`;
-            const description = descriptionsMap && descriptionsMap.get(placeholderKey);
+            // 兼容两种命名：工具名可能已经带 VCP 前缀（如 "VCPForum"），也可能不带（如 "Forum"）
+            const placeholderKey = toolName.startsWith('VCP') ? toolName : `VCP${toolName}`;
+            const description = descriptionsMap && (descriptionsMap.get(placeholderKey) || descriptionsMap.get(`VCP${toolName}`));
 
             if (description) {
                 sections.push(`### ${plugin?.displayName || toolName} (${toolName})\n${description}`);

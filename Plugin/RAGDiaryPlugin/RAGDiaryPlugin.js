@@ -3773,64 +3773,71 @@ class RAGDiaryPlugin {
             },
 
             // ═══════════════════════════════════════════════════
-            // 🌟 V2折叠：FoldingStore 接口
+            // 🌟 V2折叠：FoldingStore 接口（动态 Getter，解决初始化时序竞态）
             // ═══════════════════════════════════════════════════
 
-            /** FoldingStore 读写接口，供 ContextFoldingV2 使用 */
-            foldingStore: self.foldingStore ? Object.freeze({
-                /**
-                 * 获取条目
-                 * @param {string} contentHash - SHA-256 哈希
-                 * @returns {object|null} 条目数据
-                 */
-                getEntry(contentHash) {
-                    return self.foldingStore.getEntry(contentHash);
-                },
+            /** FoldingStore 读写接口，供 ContextFoldingV2 使用
+             *  使用 getter 动态获取，避免静态快照导致的初始化竞态：
+             *  即使 getContextBridge() 被调用时 foldingStore 尚为 null，
+             *  后续访问时仍能拿到正确的实例。
+             */
+            get foldingStore() {
+                if (!self.foldingStore) return null;
+                return Object.freeze({
+                    /**
+                     * 获取条目
+                     * @param {string} contentHash - SHA-256 哈希
+                     * @returns {object|null} 条目数据
+                     */
+                    getEntry(contentHash) {
+                        return self.foldingStore.getEntry(contentHash);
+                    },
 
-                /**
-                 * 写入/更新向量
-                 * @param {string} contentHash
-                 * @param {object} data - { textPreview, vector }
-                 */
-                upsertVector(contentHash, data) {
-                    self.foldingStore.upsertVector(contentHash, data);
-                },
+                    /**
+                     * 写入/更新向量
+                     * @param {string} contentHash
+                     * @param {object} data - { textPreview, vector }
+                     */
+                    upsertVector(contentHash, data) {
+                        self.foldingStore.upsertVector(contentHash, data);
+                    },
 
-                /**
-                 * 写入摘要结果
-                 * @param {string} contentHash
-                 * @param {string} summary
-                 * @param {string} status - 'ready' | 'failed'
-                 */
-                upsertSummary(contentHash, summary, status) {
-                    self.foldingStore.upsertSummary(contentHash, summary, status);
-                },
+                    /**
+                     * 写入摘要结果
+                     * @param {string} contentHash
+                     * @param {string} summary
+                     * @param {string} status - 'ready' | 'failed'
+                     */
+                    upsertSummary(contentHash, summary, status) {
+                        self.foldingStore.upsertSummary(contentHash, summary, status);
+                    },
 
-                /**
-                 * 标记为摘要生成中
-                 * @param {string} contentHash
-                 */
-                markPending(contentHash) {
-                    self.foldingStore.markPending(contentHash);
-                },
+                    /**
+                     * 标记为摘要生成中
+                     * @param {string} contentHash
+                     */
+                    markPending(contentHash) {
+                        self.foldingStore.markPending(contentHash);
+                    },
 
-                /**
-                 * 获取统计信息
-                 * @returns {{ count, maxEntries, available }}
-                 */
-                getStats() {
-                    return self.foldingStore.getStats();
-                },
+                    /**
+                     * 获取统计信息
+                     * @returns {{ count, maxEntries, available }}
+                     */
+                    getStats() {
+                        return self.foldingStore.getStats();
+                    },
 
-                /**
-                 * 生成内容哈希的静态工具方法
-                 * @param {string} sanitizedContent
-                 * @returns {string}
-                 */
-                hashContent(sanitizedContent) {
-                    return FoldingStore.hashContent(sanitizedContent);
-                }
-            }) : null
+                    /**
+                     * 生成内容哈希的静态工具方法
+                     * @param {string} sanitizedContent
+                     * @returns {string}
+                     */
+                    hashContent(sanitizedContent) {
+                        return FoldingStore.hashContent(sanitizedContent);
+                    }
+                });
+            }
         });
     }
 

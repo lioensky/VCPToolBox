@@ -64,16 +64,18 @@ class ContextFoldingV2 {
             return;
         }
 
-        // 3. 验证 FoldingStore 可用性
-        if (!this.contextBridge.foldingStore) {
-            console.warn('[ContextFoldingV2] FoldingStore 不可用，折叠功能将不可用');
-            return;
-        }
-
-        const stats = this.contextBridge.foldingStore.getStats();
-        if (!stats.available) {
-            console.warn('[ContextFoldingV2] FoldingStore 数据库不可用');
-            return;
+        // 3. 延迟验证 FoldingStore 可用性
+        //    FoldingStore 通过 getter 动态获取，RAGDiaryPlugin 的异步初始化可能尚未完成，
+        //    因此不在此处做硬判断。改为在 processMessages 中按需检查。
+        if (this.contextBridge.foldingStore) {
+            const stats = this.contextBridge.foldingStore.getStats();
+            if (stats.available) {
+                console.log(`[ContextFoldingV2] FoldingStore 已就绪 (${stats.count}/${stats.maxEntries}条)`);
+            } else {
+                console.warn('[ContextFoldingV2] FoldingStore 数据库当前不可用，将在运行时重试');
+            }
+        } else {
+            console.log('[ContextFoldingV2] FoldingStore 当前不可用（RAGDiaryPlugin 可能尚在初始化），将在运行时动态获取');
         }
 
         // 4. 验证摘要 API 配置
