@@ -456,7 +456,7 @@ const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
 
 function cloneParams(source: RagParams): RagParams {
-  return structuredClone(source);
+  return JSON.parse(JSON.stringify(source));
 }
 
 function isNumericRecord(value: ParamValue | undefined): value is NumericRecord {
