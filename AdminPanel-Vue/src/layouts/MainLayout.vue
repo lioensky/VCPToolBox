@@ -8,32 +8,36 @@
   >
     <SolarSystemBg />
 
-    <!-- 顶栏组件 -->
-    <TopBar
-      :is-mobile-menu-open="isMobileMenuOpen"
-      :is-sidebar-collapsed="isSidebarCollapsed"
-      :is-system-menu-open="isSystemMenuOpen"
-      :is-user-menu-open="isUserMenuOpen"
-      :has-notifications="hasNotifications"
-      @toggleMobileMenu="toggleMobileMenu"
-      @toggleSidebarCollapse="toggleSidebarCollapse"
-      @toggleSystemMenu="toggleSystemMenu"
-      @toggleUserMenu="toggleUserMenu"
-      @closeAllMenus="closeAllMenus"
-    />
-
-    <div class="container">
-      <!-- 侧边栏组件 -->
-      <Sidebar
+    <!-- 顶栏组件（包裹在过渡容器中） -->
+    <div class="immersive-fade immersive-fade--topbar">
+      <TopBar
         :is-mobile-menu-open="isMobileMenuOpen"
         :is-sidebar-collapsed="isSidebarCollapsed"
-        :is-hovering-sidebar="isHoveringSidebar"
-        :is-hover-enabled="isHoverEnabled"
-        :recent-visits="recentVisits"
-        @navigate-to="navigateTo"
-        @open-command-palette="openCommandPalette"
-        @update:is-hovering-sidebar="isHoveringSidebar = $event"
+        :is-system-menu-open="isSystemMenuOpen"
+        :is-user-menu-open="isUserMenuOpen"
+        :has-notifications="hasNotifications"
+        @toggleMobileMenu="toggleMobileMenu"
+        @toggleSidebarCollapse="toggleSidebarCollapse"
+        @toggleSystemMenu="toggleSystemMenu"
+        @toggleUserMenu="toggleUserMenu"
+        @closeAllMenus="closeAllMenus"
       />
+    </div>
+
+    <div class="container">
+      <!-- 侧边栏组件（包裹在过渡容器中） -->
+      <div class="immersive-fade immersive-fade--sidebar">
+        <Sidebar
+          :is-mobile-menu-open="isMobileMenuOpen"
+          :is-sidebar-collapsed="isSidebarCollapsed"
+          :is-hovering-sidebar="isHoveringSidebar"
+          :is-hover-enabled="isHoverEnabled"
+          :recent-visits="recentVisits"
+          @navigate-to="navigateTo"
+          @open-command-palette="openCommandPalette"
+          @update:is-hovering-sidebar="isHoveringSidebar = $event"
+        />
+      </div>
 
       <!-- 侧边栏遮罩层 (移动端) -->
       <div
@@ -75,15 +79,17 @@
     <FeedbackHost />
 
     <!-- 退出沉浸模式按钮 -->
-    <button
-      v-if="isImmersiveMode"
-      id="exit-immersive-button"
-      class="exit-immersive-button"
-      @click="exitImmersiveMode"
-    >
-      <span class="material-symbols-outlined">close_fullscreen</span>
-      <span>退出沉浸模式</span>
-    </button>
+    <Transition name="immersive-exit-btn">
+      <button
+        v-if="isImmersiveMode"
+        id="exit-immersive-button"
+        class="exit-immersive-button"
+        @click="exitImmersiveMode"
+      >
+        <span class="material-symbols-outlined">close_fullscreen</span>
+        <span>退出沉浸模式</span>
+      </button>
+    </Transition>
 
     <!-- 点击外部关闭下拉菜单的遮罩 -->
     <div
@@ -172,6 +178,7 @@ void contentRef;
     var(--app-viewport-height, 100vh) - var(--app-top-bar-height, 60px)
   );
   margin-top: var(--app-top-bar-height, 60px);
+  transition: opacity 1.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .content {
@@ -180,7 +187,12 @@ void contentRef;
   box-sizing: border-box;
   overflow-y: auto;
   height: 100%;
-  transition: opacity var(--transition-normal);
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  transition:
+    opacity 1.6s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 2s cubic-bezier(0.4, 0, 0.2, 1),
+    filter 1.8s ease;
 }
 
 .sidebar-overlay {
@@ -239,6 +251,60 @@ void contentRef;
 }
 
 
+/* ── 沉浸观星模式 ── */
+
+/* 过渡包裹层：在正常状态定义 transition，确保状态切换时动画触发 */
+.immersive-fade {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  filter: blur(0);
+  transition:
+    opacity 1.8s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 2s cubic-bezier(0.4, 0, 0.2, 1),
+    filter 1.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.immersive-fade--topbar {
+  position: relative;
+  z-index: 1000;
+}
+
+.immersive-fade--sidebar {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+}
+
+/* 沉浸状态：UI 元素"浮起 → 模糊 → 消散" */
+.ui-hidden-immersive .immersive-fade--topbar {
+  opacity: 0;
+  transform: translateY(-24px);
+  filter: blur(10px);
+  pointer-events: none;
+}
+
+.ui-hidden-immersive .immersive-fade--sidebar {
+  opacity: 0;
+  transform: translateX(-16px);
+  filter: blur(10px);
+  pointer-events: none;
+}
+
+.ui-hidden-immersive .content {
+  opacity: 0;
+  transform: scale(0.97) translateY(16px);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+.ui-hidden-immersive .container {
+  pointer-events: none;
+}
+
+.ui-hidden-immersive .sidebar-overlay {
+  display: none;
+}
+
 /* 退出沉浸模式按钮 */
 .exit-immersive-button {
   position: fixed;
@@ -253,17 +319,39 @@ void contentRef;
   border: 1px solid var(--overlay-frost-border);
   border-radius: 20px;
   cursor: pointer;
-  backdrop-filter: blur(5px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-overlay-soft);
   transition:
     background-color var(--transition-normal),
-    border-color var(--transition-normal);
+    border-color var(--transition-normal),
+    box-shadow var(--transition-normal);
   z-index: 10001;
 }
 
 .exit-immersive-button:hover {
   background-color: var(--surface-overlay-strong);
   border-color: color-mix(in srgb, var(--highlight-text) 44%, transparent);
+  box-shadow: 0 4px 24px color-mix(in srgb, var(--highlight-text) 18%, transparent);
+}
+
+/* 退出按钮的入场/离场动画：延迟出现，优雅消失 */
+.immersive-exit-btn-enter-active {
+  transition: opacity 0.8s ease 1.2s, transform 0.8s cubic-bezier(0.4, 0, 0.2, 1) 1.2s;
+}
+
+.immersive-exit-btn-leave-active {
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.immersive-exit-btn-enter-from {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+
+.immersive-exit-btn-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 
 /* 下拉菜单遮罩 */

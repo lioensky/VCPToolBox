@@ -34,6 +34,7 @@ function comparePluginLabels(a: PluginInfo, b: PluginInfo): number {
 export const useAppStore = defineStore("app", () => {
   const theme = useLocalStorage<"dark" | "light">("theme", "dark");
   const animationsEnabled = useLocalStorage<boolean>("animationsEnabled", true);
+  const isImmersiveMode = ref(false);
   const pinnedPluginNames = useLocalStorage<string[]>(
     PINNED_PLUGINS_STORAGE_KEY,
     []
@@ -71,6 +72,16 @@ export const useAppStore = defineStore("app", () => {
 
   function toggleAnimations() {
     animationsEnabled.value = !animationsEnabled.value;
+  }
+
+  function enterImmersiveMode() {
+    isImmersiveMode.value = true;
+    document.body.style.overflow = "hidden";
+  }
+
+  function exitImmersiveMode() {
+    isImmersiveMode.value = false;
+    document.body.style.overflow = "";
   }
 
   function loadPlugins(pluginList: PluginInfo[]) {
@@ -161,6 +172,7 @@ export const useAppStore = defineStore("app", () => {
   return {
     theme,
     animationsEnabled,
+    isImmersiveMode,
     navItems,
     plugins,
     pluginsLoaded,
@@ -168,6 +180,8 @@ export const useAppStore = defineStore("app", () => {
     pinnedPlugins,
     setTheme,
     toggleAnimations,
+    enterImmersiveMode,
+    exitImmersiveMode,
     loadPlugins,
     refreshPlugins,
     ensurePluginsLoaded,

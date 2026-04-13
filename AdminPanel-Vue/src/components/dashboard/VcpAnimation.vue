@@ -1,6 +1,6 @@
 <template>
   <div class="vcp-animation-container">
-    <div v-once class="vcp-logo-container">
+    <div class="vcp-logo-container">
       <img
         src="/VCPLogo2.png"
         alt="VCPToolBox Logo"
@@ -8,6 +8,7 @@
         width="200"
         height="80"
         loading="eager"
+        @click="handleLogoClick"
       />
     </div>
     <canvas ref="canvas" id="vcp-animation-canvas"></canvas>
@@ -26,6 +27,30 @@ const theme = computed(() => appStore.theme);
 let animationCtx: CanvasRenderingContext2D | null = null;
 let animationFrameId: number | null = null;
 let isAnimating = false;
+
+// ── 彩蛋：快速点击 5 次 logo → 进入沉浸观星模式 ──
+let logoClickCount = 0;
+let logoClickTimer: ReturnType<typeof setTimeout> | null = null;
+const EASTER_EGG_CLICKS = 5;
+const EASTER_EGG_WINDOW_MS = 2000;
+
+function handleLogoClick() {
+  logoClickCount++;
+
+  if (logoClickTimer !== null) {
+    clearTimeout(logoClickTimer);
+  }
+
+  if (logoClickCount >= EASTER_EGG_CLICKS) {
+    logoClickCount = 0;
+    appStore.enterImmersiveMode();
+  } else {
+    logoClickTimer = setTimeout(() => {
+      logoClickCount = 0;
+      logoClickTimer = null;
+    }, EASTER_EGG_WINDOW_MS);
+  }
+}
 
 interface Particle {
   x: number;

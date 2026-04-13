@@ -1,5 +1,10 @@
 <template>
-  <div class="solar-system-bg" aria-hidden="true" :style="{ display: animationsEnabled ? '' : 'none' }">
+  <div
+    class="solar-system-bg"
+    :class="{ 'immersive-mode': isImmersiveMode }"
+    aria-hidden="true"
+    :style="{ display: animationsEnabled ? '' : 'none' }"
+  >
     <div class="stars"></div>
     <div class="stars2"></div>
     <div class="stars3"></div>
@@ -42,6 +47,7 @@ import { useAppStore } from '@/stores/app'
 
 const appStore = useAppStore()
 const animationsEnabled = computed(() => appStore.animationsEnabled)
+const isImmersiveMode = computed(() => appStore.isImmersiveMode)
 </script>
 
 <style scoped>
@@ -55,9 +61,11 @@ const animationsEnabled = computed(() => appStore.animationsEnabled)
   overflow: hidden;
   pointer-events: none;
   background: transparent;
-  transition: z-index 0.5s step-end, background 0.5s ease;
-  will-change: transform; /* 优化性能 */
-  transform: translateZ(0); /* GPU 加速 */
+  transition:
+    z-index 0.5s step-end,
+    background 2.5s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .solar-system-bg.immersive-mode {
@@ -68,11 +76,30 @@ const animationsEnabled = computed(() => appStore.animationsEnabled)
     color-mix(in srgb, var(--secondary-bg) 78%, var(--highlight-text) 22%) 0%,
     color-mix(in srgb, var(--primary-bg) 92%, oklch(0 0 0)) 100%
   );
-  transition: z-index 0s, background 2s ease;
+  transition:
+    z-index 0s,
+    background 2.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.sun, .orbit, .planet {
-  transition: opacity 1.5s cubic-bezier(0.4, 0, 0.2, 1), transform 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+.sun {
+  transition:
+    width 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    height 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 2s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 2.5s ease;
+}
+
+.orbit {
+  transition:
+    width 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    height 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 2s ease;
+}
+
+.planet {
+  transition:
+    width 2.5s cubic-bezier(0.4, 0, 0.2, 1),
+    height 2.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .solar-system-bg.immersive-mode .sun {
@@ -120,8 +147,7 @@ const animationsEnabled = computed(() => appStore.animationsEnabled)
   border: 1px solid var(--orbit-color);
   border-radius: 50%;
   transform: translate(-50%, -50%);
-  will-change: transform; /* 优化性能 */
-  transform: translateZ(0); /* GPU 加速 */
+  will-change: transform;
 }
 
 .planet {
@@ -133,8 +159,7 @@ const animationsEnabled = computed(() => appStore.animationsEnabled)
   background: var(--planet-color);
   border-radius: 50%;
   transform: translate(-50%, -50%);
-  will-change: transform; /* 优化性能 */
-  transform: translateZ(0); /* GPU 加速 */
+  will-change: transform;
 }
 
 .orbit-mercury { width: 100px; height: 100px; animation: rotate 8.8s linear infinite; }

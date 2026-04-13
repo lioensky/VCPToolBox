@@ -1,8 +1,10 @@
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import { useAppStore } from "@/stores/app";
 
 export function useMainLayoutControls() {
+  const appStore = useAppStore();
   const isMobileMenuOpen = ref(false);
-  const isImmersiveMode = ref(false);
+  const isImmersiveMode = computed(() => appStore.isImmersiveMode);
   const isSidebarCollapsed = ref(false);
   const isHoveringSidebar = ref(false);
   const isHoverEnabled = ref(false);
@@ -58,11 +60,11 @@ export function useMainLayoutControls() {
   }
 
   function enterImmersiveMode() {
-    isImmersiveMode.value = true;
+    appStore.enterImmersiveMode();
   }
 
   function exitImmersiveMode() {
-    isImmersiveMode.value = false;
+    appStore.exitImmersiveMode();
   }
 
   return {
