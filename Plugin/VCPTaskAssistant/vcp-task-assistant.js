@@ -114,7 +114,7 @@ function normalizeDispatch(input = {}) {
     return {
         channel: String(input.channel || 'AgentAssistant').trim() || 'AgentAssistant',
         temporaryContact: input.temporaryContact !== false,
-        injectTools: normalizeStringArray(input.injectTools && input.injectTools.length ? input.injectTools : ['VCPForum']),
+        // injectTools: normalizeStringArray(input.injectTools || []), // 已禁用：Agent 自身已知道可用工具，无需额外注入
         maid: String(input.maid || 'VCP系统').trim() || 'VCP系统',
         taskDelegation: !!input.taskDelegation
     };
@@ -183,6 +183,22 @@ async function loadData() {
         }
         const raw = await fsPromises.readFile(DATA_FILE, 'utf-8');
         taskCenterData = ensureDataShape(JSON.parse(raw));
+
+        // 🛡️ 启动时清理：重置所有卡死的 running 标志
+        // 服务器重启后不可能有任务正在运行，running=true 只可能是上次崩溃遗留的脏状态
+        let staleCount = 0;
+        for (const task of taskCenterData.tasks) {
+            if (task.runtime.running) {
+                task.runtime.running = false;
+                task.runtime.lastResult = `error: 服务器重启时发现任务卡死，已自动重置`;
+                task.runtime.lastError = '服务器重启自动重置 running 标志';
+                staleCount++;
+            }
+        }
+        if (staleCount > 0) {
+            console.warn(`[TaskAssistant] 🛡️ 启动清理: 重置了 ${staleCount} 个卡死的任务状态`);
+            await saveData();
+        }
     } catch (e) {
         console.error('[TaskAssistant] 加载 task-center-data.json 失败:', e.message);
         taskCenterData = createDefaultData();
@@ -214,22 +230,17 @@ function wakeUpAgent(agentName, prompt, dispatchConfig = {}) {
     return new Promise((resolve, reject) => {
         if (!VCP_KEY) return reject(new Error('VCP Key 未配置'));
 
-        const injectTools = normalizeStringArray(dispatchConfig.injectTools || []).join(',');
+        // inject_tools 功能已禁用：Agent 自身已拥有完整工具集，无需通过任务中心额外注入
         const maid = String(dispatchConfig.maid || 'VCP系统').trim() || 'VCP系统';
         const temporaryContact = dispatchConfig.temporaryContact !== false ? 'true' : 'false';
         const taskDelegation = dispatchConfig.taskDelegation ? 'true' : 'false';
-
-        // 仅在有实际工具时才包含 inject_tools 字段
-        const injectToolsLine = injectTools
-            ? `\ninject_tools:「始」${injectTools}「末」,`
-            : '';
 
         const requestBody = `<<<[TOOL_REQUEST]>>>
 maid:「始」${maid}「末」,
 tool_name:「始」AgentAssistant「末」,
 agent_name:「始」${agentName}「末」,
 prompt:「始」${prompt}「末」,
-temporary_contact:「始」${temporaryContact}「末」,${injectToolsLine}
+temporary_contact:「始」${temporaryContact}「末」,
 task_delegation:「始」${taskDelegation}「末」,
 <<<[END_TOOL_REQUEST]>>>`;
 
@@ -310,7 +321,16 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
     }
 
     if (task.runtime.running) {
-        return { skipped: true, reason: 'already-running' };
+        // 🛡️ 卡死检测：如果 running=true 但距上次开始运行已超过 10 分钟，强制重置
+        const STALE_RUNNING_TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
+        const lastRunAt = task.runtime.lastRunTime ? new Date(task.runtime.lastRunTime).getTime() : 0;
+        if (Date.now() - lastRunAt > STALE_RUNNING_TIMEOUT_MS) {
+            console.warn(`[TaskAssistant] 🛡️ 检测到任务 "${task.name}" 卡死 (running=true 但已过 ${Math.round((Date.now() - lastRunAt) / 60000)} 分钟)，强制重置`);
+            task.runtime.running = false;
+            task.runtime.lastError = '任务执行超时，已自动重置 running 标志';
+        } else {
+            return { skipped: true, reason: 'already-running' };
+        }
     }
 
     const startedAt = new Date();
