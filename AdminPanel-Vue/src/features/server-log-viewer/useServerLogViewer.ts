@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify'
 import { systemApi } from '@/api'
 import { usePolling } from '@/composables/usePolling'
 import { useVirtualScroll } from '@/composables/useVirtualScroll'
+import { useLocalStorage } from '@/composables/useLocalStorage'
 import { showMessage } from '@/utils'
 import { createLogger } from '@/utils/logger'
 
@@ -23,9 +24,9 @@ export function useServerLogViewer() {
   const logPath = ref('加载中…')
   const logLines = ref<string[]>([])
   const filterText = ref('')
-  const logLimit = ref(5000)
-  const isReverse = ref(false)
-  const autoScroll = ref(true)
+  const logLimit = useLocalStorage('vcp_log_limit', 5000)
+  const isReverse = useLocalStorage('vcp_log_reverse', false)
+  const autoScroll = useLocalStorage('vcp_log_autoscroll', true)
   const showScrollToBottom = ref(false)
   const isLoading = ref(false)
   const logOffset = ref(0)
