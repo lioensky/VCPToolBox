@@ -5,8 +5,8 @@
         src="/VCPLogo2.png"
         alt="VCPToolBox Logo"
         class="vcp-logo"
-        width="200"
-        height="80"
+        width="500"
+        height="200"
         loading="eager"
         @click="handleLogoClick"
       />
@@ -344,7 +344,7 @@ onUnmounted(() => {
   }
 
   .vcp-logo {
-    max-width: 220px;
+    max-width: 280px;
   }
 }
 </style>
