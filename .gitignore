@@ -197,6 +197,13 @@ image/fluxgen/
 .DS_Store?
 /.obsidian
 
+# Qwen Code / Snow 工具配置
+**/.qwen/
+**/.snow/
+
+# Windows 缩略图缓存
+Thumbs.db
+
 # ===== 编译产物 =====
 rust-vexus-lite/target/
 

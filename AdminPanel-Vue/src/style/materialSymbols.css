@@ -1,0 +1,8 @@
+@font-face {
+  font-family: "Material Symbols Outlined";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/material-symbols-outlined/files/material-symbols-outlined-latin-400-normal.woff2")
+    format("woff2");
+}

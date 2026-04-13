@@ -6,7 +6,7 @@ const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
 
 const path = require('path');
-const fs = require('fs').promises;
+const { promises: fs, existsSync } = require('fs');
 const http = require('http');
 const basicAuth = require('basic-auth');
 const cors = require('cors');
@@ -17,6 +17,14 @@ const DEBUG_MODE = (process.env.DebugMode || 'False').toLowerCase() === 'true';
 
 const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
+const VUE_ADMIN_PANEL_ROOT = path.join(__dirname, 'AdminPanel-Vue', 'dist');
+const LEGACY_ADMIN_PANEL_BACKUP_ROOT = path.join(__dirname, 'AdminPanel-backup-20260408-201832');
+const VUE_ADMIN_PANEL_INDEX = path.join(VUE_ADMIN_PANEL_ROOT, 'index.html');
+
+if (!existsSync(VUE_ADMIN_PANEL_INDEX)) {
+    console.warn(`[AdminServer] Vue AdminPanel build not found: ${VUE_ADMIN_PANEL_INDEX}`);
+    console.warn('[AdminServer] Run "npm run build" inside AdminPanel-Vue before starting the admin server.');
+}
 
 // ============================================================
 // 登录防暴力破解
@@ -135,7 +143,7 @@ const adminAuth = (req, res, next) => {
         if (isVerifyEndpoint || req.path.startsWith('/admin_api') ||
             (req.headers.accept && req.headers.accept.includes('application/json'))) {
             return res.status(401).json({ error: 'Unauthorized' });
-        } else if (req.path.startsWith('/AdminPanel')) {
+        } else if (req.path.startsWith('/AdminPanel') || req.path.startsWith('/AdminPanelLegacy')) {
             return res.redirect('/AdminPanel/login.html');
         } else {
             res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
@@ -150,8 +158,21 @@ const adminAuth = (req, res, next) => {
 
 app.use(adminAuth);
 
-// 静态文件
-app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+// 静态文件：默认托管 Vue 构建产物，并保留 legacy 路径兼容旧链接
+app.use('/AdminPanel', express.static(VUE_ADMIN_PANEL_ROOT));
+// Static serving targets the Vue build by default and keeps the legacy route alive.
+app.use('/AdminPanel', express.static(VUE_ADMIN_PANEL_ROOT));
+app.use('/AdminPanelLegacy', express.static(VUE_ADMIN_PANEL_ROOT));
+
+function serveVueAdminPanelApp(req, res, next) {
+    if (path.extname(req.path)) {
+        return next();
+    }
+    return res.sendFile(VUE_ADMIN_PANEL_INDEX);
+}
+
+app.get(/^\/AdminPanel(?:\/.*)?$/, serveVueAdminPanelApp);
+app.get(/^\/AdminPanelLegacy(?:\/.*)?$/, serveVueAdminPanelApp);
 
 // 默认路由：访问根路径重定向到 AdminPanel
 app.get('/', (req, res) => {
@@ -412,6 +433,8 @@ app.post('/admin_api/config/main/reload-notify', async (req, res) => {
 app.listen(ADMIN_PORT, () => {
     console.log(`[AdminServer] 管理面板独立进程已启动，监听端口 ${ADMIN_PORT}`);
     console.log(`[AdminServer] 管理面板地址: http://localhost:${ADMIN_PORT}/AdminPanel/`);
+    console.log(`[AdminServer] Vue 面板目录: ${VUE_ADMIN_PANEL_ROOT}`);
+    console.log(`[AdminServer] Legacy 备份目录: ${LEGACY_ADMIN_PANEL_BACKUP_ROOT}`);
     console.log(`[AdminServer] 主服务地址: http://localhost:${MAIN_PORT}`);
     console.log(`[AdminServer] 本地处理模块: ${localModules.join(', ')}`);
     console.log(`[AdminServer] 未匹配的 /admin_api 请求将自动代理到主进程 PORT ${MAIN_PORT}`);

@@ -119,7 +119,7 @@ function renderTaskTypeOptions(taskTypes) {
     const types = Array.isArray(taskTypes) && taskTypes.length > 0
         ? taskTypes
         : [
-            { type: 'forum_patrol', label: '论坛巡航任务' },
+            { type: 'forum_patrol', label: '论坛帖子任务' },
             { type: 'custom_prompt', label: '通用提示词任务' }
         ];
 
@@ -322,7 +322,7 @@ function addTaskCard(task) {
     body.className = 'aa-agent-card-body';
 
     const typeSelect = createSelect('fa-task-type', [
-        { value: 'forum_patrol', label: '论坛巡航任务' },
+        { value: 'forum_patrol', label: '论坛帖子任务' },
         { value: 'custom_prompt', label: '通用提示词任务' }
     ], task.type || 'forum_patrol');
 

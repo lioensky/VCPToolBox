@@ -1,0 +1,719 @@
+@import "./fonts.css";
+@import "./layout.css";
+
+:root {
+  /* --- 优化暗色主题 (深邃/玻璃拟态) - OKLCH 色彩空间 --- */
+  --primary-bg-dark: oklch(0.04 0.012 230);
+  --secondary-bg-dark: oklch(0.18 0.015 230 / 0.85);
+  --tertiary-bg-dark: oklch(0.25 0.012 230 / 0.6);
+  --accent-bg-dark: oklch(0.75 0.14 230 / 0.1);
+  --primary-text-dark: oklch(0.96 0.008 230);
+  --secondary-text-dark: oklch(0.65 0.015 230);
+  --highlight-text-dark: oklch(0.75 0.14 230);
+  --border-color-dark: oklch(1 0 0 / 0.08);
+  --button-bg-dark: oklch(0.68 0.16 230);
+  --button-hover-bg-dark: oklch(0.60 0.18 230);
+  --danger-color-dark: oklch(0.55 0.22 25);
+  --danger-hover-bg-dark: oklch(0.50 0.20 25);
+  --success-color-dark: oklch(0.55 0.20 145);
+  --warning-color-dark: oklch(0.75 0.18 85);
+  --input-bg-dark: oklch(0.25 0.012 230 / 0.8);
+  --scrollbar-track-dark: oklch(0.04 0.012 230);
+  --scrollbar-thumb-dark: oklch(0.30 0.015 230);
+  --scrollbar-thumb-hover-dark: oklch(0.40 0.018 230);
+  --cpu-color-dark: oklch(0.75 0.14 230);
+  --memory-color-dark: oklch(0.70 0.18 145);
+  --glass-blur: blur(20px);
+
+  /* 默认主题（暗色） */
+  --primary-bg: var(--primary-bg-dark);
+  --secondary-bg: var(--secondary-bg-dark);
+  --tertiary-bg: var(--tertiary-bg-dark);
+  --accent-bg: var(--accent-bg-dark);
+  --primary-text: var(--primary-text-dark);
+  --secondary-text: var(--secondary-text-dark);
+  --highlight-text: var(--highlight-text-dark);
+  --border-color: var(--border-color-dark);
+  --button-bg: var(--button-bg-dark);
+  --button-hover-bg: var(--button-hover-bg-dark);
+  --danger-color: var(--danger-color-dark);
+  --danger-hover-bg: var(--danger-hover-bg-dark);
+  --success-color: var(--success-color-dark);
+  --warning-color: var(--warning-color-dark);
+  --input-bg: var(--input-bg-dark);
+  --scrollbar-track: var(--scrollbar-track-dark);
+  --scrollbar-thumb: var(--scrollbar-thumb-dark);
+  --scrollbar-thumb-hover: var(--scrollbar-thumb-hover-dark);
+  --cpu-color: var(--cpu-color-dark);
+  --memory-color: var(--memory-color-dark);
+  --on-accent-text: oklch(1 0 0);
+  --primary-color: var(--highlight-text);
+  --primary-color-translucent: color-mix(
+    in srgb,
+    var(--highlight-text) 30%,
+    transparent
+  );
+
+  /* --- 语义状态色（自动跟随主题主色） --- */
+  --success-hover-bg: color-mix(in srgb, var(--success-color) 88%, oklch(0 0 0));
+  --success-text: color-mix(in srgb, var(--success-color) 64%, var(--primary-text));
+  --warning-text: color-mix(in srgb, var(--warning-color) 68%, var(--primary-text));
+  --danger-text: color-mix(in srgb, var(--danger-color) 66%, var(--primary-text));
+  --info-text: color-mix(in srgb, var(--highlight-text) 64%, var(--primary-text));
+  --success-bg: color-mix(in srgb, var(--success-color) 18%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning-color) 18%, transparent);
+  --danger-bg: color-mix(in srgb, var(--danger-color) 18%, transparent);
+  --info-bg: color-mix(in srgb, var(--highlight-text) 16%, transparent);
+  --success-border: color-mix(in srgb, var(--success-color) 30%, transparent);
+  --warning-border: color-mix(in srgb, var(--warning-color) 30%, transparent);
+  --danger-border: color-mix(in srgb, var(--danger-color) 30%, transparent);
+  --info-border: color-mix(in srgb, var(--highlight-text) 30%, transparent);
+  --warning-bg-strong: color-mix(in srgb, var(--warning-color) 46%, transparent);
+  --danger-shadow: color-mix(in srgb, var(--danger-color) 40%, transparent);
+  --success-shadow: color-mix(in srgb, var(--success-color) 40%, transparent);
+  --focus-ring: color-mix(in srgb, var(--highlight-text) 24%, transparent);
+
+  /* --- 语义表面层级 --- */
+  --surface-overlay-soft: color-mix(in srgb, var(--primary-text) 4%, transparent);
+  --surface-overlay: color-mix(in srgb, var(--primary-text) 6%, transparent);
+  --surface-overlay-strong: color-mix(in srgb, var(--primary-text) 10%, transparent);
+  --overlay-backdrop: oklch(0 0 0 / 0.6);
+  --overlay-backdrop-strong: oklch(0 0 0 / 0.86);
+  --overlay-panel-shadow: 0 10px 40px oklch(0 0 0 / 0.4);
+  --overlay-frost-border: oklch(1 0 0 / 0.5);
+  --overlay-frost-bg: oklch(0 0 0 / 0.4);
+  --shadow-overlay-soft: 0 2px 12px oklch(0 0 0 / 0.15);
+
+  /* --- 统一动画时长变量 --- */
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  --app-top-bar-height: 60px;
+  --app-viewport-height: 100vh;
+
+  /* --- Dashboard 专用变量 --- */
+  --dashboard-radius: var(--radius-xl, 20px);
+  --dashboard-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.4));
+  --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.5));
+
+  /* 行星颜色变量 - OKLCH */
+  --sun-color: oklch(0.85 0.18 95);
+  --mercury-color: oklch(0.65 0.01 230);
+  --venus-color: oklch(0.75 0.10 75);
+  --earth-color: oklch(0.55 0.18 250);
+  --mars-color: oklch(0.55 0.20 25);
+  --jupiter-color: oklch(0.75 0.08 65);
+  --saturn-color: oklch(0.72 0.10 75);
+  --uranus-color: oklch(0.80 0.06 210);
+  --neptune-color: oklch(0.35 0.12 260);
+  --star-color: oklch(0.96 0.003 230);
+  --orbit-color: oklch(1 0 0 / 0.1);
+
+  /* 阴影系统 - 暗色主题 */
+  --shadow-sm-dark: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md-dark: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg-dark: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl-dark: 0 20px 40px rgba(0, 0, 0, 0.6);
+
+  /* --- 优化亮色主题 (纯净/柔和) - OKLCH 色彩空间 --- */
+  --primary-bg-light: oklch(0.96 0.008 230);
+  --secondary-bg-light: oklch(0.99 0.005 230 / 0.9);
+  --tertiary-bg-light: oklch(0.94 0.008 230 / 0.7);
+  --accent-bg-light: oklch(0.68 0.16 230 / 0.08);
+  --primary-text-light: oklch(0.15 0.015 230);
+  --secondary-text-light: oklch(0.50 0.018 230);
+  --highlight-text-light: oklch(0.68 0.16 230);
+  --border-color-light: oklch(0 0 0 / 0.06);
+  --button-bg-light: oklch(0.68 0.16 230);
+  --button-hover-bg-light: oklch(0.60 0.18 230);
+  --danger-color-light: oklch(0.55 0.22 25);
+  --danger-hover-bg-light: oklch(0.50 0.20 25);
+  --success-color-light: oklch(0.55 0.20 145);
+  --warning-color-light: oklch(0.75 0.18 85);
+  --input-bg-light: oklch(0.94 0.008 230 / 0.9);
+  --scrollbar-track-light: oklch(0.96 0.008 230);
+  --scrollbar-thumb-light: oklch(0.80 0.012 230);
+  --scrollbar-thumb-hover-light: oklch(0.65 0.015 230);
+  --cpu-color-light: oklch(0.68 0.16 230);
+  --memory-color-light: oklch(0.60 0.20 145);
+
+  /* 阴影系统 - 亮色主题 */
+  --shadow-sm-light: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md-light: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg-light: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --shadow-xl-light: 0 20px 40px rgba(0, 0, 0, 0.15);
+
+  /* --- Z-Index System --- */
+  --z-index-sidebar-overlay: 998;
+  --z-index-sidebar: 999;
+  --z-index-top-bar: 1000;
+  --z-index-dropdown: 100;
+  --z-index-modal: 10000;
+  --z-index-loading: 10001;
+  --z-index-exit-immersive: 10002;
+  --z-index-message: 10003;
+
+  /* --- 圆角系统 --- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+
+  /* --- 间距系统 (4pt 比例) --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+
+  /* --- 语义化间距 --- */
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-4);
+  --space-lg: var(--space-5);
+  --space-xl: var(--space-6);
+  --space-2xl: var(--space-7);
+  --space-3xl: var(--space-8);
+
+  /* --- 排版系统（流体字号 Token）--- */
+  --font-fluid-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.8rem);
+  --font-fluid-sm: clamp(0.8rem, 0.75rem + 0.25vw, 0.875rem);
+  --font-fluid-base: clamp(0.875rem, 0.8rem + 0.25vw, 1rem);
+  --font-fluid-lg: clamp(1rem, 0.9rem + 0.5vw, 1.125rem);
+  --font-fluid-xl: clamp(1.125rem, 1rem + 0.625vw, 1.25rem);
+  --font-fluid-2xl: clamp(1.25rem, 1.1rem + 0.75vw, 1.5rem);
+  --font-fluid-3xl: clamp(1.5rem, 1.2rem + 1.5vw, 1.875rem);
+  --font-fluid-4xl: clamp(1.875rem, 1.5rem + 1.875vw, 2.25rem);
+
+  --font-size-caption: var(--font-fluid-xs);
+  --font-size-helper: var(--font-fluid-sm);
+  --font-size-body: var(--font-fluid-base);
+  --font-size-emphasis: var(--font-fluid-lg);
+  --font-size-title: var(--font-fluid-xl);
+  --font-size-display: var(--font-fluid-2xl);
+  --font-size-headline: var(--font-fluid-3xl);
+  --font-size-hero: var(--font-fluid-4xl);
+  --font-size-icon-empty: clamp(2rem, 1.7rem + 1.5vw, 2.5rem);
+  --font-size-icon-empty-lg: clamp(2.25rem, 1.8rem + 2.5vw, 3rem);
+  --font-size-icon-hero: clamp(3rem, 2.4rem + 3vw, 4rem);
+  --font-size-icon-modal-close: clamp(1.35rem, 1.1rem + 0.8vw, 1.75rem);
+  --font-size-section-title-fluid: clamp(1.4rem, 2vw, 1.9rem);
+  --font-size-section-title-strong: clamp(1.5rem, 2vw, 2rem);
+  --font-size-section-icon: clamp(1.4rem, 1.15rem + 0.8vw, 1.9rem);
+  --font-size-metric-primary: clamp(1.65rem, 1.45rem + 0.75vw, 2rem);
+  --font-size-metric-secondary: clamp(1.35rem, 1.2rem + 0.55vw, 1.75rem);
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
+}
+
+html[data-theme="dark"] {
+  --primary-bg: var(--primary-bg-dark);
+  --secondary-bg: var(--secondary-bg-dark);
+  --tertiary-bg: var(--tertiary-bg-dark);
+  --accent-bg: var(--accent-bg-dark);
+  --primary-text: var(--primary-text-dark);
+  --secondary-text: var(--secondary-text-dark);
+  --highlight-text: var(--highlight-text-dark);
+  --border-color: var(--border-color-dark);
+  --button-bg: var(--button-bg-dark);
+  --button-hover-bg: var(--button-hover-bg-dark);
+  --danger-color: var(--danger-color-dark);
+  --danger-hover-bg: var(--danger-hover-bg-dark);
+  --success-color: var(--success-color-dark);
+  --warning-color: var(--warning-color-dark);
+  --input-bg: var(--input-bg-dark);
+  --scrollbar-track: var(--scrollbar-track-dark);
+  --scrollbar-thumb: var(--scrollbar-thumb-dark);
+  --scrollbar-thumb-hover: var(--scrollbar-thumb-hover-dark);
+  --cpu-color: var(--cpu-color-dark);
+  --memory-color: var(--memory-color-dark);
+  color-scheme: dark;
+
+  /* --- Legacy Variable Support (style.css fallback) --- */
+  --bg: var(--primary-bg);
+  --text: var(--primary-text);
+  --text-h: var(--primary-text);
+  --border: var(--border-color);
+  --accent: var(--button-bg);
+  --accent-bg: oklch(0.60 0.20 290 / 0.15);
+
+  /* Variables for EasyMDE editor compatibility */
+  --primary-color: var(--highlight-text-dark);
+  --primary-color-translucent: oklch(0.70 0.12 240 / 0.3);
+  --background-color: var(--secondary-bg-dark);
+  --background-color-light: var(--tertiary-bg-dark);
+  --text-color-primary: var(--primary-text-dark);
+  --text-color-secondary: var(--secondary-text-dark);
+  --star-color: oklch(0.96 0.003 230);
+  --sun-color: oklch(0.85 0.18 95);
+  --orbit-color: oklch(1 0 0 / 0.1);
+  --mercury-color: oklch(0.65 0.01 230);
+  --venus-color: oklch(0.75 0.10 75);
+  --earth-color: oklch(0.55 0.18 250);
+  --mars-color: oklch(0.60 0.18 35);
+  --jupiter-color: oklch(0.75 0.08 65);
+  --saturn-color: oklch(0.72 0.10 75);
+  --uranus-color: oklch(0.80 0.06 210);
+  --neptune-color: oklch(0.35 0.12 260);
+}
+
+html[data-theme="light"] {
+  --primary-bg: var(--primary-bg-light);
+  --secondary-bg: var(--secondary-bg-light);
+  --tertiary-bg: var(--tertiary-bg-light);
+  --accent-bg: var(--accent-bg-light);
+  --primary-text: var(--primary-text-light);
+  --secondary-text: var(--secondary-text-light);
+  --highlight-text: var(--highlight-text-light);
+  --border-color: var(--border-color-light);
+  --button-bg: var(--button-bg-light);
+  --button-hover-bg: var(--button-hover-bg-light);
+  --danger-color: var(--danger-color-light);
+  --danger-hover-bg: var(--danger-hover-bg-light);
+  --success-color: var(--success-color-light);
+  --warning-color: var(--warning-color-light);
+  --input-bg: var(--input-bg-light);
+  --scrollbar-track: var(--scrollbar-track-light);
+  --scrollbar-thumb: var(--scrollbar-thumb-light);
+  --scrollbar-thumb-hover: var(--scrollbar-thumb-hover-light);
+  --cpu-color: var(--cpu-color-light);
+  --memory-color: var(--memory-color-light);
+  --surface-overlay-soft: color-mix(in srgb, oklch(0 0 0) 2.5%, transparent);
+  --surface-overlay: color-mix(in srgb, oklch(0 0 0) 4.5%, transparent);
+  --surface-overlay-strong: color-mix(in srgb, oklch(0 0 0) 8%, transparent);
+  --overlay-backdrop: oklch(0.2 0.01 240 / 0.26);
+  --overlay-backdrop-strong: oklch(0.2 0.01 240 / 0.34);
+  --overlay-panel-shadow:
+    0 14px 42px oklch(0.18 0.02 240 / 0.2),
+    0 2px 8px oklch(0.16 0.02 240 / 0.1);
+  --overlay-frost-border: oklch(0 0 0 / 0.12);
+  --overlay-frost-bg: oklch(1 0 0 / 0.62);
+  --shadow-overlay-soft: 0 2px 10px oklch(0.12 0.01 230 / 0.12);
+  color-scheme: light;
+
+  /* --- Legacy Variable Support (style.css fallback) --- */
+  --bg: var(--primary-bg);
+  --text: var(--primary-text);
+  --text-h: var(--primary-text);
+  --border: var(--border-color);
+  --accent: var(--button-bg);
+  --accent-bg: oklch(0.68 0.16 230 / 0.1);
+
+  /* Variables for EasyMDE editor compatibility */
+  --primary-color: var(--highlight-text-light);
+  --primary-color-translucent: oklch(0.68 0.16 230 / 0.3);
+  --background-color: var(--secondary-bg-light);
+  --background-color-light: var(--tertiary-bg-light);
+  --text-color-primary: var(--primary-text-light);
+  --text-color-secondary: var(--secondary-text-light);
+  --star-color: oklch(0.55 0.18 250);
+  --sun-color: oklch(0.75 0.18 85);
+  --orbit-color: oklch(0 0 0 / 0.05);
+  --mercury-color: oklch(0.55 0.01 230);
+  --venus-color: oklch(0.65 0.10 75);
+  --earth-color: oklch(0.55 0.18 250);
+  --mars-color: oklch(0.55 0.22 25);
+  --jupiter-color: oklch(0.65 0.10 65);
+  --saturn-color: oklch(0.62 0.10 75);
+  --uranus-color: oklch(0.70 0.12 240);
+  --neptune-color: oklch(0.35 0.08 260);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  overflow-x: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  font-family: "Noto Sans SC Variable", "Noto Sans SC", "PingFang SC",
+    "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  background-color: var(--primary-bg);
+  background-image: radial-gradient(
+      at 0% 0%,
+      oklch(0.75 0.14 230 / 0.05) 0px,
+      transparent 50%
+    ),
+    radial-gradient(at 100% 100%, oklch(0.68 0.16 230 / 0.05) 0px, transparent 50%);
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+}
+
+button,
+a,
+input,
+textarea,
+select,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+}
+
+/* 滚动条样式已统一在 layout.css 中管理 */
+
+/* Loading Overlay */
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--overlay-backdrop);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  display: none;
+  justify-content: center;
+  align-items: center;
+  z-index: var(--z-index-loading);
+  flex-direction: column;
+}
+
+.loading-overlay.visible {
+  display: flex;
+}
+
+.loading-overlay .spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid color-mix(in srgb, var(--primary-text) 22%, transparent);
+  border-top-color: var(--highlight-text);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-overlay p {
+  color: var(--primary-text);
+  margin-top: 16px;
+  font-size: var(--font-size-helper);
+}
+
+/* 
+ * 全局 spin 动画
+ * 
+ * ⚠️  注意：此 @keyframes 定义被多个组件重复定义（10处）
+ * 未来重构时应移除组件中的重复定义，统一使用此全局版本
+ * 
+ * 使用此动画的组件：
+ * - Login.vue, Dashboard.vue, ServerLogViewer.vue
+ * - ToolSelectionPanel.vue, NoteList.vue, DiscoveryModal.vue
+ * - AgentFilesEditor.vue, FeedbackHost.vue, CalendarCard.vue
+ */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Message Popup */
+.message-popup {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: var(--font-size-helper);
+  font-weight: 500;
+  z-index: var(--z-index-message);
+  opacity: 0;
+  transition:
+    transform var(--transition-normal),
+    opacity var(--transition-normal);
+}
+
+.message-popup.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.message-popup.info {
+  background: var(--button-bg);
+  color: var(--on-accent-text);
+}
+
+.message-popup.success {
+  background: var(--success-color);
+  color: var(--on-accent-text);
+}
+
+.message-popup.error {
+  background: var(--danger-color);
+  color: var(--on-accent-text);
+}
+
+/* Utility Classes */
+.material-symbols-outlined {
+  font-family: "Material Symbols Outlined";
+  font-weight: 400;
+  font-style: normal;
+  font-size: var(--font-size-display);
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  vertical-align: middle;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "liga";
+}
+
+/* ========== 按钮样式已统一在 layout.css 中管理 ========== */
+
+/* ========== 卡片和表单组件 ========== */
+.card {
+  background: var(--secondary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--primary-text);
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group input[type="password"],
+.form-group textarea,
+.form-group select {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  font-family: inherit;
+}
+
+.form-group input:focus-visible,
+.form-group textarea:focus-visible,
+.form-group select:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+  border-color: var(--highlight-text);
+}
+
+.form-group input:focus:not(:focus-visible),
+.form-group textarea:focus:not(:focus-visible),
+.form-group select:focus:not(:focus-visible) {
+  border-color: var(--highlight-text);
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+  .form-group input[type="text"],
+  .form-group input[type="number"],
+  .form-group input[type="password"],
+  .form-group textarea,
+  .form-group select {
+    font-size: var(--font-size-body);
+  }
+}
+
+@media (max-width: 480px) {
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .btn-success {
+    width: 100%;
+    justify-content: center;
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: var(--font-size-body);
+  }
+
+  .card {
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  .form-group {
+    margin-bottom: 14px;
+  }
+
+  .form-group label,
+  .description {
+    font-size: var(--font-size-helper);
+    line-height: 1.5;
+  }
+
+  .form-group input[type="text"],
+  .form-group input[type="number"],
+  .form-group input[type="password"],
+  .form-group textarea,
+  .form-group select {
+    padding: 10px 12px;
+  }
+
+  .form-group textarea {
+    min-height: 88px;
+  }
+
+  .form-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 16px;
+  }
+
+  .status-message {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: var(--font-size-helper);
+    line-height: 1.45;
+    text-align: center;
+  }
+
+  .switch-container {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .key-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
+.status-message {
+  font-size: var(--font-size-caption);
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.status-message.info {
+  color: var(--highlight-text);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.status-message.success {
+  color: oklch(0.65 0.18 145);
+  background: rgba(30, 142, 62, 0.15);
+}
+
+.status-message.error {
+  color: var(--danger-color);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.switch-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--tertiary-bg);
+  transition: background-color var(--transition-normal);
+  border-radius: 26px;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--secondary-text);
+  transition: transform var(--transition-normal);
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: var(--button-bg);
+}
+
+input:checked + .slider:before {
+  transform: translateX(22px);
+  background-color: var(--on-accent-text);
+}
+
+.description {
+  display: block;
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
+  margin-bottom: 8px;
+}
+
+.key-name {
+  font-family: "Consolas", "Monaco", monospace;
+  background: var(--tertiary-bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: var(--font-size-caption);
+}
