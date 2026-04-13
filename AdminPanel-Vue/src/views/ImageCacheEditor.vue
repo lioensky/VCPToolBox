@@ -176,6 +176,25 @@ const previewType = ref<'image' | 'video'>('image')
 const paginationSummary = computed(() => `第 ${currentPage.value} / ${totalPages.value} 页 · 共 ${totalItems.value} 条`)
 const emptyMessage = computed(() => (currentSearch.value ? '没有匹配的缓存条目。' : '暂无缓存条目。'))
 
+function normalizeMimeType(raw: string): string {
+  if (!raw) return 'application/octet-stream'
+  let mime = raw.trim()
+  // 去除 "data:" 前缀（如 "data:image/jpeg;" → "image/jpeg"）
+  if (mime.startsWith('data:')) {
+    mime = mime.slice(5)
+  }
+  // 去除尾部分号和 base64 标记（如 "image/jpeg;base64," → "image/jpeg"）
+  const semicolonIdx = mime.indexOf(';')
+  if (semicolonIdx > 0) {
+    mime = mime.slice(0, semicolonIdx)
+  }
+  // 去除尾部逗号
+  if (mime.endsWith(',')) {
+    mime = mime.slice(0, -1)
+  }
+  return mime || 'application/octet-stream'
+}
+
 function guessMimeType(base64String: string): string {
   if (!base64String) return 'application/octet-stream'
 
@@ -192,9 +211,10 @@ function guessMimeType(base64String: string): string {
 }
 
 function mediaKind(mimeType: string): 'image' | 'audio' | 'video' | 'unknown' {
-  if (mimeType.startsWith('image/')) return 'image'
-  if (mimeType.startsWith('audio/')) return 'audio'
-  if (mimeType.startsWith('video/')) return 'video'
+  const normalized = normalizeMimeType(mimeType)
+  if (normalized.startsWith('image/')) return 'image'
+  if (normalized.startsWith('audio/')) return 'audio'
+  if (normalized.startsWith('video/')) return 'video'
   return 'unknown'
 }
 
@@ -249,6 +269,7 @@ function normalizeItem(entry: MediaCacheItem): MediaItem {
   const description = typeof entry.description === 'string' ? entry.description : ''
   const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''
   const base64 = typeof entry.base64 === 'string' ? entry.base64 : ''
+  const rawMime = entry.mimeType || guessMimeType(base64)
 
   return {
     hash: entry.hash,
@@ -256,7 +277,7 @@ function normalizeItem(entry: MediaCacheItem): MediaItem {
     description,
     originalDescription: description,
     timestamp,
-    mimeType: entry.mimeType || guessMimeType(base64),
+    mimeType: normalizeMimeType(rawMime),
     isReidentifying: false,
     isDeleting: false,
     isSaving: false,

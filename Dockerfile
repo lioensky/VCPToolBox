@@ -55,6 +55,14 @@ RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/py
 # 复制所有源代码
 COPY . .
 
+# 构建 AdminPanel-Vue 前端
+RUN if [ -f AdminPanel-Vue/package.json ]; then \
+      echo ">>> Building AdminPanel-Vue frontend..."; \
+      cd AdminPanel-Vue && npm install --registry=https://registry.npmmirror.com && npm run build:no-type-check; \
+      cd ..; \
+      echo ">>> AdminPanel-Vue build complete."; \
+    fi
+
 # 查找所有插件目录下的 requirements.txt 并安装依赖
 # 使用 find 命令查找所有名为 requirements.txt 的文件
 # 然后使用 for 循环遍历这些文件并用 pip 安装
@@ -116,7 +124,10 @@ COPY --from=build /usr/src/app/*.js ./
 COPY --from=build /usr/src/app/Plugin ./Plugin
 COPY --from=build /usr/src/app/Agent ./Agent
 COPY --from=build /usr/src/app/routes ./routes
+COPY --from=build /usr/src/app/modules ./modules
 COPY --from=build /usr/src/app/requirements.txt ./
+# 复制 AdminPanel-Vue 构建产物（管理面板前端）
+COPY --from=build /usr/src/app/AdminPanel-Vue/dist ./AdminPanel-Vue/dist
 
 # 创建所有应用可能需要写入的持久化目录，以增强镜像的健壮性
 # 这样即使用户的宿主机目录不完整，容器也能正常启动。
@@ -155,8 +166,9 @@ RUN mkdir -p /usr/src/app/VCPTimedContacts \
 # USER appuser
 
 
-# 暴露端口
-EXPOSE 6005
+# 暴露端口（主服务 6005 + 管理面板 6006）
+EXPOSE 6005 6006
 
 # 定义容器启动命令
+# 默认只启动主服务；如需同时启动管理面板，可使用 docker-compose 配置
 CMD [ "node_modules/.bin/pm2-runtime", "start", "server.js" ]
