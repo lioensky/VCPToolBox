@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识库RAG-Tags编辑器</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="rag_tags_editor.css">
+    <script>
+        // 监听来自父窗口的主题变化消息
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'themeChange') {
+                const theme = event.data.theme;
+                document.documentElement.setAttribute('data-theme', theme);
+            }
+        });
+
+        // 页面加载时，向父窗口请求当前主题
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.parent && window.parent !== window) {
+                 window.parent.postMessage({ type: 'requestTheme' }, '*');
+            } else {
+                const storedTheme = localStorage.getItem('theme');
+                const prefersDarkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+                if (storedTheme) {
+                    document.documentElement.setAttribute('data-theme', storedTheme);
+                } else {
+                    document.documentElement.setAttribute('data-theme', prefersDarkScheme.matches ? 'dark' : 'light');
+                }
+            }
+        });
+    </script>
+</head>
+<body>
+<div class="container">
+    <div class="controls">
+        <button id="saveButton">保存更改到 rag_tags.json</button>
+        <button id="addKnowledgeBaseButton">添加知识库</button>
+    </div>
+
+    <h2>知识库标签列表</h2>
+    <div id="ragTagsList">
+        <p>正在加载RAG-Tags数据...</p>
+    </div>
+</div>
+
+<script>
+    let ragTagsData = {};
+    const ragTagsListDiv = document.getElementById('ragTagsList');
+    const saveButton = document.getElementById('saveButton');
+    const addKnowledgeBaseButton = document.getElementById('addKnowledgeBaseButton');
+
+    saveButton.addEventListener('click', handleSave);
+    addKnowledgeBaseButton.addEventListener('click', addKnowledgeBase);
+
+    async function loadRagTags() {
+        try {
+            const response = await fetch('/admin_api/rag-tags');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            ragTagsData = await response.json();
+            renderRagTagsList();
+        } catch (error) {
+            console.error("加载RAG-Tags失败:", error);
+            ragTagsListDiv.innerHTML = `<p style="color: red;">加载RAG-Tags失败: ${error.message}</p>`;
+        }
+    }
+    
+    function getTagString(tagData) {
+        if (typeof tagData === 'string') {
+            return tagData;
+        }
+        if (typeof tagData === 'object' && tagData !== null && tagData.hasOwnProperty('tag')) {
+            return tagData.tag;
+        }
+        return '[无效标签]';
+    }
+
+    function renderRagTagsList() {
+        ragTagsListDiv.innerHTML = '';
+
+        if (Object.keys(ragTagsData).length === 0) {
+            ragTagsListDiv.innerHTML = '<p>配置文件为空。</p>';
+            return;
+        }
+
+        for (const kbName in ragTagsData) {
+            if (ragTagsData.hasOwnProperty(kbName)) {
+                const kbData = ragTagsData[kbName];
+                const tags = Array.isArray(kbData) ? kbData : kbData.tags || [];
+                const threshold = Array.isArray(kbData) ? undefined : kbData.threshold;
+
+                const kbDiv = document.createElement('div');
+                kbDiv.className = 'kb-entry';
+                kbDiv.dataset.kbName = kbName;
+
+                const headerDiv = document.createElement('div');
+                headerDiv.className = 'kb-header';
+                
+                const title = document.createElement('h3');
+                title.textContent = kbName;
+                headerDiv.appendChild(title);
+
+                const deleteKbBtn = document.createElement('button');
+                deleteKbBtn.className = 'delete-kb-btn';
+                deleteKbBtn.textContent = '删除知识库';
+                deleteKbBtn.onclick = () => {
+                    if (confirm(`确定要删除知识库 "${kbName}" 吗？`)) {
+                        delete ragTagsData[kbName];
+                        renderRagTagsList();
+                    }
+                };
+                headerDiv.appendChild(deleteKbBtn);
+                kbDiv.appendChild(headerDiv);
+                
+                const thresholdDiv = document.createElement('div');
+                thresholdDiv.className = 'threshold-controls';
+
+                const enableCheckbox = document.createElement('input');
+                enableCheckbox.type = 'checkbox';
+                enableCheckbox.id = `enable-threshold-${kbName}`;
+                enableCheckbox.checked = threshold !== undefined;
+                
+                const thresholdLabel = document.createElement('label');
+                thresholdLabel.htmlFor = enableCheckbox.id;
+                thresholdLabel.textContent = '启用阈值:';
+                
+                const thresholdSlider = document.createElement('input');
+                thresholdSlider.type = 'range';
+                thresholdSlider.min = 0.1;
+                thresholdSlider.max = 1.0;
+                thresholdSlider.step = 0.01;
+                thresholdSlider.value = threshold !== undefined ? threshold : 0.75;
+                thresholdSlider.id = `threshold-slider-${kbName}`;
+                thresholdSlider.disabled = !enableCheckbox.checked;
+
+                const thresholdValueSpan = document.createElement('span');
+                thresholdValueSpan.className = 'threshold-value';
+                thresholdValueSpan.id = `threshold-value-${kbName}`;
+                thresholdValueSpan.textContent = parseFloat(thresholdSlider.value).toFixed(2);
+                
+                thresholdSlider.oninput = () => {
+                    thresholdValueSpan.textContent = parseFloat(thresholdSlider.value).toFixed(2);
+                };
+
+                enableCheckbox.onchange = () => {
+                    thresholdSlider.disabled = !enableCheckbox.checked;
+                };
+
+                thresholdDiv.appendChild(enableCheckbox);
+                thresholdDiv.appendChild(thresholdLabel);
+                thresholdDiv.appendChild(thresholdSlider);
+                thresholdDiv.appendChild(thresholdValueSpan);
+
+                kbDiv.appendChild(thresholdDiv);
+
+                const tagsContainer = document.createElement('div');
+                tagsContainer.className = 'tags-container';
+                tagsContainer.id = `tags-container-${kbName}`;
+
+                tags.forEach((tagData, index) => {
+                    const tagDiv = document.createElement('div');
+                    tagDiv.className = 'tag-item';
+                    
+                    const tagInput = document.createElement('input');
+                    tagInput.type = 'text';
+                    tagInput.className = 'tag-input';
+                    tagInput.value = getTagString(tagData);
+                    tagInput.dataset.originalIndex = index;
+                    tagDiv.appendChild(tagInput);
+
+                    const deleteTagBtn = document.createElement('button');
+                    deleteTagBtn.className = 'delete-tag-btn';
+                    deleteTagBtn.textContent = '×';
+                    deleteTagBtn.onclick = () => {
+                       tagDiv.remove();
+                    };
+                    tagDiv.appendChild(deleteTagBtn);
+                    tagsContainer.appendChild(tagDiv);
+                });
+                
+                const addTagBtn = document.createElement('button');
+                addTagBtn.textContent = '添加标签';
+                addTagBtn.className = 'add-tag-btn';
+                addTagBtn.onclick = () => {
+                    const tagsContainer = document.getElementById(`tags-container-${kbName}`);
+                    const newTagDiv = document.createElement('div');
+                    newTagDiv.className = 'tag-item';
+
+                    const newTagInput = document.createElement('input');
+                    newTagInput.type = 'text';
+                    newTagInput.className = 'tag-input';
+                    newTagInput.placeholder = '新标签:权重(可选)';
+                    newTagDiv.appendChild(newTagInput);
+
+                    const newDeleteBtn = document.createElement('button');
+                    newDeleteBtn.className = 'delete-tag-btn';
+                    newDeleteBtn.textContent = '×';
+                    newDeleteBtn.onclick = () => newTagDiv.remove();
+                    newTagDiv.appendChild(newDeleteBtn);
+
+                    tagsContainer.appendChild(newTagDiv);
+                    newTagInput.focus();
+                };
+
+                const addTagDiv = document.createElement('div');
+                addTagDiv.className = 'add-tag-controls';
+                addTagDiv.appendChild(addTagBtn);
+
+                kbDiv.appendChild(tagsContainer);
+                kbDiv.appendChild(addTagDiv);
+                ragTagsListDiv.appendChild(kbDiv);
+            }
+        }
+    }
+
+    function addKnowledgeBase() {
+        const newKbName = prompt("请输入新的知识库名称:");
+        if (newKbName && !ragTagsData.hasOwnProperty(newKbName)) {
+            ragTagsData[newKbName] = { tags: [] };
+            renderRagTagsList();
+        } else if (newKbName) {
+            alert('该知识库已存在！');
+        }
+    }
+
+    async function handleSave() {
+        const dataToSave = {};
+        const kbEntries = ragTagsListDiv.getElementsByClassName('kb-entry');
+
+        for (const entry of kbEntries) {
+            const kbName = entry.dataset.kbName;
+            
+            const newTags = [];
+            const tagInputs = entry.querySelectorAll('.tag-input');
+            tagInputs.forEach(input => {
+                const value = input.value.trim();
+                if (value) {
+                    newTags.push(value); // 新格式：所有标签直接作为字符串保存
+                }
+            });
+
+            dataToSave[kbName] = { tags: newTags };
+            
+            const enableThresholdCheckbox = document.getElementById(`enable-threshold-${kbName}`);
+            if (enableThresholdCheckbox && enableThresholdCheckbox.checked) {
+                const thresholdSlider = document.getElementById(`threshold-slider-${kbName}`);
+                dataToSave[kbName].threshold = parseFloat(thresholdSlider.value);
+            }
+        }
+
+        try {
+            const response = await fetch('/admin_api/rag-tags', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(dataToSave)
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                alert(result.message || 'RAG-Tags文件已成功保存。');
+                loadRagTags();
+            } else {
+                alert('保存失败: ' + (result.error || '未知错误'));
+                console.error("保存RAG-Tags失败:", result);
+            }
+        } catch (error) {
+            alert('保存RAG-Tags时发生错误: ' + error.message);
+            console.error("保存错误:", error);
+        }
+    }
+
+    window.addEventListener('DOMContentLoaded', loadRagTags);
+</script>
+</body>
+</html>

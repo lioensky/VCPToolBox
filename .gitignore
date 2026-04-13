@@ -90,6 +90,9 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+# 但保留 AdminPanel-Vue 构建产物，让用户开箱即用
+!AdminPanel-Vue/dist/
+!AdminPanel-Vue/dist/**
 
 # Gatsby files
 .cache/

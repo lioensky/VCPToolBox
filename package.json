@@ -6,7 +6,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "start:admin": "node adminServer.js",
-    "start:all": "node server.js & node adminServer.js"
+    "start:all": "node server.js & node adminServer.js",
+    "build:admin": "cd AdminPanel-Vue && npm install && npm run build"
   },
   "keywords": [],
   "author": "",
