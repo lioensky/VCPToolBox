@@ -88,7 +88,7 @@ class ContextFoldingV2 {
         this._startHotParamsWatcher();
 
         this.enabled = true;
-        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 阈值基准: ${this.hotParams.thresholdBase}, Store: ${stats.count}/${stats.maxEntries}条)`);
+        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 阈值基准: ${this.hotParams.thresholdBase})`);
     }
 
     /**
