@@ -124,9 +124,12 @@ const apiErrorCounts = new Map();
 
 const loginAttempts = new Map();
 const tempBlocks = new Map();
-const MAX_LOGIN_ATTEMPTS = 5; // 15分钟内最多尝试5次
+const noCredentialAccess = new Map(); // 无凭据访问计数（防DDoS探测）
+const MAX_LOGIN_ATTEMPTS = 5; // 15分钟内最多尝试5次（错误凭据）
+const MAX_NO_CREDENTIAL_REQUESTS = 100; // 15分钟内无凭据访问上限（防DDoS探测）
 const LOGIN_ATTEMPT_WINDOW = 15 * 60 * 1000; // 15分钟的窗口
-const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟
+const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟（错误凭据触发）
+const NO_CREDENTIAL_BLOCK_DURATION = 15 * 60 * 1000; // 封禁15分钟（无凭据DDoS触发）
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
 
@@ -497,6 +500,28 @@ const adminAuth = (req, res, next) => {
                     loginAttempts.delete(clientIp); // 封禁后清除尝试记录
                 } else {
                     loginAttempts.set(clientIp, attemptInfo);
+                }
+            }
+            // 🌟 防DDoS：无凭据访问独立计数，阈值更宽松（不影响正常 cookie 过期场景）
+            else if (clientIp && !isReadOnlyPath) {
+                const now = Date.now();
+                let accessInfo = noCredentialAccess.get(clientIp) || { count: 0, firstAccess: now };
+
+                if (now - accessInfo.firstAccess > LOGIN_ATTEMPT_WINDOW) {
+                    accessInfo = { count: 0, firstAccess: now };
+                }
+
+                accessInfo.count++;
+
+                if (accessInfo.count >= MAX_NO_CREDENTIAL_REQUESTS) {
+                    console.warn(`[AdminAuth] IP ${clientIp} blocked for ${NO_CREDENTIAL_BLOCK_DURATION / 60000} min — excessive unauthenticated requests (${accessInfo.count}/${MAX_NO_CREDENTIAL_REQUESTS}).`);
+                    tempBlocks.set(clientIp, { expires: now + NO_CREDENTIAL_BLOCK_DURATION });
+                    noCredentialAccess.delete(clientIp);
+                } else {
+                    noCredentialAccess.set(clientIp, accessInfo);
+                    if (accessInfo.count % 10 === 0) {
+                        console.log(`[AdminAuth] Unauthenticated access from IP: ${clientIp}. Count: ${accessInfo.count}/${MAX_NO_CREDENTIAL_REQUESTS}`);
+                    }
                 }
             }
 
