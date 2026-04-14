@@ -187,7 +187,7 @@ void contentRef;
   box-sizing: border-box;
   overflow-y: auto;
   height: 100%;
-  transform: scale(1) translateY(0);
+  /* 不在默认态设置 identity transform，避免创建 stacking context */
   opacity: 1;
   transition:
     opacity 1.6s cubic-bezier(0.4, 0, 0.2, 1),
@@ -256,8 +256,9 @@ void contentRef;
 /* 过渡包裹层：在正常状态定义 transition，确保状态切换时动画触发 */
 .immersive-fade {
   opacity: 1;
-  transform: translateY(0) scale(1);
-  filter: blur(0);
+  /* 不在默认态设置 identity transform/filter，避免创建 stacking context
+     导致移动端 sidebar(position:fixed; z-index:999) 被 dashboard 卡片遮挡。
+     CSS transition 可以正确地从 none 过渡到具体值。 */
   transition:
     opacity 1.8s cubic-bezier(0.4, 0, 0.2, 1),
     transform 2s cubic-bezier(0.4, 0, 0.2, 1),
