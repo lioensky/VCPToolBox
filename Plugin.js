@@ -595,7 +595,10 @@ class PluginManager extends EventEmitter {
 
                     await module.initialize(initialConfig, dependencies);
                 } catch (e) {
-                    console.error(`[PluginManager] Error initializing module for ${manifest.name}:`, e);
+                    console.error(`[PluginManager] Error initializing module for ${manifest.name}:`, e instanceof Error ? e.message : JSON.stringify(e));
+                    if (e instanceof Error && e.stack) {
+                        console.error(`[PluginManager] Stack trace for ${manifest.name}:`, e.stack);
+                    }
                 }
             }
 

@@ -55,6 +55,9 @@ class ContextFoldingV2 {
         this.minDepth = Math.max(2, parseInt(process.env.FOLDING_MIN_DEPTH) || 3);
         this.maxRetries = parseInt(process.env.FOLDING_MAX_RETRIES) || 3;
 
+        // 🌟 保存 PROJECT_BASE_PATH 到实例，供 _loadHotParams / _startHotParamsWatcher 使用
+        this._projectBasePath = (config && config.PROJECT_BASE_PATH) || process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
+
         // 2. 接收 ContextBridge
         if (dependencies && dependencies.contextBridge) {
             this.contextBridge = dependencies.contextBridge;
@@ -67,15 +70,21 @@ class ContextFoldingV2 {
         // 3. 延迟验证 FoldingStore 可用性
         //    FoldingStore 通过 getter 动态获取，RAGDiaryPlugin 的异步初始化可能尚未完成，
         //    因此不在此处做硬判断。改为在 processMessages 中按需检查。
-        if (this.contextBridge.foldingStore) {
-            const stats = this.contextBridge.foldingStore.getStats();
-            if (stats.available) {
-                console.log(`[ContextFoldingV2] FoldingStore 已就绪 (${stats.count}/${stats.maxEntries}条)`);
+        let storeStatsStr = '未就绪';
+        try {
+            if (this.contextBridge.foldingStore) {
+                const stats = this.contextBridge.foldingStore.getStats();
+                if (stats.available) {
+                    storeStatsStr = `${stats.count}/${stats.maxEntries}条`;
+                    console.log(`[ContextFoldingV2] FoldingStore 已就绪 (${storeStatsStr})`);
+                } else {
+                    console.warn('[ContextFoldingV2] FoldingStore 数据库当前不可用，将在运行时重试');
+                }
             } else {
-                console.warn('[ContextFoldingV2] FoldingStore 数据库当前不可用，将在运行时重试');
+                console.log('[ContextFoldingV2] FoldingStore 当前不可用（RAGDiaryPlugin 可能尚在初始化），将在运行时动态获取');
             }
-        } else {
-            console.log('[ContextFoldingV2] FoldingStore 当前不可用（RAGDiaryPlugin 可能尚在初始化），将在运行时动态获取');
+        } catch (foldingStoreError) {
+            console.warn(`[ContextFoldingV2] FoldingStore 可用性检查失败，将在运行时重试: ${foldingStoreError instanceof Error ? foldingStoreError.message : JSON.stringify(foldingStoreError)}`);
         }
 
         // 4. 验证摘要 API 配置
@@ -88,14 +97,14 @@ class ContextFoldingV2 {
         this._startHotParamsWatcher();
 
         this.enabled = true;
-        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 阈值基准: ${this.hotParams.thresholdBase})`);
+        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 阈值基准: ${this.hotParams.thresholdBase}, Store: ${storeStatsStr})`);
     }
 
     /**
      * 从 rag_params.json 加载热调控参数
      */
     async _loadHotParams() {
-        const projectBasePath = process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
+        const projectBasePath = this._projectBasePath || process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
         const paramsPath = path.join(projectBasePath, 'rag_params.json');
         try {
             const data = await fs.readFile(paramsPath, 'utf-8');
@@ -113,7 +122,7 @@ class ContextFoldingV2 {
      * 监听 rag_params.json 变更
      */
     _startHotParamsWatcher() {
-        const projectBasePath = process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
+        const projectBasePath = this._projectBasePath || process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
         const paramsPath = path.join(projectBasePath, 'rag_params.json');
         if (this._ragParamsWatcher) return;
 
