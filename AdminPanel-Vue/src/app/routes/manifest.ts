@@ -139,6 +139,17 @@ export const APP_ROUTE_MANIFEST = [
     component: () => import("@/views/VcptavernEditor.vue"),
   },
   {
+    id: "sarprompt-editor",
+    routeName: "SarPromptEditor",
+    path: "/sarprompt-editor",
+    title: "多模型提示词管理",
+    icon: "psychology_alt",
+    requiresAuth: true,
+    navGroup: "core",
+    showInSidebar: true,
+    component: () => import("@/views/SarPromptEditor.vue"),
+  },
+  {
     id: "schedule-manager",
     routeName: "ScheduleManager",
     path: "/schedule-manager",

@@ -71,6 +71,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     mount('/', 'dream');              // Handles /dream-logs/*, /dream-operation/*
     mount('/', 'dailyNotes');         // Wrapper for existing dailyNotesRoutes (Handles /dailynotes/*)
     mount('/', 'newapiMonitor');      // Handles /newapi-monitor/*
+    mount('/', 'sarPrompts');         // Handles /sarprompts/*
 
     return adminApiRouter;
 };
