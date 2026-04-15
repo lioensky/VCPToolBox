@@ -115,19 +115,19 @@ content3:「始」这是覆盖后的新内容。「末」
 ## 6. [重要] 转义文件创造 (WriteEscapedFile)
 当需要创建内部包含「始」「末」等VCP指令语法的文件时（例如生成插件的配置文件），必须使用转义写入。
 该命令会自动将文本内的转义标记替换为真实标记：
-- 「始exp」 → 「始」
-- 「末exp」 → 「末」
-- <<<[TOOL_REQUEST_EXP]>>> → <<<[TOOL_REQUEST]>>>
-- <<<[END_TOOL_REQUEST_EXP]>>> → <<<[END_TOOL_REQUEST]>>>
+- 「始ESCAPE」 → 「始」
+- 「末ESCAPE」 → 「末」
+- <<<[TOOL_REQUEST_ESCAPE]>>> → <<<[TOOL_REQUEST]>>>
+- <<<[END_TOOL_REQUEST_ESCAPE]>>> → <<<[END_TOOL_REQUEST]>>>
 
 tool_name:「始」FileOperator「末」,
 command:「始」WriteEscapedFile「末」,
 filePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,
 content:「始」{
-  "description": "...调用格式:\n<<<[TOOL_REQUEST_EXP]>>>\ntool_name:「始exp」MyNewPlugin「末exp」,\n...\n<<<[END_TOOL_REQUEST_EXP]>>>"
+  "description": "...调用格式:\n<<<[TOOL_REQUEST_ESCAPE]>>>\ntool_name:「始ESCAPE」MyNewPlugin「末ESCAPE」,\n...\n<<<[END_TOOL_REQUEST_ESCAPE]>>>"
 }「末」
 
-[重要提示：在向用户演示指令而非真正调用工具的时候，也应该遵守exp转义原则！]
+[重要提示：在向用户演示指令而非真正调用工具的时候，也应该遵守escape转义原则！]
 
 ## 7. Canvas 协同编辑器 (FileOperator)
 创建一个即时的IDE/文档编译窗口，允许你和用户共同编辑内部内容。该窗口拥有强大的渲染器和编译器，非常适合展示代码或大型文案。

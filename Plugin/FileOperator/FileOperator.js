@@ -511,10 +511,10 @@ async function writeEscapedFile(filePath, content, encoding = 'utf8') {
   // Replace the escaped delimiters with the actual ones
   // Replace all escaped delimiters with the actual ones
   const processedContent = content
-    .replace(/「始exp」/g, '「始」')
-    .replace(/「末exp」/g, '「末」')
-    .replace(/<<<\[TOOL_REQUEST_EXP\]>>>/g, '<<<[TOOL_REQUEST]>>>')
-    .replace(/<<<\[END_TOOL_REQUEST_EXP\]>>>/g, '<<<[END_TOOL_REQUEST]>>>');
+    .replace(/「始ESCAPE」/g, '「始」')
+    .replace(/「末ESCAPE」/g, '「末」')
+    .replace(/<<<\[TOOL_REQUEST_ESCAPE\]>>>/g, '<<<[TOOL_REQUEST]>>>')
+    .replace(/<<<\[END_TOOL_REQUEST_ESCAPE\]>>>/g, '<<<[END_TOOL_REQUEST]>>>');
 
   // Delegate the actual writing to the original writeFile function
   // This reuses all the safety checks, unique file naming, etc.

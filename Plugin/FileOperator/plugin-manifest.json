@@ -65,7 +65,7 @@
       },
       {
         "command": "WriteEscapedFile",
-        "description": "功能: 专用于写入内容本身包含VCP标准指令界定符的文件，特别是用于生成plugin-manifest.json。此命令会先将内容中的特殊转义界定符替换为标准界定符，然后再写入文件。当AI需要生成一个包含调用示例的插件描述文件时，必须使用此命令以避免解析错误。\n转义规则:\n- 「始exp」 -> 「始」\n- 「末exp」 -> 「末」\n- <<<[TOOL_REQUEST_EXP]>>> -> <<<[TOOL_REQUEST]>>>\n- <<<[END_TOOL_REQUEST_EXP]>>> -> <<<[END_TOOL_REQUEST]>>>\n参数:\n- filePath (字符串, 必需): 要写入的文件的绝对路径。\n- content (字符串, 必需): 要写入文件的内容，其中应使用上述转义规则。\n- encoding (字符串, 可选, 默认'utf8'): 写入时使用的文件编码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WriteEscapedFile「末」,\nfilePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,\ncontent:「始」{\n  \"description\": \"...调用格式:\\n<<<[TOOL_REQUEST_EXP]>>>\\ntool_name:「始exp」MyNewPlugin「末exp」,\\n...\\n<<<[END_TOOL_REQUEST_EXP]>>>\"\n}「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "功能: 专用于写入内容本身包含VCP标准指令界定符的文件，特别是用于生成plugin-manifest.json。此命令会先将内容中的特殊转义界定符替换为标准界定符，然后再写入文件。当AI需要生成一个包含调用示例的插件描述文件时，必须使用此命令以避免解析错误。\n转义规则:\n- 「始ESCAPE」 -> 「始」\n- 「末ESCAPE」 -> 「末」\n- <<<[TOOL_REQUEST_ESCAPE]>>> -> <<<[TOOL_REQUEST]>>>\n- <<<[END_TOOL_REQUEST_ESCAPE]>>> -> <<<[END_TOOL_REQUEST]>>>\n参数:\n- filePath (字符串, 必需): 要写入的文件的绝对路径。\n- content (字符串, 必需): 要写入文件的内容，其中应使用上述转义规则。\n- encoding (字符串, 可选, 默认'utf8'): 写入时使用的文件编码。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」FileOperator「末」,\ncommand:「始」WriteEscapedFile「末」,\nfilePath:「始」/path/to/new_plugin/plugin-manifest.json「末」,\ncontent:「始」{\n  \"description\": \"...调用格式:\\n<<<[TOOL_REQUEST_ESCAPE]>>>\\ntool_name:「始ESCAPE」MyNewPlugin「末ESCAPE」,\\n...\\n<<<[END_TOOL_REQUEST_ESCAPE]>>>\"\n}「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "command": "AppendFile",
