@@ -55,13 +55,33 @@
               v-model.number="entry.value"
             >
 
-            <textarea
-              v-else-if="entry.isMultilineQuoted || String(entry.value || '').length > 60"
-              :id="`plugin-${entry.key}`"
-              :value="entry.value as unknown as TextareaValue"
-              @input="entry.value = ($event.target as HTMLTextAreaElement).value"
-              rows="4"
-            ></textarea>
+            <div v-if="entry.isMultilineQuoted || String(entry.value || '').length > 60" class="textarea-wrapper">
+              <div v-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
+                <textarea
+                  :id="`plugin-${entry.key}`"
+                  :value="entry.value as unknown as TextareaValue"
+                  @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                  rows="4"
+                  :class="{ 'password-masked': !sensitiveFields[entry.key] }"
+                ></textarea>
+                <button
+                  type="button"
+                  class="toggle-visibility-btn"
+                  @click="toggleSensitiveField(entry.key)"
+                  :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                  :aria-pressed="sensitiveFields[entry.key]"
+                >
+                  {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
+                </button>
+              </div>
+              <textarea
+                v-else
+                :id="`plugin-${entry.key}`"
+                :value="entry.value as unknown as TextareaValue"
+                @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                rows="4"
+              ></textarea>
+            </div>
 
             <div v-else-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
               <input
@@ -134,13 +154,33 @@
                 v-model.number="entry.value"
               >
 
-              <textarea
-                v-else-if="entry.isMultilineQuoted || String(entry.value || '').length > 60"
-                :id="`plugin-${entry.key}`"
-                :value="entry.value as unknown as TextareaValue"
-                @input="entry.value = ($event.target as HTMLTextAreaElement).value"
-                rows="4"
-              ></textarea>
+              <div v-if="entry.isMultilineQuoted || String(entry.value || '').length > 60" class="textarea-wrapper">
+                <div v-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
+                  <textarea
+                    :id="`plugin-${entry.key}`"
+                    :value="entry.value as unknown as TextareaValue"
+                    @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                    rows="4"
+                    :class="{ 'password-masked': !sensitiveFields[entry.key] }"
+                  ></textarea>
+                  <button
+                    type="button"
+                    class="toggle-visibility-btn"
+                    @click="toggleSensitiveField(entry.key)"
+                    :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+                    :aria-pressed="sensitiveFields[entry.key]"
+                  >
+                    {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
+                  </button>
+                </div>
+                <textarea
+                  v-else
+                  :id="`plugin-${entry.key}`"
+                  :value="entry.value as unknown as TextareaValue"
+                  @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                  rows="4"
+                ></textarea>
+              </div>
 
               <div v-else-if="entry.key && isSensitiveKey(entry.key)" class="input-with-toggle">
                 <input
@@ -402,6 +442,12 @@ watch(
   color: var(--primary-text);
   font-size: var(--font-size-helper);
   cursor: pointer;
+}
+
+/* 文本掩码样式 (用于 textarea) */
+.password-masked {
+  -webkit-text-security: disc !important;
+  text-security: disc !important;
 }
 
 .toggle-visibility-btn:hover {

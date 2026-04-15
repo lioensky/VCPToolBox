@@ -45,7 +45,27 @@
           
           <!-- 多行文本或长文本 -->
           <div v-else-if="entry.isMultilineQuoted || (entry.value && String(entry.value).length > 60)">
+            <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
+              <textarea 
+                :id="`config-${entry.key}`"
+                :value="String(entry.value)"
+                @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+                :rows="Math.min(10, Math.max(3, String(entry.value).split('\n').length + 1))"
+                :class="{ 'password-masked': !sensitiveFields[entry.key] }"
+                autocomplete="off"
+              ></textarea>
+              <button 
+                type="button" 
+                class="toggle-visibility-btn"
+                @click="toggleSensitiveField(entry.key)"
+                :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+              >
+                {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
+              </button>
+            </div>
+            
             <textarea 
+              v-else
               :id="`config-${entry.key}`"
               :value="String(entry.value)"
               @input="entry.value = ($event.target as HTMLTextAreaElement).value"
@@ -333,6 +353,12 @@ onUnmounted(() => {
   font-size: var(--font-size-helper);
   cursor: pointer;
   z-index: 2;
+}
+
+/* 文本掩码样式 (用于 textarea) */
+.password-masked {
+  -webkit-text-security: disc !important;
+  text-security: disc !important;
 }
 
 .toggle-visibility-btn:hover {
