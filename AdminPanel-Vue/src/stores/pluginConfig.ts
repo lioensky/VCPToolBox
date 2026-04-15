@@ -107,7 +107,10 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     return 'string'
   }
 
-  function inferInputType(value: string): ConfigEntry['type'] {
+  function inferInputType(key: string | null, value: string): ConfigEntry['type'] {
+    // 如果是敏感字段（Token/Key等），强制设为字符串，防止被误判为整数
+    if (key && isSensitiveConfigKey(key)) return 'string'
+
     if (/^(true|false)$/i.test(value)) {
       return 'boolean'
     }
@@ -202,7 +205,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
       configEntries.value = entries.map((entry) => {
         const inferredType: ConfigEntry['type'] = entry.isCommentOrEmpty || !entry.key
           ? 'string'
-          : inferInputType(entry.value)
+          : inferInputType(entry.key, entry.value)
 
         return {
           ...entry,

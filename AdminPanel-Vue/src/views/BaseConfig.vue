@@ -193,6 +193,10 @@ function toggleSensitiveField(key: string) {
 // 推断类型
 function inferType(key: string | null, value: string): 'string' | 'boolean' | 'integer' {
   if (!key) return 'string'
+  
+  // 如果是敏感字段（Token/Key等），强制设为字符串，防止因为当前值为纯数字而被误判为整数
+  if (isSensitiveConfigKey(key)) return 'string'
+  
   if (/^(true|false)$/i.test(value)) return 'boolean'
   if (!isNaN(parseFloat(value)) && isFinite(parseFloat(value)) && !value.includes('.')) return 'integer'
   return 'string'
