@@ -3,7 +3,13 @@ import { defineStore } from 'pinia'
 import { pluginApi } from '@/api'
 import { useAppStore } from '@/stores/app'
 import type { PluginInfo, PluginInvocationCommand } from '@/types/api.plugin'
-import { parseEnvToList, serializeEnvAssignment, showMessage } from '@/utils'
+import { 
+  parseEnvToList, 
+  serializeEnvAssignment, 
+  showMessage,
+  castEnvValue,
+  isSensitiveConfigKey
+} from '@/utils'
 
 export type ConfigValue = string | boolean | number | null
 
@@ -51,7 +57,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
 
       return {
         key,
-        value: castByType(rawValue, expectedType),
+        value: castEnvValue(rawValue, expectedType),
         isCommentOrEmpty: false,
         isMultilineQuoted: existing?.isMultilineQuoted ?? String(rawValue).includes('\n'),
         type: expectedType
@@ -83,7 +89,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
   }
 
   function isSensitiveKey(key: string): boolean {
-    return /key|api|secret|password|token/i.test(key)
+    return isSensitiveConfigKey(key)
   }
 
   function toggleSensitiveField(key: string) {
@@ -109,17 +115,6 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
       return 'integer'
     }
     return 'string'
-  }
-
-  function castByType(value: string, type: ConfigEntry['type']): ConfigValue {
-    if (type === 'boolean') {
-      return String(value).toLowerCase() === 'true'
-    }
-    if (type === 'integer') {
-      const parsed = Number.parseInt(String(value), 10)
-      return Number.isNaN(parsed) ? 0 : parsed
-    }
-    return value
   }
 
   function serializeConfigEntry(entry: ConfigEntry): string {
@@ -212,7 +207,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
         return {
           ...entry,
           type: inferredType,
-          value: entry.isCommentOrEmpty || !entry.key ? entry.value : castByType(entry.value, inferredType)
+          value: entry.isCommentOrEmpty || !entry.key ? entry.value : castEnvValue(entry.value, inferredType)
         }
       })
 

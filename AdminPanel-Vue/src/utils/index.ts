@@ -27,6 +27,8 @@ export {
   buildEnvString,
   serializeEnvAssignment,
   serializeEnvValue,
+  castEnvValue,
+  isSensitiveConfigKey,
   type EnvEntry,
 } from "./env";
 

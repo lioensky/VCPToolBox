@@ -29,6 +29,28 @@ export function inferEnvValueType(key: string | null, value: string): 'string' |
   return 'string'
 }
 
+/**
+ * 将字符串值转换为预期类型
+ */
+export function castEnvValue(value: string | boolean | number, type: 'string' | 'boolean' | 'integer'): string | boolean | number {
+  const strValue = String(value)
+  if (type === 'boolean') {
+    return strValue.toLowerCase() === 'true'
+  }
+  if (type === 'integer') {
+    const parsed = parseInt(strValue, 10)
+    return isNaN(parsed) ? 0 : parsed
+  }
+  return strValue
+}
+
+/**
+ * 判断是否为敏感配置项（API Key, Password 等）
+ */
+export function isSensitiveConfigKey(key: string): boolean {
+  return /key|api|secret|password|token/i.test(key)
+}
+
 function isEscaped(line: string, index: number): boolean {
   let backslashCount = 0
   let cursor = index - 1

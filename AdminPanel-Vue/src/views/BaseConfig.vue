@@ -1,11 +1,11 @@
 <template>
   <section id="base-config-section" class="config-section active-section">
-    <p v-if="isLoading" class="config-loading">
+    <div v-if="isLoading && configEntries.length === 0" class="config-loading">
       <span class="loading-spinner"></span>
       加载全局配置中…
-    </p>
+    </div>
 
-    <form v-else-if="configEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
+    <form v-if="configEntries.length > 0" id="base-config-form" @submit.prevent="handleSubmit">
       <div v-for="entry in configEntries" :key="entry.uid">
         <!-- 注释或空行 -->
         <div v-if="entry.isCommentOrEmpty" class="form-group-comment">
@@ -47,14 +47,36 @@
           <div v-else-if="entry.isMultilineQuoted || (entry.value && String(entry.value).length > 60)">
             <textarea 
               :id="`config-${entry.key}`"
-              v-model="entry.value"
-              :rows="Math.min(10, Math.max(3, String(entry.value).split('\\n').length + 1))"
+              :value="String(entry.value)"
+              @input="entry.value = ($event.target as HTMLTextAreaElement).value"
+              :rows="Math.min(10, Math.max(3, String(entry.value).split('\n').length + 1))"
             ></textarea>
           </div>
           
           <!-- 单行文本 -->
           <div v-else>
+            <!-- 敏感信息打码输入框 -->
+            <div v-if="entry.key && isSensitiveConfigKey(entry.key)" class="input-with-toggle">
+              <input 
+                :type="sensitiveFields[entry.key] ? 'text' : 'password'" 
+                :id="`config-${entry.key}`"
+                v-model="entry.value"
+                :data-original-key="entry.key"
+                autocomplete="off"
+              >
+              <button 
+                type="button" 
+                class="toggle-visibility-btn"
+                @click="toggleSensitiveField(entry.key)"
+                :aria-label="sensitiveFields[entry.key] ? '隐藏值' : '显示值'"
+              >
+                {{ sensitiveFields[entry.key] ? '隐藏' : '显示' }}
+              </button>
+            </div>
+            
+            <!-- 普通文本输入框 -->
             <input 
+              v-else
               type="text" 
               :id="`config-${entry.key}`"
               v-model="entry.value"
@@ -66,9 +88,38 @@
         </div>
       </div>
       
-      <div class="form-actions">
-        <button type="submit" class="btn-primary">保存全局配置</button>
-        <span v-if="statusMessage" :class="['status-message', statusType]">{{ statusMessage }}</span>
+      <div class="config-action-capsule-container">
+        <div class="config-action-capsule">
+          <!-- 保存按钮部分 -->
+          <button 
+            type="submit" 
+            class="capsule-segment save-segment" 
+            :disabled="isLoading"
+            :title="'保存全局配置'"
+          >
+            <span v-if="isLoading" class="loading-spinner-sm"></span>
+            <span v-else class="material-symbols-outlined">save</span>
+            <Transition name="fade-text" mode="out-in">
+              <span v-if="statusMessage" :key="'status'" class="status-text" :class="statusType">
+                {{ statusMessage }}
+              </span>
+              <span v-else :key="'label'" class="label-text">保存配置</span>
+            </Transition>
+          </button>
+
+          <!-- 分割线 (始终显示) -->
+          <div class="capsule-divider"></div>
+
+          <!-- 回到顶部部分 (始终显示) -->
+          <button 
+            type="button" 
+            class="capsule-segment top-segment" 
+            @click="scrollToTop"
+            title="回到顶部"
+          >
+            <span class="material-symbols-outlined">keyboard_arrow_up</span>
+          </button>
+        </div>
       </div>
     </form>
 
@@ -81,19 +132,43 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { adminConfigApi } from '@/api'
-import { showMessage, parseEnvToList, serializeEnvAssignment, type EnvEntry } from '@/utils'
+import { 
+  showMessage, 
+  parseEnvToList, 
+  serializeEnvAssignment, 
+  castEnvValue, 
+  isSensitiveConfigKey, 
+  type EnvEntry 
+} from '@/utils'
 
-interface ConfigEntry extends EnvEntry {
+interface ConfigEntry extends Omit<EnvEntry, 'value'> {
   uid: string
   type: 'string' | 'boolean' | 'integer'
+  value: string | boolean | number
 }
 
 const configEntries = ref<ConfigEntry[]>([])
 const statusMessage = ref('')
 const statusType = ref<'info' | 'success' | 'error'>('info')
 const isLoading = ref(true)
+const sensitiveFields = reactive<Record<string, boolean>>({})
+
+// 回到顶部逻辑
+function scrollToTop() {
+  const container = document.getElementById('config-details-container')
+  if (container) {
+    container.scrollTo({ top: 0, behavior: 'smooth' })
+  } else {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+}
+
+// 切换敏感字段可见性
+function toggleSensitiveField(key: string) {
+  sensitiveFields[key] = !sensitiveFields[key]
+}
 
 // 推断类型
 function inferType(key: string | null, value: string): 'string' | 'boolean' | 'integer' {
@@ -104,8 +179,8 @@ function inferType(key: string | null, value: string): 'string' | 'boolean' | 'i
 }
 
 // 加载配置
-async function loadConfig() {
-  isLoading.value = true
+async function loadConfig(silent = false) {
+  if (!silent) isLoading.value = true
   try {
     const content = await adminConfigApi.getMainConfig({
       showLoader: false,
@@ -113,16 +188,20 @@ async function loadConfig() {
     })
     const entries = parseEnvToList(content)
 
-    configEntries.value = entries.map((entry, index) => ({
-      ...entry,
-      uid: `${entry.key ?? 'line'}-${String(entry.value)}-${index}`,
-      type: entry.isCommentOrEmpty ? 'string' : inferType(entry.key, entry.value)
-    }))
+    configEntries.value = entries.map((entry, index) => {
+      const type = entry.isCommentOrEmpty ? 'string' : inferType(entry.key, entry.value)
+      return {
+        ...entry,
+        uid: `${entry.key ?? 'line'}-${index}`,
+        type,
+        value: entry.isCommentOrEmpty || !entry.key ? entry.value : castEnvValue(entry.value, type)
+      }
+    })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     showMessage(`加载全局配置失败：${errorMessage}`, 'error')
   } finally {
-    isLoading.value = false
+    if (!silent) isLoading.value = false
   }
 }
 
@@ -134,10 +213,19 @@ async function handleSubmit() {
     await adminConfigApi.saveMainConfig(newConfigString, {
       loadingKey: 'base-config.save'
     })
-    statusMessage.value = '全局配置已保存！部分更改可能需要重启服务生效。'
+    statusMessage.value = '全局配置已保存！'
     statusType.value = 'success'
     showMessage('全局配置已保存！', 'success')
-    await loadConfig()
+    
+    // 静默刷新数据，避免加载动画导致滚动重置
+    await loadConfig(true)
+    
+    // 3秒后自动隐藏提示
+    setTimeout(() => {
+      if (statusType.value === 'success') {
+        statusMessage.value = ''
+      }
+    }, 4000)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
     statusMessage.value = `保存失败：${errorMessage}`
@@ -163,6 +251,11 @@ function buildEnvStringForEntries(entries: ConfigEntry[]): string {
 
 onMounted(() => {
   loadConfig()
+  document.documentElement.classList.add('hide-global-back-to-top')
+})
+
+onUnmounted(() => {
+  document.documentElement.classList.remove('hide-global-back-to-top')
 })
 </script>
 
@@ -214,5 +307,170 @@ onMounted(() => {
   font-family: inherit;
   white-space: pre-wrap;
   margin: 8px 0;
+}
+
+/* 敏感信息打码样式 */
+.input-with-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-with-toggle input {
+  flex: 1;
+  padding-right: 70px;
+}
+
+.toggle-visibility-btn {
+  position: absolute;
+  right: 8px;
+  min-height: 30px;
+  padding: 4px 10px;
+  background: var(--tertiary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--primary-text);
+  font-size: var(--font-size-helper);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.toggle-visibility-btn:hover {
+  background: var(--accent-bg);
+}
+
+/* 一体化胶囊操作中心 */
+.config-action-capsule-container {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  z-index: var(--z-index-message);
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+  transition: all var(--transition-normal);
+}
+
+.config-action-capsule {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  height: 50px;
+  background-color: var(--button-bg);
+  color: var(--on-accent-text);
+  border-radius: 25px;
+  box-shadow: var(--shadow-overlay-soft);
+  overflow: hidden;
+  transition: all var(--transition-spring);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.config-action-capsule:hover {
+  background-color: var(--button-hover-bg);
+  transform: translateY(-4px);
+  box-shadow: var(--overlay-panel-shadow);
+}
+
+.capsule-segment {
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  transition: background-color var(--transition-fast);
+}
+
+.capsule-segment:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.save-segment {
+  gap: 8px;
+  min-width: 120px;
+}
+
+.top-segment {
+  width: 50px;
+  padding: 0;
+}
+
+.capsule-divider {
+  width: 1px;
+  height: 24px;
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.label-text, .status-text {
+  font-size: var(--font-size-helper);
+  font-weight: 500;
+}
+
+.status-text.success {
+  color: #a7f3d0;
+}
+
+.status-text.error {
+  color: #fecaca;
+}
+
+.loading-spinner-sm {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* 文本切换动画 */
+.fade-text-enter-active,
+.fade-text-leave-active {
+  transition: all 0.2s ease;
+}
+
+.fade-text-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.fade-text-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* 隐藏全局回到顶部 */
+:global(.hide-global-back-to-top .back-to-top-btn) {
+  display: none !important;
+}
+
+#base-config-section {
+  padding-bottom: 100px;
+}
+
+@media (max-width: 768px) {
+  .config-action-capsule-container {
+    bottom: 20px;
+    right: 20px;
+  }
+}
+
+@media (max-width: 480px) {
+  .config-action-capsule-container {
+    right: 12px;
+    bottom: 20px;
+  }
+  
+  .label-text {
+    display: none; /* 极窄屏幕隐藏文字只留图标 */
+  }
+  
+  .save-segment {
+    min-width: 50px;
+    padding: 0 12px;
+  }
 }
 </style>
