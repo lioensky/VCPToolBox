@@ -1,0 +1,25 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SkillBridge",
+  "version": "1.0.0",
+  "displayName": "Skill 技能目录桥接器",
+  "description": "启动时扫描 SkillBridge 下全部技能的 SKILL.md 前置描述，生成可折叠的技能目录索引，供系统提示词按需感知。",
+  "author": "VCP Team",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SkillBridge.js"
+  },
+  "communication": {
+    "protocol": "process_stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPSkillBridge}}",
+        "description": "Skill 技能目录总览与按需读取提示"
+      }
+    ]
+  }
+}

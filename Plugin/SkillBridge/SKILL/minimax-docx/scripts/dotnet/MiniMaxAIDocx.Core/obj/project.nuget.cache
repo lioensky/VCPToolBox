@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "dgSpecHash": "SLRMSnctaek=",
+  "success": true,
+  "projectFilePath": "/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/MiniMaxAIDocx.Core.csproj",
+  "expectedPackageFiles": [
+    "/Users/minimax/.nuget/packages/documentformat.openxml/3.5.1/documentformat.openxml.3.5.1.nupkg.sha512",
+    "/Users/minimax/.nuget/packages/documentformat.openxml.framework/3.5.1/documentformat.openxml.framework.3.5.1.nupkg.sha512",
+    "/Users/minimax/.nuget/packages/system.commandline/2.0.5/system.commandline.2.0.5.nupkg.sha512",
+    "/Users/minimax/.nuget/packages/system.io.packaging/8.0.1/system.io.packaging.8.0.1.nupkg.sha512",
+    "/Users/minimax/.nuget/packages/microsoft.netcore.app.ref/8.0.23/microsoft.netcore.app.ref.8.0.23.nupkg.sha512",
+    "/Users/minimax/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.23/microsoft.aspnetcore.app.ref.8.0.23.nupkg.sha512"
+  ],
+  "logs": []
+}

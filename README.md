@@ -321,6 +321,33 @@ VCP 引入原生的**上下文折叠协议**，从系统提示词到正文对话
 
 **与传统上下文压缩的本质区别**：上下文压缩会丢失信息，而 VCP 的语义折叠保留了原文的摘要回溯能力——AI 仍然知道"那里曾经讨论过什么"，只是用更少的 Token 表达。
 
+#### 基于上下文折叠的 SkillBridge：低 Token Skill 桥接器
+
+VCP 现在可以利用原生的**上下文折叠协议**，把一整套外部 Skill 体系桥接进系统提示词，而无需把所有 Skill 的完整正文一次性塞进上下文。通过你在AI系统提示词引入{{VCPSkillBridge}}占位符来获取Skill，将你下载的SKill放到`VCPSkillBridge`插件的Skill目录即可，自动加载。
+
+**核心思路：**
+- 在 [`Plugin/SkillBridge/`](Plugin/SkillBridge/) 中，静态插件会在启动时自动扫描各个 Skill 目录下的 [`SKILL.md`](Plugin/SkillBridge/SKILL/fullstack-dev/SKILL.md)
+- 自动抽取 frontmatter 中的 `description`（若缺失则回退正文前 400 字）
+- 将这些描述扁平化后写入每个折叠块的 `::desc:` 字段
+- 在真正注入系统提示词时，只暴露：
+  - Skill 名称
+  - Skill 文件真实路径
+  - 一个提示 AI “如需深入，请再主动读取该 Skill 文件”的顶层桥接说明
+
+这意味着 AI 可以先通过语义匹配知道：
+- 当前有哪些 Skill 与任务最相关
+- 哪个 Skill 值得继续深入
+- 然后再通过文件管理插件按需读取具体的 [`SKILL.md`](Plugin/SkillBridge/SKILL/fullstack-dev/SKILL.md) 或其 `references/`
+
+**直接收益：**
+- **极致省 Token**：不再把十几个 Skill 的完整正文全部常驻注入
+- **高精度路由**：利用 `::desc:` 的区块级语义召回，只展开当前任务真正相关的 Skill 目录提示
+- **兼容现有 Skill 生态**：无需改写 Skill 体系本身，只需桥接其元描述
+- **AI 自主学习能力增强**：AI 会先“知道有这个 Skill”，再决定是否读取与调用，形成真正的按需学习与按需工具化流程
+
+**一句话理解**：
+VCP 不是把所有 Skill 粗暴塞给模型，而是通过**上下文折叠 + 语义召回 + 文件按需读取**，把 Skill 体系变成了一个可被 AI 自主检索、低成本调用的“外置技能脑”。
+
 ### 3.8 高级变量编辑器
 
 集中管理 `TVStxt/` 目录下的高级提示词和占位符组合，同样适用于上述的折叠协议。

@@ -1,0 +1,13 @@
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/bin/Debug/net8.0/MiniMaxAIDocx.Core.deps.json
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/bin/Debug/net8.0/MiniMaxAIDocx.Core.dll
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/bin/Debug/net8.0/MiniMaxAIDocx.Core.pdb
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.csproj.AssemblyReference.cache
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.GeneratedMSBuildEditorConfig.editorconfig
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.AssemblyInfoInputs.cache
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.AssemblyInfo.cs
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.csproj.CoreCompileInputs.cache
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.sourcelink.json
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.dll
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/refint/MiniMaxAIDocx.Core.dll
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/MiniMaxAIDocx.Core.pdb
+/Users/minimax/mmo/skills/skills/minimax-docx/scripts/dotnet/MiniMaxAIDocx.Core/obj/Debug/net8.0/ref/MiniMaxAIDocx.Core.dll

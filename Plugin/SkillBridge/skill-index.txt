@@ -1,0 +1,48 @@
+[===vcp_fold: 0.0 ===]
+这里是Skill技能目录，若你需要对应技能，请使用文件管理插件的Ink模式读取技能。
+
+当前共暴露 11 个 Skill 索引。
+
+[===vcp_fold: 0.5 ::desc: 《Android native application development and UI design guide. Covers Material Design 3, Kotlin/Compose development, project configuration, accessibility, and build troubleshooting. Read this before Android native application development.》===]
+- Skill: android-native-dev
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\android-native-dev\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Full-stack frontend development combining premium UI design, cinematic animations, AI-generated media assets, persuasive copywriting, and visual art. Builds complete, visually striking web pages with real media, advanced motion, and compelling copy. Use when: building landing pages, marketing sites, product pages, dashboards, generating media assets (image/video/audio/music), writing conversion copy, creating generative art, or implementing cinematic scroll animations.》===]
+- Skill: frontend-dev
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\frontend-dev\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Full-stack backend architecture and frontend-backend integration guide. TRIGGER when: building a full-stack app, creating REST API with frontend, scaffolding backend service, building todo app, building CRUD app, building real-time app, building chat app, Express + React, Next.js API, Node.js backend, Python backend, Go backend, designing service layers, implementing error handling, managing config/auth, setting up API clients, implementing auth flows, handling file uploads, adding real-time features (SSE/WebSocket), hardening for production. DO NOT TRIGGER when: pure frontend UI work, pure CSS/styling, database schema only.》===]
+- Skill: fullstack-dev
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\fullstack-dev\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Convert photos (people, pets, objects, logos) into 4 animated GIF stickers with captions. Use when: user wants to create cartoon stickers, GIF expressions, emoji packs, animated avatars, or convert photos to Funko Pop / Pop Mart blind box style animations. Triggers: sticker, GIF, cartoon, emoji, expression pack, avatar animation.》===]
+- Skill: gif-sticker-maker
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\gif-sticker-maker\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《HTML PPT Studio — author professional static HTML presentations in many styles, layouts, and animations, all driven by templates. Use when the user asks for a presentation, PPT, slides, keynote, deck, slideshow, "幻灯片", "演讲稿", "做一份 PPT", "做一份 slides", a reveal-style HTML deck, a 小红书 图文, or any kind of multi-slide pitch/report/sharing document that should look tasteful and be usable with keyboard navigation. Triggers include keywords like "presentation", "ppt", "slides", "deck", "keynote", "reveal", "slideshow", "幻灯片", "演讲稿", "分享稿", "小红书图文", "talk slides", "pitch deck", "tech sharing", "technical presentation".》===]
+- Skill: html-ppt-skill
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\html-ppt-skill\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《iOS application development guide covering UIKit, SnapKit, and SwiftUI. Includes touch targets, safe areas, navigation patterns, Dynamic Type, Dark Mode, accessibility, collection views, common UI components, and SwiftUI design guidelines. For detailed references on specific topics, see the reference files. Use when: developing iOS apps, implementing UI, reviewing iOS code, working with UIKit/SnapKit/SwiftUI layouts, building iPhone interfaces, Swift mobile development, Apple HIG compliance, iOS accessibility implementation.》===]
+- Skill: ios-application-dev
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\ios-application-dev\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Professional DOCX document creation, editing, and formatting using OpenXML SDK (.NET). Three pipelines: (A) create new documents from scratch, (B) fill/edit content in existing documents, (C) apply template formatting with XSD validation gate-check. MUST use this skill whenever the user wants to produce, modify, or format a Word document — including when they say "write a report", "draft a proposal", "make a contract", "fill in this form", "reformat to match this template", or any task whose final output is a .docx file. Even if the user doesn't mention "docx" explicitly, if the task implies a printable/formal document, use this skill.》===]
+- Skill: minimax-docx
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\minimax-docx\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Use this skill when visual quality and design identity matter for a PDF. CREATE (generate from scratch): "make a PDF", "generate a report", "write a proposal", "create a resume", "beautiful PDF", "professional document", "cover page", "polished PDF", "client-ready document". FILL (complete form fields): "fill in the form", "fill out this PDF", "complete the form fields", "write values into PDF", "what fields does this PDF have". REFORMAT (apply design to an existing doc): "reformat this document", "apply our style", "convert this Markdown/text to PDF", "make this doc look good", "re-style this PDF". This skill uses a token-based design system: color, typography, and spacing are derived from the document type and flow through every page. The output is print-ready. Prefer this skill when appearance matters, not just when any PDF output is needed.》===]
+- Skill: minimax-pdf
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\minimax-pdf\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Open, create, read, analyze, edit, or validate Excel/spreadsheet files (.xlsx, .xlsm, .csv, .tsv). Use when the user asks to create, build, modify, analyze, read, validate, or format any Excel spreadsheet, financial model, pivot table, or tabular data file. Covers: creating new xlsx from scratch, reading and analyzing existing files, editing existing xlsx with zero format loss, formula recalculation and validation, and applying professional financial formatting standards. Triggers on 'spreadsheet', 'Excel', '.xlsx', '.csv', 'pivot table', 'financial model', 'formula', or any request to produce tabular data in Excel format.》===]
+- Skill: minimax-xlsx
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\minimax-xlsx\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《"Generate, edit, and read PowerPoint presentations. Create from scratch with PptxGenJS (cover, TOC, content, section divider, summary slides), edit existing PPTX via XML workflows, or extract text with markitdown. Triggers: PPT, PPTX, PowerPoint, presentation, slide, deck, slides."》===]
+- Skill: pptx-generator
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\pptx-generator\SKILL.md
+
+[===vcp_fold: 0.5 ::desc: 《Comprehensive GLSL shader techniques for creating stunning visual effects — ray marching, SDF modeling, fluid simulation, particle systems, procedural generation, lighting, post-processing, and more.》===]
+- Skill: shader-dev
+- 路径: H:\VCP\VCPToolBox\Plugin\SkillBridge\SKILL\shader-dev\SKILL.md
