@@ -72,6 +72,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     mount('/', 'dailyNotes');         // Wrapper for existing dailyNotesRoutes (Handles /dailynotes/*)
     mount('/', 'newapiMonitor');      // Handles /newapi-monitor/*
     mount('/', 'sarPrompts');         // Handles /sarprompts/*
+    mount('/', 'emojis');             // Handles /emojis/*
 
     return adminApiRouter;
 };
