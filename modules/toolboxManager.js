@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
+const { parseFoldBlocks, buildDynamicFoldObject } = require('./foldProtocol');
 
 const MAP_FILE = path.join(__dirname, '..', 'toolbox_map.json');
 
@@ -15,8 +16,6 @@ function resolveTvsDir() {
     ? normalizedPath
     : path.resolve(__dirname, '..', normalizedPath);
 }
-
-const FOLD_REGEX = /^\[===vcp_fold:\s*([0-9.]+)(?:\s*::desc:\s*(.*?)\s*)?===\]\s*$/;
 
 class ToolboxManager {
   constructor() {
@@ -145,14 +144,11 @@ class ToolboxManager {
       }
 
       const content = await fs.readFile(fullPath, 'utf8');
-      const fold_blocks = this._parseFoldBlocks(content);
-
-      const foldObj = {
-        vcp_dynamic_fold: true,
-        dynamic_fold_strategy: 'toolbox_block_similarity',
-        plugin_description: item.description || `Toolbox ${alias}`,
-        fold_blocks
-      };
+      const foldObj = buildDynamicFoldObject({
+        content,
+        pluginDescription: item.description || `Toolbox ${alias}`,
+        strategy: 'toolbox_block_similarity'
+      });
 
       this.contentCache.set(fullPath, { mtimeMs: stat.mtimeMs, foldObj });
       return foldObj;
@@ -195,64 +191,12 @@ class ToolboxManager {
     return { ok: true, path: resolved };
   }
 
-  _parseFoldBlocks(content) {
-    const blocks = [];
-    let currentThreshold = 0.0;
-    let currentDescription = '';
-    let currentContent = [];
-    let hasOpenedFoldBlock = false;
-
-    const lines = String(content || '').split('\n');
-    for (const line of lines) {
-      const match = line.match(FOLD_REGEX);
-      if (match) {
-        if (hasOpenedFoldBlock || currentContent.length > 0) {
-          blocks.push({
-            threshold: currentThreshold,
-            description: currentDescription,
-            content: currentContent.join('\n').trim()
-          });
-        }
-
-        currentThreshold = parseFloat(match[1]);
-        if (Number.isNaN(currentThreshold)) currentThreshold = 0.0;
-        currentDescription = typeof match[2] === 'string' ? match[2].trim() : '';
-        currentContent = [];
-        hasOpenedFoldBlock = true;
-      } else {
-        currentContent.push(line);
-      }
-    }
-
-    if (hasOpenedFoldBlock || currentContent.length > 0) {
-      blocks.push({
-        threshold: currentThreshold,
-        description: currentDescription,
-        content: currentContent.join('\n').trim()
-      });
-    }
-
-    const validBlocks = blocks.filter(block => block && typeof block.content === 'string');
-    if (validBlocks.length === 0) {
-      return [{ threshold: 0.0, description: '', content: '配置文件中未找到有效内容。' }];
-    }
-
-    return validBlocks;
-  }
-
   _buildErrorFoldObject(errorMessage, alias, description = '') {
-    return {
-      vcp_dynamic_fold: true,
-      dynamic_fold_strategy: 'toolbox_block_similarity',
-      plugin_description: description || `Toolbox ${alias}`,
-      fold_blocks: [
-        {
-          threshold: 0.0,
-          description: '',
-          content: `[ToolboxManager] ${errorMessage}`
-        }
-      ]
-    };
+    return buildDynamicFoldObject({
+      content: `[ToolboxManager] ${errorMessage}`,
+      pluginDescription: description || `Toolbox ${alias}`,
+      strategy: 'toolbox_block_similarity'
+    });
   }
 }
 

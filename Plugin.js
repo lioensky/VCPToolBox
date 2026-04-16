@@ -10,6 +10,7 @@ const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
 const ToolApprovalManager = require('./modules/toolApprovalManager');
+const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -203,21 +204,34 @@ class PluginManager extends EventEmitter {
 
                 let parsedValue = newValue;
                 if (newValue !== null) {
+                    const trimmedValue = newValue.trim();
+                    parsedValue = trimmedValue;
+
                     try {
-                        let trimmedValue = newValue.trim();
-                        // 尝试解析 JSON，支持 vcp_dynamic_fold 协议
+                        // 优先兼容原有 JSON dynamic fold 协议
                         if (trimmedValue.startsWith('{')) {
                             const jsonObj = JSON.parse(trimmedValue);
                             if (jsonObj && jsonObj.vcp_dynamic_fold) {
                                 parsedValue = jsonObj; // 保持对象形式以供折叠处理
-                            } else {
-                                parsedValue = trimmedValue;
                             }
+                        } else if (hasFoldMarkers(trimmedValue)) {
+                            // 兼容共享的文本折叠协议，支持 [===vcp_fold: x ::desc: ...===]
+                            parsedValue = buildDynamicFoldObject({
+                                content: trimmedValue,
+                                pluginDescription: plugin.description || plugin.displayName || plugin.name,
+                                strategy: 'toolbox_block_similarity'
+                            });
+                        }
+                    } catch (e) {
+                        if (hasFoldMarkers(trimmedValue)) {
+                            parsedValue = buildDynamicFoldObject({
+                                content: trimmedValue,
+                                pluginDescription: plugin.description || plugin.displayName || plugin.name,
+                                strategy: 'toolbox_block_similarity'
+                            });
                         } else {
                             parsedValue = trimmedValue;
                         }
-                    } catch (e) {
-                        parsedValue = newValue.trim();
                     }
                 }
 
@@ -1259,16 +1273,33 @@ class PluginManager extends EventEmitter {
         }
 
         for (const [placeholder, value] of Object.entries(placeholders)) {
-            // 新增逻辑：尝试解析可能的 JSON 折叠对象
+            // 兼容 JSON 折叠对象与共享文本折叠协议
             let parsedValue = value;
-            if (typeof value === 'string' && value.trim().startsWith('{')) {
-                try {
-                    const jsonObj = JSON.parse(value.trim());
-                    if (jsonObj && jsonObj.vcp_dynamic_fold) {
-                        parsedValue = jsonObj; // 保持对象形式以供折叠处理
+            if (typeof value === 'string') {
+                const trimmedValue = value.trim();
+                parsedValue = trimmedValue;
+
+                if (trimmedValue.startsWith('{')) {
+                    try {
+                        const jsonObj = JSON.parse(trimmedValue);
+                        if (jsonObj && jsonObj.vcp_dynamic_fold) {
+                            parsedValue = jsonObj; // 保持对象形式以供折叠处理
+                        }
+                    } catch (e) {
+                        if (hasFoldMarkers(trimmedValue)) {
+                            parsedValue = buildDynamicFoldObject({
+                                content: trimmedValue,
+                                pluginDescription: placeholder,
+                                strategy: 'toolbox_block_similarity'
+                            });
+                        }
                     }
-                } catch (e) {
-                    // 解析失败说明只是普通的字符串，可以直接忽略错误
+                } else if (hasFoldMarkers(trimmedValue)) {
+                    parsedValue = buildDynamicFoldObject({
+                        content: trimmedValue,
+                        pluginDescription: placeholder,
+                        strategy: 'toolbox_block_similarity'
+                    });
                 }
             }
 
