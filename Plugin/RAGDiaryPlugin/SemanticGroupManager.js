@@ -271,10 +271,15 @@ class SemanticGroupManager {
     }
 
     // ============ 核心功能：组激活 ============
-    detectAndActivateGroups(text) {
+    detectAndActivateGroups(text, agentName = null) {
         const activatedGroups = new Map();
 
         for (const [groupName, groupData] of Object.entries(this.groups)) {
+            // Per-Agent 过滤：若组配置了 agents 字段且当前 agent 不在其中，跳过
+            if (agentName && groupData.agents && groupData.agents.length > 0 && !groupData.agents.some(a => agentName === a || agentName.startsWith(a))) {
+                console.log(`[SemanticGroup] 组 "${groupName}" 因 agents 过滤跳过 (当前agent: ${agentName}, 允许: ${groupData.agents.join(',')})`);
+                continue;
+            }
             // 如果 auto_learned 不存在，提供一个空数组作为后备
             const autoLearnedWords = groupData.auto_learned || [];
             const allWords = [...groupData.words, ...autoLearnedWords];

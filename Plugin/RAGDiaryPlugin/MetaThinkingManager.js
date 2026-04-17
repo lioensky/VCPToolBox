@@ -103,7 +103,7 @@ class MetaThinkingManager {
     /**
      * 处理VCP元思考链 - 递归向量增强的多阶段推理
      */
-    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
+    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65, agentName = null) {
 
         // 🌟 兜底：如果配置尚未加载，先执行加载
         if (!this.metaThinkingChains.chains || Object.keys(this.metaThinkingChains.chains).length === 0) {
@@ -206,7 +206,7 @@ class MetaThinkingManager {
         // 如果启用语义组，获取激活的组
         let activatedGroups = null;
         if (useGroup) {
-            activatedGroups = this.ragPlugin.semanticGroups.detectAndActivateGroups(userContent);
+            activatedGroups = this.ragPlugin.semanticGroups.detectAndActivateGroups(userContent, agentName);
             if (activatedGroups.size > 0) {
                 const enhancedVector = await this.ragPlugin.semanticGroups.getEnhancedVector(userContent, activatedGroups, currentQueryVector);
                 if (enhancedVector) {

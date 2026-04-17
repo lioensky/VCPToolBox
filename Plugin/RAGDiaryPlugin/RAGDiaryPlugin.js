@@ -1311,6 +1311,10 @@ class RAGDiaryPlugin {
         const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
         const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
         const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+
+        // Per-Agent: 从同一 system message 的日记本声明中提取 Agent 标识
+        const agentNameMatch = content.match(/\[\[(\w+?)日记本/);
+        const agentName = agentNameMatch ? agentNameMatch[1] : null;
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
         // --- 1. 处理 [[VCP元思考...]] 元思考链 ---
         for (const match of metaThinkingDeclarations) {
@@ -1372,7 +1376,8 @@ class RAGDiaryPlugin {
                     null, // kSequence现在从JSON配置中获取，不再从占位符传递
                     useGroup,
                     isAutoMode,
-                    autoThreshold
+                    autoThreshold,
+                    agentName // Per-Agent: 传递 Agent 标识用于语义组/思维簇过滤
                 );
 
                 processedContent = processedContent.replace(placeholder, metaResult);
@@ -2316,7 +2321,7 @@ class RAGDiaryPlugin {
         let vcpInfoData = null;
 
         if (useGroup) {
-            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
+            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent, dbName);
             if (activatedGroups.size > 0) {
                 const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups, queryVector);
                 if (enhancedVector) finalQueryVector = enhancedVector;
