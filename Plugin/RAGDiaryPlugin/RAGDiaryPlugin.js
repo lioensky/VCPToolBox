@@ -167,20 +167,46 @@ class RAGDiaryPlugin {
 
         // --- 🌟 V2折叠：初始化 FoldingStore（热重载安全：先关旧实例再开新实例） ---
         try {
+            const foldingDbPath = path.join(__dirname, 'folding_store.db');
+            const foldingStoreOptions = {
+                maxEntries: parseInt(process.env.FOLDING_STORE_MAX_ENTRIES) || 200,
+                evictCount: parseInt(process.env.FOLDING_STORE_EVICT_COUNT) || 20
+            };
+
+            console.log(
+                `[RAGDiaryPlugin] FoldingStore 初始化开始: ` +
+                `dbPath=${foldingDbPath}, ` +
+                `cwd=${process.cwd()}, ` +
+                `pluginDir=${__dirname}, ` +
+                `options=${JSON.stringify(foldingStoreOptions)}`
+            );
+
             // 防止热重载时产生幽灵实例：如果旧 store 存在，先优雅关闭
             if (this.foldingStore) {
                 console.log('[RAGDiaryPlugin] 检测到 FoldingStore 旧实例，正在关闭以防竞态...');
                 this.foldingStore.shutdown();
                 this.foldingStore = null;
+                console.log('[RAGDiaryPlugin] FoldingStore 旧实例已关闭。');
             }
 
-            const foldingDbPath = path.join(__dirname, 'folding_store.db');
-            this.foldingStore = new FoldingStore(foldingDbPath, {
-                maxEntries: parseInt(process.env.FOLDING_STORE_MAX_ENTRIES) || 200,
-                evictCount: parseInt(process.env.FOLDING_STORE_EVICT_COUNT) || 20
-            });
+            this.foldingStore = new FoldingStore(foldingDbPath, foldingStoreOptions);
+
+            if (this.foldingStore) {
+                const stats = this.foldingStore.getStats();
+                console.log(
+                    `[RAGDiaryPlugin] FoldingStore 初始化完成: ` +
+                    `available=${stats.available}, count=${stats.count}, maxEntries=${stats.maxEntries}`
+                );
+            } else {
+                console.warn('[RAGDiaryPlugin] FoldingStore 初始化结束，但实例为空，折叠功能将不可用。');
+            }
         } catch (e) {
-            console.error('[RAGDiaryPlugin] FoldingStore 初始化失败，折叠功能将不可用:', e.message);
+            console.error('[RAGDiaryPlugin] FoldingStore 初始化失败，折叠功能将不可用。');
+            console.error(`[RAGDiaryPlugin] FoldingStore 初始化失败详情: dbPath=${path.join(__dirname, 'folding_store.db')}, cwd=${process.cwd()}, pluginDir=${__dirname}`);
+            console.error('[RAGDiaryPlugin] FoldingStore 初始化错误消息:', e.message);
+            if (e.stack) {
+                console.error('[RAGDiaryPlugin] FoldingStore 初始化错误堆栈:', e.stack);
+            }
             this.foldingStore = null;
         }
     }

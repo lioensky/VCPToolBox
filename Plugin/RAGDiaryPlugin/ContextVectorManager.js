@@ -97,42 +97,83 @@ class ContextVectorManager {
         const newAssistantVectors = [];
         const newUserVectors = [];
 
+        const stats = {
+            totalHistoricalAssistantMessages: 0,
+            totalHistoricalUserMessages: 0,
+            vectorizedAssistantMessages: 0,
+            vectorizedUserMessages: 0,
+            exactHashHits: 0,
+            fuzzyHits: 0,
+            embeddingCacheHits: 0,
+            apiGenerated: 0,
+            unresolved: 0,
+            skippedSystemMessages: 0,
+            skippedLastTurnMessages: 0,
+            skippedEmptyMessages: 0
+        };
+
         // 识别最后的消息索引以进行排除
         const lastUserIndex = messages.findLastIndex(m => m.role === 'user');
         const lastAiIndex = messages.findLastIndex(m => m.role === 'assistant');
 
         const tasks = messages.map(async (msg, index) => {
             // 排除逻辑：系统消息、最后一个用户消息、最后一个 AI 消息
-            if (msg.role === 'system') return;
-            if (index === lastUserIndex || index === lastAiIndex) return;
+            if (msg.role === 'system') {
+                stats.skippedSystemMessages++;
+                return;
+            }
+            if (index === lastUserIndex || index === lastAiIndex) {
+                stats.skippedLastTurnMessages++;
+                return;
+            }
 
             const content = typeof msg.content === 'string'
                 ? msg.content
                 : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
 
-            if (!content || content.length < 2) return;
+            if (!content || content.length < 2) {
+                stats.skippedEmptyMessages++;
+                return;
+            }
+
+            if (msg.role === 'assistant') {
+                stats.totalHistoricalAssistantMessages++;
+            } else if (msg.role === 'user') {
+                stats.totalHistoricalUserMessages++;
+            }
 
             const normalized = this._normalize(content);
             const hash = this._generateHash(normalized);
 
             let vector = null;
+            let vectorSource = 'none';
 
             // 1. 精确匹配
             if (this.vectorMap.has(hash)) {
                 vector = this.vectorMap.get(hash).vector;
+                vectorSource = 'exact';
             }
             // 2. 模糊匹配 (处理微小编辑)
             else {
                 vector = this._findFuzzyMatch(normalized);
+                if (vector) {
+                    vectorSource = 'fuzzy';
+                }
 
                 // 3. 尝试从插件的 Embedding 缓存中获取（不触发 API）
                 if (!vector) {
                     vector = this.plugin._getEmbeddingFromCacheOnly(content);
+                    if (vector) {
+                        vectorSource = 'embeddingCache';
+                    }
                 }
 
                 // 4. 如果缓存也没有，且允许 API，则请求新向量（触发 API）
                 if (!vector && allowApi) {
                     vector = await this.plugin.getSingleEmbeddingCached(content);
+                    if (vector) {
+                        vectorSource = 'api';
+                    }
                 }
 
                 // 存入映射
@@ -146,12 +187,20 @@ class ContextVectorManager {
                 }
             }
 
+            if (vectorSource === 'exact') stats.exactHashHits++;
+            else if (vectorSource === 'fuzzy') stats.fuzzyHits++;
+            else if (vectorSource === 'embeddingCache') stats.embeddingCacheHits++;
+            else if (vectorSource === 'api') stats.apiGenerated++;
+            else stats.unresolved++;
+
             if (vector) {
                 const entry = { vector, index, role: msg.role };
                 if (msg.role === 'assistant') {
                     newAssistantVectors.push(entry);
+                    stats.vectorizedAssistantMessages++;
                 } else if (msg.role === 'user') {
                     newUserVectors.push(entry);
+                    stats.vectorizedUserMessages++;
                 }
             }
         });
@@ -162,7 +211,14 @@ class ContextVectorManager {
         this.historyAssistantVectors = newAssistantVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
         this.historyUserVectors = newUserVectors.sort((a, b) => a.index - b.index).map(v => v.vector);
 
-        console.log(`[ContextVectorManager] 上下文向量映射已更新。历史AI向量: ${this.historyAssistantVectors.length}, 历史用户向量: ${this.historyUserVectors.length}`);
+        console.log(
+            `[ContextVectorManager] 上下文向量映射已更新。` +
+            ` 历史AI消息: ${stats.totalHistoricalAssistantMessages}, 已向量化AI: ${stats.vectorizedAssistantMessages};` +
+            ` 历史用户消息: ${stats.totalHistoricalUserMessages}, 已向量化用户: ${stats.vectorizedUserMessages};` +
+            ` 命中统计[精确:${stats.exactHashHits}, 模糊:${stats.fuzzyHits}, 缓存:${stats.embeddingCacheHits}, API:${stats.apiGenerated}, 未解析:${stats.unresolved}]` +
+            `；跳过[system:${stats.skippedSystemMessages}, 最后一轮:${stats.skippedLastTurnMessages}, 空消息:${stats.skippedEmptyMessages}]` +
+            `；历史向量API开关=${allowApi}`
+        );
     }
 
     /**

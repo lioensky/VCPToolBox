@@ -4,6 +4,7 @@
 
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 
 class FoldingStore {
@@ -22,31 +23,57 @@ class FoldingStore {
         this._stmts = {};
 
         try {
+            const dbDir = path.dirname(dbPath);
+            console.log(`[FoldingStore] 初始化开始: dbPath=${dbPath}, dbDir=${dbDir}, cwd=${process.cwd()}, maxEntries=${this.maxEntries}, evictCount=${this.evictCount}`);
+
+            try {
+                fs.mkdirSync(dbDir, { recursive: true });
+                const probePath = path.join(dbDir, '.folding_store.write_test');
+                fs.writeFileSync(probePath, 'ok');
+                fs.unlinkSync(probePath);
+                console.log(`[FoldingStore] 目录写入探测成功: ${dbDir}`);
+            } catch (probeErr) {
+                console.error(`[FoldingStore] 目录写入探测失败: dir=${dbDir}, error=${probeErr.message}`);
+                throw probeErr;
+            }
+
             this.db = new Database(dbPath);
+            console.log('[FoldingStore] SQLite 连接已建立，开始配置 PRAGMA...');
             this.db.pragma('journal_mode = WAL');
             this.db.pragma('synchronous = NORMAL');
             this._initSchema();
             this._prepareStatements();
 
             const count = this.db.prepare('SELECT COUNT(*) as cnt FROM folding_entries').get().cnt;
-            console.log(`[FoldingStore] 数据库已就绪: ${dbPath} (${count} 条记录)`);
+            console.log(`[FoldingStore] 数据库已就绪: dbPath=${dbPath}, count=${count}, journal_mode=WAL, synchronous=NORMAL`);
         } catch (e) {
-            console.error(`[FoldingStore] 数据库初始化失败: ${e.message}`);
+            console.error(`[FoldingStore] 数据库初始化失败: dbPath=${dbPath}, error=${e.message}`);
+            if (e.stack) {
+                console.error(`[FoldingStore] 数据库初始化失败堆栈:\n${e.stack}`);
+            }
+
             // 尝试删除损坏的数据库并重建
             try {
-                const fs = require('fs');
                 if (fs.existsSync(dbPath)) {
                     fs.unlinkSync(dbPath);
-                    console.log('[FoldingStore] 已删除损坏的数据库，正在重建...');
+                    console.log(`[FoldingStore] 已删除旧数据库文件，准备重建: ${dbPath}`);
+                } else {
+                    console.log(`[FoldingStore] 初始化失败时未发现现有数据库文件，将直接尝试重建: ${dbPath}`);
                 }
                 this.db = new Database(dbPath);
+                console.log('[FoldingStore] 重建阶段 SQLite 连接已建立，开始配置 PRAGMA...');
                 this.db.pragma('journal_mode = WAL');
                 this.db.pragma('synchronous = NORMAL');
                 this._initSchema();
                 this._prepareStatements();
-                console.log('[FoldingStore] 数据库已重建');
+
+                const rebuiltCount = this.db.prepare('SELECT COUNT(*) as cnt FROM folding_entries').get().cnt;
+                console.log(`[FoldingStore] 数据库已重建: dbPath=${dbPath}, count=${rebuiltCount}`);
             } catch (rebuildErr) {
-                console.error(`[FoldingStore] 数据库重建也失败: ${rebuildErr.message}`);
+                console.error(`[FoldingStore] 数据库重建也失败: dbPath=${dbPath}, error=${rebuildErr.message}`);
+                if (rebuildErr.stack) {
+                    console.error(`[FoldingStore] 数据库重建失败堆栈:\n${rebuildErr.stack}`);
+                }
                 this.db = null;
             }
         }
