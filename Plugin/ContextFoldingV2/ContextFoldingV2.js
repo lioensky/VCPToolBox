@@ -26,6 +26,7 @@ class ContextFoldingV2 {
         this.summaryUserPrompt = '';
         this.minDepth = 3;
         this.maxRetries = 3;
+        this.maxConcurrentSummaries = 5;
 
         // 热调控参数（从 rag_params.json 实时读取）
         this.hotParams = {
@@ -39,6 +40,8 @@ class ContextFoldingV2 {
 
         // 运行时状态
         this.pendingHashes = new Set(); // 防止并发重复触发摘要生成
+        this.summaryQueue = [];
+        this.activeSummaryCount = 0;
     }
 
     /**
@@ -54,6 +57,7 @@ class ContextFoldingV2 {
         this.summaryUserPrompt = (process.env.FOLDING_SUMMARY_USER_PROMPT || '').replace(/\\n/g, '\n');
         this.minDepth = Math.max(2, parseInt(process.env.FOLDING_MIN_DEPTH) || 3);
         this.maxRetries = parseInt(process.env.FOLDING_MAX_RETRIES) || 3;
+        this.maxConcurrentSummaries = Math.max(1, parseInt(process.env.FOLDING_SUMMARY_MAX_CONCURRENT, 10) || 5);
 
         // 🌟 保存 PROJECT_BASE_PATH 到实例，供 _loadHotParams / _startHotParamsWatcher 使用
         this._projectBasePath = (config && config.PROJECT_BASE_PATH) || process.env.PROJECT_BASE_PATH || path.join(__dirname, '../../');
@@ -97,7 +101,7 @@ class ContextFoldingV2 {
         this._startHotParamsWatcher();
 
         this.enabled = true;
-        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 阈值基准: ${this.hotParams.thresholdBase}, Store: ${storeStatsStr})`);
+        console.log(`[ContextFoldingV2] 初始化完成 (模型: ${this.summaryModel}, 最低深度: ${this.minDepth}, 最大并发: ${this.maxConcurrentSummaries}, 阈值基准: ${this.hotParams.thresholdBase}, Store: ${storeStatsStr})`);
     }
 
     /**
@@ -377,34 +381,69 @@ class ContextFoldingV2 {
         const store = this.contextBridge.foldingStore;
         store.markPending(hash);
 
-        // 指数退避延迟：1s, 3s, 9s
-        const delay = 1000 * Math.pow(3, retryCount);
+        this.summaryQueue.push({ hash, originalContent, retryCount });
+        this._processSummaryQueue();
+    }
 
-        setTimeout(async () => {
-            try {
-                const startTime = Date.now();
-                const summary = await this._generateSummary(originalContent);
+    _processSummaryQueue() {
+        while (this.activeSummaryCount < this.maxConcurrentSummaries && this.summaryQueue.length > 0) {
+            const task = this.summaryQueue.shift();
+            this.activeSummaryCount++;
+            this._runSummaryTask(task).finally(() => {
+                this.activeSummaryCount = Math.max(0, this.activeSummaryCount - 1);
+                this._processSummaryQueue();
+            });
+        }
+    }
 
-                if (summary) {
-                    store.upsertSummary(hash, summary, 'ready');
-                    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                    console.log(`[ContextFoldingV2] ✅ 摘要生成成功: hash=${hash.substring(0, 8)}...（耗时 ${elapsed}s）`);
-                } else {
-                    store.upsertSummary(hash, '', 'failed');
-                    console.warn(`[ContextFoldingV2] ❌ 摘要验证失败: hash=${hash.substring(0, 8)}...`);
-                }
-            } catch (e) {
-                store.upsertSummary(hash, '', 'failed');
-                console.error(`[ContextFoldingV2] ❌ 摘要生成异常: ${e.message}`);
-            } finally {
-                this.pendingHashes.delete(hash);
+    async _runSummaryTask(task) {
+        const { hash, originalContent, retryCount } = task;
+        const store = this.contextBridge.foldingStore;
+
+        // 指数退避延迟：1s, 3s, 9s；429 会在此基础上进一步拉长
+        const delay = this._computeRetryDelay(retryCount);
+
+        await this._sleep(delay);
+
+        try {
+            const startTime = Date.now();
+            const result = await this._generateSummary(originalContent);
+
+            if (result && result.summary) {
+                store.upsertSummary(hash, result.summary, 'ready');
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                console.log(`[ContextFoldingV2] ✅ 摘要生成成功: hash=${hash.substring(0, 8)}...（耗时 ${elapsed}s）`);
+                return;
             }
-        }, delay);
+
+            if (result && result.retryable429) {
+                store.upsertSummary(hash, '', 'failed');
+                console.warn(`[ContextFoldingV2] ⏳ 摘要触发 429，将延长退避后重试: hash=${hash.substring(0, 8)}...`);
+            } else {
+                store.upsertSummary(hash, '', 'failed');
+                console.warn(`[ContextFoldingV2] ❌ 摘要验证失败: hash=${hash.substring(0, 8)}...`);
+            }
+        } catch (e) {
+            store.upsertSummary(hash, '', 'failed');
+            console.error(`[ContextFoldingV2] ❌ 摘要生成异常: ${e.message}`);
+        } finally {
+            this.pendingHashes.delete(hash);
+        }
+    }
+
+    _computeRetryDelay(retryCount, options = {}) {
+        const { isRateLimit = false } = options;
+        const baseDelay = 1000 * Math.pow(3, retryCount);
+        return isRateLimit ? baseDelay * 5 : baseDelay;
+    }
+
+    _sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**
      * 调用 LLM 生成摘要（含三级安全验证）
-     * 返回完整格式的摘要文本，或 null（验证失败）
+     * 返回 { summary, retryable429 }，其中 summary 为完整格式摘要文本
      */
     async _generateSummary(text) {
         const apiUrl = process.env.API_URL;
@@ -412,7 +451,7 @@ class ContextFoldingV2 {
 
         if (!apiUrl || !apiKey) {
             console.error('[ContextFoldingV2] API_URL 或 API_Key 未配置');
-            return null;
+            return { summary: null, retryable429: false };
         }
 
         // 截断过长内容（防止请求过大）
@@ -446,14 +485,19 @@ class ContextFoldingV2 {
             });
 
             const rawOutput = response.data?.choices?.[0]?.message?.content || '';
-            return this._validateSummary(rawOutput.trim());
+            return {
+                summary: this._validateSummary(rawOutput.trim()),
+                retryable429: false
+            };
         } catch (e) {
             if (e.response) {
+                const isRateLimit = e.response.status === 429;
                 console.error(`[ContextFoldingV2] 摘要API错误: ${e.response.status} ${JSON.stringify(e.response.data).substring(0, 200)}`);
-            } else {
-                console.error(`[ContextFoldingV2] 摘要请求失败: ${e.message}`);
+                return { summary: null, retryable429: isRateLimit };
             }
-            return null;
+
+            console.error(`[ContextFoldingV2] 摘要请求失败: ${e.message}`);
+            return { summary: null, retryable429: false };
         }
     }
 
@@ -557,6 +601,8 @@ class ContextFoldingV2 {
      */
     shutdown() {
         this.pendingHashes.clear();
+        this.summaryQueue = [];
+        this.activeSummaryCount = 0;
         this.enabled = false;
         if (this._ragParamsWatcher) {
             this._ragParamsWatcher.close();
