@@ -123,39 +123,39 @@ class RAGDiaryPlugin {
             this.lastConfigHash = currentConfigHash;
 
             if (!currentConfigHash) {
-                console.log('[RAGDiaryPlugin] 未找到 rag_tags.json 文件，跳过缓存处理。');
+                console.log('[RAGDiaryPlugin] 未找到 rag_tags.json 文件：跳过 RAG 标签缓存加载，但继续初始化 AIMemo / MetaThinking / FoldingStore 等子系统。');
                 this.ragConfig = {};
-                return;
-            }
-
-            let cache = null;
-            try {
-                const cacheData = await fs.readFile(cachePath, 'utf-8');
-                cache = JSON.parse(cacheData);
-            } catch (e) {
-                console.log('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。');
-            }
-
-            if (cache && cache.sourceHash === currentConfigHash) {
-                // --- 缓存命中 ---
-                console.log('[RAGDiaryPlugin] 缓存有效，从磁盘加载向量...');
-                this.ragConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
-                this.enhancedVectorCache = cache.vectors;
-                console.log(`[RAGDiaryPlugin] 成功从缓存加载 ${Object.keys(this.enhancedVectorCache).length} 个向量。`);
             } else {
-                // --- 缓存失效或未命中 ---
-                if (cache) {
-                    console.log('[RAGDiaryPlugin] rag_tags.json 已更新，正在重建缓存...');
-                } else {
-                    console.log('[RAGDiaryPlugin] 未找到有效缓存，首次构建向量缓存...');
+                let cache = null;
+                try {
+                    const cacheData = await fs.readFile(cachePath, 'utf-8');
+                    cache = JSON.parse(cacheData);
+                } catch (e) {
+                    console.log('[RAGDiaryPlugin] 缓存文件不存在或已损坏，将重新构建。');
                 }
 
-                const configData = await fs.readFile(configPath, 'utf-8');
-                this.ragConfig = JSON.parse(configData);
+                if (cache && cache.sourceHash === currentConfigHash) {
+                    // --- 缓存命中 ---
+                    console.log('[RAGDiaryPlugin] 缓存有效，从磁盘加载向量...');
+                    this.ragConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+                    this.enhancedVectorCache = cache.vectors;
+                    console.log(`[RAGDiaryPlugin] 成功从缓存加载 ${Object.keys(this.enhancedVectorCache).length} 个向量。`);
+                } else {
+                    // --- 缓存失效或未命中 ---
+                    if (cache) {
+                        console.log('[RAGDiaryPlugin] rag_tags.json 已更新，正在重建缓存...');
+                    } else {
+                        console.log('[RAGDiaryPlugin] 未找到有效缓存，首次构建向量缓存...');
+                    }
 
-                // 调用 _buildAndSaveCache 来生成向量
-                await this._buildAndSaveCache(currentConfigHash, cachePath);
+                    const configData = await fs.readFile(configPath, 'utf-8');
+                    this.ragConfig = JSON.parse(configData);
+
+                    // 调用 _buildAndSaveCache 来生成向量
+                    await this._buildAndSaveCache(currentConfigHash, cachePath);
+                }
             }
+
 
         } catch (error) {
             console.error('[RAGDiaryPlugin] 加载配置文件或处理缓存时发生严重错误:', error);
