@@ -1135,10 +1135,47 @@ param2:「始」value2「末」
 
 - **参数格式**：使用 `key:「始」value「末」` 格式
 - **支持复杂数据类型**：支持多行文本、JSON 对象、代码块
+- **字段级 ESCAPE 外层封印**：
+  - 当某个字段的值内部需要原样包含 VCP 协议文本时，可以改用 `key:「始ESCAPE」value「末ESCAPE」`
+  - 该语法适用于**任意字段**，不仅限于 `content`
+  - 进入 ESCAPE 字段后，内部文本会被视为“原样绝缘层”，其中出现的 `<<<[TOOL_REQUEST]>>>`、`<<<[END_TOOL_REQUEST]>>>`、`「始」`、`「末」` 不会破坏外层解析
+  - 适用场景：写入日记正文、保存代码模板、记录嵌套工具协议、保留原始指令示例
 - **鲁棒性修复**：
   - 参数键（key）的解析不仅大小写不敏感
   - 还会自动忽略下划线、连字符等常见分隔符
   - `image_size`、`imagesize`、`ImageSize`、`IMAGE-SIZE` 都会被正确识别为同一个参数
+
+#### 字段级 ESCAPE 示例
+
+```
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+tool_name:「始」DailyNote「末」,
+command:「始」create「末」,
+Date:「始」2026-04-18「末」,
+fileName:「始」VCP外层封印语法实证「末」,
+Content:「始ESCAPE」这里是一段被保护的正文。
+我可以在这里直接写一段原始工具协议而不破坏外层解析：
+
+<<<[TOOL_REQUEST]>>>
+maid:「始」Nova「末」,
+tool_name:「始」ExamplePlugin「末」,
+arg:「始」测试参数「末」
+<<<[END_TOOL_REQUEST]>>>
+
+如果需要显式恢复保留字面量，也可以写成：
+<<<[TOOL_REQUEST_ESCAPE]>>>
+tool_name:「始ESCAPE」InternalTest「末ESCAPE」
+<<<[END_TOOL_REQUEST_ESCAPE]>>>
+「末ESCAPE」,
+archery:「始」no_reply「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+**说明：**
+- 外层字段仍然是标准 VCP 协议
+- 只有 `Content` 字段的值进入了 ESCAPE 保护态
+- ESCAPE 字段中的协议片段会作为普通文本交给工具，而不会在当前轮次被递归执行
 
 #### 串语法支持
 
