@@ -271,13 +271,36 @@ class SemanticGroupManager {
     }
 
     // ============ 核心功能：组激活 ============
-    detectAndActivateGroups(text) {
+    isGroupAllowedForAgent(groupData, agentName = null) {
+        const allowedAgents = groupData?.agents;
+
+        // 向后兼容：未配置 agents 或配置为空 = 全局生效
+        if (!Array.isArray(allowedAgents) || allowedAgents.length === 0) {
+            return true;
+        }
+
+        // 向后兼容：上游尚未透传 agentName 时，不做拦截
+        if (!agentName) {
+            return true;
+        }
+
+        return allowedAgents.includes(agentName);
+    }
+
+    detectAndActivateGroups(text, agentName = null) {
         const activatedGroups = new Map();
 
         for (const [groupName, groupData] of Object.entries(this.groups)) {
+            if (!this.isGroupAllowedForAgent(groupData, agentName)) {
+                const allowedAgents = Array.isArray(groupData?.agents) ? groupData.agents.join(', ') : 'GLOBAL';
+                console.log(`[SemanticGroup] Skip Group "${groupName}" for agent "${agentName}" (allowed: ${allowedAgents})`);
+                continue;
+            }
+
             // 如果 auto_learned 不存在，提供一个空数组作为后备
             const autoLearnedWords = groupData.auto_learned || [];
-            const allWords = [...groupData.words, ...autoLearnedWords];
+            const baseWords = groupData.words || [];
+            const allWords = [...baseWords, ...autoLearnedWords];
 
             const matchedWords = allWords.filter(word => this.flexibleMatch(text, word));
 

@@ -30,6 +30,8 @@ const ToolExecutor = require('./vcpLoop/toolExecutor');
 const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
 
+
+
 /**
  * 检测工具返回结果是否为错误
  * @param {any} result - 工具返回的结果
@@ -213,7 +215,7 @@ async function fetchWithRetry(
   throw new Error('Fetch failed after all retries.');
 }
 // 辅助函数：根据新上下文刷新对话历史中的RAG区块
-async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, debugMode = false) {
+async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, debugMode = false, processingContext = {}) {
   const ragPlugin = pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
   // 检查插件是否存在且是否实现了refreshRagBlock方法
   if (!ragPlugin || typeof ragPlugin.refreshRagBlock !== 'function') {
@@ -283,7 +285,7 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
             }
 
             // 调用 RAG 插件的刷新接口, now with originalUserQuery
-            const newBlock = await ragPlugin.refreshRagBlock(metadata, newContext, originalUserQuery);
+            const newBlock = await ragPlugin.refreshRagBlock(metadata, newContext, originalUserQuery, processingContext);
 
             // 🟢 改进点4：关键修复！使用回调函数进行替换，防止 newBlock 中的 "$" 符号被解析为正则特殊字符
             // 这是一个极其常见的 Bug，导致包含 $ 的内容（如公式、代码）替换失败或乱码
@@ -480,21 +482,17 @@ class ChatCompletionHandler {
       }
 
       // --- VCPTavern 优先处理 ---
-      // 在任何变量替换之前，首先运行 VCPTavern 来注入预设内容
+      // 在任何变量替换之前，首先准备一个可用的初始上下文，再运行 VCPTavern 注入预设内容
       let tavernProcessedMessages = originalBody.messages;
-      if (pluginManager.messagePreprocessors.has('VCPTavern')) {
-        if (DEBUG_MODE) console.log(`[Server] Calling priority message preprocessor: VCPTavern`);
-        try {
-          tavernProcessedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', originalBody.messages);
-        } catch (pluginError) {
-          console.error(`[Server] Error in priority preprocessor VCPTavern:`, pluginError);
-        }
-      }
 
       // --- 统一处理所有变量替换 ---
+      // Identity is carried by processingContext and provided explicitly by the request layer.
+      const agentName = originalBody.agentName || originalBody.context?.agentName || null;
+
       // 创建一个包含所有所需依赖的统一上下文
       const processingContext = {
         pluginManager,
+        agentName,
         cachedEmojiLists: this.config.cachedEmojiLists,
         detectors: this.config.detectors,
         superDetectors: this.config.superDetectors,
@@ -506,6 +504,16 @@ class ChatCompletionHandler {
         expandedAgentName: null,    // string | null - 已展开的唯一 Agent 别名
         expandedToolboxes: new Set() // Set<string> - 已展开的 Toolbox 别名集合
       };
+
+      if (pluginManager.messagePreprocessors.has('VCPTavern')) {
+        if (DEBUG_MODE) console.log(`[Server] Calling priority message preprocessor: VCPTavern`);
+        try {
+          tavernProcessedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', originalBody.messages, processingContext);
+          processingContext.messages = tavernProcessedMessages;
+        } catch (pluginError) {
+          console.error(`[Server] Error in priority preprocessor VCPTavern:`, pluginError);
+        }
+      }
 
       // 🔒 顺序处理消息（非并发），确保 agent/toolbox 的"首次展开"语义正确
       // 如果使用 Promise.all 并发，多条消息可能同时展开同一个 agent，违反"只展开一个"的约束
@@ -560,7 +568,7 @@ class ChatCompletionHandler {
         if (pluginManager.messagePreprocessors.has(processorName)) {
           if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
           try {
-            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
+            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages, processingContext);
           } catch (pluginError) {
             console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
           }
@@ -574,7 +582,7 @@ class ChatCompletionHandler {
 
         if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
         try {
-          processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
+          processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages, processingContext);
         } catch (pluginError) {
           console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
         }

@@ -363,7 +363,7 @@ class PluginManager extends EventEmitter {
         return `[Invalid value format for placeholder ${placeholder}]`;
     }
 
-    async executeMessagePreprocessor(pluginName, messages) {
+    async executeMessagePreprocessor(pluginName, messages, context = {}) {
         const processorModule = this.messagePreprocessors.get(pluginName);
         const pluginManifest = this.plugins.get(pluginName);
         if (!processorModule || !pluginManifest) {
@@ -376,8 +376,9 @@ class PluginManager extends EventEmitter {
         }
         try {
             if (this.debugMode) console.log(`[PluginManager] Executing message preprocessor: ${pluginName}`);
+            console.log(`[PluginManager] Preprocessor context agentName for ${pluginName}: ${context?.agentName || 'null'}`);
             const pluginSpecificConfig = this._getPluginConfig(pluginManifest);
-            const processedMessages = await processorModule.processMessages(messages, pluginSpecificConfig);
+            const processedMessages = await processorModule.processMessages(messages, pluginSpecificConfig, context);
             if (this.debugMode) console.log(`[PluginManager] Message preprocessor ${pluginName} finished.`);
             return processedMessages;
         } catch (error) {

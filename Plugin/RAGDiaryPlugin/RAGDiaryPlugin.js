@@ -1041,7 +1041,7 @@ class RAGDiaryPlugin {
     }
 
     // processMessages 是 messagePreprocessor 的标准接口
-    async processMessages(messages, pluginConfig) {
+    async processMessages(messages, pluginConfig, context = {}) {
         try {
             // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
             // 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
@@ -1247,7 +1247,8 @@ class RAGDiaryPlugin {
                     contextDiaryPrefixes, // 🌟 V4.1: 传递上下文日记去重前缀
                     messages, // 🌟 V4.2: 传递完整消息用于 RoleValve
                     ghostTags, // 🌟 V6: 传递幽灵节点
-                    collectedAttachments // 🌟 V7: 传递附件收集器
+                    collectedAttachments, // 🌟 V7: 传递附件收集器
+                    context // 🌟 Per-Agent Semantic Group: 透传当前 Agent 上下文
                 );
 
                 newMessages[index].content = processedContent;
@@ -1323,7 +1324,7 @@ class RAGDiaryPlugin {
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = []) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15, tagTruncationRatio = 0.5, metrics = {}, historySegments = [], contextDiaryPrefixes = new Set(), messages = [], ghostTags = [], collectedAttachments = [], context = {}) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -1398,7 +1399,8 @@ class RAGDiaryPlugin {
                     null, // kSequence现在从JSON配置中获取，不再从占位符传递
                     useGroup,
                     isAutoMode,
-                    autoThreshold
+                    autoThreshold,
+                    context // 🌟 Per-Agent Semantic Group: 透传当前 Agent 上下文到元思考链
                 );
 
                 processedContent = processedContent.replace(placeholder, metaResult);
@@ -1513,7 +1515,8 @@ class RAGDiaryPlugin {
                             historySegments: historySegments, // 🌟 传入历史分段
                             contextDiaryPrefixes, // 🌟 V4.1: 传入上下文日记去重前缀
                             ghostTags, // 🌟 V6: 传入幽灵节点
-                            collectedAttachments // 🌟 V7
+                            collectedAttachments, // 🌟 V7
+                            context // 🌟 Per-Agent Semantic Group: 透传当前 Agent 上下文
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -2157,7 +2160,7 @@ class RAGDiaryPlugin {
      * @param {string} originalUserQuery - 从 chatCompletionHandler 回溯找到的真实用户查询
      * @returns {Promise<string>} 返回完整的、带有新元数据的新区块文本
      */
-    async refreshRagBlock(metadata, contextData, originalUserQuery) {
+    async refreshRagBlock(metadata, contextData, originalUserQuery, context = {}) {
         console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块 (U:0.5, A:0.35, T:0.15 权重)...`);
         const { lastAiMessage, toolResultsText } = contextData;
 
@@ -2226,6 +2229,7 @@ class RAGDiaryPlugin {
             combinedQueryForDisplay: combinedSanitizedContext, // ✅ 使用组合后的上下文进行显示
             dynamicK: metadata.k || 5,
             timeRanges: this.timeParser.parse(combinedSanitizedContext), // ✅ 基于组合后的上下文重新解析时间
+            context // 🌟 Per-Agent Semantic Group: 透传当前 Agent 上下文到 refresh 路径
         });
 
         // 6. 返回完整的、带有新元数据的新区块文本
@@ -2249,7 +2253,8 @@ class RAGDiaryPlugin {
             historySegments = [], // 🌟 Tagmemo V4
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
             ghostTags = [], // 🌟 V6: 幽灵节点
-            collectedAttachments = [] // 🌟 V7
+            collectedAttachments = [], // 🌟 V7
+            context = {} // 🌟 Per-Agent Semantic Group: 当前 Agent 上下文
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -2284,6 +2289,7 @@ class RAGDiaryPlugin {
         const kMultiplier = this._extractKMultiplier(modifiers);
         const useTime = allowTimeAndGroup && modifiers.includes('::Time');
         const useGroup = allowTimeAndGroup && modifiers.includes('::Group');
+        
         // 🌟 Rerank+ (RRF): 解析 ::Rerank+ 修饰符
         // 语法: ::Rerank+ (默认α=0.5) 或 ::Rerank+0.7 (α=0.7, Reranker占70%权重)
         const rerankPlusMatch = modifiers.match(/::Rerank\+(\d+\.?\d*)?/);
@@ -2342,7 +2348,9 @@ class RAGDiaryPlugin {
         let vcpInfoData = null;
 
         if (useGroup) {
-            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent);
+            const agentName = context?.agentName || null;
+            
+            activatedGroups = this.semanticGroups.detectAndActivateGroups(userContent, agentName);
             if (activatedGroups.size > 0) {
                 const enhancedVector = await this.semanticGroups.getEnhancedVector(userContent, activatedGroups, queryVector);
                 if (enhancedVector) finalQueryVector = enhancedVector;
