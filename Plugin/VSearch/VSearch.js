@@ -17,13 +17,22 @@ const {
     VSearchModel: MODEL,
     GrokModel: GROK_MODEL,
     TavilyModel: TAVILY_MODEL,
+    SummaryKey: SUMMARY_KEY,
+    SummaryUrl: SUMMARY_URL,
+    SummaryModel: SUMMARY_MODEL,
     VSearchMaxToken: MAX_TOKENS,
     MaxConcurrent: MAX_CONCURRENT,
-    HTTP_PROXY: PROXY
+    HTTP_PROXY: PROXY,
+    KimiSearchUrl: KIMI_SEARCH_URL,
+    KimiSearchKey: KIMI_SEARCH_KEY,
+    KimiSearchMaxResults: KIMI_SEARCH_MAX_RESULTS,
+    KimiSearchIncludeContent: KIMI_SEARCH_INCLUDE_CONTENT,
 } = process.env;
 
 const CONCURRENCY = parseInt(MAX_CONCURRENT, 10) || 5;
 const TOKENS = parseInt(MAX_TOKENS, 10) || 50000;
+const KIMI_MAX_RESULTS = Math.min(Math.max(parseInt(KIMI_SEARCH_MAX_RESULTS, 10) || 5, 1), 20);
+const KIMI_INCLUDE_CONTENT = KIMI_SEARCH_INCLUDE_CONTENT === 'true';
 
 // --- 2. 辅助函数 ---
 const log = (message) => {
@@ -348,17 +357,23 @@ const callTavilyMode = async (topic, keywordList, tavilyKeyStr) => {
     }
 
     // === 阶段2: 模型总结 ===
+    const summaryKey = SUMMARY_KEY || API_KEY;
+    const summaryUrl = SUMMARY_URL || API_URL;
+    const summaryModel = SUMMARY_MODEL || TAVILY_MODEL || "claude-sonnet-4-6";
+
+    if (!summaryKey || !summaryUrl) {
+        log(`[Tavily] 未配置总结用 LLM API（SummaryKey/SummaryUrl 或 VSearchKey/VSearchUrl），跳过总结阶段，直接返回原始结果`);
+        return combinedResults;
+    }
+
     try {
-        const summaryModel = TAVILY_MODEL || "claude-sonnet-4-6";
-        log(`[Tavily] 阶段2/2: 正在使用 ${summaryModel} 通过 ${API_URL} 进行全量总结...`);
+        log(`[Tavily] 阶段2/2: 正在使用 ${summaryModel} 通过 ${summaryUrl} 进行全量总结...`);
         const summaryPayload = {
             model: summaryModel,
             messages: [
                 {
                     role: 'system',
-                    content: `你是一个顶级信息整合专家。你会收到一份关于多个关键词的原始搜索结果汇总。
-你的任务是结合【研究主题：${topic}】，将这些零散的信息提炼成一份高质量、结构化、具有深度洞察的研究报告。
-请保留重要的 URL 链接，并确保报告逻辑严密。`
+                    content: `你是一个顶级信息整合专家。你会收到一份关于多个关键词的原始搜索结果汇总。\n你的任务是结合【研究主题：${topic}】，将这些零散的信息提炼成一份高质量、结构化、具有深度洞察的研究报告。\n请保留重要的 URL 链接，并确保报告逻辑严密。`
                 },
                 { role: 'user', content: `原始搜索结果汇总如下：\n\n${combinedResults}` }
             ],
@@ -366,12 +381,12 @@ const callTavilyMode = async (topic, keywordList, tavilyKeyStr) => {
         };
 
         const summaryAxiosConfig = {
-            headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+            headers: { 'Authorization': `Bearer ${summaryKey}`, 'Content-Type': 'application/json' },
             timeout: 180000,
             proxy: false  // 显式禁用代理，避免环境变量残留干扰
         };
 
-        const summaryResponse = await axios.post(API_URL, summaryPayload, summaryAxiosConfig);
+        const summaryResponse = await axios.post(summaryUrl, summaryPayload, summaryAxiosConfig);
 
         log(`[Tavily] 阶段2/2 完成: 总结成功`);
         return summaryResponse.data.choices[0].message.content;
@@ -385,8 +400,116 @@ const callTavilyMode = async (topic, keywordList, tavilyKeyStr) => {
     }
 };
 
+/**
+ * 单次调用 Kimi Search API
+ */
+const callKimiSearch = async (query, apiKey, baseUrl, maxResults, includeContent) => {
+    const url = baseUrl.endsWith('/search') ? baseUrl : `${baseUrl.replace(/\/$/, '')}/search`;
+    try {
+        log(`[KimiSearch] 正在搜索: "${query}"...`);
+        const response = await axios.post(url, {
+            text_query: query,
+            limit: maxResults,
+            enable_page_crawling: includeContent,
+            timeout_seconds: 30
+        }, {
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'X-Msh-Tool-Call-Id': `vsearch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+            },
+            timeout: 180000,
+            proxy: false
+        });
+
+        const results = response.data.search_results || [];
+        if (results.length === 0) {
+            return '未找到相关搜索结果。\n';
+        }
+
+        let markdown = '';
+        results.forEach((item, index) => {
+            markdown += `${index + 1}. **${item.title}**\n`;
+            markdown += `   URL: ${item.url}\n`;
+            if (item.date) markdown += `   Date: ${item.date}\n`;
+            if (item.site_name) markdown += `   Source: ${item.site_name}\n`;
+            markdown += `   Summary: ${item.snippet}\n`;
+            if (item.content) {
+                markdown += `\n   ${item.content}\n`;
+            }
+            markdown += '\n';
+        });
+        return markdown;
+    } catch (error) {
+        const status = error.response?.status || 'N/A';
+        log(`[KimiSearch] 搜索失败 (HTTP ${status}): ${error.message}`);
+        return `[搜索失败] 错误原因: ${error.message}`;
+    }
+};
+
+/**
+ * KimiSearch 模式 (并发搜索 + 可选 LLM 总结)
+ */
+const callKimiSearchMode = async (topic, keywordList, apiKey, baseUrl, maxResults, includeContent) => {
+    // === 阶段1: 并发搜索 ===
+    let combinedResults = '';
+    try {
+        log(`[KimiSearch] 阶段1/2: 正在并发获取 ${keywordList.length} 个关键词的搜索结果...`);
+        const searchPromises = keywordList.map(async (kw) => {
+            const result = await callKimiSearch(kw, apiKey, baseUrl, maxResults, includeContent);
+            log(`[KimiSearch] 关键词 "${kw}" 搜索完成`);
+            return `### 关键词: ${kw}\n${result}`;
+        });
+        const allSearchResults = await Promise.all(searchPromises);
+        combinedResults = allSearchResults.join('\n---\n');
+        log(`[KimiSearch] 阶段1/2 完成: 搜索结果总长度 ${combinedResults.length} 字符`);
+    } catch (searchError) {
+        log(`[KimiSearch] 阶段1 搜索整体失败: ${searchError.message}`);
+        return `[KimiSearch 搜索阶段失败] 错误原因: ${searchError.message}`;
+    }
+
+    // === 阶段2: 模型总结 (如果配置了 LLM API) ===
+    const summaryKey = SUMMARY_KEY || API_KEY;
+    const summaryUrl = SUMMARY_URL || API_URL;
+    const summaryModel = SUMMARY_MODEL || MODEL || "claude-sonnet-4-6";
+
+    if (!summaryKey || !summaryUrl) {
+        log(`[KimiSearch] 未配置总结用 LLM API（SummaryKey/SummaryUrl 或 VSearchKey/VSearchUrl），跳过总结阶段，直接返回原始结果`);
+        return combinedResults;
+    }
+
+    try {
+        log(`[KimiSearch] 阶段2/2: 正在使用 ${summaryModel} 通过 ${summaryUrl} 进行全量总结...`);
+        const summaryPayload = {
+            model: summaryModel,
+            messages: [
+                {
+                    role: 'system',
+                    content: `你是一个顶级信息整合专家。你会收到一份关于多个关键词的原始搜索结果汇总。\n你的任务是结合【研究主题：${topic}】，将这些零散的信息提炼成一份高质量、结构化、具有深度洞察的研究报告。\n请保留重要的 URL 链接，并确保报告逻辑严密。`
+                },
+                { role: 'user', content: `原始搜索结果汇总如下：\n\n${combinedResults}` }
+            ],
+            max_tokens: TOKENS
+        };
+
+        const summaryResponse = await axios.post(summaryUrl, summaryPayload, {
+            headers: { 'Authorization': `Bearer ${summaryKey}`, 'Content-Type': 'application/json' },
+            timeout: 300000,
+            proxy: false
+        });
+
+        log(`[KimiSearch] 阶段2/2 完成: 总结成功`);
+        return summaryResponse.data.choices[0].message.content;
+    } catch (summaryError) {
+        const statusCode = summaryError.response?.status || 'N/A';
+        const errorDetail = summaryError.response?.data ? JSON.stringify(summaryError.response.data).substring(0, 500) : summaryError.message;
+        log(`[KimiSearch] 阶段2 总结失败 (HTTP ${statusCode}): ${errorDetail}`);
+        return `[总结阶段失败 (HTTP ${statusCode}): ${summaryError.message}]\n\n**以下为原始搜索结果（未经整合）：**\n\n${combinedResults}`;
+    }
+};
+
 async function main(request) {
-    const { SearchTopic, Keywords, ShowURL, SearchMode = 'grounding' } = request;
+    const { SearchTopic, Keywords, ShowURL, SearchMode = 'kimisearch' } = request;
     const showURL = ShowURL === true || ShowURL === 'true';
 
     if (!SearchTopic || !Keywords) {
@@ -421,6 +544,18 @@ async function main(request) {
         }
         const result = await callTavilyMode(SearchTopic, keywordList, tavilyKeyStr);
         return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: Tavily]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
+    }
+
+    if (SearchMode === 'kimisearch') {
+        // KimiSearch 模式：调用 Kimi Search API
+        if (!KIMI_SEARCH_KEY) {
+            return sendResponse({ status: "error", error: "KimiSearch 模式需要在 config.env 中配置 KimiSearchKey。" });
+        }
+        if (!KIMI_SEARCH_URL) {
+            return sendResponse({ status: "error", error: "KimiSearch 模式需要在 config.env 中配置 KimiSearchUrl。" });
+        }
+        const result = await callKimiSearchMode(SearchTopic, keywordList, KIMI_SEARCH_KEY, KIMI_SEARCH_URL, KIMI_MAX_RESULTS, KIMI_INCLUDE_CONTENT);
+        return sendResponse({ status: "success", result: `## VSearch 检索报告 [模式: KimiSearch]\n\n**研究主题**: ${SearchTopic}\n\n${result}` });
     }
 
     // Grounding 模式：保持原有的并发分批逻辑

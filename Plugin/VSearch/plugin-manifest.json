@@ -1,9 +1,9 @@
 {
   "manifestVersion": "1.0.0",
   "name": "VSearch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "VSearch 语义并发搜索器",
-  "description": "一个极简、高效的语义级并发搜索引擎。利用小模型内置搜索能力，针对特定主题和关键词进行深度检索，返回高质量的参考资料。",
+  "description": "一个极简、高效的语义级并发搜索引擎。支持多种搜索后端（Grounding、Grok、Tavily、KimiSearch），针对特定主题和关键词进行深度检索，返回高质量的参考资料。",
   "author": "VCP",
   "pluginType": "synchronous",
   "entryPoint": {
@@ -17,34 +17,66 @@
   "configSchema": {
     "VSearchKey": {
       "type": "string",
-      "description": "用于访问大模型服务的API Key (Grounding/Grok模式)。"
+      "description": "用于访问大模型服务的API Key。"
     },
     "VSearchUrl": {
       "type": "string",
-      "description": "大模型服务的API端点URL (Grounding/Grok模式)。"
+      "description": "大模型服务的API端点URL。"
     },
     "VSearchModel": {
       "type": "string",
-      "description": "用于执行联网搜索的辅助模型名称 (Grounding模式建议 gemini-2.5-flash-lite-preview-09-2025-thinking，Grok模式建议 grok-4.20-beta)。"
+      "description": "Grounding模式直接调用的模型名称（建议具备googleSearch工具能力）。"
     },
-    "TavilyModel": {
+    "GrokModel": {
       "type": "string",
-      "description": "Tavily模式下用于总结的模型名称 (建议使用 claude-3-5-sonnet-20240620)。"
+      "description": "Grok模式使用的模型名称。"
     },
     "TavilyKey": {
       "type": "string",
-      "description": "Tavily API Key (仅Tavily模式需要)。"
+      "description": "Tavily API Key（仅Tavily模式需要，也支持从根目录config.env读取）。"
+    },
+    "TavilyModel": {
+      "type": "string",
+      "description": "Tavily模式下用于二阶总结的模型名称。"
     },
     "MaxConcurrent": {
       "type": "integer",
       "description": "并发执行搜索任务的队列上限。"
+    },
+    "KimiSearchUrl": {
+      "type": "string",
+      "description": "Kimi Search API的基础URL（仅KimiSearch模式需要）。"
+    },
+    "KimiSearchKey": {
+      "type": "string",
+      "description": "Kimi Search API的访问密钥（仅KimiSearch模式需要）。"
+    },
+    "KimiSearchMaxResults": {
+      "type": "integer",
+      "description": "Kimi Search模式下每个关键词返回的最大结果数（默认5，最大20）。"
+    },
+    "KimiSearchIncludeContent": {
+      "type": "boolean",
+      "description": "Kimi Search模式下是否抓取网页完整正文（默认false，开启后消耗更多Token）。"
+    },
+    "SummaryKey": {
+      "type": "string",
+      "description": "Tavily/KimiSearch模式下二阶总结专用的LLM API Key（可选）。"
+    },
+    "SummaryUrl": {
+      "type": "string",
+      "description": "Tavily/KimiSearch模式下二阶总结专用的LLM API端点URL（可选）。"
+    },
+    "SummaryModel": {
+      "type": "string",
+      "description": "Tavily/KimiSearch模式下二阶总结专用的模型名称（可选）。"
     }
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "VSearch",
-        "description": "执行语义级并发搜索。该工具会根据你提供的主题和关键词，并发调用搜索引擎并返回深度整合后的信息。\n参数:\n- SearchTopic (字符串, 必需): 检索的目标主题或研究背景，帮助AI理解搜索意图。\n- Keywords (字符串, 必需): 具体的检索关键词，多个关键词请用逗号或换行分隔。\n- SearchMode (字符串, 可选, 默认'grounding'): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,\nKeywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,\nSearchMode:「始」grounding「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "执行语义级并发搜索。该工具会根据你提供的主题和关键词，并发调用搜索引擎并返回深度整合后的信息。\n参数:\n- SearchTopic (字符串, 必需): 检索的目标主题或研究背景，帮助AI理解搜索意图。\n- Keywords (字符串, 必需): 具体的检索关键词，多个关键词请用逗号或换行分隔。\n- SearchMode (字符串, 可选, 默认'kimisearch'): 搜索模式。可选值: 'grounding' (Google搜索), 'grok' (Grok内置搜索), 'tavily' (Tavily外部搜索), 'kimisearch' (Kimi Search 外部搜索)。\n- ShowURL (布尔值, 可选, 默认false): 是否在结果中显示参考来源的完整URL。如果不需要溯源，建议设为false以节省Token。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」VSearch「末」,\nSearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,\nKeywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,\nSearchMode:「始」kimisearch「末」,\nShowURL:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
