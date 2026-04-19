@@ -1,26 +1,32 @@
 {
   "manifestVersion": "1.0.0",
   "name": "DeepWikiVCP",
-  "version": "1.0.0",
-  "displayName": "DeepWiki 抓取器",
-  "description": "一个同步插件，用于抓取 deepwiki.com 的内容并将其转换为 Markdown 格式。",
-  "author": "Roo",
+  "version": "2.0.0",
+  "displayName": "DeepWiki仓库文档检索",
+  "description": "通过 DeepWiki 官方 MCP API 获取 GitHub 仓库的 AI 生成文档、目录结构和智能问答。零依赖，无需配置。",
+  "author": "CodeCC & ZhaoFeng",
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
-    "command": "node Plugin/DeepWikiVCP/deepwiki_vcp.js"
+    "command": "node DeepWikiVCP.js"
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 60000
+    "timeout": 120000
   },
   "configSchema": {},
   "capabilities": {
     "invocationCommands": [
       {
-        "commandIdentifier": "deepwiki_fetch",
-        "description": "调用此工具从 deepwiki.com 抓取一个仓库的内容并返回 Markdown。\n参数:\n- url (字符串, 必需): deepwiki 的 URL 或缩写形式 (例如 'owner/repo' 或 'react')。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\nurl:「始」regenrek/deepwiki-mcp「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\nurl:「始」vuejs/vue「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "commandIdentifier": "wiki_structure",
+        "description": "获取 GitHub 仓库在DeepWiki 上的文档目录结构。\n参数:\n- url (字符串, 必需): 仓库标识，支持 owner/repo 格式、GitHub URL 或 DeepWiki URL。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_structure「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"},
+      {
+        "commandIdentifier": "wiki_content",
+        "description": "读取 DeepWiki 上指定仓库的完整文档内容。返回整个仓库的文档，内容较长时会自动截断。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_content「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "wiki_ask",
+        "description": "向 DeepWiki AI 提出关于某个 GitHub 仓库的问题，获取基于仓库代码的 AI 回答。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n- question (字符串, 必需): 你想问的问题。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」这个项目的插件系统是如何工作的？「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

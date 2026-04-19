@@ -1,23 +1,7 @@
 {
   "name": "vcp-deepwiki-plugin",
-  "version": "1.0.0",
-  "description": "Synchronous VCP plugin to fetch content from deepwiki.com",
-  "main": "deepwiki_vcp.js",
-  "type": "module",
-  "dependencies": {
-    "hast-util-from-html": "^2.0.3",
-    "hast-util-sanitize": "^5.0.2",
-    "linkedom": "^0.18.9",
-    "ofetch": "^1.4.1",
-    "rehype-parse": "^9.0.1",
-    "rehype-remark": "^10.0.1",
-    "rehype-sanitize": "^6.0.0",
-    "remark-gfm": "^4.0.1",
-    "remark-stringify": "^11.0.0",
-    "unified": "^11.0.5",
-    "unist-util-visit": "^5.0.0",
-    "wink-eng-lite-web-model": "^1.0.0",
-    "wink-nlp": "^1.10.0",
-    "zod": "^3.24.3"
-  }
+  "version": "2.0.0",
+  "description": "VCP plugin for DeepWiki - GitHub repo documentation via official MCP API",
+  "main": "DeepWikiVCP.js",
+  "dependencies": {}
 }
