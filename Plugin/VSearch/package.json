@@ -1,0 +1,19 @@
+{
+  "name": "vsearch",
+  "version": "1.0.0",
+  "description": "",
+  "main": "VSearch.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@tavily/core": "^0.7.2",
+    "axios": "^1.15.0",
+    "dotenv": "^17.4.2",
+    "https-proxy-agent": "^9.0.0"
+  }
+}
