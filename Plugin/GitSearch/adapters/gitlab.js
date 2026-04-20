@@ -7,12 +7,17 @@
  */
 
 const axios = require('axios');
+const { createProxyAgent } = require('./proxy');
 
 // ── axios 客户端配置 ──
 const gitlabUrl = (process.env.GITLAB_URL || 'https://gitlab.com').replace(/\/$/, '');
+const agent = createProxyAgent(process.env.GITLAB_PROXY);
 const client = axios.create({
   baseURL: `${gitlabUrl}/api/v4`,
-  headers: { 'PRIVATE-TOKEN': process.env.GITLAB_TOKEN }
+  headers: { 'PRIVATE-TOKEN': process.env.GITLAB_TOKEN },
+  httpAgent: agent,
+  httpsAgent: agent,
+  proxy: false
 });
 
 // ═══════════════════════════════════════════════════════════

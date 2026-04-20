@@ -6,6 +6,7 @@
  */
 
 const axios = require('axios');
+const { createProxyAgent } = require('./proxy');
 
 // ── axios 客户端配置 ──
 const headers = {
@@ -15,9 +16,13 @@ const headers = {
 if (process.env.GITHUB_TOKEN) {
   headers['Authorization'] = `token ${process.env.GITHUB_TOKEN}`;
 }
+const agent = createProxyAgent(process.env.GITHUB_PROXY);
 const client = axios.create({
   baseURL: 'https://api.github.com',
-  headers
+  headers,
+  httpAgent: agent,
+  httpsAgent: agent,
+  proxy: false
 });
 
 // ═══════════════════════════════════════════════════════════

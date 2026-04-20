@@ -7,11 +7,16 @@
  */
 
 const axios = require('axios');
+const { createProxyAgent } = require('./proxy');
 
 // ── axios 客户端配置 ──
+const agent = createProxyAgent(process.env.GITEE_PROXY);
 const client = axios.create({
   baseURL: 'https://gitee.com/api/v5',
-  headers: { 'User-Agent': 'GitSearch-VCP-Plugin' }
+  headers: { 'User-Agent': 'GitSearch-VCP-Plugin' },
+  httpAgent: agent,
+  httpsAgent: agent,
+  proxy: false
 });
 
 // ═══════════════════════════════════════════════════════════
