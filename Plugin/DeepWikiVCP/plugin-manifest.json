@@ -1,10 +1,10 @@
 {
   "manifestVersion": "1.0.0",
   "name": "DeepWikiVCP",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "displayName": "DeepWiki仓库文档检索",
-  "description": "通过 DeepWiki 官方 MCP API 获取 GitHub 仓库的 AI 生成文档、目录结构和智能问答。零依赖，无需配置。",
-  "author": "CodeCC & ZhaoFeng",
+  "description": "通过 DeepWiki 官方 MCP API 获取任意 GitHub 公开仓库的 AI 生成文档。支持文档结构、完整内容、AI 智能问答、Deep Research 深度研究和多仓库联合查询。",
+  "author": "infinite-vector",
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
@@ -12,21 +12,37 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 120000
+    "timeout": 180000
   },
-  "configSchema": {},
+  "configSchema": {
+    "DEEPWIKI_PROXY": {
+      "type": "string",
+      "description": "HTTP 代理地址，留空则继承系统代理。注意: Node.js 内置 fetch 不自动读取环境变量代理，本插件通过 undici.ProxyAgent 显式设置。",
+      "required": false
+    },
+    "DEEPWIKI_GITHUB_TOKEN": {
+      "type": "string",
+      "description": "GitHub PAT，用于查询私有仓库（预留，当前 MCP 不支持透传）",
+      "required": false
+    },
+    "DEEPWIKI_GITLAB_TOKEN": {
+      "type": "string",
+      "description": "GitLab PAT，用于查询私有仓库（预留，当前 MCP 不支持透传）",
+      "required": false
+    }
+  },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "wiki_structure",
-        "description": "获取 GitHub 仓库在DeepWiki 上的文档目录结构。\n参数:\n- url (字符串, 必需): 仓库标识，支持 owner/repo 格式、GitHub URL 或 DeepWiki URL。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_structure「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"},
+        "description": "获取 GitHub仓库在 DeepWiki 上的文档目录结构。\n参数:\n- url (字符串, 必需): 仓库标识，支持 owner/repo 格式、GitHub URL 或 DeepWiki URL。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_structure「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"},
       {
         "commandIdentifier": "wiki_content",
-        "description": "读取 DeepWiki 上指定仓库的完整文档内容。返回整个仓库的文档，内容较长时会自动截断。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_content「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "读取 DeepWiki 上指定仓库的完整文档内容。返回整个仓库的文档，内容较长时会自动截断。注意：返回数据量可能很大，建议优先使用 wiki_ask。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_content「末」,\nurl:「始」lioensky/VCPToolBox「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
         "commandIdentifier": "wiki_ask",
-        "description": "向 DeepWiki AI 提出关于某个 GitHub 仓库的问题，获取基于仓库代码的 AI 回答。\n参数:\n- url (字符串, 必需): 仓库标识 (owner/repo 格式)。\n- question (字符串, 必需): 你想问的问题。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」这个项目的插件系统是如何工作的？「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "向 DeepWiki AI 提出关于 GitHub 仓库的问题。支持单仓库或多仓库联合查询（最多10个）。\n参数:\n- url (字符串, 必需): 仓库标识。单仓库: owner/repo 格式。多仓库: 用逗号分隔，如 'owner1/repo1, owner2/repo2'（最多10个）。\n- question (字符串, 必需): 你想问的问题。\n- deep_research (布尔, 可选): 设为 true 启用深度研究模式，AI 将进行多轮迭代检索（最多5轮），适合复杂架构分析。\n调用示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」插件系统是如何工作的？「末」\n<<<[END_TOOL_REQUEST]>>>\n深度研究:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox「末」,\nquestion:「始」详细分析 RAG 记忆系统的完整架构「末」,\ndeep_research:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n多仓库联合查询:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DeepWikiVCP「末」,\ncommand:「始」wiki_ask「末」,\nurl:「始」lioensky/VCPToolBox, lioensky/VCPChat「末」,\nquestion:「始」前后端是如何通信的？「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }
