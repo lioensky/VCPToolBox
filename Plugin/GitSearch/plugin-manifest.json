@@ -1,0 +1,57 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "GitSearch",
+  "version": "1.0.0",
+  "displayName": "代码托管平台聚合搜索",
+  "description": "聚合 GitHub、GitLab、Gitee 三大代码托管平台的纯读取操作，提供统一的工具名和调用方式。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node GitSearch.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "configSchema": {
+    "GITHUB_TOKEN": {
+      "type": "string",
+      "description": "GitHub Personal Access Token。获取方式: https://github.com/settings/tokens"
+    },
+    "GITHUB_PROXY": {
+      "type": "string",
+      "description": "GitHub 请求代理。支持 http://, https://, socks5:// 等协议。示例: socks5://127.0.0.1:10808"
+    },
+    "GITLAB_TOKEN": {
+      "type": "string",
+      "description": "GitLab Personal Access Token。获取方式: https://gitlab.com/-/profile/personal_access_tokens"
+    },
+    "GITLAB_URL": {
+      "type": "string",
+      "description": "GitLab 实例地址。默认: https://gitlab.com，自托管请填写对应地址",
+      "default": "https://gitlab.com"
+    },
+    "GITLAB_PROXY": {
+      "type": "string",
+      "description": "GitLab 请求代理。支持 http://, https://, socks5:// 等协议。示例: http://127.0.0.1:7890"
+    },
+    "GITEE_TOKEN": {
+      "type": "string",
+      "description": "Gitee 私人令牌。获取方式: https://gitee.com/profile/personal_access_tokens"
+    },
+    "GITEE_PROXY": {
+      "type": "string",
+      "description": "Gitee 请求代理。支持 http://, https://, socks5:// 等协议。示例: socks5://127.0.0.1:10808"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GitSearch",
+        "description": "聚合 GitHub、GitLab、Gitee 三大代码托管平台的纯读取搜索工具。\n每次调用必须指定 platform 参数（值为 github、gitlab 或 gitee）。\n\n支持以下14个统一命令：\n1. repo_get — 获取仓库/项目信息\n2. repo_list_files — 获取文件内容或目录列表\n3. repo_list_branches — 列出分支\n4. repo_list_commits — 列出提交历史\n5. repo_search_code — 搜索代码（仅GitHub支持）\n6. repo_list_releases — 列出Releases\n7. issue_list — 列出Issues\n8. issue_get — 获取Issue详情\n9. issue_search — 搜索Issues（仅GitHub支持）\n10. pr_list — 列出Pull Requests / Merge Requests\n11. pr_get — 获取PR/MR详情\n12. pr_get_diff — 获取PR/MR文件变更列表\n13. user_get_me — 获取当前用户信息（GitHub/Gitee支持，GitLab不支持）\n14. user_search — 搜索用户\n\n通用参数：\n- platform (必需): 平台名称，值为 github、gitlab 或 gitee\n- command (必需): 统一命令名，见上方列表\n- repo_owner (仓库相关命令必需): 仓库所有者\n- repo_name (仓库相关命令必需): 仓库名称\n- path (repo_list_files可选): 文件路径，省略则列出根目录\n- ref (repo_list_files/repo_list_commits可选): 分支/tag/SHA\n- issue_number (issue_get必需): Issue编号\n- pr_number (pr_get/pr_get_diff必需): PR/MR编号\n- query (搜索类命令必需): 搜索关键词\n- state (列表类可选): 状态筛选\n- page/per_page (列表类可选): 分页\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GitSearch「末」,\nplatform:「始」github「末」,\ncommand:「始」repo_get「末」,\nrepo_owner:「始」facebook「末」,\nrepo_name:「始」react「末」\n<<<[END_TOOL_REQUEST]>>>\n\n批量调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GitSearch「末」,\ncommand1:「始」repo_get「末」,\nplatform1:「始」github「末」,\nrepo_owner1:「始」facebook「末」,\nrepo_name1:「始」react「末」,\ncommand2:「始」issue_list「末」,\nplatform2:「始」github「末」,\nrepo_owner2:「始」facebook「末」,\nrepo_name2:「始」react「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」GitSearch「末」,\nplatform:「始」github「末」,\ncommand:「始」repo_get「末」,\nrepo_owner:「始」facebook「末」,\nrepo_name:「始」react「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
