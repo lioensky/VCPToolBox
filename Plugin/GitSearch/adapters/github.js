@@ -7,6 +7,7 @@
 
 const axios = require('axios');
 const { createProxyAgent } = require('./proxy');
+const { truncate } = require('./utils');
 
 // ── axios 客户端配置 ──
 const headers = {
@@ -68,15 +69,6 @@ function formatDate(isoString) {
   if (isNaN(d.getTime())) return isoString;
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/**
- * 截断过长内容（超过 8000 字符）
- */
-function truncate(content, maxLen = 8000) {
-  if (!content || content.length <= maxLen) return content;
-  return content.slice(0, maxLen) +
-    '\n\n---\n*Content truncated. Total length exceeds 8000 characters.*';
 }
 
 /**

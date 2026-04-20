@@ -38,6 +38,9 @@ GITLAB_URL=https://gitlab.com
 
 # Gitee 私人令牌
 GITEE_TOKEN=xxxxxxxxxxxxxxxxxxxx
+
+# 输出长度限制（可选，设为 0 则不限制）
+MAX_OUTPUT_LENGTH=0
 ```
 
 ### 令牌获取地址
