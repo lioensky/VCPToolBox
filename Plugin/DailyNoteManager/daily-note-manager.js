@@ -11,6 +11,16 @@ let dailyNoteRootPath = '';
 let configuredExtension = 'txt';
 let associativeDiscovery = null;
 
+// --- 写入队列：串行化 organize 操作，防止并发同名文件冲突 ---
+let _writeQueue = Promise.resolve();
+function withWriteLock(fn) {
+    let release;
+    const queued = new Promise(resolve => { release = resolve; });
+    const prev = _writeQueue;
+    _writeQueue = queued;
+    return prev.then(() => fn().finally(release));
+}
+
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
 // 归档文件夹名
@@ -232,7 +242,19 @@ async function handleOrganizeCommand(args) {
     const tag = args.Tag || args.tag;
     const fileName = args.fileName || args.FileName;
 
-    debugLog(`Processing 'organize' command`);
+    debugLog(`Processing 'organize' command (queued)`);
+
+    // 通过写入队列串行化，确保并发调用获得不同时间戳
+    return withWriteLock(() => _handleOrganizeInternal(args));
+}
+
+async function _handleOrganizeInternal(args) {
+    const urls = args.urls || args.Urls || args.URL;
+    const maid = args.maid || args.maidName || args.Maid;
+    const dateString = args.dateString || args.Date || args.date;
+    const contentText = args.contentText || args.Content || args.content;
+    const tag = args.Tag || args.tag;
+    const fileName = args.fileName || args.FileName;
 
     if (!urls || !maid || !dateString || !contentText) {
         return {
@@ -290,22 +312,29 @@ async function handleOrganizeCommand(args) {
         let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
         let filePath = path.join(dirPath, finalFileName);
         let counter = 1;
+        const MAX_RETRY = 50;
 
         await fs.mkdir(dirPath, { recursive: true });
 
-        while (true) {
+        // 使用 wx 标志原子性创建文件，防止并发写入同名文件
+        const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
+        while (counter <= MAX_RETRY) {
             try {
-                await fs.access(filePath);
-                counter++;
-                finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
-                filePath = path.join(dirPath, finalFileName);
-            } catch {
-                break;
+                await fs.writeFile(filePath, fileContent, { encoding: 'utf-8', flag: 'wx' });
+                break; // 创建成功
+            } catch (wxErr) {
+                if (wxErr.code === 'EEXIST') {
+                    counter++;
+                    finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
+                    filePath = path.join(dirPath, finalFileName);
+                } else {
+                    throw wxErr; // 非冲突错误直接抛出
+                }
             }
         }
-
-        const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
-        await fs.writeFile(filePath, fileContent, 'utf-8');
+        if (counter > MAX_RETRY) {
+            throw new Error(`文件名冲突过多，已尝试 ${MAX_RETRY} 次: ${baseFileNameWithoutExt}`);
+        }
         newFilePath = filePath;
         debugLog(`成功创建整理后日记: ${filePath}`);
 
@@ -338,18 +367,20 @@ async function handleOrganizeCommand(args) {
         }
 
         const baseFileName = path.basename(sourcePath);
+        const ext = path.extname(baseFileName);
+        const nameWithoutExt = path.basename(baseFileName, ext);
         let destPath = path.join(archiveDir, baseFileName);
         let archiveCounter = 1;
 
-        while (true) {
+        // 归档也用原子性写入检测冲突
+        const archiveMaxRetry = 50;
+        while (archiveCounter <= archiveMaxRetry) {
             try {
                 await fs.access(destPath);
                 archiveCounter++;
-                const ext = path.extname(baseFileName);
-                const nameWithoutExt = path.basename(baseFileName, ext);
                 destPath = path.join(archiveDir, `${nameWithoutExt}(${archiveCounter})${ext}`);
             } catch {
-                break;
+                break; // 文件不存在，可以使用
             }
         }
 
