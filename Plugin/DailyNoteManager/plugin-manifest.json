@@ -3,22 +3,22 @@
   "name": "DailyNoteManager",
   "version": "2.0.0",
   "displayName": "日记整理器",
-  "description": "日记管理与整理插件，提供列出(list)和整理(organize)两个功能。list 可按日期范围查看指定文件夹内的所有日记及其URL；organize 可将多篇旧日记归档到「已整理」文件夹，并创建一篇新的合并日记。",
+  "description": "日记管理与整理混合插件，提供列出(list)、整理(organize)和联想(associate)三个功能。list 可按日期范围查看指定文件夹内的所有日记及其URL；organize 可将多篇旧日记归档到「已整理」文件夹并创建一篇新的合并日记；associate 可基于一篇或多篇日记通过向量语义搜索发现关联日记。",
   "author": "VCP",
-  "pluginType": "synchronous",
+  "pluginType": "hybridservice",
   "entryPoint": {
     "type": "nodejs",
-    "command": "node daily-note-manager.js"
+    "script": "daily-note-manager.js"
   },
   "communication": {
-    "protocol": "stdio",
+    "protocol": "direct",
     "timeout": 30000
   },
   "capabilities": {
     "invocationCommands": [
       {
         "commandIdentifier": "list",
-        "description": "「列出日记」：按日期范围读取指定文件夹内的所有日记文件，返回每篇日记的URL和完整内容。\n\n**参数说明：**\n- folder: 日记文件夹名称（如 Nova、VCP开发 等，对应 dailynote/ 下的子文件夹）\n- startDate: 起始日期，格式 YYYY-MM-DD\n- endDate: 结束日期，格式 YYYY-MM-DD\n\n**返回内容：**\n每条日记以 `--- [文件夹/文件名.txt] ---` 标记URL，后跟完整日记内容。这些URL可以直接用于 organize 命令的 urls 参数。\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」list「末」,\nfolder:「始」Nova「末」,\nstartDate:「始」2026-04-01「末」,\nendDate:「始」2026-04-30「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "「列出日记」：按日期范围读取指定文件夹内的所有日记文件，返回每篇日记的URL和完整内容。\n\n**参数说明：**\n- folder: 日记文件夹名称（如 Nova、VCP开发 等，对应 dailynote/ 下的子文件夹）\n- startDate: 起始日期，格式 YYYY-MM-DD\n- endDate: 结束日期，格式 YYYY-MM-DD\n\n**返回内容：**\n每条日记以 `--- [文件夹/文件名.txt] ---` 标记URL，后跟完整日记内容。这些URL可以直接用于 organize 或 associate 命令。\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」list「末」,\nfolder:「始」Nova「末」,\nstartDate:「始」2026-04-01「末」,\nendDate:「始」2026-04-30「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "folder",
@@ -77,6 +77,42 @@
           {
             "name": "fileName",
             "description": "可选的文件名后缀，追加到时间戳文件名后。",
+            "required": false,
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "commandIdentifier": "associate",
+        "description": "「联想关联日记」：输入一篇或多篇日记的URL，通过向量语义搜索在指定文件夹范围内发现关联日记。支持设置k值（返回数量）、最低相似度阈值（低于阈值的结果直接丢弃）和TagMemo增强因子。多URL输入时会自动对结果去重合并。\n\n**参数说明：**\n- url: 源日记文件的相对路径（来自 list 命令输出的URL），支持多个URL换行分隔\n- range: 可选，搜索范围（文件夹名称列表），逗号分隔。为空则全局搜索\n- k: 可选，返回的关联日记数量，默认 10\n- minScore: 可选，最低相似度阈值（0~1），低于此分数的结果直接丢弃，默认 0（不过滤）\n- tagBoost: 可选，TagMemo标签增强因子（0~1），默认 0.15\n\n**调用格式（单URL）：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」associate「末」,\nurl:「始」Nova/2026-04-18-14_52_57.txt「末」,\nrange:「始」Nova, VCP开发「末」,\nk:「始」5「末」,\nminScore:「始」0.3「末」\n<<<[END_TOOL_REQUEST]>>>\n\n**调用格式（多URL去重）：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」associate「末」,\nurl:「始」Nova/2026-04-18-14_52_57.txt\nNova/2026-04-19-09_11_45.txt「末」,\nrange:「始」Nova, VCP开发「末」,\nk:「始」10「末」,\nminScore:「始」0.25「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "parameters": [
+          {
+            "name": "url",
+            "description": "源日记文件的相对路径，支持多个URL换行分隔。来自 list 命令的输出。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "range",
+            "description": "可选的搜索范围，文件夹名称列表，逗号分隔。为空则在所有日记文件夹中搜索。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "k",
+            "description": "返回的关联日记数量，默认 10。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "minScore",
+            "description": "最低相似度阈值（0~1），低于此分数的结果将被丢弃。默认 0（不过滤）。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "tagBoost",
+            "description": "TagMemo 标签增强因子（0~1），默认 0.15。",
             "required": false,
             "type": "string"
           }

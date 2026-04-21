@@ -1,17 +1,15 @@
-#!/usr/bin/env node
+// Plugin/DailyNoteManager/daily-note-manager.js
+// hybridservice 混合插件：list（列出日记）+ organize（整理日记）+ associate（联想关联日记）
 
 const fs = require('fs').promises;
 const path = require('path');
 
-// --- Load environment variables ---
-require('dotenv').config({ path: path.join(__dirname, 'config.env') });
-require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env') });
-
-// --- Configuration ---
-const DEBUG_MODE = (process.env.DebugMode || "false").toLowerCase() === "true";
-const projectBasePath = process.env.PROJECT_BASE_PATH;
-const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
-const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt";
+// --- Runtime State ---
+let pluginConfig = {};
+let debugMode = false;
+let dailyNoteRootPath = '';
+let configuredExtension = 'txt';
+let associativeDiscovery = null;
 
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
@@ -20,7 +18,7 @@ const ARCHIVE_FOLDER = '已整理';
 
 // --- Debug Logging (to stderr) ---
 function debugLog(message, ...args) {
-    if (DEBUG_MODE) {
+    if (debugMode) {
         console.error(`[DailyNoteManager][Debug] ${message}`, ...args);
     }
 }
@@ -59,27 +57,22 @@ function isPathWithinBase(targetPath, basePath) {
 }
 
 // --- Helper: Extract date from diary filename ---
-// 支持格式: 2026-04-18-14_52_57.txt, 2026-04-18-14_52_57-标题.txt
-// 也兼容旧格式: 2025.05.13.txt, 2025.05.13.1.txt
 function extractDateFromFilename(filename) {
     // 新格式: YYYY-MM-DD-HH_MM_SS...
     const newFormatMatch = filename.match(/^(\d{4})-(\d{2})-(\d{2})-/);
     if (newFormatMatch) {
         return `${newFormatMatch[1]}-${newFormatMatch[2]}-${newFormatMatch[3]}`;
     }
-
     // 旧格式: YYYY.MM.DD...
     const oldFormatMatch = filename.match(/^(\d{4})\.(\d{2})\.(\d{2})/);
     if (oldFormatMatch) {
         return `${oldFormatMatch[1]}-${oldFormatMatch[2]}-${oldFormatMatch[3]}`;
     }
-
     return null;
 }
 
 // --- Helper: Parse date string to comparable value ---
 function parseDateToNum(dateStr) {
-    // dateStr: "YYYY-MM-DD"
     return parseInt(dateStr.replace(/-/g, ''), 10);
 }
 
@@ -144,7 +137,6 @@ async function handleListCommand(args) {
         return { status: "error", error: "参数不完整：需要 folder, startDate, endDate。" };
     }
 
-    // 验证日期格式
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
     if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
         return { status: "error", error: "日期格式错误，请使用 YYYY-MM-DD 格式。" };
@@ -156,14 +148,12 @@ async function handleListCommand(args) {
         return { status: "error", error: `起始日期 ${startDate} 不能晚于结束日期 ${endDate}。` };
     }
 
-    // 安全检查文件夹
     const sanitizedFolder = sanitizePathComponent(folder);
     const dirPath = path.join(dailyNoteRootPath, sanitizedFolder);
 
     if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
         return { status: "error", error: "安全错误：检测到无效的文件夹路径。" };
     }
-
     if (IGNORED_FOLDERS.includes(sanitizedFolder)) {
         return { status: "error", error: `不允许访问被忽略的文件夹: ${sanitizedFolder}` };
     }
@@ -190,9 +180,7 @@ async function handleListCommand(args) {
             }
 
             const fileNum = parseDateToNum(dateStr);
-            if (fileNum < startNum || fileNum > endNum) {
-                continue;
-            }
+            if (fileNum < startNum || fileNum > endNum) continue;
 
             const filePath = path.join(dirPath, file);
             let content = '';
@@ -203,20 +191,12 @@ async function handleListCommand(args) {
                 continue;
             }
 
-            // 构建相对 URL（相对于 dailyNoteRootPath）
             const relativeUrl = path.join(sanitizedFolder, file).replace(/\\/g, '/');
-
-            results.push({
-                url: relativeUrl,
-                date: dateStr,
-                filename: file,
-                content: content
-            });
+            results.push({ url: relativeUrl, date: dateStr, filename: file, content });
         }
 
-        debugLog(`在 ${sanitizedFolder} 中找到 ${results.length} 条日记（日期范围 ${startDate} ~ ${endDate}）`);
+        debugLog(`在 ${sanitizedFolder} 中找到 ${results.length} 条日记（${startDate} ~ ${endDate}）`);
 
-        // 格式化输出
         if (results.length === 0) {
             return {
                 status: "success",
@@ -228,9 +208,7 @@ async function handleListCommand(args) {
         for (const entry of results) {
             output += `--- [${entry.url}] ---\n`;
             output += entry.content;
-            if (!entry.content.endsWith('\n')) {
-                output += '\n';
-            }
+            if (!entry.content.endsWith('\n')) output += '\n';
             output += '\n';
         }
 
@@ -256,7 +234,6 @@ async function handleOrganizeCommand(args) {
 
     debugLog(`Processing 'organize' command`);
 
-    // 参数验证
     if (!urls || !maid || !dateString || !contentText) {
         return {
             status: "error",
@@ -264,7 +241,6 @@ async function handleOrganizeCommand(args) {
         };
     }
 
-    // 解析 urls（按换行符分割）
     const urlList = urls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
     if (urlList.length === 0) {
         return { status: "error", error: "urls 列表为空，请至少提供一个要整理的文件URL。" };
@@ -285,7 +261,7 @@ async function handleOrganizeCommand(args) {
         if (tagMatch) {
             folderName = tagMatch[1].trim();
             actualMaidName = tagMatch[2].trim();
-            debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
+            debugLog(`Tagged note: folder=${folderName}, maid=${actualMaidName}`);
         }
 
         const sanitizedFolderName = sanitizePathComponent(folderName);
@@ -295,17 +271,13 @@ async function handleOrganizeCommand(args) {
 
         const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
         const now = new Date();
-        const hours = now.getHours().toString().padStart(2, '0');
-        const minutes = now.getMinutes().toString().padStart(2, '0');
-        const seconds = now.getSeconds().toString().padStart(2, '0');
-        const timeStringForFile = `${hours}_${minutes}_${seconds}`;
+        const timeStringForFile = `${now.getHours().toString().padStart(2, '0')}_${now.getMinutes().toString().padStart(2, '0')}_${now.getSeconds().toString().padStart(2, '0')}`;
 
         const dirPath = path.join(dailyNoteRootPath, sanitizedFolderName);
         if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
             return { status: "error", error: "安全错误：检测到无效的文件夹路径。" };
         }
 
-        // 可选的 fileName 后缀
         let sanitizedOptionalFileName = '';
         if (typeof fileName === 'string' && fileName.trim()) {
             sanitizedOptionalFileName = sanitizePathComponent(fileName.trim());
@@ -313,7 +285,7 @@ async function handleOrganizeCommand(args) {
 
         const fileNameSuffix = sanitizedOptionalFileName ? `-${sanitizedOptionalFileName}` : '';
         const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}${fileNameSuffix}`;
-        const fileExtension = `.${CONFIGURED_EXTENSION}`;
+        const fileExtension = `.${configuredExtension}`;
 
         let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
         let filePath = path.join(dirPath, finalFileName);
@@ -321,7 +293,6 @@ async function handleOrganizeCommand(args) {
 
         await fs.mkdir(dirPath, { recursive: true });
 
-        // 循环检查文件名冲突
         while (true) {
             try {
                 await fs.access(filePath);
@@ -329,21 +300,17 @@ async function handleOrganizeCommand(args) {
                 finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
                 filePath = path.join(dirPath, finalFileName);
             } catch {
-                break; // 文件不存在，可以使用
+                break;
             }
         }
 
-        // 写入新日记（格式与 DailyNote create 完全一致）
         const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
         await fs.writeFile(filePath, fileContent, 'utf-8');
         newFilePath = filePath;
         debugLog(`成功创建整理后日记: ${filePath}`);
 
     } catch (createError) {
-        return {
-            status: "error",
-            error: `创建整理后日记失败: ${createError.message}`
-        };
+        return { status: "error", error: `创建整理后日记失败: ${createError.message}` };
     }
 
     // ---- Step 2: 将原始文件移动到「已整理」文件夹 ----
@@ -356,7 +323,6 @@ async function handleOrganizeCommand(args) {
 
     const moveResults = [];
     for (const url of urlList) {
-        // url 格式: "文件夹名/文件名.txt" （相对于 dailyNoteRootPath）
         const sourcePath = path.join(dailyNoteRootPath, url.replace(/\//g, path.sep));
 
         if (!isPathWithinBase(sourcePath, dailyNoteRootPath)) {
@@ -375,7 +341,6 @@ async function handleOrganizeCommand(args) {
         let destPath = path.join(archiveDir, baseFileName);
         let archiveCounter = 1;
 
-        // 处理归档目录的文件名冲突
         while (true) {
             try {
                 await fs.access(destPath);
@@ -389,25 +354,20 @@ async function handleOrganizeCommand(args) {
         }
 
         try {
-            // 先尝试 rename（同设备快速移动）
             await fs.rename(sourcePath, destPath);
             moveResults.push({ url, status: 'success', message: `已归档到 ${ARCHIVE_FOLDER}/` });
             debugLog(`已移动: ${sourcePath} -> ${destPath}`);
-        } catch (renameErr) {
-            // rename 失败（可能跨设备），回退到 copy + delete
+        } catch {
             try {
                 await fs.copyFile(sourcePath, destPath);
                 await fs.unlink(sourcePath);
                 moveResults.push({ url, status: 'success', message: `已归档到 ${ARCHIVE_FOLDER}/` });
-                debugLog(`已复制并删除: ${sourcePath} -> ${destPath}`);
             } catch (copyErr) {
                 moveResults.push({ url, status: 'error', message: `归档失败: ${copyErr.message}` });
-                console.error(`[DailyNoteManager] 归档文件失败 ${sourcePath}:`, copyErr.message);
             }
         }
     }
 
-    // ---- 汇总结果 ----
     const successCount = moveResults.filter(r => r.status === 'success').length;
     const failCount = moveResults.filter(r => r.status === 'error').length;
 
@@ -423,63 +383,210 @@ async function handleOrganizeCommand(args) {
         summaryMessage += `\n失败详情:\n${failDetails}`;
     }
 
-    return {
-        status: failCount > 0 ? "partial" : "success",
-        result: summaryMessage
-    };
+    return { status: failCount > 0 ? "partial" : "success", result: summaryMessage };
 }
 
 // ============================================================
-// Main Entry
+// Command: associate
+// 联想发现：基于一篇或多篇日记，通过向量相似度查找关联日记（多URL去重合并）
 // ============================================================
-async function main() {
-    let inputData = '';
-    process.stdin.setEncoding('utf8');
+async function handleAssociateCommand(args) {
+    if (!associativeDiscovery) {
+        return {
+            status: "error",
+            error: "AssociativeDiscovery 模块不可用。请确认知识库系统已初始化。"
+        };
+    }
 
-    process.stdin.on('readable', () => {
-        let chunk;
-        while ((chunk = process.stdin.read()) !== null) {
-            inputData += chunk;
-        }
-    });
+    const urlRaw = args.url || args.Url || args.URL || args.urls || args.Urls;
+    const range = args.range || args.Range;
+    const k = parseInt(args.k || args.K || '10', 10);
+    const minScore = parseFloat(args.minScore || args.MinScore || args.min_score || '0');
+    const tagBoost = parseFloat(args.tagBoost || args.TagBoost || args.tag_boost || '0.15');
 
-    process.stdin.on('end', async () => {
-        debugLog('Received stdin data:', inputData);
-        let result;
-        try {
-            if (!inputData) {
-                throw new Error("No input data received via stdin.");
+    if (!urlRaw || typeof urlRaw !== 'string' || !urlRaw.trim()) {
+        return { status: "error", error: "缺少必需参数：url（日记文件的相对路径，支持多个URL换行分隔）。" };
+    }
+
+    // 支持多 URL（换行分隔）
+    const urlList = urlRaw.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+    if (urlList.length === 0) {
+        return { status: "error", error: "url 列表为空。" };
+    }
+
+    // 解析 range（逗号或换行分隔的文件夹名列表）
+    let rangeList = [];
+    if (range && typeof range === 'string' && range.trim()) {
+        rangeList = range.split(/[,\n]/).map(s => s.trim()).filter(s => s.length > 0);
+    }
+
+    debugLog(`Processing 'associate' command - urls: [${urlList.join(', ')}], k: ${k}, minScore: ${minScore}, range: [${rangeList.join(', ')}]`);
+
+    try {
+        // 对每个源 URL 并行执行联想搜索
+        const discoverPromises = urlList.map(sourceUrl =>
+            associativeDiscovery.discover({
+                sourceFilePath: sourceUrl,
+                k,
+                range: rangeList,
+                tagBoost
+            })
+        );
+        const allResults = await Promise.all(discoverPromises);
+
+        // 合并去重：同一路径取最高分，合并 matchedTags 和 chunks
+        const mergedMap = new Map();
+        const warnings = [];
+        let totalChunksFound = 0;
+        const allSourceUrls = new Set(urlList.map(u => u.replace(/\\/g, '/')));
+
+        for (const result of allResults) {
+            if (result.warning) warnings.push(result.warning);
+            totalChunksFound += result.metadata.totalChunksFound;
+
+            for (const entry of result.results) {
+                const normalizedPath = entry.path.replace(/\\/g, '/');
+
+                // 排除所有源文件自身
+                if (allSourceUrls.has(normalizedPath)) continue;
+
+                if (!mergedMap.has(normalizedPath)) {
+                    mergedMap.set(normalizedPath, {
+                        path: normalizedPath,
+                        name: entry.name,
+                        score: entry.score,
+                        chunks: [...(entry.chunks || [])],
+                        matchedTags: [...(entry.matchedTags || [])],
+                        tagMatchScore: entry.tagMatchScore || 0
+                    });
+                } else {
+                    const existing = mergedMap.get(normalizedPath);
+                    if (entry.score > existing.score) {
+                        existing.score = entry.score;
+                    }
+                    for (const chunk of (entry.chunks || [])) {
+                        if (existing.chunks.length < 3 && !existing.chunks.includes(chunk)) {
+                            existing.chunks.push(chunk);
+                        }
+                    }
+                    for (const tag of (entry.matchedTags || [])) {
+                        if (!existing.matchedTags.includes(tag)) {
+                            existing.matchedTags.push(tag);
+                        }
+                    }
+                }
             }
-            const args = JSON.parse(inputData);
-            const { command, ...parameters } = args;
-
-            switch (command) {
-                case 'list':
-                    result = await handleListCommand(parameters);
-                    break;
-                case 'organize':
-                    result = await handleOrganizeCommand(parameters);
-                    break;
-                default:
-                    result = {
-                        status: "error",
-                        error: `未知命令: '${command}'。可用命令: 'list'（列出日记）, 'organize'（整理日记）。`
-                    };
-            }
-        } catch (error) {
-            console.error("[DailyNoteManager] Error processing request:", error.message);
-            result = { status: "error", error: error.message || "An unknown error occurred." };
         }
 
-        process.stdout.write(JSON.stringify(result));
-        process.exit(result.status === "error" ? 1 : 0);
-    });
+        // 按分数排序，截取前 k 条
+        let finalResults = Array.from(mergedMap.values())
+            .sort((a, b) => b.score - a.score)
+            .slice(0, k);
 
-    process.stdin.on('error', (err) => {
-        console.error("[DailyNoteManager] Stdin error:", err);
-        process.stdout.write(JSON.stringify({ status: "error", error: "Error reading input." }));
-        process.exit(1);
-    });
+        // 按最低分数阈值过滤
+        if (minScore > 0) {
+            finalResults = finalResults.filter(r => r.score >= minScore);
+        }
+
+        const uniqueWarnings = [...new Set(warnings)];
+
+        if (finalResults.length === 0) {
+            let msg = `未找到与输入的 ${urlList.length} 篇日记相关联的结果`;
+            if (minScore > 0) msg += `（最低阈值: ${minScore}）`;
+            msg += '。';
+            if (uniqueWarnings.length > 0) msg += `\n${uniqueWarnings.join('\n')}`;
+            return { status: "success", result: msg };
+        }
+
+        // 格式化输出
+        let output = '';
+        if (urlList.length === 1) {
+            output += `找到 ${finalResults.length} 条与「${urlList[0]}」关联的日记`;
+        } else {
+            output += `找到 ${finalResults.length} 条与输入的 ${urlList.length} 篇日记关联的结果（已去重合并）`;
+        }
+        if (rangeList.length > 0) {
+            output += `（范围: ${rangeList.join(', ')}）`;
+        }
+        output += `：\n`;
+        if (uniqueWarnings.length > 0) output += `${uniqueWarnings.join('\n')}\n`;
+        output += '\n';
+
+        for (const entry of finalResults) {
+            output += `📄 [${entry.path}] (相似度: ${entry.score.toFixed(4)})\n`;
+            if (entry.matchedTags && entry.matchedTags.length > 0) {
+                output += `   🏷️ 匹配标签: ${entry.matchedTags.join(', ')}\n`;
+            }
+            if (entry.chunks && entry.chunks.length > 0) {
+                output += `   📝 预览: ${entry.chunks[0]}\n`;
+            }
+            output += '\n';
+        }
+
+        output += `---\n`;
+        output += `搜索统计: 共 ${urlList.length} 个源文件, 检索到 ${totalChunksFound} 个文本块, 去重后 ${mergedMap.size} 个关联文件`;
+
+        return { status: "success", result: output.trimEnd() };
+
+    } catch (error) {
+        console.error(`[DailyNoteManager] associate 命令错误:`, error);
+        return { status: "error", error: `联想搜索失败: ${error.message}` };
+    }
 }
 
-main();
+// ============================================================
+// hybridservice Interface
+// ============================================================
+function initialize(config, dependencies) {
+    pluginConfig = config;
+    debugMode = config.DebugMode || false;
+
+    // 从环境变量或 config 获取路径
+    dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH ||
+        (config.PROJECT_BASE_PATH ? path.join(config.PROJECT_BASE_PATH, 'dailynote') :
+            path.join(__dirname, '..', '..', 'dailynote'));
+
+    configuredExtension = (process.env.DAILY_NOTE_EXTENSION || 'txt').toLowerCase() === 'md' ? 'md' : 'txt';
+
+    // 延迟加载 AssociativeDiscovery（它依赖 KnowledgeBaseManager 单例）
+    try {
+        associativeDiscovery = require('../../modules/associativeDiscovery');
+        debugLog('AssociativeDiscovery module loaded successfully');
+    } catch (e) {
+        console.error('[DailyNoteManager] Warning: Failed to load AssociativeDiscovery:', e.message);
+        console.error('[DailyNoteManager] The "associate" command will be unavailable.');
+    }
+
+    console.log(`[DailyNoteManager] ✅ Initialized (hybridservice). Root: ${dailyNoteRootPath}`);
+}
+
+async function processToolCall(args) {
+    const { command, ...params } = args;
+
+    debugLog(`processToolCall invoked, command: ${command}`);
+
+    switch (command) {
+        case 'list':
+            return await handleListCommand(params);
+        case 'organize':
+            return await handleOrganizeCommand(params);
+        case 'associate':
+            return await handleAssociateCommand(params);
+        default:
+            return {
+                status: "error",
+                error: `未知命令: '${command}'。可用命令: 'list'（列出日记）, 'organize'（整理日记）, 'associate'（联想关联日记）。`
+            };
+    }
+}
+
+function shutdown() {
+    debugLog('Shutting down DailyNoteManager...');
+    associativeDiscovery = null;
+}
+
+module.exports = {
+    initialize,
+    processToolCall,
+    shutdown
+};
