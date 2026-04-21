@@ -1,0 +1,90 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DailyNoteManager",
+  "version": "2.0.0",
+  "displayName": "日记整理器",
+  "description": "日记管理与整理插件，提供列出(list)和整理(organize)两个功能。list 可按日期范围查看指定文件夹内的所有日记及其URL；organize 可将多篇旧日记归档到「已整理」文件夹，并创建一篇新的合并日记。",
+  "author": "VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node daily-note-manager.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "list",
+        "description": "「列出日记」：按日期范围读取指定文件夹内的所有日记文件，返回每篇日记的URL和完整内容。\n\n**参数说明：**\n- folder: 日记文件夹名称（如 Nova、VCP开发 等，对应 dailynote/ 下的子文件夹）\n- startDate: 起始日期，格式 YYYY-MM-DD\n- endDate: 结束日期，格式 YYYY-MM-DD\n\n**返回内容：**\n每条日记以 `--- [文件夹/文件名.txt] ---` 标记URL，后跟完整日记内容。这些URL可以直接用于 organize 命令的 urls 参数。\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」list「末」,\nfolder:「始」Nova「末」,\nstartDate:「始」2026-04-01「末」,\nendDate:「始」2026-04-30「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "parameters": [
+          {
+            "name": "folder",
+            "description": "日记文件夹名称，对应 dailynote/ 下的子文件夹名。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "startDate",
+            "description": "起始日期，格式 YYYY-MM-DD。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "endDate",
+            "description": "结束日期，格式 YYYY-MM-DD。",
+            "required": true,
+            "type": "string"
+          }
+        ]
+      },
+      {
+        "commandIdentifier": "organize",
+        "description": "「整理日记」：将多篇日记整合为一篇新日记，并将原始文件归档到「已整理」文件夹。新日记的写入格式与 DailyNote 插件完全一致。\n\n**工作流程：**\n1. 先使用 list 命令查看日期范围内的日记，获取各日记的URL\n2. 阅读日记内容后，选择需要整理的日记URL\n3. 调用 organize 命令，提供URL列表和新日记内容\n4. 插件会创建新的整理后日记，并将原始文件移动到「已整理」文件夹\n\n**参数说明：**\n- urls: 需要归档的日记URL列表（来自 list 命令输出的URL），多个URL用换行分隔\n- maid: 作者署名，支持 [文件夹]署名 格式指定存储目录\n- Date: 新日记的日期，格式 YYYY-MM-DD\n- Content: 新的整理后日记内容\n- Tag: 可选，标签（也可以写在 Content 末尾的 Tag: 行中）\n- fileName: 可选，文件名后缀\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」organize「末」,\nurls:「始」Nova/2026-04-18-14_52_57.txt\nNova/2026-04-18-15_30_22.txt\nNova/2026-04-19-09_11_45.txt「末」,\nmaid:「始」[已整理]Nova「末」,\nDate:「始」2026-04-18「末」,\nContent:「始」[14:54] 主人夸奖Nova可爱，给予了一个温暖的拥抱和亲吻。\n[15:30] 讨论了VCP系统的架构升级计划，Nova提出了向量索引优化方案。\n[09:11] 早间系统自检完成，所有模块运行正常。「末」,\nTag:「始」情感交互, VCP架构, 系统维护「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "parameters": [
+          {
+            "name": "urls",
+            "description": "待归档的日记文件URL列表，多个URL用换行分隔。URL来自 list 命令的输出（格式如：文件夹名/文件名.txt）。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "maid",
+            "description": "作者署名，支持使用 [文件夹]署名 格式来指定新日记的存储目录。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "Date",
+            "description": "新日记的日期，格式 YYYY-MM-DD。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "Content",
+            "description": "新的整理后日记内容。如果'Tag'参数未提供，则此内容的最后一行必须是以'Tag:'开头的标签行。",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "Tag",
+            "description": "可选的标签字段。如果提供，它将覆盖 Content 中的 Tag: 行。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "fileName",
+            "description": "可选的文件名后缀，追加到时间戳文件名后。",
+            "required": false,
+            "type": "string"
+          }
+        ]
+      }
+    ]
+  },
+  "configSchema": {
+    "DebugMode": "boolean"
+  }
+}
