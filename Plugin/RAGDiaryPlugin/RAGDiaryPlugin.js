@@ -2317,6 +2317,9 @@ class RAGDiaryPlugin {
         // 🌟 解析 Truncate 阈值
         const truncateThreshold = this._extractTruncateThreshold(modifiers);
 
+        // 🌟 V9: 父文档展开修饰符 - 命中任意 chunk 即展开完整日记文件
+        const useExpand = modifiers.includes('::Expand');
+
         // TagMemo修饰符检测（静默）
 
         const displayName = dbName + '日记本';
@@ -2526,6 +2529,11 @@ class RAGDiaryPlugin {
         // 统一添加 source 标识并格式化
         finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
 
+        // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）
+        if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
+            finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName);
+        }
+
         if (useTime && timeRanges && timeRanges.length > 0) {
             retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
         } else if (useGroup) {
@@ -2588,6 +2596,7 @@ class RAGDiaryPlugin {
                     rrfAlpha: rrfAlpha, // 🌟 RRF 权重参数
                     useGeodesicRerank: useGeodesicRerank, // 🌟 V8: 测地线重排标识
                     geoAlpha: geoOptions?.geoAlpha, // 🌟 V8: 测地线混合权重
+                    useExpand: useExpand, // 🌟 V9: 父文档展开标识
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
                     coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
@@ -2635,6 +2644,89 @@ class RAGDiaryPlugin {
         return retrievedContent;
     }
 
+
+    //####################################################################################
+    //## 🌟 V9: Parent Document Expansion - 父文档展开
+    //####################################################################################
+
+    /**
+     * 🌟 V9: 父文档展开 (Parent Document Expansion)
+     * 将命中的 chunk 结果展开为其所属的完整日记文件内容。
+     * 同一文件的多个 chunk 命中只展开一次，保留最高分。
+     *
+     * @param {Array} results - 搜索结果数组，每个元素需包含 fullPath 字段
+     * @param {string} dbName - 日记本名称
+     * @returns {Promise<Array>} 展开后的结果数组（每个元素的 text 为完整文件内容）
+     */
+    async _expandChunksToFullDocuments(results, dbName) {
+        if (!results || results.length === 0) return results;
+
+        // 1. 按 fullPath 分组，保留每个文件的最高分和元数据
+        const fileMap = new Map(); // fullPath → { bestScore, bestResult, chunkCount }
+        const noPathResults = []; // 没有 fullPath 的结果保持原样
+
+        for (const r of results) {
+            const filePath = r.fullPath;
+            if (!filePath) {
+                noPathResults.push(r);
+                continue;
+            }
+
+            if (!fileMap.has(filePath)) {
+                fileMap.set(filePath, {
+                    bestScore: r.rerank_score ?? r.score ?? 0,
+                    bestResult: r,
+                    chunkCount: 1
+                });
+            } else {
+                const existing = fileMap.get(filePath);
+                existing.chunkCount++;
+                const currentScore = r.rerank_score ?? r.score ?? 0;
+                if (currentScore > existing.bestScore) {
+                    existing.bestScore = currentScore;
+                    existing.bestResult = r;
+                }
+            }
+        }
+
+        // 2. 读取每个唯一文件的完整内容
+        const expandedResults = [];
+        let expandedFileCount = 0;
+        let totalChunksCollapsed = 0;
+
+        for (const [filePath, info] of fileMap) {
+            try {
+                const absolutePath = path.join(dailyNoteRootPath, filePath);
+                const fullContent = await fs.readFile(absolutePath, 'utf-8');
+
+                // 用完整文件内容替换 chunk 文本，保留原始结果的其他元数据
+                expandedResults.push({
+                    ...info.bestResult,
+                    text: fullContent,
+                    score: info.bestScore,
+                    _expanded: true,
+                    _originalChunkCount: info.chunkCount
+                });
+                expandedFileCount++;
+                totalChunksCollapsed += info.chunkCount;
+            } catch (e) {
+                // 文件读取失败时回退到原始 chunk
+                console.warn(`[RAGDiaryPlugin] Expand: 文件读取失败 "${filePath}": ${e.message}，回退到原始 chunk`);
+                expandedResults.push(info.bestResult);
+            }
+        }
+
+        // 3. 合并无路径结果并按分数排序
+        expandedResults.push(...noPathResults);
+        expandedResults.sort((a, b) => {
+            const scoreA = a.rerank_score ?? a.score ?? 0;
+            const scoreB = b.rerank_score ?? b.score ?? 0;
+            return scoreB - scoreA;
+        });
+
+        console.log(`[RAGDiaryPlugin] 🌟 Expand: ${results.length} chunks → ${expandedResults.length} 完整文档 (${expandedFileCount} 文件展开, ${totalChunksCollapsed} chunks 合并)`);
+        return expandedResults;
+    }
 
     //####################################################################################
     //## Time-Aware RAG Logic - 时间感知RAG逻辑
