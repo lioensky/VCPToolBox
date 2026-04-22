@@ -1,0 +1,6 @@
+*.db
+*.db-shm
+*.db-wal
+*.json
+!plugin-manifest.json
+!config.env.example

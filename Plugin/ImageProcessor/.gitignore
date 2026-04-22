@@ -1,0 +1,6 @@
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.json
+!plugin-manifest.json
+!config.env.example
