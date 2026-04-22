@@ -509,7 +509,8 @@ const callKimiSearchMode = async (topic, keywordList, apiKey, baseUrl, maxResult
 };
 
 async function main(request) {
-    const { SearchTopic, Keywords, ShowURL, SearchMode = 'kimisearch' } = request;
+    const { SearchTopic, Keywords, ShowURL, 
+        SearchMode = process.env.SearchMode || 'kimisearch' } = request;
     const showURL = ShowURL === true || ShowURL === 'true';
 
     if (!SearchTopic || !Keywords) {
