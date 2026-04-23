@@ -2593,7 +2593,11 @@ class RAGDiaryPlugin {
         if (this.pushVcpInfo && finalResultsForBroadcast) {
             try {
                 // ✅ 新增：根据相关度分数对结果进行排序
+                // 🌟 V10.1: rag/time 优先于 associate，确保原始召回结果在广播中不被挤出
                 finalResultsForBroadcast.sort((a, b) => {
+                    const aIsAssociate = a.source === 'associate' ? 1 : 0;
+                    const bIsAssociate = b.source === 'associate' ? 1 : 0;
+                    if (aIsAssociate !== bIsAssociate) return aIsAssociate - bIsAssociate; // rag/time 排前
                     const scoreA = a.rerank_score ?? a.score ?? -1;
                     const scoreB = b.rerank_score ?? b.score ?? -1;
                     return scoreB - scoreA;
@@ -2629,7 +2633,7 @@ class RAGDiaryPlugin {
                         }
                     }) : undefined,
                     // 🌟 限制广播结果数量和长度，防止 payload 过大导致广播失败
-                    results: cleanedResults.slice(0, 10),
+                    results: cleanedResults.slice(0, 20),
                     // ✅ 新增：汇总Tag统计信息
                     tagStats: tagWeight !== null ? this._aggregateTagStats(cleanedResults) : undefined
                 };
@@ -2700,8 +2704,16 @@ class RAGDiaryPlugin {
                 const existing = fileMap.get(filePath);
                 existing.chunkCount++;
                 const currentScore = r.rerank_score ?? r.score ?? 0;
-                if (currentScore > existing.bestScore) {
+                // 🌟 V10.1 修复：Expand 去重时，rag/time 身份优先于 associate
+                // 防止同一文件的 associate chunk（可能分数更高）覆盖原始 rag 的 source 标记
+                const existingIsOriginal = existing.bestResult.source !== 'associate';
+                const currentIsAssociate = r.source === 'associate';
+                if (currentScore > existing.bestScore && !(existingIsOriginal && currentIsAssociate)) {
                     existing.bestScore = currentScore;
+                    existing.bestResult = r;
+                } else if (!existingIsOriginal && !currentIsAssociate) {
+                    // 反向修复：如果现有是 associate 而新来的是 rag/time，无论分数都替换
+                    existing.bestScore = Math.max(existing.bestScore, currentScore);
                     existing.bestResult = r;
                 }
             }
@@ -2788,8 +2800,9 @@ class RAGDiaryPlugin {
             return [];
         }
 
-        // 2. 构建原始结果的文本指纹集（用于排除已召回的内容）
+        // 2. 构建原始结果的双重排除集（文本指纹 + 文件路径，防止种子交叉引用泄露）
         const originalTextSet = new Set(seedResults.map(r => r.text?.trim()).filter(Boolean));
+        const originalPathSet = new Set(seedResults.map(r => r.fullPath).filter(Boolean));
 
         // 3. 每个种子跨所有目标索引执行纯语义搜索（无 TagMemo 偏置）
         const coOccurrenceMap = new Map(); // textKey → { count, bestScore, result }
@@ -2800,8 +2813,8 @@ class RAGDiaryPlugin {
 
             const searchPromises = targetDiaries.map(async (diaryName) => {
                 try {
-                    // 纯语义搜索，tagBoost=0，不施加 TagMemo 偏置
-                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, 0);
+                    // 🌟 V10.1: 使用 tagBoost=0.33 让 TagMemo 脉冲传播参与联想发现
+                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, 0.33);
                 } catch (e) {
                     return [];
                 }
@@ -2813,8 +2826,9 @@ class RAGDiaryPlugin {
             for (const r of allResults) {
                 const key = r.text?.trim();
                 if (!key) continue;
-                // 排除种子自身和原始召回结果
+                // 排除种子自身和原始召回结果（双重保险：文本 + 路径）
                 if (originalTextSet.has(key)) continue;
+                if (r.fullPath && originalPathSet.has(r.fullPath)) continue;
                 // 本组内去重
                 if (thisGroupHits.has(key)) continue;
                 thisGroupHits.add(key);
