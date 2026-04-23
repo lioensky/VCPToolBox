@@ -2103,7 +2103,8 @@ class RAGDiaryPlugin {
                     historySegments,
                     contextDiaryPrefixes, // 🌟 V4.1: 透传上下文日记去重前缀
                     ghostTags, // 🌟 修复 4.2：透传给底层具体执行的日记本！
-                    collectedAttachments // 🌟 V7
+                    collectedAttachments, // 🌟 V7
+                    associateDiaries: diaryNames // 🌟 V10: 聚合模式下传入所有日记本名，实现跨索引联想共现
                 });
                 return { name: allocation.name, content, k: allocation.k, success: true };
             } catch (e) {
@@ -2249,7 +2250,8 @@ class RAGDiaryPlugin {
             historySegments = [], // 🌟 Tagmemo V4
             contextDiaryPrefixes = new Set(), // 🌟 V4.1: 上下文日记去重前缀
             ghostTags = [], // 🌟 V6: 幽灵节点
-            collectedAttachments = [] // 🌟 V7
+            collectedAttachments = [], // 🌟 V7
+            associateDiaries = [] // 🌟 V10: Associate 联想共现搜索范围（聚合模式传入所有日记本名）
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -2319,6 +2321,9 @@ class RAGDiaryPlugin {
 
         // 🌟 V9: 父文档展开修饰符 - 命中任意 chunk 即展开完整日记文件
         const useExpand = modifiers.includes('::Expand');
+
+        // 🌟 V10: 联想共现发现修饰符 - 对已召回 chunk 执行跨索引联想，提取潜在认知共现
+        const useAssociate = modifiers.includes('::Associate');
 
         // TagMemo修饰符检测（静默）
 
@@ -2529,7 +2534,18 @@ class RAGDiaryPlugin {
         // 统一添加 source 标识并格式化
         finalResultsForBroadcast = finalResultsForBroadcast.map(r => ({ ...r, source: r.source || 'rag' }));
 
-        // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）
+        // 🌟 V10: 联想共现发现 - 每个已召回 chunk 作为种子，跨目标索引搜索，提取共现结果（额外追加，不影响原始 K）
+        if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
+            const targetDiaries = associateDiaries.length > 0 ? associateDiaries : [dbName];
+            const associateResults = await this._applyAssociativeDiscovery(
+                finalResultsForBroadcast, targetDiaries, finalK
+            );
+            if (associateResults.length > 0) {
+                finalResultsForBroadcast = [...finalResultsForBroadcast, ...associateResults];
+            }
+        }
+
+        // 🌟 V9: 父文档展开 - 将命中的 chunk 展开为完整日记文件（按文件去重）— 始终在最后执行
         if (useExpand && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
             finalResultsForBroadcast = await this._expandChunksToFullDocuments(finalResultsForBroadcast, dbName);
         }
@@ -2597,6 +2613,8 @@ class RAGDiaryPlugin {
                     useGeodesicRerank: useGeodesicRerank, // 🌟 V8: 测地线重排标识
                     geoAlpha: geoOptions?.geoAlpha, // 🌟 V8: 测地线混合权重
                     useExpand: useExpand, // 🌟 V9: 父文档展开标识
+                    useAssociate: useAssociate, // 🌟 V10: 联想共现标识
+                    associateCount: useAssociate ? (finalResultsForBroadcast?.filter(r => r.source === 'associate').length || 0) : undefined,
                     useTagMemo: tagWeight !== null, // ✅ 添加Tag模式标识
                     tagWeight: tagWeight, // ✅ 添加Tag权重
                     coreTags: coreTagsForDisplay, // 🌟 广播中依然显示提取到的标签，方便观察
@@ -2729,6 +2747,118 @@ class RAGDiaryPlugin {
     }
 
     //####################################################################################
+    //## 🌟 V10: Associative Co-occurrence Discovery - 联想共现发现
+    //####################################################################################
+
+    /**
+     * 🌟 V10: 联想共现发现 (Associative Co-occurrence Discovery)
+     * 将已召回的 n 个 chunk 作为种子，每个种子以当前动态 K 在目标索引中执行纯语义搜索，
+     * 产生 n 组联想结果。从中提取在 ≥2 组中共现的结果，作为"潜在认知共现"额外追加。
+     *
+     * 聚合模式下，种子会跨所有聚合日记本索引搜索，实现真正的跨域认知关联。
+     * 结果为额外追加，不占用原始 K 配额。
+     *
+     * @param {Array} seedResults - 原始召回结果（每个需包含 text 字段）
+     * @param {string[]} targetDiaries - 联想搜索的目标日记本列表
+     * @param {number} dynamicK - 每个种子的联想搜索深度
+     * @returns {Promise<Array>} 共现结果数组（source='associate'）
+     */
+    async _applyAssociativeDiscovery(seedResults, targetDiaries, dynamicK) {
+        if (!seedResults || seedResults.length === 0 || !targetDiaries || targetDiaries.length === 0) {
+            return [];
+        }
+
+        // 1. 为每个种子 chunk 从数据库获取向量
+        const seedChunks = [];
+        for (const r of seedResults) {
+            if (!r.text) continue;
+            try {
+                const vec = await this.vectorDBManager.getVectorByText(null, r.text);
+                if (vec) {
+                    seedChunks.push({ text: r.text.trim(), vector: vec, fullPath: r.fullPath });
+                }
+            } catch (e) {
+                // 向量获取失败，跳过该种子
+            }
+        }
+
+        // 至少需要 2 个有效种子才能做共现分析
+        if (seedChunks.length < 2) {
+            console.log(`[RAGDiaryPlugin] Associate: 有效种子不足 (${seedChunks.length}<2)，跳过联想`);
+            return [];
+        }
+
+        // 2. 构建原始结果的文本指纹集（用于排除已召回的内容）
+        const originalTextSet = new Set(seedResults.map(r => r.text?.trim()).filter(Boolean));
+
+        // 3. 每个种子跨所有目标索引执行纯语义搜索（无 TagMemo 偏置）
+        const coOccurrenceMap = new Map(); // textKey → { count, bestScore, result }
+
+        for (let seedIdx = 0; seedIdx < seedChunks.length; seedIdx++) {
+            const seed = seedChunks[seedIdx];
+            const thisGroupHits = new Set(); // 本组去重：同一种子不重复计数同一结果
+
+            const searchPromises = targetDiaries.map(async (diaryName) => {
+                try {
+                    // 纯语义搜索，tagBoost=0，不施加 TagMemo 偏置
+                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, 0);
+                } catch (e) {
+                    return [];
+                }
+            });
+
+            const resultsPerDiary = await Promise.all(searchPromises);
+            const allResults = resultsPerDiary.flat();
+
+            for (const r of allResults) {
+                const key = r.text?.trim();
+                if (!key) continue;
+                // 排除种子自身和原始召回结果
+                if (originalTextSet.has(key)) continue;
+                // 本组内去重
+                if (thisGroupHits.has(key)) continue;
+                thisGroupHits.add(key);
+
+                if (!coOccurrenceMap.has(key)) {
+                    coOccurrenceMap.set(key, { count: 1, bestScore: r.score || 0, result: r });
+                } else {
+                    const existing = coOccurrenceMap.get(key);
+                    existing.count++;
+                    if ((r.score || 0) > existing.bestScore) {
+                        existing.bestScore = r.score || 0;
+                        existing.result = r;
+                    }
+                }
+            }
+        }
+
+        // 4. 提取共现结果（出现在 ≥2 个种子的联想组中）
+        const associateResults = [];
+        for (const [, data] of coOccurrenceMap) {
+            if (data.count >= 2) {
+                associateResults.push({
+                    ...data.result,
+                    source: 'associate',
+                    _associateCoCount: data.count,
+                    score: data.bestScore
+                });
+            }
+        }
+
+        // 按共现次数降序，次之按分数降序
+        associateResults.sort((a, b) => {
+            if (b._associateCoCount !== a._associateCoCount) {
+                return b._associateCoCount - a._associateCoCount;
+            }
+            return (b.score || 0) - (a.score || 0);
+        });
+
+        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${targetDiaries.length} 索引 → ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中`);
+
+        return associateResults;
+    }
+
+    //####################################################################################
     //## Time-Aware RAG Logic - 时间感知RAG逻辑
     //####################################################################################
 
@@ -2826,12 +2956,21 @@ class RAGDiaryPlugin {
     }
 
     formatStandardResults(searchResults, displayName, metadata) {
+        const mainResults = searchResults ? searchResults.filter(r => r.source !== 'associate') : [];
+        const associateResults = searchResults ? searchResults.filter(r => r.source === 'associate') : [];
+
         let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
-        if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+        if (mainResults.length > 0) {
+            innerContent += mainResults.map(r => `* ${r.text.trim()}`).join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
+
+        if (associateResults.length > 0) {
+            innerContent += `\n\n【联想共现记忆 (${associateResults.length}条, 多条记忆交叉关联)】\n`;
+            innerContent += associateResults.map(r => `* ${r.text.trim()}`).join('\n');
+        }
+
         innerContent += `\n[--- 记忆片段结束 ---]\n`;
 
         const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
@@ -2852,8 +2991,9 @@ class RAGDiaryPlugin {
 
         const ragEntries = results.filter(e => e.source === 'rag');
         const timeEntries = results.filter(e => e.source === 'time');
+        const associateEntries = results.filter(e => e.source === 'associate');
 
-        innerContent += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条)]\n\n`;
+        innerContent += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条${associateEntries.length > 0 ? `, 联想共现 ${associateEntries.length}条` : ''})]\n\n`;
 
         if (ragEntries.length > 0) {
             innerContent += '【语义相关记忆】\n';
@@ -2870,6 +3010,15 @@ class RAGDiaryPlugin {
             timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
             timeEntries.forEach(entry => {
                 innerContent += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+            });
+        }
+
+        if (associateEntries.length > 0) {
+            innerContent += '\n【联想共现记忆】\n';
+            associateEntries.forEach(entry => {
+                const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
+                const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
+                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
             });
         }
 
@@ -3297,6 +3446,7 @@ class RAGDiaryPlugin {
             
             if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
             if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
+            if (r._associateCoCount !== undefined) cleaned.associateCoCount = r._associateCoCount; // 🌟 V10
             // 🛡️ 确保 coreTagsMatched 是纯字符串数组 (脱水处理)
             if (r.coreTagsMatched && Array.isArray(r.coreTagsMatched)) {
                 cleaned.coreTagsMatched = r.coreTagsMatched.map(t => {
