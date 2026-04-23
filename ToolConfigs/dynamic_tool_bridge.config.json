@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "enabled": true,
+  "placeholder": "{{VCPDynamicTools}}",
+  "maxBriefListItems": 120,
+  "maxExpandedPlugins": 4,
+  "maxForcedCategoryPlugins": 12,
+  "maxInjectionChars": 16000,
+  "classificationDebounceMs": 1000,
+  "classifierTimeoutMs": 30000,
+  "useRagEmbeddings": true,
+  "manualOverrides": {
+    "excludedOriginKeys": [],
+    "pinnedOriginKeys": [],
+    "categoryAliases": {}
+  },
+  "smallModel": {
+    "enabled": false,
+    "useMainConfig": true,
+    "endpoint": "",
+    "model": ""
+  }
+}

@@ -528,7 +528,7 @@ services:
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 基础镜像 | node:20-alpine | 轻量级 Node.js 环境 |
+| 基础镜像 | node:22-alpine | 轻量级 Node.js 环境 |
 | 工作目录 | /usr/src/app | 容器内应用路径 |
 | 暴露端口 | 6005 | VCP 服务端口 |
 | 运行用户 | root | ⚠️ 安全风险（见下文） |
@@ -610,7 +610,40 @@ VCP Agent 拥有**硬件底层级分布式系统根权限**：
 
 ---
 
-## 6. 常见配置问题
+## 6. DynamicToolBridge 配置
+
+动态插件工具列表通过 `ToolConfigs/dynamic_tool_bridge.config.json` 配置，运行时缓存写入同目录的 `dynamic_tool_catalog.json` 与 `dynamic_tool_categories.json`。
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `true` | 是否启用 `{{VCPDynamicTools}}` 动态注入；关闭后可切回 `{{VCPAllTools}}` |
+| `maxBriefListItems` | `120` | 轻量工具清单最多展示的插件数 |
+| `maxExpandedPlugins` | `4` | 普通语义命中时最多展开的完整工具说明数 |
+| `maxForcedCategoryPlugins` | `12` | agent 主动点名分类时最多展开的插件数 |
+| `maxInjectionChars` | `16000` | 单次动态工具注入最大字符数 |
+| `classificationDebounceMs` | `1000` | 插件热加载后分类队列去抖时间 |
+| `classifierTimeoutMs` | `30000` | 小模型分类超时时间 |
+| `manualOverrides.excludedOriginKeys` | `[]` | 手动排除的工具 originKey |
+| `manualOverrides.pinnedOriginKeys` | `[]` | 轻量清单中优先展示的工具 originKey |
+| `smallModel.enabled` | `false` | 是否启用增量小模型分类；可由私有插件配置覆盖 |
+| `smallModel.useMainConfig` | `true` | 是否复用主 `config.env` 的 `API_URL` 和 `API_Key` |
+| `smallModel.model` | `""` | 小模型名称；复用主配置时只需要填写模型名 |
+| `smallModel.endpoint` | `""` | 独立 OpenAI 兼容端点；仅 `useMainConfig=false` 时使用，可填基础地址或完整 `/v1/chat/completions` |
+
+小模型的独立私有配置位于 `Plugin/DynamicToolBridge/config.env`，模板见 `Plugin/DynamicToolBridge/config.env.example`。默认 `SmallModel_Use_Main_Config=true`，会自动使用主配置的 `API_URL` 与 `API_Key`，因此只需要填写 `SmallModel_Model`。如果需要独立分类端点，设置 `SmallModel_Use_Main_Config=false`，再填写 `SmallModel_Endpoint`、`SmallModel_Model`、`SmallModel_API_Key`。端点固定按 OpenAI 兼容 chat completions 调用；填写基础地址时会自动补全 `/v1/chat/completions`。私有 API Key 不会被写回 `ToolConfigs` 或管理 API 返回体。
+
+Agent prompt 使用 `{{VCPDynamicTools}}` 后，请求预处理阶段会注入轻量工具清单，并按当前语义展开相关工具完整说明。Agent 也可显式请求展开：
+
+```text
+[[VCPDynamicTools:category=search:all]]
+[[VCPDynamicTools:tool=VSearch]]
+```
+
+`Plugin/DynamicToolBridge/config.env` 改动需要重启服务；`ToolConfigs/dynamic_tool_bridge.config.json` 可通过管理 API 写入并在运行时更新。
+
+---
+
+## 7. 常见配置问题
 
 ### Q1: 启动后无法连接后端 API
 

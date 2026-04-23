@@ -68,6 +68,7 @@ module.exports = function (DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurr
     mount('/', 'agentAssistant');     // Handles /agent-assistant/*
     mount('/', 'taskAssistant');     // Handles /task-assistant/*
     mount('/', 'toolListEditor');     // Handles /tool-list/*
+    mount('/', 'dynamicTools');       // Handles /dynamic-tools/*
     mount('/', 'dream');              // Handles /dream-logs/*, /dream-operation/*
     mount('/', 'dailyNotes');         // Wrapper for existing dailyNotesRoutes (Handles /dailynotes/*)
     mount('/', 'newapiMonitor');      // Handles /newapi-monitor/*

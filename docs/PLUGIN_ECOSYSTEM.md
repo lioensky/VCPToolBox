@@ -1409,6 +1409,37 @@ echo '{"test": "data"}' | node MyPlugin.js
 
 ---
 
+## 11. DynamicToolBridge 动态工具清单
+
+DynamicToolBridge 是插件生态的提示词注入层，不是新的工具执行通道。它读取 `PluginManager` 已发现的本地和分布式插件，生成轻量工具清单、分类缓存和按需展开文本，用于替代高成本的全量 `{{VCPAllTools}}` 注入场景。
+
+**生命周期：**
+
+1. `PluginManager.loadPlugins()` 完成本地插件发现后触发 `tools_changed`。
+2. `registerDistributedTools(serverId, tools)` 完成云端插件注册后触发 `tools_changed`。
+3. `unregisterAllDistributedTools(serverId)` 先触发 `distributed_tools_offline`，再触发 `tools_changed`，registry 保留分类缓存但将离线工具排除出当前注入。
+4. `modules/messageProcessor.js` 处理 `{{VCPDynamicTools}}` 时，请求前生成轻量列表和相关工具完整说明。
+
+**缓存文件：**
+
+| 文件 | 用途 |
+|------|------|
+| `ToolConfigs/dynamic_tool_bridge.config.json` | 行为配置与非敏感小模型分类开关，不保存 API key 明文 |
+| `Plugin/DynamicToolBridge/config.env` | 动态工具桥接的私有小模型配置；默认复用主 `API_URL/API_Key` 时只填模型名，独立端点模式才填写 endpoint 和 API key |
+| `ToolConfigs/dynamic_tool_catalog.json` | 插件 originKey、状态、hash、快照编号 |
+| `ToolConfigs/dynamic_tool_categories.json` | 插件 brief、分类、关键词、sourceHash |
+
+新增插件或工具说明变化会进入增量分类队列；插件禁用、重新启用、分布式离线和重连只同步状态并复用缓存。`{{VCPAllTools}}` 保持原行为，可作为回滚路径。
+
+Agent 可在上下文中显式请求展开分类或工具：
+
+```text
+[[VCPDynamicTools:category=search:all]]
+[[VCPDynamicTools:tool=VSearch]]
+```
+
+---
+
 ## 附录
 
 ### A. 文件扩展名约定

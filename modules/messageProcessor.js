@@ -5,6 +5,7 @@ const lunarCalendar = require('chinese-lunar-calendar');
 const agentManager = require('./agentManager.js'); // 引入新的Agent管理器
 const tvsManager = require('./tvsManager.js'); // 引入新的TVS管理器
 const toolboxManager = require('./toolboxManager.js');
+const dynamicToolRegistry = require('./dynamicToolRegistry.js');
 const sarPromptManager = require('./sarPromptManager.js');
 
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
@@ -486,6 +487,19 @@ async function replaceOtherVariables(text, model, role, context) {
         }
 
         const individualPluginDescriptions = pluginManager.getIndividualPluginDescriptions();
+        if (processedText.includes('{{VCPDynamicTools}}')) {
+            let dynamicToolsText = '[VCPDynamicTools information unavailable]';
+            try {
+                dynamicToolsText = await dynamicToolRegistry.buildInjection({
+                    messages: context.messages || context.originalMessages || [],
+                    pluginManager,
+                    debugMode: DEBUG_MODE
+                });
+            } catch (error) {
+                console.error('[replaceOtherVariables] Error processing {{VCPDynamicTools}}:', error);
+            }
+            processedText = processedText.replaceAll('{{VCPDynamicTools}}', dynamicToolsText);
+        }
         if (individualPluginDescriptions && individualPluginDescriptions.size > 0) {
             for (const [placeholderKey, description] of individualPluginDescriptions) {
                 processedText = processedText.replaceAll(`{{${placeholderKey}}}`, description || `[${placeholderKey} 信息不可用]`);

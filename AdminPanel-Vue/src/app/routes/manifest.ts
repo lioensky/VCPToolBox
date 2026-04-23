@@ -249,6 +249,17 @@ export const APP_ROUTE_MANIFEST = [
     component: () => import("@/views/ToolListEditor.vue"),
   },
   {
+    id: "dynamic-tools-manager",
+    routeName: "DynamicToolsManager",
+    path: "/dynamic-tools-manager",
+    title: "动态工具清单",
+    icon: "dynamic_feed",
+    requiresAuth: true,
+    navGroup: "tools",
+    showInSidebar: true,
+    component: () => import("@/views/DynamicToolsManager.vue"),
+  },
+  {
     id: "preprocessor-order-manager",
     routeName: "PreprocessorOrderManager",
     path: "/preprocessor-order-manager",

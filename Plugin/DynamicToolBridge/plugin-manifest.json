@@ -1,0 +1,50 @@
+{
+  "name": "DynamicToolBridge",
+  "displayName": "动态工具清单桥接器",
+  "version": "1.0.0",
+  "description": "为 {{VCPDynamicTools}} 动态插件工具清单提供插件中心可见的配置入口。该插件本身不作为 LLM 可调用工具暴露，只负责小模型分类器等私有配置的管理。",
+  "author": "白金喵",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "node noop.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1000
+  },
+  "configSchema": {
+    "SmallModel_Enabled": {
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "是否启用小模型分类器。启用后仅在新增插件、插件说明变化或手动重建分类时调用，不进入普通请求主路径。"
+    },
+    "SmallModel_Use_Main_Config": {
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "是否复用主配置的上游 API。true 时自动使用 VCPToolBox/config.env 里的 API_URL 和 API_Key，此时下面的独立端点和独立 API Key 不需要填写，只需要填写模型名。false 时才使用本插件的独立端点和独立 API Key。"
+    },
+    "SmallModel_Model": {
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "小模型名称。复用主配置时只需要填写这一项；独立配置时也需要填写这一项。请求格式固定为 OpenAI 兼容 chat completions。"
+    },
+    "SmallModel_Endpoint": {
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "独立 OpenAI 兼容端点。仅当 SmallModel_Use_Main_Config=false 时填写。可填基础地址，例如 https://example.com，系统会自动补全 /v1/chat/completions；也可直接填写完整的 /v1/chat/completions 地址。"
+    },
+    "SmallModel_API_Key": {
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "独立端点的 API Key。仅当 SmallModel_Use_Main_Config=false 时填写。复用主配置时会自动使用主 config.env 的 API_Key，不读取这里。"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": []
+  }
+}
