@@ -2538,7 +2538,7 @@ class RAGDiaryPlugin {
         if (useAssociate && finalResultsForBroadcast && finalResultsForBroadcast.length > 0) {
             const targetDiaries = associateDiaries.length > 0 ? associateDiaries : [dbName];
             const associateResults = await this._applyAssociativeDiscovery(
-                finalResultsForBroadcast, targetDiaries, finalK
+                finalResultsForBroadcast, targetDiaries, finalK, tagWeight ?? defaultTagWeight
             );
             if (associateResults.length > 0) {
                 finalResultsForBroadcast = [...finalResultsForBroadcast, ...associateResults];
@@ -2773,9 +2773,10 @@ class RAGDiaryPlugin {
      * @param {Array} seedResults - 原始召回结果（每个需包含 text 字段）
      * @param {string[]} targetDiaries - 联想搜索的目标日记本列表
      * @param {number} dynamicK - 每个种子的联想搜索深度
+     * @param {number|null} associateTagWeight - 联想搜索的 TagMemo 权重（动态计算值，null 则无 Tag 增强）
      * @returns {Promise<Array>} 共现结果数组（source='associate'）
      */
-    async _applyAssociativeDiscovery(seedResults, targetDiaries, dynamicK) {
+    async _applyAssociativeDiscovery(seedResults, targetDiaries, dynamicK, associateTagWeight = null) {
         if (!seedResults || seedResults.length === 0 || !targetDiaries || targetDiaries.length === 0) {
             return [];
         }
@@ -2813,8 +2814,8 @@ class RAGDiaryPlugin {
 
             const searchPromises = targetDiaries.map(async (diaryName) => {
                 try {
-                    // 🌟 V10.1: 使用 tagBoost=0.33 让 TagMemo 脉冲传播参与联想发现
-                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, 0.33);
+                    // 🌟 V10.2: 使用动态计算的 TagMemo 权重参与联想发现（替代硬编码 0.33）
+                    return await this.vectorDBManager.search(diaryName, seed.vector, dynamicK, associateTagWeight);
                 } catch (e) {
                     return [];
                 }
@@ -2867,7 +2868,7 @@ class RAGDiaryPlugin {
             return (b.score || 0) - (a.score || 0);
         });
 
-        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${targetDiaries.length} 索引 → ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中`);
+        console.log(`[RAGDiaryPlugin] 🌟 Associate: ${seedChunks.length} 种子 × ${targetDiaries.length} 索引 → ${coOccurrenceMap.size} 候选 → ${associateResults.length} 共现命中 (tagWeight=${associateTagWeight?.toFixed(3) ?? 'null'})`);
 
         return associateResults;
     }
