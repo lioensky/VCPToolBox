@@ -172,11 +172,9 @@ const adminAuth = (req, res, next) => {
         if (isVerifyEndpoint || req.path.startsWith('/admin_api') ||
             (req.headers.accept && req.headers.accept.includes('application/json'))) {
             return res.status(401).json({ error: 'Unauthorized' });
-        } else if (req.path.startsWith('/AdminPanel') || req.path.startsWith('/AdminPanelLegacy')) {
-            return res.redirect('/AdminPanel/login.html');
         } else {
-            res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
-            return res.status(401).send('<h1>401 Unauthorized</h1>');
+            // 所有未认证的页面请求（包括根路径 /）统一重定向到登录页
+            return res.redirect('/AdminPanel/login.html');
         }
     }
 

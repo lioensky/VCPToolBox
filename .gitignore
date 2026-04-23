@@ -154,6 +154,10 @@ preprocessor_order.json
 tag-processor-config.env
 
 # ===== 运行时数据 / 缓存 =====
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
