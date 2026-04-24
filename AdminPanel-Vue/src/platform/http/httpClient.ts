@@ -74,7 +74,7 @@ function createTimeoutSignal(timeoutMs?: number): {
 
   const controller = new AbortController();
   const timer = globalThis.setTimeout(() => {
-    controller.abort();
+    controller.abort(createAbortError(`Request timed out after ${timeoutMs}ms`));
   }, timeoutMs);
 
   return {
@@ -100,15 +100,15 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): {
 
   const controller = new AbortController();
 
-  const abort = () => {
+  const abort = (reason?: unknown) => {
     if (!controller.signal.aborted) {
-      controller.abort();
+      controller.abort(reason);
     }
   };
 
   for (const signal of availableSignals) {
     if (signal.aborted) {
-      abort();
+      abort(signal.reason);
       return {
         signal: controller.signal,
         cleanup: () => undefined,
@@ -117,7 +117,7 @@ function mergeAbortSignals(signals: Array<AbortSignal | undefined>): {
   }
 
   const listeners = availableSignals.map((signal) => {
-    const handleAbort = () => abort();
+    const handleAbort = () => abort(signal.reason);
     signal.addEventListener("abort", handleAbort, { once: true });
     return {
       signal,

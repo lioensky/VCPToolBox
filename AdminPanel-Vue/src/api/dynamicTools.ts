@@ -55,6 +55,7 @@ export interface DynamicToolsState {
   initialized: boolean;
   snapshotId: number;
   queueSize: number;
+  isClassifying: boolean;
   lastError: string | null;
   config: DynamicToolsConfig;
   records: DynamicToolRecord[];
@@ -111,13 +112,17 @@ export const dynamicToolsApi = {
 
   async rebuild(
     mode: DynamicToolsRebuildMode,
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    options: { wait?: boolean } = {}
   ): Promise<DynamicToolsState> {
     const response = await requestWithUi<DynamicToolsStateResponse>(
       {
         url: "/admin_api/dynamic-tools/rebuild",
         method: "POST",
-        body: { mode },
+        body: {
+          mode,
+          wait: options.wait !== false,
+        },
       },
       uiOptions
     );

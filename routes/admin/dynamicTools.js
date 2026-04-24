@@ -89,7 +89,8 @@ module.exports = function(options) {
                 await dynamicToolRegistry.syncFromPluginManager('admin_rebuild');
             }
             const mode = typeof req.body?.mode === 'string' ? req.body.mode : 'classification';
-            const state = await dynamicToolRegistry.forceRebuild({ mode });
+            const wait = req.body?.wait !== false;
+            const state = await dynamicToolRegistry.forceRebuild({ mode, wait });
             res.json({ status: 'success', state });
         } catch (error) {
             console.error('[AdminAPI] Error rebuilding dynamic tools:', error);

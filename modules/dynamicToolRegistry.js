@@ -5,6 +5,9 @@ const crypto = require('crypto');
 const dotenv = require('dotenv');
 
 const PRIVATE_CONFIG_RELATIVE_PATH = path.join('Plugin', 'DynamicToolBridge', 'config.env');
+const LIGHT_LIST_TOKEN_BUDGET = 15;
+const DEFAULT_BRIEF_TOKEN_BUDGET = 6;
+const MIN_BRIEF_TOKEN_BUDGET = 3;
 
 const DEFAULT_CONFIG = Object.freeze({
     version: 1,
@@ -86,6 +89,23 @@ function cleanText(value, maxLength = 240) {
         .trim();
     if (text.length <= maxLength) return text;
     return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function tokenPieces(value) {
+    return String(value || '').match(/[A-Za-z0-9_.-]+|[\u3400-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/g) || [];
+}
+
+function estimateTokenCount(value) {
+    return tokenPieces(value).length;
+}
+
+function truncateToTokenBudget(value, maxTokens) {
+    const text = cleanText(value, 500);
+    const budget = Math.max(1, Math.trunc(Number(maxTokens) || 1));
+    const pieces = tokenPieces(text);
+    if (pieces.length <= budget) return text;
+    if (pieces.length === 0) return cleanText(text, Math.max(12, budget * 8));
+    return cleanText(`${pieces.slice(0, budget).join(' ')}...`, Math.max(24, budget * 14));
 }
 
 function parseEnvBoolean(value, fallback = false) {
@@ -489,10 +509,9 @@ class DynamicToolRegistry {
             .sort((a, b) => this._compareRecordsWithPinned(a, b))
             .slice(0, this.config.maxBriefListItems);
         for (const record of briefRecords) {
-            const classification = this._classificationFor(record);
             const categories = this._recordCategories(record).join(', ') || 'general';
-            const brief = cleanText(classification?.brief || record.brief || record.description || 'No brief description.', 220);
-            lines.push(`- ${record.displayName || record.pluginName} (${record.pluginName}) [${categories}]: ${brief}`);
+            const brief = this._briefForLightList(record, categories.split(',').map((item) => item.trim()).filter(Boolean));
+            lines.push(`- ${this._formatLightListName(record)} [${categories}]: ${brief}`);
         }
         if (available.length > briefRecords.length) {
             lines.push(`- ... ${available.length - briefRecords.length} more tools hidden by maxBriefListItems.`);
@@ -537,7 +556,7 @@ class DynamicToolRegistry {
                     sourceHash: record.sourceHash,
                     categories: classification?.categories || [],
                     keywords: classification?.keywords || [],
-                    brief: classification?.brief || record.brief || '',
+                    brief: this._briefForLightList(record, classification?.categories || []),
                     classifiedBy: classification?.classifiedBy || null,
                     classifiedAt: classification?.classifiedAt || null,
                     lastSeenAt: record.lastSeenAt,
@@ -548,6 +567,7 @@ class DynamicToolRegistry {
             initialized: this.initialized,
             snapshotId: this.snapshotId,
             queueSize: this.classificationQueue.size,
+            isClassifying: Boolean(this.classificationPromise || this.classificationTimer || this.classificationQueue.size > 0),
             lastError: this.lastError,
             config: this._redactConfig(this.config),
             records
@@ -564,6 +584,7 @@ class DynamicToolRegistry {
 
     async forceRebuild(options = {}) {
         const mode = typeof options === 'string' ? options : (options.mode || 'classification');
+        const wait = typeof options === 'string' ? true : options.wait !== false;
         if (mode === 'catalog' || mode === 'all') {
             await this.syncFromPluginManager('manual_rebuild');
         }
@@ -574,7 +595,15 @@ class DynamicToolRegistry {
                 }
             }
         }
-        await this.flushClassificationQueue();
+        const classificationPromise = this.flushClassificationQueue();
+        if (wait) {
+            await classificationPromise;
+        } else {
+            classificationPromise.catch((error) => {
+                this.lastError = error.message;
+                console.error('[DynamicToolRegistry] manual rebuild classification failed:', error);
+            });
+        }
         return this.getAdminState();
     }
 
@@ -672,6 +701,7 @@ class DynamicToolRegistry {
         const prompt = [
             'Classify this VCP plugin into concise semantic categories.',
             'Return strict JSON: {"brief": "...", "categories": ["..."], "keywords": ["..."], "confidence": 0.0}.',
+            `Keep "brief" extremely compact: target ${DEFAULT_BRIEF_TOKEN_BUDGET} tokens, and keep plugin name + categories + brief within ${LIGHT_LIST_TOKEN_BUDGET} tokens for lightweight tool lists.`,
             `Reason: ${reason}`,
             `Name: ${record.pluginName}`,
             `Display: ${record.displayName}`,
@@ -692,7 +722,8 @@ class DynamicToolRegistry {
                         { role: 'system', content: 'You classify tool plugins. Return JSON only.' },
                         { role: 'user', content: prompt }
                     ],
-                    temperature: 0.1
+                    temperature: 0.1,
+                    max_tokens: 220
                 })
             }), this.config.classifierTimeoutMs, 'small model classification request');
 
@@ -732,9 +763,10 @@ class DynamicToolRegistry {
         if (!result || typeof result !== 'object') return fallback;
         const categories = asArray(result.categories).map(String).map((item) => item.trim()).filter(Boolean);
         const keywords = asArray(result.keywords).map(String).map((item) => item.trim()).filter(Boolean);
+        const selectedCategories = categories.length > 0 ? categories : fallback.categories;
         return {
-            brief: cleanText(result.brief || fallback.brief, 260),
-            categories: categories.length > 0 ? categories : fallback.categories,
+            brief: this._compactBrief(record, selectedCategories, result.brief || fallback.brief),
+            categories: selectedCategories,
             keywords: keywords.length > 0 ? keywords : fallback.keywords,
             classifiedBy: result.classifiedBy || classifiedBy,
             confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : fallback.confidence
@@ -769,9 +801,10 @@ class DynamicToolRegistry {
             const selected = scored.filter((item) => item.score >= 0.34).slice(0, 3);
             if (selected.length === 0) return null;
             const keywords = selected.flatMap((item) => item.keywords.slice(0, 6));
+            const categories = selected.map((item) => item.category);
             return {
-                brief: cleanText(record.brief || record.description || `${record.pluginName} provides a VCP tool.`, 260),
-                categories: selected.map((item) => item.category),
+                brief: this._compactBrief(record, categories, record.brief || record.description || `${record.pluginName} provides a VCP tool.`),
+                categories,
                 keywords: Array.from(new Set(keywords)),
                 classifiedBy: 'rag_embedding_fallback',
                 confidence: Math.max(0.45, Math.min(0.95, selected[0].score))
@@ -848,14 +881,47 @@ class DynamicToolRegistry {
             categories.push('general');
             keywords.add('tool');
         }
-        const brief = cleanText(record.brief || record.description || `${record.pluginName} provides a VCP tool.`, 260);
+        const selectedCategories = Array.from(new Set(categories));
+        const brief = this._compactBrief(record, selectedCategories, record.brief || record.description || `${record.pluginName} provides a VCP tool.`);
         return {
             brief,
-            categories: Array.from(new Set(categories)),
+            categories: selectedCategories,
             keywords: Array.from(keywords),
             classifiedBy: 'keyword_fallback',
             confidence: categories.includes('general') ? 0.45 : 0.7
         };
+    }
+
+    _formatLightListName(record) {
+        const pluginName = String(record?.pluginName || '').trim();
+        const displayName = String(record?.displayName || '').trim();
+        if (displayName && displayName !== pluginName) return `${displayName} (${pluginName})`;
+        return pluginName || displayName || 'UnknownTool';
+    }
+
+    _briefTokenBudget(record, categories = []) {
+        const categoryText = asArray(categories).join(' ');
+        const used = estimateTokenCount(`${this._formatLightListName(record)} ${categoryText}`);
+        return Math.max(
+            MIN_BRIEF_TOKEN_BUDGET,
+            Math.min(DEFAULT_BRIEF_TOKEN_BUDGET, LIGHT_LIST_TOKEN_BUDGET - used)
+        );
+    }
+
+    _compactBrief(record, categories, brief) {
+        const fallback = record?.description || `${record?.pluginName || 'This tool'} provides a VCP tool.`;
+        const source = brief || record?.brief || fallback;
+        return truncateToTokenBudget(source, this._briefTokenBudget(record, categories));
+    }
+
+    _briefForLightList(record, categories = []) {
+        const classification = this._classificationFor(record);
+        const selectedCategories = asArray(categories).length > 0 ? categories : (classification?.categories || []);
+        return this._compactBrief(
+            record,
+            selectedCategories,
+            classification?.brief || record.brief || record.description || 'No brief description.'
+        );
     }
 
     _parseDirectives(text) {

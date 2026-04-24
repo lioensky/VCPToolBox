@@ -125,6 +125,16 @@ function testConfig(overrides = {}) {
   };
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 test('sync classifies only new or changed plugin sources and preserves disabled cache', async () => {
   const projectRoot = await makeProjectRoot();
   const calls = [];
@@ -160,6 +170,46 @@ test('sync classifies only new or changed plugin sources and preserves disabled 
   await registry.syncFromPluginManager('changed');
   await registry.flushClassificationQueue();
   assert.equal(calls.length, 2, 'source hash change must reclassify exactly once');
+});
+
+test('manual rebuild can run classification in the background without waiting', async () => {
+  const projectRoot = await makeProjectRoot();
+  const blocker = createDeferred();
+  const calls = [];
+  const pluginManager = makePluginManager([
+    makeManifest('SlowSearch', 'Search the web with a slow classifier.')
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ classificationDebounceMs: 60000 }),
+    classifier: async (record) => {
+      calls.push(record.pluginName);
+      await blocker.promise;
+      return {
+        categories: ['search'],
+        keywords: ['search'],
+        brief: `${record.pluginName} searches resources.`,
+        confidence: 0.9
+      };
+    }
+  });
+
+  await registry.syncFromPluginManager('seed_catalog');
+  const startedAt = Date.now();
+  const state = await registry.forceRebuild({ mode: 'classification', wait: false });
+
+  assert.ok(Date.now() - startedAt < 100, 'background rebuild should return before classification finishes');
+  assert.equal(state.isClassifying, true);
+  assert.deepEqual(calls, ['SlowSearch']);
+
+  blocker.resolve();
+  await registry.flushClassificationQueue();
+  const finalState = registry.getAdminState();
+  assert.equal(finalState.isClassifying, false);
+  assert.equal(finalState.records[0].classifiedBy, 'custom_classifier');
 });
 
 test('sync queue recovers after one failed sync write', async () => {
@@ -323,6 +373,38 @@ test('buildInjection exposes brief list, relevant full descriptions, and explici
     false,
     'weak category mentions must not force-expand the whole category'
   );
+});
+
+test('buildInjection keeps verbose classifier briefs compact in the light list', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('VerboseSearch', 'Search the web with a long operational description.')
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig(),
+    classifier: async () => ({
+      categories: ['search'],
+      keywords: ['search'],
+      brief: 'Searches public web references with an excessively verbose multi stage explanation that would waste context in large tool lists.',
+      confidence: 0.9
+    })
+  });
+  await registry.syncFromPluginManager('compact_brief_list');
+  await registry.flushClassificationQueue();
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'user', content: 'search the web' }],
+    pluginManager
+  });
+  const line = injection.split('\n').find((item) => item.includes('VerboseSearch') && item.includes('[search]'));
+
+  assert.ok(line, 'expected the verbose tool to appear in the light list');
+  assert.equal(line.includes('multi stage explanation'), false);
+  assert.ok(line.length <= 110, `light list entry should stay compact, got ${line.length} chars: ${line}`);
 });
 
 test('messageProcessor replaces VCPDynamicTools without changing VCPAllTools behavior', async () => {
@@ -653,6 +735,65 @@ test('small model can reuse main upstream config with only model name', async (t
   assert.equal(requests[0].url, 'https://upstream.local/v1/chat/completions');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer main-upstream-key');
   assert.equal(requests[0].options.body.model, 'main-config-classifier');
+});
+
+test('small model classification asks for compact briefs and clamps verbose responses', async (t) => {
+  const projectRoot = await makeProjectRoot();
+  const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
+  await fs.mkdir(privateConfigDir, { recursive: true });
+  await fs.writeFile(path.join(privateConfigDir, 'config.env'), [
+    'SmallModel_Enabled=true',
+    'SmallModel_Use_Main_Config=true',
+    'SmallModel_Model=compact-classifier'
+  ].join('\n'), 'utf8');
+
+  const oldApiUrl = process.env.API_URL;
+  process.env.API_URL = 'https://upstream.local';
+  t.after(() => {
+    if (oldApiUrl === undefined) delete process.env.API_URL;
+    else process.env.API_URL = oldApiUrl;
+  });
+
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options: { ...options, body: JSON.parse(options.body) } });
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                brief: 'Searches web references with a very long explanation that should never be exposed in the lightweight tool list.',
+                categories: ['search'],
+                keywords: ['search'],
+                confidence: 0.91
+              })
+            }
+          }]
+        };
+      }
+    };
+  });
+
+  const pluginManager = makePluginManager([
+    makeManifest('CompactSearch', 'Search the web with the main upstream classifier.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig()
+  });
+
+  await registry.syncFromPluginManager('compact_small_model');
+  await registry.flushClassificationQueue();
+
+  const prompt = requests[0].options.body.messages[1].content;
+  assert.match(prompt, /15 tokens/);
+  const record = registry.getAdminState().records[0];
+  assert.equal(record.brief.includes('very long explanation'), false);
+  assert.ok(record.brief.length <= 70, `brief should be compact, got ${record.brief.length} chars: ${record.brief}`);
 });
 
 test('small model uses independent OpenAI endpoint when main config reuse is disabled', async (t) => {
