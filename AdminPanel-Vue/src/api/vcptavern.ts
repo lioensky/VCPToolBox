@@ -8,7 +8,7 @@ const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
 export type RuleType = "relative" | "depth" | "embed";
 export type RulePosition = "before" | "after";
-export type RuleTarget = "system" | "last_user";
+export type RuleTarget = "system" | "last_user" | "first_user";
 export type RuleRole = "system" | "user" | "assistant";
 
 export interface RuleContent {
@@ -44,8 +44,7 @@ export const vcptavernApi = {
   ): Promise<string[]> {
     const response = await requestWithUi<unknown>(
       {
-        url: `${API_BASE_URL}/presets`,
-      },
+        url: `${API_BASE_URL}/presets`,},
       uiOptions
     );
     return Array.isArray(response)
@@ -93,4 +92,3 @@ export const vcptavernApi = {
     );
   },
 };
-

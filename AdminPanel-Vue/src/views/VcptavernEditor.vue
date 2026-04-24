@@ -5,8 +5,7 @@
         <p class="description">
           管理上下文注入预设与规则。按住规则左侧手柄可像仪表盘一样实时预览排序位置，
           并在释放时提交最终顺序。
-        </p>
-      </div>
+        </p></div>
       <div class="header-actions">
         <button
           class="btn-secondary"
@@ -15,8 +14,7 @@
           @click="fetchPresets"
         >
           刷新
-        </button>
-      </div>
+        </button></div>
     </div>
 
     <div class="preset-toolbar card">
@@ -59,7 +57,7 @@
     </div>
 
     <div v-if="!isEditorVisible" class="empty-tip card">
-      <p>请选择一个预设进行编辑，或点击“新建”创建预设。</p>
+      <p>请选择一个预设进行编辑，或点击"新建"创建预设。</p>
     </div>
 
     <div v-else class="editor card">
@@ -92,8 +90,7 @@
         </button>
       </div>
 
-      <div v-if="editorState.rules.length === 0" class="empty-rules">
-        暂无规则，点击“添加规则”创建。
+      <div v-if="editorState.rules.length === 0" class="empty-rules">暂无规则，点击"添加规则"创建。
       </div>
 
       <TransitionGroup
@@ -179,6 +176,7 @@
               <select v-model="rule.target">
                 <option value="system">系统提示</option>
                 <option value="last_user">最后的用户消息</option>
+                <option value="first_user">第一个用户消息</option>
               </select>
             </div>
 
@@ -216,16 +214,14 @@
           @click="savePreset"
         >
           {{ isSaving ? "保存中…" : "保存预设" }}
-        </button>
-      </div>
+        </button></div>
     </div>
 
     <div v-if="dragGhost" ref="dragGhostElement" class="rule-drag-ghost">
       <div class="rule-drag-ghost-shell">
         <div class="rule-drag-ghost-title">{{ dragGhost.label }}</div>
         <div class="rule-drag-ghost-meta">{{ dragGhost.meta }}</div>
-      </div>
-    </div>
+      </div></div>
   </section>
 </template>
 
@@ -306,7 +302,7 @@ void dragGhostElement
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap:6px;
 }
 
 .form-group.full-width {
@@ -423,8 +419,7 @@ button:focus-visible {
   padding: 0;
   cursor: grab;
   font-size: var(--font-size-body);
-  flex-shrink: 0;
-  user-select: none;
+  flex-shrink: 0;user-select: none;
   touch-action: none;
 }
 
@@ -487,8 +482,7 @@ button:focus-visible {
 
 .rule-drag-ghost-meta {
   margin-top: 6px;
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
+  color: var(--secondary-text);font-size: var(--font-size-helper);
   line-height: 1.45;
   text-transform: capitalize;
 }

@@ -315,6 +315,16 @@ class VCPTavern {
                         newMessages[lastUserIndex].content = newMessages[lastUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
                     }
                 }
+            } else if (rule.target === 'first_user') {
+                // [PR] 新增：定位第一条user 消息进行嵌入
+                const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
+                if (firstUserIndex !== -1 && typeof newMessages[firstUserIndex].content === 'string') {
+                    if (rule.position === 'before') {
+                        newMessages[firstUserIndex].content = textToEmbed.trim() + '\n\n' + newMessages[firstUserIndex].content.trim();
+                    } else { // after
+                        newMessages[firstUserIndex].content = newMessages[firstUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
+                    }
+                }
             }
         }
 
@@ -356,6 +366,16 @@ class VCPTavern {
                         newMessages.splice(lastUserIndex + 1, 0, msgObj);
                     } else { // before
                         newMessages.splice(lastUserIndex, 0, msgObj);
+                    }
+                }
+            } else if (rule.target === 'first_user') {
+                // [PR] 新增：定位第一条 user 消息进行相对注入
+                const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
+                if (firstUserIndex !== -1) {
+                    if (rule.position === 'after') {
+                        newMessages.splice(firstUserIndex + 1, 0, msgObj);
+                    } else { // before
+                        newMessages.splice(firstUserIndex, 0, msgObj);
                     }
                 }
             } else if (rule.target === 'all_user') {
