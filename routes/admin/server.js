@@ -6,40 +6,42 @@ module.exports = function(options) {
     const router = express.Router();
     const { pluginManager } = options;
 
+    let restartInFlight = false;
+
     // POST to restart the server
     router.post('/server/restart', async (req, res) => {
         const { triggerRestart } = options;
-        res.json({ message: '服务器重启命令已接纳。正在执行优雅关闭并请求进程管理器重启...' });
 
-        setTimeout(async () => {
-            console.log('[AdminPanelRoutes] Received restart command. Initiating shutdown...');
-
-            // 强制清除Node.js模块缓存（尽力而为）
-            const moduleKeys = Object.keys(require.cache);
-            moduleKeys.forEach(key => {
-                if (key.includes('TextChunker.js') || key.includes('VectorDBManager.js')) {
-                    delete require.cache[key];
-                }
+        if (restartInFlight) {
+            return res.status(202).json({
+                status: 'restarting',
+                message: '服务器已在执行优雅重启流程，请勿重复触发。'
             });
+        }
 
-            if (typeof triggerRestart === 'function') {
-                try {
-                    await triggerRestart(1); // 传 1 以确保 PM2 检测到状态变化并自动拉起
-                } catch (error) {
-                    console.error('[AdminPanelRoutes] Graceful shutdown failed, falling back to process.exit(1):', error);
-                    process.exit(1);
-                }
-            } else {
-                console.warn('[AdminPanelRoutes] No triggerRestart callback found. Falling back to process.exit(1).');
-                process.exit(1);
+        if (typeof triggerRestart !== 'function') {
+            console.warn('[AdminPanelRoutes] No triggerRestart callback found.');
+            return res.status(500).json({
+                status: 'error',
+                message: '服务器未配置重启处理器，无法执行优雅重启。'
+            });
+        }
+
+        restartInFlight = true;
+        res.status(202).json({
+            status: 'accepted',
+            message: '服务器重启命令已接纳。正在进入优雅排空与重启流程...'
+        });
+
+        setImmediate(async () => {
+            console.log('[AdminPanelRoutes][RESTART_V2_SENTINEL_20260424] Received restart command. Initiating controlled shutdown...');
+            try {
+                await triggerRestart(1); // 传 1 以确保 PM2 检测到状态变化并自动拉起
+            } catch (error) {
+                restartInFlight = false;
+                console.error('[AdminPanelRoutes] Graceful restart failed:', error);
             }
-            
-            // 最后的防御：如果 15 秒后还没退出，强行硬退出
-            setTimeout(() => {
-                console.error('[AdminPanelRoutes] Shutdown timed out. Force exiting...');
-                process.exit(1);
-            }, 15000).unref();
-        }, 1000);
+        });
     });
 
     // 验证登录端点

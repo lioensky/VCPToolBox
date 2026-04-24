@@ -36,6 +36,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const API_BASE_URL = '/admin_api';
     let originalBaseConfigEntries = [];
+    let restartLifecyclePollTimer = null;
+    let restartInProgress = false;
 
     /**
      * 清理所有 iframe 内部的状态，防止滚动条锁定等问题。
@@ -238,17 +240,100 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) { /* Error handled by apiFetch */ }
     }
 
+    function setRestartButtonState(disabled, text = '') {
+        if (!restartServerButton) return;
+        if (!restartServerButton.dataset.originalText) {
+            restartServerButton.dataset.originalText = restartServerButton.textContent || '重启服务器';
+        }
+
+        restartServerButton.disabled = disabled;
+        restartServerButton.textContent = text || restartServerButton.dataset.originalText;
+    }
+
+    function getLifecycleStageMessage(lifecycle) {
+        const state = lifecycle?.state || 'UNKNOWN';
+        const activeRequestCount = lifecycle?.activeRequestCount ?? 0;
+
+        switch (state) {
+            case 'RUNNING':
+                return '主服务运行正常。';
+            case 'DRAINING':
+                return activeRequestCount > 0
+                    ? `正在排空活动请求（剩余 ${activeRequestCount} 个）...`
+                    : '正在排空活动请求，准备关闭服务接入层...';
+            case 'SHUTTING_DOWN':
+                return '活动请求已排空，正在关闭数据库、插件与 WebSocket...';
+            case 'EXITING':
+                return '主服务即将退出，等待进程管理器拉起新实例...';
+            default:
+                return `主服务当前状态：${state}`;
+        }
+    }
+
+    async function fetchServerLifecycle() {
+        return apiFetch(`${API_BASE_URL}/server/lifecycle`);
+    }
+
+    function stopRestartLifecyclePolling() {
+        if (restartLifecyclePollTimer) {
+            clearInterval(restartLifecyclePollTimer);
+            restartLifecyclePollTimer = null;
+        }
+    }
+
+    function startRestartLifecyclePolling() {
+        stopRestartLifecyclePolling();
+
+        restartLifecyclePollTimer = setInterval(async () => {
+            try {
+                const response = await fetchServerLifecycle();
+                const lifecycle = response?.lifecycle;
+                const state = lifecycle?.state;
+
+                if (!state) return;
+
+                const stageMessage = getLifecycleStageMessage(lifecycle);
+                setRestartButtonState(true, `重启中：${state}`);
+                showMessage(stageMessage, 'info', 2500);
+
+                if (state === 'RUNNING') {
+                    stopRestartLifecyclePolling();
+                    restartInProgress = false;
+                    setRestartButtonState(false);
+                    showMessage('主服务已恢复运行。', 'success', 4000);
+                }
+            } catch (error) {
+                console.warn('Lifecycle polling error during restart:', error?.message || error);
+                showMessage('主服务正在重启，暂时无法获取生命周期状态，继续等待中...', 'info', 2500);
+            }
+        }, 2000);
+    }
+
     /**
      * 重启服务器。
      */
     async function restartServer() {
+        if (restartInProgress) {
+            showMessage('主服务已在重启流程中，请勿重复触发。', 'info', 3000);
+            return;
+        }
+
         if (!confirm('您确定要重启服务器吗？')) return;
+
+        restartInProgress = true;
+        setRestartButtonState(true, '正在请求重启...');
+
         try {
             showMessage('正在发送重启服务器命令...', 'info');
             const response = await apiFetch(`${API_BASE_URL}/server/restart`, { method: 'POST' });
-            const message = response?.message || (typeof response === 'string' && response.includes('重启命令已发送') ? response : '服务器重启命令已发送。请稍后检查服务器状态。');
-            showMessage(message, 'success', 5000);
+            const message = response?.message || '服务器重启命令已发送。';
+
+            showMessage(message, 'success', 4000);
+            setRestartButtonState(true, '正在排空请求...');
+            startRestartLifecyclePolling();
         } catch (error) {
+            restartInProgress = false;
+            setRestartButtonState(false);
             console.error('Restart server failed:', error);
         }
     }

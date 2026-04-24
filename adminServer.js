@@ -313,32 +313,70 @@ for (const moduleName of localModules) {
 // ============================================================
 app.post('/admin_api/server/restart', async (req, res) => {
     console.log('[AdminServer] Restart request received — forwarding to main process...');
-    res.json({ message: '正在通知主服务重启。管理面板将保持运行。' });
 
-    // 通过 HTTP 请求通知主进程自行重启
-    setTimeout(() => {
-        const restartReq = http.request(
-            `http://127.0.0.1:${MAIN_PORT}/admin_api/server/restart`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': req.headers.authorization || '',
-                    'Cookie': req.headers.cookie || ''
-                },
-                timeout: 5000
+    const restartReq = http.request(
+        `http://127.0.0.1:${MAIN_PORT}/admin_api/server/restart`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': req.headers.authorization || '',
+                'Cookie': req.headers.cookie || ''
             },
-            (restartRes) => {
+            timeout: 10000
+        },
+        (restartRes) => {
+            let body = '';
+
+            restartRes.on('data', chunk => {
+                body += chunk;
+            });
+
+            restartRes.on('end', () => {
                 console.log(`[AdminServer] Main process restart response: ${restartRes.statusCode}`);
-            }
-        );
-        restartReq.on('error', (err) => {
-            // 预期会出错：主进程收到后会执行 process.exit(1)，连接会断
-            console.log(`[AdminServer] Main process restart signal sent (connection closed as expected: ${err.code || err.message})`);
-        });
-        restartReq.write('{}');
-        restartReq.end();
-    }, 300);
+
+                if (res.headersSent) return;
+
+                const contentType = restartRes.headers['content-type'] || 'application/json';
+                res.status(restartRes.statusCode || 202);
+                res.setHeader('Content-Type', contentType);
+
+                try {
+                    const parsed = body ? JSON.parse(body) : {
+                        status: 'accepted',
+                        message: '主服务已收到重启请求。'
+                    };
+                    res.json(parsed);
+                } catch (e) {
+                    res.send(body || '主服务已收到重启请求。');
+                }
+            });
+        }
+    );
+
+    restartReq.on('error', (err) => {
+        console.error(`[AdminServer] Failed to forward restart request to main process: ${err.code || err.message}`);
+        if (!res.headersSent) {
+            res.status(502).json({
+                status: 'error',
+                message: '无法将重启请求转发给主服务。',
+                details: err.message
+            });
+        }
+    });
+
+    restartReq.on('timeout', () => {
+        restartReq.destroy();
+        if (!res.headersSent) {
+            res.status(504).json({
+                status: 'error',
+                message: '主服务重启接口响应超时。'
+            });
+        }
+    });
+
+    restartReq.write('{}');
+    restartReq.end();
 });
 
 app.use('/admin_api', localAdminRouter);

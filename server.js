@@ -138,6 +138,214 @@ const ToolCallParser = require('./modules/vcpLoop/toolCallParser.js');
 
 const activeRequests = new Map(); // 新增：用于存储活动中的请求，以便中止
 
+const SERVER_LIFECYCLE = Object.freeze({
+    RUNNING: 'RUNNING',
+    DRAINING: 'DRAINING',
+    SHUTTING_DOWN: 'SHUTTING_DOWN',
+    EXITING: 'EXITING'
+});
+
+let serverLifecycleState = SERVER_LIFECYCLE.RUNNING;
+let shutdownPromise = null;
+let shutdownStartedAt = null;
+let shutdownReason = null;
+let lastShutdownExitCode = 0;
+let forceShutdownTimer = null;
+const trackedSockets = new Set();
+const activeHttpRequests = new Set();
+
+function getServerLifecycleStatus() {
+    return {
+        state: serverLifecycleState,
+        reason: shutdownReason,
+        startedAt: shutdownStartedAt,
+        uptimeMsInState: shutdownStartedAt ? Date.now() - shutdownStartedAt : 0,
+        activeRequestCount: activeRequests.size
+    };
+}
+
+function isServerDraining() {
+    return serverLifecycleState !== SERVER_LIFECYCLE.RUNNING;
+}
+
+function buildDrainingResponse(req) {
+    const lifecycleStatus = getServerLifecycleStatus();
+    const isStreamRequest = req?.body?.stream === true;
+    const message = '服务正在重启/关闭中，暂时不再接受新的请求。';
+
+    if (isStreamRequest) {
+        return {
+            type: 'stream',
+            status: 200,
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive'
+            },
+            body: {
+                id: `chatcmpl-draining-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: req?.body?.model || 'unknown',
+                choices: [{
+                    index: 0,
+                    delta: { content: message },
+                    finish_reason: 'stop'
+                }],
+                lifecycle: lifecycleStatus
+            }
+        };
+    }
+
+    return {
+        type: 'json',
+        status: 503,
+        body: {
+            error: 'Service Unavailable',
+            message,
+            lifecycle: lifecycleStatus
+        }
+    };
+}
+
+function sendDrainingResponse(req, res) {
+    const payload = buildDrainingResponse(req);
+
+    if (payload.type === 'stream') {
+        if (!res.headersSent) {
+            res.status(payload.status);
+            Object.entries(payload.headers).forEach(([key, value]) => res.setHeader(key, value));
+        }
+        res.write(`data: ${JSON.stringify(payload.body)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+    }
+
+    if (!res.headersSent) {
+        res.status(payload.status).json(payload.body);
+    } else if (!res.writableEnded) {
+        res.end();
+    }
+}
+
+function destroyIdleSockets() {
+    let destroyedCount = 0;
+    for (const socket of trackedSockets) {
+        try {
+            const hasActiveRequest = activeHttpRequests.has(socket);
+            if (!hasActiveRequest && !socket.destroyed) {
+                socket.destroy();
+                destroyedCount++;
+            }
+        } catch (error) {
+            console.error('[Server] Failed to destroy idle socket:', error.message);
+        }
+    }
+    console.log(`[Server] Destroyed ${destroyedCount} idle socket(s).`);
+}
+
+async function closeHttpServerGracefully() {
+    if (!server || typeof server.close !== 'function') {
+        return;
+    }
+
+    console.log(`[Server] Preparing to close HTTP server. trackedSockets=${trackedSockets.size}, activeHttpRequests=${activeHttpRequests.size}`);
+
+    destroyIdleSockets();
+
+    await new Promise((resolve) => {
+        try {
+            server.close((error) => {
+                if (error) {
+                    console.error('[Server] Error while closing HTTP server:', error);
+                } else {
+                    console.log('[Server] HTTP server stopped accepting new connections.');
+                }
+                resolve();
+            });
+        } catch (error) {
+            console.error('[Server] Failed to invoke server.close():', error);
+            resolve();
+        }
+    });
+}
+
+async function waitForActiveRequestsToDrain(timeoutMs = 30000) {
+    const start = Date.now();
+
+    while (activeRequests.size > 0 && (Date.now() - start) < timeoutMs) {
+        console.log(`[Shutdown] Waiting for ${activeRequests.size} active request(s) to finish...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    return activeRequests.size === 0;
+}
+
+async function abortAllActiveRequests(reason = '服务器正在关闭') {
+    console.log(`[Shutdown] Aborting ${activeRequests.size} active request(s)...`);
+
+    for (const [id, context] of activeRequests.entries()) {
+        try {
+            if (!context.aborted) {
+                context.aborted = true;
+            }
+
+            if (context.abortController && !context.abortController.signal.aborted) {
+                context.abortController.abort();
+            }
+
+            if (context.res && !context.res.writableEnded && !context.res.destroyed) {
+                const isStreamRequest = context.req?.body?.stream === true;
+
+                if (!context.res.headersSent) {
+                    if (isStreamRequest) {
+                        context.res.status(200);
+                        context.res.setHeader('Content-Type', 'text/event-stream');
+                        context.res.setHeader('Cache-Control', 'no-cache');
+                        context.res.setHeader('Connection', 'keep-alive');
+
+                        const shutdownChunk = {
+                            id: `chatcmpl-shutdown-${Date.now()}`,
+                            object: 'chat.completion.chunk',
+                            created: Math.floor(Date.now() / 1000),
+                            model: context.req?.body?.model || 'unknown',
+                            choices: [{
+                                index: 0,
+                                delta: { content: reason },
+                                finish_reason: 'stop'
+                            }]
+                        };
+
+                        context.res.write(`data: ${JSON.stringify(shutdownChunk)}\n\n`);
+                        context.res.write('data: [DONE]\n\n');
+                        context.res.end();
+                    } else {
+                        context.res.status(503).json({
+                            error: 'Service Unavailable',
+                            message: reason
+                        });
+                    }
+                } else if (String(context.res.getHeader('Content-Type') || '').includes('text/event-stream')) {
+                    context.res.write('data: [DONE]\n\n');
+                    context.res.end();
+                } else {
+                    context.res.end();
+                }
+            }
+        } catch (error) {
+            console.error(`[Shutdown] Failed to abort active request ${id}:`, error.message);
+            try {
+                if (context.res && !context.res.destroyed) {
+                    context.res.destroy();
+                }
+            } catch (destroyError) {
+                console.error(`[Shutdown] Failed to destroy response for request ${id}:`, destroyError.message);
+            }
+        }
+    }
+}
+
 // 新增：定时清理 activeRequests 防止内存泄漏
 setInterval(() => {
     const now = Date.now();
@@ -367,6 +575,25 @@ app.use((req, res, next) => {
     if (clientIp && ipBlacklist.includes(clientIp)) {
         console.warn(`[Security] 已阻止来自黑名单IP ${clientIp} 的请求。`);
         return res.status(403).json({ error: 'Forbidden: Your IP address has been blocked due to suspicious activity.' });
+    }
+    next();
+});
+
+app.use((req, res, next) => {
+    if (isServerDraining()) {
+        const allowDuringShutdownPaths = new Set([
+            '/admin_api/server/restart',
+            '/admin_api/server/lifecycle',
+            '/v1/interrupt'
+        ]);
+        const allowDuringShutdown =
+            allowDuringShutdownPaths.has(req.path) ||
+            req.path.startsWith('/plugin-callback/');
+
+        if (!allowDuringShutdown) {
+            console.warn(`[Server] Rejecting new request during ${serverLifecycleState}: ${req.method} ${req.path}`);
+            return sendDrainingResponse(req, res);
+        }
     }
     next();
 });
@@ -746,6 +973,15 @@ app.post('/v1/schedule_task', async (req, res) => {
     }
 });
 
+// 新增：生命周期状态查询路由
+app.get('/admin_api/server/lifecycle', (req, res) => {
+    res.status(200).json({
+        status: 'success',
+        lifecycle: getServerLifecycleStatus(),
+        shutdownExitCode: lastShutdownExitCode
+    });
+});
+
 // 新增：紧急停止路由
 app.post('/v1/interrupt', (req, res) => {
     const id = req.body.requestId || req.body.messageId; // 兼容 requestId 和 messageId
@@ -1115,7 +1351,7 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     TVS_DIR, // Pass the TVStxt directory path
     (code = 1) => {
         console.log(`[Server] Restart triggered from admin API (exit code: ${code}).`);
-        gracefulShutdown(code).catch(err => {
+        gracefulShutdown(code, 'admin_restart').catch(err => {
             console.error('[Server] Fatal error during graceful restart:', err);
             process.exit(code);
         });
@@ -1338,6 +1574,27 @@ async function startServer() {
         console.log(`中间层服务器正在监听端口 ${port}`);
         console.log(`API 服务器地址: ${apiUrl}`);
 
+        server.on('connection', (socket) => {
+            trackedSockets.add(socket);
+
+            socket.on('close', () => {
+                trackedSockets.delete(socket);
+                activeHttpRequests.delete(socket);
+            });
+        });
+
+        server.on('request', (req, res) => {
+            if (req.socket) {
+                activeHttpRequests.add(req.socket);
+                res.on('finish', () => {
+                    activeHttpRequests.delete(req.socket);
+                });
+                res.on('close', () => {
+                    activeHttpRequests.delete(req.socket);
+                });
+            }
+        });
+
         // Initialize the new WebSocketServer
         if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
         const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
@@ -1359,42 +1616,124 @@ startServer().catch(err => {
 });
 
 
-async function gracefulShutdown(exitCode = 0) {
-    console.log('Initiating graceful shutdown...');
-
-    if (taskScheduler) {
-        taskScheduler.shutdown();
+async function gracefulShutdown(exitCode = 0, reason = 'signal') {
+    if (shutdownPromise) {
+        console.log(`[Server] gracefulShutdown already in progress. Reusing existing shutdown promise. Current state: ${serverLifecycleState}`);
+        return shutdownPromise;
     }
 
-    if (webSocketServer) {
-        console.log('[Server] Shutting down WebSocketServer...');
-        webSocketServer.shutdown();
-    }
-    if (pluginManager) {
-        await pluginManager.shutdownAllPlugins();
-    }
+    lastShutdownExitCode = exitCode;
+    shutdownReason = reason;
+    shutdownStartedAt = Date.now();
+    serverLifecycleState = SERVER_LIFECYCLE.DRAINING;
 
-    if (knowledgeBaseManager) {
-        await knowledgeBaseManager.shutdown();
-    }
+    console.log(`[Server] Initiating graceful shutdown. reason=${reason}, exitCode=${exitCode}`);
+    console.log(`[Server][ShutdownTrace] Phase 0/10 - shutdown requested. activeRequests=${activeRequests.size}`);
 
-    const serverLogWriteStream = logger.getLogWriteStream();
-    if (serverLogWriteStream) {
-        logger.originalConsoleLog('[Server] Closing server log file stream...');
-        const logClosePromise = new Promise((resolve) => {
-            serverLogWriteStream.end(`[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server gracefully shut down.\n`, () => {
-                logger.originalConsoleLog('[Server] Server log stream closed.');
-                resolve();
-            });
-        });
-        await logClosePromise;
-    }
+    forceShutdownTimer = setTimeout(() => {
+        console.error('[Server] Graceful shutdown timed out. Forcing process exit.');
+        serverLifecycleState = SERVER_LIFECYCLE.EXITING;
+        process.exit(exitCode);
+    }, 60000);
+    forceShutdownTimer.unref();
 
-    process.exit(exitCode);
+    shutdownPromise = (async () => {
+        try {
+            if (webSocketServer && typeof webSocketServer.beginDrain === 'function') {
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - begin WebSocket drain`);
+                console.log('[Server] Draining WebSocket upgrade handling...');
+                await webSocketServer.beginDrain();
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - WebSocket drain ready`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 1/10 - WebSocket drain skipped`);
+            }
+
+            console.log(`[Server][ShutdownTrace] Phase 2/10 - closing HTTP server listener`);
+            await closeHttpServerGracefully();
+            console.log(`[Server][ShutdownTrace] Phase 2/10 - HTTP server listener closed. trackedSockets=${trackedSockets.size}, activeHttpRequests=${activeHttpRequests.size}`);
+
+            console.log(`[Server][ShutdownTrace] Phase 3/10 - waiting active requests to drain (initial=${activeRequests.size})`);
+            const drainedNaturally = await waitForActiveRequestsToDrain(30000);
+            console.log(`[Server][ShutdownTrace] Phase 3/10 - drain wait result=${drainedNaturally}, remaining=${activeRequests.size}`);
+
+            if (!drainedNaturally) {
+                console.warn(`[Server] Active requests did not drain within timeout. Remaining: ${activeRequests.size}`);
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - aborting remaining active requests`);
+                await abortAllActiveRequests('服务正在重启，当前请求已被服务器安全中止。');
+                const drainedAfterAbort = await waitForActiveRequestsToDrain(5000);
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - abort complete. drainedAfterAbort=${drainedAfterAbort}, remaining=${activeRequests.size}`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 4/10 - abort skipped, no remaining active requests`);
+            }
+
+            serverLifecycleState = SERVER_LIFECYCLE.SHUTTING_DOWN;
+            console.log(`[Server][ShutdownTrace] Phase 5/10 - lifecycle switched to SHUTTING_DOWN`);
+
+            if (taskScheduler) {
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown start`);
+                taskScheduler.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 6/10 - taskScheduler shutdown skipped`);
+            }
+
+            if (webSocketServer) {
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - webSocketServer.shutdown start`);
+                console.log('[Server] Shutting down WebSocketServer...');
+                await Promise.resolve(webSocketServer.shutdown());
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - webSocketServer.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 7/10 - WebSocketServer shutdown skipped`);
+            }
+
+            if (pluginManager) {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins start`);
+                await pluginManager.shutdownAllPlugins();
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager.shutdownAllPlugins done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 8/10 - pluginManager shutdown skipped`);
+            }
+
+            if (knowledgeBaseManager) {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager.shutdown start`);
+                await knowledgeBaseManager.shutdown();
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager.shutdown done`);
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 9/10 - knowledgeBaseManager shutdown skipped`);
+            }
+
+            const serverLogWriteStream = logger.getLogWriteStream();
+            if (serverLogWriteStream) {
+                logger.originalConsoleLog('[Server][ShutdownTrace] Phase 10/10 - closing server log file stream');
+                logger.originalConsoleLog('[Server] Closing server log file stream...');
+                const logClosePromise = new Promise((resolve) => {
+                    serverLogWriteStream.end(`[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] Server gracefully shut down. reason=${reason}\n`, () => {
+                        logger.originalConsoleLog('[Server] Server log stream closed.');
+                        logger.originalConsoleLog('[Server][ShutdownTrace] Phase 10/10 - server log file stream closed');
+                        resolve();
+                    });
+                });
+                await logClosePromise;
+            } else {
+                console.log(`[Server][ShutdownTrace] Phase 10/10 - log stream close skipped`);
+            }
+        } finally {
+            if (forceShutdownTimer) {
+                clearTimeout(forceShutdownTimer);
+                forceShutdownTimer = null;
+            }
+            serverLifecycleState = SERVER_LIFECYCLE.EXITING;
+        }
+
+        console.log(`[Server][ShutdownTrace] Final - process.exit(${exitCode})`);
+        process.exit(exitCode);
+    })();
+
+    return shutdownPromise;
 }
 
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', () => gracefulShutdown(0, 'SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown(0, 'SIGTERM'));
 
 // 新增：捕获未处理的异常，防止服务器崩溃
 process.on('uncaughtException', (error) => {

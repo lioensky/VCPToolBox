@@ -4,6 +4,11 @@ const url = require('url');
 
 let wssInstance;
 let pluginManager = null; // 为 PluginManager 实例占位
+let attachedHttpServer = null;
+let upgradeHandler = null;
+let isDraining = false;
+let shutdownPromise = null;
+
 let serverConfig = {
     debugMode: false,
     vcpKey: null
@@ -38,6 +43,9 @@ function initialize(httpServer, config) {
         return;
     }
     serverConfig = { ...serverConfig, ...config };
+    attachedHttpServer = httpServer;
+    isDraining = false;
+    shutdownPromise = null;
 
     if (!serverConfig.vcpKey && serverConfig.debugMode) {
         console.warn('[WebSocketServer] VCP_Key not set. WebSocket connections will not be authenticated if default path is used.');
@@ -45,7 +53,17 @@ function initialize(httpServer, config) {
 
     wssInstance = new WebSocket.Server({ noServer: true });
 
-    httpServer.on('upgrade', (request, socket, head) => {
+    upgradeHandler = (request, socket, head) => {
+        if (isDraining) {
+            writeLog(`Rejecting WebSocket upgrade during draining: ${request.url}`);
+            try {
+                socket.destroy();
+            } catch (e) {
+                // ignore
+            }
+            return;
+        }
+
         const parsedUrl = url.parse(request.url, true);
         const pathname = parsedUrl.pathname;
 
@@ -149,7 +167,9 @@ function initialize(httpServer, config) {
                 wssInstance.emit('connection', ws, request);
             });
         }
-    });
+    };
+
+    httpServer.on('upgrade', upgradeHandler);
 
     wssInstance.on('connection', (ws, request) => {
         if (serverConfig.debugMode) {
@@ -393,21 +413,60 @@ function sendMessageToClient(clientId, data) {
     return false;
 }
 
+async function beginDrain() {
+    if (isDraining) {
+        return;
+    }
+
+    isDraining = true;
+    writeLog('WebSocketServer entered draining mode.');
+
+    if (attachedHttpServer && upgradeHandler) {
+        attachedHttpServer.off('upgrade', upgradeHandler);
+        writeLog('WebSocket upgrade handler detached from HTTP server.');
+    }
+}
+
 function shutdown() {
-    if (serverConfig.debugMode) {
-        console.log('[WebSocketServer] Shutting down...');
+    if (shutdownPromise) {
+        return shutdownPromise;
     }
-    if (wssInstance) {
-        wssInstance.clients.forEach(client => {
-            client.close();
-        });
-        wssInstance.close(() => {
-            if (serverConfig.debugMode) {
-                console.log('[WebSocketServer] Server closed.');
-            }
-        });
-    }
-    writeLog('WebSocketServer shutdown.');
+
+    shutdownPromise = (async () => {
+        if (serverConfig.debugMode) {
+            console.log('[WebSocketServer] Shutting down...');
+        }
+
+        await beginDrain();
+
+        if (wssInstance) {
+            await new Promise((resolve) => {
+                try {
+                    wssInstance.clients.forEach(client => {
+                        try {
+                            client.close();
+                        } catch (e) {
+                            // ignore
+                        }
+                    });
+
+                    wssInstance.close(() => {
+                        if (serverConfig.debugMode) {
+                            console.log('[WebSocketServer] Server closed.');
+                        }
+                        resolve();
+                    });
+                } catch (error) {
+                    console.error('[WebSocketServer] Error during shutdown:', error);
+                    resolve();
+                }
+            });
+        }
+
+        writeLog('WebSocketServer shutdown.');
+    })();
+
+    return shutdownPromise;
 }
 
 // --- 新增分布式服务器相关函数 ---
@@ -556,6 +615,7 @@ function broadcastToAdminPanel(data) {
 
 module.exports = {
     initialize,
+    beginDrain,
     setPluginManager,
     broadcast,
     broadcastVCPInfo, // 导出新的广播函数
