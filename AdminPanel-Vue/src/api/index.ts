@@ -73,6 +73,9 @@ export type * from './tvs'
 export { toolListApi } from './toolList'
 export type * from './toolList'
 
+export { dynamicToolsApi } from './dynamicTools'
+export type * from './dynamicTools'
+
 export { vcptavernApi } from './vcptavern'
 export type * from './vcptavern'
 

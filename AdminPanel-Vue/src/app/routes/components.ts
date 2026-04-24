@@ -13,6 +13,7 @@ export const APP_ROUTE_COMPONENTS = {
   "toolbox-manager": () => import("@/views/ToolboxManager.vue"),
   "tvs-files-editor": () => import("@/views/TvsFilesEditor.vue"),
   "tool-list-editor": () => import("@/views/ToolListEditor.vue"),
+  "dynamic-tools-manager": () => import("@/views/DynamicToolsManager.vue"),
   "preprocessor-order-manager": () =>
     import("@/views/PreprocessorOrderManager.vue"),
   "tool-approval-manager": () => import("@/views/ToolApprovalManager.vue"),

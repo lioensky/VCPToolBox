@@ -523,7 +523,21 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.4 服务器日志
+### 6.4 Dynamic ToolBridge API
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/admin_api/dynamic-tools/state` | 查看动态工具 catalog、分类缓存、队列状态和脱敏配置 |
+| GET | `/admin_api/dynamic-tools/config` | 获取 `dynamic_tool_bridge.config.json` 的脱敏配置 |
+| POST | `/admin_api/dynamic-tools/config` | 保存动态工具配置；不接受或返回 API key 明文 |
+| POST | `/admin_api/dynamic-tools/rebuild` | 手动重建 catalog 或分类缓存，`mode=classification|catalog|all` |
+| POST | `/admin_api/dynamic-tools/override` | 固定或排除指定 `originKey`，也可批量写入 `manualOverrides` |
+
+所有端点挂载在既有 `/admin_api` 路由下，复用 Admin Basic Auth。动态工具只影响提示词注入，不新增任何绕过 `ToolApprovalManager` 的工具执行路径。
+
+---
+
+### 6.5 服务器日志
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -544,7 +558,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.5 知识库管理
+### 6.6 知识库管理
 
 #### Daily Notes API
 
@@ -572,7 +586,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.6 消息预处理器管理
+### 6.7 消息预处理器管理
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -581,7 +595,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.7 Agent 管理
+### 6.8 Agent 文件管理
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -592,7 +606,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.7 Agent 管理
+### 6.9 Agent 管理
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -605,7 +619,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.8 TVS 变量管理
+### 6.10 TVS 变量管理
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -615,7 +629,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.9 缓存管理
+### 6.11 缓存管理
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
@@ -628,7 +642,7 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 ---
 
-### 6.10 其他端点
+### 6.12 其他端点
 
 | 方法 | 端点 | 说明 |
 |------|------|------|

@@ -107,6 +107,7 @@ const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const toolboxManager = require('./modules/toolboxManager.js');
+const dynamicToolRegistry = require('./modules/dynamicToolRegistry.js');
 const messageProcessor = require('./modules/messageProcessor.js');
 const knowledgeBaseManager = require('./KnowledgeBaseManager.js'); // 新增：引入统一知识库管理器
 const pluginManager = require('./Plugin.js');
@@ -1191,6 +1192,11 @@ async function initialize() {
 
     pluginManager.setProjectBasePath(__dirname);
     pluginManager.setVectorDBManager(knowledgeBaseManager); // 注入 knowledgeBaseManager
+    await dynamicToolRegistry.initialize({
+        pluginManager,
+        projectBasePath: __dirname,
+        debugMode: DEBUG_MODE
+    });
 
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
