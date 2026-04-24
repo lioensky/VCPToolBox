@@ -29,6 +29,7 @@
       <div class="summary-item">
         <span class="summary-label">分类队列</span>
         <strong>{{ state?.queueSize ?? 0 }}</strong>
+        <small v-if="isClassifying">后台分类中</small>
       </div>
       <div class="summary-item">
         <span class="summary-label">快照</span>
@@ -145,15 +146,15 @@
       <div class="card-header">
         <h3>分类维护</h3>
         <div class="header-actions">
-          <button type="button" class="btn-secondary btn-sm btn-sm-touch" @click="rebuild('catalog')">
+          <button type="button" class="btn-secondary btn-sm btn-sm-touch" :disabled="isClassifying" @click="rebuild('catalog')">
             <span class="material-symbols-outlined">inventory</span>
             重建清单
           </button>
-          <button type="button" class="btn-secondary btn-sm btn-sm-touch" @click="rebuild('classification')">
+          <button type="button" class="btn-secondary btn-sm btn-sm-touch" :disabled="isClassifying" @click="rebuild('classification')">
             <span class="material-symbols-outlined">category</span>
             重建分类
           </button>
-          <button type="button" class="btn-primary btn-sm btn-sm-touch" @click="rebuild('all')">
+          <button type="button" class="btn-primary btn-sm btn-sm-touch" :disabled="isClassifying" @click="rebuild('all')">
             <span class="material-symbols-outlined">sync</span>
             全量重建
           </button>
@@ -245,7 +246,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import {
   dynamicToolsApi,
@@ -335,11 +336,13 @@ const aliasText = ref("");
 const filterText = ref("");
 const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
+const rebuildPollingTimer = ref<number | null>(null);
 
 const records = computed(() => state.value?.records || []);
 const availableCount = computed(() => records.value.filter((record) => record.available).length);
 const excludedKeys = computed(() => new Set(config.value.manualOverrides.excludedOriginKeys));
 const pinnedKeys = computed(() => new Set(config.value.manualOverrides.pinnedOriginKeys));
+const isClassifying = computed(() => Boolean(state.value?.isClassifying));
 
 const filteredRecords = computed(() => {
   const query = filterText.value.toLowerCase();
@@ -374,6 +377,29 @@ async function loadState() {
     const errorMessage = error instanceof Error ? error.message : String(error);
     showMessage(`加载动态工具清单失败：${errorMessage}`, "error");
   }
+}
+
+function stopRebuildPolling() {
+  if (rebuildPollingTimer.value !== null) {
+    window.clearInterval(rebuildPollingTimer.value);
+    rebuildPollingTimer.value = null;
+  }
+}
+
+function startRebuildPolling() {
+  stopRebuildPolling();
+  rebuildPollingTimer.value = window.setInterval(() => {
+    void (async () => {
+      const wasClassifying = isClassifying.value;
+      await loadState();
+      if (wasClassifying && !isClassifying.value) {
+        stopRebuildPolling();
+        statusMessage.value = "动态工具重建已完成";
+        statusType.value = "success";
+        showMessage(statusMessage.value, "success");
+      }
+    })();
+  }, 2500);
 }
 
 async function saveDynamicConfig() {
@@ -422,11 +448,12 @@ async function rebuild(mode: DynamicToolsRebuildMode) {
   try {
     const nextState = await dynamicToolsApi.rebuild(mode, {
       loadingKey: `dynamic-tools.rebuild.${mode}`,
-    });
+    }, { wait: false });
     applyState(nextState);
-    statusMessage.value = "重建任务已完成";
-    statusType.value = "success";
+    statusMessage.value = isClassifying.value ? "重建任务已开始，正在后台分类" : "重建任务已完成";
+    statusType.value = isClassifying.value ? "info" : "success";
     showMessage(statusMessage.value, "success");
+    if (isClassifying.value) startRebuildPolling();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     statusMessage.value = `重建失败：${errorMessage}`;
@@ -489,6 +516,10 @@ function openPluginConfig() {
 
 onMounted(() => {
   void loadState();
+});
+
+onBeforeUnmount(() => {
+  stopRebuildPolling();
 });
 </script>
 
