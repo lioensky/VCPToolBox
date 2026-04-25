@@ -324,11 +324,26 @@ def fetch_single_provider(provider_name: str, params: dict[str, Any]) -> dict[st
         )
         if query.year is None:
             query = YieldCurveQuery(curve_kind=query.curve_kind)
-        result = client.latest_yield_curve(query)
-        return {
-            "provider": provider,
-            "data": simplify(result),
-        }
+
+        try:
+            result = client.latest_yield_curve(query)
+            return {
+                "provider": provider,
+                "data": simplify(result),
+            }
+        except Exception as exc:
+            message = str(exc)
+            if "Date column" in message or "expected Treasury CSV to include a Date column" in message:
+                return {
+                    "provider": provider,
+                    "status": "degraded",
+                    "warning": "Treasury 官方 CSV 接口返回格式发生变化，当前已跳过收益率曲线抓取。",
+                    "curve_kind": query.curve_kind,
+                    "year": query.year,
+                    "data": None,
+                    "error": message,
+                }
+            raise
 
     if provider == "cftc":
         client = CftcCotProvider()
