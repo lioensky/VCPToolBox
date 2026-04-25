@@ -157,8 +157,9 @@ class ContextFoldingV2 {
             const activationRegex = /(\{\{ContextFoldingV2(?::(\d+\.?\d*))?\}\}|\[\[ContextFoldingV2(?::(\d+\.?\d*))?\]\])/;
 
             for (let i = 0; i < messages.length; i++) {
-                if (messages[i].role === 'system' && typeof messages[i].content === 'string') {
-                    const match = messages[i].content.match(activationRegex);
+                if (messages[i].role === 'system') {
+                    const systemText = this._getContent(messages[i]);
+                    const match = systemText.match(activationRegex);
                     if (match) {
                         activated = true;
                         activationIndex = i;
@@ -184,9 +185,12 @@ class ContextFoldingV2 {
             // 将占位符从 system 消息中移除（它只是开关，不应出现在最终输出中）
             const newMessages = JSON.parse(JSON.stringify(messages));
             if (activationIndex >= 0 && matchedPlaceholder) {
-                newMessages[activationIndex].content = newMessages[activationIndex].content
-                    .replace(matchedPlaceholder, '')
-                    .trim();
+                this._setContent(
+                    newMessages[activationIndex],
+                    this._getContent(newMessages[activationIndex])
+                        .replace(matchedPlaceholder, '')
+                        .trim()
+                );
             }
 
             // 1. 识别所有 assistant 块并计算深度
@@ -570,10 +574,18 @@ class ContextFoldingV2 {
      * 从消息中提取文本内容（兼容字符串和多模态数组格式）
      */
     _getContent(msg) {
-        if (typeof msg.content === 'string') return msg.content;
-        if (Array.isArray(msg.content)) {
-            const textPart = msg.content.find(p => p.type === 'text');
-            return textPart ? textPart.text || '' : '';
+        const content = msg?.content;
+
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+                .map(part => part.text)
+                .join('\n')
+                .trim();
+        }
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return content.text;
         }
         return '';
     }
@@ -582,15 +594,35 @@ class ContextFoldingV2 {
      * 设置消息内容（兼容字符串和多模态数组格式）
      */
     _setContent(msg, newText) {
+        if (!msg) return;
+
         if (typeof msg.content === 'string') {
             msg.content = newText;
         } else if (Array.isArray(msg.content)) {
-            const textPart = msg.content.find(p => p.type === 'text');
-            if (textPart) {
-                textPart.text = newText;
+            const textIndices = [];
+            for (let i = 0; i < msg.content.length; i++) {
+                const part = msg.content[i];
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    textIndices.push(i);
+                }
+            }
+
+            if (textIndices.length > 0) {
+                const firstIndex = textIndices[0];
+                msg.content = msg.content
+                    .map((part, index) => {
+                        if (!textIndices.includes(index)) return part;
+                        if (index === firstIndex) {
+                            return { ...part, text: newText };
+                        }
+                        return null;
+                    })
+                    .filter(Boolean);
             } else {
                 msg.content.unshift({ type: 'text', text: newText });
             }
+        } else if (msg.content && typeof msg.content === 'object' && typeof msg.content.text === 'string') {
+            msg.content = { ...msg.content, text: newText };
         } else {
             msg.content = newText;
         }

@@ -157,18 +157,82 @@ function resizeImageHalf(base64WithPrefix) {
 }
 
 class CapturePreprocessor {
+    _extractTextFromContent(content) {
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+                .map(part => part.text)
+                .join('\n')
+                .trim();
+        }
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return content.text;
+        }
+        return '';
+    }
+
+    _replaceTextInContent(content, replacer) {
+        if (typeof replacer !== 'function') return content;
+
+        if (typeof content === 'string') {
+            return replacer(content);
+        }
+
+        if (Array.isArray(content)) {
+            const textIndices = [];
+            const textValues = [];
+
+            content.forEach((part, index) => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    textIndices.push(index);
+                    textValues.push(part.text);
+                }
+            });
+
+            const mergedText = textValues.join('\n').trim();
+            const replacedText = replacer(mergedText);
+
+            if (textIndices.length > 0) {
+                const firstIndex = textIndices[0];
+                return content
+                    .map((part, index) => {
+                        if (!textIndices.includes(index)) return part;
+                        if (index === firstIndex) {
+                            return { ...part, text: replacedText };
+                        }
+                        return null;
+                    })
+                    .filter(Boolean);
+            }
+
+            return [{ type: 'text', text: replacedText }, ...content];
+        }
+
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return { ...content, text: replacer(content.text) };
+        }
+
+        return content;
+    }
+
     async processMessages(messages, requestConfig = {}) {
         const currentConfig = { ...vcpConfig, ...requestConfig };
         let systemPrompt = messages.find(m => m.role === 'system');
         let lastUserMessage = messages.findLast(m => m.role === 'user');
 
-        if (!systemPrompt || typeof systemPrompt.content !== 'string' || !lastUserMessage) {
+        if (!systemPrompt || !lastUserMessage) {
+            return messages;
+        }
+
+        const systemPromptText = this._extractTextFromContent(systemPrompt.content);
+        if (!systemPromptText) {
             return messages;
         }
 
         // 新正则支持 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口}} 和 {{VCPCameraCapture(N)}}
         const placeholderRegex = /{{\s*(VCPScreenShotMini(?::([^}]+))?|VCPScreenShot(?::([^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
-        const matches = [...systemPrompt.content.matchAll(placeholderRegex)];
+        const matches = [...systemPromptText.matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
             return messages;
@@ -247,7 +311,11 @@ class CapturePreprocessor {
         let userContent = lastUserMessage.content;
         if (typeof userContent === 'string') {
             userContent = [{ type: 'text', text: userContent }];
-        } else if (!Array.isArray(userContent)) {
+        } else if (Array.isArray(userContent)) {
+            userContent = [...userContent];
+        } else if (userContent && typeof userContent === 'object' && typeof userContent.text === 'string') {
+            userContent = [{ type: 'text', text: userContent.text }];
+        } else {
             return messages;
         }
 
@@ -263,7 +331,9 @@ class CapturePreprocessor {
         }
 
         // Clean the system prompt and merge user message content
-        systemPrompt.content = systemPrompt.content.replace(placeholderRegex, '').trim();
+        systemPrompt.content = this._replaceTextInContent(systemPrompt.content, (text) =>
+            text.replace(placeholderRegex, '').trim()
+        );
 
         const mergedContent = [];
         for (const part of userContent) {

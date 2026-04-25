@@ -517,6 +517,64 @@ class RAGDiaryPlugin {
         return 1 / (1 + Math.exp(-x));
     }
 
+    _extractTextFromContent(content) {
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+                .map(part => part.text)
+                .join('\n')
+                .trim();
+        }
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return content.text;
+        }
+        return '';
+    }
+
+    _replaceTextInContent(content, replacer) {
+        if (typeof replacer !== 'function') return content;
+
+        if (typeof content === 'string') {
+            return replacer(content);
+        }
+
+        if (Array.isArray(content)) {
+            const textIndices = [];
+            const textValues = [];
+
+            content.forEach((part, index) => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    textIndices.push(index);
+                    textValues.push(part.text);
+                }
+            });
+
+            const mergedText = textValues.join('\n').trim();
+            const replacedText = replacer(mergedText);
+
+            if (textIndices.length > 0) {
+                const firstIndex = textIndices[0];
+                const newContent = content.map((part, index) => {
+                    if (!textIndices.includes(index)) return part;
+                    if (index === firstIndex) {
+                        return { ...part, text: replacedText };
+                    }
+                    return null;
+                }).filter(Boolean);
+                return newContent;
+            }
+
+            return [...content, { type: 'text', text: replacedText }];
+        }
+
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return { ...content, text: replacer(content.text) };
+        }
+
+        return content;
+    }
+
     /**
      * V3 动态参数计算：结合逻辑深度 (L)、共振 (R) 和语义宽度 (S)
      */
@@ -763,9 +821,7 @@ class RAGDiaryPlugin {
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractTextFromContent(msg.content);
 
             if (!content.includes('TOOL_REQUEST')) continue;
 
@@ -1058,16 +1114,18 @@ class RAGDiaryPlugin {
             // 1. 识别所有需要处理的 system 消息（包括日记本、元思考和全局AIMemo开关）
             let isAIMemoLicensed = false; // <--- AIMemo许可证 [[AIMemo=True]] 检测标志
             const targetSystemMessageIndices = messages.reduce((acc, m, index) => {
-                if (m.role === 'system' && typeof m.content === 'string') {
+                if (m.role === 'system') {
+                    const systemText = this._extractTextFromContent(m.content);
+                    if (!systemText) return acc;
+
                     // 检查全局 AIMemo 开关
-                    if (m.content.includes('[[AIMemo=True]]')) {
+                    if (systemText.includes('[[AIMemo=True]]')) {
                         isAIMemoLicensed = true;
                         console.log('[RAGDiaryPlugin] AIMemo license [[AIMemo=True]] detected. ::AIMemo modifier is now active.');
                     }
 
                     // 检查 RAG/Meta/AIMemo 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(m.content)) {
-                        // 确保每个包含占位符的 system 消息都被处理
+                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(systemText)) {
                         if (!acc.includes(index)) {
                             acc.push(index);
                         }
@@ -1088,9 +1146,7 @@ class RAGDiaryPlugin {
                 if (m.role !== 'user') {
                     return false;
                 }
-                const content = typeof m.content === 'string'
-                    ? m.content
-                    : (Array.isArray(m.content) ? m.content.find(p => p.type === 'text')?.text : '') || '';
+                const content = this._extractTextFromContent(m.content);
                 return !content.startsWith('[系统邀请指令:]') && !content.trim().startsWith('[系统提示:]无内容');
             });
             const lastAiMessageIndex = messages.findLastIndex(m => m.role === 'assistant');
@@ -1100,16 +1156,12 @@ class RAGDiaryPlugin {
 
             if (lastUserMessageIndex > -1) {
                 const lastUserMessage = messages[lastUserMessageIndex];
-                userContent = typeof lastUserMessage.content === 'string'
-                    ? lastUserMessage.content
-                    : (Array.isArray(lastUserMessage.content) ? lastUserMessage.content.find(p => p.type === 'text')?.text : '') || '';
+                userContent = this._extractTextFromContent(lastUserMessage.content);
             }
 
             if (lastAiMessageIndex > -1) {
                 const lastAiMessage = messages[lastAiMessageIndex];
-                aiContent = typeof lastAiMessage.content === 'string'
-                    ? lastAiMessage.content
-                    : (Array.isArray(lastAiMessage.content) ? lastAiMessage.content.find(p => p.type === 'text')?.text : '') || '';
+                aiContent = this._extractTextFromContent(lastAiMessage.content);
             }
 
             // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签和emoji
@@ -1231,7 +1283,7 @@ class RAGDiaryPlugin {
 
                 // 调用新的辅助函数处理单个消息
                 const processedContent = await this._processSingleSystemMessage(
-                    systemMessage.content,
+                    this._extractTextFromContent(systemMessage.content),
                     queryVector,
                     userContent, // 传递 userContent 用于语义组和时间解析
                     aiContent, // 传递 aiContent 用于 AIMemo
@@ -1250,7 +1302,10 @@ class RAGDiaryPlugin {
                     collectedAttachments // 🌟 V7: 传递附件收集器
                 );
 
-                newMessages[index].content = processedContent;
+                newMessages[index].content = this._replaceTextInContent(
+                    systemMessage.content,
+                    () => processedContent
+                );
             }));
 
             // 🌟 V7: 处理收集到的多模态附件
@@ -1281,12 +1336,10 @@ class RAGDiaryPlugin {
                                 { type: 'text', text: originalText + ' ' + note }
                             ];
                         } else if (Array.isArray(firstUserMsg.content)) {
-                            const textPart = firstUserMsg.content.find(p => p.type === 'text');
-                            if (textPart) {
-                                textPart.text += ' ' + note;
-                            } else {
-                                firstUserMsg.content.push({ type: 'text', text: note });
-                            }
+                            firstUserMsg.content = this._replaceTextInContent(firstUserMsg.content, (text) => {
+                                const trimmed = (text || '').trim();
+                                return trimmed ? `${trimmed} ${note}` : note;
+                            });
                         }
 
                         // 添加 base64 数据到 content 数组
@@ -1310,12 +1363,12 @@ class RAGDiaryPlugin {
             // 返回原始消息，移除占位符以避免二次错误
             const safeMessages = JSON.parse(JSON.stringify(messages));
             safeMessages.forEach(msg => {
-                if (msg.role === 'system' && typeof msg.content === 'string') {
-                    msg.content = msg.content
+                if (msg.role === 'system') {
+                    msg.content = this._replaceTextInContent(msg.content, (text) => text
                         .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
                         .replace(/<<.*日记本>>/g, '[RAG处理失败]')
                         .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]');
+                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]'));
                 }
             });
             return safeMessages;
@@ -3839,9 +3892,7 @@ class RAGDiaryPlugin {
         for (const msg of messages) {
             if (msg.role !== 'assistant') continue;
 
-            const content = typeof msg.content === 'string'
-                ? msg.content
-                : (Array.isArray(msg.content) ? msg.content.find(p => p.type === 'text')?.text : '') || '';
+            const content = this._extractTextFromContent(msg.content);
 
             if (!content || content.length < 10) continue;
             // 跳过已折叠的内容

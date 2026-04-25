@@ -120,15 +120,19 @@ function fixTagFormat(tagLine) {
 }
 
 function processTags(contentText, externalTag) {
+    const detection = detectTagLine(contentText);
+
     if (externalTag && typeof externalTag === 'string' && externalTag.trim() !== '') {
         const fixedTag = fixTagFormat(externalTag);
-        return contentText.trimEnd() + '\n' + fixedTag;
+        const contentBody = detection.hasTag ? detection.contentWithoutLastLine : contentText;
+        return contentBody.trimEnd() + '\n' + fixedTag;
     }
-    const detection = detectTagLine(contentText);
+
     if (detection.hasTag) {
         const fixedTag = fixTagFormat(detection.lastLine);
         return detection.contentWithoutLastLine.trimEnd() + '\n' + fixedTag;
     }
+
     throw new Error("Tag is missing. Please provide a 'Tag' argument or add a 'Tag:' line at the end of the 'Content'.");
 }
 

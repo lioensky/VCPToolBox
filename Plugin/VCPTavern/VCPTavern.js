@@ -47,6 +47,37 @@ class VCPTavern {
         return hash.toString(16);
     }
 
+    // 辅助方法：从消息内容中提取纯文本（兼容多模态数组）
+    _getTextFromContent(content) {
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+                .map(part => part.text)
+                .join('\n');
+        }
+        return '';
+    }
+
+    // 辅助方法：更新消息内容中的文本（兼容多模态数组）
+    _updateTextInContent(content, updateFn) {
+        if (typeof content === 'string') {
+            return updateFn(content);
+        }
+        if (Array.isArray(content)) {
+            // 尝试找到第一个文本部分进行修改
+            const textPart = content.find(part => part && part.type === 'text' && typeof part.text === 'string');
+            if (textPart) {
+                textPart.text = updateFn(textPart.text);
+            } else {
+                // 如果没有文本部分，则在末尾添加一个
+                content.push({ type: 'text', text: updateFn('') });
+            }
+            return content;
+        }
+        return content;
+    }
+
     // 获取会话唯一标识 (Session Key) - 双锚点机制
     _getSessionKey(messages, explicitId) {
         // 1. 显式 ID (最高优先级)
@@ -63,16 +94,17 @@ class VCPTavern {
             // B. 尝试从 System Prompt 正则提取 Name/Char
             const systemMsg = messages.find(m => m.role === 'system');
             if (systemMsg && systemMsg.content) {
+                const contentStr = this._getTextFromContent(systemMsg.content);
                 // 匹配 Name: xxx, Char: xxx, 角色: xxx 等常见格式
                 // 忽略大小写，取第一行非空内容
-                const nameMatch = systemMsg.content.match(/(?:Name|Char|Character|姓名|角色)\s*[:：]\s*([^\n\r]+)/i) || systemMsg.content.match(/\{\{agent:(\w+)\}\}/i);
+                const nameMatch = contentStr.match(/(?:Name|Char|Character|姓名|角色)\s*[:：]\s*([^\n\r]+)/i) || contentStr.match(/\{\{agent:(\w+)\}\}/i);
                 if (nameMatch && nameMatch[1]) {
                     charId = nameMatch[1].trim();
                 } else {
                     // C. 实在找不到名字，计算 System Prompt 的哈希 (作为最后的兜底)
                     // 为了抵抗 RAG 变动，我们取 System Prompt 的 *后半部分* (假设破限词在最后且相对固定)
                     // 或者取整个内容的哈希，虽然不稳定，但总比没有好
-                    charId = 'SysHash_' + this._computeHash(systemMsg.content.slice(-500)); // 取后500字符
+                    charId = 'SysHash_' + this._computeHash(contentStr.slice(-500)); // 取后500字符
                 }
             }
         }
@@ -177,12 +209,13 @@ class VCPTavern {
         if (!messages || messages.length === 0) return messages;
 
         const systemMessage = messages.find(m => m.role === 'system');
-        if (!systemMessage || typeof systemMessage.content !== 'string') {
+        if (!systemMessage || !systemMessage.content) {
             return messages;
         }
 
+        const systemContentStr = this._getTextFromContent(systemMessage.content);
         const triggerRegex = /\{\{VCPTavern::(.+?)\}\}/;
-        const match = systemMessage.content.match(triggerRegex);
+        const match = systemContentStr.match(triggerRegex);
 
         if (!match) {
             return messages;
@@ -203,17 +236,19 @@ class VCPTavern {
         const globalCleanupRegex = new RegExp(`\\{\\{VCPTavern::${escapedPreset}(?:::[^}]*)?\\}\\}`, 'g');
 
         // 从 system message 中移除所有重复的同名占位符
-        systemMessage.content = systemMessage.content.replace(globalCleanupRegex, '').trim();
+        systemMessage.content = this._updateTextInContent(systemMessage.content, (text) => text.replace(globalCleanupRegex, '').trim());
 
         // 扫描所有其他消息，清除残留的同名占位符
         for (const msg of messages) {
             if (msg === systemMessage) continue;
-            if (typeof msg.content === 'string') {
-                const cleaned = msg.content.replace(globalCleanupRegex, '');
-                if (cleaned !== msg.content) {
-                    msg.content = cleaned.trim();
-                    if (this.debugMode) console.log(`[VCPTavern] 已清除 ${msg.role} 消息中的重复占位符 {{VCPTavern::${presetName}}}`);
-                }
+            const originalContent = msg.content;
+            msg.content = this._updateTextInContent(msg.content, (text) => {
+                const cleaned = text.replace(globalCleanupRegex, '');
+                return cleaned.trim();
+            });
+            
+            if (this.debugMode && JSON.stringify(originalContent) !== JSON.stringify(msg.content)) {
+                console.log(`[VCPTavern] 已清除 ${msg.role} 消息中的重复占位符 {{VCPTavern::${presetName}}}`);
             }
         }
 
@@ -259,12 +294,28 @@ class VCPTavern {
         // 将计算出的时间变量注入到实例中，供 _resolveTimeVariables 使用
         // 注意：这里我们需要稍微修改 _resolveTimeVariables 来支持这两个新变量
         // 或者我们直接在这里定义一个临时的替换函数
-        const resolveExtendedVariables = (text) => {
-            if (!text || typeof text !== 'string') return text;
-            let resolved = this._resolveTimeVariables(text); // 先处理基础时间变量
-            return resolved
-                .replace(/\{\{LastChatTime\}\}/g, lastChatTimeStr)
-                .replace(/\{\{TimeSinceLastChat\}\}/g, timeSinceLastChatStr);
+        const resolveExtendedVariables = (content) => {
+            if (!content) return content;
+            
+            const replaceFn = (text) => {
+                if (typeof text !== 'string') return text;
+                let resolved = this._resolveTimeVariables(text);
+                return resolved
+                    .replace(/\{\{LastChatTime\}\}/g, lastChatTimeStr)
+                    .replace(/\{\{TimeSinceLastChat\}\}/g, timeSinceLastChatStr);
+            };
+
+            if (typeof content === 'string') {
+                return replaceFn(content);
+            } else if (Array.isArray(content)) {
+                return content.map(part => {
+                    if (part && part.type === 'text' && typeof part.text === 'string') {
+                        return { ...part, text: replaceFn(part.text) };
+                    }
+                    return part;
+                });
+            }
+            return content;
         };
 
         // 辅助函数：确保注入内容是消息对象格式
@@ -291,14 +342,20 @@ class VCPTavern {
             // 解析时间变量
             textToEmbed = resolveExtendedVariables(textToEmbed);
 
+            const embedFn = (content) => {
+                return this._updateTextInContent(content, (originalText) => {
+                    if (rule.position === 'before') {
+                        return textToEmbed.trim() + '\n\n' + originalText.trim();
+                    } else { // after
+                        return originalText.trim() + '\n\n' + textToEmbed.trim();
+                    }
+                });
+            };
+
             if (rule.target === 'system') {
                 const systemMsg = newMessages.find(m => m.role === 'system');
-                if (systemMsg && typeof systemMsg.content === 'string') {
-                    if (rule.position === 'before') {
-                        systemMsg.content = textToEmbed.trim() + '\n\n' + systemMsg.content.trim();
-                    } else { // after
-                        systemMsg.content = systemMsg.content.trim() + '\n\n' + textToEmbed.trim();
-                    }
+                if (systemMsg) {
+                    systemMsg.content = embedFn(systemMsg.content);
                 }
             } else if (rule.target === 'last_user') {
                 let lastUserIndex = -1;
@@ -308,22 +365,13 @@ class VCPTavern {
                         break;
                     }
                 }
-                if (lastUserIndex !== -1 && typeof newMessages[lastUserIndex].content === 'string') {
-                    if (rule.position === 'before') {
-                        newMessages[lastUserIndex].content = textToEmbed.trim() + '\n\n' + newMessages[lastUserIndex].content.trim();
-                    } else { // after
-                        newMessages[lastUserIndex].content = newMessages[lastUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
-                    }
+                if (lastUserIndex !== -1) {
+                    newMessages[lastUserIndex].content = embedFn(newMessages[lastUserIndex].content);
                 }
             } else if (rule.target === 'first_user') {
-                // [PR] 新增：定位第一条user 消息进行嵌入
                 const firstUserIndex = newMessages.findIndex(m => m.role === 'user');
-                if (firstUserIndex !== -1 && typeof newMessages[firstUserIndex].content === 'string') {
-                    if (rule.position === 'before') {
-                        newMessages[firstUserIndex].content = textToEmbed.trim() + '\n\n' + newMessages[firstUserIndex].content.trim();
-                    } else { // after
-                        newMessages[firstUserIndex].content = newMessages[firstUserIndex].content.trim() + '\n\n' + textToEmbed.trim();
-                    }
+                if (firstUserIndex !== -1) {
+                    newMessages[firstUserIndex].content = embedFn(newMessages[firstUserIndex].content);
                 }
             }
         }
