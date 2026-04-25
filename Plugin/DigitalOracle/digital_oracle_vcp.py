@@ -6,6 +6,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+import re
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -532,6 +533,93 @@ def fetch_market_data_command(args: dict[str, Any]) -> str:
     return render_provider_result(result)
 
 
+def extract_indexed_commands(args: dict[str, Any]) -> list[tuple[int, str]]:
+    indexed_commands: list[tuple[int, str]] = []
+    for key, value in args.items():
+        match = re.fullmatch(r"command(\d+)", str(key), flags=re.IGNORECASE)
+        if not match:
+            continue
+        if value is None or str(value).strip() == "":
+            continue
+        indexed_commands.append((int(match.group(1)), str(value).strip()))
+    return sorted(indexed_commands, key=lambda item: item[0])
+
+
+def extract_args_for_command_index(args: dict[str, Any], index: int) -> dict[str, Any]:
+    suffix = str(index)
+    extracted: dict[str, Any] = {}
+
+    for key, value in args.items():
+        key_str = str(key)
+        if key_str.lower() == f"command{suffix}".lower():
+            continue
+
+        if key_str.lower().endswith(suffix.lower()):
+            base_key = key_str[: -len(suffix)]
+            if base_key:
+                extracted[base_key] = value
+
+    return extracted
+
+
+def render_batch_results(results: list[dict[str, Any]]) -> str:
+    lines = [
+        "# DigitalOracle 批量串行执行结果",
+        "",
+    ]
+
+    for item in results:
+        index = item["index"]
+        command = item["command"]
+        status = item["status"]
+
+        lines.append(f"## 指令 {index}: {command}")
+        lines.append(f"- status: {status}")
+
+        if status == "success":
+            lines.append(item["result"])
+        else:
+            lines.append(f"- error: {item['error']}")
+
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def execute_batch_commands(args: dict[str, Any]) -> str:
+    indexed_commands = extract_indexed_commands(args)
+    if not indexed_commands:
+        raise ValueError("未检测到批量指令。")
+
+    results: list[dict[str, Any]] = []
+
+    for index, command in indexed_commands:
+        command_args = extract_args_for_command_index(args, index)
+        command_args["command"] = command
+
+        try:
+            result = execute_single_command(command_args)
+            results.append(
+                {
+                    "index": index,
+                    "command": command,
+                    "status": "success",
+                    "result": result,
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "index": index,
+                    "command": command,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+
+    return render_batch_results(results)
+
+
 def get_global_macro_dashboard_command(args: dict[str, Any]) -> str:
     risk_assets = coerce_tuple(pick(args, "risk_assets", default="SPY,QQQ,GC=F,CL=F,BTC-USD"))
     coin_ids = coerce_tuple(pick(args, "coin_ids", default="bitcoin,ethereum"))
@@ -588,7 +676,7 @@ def get_global_macro_dashboard_command(args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def execute_command(args: dict[str, Any]) -> str:
+def execute_single_command(args: dict[str, Any]) -> str:
     command = str(pick(args, "command", default="FetchMarketData")).strip()
 
     if command == "ListProviders":
@@ -599,6 +687,12 @@ def execute_command(args: dict[str, Any]) -> str:
         return get_global_macro_dashboard_command(args)
 
     raise ValueError(f"不支持的 command: {command}")
+
+
+def execute_command(args: dict[str, Any]) -> str:
+    if extract_indexed_commands(args):
+        return execute_batch_commands(args)
+    return execute_single_command(args)
 
 
 def print_success(result: Any) -> None:
