@@ -1,0 +1,54 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DigitalOracle",
+  "version": "1.0.0",
+  "displayName": "金融数字全球监控",
+  "description": "基于 Digital Oracle 上游库封装的 VCP 同步插件。允许 AI 手动选择金融信源，一键拉取全球宏观、利率、商品、股票、加密、预测市场与期权数据，并返回结构化结果，供后续分析和推理使用。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python digital_oracle_vcp.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "configSchema": {
+    "DIGITAL_ORACLE_SEC_EMAIL": {
+      "type": "string",
+      "description": "SEC EDGAR 信源所需邮箱，会作为 User-Agent 身份的一部分发送；仅在调用 edgar 信源时必需。",
+      "default": ""
+    },
+    "DIGITAL_ORACLE_DEBUG": {
+      "type": "boolean",
+      "description": "是否输出调试级错误堆栈到插件返回结果 details 字段。",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [],
+    "invocationCommands": [
+      {
+        "command": "ListProviders",
+        "commandIdentifier": "DigitalOracleListProviders",
+        "description": "功能: 列出本插件支持的全部金融信源、各自用途与常用参数。适用于 AI 在正式抓取前先查看可选信源，再按问题选择最合适的 1~4 个维度。\n参数: 无。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DigitalOracle「末」,\ncommand:「始」ListProviders「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "FetchMarketData",
+        "commandIdentifier": "DigitalOracleFetchMarketData",
+        "description": "功能: 手动指定一个金融信源并立即抓取数据。这是本插件的核心同步命令，适合 AI 按问题定向拉取全球金融数据。推荐先用 ListProviders 查看信源，再调用本命令。\n支持的 provider/source 包括:\n- polymarket: 预测市场事件概率\n- kalshi: 美国监管事件市场\n- yahoo: 股票/ETF/商品/外汇价格历史\n- treasury: 美国国债收益率曲线\n- cftc: CFTC 机构持仓报告\n- coingecko: 加密现货价格/市值\n- deribit_futures: 加密期货期限结构\n- deribit_options: 加密期权链与 IV\n- fear_greed: CNN 恐惧贪婪指数\n- cme_fedwatch: FOMC 利率隐含概率\n- worldbank: 世界银行宏观指标\n- bis: 央行政策利率\n- web: 网页搜索补充信号（如 VIX/CDS/OAS）\n- yfinance_options: 美股期权链、Greeks、IV\n- edgar: SEC 内部人交易\n参数:\n- provider / source (字符串, 必需): 要调用的信源标识。\n- params (JSON字符串, 可选): 传给该信源的参数对象。也可把这些参数直接平铺在请求根级。\n常见参数示例:\n- polymarket: slug_contains, title_contains, limit\n- yahoo: symbol, interval, limit, start_date, end_date\n- treasury: curve_kind, year\n- cftc: commodity_name, limit\n- coingecko: coin_ids, vs_currency\n- web: query\n- yfinance_options: ticker, expiration\n- edgar: ticker, limit\n调用格式示例1（抓取黄金价格）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DigitalOracle「末」,\ncommand:「始」FetchMarketData「末」,\nprovider:「始」yahoo「末」,\nsymbol:「始」GC=F「末」,\ninterval:「始」d「末」,\nlimit:「始」30「末」\n<<<[END_TOOL_REQUEST]>>>\n调用格式示例2（抓取 Polymarket 台湾相关事件）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DigitalOracle「末」,\ncommand:「始」FetchMarketData「末」,\nprovider:「始」polymarket「末」,\nparams:「始」{\"slug_contains\":\"taiwan\",\"limit\":8}「末」\n<<<[END_TOOL_REQUEST]>>>\n调用格式示例3（抓取美股期权链）:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DigitalOracle「末」,\ncommand:「始」FetchMarketData「末」,\nprovider:「始」yfinance_options「末」,\nparams:「始」{\"ticker\":\"SPY\",\"expiration\":\"2026-12-18\"}「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "GetGlobalMacroDashboard",
+        "commandIdentifier": "DigitalOracleGlobalMacroDashboard",
+        "description": "功能: 一键拉取全球金融监控面板。该命令会并行抓取多个核心维度，包括恐惧贪婪指数、美联储概率、美债收益率、黄金、原油、比特币期限结构、加密现货、主要风险资产等，用于构建一个快速全球市场总览。\n参数:\n- risk_assets (字符串或JSON数组, 可选): 需要附加抓取的风险资产列表，默认 SPY,QQQ,GC=F,CL=F,BTC-USD。\n- coin_ids (字符串或JSON数组, 可选): 需要抓取的加密资产，默认 bitcoin,ethereum。\n- countries (字符串或JSON数组, 可选): 需要抓取 BIS 政策利率的国家/地区代码，默认 US,CN,JP,EU。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DigitalOracle「末」,\ncommand:「始」GetGlobalMacroDashboard「末」,\nrisk_assets:「始」[\"SPY\",\"QQQ\",\"GC=F\",\"CL=F\",\"BTC-USD\",\"EURUSD=X\"]「末」,\ncoin_ids:「始」[\"bitcoin\",\"ethereum\",\"solana\"]「末」,\ncountries:「始」[\"US\",\"CN\",\"JP\",\"EU\"]「末」\n<<<[END_TOOL_REQUEST]>>>\n适用场景:\n- 用户要求“全球金融市场现在怎么样”\n- 需要先建立市场全局感知，再决定进一步深挖哪些信源\n- 需要同步快速拉取多维金融快照"
+      }
+    ],
+    "responseFormatToAI": "请基于以下 DigitalOracle 结构化结果继续分析，并在引用时保留关键信源名称、标的与时间窗口：\n{result}"
+  },
+  "dependencies": {
+    "python": ">=3.10",
+    "libraries": []
+  }
+}
