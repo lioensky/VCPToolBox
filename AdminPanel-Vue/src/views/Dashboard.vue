@@ -3,9 +3,19 @@
     <VcpAnimation />
 
     <div class="dashboard-layout-toolbar">
-      <p class="dashboard-layout-hint">
-        按住卡片顶部拖动排序，右下角调整大小，布局会自动保存到本地。
-      </p>
+      <div class="dashboard-layout-help">
+        <button
+          type="button"
+          class="dashboard-layout-hint-btn"
+          aria-label="查看布局操作提示"
+          title="查看布局操作提示"
+        >
+          <span class="material-symbols-outlined">info</span>
+        </button>
+        <div class="dashboard-layout-hint-tooltip" role="tooltip">
+          按住卡片顶部拖动排序，右下角调整大小，布局会自动保存到本地。
+        </div>
+      </div>
       <div class="dashboard-layout-actions">
         <button type="button" class="btn-primary dashboard-layout-manage" @click="showManager = true">
           管理卡片
@@ -18,7 +28,7 @@
 
     <!-- 加载状态 -->
     <div v-if="!catalogReady" class="dashboard-loading">
-      <div class="dashboard-loading-spinner"></div>
+      <div class="loading-spinner loading-spinner--thick loading-spinner--lg"></div>
       <p>加载 Dashboard 卡片…</p>
     </div>
 
@@ -782,23 +792,14 @@ onBeforeUnmount(() => {
   color: var(--secondary-text);
 }
 
-.dashboard-loading-spinner {
+.dashboard-loading .loading-spinner {
   width: 48px;
   height: 48px;
-  border: 4px solid var(--border-color);
-  border-top-color: var(--highlight-text);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation-duration: 0.8s;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dashboard-loading-spinner {
+  .dashboard-loading .loading-spinner {
     animation: none;
   }
 }
@@ -856,6 +857,9 @@ onBeforeUnmount(() => {
   gap: var(--space-4, 16px);
   margin-bottom: var(--space-5, 24px);
   padding: var(--space-3, 12px) var(--space-4, 16px);
+  position: sticky;
+  top: 0;
+  z-index: 12;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl, 20px);
   background:
@@ -863,11 +867,54 @@ onBeforeUnmount(() => {
     var(--secondary-bg);
 }
 
-.dashboard-layout-hint {
-  margin: 0;
-  font-size: var(--font-size-body);
-  line-height: 1.5;
+.dashboard-layout-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.dashboard-layout-hint-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--tertiary-bg);
   color: var(--secondary-text);
+  cursor: help;
+}
+
+.dashboard-layout-hint-btn:hover,
+.dashboard-layout-hint-btn:focus-visible {
+  color: var(--primary-text);
+  border-color: color-mix(in srgb, var(--button-bg) 42%, var(--border-color));
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.dashboard-layout-hint-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  width: min(360px, calc(100vw - 48px));
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 12px);
+  border: 1px solid var(--border-color);
+  background: var(--secondary-bg);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.dashboard-layout-help:hover .dashboard-layout-hint-tooltip,
+.dashboard-layout-help:focus-within .dashboard-layout-hint-tooltip {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .dashboard-layout-actions {
@@ -1151,8 +1198,8 @@ onBeforeUnmount(() => {
     border-radius: 16px;
   }
 
-  .dashboard-layout-hint {
-    font-size: var(--font-size-body);
+  .dashboard-layout-hint-tooltip {
+    width: min(300px, calc(100vw - 40px));
   }
 
   .dashboard-item-dragzone {

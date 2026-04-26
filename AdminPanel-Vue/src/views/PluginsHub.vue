@@ -2,7 +2,7 @@
   <section class="plugins-hub">
     <section class="hub-hero card">
       <div class="hero-copy">
-        <span class="hero-eyebrow">Plugin Center</span>
+        <span class="eyebrow hero-eyebrow">Plugin Center</span>
         <h2>插件中心与启用管理</h2>
         <p>
           集中查看全部插件的启用状态、固定情况与分布式属性，支持搜索、筛选、刷新列表，并可直接进入插件配置或执行启停管理。
@@ -29,11 +29,37 @@
       </div>
     </section>
 
+    <section class="card view-tabs-card">
+      <div class="view-mode-switch" role="group" aria-label="插件视图切换">
+        <button
+          type="button"
+          class="view-mode-btn"
+          :class="{ active: viewMode === 'grouped' }"
+          :aria-pressed="viewMode === 'grouped'"
+          @click="viewMode = 'grouped'"
+        >
+          <span class="material-symbols-outlined">view_agenda</span>
+          <span>分组视图</span>
+        </button>
+        <button
+          type="button"
+          class="view-mode-btn"
+          :class="{ active: viewMode === 'list' }"
+          :aria-pressed="viewMode === 'list'"
+          @click="viewMode = 'list'"
+        >
+          <span class="material-symbols-outlined">view_list</span>
+          <span>列表视图</span>
+        </button>
+      </div>
+    </section>
+
     <section class="card controls-card">
-      <div class="controls-top">
+      <div class="controls-main-row">
         <label class="search-field">
           <span class="material-symbols-outlined">search</span>
           <input
+            ref="pluginSearchInputRef"
             v-model="searchQuery"
             type="search"
             placeholder="搜索插件名称、原始名或描述…"
@@ -54,16 +80,41 @@
 
       <div class="filter-row" aria-label="插件筛选">
         <button
-          v-for="filter in filterOptions"
+          v-for="filter in visibleFilterOptions"
           :key="filter.value"
           type="button"
           class="filter-pill"
           :class="{ active: activeFilter === filter.value }"
           :aria-pressed="activeFilter === filter.value"
-          @click="activeFilter = filter.value"
+          @click="selectFilter(filter.value)"
         >
           {{ filter.label }}
         </button>
+
+        <details
+          v-if="overflowFilterOptions.length > 0"
+          class="filters-overflow"
+          :open="filterOverflowOpen"
+          @toggle="handleFilterOverflowToggle"
+        >
+          <summary class="filters-overflow-trigger">
+            更多
+            <span class="pill-count">{{ overflowFilterOptions.length }}</span>
+          </summary>
+          <div class="filters-overflow-menu" role="menu" aria-label="更多插件筛选">
+            <button
+              v-for="filter in overflowFilterOptions"
+              :key="filter.value"
+              type="button"
+              class="filter-pill"
+              :class="{ active: activeFilter === filter.value }"
+              :aria-pressed="activeFilter === filter.value"
+              @click="selectFilter(filter.value)"
+            >
+              {{ filter.label }}
+            </button>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -119,10 +170,11 @@
     <section class="results-header">
       <div>
         <h3>插件列表</h3>
-        <p>
+        <p v-if="viewMode === 'grouped'">
           共展示 {{ visiblePluginRecords.length }} 个结果，按
           {{ visiblePluginTypeGroups.length }} 个类型分组
         </p>
+        <p v-else>共展示 {{ visiblePluginRecords.length }} 个结果，当前为列表视图</p>
       </div>
     </section>
 
@@ -132,7 +184,7 @@
       <p>试试切换筛选条件，或者搜索插件原始名称。</p>
     </section>
 
-    <section v-else class="plugin-grouped-view">
+    <section v-else-if="viewMode === 'grouped'" class="plugin-grouped-view">
       <article
         v-for="group in visiblePluginTypeGroups"
         :key="group.type"
@@ -297,13 +349,124 @@
         </transition>
       </article>
     </section>
+
+    <section v-else class="plugin-list-view">
+      <div class="plugin-grid">
+        <article
+          v-for="plugin in visiblePluginRecords"
+          :key="plugin.pluginName"
+          class="plugin-card"
+        >
+          <div class="plugin-card-top">
+            <div class="plugin-identity">
+              <div class="plugin-icon-shell">
+                <span class="material-symbols-outlined">{{ plugin.icon }}</span>
+              </div>
+
+              <div class="plugin-heading">
+                <div class="plugin-title-row">
+                  <h3>{{ plugin.displayName }}</h3>
+                  <span
+                    class="status-badge"
+                    :class="plugin.enabled ? 'status-enabled' : 'status-disabled'"
+                  >
+                    {{ plugin.enabled ? "启用中" : "已禁用" }}
+                  </span>
+                  <span
+                    v-if="plugin.isDistributed"
+                    class="status-badge status-neutral"
+                  >
+                    分布式
+                  </span>
+                  <span v-if="plugin.isPinned" class="status-badge status-pinned">
+                    已固定
+                  </span>
+                </div>
+                <p class="plugin-original-name">{{ plugin.pluginName }}</p>
+              </div>
+            </div>
+
+            <div class="plugin-card-side">
+              <button
+                type="button"
+                class="pin-toggle"
+                :class="{ 'is-active': plugin.isPinned }"
+                :title="plugin.isPinned ? '取消固定' : '固定到侧栏'"
+                :aria-label="plugin.isPinned ? '取消固定到侧栏' : '固定到侧栏'"
+                :aria-pressed="plugin.isPinned"
+                @click="togglePinned(plugin.pluginName)"
+              >
+                <span class="material-symbols-outlined">
+                  {{ plugin.isPinned ? "keep" : "keep_off" }}
+                </span>
+              </button>
+
+              <span class="plugin-version-badge">
+                v{{ plugin.plugin.manifest.version || "0.0.0" }}
+              </span>
+            </div>
+          </div>
+
+          <div class="plugin-card-main">
+            <p
+              class="plugin-description"
+              :title="plugin.description || '该插件暂未提供描述信息。'"
+            >
+              {{ plugin.summary }}
+            </p>
+
+            <div v-if="plugin.isDistributed || plugin.isPinned" class="plugin-status-pills">
+              <span v-if="plugin.isDistributed" class="mini-pill mini-pill--sensitive">
+                <span class="material-symbols-outlined mini-pill-icon">hub</span>
+                分布式
+              </span>
+              <span v-if="plugin.isPinned" class="mini-pill mini-pill--changed">
+                <span class="material-symbols-outlined mini-pill-icon">push_pin</span>
+                已固定
+              </span>
+            </div>
+
+            <div class="plugin-actions">
+              <button
+                type="button"
+                class="btn-primary"
+                @click="openPluginConfig(plugin.pluginName)"
+              >
+                <span class="material-symbols-outlined">open_in_new</span>
+                <span>打开配置</span>
+              </button>
+
+              <button
+                type="button"
+                :class="plugin.enabled ? 'btn-danger' : 'btn-secondary'"
+                :disabled="plugin.isDistributed || isPluginPending(plugin.pluginName)"
+                :title="plugin.isDistributed ? '分布式插件状态由所属节点管理' : undefined"
+                @click="togglePlugin(plugin.plugin)"
+              >
+                <span class="material-symbols-outlined">
+                  {{ plugin.enabled ? "power_settings_new" : "bolt" }}
+                </span>
+                <span>{{
+                  isPluginPending(plugin.pluginName)
+                    ? "处理中…"
+                    : plugin.enabled
+                      ? "禁用插件"
+                      : "启用插件"
+                }}</span>
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { pluginApi } from "@/api";
+import { useLocalStorage } from "@/composables/useLocalStorage";
 import {
   recordNavigationVisit,
   useNavigationUsage,
@@ -319,6 +482,7 @@ import {
   type PluginFilter,
   type PluginHubRecord,
 } from "@/features/plugins-hub/derivePluginHubState";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { showMessage } from "@/utils";
 import type { PluginInfo } from "@/types/api.plugin";
@@ -326,13 +490,40 @@ import type { PluginInfo } from "@/types/api.plugin";
 const router = useRouter();
 const appStore = useAppStore();
 
+type PluginViewMode = "grouped" | "list";
+type PersistedPluginViewMode = PluginViewMode | "";
+
 const searchQuery = ref("");
 const activeFilter = ref<PluginFilter>("all");
+const storedViewMode = useLocalStorage<PersistedPluginViewMode>(
+  "pluginsHub.viewMode",
+  "grouped",
+  {
+    parser: (value) => {
+      try {
+        const parsed = JSON.parse(value) as string;
+        return parsed === "list" ? "list" : "grouped";
+      } catch {
+        return "grouped";
+      }
+    },
+    serializer: (value) => JSON.stringify(value === "list" ? "list" : "grouped"),
+  }
+);
+const viewMode = computed<PluginViewMode>({
+  get: () => (storedViewMode.value === "list" ? "list" : "grouped"),
+  set: (value) => {
+    storedViewMode.value = value;
+  },
+});
 const isRefreshing = ref(false);
 const pendingPluginNames = ref<string[]>([]);
 const recentVisits = useRecentVisits();
 const navigationUsage = useNavigationUsage();
 const collapsedTypeGroups = ref<Record<string, boolean>>({});
+const pluginSearchInputRef = ref<HTMLInputElement | null>(null);
+const filterOverflowOpen = ref(false);
+const MAX_VISIBLE_FILTERS = 5;
 
 const plugins = computed(() => appStore.plugins);
 const pinnedPluginNames = computed(() => appStore.pinnedPluginNames);
@@ -345,6 +536,63 @@ const filterOptions: Array<{ value: PluginFilter; label: string }> = [
   { value: "pinned", label: "已固定" },
   { value: "distributed", label: "分布式" },
 ];
+
+const visibleFilterOptions = computed(() => {
+  if (filterOptions.length <= MAX_VISIBLE_FILTERS) {
+    return filterOptions;
+  }
+
+  const base = filterOptions.slice(0, MAX_VISIBLE_FILTERS);
+  const selected = filterOptions.find((item) => item.value === activeFilter.value);
+  if (!selected || base.some((item) => item.value === selected.value)) {
+    return base;
+  }
+
+  return [...base.slice(0, MAX_VISIBLE_FILTERS - 1), selected];
+});
+
+const overflowFilterOptions = computed(() => {
+  const visibleValues = new Set(visibleFilterOptions.value.map((item) => item.value));
+  return filterOptions.filter((item) => !visibleValues.has(item.value));
+});
+
+function selectFilter(filter: PluginFilter): void {
+  activeFilter.value = filter;
+  filterOverflowOpen.value = false;
+}
+
+function handleFilterOverflowToggle(event: Event): void {
+  const details = event.currentTarget;
+  if (!(details instanceof HTMLDetailsElement)) {
+    return;
+  }
+  filterOverflowOpen.value = details.open;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+function handlePageHotkeys(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.altKey) {
+    return;
+  }
+
+  if (!event.ctrlKey && !event.metaKey && event.key === "/" && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    pluginSearchInputRef.value?.focus();
+    pluginSearchInputRef.value?.select();
+    return;
+  }
+
+  if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "r" && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    void refreshPlugins();
+  }
+}
 const PLUGIN_TYPE_LABELS: Record<string, string> = {
   static: "静态插件",
   messagePreprocessor: "消息预处理",
@@ -499,9 +747,11 @@ async function togglePlugin(plugin: PluginInfo) {
   const action = enable ? "启用" : "禁用";
 
   if (
-    !confirm(
-      `确定要${action}插件 "${plugin.manifest.displayName?.trim() || pluginName}" 吗？`
-    )
+    !(await askConfirm({
+      message: `确定要${action}插件 "${plugin.manifest.displayName?.trim() || pluginName}" 吗？`,
+      danger: !enable,
+      confirmText: action,
+    }))
   ) {
     return;
   }
@@ -533,6 +783,16 @@ onMounted(async () => {
       showMessage(`Failed to load plugins: ${message}`, "error");
     }
   }
+
+  document.addEventListener("keydown", handlePageHotkeys);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", handlePageHotkeys);
+});
+
+watch(activeFilter, () => {
+  filterOverflowOpen.value = false;
 });
 </script>
 
@@ -563,15 +823,7 @@ onMounted(async () => {
 }
 
 .hero-eyebrow {
-  display: inline-flex;
   margin-bottom: var(--space-3);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--button-bg) 16%, transparent);
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .hero-stats {
@@ -607,43 +859,67 @@ onMounted(async () => {
   font-size: var(--font-size-helper);
 }
 
+.view-tabs-card {
+  background: var(--secondary-bg);
+}
+
 .controls-card {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  position: sticky;
+  top: 0;
+  z-index: 17;
+  background: var(--secondary-bg);
 }
 
-.controls-top {
+.controls-top,
+.controls-main-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-3);
   align-items: center;
 }
 
-.search-field {
-  flex: 1;
+.view-mode-switch {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.view-mode-btn {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 6px;
+  min-height: 40px;
   padding: 0 14px;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  background: var(--input-bg);
-}
-
-.search-field .material-symbols-outlined {
+  border-radius: var(--radius-md);
+  background: var(--tertiary-bg);
   color: var(--secondary-text);
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.search-field input {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 14px 0;
+.view-mode-btn:hover {
+  color: var(--primary-text);
+  background: var(--accent-bg);
+  border-color: color-mix(in srgb, var(--button-bg) 30%, transparent);
 }
 
-.search-field input:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: -2px;
+.view-mode-btn.active {
+  color: var(--on-accent-text);
+  background: var(--button-bg);
+  border-color: color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
+}
+
+.view-mode-btn:focus-visible {
+  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .search-field input:focus:not(:focus-visible) {
@@ -654,33 +930,75 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
+  position: relative;
 }
 
-.filter-pill {
-  border: 1px solid var(--border-color);
+.pill-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  margin-left: 4px;
   border-radius: 999px;
-  background: var(--surface-overlay-soft);
+  background: color-mix(in srgb, var(--button-bg) 16%, transparent);
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.filters-overflow {
+  position: relative;
+}
+
+.filters-overflow > summary {
+  list-style: none;
+}
+
+.filters-overflow > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filters-overflow-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 999px;
   color: var(--secondary-text);
-  padding: 8px 14px;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 var(--surface-overlay-soft);
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
+  background: var(--tertiary-bg);
 }
 
-.filter-pill:hover,
-.filter-pill.active {
-  background: color-mix(in srgb, var(--button-bg) 14%, var(--tertiary-bg));
+.filters-overflow[open] .filters-overflow-trigger {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--button-bg) 28%, var(--border-color));
   color: var(--primary-text);
-  border-color: color-mix(in srgb, var(--button-bg) 36%, transparent);
 }
 
-.filter-pill:focus-visible {
-  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
-  box-shadow: 0 0 0 2px var(--focus-ring);
+.filters-overflow-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-bg);
+  box-shadow: var(--shadow-lg);
+  z-index: 5;
+}
+
+.filters-overflow-menu .filter-pill {
+  width: 100%;
+  justify-content: space-between;
 }
 
 .quick-grid {
@@ -746,6 +1064,10 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 22px;
+}
+
+.plugin-list-view {
+  display: block;
 }
 
 .plugin-type-group {
@@ -1000,39 +1322,6 @@ onMounted(async () => {
   margin-top: 12px;
 }
 
-.mini-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.mini-pill-icon {
-  font-size: var(--font-size-body);
-  line-height: 1;
-}
-
-.mini-pill--sensitive {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-}
-
-.mini-pill--changed {
-  background: var(--info-bg);
-  color: var(--info-text);
-}
-
-.mini-pill--neutral {
-  background: var(--tertiary-bg);
-  color: var(--secondary-text);
-}
-
 .pin-toggle {
   display: inline-grid;
   place-items: center;
@@ -1122,7 +1411,7 @@ onMounted(async () => {
 }
 
 @media (max-width: 768px) {
-  .controls-top {
+  .controls-main-row {
     flex-direction: column;
     align-items: stretch;
   }
@@ -1140,7 +1429,16 @@ onMounted(async () => {
     padding: 12px;
   }
 
-  .controls-top .btn-secondary {
+  .controls-main-row .btn-secondary {
+    justify-content: center;
+  }
+
+  .view-mode-switch {
+    width: 100%;
+  }
+
+  .view-mode-btn {
+    flex: 1;
     justify-content: center;
   }
 

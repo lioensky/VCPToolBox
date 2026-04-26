@@ -1,116 +1,124 @@
 <template>
-  <div v-if="modelValue" class="modal-overlay" @click="closeModal">
-    <div class="modal-content discovery-modal" @click.stop>
-      <div class="modal-header">
-        <h3>联想追溯：{{ sourceFileName }}</h3>
-        <button class="modal-close" @click="closeModal">
-          <span class="material-symbols-outlined">close</span>
-        </button>
-      </div>
+  <BaseModal
+    v-model="modalVisible"
+    aria-label="联想追溯"
+  >
+    <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+      <div v-bind="overlayAttrs" class="modal-overlay">
+        <div :ref="panelRef" v-bind="panelAttrs" class="modal-content discovery-modal">
+    <div class="modal-header">
+      <h3>联想追溯：{{ sourceFileName }}</h3>
+      <button class="modal-close" @click="closeModal">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
 
-      <div class="modal-body">
-        <!-- 配置区域 -->
-        <div class="discovery-config">
-          <div class="config-row">
-            <label>K 值（返回数量）:</label>
-            <div class="k-slider-container">
-              <input
-                type="range"
-                min="1"
-                max="200"
-                v-model.number="kValue"
-                @input="updateKDisplay"
-              />
-              <span class="k-value-display">{{ kDisplay }}</span>
-            </div>
-          </div>
-
-          <div class="config-row">
-            <label>搜索范围:</label>
-            <div class="folder-chips-container">
-              <div
-                v-for="folder in folders"
-                :key="folder"
-                class="folder-chip"
-                :class="{ active: selectedFolders.includes(folder) }"
-                @click="toggleFolder(folder)"
-              >
-                {{ folder }}
-              </div>
-            </div>
+    <div class="modal-body">
+      <!-- 配置区域 -->
+      <div class="discovery-config">
+        <div class="config-row">
+          <label>K 值（返回数量）:</label>
+          <div class="k-slider-container">
+            <input
+              type="range"
+              min="1"
+              max="200"
+              v-model.number="kValue"
+              @input="updateKDisplay"
+            />
+            <span class="k-value-display">{{ kDisplay }}</span>
           </div>
         </div>
 
-        <!-- 加载状态 -->
-        <div v-if="loading" class="loading-state">
-          <span class="loading-spinner"></span>
-          <p>正在进行联想追溯…</p>
-        </div>
-
-        <!-- 警告信息 -->
-        <div v-if="warning" class="warning-message">
-          <span class="material-symbols-outlined">warning</span>
-          {{ warning }}
-        </div>
-
-        <!-- 结果列表 -->
-        <div v-if="results.length > 0" class="discovery-results-list">
-          <div
-            v-for="(result, index) in results"
-            :key="result.path || `${result.name}-${index}`"
-            class="discovery-result-card"
-            @click="openResult(result)"
-          >
-            <div class="result-header">
-              <span class="result-filename">{{ result.name }}</span>
-              <span class="result-score-tag"
-                >匹配度：{{ result.scorePercent }}%</span
-              >
+        <div class="config-row">
+          <label>搜索范围:</label>
+          <div class="folder-chips-container">
+            <div
+              v-for="folder in folders"
+              :key="folder"
+              class="folder-chip"
+              :class="{ active: selectedFolders.includes(folder) }"
+              @click="toggleFolder(folder)"
+            >
+              {{ folder }}
             </div>
-            <div class="result-score-bar-container">
-              <div
-                class="result-score-bar"
-                :style="{ width: result.scorePercent + '%' }"
-              ></div>
-            </div>
-            <div class="result-tags">
-              <span
-                v-for="(tag, i) in result.matchedTags?.slice(0, 5)"
-                :key="`${tag}-${i}`"
-                class="result-tag"
-              >
-                #{{ tag }}
-              </span>
-            </div>
-            <div class="result-preview">{{ result.preview }}</div>
           </div>
-        </div>
-
-        <!-- 无结果 -->
-        <div v-else-if="!loading && hasSearched" class="no-results">
-          <span class="material-symbols-outlined">search_off</span>
-          <p>未发现相关的记忆节点。</p>
         </div>
       </div>
 
-      <div class="modal-footer">
-        <button
-          class="btn-primary"
-          @click="performDiscovery"
-          :disabled="loading"
+      <!-- 加载状态 -->
+      <div v-if="loading" class="loading-state">
+        <span class="loading-spinner loading-spinner--mb-4"></span>
+        <p>正在进行联想追溯…</p>
+      </div>
+
+      <!-- 警告信息 -->
+      <div v-if="warning" class="warning-message">
+        <span class="material-symbols-outlined">warning</span>
+        {{ warning }}
+      </div>
+
+      <!-- 结果列表 -->
+      <div v-if="results.length > 0" class="discovery-results-list">
+        <div
+          v-for="(result, index) in results"
+          :key="result.path || `${result.name}-${index}`"
+          class="discovery-result-card"
+          @click="openResult(result)"
         >
-          <span class="material-symbols-outlined">psychology</span>
-          开始联想
-        </button>
+          <div class="result-header">
+            <span class="result-filename">{{ result.name }}</span>
+            <span class="result-score-tag"
+              >匹配度：{{ result.scorePercent }}%</span
+            >
+          </div>
+          <div class="result-score-bar-container">
+            <div
+              class="result-score-bar"
+              :style="{ width: result.scorePercent + '%' }"
+            ></div>
+          </div>
+          <div class="result-tags">
+            <span
+              v-for="(tag, i) in result.matchedTags?.slice(0, 5)"
+              :key="`${tag}-${i}`"
+              class="result-tag"
+            >
+              #{{ tag }}
+            </span>
+          </div>
+          <div class="result-preview">{{ result.preview }}</div>
+        </div>
+      </div>
+
+      <!-- 无结果 -->
+      <div v-else-if="!loading && hasSearched" class="no-results">
+        <span class="material-symbols-outlined">search_off</span>
+        <p>未发现相关的记忆节点。</p>
       </div>
     </div>
-  </div>
+
+    <div class="modal-footer">
+      <button
+        class="btn-primary"
+        @click="performDiscovery"
+        :disabled="loading"
+      >
+        <span class="material-symbols-outlined">psychology</span>
+        开始联想
+      </button>
+    </div>
+        </div>
+      </div>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { diaryApi } from "@/api";
 import { showMessage } from "@/utils";
+import BaseModal from "@/components/ui/BaseModal.vue";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -145,6 +153,11 @@ const hasSearched = ref(false);
 const sourceFileName = computed(
   () => props.sourceNote?.title || props.sourceNote?.file || ""
 );
+
+const modalVisible = computed({
+  get: () => props.modelValue,
+  set: (value: boolean) => emit("update:modelValue", value),
+});
 
 // 加载文件夹列表
 async function loadFolders() {
@@ -241,17 +254,9 @@ watch(
 
 <style scoped>
 .modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--overlay-backdrop);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10000;
-  animation: fadeIn 0.2s ease;
+  background: var(--overlay-backdrop-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .modal-content {
@@ -262,7 +267,6 @@ watch(
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  animation: slideIn 0.3s ease;
 }
 
 .discovery-modal {
@@ -399,16 +403,6 @@ watch(
   align-items: center;
   padding: 40px 20px;
   color: var(--secondary-text);
-}
-
-.loading-spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--highlight-text);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: var(--space-4);
 }
 
 .warning-message {
@@ -610,26 +604,6 @@ watch(
   .modal-footer .btn-primary {
     width: 100%;
     justify-content: center;
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes slideIn {
-  from {
-    transform: translateY(-20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
   }
 }
 

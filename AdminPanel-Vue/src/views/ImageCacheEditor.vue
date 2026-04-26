@@ -5,6 +5,15 @@
         <p class="description">编辑多媒体缓存记录，支持搜索、分页、重新识别与预览。</p>
       </div>
       <div class="header-actions">
+        <button
+          v-if="isDev"
+          class="btn-secondary"
+          type="button"
+          @click="loadTestData"
+          :disabled="isLoading"
+        >
+          加载测试数据
+        </button>
         <button class="btn-secondary" type="button" @click="refreshCurrentPage" :disabled="isLoading">
           刷新
         </button>
@@ -47,13 +56,13 @@
     <div v-else class="media-grid">
       <article v-for="item in mediaItems" :key="item.hash" class="media-card">
         <div class="card-actions">
-        <button
-          class="icon-btn reidentify"
-          type="button"
-          :disabled="isItemBusy(item)"
-          :aria-label="item.isReidentifying ? '正在重新识别' : '重新识别媒体描述'"
-          @click="reidentifyItem(item)"
-        >
+          <button
+            class="icon-btn reidentify"
+            type="button"
+            :disabled="isItemBusy(item)"
+            :aria-label="item.isReidentifying ? '正在重新识别' : '重新识别媒体描述'"
+            @click="reidentifyItem(item)"
+          >
             {{ item.isReidentifying ? '…' : '↻' }}
           </button>
           <button
@@ -79,13 +88,13 @@
           >
             <img
               v-if="mediaKind(item.mimeType) === 'image'"
-              v-lazy="toDataUrl(item)"
+              v-lazy="getDataUrl(item.hash)"
               alt="媒体预览"
               class="media-preview"
             >
             <video
               v-else
-              :src="toDataUrl(item)"
+              :src="getDataUrl(item.hash)"
               class="media-preview"
               preload="metadata"
               muted
@@ -94,7 +103,7 @@
 
           <audio
             v-else-if="mediaKind(item.mimeType) === 'audio'"
-            :src="toDataUrl(item)"
+            :src="getDataUrl(item.hash)"
             controls
             preload="metadata"
             class="media-audio"
@@ -115,7 +124,13 @@
           placeholder="请输入媒体描述…"
         ></textarea>
 
-        <button class="btn-success" style="width: 100%;" type="button" :disabled="isItemBusy(item)" @click="saveItem(item)">
+        <button
+          class="btn-success"
+          style="width: 100%;"
+          type="button"
+          :disabled="isItemBusy(item) || !isItemDirty(item)"
+          @click="saveItem(item)"
+        >
           {{ saveButtonLabel(item) }}
         </button>
 
@@ -123,33 +138,37 @@
       </article>
     </div>
 
-    <div
-      v-if="previewOpen"
-      class="preview-modal"
-      role="dialog"
-      aria-modal="true"
+    <BaseModal
+      v-model="previewOpen"
       aria-label="媒体预览"
-      @click.self="closePreview"
+      @close="closePreview"
     >
-      <button class="modal-close" type="button" aria-label="关闭预览" @click="closePreview">×</button>
-      <div class="modal-content">
-        <img v-if="previewType === 'image'" :src="previewDataUrl" alt="放大预览图" />
-        <video v-else controls autoplay :src="previewDataUrl"></video>
-      </div>
-    </div>
+      <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+        <div v-bind="overlayAttrs" class="preview-modal">
+          <div :ref="panelRef" v-bind="panelAttrs" class="modal-content">
+      <button ref="modalCloseBtn" class="modal-close" type="button" aria-label="关闭预览" @click="closePreview">×</button>
+      <img v-if="previewType === 'image'" :src="previewDataUrl" alt="放大预览图" />
+      <video v-else controls :src="previewDataUrl"></video>
+          </div>
+        </div>
+      </template>
+    </BaseModal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { mediaCacheApi, type MediaCacheItem } from '@/api'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 
 const DEFAULT_PAGE_SIZE = 20
+const isDev = import.meta.env.DEV
 
 interface MediaItem {
   hash: string
-  base64: string
   description: string
   originalDescription: string
   timestamp: string
@@ -158,8 +177,11 @@ interface MediaItem {
   isDeleting: boolean
   isSaving: boolean
   saveFeedback: 'idle' | 'saved'
-  saveResetTimer: number | null
 }
+
+// Large binary data and timer IDs kept outside Vue's reactive proxy
+const dataUrlCache = new Map<string, string>()
+const saveTimers = new Map<string, number>()
 
 const mediaItems = ref<MediaItem[]>([])
 const isLoading = ref(false)
@@ -172,23 +194,30 @@ const pageSize = ref(DEFAULT_PAGE_SIZE)
 const previewOpen = ref(false)
 const previewDataUrl = ref('')
 const previewType = ref<'image' | 'video'>('image')
+const modalCloseBtn = ref<HTMLButtonElement | null>(null)
+
+let previouslyFocusedElement: HTMLElement | null = null
 
 const paginationSummary = computed(() => `第 ${currentPage.value} / ${totalPages.value} 页 · 共 ${totalItems.value} 条`)
 const emptyMessage = computed(() => (currentSearch.value ? '没有匹配的缓存条目。' : '暂无缓存条目。'))
+const hasUnsavedChanges = computed(() =>
+  mediaItems.value.some(item => item.description !== item.originalDescription)
+)
+
+function getDataUrl(hash: string): string {
+  return dataUrlCache.get(hash) || ''
+}
 
 function normalizeMimeType(raw: string): string {
   if (!raw) return 'application/octet-stream'
   let mime = raw.trim()
-  // 去除 "data:" 前缀（如 "data:image/jpeg;" → "image/jpeg"）
   if (mime.startsWith('data:')) {
     mime = mime.slice(5)
   }
-  // 去除尾部分号和 base64 标记（如 "image/jpeg;base64," → "image/jpeg"）
   const semicolonIdx = mime.indexOf(';')
   if (semicolonIdx > 0) {
     mime = mime.slice(0, semicolonIdx)
   }
-  // 去除尾部逗号
   if (mime.endsWith(',')) {
     mime = mime.slice(0, -1)
   }
@@ -210,6 +239,12 @@ function guessMimeType(base64String: string): string {
   return 'application/octet-stream'
 }
 
+function buildDataUrl(base64: string, mimeType: string): string {
+  if (!base64) return ''
+  if (base64.startsWith('data:')) return base64
+  return `data:${mimeType};base64,${base64}`
+}
+
 function mediaKind(mimeType: string): 'image' | 'audio' | 'video' | 'unknown' {
   const normalized = normalizeMimeType(mimeType)
   if (normalized.startsWith('image/')) return 'image'
@@ -218,51 +253,42 @@ function mediaKind(mimeType: string): 'image' | 'audio' | 'video' | 'unknown' {
   return 'unknown'
 }
 
-function toDataUrl(item: MediaItem): string {
-  if (!item.base64) {
-    return ''
-  }
-
-  if (item.base64.startsWith('data:')) {
-    return item.base64
-  }
-
-  return `data:${item.mimeType};base64,${item.base64}`
-}
-
 function isItemBusy(item: MediaItem): boolean {
   return item.isReidentifying || item.isDeleting || item.isSaving
 }
 
+function isItemDirty(item: MediaItem): boolean {
+  return item.description !== item.originalDescription
+}
+
 function saveButtonLabel(item: MediaItem): string {
-  if (item.isSaving) {
-    return '保存中…'
-  }
-
-  if (item.saveFeedback === 'saved') {
-    return '已保存'
-  }
-
+  if (item.isSaving) return '保存中…'
+  if (item.saveFeedback === 'saved') return '已保存'
   return '保存更改'
 }
 
-function clearSaveResetTimer(item: MediaItem): void {
-  if (item.saveResetTimer !== null) {
-    window.clearTimeout(item.saveResetTimer)
-    item.saveResetTimer = null
+function clearSaveTimer(hash: string): void {
+  const timer = saveTimers.get(hash)
+  if (timer !== undefined) {
+    window.clearTimeout(timer)
+    saveTimers.delete(hash)
   }
 }
 
 function scheduleSaveFeedbackReset(item: MediaItem): void {
-  clearSaveResetTimer(item)
-  item.saveResetTimer = window.setTimeout(() => {
+  clearSaveTimer(item.hash)
+  saveTimers.set(item.hash, window.setTimeout(() => {
     item.saveFeedback = 'idle'
-    item.saveResetTimer = null
-  }, 2000)
+    saveTimers.delete(item.hash)
+  }, 2000))
 }
 
-function disposeMediaItems(items: MediaItem[] = mediaItems.value): void {
-  items.forEach((item) => clearSaveResetTimer(item))
+function disposeAll(): void {
+  for (const timer of saveTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  saveTimers.clear()
+  dataUrlCache.clear()
 }
 
 function normalizeItem(entry: MediaCacheItem): MediaItem {
@@ -270,19 +296,21 @@ function normalizeItem(entry: MediaCacheItem): MediaItem {
   const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''
   const base64 = typeof entry.base64 === 'string' ? entry.base64 : ''
   const rawMime = entry.mimeType || guessMimeType(base64)
+  const mimeType = normalizeMimeType(rawMime)
+
+  // Store large binary data outside reactive system
+  dataUrlCache.set(entry.hash, buildDataUrl(base64, mimeType))
 
   return {
     hash: entry.hash,
-    base64,
     description,
     originalDescription: description,
     timestamp,
-    mimeType: normalizeMimeType(rawMime),
+    mimeType,
     isReidentifying: false,
     isDeleting: false,
     isSaving: false,
-    saveFeedback: 'idle',
-    saveResetTimer: null
+    saveFeedback: 'idle'
   }
 }
 
@@ -291,6 +319,11 @@ function updatePaginationState(total: number, pages: number, page: number, nextP
   totalPages.value = Math.max(pages, 1)
   currentPage.value = total > 0 ? Math.min(page, totalPages.value) : 1
   pageSize.value = nextPageSize || pageSize.value
+}
+
+async function confirmDiscardChanges(): Promise<boolean> {
+  if (!hasUnsavedChanges.value) return true
+  return askConfirm('有未保存的修改，确定要离开吗？未保存的内容将会丢失。')
 }
 
 async function loadMediaCache(page = currentPage.value) {
@@ -308,7 +341,9 @@ async function loadMediaCache(page = currentPage.value) {
       return
     }
 
-    disposeMediaItems()
+    for (const item of mediaItems.value) clearSaveTimer(item.hash)
+    dataUrlCache.clear()
+
     mediaItems.value = data.items.map(normalizeItem)
     updatePaginationState(data.total, data.totalPages, data.page, data.pageSize)
   } catch (error) {
@@ -324,36 +359,31 @@ function refreshCurrentPage() {
   void loadMediaCache(currentPage.value)
 }
 
-function applySearch() {
+async function applySearch() {
+  if (!(await confirmDiscardChanges())) return
   currentSearch.value = searchInput.value
   currentPage.value = 1
   void loadMediaCache(1)
 }
 
-function goToPreviousPage() {
-  if (currentPage.value <= 1) {
-    return
-  }
-
+async function goToPreviousPage() {
+  if (currentPage.value <= 1) return
+  if (!(await confirmDiscardChanges())) return
   void loadMediaCache(currentPage.value - 1)
 }
 
-function goToNextPage() {
-  if (currentPage.value >= totalPages.value) {
-    return
-  }
-
+async function goToNextPage() {
+  if (currentPage.value >= totalPages.value) return
+  if (!(await confirmDiscardChanges())) return
   void loadMediaCache(currentPage.value + 1)
 }
 
 async function saveItem(item: MediaItem) {
-  if (item.isSaving) {
-    return
-  }
+  if (item.isSaving || !isItemDirty(item)) return
 
   item.isSaving = true
   item.saveFeedback = 'idle'
-  clearSaveResetTimer(item)
+  clearSaveTimer(item.hash)
 
   try {
     const result = await mediaCacheApi.updateEntry(item.hash, item.description)
@@ -371,22 +401,29 @@ async function saveItem(item: MediaItem) {
 }
 
 async function removeItem(item: MediaItem) {
-  if (item.isDeleting || !confirm('确定要删除这个媒体条目吗？')) {
-    return
-  }
+  if (
+    item.isDeleting ||
+    !(await askConfirm({
+      message: '确定要删除这个媒体条目吗？',
+      danger: true,
+      confirmText: '删除',
+    }))
+  ) return
 
   item.isDeleting = true
   try {
     const result = await mediaCacheApi.deleteEntry(item.hash)
-    clearSaveResetTimer(item)
+    clearSaveTimer(item.hash)
+    dataUrlCache.delete(item.hash)
 
-    mediaItems.value = mediaItems.value.filter((currentItem) => currentItem.hash !== item.hash)
+    mediaItems.value = mediaItems.value.filter(i => i.hash !== item.hash)
     totalItems.value = Math.max(totalItems.value - 1, 0)
-    totalPages.value = Math.max(Math.ceil(totalItems.value / pageSize.value), 1)
-    currentPage.value = totalItems.value === 0 ? 1 : Math.min(currentPage.value, totalPages.value)
 
     if (mediaItems.value.length === 0 && totalItems.value > 0) {
       await loadMediaCache(currentPage.value)
+    } else {
+      totalPages.value = Math.max(Math.ceil(totalItems.value / pageSize.value), 1)
+      currentPage.value = totalItems.value === 0 ? 1 : Math.min(currentPage.value, totalPages.value)
     }
 
     showMessage(result.message || '缓存条目已删除。', 'success')
@@ -400,9 +437,7 @@ async function removeItem(item: MediaItem) {
 }
 
 async function reidentifyItem(item: MediaItem) {
-  if (isItemBusy(item)) {
-    return
-  }
+  if (isItemBusy(item)) return
 
   item.isReidentifying = true
   try {
@@ -424,39 +459,55 @@ async function reidentifyItem(item: MediaItem) {
 
 function openPreview(item: MediaItem) {
   const type = mediaKind(item.mimeType)
-  const dataUrl = toDataUrl(item)
+  const dataUrl = getDataUrl(item.hash)
 
-  if ((type !== 'image' && type !== 'video') || !dataUrl) {
-    return
-  }
+  if ((type !== 'image' && type !== 'video') || !dataUrl) return
 
+  previouslyFocusedElement = document.activeElement as HTMLElement | null
   previewDataUrl.value = dataUrl
   previewType.value = type
   previewOpen.value = true
-  document.body.style.overflow = 'hidden'
+
+  nextTick(() => {
+    modalCloseBtn.value?.focus()
+  })
 }
 
 function closePreview() {
   previewOpen.value = false
   previewDataUrl.value = ''
-  document.body.style.overflow = ''
-}
 
-function handleEsc(event: KeyboardEvent) {
-  if (event.key === 'Escape' && previewOpen.value) {
-    closePreview()
+  if (previouslyFocusedElement) {
+    previouslyFocusedElement.focus()
+    previouslyFocusedElement = null
   }
 }
 
+async function loadTestData() {
+  const { getMediaCacheFixtures } = await import('@/dev/media-cache-fixtures')
+  const fixtures = getMediaCacheFixtures()
+
+  for (const item of mediaItems.value) clearSaveTimer(item.hash)
+  dataUrlCache.clear()
+
+  mediaItems.value = fixtures.items.map(normalizeItem)
+  updatePaginationState(fixtures.total, fixtures.totalPages, fixtures.page, fixtures.pageSize)
+  showMessage('已加载测试数据', 'success')
+}
+
+onBeforeRouteLeave(async () => {
+  if (!hasUnsavedChanges.value) return true
+  const confirmed = await askConfirm('有未保存的修改，确定要离开吗？未保存的内容将会丢失。')
+  if (!confirmed) return false
+  return true
+})
+
 onMounted(() => {
   void loadMediaCache()
-  document.addEventListener('keydown', handleEsc)
 })
 
 onUnmounted(() => {
-  disposeMediaItems()
-  document.removeEventListener('keydown', handleEsc)
-  document.body.style.overflow = ''
+  disposeAll()
 })
 </script>
 
@@ -472,6 +523,10 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: var(--space-4);
   align-items: flex-start;
+}
+
+.page-header .description {
+  margin: 0;
 }
 
 .page-header h2 {
@@ -649,13 +704,7 @@ textarea:focus-visible,
 }
 
 .preview-modal {
-  position: fixed;
-  inset: 0;
   background: var(--overlay-backdrop-strong);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1200;
 }
 
 .modal-content {

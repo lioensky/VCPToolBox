@@ -6,7 +6,25 @@
     </p>
 
     <div class="preprocessor-order-controls">
-      <button @click="saveOrder" class="btn-primary">保存顺序并热重载</button>
+      <span class="dirty-summary" :class="{ 'is-dirty': hasChanges }">
+        {{ hasChanges ? `已修改 ${changedItemCount} 项` : '当前顺序未修改' }}
+      </span>
+      <button
+        type="button"
+        class="btn-secondary"
+        :disabled="!hasChanges || isSaving"
+        @click="resetOrder"
+      >
+        撤销
+      </button>
+      <button
+        type="button"
+        class="btn-primary"
+        :disabled="!hasChanges || isSaving"
+        @click="saveOrder"
+      >
+        {{ isSaving ? '保存中…' : '保存顺序并热重载' }}
+      </button>
       <span v-if="statusMessage" :class="['status-message', statusType]">
         {{ statusMessage }}
       </span>
@@ -38,15 +56,10 @@
           },
         ]"
       >
-        <button
-          type="button"
-          class="drag-handle"
-          aria-label="拖动排序"
-          title="拖动排序"
+        <DragHandle
+          label="拖动排序"
           @pointerdown="handleDragHandlePointerDown(plugin.name, $event)"
-        >
-          ☰
-        </button>
+        />
 
         <span class="plugin-index">{{ index + 1 }}.</span>
 
@@ -71,7 +84,11 @@
 </template>
 
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { usePreprocessorOrderManager } from "@/features/preprocessor-order-manager/usePreprocessorOrderManager";
+import DragHandle from "@/components/ui/DragHandle.vue";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 
 const {
   orderedPreprocessors,
@@ -82,9 +99,54 @@ const {
   dragGhostElement,
   statusMessage,
   statusType,
+  isSaving,
+  hasChanges,
+  changedItemCount,
   handleDragHandlePointerDown,
+  resetOrder,
   saveOrder,
 } = usePreprocessorOrderManager();
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+function handlePageHotkeys(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.altKey) {
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    if (isEditableTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    void saveOrder();
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("keydown", handlePageHotkeys);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", handlePageHotkeys);
+});
+
+onBeforeRouteLeave(async () => {
+  if (!hasChanges.value) {
+    return true;
+  }
+
+  return await askConfirm({
+    message: "预处理器顺序有未保存改动，确定要离开吗？",
+    danger: true,
+    confirmText: "放弃改动",
+  });
+});
 
 void dragGhostElement
 </script>
@@ -92,9 +154,36 @@ void dragGhostElement
 <style scoped>
 .preprocessor-order-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-3);
   align-items: center;
   margin-bottom: var(--space-4);
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-bg);
+}
+
+.dirty-summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--tertiary-bg);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 600;
+}
+
+.dirty-summary.is-dirty {
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
 }
 
 .draggable-list {
@@ -150,34 +239,6 @@ void dragGhostElement
 
 .draggable-item--drop-after::after {
   bottom: -6px;
-}
-
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--secondary-text);
-  font-size: var(--font-size-body);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-  transition: color 0.2s ease, background-color 0.2s ease;
-}
-
-.drag-handle:hover {
-  color: var(--primary-text);
-  background: var(--accent-bg);
-}
-
-.drag-handle:active {
-  cursor: grabbing;
 }
 
 .plugin-index {

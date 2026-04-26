@@ -2,7 +2,7 @@
   <section class="config-section active-section rag-lab">
     <header class="rag-lab__hero card">
       <div class="rag-lab__hero-copy">
-        <span class="rag-lab__eyebrow">Wave RAG Parameter Lab</span>
+        <span class="eyebrow rag-lab__eyebrow">Wave RAG Parameter Lab</span>
         <h2>浪潮 RAG 参数调优工作台</h2>
         <p class="description">
           集中查看和调整浪潮 RAG 的核心参数，支持按模块浏览、快速定位高影响项，并对虫洞脉冲路由等复杂参数进入独立控制舱进行细化编辑。
@@ -42,7 +42,7 @@
       <button type="button" class="btn-secondary" @click="loadParams">重新加载</button>
     </div>
 
-    <form v-else :id="formId" class="rag-lab__workspace" @submit.prevent="saveParams">
+    <form v-else :id="formId" class="rag-lab__workspace" :class="{ 'is-aside-collapsed': asideCollapsed }" @submit.prevent="saveParams">
       <div class="rag-lab__main">
         <article
           v-for="section in groupSections"
@@ -300,11 +300,63 @@
       </div>
 
       <aside class="rag-lab__aside">
-        <div class="rag-console card">
+        <div
+          class="rag-console card"
+          :class="{ 'is-collapsed': asideCollapsed }"
+          :aria-label="asideCollapsed ? 'RAG 调优操作台（已折叠）' : 'RAG 调优操作台'"
+        >
+          <template v-if="asideCollapsed">
+            <div class="console-rail">
+              <button
+                type="button"
+                class="console-rail-toggle"
+                aria-label="展开操作台"
+                title="展开操作台"
+                @click="toggleAside"
+              >
+                <span class="material-symbols-outlined">right_panel_open</span>
+              </button>
+              <div class="console-rail-divider"></div>
+              <button
+                type="submit"
+                class="console-rail-icon"
+                aria-label="保存参数配置"
+                title="保存参数配置"
+                :disabled="isSaving || !hasParams || !isDirty"
+              >
+                <span class="material-symbols-outlined">save</span>
+              </button>
+              <button
+                v-for="section in groupSections.slice(0, 8)"
+                :key="`${section.anchor}-rail`"
+                type="button"
+                class="console-rail-icon"
+                :title="section.meta.title"
+                :aria-label="`跳转到 ${section.meta.title}`"
+                @click="scrollToGroup(section.anchor)"
+              >
+                <span class="material-symbols-outlined">tune</span>
+              </button>
+            </div>
+          </template>
+          <template v-else>
           <div class="rag-console__section">
-            <span class="rag-console__label">操作台</span>
-            <h3>保存与回退</h3>
-            <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
+            <div class="rag-console__header">
+              <div>
+                <span class="rag-console__label">操作台</span>
+                <h3>保存与回退</h3>
+                <p>建议一次只改一组高敏参数，并在每次保存后观察实际召回结果。</p>
+              </div>
+              <button
+                type="button"
+                class="console-rail-toggle"
+                aria-label="折叠操作台"
+                title="折叠操作台"
+                @click="toggleAside"
+              >
+                <span class="material-symbols-outlined">right_panel_close</span>
+              </button>
+            </div>
           </div>
 
           <div class="rag-console__actions">
@@ -361,6 +413,7 @@
               </li>
             </ul>
           </div>
+          </template>
         </div>
       </aside>
     </form>
@@ -387,6 +440,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { ragApi, type ParamGroup, type ParamValue, type RagParams } from "@/api";
+import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
   GROUP_ORDER,
@@ -445,6 +499,8 @@ interface GroupSection {
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const WORMHOLE_PARAM_KEY = "spikeRouting";
 const formId = "rag-tuning-form";
+const CONTENT_CONTAINER_ID = "config-details-container";
+const GROUP_SCROLL_OFFSET = 16;
 
 const params = ref<RagParams>({});
 const originalParams = ref<RagParams>({});
@@ -454,6 +510,10 @@ const loadError = ref("");
 const statusMessage = ref("");
 const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
+
+const { collapsed: asideCollapsed, toggle: toggleAside } = useConsoleCollapse(
+  "rag-tuning-aside"
+);
 
 function cloneParams(source: RagParams): RagParams {
   return JSON.parse(JSON.stringify(source));
@@ -683,11 +743,42 @@ function getWormholeQuickValue(entry: ParamEntry, subKey: WormholePrimaryKey): s
   return formatNumber(entry.value[subKey]);
 }
 
+function resolveContentContainer(target?: HTMLElement): HTMLElement | null {
+  const container = document.getElementById(CONTENT_CONTAINER_ID);
+  if (container instanceof HTMLElement) {
+    return container;
+  }
+
+  if (target) {
+    const fallbackContainer = target.closest<HTMLElement>(".content");
+    if (fallbackContainer) {
+      return fallbackContainer;
+    }
+  }
+
+  return null;
+}
+
 function scrollToGroup(anchor: string): void {
-  document.getElementById(anchor)?.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  });
+  const target = document.getElementById(anchor);
+  if (!target) {
+    return;
+  }
+
+  const contentContainer = resolveContentContainer(target);
+  if (contentContainer) {
+    const containerRect = contentContainer.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const targetTop =
+      contentContainer.scrollTop +
+      (targetRect.top - containerRect.top) -
+      GROUP_SCROLL_OFFSET;
+
+    contentContainer.scrollTo({
+      top: Math.max(targetTop, 0),
+      behavior: "smooth",
+    });
+  }
 }
 
 function openWormholeModal(): void {
@@ -812,16 +903,9 @@ onMounted(() => {
 }
 
 .rag-lab__eyebrow {
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-full);
   background: var(--info-bg);
-  color: var(--highlight-text);
-  font-size: var(--font-size-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .rag-lab__hero-copy {
@@ -906,6 +990,10 @@ onMounted(() => {
   grid-template-columns: minmax(0, 1fr) 320px;
   gap: var(--space-5);
   align-items: start;
+}
+
+.rag-lab__workspace.is-aside-collapsed {
+  grid-template-columns: minmax(0, 1fr) 56px;
 }
 
 .rag-lab__main {
@@ -1058,42 +1146,6 @@ onMounted(() => {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
-}
-
-.mini-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: var(--radius-full);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-}
-
-.mini-pill--neutral {
-  background: var(--surface-overlay);
-  color: var(--secondary-text);
-}
-
-.mini-pill--stable {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.mini-pill--sensitive {
-  background: var(--warning-bg);
-  color: var(--warning-text);
-}
-
-.mini-pill--critical {
-  background: var(--danger-bg);
-  color: var(--danger-text);
-}
-
-.mini-pill--changed {
-  background: var(--info-bg);
-  color: var(--info-text);
 }
 
 .param-row__summary {
@@ -1356,6 +1408,26 @@ onMounted(() => {
   gap: var(--space-4);
   padding: var(--space-5);
   border-radius: var(--radius-xl);
+  transition: padding 0.2s ease;
+}
+
+.rag-console.is-collapsed {
+  padding: var(--space-3) 0;
+  gap: 0;
+  align-items: center;
+}
+
+.rag-console__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.rag-console__header > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .rag-console__section {
@@ -1476,7 +1548,8 @@ onMounted(() => {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .rag-lab__workspace {
+  .rag-lab__workspace,
+  .rag-lab__workspace.is-aside-collapsed {
     grid-template-columns: 1fr;
   }
 

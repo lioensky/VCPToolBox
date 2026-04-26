@@ -233,6 +233,7 @@ import {
   type RawDreamDetail,
   type RawDreamOperation,
 } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 interface DreamSummaryView {
@@ -571,7 +572,11 @@ async function reviewOperation(
   const warning =
     action === "approve" ? "批准后将执行实际的文件操作。" : "";
 
-  if (!confirm(`确定${actionLabel}此操作吗？${warning}`)) {
+  if (!(await askConfirm({
+    message: `确定${actionLabel}此操作吗？${warning}`,
+    danger: action === "approve",
+    confirmText: actionLabel,
+  }))) {
     return;
   }
 

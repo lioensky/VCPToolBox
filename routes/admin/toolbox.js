@@ -50,9 +50,7 @@ module.exports = function(options) {
             const file = typeof value.file === 'string' ? value.file.replace(/\\/g, '/') : '';
             const description = typeof value.description === 'string' ? value.description.trim() : '';
             if (!file) continue;
-            serialized[alias] = description
-                ? { file, description }
-                : file;
+            serialized[alias] = { file, description };
         }
         return serialized;
     }
@@ -193,7 +191,8 @@ module.exports = function(options) {
             try {
                 const toolboxManager = require('../../modules/toolboxManager');
                 if (toolboxManager && toolboxManager.contentCache instanceof Map) {
-                    toolboxManager.contentCache.delete(decodedPath.replace(/\\/g, '/'));
+                    const resolvedFilePath = path.resolve(TVSTXT_DIR_PATH, decodedPath);
+                    toolboxManager.contentCache.delete(resolvedFilePath);
                 }
             } catch (e) {}
             res.json({ message: 'Toolbox file saved successfully.' });
@@ -222,6 +221,29 @@ module.exports = function(options) {
         } catch (error) {
             if (error.code === 'EEXIST') res.status(409).json({ error: `File '${finalFileName}' already exists.` });
             else res.status(500).json({ error: 'Failed to create toolbox file', details: error.message });
+        }
+    });
+
+    // DELETE toolbox file
+    router.delete('/toolbox/file/:encodedPath', async (req, res) => {
+        const decodedPath = decodeURIComponent(req.params.encodedPath || '');
+        const lower = decodedPath.toLowerCase();
+        if (!lower.endsWith('.txt') && !lower.endsWith('.md')) {
+            return res.status(400).json({ error: 'Invalid file name.' });
+        }
+        try {
+            const filePath = safeResolveUnderTVSTxt(decodedPath);
+            await fs.unlink(filePath);
+            try {
+                const toolboxManager = require('../../modules/toolboxManager');
+                if (toolboxManager && toolboxManager.contentCache instanceof Map) {
+                    toolboxManager.contentCache.delete(filePath);
+                }
+            } catch (e) {}
+            res.json({ message: 'Toolbox file deleted successfully.' });
+        } catch (error) {
+            if (error.code === 'ENOENT') res.status(404).json({ error: 'File not found.' });
+            else res.status(500).json({ error: 'Failed to delete toolbox file', details: error.message });
         }
     });
 

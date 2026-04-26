@@ -2,7 +2,7 @@
   <div class="dashboard-card-shell dashboard-card-shell--amber calendar-card">
     <h3 class="dashboard-card-title">即将进行的日程</h3>
     <div v-if="loading" class="dashboard-card-empty calendar-loading">
-      <span class="loading-spinner"></span>
+      <span class="loading-spinner loading-spinner--sm loading-spinner--mb-3"></span>
       <p>正在加载日程...</p>
     </div>
     <div v-else-if="upcomingSchedules.length === 0" class="dashboard-card-empty calendar-empty">
@@ -95,23 +95,6 @@ onMounted(() => {
 .calendar-loading,
 .calendar-empty {
   min-height: 220px;
-}
-
-.loading-spinner {
-  display: inline-block;
-  width: 32px;
-  height: 32px;
-  margin-bottom: 12px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--highlight-text);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .calendar-widget {

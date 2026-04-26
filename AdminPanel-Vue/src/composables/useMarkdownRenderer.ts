@@ -2,6 +2,33 @@ import { ref, computed } from "vue";
 import type * as DOMPurifyModule from "dompurify";
 import type * as Marked from "marked";
 
+const MARKDOWN_SANITIZE_OPTIONS: DOMPurifyModule.Config = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: [
+    "style",
+    "script",
+    "iframe",
+    "object",
+    "embed",
+    "form",
+    "input",
+    "button",
+    "textarea",
+    "select",
+  ],
+  FORBID_ATTR: ["style"],
+  ALLOW_DATA_ATTR: false,
+};
+
+function escapeHtml(content: string): string {
+  return content
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
  * Markdown 渲染 Composable
  * 
@@ -62,8 +89,10 @@ export function useMarkdownRenderer() {
     }
 
     if (!markedModule || !dompurifyModule) {
-      console.warn("[useMarkdownRenderer] 渲染引擎未就绪，返回原始内容");
-      return content;
+      console.warn("[useMarkdownRenderer] 渲染引擎未就绪，降级为文本转义输出");
+      const escapedHtml = escapeHtml(content);
+      lastRenderedContent.value = escapedHtml;
+      return escapedHtml;
     }
 
     // 解析 Markdown
@@ -71,7 +100,10 @@ export function useMarkdownRenderer() {
     const html = typeof parsed === "string" ? parsed : content;
     
     // 消毒 HTML
-    const sanitizedHtml = dompurifyModule.default.sanitize(html);
+    const sanitizedHtml = dompurifyModule.default.sanitize(
+      html,
+      MARKDOWN_SANITIZE_OPTIONS
+    );
     
     // 缓存最后渲染结果
     lastRenderedContent.value = sanitizedHtml;

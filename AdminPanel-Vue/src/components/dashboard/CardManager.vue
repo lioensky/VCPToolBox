@@ -109,13 +109,14 @@ function getInstanceTitle(instance: DashboardCardInstance): string {
 .card-manager-overlay {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-index-modal);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
   background: var(--overlay-backdrop-strong);
-  backdrop-filter: blur(16px);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .card-manager {

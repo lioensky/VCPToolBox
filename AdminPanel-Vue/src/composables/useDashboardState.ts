@@ -521,7 +521,8 @@ export function useDashboardState(
     const maxValue = Math.max(...data, 100);
 
     ctx.beginPath();
-    ctx.strokeStyle = theme.value === "dark" ? "#38bdf8" : "#0284c7";
+    ctx.strokeStyle =
+      theme.value === "dark" ? "oklch(0.78 0.15 230)" : "oklch(0.62 0.14 240)";
     ctx.lineWidth = 2;
 
     data.forEach((value, index) => {
@@ -542,8 +543,8 @@ export function useDashboardState(
     ctx.closePath();
     ctx.fillStyle =
       theme.value === "dark"
-        ? "rgba(56, 189, 248, 0.1)"
-        : "rgba(2, 132, 199, 0.1)";
+        ? "oklch(0.78 0.15 230 / 0.1)"
+        : "oklch(0.62 0.14 240 / 0.1)";
     ctx.fill();
   }
 

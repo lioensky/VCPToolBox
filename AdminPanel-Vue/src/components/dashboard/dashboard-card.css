@@ -1,9 +1,9 @@
 .dashboard-card-shell {
   --dashboard-accent: var(--highlight-text);
-  --dashboard-accent-border: rgba(56, 189, 248, 0.28);
+  --dashboard-accent-border: color-mix(in srgb, var(--dashboard-accent) 28%, transparent);
   --dashboard-radius: var(--radius-xl, 20px);
-  --dashboard-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.4));
-  --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.5));
+  --dashboard-shadow: var(--shadow-md, 0 4px 12px oklch(0 0 0 / 0.40));
+  --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px oklch(0 0 0 / 0.50));
   --transition-normal: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
@@ -16,7 +16,7 @@
   border: 1px solid var(--border-color);
   border-radius: var(--dashboard-radius);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0.015)),
     var(--secondary-bg);
   backdrop-filter: var(--glass-blur, blur(12px));
   -webkit-backdrop-filter: var(--glass-blur, blur(12px));
@@ -115,7 +115,7 @@
   align-items: center;
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: oklch(1 0 0 / 0.08);
   color: var(--dashboard-accent);
   border: 1px solid var(--dashboard-accent-border);
   font-size: var(--font-size-caption);
@@ -128,7 +128,7 @@
   border-radius: var(--radius-lg, 14px);
   border: 1px solid var(--border-color);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0.015)),
     var(--accent-bg);
   transition:
     transform var(--transition-fast),
@@ -143,9 +143,9 @@
   transform: translateY(-2px);
   border-color: var(--dashboard-accent-border);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+    linear-gradient(180deg, oklch(1 0 0 / 0.05), oklch(1 0 0 / 0.02)),
     var(--tertiary-bg);
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.4));
+  box-shadow: var(--shadow-md, 0 4px 12px oklch(0 0 0 / 0.40));
 }
 
 .dashboard-card-empty {

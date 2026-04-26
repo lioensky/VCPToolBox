@@ -32,12 +32,24 @@ export interface DiarySaveResponse {
 
 export interface DiaryDeleteResponse {
   deleted: string[];
+  errors?: DiaryOperationError[];
   message?: string;
 }
 
 export interface DiaryMoveTarget {
   folder: string;
   file: string;
+}
+
+export interface DiaryOperationError {
+  note: string;
+  error: string;
+}
+
+export interface DiaryMoveResponse {
+  moved: string[];
+  errors?: DiaryOperationError[];
+  message?: string;
 }
 
 export interface AssociativeDiscoveryParams {
@@ -124,6 +136,18 @@ function normalizeRagTagsConfig(config: RagTagsFolderResponse | undefined): RagT
     threshold: config.threshold ?? 0.7,
     tags: config.tags || [],
   };
+}
+
+function toRagTagsPayload(config: RagTagsConfig): { tags: string[]; threshold?: number } {
+  const payload: { tags: string[]; threshold?: number } = {
+    tags: config.tags.map((tag) => tag.trim()).filter(Boolean),
+  };
+
+  if (config.thresholdEnabled) {
+    payload.threshold = config.threshold;
+  }
+
+  return payload;
 }
 
 export const diaryApi = {
@@ -223,6 +247,7 @@ export const diaryApi = {
 
     return {
       deleted: response.deleted || [],
+      errors: response.errors || [],
       message: response.message,
     };
   },
@@ -245,15 +270,20 @@ export const diaryApi = {
     config: RagTagsConfig,
     uiOptions: RequestUiOptions = {}
   ): Promise<void> {
-    const payload: Record<string, { tags: string[]; threshold?: number }> = {
-      [folder]: {
-        tags: config.tags.filter((tag) => tag.trim()),
+    const existingConfig = await requestWithUi<Record<string, RagTagsFolderResponse>>(
+      {
+        url: "/admin_api/rag-tags",
       },
-    };
+      DEFAULT_READ_UI_OPTIONS
+    );
 
-    if (config.thresholdEnabled) {
-      payload[folder].threshold = config.threshold;
-    }
+    const payload = Object.fromEntries(
+      Object.entries(existingConfig).map(([name, folderConfig]) => [
+        name,
+        toRagTagsPayload(normalizeRagTagsConfig(folderConfig)),
+      ])
+    );
+    payload[folder] = toRagTagsPayload(config);
 
     await requestWithUi(
       {
@@ -284,8 +314,8 @@ export const diaryApi = {
     notes: DiaryMoveTarget[],
     targetFolder: string,
     uiOptions: RequestUiOptions = {}
-  ): Promise<void> {
-    await requestWithUi(
+  ): Promise<DiaryMoveResponse> {
+    const response = await requestWithUi<DiaryMoveResponse>(
       {
         url: "/admin_api/dailynotes/move",
         method: "POST",
@@ -296,6 +326,12 @@ export const diaryApi = {
       },
       uiOptions
     );
+
+    return {
+      moved: response.moved || [],
+      errors: response.errors || [],
+      message: response.message,
+    };
   },
 
   async associativeDiscovery(

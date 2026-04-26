@@ -1,6 +1,8 @@
 const express = require('express');
 const dynamicToolRegistry = require('../../modules/dynamicToolRegistry.js');
 
+const REBUILD_MODES = new Set(['classification', 'catalog', 'all']);
+
 module.exports = function(options) {
     const router = express.Router();
     const { pluginManager } = options;
@@ -89,6 +91,12 @@ module.exports = function(options) {
                 await dynamicToolRegistry.syncFromPluginManager('admin_rebuild');
             }
             const mode = typeof req.body?.mode === 'string' ? req.body.mode : 'classification';
+            if (!REBUILD_MODES.has(mode)) {
+                return res.status(400).json({
+                    error: 'Invalid dynamic tools rebuild mode',
+                    details: `mode must be one of: ${Array.from(REBUILD_MODES).join(', ')}`
+                });
+            }
             const wait = req.body?.wait !== false;
             const state = await dynamicToolRegistry.forceRebuild({ mode, wait });
             res.json({ status: 'success', state });

@@ -10,13 +10,13 @@
       v-for="post in posts"
       :key="post.uid"
       class="forum-post-item"
-      :class="{ 'pinned-post': post.title.includes('[置顶]') }"
+      :class="{ 'pinned-post': isPinnedPost(post) }"
       @click="emit('viewPost', post)"
     >
       <div class="forum-post-header">
-        <span v-if="post.title.includes('[置顶]')" class="pin-badge">置顶</span>
+        <span v-if="isPinnedPost(post)" class="pin-badge">置顶</span>
         <span class="post-title" :title="post.title">
-          {{ post.title.length > 50 ? `${post.title.slice(0, 50)}...` : post.title }}
+          {{ post.title }}
         </span>
       </div>
       <div class="forum-post-meta">
@@ -51,6 +51,7 @@
 
 <script setup lang="ts">
 import { formatDate } from "@/utils";
+import { isPinnedPost } from "@/features/vcp-forum/useVcpForum";
 import type { ForumPost } from "@/features/vcp-forum/types";
 
 defineProps<{
@@ -109,6 +110,13 @@ const emit = defineEmits<{
   font-weight: 600;
   font-size: var(--font-size-emphasis);
   color: var(--primary-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .pin-badge {

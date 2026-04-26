@@ -21,14 +21,75 @@
   >
     {{ messageState.text }}
   </div>
+
+  <ConfirmDialog
+    v-model="confirmVisible"
+    :title="confirmDialogState.title"
+    :message="confirmDialogState.message"
+    :confirm-text="confirmDialogState.confirmText"
+    :cancel-text="confirmDialogState.cancelText"
+    :danger="confirmDialogState.danger"
+    @confirm="confirmCurrentDialog"
+    @cancel="cancelCurrentDialog"
+  />
+
+  <InputDialog
+    v-model="inputVisible"
+    :title="inputDialog.title"
+    :message="inputDialog.message"
+    :placeholder="inputDialog.placeholder"
+    :confirm-text="inputDialog.confirmText"
+    :cancel-text="inputDialog.cancelText"
+    :multiline="inputDialog.multiline"
+    :input-value="inputDialog.value"
+    :error="inputDialog.error"
+    @update:input-value="onInputValueChange"
+    @confirm="submitInputDialog"
+    @cancel="cancelInputDialog"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed } from "vue";
-import { feedbackState, isLoadingVisible } from "@/platform/feedback/feedbackState";
+import ConfirmDialog from "@/components/feedback/ConfirmDialog.vue";
+import InputDialog from "@/components/feedback/InputDialog.vue";
+import {
+  cancelCurrentDialog,
+  cancelInputDialog,
+  confirmCurrentDialog,
+  feedbackState,
+  isLoadingVisible,
+  submitInputDialog,
+} from "@/platform/feedback/feedbackState";
 
 const loadingVisible = isLoadingVisible;
 const messageState = computed(() => feedbackState.message);
+const confirmDialogState = computed(() => feedbackState.confirm);
+const confirmVisible = computed({
+  get: () => feedbackState.confirm.visible,
+  set: (nextVisible: boolean) => {
+    if (!nextVisible && feedbackState.confirm.visible) {
+      cancelCurrentDialog();
+    }
+  },
+});
+
+const inputDialog = computed(() => feedbackState.input);
+const inputVisible = computed({
+  get: () => feedbackState.input.visible,
+  set: (nextVisible: boolean) => {
+    if (!nextVisible && feedbackState.input.visible) {
+      cancelInputDialog();
+    }
+  },
+});
+
+function onInputValueChange(value: string): void {
+  feedbackState.input.value = value;
+  if (feedbackState.input.error) {
+    feedbackState.input.error = "";
+  }
+}
 </script>
 
 <style scoped>

@@ -11,33 +11,74 @@
       :initial-left-width="450"
       :min-left-width="350"
       :max-left-width="600"
+      collapsible
+      persist-key="agentFilesEditor"
     >
       <template #left-actions>
-        <div class="header-actions">
-          <button
-            @click="addAgentEntry"
-            class="btn-primary btn-sm btn-sm-touch"
-            aria-label="添加新 Agent"
-            title="添加新 Agent"
+        <div class="pane-toolbar pane-toolbar--left">
+          <div class="pane-toolbar-main">
+            <button
+              @click="addAgentEntry"
+              class="btn-primary btn-sm btn-sm-touch"
+              aria-label="添加新 Agent"
+              title="添加新 Agent"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">add</span>
+              添加
+            </button>
+            <button
+              type="button"
+              @click="saveAgentMap"
+              class="btn-success btn-sm btn-sm-touch"
+              :disabled="isSavingMap || !mapDirty"
+              aria-label="保存映射表"
+              title="保存映射表"
+            >
+              <span
+                class="material-symbols-outlined"
+                :class="{ spinning: isSavingMap }"
+                aria-hidden="true"
+              >{{ isSavingMap ? "sync" : "save" }}</span>
+              {{ isSavingMap ? "保存中…" : mapDirty ? "保存" : "已保存" }}
+            </button>
+            <details class="pane-toolbar-menu">
+              <summary class="pane-toolbar-menu-trigger" aria-label="更多操作" title="更多操作">
+                <span class="material-symbols-outlined">more_vert</span>
+              </summary>
+              <div class="pane-toolbar-menu-content" role="menu" aria-label="Agent 映射更多操作">
+                <button type="button" @click="refreshAll" class="pane-toolbar-menu-item">
+                  <span class="material-symbols-outlined">refresh</span>
+                  刷新数据
+                </button>
+              </div>
+            </details>
+          </div>
+          <span
+            class="pane-toolbar-chip"
+            :class="{ 'pane-toolbar-chip--active': mapDirty }"
+            :title="mapDirty ? '映射未保存' : '映射已同步'"
+            :aria-label="mapDirty ? '映射未保存' : '映射已同步'"
           >
-            <span class="material-symbols-outlined" aria-hidden="true">add</span>
-            添加
-          </button>
+            {{ mapDirty ? '映射未保存' : '映射已同步' }}
+          </span>
+        </div>
+      </template>
+
+      <template #left-collapsed>
+        <div class="collapsed-list">
           <button
+            v-for="entry in agentMap"
+            :key="entry.localId"
             type="button"
-            @click="saveAgentMap"
-            class="btn-primary btn-sm btn-sm-touch"
-            :disabled="isSavingMap"
-            aria-label="保存映射表"
-            title="保存映射表"
+            class="collapsed-item"
+            :title="entry.name || entry.file"
+            @click="selectAgentFile(resolveAgentFileName(entry.file))"
           >
-            <span
-              class="material-symbols-outlined"
-              :class="{ spinning: isSavingMap }"
-              aria-hidden="true"
-            >{{ isSavingMap ? "sync" : "save" }}</span>
-            {{ isSavingMap ? "保存中…" : "保存" }}
+            <span class="collapsed-avatar">{{ (entry.name || entry.file || 'A').slice(0, 1).toUpperCase() }}</span>
           </button>
+          <div v-if="agentMap.length === 0" class="collapsed-empty">
+            <span class="material-symbols-outlined">smart_toy</span>
+          </div>
         </div>
       </template>
 
@@ -132,12 +173,29 @@
         </div>
       </template>
 
+      <template #right-actions>
+        <div v-if="editingFile" class="pane-toolbar pane-toolbar--right">
+          <div class="pane-toolbar-main">
+            <button
+              type="button"
+              @click="saveAgentFile"
+              :disabled="!fileDirty || isSavingFile"
+              class="btn-success btn-sm btn-sm-touch"
+            >
+              <span class="material-symbols-outlined" :class="{ spinning: isSavingFile }">{{ isSavingFile ? "sync" : "save" }}</span>
+              {{ isSavingFile ? "保存中…" : fileDirty ? "保存文件" : "已保存" }}
+            </button>
+          </div>
+        </div>
+      </template>
+
       <template #right-content>
         <div class="agent-file-editor">
           <div class="agent-editor-controls">
             <span class="editing-file-display">
               <span class="material-symbols-outlined">description</span>
               {{ editingFile || "未选择文件" }}
+              <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
             </span>
           </div>
           <textarea
@@ -147,26 +205,12 @@
             placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt / .md 文件…"
             class="file-content-editor"
           ></textarea>
-          <div class="editor-actions">
-            <button
-              type="button"
-              @click="saveAgentFile"
-              :disabled="!editingFile || isSavingFile"
-              class="btn-primary"
-            >
-              <span
-                class="material-symbols-outlined"
-                :class="{ spinning: isSavingFile }"
-              >{{ isSavingFile ? "sync" : "save" }}</span>
-              {{ isSavingFile ? "保存中…" : "保存文件内容" }}
-            </button>
-            <span
-              v-if="fileStatusMessage"
-              :class="['status-message', fileStatusType]"
-            >
-              {{ fileStatusMessage }}
-            </span>
-          </div>
+          <span
+            v-if="fileStatusMessage"
+            :class="['status-message', fileStatusType]"
+          >
+            {{ fileStatusMessage }}
+          </span>
         </div>
       </template>
     </DualPaneEditor>
@@ -187,9 +231,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { agentApi } from "@/api";
 import DualPaneEditor from "@/components/DualPaneEditor.vue";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentFilesStatusType,
   AgentMapEntry,
@@ -224,10 +270,12 @@ const statusMessage = ref("");
 const statusType = ref<AgentFilesStatusType>("info");
 const editingFile = ref("");
 const fileContent = ref("");
+const originalFileContent = ref("");
 const fileStatusMessage = ref("");
 const fileStatusType = ref<AgentFilesStatusType>("info");
 const isSavingMap = ref(false);
 const isSavingFile = ref(false);
+const initialAgentMapSnapshot = ref("[]");
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -242,6 +290,28 @@ const availableFileLookup = computed(() => {
 
   return lookup;
 });
+
+function serializeAgentMap(entries: AgentMapDraft[]): string {
+  return JSON.stringify(
+    entries.map((entry) => ({
+      name: entry.name.trim(),
+      file: entry.file.trim(),
+    }))
+  );
+}
+
+const mapDirty = computed(
+  () => serializeAgentMap(agentMap.value) !== initialAgentMapSnapshot.value
+);
+
+const fileDirty = computed(() => {
+  if (!editingFile.value) {
+    return false;
+  }
+  return fileContent.value !== originalFileContent.value;
+});
+
+const hasPendingChanges = computed(() => mapDirty.value || fileDirty.value);
 
 function sanitizeAgentFileInput(fileName: string): string {
   return fileName.trim().replace(/\\/g, "/");
@@ -455,11 +525,16 @@ async function loadAgentMap(): Promise<void> {
           file: String(file),
         })
       );
+    } else {
+      agentMap.value = [];
     }
+    initialAgentMapSnapshot.value = serializeAgentMap(agentMap.value);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Failed to load agent map:", errorMessage);
     showMessage(`Failed to load agent map: ${errorMessage}`, "error");
+    agentMap.value = [];
+    initialAgentMapSnapshot.value = serializeAgentMap(agentMap.value);
   }
 }
 
@@ -476,6 +551,8 @@ async function saveAgentMap(): Promise<void> {
     await agentApi.saveAgentMap(agentMapObject, {
       loadingKey: "agent-files.map.save",
     });
+
+    initialAgentMapSnapshot.value = serializeAgentMap(agentMap.value);
 
     statusMessage.value = "Agent 映射已保存。";
     statusType.value = "success";
@@ -494,10 +571,16 @@ function addAgentEntry(): void {
   agentMap.value.push(createAgentMapDraft());
 }
 
-function removeAgentEntry(index: number): void {
-  if (confirm("确定删除这条 Agent 映射吗？")) {
-    agentMap.value.splice(index, 1);
+async function removeAgentEntry(index: number): Promise<void> {
+  if (!(await askConfirm({
+    message: "确定删除这条 Agent 映射吗？",
+    danger: true,
+    confirmText: "删除",
+  }))) {
+    return;
   }
+
+  agentMap.value.splice(index, 1);
 }
 
 async function createAndBindAgentFile(entry: AgentMapDraft): Promise<void> {
@@ -546,6 +629,17 @@ async function selectAgentFile(fileName: string): Promise<void> {
     return;
   }
 
+  if (editingFile.value !== fileName && fileDirty.value) {
+    const shouldDiscard = await askConfirm({
+      message: `文件「${editingFile.value}」有未保存改动，确定放弃并切换吗？`,
+      danger: true,
+      confirmText: "放弃改动",
+    });
+    if (!shouldDiscard) {
+      return;
+    }
+  }
+
   editingFile.value = fileName;
   fileStatusMessage.value = "";
 
@@ -558,9 +652,12 @@ async function selectAgentFile(fileName: string): Promise<void> {
         loadingKey: "agent-files.file.load",
       }
     );
+    originalFileContent.value = fileContent.value;
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     showMessage(`Failed to load file: ${errorMessage}`, "error");
+    fileContent.value = "";
+    originalFileContent.value = "";
   }
 }
 
@@ -576,6 +673,8 @@ async function saveAgentFile(): Promise<void> {
       loadingKey: "agent-files.file.save",
     });
 
+    originalFileContent.value = fileContent.value;
+
     fileStatusMessage.value = "文件已保存。";
     fileStatusType.value = "success";
     showMessage("文件已保存。", "success");
@@ -588,15 +687,111 @@ async function saveAgentFile(): Promise<void> {
   }
 }
 
+async function refreshAll(): Promise<void> {
+  if (hasPendingChanges.value) {
+    const shouldContinue = await askConfirm({
+      message: "存在未保存改动，刷新会覆盖当前编辑内容，是否继续？",
+      danger: true,
+      confirmText: "继续刷新",
+    });
+    if (!shouldContinue) {
+      return;
+    }
+  }
+
+  await Promise.all([loadAvailableFiles(), loadAgentMap()]);
+  if (editingFile.value) {
+    await selectAgentFile(editingFile.value);
+  }
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.altKey) {
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    if (fileDirty.value) {
+      void saveAgentFile();
+      return;
+    }
+
+    if (mapDirty.value && !isEditableTarget(event.target)) {
+      void saveAgentMap();
+    }
+  }
+}
+
+function handleBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!hasPendingChanges.value) {
+    return;
+  }
+  event.preventDefault();
+  event.returnValue = "";
+}
+
 onMounted(() => {
   void Promise.all([loadAvailableFiles(), loadAgentMap()]);
+  document.addEventListener("keydown", handleKeydown);
+  window.addEventListener("beforeunload", handleBeforeUnload);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("beforeunload", handleBeforeUnload);
+});
+
+onBeforeRouteLeave(async () => {
+  if (!hasPendingChanges.value) {
+    return true;
+  }
+
+  return await askConfirm({
+    message: "存在未保存的 Agent 改动，确定要离开吗？",
+    danger: true,
+    confirmText: "放弃改动",
+  });
 });
 </script>
 
 <style scoped>
-.header-actions {
+.collapsed-list {
   display: flex;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.collapsed-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--tertiary-bg);
+  color: var(--secondary-text);
+  cursor: pointer;
+  padding: 0;
+}
+
+.collapsed-avatar {
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+  color: inherit;
+}
+
+.collapsed-empty {
+  color: var(--secondary-text);
 }
 
 .agent-files-page {
@@ -608,51 +803,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-/* 本页按钮兜底：确保保存按钮在任意主题/浏览器下都有可见边框和背景 */
-.agent-files-page .btn-primary,
-.agent-files-page .btn-success {
-  border-width: 1px;
-  border-style: solid;
-}
-
-.agent-files-page .btn-primary {
-  background: #1f6feb;
-  border-color: #1f6feb;
-  color: #fff;
-  background: var(--button-bg);
-  border-color: var(--button-bg);
-  color: var(--on-accent-text);
-}
-
-.agent-files-page .btn-success {
-  background: #1e8e3e;
-  border-color: #1e8e3e;
-  color: #fff;
-  background: var(--success-color);
-  border-color: var(--success-color);
-  color: var(--on-accent-text);
-}
-
-.agent-files-page .btn-primary:hover {
-  background: #1967d2;
-  border-color: #1967d2;
-  background: var(--button-hover-bg);
-  border-color: var(--button-hover-bg);
-}
-
-.agent-files-page .btn-success:hover {
-  background: #188038;
-  border-color: #188038;
-  background: var(--success-hover-bg);
-  border-color: var(--success-hover-bg);
-}
-
-.agent-files-page .btn-primary:focus-visible,
-.agent-files-page .btn-success:focus-visible {
-  outline: 2px solid var(--highlight-text);
-  outline-offset: 2px;
 }
 
 .agent-map-list {
@@ -793,6 +943,11 @@ onMounted(() => {
 
 .editing-file-display .material-symbols-outlined {
   font-size: var(--font-size-emphasis) !important;
+}
+
+.dirty-indicator {
+  color: var(--highlight-text);
+  font-size: var(--font-size-helper);
 }
 
 .file-content-editor {

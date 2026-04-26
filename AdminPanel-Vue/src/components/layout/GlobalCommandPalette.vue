@@ -1,117 +1,117 @@
 <template>
-  <Teleport to="body">
-    <div
-      v-if="isOpen"
-      class="command-palette"
-      role="dialog"
-      aria-modal="true"
-      aria-label="全局跳转"
-      @click="emit('close')"
+  <BaseModal
+    :model-value="isOpen"
+    aria-label="全局跳转"
+    @update:modelValue="handleModalVisibility"
+  >
+    <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+      <div v-bind="overlayAttrs" class="command-palette">
+        <div :ref="panelRef" v-bind="panelAttrs" class="command-panel">
+    <header class="command-header">
+      <div>
+        <p class="command-eyebrow">Global Jump</p>
+        <h2>页面、插件、最近访问都在这里</h2>
+      </div>
+      <button
+        type="button"
+        class="command-close"
+        aria-label="关闭全局跳转"
+        @click="emit('close')"
+      >
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </header>
+
+    <label class="command-search">
+      <span class="material-symbols-outlined">search</span>
+      <input
+        ref="searchInputRef"
+        v-model="searchQuery"
+        type="search"
+        placeholder="搜索页面、插件、最近访问..."
+        aria-label="搜索页面、插件、最近访问"
+        aria-controls="global-command-results"
+        :aria-activedescendant="activeDescendantId"
+        autocomplete="off"
+        @keydown="handleInputKeydown"
+      />
+    </label>
+
+    <div class="command-hints">
+      <span>↑ ↓ 选择</span>
+      <span>Enter 打开</span>
+      <span>Esc 关闭</span>
+    </div>
+
+    <section
+      v-if="resultSections.length === 0"
+      class="command-empty"
+      aria-live="polite"
     >
-      <div class="command-panel" @click.stop>
-        <header class="command-header">
-          <div>
-            <p class="command-eyebrow">Global Jump</p>
-            <h2>页面、插件、最近访问都在这里</h2>
-          </div>
-          <button
-            type="button"
-            class="command-close"
-            aria-label="关闭全局跳转"
-            @click="emit('close')"
-          >
-            <span class="material-symbols-outlined">close</span>
-          </button>
+      <span class="material-symbols-outlined">travel_explore</span>
+      <h3>没有匹配的结果</h3>
+      <p>换个关键词试试，或者直接打开插件中心继续找。</p>
+    </section>
+
+    <div v-else id="global-command-results" class="command-results" role="listbox">
+      <section
+        v-for="section in indexedSections"
+        :key="section.id"
+        class="command-section"
+      >
+        <header class="command-section-header">
+          <span>{{ section.title }}</span>
+          <span>{{ section.items.length }}</span>
         </header>
 
-        <label class="command-search">
-          <span class="material-symbols-outlined">search</span>
-          <input
-            ref="searchInputRef"
-            v-model="searchQuery"
-            type="search"
-            placeholder="搜索页面、插件、最近访问..."
-            aria-label="搜索页面、插件、最近访问"
-            aria-controls="global-command-results"
-            :aria-activedescendant="activeDescendantId"
-            autocomplete="off"
-            @keydown="handleInputKeydown"
-          />
-        </label>
-
-        <div class="command-hints">
-          <span>↑ ↓ 选择</span>
-          <span>Enter 打开</span>
-          <span>Esc 关闭</span>
-        </div>
-
-        <section
-          v-if="resultSections.length === 0"
-          class="command-empty"
-          aria-live="polite"
+        <button
+          v-for="item in section.items"
+          :id="getOptionId(item.index)"
+          :key="item.id"
+          type="button"
+          class="command-item"
+          :class="{ active: item.index === activeIndex }"
+          role="option"
+          :aria-selected="item.index === activeIndex"
+          :data-command-index="item.index"
+          @mouseenter="activeIndex = item.index"
+          @click="runEntry(item)"
         >
-          <span class="material-symbols-outlined">travel_explore</span>
-          <h3>没有匹配的结果</h3>
-          <p>换个关键词试试，或者直接打开插件中心继续找。</p>
-        </section>
+          <span class="command-item-icon material-symbols-outlined">
+            {{ item.icon }}
+          </span>
 
-        <div v-else id="global-command-results" class="command-results" role="listbox">
-          <section
-            v-for="section in indexedSections"
-            :key="section.id"
-            class="command-section"
-          >
-            <header class="command-section-header">
-              <span>{{ section.title }}</span>
-              <span>{{ section.items.length }}</span>
-            </header>
+          <span class="command-item-copy">
+            <span class="command-item-topline">
+              <strong>{{ item.label }}</strong>
+              <span class="command-kind">
+                {{ kindLabelMap[item.kind] }}
+              </span>
+            </span>
+            <span class="command-item-subtitle">{{ item.subtitle }}</span>
+          </span>
 
-            <button
-              v-for="item in section.items"
-              :id="getOptionId(item.index)"
-              :key="item.id"
-              type="button"
-              class="command-item"
-              :class="{ active: item.index === activeIndex }"
-              role="option"
-              :aria-selected="item.index === activeIndex"
-              :data-command-index="item.index"
-              @mouseenter="activeIndex = item.index"
-              @click="runEntry(item)"
+          <span class="command-item-badges">
+            <span
+              v-for="badge in item.badges.slice(0, 2)"
+              :key="`${item.id}-${badge}`"
+              class="command-badge"
             >
-              <span class="command-item-icon material-symbols-outlined">
-                {{ item.icon }}
-              </span>
-
-              <span class="command-item-copy">
-                <span class="command-item-topline">
-                  <strong>{{ item.label }}</strong>
-                  <span class="command-kind">
-                    {{ kindLabelMap[item.kind] }}
-                  </span>
-                </span>
-                <span class="command-item-subtitle">{{ item.subtitle }}</span>
-              </span>
-
-              <span class="command-item-badges">
-                <span
-                  v-for="badge in item.badges.slice(0, 2)"
-                  :key="`${item.id}-${badge}`"
-                  class="command-badge"
-                >
-                  {{ badge }}
-                </span>
-              </span>
-            </button>
-          </section>
+              {{ badge }}
+            </span>
+          </span>
+        </button>
+      </section>
+    </div>
         </div>
       </div>
-    </div>
-  </Teleport>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import BaseModal from "@/components/ui/BaseModal.vue";
 import type { NavItem } from "@/stores/app";
 import type { PluginInfo } from "@/types/api.plugin";
 import type { CommandPaletteEntryKind } from "@/utils/commandPalette";
@@ -247,6 +247,12 @@ function runEntry(item: { target: string; pluginName?: string }) {
   emit("close");
 }
 
+function handleModalVisibility(visible: boolean): void {
+  if (!visible) {
+    emit("close");
+  }
+}
+
 function handleInputKeydown(event: KeyboardEvent) {
   switch (event.key) {
     case "ArrowDown":
@@ -276,10 +282,6 @@ function handleInputKeydown(event: KeyboardEvent) {
       runEntry(activeItem);
       break;
     }
-    case "Escape":
-      event.preventDefault();
-      emit("close");
-      break;
     default:
       break;
   }
@@ -324,7 +326,7 @@ onUnmounted(() => {
 .command-palette {
   position: fixed;
   inset: 0;
-  z-index: 10002;
+  z-index: calc(var(--z-index-modal) + 1);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -336,7 +338,8 @@ onUnmounted(() => {
       transparent 36%
     ),
     var(--overlay-backdrop-strong);
-  backdrop-filter: blur(18px);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .command-panel {
@@ -630,6 +633,14 @@ onUnmounted(() => {
 
   .command-search input {
     font-size: var(--font-size-body);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .command-close,
+  .command-item,
+  .command-item-icon {
+    transition: none !important;
   }
 }
 </style>

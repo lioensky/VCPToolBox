@@ -5,6 +5,7 @@ export const APP_ROUTE_COMPONENTS = {
   "daily-notes-manager": () => import("@/views/DailyNotesManager.vue"),
   "vcp-forum": () => import("@/views/VcpForum.vue"),
   "image-cache-editor": () => import("@/views/ImageCacheEditor.vue"),
+  "emoji-gallery": () => import("@/views/EmojiGallery.vue"),
   "semantic-groups-editor": () => import("@/views/SemanticGroupsEditor.vue"),
   "vcptavern-editor": () => import("@/views/VcptavernEditor.vue"),
   "agent-files-editor": () => import("@/views/AgentFilesEditor.vue"),
@@ -22,7 +23,9 @@ export const APP_ROUTE_COMPONENTS = {
   "schedule-manager": () => import("@/views/ScheduleManager.vue"),
   "dream-manager": () => import("@/views/DreamManager.vue"),
   "server-log-viewer": () => import("@/views/ServerLogViewer.vue"),
+  "theme-editor": () => import("@/views/ThemeEditor.vue"),
   "placeholder-viewer": () => import("@/views/PlaceholderViewer.vue"),
   plugins: () => import("@/views/PluginsHub.vue"),
+  "plugin-store": () => import("@/views/PluginStore.vue"),
   "plugin-config": () => import("@/views/PluginConfig.vue"),
 } as const;

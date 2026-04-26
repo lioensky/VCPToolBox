@@ -494,6 +494,42 @@ class VCPTavern {
         const router = express.Router();
         router.use(express.json({ limit: '10mb' }));
 
+        const PRESET_NAME_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+        const RESOLVED_PRESETS_DIR = path.resolve(PRESETS_DIR);
+        const isValidPresetName = (name) => typeof name === 'string' && PRESET_NAME_RE.test(name);
+        const resolvePresetPath = (name) => {
+            const filePath = path.resolve(path.join(PRESETS_DIR, `${name}.json`));
+            // Defense in depth: ensure resolved path stays inside presets dir
+            if (filePath !== path.join(RESOLVED_PRESETS_DIR, `${name}.json`)) {
+                return null;
+            }
+            return filePath;
+        };
+        const validatePresetBody = (body) => {
+            if (!body || typeof body !== 'object' || Array.isArray(body)) {
+                return 'Invalid payload: expected object';
+            }
+            if (body.description !== undefined && typeof body.description !== 'string') {
+                return 'Invalid payload: description must be a string';
+            }
+            if (body.rules !== undefined) {
+                if (!Array.isArray(body.rules)) {
+                    return 'Invalid payload: rules must be an array';
+                }
+                for (let i = 0; i < body.rules.length; i++) {
+                    const rule = body.rules[i];
+                    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+                        return `Invalid rule at index ${i}: expected object`;
+                    }
+                    if (rule.content !== undefined && rule.content !== null
+                        && typeof rule.content !== 'string' && typeof rule.content !== 'object') {
+                        return `Invalid rule at index ${i}: content must be string or object`;
+                    }
+                }
+            }
+            return null;
+        };
+
         // 获取所有预设名称
         router.get('/presets', (req, res) => {
             res.json(Array.from(this.presets.keys()));
@@ -501,7 +537,11 @@ class VCPTavern {
 
         // 获取特定预设的详细内容
         router.get('/presets/:name', (req, res) => {
-            const preset = this.presets.get(req.params.name);
+            const presetName = req.params.name;
+            if (!isValidPresetName(presetName)) {
+                return res.status(400).json({ error: 'Invalid preset name' });
+            }
+            const preset = this.presets.get(presetName);
             if (preset) {
                 res.json(preset);
             } else {
@@ -511,13 +551,22 @@ class VCPTavern {
 
         // 保存/更新预设
         router.post('/presets/:name', async (req, res) => {
-            const presetName = req.params.name.replace(/[^a-zA-Z0-9_-]/g, ''); // Sanitize
-            if (!presetName) {
-                return res.status(400).json({ error: 'Invalid preset name.' });
+            const presetName = req.params.name;
+            if (!isValidPresetName(presetName)) {
+                return res.status(400).json({
+                    error: 'Invalid preset name. Only letters, digits, "_" and "-" are allowed (max 128 chars).',
+                });
+            }
+            const bodyError = validatePresetBody(req.body);
+            if (bodyError) {
+                return res.status(400).json({ error: bodyError });
+            }
+            const filePath = resolvePresetPath(presetName);
+            if (!filePath) {
+                return res.status(400).json({ error: 'Invalid preset path' });
             }
             const presetData = req.body;
             try {
-                const filePath = path.join(PRESETS_DIR, `${presetName}.json`);
                 await fs.writeFile(filePath, JSON.stringify(presetData, null, 2));
                 this.presets.set(presetName, presetData);
                 if (this.debugMode) console.log(`[VCPTavern] 预设已保存: ${presetName}`);
@@ -531,8 +580,14 @@ class VCPTavern {
         // 删除预设
         router.delete('/presets/:name', async (req, res) => {
             const presetName = req.params.name;
+            if (!isValidPresetName(presetName)) {
+                return res.status(400).json({ error: 'Invalid preset name' });
+            }
+            const filePath = resolvePresetPath(presetName);
+            if (!filePath) {
+                return res.status(400).json({ error: 'Invalid preset path' });
+            }
             try {
-                const filePath = path.join(PRESETS_DIR, `${presetName}.json`);
                 await fs.unlink(filePath);
                 this.presets.delete(presetName);
                 if (this.debugMode) console.log(`[VCPTavern] 预设已删除: ${presetName}`);

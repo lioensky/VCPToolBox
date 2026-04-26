@@ -114,10 +114,6 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     lastAuthCheckAt.value = 0
     authCheckPromise = null
-
-    if (typeof window !== 'undefined') {
-      sessionStorage.clear()
-    }
   }
 
   function clearError(): void {

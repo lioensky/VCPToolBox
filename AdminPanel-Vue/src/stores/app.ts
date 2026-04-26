@@ -11,6 +11,7 @@ import {
 } from "@/app/routes/manifest";
 import { pluginApi } from "@/api";
 import { useLocalStorage } from "@/composables/useLocalStorage";
+import { applyActiveTheme } from "@/features/theme-editor/themeEngine";
 import type { PluginInfo } from "@/types/api.plugin";
 
 export type NavItem = AppNavItem;
@@ -56,6 +57,9 @@ export const useAppStore = defineStore("app", () => {
     },
     { immediate: true }
   );
+
+  // 启动时应用保存的自定义主题（覆盖 -dark/-light 变量，切换模式时 CSS 自动选择）
+  applyActiveTheme();
 
   const pluginMap = computed(
     () => new Map(plugins.value.map((plugin) => [getPluginName(plugin), plugin]))

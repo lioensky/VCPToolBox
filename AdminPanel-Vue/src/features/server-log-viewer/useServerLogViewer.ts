@@ -4,6 +4,7 @@ import { systemApi } from '@/api'
 import { usePolling } from '@/composables/usePolling'
 import { useVirtualScroll } from '@/composables/useVirtualScroll'
 import { useLocalStorage } from '@/composables/useLocalStorage'
+import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 import { createLogger } from '@/utils/logger'
 
@@ -50,11 +51,16 @@ export function useServerLogViewer() {
 
   const filteredLines = computed(() => {
     const keyword = filterText.value.trim()
-    const source = keyword
-      ? logLines.value.filter((line) => line.includes(keyword))
-      : logLines.value
+    let source: string[]
+    if (keyword) {
+      const lowerKeyword = keyword.toLowerCase()
+      source = logLines.value.filter((line) => line.toLowerCase().includes(lowerKeyword))
+    } else {
+      source = logLines.value
+    }
 
-    const limited = source.length > logLimit.value ? source.slice(-logLimit.value) : source
+    const limit = Math.max(100, Math.min(logLimit.value || 5000, 100000))
+    const limited = source.length > limit ? source.slice(-limit) : source
 
     if (isReverse.value) {
       return [...limited].reverse()
@@ -94,7 +100,7 @@ export function useServerLogViewer() {
 
     const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight
     const isNearBottom = scrollBottom < 100
-    showScrollToBottom.value = !isNearBottom && autoScroll.value
+    showScrollToBottom.value = !isNearBottom
   }
 
   function updateContainerHeight() {
@@ -143,14 +149,19 @@ export function useServerLogViewer() {
     showMessage('日志已复制到剪贴板', 'success')
   }
 
-  function clearLog() {
-    if (confirm('确定要清空日志显示吗？（这不会删除实际日志文件）')) {
-      logLines.value = []
-      logOffset.value = 0
-      isIncrementalReady.value = false
-      pendingLineFragment.value = ''
-      showMessage('日志显示已清空', 'success')
+  async function clearLog() {
+    if (!(await askConfirm({
+      message: '确定要清空日志显示吗？（这不会删除实际日志文件）',
+      danger: true,
+      confirmText: '清空',
+    }))) {
+      return
     }
+
+    logLines.value = []
+    pendingLineFragment.value = ''
+    highlightCache.clear()
+    showMessage('日志显示已清空', 'success')
   }
 
   function getLineClass(content: string): string {
@@ -172,7 +183,7 @@ export function useServerLogViewer() {
   function highlightText(text: string): string {
     const regex = highlightRegex.value
     if (!regex) {
-      return text
+      return DOMPurify.sanitize(text)
     }
 
     const cacheKey = `${filterText.value}\u0000${text}`
@@ -193,11 +204,11 @@ export function useServerLogViewer() {
   }
 
   function trimLogLines(lines: string[]): string[] {
-    return lines.length > logLimit.value ? lines.slice(-logLimit.value) : lines
+    const limit = Math.max(100, Math.min(logLimit.value || 5000, 100000))
+    return lines.length > limit ? lines.slice(-limit) : lines
   }
 
   function splitLogChunk(content: string, carry = ''): {
-    completeLines: string[]
     displayedLines: string[]
     trailingFragment: string
   } {
@@ -214,7 +225,6 @@ export function useServerLogViewer() {
     const displayedLines = trailingFragment ? [...segments, trailingFragment] : segments
 
     return {
-      completeLines: segments,
       displayedLines,
       trailingFragment,
     }
@@ -308,7 +318,6 @@ export function useServerLogViewer() {
   watch(
     () => logLines.value.length,
     () => {
-      highlightCache.clear()
       updateContainerHeight()
     },
     { flush: 'post' }
