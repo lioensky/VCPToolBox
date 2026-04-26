@@ -84,37 +84,118 @@ class ToolApprovalManager {
         return commands;
     }
 
-    shouldApprove(toolName, toolArgs = {}) {
+    parseApprovalRule(entry) {
+        if (typeof entry !== 'string') {
+            return null;
+        }
+
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        const silentSuffix = '::SilentReject';
+        const isSilentRule = trimmed.endsWith(silentSuffix);
+        const baseRule = isSilentRule
+            ? trimmed.slice(0, -silentSuffix.length).trim()
+            : trimmed;
+
+        if (!baseRule) {
+            return null;
+        }
+
+        return {
+            rawRule: trimmed,
+            baseRule,
+            notifyAiOnReject: !isSilentRule
+        };
+    }
+
+    getApprovalDecision(toolName, toolArgs = {}) {
+        const defaultDecision = {
+            requiresApproval: false,
+            notifyAiOnReject: true,
+            matchedRule: null,
+            matchedCommand: null
+        };
+
         if (!this.config.enabled) {
-            return false;
+            return defaultDecision;
         }
 
         if (this.config.approveAll) {
             console.log(`[ToolApprovalManager] 🛡️ [${toolName}] 所有工具均需审核 (approveAll=true)`);
-            return true;
+            return {
+                requiresApproval: true,
+                notifyAiOnReject: true,
+                matchedRule: '__APPROVE_ALL__',
+                matchedCommand: null
+            };
         }
 
         const approvalList = Array.isArray(this.config.approvalList) ? this.config.approvalList : [];
-        const matchedToolRule = approvalList.includes(toolName);
-        if (matchedToolRule) {
-            console.log(`[ToolApprovalManager] 🛡️ [${toolName}] 命中工具级审核规则，准备发送请求`);
-            return true;
-        }
+        const parsedRules = approvalList
+            .map(entry => this.parseApprovalRule(entry))
+            .filter(Boolean);
 
         const commands = this.extractCommands(toolArgs);
-        for (const command of commands) {
-            const commandRule = `${toolName}:${command}`;
-            if (approvalList.includes(commandRule)) {
-                console.log(`[ToolApprovalManager] 🛡️ [${toolName}] 命中命令级审核规则 [${commandRule}]，准备发送请求`);
-                return true;
+        let bestMatch = null;
+
+        const considerMatch = (rule, specificity, matchedCommand = null) => {
+            if (!bestMatch) {
+                bestMatch = { ...rule, specificity, matchedCommand };
+                return;
             }
+
+            if (specificity > bestMatch.specificity) {
+                bestMatch = { ...rule, specificity, matchedCommand };
+                return;
+            }
+
+            if (
+                specificity === bestMatch.specificity &&
+                rule.notifyAiOnReject === false &&
+                bestMatch.notifyAiOnReject !== false
+            ) {
+                bestMatch = { ...rule, specificity, matchedCommand };
+            }
+        };
+
+        for (const rule of parsedRules) {
+            if (rule.baseRule === toolName) {
+                considerMatch(rule, 1, null);
+            }
+
+            for (const command of commands) {
+                const commandRule = `${toolName}:${command}`;
+                if (rule.baseRule === commandRule) {
+                    considerMatch(rule, 2, command);
+                }
+            }
+        }
+
+        if (bestMatch) {
+            const scope = bestMatch.specificity === 2 ? '命令级' : '工具级';
+            const silentTag = bestMatch.notifyAiOnReject === false ? '，拒绝时不提示AI' : '';
+            console.log(`[ToolApprovalManager] 🛡️ [${toolName}] 命中${scope}审核规则 [${bestMatch.rawRule}]，准备发送请求${silentTag}`);
+            return {
+                requiresApproval: true,
+                notifyAiOnReject: bestMatch.notifyAiOnReject,
+                matchedRule: bestMatch.rawRule,
+                matchedCommand: bestMatch.matchedCommand || null
+            };
         }
 
         if (this.config.debugMode) {
             const commandInfo = commands.length > 0 ? `，commands=${JSON.stringify(commands)}` : '';
             console.log(`[ToolApprovalManager] [${toolName}] 不需要审核${commandInfo}`);
         }
-        return false;
+
+        return defaultDecision;
+    }
+
+    shouldApprove(toolName, toolArgs = {}) {
+        return this.getApprovalDecision(toolName, toolArgs).requiresApproval;
     }
 
     getTimeoutMs() {

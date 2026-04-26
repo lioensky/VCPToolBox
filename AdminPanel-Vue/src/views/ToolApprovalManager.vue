@@ -27,9 +27,9 @@
           <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
         </div>
         <div class="config-item">
-          <label for="tool-approval-list">被审核工具名单 (每行一个工具名称)</label>
-          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor"></textarea>
-          <p class="aa-hint">当"开启所有工具调用审核"关闭时，仅对此名单中的工具进行审核。</p>
+          <label for="tool-approval-list">被审核规则名单 (每行一条规则)</label>
+          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"></textarea>
+          <p class="aa-hint">支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。</p>
         </div>
         <div class="config-footer">
           <button type="submit" class="btn-primary">保存审核配置</button>
