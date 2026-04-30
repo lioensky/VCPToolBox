@@ -252,6 +252,7 @@ const localModules = [
     'cache',           // 多媒体/图像缓存管理
     'dailyNotes',      // 日记知识库文件管理
     'agentAssistant',  // Agent 助手配置（纯文件 I/O）
+    // AgentDream 审批依赖主进程插件运行态，应走下方 /admin_api 代理。
 ];
 
 // 日志路径获取函数（本地计算，不依赖主进程 logger 实例）

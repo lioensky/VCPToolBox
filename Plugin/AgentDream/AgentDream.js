@@ -316,14 +316,17 @@ async function triggerDream(agentName) {
 
         console.log(`[AgentDream] 🌙 Dream narrative received for ${agentName} (${cleanedNarrative.length} chars)`);
 
-        // 持久化梦记录 JSON（包含完整梦叙事、记忆树）
+        // 从梦叙事中提取可审批的结构化操作
+        const extractedOperations = await _extractOperationsFromDreamNarrative(cleanedNarrative, dreamTree, agentName);
+
+        // 持久化梦记录 JSON（包含完整梦叙事、记忆树与待审批操作）
         const dreamSessionLog = {
             dreamId: dreamId,
             agentName: agentName,
             timestamp: new Date().toISOString(),
             dreamNarrative: cleanedNarrative,
             dreamTree: dreamTree,
-            operations: [] // 后续 processToolCall 会追加
+            operations: extractedOperations
         };
         const sessionLogFileName = `${agentName}_${_getDateStr()}_${dreamId.split('-').pop()}.json`;
         const sessionLogPath = path.join(__dirname, 'dream_logs', sessionLogFileName);
@@ -477,7 +480,7 @@ async function processToolCall(args) {
     if (args.command && !args.command1) {
         args.command1 = args.command;
         // 同步迁移所有无后缀的参数到后缀1
-        const paramKeys = ['sourceDiaries', 'newContent', 'targetDiary', 'reason', 'referenceDiaries', 'insightContent'];
+        const paramKeys = ['sourceDiaries', 'newContent', 'targetDiary', 'reason', 'referenceDiaries', 'insightContent', 'Tag', 'tags', 'naturalTags'];
         for (const key of paramKeys) {
             if (args[key] && !args[`${key}1`]) {
                 args[`${key}1`] = args[key];
@@ -587,6 +590,7 @@ async function _parseOperation(command, index, args) {
                 sourceDiaries,
                 sourceContents,
                 newContent: args[`newContent${suffix}`] || '',
+                naturalTags: _parseTagList(args[`Tag${suffix}`] || args[`tags${suffix}`] || args[`naturalTags${suffix}`] || ''),
                 status: 'pending_review'
             };
         }
@@ -619,6 +623,7 @@ async function _parseOperation(command, index, args) {
                 operationId,
                 referenceDiaries,
                 insightContent: args[`insightContent${suffix}`] || '',
+                naturalTags: _parseTagList(args[`Tag${suffix}`] || args[`tags${suffix}`] || args[`naturalTags${suffix}`] || ''),
                 suggestedMaid: args[`maid`] || args[`agent_name`] || '未知',
                 suggestedDate: _getDateStr(),
                 status: 'pending_review'
@@ -637,6 +642,531 @@ async function _parseOperation(command, index, args) {
 }
 
 /**
+ * 从梦叙事自然语言中提取待审批操作。
+ * 当前优先支持 dreampost 模板中常见的三类建议：
+ * - DiaryMerge（通过 LocalURL / 文件路径识别源日记）
+ * - DiaryDelete（预留）
+ * - DreamInsight（提取标题/摘要/关联记忆）
+ */
+async function _extractOperationsFromDreamNarrative(narrative, dreamTree, agentName) {
+    if (typeof narrative !== 'string' || !narrative.trim()) return [];
+
+    const blockMatch = narrative.match(/【可能的记忆整理建议】([\s\S]*?)(?:\n---\n|\n【梦醒感悟】|$)/);
+    if (!blockMatch) return [];
+
+    const block = blockMatch[1];
+    const operations = [];
+    let opIndex = 1;
+
+    const knownDiaryMap = _buildDreamDiaryLookup(dreamTree);
+    const structuredOperations = await _extractStructuredOperationsFromBlock(block, narrative, knownDiaryMap, agentName);
+    if (structuredOperations.length > 0) {
+        return structuredOperations;
+    }
+
+    const sections = _splitDreamOperationSections(block);
+    const insightSections = sections.filter(item => /DreamInsight/i.test(item.command));
+    let hasCreatedInsight = false;
+
+    for (const { command, section } of sections) {
+
+        if (/DiaryMerge/i.test(command)) {
+            const sourceDiaries = _extractDiaryRefsFromText(section, knownDiaryMap);
+            if (sourceDiaries.length < 2) continue;
+
+            const sourceContents = await _readDiaryContents(sourceDiaries);
+
+            const reason = _extractLabeledBlock(section, ['合并理由', '删除理由', '理由', 'reason']);
+            const mergedContent = _buildMergeDraft(sourceDiaries, sourceContents, reason);
+
+            operations.push({
+                type: 'merge',
+                operationId: `op-${opIndex++}`,
+                sourceDiaries,
+                sourceContents,
+                newContent: mergedContent,
+                naturalTags: _extractNaturalDreamTags(narrative),
+                status: 'pending_review',
+                extractedFromNarrative: true
+            });
+        } else if (/DiaryDelete/i.test(command)) {
+            const refs = _extractDiaryRefsFromText(section, knownDiaryMap);
+            const targetDiary = refs[0];
+            if (!targetDiary) continue;
+
+            let targetContent = '';
+            try {
+                targetContent = await fsPromises.readFile(_urlToFilePath(targetDiary), 'utf-8');
+            } catch (e) {
+                targetContent = `[读取失败: ${e.message}]`;
+            }
+
+            const reason = _extractLabeledBlock(section, ['删除理由', '理由', 'reason']);
+            operations.push({
+                type: 'delete',
+                operationId: `op-${opIndex++}`,
+                targetDiary,
+                targetContent,
+                reason: reason || '梦境建议删除该日记。',
+                status: 'pending_review',
+                extractedFromNarrative: true
+            });
+        } else if (/DreamInsight/i.test(command)) {
+            if (hasCreatedInsight) continue;
+            hasCreatedInsight = true;
+
+            const referenceDiaries = _extractDiaryRefsFromText(section, knownDiaryMap);
+            const title = _extractInsightTitle(section) || '梦醒感悟';
+            const allInsightSections = insightSections.map(item => item.section);
+            const insightContent = _buildInsightDraft(narrative, allInsightSections, title, referenceDiaries, agentName);
+            const naturalTags = _extractNaturalDreamTags(narrative);
+
+            operations.push({
+                type: 'insight',
+                operationId: `op-${opIndex++}`,
+                referenceDiaries,
+                insightContent,
+                naturalTags,
+                suggestedMaid: agentName,
+                suggestedDate: _getDateStrForDailyNote(),
+                status: 'pending_review',
+                extractedFromNarrative: true
+            });
+        }
+    }
+
+    return operations;
+}
+
+async function _extractStructuredOperationsFromBlock(block, narrative, knownDiaryMap, agentName) {
+    const payload = _parseStructuredOperationPayload(block);
+    if (!payload || !Array.isArray(payload.operations)) return [];
+
+    const operations = [];
+    let opIndex = 1;
+    let hasCreatedInsight = false;
+    const naturalDreamTags = _extractNaturalDreamTags(narrative);
+    const insightEntries = payload.operations.filter(op => _normalizeDreamOperationType(op?.type) === 'insight');
+
+    for (const rawOperation of payload.operations) {
+        const type = _normalizeDreamOperationType(rawOperation?.type);
+
+        if (type === 'merge') {
+            const sourceDiaries = _resolveKnownDiaryRefs(rawOperation.candidates || rawOperation.sourceDiaries, knownDiaryMap);
+            if (sourceDiaries.length < 2) continue;
+
+            const sourceContents = await _readDiaryContents(sourceDiaries);
+            const reason = String(rawOperation.reason || '').trim();
+            const mergedContent = _buildMergeDraft(sourceDiaries, sourceContents, reason);
+
+            operations.push({
+                type: 'merge',
+                operationId: `op-${opIndex++}`,
+                sourceDiaries,
+                sourceContents,
+                newContent: mergedContent,
+                naturalTags: _mergeTagArrays(rawOperation.tags, naturalDreamTags),
+                status: 'pending_review',
+                extractedFromNarrative: true,
+                extractionProtocol: 'json-v1'
+            });
+        } else if (type === 'delete') {
+            const targetDiary = _resolveKnownDiaryRef(rawOperation.target || rawOperation.targetDiary, knownDiaryMap);
+            if (!targetDiary) continue;
+
+            let targetContent = '';
+            try {
+                targetContent = await fsPromises.readFile(_urlToFilePath(targetDiary), 'utf-8');
+            } catch (e) {
+                targetContent = `[读取失败: ${e.message}]`;
+            }
+
+            operations.push({
+                type: 'delete',
+                operationId: `op-${opIndex++}`,
+                targetDiary,
+                targetContent,
+                reason: String(rawOperation.reason || '').trim() || '梦境建议删除该日记。',
+                status: 'pending_review',
+                extractedFromNarrative: true,
+                extractionProtocol: 'json-v1'
+            });
+        } else if (type === 'insight') {
+            if (hasCreatedInsight) continue;
+            hasCreatedInsight = true;
+
+            const title = String(rawOperation.title || '').trim() || '梦醒感悟';
+            const referenceDiaries = _resolveKnownDiaryRefs(rawOperation.referenceDiaries || rawOperation.references, knownDiaryMap);
+            const insightContent = _buildInsightDraftFromStructured(narrative, insightEntries, title, referenceDiaries);
+
+            operations.push({
+                type: 'insight',
+                operationId: `op-${opIndex++}`,
+                referenceDiaries,
+                insightContent,
+                naturalTags: _mergeTagArrays(...insightEntries.map(op => op.tags), naturalDreamTags),
+                suggestedMaid: agentName,
+                suggestedDate: _getDateStrForDailyNote(),
+                status: 'pending_review',
+                extractedFromNarrative: true,
+                extractionProtocol: 'json-v1'
+            });
+        }
+    }
+
+    return operations;
+}
+
+function _parseStructuredOperationPayload(block) {
+    const candidates = [];
+    const fencedMatches = [...String(block || '').matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+    for (const match of fencedMatches) {
+        if (match[1] && /"operations"\s*:/.test(match[1])) candidates.push(match[1]);
+    }
+
+    const trimmed = String(block || '').trim();
+    if (/^\{[\s\S]*"operations"\s*:/.test(trimmed)) candidates.push(trimmed);
+
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate.trim());
+            if (parsed && Array.isArray(parsed.operations)) return parsed;
+        } catch (e) {
+            console.warn(`[AgentDream] Structured dream operation JSON parse failed, falling back to legacy parser: ${e.message}`);
+        }
+    }
+
+    return null;
+}
+
+function _normalizeDreamOperationType(type) {
+    const normalized = String(type || '').trim().toLowerCase();
+    if (normalized === 'diarymerge' || normalized === 'merge') return 'merge';
+    if (normalized === 'diarydelete' || normalized === 'delete') return 'delete';
+    if (normalized === 'dreaminsight' || normalized === 'insight') return 'insight';
+    return '';
+}
+
+function _resolveKnownDiaryRefs(value, knownDiaryMap) {
+    const refs = Array.isArray(value) ? value : String(value || '').split(/[\n,]+/);
+    return refs.map(ref => _resolveKnownDiaryRef(ref, knownDiaryMap)).filter(Boolean);
+}
+
+function _resolveKnownDiaryRef(value, knownDiaryMap) {
+    const raw = String(value || '').trim().replace(/\\/g, '/');
+    if (!raw) return '';
+
+    if (knownDiaryMap.has(raw)) return knownDiaryMap.get(raw);
+
+    const basename = path.basename(raw);
+    if (knownDiaryMap.has(basename)) return knownDiaryMap.get(basename);
+
+    const normalizedUrl = raw.startsWith('file:///') ? raw : `file:///${raw}`;
+    const knownUrls = new Set(knownDiaryMap.values());
+    return knownUrls.has(normalizedUrl) ? normalizedUrl : '';
+}
+
+async function _readDiaryContents(diaryUrls) {
+    const contents = {};
+    for (const diaryUrl of diaryUrls) {
+        const filePath = _urlToFilePath(diaryUrl);
+        try {
+            contents[diaryUrl] = await fsPromises.readFile(filePath, 'utf-8');
+        } catch (e) {
+            contents[diaryUrl] = `[读取失败: ${e.message}]`;
+        }
+    }
+    return contents;
+}
+
+function _splitDreamOperationSections(block) {
+    const sections = [];
+    const headerPattern = /(?:^|\n)(?:\d+\.\s*)?(?:[-*]\s*)?(?:\*\*)?\s*(DiaryMerge|DiaryDelete|DreamInsight)\s*(?:（[^）]*）|\([^)]+\))?\s*(?:\*\*)?\s*:?\s*/gi;
+    const matches = [...block.matchAll(headerPattern)];
+
+    for (let i = 0; i < matches.length; i++) {
+        const match = matches[i];
+        const start = match.index + match[0].length;
+        const end = i + 1 < matches.length ? matches[i + 1].index : block.length;
+        const section = block.slice(start, end).trim();
+        if (!section) continue;
+        sections.push({ command: match[1], section });
+    }
+
+    return sections;
+}
+
+function _extractLabeledBlock(text, labels) {
+    for (const label of labels) {
+        const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = new RegExp(`(?:^|\\n)\\s*(?:[-*]\\s*)?${escaped}\\s*[:：]\\s*([\\s\\S]*?)(?=\\n\\s*(?:[-*]\\s*)?(?:title|content|tags|candidates|target|status|location|标题|内容|建议内容|标签|候选|目标|状态|位置|建议归档位置|归档位置|理由|合并理由|删除理由|reason)\\s*[:：]|\\n\\s*\\\`\\\`\\\`|$)`, 'i');
+        const match = text.match(pattern);
+        if (match && match[1]) return match[1].trim();
+    }
+    return '';
+}
+
+function _buildDreamDiaryLookup(dreamTree) {
+    const map = new Map();
+    const visit = (item) => {
+        if (!item || typeof item !== 'object') return;
+        const rawPath = item.filePath || item.fullPath;
+        if (!rawPath) return;
+        const normalized = String(rawPath).replace(/\\/g, '/');
+        const basename = path.basename(normalized);
+        const fileUrl = normalized.startsWith('file:///') ? normalized : `file:///${normalized}`;
+        map.set(basename, fileUrl);
+        map.set(normalized, fileUrl);
+    };
+
+    const groups = [
+        dreamTree?.recent?.seeds,
+        dreamTree?.recent?.resonanceL1,
+        dreamTree?.recent?.cascadeL2,
+        dreamTree?.mid?.seeds,
+        dreamTree?.mid?.cascadeL1,
+        dreamTree?.deep?.recalls
+    ];
+
+    for (const group of groups) {
+        if (Array.isArray(group)) group.forEach(visit);
+    }
+
+    return map;
+}
+
+function _extractDiaryRefsFromText(text, knownDiaryMap) {
+    const refs = new Set();
+
+    const fileUrlMatches = text.match(/file:\/\/\/[^\s`，。；;）)\]\}"]+\.txt/g) || [];
+    for (const url of fileUrlMatches) refs.add(url.replace(/\\/g, '/'));
+
+    const txtMatches = text.match(/[\w\u4e00-\u9fa5\-_.]+\.txt/g) || [];
+    for (const name of txtMatches) {
+        const hit = knownDiaryMap.get(name);
+        if (hit) refs.add(hit);
+    }
+
+    return [...refs];
+}
+
+function _buildMergeDraft(sourceDiaries, sourceContents, reason) {
+    const body = [
+        `[梦境整理] AgentDream 自动建议合并 ${sourceDiaries.length} 篇高相似日记。`,
+        reason ? `合并理由：${reason}` : '',
+        '',
+        '源日记摘要：',
+        ...sourceDiaries.map((url, idx) => {
+            const content = sourceContents[url] || '';
+            const firstLine = content.split(/\r?\n/).find(line => line.trim()) || '';
+            return `${idx + 1}. ${_fileUrlToDisplayPath(url)} — ${firstLine}`;
+        }),
+    ].filter(Boolean);
+
+    return body.join('\n');
+}
+
+function _extractInsightTitle(text) {
+    const bold = text.match(/\*\*([^*]+)\*\*/g);
+    if (bold && bold.length > 1) {
+        return bold[1].replace(/\*/g, '').trim();
+    }
+    const title = _extractLabeledBlock(text, ['标题', 'title']);
+    return title.split(/\r?\n/)[0]?.trim() || '';
+}
+
+function _extractInsightSummary(text) {
+    return _extractLabeledBlock(text, ['摘要', '建议内容', '内容', 'content', 'summary']) ||
+        _extractLabeledBlock(text, ['主题可为']);
+}
+
+function _extractNarrativeChapter(narrative, chapterTitle) {
+    const escapedTitle = chapterTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(?:^|\\n)【${escapedTitle}】\\s*([\\s\\S]*?)(?=\\n【[^】]+】|$)`);
+    const match = String(narrative || '').match(pattern);
+    return match && match[1] ? match[1].trim() : '';
+}
+
+function _buildInsightDraft(narrative, sections, title, referenceDiaries, agentName) {
+    const dreamAwakening = _extractNarrativeChapter(narrative, '梦醒感悟');
+    const dreamAssociations = _extractNarrativeChapter(narrative, '梦中关联');
+    const insightSections = Array.isArray(sections) ? sections : [sections];
+    const summaries = insightSections
+        .map(section => ({
+            title: _extractInsightTitle(section),
+            summary: _extractInsightSummary(section) || section
+        }))
+        .filter(item => item.summary && item.summary.trim());
+    const summary = summaries[0]?.summary || '';
+
+    const body = [
+        '[DreamInsight]',
+        `标题：${title}`,
+        '性质：由梦境自动提取，待审批',
+        ''
+    ];
+
+    if (dreamAwakening) {
+        body.push('梦醒感悟：', dreamAwakening, '');
+        if (dreamAssociations) {
+            body.push('梦中关联：', dreamAssociations, '');
+        }
+        if (summaries.length > 0) {
+            body.push('审批建议主题：');
+            for (const item of summaries) {
+                const label = item.title || '梦感悟建议';
+                body.push(`- ${label}：${item.summary.trim()}`);
+            }
+            body.push('');
+        }
+    } else {
+        body.push('摘要：', summary.trim(), '');
+    }
+
+    body.push(
+        '关联记忆：',
+        referenceDiaries.map(u => `- ${_fileUrlToDisplayPath(u)}`).join('\n')
+    );
+
+    return body.join('\n');
+}
+
+function _buildInsightDraftFromStructured(narrative, insightEntries, title, referenceDiaries) {
+    const dreamAwakening = _extractNarrativeChapter(narrative, '梦醒感悟');
+    const dreamAssociations = _extractNarrativeChapter(narrative, '梦中关联');
+    const summaries = (Array.isArray(insightEntries) ? insightEntries : [])
+        .map(entry => ({
+            title: String(entry?.title || '').trim(),
+            summary: String(entry?.reason || entry?.summary || entry?.content || '').trim()
+        }))
+        .filter(item => item.title || item.summary);
+
+    const body = [
+        '[DreamInsight]',
+        `标题：${title}`,
+        '性质：由梦境自动提取，待审批',
+        ''
+    ];
+
+    if (dreamAwakening) {
+        body.push('梦醒感悟：', dreamAwakening, '');
+        if (dreamAssociations) {
+            body.push('梦中关联：', dreamAssociations, '');
+        }
+        if (summaries.length > 0) {
+            body.push('审批建议主题：');
+            for (const item of summaries) {
+                const label = item.title || '梦感悟建议';
+                const summary = item.summary || '梦境建议沉淀该主题。';
+                body.push(`- ${label}：${summary}`);
+            }
+            body.push('');
+        }
+    } else {
+        const fallback = summaries.map(item => item.summary || item.title).filter(Boolean).join('\n');
+        body.push('摘要：', fallback || '梦境建议沉淀该主题。', '');
+    }
+
+    body.push(
+        '关联记忆：',
+        referenceDiaries.map(u => `- ${_fileUrlToDisplayPath(u)}`).join('\n')
+    );
+
+    return body.join('\n');
+}
+
+function _uniqueTags(tags) {
+    const seen = new Set();
+    return tags
+        .map(tag => String(tag || '').trim())
+        .filter(Boolean)
+        .filter(tag => {
+            const key = tag.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .join(', ');
+}
+
+function _mergeTagArrays(...tagGroups) {
+    const merged = [];
+    for (const group of tagGroups) {
+        if (Array.isArray(group)) {
+            merged.push(...group);
+        } else if (typeof group === 'string') {
+            merged.push(..._parseTagList(group));
+        }
+    }
+    return _uniqueTags(merged).split(', ').filter(Boolean);
+}
+
+function _parseTagList(text) {
+    return String(text || '')
+        .replace(/^Tag\s*[:：]\s*/i, '')
+        .split(/[，,、；;\n]+/)
+        .map(tag => tag.replace(/^[-*]\s*/, '').trim())
+        .filter(tag => tag.length <= 24 && (tag.length >= 2 || /^[\u4e00-\u9fa5]$/.test(tag)));
+}
+
+function _extractNaturalDreamTags(narrative) {
+    const tagChapter = _extractNarrativeChapter(narrative, 'Tag');
+    if (tagChapter) return _parseTagList(tagChapter);
+
+    const trailingTag = String(narrative || '').match(/(?:^|\n)Tag\s*[:：]\s*([^\n]+)\s*$/i);
+    return trailingTag ? _parseTagList(trailingTag[1]) : [];
+}
+
+function _extractTagsFromContent(content) {
+    const tagLine = String(content || '').match(/(?:^|\n)Tag\s*[:：]\s*([^\n]+)\s*$/i);
+    return tagLine ? _parseTagList(tagLine[1]) : [];
+}
+
+function _buildMergeTags(operation, dreamLog) {
+    const sourceTags = [];
+    for (const content of Object.values(operation.sourceContents || {})) {
+        sourceTags.push(..._extractTagsFromContent(content));
+    }
+    const naturalTags = Array.isArray(operation.naturalTags) ? operation.naturalTags : [];
+    return _uniqueTags([
+        '梦境整理',
+        '日记合并',
+        ...sourceTags,
+        ...naturalTags
+    ]);
+}
+
+function _buildInsightTags(operation, dreamLog, maidName) {
+    const naturalTags = Array.isArray(operation.naturalTags) ? operation.naturalTags : [];
+    return _uniqueTags([
+        '梦感悟',
+        '梦境回廊',
+        ...naturalTags
+    ]);
+}
+
+function _fileUrlToDisplayPath(fileUrl) {
+    if (!fileUrl) return '';
+    return fileUrl.replace('file:///', '').replace(/\//g, path.sep);
+}
+
+function _getDateStrForDailyNote() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function _normalizeDailyNoteDate(value) {
+    const raw = String(value || '').trim();
+    const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+    const dashed = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    if (dashed) {
+        return `${dashed[1]}-${String(dashed[2]).padStart(2, '0')}-${String(dashed[3]).padStart(2, '0')}`;
+    }
+    return _getDateStrForDailyNote();
+}
+
+/**
  * 将 file:/// URL 转换为本地文件路径
  */
 function _urlToFilePath(fileUrl) {
@@ -644,6 +1174,344 @@ function _urlToFilePath(fileUrl) {
         return fileUrl.replace('file:///', '').replace(/\//g, path.sep);
     }
     return fileUrl; // 如果不是 file:// URL，直接当路径用
+}
+
+function _sanitizeFileNamePart(value) {
+    return String(value || '未知').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || '未知';
+}
+
+function _isPathWithinBase(targetPath, basePath) {
+    const resolvedTarget = path.resolve(targetPath);
+    const resolvedBase = path.resolve(basePath);
+    return resolvedTarget === resolvedBase || resolvedTarget.startsWith(resolvedBase + path.sep);
+}
+
+function _safeResolveDreamLogPath(logFileName) {
+    const safeName = path.basename(String(logFileName || ''));
+    if (!safeName || !safeName.endsWith('.json') || safeName !== String(logFileName || '')) {
+        throw new Error('Invalid dream log filename.');
+    }
+    const logsDir = path.join(__dirname, 'dream_logs');
+    const logPath = path.join(logsDir, safeName);
+    if (!_isPathWithinBase(logPath, logsDir)) {
+        throw new Error('Security error: dream log path escaped logs directory.');
+    }
+    return logPath;
+}
+
+function _getDailyNoteRootPath() {
+    if (dailyNoteRootPath) return dailyNoteRootPath;
+    return process.env.KNOWLEDGEBASE_ROOT_PATH ||
+        (process.env.PROJECT_BASE_PATH ? path.join(process.env.PROJECT_BASE_PATH, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
+}
+
+function _filePathToDailyRelative(filePath) {
+    const resolvedPath = path.resolve(filePath);
+    const resolvedRoot = path.resolve(_getDailyNoteRootPath());
+    if (!_isPathWithinBase(resolvedPath, resolvedRoot)) {
+        throw new Error(`Security error: diary path is outside dailynote root: ${filePath}`);
+    }
+    return path.relative(resolvedRoot, resolvedPath).replace(/\\/g, '/');
+}
+
+function _extractPlainMaidName(maidName) {
+    const raw = String(maidName || '未知').trim();
+    const match = raw.match(/^\[[^\]]+\](.*)$/);
+    return (match ? match[1] : raw).trim() || '未知';
+}
+
+async function _callPluginTool(toolName, args) {
+    const pluginManager = require('../../Plugin.js');
+    if (!pluginManager || typeof pluginManager.processToolCall !== 'function') {
+        throw new Error('PluginManager is unavailable.');
+    }
+    return await pluginManager.processToolCall(toolName, args);
+}
+
+function _isPluginToolFailure(result) {
+    return !result ||
+        result.status === 'error' ||
+        result.plugin_error ||
+        result.plugin_execution_error ||
+        result.error;
+}
+
+function _formatPluginToolFailure(result) {
+    if (!result) return 'unknown error';
+    return result.error ||
+        result.plugin_error ||
+        result.plugin_execution_error ||
+        result.message ||
+        result.result ||
+        JSON.stringify(result);
+}
+
+async function _archiveDiaryToOrganized(filePath, reason = 'dream-review') {
+    const rootPath = _getDailyNoteRootPath();
+    const resolvedPath = path.resolve(filePath);
+    const resolvedRoot = path.resolve(rootPath);
+    if (!_isPathWithinBase(resolvedPath, resolvedRoot)) {
+        throw new Error(`Security error: refused to archive outside dailynote root: ${filePath}`);
+    }
+
+    const archiveDir = path.join(rootPath, '归档区');
+    if (!_isPathWithinBase(archiveDir, rootPath)) {
+        throw new Error('Security error: invalid archive directory.');
+    }
+
+    await fsPromises.mkdir(archiveDir, { recursive: true });
+
+    const baseName = path.basename(resolvedPath);
+    const ext = path.extname(baseName);
+    const nameWithoutExt = path.basename(baseName, ext);
+    let destPath = path.join(archiveDir, baseName);
+    let counter = 1;
+
+    while (true) {
+        try {
+            await fsPromises.access(destPath);
+            counter += 1;
+            destPath = path.join(archiveDir, `${nameWithoutExt}(${counter})${ext}`);
+        } catch {
+            break;
+        }
+    }
+
+    try {
+        await fsPromises.rename(resolvedPath, destPath);
+    } catch {
+        await fsPromises.copyFile(resolvedPath, destPath);
+        await fsPromises.unlink(resolvedPath);
+    }
+
+    return {
+        archivedPath: destPath,
+        reason,
+        archiveFolder: '归档区'
+    };
+}
+
+async function _removeDiaryFromKnowledgeBase(filePath) {
+    if (!knowledgeBaseManager) {
+        try {
+            knowledgeBaseManager = require('../../KnowledgeBaseManager');
+        } catch (e) {
+            return { status: 'skipped', reason: `KnowledgeBaseManager unavailable: ${e.message}` };
+        }
+    }
+
+    try {
+        if (typeof knowledgeBaseManager.removeDocument === 'function') {
+            const result = await knowledgeBaseManager.removeDocument(filePath);
+            return { method: 'removeDocument', ...result };
+        }
+
+        if (knowledgeBaseManager.initialized && typeof knowledgeBaseManager._handleDelete === 'function') {
+            const result = await knowledgeBaseManager._handleDelete(filePath);
+            return { method: '_handleDelete', ...result };
+        }
+
+        return { status: 'skipped', reason: 'No document removal API available' };
+    } catch (e) {
+        return { status: 'error', error: e.message };
+    }
+}
+
+function _normalizeTextForCompare(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function _getInsightComparableText(text) {
+    const raw = String(text || '');
+    const match = raw.match(/梦醒感悟：\s*([\s\S]*?)(?=\n梦中关联：|\n审批建议主题：|\n关联记忆：|\nTag:|$)/);
+    return (match && match[1] ? match[1] : raw).trim();
+}
+
+async function _findExistingInsightDiary(maidName, insightContent) {
+    const rootPath = _getDailyNoteRootPath();
+    const folderName = _sanitizeFileNamePart(`${maidName}的梦`);
+    const dirPath = path.join(rootPath, folderName);
+    if (!_isPathWithinBase(dirPath, rootPath)) return null;
+
+    const normalizedInsight = _normalizeTextForCompare(_getInsightComparableText(insightContent));
+    if (!normalizedInsight) return null;
+
+    let files = [];
+    try {
+        files = await fsPromises.readdir(dirPath, { withFileTypes: true });
+    } catch {
+        return null;
+    }
+
+    const candidates = [];
+    for (const entry of files) {
+        if (!entry.isFile() || !/\.(txt|md)$/i.test(entry.name)) continue;
+        const filePath = path.join(dirPath, entry.name);
+        try {
+            const content = await fsPromises.readFile(filePath, 'utf-8');
+            const normalizedContent = _normalizeTextForCompare(_getInsightComparableText(content));
+            if (normalizedContent.includes(normalizedInsight) || normalizedInsight.includes(normalizedContent)) {
+                const stat = await fsPromises.stat(filePath);
+                candidates.push({ filePath, fileName: entry.name, mtimeMs: stat.mtimeMs });
+            }
+        } catch {
+            // Ignore unreadable candidates; approval can create a fresh note if none match.
+        }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return candidates[0] || null;
+}
+
+async function _approveDreamOperationCore(logFileName, operationId) {
+    const logPath = _safeResolveDreamLogPath(logFileName);
+    const content = await fsPromises.readFile(logPath, 'utf-8');
+    const dreamLog = JSON.parse(content);
+    const operations = Array.isArray(dreamLog.operations) ? dreamLog.operations : [];
+    const operation = operations.find(o => String(o.operationId) === String(operationId));
+
+    if (!operation) {
+        throw new Error(`操作 ${operationId} 未找到。`);
+    }
+    if (operation.status !== 'pending_review') {
+        throw new Error(`操作 ${operationId} 已被处理 (${operation.status})，无法重复审批。`);
+    }
+
+    let result = {};
+
+    switch (operation.type) {
+        case 'merge': {
+            const sourceDiaries = Array.isArray(operation.sourceDiaries) ? operation.sourceDiaries : [];
+            if (sourceDiaries.length === 0) throw new Error('合并操作缺少 sourceDiaries。');
+
+            const relativeUrls = sourceDiaries.map(url => _filePathToDailyRelative(_urlToFilePath(url)));
+            const maidName = dreamLog.agentName || operation.suggestedMaid || '未知';
+            const dateStr = _normalizeDailyNoteDate(operation.suggestedDate);
+
+            const organizeResult = await _callPluginTool('DailyNoteManager', {
+                command: 'organize',
+                urls: relativeUrls.join('\n'),
+                maid: maidName,
+                Date: dateStr,
+                Content: operation.newContent || '',
+                Tag: _buildMergeTags(operation, dreamLog),
+                fileName: '梦境合并'
+            });
+
+            if (_isPluginToolFailure(organizeResult)) {
+                throw new Error(`DailyNoteManager organize failed: ${_formatPluginToolFailure(organizeResult)}`);
+            }
+
+            result.organize = organizeResult;
+            break;
+        }
+
+        case 'delete': {
+            const targetPath = _urlToFilePath(operation.targetDiary || '');
+            const archiveResult = await _archiveDiaryToOrganized(targetPath, 'deleted-by-dream');
+            const knowledgeBaseResult = await _removeDiaryFromKnowledgeBase(targetPath);
+
+            result.deleted = true;
+            result.archive = archiveResult;
+            result.knowledgeBase = knowledgeBaseResult;
+            break;
+        }
+
+        case 'insight': {
+            const maidName = _extractPlainMaidName(operation.suggestedMaid || dreamLog.agentName || '未知');
+            const dateStr = _normalizeDailyNoteDate(operation.suggestedDate);
+
+            const existingInsight = await _findExistingInsightDiary(maidName, operation.insightContent || '');
+
+            if (existingInsight) {
+                result.newDiary = {
+                    status: 'success',
+                    deduped: true,
+                    message: `Existing dream insight found at ${existingInsight.filePath}`,
+                    filePath: existingInsight.filePath,
+                    fileName: existingInsight.fileName
+                };
+                break;
+            }
+
+            const writeResult = await _callPluginTool('DailyNote', {
+                command: 'create',
+                maid: `[${maidName}的梦]${maidName}`,
+                Date: dateStr,
+                Content: operation.insightContent || '',
+                Tag: _buildInsightTags(operation, dreamLog, maidName),
+                fileName: '梦感悟'
+            });
+
+            if (_isPluginToolFailure(writeResult)) {
+                throw new Error(`DailyNote create failed: ${_formatPluginToolFailure(writeResult)}`);
+            }
+
+            result.newDiary = writeResult;
+            break;
+        }
+
+        default:
+            throw new Error(`不支持的操作类型: ${operation.type}`);
+    }
+
+    operation.status = 'approved';
+    operation.reviewedAt = new Date().toISOString();
+    operation.result = result;
+    await fsPromises.writeFile(logPath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+
+    return { status: 'success', message: `操作 ${operationId} 已批准并执行。`, operation };
+}
+
+async function _rejectDreamOperationCore(logFileName, operationId) {
+    const logPath = _safeResolveDreamLogPath(logFileName);
+    const content = await fsPromises.readFile(logPath, 'utf-8');
+    const dreamLog = JSON.parse(content);
+    const operations = Array.isArray(dreamLog.operations) ? dreamLog.operations : [];
+    const operation = operations.find(o => String(o.operationId) === String(operationId));
+
+    if (!operation) {
+        throw new Error(`操作 ${operationId} 未找到。`);
+    }
+    if (operation.status !== 'pending_review') {
+        throw new Error(`操作 ${operationId} 已被处理 (${operation.status})，无法重复审批。`);
+    }
+
+    operation.status = 'rejected';
+    operation.reviewedAt = new Date().toISOString();
+    await fsPromises.writeFile(logPath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+
+    return { status: 'success', message: `操作 ${operationId} 已拒绝。`, operation };
+}
+
+async function _repairDreamLogOperationsCore(logFileName) {
+    const logPath = _safeResolveDreamLogPath(logFileName);
+    const content = await fsPromises.readFile(logPath, 'utf-8');
+    const dreamLog = JSON.parse(content);
+
+    if (Array.isArray(dreamLog.operations) && dreamLog.operations.length > 0) {
+        return {
+            status: 'skipped',
+            message: 'Dream log already has operations.',
+            operationCount: dreamLog.operations.length
+        };
+    }
+
+    const operations = await _extractOperationsFromDreamNarrative(
+        dreamLog.dreamNarrative || '',
+        dreamLog.dreamTree || {},
+        dreamLog.agentName || '未知'
+    );
+
+    dreamLog.operations = operations;
+    await fsPromises.writeFile(logPath, JSON.stringify(dreamLog, null, 2), 'utf-8');
+
+    return {
+        status: 'success',
+        message: `Repaired ${operations.length} dream operation(s).`,
+        operationCount: operations.length,
+        operations
+    };
 }
 
 // =========================================================================
@@ -991,13 +1859,14 @@ module.exports = {
             return [];
         }
     },
-    // 二期: 审批操作
+    // 审批操作：后台面板与其他调用方统一走这里，避免路由层复制业务逻辑
     approveDreamOperation: async (logFileName, operationId) => {
-        // 预留接口 - 二期实现
-        return { status: 'not_implemented', message: '梦操作审批功能将在二期面板中实现。' };
+        return await _approveDreamOperationCore(logFileName, operationId);
     },
     rejectDreamOperation: async (logFileName, operationId) => {
-        // 预留接口 - 二期实现
-        return { status: 'not_implemented', message: '梦操作拒绝功能将在二期面板中实现。' };
+        return await _rejectDreamOperationCore(logFileName, operationId);
+    },
+    repairDreamLogOperations: async (logFileName) => {
+        return await _repairDreamLogOperationsCore(logFileName);
     }
 };

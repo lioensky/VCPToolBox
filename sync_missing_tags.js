@@ -10,7 +10,7 @@ const config = {
     rootPath: process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote'),
     storePath: process.env.KNOWLEDGEBASE_STORE_PATH || path.join(__dirname, 'VectorStore'),
     ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
-    syncDir: '已整理',
+    syncDir: '归档区',
     syncFileName: 'missing_tags_sync.md'
 };
 

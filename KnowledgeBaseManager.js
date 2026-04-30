@@ -42,8 +42,8 @@ class KnowledgeBaseManager {
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
 
-            ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
-            ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
+            ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛,_archive').split(',').map(f => f.trim()).filter(Boolean),
+            ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '归档区').split(',').map(p => p.trim()).filter(Boolean),
             ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
 
             tagBlacklist: new Set((process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)),
@@ -525,7 +525,10 @@ class KnowledgeBaseManager {
             searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
         }
 
-        const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all();
+        const allDiaries = this.db.prepare('SELECT DISTINCT diary_name FROM files').all()
+            .filter(({ diary_name }) => !this.config.ignoreFolders.includes(diary_name))
+            .filter(({ diary_name }) => !this.config.ignorePrefixes.some(prefix => diary_name.startsWith(prefix)))
+            .filter(({ diary_name }) => !this.config.ignoreSuffixes.some(suffix => diary_name.endsWith(suffix)));
 
         const searchPromises = allDiaries.map(async ({ diary_name }) => {
             try {
@@ -994,6 +997,10 @@ class KnowledgeBaseManager {
             if (allChunksWithMeta.length > 0) {
                 const texts = allChunksWithMeta.map(i => i.text);
                 chunkVectors = await getEmbeddingsBatch(texts, embeddingConfig);
+                const failedChunkVectorCount = chunkVectors.filter(v => !v).length;
+                if (failedChunkVectorCount > 0) {
+                    throw new Error(`Embedding returned ${failedChunkVectorCount}/${chunkVectors.length} empty chunk vectors. Deferring batch retry to avoid partial index writes.`);
+                }
                 // 🛡️ getEmbeddingsBatch 现在保证 chunkVectors.length === texts.length
                 // 失败/超长的位置为 null，后续写入 DB 时会跳过这些 null 向量
             }
@@ -1004,6 +1011,10 @@ class KnowledgeBaseManager {
                 for (let i = 0; i < newTags.length; i += tagLimit) {
                     const batch = newTags.slice(i, i + tagLimit);
                     const batchVectors = await getEmbeddingsBatch(batch, embeddingConfig);
+                    const failedTagVectorCount = batchVectors.filter(v => !v).length;
+                    if (failedTagVectorCount > 0) {
+                        throw new Error(`Embedding returned ${failedTagVectorCount}/${batchVectors.length} empty tag vectors. Deferring batch retry to avoid partial tag index writes.`);
+                    }
                     // 同样保证长度对齐，null 表示失败
                     tagVectors.push(...batchVectors);
                 }
@@ -1204,11 +1215,25 @@ class KnowledgeBaseManager {
         return cleaned.length === 0 ? '[EMPTY_CONTENT]' : cleaned;
     }
 
+    async removeDocument(filePath) {
+        if (!this.initialized || !this.db) {
+            return { status: 'skipped', reason: 'KnowledgeBaseManager is not initialized' };
+        }
+
+        const resolvedPath = path.resolve(filePath);
+        const resolvedRoot = path.resolve(this.config.rootPath);
+        if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+            return { status: 'error', error: `Refused to remove document outside knowledge base root: ${filePath}` };
+        }
+
+        return await this._handleDelete(filePath);
+    }
+
     async _handleDelete(filePath) {
         const relPath = path.relative(this.config.rootPath, filePath);
         try {
             const row = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?').get(relPath);
-            if (!row) return;
+            if (!row) return { status: 'skipped', reason: 'Document not found in index', path: relPath };
             const chunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(row.id);
             this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
 
@@ -1217,7 +1242,16 @@ class KnowledgeBaseManager {
                 chunkIds.forEach(c => idx.remove(c.id));
                 this._scheduleIndexSave(row.diary_name);
             }
-        } catch (e) { console.error(`[KnowledgeBase] Delete error:`, e); }
+            return {
+                status: 'success',
+                path: relPath,
+                diaryName: row.diary_name,
+                removedChunks: chunkIds.length
+            };
+        } catch (e) {
+            console.error(`[KnowledgeBase] Delete error:`, e);
+            return { status: 'error', error: e.message, path: relPath };
+        }
     }
 
     _scheduleIndexSave(name) {

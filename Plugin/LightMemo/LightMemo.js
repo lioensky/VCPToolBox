@@ -117,7 +117,7 @@ class LightMemoPlugin {
 
     loadConfig() {
         // config.env is already loaded by Plugin.js, we just need to read the values
-        const excluded = process.env.EXCLUDED_FOLDERS || "已整理,夜伽,MusicDiary";
+        const excluded = process.env.EXCLUDED_FOLDERS || "归档区,夜伽,MusicDiary";
         this.excludedFolders = excluded.split(',').map(f => f.trim()).filter(Boolean);
 
         this.rerankConfig = {
@@ -706,7 +706,7 @@ class LightMemoPlugin {
                 sql += ` AND f.diary_name NOT IN (${currentExcludedFolders.map(() => '?').join(',')})`;
                 params.push(...currentExcludedFolders);
             }
-            sql += ` AND f.diary_name NOT LIKE '已整理%' AND f.diary_name NOT LIKE '%簇'`;
+            sql += ` AND f.diary_name NOT LIKE '归档区%' AND f.diary_name NOT LIKE '%簇'`;
 
             // 2. 目标范围过滤
             if (!searchAll) {

@@ -910,7 +910,10 @@ class PluginManager extends EventEmitter {
                     if (pluginOutput.result) {
                         normalizedPluginOutput.result = pluginOutput.result;
                     }
-                    normalizedPluginOutput.plugin_error = pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`;
+                    normalizedPluginOutput.plugin_error =
+                        pluginOutput.error ||
+                        pluginOutput.result ||
+                        `Plugin "${toolName}" reported an unspecified error.`;
                     _filterFuzzyDiff(normalizedPluginOutput, _getFormattedLocalTimestamp());
                     throw new Error(JSON.stringify(normalizedPluginOutput));
                 }

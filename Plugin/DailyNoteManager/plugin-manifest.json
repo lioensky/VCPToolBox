@@ -3,7 +3,7 @@
   "name": "DailyNoteManager",
   "version": "2.0.0",
   "displayName": "日记整理器",
-  "description": "日记管理与整理混合插件，提供列出(list)、整理(organize)和联想(associate)三个功能。list 可按日期范围查看指定文件夹内的所有日记及其URL；organize 可将多篇旧日记归档到「已整理」文件夹并创建一篇新的合并日记；associate 可基于一篇或多篇日记通过向量语义搜索发现关联日记。",
+  "description": "日记管理与整理混合插件，提供列出(list)、整理(organize)和联想(associate)三个功能。list 可按日期范围查看指定文件夹内的所有日记及其URL；organize 可将多篇旧日记归档到「归档区」文件夹并创建一篇新的合并日记；associate 可基于一篇或多篇日记通过向量语义搜索发现关联日记。",
   "author": "VCP",
   "pluginType": "hybridservice",
   "entryPoint": {
@@ -42,7 +42,7 @@
       },
       {
         "commandIdentifier": "organize",
-        "description": "「整理日记」：将多篇日记整合为一篇新日记，并将原始文件归档到「已整理」文件夹。新日记的写入格式与 DailyNote 插件完全一致（maid 参数控制新日记写入哪个文件夹）。\n\n**工作流程：**\n1. 先使用 list 命令查看日期范围内的日记，获取各日记的URL\n2. 阅读日记内容后，选择需要整理的日记URL\n3. 调用 organize 命令，提供URL列表和新日记内容\n4. 插件会创建新的整理后日记（写入 maid 指定的文件夹），并将原始文件移动到「已整理」文件夹\n\n**参数说明：**\n- urls: 需要归档的日记URL列表（来自 list 命令输出的URL），多个URL用换行分隔\n- maid: 作者署名，与 DailyNote 插件完全一致，支持 [文件夹]署名 格式指定新日记的存储目录（如 [Nova的知识]Nova → 写到 Nova的知识/ 文件夹）\n- Date: 新日记的日期，格式 YYYY-MM-DD\n- Content: 新的整理后日记内容\n- Tag: 可选，标签（也可以写在 Content 末尾的 Tag: 行中）\n- fileName: 可选，文件名后缀\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」organize「末」,\nurls:「始」Nova/2026-04-18-14_52_57.txt\nNova/2026-04-18-15_30_22.txt\nNova/2026-04-19-09_11_45.txt「末」,\nmaid:「始」[Nova]Nova「末」,\nDate:「始」2026-04-18「末」,\nfileName:「始」日记整理「末」,\nContent:「始」[14:54] 主人夸奖Nova可爱，给予了一个温暖的拥抱和亲吻。\n[15:30] 讨论了VCP系统的架构升级计划，Nova提出了向量索引优化方案。\n[09:11] 早间系统自检完成，所有模块运行正常。「末」,\nTag:「始」情感交互, VCP架构, 系统维护「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "「整理日记」：将多篇日记整合为一篇新日记，并将原始文件归档到「归档区」文件夹。新日记的写入格式与 DailyNote 插件完全一致（maid 参数控制新日记写入哪个文件夹）。\n\n**工作流程：**\n1. 先使用 list 命令查看日期范围内的日记，获取各日记的URL\n2. 阅读日记内容后，选择需要整理的日记URL\n3. 调用 organize 命令，提供URL列表和新日记内容\n4. 插件会创建新的整理后日记（写入 maid 指定的文件夹），并将原始文件移动到「归档区」文件夹\n\n**参数说明：**\n- urls: 需要归档的日记URL列表（来自 list 命令输出的URL），多个URL用换行分隔\n- maid: 作者署名，与 DailyNote 插件完全一致，支持 [文件夹]署名 格式指定新日记的存储目录（如 [Nova的知识]Nova → 写到 Nova的知识/ 文件夹）\n- Date: 新日记的日期，格式 YYYY-MM-DD\n- Content: 新的整理后日记内容\n- Tag: 可选，标签（也可以写在 Content 末尾的 Tag: 行中）\n- fileName: 可选，文件名后缀\n\n**调用格式：**\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteManager「末」,\ncommand:「始」organize「末」,\nurls:「始」Nova/2026-04-18-14_52_57.txt\nNova/2026-04-18-15_30_22.txt\nNova/2026-04-19-09_11_45.txt「末」,\nmaid:「始」[Nova]Nova「末」,\nDate:「始」2026-04-18「末」,\nfileName:「始」日记整理「末」,\nContent:「始」[14:54] 主人夸奖Nova可爱，给予了一个温暖的拥抱和亲吻。\n[15:30] 讨论了VCP系统的架构升级计划，Nova提出了向量索引优化方案。\n[09:11] 早间系统自检完成，所有模块运行正常。「末」,\nTag:「始」情感交互, VCP架构, 系统维护「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "urls",

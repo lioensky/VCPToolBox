@@ -198,16 +198,26 @@
                   <button
                     type="button"
                     class="btn-success"
+                    :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="approveOperation(dream.filename, operation.id)"
                   >
-                    ✅ 批准执行
+                    {{
+                      isOperationProcessing(dream.filename, operation.id)
+                        ? "执行中…"
+                        : "✅ 批准执行"
+                    }}
                   </button>
                   <button
                     type="button"
                     class="btn-danger"
+                    :disabled="isOperationProcessing(dream.filename, operation.id)"
                     @click.stop="rejectOperation(dream.filename, operation.id)"
                   >
-                    ❌ 拒绝
+                    {{
+                      isOperationProcessing(dream.filename, operation.id)
+                        ? "处理中…"
+                        : "❌ 拒绝"
+                    }}
                   </button>
                 </div>
                 <p v-else-if="operation.reviewedAt" class="dream-reviewed-info">
@@ -318,6 +328,7 @@ type DreamListState =
 const { renderMarkdownSync, initializeRenderer } = useMarkdownRenderer();
 
 const listState = ref<DreamListState>({ status: "loading" });
+const processingOperationIds = ref(new Set<string>());
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -411,6 +422,14 @@ function toDreamSummaryView(summary: DreamLogSummary): DreamSummaryView {
   };
 }
 
+function getOperationKey(filename: string, operationId: string): string {
+  return `${filename}:${operationId}`;
+}
+
+function isOperationProcessing(filename: string, operationId: string): boolean {
+  return processingOperationIds.value.has(getOperationKey(filename, operationId));
+}
+
 function createOperationBaseView(
   operation: RawDreamOperation,
   index: number
@@ -496,12 +515,24 @@ function getLoadedDreams(): DreamSummaryView[] | null {
 }
 
 async function loadDreams(): Promise<void> {
+  const previousDreams =
+    listState.value.status === "loaded" ? listState.value.dreams : [];
+  const previousById = new Map(previousDreams.map((dream) => [dream.id, dream]));
+
   listState.value = { status: "loading" };
 
   try {
     const summaries = await dreamApi.getDreamLogSummaries();
     const dreams = summaries
-      .map(toDreamSummaryView)
+      .map((summary) => {
+        const nextDream = toDreamSummaryView(summary);
+        const previousDream = previousById.get(nextDream.id);
+        if (previousDream?.expanded) {
+          nextDream.expanded = true;
+          nextDream.detailState = previousDream.detailState;
+        }
+        return nextDream;
+      })
       .sort((left, right) => {
         const leftTime = left.timestamp ? new Date(left.timestamp).getTime() : 0;
         const rightTime = right.timestamp
@@ -519,6 +550,30 @@ async function loadDreams(): Promise<void> {
       status: "error",
       message: getErrorMessage(error),
     };
+  }
+}
+
+function applyReviewedOperation(
+  filename: string,
+  operation?: RawDreamOperation
+): void {
+  if (!operation || listState.value.status !== "loaded") {
+    return;
+  }
+
+  const dream = listState.value.dreams.find((item) => item.filename === filename);
+  if (dream?.detailState.status !== "loaded") {
+    return;
+  }
+
+  const reviewedOperation = toDreamOperationView(operation, 0);
+  const operations = dream.detailState.detail.operations;
+  const operationIndex = operations.findIndex(
+    (item) => item.id === reviewedOperation.id
+  );
+
+  if (operationIndex >= 0) {
+    operations.splice(operationIndex, 1, reviewedOperation);
   }
 }
 
@@ -575,6 +630,15 @@ async function reviewOperation(
     return;
   }
 
+  const operationKey = getOperationKey(filename, operationId);
+  if (processingOperationIds.value.has(operationKey)) {
+    return;
+  }
+
+  processingOperationIds.value = new Set(processingOperationIds.value).add(
+    operationKey
+  );
+
   try {
     const result = await dreamApi.reviewDreamOperation(
       filename,
@@ -585,10 +649,21 @@ async function reviewOperation(
       }
     );
 
+    applyReviewedOperation(filename, result.operation);
     showMessage(result.message || `操作已${actionLabel}`, "success");
     await loadDreams();
+
+    const dreams = getLoadedDreams();
+    const refreshedDream = dreams?.find((dream) => dream.filename === filename);
+    if (refreshedDream?.expanded) {
+      await loadDreamDetail(refreshedDream);
+    }
   } catch (error) {
     showMessage(`${actionLabel}失败: ${getErrorMessage(error)}`, "error");
+  } finally {
+    const nextProcessingOperationIds = new Set(processingOperationIds.value);
+    nextProcessingOperationIds.delete(operationKey);
+    processingOperationIds.value = nextProcessingOperationIds;
   }
 }
 

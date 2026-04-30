@@ -16,7 +16,7 @@
     "EXCLUDED_FOLDERS": {
       "type": "string",
       "description": "需要屏蔽、任何时候都不搜索的日记文件夹名称，用逗号分隔。",
-      "default": "已整理,夜伽,MusicDiary"
+      "default": "归档区,夜伽,MusicDiary"
     },
     "RerankUrl": {
       "type": "string",

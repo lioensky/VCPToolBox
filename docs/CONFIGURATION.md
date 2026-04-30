@@ -223,7 +223,7 @@ API_URL=https://api.openai.com
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `IGNORE_FOLDERS` | string | VCP论坛 | 忽略的日记本名称（逗号分隔） |
-| `IGNORE_PREFIXES` | string | 已整理 | 忽略的文件名前缀（逗号分隔） |
+| `IGNORE_PREFIXES` | string | 归档区 | 忽略的文件名前缀（逗号分隔） |
 | `IGNORE_SUFFIXES` | string | 夜伽 | 忽略的文件名后缀（逗号分隔） |
 | `TAG_BLACKLIST` | string | - | Tag 黑名单（逗号分隔） |
 | `TAG_BLACKLIST_SUPER` | string | - | Tag 移除关键词列表 |

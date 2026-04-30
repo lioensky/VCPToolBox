@@ -919,7 +919,7 @@ $$\text{Coverage} = \frac{E_{projection}}{E_{original}}$$
 | 索引保存延迟 | `KNOWLEDGEBASE_INDEX_SAVE_DELAY` | 120000 | 毫秒 |
 | 标签索引保存延迟 | `KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY` | 300000 | 毫秒 |
 | 忽略文件夹 | `IGNORE_FOLDERS` | VCP论坛 | 逗号分隔 |
-| 忽略前缀 | `IGNORE_PREFIXES` | 已整理 | 逗号分隔 |
+| 忽略前缀 | `IGNORE_PREFIXES` | 归档区 | 逗号分隔 |
 | 忽略后缀 | `IGNORE_SUFFIXES` | 夜伽 | 逗号分隔 |
 | 标签黑名单 | `TAG_BLACKLIST` | (空) | 逗号分隔 |
 | 标签扩展上限 | `TAG_EXPAND_MAX_COUNT` | 30 | |

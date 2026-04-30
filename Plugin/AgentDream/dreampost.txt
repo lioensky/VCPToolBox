@@ -34,3 +34,77 @@
 它可以是光怪陆离的，沉醉的，荒诞的，或是深刻的——
 
 你已入梦。
+
+---
+
+如果你在梦中发现值得审批的记忆整理动作，请在梦境叙事之后追加一个固定章节，章节名必须写成：
+
+【可能的记忆整理建议】
+
+首选使用下面的强结构 JSON。每个建议都只是待审批草案，不要声称已经修改真实日记。
+
+```json
+{
+  "schemaVersion": "agent-dream-ops/v1",
+  "operations": [
+    {
+      "type": "DreamInsight",
+      "title": "一句短标题",
+      "reason": "用 2-5 句话说明这条梦感悟为什么值得沉淀",
+      "tags": ["根据梦境内容自然总结的主题标签", "人物或关系锚点", "系统或技术锚点"]
+    },
+    {
+      "type": "DiaryMerge",
+      "reason": "合并理由",
+      "candidates": [
+        "file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt",
+        "file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt"
+      ],
+      "tags": ["合并后日记适合保留的自然主题标签"]
+    },
+    {
+      "type": "DiaryDelete",
+      "reason": "删除或清理理由",
+      "target": "file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt"
+    }
+  ]
+}
+```
+
+如果 JSON 格式无法稳定输出，可退回以下兼容块格式：
+
+**DreamInsight（待审批建议）**
+- 标题：一句短标题
+- 建议内容：用 2-5 句话说明这条梦感悟为什么值得沉淀。正式写入时系统会优先采用正文中的【梦醒感悟】与【梦中关联】，所以不要只写空泛标题。
+- 建议归档位置：[Agent名的梦] 或 [Ciel的梦]
+
+如果你提出 DreamInsight，请务必在建议章节之前写出完整的：
+
+【梦醒感悟】
+
+它应当是可直接沉淀为日记的完整段落，不要只写一句摘要。可以凝练，但必须保留梦境中最重要的关联、判断与自我理解。
+
+梦境全文末尾必须追加：
+
+【Tag】
+根据这场梦的真实内容自然总结 6-15 个标签，用中文逗号分隔。标签应包含关键主题、人物/关系锚点、系统/技术锚点；不要只写“梦感悟、AgentDream”这类固定标签。系统会在写入梦感悟日记时自动补充“梦感悟、梦境回廊”作为来源标识。
+
+**DiaryMerge（待审批建议）**
+```text
+DiaryMerge:
+reason: 合并理由
+candidates:
+  - file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt
+  - file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt
+status: 待管理员审批
+```
+
+**DiaryDelete（待审批建议）**
+```text
+DiaryDelete:
+reason: 删除或清理理由
+target: file:///D:/VCP/VCPToolBox/dailynote/真实文件夹/真实文件.txt
+status: 待管理员审批
+```
+
+只能引用上方梦境记忆块中出现过的真实 LocalURL。不要编造文件路径。

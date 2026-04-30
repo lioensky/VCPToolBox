@@ -24,7 +24,7 @@ function withWriteLock(fn) {
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
 // 归档文件夹名
-const ARCHIVE_FOLDER = '已整理';
+const ARCHIVE_FOLDER = '归档区';
 
 // --- Debug Logging (to stderr) ---
 function debugLog(message, ...args) {
@@ -236,7 +236,7 @@ async function handleListCommand(args) {
 
 // ============================================================
 // Command: organize
-// 整理日记：创建新的合并日记 + 将原始文件归档到「已整理」
+// 整理日记：创建新的合并日记 + 将原始文件归档到「归档区」
 // ============================================================
 async function handleOrganizeCommand(args) {
     const urls = args.urls || args.Urls || args.URL;
@@ -346,7 +346,7 @@ async function _handleOrganizeInternal(args) {
         return { status: "error", error: `创建整理后日记失败: ${createError.message}` };
     }
 
-    // ---- Step 2: 将原始文件移动到「已整理」文件夹 ----
+    // ---- Step 2: 将原始文件移动到「归档区」文件夹 ----
     const archiveDir = path.join(dailyNoteRootPath, ARCHIVE_FOLDER);
     if (!isPathWithinBase(archiveDir, dailyNoteRootPath)) {
         return { status: "error", error: "安全错误：归档文件夹路径无效。" };
