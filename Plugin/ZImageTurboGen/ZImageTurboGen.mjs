@@ -2,6 +2,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import fetch from 'node-fetch';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // --- Configuration ---
 const API_KEY = process.env.ZIMAGE_API_KEY || "apikey(填自己的密钥)";
@@ -9,8 +11,21 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl;
+const VAR_HTTPS_URL = process.env.VarHttpsUrl;
+const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true' || process.env.USE_PUBLIC_URL === '1';
+const HTTP_PROXY = process.env.HTTP_PROXY || process.env.http_proxy || process.env.HTTPS_PROXY || process.env.https_proxy;
 
 const API_ENDPOINT = 'https://ai.gitee.com/v1/images/generations';
+
+// --- Proxy Setup ---
+const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : null;
+
+async function fetchWithProxy(url, options = {}) {
+    if (proxyAgent) {
+        return fetch(url, { ...options, agent: proxyAgent });
+    }
+    return fetch(url, options);
+}
 
 // --- Helper Functions ---
 
@@ -84,8 +99,7 @@ async function processApiRequest(args) {
         : 8;
     payload.num_inference_steps = steps;
 
-    // Use native fetch (available in Node 18+)
-    const response = await fetch(API_ENDPOINT, {
+    const response = await fetchWithProxy(API_ENDPOINT, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${API_KEY}`,
@@ -118,7 +132,7 @@ async function processApiRequest(args) {
         imageMimeType = responseData.type || 'image/png';
     } else if (responseData.url) {
         // API returned a URL to download
-        const imageResponse = await fetch(responseData.url, {
+        const imageResponse = await fetchWithProxy(responseData.url, {
             signal: AbortSignal.timeout(60000),
         });
         if (!imageResponse.ok) {
@@ -143,7 +157,9 @@ async function processApiRequest(args) {
     await fs.writeFile(localImagePath, imageBuffer);
 
     const relativePathForUrl = path.join('zimageturbogen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    const accessibleImageUrl = USE_PUBLIC_URL
+        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`
+        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
     const base64Image = imageBuffer.toString('base64');
 
