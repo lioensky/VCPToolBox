@@ -727,6 +727,15 @@ class PluginManager extends EventEmitter {
             return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${timezoneString}`;
         };
 
+        // Helper to clean up fuzzyDiff output for error/success responses
+        const _filterFuzzyDiff = (resultObj, timestamp) => {
+            if (resultObj && typeof resultObj === 'object' &&
+                resultObj.fuzzyDiff && typeof resultObj.fuzzyDiff === 'object') {
+                const { candidateFile, diff } = resultObj.fuzzyDiff;
+                resultObj.fuzzyDiff = { candidateFile, diff, timestamp };
+            }
+        };
+
         const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
         const pluginSpecificArgs = { ...toolArgs };
         if (maidNameFromArgs) {
@@ -897,7 +906,13 @@ class PluginManager extends EventEmitter {
                         resultFromPlugin = pluginOutput.result;
                     }
                 } else {
-                    throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
+                    const normalizedPluginOutput = {};
+                    if (pluginOutput.result) {
+                        normalizedPluginOutput.result = pluginOutput.result;
+                    }
+                    normalizedPluginOutput.plugin_error = pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`;
+                    _filterFuzzyDiff(normalizedPluginOutput, _getFormattedLocalTimestamp());
+                    throw new Error(JSON.stringify(normalizedPluginOutput));
                 }
             }
 
@@ -908,6 +923,7 @@ class PluginManager extends EventEmitter {
                 finalResultObject.MaidName = maidNameFromArgs;
             }
             finalResultObject.timestamp = _getFormattedLocalTimestamp();
+            _filterFuzzyDiff(finalResultObject, _getFormattedLocalTimestamp());
 
             return finalResultObject;
 
@@ -926,6 +942,7 @@ class PluginManager extends EventEmitter {
             if (!errorObject.timestamp) {
                 errorObject.timestamp = _getFormattedLocalTimestamp();
             }
+            _filterFuzzyDiff(errorObject, _getFormattedLocalTimestamp());
             throw new Error(JSON.stringify(errorObject));
         }
     }
