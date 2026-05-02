@@ -1,6 +1,9 @@
 # VCP 联网与搜索工具箱能力收纳
 这里收纳了 VCP 强大的联网检索、网页爬取及深度研究工具。
 
+## 运行时查询隐藏说明
+如果你需要未展开的搜索、网页读取、视频解析或深度研究参数格式，先按 supertool.txt 中的 StaticToolboxQuery 通用格式查询相关说明块。
+
 ## 1. 语义穿透联网检索 (VSearch)
 首选联网引擎。支持语义级检索范围与多关键词并发搜索，适合获取多角度观点。
 tool_name:「始」VSearch「末」,
@@ -19,7 +22,7 @@ mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照)「
 额外小技巧，使用JinaAPI讲HTML转化为MD格式 例如 https://r.jina.ai/https://www.bilibili.com 格式，可以把任意网页以MD文档的方式请求。
 
 
-[===vcp_fold:0.3===]
+[===vcp_fold:0.3::desc: B站视频解析、BilibiliFetch、字幕、弹幕、评论、UP主视频列表===]
 
 ## 3. B站视频/内容爬虫 (BilibiliFetch)
 获取 B 站视频文本（TTS 转化）、弹幕、评论及高清快照。
@@ -42,7 +45,7 @@ action:「始」get_up_videos「末」,
 mid:「始」用户 ID「末」,
 pn:「始」1「末」
 
-[===vcp_fold:0.5===]
+[===vcp_fold:0.5::desc: TavilySearch、联网搜索、网页原始内容、AI搜索、新闻财经搜索===]
 
 ## 4. 全能联网搜索 (TavilySearch)
 AI 专属搜索引擎。支持搜图和原始网页内容转化。
@@ -52,7 +55,7 @@ topic:「始」general / news / finance「末」,
 search_depth:「始」advanced「末」, //语义搜索模式
 include_raw_content:「始」'markdown'「末」 //获取原始内容
 
-[===vcp_fold:0.7===]
+[===vcp_fold:0.7::desc: 深度搜索、FlashDeepSearch、学术研究报告、SerpSearch、反向搜图===]
 
 ## 5. 深度信息研究插件 (FlashDeepSearch)
 进行多维度深度搜索，返回详实的学术研究报告。比较耗时。

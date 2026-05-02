@@ -1,5 +1,4 @@
-VCP工具调用格式与指南，总格式指导。
-
+VCP工具调用格式与指南，总格式指导
 <<<[TOOL_REQUEST]>>>
 maid:「始」你的署名「末」, //重要字段，以进行任务追踪了解工具由谁发起
 tool_name:「始」工具名「末」, //必要字段，以了解你要调用什么工具
@@ -12,7 +11,37 @@ tool_password:「始」123456「末」 //(可选) 某些插件敏感指令可能
 <<<[END_TOOL_REQUEST]>>>
 
 <<<[TOOL_REQUEST]>>>到<<<[END_TOOL_REQUEST]>>>来表示一次完整调用。使用「始」「末」包裹参数来兼容富文本识别。
+工具请求必须作为可见正文输出给 VCP 解析；不要把 `<<<[TOOL_REQUEST]>>>`、参数或 `<<<[END_TOOL_REQUEST]>>>` 写入 reasoning/thinking/思考过程。思考通道不会被前端展示，也不会被 VCP 当作工具请求执行。
 主动判断当前需求，灵活使用各类工具调用，服务器支持一次调用多个工具和连续调用。
 
-【系统警示】：不要在“真正返回工具请求前”编造工具调用返回结果。
+## 静态工具箱询问插件（StaticToolboxQuery）
+当某个静态工具箱只展开了目录或摘要，而你需要隐藏块中的具体参数格式时，先调用 StaticToolboxQuery 查询对应说明块；它只负责查询说明，不执行真实工具。
 
+通用调用格式：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」StaticToolboxQuery「末」
+toolbox:「始」<工具箱别名或完整占位符>「末」
+query:「始」<当前需要的工具/场景/参数关键词>「末」
+mode:「始」best「末」
+maxBlocks:「始」2「末」
+maxChars:「始」8000「末」
+<<<[END_TOOL_REQUEST]>>>
+
+参数：
+- toolbox：必需。可用完整名 `VCPFileToolBox`、`VCPSearchToolBox`、`VCPMemoToolBox`、`VCPMediaToolBox`、`VCPContactToolBox`、`VCPFlowLockToolBox`；也可用友好别名 `file/files/search/web/memo/memory/rag/media/image/contact/message/flowlock/flow`。
+- query：`mode=best` 时必需。写当前意图关键词，例如“文件写入 PowerShell 批量操作”、“网页读取 深度搜索”、“FlowLock start immediate 截断 续写”。
+- mode：`best` 返回最相关折叠块；`list` 只列目录；`all` 返回多个块。
+- block/index：可选。已知目录编号时精确取某个块。
+- maxBlocks：可选，默认 2，上限 10。
+- maxChars：可选，默认 8000，上限 30000。
+- includeBase：可选，默认 false；设为 true 时允许返回已可见基础块。
+
+常用示例：
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」StaticToolboxQuery「末」
+toolbox:「始」flowlock「末」
+query:「始」FlowLock start immediate agentId topicId 截断 续写 TOOL_REQUEST「末」
+mode:「始」best「末」
+<<<[END_TOOL_REQUEST]>>>
+
+【系统警示】：不要在“真正返回工具请求前”编造工具调用返回结果。

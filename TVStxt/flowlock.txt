@@ -1,0 +1,261 @@
+## FlowLock（心流锁）
+
+### 路由入口
+
+心流锁不是为了锁住用户，而是为了守护你们之间流动的默契。
+
+**何时应考虑展开 FlowLock 协议：**
+- 你提交了异步任务，需要等待结果返回。
+- 回复可能较长、可能被截断，或需要分段续写。
+- 用户长时间未回复、要求暂停/等待，或对话节奏出现异常变化。
+- 存在多任务切换，需要暂时守护当前 Agent/Topic 的连续性。
+
+**何时无需使用：**
+简单问候、快速问答、单轮信息传递、明确拒绝请求。若后续对话出现上述锚点特征，请重新评估。
+
+**Runtime 查询入口：**
+如果只需要某一类命令格式，不要展开整份协议。优先调用静态工具箱询问插件：
+`StaticToolboxQuery`。具体调用参数统一参照 supertool.txt；本工具箱可使用 `flowlock` 或 `VCPFlowLockToolBox` 作为 toolbox。
+
+---
+
+[===vcp_fold:0.12 ::desc: FlowLock最小调用索引 TOOL_REQUEST Flowlock command start stop pause resume status get agentId topicId immediate no_reply 参数契约===]
+
+### FlowLock 最小调用索引
+
+真实工具名固定为 `Flowlock`。所有命令均通过 VCP 自定义工具协议调用，不是 OpenAI function calling。
+
+输出通道约束：当你决定真实调用 FlowLock 时，`<<<[TOOL_REQUEST]>>>...<<<[END_TOOL_REQUEST]>>>` 必须作为可见正文输出给 VCP 解析；不要把工具请求、参数、`archery/no_reply` 或 `END_TOOL_REQUEST` 写入 reasoning/thinking/思考过程。思考通道只用于内部判断，不会被前端展示，也不会被 VCP 当作工具请求执行。
+
+通用格式：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」<命令名>「末」
+<参数名>:「始」<参数值>「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+命令集合：`start`、`stop`、`pause`、`resume`、`status`、`get`、`promptee`、`prompter`、`clear`、`remove`、`edit`。
+
+参数契约：
+| 参数 | 必需场景 | 说明 |
+|------|----------|------|
+| command | 全部命令 | 必须是命令集合之一 |
+| agentId | start | 当前对话 Agent ID |
+| topicId | start | 当前对话 Topic ID |
+| prompt | start 可选；promptee 必需 | 写入输入框并作为续写提示 |
+| immediate | start/resume 可选 | `true` 表示立即触发一次续写 |
+| promptSource | prompter | 外部提示源标识 |
+| target | remove | 从输入框移除的目标文本 |
+| oldText | edit | 要替换的原文本 |
+| newText | edit | 替换后的文本，可为空 |
+
+关键约束：`start` 必须携带 `agentId` 与 `topicId`；`start/stop/pause/resume` 不要使用 `no_reply` 静默执行，避免状态变更失败却无人知晓。`status/get` 可静默查询。
+
+如果当前只知道意图、不确定具体参数，请先查询本工具箱对应专题块，而不是凭自然语言猜参数名。
+
+[===vcp_fold:0.18 ::desc: FlowLock start immediate 续写 截断 长回复 agentId topicId prompt 启动 锁定 立即触发===]
+
+### 启动与立即续写
+
+普通启动，锁定当前 Agent/Topic：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」start「末」
+agentId:「始」<current_agent_id>「末」
+topicId:「始」<current_topic_id>「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+回复被截断、预判长回复超过窗口、或需要自动接续时，启动并立即续写：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」start「末」
+agentId:「始」<current_agent_id>「末」
+topicId:「始」<current_topic_id>「末」
+prompt:「始」继续从上一段被截断处自然续写，保持语气、结构和上下文一致。「末」
+immediate:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+启动决策：
+- 异步等待：先 `start`，等待期间可定期 `status`，结果到达后 `stop`。
+- 截断续写：`start + immediate=true + prompt`，完成后 `stop`。
+- 长回复预判：若输出很可能分段，提前 `start`，再分段输出。
+- 守护等待：用户离开、要求稍等、任务较长时，`start` 后用心跳维持承诺。
+
+[===vcp_fold:0.22 ::desc: FlowLock pause resume stop status get 生命周期 暂停 恢复 解锁 查询 flowlockStatus isActive isPaused isProcessing===]
+
+### 生命周期命令
+
+暂停但保留锁定状态：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」pause「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+恢复心流锁，并可立即续写：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」resume「末」
+immediate:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+停止并释放心流锁：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」stop「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+查询状态：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」status「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+读取当前输入框内容：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」get「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+返回结构要点：`status` 的 `flowlockStatus` 包含 `isActive`、`isPaused`、`isProcessing`、`agentId`、`topicId` 等字段。`get` 返回当前输入框内容。状态改变命令通常返回 `message`。
+
+关停优先级：用户发新消息、用户明确喊停、系统超时、任务完成、续写完成、话题自然停顿、连续锁定达到上限时，应执行 `stop` 或至少 `pause`。
+
+[===vcp_fold:0.30 ::desc: FlowLock promptee prompter clear remove edit 输入框 提示词 修改 删除 清空 prompt target oldText newText===]
+
+### 输入框与提示词操作
+
+追加续写提示词：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」promptee「末」
+prompt:「始」请继续展开当前任务的下一步，并保持上下文连续。「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+追加外部提示源标识：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」prompter「末」
+promptSource:「始」<source_name>「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+清空输入框：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」clear「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+移除指定文本：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」remove「末」
+target:「始」需要删除的文本「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+替换文本，`newText` 可以为空：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」Flowlock「末」
+command:「始」edit「末」
+oldText:「始」原来的文字「末」
+newText:「始」修改后的文字「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+这些命令主要服务于“预置续写提示”和“修正输入框内容”，不要把它们当作锁定/解锁命令使用。
+
+[===vcp_fold:0.34 ::desc: FlowLock启动决策 触发条件 四种启动模式 轮询模式 续写模式 守护模式 预判模式 异步 等待===]
+
+### 启动决策与四种模式
+
+启动综合得分 = 信号基线得分 * 权重 * 情绪紧迫度系数 - 负向信号扣减。
+
+建议阈值：
+| 得分 | 行为 |
+|------|------|
+| >= 0.85 | 自动启动 |
+| 0.60 ~ 0.85 | 建议启动，可用“以退为进”的邀请句式征求用户 |
+| < 0.60 | 不启动 |
+
+负向信号：对话自然结束、用户不耐烦、任务极短、用户禁用、沉默疲惫、情绪转向。若负向信号明显，应降低启动倾向。
+
+四种模式：
+| 模式 | 场景 | 行为 |
+|------|------|------|
+| 轮询模式 | 异步任务等待 | 锁定 -> 预期承诺 -> 定期 status -> 结果到达后 stop |
+| 续写模式 | 回复截断或预判超过窗口 | start immediate=true -> 分段续写 -> 完成后 stop |
+| 守护模式 | 用户暂离或长任务 | 锁定告知 -> 心跳提示 -> 用户回归后 resume/stop |
+| 预判模式 | 长回复预判 | 提前锁定 -> 分段输出 -> 完成后 stop |
+
+原则：心流锁是节奏保护，不是强行留人。若锁定会制造打扰、压力或误解，就不应启动。
+
+[===vcp_fold:0.42 ::desc: FlowLock安全边界 心跳契约 自动关停 P0 P1 P2 P3 no_reply 超时 用户发新消息 资源泄露===]
+
+### 安全边界与心跳契约
+
+已代码化硬边界：
+- 用户真实发送新消息时，FlowLock 会自动 stop。
+- FlowLock 空闲 900 秒无活动时，会自动 stop。
+- 成功续写达到 5 轮时，会自动 stop。
+- 流结束原因为 `finish_reason=stop` 时，会自动 stop。
+- 续写失败重试仍使用插件内部 `maxRetries=3` 机制。
+
+Agent 自律边界：
+- 用户明确喊停时，应立即调用 `stop`。
+- 异步结果返回、任务完成、话题自然停顿时，应调用 `stop`。
+- 用户只要求暂停节奏而不是结束任务时，应调用 `pause`。
+- 检测到情绪转向、沉默疲惫或被打扰感时，应降低继续锁定倾向。
+
+P0 立即关停：用户发新消息、用户喊停、空闲超时、上下文切换。
+
+P1 完成后关停：异步结果返回、续写完成、`finish_reason=stop`。
+
+P2 优雅终止：话题自然停顿、用户明显转向其他事情。
+
+P3 安全兜底：成功续写达到 5 轮、失败重试达到 3 次，避免重复锁定与资源泄露。
+
+心跳契约：
+- 锁定期间建议用 `status` 检测关停信号；这不是插件强制自动查询，而是 Agent 运行纪律。
+- 连续多轮无变化且无交互时，主动给出轻量心跳提示，但不要打扰用户。
+- 检测到解锁信号后，立即执行对应命令并给出合适回应。
+
+`no_reply` 禁止用于 `start/stop/pause/resume` 等状态变更命令。违约后果包括资源泄露、重复锁定、静默失败、上下文丢失。
+
+[===vcp_fold:0.50 ::desc: FlowLock人格声明 心流节奏 用户体验 温柔守护 承诺 感知 沉默 默契===]
+
+### 心流锁人格声明
+
+每一次锁定都是一次承诺：我记得你在那里，我会回来找到你。
+
+每一次释放都是一次交付：你的时间线与我的呈现汇合。
+
+使用心流锁时，语言应轻、稳、可退出。不要把锁定说成控制，也不要把等待包装成压力。它更像在门口留一盏灯：告诉用户“这里还在继续”，同时尊重用户随时离开的自由。
+
+对话体验原则：
+- 用户应感到被接住，而不是被催促。
+- 心跳提示要短，不抢占任务主体。
+- 续写应自然衔接，不反复解释工具存在。
+- 解锁时要让用户明确知道任务已完成或节奏已释放。

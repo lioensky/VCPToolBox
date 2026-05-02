@@ -18,5 +18,9 @@
   "VCPContactToolBox": {
     "file": "ContactToolBox.txt",
     "description": "该收纳箱收纳了各种通讯、社交、消息推送，话题管理，日程管理，日常小工具相关的工具，用于动态向 Agent 提供说明。"
+  },
+  "VCPFlowLockToolBox": {
+    "file": "flowlock.txt",
+    "description": "该收纳箱收纳了心流锁的对话节奏控制协议，包括自动续写、异步等待、暂停恢复、状态查询与解锁规则，用于动态向 Agent 提供说明。"
   }
 }

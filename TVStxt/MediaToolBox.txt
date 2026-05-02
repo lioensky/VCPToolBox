@@ -1,7 +1,10 @@
 # VCP 多媒体工具箱能力收纳
 这里收纳了各种强大的多媒体生成与控制工具。
 
-[===vcp_fold:0.3===]
+## 运行时查询隐藏说明
+如果你需要未展开的生图、修图、音乐或视频生成参数格式，先按 supertool.txt 中的 StaticToolboxQuery 通用格式查询相关说明块。
+
+[===vcp_fold:0.3::desc: Qwen生图、ZImageTurboGen、MusicController、服务器音乐播放===]
 
 ## 1. 通义Qwen生图 (ZImageTurboGen)
 国产生图开源模型，性能不错，支持NSFW。每日有100点免费算力额度。
@@ -18,7 +21,7 @@ tool_name:「始」MusicController「末」,
 command:「始」playSong「末」,
 songname:「始」星の余韻「末」 // 注意观察当前服务器音乐列表是否包含曲目，可用LightMemo检索。
 
-[===vcp_fold:0.5===]
+[===vcp_fold:0.5::desc: 豆包生图、豆包修图、多图合成、NanoBanana、Suno音乐、Grok视频===]
 
 ## 3. 豆包生图 (DoubaoGen)
 国产超强文生图工具，支持任意分辨率组合，对文字/字体高度可控。

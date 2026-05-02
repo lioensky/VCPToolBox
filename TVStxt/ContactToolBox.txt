@@ -1,6 +1,9 @@
 # VCP 通讯与日常工具箱能力收纳
 这里收纳了跨Agent通讯、通知、日程管理及日常辅助工具。
 
+## 运行时查询隐藏说明
+如果你需要未展开的通讯、通知、话题创建、离线话题外盒、日程或闹钟参数格式，先按 supertool.txt 中的 StaticToolboxQuery 通用格式查询相关说明块。
+
 ## 1. 女仆通讯器 (AgentAssistant)
 联络别的女仆！虽然非常方便，但如果和用户聊天时沉迷和别的女仆"煲电话粥"很不礼貌哦。
 tool_name:「始」AgentAssistant「末」,
@@ -29,16 +32,57 @@ expression:「始」您要计算的完整数学表达式「末」
 - 误差传递: error_propagation('expr_str', {'var1':(value, error), ...})
 - 置信区间: confidence_interval([data_list], confidence_level)
 
-[===vcp_fold:0.4===]
+[===vcp_fold:0.4 ::desc: 话题创建、离线话题外盒、通知、日程、闹钟和跨Agent通讯===]
 
-## 4. 主动创建话题 (AgentTopicCreator)
+## 4. 主动创建话题 (TopicSponsor)
 主动对用户发起一个全新的Vchat聊天话题上下文。
-tool_name:「始」AgentTopicCreator「末」,
+TopicSponsor 是 VCPChat 分布式服务器侧的话题操作器，适合在线查询和执行 VChat 当前话题操作。若你需要“即使 VCPChat 离线也不能丢失”的创建话题或指定话题回复，请优先使用 TopicOutbox。
+tool_name:「始」TopicSponsor「末」,
 command:「始」CreateTopic「末」,
+maid:「始」目标Agent名称，例如 记忆大师「末」,
 topic_name:「始」话题标题「末」,
 initial_message:「始」初始话题内容，也就是你的第一条发言来发起话题「末」
 
-## 5. VCP日程管理器 (ScheduleManager)
+## 5. 离线话题外盒 (TopicOutbox)
+当你需要创建新话题或向指定话题追加回复，但不确定 VCPChat / 分布式服务器是否在线时，使用 TopicOutbox。它会把这两类 VChat 话题写操作保存在 VCPToolBox 主服务器，等 TopicSponsor 上线注册后再投递。TopicOutbox 不负责读取话题、检查未读、检查归属等查询类能力；这些仍由 TopicSponsor 在线处理。
+
+创建待投递话题
+tool_name:「始」TopicOutbox「末」,
+command:「始」CreateTopicRequest「末」,
+topicRequestId:「始」唯一请求ID，用于防止重复投递，例如 memo-dream-20260501-001「末」,
+maid:「始」目标Agent名称，例如 记忆大师「末」,
+topic_name:「始」话题标题「末」,
+initial_message:「始」初始话题内容。可包含前端可点击的HTML按钮，但按钮文本或data-send必须短，例如 <button data-send="批准 memo-dream-20260501-001">批准</button>「末」,
+priority:「始」可选，low / normal / high，默认 normal「末」,
+expires_at:「始」可选，ISO时间。过期后不再投递「末」,
+metadata:「始」可选，JSON对象字符串，用于记录source、approval_id等审计信息「末」
+
+向指定话题追加待投递回复
+tool_name:「始」TopicOutbox「末」,
+command:「始」ReplyToTopicRequest「末」,
+topicRequestId:「始」唯一请求ID，用于防止重复回复，例如 memo-dream-20260501-001-reply-001「末」,
+maid:「始」目标Agent名称，例如 记忆大师「末」,
+topic_id:「始」要追加回复的VChat话题ID，例如 topic_1714550400000「末」,
+message:「始」要追加到话题里的回复内容「末」,
+sender_name:「始」发送者名称，例如 记忆大师「末」,
+priority:「始」可选，low / normal / high，默认 normal「末」,
+expires_at:「始」可选，ISO时间。过期后不再投递「末」,
+metadata:「始」可选，JSON对象字符串，用于记录source、approval_id等审计信息「末」
+
+查询TopicOutbox队列记录
+tool_name:「始」TopicOutbox「末」,
+command:「始」ListTopicRequests「末」,
+status:「始」可选，pending / delivered / failed / cancelled / expired「末」,
+maid:「始」可选，目标Agent名称「末」
+
+取消待投递话题
+tool_name:「始」TopicOutbox「末」,
+command:「始」CancelTopicRequest「末」,
+topicRequestId:「始」要取消的唯一请求ID「末」
+
+重要约束：TopicOutbox 的 delivered 只表示创建话题或追加回复已经投递成功，不表示主人已经批准。审批按钮只放短命令和审批ID，不要把完整方案塞进按钮文本。用户点击按钮后，前端会把按钮内容作为用户消息发给当前Agent，Agent必须收到明确批准后再执行实际工具操作。
+
+## 6. VCP日程管理器 (ScheduleManager)
 tool_name:「始」ScheduleManager「末」,
 创建日程
 command:「始」AddSchedule「末」,
@@ -50,7 +94,7 @@ command:「始」ListSchedules「末」
 command:「始」DeleteSchedule「末」,
 id:「始」1735564800000「末」
 
-## 6. VChat闹钟 (VCPAlarm)
+## 7. VChat闹钟 (VCPAlarm)
 铃声是小克的主题曲MV！
 tool_name:「始」VCPAlarm「末」,
 time_description:「始」1分钟后「末」 // 支持具体时间（如'晚上10点30分'）或相对时间（如'15分钟后'）

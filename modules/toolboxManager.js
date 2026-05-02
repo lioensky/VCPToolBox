@@ -2,7 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
-const { parseFoldBlocks, buildDynamicFoldObject } = require('./foldProtocol');
+const { buildDynamicFoldObject } = require('./foldProtocol');
 
 const MAP_FILE = path.join(__dirname, '..', 'toolbox_map.json');
 

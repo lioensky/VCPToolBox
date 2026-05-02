@@ -1,0 +1,28 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "StaticToolboxQuery",
+  "displayName": "静态工具箱运行时查询器",
+  "version": "1.0.0",
+  "description": "按需查询 TVStxt 静态工具箱中的折叠说明块，让 Agent 在运行时获取隐藏工具参数格式，再调用真实工具。",
+  "author": "VCP & Codex",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node StaticToolboxQuery.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000
+  },
+  "configSchema": {},
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "StaticToolboxQuery",
+        "command": "StaticToolboxQuery",
+        "description": "查询静态工具箱里被折叠收纳的工具说明块。适用于：当前上下文只显示了工具箱入口，但你在 runtime 中判断需要某个隐藏工具的参数格式。该工具只返回说明文本，不执行真实文件、联网、通讯或多媒体操作。\n\n参数：\n- toolbox: 必需。目标工具箱别名，支持 VCPFileToolBox、VCPSearchToolBox、VCPMemoToolBox、VCPContactToolBox、VCPMediaToolBox、VCPFlowLockToolBox，也支持 file/search/memo/contact/media/flowlock。\n- mode: 可选。best/list/all，默认 best。list 只列目录；best 按 query 返回最相关 block；all 返回多个 block，仍受 maxBlocks/maxChars 限制。\n- query: best 模式必需。描述要找的能力，例如 文件写入、PowerShell、B站视频、Agent通讯、深度回忆、心流锁续写。\n- block 或 index: 可选。使用 list 返回的 index 精确获取某个 block。\n- maxBlocks: 可选，默认 2，最大 10。\n- maxChars: 可选，默认 8000，最大 30000。\n- includeBase: 可选，默认 false；是否允许返回基础常驻 block。\n\n调用格式：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」StaticToolboxQuery「末」,\ntoolbox:「始」VCPFileToolBox「末」,\nquery:「始」文件写入和编辑「末」,\nmode:「始」best「末」,\nmaxBlocks:「始」2「末」\n<<<[END_TOOL_REQUEST]>>>\n\n推荐流程：先用 StaticToolboxQuery 获取隐藏说明，再按 matchedBlocks.content 中给出的格式调用真实工具。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」StaticToolboxQuery「末」,\ntoolbox:「始」file「末」,\nquery:「始」WriteFile EditFile AppendFile 文件写入「末」,\nmode:「始」best「末」,\nmaxBlocks:「始」1「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」StaticToolboxQuery「末」,\ntoolbox:「始」flowlock「末」,\nquery:「始」续写 截断 暂停 恢复 status「末」,\nmode:「始」best「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
