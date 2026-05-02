@@ -1,0 +1,52 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianAsyncWorker",
+  "version": "0.1.0",
+  "displayName": "Obsidian Async Worker",
+  "description": "Asynchronous background worker for lightweight Obsidian vault maintenance reports and callback-ready task status.",
+  "author": "VCPstudio",
+  "pluginType": "asynchronous",
+  "entryPoint": {
+    "command": "node ObsidianAsyncWorker.js",
+    "timeout": 1800000
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1800000
+  },
+  "configSchema": {
+    "OBSIDIAN_VAULT_DIR": {
+      "type": "string",
+      "description": "Absolute path to the primary Obsidian vault.",
+      "default": ""
+    },
+    "OBSIDIAN_ALLOWED_VAULTS": {
+      "type": "string",
+      "description": "Optional semicolon-separated absolute vault roots. The primary vault is always allowed.",
+      "default": ""
+    },
+    "OBSIDIAN_ASYNC_STATE_DIR": {
+      "type": "string",
+      "description": "Optional directory for task status JSON files. Defaults to ./state.",
+      "default": ""
+    },
+    "OBSIDIAN_ASYNC_MAX_FILE_SIZE": {
+      "type": "integer",
+      "description": "Maximum markdown file size to inspect, in bytes.",
+      "default": 1048576
+    },
+    "CALLBACK_BASE_URL": {
+      "type": "string",
+      "description": "Optional VCP plugin callback base URL.",
+      "default": ""
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "GenerateVaultReport",
+        "description": "Queue a background Obsidian vault maintenance report.\nParameters:\n- command: GenerateVaultReport\n- taskName: optional display name.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianAsyncWorker「末」\ncommand:「始」GenerateVaultReport「末」\ntaskName:「始」Weekly vault report「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

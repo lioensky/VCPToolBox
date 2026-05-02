@@ -1,0 +1,54 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianVaultMemory",
+  "version": "0.1.0",
+  "displayName": "Obsidian Vault Memory",
+  "description": "Synchronous retrieval plugin for immediate Obsidian vault search. It reads markdown notes, returns matching snippets, and never edits vault content.",
+  "author": "VCPstudio",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "node ObsidianVaultMemory.js",
+    "timeout": 60000
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "OBSIDIAN_VAULT_DIR": {
+      "type": "string",
+      "description": "Absolute path to the primary Obsidian vault.",
+      "default": ""
+    },
+    "OBSIDIAN_ALLOWED_VAULTS": {
+      "type": "string",
+      "description": "Optional semicolon-separated absolute vault roots. The primary vault is always allowed.",
+      "default": ""
+    },
+    "OBSIDIAN_SEARCH_LIMIT": {
+      "type": "integer",
+      "description": "Default maximum number of search results.",
+      "default": 10
+    },
+    "OBSIDIAN_MAX_FILE_SIZE": {
+      "type": "integer",
+      "description": "Maximum markdown file size to search, in bytes.",
+      "default": 1048576
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "SearchNotes",
+        "description": "Search markdown notes in the configured Obsidian vault and return ranked snippets.\nParameters:\n- command: SearchNotes\n- query: text to search for.\n- maxResults: optional integer.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianVaultMemory「末」\ncommand:「始」SearchNotes「末」\nquery:「始」project architecture「末」\nmaxResults:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "GetBacklinks",
+        "description": "Find notes that link to a target note name or path.\nParameters:\n- command: GetBacklinks\n- target: note title, relative path, or wiki-link target."
+      },
+      {
+        "command": "ListRecentNotes",
+        "description": "List recently modified markdown notes in the configured vault.\nParameters:\n- command: ListRecentNotes\n- maxResults: optional integer."
+      }
+    ]
+  }
+}

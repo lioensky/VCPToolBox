@@ -1,0 +1,50 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianSafetyAudit",
+  "version": "0.1.0",
+  "displayName": "Obsidian Safety Audit",
+  "description": "Synchronous safety and audit plugin for Obsidian actions. It classifies risk, applies deny/approval policies, and writes JSONL audit records.",
+  "author": "VCPstudio",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "command": "node ObsidianSafetyAudit.js",
+    "timeout": 60000
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "configSchema": {
+    "OBSIDIAN_AUDIT_LOG_PATH": {
+      "type": "string",
+      "description": "Optional JSONL audit log path. Defaults to ./audit/obsidian-audit.jsonl.",
+      "default": ""
+    },
+    "OBSIDIAN_DENY_ACTIONS": {
+      "type": "string",
+      "description": "Comma-separated action names that are always denied.",
+      "default": "DeleteVault,DeleteFolder"
+    },
+    "OBSIDIAN_REQUIRE_APPROVAL_ACTIONS": {
+      "type": "string",
+      "description": "Comma-separated action names that require human approval.",
+      "default": "WriteNoteAtomic,AppendNote,ReplaceInNote,DeleteNote"
+    },
+    "OBSIDIAN_HIGH_RISK_PATH_PATTERNS": {
+      "type": "string",
+      "description": "Comma-separated path fragments that should require approval.",
+      "default": ".obsidian,Templates"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "AssessAction",
+        "description": "Assess an Obsidian action before execution and optionally record the decision.\nParameters:\n- command: AssessAction\n- action: action name, e.g. WriteNoteAtomic.\n- notePath: optional target note path.\n- actor: optional actor name.\n- reason: optional reason.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianSafetyAudit「末」\ncommand:「始」AssessAction「末」\naction:「始」WriteNoteAtomic「末」\nnotePath:「始」Daily/2026-04-23.md「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "RecordAuditEvent",
+        "description": "Write a structured Obsidian audit event to the JSONL audit log.\nParameters:\n- command: RecordAuditEvent\n- action: action name.\n- decision: allowed, denied, approval_required, completed, or failed.\n- notePath: optional target note path.\n- details: optional structured details."
+      }
+    ]
+  }
+}

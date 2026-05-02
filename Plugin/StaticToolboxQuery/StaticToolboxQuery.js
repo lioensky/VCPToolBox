@@ -31,7 +31,12 @@ const FRIENDLY_TOOLBOX_ALIASES = new Map([
   ['flowlock', 'VCPFlowLockToolBox'],
   ['flow', 'VCPFlowLockToolBox'],
   ['rhythm', 'VCPFlowLockToolBox'],
-  ['vcpflowlocktoolbox', 'VCPFlowLockToolBox']
+  ['vcpflowlocktoolbox', 'VCPFlowLockToolBox'],
+  ['obsidian', 'VCPObsidianToolBox'],
+  ['vault', 'VCPObsidianToolBox'],
+  ['note', 'VCPObsidianToolBox'],
+  ['notes', 'VCPObsidianToolBox'],
+  ['vcpobsidiantoolbox', 'VCPObsidianToolBox']
 ]);
 
 class ToolboxQueryError extends Error {

@@ -20,6 +20,8 @@ test('resolves friendly aliases to registered static toolboxes', () => {
   assert.equal(resolveToolboxAlias('file'), 'VCPFileToolBox');
   assert.equal(resolveToolboxAlias('search'), 'VCPSearchToolBox');
   assert.equal(resolveToolboxAlias('flowlock'), 'VCPFlowLockToolBox');
+  assert.equal(resolveToolboxAlias('obsidian'), 'VCPObsidianToolBox');
+  assert.equal(resolveToolboxAlias('vault'), 'VCPObsidianToolBox');
   assert.equal(resolveToolboxAlias('VCPMemoToolBox'), 'VCPMemoToolBox');
 });
 
@@ -89,6 +91,23 @@ test('best mode returns flowlock protocol content for continuation queries', asy
   assert.equal(result.mode, 'best');
   assert.equal(result.matchedBlocks.length, 1);
   assert.match(result.matchedBlocks[0].content, /status|pause|resume|续写/);
+});
+
+test('best mode returns Obsidian toolbox content for vault operations', async () => {
+  const result = await queryStaticToolbox({
+    toolbox: 'obsidian',
+    query: 'SearchNotes ReadNote AssessAction notePath vault',
+    mode: 'best',
+    maxBlocks: 2
+  });
+
+  assert.equal(result.toolbox, 'VCPObsidianToolBox');
+  assert.equal(result.mode, 'best');
+  assert.ok(result.matchedBlocks.length >= 1);
+  assert.match(
+    result.matchedBlocks.map(block => block.content).join('\n'),
+    /ObsidianVaultMemory|ObsidianCoreGateway|ObsidianSafetyAudit/
+  );
 });
 
 test('best mode reports clear errors for unknown toolbox, invalid mode, and missing query', async () => {

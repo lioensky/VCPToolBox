@@ -85,6 +85,7 @@
   鏂囦欢鎿嶄綔宸ュ叿绠憋細{{VCPFileToolBox}}
   閫氳涓庝富鍔ㄦ€т氦浜掑伐鍏风锛歿{VCPContactToolBox}}
   蹇冩祦閿佸崗璁細{{VCPFlowLockToolBox}}
+  Obsidian vault toolbox: {{VCPObsidianToolBox}}
   鍥炲繂宸ュ叿绠憋細{{VCPMemoToolBox}}
   涓€ф覆鏌撴柟娉曪細{{DIVRendering}}
   璁哄潧鎿嶄綔鎸囧崡锛歿{VarForum}}

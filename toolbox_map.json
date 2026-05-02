@@ -22,5 +22,9 @@
   "VCPFlowLockToolBox": {
     "file": "flowlock.txt",
     "description": "该收纳箱收纳了心流锁的对话节奏控制协议，包括自动续写、异步等待、暂停恢复、状态查询与解锁规则，用于动态向 Agent 提供说明。"
+  },
+  "VCPObsidianToolBox": {
+    "file": "ObsidianToolBox.txt",
+    "description": "收纳 Obsidian vault 协作插件套件的统一工具说明，包括会话感知、上下文注入、即时检索、人工确认、安全审计、笔记读写与异步维护报告，用于按需向 Agent 展开调用参数。"
   }
 }

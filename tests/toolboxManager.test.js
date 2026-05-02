@@ -16,7 +16,8 @@ test('static TVStxt toolboxes are exposed as dynamic fold objects', async () => 
     'VCPMediaToolBox',
     'VCPSearchToolBox',
     'VCPContactToolBox',
-    'VCPFlowLockToolBox'
+    'VCPFlowLockToolBox',
+    'VCPObsidianToolBox'
   ];
 
   for (const alias of aliases) {
@@ -29,6 +30,21 @@ test('static TVStxt toolboxes are exposed as dynamic fold objects', async () => 
     assert.ok(foldObj.fold_blocks.length >= 2, `${alias} should have folded sections`);
     assert.ok(foldObj.fold_blocks.every(block => typeof block.content === 'string'));
   }
+});
+
+test('Obsidian toolbox exposes focused folded protocol blocks', async () => {
+  toolboxManager.setTvsDir(path.join(__dirname, '..', 'TVStxt'));
+  await toolboxManager.loadMap();
+
+  const foldObj = await toolboxManager.getFoldObject('VCPObsidianToolBox');
+  const thresholds = foldObj.fold_blocks.map(block => block.threshold);
+
+  assert.equal(foldObj.vcp_dynamic_fold, true);
+  assert.ok(foldObj.fold_blocks.length >= 7);
+  assert.ok(thresholds.includes(0.14));
+  assert.ok(thresholds.includes(0.36));
+  assert.ok(foldObj.fold_blocks.some(block => /ObsidianCoreGateway/.test(block.content)));
+  assert.ok(foldObj.fold_blocks.some(block => /ObsidianVaultMemory/.test(block.content)));
 });
 
 test('message processor expands static toolbox placeholders through fold protocol', async () => {

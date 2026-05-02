@@ -1,0 +1,40 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianSessionSensor",
+  "version": "0.1.0",
+  "displayName": "Obsidian Session Sensor",
+  "description": "Static context sensor for recent Obsidian vault activity. It injects lightweight vault/session context without editing notes.",
+  "author": "VCPstudio",
+  "pluginType": "static",
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPObsidianSession}}",
+        "description": "Recent Obsidian vault context and optional active note signal."
+      }
+    ]
+  },
+  "entryPoint": {
+    "type": "executable",
+    "command": "powershell.exe -ExecutionPolicy Bypass -File ./sensor.ps1"
+  },
+  "refreshIntervalCron": "*/3 * * * *",
+  "executeOnStartup": true,
+  "configSchema": {
+    "OBSIDIAN_VAULT_DIR": {
+      "type": "string",
+      "description": "Absolute path to the primary Obsidian vault.",
+      "default": ""
+    },
+    "OBSIDIAN_ACTIVE_NOTE": {
+      "type": "string",
+      "description": "Optional active note path, relative to vault or absolute.",
+      "default": ""
+    },
+    "OBSIDIAN_SENSOR_LIMIT": {
+      "type": "integer",
+      "description": "Maximum recent markdown files to include.",
+      "default": 8
+    }
+  }
+}

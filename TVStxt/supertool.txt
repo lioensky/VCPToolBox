@@ -28,7 +28,7 @@ maxChars:「始」8000「末」
 <<<[END_TOOL_REQUEST]>>>
 
 参数：
-- toolbox：必需。可用完整名 `VCPFileToolBox`、`VCPSearchToolBox`、`VCPMemoToolBox`、`VCPMediaToolBox`、`VCPContactToolBox`、`VCPFlowLockToolBox`；也可用友好别名 `file/files/search/web/memo/memory/rag/media/image/contact/message/flowlock/flow`。
+- toolbox：必需。可用完整名 `VCPFileToolBox`、`VCPSearchToolBox`、`VCPMemoToolBox`、`VCPMediaToolBox`、`VCPContactToolBox`、`VCPFlowLockToolBox`、`VCPObsidianToolBox`；也可用友好别名 `file/files/search/web/memo/memory/rag/media/image/contact/message/flowlock/flow/obsidian/vault/note/notes`。
 - query：`mode=best` 时必需。写当前意图关键词，例如“文件写入 PowerShell 批量操作”、“网页读取 深度搜索”、“FlowLock start immediate 截断 续写”。
 - mode：`best` 返回最相关折叠块；`list` 只列目录；`all` 返回多个块。
 - block/index：可选。已知目录编号时精确取某个块。

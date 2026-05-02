@@ -1,0 +1,296 @@
+# VCP Obsidian 笔记协作工具箱
+
+这里收纳 Obsidian 全插件化协作套件的调用说明。它服务于“把 Obsidian vault 当作可检索、可审计、可确认后编辑的知识工作台”，而不是绕过用户直接批量改笔记。
+
+## 路由入口
+
+当你需要读取、搜索、注入、编辑或审计 Obsidian 笔记时，优先使用本工具箱。若当前上下文只显示本入口，而你需要具体参数，请先调用 `StaticToolboxQuery` 查询 `obsidian` 或 `VCPObsidianToolBox` 的相关折叠块。
+
+常用判断：
+- 只需要最近 vault/active note 信号：使用 `{{VCPObsidianSession}}` 静态上下文，不要主动编辑。
+- 只需要检索：用 `ObsidianVaultMemory`。
+- 需要读写单篇笔记：先用 `ObsidianSafetyAudit` 判断风险，再用 `ObsidianCoreGateway`。
+- 涉及覆盖、追加、替换等写动作：原则上先走 `ObsidianHumanGateway` 确认或遵循系统审批链。
+- 需要长耗时 vault 报告：用 `ObsidianAsyncWorker`。
+
+最小查询示例：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」StaticToolboxQuery「末」,
+toolbox:「始」obsidian「末」,
+query:「始」SearchNotes query maxResults ObsidianVaultMemory「末」,
+mode:「始」best「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+[===vcp_fold:0.14 ::desc: Obsidian工具索引 tool_name command ReadNote WriteNoteAtomic AppendNote ReplaceInNote SearchNotes AssessAction confirmation vault notePath 参数总览 ===]
+
+## 1. 最小工具索引
+
+工具名称与职责：
+- `ObsidianSessionSensor`：静态插件，占位符 `{{VCPObsidianSession}}`，提供最近 vault 活动和 active note 信号。
+- `ObsidianPromptPreprocessor`：消息预处理器，按配置把 active/context notes 注入系统提示词。
+- `ObsidianVaultMemory`：同步检索工具，只读搜索 vault。
+- `ObsidianSafetyAudit`：同步审计工具，判定动作风险并写 JSONL 审计。
+- `ObsidianHumanGateway`：混合服务工具，创建/查询/解决人工确认请求。
+- `ObsidianCoreGateway`：混合服务工具，唯一笔记执行主轴，负责读、写、追加、精确替换、打开笔记。
+- `ObsidianAsyncWorker`：异步工具，生成 vault 维护报告。
+
+通用 VCP 调用格式：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianVaultMemory「末」,
+command:「始」SearchNotes「末」,
+query:「始」关键词「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+关键参数名：
+- `command`：命令名，多数工具必需。
+- `notePath`：vault 内相对路径或允许 vault 内的绝对 `.md` 路径。
+- `query`：检索关键词。
+- `content`：完整写入或追加内容。
+- `searchText` / `replaceText`：精确替换的原文与新文。
+- `action`：审计或确认的目标动作，例如 `WriteNoteAtomic`、`AppendNote`、`ReplaceInNote`。
+- `reason` / `details`：审计、确认或操作说明。
+
+[===vcp_fold:0.20 ::desc: ObsidianSessionSensor ObsidianPromptPreprocessor active note context notes VCPObsidianSession OBSIDIAN_ACTIVE_NOTE 只读上下文注入 ===]
+
+## 2. 会话感知与上下文注入
+
+### ObsidianSessionSensor
+
+静态占位符：
+```text
+{{VCPObsidianSession}}
+```
+
+用途：
+- 提供 vault 是否可用、最近 markdown 文件、active note 线索。
+- 输出遵循 `vcp_dynamic_fold`，会根据上下文折叠协议按需展开。
+- 不执行编辑，不搜索全文，不替代用户授权。
+
+### ObsidianPromptPreprocessor
+
+由 VCP messagePreprocessor 链自动调用，通常无需手写工具请求。它根据插件配置读取：
+- `OBSIDIAN_ACTIVE_NOTE`
+- `OBSIDIAN_CONTEXT_NOTES`
+- `OBSIDIAN_CONTEXT_MAX_CHARS`
+- `OBSIDIAN_PREPROCESSOR_ENABLED`
+
+行为边界：
+- 只把指定笔记作为只读上下文注入。
+- 不主动搜索全 vault。
+- 不授予编辑权限；编辑仍需走审计/确认/执行链。
+
+[===vcp_fold:0.24 ::desc: ObsidianVaultMemory SearchNotes GetBacklinks ListRecentNotes query target maxResults searchPath 即时检索 反链 最近笔记 ===]
+
+## 3. 即时检索：ObsidianVaultMemory
+
+### SearchNotes
+
+搜索 vault 内 markdown 笔记并返回匹配片段：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianVaultMemory「末」,
+command:「始」SearchNotes「末」,
+query:「始」project architecture「末」,
+maxResults:「始」5「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+可选参数：
+- `searchPath`：限制检索子目录。
+- `maxResults`：返回结果数。
+
+### GetBacklinks
+
+查找指向目标笔记的反链：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianVaultMemory「末」,
+command:「始」GetBacklinks「末」,
+target:「始」Daily/2026-05-02.md「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### ListRecentNotes
+
+列出最近修改的 markdown：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianVaultMemory「末」,
+command:「始」ListRecentNotes「末」,
+maxResults:「始」10「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+[===vcp_fold:0.30 ::desc: ObsidianSafetyAudit AssessAction RecordAuditEvent approval_required denied allowed audit log riskLevel OBSIDIAN_DENY_ACTIONS 高风险动作 ===]
+
+## 4. 安全审计：ObsidianSafetyAudit
+
+在写入、追加、替换、删除等动作前，先判定风险：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianSafetyAudit「末」,
+command:「始」AssessAction「末」,
+action:「始」WriteNoteAtomic「末」,
+notePath:「始」Daily/2026-05-02.md「末」,
+actor:「始」当前Agent名「末」,
+reason:「始」根据用户要求更新笔记摘要「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+典型返回决策：
+- `allowed`：低风险，可继续。
+- `approval_required`：需要人工确认或系统审批。
+- `denied`：禁止执行，不要绕过。
+
+记录完成或失败事件：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianSafetyAudit「末」,
+command:「始」RecordAuditEvent「末」,
+action:「始」AppendNote「末」,
+decision:「始」completed「末」,
+notePath:「始」Daily/2026-05-02.md「末」,
+reason:「始」追加完成「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+[===vcp_fold:0.32 ::desc: ObsidianHumanGateway 确认请求 confirm pending resolve approved rejected riskLevel 人工审批 高风险写入 ===]
+
+## 5. 人工确认：ObsidianHumanGateway
+
+当审计返回 `approval_required`，或你判断写动作可能影响用户重要笔记时，创建确认请求：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianHumanGateway「末」,
+title:「始」确认 Obsidian 笔记写入「末」,
+message:「始」是否允许更新 Daily/2026-05-02.md 的摘要段落？「末」,
+riskLevel:「始」high「末」,
+action:「始」WriteNoteAtomic「末」,
+target:「始」Daily/2026-05-02.md「末」,
+details:「始」将根据用户刚刚确认的内容替换旧摘要「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+HTTP 服务路由同时存在，供前端或管理面板使用：
+- `POST /api/obsidian-human/confirm`
+- `GET /api/obsidian-human/pending/:id`
+- `POST /api/obsidian-human/resolve/:id`
+
+边界：
+- 它只管理确认状态，不直接写笔记。
+- 获得确认后，仍由 `ObsidianCoreGateway` 执行写动作。
+
+[===vcp_fold:0.36 ::desc: ObsidianCoreGateway ReadNote WriteNoteAtomic AppendNote ReplaceInNote OpenNote notePath content searchText replaceText createIfMissing 原子写入 精确替换 ===]
+
+## 6. 笔记执行主轴：ObsidianCoreGateway
+
+### ReadNote
+
+读取单篇 markdown：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianCoreGateway「末」,
+command:「始」ReadNote「末」,
+notePath:「始」Daily/2026-05-02.md「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### WriteNoteAtomic
+
+原子覆盖写入整篇笔记。高风险，通常先审计与确认：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianCoreGateway「末」,
+command:「始」WriteNoteAtomic「末」,
+notePath:「始」Inbox/example.md「末」,
+content:「始」# Example
+
+Content.「末」,
+createIfMissing:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### AppendNote
+
+追加内容：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianCoreGateway「末」,
+command:「始」AppendNote「末」,
+notePath:「始」Daily/2026-05-02.md「末」,
+content:「始」
+
+## 新增记录
+这里是追加内容。「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### ReplaceInNote
+
+精确替换文本。默认 `searchText` 必须只出现一次：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianCoreGateway「末」,
+command:「始」ReplaceInNote「末」,
+notePath:「始」Daily/2026-05-02.md「末」,
+searchText:「始」旧文本「末」,
+replaceText:「始」新文本「末」,
+allowMultiple:「始」false「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+### OpenNote
+
+通过已配置的 Obsidian CLI 打开笔记；未配置 CLI 时会安全跳过：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianCoreGateway「末」,
+command:「始」OpenNote「末」,
+notePath:「始」Daily/2026-05-02.md「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+[===vcp_fold:0.44 ::desc: ObsidianAsyncWorker GenerateVaultReport taskName taskId state async vault report tags links recent notes 异步维护报告 ===]
+
+## 7. 异步维护：ObsidianAsyncWorker
+
+生成 vault 维护报告：
+```text
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ObsidianAsyncWorker「末」,
+command:「始」GenerateVaultReport「末」,
+taskName:「始」Weekly vault report「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+返回要点：
+- 立即返回 `taskId` 与状态文件路径。
+- 后台统计 note 数量、总字节数、标签、wiki links、最近笔记。
+- 如配置 `CALLBACK_BASE_URL`，会向 VCP 插件回调端点上报完成状态。
+
+适用场景：
+- 用户要求整理 vault 概况。
+- 需要后台生成维护报告，而不是阻塞当前对话。
+- 检查近期笔记、标签和链接状态。
+
+[===vcp_fold:0.52 ::desc: Obsidian端到端流程 检索 审计 确认 编辑 回滚记录 安全边界 E2E workflow ===]
+
+## 8. 推荐端到端流程
+
+读写协作主路径：
+1. 用 `ObsidianVaultMemory.SearchNotes` 或 `ReadNote` 找到目标笔记。
+2. 对写动作调用 `ObsidianSafetyAudit.AssessAction`。
+3. 若返回 `approval_required`，调用 `ObsidianHumanGateway` 创建确认请求。
+4. 获得确认后，调用 `ObsidianCoreGateway.AppendNote` / `ReplaceInNote` / `WriteNoteAtomic`。
+5. 调用 `ObsidianSafetyAudit.RecordAuditEvent` 记录完成或失败。
+
+安全边界：
+- 不要把检索结果当成用户授权。
+- 不要绕过 `ObsidianCoreGateway` 直接写 vault。
+- 不要对 `.obsidian`、模板目录、批量文件执行无确认写入。
+- 不要在用户只要求“看看/查找/总结”时主动写入。
+- 高风险动作失败时，明确告知用户失败原因，并保留审计记录。

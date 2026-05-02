@@ -1,0 +1,68 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianCoreGateway",
+  "version": "0.1.0",
+  "displayName": "Obsidian Core Gateway",
+  "description": "The single execution gateway for Obsidian note operations. It validates note paths, reads notes, performs atomic writes/appends/exact replacements, and can optionally call an Obsidian CLI command to open a note.",
+  "author": "VCPstudio",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "ObsidianCoreGateway.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "OBSIDIAN_VAULT_DIR": {
+      "type": "string",
+      "description": "Absolute path to the primary Obsidian vault.",
+      "default": ""
+    },
+    "OBSIDIAN_ALLOWED_VAULTS": {
+      "type": "string",
+      "description": "Optional semicolon-separated absolute vault roots. The primary vault is always allowed.",
+      "default": ""
+    },
+    "OBSIDIAN_CLI_COMMAND": {
+      "type": "string",
+      "description": "Optional CLI executable or command prefix used by OpenNote.",
+      "default": ""
+    },
+    "OBSIDIAN_CLI_OPEN_ARGS": {
+      "type": "string",
+      "description": "Optional OpenNote argument template. Use {path} for the absolute note path.",
+      "default": "{path}"
+    },
+    "OBSIDIAN_BACKUP_BEFORE_WRITE": {
+      "type": "boolean",
+      "description": "When true, writes create a .bak file before replacing existing content.",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ReadNote",
+        "description": "Read a markdown note inside the configured Obsidian vault.\nParameters:\n- command: ReadNote\n- notePath: relative vault path or absolute path inside an allowed vault.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianCoreGateway「末」\ncommand:「始」ReadNote「末」\nnotePath:「始」Daily/2026-04-23.md「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "WriteNoteAtomic",
+        "description": "Atomically write a markdown note inside the configured Obsidian vault. Existing files are replaced through a same-directory temporary file and rename.\nParameters:\n- command: WriteNoteAtomic\n- notePath: relative vault path or absolute path inside an allowed vault.\n- content: full markdown content.\n- createIfMissing: optional boolean, default true.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianCoreGateway「末」\ncommand:「始」WriteNoteAtomic「末」\nnotePath:「始」Inbox/example.md「末」\ncontent:「始」# Example\\n\\nContent.「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "AppendNote",
+        "description": "Append markdown content to a note inside the configured Obsidian vault.\nParameters:\n- command: AppendNote\n- notePath: relative vault path or absolute path inside an allowed vault.\n- content: markdown content to append."
+      },
+      {
+        "commandIdentifier": "ReplaceInNote",
+        "description": "Replace an exact text fragment in an existing markdown note. By default the search text must occur exactly once.\nParameters:\n- command: ReplaceInNote\n- notePath: relative vault path or absolute path inside an allowed vault.\n- searchText: exact text to replace.\n- replaceText: replacement text.\n- allowMultiple: optional boolean, default false."
+      },
+      {
+        "commandIdentifier": "OpenNote",
+        "description": "Open a note through the configured Obsidian CLI command. This command does not edit note content.\nParameters:\n- command: OpenNote\n- notePath: relative vault path or absolute path inside an allowed vault."
+      }
+    ]
+  }
+}

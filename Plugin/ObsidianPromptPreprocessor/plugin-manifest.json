@@ -1,0 +1,47 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianPromptPreprocessor",
+  "version": "0.1.0",
+  "displayName": "Obsidian Prompt Preprocessor",
+  "description": "Message preprocessor that injects explicit Obsidian note context into the system prompt without editing notes or searching the whole vault.",
+  "author": "VCPstudio",
+  "pluginType": "messagePreprocessor",
+  "entryPoint": {
+    "script": "ObsidianPromptPreprocessor.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "OBSIDIAN_VAULT_DIR": {
+      "type": "string",
+      "description": "Absolute path to the primary Obsidian vault.",
+      "default": ""
+    },
+    "OBSIDIAN_ALLOWED_VAULTS": {
+      "type": "string",
+      "description": "Optional semicolon-separated absolute vault roots. The primary vault is always allowed.",
+      "default": ""
+    },
+    "OBSIDIAN_ACTIVE_NOTE": {
+      "type": "string",
+      "description": "Optional active note path to inject.",
+      "default": ""
+    },
+    "OBSIDIAN_CONTEXT_NOTES": {
+      "type": "string",
+      "description": "Optional semicolon-separated note paths to inject.",
+      "default": ""
+    },
+    "OBSIDIAN_CONTEXT_MAX_CHARS": {
+      "type": "integer",
+      "description": "Maximum total characters injected into the prompt.",
+      "default": 4000
+    },
+    "OBSIDIAN_PREPROCESSOR_ENABLED": {
+      "type": "boolean",
+      "description": "Set false to disable context injection.",
+      "default": true
+    }
+  }
+}

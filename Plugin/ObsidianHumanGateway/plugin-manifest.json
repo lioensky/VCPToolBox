@@ -1,0 +1,43 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianHumanGateway",
+  "version": "0.1.0",
+  "displayName": "Obsidian Human Gateway",
+  "description": "Service plugin that centralizes human confirmation requests for Obsidian high-risk actions.",
+  "author": "VCPstudio",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "ObsidianHumanGateway.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "OBSIDIAN_CONFIRMATION_TTL_MS": {
+      "type": "integer",
+      "description": "How long a confirmation request remains pending.",
+      "default": 900000
+    }
+  },
+  "capabilities": {
+    "serviceRoutes": [
+      {
+        "method": "POST",
+        "path": "/api/obsidian-human/confirm",
+        "description": "Create a confirmation request."
+      },
+      {
+        "method": "GET",
+        "path": "/api/obsidian-human/pending/:id",
+        "description": "Read a pending confirmation request."
+      },
+      {
+        "method": "POST",
+        "path": "/api/obsidian-human/resolve/:id",
+        "description": "Approve or reject a pending confirmation request."
+      }
+    ]
+  }
+}
