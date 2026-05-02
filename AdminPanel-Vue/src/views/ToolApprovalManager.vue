@@ -28,7 +28,7 @@
         </div>
         <div class="config-item">
           <label for="tool-approval-list">被审核规则名单 (每行一条规则)</label>
-          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" placeholder="例如：&#10;SciCalculator&#10;PowerShellExecutor:Get-ChildItem&#10;PowerShellExecutor::SilentReject&#10;PowerShellExecutor:Remove-Item::SilentReject"></textarea>
+          <textarea id="tool-approval-list" v-model="config.approvalListText" rows="8" placeholder="例如：&#10;SciCalculator&#10;ServerPowerShellExecutor:Get-ChildItem&#10;ServerPowerShellExecutor::SilentReject&#10;ServerPowerShellExecutor:Remove-Item::SilentReject"></textarea>
           <p class="aa-hint">支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。</p>
         </div>
         <div class="config-footer">

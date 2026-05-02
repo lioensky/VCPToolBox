@@ -41,6 +41,9 @@ module.exports = function(options) {
             excludedOriginKeys: Array.isArray(overrides.excludedOriginKeys)
                 ? overrides.excludedOriginKeys.map(String).filter(Boolean)
                 : [],
+            excludedPluginNames: Array.isArray(overrides.excludedPluginNames)
+                ? overrides.excludedPluginNames.map(String).filter(Boolean)
+                : [],
             pinnedOriginKeys: Array.isArray(overrides.pinnedOriginKeys)
                 ? overrides.pinnedOriginKeys.map(String).filter(Boolean)
                 : [],
@@ -105,6 +108,9 @@ module.exports = function(options) {
                 excludedOriginKeys: Array.isArray(current.manualOverrides?.excludedOriginKeys)
                     ? [...current.manualOverrides.excludedOriginKeys]
                     : [],
+                excludedPluginNames: Array.isArray(current.manualOverrides?.excludedPluginNames)
+                    ? [...current.manualOverrides.excludedPluginNames]
+                    : [],
                 pinnedOriginKeys: Array.isArray(current.manualOverrides?.pinnedOriginKeys)
                     ? [...current.manualOverrides.pinnedOriginKeys]
                     : [],
@@ -124,6 +130,7 @@ module.exports = function(options) {
             if (req.body?.manualOverrides && typeof req.body.manualOverrides === 'object') {
                 const manual = sanitizeManualOverrides(req.body.manualOverrides);
                 overrides.excludedOriginKeys = manual.excludedOriginKeys;
+                overrides.excludedPluginNames = manual.excludedPluginNames;
                 overrides.pinnedOriginKeys = manual.pinnedOriginKeys;
                 overrides.categoryAliases = manual.categoryAliases;
             }

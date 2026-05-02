@@ -7,6 +7,40 @@ module.exports = function(options) {
     const { pluginManager, tvsDirPath } = options;
     const PROJECT_BASE_PATH = path.join(__dirname, '..', '..');
     const TOOL_CONFIGS_DIR = path.join(PROJECT_BASE_PATH, 'ToolConfigs');
+    const RESERVED_CONFIG_NAMES = new Set([
+        'dynamic_tool_bridge.config',
+        'dynamic_tool_catalog',
+        'dynamic_tool_categories'
+    ]);
+
+    function isReservedConfigName(configName) {
+        return RESERVED_CONFIG_NAMES.has(configName) || configName.startsWith('dynamic_tool_');
+    }
+
+    function sanitizeConfigName(rawName) {
+        const configName = String(rawName || '').trim();
+        if (!/^[\w.-]+$/.test(configName) || path.basename(configName) !== configName) {
+            const error = new Error('Invalid config name');
+            error.statusCode = 400;
+            throw error;
+        }
+        if (isReservedConfigName(configName)) {
+            const error = new Error('Reserved dynamic-tool system config cannot be edited here');
+            error.statusCode = 403;
+            throw error;
+        }
+        return configName;
+    }
+
+    function sanitizeTvsFileName(rawName) {
+        const fileName = String(rawName || '').trim();
+        if (!fileName || fileName.includes('\0') || path.basename(fileName) !== fileName) {
+            const error = new Error('Invalid TVS file name');
+            error.statusCode = 400;
+            throw error;
+        }
+        return fileName;
+    }
 
     // 确保ToolConfigs目录存在
     async function ensureToolConfigsDir() {
@@ -48,7 +82,8 @@ module.exports = function(options) {
             const files = await fs.readdir(TOOL_CONFIGS_DIR);
             const configs = files
                 .filter(f => f.endsWith('.json'))
-                .map(f => f.replace('.json', ''));
+                .map(f => f.replace('.json', ''))
+                .filter(configName => !isReservedConfigName(configName));
             res.json({ configs });
         } catch (error) {
             console.error('[AdminAPI] Error getting config list:', error);
@@ -59,13 +94,13 @@ module.exports = function(options) {
     // GET /tool-list-editor/config/:configName - 加载指定的配置文件
     router.get('/tool-list-editor/config/:configName', async (req, res) => {
         try {
-            const configName = req.params.configName;
+            const configName = sanitizeConfigName(req.params.configName);
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
             const content = await fs.readFile(configPath, 'utf-8');
             res.json(JSON.parse(content));
         } catch (error) {
             console.error('[AdminAPI] Error loading config:', error);
-            res.status(500).json({ error: 'Failed to load config', details: error.message });
+            res.status(error.statusCode || 500).json({ error: 'Failed to load config', details: error.message });
         }
     });
 
@@ -73,7 +108,7 @@ module.exports = function(options) {
     router.post('/tool-list-editor/config/:configName', async (req, res) => {
         try {
             await ensureToolConfigsDir();
-            const configName = req.params.configName;
+            const configName = sanitizeConfigName(req.params.configName);
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
             const configData = {
                 selectedTools: req.body.selectedTools || [],
@@ -83,27 +118,27 @@ module.exports = function(options) {
             res.json({ status: 'success', message: 'Config saved successfully' });
         } catch (error) {
             console.error('[AdminAPI] Error saving config:', error);
-            res.status(500).json({ error: 'Failed to save config', details: error.message });
+            res.status(error.statusCode || 500).json({ error: 'Failed to save config', details: error.message });
         }
     });
 
     // DELETE /tool-list-editor/config/:configName - 删除配置文件
     router.delete('/tool-list-editor/config/:configName', async (req, res) => {
         try {
-            const configName = req.params.configName;
+            const configName = sanitizeConfigName(req.params.configName);
             const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
             await fs.unlink(configPath);
             res.json({ status: 'success', message: 'Config deleted successfully' });
         } catch (error) {
             console.error('[AdminAPI] Error deleting config:', error);
-            res.status(500).json({ error: 'Failed to delete config', details: error.message });
+            res.status(error.statusCode || 500).json({ error: 'Failed to delete config', details: error.message });
         }
     });
 
     // GET /tool-list-editor/check-file/:fileName - 检查文件是否存在
     router.get('/tool-list-editor/check-file/:fileName', async (req, res) => {
         try {
-            const fileName = req.params.fileName;
+            const fileName = sanitizeTvsFileName(req.params.fileName);
             const outputPath = path.join(tvsDirPath, `${fileName}.txt`);
             try {
                 await fs.access(outputPath);
@@ -113,14 +148,14 @@ module.exports = function(options) {
             }
         } catch (error) {
             console.error('[AdminAPI] Error checking file:', error);
-            res.status(500).json({ error: 'Failed to check file', details: error.message });
+            res.status(error.statusCode || 500).json({ error: 'Failed to check file', details: error.message });
         }
     });
 
     // POST /tool-list-editor/export/:fileName - 导出为txt文件
     router.post('/tool-list-editor/export/:fileName', async (req, res) => {
         try {
-            const fileName = req.params.fileName;
+            const fileName = sanitizeTvsFileName(req.params.fileName);
             const outputPath = path.join(tvsDirPath, `${fileName}.txt`);
             const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
             let output = '';
@@ -202,7 +237,7 @@ module.exports = function(options) {
             res.json({ status: 'success', filePath: `${path.basename(tvsDirPath)}/${fileName}.txt` });
         } catch (error) {
             console.error('[AdminAPI] Error exporting to txt:', error);
-            res.status(500).json({ error: 'Failed to export to txt', details: error.message });
+            res.status(error.statusCode || 500).json({ error: 'Failed to export to txt', details: error.message });
         }
     });
 

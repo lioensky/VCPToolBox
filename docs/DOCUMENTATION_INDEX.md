@@ -4,6 +4,8 @@
 **文档版本：** 1.0.0  
 **仓库提交：** d09c49f
 
+> **当前校准：** 2026-05-01 已对主要文档与当前代码做一次抽查校准。请优先阅读 [CURRENT_STATE_2026-05-01.md](./CURRENT_STATE_2026-05-01.md)。本目录中多份长文档仍是 2026-02-13 的历史快照，遇到与代码不一致时以 `server.js`、`adminServer.js`、`Plugin.js`、`modules/*` 和 `routes/admin/*` 为准。
+
 ---
 
 ## 文档目的
@@ -28,6 +30,7 @@
 | [PLUGIN_ECOSYSTEM.md](./PLUGIN_ECOSYSTEM.md) | 插件类型、manifest schema、执行模式、配置机制 | ⭐⭐⭐ |
 | [CONFIGURATION.md](./CONFIGURATION.md) | 所有配置参数、优先级规则、影响范围、风险警告 | ⭐⭐⭐ |
 | [API_ROUTES.md](./API_ROUTES.md) | HTTP端点、认证要求、参数规范、处理逻辑 | ⭐⭐⭐ |
+| [CURRENT_STATE_2026-05-01.md](./CURRENT_STATE_2026-05-01.md) | 当前实现校准、静态工具箱、动态工具清单与文档时效性说明 | ⭐⭐⭐ |
 
 ### 专项技术文档
 
@@ -43,8 +46,8 @@
 
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
-| [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 所有重要文件的职责、入口、依赖关系 | ⭐ |
-| [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 每项功能的入口、触发条件、处理流程、配置项 | ⭐ |
+| [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 旧快照文件清单；插件数量和 AdminPanel 路径已落后，使用前请对照代码 | ⭐ |
+| [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 旧快照功能矩阵；适合理解旧设计，不适合作为当前功能真相源 | ⭐ |
 | [OPERATIONS.md](./OPERATIONS.md) | 启动方式、依赖要求、Docker配置、故障排查 | ⭐ |
 
 ---
@@ -78,7 +81,7 @@
 | 知识库 | `KnowledgeBaseManager.js` | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § 架构 |
 | 向量引擎 | `rust-vexus-lite/` | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) |
 | 路由层 | `routes/` | [API_ROUTES.md](./API_ROUTES.md) |
-| 管理面板 | `AdminPanel/` | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) |
+| 管理面板 | `AdminPanel-Vue/` + `adminServer.js` | [CURRENT_STATE_2026-05-01.md](./CURRENT_STATE_2026-05-01.md), [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) |
 
 ---
 
@@ -183,9 +186,9 @@
 
 ### 文档时效性
 
-- 文档基于 **2026-02-13** 的代码快照生成
-- 代码快速迭代可能导致文档滞后
-- 遇到不一致时，以代码为准，并提交文档更新
+- 文档主体基于 **2026-02-13** 的代码快照生成，2026-05-01 只做了重点校准和补充。
+- `FRONTEND_COMPONENTS.md`、`ADMINPANEL_DEVELOPMENT.md`、`FILE_INVENTORY.md`、`FEATURE_MATRIX.md` 当前应视作历史快照。
+- 遇到不一致时，以代码为准，并在 [CURRENT_STATE_2026-05-01.md](./CURRENT_STATE_2026-05-01.md) 记录新的校准结论。
 
 ---
 

@@ -614,6 +614,13 @@ VCP Agent 拥有**硬件底层级分布式系统根权限**：
 
 动态插件工具列表通过 `ToolConfigs/dynamic_tool_bridge.config.json` 配置，运行时缓存写入同目录的 `dynamic_tool_catalog.json` 与 `dynamic_tool_categories.json`。
 
+DynamicToolBridge 只负责 `{{VCPDynamicTools}}` 的提示词注入，不是新的工具执行通道。它与静态工具箱的关系如下：
+
+- `ToolConfigs/dynamic_tool_bridge.config.json`：人工可编辑的动态工具行为配置。
+- `ToolConfigs/dynamic_tool_catalog.json`：运行时 catalog 缓存，记录工具来源、在线状态、hash；不要手工编辑。
+- `ToolConfigs/dynamic_tool_categories.json`：运行时分类缓存，记录 brief、categories、keywords；不要手工编辑。
+- 工具列表配置编辑器保存的其他 `ToolConfigs/*.json`：旧式手选工具列表配置，可导出为 `TVStxt/*.txt` 静态说明，和动态工具缓存不是同一套机制。
+
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
 | `enabled` | `true` | 是否启用 `{{VCPDynamicTools}}` 动态注入；关闭后可切回 `{{VCPAllTools}}` |
@@ -624,6 +631,7 @@ VCP Agent 拥有**硬件底层级分布式系统根权限**：
 | `classificationDebounceMs` | `1000` | 插件热加载后分类队列去抖时间 |
 | `classifierTimeoutMs` | `30000` | 小模型分类超时时间 |
 | `manualOverrides.excludedOriginKeys` | `[]` | 手动排除的工具 originKey |
+| `manualOverrides.excludedPluginNames` | `[]` | 按插件名排除，常用于隐藏旧名、前端分布式版本或不希望暴露给 Agent 的工具 |
 | `manualOverrides.pinnedOriginKeys` | `[]` | 轻量清单中优先展示的工具 originKey |
 | `smallModel.enabled` | `false` | 是否启用增量小模型分类；可由私有插件配置覆盖 |
 | `smallModel.useMainConfig` | `true` | 是否复用主 `config.env` 的 `API_URL` 和 `API_Key` |

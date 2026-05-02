@@ -539,6 +539,54 @@ class ChatCompletionHandler {
         }
         processedMessages.push(newMessage);
       }
+
+      // --- VCPTavern 二次处理 ---
+      // 角色卡/TVS 变量展开后，系统提示词中才可能出现 {{VCPTavern::preset}}。
+      if (pluginManager.messagePreprocessors.has('VCPTavern')) {
+        if (DEBUG_MODE) console.log(`[Server] Calling post-variable message preprocessor: VCPTavern`);
+        try {
+          const beforeTavernMessages = processedMessages;
+          processedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', processedMessages);
+
+          // 若 VCPTavern 注入了新内容，再补跑一次变量替换，兼容预设内的普通占位符。
+          if (processedMessages !== beforeTavernMessages) {
+            processingContext.messages = processedMessages;
+            const postTavernProcessedMessages = [];
+            for (const msg of processedMessages) {
+              const newMessage = JSON.parse(JSON.stringify(msg));
+              if (newMessage.content && typeof newMessage.content === 'string') {
+                newMessage.content = await messageProcessor.replaceAgentVariables(
+                  newMessage.content,
+                  originalBody.model,
+                  msg.role,
+                  processingContext,
+                );
+              } else if (Array.isArray(newMessage.content)) {
+                const newParts = [];
+                for (const part of newMessage.content) {
+                  if (part.type === 'text' && typeof part.text === 'string') {
+                    const newPart = JSON.parse(JSON.stringify(part));
+                    newPart.text = await messageProcessor.replaceAgentVariables(
+                      newPart.text,
+                      originalBody.model,
+                      msg.role,
+                      processingContext,
+                    );
+                    newParts.push(newPart);
+                  } else {
+                    newParts.push(part);
+                  }
+                }
+                newMessage.content = newParts;
+              }
+              postTavernProcessedMessages.push(newMessage);
+            }
+            processedMessages = postTavernProcessedMessages;
+          }
+        } catch (pluginError) {
+          console.error(`[Server] Error in post-variable preprocessor VCPTavern:`, pluginError);
+        }
+      }
       if (DEBUG_MODE) await writeDebugLog('LogAfterVariableProcessing', processedMessages);
 
       // --- 媒体处理器 ---

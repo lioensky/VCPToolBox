@@ -3,6 +3,8 @@
 **生成时间：** 2026-02-13
 **版本：** VCP 6.4
 
+> **时效性提示（2026-05-01）：** 本文主体描述的是旧 `AdminPanel/` 原生 JS 面板。当前主用管理面板是 `AdminPanel-Vue/dist`，由 `adminServer.js` 作为独立后台进程监听 `PORT+1` 托管；主进程访问 `/AdminPanel` 会重定向到独立后台进程。本文中关于 `AdminPanel/index.html`、`AdminPanel/js/*.js`、iframe 子页面的开发说明只适合作为历史参考。新增或修改管理面板功能时，请优先查看 `AdminPanel-Vue/src`、`adminServer.js` 与 `routes/adminPanelRoutes.js`。
+
 ---
 
 ## 目录
@@ -23,7 +25,7 @@ VCPToolBox 前端生态由三个核心组件构成：
 
 | 组件 | 类型 | 主要功能 | 技术栈 |
 |------|------|----------|--------|
-| AdminPanel | 内嵌静态前端 | 服务器管理、配置、监控 | 原生 JS/CSS、EasyMDE |
+| AdminPanel-Vue | 独立 Vue 管理面板 | 服务器管理、配置、监控、动态工具清单、审批面板 | Vue + Vite 构建产物，`adminServer.js` 托管 |
 | VCPChrome | Chrome 扩展 | 浏览器控制、页面信息采集 | Manifest V3、Service Worker |
 | OpenWebUISub | 用户脚本 | 前端增强、VCP 协议渲染 | Tampermonkey/Greasemonkey |
 
@@ -57,7 +59,7 @@ VCPToolBox 前端生态由三个核心组件构成：
 
 ### 2.1 架构概览
 
-AdminPanel 是由后端直接托管的内嵌静态前端，**并非独立 SPA 工程**。采用原生 JavaScript 模块化设计，无需前端打包工具。
+历史版本的 AdminPanel 是由后端直接托管的内嵌静态前端；当前版本已经迁移为 `AdminPanel-Vue` SPA。运行时由 `adminServer.js` 托管 `AdminPanel-Vue/dist`，并将大部分 `/admin_api/*` 请求代理回主进程。
 
 ### 2.2 目录结构
 

@@ -3,6 +3,63 @@ const path = require('path');
 
 const DAILYNOTE_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, '../../dailynote');
 
+function stripBom(text) {
+    return typeof text === 'string' ? text.replace(/^\uFEFF/, '') : text;
+}
+
+function normalizeLineEndings(text) {
+    return typeof text === 'string' ? text.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : text;
+}
+
+function unwrapReadFileText(text) {
+    if (typeof text !== 'string') {
+        return text;
+    }
+
+    const wrapperMatch = text.match(/^已读取文件\s+'[^']+'\s+\([^)]+\)。\n```[^\n]*\n([\s\S]*?)\n```$/);
+    return wrapperMatch ? wrapperMatch[1] : text;
+}
+
+function prepareMatchText(text) {
+    return normalizeLineEndings(stripBom(unwrapReadFileText(text)));
+}
+
+function restoreOriginalLineEndings(text, originalContent) {
+    if (typeof text !== 'string') {
+        return text;
+    }
+
+    if (typeof originalContent === 'string' && originalContent.includes('\r\n')) {
+        return text.replace(/\n/g, '\r\n');
+    }
+
+    return text;
+}
+
+function replaceWithNormalization(originalContent, targetText, replacementText) {
+    if (typeof originalContent !== 'string' || typeof targetText !== 'string' || typeof replacementText !== 'string') {
+        return null;
+    }
+
+    if (originalContent.includes(targetText)) {
+        return originalContent.replace(targetText, replacementText);
+    }
+
+    const hasBom = originalContent.startsWith('\uFEFF');
+    const normalizedContent = prepareMatchText(originalContent);
+    const normalizedTarget = prepareMatchText(targetText);
+    const normalizedReplacement = prepareMatchText(replacementText);
+
+    if (!normalizedContent.includes(normalizedTarget)) {
+        return null;
+    }
+
+    const replacedNormalizedContent = normalizedContent.replace(normalizedTarget, normalizedReplacement);
+    const restoredContent = restoreOriginalLineEndings(replacedNormalizedContent, originalContent);
+
+    return hasBom ? `\uFEFF${restoredContent}` : restoredContent;
+}
+
 async function main() {
     try {
         const input = await readStdin();
@@ -16,7 +73,12 @@ async function main() {
                 `[Command ${i + 1}]: ${r.success ? 'SUCCESS' : 'FAILED'}\n  - Message: ${r.message || r.error}`
             ).join('\n\n');
             
-            console.log(JSON.stringify({ status: overallSuccess ? 'success' : 'error', result: `Batch processing completed.\n\n${report}` }));
+            const responseText = `Batch processing completed.\n\n${report}`;
+            console.log(JSON.stringify(
+                overallSuccess
+                    ? { status: 'success', result: responseText }
+                    : { status: 'error', error: responseText }
+            ));
         } else {
             // 处理单个命令
             const { command, ...parameters } = request;
@@ -31,7 +93,12 @@ async function main() {
                 default:
                     result = { success: false, error: `Unknown command: ${command}` };
             }
-            console.log(JSON.stringify({ status: result.success ? 'success' : 'error', result: result.message || result.error }));
+            const responseText = result.message || result.error;
+            console.log(JSON.stringify(
+                result.success
+                    ? { status: 'success', result: responseText }
+                    : { status: 'error', error: responseText }
+            ));
         }
     } catch (error) {
         console.log(JSON.stringify({ status: 'error', error: error.message }));
@@ -113,8 +180,8 @@ async function editClusterFile({ clusterName, targetText, replacementText }) {
                 const stat = await fs.stat(filePath);
                 if (stat.isFile()) {
                     const content = await fs.readFile(filePath, 'utf8');
-                    if (content.includes(targetText)) {
-                        const newContent = content.replace(targetText, replacementText);
+                    const newContent = replaceWithNormalization(content, targetText, replacementText);
+                    if (newContent !== null) {
                         await fs.writeFile(filePath, newContent, 'utf8');
                         return { success: true, message: `File updated successfully at ${filePath}` };
                     }

@@ -273,6 +273,7 @@ function createDefaultConfig(): DynamicToolsConfig {
     useRagEmbeddings: true,
     manualOverrides: {
       excludedOriginKeys: [],
+      excludedPluginNames: [],
       pinnedOriginKeys: [],
       categoryAliases: {},
     },
@@ -295,6 +296,9 @@ function normalizeConfig(config: DynamicToolsConfig | null | undefined): Dynamic
       ...(config?.manualOverrides || {}),
       excludedOriginKeys: Array.isArray(config?.manualOverrides?.excludedOriginKeys)
         ? config.manualOverrides.excludedOriginKeys
+        : [],
+      excludedPluginNames: Array.isArray(config?.manualOverrides?.excludedPluginNames)
+        ? config.manualOverrides.excludedPluginNames
         : [],
       pinnedOriginKeys: Array.isArray(config?.manualOverrides?.pinnedOriginKeys)
         ? config.manualOverrides.pinnedOriginKeys

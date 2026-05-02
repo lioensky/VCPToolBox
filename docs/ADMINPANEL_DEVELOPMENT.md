@@ -1,8 +1,10 @@
 # AdminPanel 管理面板开发指南
 
-**版本：** 1.0.0  
-**最后更新：** 2026-02-17  
+**版本：** 1.0.0
+**最后更新：** 2026-02-17
 **适用版本：** VCPToolBox 6.4+
+
+> **时效性提示（2026-05-01）：** 本文主体仍按旧 `AdminPanel/` 原生 JS 面板编写。当前主用管理面板已经迁移到 `AdminPanel-Vue/src`，构建产物位于 `AdminPanel-Vue/dist`，由 `adminServer.js` 独立进程托管。本文保留为历史参考；新增页面或修改现有页面时，请优先走 Vue 路由、组件、`src/api` 模块和 `routes/admin/*.js` 后端模块。
 
 ---
 
@@ -76,9 +78,9 @@ flowchart LR
 ### 2.2 命名与 DOM 约定
 
 - **侧栏**：`data-target="xxx"`（如 `schedule-manager`）。
-- **Section**：`id="xxx-section"`（即 `data-target` + `-section`）。  
+- **Section**：`id="xxx-section"`（即 `data-target` + `-section`）。
   📁 [AdminPanel/script.js](AdminPanel/script.js) 中 `navigateTo()` 内：`const sectionIdToActivate = \`${dataTarget}-section\`;`
-- **懒加载 iframe**：section 内写 `<iframe data-src="子页面.html" ...>`，进入分区时 script.js 会赋 `iframe.src = iframe.dataset.src`，离开时置为 `about:blank`。  
+- **懒加载 iframe**：section 内写 `<iframe data-src="子页面.html" ...>`，进入分区时 script.js 会赋 `iframe.src = iframe.dataset.src`，离开时置为 `about:blank`。
   📁 [AdminPanel/script.js](AdminPanel/script.js) 中 `navigateTo()` 内对 `.config-section` 的 `forEach` 里（进入时赋 `iframe.src`，离开时赋 `about:blank`）。
 
 ### 2.3 内联内容 vs iframe
@@ -185,5 +187,5 @@ flowchart LR
 
 ---
 
-**文档维护者：** VCPToolBox 开发团队  
+**文档维护者：** VCPToolBox 开发团队
 **最后更新：** 2026-02-17

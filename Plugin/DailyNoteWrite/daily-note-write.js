@@ -12,7 +12,7 @@ const projectBasePath = process.env.PROJECT_BASE_PATH;
 const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
 
 // Tag processing configuration
-const TAG_MODEL = process.env.TagModel || 'gemini-2.5-flash-preview-09-2025-thinking';
+const TAG_MODEL = process.env.TagModel || 'deepseek-v4-flash';
 const TAG_MODEL_MAX_OUTPUT_TOKENS = parseInt(process.env.TagModelMaxOutPutTokens || '30000', 10);
 const TAG_MODEL_MAX_TOKENS = parseInt(process.env.TagModelMaxTokens || '40000', 10);
 const TAG_MODEL_PROMPT_FILE = process.env.TagModelPrompt || 'TagMaster.txt';
@@ -353,7 +353,7 @@ async function writeDiary(maidName, dateString, contentText, fileName) {
         debugLog(`Sanitized folder name from "${folderName}" to "${sanitizedFolderName}"`);
     }
 
-    const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
+    const datePart = dateString.replace(/[.\\\/:\s-]/g, '-').replace(/-+/g, '-');
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
     const minutes = now.getMinutes().toString().padStart(2, '0');

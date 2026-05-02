@@ -4,6 +4,8 @@
 **生成日期:** 2026-02-13  
 **适用提交:** d09c49f
 
+> **时效性提示（2026-05-01）：** 本文主体仍可用于理解旧版核心结构，但启动序列和管理面板描述已落后。当前启动链路还会初始化 `tvsManager`、`toolboxManager`、`sarPromptManager`、`dynamicToolRegistry`；管理面板由 `adminServer.js` 独立进程托管 `AdminPanel-Vue/dist`，主进程 `/AdminPanel` 负责重定向。最新校准见 [CURRENT_STATE_2026-05-01.md](./CURRENT_STATE_2026-05-01.md)。
+
 ---
 
 ## 目录

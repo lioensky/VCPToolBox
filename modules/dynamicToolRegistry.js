@@ -22,6 +22,7 @@ const DEFAULT_CONFIG = Object.freeze({
     useRagEmbeddings: true,
     manualOverrides: {
         excludedOriginKeys: [],
+        excludedPluginNames: [],
         pinnedOriginKeys: [],
         categoryAliases: {}
     },
@@ -615,6 +616,7 @@ class DynamicToolRegistry {
 
         for (const manifest of pluginManager.plugins.values()) {
             if (!manifest || !manifest.name) continue;
+            if (manifest.enabled === false) continue;
             const commands = asArray(manifest.capabilities?.invocationCommands);
             if (commands.length === 0) continue;
 
@@ -637,12 +639,13 @@ class DynamicToolRegistry {
             const record = {
                 originKey,
                 pluginName: manifest.name,
+                aliasNames: asArray(manifest.aliases),
                 displayName: manifest.displayName || manifest.name,
                 description: manifest.description || '',
                 pluginType: manifest.pluginType || '',
                 originKind,
                 originId,
-                enabled: true,
+                enabled: manifest.enabled !== false,
                 online: true,
                 available: true,
                 manifestHash,
@@ -673,7 +676,13 @@ class DynamicToolRegistry {
 
     _isAvailable(record) {
         const excluded = new Set(asArray(this.config.manualOverrides?.excludedOriginKeys));
-        return record.enabled !== false && record.online !== false && !excluded.has(record.originKey);
+        const excludedPluginNames = new Set(
+            asArray(this.config.manualOverrides?.excludedPluginNames).map((name) => normalizeName(name))
+        );
+        return record.enabled !== false
+            && record.online !== false
+            && !excluded.has(record.originKey)
+            && !excludedPluginNames.has(normalizeName(record.pluginName));
     }
 
     async _classifyRecord(record, reason) {
@@ -779,7 +788,7 @@ class DynamicToolRegistry {
         if (!getEmbedding) return null;
 
         try {
-            const text = cleanText(`${record.pluginName} ${record.displayName} ${record.description} ${record.fullDescription}`, 2000);
+            const text = cleanText(`${record.pluginName} ${(record.aliasNames || []).join(' ')} ${record.displayName} ${record.description} ${record.fullDescription}`, 2000);
             const pluginVector = await withTimeout(
                 Promise.resolve(getEmbedding(text)),
                 this.config.classifierTimeoutMs,
@@ -867,7 +876,7 @@ class DynamicToolRegistry {
     }
 
     _fallbackClassify(record) {
-        const text = `${record.pluginName} ${record.displayName} ${record.description} ${record.fullDescription}`.toLowerCase();
+        const text = `${record.pluginName} ${(record.aliasNames || []).join(' ')} ${record.displayName} ${record.description} ${record.fullDescription}`.toLowerCase();
         const categories = [];
         const keywords = new Set();
         for (const rule of CATEGORY_RULES) {
@@ -953,7 +962,7 @@ class DynamicToolRegistry {
             if (lower.includes(category.toLowerCase())) directives.categories.add(category);
         }
         for (const record of available) {
-            const names = [record.pluginName, record.displayName, ...(record.commandIdentifiers || [])].filter(Boolean);
+            const names = [record.pluginName, ...(record.aliasNames || []), record.displayName, ...(record.commandIdentifiers || [])].filter(Boolean);
             if (names.some((name) => lower.includes(String(name).toLowerCase()))) {
                 directives.tools.add(record.pluginName);
             }
@@ -981,7 +990,7 @@ class DynamicToolRegistry {
         for (const keyword of keywords) {
             if (queryLower.includes(keyword.toLowerCase()) || queryTokens.has(keyword.toLowerCase())) score += 5;
         }
-        const haystack = `${record.pluginName} ${record.displayName} ${record.description} ${classification?.brief || ''}`.toLowerCase();
+        const haystack = `${record.pluginName} ${(record.aliasNames || []).join(' ')} ${record.displayName} ${record.description} ${classification?.brief || ''}`.toLowerCase();
         for (const token of queryTokens) {
             if (haystack.includes(token)) score += 2;
         }
@@ -1012,7 +1021,7 @@ class DynamicToolRegistry {
 
     _matchesToolName(record, requested) {
         const requestedLower = normalizeName(requested);
-        return [record.pluginName, record.displayName, ...(record.commandIdentifiers || [])]
+        return [record.pluginName, ...(record.aliasNames || []), record.displayName, ...(record.commandIdentifiers || [])]
             .filter(Boolean)
             .some((value) => normalizeName(value) === requestedLower);
     }

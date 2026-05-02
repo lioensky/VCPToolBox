@@ -1,6 +1,8 @@
 # VCPToolBox 文件清单
 
 > **生成时间：** 2026-02-13
+
+> **时效性提示（2026-05-01）：** 本文是旧快照清单，插件数量、真实插件名和 AdminPanel 目录已经明显落后。当前代码中带 `plugin-manifest.json` 的插件目录约为 95 个，且 `FileOperator`、`PowerShellExecutor`、`CodeSearcher`、`VCPEverything` 等目录的真实工具名已经分别偏向 `ServerFileOperator`、`ServerPowerShellExecutor`、`ServerCodeSearcher`、`ServerSearchController`。本文保留为历史索引，不建议作为当前插件清单真相源。
 > **项目版本：** VCP 6.4
 
 ---

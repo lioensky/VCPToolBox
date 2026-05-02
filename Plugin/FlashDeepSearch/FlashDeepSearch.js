@@ -72,7 +72,7 @@ const callLanguageModel = async (model, messages, systemPrompt = null, maxTokens
             function: { name: "googleSearch", description: "从谷歌搜索引擎获取实时信息。", parameters: { type: "object", properties: { query: { type: "string" } } } }
         }];
     }
-    
+
     log(`调用模型: ${model}`);
     const response = await axios.post(API_URL, payload, {
         headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
@@ -104,13 +104,13 @@ async function generateKeywords(topic, broadness) {
     log('步骤 1: 生成研究关键词...');
     const systemPrompt = `您是一个专攻研究规划的AI，名为“跨域研究织网者”。您的核心任务是接收一个自然语言描述的【研究主题】和一个【搜索广度】参数(SearchBroadness, 范围5-20)，并将其解构为一系列具有高度多样性和探索性的检索关键词。\n您的行动协议如下:\n主题解构 (Deconstruction): 首先，对用户提供的【研究主题】进行深度分析，识别其核心概念、潜在的子领域和关键实体。\n多维扩展 (Expansion): 以核心概念为基础，从多个维度进行发散性思考，必须涵盖但不限于以下视角：技术/科学视角、社会/经济视角、历史/文化视角、哲学/伦理视角、批判/反方视角。\n关键词合成 (Synthesis): 根据上述扩展，生成一系列关键词。这些关键词必须具备以下特点：语言多样性(必须同时包含【中文】和【英文】关键词)、领域多样性(必须跨越至少三个不同的学科领域)、视角多样性(必须体现上述不同的思考维度)。\n首先，用户将会像你请求研究内容，和【搜索广度】(SearchBroadness)，你需要仔细斟酌需要获取的信息，然后详细构建一套检索关键词列表。\n关键词列表格式化输出 (Formatting): 您的首次输出必须严格包含关键词列表。关键词的数量必须严格等于【搜索广度】(SearchBroadness)参数的值。\n输出格式为：\n[KeyWord1:] [KeyWord2:] [KeyWord3:] ... [KeyWordN:]\n每个关键词都由 [KeyWordX:] 包裹。\n当你首次输出结束后，系统会根据您的检索词列表构建详细的检索报告，请将所有信息汇总，构建为具体详实的论文阐述您的思考，研究观点和具有参考价值的结论。`;
     const userMessage = `Agent请求内容字段(${topic})，请求【搜索广度】(SearchBroadness)为:${broadness}`;
-    
+
     const responseText = await callLanguageModel(DeepSearchModel, [{ role: 'user', content: userMessage }], systemPrompt, DEEP_SEARCH_MAX_TOKENS);
     log(`DeepSearchModel 原始响应: ${responseText}`);
-    
+
     // 增强型关键词提取逻辑，兼容多种 LLM 输出格式
     const keywordSet = new Set();
-    
+
     // 模式 1: [KeyWord1: keyword] (本次报错的情况) 或 [KeyWord1: ] keyword
     const pattern1 = /\[KeyWord\d+:\s*([^\]]+)\]/g;
     [...responseText.matchAll(pattern1)].forEach(m => {
@@ -141,7 +141,7 @@ async function generateKeywords(topic, broadness) {
         throw new Error("未能从DeepSearchModel的响应中提取任何关键词。");
     }
     log(`成功提取到 ${keywords.length} 个关键词。`);
-    
+
     // 返回关键词和此次对话历史
     return {
         keywords,
@@ -156,7 +156,7 @@ async function executeConcurrentSearches(topic, keywords) {
     log(`步骤 2: 并发执行 ${keywords.length} 个搜索任务...`);
     const systemPrompt = "你是一个谷歌联网搜索信息获取小助手，你的工作是根据用户的需求和具体提供的检索关键词，从互联网获取重要信息，返回的信息必须严格标注引用的url。";
     let searchResults = [];
-    
+
     for (let i = 0; i < keywords.length; i += MAX_CONCURRENT_SEARCHES) {
         const chunk = keywords.slice(i, i + MAX_CONCURRENT_SEARCHES);
         const promises = chunk.map(async (keyword) => {
@@ -169,11 +169,11 @@ async function executeConcurrentSearches(topic, keywords) {
                 return null; // 返回 null 表示失败
             }
         });
-        
+
         const chunkResults = await Promise.all(promises);
         searchResults = searchResults.concat(chunkResults.filter(r => r !== null)); // 过滤掉失败的搜索
     }
-    
+
     log(`成功完成 ${searchResults.length} 个搜索任务。`);
     return searchResults.join('');
 }
@@ -182,7 +182,7 @@ async function generateFinalReport(searchData, history) {
     log('步骤 3: 生成最终研究报告...');
     // 沿用第一步的系统提示词，确保角色连贯性
     const systemPrompt = `您是一个专攻研究规划的AI，名为“跨域研究织网者”。您的核心任务是接收一个自然语言描述的【研究主题】和一个【搜索广度】参数(SearchBroadness, 范围5-20)，并将其解构为一系列具有高度多样性和探索性的检索关键词。\n您的行动协议如下:\n主题解构 (Deconstruction): 首先，对用户提供的【研究主题】进行深度分析，识别其核心概念、潜在的子领域和关键实体。\n多维扩展 (Expansion): 以核心概念为基础，从多个维度进行发散性思考，必须涵盖但不限于以下视角：技术/科学视角、社会/经济视角、历史/文化视角、哲学/伦理视角、批判/反方视角。\n关键词合成 (Synthesis): 根据上述扩展，生成一系列关键词。这些关键词必须具备以下特点：语言多样性(必须同时包含【中文】和【英文】关键词)、领域多样性(必须跨越至少三个不同的学科领域)、视角多样性(必须体现上述不同的思考维度)。\n首先，用户将会像你请求研究内容，和【搜索广度】(SearchBroadness)，你需要仔细斟酌需要获取的信息，然后详细构建一套检索关键词列表。\n关键词列表格式化输出 (Formatting): 您的首次输出必须严格包含关键词列表。关键词的数量必须严格等于【搜索广度】(SearchBroadness)参数的值。\n输出格式为：\n[KeyWord1:] [KeyWord2:] [KeyWord3:] ... [KeyWordN:]\n每个关键词都由 [KeyWordX:] 包裹。\n当你首次输出结束后，系统会根据您的检索词列表构建详细的检索报告，请将所有信息汇总，构建为具体详实的论文阐述您的思考，研究观点和具有参考价值的结论。`;
-    
+
     // 构建最终的用户指令，清晰地告知模型进入第二阶段
     const finalUserMessage = `${searchData}\n[你已经完成了关键词的生成。现在，请基于以上所有参考信息和你之前的思考过程（完整的对话历史），撰写最终的研究论文。]`;
     const messages = [...history, { role: 'user', content: finalUserMessage }];
@@ -223,7 +223,7 @@ async function main(request) {
             throw new Error("所有关键词搜索均失败，无法生成报告。");
         }
         const finalReport = await generateFinalReport(searchData, history);
-        
+
         // 保存并返回
         await saveReport(SearchContent, finalReport);
         sendResponse({ status: "success", result: finalReport });

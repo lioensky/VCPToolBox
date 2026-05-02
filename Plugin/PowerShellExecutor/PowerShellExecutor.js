@@ -5,6 +5,25 @@ const http = require('http'); // 用于向主服务器发送回调
 const fs = require('fs').promises; // 添加 fs 模块
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
 
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function commandMatchesRule(command, rule) {
+    const normalizedCommand = String(command || '').toLowerCase();
+    const normalizedRule = String(rule || '').toLowerCase().trim();
+    if (!normalizedCommand || !normalizedRule) return false;
+
+    // Single-word rules should match command tokens, not substrings in paths or words.
+    // Example: forbid "del" should not reject paths containing "model".
+    if (/^[a-z0-9_-]+$/i.test(normalizedRule)) {
+        const tokenRegex = new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(normalizedRule)}(?=$|[^a-z0-9_-])`, 'i');
+        return tokenRegex.test(normalizedCommand);
+    }
+
+    return normalizedCommand.includes(normalizedRule);
+}
+
 // 用于向主服务器发送回调的函数
 function sendCallback(requestId, status, result) {
     const callbackBaseUrl = process.env.CALLBACK_BASE_URL || 'http://localhost:6005/plugin-callback'; // 默认为localhost
@@ -129,7 +148,7 @@ async function main() {
 
     process.stdin.on('end', async () => {
         try {
-            const args = JSON.parse(input);
+            const args = JSON.parse(input.replace(/^\uFEFF+/, '').trim());
             // 支持 command, command1, command2... 串行执行
             const commands = [];
             if (args.command) {
@@ -150,12 +169,13 @@ async function main() {
                 const lowerCaseCmd = cmd.toLowerCase();
 
                 // 1. 检查是否包含被禁止的指令
-                if (forbiddenCommands.length > 0 && forbiddenCommands.some(forbidden => lowerCaseCmd.includes(forbidden))) {
-                    throw new Error(`执行被拒绝：指令 "${cmd.substring(0, 50)}..." 包含被禁止的关键字。`);
+                const matchedForbidden = forbiddenCommands.find(forbidden => commandMatchesRule(lowerCaseCmd, forbidden));
+                if (matchedForbidden) {
+                    throw new Error(`执行被拒绝：指令 "${cmd.substring(0, 50)}..." 命中被禁止的命令规则 "${matchedForbidden}"。`);
                 }
 
                 // 2. 检查是否需要管理员授权
-                if (!isAuthRequiredByConfig && authRequiredCommands.length > 0 && authRequiredCommands.some(authCmd => lowerCaseCmd.includes(authCmd))) {
+                if (!isAuthRequiredByConfig && authRequiredCommands.length > 0 && authRequiredCommands.some(authCmd => commandMatchesRule(lowerCaseCmd, authCmd))) {
                     isAuthRequiredByConfig = true;
                 }
             }
@@ -176,7 +196,8 @@ async function main() {
                 command = commands.join('; ');
             }
             let executionType = args.executionType;
-            const toolPassword = args.tool_password || args.requireAdmin; // 兼容旧版 requireAdmin 参数
+            const toolPassword = args.tool_password || (typeof args.requireAdmin === 'string' || typeof args.requireAdmin === 'number' ? args.requireAdmin : '');
+            const manualApproved = process.env.VCP_MANUAL_APPROVED === 'true';
             let notice;
 
             if (!executionType) {
@@ -189,22 +210,25 @@ async function main() {
                 throw new Error('缺少必需参数: 必须提供 "command" 或 "command1", "command2", ... 等参数。');
             }
 
-            // 验证码验证逻辑
-            if (isAuthRequiredByConfig && !toolPassword) {
-                throw new Error('此操作涉及敏感指令，需要验证码授权，但未提供 tool_password。');
-            }
-
-            if (toolPassword) {
+            // Auth-required commands can be authorized either by an explicit code
+            // or by a one-shot manual approval marker from PluginManager.
+            if (isAuthRequiredByConfig) {
                 const realCode = process.env.DECRYPTED_AUTH_CODE;
 
                 if (!realCode) {
                     throw new Error('无法获取验证码。请确保主服务器配置正确。');
                 }
 
-                if (String(toolPassword) !== realCode) {
+                if (toolPassword && String(toolPassword) !== realCode) {
                     throw new Error('验证码错误。');
                 }
-                // 移除原有的强制切换 background 的逻辑
+
+                if (!toolPassword && !manualApproved) {
+                    if (args.requireAdmin === true) {
+                        throw new Error('ServerPowerShellExecutor 不接受 requireAdmin:true 作为授权。敏感指令请提供 6 位验证码字段 tool_password，或在审批面板中手动批准本次执行。');
+                    }
+                    throw new Error('此操作涉及敏感指令，需要验证码授权或审批面板手动批准，但未获得授权。');
+                }
             }
 
             if (executionType === 'background') {

@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 30000
+    "timeout": 120000
   },
   "capabilities": {
     "invocationCommands": [

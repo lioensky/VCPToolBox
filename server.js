@@ -116,6 +116,7 @@ const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
 const FileFetcherServer = require('./FileFetcherServer.js'); // 引入新的 FileFetcherServer 模块
 const vcpInfoHandler = require('./vcpInfoHandler.js'); // 引入新的 VCP 信息处理器
+const { prewarmEverythingForServerStart } = require('./Plugin/VCPEverything/everything-runtime.js');
 const basicAuth = require('basic-auth');
 const cors = require('cors'); // 引入 cors 模块
 
@@ -1436,6 +1437,21 @@ async function initialize() {
 
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
+    if (pluginManager.getPlugin('ServerEverythingSearch')) {
+        console.log('[Server] 正在预热 Everything 秒搜服务...');
+        prewarmEverythingForServerStart()
+            .then((result) => {
+                if (result?.skipped) {
+                    console.log(`[Server] Everything 预热已跳过: ${result.reason}`);
+                    return;
+                }
+
+                console.log(`[Server] Everything 预热完成: started=${result.started}, ready=${result.ready}, totalResults=${result.totalResults}`);
+            })
+            .catch((error) => {
+                console.error('[Server] Everything 预热失败:', error.message);
+            });
+    }
     console.log('插件加载完成。');
 
     console.log('开始初始化服务类插件...');

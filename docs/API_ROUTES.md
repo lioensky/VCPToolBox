@@ -535,6 +535,8 @@ WhitelistEmbeddingModel=gemini-embedding-exp-03-07
 
 所有端点挂载在既有 `/admin_api` 路由下，复用 Admin Basic Auth。动态工具只影响提示词注入，不新增任何绕过 `ToolApprovalManager` 的工具执行路径。
 
+注意：`/admin_api/tool-list-editor/*` 是旧式“工具列表配置编辑器”接口，负责把人工选择的工具集合保存为普通 `ToolConfigs/*.json`，并可导出为 `TVStxt/*.txt`。它不是 DynamicToolBridge 的运行时缓存接口；`dynamic_tool_bridge.config.json`、`dynamic_tool_catalog.json`、`dynamic_tool_categories.json` 属于动态工具清单系统，应由 `/admin_api/dynamic-tools/*` 管理或自动生成。
+
 ---
 
 ### 6.5 服务器日志

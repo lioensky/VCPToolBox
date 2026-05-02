@@ -14,6 +14,7 @@ export interface DynamicToolsSmallModelConfig {
 
 export interface DynamicToolsManualOverrides {
   excludedOriginKeys: string[];
+  excludedPluginNames: string[];
   pinnedOriginKeys: string[];
   categoryAliases: Record<string, string>;
 }

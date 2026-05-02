@@ -4,6 +4,32 @@
   "approveAll": false,
   "approvalList": [
     "SciCalculator",
-    "PowerShellExecutor"
+    "ServerPowerShellExecutor",
+    "ServerFileOperator:WriteFile",
+    "ServerFileOperator:WriteEscapedFile",
+    "ServerFileOperator:AppendFile",
+    "ServerFileOperator:EditFile",
+    "ServerFileOperator:CopyFile",
+    "ServerFileOperator:MoveFile",
+    "ServerFileOperator:RenameFile",
+    "ServerFileOperator:DeleteFile",
+    "ServerFileOperator:CreateDirectory",
+    "ServerFileOperator:DownloadFile",
+    "ServerFileOperator:ApplyDiff",
+    "ServerFileOperator:UpdateHistory",
+    "ServerFileOperator:CreateCanvas",
+    "FileOperator:WriteFile",
+    "FileOperator:WriteEscapedFile",
+    "FileOperator:AppendFile",
+    "FileOperator:EditFile",
+    "FileOperator:CopyFile",
+    "FileOperator:MoveFile",
+    "FileOperator:RenameFile",
+    "FileOperator:DeleteFile",
+    "FileOperator:CreateDirectory",
+    "FileOperator:DownloadFile",
+    "FileOperator:ApplyDiff",
+    "FileOperator:UpdateHistory",
+    "FileOperator:CreateCanvas"
   ]
 }

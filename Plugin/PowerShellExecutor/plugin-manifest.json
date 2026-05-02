@@ -18,8 +18,8 @@
   "capabilities": {
     "invocationCommands": [
       {
-        "commandIdentifier": "PowerShellExecutor",
-        "description": "调用此工具执行指定的 PowerShell 命令并返回其输出。可以选择阻塞或后台执行。\n参数:\n- command (字符串, 必需): 要执行的 PowerShell 命令内容。\n- executionType (字符串, 必须): 执行类型。'blocking' 用于短期运行并立即返回结果；'background' 用于长期运行的服务类任务，将打开一个用户可见的PowerShell窗口。\n- tool_password (字符串, 可选): 验证码。如果指令被配置为敏感指令（如修改系统设置），则必须提供此参数以获得执行授权。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」Get-ChildItem「末」,\nexecutionType:「始」blocking「末」\n<<<[END_TOOL_REQUEST]>>>\n\n后台执行示例 (长期运行的服务类任务):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」ls -R「末」,\nexecutionType:「始」background「末」\n<<<[END_TOOL_REQUEST]>>>\n\n敏感指令执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PowerShellExecutor「末」,\ncommand:「始」net user test /add「末」,\nexecutionType:「始」blocking「末」,\ntool_password:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "commandIdentifier": "ServerPowerShellExecutor",
+        "description": "调用此工具执行指定的 PowerShell 命令并返回其输出。可以选择阻塞或后台执行。\n参数:\n- command (字符串, 必需): 要执行的 PowerShell 命令内容。\n- executionType (字符串, 必须): 执行类型。'blocking' 用于短期运行并立即返回结果；'background' 用于长期运行的服务类任务，将打开一个用户可见的PowerShell窗口。\n- tool_password (字符串, 可选): 验证码。如果指令被配置为敏感指令（如修改系统设置），则必须提供此参数以获得执行授权。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerPowerShellExecutor「末」,\ncommand:「始」Get-ChildItem「末」,\nexecutionType:「始」blocking「末」\n<<<[END_TOOL_REQUEST]>>>\n\n后台执行示例 (长期运行的服务类任务):\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerPowerShellExecutor「末」,\ncommand:「始」ls -R「末」,\nexecutionType:「始」background「末」\n<<<[END_TOOL_REQUEST]>>>\n\n敏感指令执行示例:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerPowerShellExecutor「末」,\ncommand:「始」net user test /add「末」,\nexecutionType:「始」blocking「末」,\ntool_password:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

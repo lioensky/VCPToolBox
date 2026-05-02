@@ -9,6 +9,9 @@ const { tavily } = require('@tavily/core');
 const configPath = path.resolve(__dirname, './config.env');
 const rootConfigPath = path.resolve(__dirname, '../../config.env');
 
+// 优先加载根目录配置，确保全局 Key 生效
+dotenv.config({ path: rootConfigPath });
+// 加载本地配置（如有冲突，本地优先）
 dotenv.config({ path: configPath });
 
 const {
@@ -510,7 +513,7 @@ const callKimiSearchMode = async (topic, keywordList, apiKey, baseUrl, maxResult
 
 async function main(request) {
     const { SearchTopic, Keywords, ShowURL, 
-        SearchMode = process.env.SearchMode || 'kimisearch' } = request;
+        SearchMode = process.env.SearchMode || 'grounding' } = request;
     const showURL = ShowURL === true || ShowURL === 'true';
 
     if (!SearchTopic || !Keywords) {

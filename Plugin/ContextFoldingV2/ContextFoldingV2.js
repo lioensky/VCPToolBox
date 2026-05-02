@@ -489,8 +489,31 @@ class ContextFoldingV2 {
             });
 
             const rawOutput = response.data?.choices?.[0]?.message?.content || '';
+            let validatedSummary = this._validateSummary(rawOutput.trim());
+
+            if (!validatedSummary && rawOutput.trim().startsWith(FOLDING_PREFIX)) {
+                const repairResponse = await axios.post(`${apiUrl}/v1/chat/completions`, {
+                    model: this.summaryModel,
+                    messages: [
+                        { role: 'system', content: 'You are a formatting repair assistant. Output only the required wrapped summary with no extra text.' },
+                        { role: 'user', content: `Your previous output was structurally incomplete. Reply with exactly one line in this format only:\n[VCP上下文语义折叠-本层摘要:summary content]\nDo not output any extra text, explanation, code block, or line break.\n\nOriginal incomplete output:\n${rawOutput.trim()}` }
+                    ],
+                    max_tokens: this.summaryMaxTokens,
+                    temperature: 0.3
+                }, {
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: this.summaryTimeoutMs
+                });
+
+                const repairedOutput = repairResponse.data?.choices?.[0]?.message?.content || '';
+                validatedSummary = this._validateSummary(repairedOutput.trim());
+            }
+
             return {
-                summary: this._validateSummary(rawOutput.trim()),
+                summary: validatedSummary,
                 retryable429: false
             };
         } catch (e) {

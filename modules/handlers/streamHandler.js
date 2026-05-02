@@ -3,6 +3,75 @@ const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
 
+function extractTextFromContentLike(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        if (typeof item.text === 'string') return item.text;
+        if (typeof item.content === 'string') return item.content;
+        if (Array.isArray(item.content)) return extractTextFromContentLike(item.content);
+        if (typeof item.value === 'string') return item.value;
+        return '';
+      })
+      .join('');
+  }
+  if (value && typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.content === 'string') return value.content;
+    if (Array.isArray(value.content)) return extractTextFromContentLike(value.content);
+    if (typeof value.value === 'string') return value.value;
+  }
+  return '';
+}
+
+function extractVisibleTextFromChunkData(parsedData) {
+  if (!parsedData || typeof parsedData !== 'object') return '';
+
+  const choice = Array.isArray(parsedData.choices) ? parsedData.choices[0] : null;
+  const delta = choice?.delta || parsedData.delta;
+  const message = choice?.message || parsedData.message;
+  const candidate = Array.isArray(parsedData.candidates) ? parsedData.candidates[0] : null;
+
+  return (
+    extractTextFromContentLike(delta?.content) ||
+    extractTextFromContentLike(delta?.text) ||
+    extractTextFromContentLike(delta) ||
+    extractTextFromContentLike(choice?.text) ||
+    extractTextFromContentLike(message?.content) ||
+    extractTextFromContentLike(parsedData.content) ||
+    extractTextFromContentLike(parsedData.text) ||
+    extractTextFromContentLike(parsedData.output_text) ||
+    extractTextFromContentLike(parsedData.output?.[0]?.content) ||
+    extractTextFromContentLike(parsedData.response?.output_text) ||
+    extractTextFromContentLike(candidate?.content?.parts)
+  );
+}
+
+function formatUpstreamStreamError(errorValue) {
+  if (!errorValue) return 'Unknown upstream stream error';
+  if (typeof errorValue === 'string') return errorValue;
+  if (typeof errorValue !== 'object') return String(errorValue);
+
+  const parts = [];
+  if (errorValue.message) parts.push(errorValue.message);
+  if (errorValue.code) parts.push(`code=${errorValue.code}`);
+  if (errorValue.type) parts.push(`type=${errorValue.type}`);
+  if (errorValue.status) parts.push(`status=${errorValue.status}`);
+  if (errorValue.details) {
+    parts.push(typeof errorValue.details === 'string' ? errorValue.details : JSON.stringify(errorValue.details));
+  }
+  if (errorValue.response?.data) {
+    parts.push(typeof errorValue.response.data === 'string'
+      ? errorValue.response.data
+      : JSON.stringify(errorValue.response.data));
+  }
+
+  return parts.length > 0 ? parts.join(' | ') : JSON.stringify(errorValue);
+}
+
 class StreamHandler {
   constructor(context) {
     this.context = context;
@@ -49,6 +118,60 @@ class StreamHandler {
     let currentAIRawDataForDiary = '';
     let chatLogs = [];
 
+    const streamUpstreamErrorAndEnd = async (aiResponse, phase, requestMessages) => {
+      const status = aiResponse?.status || 'unknown';
+      let errorBodyText = '';
+      try {
+        errorBodyText = aiResponse && typeof aiResponse.text === 'function'
+          ? await aiResponse.text()
+          : '';
+      } catch (e) {
+        errorBodyText = `[failed to read upstream error body: ${e.message}]`;
+      }
+
+      console.error(`[VCP Stream Loop] Upstream API returned status ${status} during ${phase}: ${errorBodyText}`);
+
+      if (writeChatLog) {
+        writeChatLog(originalBody, [
+          ...chatLogs,
+          {
+            request: { messages: requestMessages },
+            response: { error: true, status, phase, body: errorBodyText },
+          },
+        ]);
+      }
+
+      if (res.writableEnded || res.destroyed) return;
+
+      const errorPayload = {
+        id: `chatcmpl-VCP-loop-upstream-error-${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: originalBody.model || 'unknown',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: `[UPSTREAM_ERROR] Upstream API returned status ${status}: ${errorBodyText}`,
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      };
+
+      try {
+        res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+        res.write('data: [DONE]\n\n', () => {
+          try { res.end(); } catch (e) { }
+        });
+      } catch (e) {
+        console.error('[VCP Stream Loop] Failed to stream upstream error:', e.message);
+        if (!res.writableEnded && !res.destroyed) {
+          try { res.end(); } catch (endError) { }
+        }
+      }
+    };
+
     // 辅助函数：处理 AI 响应流 (优化版：直通转发 + 后台解析 + chunk 空闲超时保护)
     const processAIResponseStreamHelper = async (aiResponse, isInitialCall) => {
       return new Promise((resolve, reject) => {
@@ -62,15 +185,47 @@ class StreamHandler {
         const CHUNK_IDLE_TIMEOUT = 90000; // 90 秒无新 chunk 则判定上游流冻结
         let message = { content: '', reasoning_content: '' };
 
-        const appendDelta = (delta) => {
-          if (delta && delta.content) {
-            collectedContentThisTurn += delta.content;
-            message.content += delta.content;
+        const appendDelta = (parsedData) => {
+          const visibleText = extractVisibleTextFromChunkData(parsedData);
+          if (visibleText) {
+            collectedContentThisTurn += visibleText;
+            message.content += visibleText;
           }
-          if (delta && delta.reasoning_content) {
-            collectedContentThisTurn += delta.reasoning_content;
-            message.reasoning_content += delta.reasoning_content;
+        };
+
+        const endWithParsedStreamError = (parsedData) => {
+          const upstreamErrorMessage = formatUpstreamStreamError(parsedData.error);
+          console.error(`[VCP Stream Loop] Upstream emitted stream error chunk: ${upstreamErrorMessage}`);
+
+          const errorContent = `[UPSTREAM_ERROR] ${upstreamErrorMessage}`;
+          collectedContentThisTurn += errorContent;
+          message.content += errorContent;
+          streamAborted = true;
+
+          if (!res.writableEnded && !res.destroyed) {
+            try {
+              const errorPayload = {
+                id: `chatcmpl-VCP-stream-error-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: originalBody.model || 'unknown',
+                choices: [{ index: 0, delta: { content: errorContent }, finish_reason: 'stop' }],
+              };
+              res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+              res.write('data: [DONE]\n\n', () => {
+                try { res.end(); } catch (e) { }
+              });
+            } catch (e) {
+              console.error('[VCP Stream Loop] Failed to stream parsed upstream error:', e.message);
+              try { res.end(); } catch (endError) { }
+            }
           }
+
+          if (aiResponse.body && !aiResponse.body.destroyed) aiResponse.body.destroy();
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
+          if (chunkIdleTimer) clearTimeout(chunkIdleTimer);
+          if (abortController?.signal) abortController.signal.removeEventListener('abort', abortHandler);
+          resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn, message: message });
         };
         // 🌟 核心修复：注入 SSE 幽灵心跳保活，防止上游卡顿时浏览器假死
         keepAliveTimer = setInterval(() => {
@@ -143,6 +298,18 @@ class StreamHandler {
 
           for (const line of lines) {
             const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonData = trimmedLine.substring(6).trim();
+              if (jsonData && jsonData !== '[DONE]') {
+                try {
+                  const parsedData = JSON.parse(jsonData);
+                  if (parsedData?.error) {
+                    endWithParsedStreamError(parsedData);
+                    return;
+                  }
+                } catch (e) { }
+              }
+            }
 
             // 1. 转发逻辑：只要不是 [DONE] 就立即转发
             if (!res.writableEnded && !res.destroyed) {
@@ -164,8 +331,11 @@ class StreamHandler {
               if (jsonData && jsonData !== '[DONE]') {
                 try {
                   const parsedData = JSON.parse(jsonData);
-                  const delta = parsedData.choices?.[0]?.delta;
-                  appendDelta(delta);
+                  if (parsedData?.error) {
+                    endWithParsedStreamError(parsedData);
+                    return;
+                  }
+                  appendDelta(parsedData);
                 } catch (e) { }
               }
             }
@@ -184,6 +354,18 @@ class StreamHandler {
           // 处理最后剩余的 buffer 并转发
           if (sseLineBuffer.length > 0) {
             const trimmedLine = sseLineBuffer.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonData = trimmedLine.substring(6).trim();
+              if (jsonData && jsonData !== '[DONE]') {
+                try {
+                  const parsedData = JSON.parse(jsonData);
+                  if (parsedData?.error) {
+                    endWithParsedStreamError(parsedData);
+                    return;
+                  }
+                } catch (e) { }
+              }
+            }
             if (!res.writableEnded && !res.destroyed && trimmedLine !== 'data: [DONE]' && trimmedLine !== 'data:[DONE]') {
               try {
                 res.write(sseLineBuffer + '\n');
@@ -195,8 +377,11 @@ class StreamHandler {
               if (jsonData && jsonData !== '[DONE]') {
                 try {
                   const parsedData = JSON.parse(jsonData);
-                  const delta = parsedData.choices?.[0]?.delta;
-                  appendDelta(delta);
+                  if (parsedData?.error) {
+                    endWithParsedStreamError(parsedData);
+                    return;
+                  }
+                  appendDelta(parsedData);
                 } catch (e) { }
               }
             }
@@ -350,6 +535,8 @@ class StreamHandler {
           recursionDepth++;
           continue;
         }
+        await streamUpstreamErrorAndEnd(nextAiAPIResponse, 'archery_error_followup', currentMessagesForLoop);
+        return;
       }
 
       if (normalCalls.length === 0) {
@@ -461,7 +648,10 @@ class StreamHandler {
         { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
       );
 
-      if (!nextAiAPIResponse.ok) break;
+      if (!nextAiAPIResponse.ok) {
+        await streamUpstreamErrorAndEnd(nextAiAPIResponse, 'tool_result_followup', currentMessagesForLoop);
+        return;
+      }
 
       let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
       currentAIContentForLoop = nextAIResponseData.content;

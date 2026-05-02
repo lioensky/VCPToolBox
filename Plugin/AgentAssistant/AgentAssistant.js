@@ -12,6 +12,7 @@ let MAX_HISTORY_ROUNDS;
 let CONTEXT_TTL_HOURS;
 let DEBUG_MODE;
 let VCP_API_TARGET_URL;
+const AGENT_COMM_LOG_BOOK = '[公共的日常]AgentAssistant';
 
 // --- Task Delegation Config Variables ---
 let DELEGATION_MAX_ROUNDS;
@@ -26,6 +27,19 @@ const activeDelegations = new Map(); // delegationId -> { status, agentName, cur
 
 let pushVcpInfo = () => { }; // Default no-op function
 let cleanupInterval;
+
+function normalizeAgentModelId(modelId) {
+    if (typeof modelId !== 'string') return modelId;
+
+    const trimmed = modelId.trim();
+    const legacyMap = {
+        'gpt5.4': 'gpt-5.4',
+        'gpt5.4mini': 'gpt-5.4-mini',
+        'gpt5.4-mini': 'gpt-5.4-mini'
+    };
+
+    return legacyMap[trimmed] || trimmed;
+}
 
 // --- Core Module Functions ---
 
@@ -174,8 +188,9 @@ function loadAgentsFromLocalConfig() {
     if (Array.isArray(config.agents)) {
         for (const agent of config.agents) {
             const { baseName, modelId, chineseName, systemPrompt, maxOutputTokens, temperature, description } = agent;
+            const normalizedModelId = normalizeAgentModelId(modelId);
 
-            if (!modelId || !chineseName) {
+            if (!normalizedModelId || !chineseName) {
                 if (DEBUG_MODE) console.error(`[AgentAssistant Service] Skipping agent ${baseName || chineseName}: Missing MODEL_ID or CHINESE_NAME.`);
                 continue;
             }
@@ -185,7 +200,7 @@ function loadAgentsFromLocalConfig() {
             if (AGENT_ALL_SYSTEM_PROMPT) finalSystemPrompt += `\n\n${AGENT_ALL_SYSTEM_PROMPT}`;
 
             AGENTS[chineseName] = {
-                id: modelId,
+                id: normalizedModelId,
                 name: chineseName,
                 baseName: baseName || chineseName.toUpperCase(), // 兜底
                 systemPrompt: finalSystemPrompt,
@@ -193,7 +208,7 @@ function loadAgentsFromLocalConfig() {
                 temperature: parseFloat(temperature || '0.7'),
                 description: description || `Assistant ${chineseName}.`,
             };
-            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Loaded agent: '${chineseName}' (Base: ${baseName}, ModelID: ${modelId})`);
+            if (DEBUG_MODE) console.error(`[AgentAssistant Service] Loaded agent: '${chineseName}' (Base: ${baseName}, ModelID: ${normalizedModelId})`);
         }
     }
 
@@ -344,6 +359,109 @@ function parseAndValidateDate(dateString) {
     return date;
 }
 
+function formatDiaryTimestamp(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatDiaryDateOnly(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function compactWhitespace(text) {
+    return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function truncateForDiary(text, maxLength = 400) {
+    const normalized = compactWhitespace(text);
+    if (normalized.length <= maxLength) return normalized;
+    return normalized.slice(0, maxLength - 3).trimEnd() + '...';
+}
+
+function stripAgentAssistantTip(text) {
+    return String(text || '').replace(/^\[Tips:[\s\S]*?\]\s*/i, '').trim();
+}
+
+function inferSenderNameFromPrompt(promptText) {
+    const cleanPrompt = stripAgentAssistantTip(promptText);
+    const patterns = [
+        /(?:我是|我叫|这里是|来自)(?:主控AI|主控|Agent|代理)?\s*([^\s，,。；;：:、]{1,12})/,
+        /^([^\s，,。；;：:、]{1,12})[：:，,]\s*(?:我是|这里是|请|麻烦|帮)/
+    ];
+
+    for (const pattern of patterns) {
+        const match = cleanPrompt.match(pattern);
+        if (match && match[1]) {
+            return match[1].trim();
+        }
+    }
+
+    return '';
+}
+
+function normalizeSenderName(value) {
+    return String(value || '')
+        .replace(/[\r\n,，、]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function resolveSenderName(args = {}, promptText = '', fallback = '') {
+    const explicitSender = args.maid ||
+        args.sender_name ||
+        args.senderName ||
+        args.sender ||
+        args.from_agent ||
+        args.fromAgent ||
+        args.source_agent ||
+        args.sourceAgent ||
+        args.caller_name ||
+        args.callerName ||
+        args.initiator;
+
+    return normalizeSenderName(explicitSender) ||
+        normalizeSenderName(inferSenderNameFromPrompt(promptText)) ||
+        fallback;
+}
+
+async function appendAgentCommunicationDiary({
+    senderName,
+    targetAgentName,
+    communicationType,
+    sessionId,
+    promptText,
+    responseText,
+    status = 'success'
+}) {
+    try {
+        const pluginManager = require('../../Plugin.js');
+        const now = new Date();
+        const dateString = formatDiaryDateOnly(now);
+        const safeSenderName = senderName || inferSenderNameFromPrompt(promptText) || '未知发起方';
+        const summaryPrompt = truncateForDiary(stripAgentAssistantTip(promptText), 500);
+        const summaryResponse = truncateForDiary(responseText, 800);
+        const contentText =
+            `【通讯方式】${communicationType}\n` +
+            `【发起方】${safeSenderName}\n` +
+            `【接收方】${targetAgentName}\n` +
+            `【请求摘要】\n${summaryPrompt || '(空)'}\n\n` +
+            `【回复摘要】\n${summaryResponse || '(空)'}`;
+
+        const payload = {
+            maidName: AGENT_COMM_LOG_BOOK,
+            dateString,
+            contentText,
+            fileName: `${targetAgentName}-${communicationType}`
+        };
+
+        const result = await pluginManager.executePlugin('DailyNoteWrite', JSON.stringify(payload));
+        if (DEBUG_MODE) {
+            console.error('[AgentAssistant Service] Agent communication diary saved:', result);
+        }
+    } catch (e) {
+        console.error('[AgentAssistant Service] Failed to append agent communication diary:', e.message);
+    }
+}
+
 function parseInjectTools(injectToolsRaw) {
     if (!injectToolsRaw) return [];
     if (Array.isArray(injectToolsRaw)) {
@@ -410,6 +528,7 @@ async function processToolCall(args) {
     }
 
     const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools } = args;
+    const resolvedSenderName = resolveSenderName(args, prompt);
 
     // Handle querying a delegation status
     if (query_delegation) {
@@ -490,7 +609,7 @@ async function processToolCall(args) {
             const schedulerPayload = {
                 schedule_time: targetDate.toISOString(),
                 task_id: `task-${targetDate.getTime()}-${uuidv4()}`,
-                tool_call: { tool_name: "AgentAssistant", arguments: { agent_name, prompt, maid } }
+                tool_call: { tool_name: "AgentAssistant", arguments: { agent_name, prompt, maid: resolvedSenderName } }
             };
             if (DEBUG_MODE) console.error(`[AgentAssistant Service] Calling /v1/schedule_task with payload:`, JSON.stringify(schedulerPayload, null, 2));
 
@@ -520,7 +639,7 @@ async function processToolCall(args) {
     // Handle basic Task Delegation request
     if (String(task_delegation).toLowerCase() === 'true') {
         const delegationId = `aa-delegation-${Date.now()}-${uuidv4().slice(0, 8)}`;
-        const senderName = maid || "系统任务中心";
+        const senderName = resolvedSenderName || "系统任务中心";
         const temporaryToolsSystemPrompt = buildTemporaryToolsSystemPrompt(inject_tools);
 
         activeDelegations.set(delegationId, {
@@ -567,8 +686,9 @@ async function processToolCall(args) {
 
     try {
         // 注入来源提示词，防止 AI 之间产生“套娃”式工具调用
-        const senderName = maid || "系统助手";
-        const communicationTip = `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
+        const senderName = resolvedSenderName;
+        const tipSenderName = senderName || '未知发起方';
+        const communicationTip = `[Tips:这是一条来自AgentAssistant通讯中心 ${tipSenderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
         const finalPrompt = communicationTip + prompt;
 
         const processedUserPrompt = await replacePlaceholdersInUserPrompt(finalPrompt, agentConfig);
@@ -649,6 +769,16 @@ async function processToolCall(args) {
         } catch (e) {
             console.error('[AgentAssistant Service] Error broadcasting VCP Info:', e.message);
         }
+
+        await appendAgentCommunicationDiary({
+            senderName,
+            targetAgentName: agent_name,
+            communicationType: useContext ? '上下文通讯' : '临时通讯',
+            sessionId: userSessionId,
+            promptText: prompt,
+            responseText: cleanedAssistantResponse,
+            status: 'success'
+        });
 
         return { status: "success", result: { content: [{ type: "text", text: cleanedAssistantResponse }] } };
 
@@ -826,6 +956,16 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
 
         // Save to AgentTask Document Directory
         await archiveDelegationReport(delegationId, agentConfig.baseName, completionStatus, secureReport, taskPrompt);
+
+        await appendAgentCommunicationDiary({
+            senderName,
+            targetAgentName: agentConfig.name,
+            communicationType: '异步委托',
+            sessionId: delegationId,
+            promptText: taskPrompt,
+            responseText: secureReport,
+            status: completionStatus
+        });
 
         await sendDelegationCallback(delegationId, completionStatus, secureReport, agentConfig.baseName);
     }

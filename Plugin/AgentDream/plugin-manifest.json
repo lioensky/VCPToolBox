@@ -3,7 +3,7 @@
     "name": "AgentDream",
     "displayName": "梦系统插件",
     "version": "1.0.0",
-    "description": "Agent梦境系统。让AI回顾记忆、进行联想式沉浸梦境、整理记忆。梦中的所有操作（日记合并、删除、梦感悟）会被记录为可审核的JSON索引，供管理员在后台面板审批。支持串语法批量操作。",
+    "description": "Agent梦境系统。让AI回顾记忆、进行联想式沉浸梦境，并将梦中的新认知沉淀为 DreamInsight 待审批项。日记合并、删除、归档等正式记忆整理职责交由记忆大师；梦系统只在 DreamInsight 中记录可转交记忆大师的整理线索。",
     "author": "莱恩先生 & VCP",
     "pluginType": "hybridservice",
     "entryPoint": {
@@ -30,20 +30,20 @@
         "invocationCommands": [
             {
                 "command": "DiaryMerge",
-                "description": "功能: 合并多篇日记为一篇新日记。AI提供需要合并的日记路径列表和合并后的新日记正文。系统会自动读取源日记的原始内容，连同新内容一起记录到梦操作JSON供管理员审批。此操作不会立即执行；管理员批准后才会通过 DailyNoteManager organize 写入正式日记并归档源文件。\n参数:\n- sourceDiaries (字符串, 必需): 需要合并的日记文件URL列表，多个用逗号分隔。\n- newContent (字符串, 必需): 合并后的全新日记正文，不要在正文里重复写日期署名头，也不要求在正文末尾写 Tag 行。\n- Tag / tags / naturalTags (字符串, 可选): 自然主题标签，多个用逗号分隔。批准执行时系统会用独立 Tag 参数写入；若未提供，会尽量继承源日记的 Tag，并补充“梦境整理、日记合并”。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DiaryMerge「末」,\nsourceDiaries1:「始」file:///path/a.txt,file:///path/b.txt「末」,\nnewContent1:「始」合并后的完整日记正文「末」,\nTag1:「始」主题标签1, 主题标签2「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "Legacy兼容接口：不建议由梦系统或普通Agent主动调用。日记合并、归档、结构化整理应委托记忆大师使用 DailyNoteManager 执行。梦系统如发现可合并线索，应写入 DreamInsight 的“记忆大师整理线索”，而不是提交 DiaryMerge。保留此接口仅用于兼容旧梦日志和人工维护场景。"
             },
             {
                 "command": "DiaryDelete",
-                "description": "功能: 标记一篇冗余日记待删除。AI只需提供日记路径和删除理由，系统会自动读取该日记的完整内容并记录到梦操作JSON供管理员审批。此操作不会立即执行。\n参数:\n- targetDiary (字符串, 必需): 待删除的日记文件URL。\n- reason (字符串, 必需): 删除理由。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DiaryDelete「末」,\ntargetDiary1:「始」file:///path/c.txt「末」,\nreason1:「始」内容与 a.txt 完全重复「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "Legacy兼容接口：不建议由梦系统或普通Agent主动调用。梦系统不负责删除或归档日记；疑似冗余、过时、冲突内容应写入 DreamInsight 的“记忆大师整理线索”，由记忆大师以 Scan/Track/Organize 模式复核。保留此接口仅用于兼容旧梦日志和人工维护场景。"
             },
             {
                 "command": "DreamInsight",
-                "description": "功能: 基于参考日记产生梦感悟，创建一篇全新的感悟日记。AI提供触发感悟的参考日记路径和梦感悟正文。此操作不会立即执行，记录到梦操作JSON供管理员审批；管理员批准后才会通过 DailyNote create 写入正式日记。\n参数:\n- referenceDiaries (字符串, 必需): 触发感悟的参考日记URL列表，多个用逗号分隔。\n- insightContent (字符串, 必需): 梦感悟的完整正文，不要求在正文末尾写 Tag 行。\n- Tag / tags / naturalTags (字符串, 推荐): 根据梦感悟内容自然总结的主题标签，多个用逗号分隔。批准执行时系统会补充“梦感悟、梦境回廊”作为来源标识，再通过独立 Tag 参数写入正式日记。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DreamInsight「末」,\nreferenceDiaries1:「始」file:///path/a.txt,file:///path/d.txt「末」,\ninsightContent1:「始」梦感悟的完整正文「末」,\nTag1:「始」自然主题1, 自然主题2, 彦「末」\n<<<[END_TOOL_REQUEST]>>>"
+                "description": "功能: 基于参考日记产生梦感悟，创建一篇全新的感悟日记。DreamInsight 是梦系统当前推荐且默认唯一的自动审批产物。若梦中发现可整理、可合并、疑似过时或冲突的日记，请把它们写进 insightContent 的“记忆大师整理线索”段，作为后续委托记忆大师处理的候选线索；梦系统本身不直接执行日记合并、删除或归档。\n参数:\n- referenceDiaries (字符串, 必需): 触发感悟的参考日记URL列表，多个用逗号分隔。\n- insightContent (字符串, 必需): 梦感悟的完整正文，可包含“记忆大师整理线索”段；不要求在正文末尾写 Tag 行。\n- Tag / tags / naturalTags (字符串, 推荐): 根据梦感悟内容自然总结的主题标签，多个用逗号分隔。批准执行时系统会补充“梦感悟、梦境回廊”作为来源标识，再通过独立 Tag 参数写入正式日记。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DreamInsight「末」,\nreferenceDiaries1:「始」file:///path/a.txt,file:///path/d.txt「末」,\ninsightContent1:「始」梦感悟的完整正文，可含记忆大师整理线索「末」,\nTag1:「始」自然主题1, 自然主题2, 彦「末」\n<<<[END_TOOL_REQUEST]>>>"
             }
         ],
         "serialSyntax": {
-            "description": "支持串语法，一次调用完成多个操作。将command/参数的后缀数字递增即可。",
-            "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DiaryMerge「末」,\nsourceDiaries1:「始」file:///path/a.txt,file:///path/b.txt「末」,\nnewContent1:「始」合并后的正文「末」,\nTag1:「始」标签1, 标签2「末」,\ncommand2:「始」DiaryDelete「末」,\ntargetDiary2:「始」file:///path/c.txt「末」,\nreason2:「始」内容冗余「末」,\ncommand3:「始」DreamInsight「末」,\nreferenceDiaries3:「始」file:///path/a.txt「末」,\ninsightContent3:「始」梦感悟正文「末」,\nTag3:「始」自然主题1, 自然主题2「末」\n<<<[END_TOOL_REQUEST]>>>"
+            "description": "支持串语法；当前推荐只批量提交 DreamInsight。DiaryMerge / DiaryDelete 仅作为 legacy 兼容接口，不应作为梦系统常规输出。",
+            "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgentDream「末」,\ncommand1:「始」DreamInsight「末」,\nreferenceDiaries1:「始」file:///path/a.txt,file:///path/d.txt「末」,\ninsightContent1:「始」梦感悟正文；如有整理候选，请写入“记忆大师整理线索”段「末」,\nTag1:「始」梦感悟, 自然主题, 彦「末」\n<<<[END_TOOL_REQUEST]>>>"
         }
     }
 }

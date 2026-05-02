@@ -10,6 +10,11 @@ let debugMode = false;
 let dailyNoteRootPath = '';
 let configuredExtension = 'txt';
 let associativeDiscovery = null;
+const TAG_MODEL = process.env.TagModel || 'deepseek-v4-flash';
+const TAG_MODEL_MAX_TOKENS = parseInt(process.env.TagModelMaxTokens || '40000', 10);
+const TAG_MODEL_PROMPT_FILE = process.env.TagModelPrompt || 'TagMaster.txt';
+const API_KEY = process.env.API_Key;
+const API_URL = process.env.API_URL;
 
 // --- 写入队列：串行化 organize 操作，防止并发同名文件冲突 ---
 let _writeQueue = Promise.resolve();
@@ -119,7 +124,107 @@ function fixTagFormat(tagLine) {
     return 'Tag: ' + normalizedContent;
 }
 
-function processTags(contentText, externalTag) {
+function extractTagFromAIResponse(aiResponse) {
+    const patterns = [
+        /\[\[Tag:\s*(.+?)\]\]/i,
+        /^Tag:\s*(.+)$/im,
+        /^\[\s*Tag:\s*(.+?)\s*\]$/im
+    ];
+
+    for (const pattern of patterns) {
+        const match = aiResponse.match(pattern);
+        if (match && match[1] && match[1].trim()) {
+            return 'Tag: ' + match[1].trim();
+        }
+    }
+
+    const normalized = aiResponse.trim().replace(/^\[+|\]+$/g, '').trim();
+    if (normalized && normalized.length <= 200 && !normalized.includes('\n\n')) {
+        return 'Tag: ' + normalized;
+    }
+
+    return null;
+}
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function generateTagsWithAI(content, maxRetries = 3) {
+    if (!API_KEY || !API_URL) {
+        console.error('[DailyNoteManager] API configuration missing. Cannot generate tags.');
+        return null;
+    }
+
+    const promptFilePath = path.join(__dirname, '..', 'DailyNoteWrite', TAG_MODEL_PROMPT_FILE);
+    let systemPrompt;
+    try {
+        systemPrompt = await fs.readFile(promptFilePath, 'utf-8');
+    } catch (err) {
+        console.error('[DailyNoteManager] Failed to read TagMaster prompt file:', err.message);
+        return null;
+    }
+
+    const requestData = {
+        model: TAG_MODEL,
+        messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content }
+        ],
+        max_tokens: TAG_MODEL_MAX_TOKENS,
+        temperature: 0.7
+    };
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const fetch = (await import('node-fetch')).default;
+            const response = await fetch(`${API_URL}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: JSON.stringify(requestData),
+                timeout: 60000
+            });
+
+            if (response.status === 500 || response.status === 503) {
+                const errorText = await response.text();
+                console.error(`[DailyNoteManager] AI API returned ${response.status} (attempt ${attempt}/${maxRetries}):`, errorText);
+                if (attempt < maxRetries) {
+                    await delay(Math.pow(2, attempt - 1) * 1000);
+                    continue;
+                }
+                return null;
+            }
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[DailyNoteManager] AI API error:', response.status, errorText);
+                return null;
+            }
+
+            const result = await response.json();
+            if (!result.choices || result.choices.length === 0) {
+                console.error('[DailyNoteManager] Unexpected AI response format:', result);
+                return null;
+            }
+
+            return extractTagFromAIResponse(result.choices[0].message.content);
+        } catch (error) {
+            console.error(`[DailyNoteManager] Error on attempt ${attempt}/${maxRetries}:`, error.message);
+            if (attempt < maxRetries) {
+                await delay(Math.pow(2, attempt - 1) * 1000);
+                continue;
+            }
+            return null;
+        }
+    }
+
+    return null;
+}
+
+async function processTags(contentText, externalTag, tagSourceContent) {
     const detection = detectTagLine(contentText);
 
     if (externalTag && typeof externalTag === 'string' && externalTag.trim() !== '') {
@@ -133,7 +238,17 @@ function processTags(contentText, externalTag) {
         return detection.contentWithoutLastLine.trimEnd() + '\n' + fixedTag;
     }
 
-    throw new Error("Tag is missing. Please provide a 'Tag' argument or add a 'Tag:' line at the end of the 'Content'.");
+    const contentForTags = (typeof tagSourceContent === 'string' && tagSourceContent.trim())
+        ? tagSourceContent
+        : contentText;
+    const generatedTag = await generateTagsWithAI(contentForTags);
+    if (!generatedTag) {
+        console.warn('[DailyNoteManager] Failed to generate tags, saving without tags');
+        return contentText;
+    }
+
+    const fixedTag = fixTagFormat(generatedTag);
+    return contentText.trimEnd() + '\n' + fixedTag;
 }
 
 // ============================================================
@@ -244,6 +359,7 @@ async function handleOrganizeCommand(args) {
     const dateString = args.dateString || args.Date || args.date;
     const contentText = args.contentText || args.Content || args.content;
     const tag = args.Tag || args.tag;
+    const tagSourceContent = args.TagSourceContent || args.tagSourceContent || args.TagContent || args.tagContent;
     const fileName = args.fileName || args.FileName;
 
     debugLog(`Processing 'organize' command (queued)`);
@@ -258,6 +374,7 @@ async function _handleOrganizeInternal(args) {
     const dateString = args.dateString || args.Date || args.date;
     const contentText = args.contentText || args.Content || args.content;
     const tag = args.Tag || args.tag;
+    const tagSourceContent = args.TagSourceContent || args.tagSourceContent || args.TagContent || args.tagContent;
     const fileName = args.fileName || args.FileName;
 
     if (!urls || !maid || !dateString || !contentText) {
@@ -277,7 +394,7 @@ async function _handleOrganizeInternal(args) {
     // ---- Step 1: 创建新的整理后日记 ----
     let newFilePath = '';
     try {
-        const processedContent = processTags(contentText, tag);
+        const processedContent = await processTags(contentText, tag, tagSourceContent);
 
         const trimmedMaidName = maid.trim();
         let folderName = trimmedMaidName;

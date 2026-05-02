@@ -10,9 +10,22 @@
   "classifierTimeoutMs": 30000,
   "useRagEmbeddings": true,
   "manualOverrides": {
-    "excludedOriginKeys": [],
+    "excludedOriginKeys": [
+      "distributed:dist-moczzogg-c6n93bn:PowerShellExecutor",
+      "distributed:dist-moczzogg-c6n93bn:OldPowerShellExecutor",
+      "distributed:dist-mod02j74-n59hsvm:PowerShellExecutor",
+      "distributed:dist-mod02j74-n59hsvm:OldPowerShellExecutor",
+      "distributed:dist-mod04je6-3uabspw:PowerShellExecutor",
+      "distributed:dist-mod04je6-3uabspw:OldPowerShellExecutor"
+    ],
     "pinnedOriginKeys": [],
-    "categoryAliases": {}
+    "categoryAliases": {},
+    "excludedPluginNames": [
+      "FrontendPowerShellExecutor",
+      "OldPowerShellExecutor",
+      "PTYShellExecutor",
+      "PowerShellExecutor"
+    ]
   },
   "smallModel": {
     "enabled": false,
