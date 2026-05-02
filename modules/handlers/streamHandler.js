@@ -2,6 +2,7 @@
 const { StringDecoder } = require('string_decoder');
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { buildAttachmentChunk, collectAttachmentsFromToolResults } = require('../attachmentCollector.js');
 
 function extractTextFromContentLike(value) {
   if (typeof value === 'string') return value;
@@ -557,6 +558,17 @@ class StreamHandler {
 
       // 执行普通调用
       const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForLoop);
+      const vcpAttachments = collectAttachmentsFromToolResults(toolResults);
+      if (vcpAttachments.length > 0 && !res.writableEnded && !res.destroyed) {
+        try {
+          res.write(`data: ${JSON.stringify(buildAttachmentChunk({
+            model: originalBody.model,
+            attachments: vcpAttachments
+          }))}\n\n`);
+        } catch (attachmentWriteError) {
+          console.error('[VCP Stream Loop] Failed to stream attachment chunk:', attachmentWriteError.message);
+        }
+      }
       const combinedToolResultsForAI = toolResults.map(r => r.content).flat();
       if (archeryErrorContents.length > 0) combinedToolResultsForAI.push(...archeryErrorContents);
 

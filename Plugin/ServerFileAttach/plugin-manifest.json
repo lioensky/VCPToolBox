@@ -1,0 +1,79 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ServerFileAttach",
+  "version": "0.1.0",
+  "displayName": "服务器文件附件投递器",
+  "description": "Registers whitelisted server-side files as standard chat attachments and exposes a guarded download route.",
+  "author": "VCPstudio",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "ServerFileAttach.js"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 120000
+  },
+  "configSchema": {
+    "ALLOWED_ATTACHMENT_ROOTS": {
+      "type": "string",
+      "description": "Semicolon-separated absolute or project-relative directories that may be attached. Empty means deny all.",
+      "default": ""
+    },
+    "MAX_ATTACHMENT_BYTES": {
+      "type": "integer",
+      "description": "Maximum file size allowed for one attachment.",
+      "default": 52428800
+    },
+    "ATTACHMENT_CACHE_DIR": {
+      "type": "string",
+      "description": "Directory used for the attachment index.",
+      "default": ".file_cache/agent_attachments"
+    },
+    "ATTACHMENT_HASH_ALGORITHM": {
+      "type": "string",
+      "description": "Hash algorithm used for source integrity verification.",
+      "default": "sha256"
+    },
+    "ALLOW_UNKNOWN_MIME": {
+      "type": "boolean",
+      "description": "When true, unknown extensions are served as application/octet-stream.",
+      "default": true
+    },
+    "ATTACHMENT_TTL_SECONDS": {
+      "type": "integer",
+      "description": "How long attachment records stay valid.",
+      "default": 86400
+    },
+    "ATTACHMENT_DOWNLOAD_BASE_URL": {
+      "type": "string",
+      "description": "Optional absolute URL prefix. Empty returns a relative /v1/attachments/:id URL.",
+      "default": ""
+    },
+    "SERVER_ATTACHMENT_REQUIRE_AUTH": {
+      "type": "boolean",
+      "description": "Require Bearer auth or ?key= for downloads.",
+      "default": true
+    },
+    "SERVER_ATTACHMENT_KEY": {
+      "type": "string",
+      "description": "Download key. Defaults to global Key when omitted.",
+      "default": ""
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "AttachFile",
+        "description": "Register a whitelisted server file as a chat attachment.\nParameters:\n- command: AttachFile\n- filePath/sourcePath/src: required source file path or file:// URL.\n- name: optional display name.\n- disposition: optional, default download.\nExample:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ServerFileAttach「末」,\ncommand:「始」AttachFile「末」,\nfilePath:「始」file/report.pdf「末」,\nname:「始」report.pdf「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ],
+    "serviceRoutes": [
+      {
+        "method": "GET",
+        "path": "/v1/attachments/:serverAttachmentId",
+        "description": "Download a registered attachment after auth and source integrity checks."
+      }
+    ]
+  }
+}

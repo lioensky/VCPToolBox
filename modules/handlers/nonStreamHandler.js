@@ -1,6 +1,7 @@
 // modules/handlers/nonStreamHandler.js
 const vcpInfoHandler = require('../../vcpInfoHandler.js');
 const roleDivider = require('../roleDivider.js');
+const { collectAttachmentsFromToolResults } = require('../attachmentCollector.js');
 
 class NonStreamHandler {
   constructor(context) {
@@ -70,6 +71,7 @@ class NonStreamHandler {
     let conversationHistoryForClient = [];
     let currentAIContentForLoop = fullContentFromAI;
     let currentMessagesForNonStreamLoop = originalBody.messages ? JSON.parse(JSON.stringify(originalBody.messages)) : [];
+    const collectedAttachments = new Map();
 
     do {
       // 检查中止信号
@@ -183,6 +185,9 @@ class NonStreamHandler {
         currentMessagesForNonStreamLoop.push(...assistantMessages);
 
         const toolResults = await toolExecutor.executeAll(normalCalls, clientIp, currentMessagesForNonStreamLoop);
+        for (const attachment of collectAttachmentsFromToolResults(toolResults)) {
+          collectedAttachments.set(attachment.serverAttachmentId, attachment);
+        }
         const normalCallLogs = (() => {
           let logs = [];
           if (writeChatLog) {
@@ -288,10 +293,18 @@ class NonStreamHandler {
         finalJsonResponse.choices[0].message.content = finalContentForClient;
       }
       finalJsonResponse.choices[0].finish_reason = recursionDepth >= maxRecursion ? 'length' : 'stop';
+      if (collectedAttachments.size > 0) {
+        finalJsonResponse.vcp_attachments = Array.from(collectedAttachments.values());
+        finalJsonResponse.attachments = finalJsonResponse.vcp_attachments;
+      }
     } catch (e) {
       finalJsonResponse = {
         choices: [{ index: 0, message: { role: 'assistant', content: finalContentForClient }, finish_reason: recursionDepth >= maxRecursion ? 'length' : 'stop' }]
       };
+      if (collectedAttachments.size > 0) {
+        finalJsonResponse.vcp_attachments = Array.from(collectedAttachments.values());
+        finalJsonResponse.attachments = finalJsonResponse.vcp_attachments;
+      }
     }
 
     if (writeChatLog) writeChatLog(originalBody, chatLogs);
