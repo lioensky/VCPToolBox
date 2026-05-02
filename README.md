@@ -251,7 +251,7 @@ VCP 初始的 DailyNote 里提供了 VCP 开发文档等大量专业日记，方
 
 日记的创建、编辑和批处理现在统一为 **DailyNote** 一个插件，从而方便串行和并发处理。
 
-[深入了解 DailyNote 日记系统的工作原理与使用方式](dailynote.md)
+[深入了解 DailyNote 记忆系统的工作原理与使用方式](VCP记忆管理系统.md)
 
 ### 3.2 分布式备份与恢复
 
@@ -1422,7 +1422,7 @@ VCP 的设计使其能够灵活适配多种后端。
 推荐使用能够良好渲染 Markdown、支持代码高亮、并且能够自定义或适配 VCP 工具调用指令显示的前端：
 
 - **VCPChat**（官方项目，首选！）：[VCPChat](https://github.com/lioensky/VCPChat)
-- **Sillytavern**
+- **VCPMobile** (友情项目):[VCPMobile](https://github.com/MRiecy/VCPMobile) - Vchat的第三方移动端移植版本，支持数据双向同步。
 - **aio-hub** (友情项目): [aio-hub](https://github.com/miaotouy/aio-hub) - 一个基于 Tauri 开发的更高性能的桌面 LLM 聊天客户端，并作了部分 VCP 的原生 API 兼容。
 
 理想的前端还应：
