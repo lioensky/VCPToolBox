@@ -21,7 +21,6 @@ export interface ForumAssistantTaskSchedule {
 export interface ForumAssistantTaskDispatch {
   channel: string;
   temporaryContact: boolean;
-  injectTools: string[];
   maid: string;
   taskDelegation: boolean;
 }
@@ -34,8 +33,20 @@ export interface ForumAssistantTaskPayload {
   maxPosts?: number;
 }
 
+export interface ForumAssistantAcceptanceRule {
+  type: string;
+  label?: string;
+  value?: string;
+  path?: string;
+  fileNameContains?: string;
+  required?: boolean;
+}
+
 export interface ForumAssistantTaskRuntime {
   running: boolean;
+  status?: string;
+  statusText?: string;
+  latestRunId?: string | null;
   lastRunTime: string | null;
   lastFinishTime: string | null;
   lastResult: string | null;
@@ -58,6 +69,7 @@ export interface ForumAssistantTask {
   };
   dispatch: ForumAssistantTaskDispatch;
   payload: ForumAssistantTaskPayload;
+  acceptanceRules: ForumAssistantAcceptanceRule[];
   runtime: ForumAssistantTaskRuntime;
   meta: {
     createdAt: string | null;
@@ -87,6 +99,7 @@ export interface ForumAssistantConfigResponse {
 
 export interface ForumAssistantHistoryItem {
   id: string;
+  runId?: string | null;
   taskId: string;
   taskName: string;
   type: string;
@@ -95,8 +108,53 @@ export interface ForumAssistantHistoryItem {
   finishedAt: string | null;
   durationMs: number | null;
   status: string;
+  statusText?: string;
+  hasRunDetail?: boolean;
   agents: string[];
+  failedAgents?: string[];
   message: string;
+}
+
+export interface ForumAssistantRunDetail {
+  runId: string;
+  taskId?: string;
+  taskName?: string;
+  type?: string;
+  triggerSource?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  status?: string;
+  statusText?: string;
+  agents?: string[];
+  failedAgents?: string[];
+  originalAgents?: string[];
+  delegationIds?: Array<{ agentName: string; delegationId: string }>;
+  promptSummary?: string;
+  dispatchResults?: Array<{
+    agentName: string;
+    httpStatus?: number;
+    pluginStatus?: string | null;
+    delegationId?: string | null;
+    text?: string;
+    rawBody?: string;
+  }>;
+  taskEcho?: {
+    found?: boolean;
+    status?: string | null;
+    statusText?: string | null;
+    raw?: string | null;
+  } | null;
+  systemAcceptance?: Array<{
+    type?: string;
+    status?: string;
+    message?: string;
+    evidence?: string[];
+  }>;
+  artifacts?: string[];
+  error?: string | null;
+  legacy?: boolean;
+  message?: string;
 }
 
 export interface ForumAssistantStatusTask {
@@ -135,6 +193,7 @@ export interface ForumAssistantSaveConfigPayload {
     };
     dispatch: ForumAssistantTaskDispatch;
     payload: ForumAssistantTaskPayload;
+    acceptanceRules?: ForumAssistantAcceptanceRule[];
   }>;
 }
 
@@ -232,14 +291,12 @@ function normalizeSchedule(value: unknown): ForumAssistantTaskSchedule {
 
 function normalizeDispatch(value: unknown): ForumAssistantTaskDispatch {
   const record = isRecord(value) ? value : {};
-  const injectTools = asStringArray(record.injectTools);
 
   return {
     channel: asString(record.channel, "AgentAssistant") || "AgentAssistant",
     temporaryContact: record.temporaryContact !== false,
-    injectTools: injectTools.length > 0 ? injectTools : ["VCPForum"],
     maid: asString(record.maid, "VCP系统") || "VCP系统",
-    taskDelegation: record.taskDelegation === true,
+    taskDelegation: record.taskDelegation !== false,
   };
 }
 
@@ -271,6 +328,24 @@ function normalizePayload(
   };
 }
 
+function normalizeAcceptanceRules(value: unknown): ForumAssistantAcceptanceRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .map((item) => ({
+      type: asString(item.type),
+      label: asString(item.label) || undefined,
+      value: asString(item.value) || undefined,
+      path: asString(item.path) || undefined,
+      fileNameContains: asString(item.fileNameContains) || undefined,
+      required: item.required !== false,
+    }))
+    .filter((item) => item.type);
+}
+
 function normalizeRuntime(value: unknown): ForumAssistantTaskRuntime {
   const record = isRecord(value) ? value : {};
   const lastDurationMs =
@@ -278,6 +353,9 @@ function normalizeRuntime(value: unknown): ForumAssistantTaskRuntime {
 
   return {
     running: record.running === true,
+    status: asNullableString(record.status) || undefined,
+    statusText: asNullableString(record.statusText) || undefined,
+    latestRunId: asNullableString(record.latestRunId),
     lastRunTime: asNullableString(record.lastRunTime),
     lastFinishTime: asNullableString(record.lastFinishTime),
     lastResult: asNullableString(record.lastResult),
@@ -307,6 +385,7 @@ function normalizeTask(value: unknown): ForumAssistantTask {
     },
     dispatch: normalizeDispatch(record.dispatch),
     payload: normalizePayload(record.payload, type),
+    acceptanceRules: normalizeAcceptanceRules(record.acceptanceRules),
     runtime: normalizeRuntime(record.runtime),
     meta: {
       createdAt: asNullableString(meta.createdAt),
@@ -384,6 +463,7 @@ function normalizeHistoryItem(value: unknown): ForumAssistantHistoryItem | null 
 
   return {
     id: asString(value.id),
+    runId: asNullableString(value.runId),
     taskId: asString(value.taskId),
     taskName: asString(value.taskName),
     type: asString(value.type),
@@ -392,9 +472,21 @@ function normalizeHistoryItem(value: unknown): ForumAssistantHistoryItem | null 
     finishedAt: asNullableString(value.finishedAt),
     durationMs: value.durationMs == null ? null : asInteger(value.durationMs, 0),
     status: asString(value.status),
+    statusText: asNullableString(value.statusText) || undefined,
+    hasRunDetail: value.hasRunDetail === true,
     agents: asStringArray(value.agents),
+    failedAgents: asStringArray(value.failedAgents),
     message: asString(value.message),
   };
+}
+
+function normalizeRunDetail(value: unknown): ForumAssistantRunDetail {
+  const record = isRecord(value) ? value : {};
+
+  return {
+    ...record,
+    runId: asString(record.runId),
+  } as ForumAssistantRunDetail;
 }
 
 function normalizeStatus(value: unknown): ForumAssistantStatus {
@@ -480,5 +572,20 @@ export const forumAssistantApi = {
       success: record.success !== false,
       message: asString(record.message, "任务已触发"),
     };
+  },
+
+  async getRunDetail(
+    runId: string,
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<ForumAssistantRunDetail> {
+    const response = await requestForumAssistant<unknown>(
+      {
+        url: `/admin_api/task-assistant/runs/${encodeURIComponent(runId)}`,
+        method: "GET",
+      },
+      uiOptions
+    );
+
+    return normalizeRunDetail(response);
   },
 };

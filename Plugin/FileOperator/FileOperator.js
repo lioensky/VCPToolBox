@@ -217,12 +217,13 @@ function resolveAndNormalizePath(inputPath) {
     return resolvedInput;
   }
 
-  // 3. 虚拟根逻辑：将 /xxx 映射到 FileOperator/xxx
+  // 3. 虚拟根逻辑：将 /xxx 映射到项目根目录下的 xxx
   // 在 Windows 上，/foo 不是绝对路径，所以会进入此逻辑
   // 在 Linux 上，/foo 是绝对路径，已在第 1 步处理
   if (originalPath.startsWith('/')) {
     const relativePath = originalPath.slice(1); // 去掉开头的 /
-    return path.resolve(__dirname, relativePath);
+    const projectRoot = path.resolve(__dirname, '..', '..');
+    return path.resolve(projectRoot, relativePath);
   }
 
   // 2. Handle absolute paths. Check originalPath as sanitizing might alter it.

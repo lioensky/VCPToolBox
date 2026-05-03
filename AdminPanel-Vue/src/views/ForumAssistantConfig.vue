@@ -249,17 +249,8 @@
             </label>
 
             <label class="field">
-              <span>请求发送者</span>
+              <span>唤醒署名</span>
               <input v-model.trim="task.maid" type="text" placeholder="默认 VCP系统" />
-            </label>
-
-            <label class="field">
-              <span>注入工具</span>
-              <input
-                v-model="task.injectToolsText"
-                type="text"
-                placeholder="例如：VCPForum"
-              />
             </label>
 
             <label class="field">
@@ -310,8 +301,12 @@
 
           <label class="switch-row section-switch">
             <input v-model="task.taskDelegation" type="checkbox" />
-            <span>异步高级委托</span>
+            <span>后台陪伴式委托（默认开启）</span>
           </label>
+
+          <p class="hint-text acceptance-help">
+            任务中心负责周期唤醒；如果 Agent 在本轮里判断有必要稍后继续，他可以自行通过 AgentAssistant 给未来的自己留一次定时通话，两者是协同关系。
+          </p>
 
           <template v-if="task.type === 'forum_patrol'">
             <label class="switch-row section-switch">
@@ -350,6 +345,13 @@
             ></textarea>
           </label>
 
+          <section class="resonance-anchor-panel">
+            <h4>统一回响锚点</h4>
+            <p>
+              任务中心会统一检查任务回声、主动动作、公开痕迹、未来锚点，以及提示词中声明的日记落点。这里不再手动编辑 JSON 规则。
+            </p>
+          </section>
+
           <div class="placeholder-row">
             <span class="placeholder-label">可用占位符</span>
             <span
@@ -368,9 +370,9 @@
             <div class="runtime-state-row">
               <span
                 class="status-badge"
-                :class="task.runtime?.running ? 'status-running' : 'status-neutral'"
+                :class="resolveRuntimeStatusClass(task.runtime)"
               >
-                {{ task.runtime?.running ? "执行中" : "待机" }}
+                {{ task.runtime?.statusText || (task.runtime?.running ? "执行中" : "待机") }}
               </span>
               <span class="runtime-summary">
                 成功 {{ task.runtime?.successCount ?? 0 }} 次 / 失败
@@ -426,18 +428,117 @@
         >
           <div class="history-item-top">
             <strong>{{ item.taskName || item.taskId || "未知任务" }}</strong>
-            <span
-              class="status-badge"
-              :class="item.status === 'error' ? 'status-disabled' : 'status-enabled'"
-            >
-              {{ item.status || "unknown" }}
-            </span>
+            <div class="history-actions">
+              <span
+                class="status-badge"
+                :class="resolveHistoryStatusClass(item)"
+              >
+                {{ item.statusText || item.status || "未知状态" }}
+              </span>
+              <button
+                type="button"
+                class="history-toggle"
+                :aria-expanded="isHistoryExpanded(item)"
+                :disabled="isHistoryDetailLoading(item)"
+                @click="toggleHistoryDetail(item)"
+              >
+                <span class="material-symbols-outlined">
+                  {{ isHistoryExpanded(item) ? "expand_less" : "expand_more" }}
+                </span>
+                {{ isHistoryExpanded(item) ? "收起" : "详情" }}
+              </button>
+            </div>
           </div>
           <p>{{ item.message || "无返回信息" }}</p>
           <div class="history-meta">
             <span>触发方式：{{ item.triggerSource || "unknown" }}</span>
             <span>完成时间：{{ formatDateTime(item.finishedAt) }}</span>
             <span>耗时：{{ formatDuration(item.durationMs) }}</span>
+          </div>
+
+          <div v-if="isHistoryExpanded(item)" class="history-detail-panel">
+            <div v-if="isHistoryDetailLoading(item)" class="history-detail-empty">
+              正在读取运行详情...
+            </div>
+            <template v-else-if="getHistoryDetail(item)">
+              <div v-if="getHistoryDetail(item)?.legacy" class="history-detail-empty">
+                {{ getHistoryDetail(item)?.message || "旧记录未验证，缺少完整运行详情。" }}
+              </div>
+              <template v-else>
+                <div class="history-detail-grid">
+                  <div class="runtime-item">
+                    <span>运行 ID</span>
+                    <strong>{{ getHistoryDetail(item)?.runId || "未记录" }}</strong>
+                  </div>
+                  <div class="runtime-item">
+                    <span>目标 Agent</span>
+                    <strong>{{ formatList(getHistoryDetail(item)?.agents) }}</strong>
+                  </div>
+                  <div class="runtime-item">
+                    <span>开始时间</span>
+                    <strong>{{ formatDateTime(getHistoryDetail(item)?.startedAt) }}</strong>
+                  </div>
+                  <div class="runtime-item">
+                    <span>完成时间</span>
+                    <strong>{{ formatDateTime(getHistoryDetail(item)?.finishedAt) }}</strong>
+                  </div>
+                </div>
+
+                <section class="history-detail-block">
+                  <h4>任务回声</h4>
+                  <pre>{{ getHistoryDetail(item)?.taskEcho?.raw || "未收到可解析的任务回声。" }}</pre>
+                </section>
+
+                <section class="history-detail-block">
+                  <h4>主动性回响</h4>
+                  <div
+                    v-for="(acceptance, index) in getHistoryDetail(item)?.systemAcceptance || []"
+                    :key="`${item.id}-acceptance-${index}`"
+                    class="acceptance-row"
+                  >
+                    <span
+                      class="status-badge"
+                      :class="acceptance.status === '通过' ? 'status-enabled' : 'status-disabled'"
+                    >
+                      {{ acceptance.status || "未记录" }}
+                    </span>
+                    <p>{{ acceptance.type || "验收" }}：{{ acceptance.message || "无说明" }}</p>
+                  </div>
+                  <p
+                    v-if="!getHistoryDetail(item)?.systemAcceptance?.length"
+                    class="history-detail-empty"
+                  >
+                    暂无主动性回响记录。
+                  </p>
+                </section>
+
+                <section
+                  v-if="getHistoryDetail(item)?.artifacts?.length"
+                  class="history-detail-block"
+                >
+                  <h4>落点痕迹</h4>
+                  <ul class="history-artifact-list">
+                    <li
+                      v-for="(artifact, index) in getHistoryDetail(item)?.artifacts || []"
+                      :key="`${item.id}-artifact-${index}`"
+                    >
+                      {{ artifact }}
+                    </li>
+                  </ul>
+                </section>
+
+                <section
+                  v-if="getHistoryDetail(item)?.error"
+                  class="history-detail-block"
+                >
+                  <h4>错误详情</h4>
+                  <pre>{{ getHistoryDetail(item)?.error }}</pre>
+                </section>
+              </template>
+            </template>
+            <div v-else class="history-detail-empty">
+              暂无详情。
+            </div>
           </div>
         </article>
       </div>
@@ -451,6 +552,7 @@ import {
   forumAssistantApi,
   type ForumAssistantConfigResponse,
   type ForumAssistantHistoryItem,
+  type ForumAssistantRunDetail,
   type ForumAssistantSaveConfigPayload,
   type ForumAssistantStatus,
   type ForumAssistantStatusTask,
@@ -472,7 +574,6 @@ interface ForumAssistantTaskDraft {
   taskDelegation: boolean;
   targetAgentsText: string;
   randomCount: number;
-  injectToolsText: string;
   maid: string;
   scheduleMode: string;
   intervalMinutes: number;
@@ -513,6 +614,9 @@ const isLoading = ref(false);
 const isSaving = ref(false);
 const pendingTriggerTaskIds = ref<string[]>([]);
 const availableAgents = ref<Array<{ chineseName: string }>>([]);
+const expandedHistoryIds = ref<string[]>([]);
+const historyDetailLoadingIds = ref<string[]>([]);
+const historyRunDetails = ref<Record<string, ForumAssistantRunDetail>>({});
 
 const resolvedTaskTypes = computed(() =>
   availableTaskTypes.value.length > 0 ? availableTaskTypes.value : DEFAULT_TASK_TYPES
@@ -521,9 +625,110 @@ const historyItems = computed<ForumAssistantHistoryItem[]>(
   () => runtimeStatus.value?.history ?? []
 );
 
+function getHistoryRunId(item: ForumAssistantHistoryItem): string {
+  return item.runId || item.id;
+}
+
+function isHistoryExpanded(item: ForumAssistantHistoryItem): boolean {
+  return expandedHistoryIds.value.includes(getHistoryRunId(item));
+}
+
+function isHistoryDetailLoading(item: ForumAssistantHistoryItem): boolean {
+  return historyDetailLoadingIds.value.includes(getHistoryRunId(item));
+}
+
+function getHistoryDetail(item: ForumAssistantHistoryItem): ForumAssistantRunDetail | undefined {
+  return historyRunDetails.value[getHistoryRunId(item)];
+}
+
+function resolveHistoryStatusClass(item: ForumAssistantHistoryItem): string {
+  if (item.status === "completed") {
+    return "status-enabled";
+  }
+
+  if (
+    item.status === "failed" ||
+    item.status === "error" ||
+    item.status === "acceptance_failed" ||
+    item.status === "timeout"
+  ) {
+    return "status-disabled";
+  }
+
+  if (item.status === "running" || item.status === "waiting_echo" || item.status === "submitted") {
+    return "status-running";
+  }
+
+  return "status-neutral";
+}
+
+function resolveRuntimeStatusClass(runtime: ForumAssistantTaskRuntime | null): string {
+  if (!runtime) {
+    return "status-neutral";
+  }
+
+  return resolveHistoryStatusClass({
+    id: runtime.latestRunId || "",
+    taskId: "",
+    taskName: "",
+    type: "",
+    triggerSource: "",
+    startedAt: runtime.lastRunTime,
+    finishedAt: runtime.lastFinishTime,
+    durationMs: runtime.lastDurationMs,
+    status: runtime.status || (runtime.running ? "running" : "idle"),
+    statusText: runtime.statusText,
+    agents: [],
+    message: runtime.lastResult || "",
+  });
+}
+
+async function toggleHistoryDetail(item: ForumAssistantHistoryItem): Promise<void> {
+  const runId = getHistoryRunId(item);
+
+  if (isHistoryExpanded(item)) {
+    expandedHistoryIds.value = expandedHistoryIds.value.filter((id) => id !== runId);
+    return;
+  }
+
+  expandedHistoryIds.value = [...expandedHistoryIds.value, runId];
+
+  if (historyRunDetails.value[runId]) {
+    return;
+  }
+
+  historyDetailLoadingIds.value = [...historyDetailLoadingIds.value, runId];
+  try {
+    const detail = await forumAssistantApi.getRunDetail(runId);
+    historyRunDetails.value = {
+      ...historyRunDetails.value,
+      [runId]: detail,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    historyRunDetails.value = {
+      ...historyRunDetails.value,
+      [runId]: {
+        runId,
+        legacy: true,
+        status: "legacy_unverified",
+        statusText: "旧记录未验证",
+        message: `读取运行详情失败：${message}`,
+      },
+    };
+  } finally {
+    historyDetailLoadingIds.value = historyDetailLoadingIds.value.filter(
+      (id) => id !== runId
+    );
+  }
+}
+
 function createDefaultRuntime(): ForumAssistantTaskRuntime {
   return {
     running: false,
+    status: "idle",
+    statusText: "等待执行",
+    latestRunId: null,
     lastRunTime: null,
     lastFinishTime: null,
     lastResult: null,
@@ -609,14 +814,14 @@ function buildFallbackTemplate(type: string): ForumAssistantTask {
       dispatch: {
         channel: "AgentAssistant",
         temporaryContact: true,
-        injectTools: ["VCPForum"],
         maid: "VCP系统",
-        taskDelegation: false,
+        taskDelegation: true,
       },
       payload: {
         promptTemplate: "",
         availablePlaceholders: [],
       },
+      acceptanceRules: [],
       runtime: createDefaultRuntime(),
       meta: {
         createdAt: null,
@@ -641,9 +846,8 @@ function buildFallbackTemplate(type: string): ForumAssistantTask {
     dispatch: {
       channel: "AgentAssistant",
       temporaryContact: true,
-      injectTools: ["VCPForum"],
       maid: "VCP系统",
-      taskDelegation: false,
+      taskDelegation: true,
     },
     payload: {
       promptTemplate:
@@ -653,6 +857,7 @@ function buildFallbackTemplate(type: string): ForumAssistantTask {
       forumListPlaceholder: "{{forum_post_list}}",
       maxPosts: 200,
     },
+    acceptanceRules: [],
     runtime: createDefaultRuntime(),
     meta: {
       createdAt: null,
@@ -680,10 +885,9 @@ function toTaskDraft(
     name: task.name,
     type: taskType,
     enabled: task.enabled,
-    taskDelegation: task.dispatch.taskDelegation || false,
+    taskDelegation: task.dispatch.taskDelegation !== false,
     targetAgentsText: realAgents.join(", "),
     randomCount,
-    injectToolsText: task.dispatch.injectTools.join(", "),
     maid: task.dispatch.maid || "VCP系统",
     scheduleMode: task.schedule.mode,
     intervalMinutes: task.schedule.intervalMinutes,
@@ -979,11 +1183,11 @@ function buildTaskPayload(
     dispatch: {
       channel: "AgentAssistant",
       temporaryContact: true,
-      injectTools: splitCommaSeparated(draft.injectToolsText),
       maid: draft.maid.trim() || "VCP系统",
-      taskDelegation: draft.taskDelegation,
+      taskDelegation: draft.taskDelegation !== false,
     },
     payload,
+    acceptanceRules: [],
   };
 }
 
@@ -1040,6 +1244,10 @@ function formatDuration(value: number | null | undefined): string {
   }
 
   return `${(value / 1000).toFixed(2)} s`;
+}
+
+function formatList(value: string[] | null | undefined): string {
+  return Array.isArray(value) && value.length > 0 ? value.join("、") : "未记录";
 }
 
 onMounted(async () => {
@@ -1269,6 +1477,26 @@ onMounted(async () => {
   align-items: center;
 }
 
+.acceptance-help {
+  margin: calc(var(--space-3) * -1) 0 0;
+}
+
+.resonance-anchor-panel {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  background: color-mix(in srgb, var(--tertiary-bg) 78%, transparent);
+}
+
+.resonance-anchor-panel h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.resonance-anchor-panel p {
+  margin: 0;
+  color: var(--secondary-text);
+}
+
 .placeholder-label {
   font-weight: 600;
   color: var(--secondary-text);
@@ -1334,6 +1562,97 @@ onMounted(async () => {
 .history-meta {
   flex-wrap: wrap;
   margin-top: 10px;
+  color: var(--secondary-text);
+}
+
+.history-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tertiary-bg) 78%, transparent);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.history-toggle:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.history-toggle .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.history-detail-panel {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  background: color-mix(in srgb, var(--tertiary-bg) 78%, transparent);
+}
+
+.history-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.history-detail-block {
+  margin-top: var(--space-4);
+}
+
+.history-detail-block h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.history-detail-block pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--input-bg);
+  color: var(--primary-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.acceptance-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: var(--space-2);
+}
+
+.acceptance-row p {
+  margin: 3px 0 0;
+}
+
+.history-artifact-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--secondary-text);
+}
+
+.history-artifact-list li + li {
+  margin-top: 6px;
+}
+
+.history-detail-empty {
   color: var(--secondary-text);
 }
 

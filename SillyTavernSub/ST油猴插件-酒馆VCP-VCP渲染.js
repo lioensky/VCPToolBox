@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         VCPSub Enhanced UI for SillyTavern (Animated Prettifier, Icon Animations, Border Fix, Slower Diary Border)
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  Prettifies VCP-ToolUse and Maid Diary blocks with animations (hides copy button, animates icons, fixes border rendering, slows down diary border animation).
+// @version      1.7
+// @description  稳定折叠渲染 VCP-ToolUse 和 Maid/DailyNote 块，兼容流式输出后的 DOM 重绘。
 // @author       Xiaoke & Ryan (Modified by Roo, Animations by AI)
 // @match        *://localhost:8000/*
 // @match        *://127.0.0.1:8000/*
@@ -19,8 +19,9 @@
     const debounceTimers = new WeakMap();
     const DEBOUNCE_DELAY = 400; // Milliseconds to wait after last text change for general blocks
     const DIARY_DEBOUNCE_DELAY = 3000; // 3 seconds delay for Maid Diary blocks
+    const renderedTextCache = new WeakMap();
 
-    console.log('VCPSub Prettifier (Animated with Icon Animations, Border Fix, Slower Diary Border): Script started.');
+    console.log('VCPSub Prettifier v1.7 (Stable ToolUse / Diary Renderer): Script started.');
 
     // --- VCP ToolUse and Maid Diary Prettifier ---
 
@@ -141,6 +142,49 @@
             /* 隐藏 VCP 气泡内的复制按钮 */
             .vcp-tool-use-bubble code .code-copy {
                 display: none !important;
+            }
+
+            .vcp-stable-card {
+                position: relative;
+                z-index: 1;
+                display: block;
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace !important;
+            }
+
+            .vcp-stable-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 700;
+                line-height: 1.4;
+            }
+
+            .vcp-stable-subtitle {
+                opacity: 0.82;
+                font-size: 0.9em;
+                margin-top: 4px;
+            }
+
+            .vcp-stable-details {
+                margin-top: 8px;
+                opacity: 0.95;
+            }
+
+            .vcp-stable-details summary {
+                cursor: pointer;
+                font-weight: 700;
+                user-select: none;
+            }
+
+            .vcp-stable-raw {
+                margin-top: 6px;
+                white-space: pre-wrap;
+                word-break: break-word;
+                max-height: 320px;
+                overflow: auto;
+                padding: 8px;
+                border-radius: 6px;
+                background: rgba(0,0,0,0.18);
             }
 
             /* 女仆日记气泡样式 */
@@ -289,11 +333,6 @@
 
     function prettifyBlock(preElement) {
         // console.log('VCPSub Enhanced UI [Prettify]: Called for preElement:', preElement, 'innerHTML (sample):', preElement.innerHTML?.substring(0, 200));
-        if (preElement.dataset.vcpPrettified || preElement.dataset.maidDiaryPrettified) {
-            // console.log('VCPSub Enhanced UI [Prettify]: Already prettified, skipping:', preElement);
-            return;
-        }
-
         let codeElement = preElement.querySelector('code.hljs');
         if (!codeElement) {
             codeElement = preElement.querySelector('code');
@@ -304,10 +343,28 @@
         }
 
         const textContent = codeElement.textContent || "";
+        const normalizedText = textContent.trim();
+        if (!normalizedText) return;
+
+        const cacheKey = normalizedText;
+        if (renderedTextCache.get(preElement) === cacheKey) return;
+
         let htmlContent = codeElement.innerHTML;
         htmlContent = htmlContent.replace(/<i class="fa-solid fa-copy code-copy.*?<\/i>/s, '');
 
-        if (textContent.trim().startsWith('VCP-ToolUse:')) {
+        if (isVcpToolUseText(normalizedText)) {
+            renderStableToolUse(preElement, codeElement, normalizedText);
+            renderedTextCache.set(preElement, cacheKey);
+            return;
+        }
+
+        if (isDiaryText(normalizedText)) {
+            renderStableDiary(preElement, codeElement, normalizedText);
+            renderedTextCache.set(preElement, cacheKey);
+            return;
+        }
+
+        if (normalizedText.startsWith('VCP-ToolUse:')) {
             preElement.classList.add('vcp-tool-use-bubble');
             htmlContent = htmlContent.replace(/(VCP-ToolUse:)/, '<span class="vcp-tool-label">$1</span>');
             const tempDivVcp = document.createElement('div');
@@ -328,8 +385,9 @@
             }
             codeElement.innerHTML = tempDivVcp.innerHTML;
             preElement.dataset.vcpPrettified = "true";
+            renderedTextCache.set(preElement, cacheKey);
 
-        } else if (textContent.trim().startsWith('Maid')) {
+        } else if (normalizedText.startsWith('Maid')) {
             preElement.classList.add('maid-diary-bubble');
             const tempDivMaid = document.createElement('div');
             tempDivMaid.innerHTML = htmlContent;
@@ -351,7 +409,151 @@
                 }
             }
             preElement.dataset.maidDiaryPrettified = "true";
+            renderedTextCache.set(preElement, cacheKey);
         }
+    }
+
+    function escapeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function cleanVcpValue(value) {
+        return String(value || '')
+            .replace(/^「始」/, '')
+            .replace(/「末」,?$/, '')
+            .replace(/^\[/, '')
+            .replace(/\]$/, '')
+            .trim();
+    }
+
+    function isVcpToolUseText(text) {
+        return /^VCP-ToolUse:\s*\[[^\]\n\r]+\]/.test(text) ||
+            (text.includes('<<<[TOOL_REQUEST]>>>') && text.includes('<<<[END_TOOL_REQUEST]>>>')) ||
+            (text.includes('tool_name:') && text.includes('<<<[END_TOOL_REQUEST]>>>'));
+    }
+
+    function isDiaryText(text) {
+        return text.includes('<<<DailyNoteEnd>>>') ||
+            (text.includes('<<<DailyNoteStart>>>') && /Content\s*:/i.test(text)) ||
+            (/^Maid\s*:/i.test(text) && /Content\s*:/i.test(text));
+    }
+
+    function parseToolUse(text) {
+        const compactMatch = text.match(/VCP-ToolUse:\s*\[([^\]\n\r]*)\]/);
+        const toolNameMatch = text.match(/tool_name:\s*「始」([\s\S]*?)「末」/) ||
+            text.match(/tool_name:\s*([^\n\r,]+)/);
+        const toolName = cleanVcpValue((compactMatch && compactMatch[1]) || (toolNameMatch && toolNameMatch[1]) || '工具调用');
+        const fieldRows = [];
+        const lines = text
+            .replace(/<<<\[TOOL_REQUEST\]>>>/g, '')
+            .replace(/<<<\[END_TOOL_REQUEST\]>>>/g, '')
+            .replace(/VCP-ToolUse:\s*\[[^\]\n\r]*\]/g, '')
+            .split('\n');
+
+        lines.forEach(line => {
+            const match = line.match(/^\s*([\w_\u4e00-\u9fa5-]+)\s*:\s*([\s\S]*)$/);
+            if (!match) return;
+            const key = match[1].trim();
+            if (key === 'tool_name') return;
+            const value = cleanVcpValue(match[2]);
+            if (value) fieldRows.push({ key, value });
+        });
+
+        return { toolName, fieldRows };
+    }
+
+    function renderStableToolUse(preElement, codeElement, text) {
+        const parsed = parseToolUse(text);
+        preElement.classList.remove('maid-diary-bubble');
+        preElement.classList.add('vcp-tool-use-bubble');
+        preElement.dataset.vcpPrettified = 'true';
+        delete preElement.dataset.maidDiaryPrettified;
+
+        const rowsHtml = parsed.fieldRows.slice(0, 6).map(row =>
+            `<div><b>${escapeHtml(row.key)}</b>: ${escapeHtml(row.value)}</div>`
+        ).join('');
+
+        codeElement.innerHTML = `
+            <div class="vcp-stable-card">
+                <div class="vcp-stable-header">
+                    <span class="vcp-tool-label">VCP-ToolUse</span>
+                    <span class="vcp-tool-name-highlight">${escapeHtml(parsed.toolName)}</span>
+                </div>
+                <div class="vcp-stable-subtitle">${rowsHtml || '工具调用已捕获，原始协议已折叠。'}</div>
+                <details class="vcp-stable-details">
+                    <summary>展开原始调用内容</summary>
+                    <div class="vcp-stable-raw">${escapeHtml(text)}</div>
+                </details>
+            </div>
+        `;
+    }
+
+    function parseDiary(text) {
+        const clean = text
+            .replace(/```+\s*DailyNote/gi, '')
+            .replace(/<<<DailyNoteStart>>>/g, '')
+            .replace(/<<<DailyNoteEnd>>>/g, '')
+            .replace(/^>+\s*/gm, '')
+            .trim();
+        const data = { maid: '', date: '', content: '', tag: '' };
+        let currentKey = '';
+        clean.split('\n').forEach(line => {
+            const trimmed = line.trimEnd();
+            if (/^Maid\s*:/i.test(trimmed)) {
+                currentKey = 'maid';
+                data.maid = trimmed.replace(/^Maid\s*:\s*/i, '').trim();
+            } else if (/^Date\s*:/i.test(trimmed)) {
+                currentKey = 'date';
+                data.date = trimmed.replace(/^Date\s*:\s*/i, '').trim();
+            } else if (/^Content\s*:/i.test(trimmed)) {
+                currentKey = 'content';
+                data.content = trimmed.replace(/^Content\s*:\s*/i, '').trim();
+            } else if (/^Tag\s*:/i.test(trimmed)) {
+                currentKey = 'tag';
+                data.tag = trimmed.replace(/^Tag\s*:\s*/i, '').trim();
+            } else if (currentKey) {
+                data[currentKey] += '\n' + trimmed;
+            }
+        });
+        return data;
+    }
+
+    function renderStableDiary(preElement, codeElement, text) {
+        const data = parseDiary(text);
+        if (!data.maid && !data.content) return;
+
+        preElement.classList.remove('vcp-tool-use-bubble');
+        preElement.classList.add('maid-diary-bubble');
+        preElement.dataset.maidDiaryPrettified = 'true';
+        delete preElement.dataset.vcpPrettified;
+
+        const notebookMatch = data.maid.match(/^\[(.*?)\](.*)$/);
+        const notebookName = notebookMatch ? notebookMatch[1] : (data.maid || '日记');
+        const writer = notebookMatch ? notebookMatch[2].trim() : data.maid;
+        const title = notebookName.endsWith('日记本') ? notebookName : `${notebookName}日记本`;
+        const summary = [
+            writer ? `署名：${writer}` : '',
+            data.date ? `日期：${data.date}` : '',
+            data.tag ? `Tag：${data.tag}` : ''
+        ].filter(Boolean).join('　');
+
+        codeElement.innerHTML = `
+            <div class="vcp-stable-card">
+                <div class="vcp-stable-header">
+                    <span class="maid-label">${escapeHtml(title)}</span>
+                </div>
+                <div class="vcp-stable-subtitle">${escapeHtml(summary || '日记写入已捕获。')}</div>
+                <details class="vcp-stable-details">
+                    <summary>展开日记内容</summary>
+                    <div class="vcp-stable-raw">${escapeHtml(data.content || text)}</div>
+                </details>
+            </div>
+        `;
     }
 
     function observeChatForBlocks() {

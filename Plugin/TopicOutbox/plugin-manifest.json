@@ -1,0 +1,47 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TopicOutbox",
+  "displayName": "话题写操作外盒",
+  "version": "1.0.0",
+  "description": "为所有 Agent 提供可靠的 VChat 话题写操作外盒。支持离线保存创建新话题和向指定话题追加回复，等待 VCPChat 分布式侧 TopicSponsor 上线后自动投递。TopicOutbox 不负责读取话题、检查未读或判断归属。",
+  "author": "VCP",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "TopicOutbox.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "requiresPluginManager": true,
+  "configSchema": {
+    "TOPIC_OUTBOX_STORE_PATH": "string",
+    "TOPIC_OUTBOX_MAX_PENDING": "integer",
+    "TOPIC_OUTBOX_MAX_MESSAGE_CHARS": "integer",
+    "TOPIC_OUTBOX_DEFAULT_TTL_DAYS": "integer",
+    "TOPIC_OUTBOX_ALLOWED_TARGET_AGENTS": "string",
+    "TOPIC_OUTBOX_ENABLE_IMMEDIATE_DELIVERY": "boolean",
+    "TOPIC_OUTBOX_DELIVERY_LOCK_SECONDS": "integer",
+    "TOPIC_OUTBOX_MAX_DELIVERY_ATTEMPTS": "integer",
+    "TOPIC_OUTBOX_DRAIN_BATCH_SIZE": "integer"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "CreateTopicRequest",
+        "description": "保存一个待投递的新话题创建请求。即使 VCPChat / TopicSponsor 当前离线，也会写入 TopicOutbox 队列；TopicSponsor 上线注册后自动投递到 VChat。重复提交相同 topicRequestId 且内容一致会返回已有记录，不会重复创建。\n参数:\n- command: 固定为 CreateTopicRequest。\n- topicRequestId: 必需，唯一幂等 ID，例如 memo-dream-20260501-001。\n- maid: 必需，目标 Agent 名称，例如 记忆大师。\n- topic_name: 必需，话题标题。\n- initial_message: 必需，话题初始内容。可包含 HTML button，按钮文本或 data-send 必须很短，例如 批准 memo-dream-20260501-001。\n- priority: 可选，low / normal / high，默认 normal。\n- expires_at: 可选，ISO 时间，过期后不再投递。\n- metadata: 可选，JSON 对象或 JSON 字符串，用于保存来源和审批 ID。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TopicOutbox「末」,\ncommand:「始」CreateTopicRequest「末」,\ntopicRequestId:「始」memo-dream-20260501-001「末」,\nmaid:「始」记忆大师「末」,\ntopic_name:「始」待审批：梦系统整理线索 #001「末」,\ninitial_message:「始」这里是审批摘要。\\n\\n<button data-send=\\\"批准 memo-dream-20260501-001\\\">批准</button> <button data-send=\\\"拒绝 memo-dream-20260501-001\\\">拒绝</button>「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "ReplyToTopicRequest",
+        "description": "保存一个待投递的指定话题回复请求。用于向已知 VChat 话题追加状态更新，离线时不会丢失；TopicSponsor 上线后自动投递。\n参数:\n- command: 固定为 ReplyToTopicRequest。\n- topicRequestId: 必需，唯一幂等 ID，例如 memo-dream-20260501-001-reply-001。\n- maid: 必需，目标 Agent 名称，例如 记忆大师。\n- topic_id: 必需，目标 VChat 话题 ID。\n- message: 必需，要追加到话题里的回复内容。\n- sender_name: 必需，显示的发送者名称。\n- priority: 可选，low / normal / high，默认 normal。\n- expires_at: 可选，ISO 时间，过期后不再投递。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TopicOutbox「末」,\ncommand:「始」ReplyToTopicRequest「末」,\ntopicRequestId:「始」memo-dream-20260501-001-reply-001「末」,\nmaid:「始」记忆大师「末」,\ntopic_id:「始」topic_1714550400000「末」,\nmessage:「始」审批状态已更新：等待主人确认。「末」,\nsender_name:「始」记忆大师「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "ListTopicRequests",
+        "description": "查询 TopicOutbox 自身保存的队列与审计记录，不查询 VChat 当前话题状态。\n参数:\n- command: 固定为 ListTopicRequests。\n- status: 可选，pending / delivering / delivered / failed / cancelled / expired。\n- maid: 可选，按目标 Agent 名称过滤。\n- limit: 可选，返回数量，默认 50。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TopicOutbox「末」,\ncommand:「始」ListTopicRequests「末」,\nstatus:「始」pending「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "CancelTopicRequest",
+        "description": "取消尚未成功投递的 TopicOutbox 写操作。已 delivered 的请求不能取消。\n参数:\n- command: 固定为 CancelTopicRequest。\n- topicRequestId: 必需，要取消的请求 ID。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」TopicOutbox「末」,\ncommand:「始」CancelTopicRequest「末」,\ntopicRequestId:「始」memo-dream-20260501-001「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

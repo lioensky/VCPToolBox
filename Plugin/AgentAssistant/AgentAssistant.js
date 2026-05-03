@@ -41,6 +41,18 @@ function normalizeAgentModelId(modelId) {
     return legacyMap[trimmed] || trimmed;
 }
 
+function getStandardRequestTimeoutMs() {
+    return parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT, 10) || 118000;
+}
+
+function getDelegationRequestTimeoutMs() {
+    const configured = parseInt(process.env.AGENT_ASSISTANT_DELEGATION_REQUEST_TIMEOUT, 10);
+    const standard = getStandardRequestTimeoutMs();
+    return Number.isFinite(configured) && configured > 0
+        ? Math.max(configured, standard)
+        : Math.max(standard, 240000);
+}
+
 // --- Core Module Functions ---
 
 /**
@@ -728,7 +740,7 @@ async function processToolCall(args) {
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
             headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
-            timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+            timeout: getStandardRequestTimeoutMs()
         });
 
         const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
@@ -871,7 +883,7 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
 
             const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
                 headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
-                timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+                timeout: getDelegationRequestTimeoutMs()
             });
 
             const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
@@ -942,7 +954,14 @@ async function executeDelegation(delegationId, agentConfig, taskPrompt, senderNa
         if (!finalReport && completionStatus === 'Failed') {
             finalReport = `达到最大轮数限制 (${DELEGATION_MAX_ROUNDS} 轮)，任务尚未自动上报完成。`;
         }
-
+    } catch (error) {
+        completionStatus = 'Failed';
+        finalReport = error instanceof Error
+            ? `任务执行过程中发生异常: ${error.message}`
+            : `任务执行过程中发生异常: ${String(error)}`;
+        if (DEBUG_MODE) {
+            console.error(`[AgentAssistant Delegation] Delegation ${delegationId} failed inside loop:`, error);
+        }
     } finally {
         activeSessionLocks.delete(lockKey);
         activeDelegations.delete(delegationId);

@@ -408,10 +408,16 @@ app.use('/admin_api', (req, res, next) => {
         headers: { ...req.headers },
         timeout: 30000,
     };
+    const shouldForwardBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const bodyData = shouldForwardBody ? JSON.stringify(req.body ?? {}) : null;
 
     // 移除可能干扰的 headers
     delete proxyOptions.headers['host'];
     delete proxyOptions.headers['content-length'];
+    if (bodyData !== null) {
+        proxyOptions.headers['content-type'] = 'application/json';
+        proxyOptions.headers['content-length'] = Buffer.byteLength(bodyData);
+    }
 
     const proxyReq = http.request(proxyUrl, proxyOptions, (proxyRes) => {
         res.status(proxyRes.statusCode);
@@ -446,10 +452,7 @@ app.use('/admin_api', (req, res, next) => {
     });
 
     // 转发请求体
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
-        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+    if (bodyData !== null) {
         proxyReq.write(bodyData);
     }
 

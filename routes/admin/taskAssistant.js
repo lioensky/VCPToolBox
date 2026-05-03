@@ -51,6 +51,31 @@ module.exports = function (options) {
         }
     });
 
+    router.get('/task-assistant/runs', (req, res) => {
+        try {
+            const mod = ensureModule(res);
+            if (!mod) return;
+            res.json(mod.listRuns({
+                taskId: req.query.taskId,
+                limit: req.query.limit
+            }));
+        } catch (e) {
+            console.error('[TaskAssistant Route] listRuns error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    router.get('/task-assistant/runs/:runId', async (req, res) => {
+        try {
+            const mod = ensureModule(res);
+            if (!mod) return;
+            res.json(await mod.getRunDetail(req.params.runId));
+        } catch (e) {
+            console.error('[TaskAssistant Route] getRunDetail error:', e);
+            res.status(404).json({ error: e.message });
+        }
+    });
+
     router.post('/task-assistant/trigger', async (req, res) => {
         try {
             const mod = ensureModule(res);
