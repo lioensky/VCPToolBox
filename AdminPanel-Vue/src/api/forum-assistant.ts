@@ -139,6 +139,14 @@ export interface ForumAssistantRunDetail {
     text?: string;
     rawBody?: string;
   }>;
+  delegationPolls?: Array<{
+    agentName?: string;
+    delegationId?: string;
+    state?: string;
+    checkedAt?: string;
+    text?: string;
+  }>;
+  delegationFinalText?: string | null;
   taskEcho?: {
     found?: boolean;
     status?: string | null;

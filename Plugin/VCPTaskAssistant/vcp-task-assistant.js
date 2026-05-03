@@ -87,6 +87,7 @@ let DEBUG_MODE = false;
 
 let taskCenterData = createDefaultData();
 let activeTimers = new Map();
+let deferredTimers = new Map();
 let forumEngine = null;
 
 function createDefaultData() {
@@ -94,7 +95,12 @@ function createDefaultData() {
         version: 2,
         globalEnabled: false,
         settings: {
-            maxHistory: MAX_HISTORY
+            maxHistory: MAX_HISTORY,
+            dreamQuietWindow: {
+                enabled: true,
+                startHour: 1,
+                endHour: 8
+            }
         },
         taskIndex: [],
         tasks: [],
@@ -106,6 +112,59 @@ function logDebug(message) {
     if (DEBUG_MODE) {
         console.log(`[TaskAssistant] ${message}`);
     }
+}
+
+function normalizeDreamQuietWindow(input = {}) {
+    const parsedStartHour = parseInt(input.startHour, 10);
+    const parsedEndHour = parseInt(input.endHour, 10);
+    return {
+        enabled: input.enabled !== false,
+        startHour: Math.min(Math.max(Number.isFinite(parsedStartHour) ? parsedStartHour : 1, 0), 23),
+        endHour: Math.min(Math.max(Number.isFinite(parsedEndHour) ? parsedEndHour : 8, 0), 23)
+    };
+}
+
+function getDreamQuietWindow() {
+    return normalizeDreamQuietWindow(taskCenterData?.settings?.dreamQuietWindow || {});
+}
+
+function isInDreamQuietWindow(date = new Date(), windowConfig = getDreamQuietWindow()) {
+    if (!windowConfig.enabled) return false;
+
+    const hour = date.getHours();
+    const startHour = windowConfig.startHour;
+    const endHour = windowConfig.endHour;
+
+    if (startHour === endHour) return true;
+    if (startHour < endHour) {
+        return hour >= startHour && hour < endHour;
+    }
+    return hour >= startHour || hour < endHour;
+}
+
+function getDreamQuietWindowEnd(date = new Date(), windowConfig = getDreamQuietWindow()) {
+    const end = new Date(date);
+    end.setHours(windowConfig.endHour, 0, 0, 0);
+    if (windowConfig.startHour >= windowConfig.endHour && date.getHours() >= windowConfig.startHour) {
+        end.setDate(end.getDate() + 1);
+    }
+    if (end <= date) {
+        end.setDate(end.getDate() + 1);
+    }
+    return end;
+}
+
+function shouldDeferForDreamWindow(triggerSource, date = new Date()) {
+    if (triggerSource === 'manual-trigger') return false;
+    return isInDreamQuietWindow(date);
+}
+
+function isAutomaticTrigger(triggerSource) {
+    return triggerSource !== 'manual-trigger';
+}
+
+function alignRunTimeAfterDreamWindow(date = new Date()) {
+    return isInDreamQuietWindow(date) ? getDreamQuietWindowEnd(date) : date;
 }
 
 /**
@@ -165,12 +224,16 @@ async function listJsonFiles(dirPath) {
 function ensureDataShape(input) {
     const data = input && typeof input === 'object' ? input : {};
     const settings = data.settings && typeof data.settings === 'object' ? data.settings : {};
+    const dreamQuietWindow = settings.dreamQuietWindow && typeof settings.dreamQuietWindow === 'object'
+        ? settings.dreamQuietWindow
+        : {};
     const tasks = Array.isArray(data.tasks) ? data.tasks.map(normalizeTask).filter(Boolean) : [];
     return {
         version: 2,
         globalEnabled: !!data.globalEnabled,
         settings: {
-            maxHistory: Math.max(parseInt(settings.maxHistory, 10) || MAX_HISTORY, 20)
+            maxHistory: Math.max(parseInt(settings.maxHistory, 10) || MAX_HISTORY, 20),
+            dreamQuietWindow: normalizeDreamQuietWindow(dreamQuietWindow)
         },
         taskIndex: Array.isArray(data.taskIndex)
             ? data.taskIndex.filter(item => item && typeof item === 'object')
@@ -311,9 +374,20 @@ function normalizeForumPayload(input = {}) {
 
 function normalizeCustomPayload(input = {}) {
     return {
-        promptTemplate: String(input.promptTemplate || ''),
+        promptTemplate: normalizePromptText(input.promptTemplate || ''),
         availablePlaceholders: Array.isArray(input.availablePlaceholders) ? input.availablePlaceholders : []
     };
+}
+
+function normalizePromptText(value) {
+    const text = String(value || '');
+    const escapedNewlines = (text.match(/\\n/g) || []).length;
+    const realNewlines = (text.match(/\n/g) || []).length;
+    if (escapedNewlines <= realNewlines) return text;
+    return text
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t');
 }
 
 function normalizeAcceptanceRules(input = []) {
@@ -735,7 +809,7 @@ async function queryDelegationStatus(delegationId, maid = 'VCP任务派发中心
 
 async function buildTaskPrompt(task) {
     if (task.type === 'custom_prompt') {
-        return String(task.payload.promptTemplate || '');
+        return normalizePromptText(task.payload.promptTemplate || '');
     }
 
     const forumList = task.payload.includeForumPostList && forumEngine
@@ -850,8 +924,18 @@ function extractDelegationFinalText(text) {
 
 function parseTaskEcho(text) {
     const source = String(text || '');
-    const startIndex = source.indexOf('【任务回声】');
-    if (startIndex === -1) {
+    const startMarker = '【任务回声】';
+    const endMarker = '【任务回声结束】';
+    const startIndexes = [];
+    let searchIndex = 0;
+    while (true) {
+        const index = source.indexOf(startMarker, searchIndex);
+        if (index === -1) break;
+        startIndexes.push(index);
+        searchIndex = index + startMarker.length;
+    }
+
+    if (startIndexes.length === 0) {
         const compatible = parseDelegationEchoAsTaskEcho(source);
         if (compatible) return compatible;
         return {
@@ -862,15 +946,40 @@ function parseTaskEcho(text) {
         };
     }
 
-    const endIndex = source.indexOf('【任务回声结束】', startIndex);
-    const body = endIndex === -1
-        ? source.slice(startIndex + '【任务回声】'.length)
-        : source.slice(startIndex + '【任务回声】'.length, endIndex);
-    const raw = endIndex === -1
-        ? source.slice(startIndex).trim()
-        : source.slice(startIndex, endIndex + '【任务回声结束】'.length).trim();
-    const statusMatch = body.match(/状态\s*[:：]\s*([^\n\r]+)/);
-    const statusText = statusMatch ? statusMatch[1].trim() : '未声明';
+    const candidates = startIndexes.map((startIndex, candidateIndex) => {
+        const nextStartIndex = startIndexes[candidateIndex + 1] ?? -1;
+        const endIndex = source.indexOf(endMarker, startIndex);
+        const hasEnd = endIndex !== -1 && (nextStartIndex === -1 || endIndex < nextStartIndex);
+        const blockEnd = hasEnd
+            ? endIndex + endMarker.length
+            : (nextStartIndex === -1 ? source.length : nextStartIndex);
+        const bodyEnd = hasEnd ? endIndex : blockEnd;
+        const body = source.slice(startIndex + startMarker.length, bodyEnd);
+        const raw = source.slice(startIndex, blockEnd).trim();
+        const parsed = parseTaskEchoStatus(body);
+        return {
+            body,
+            raw,
+            ...parsed
+        };
+    });
+
+    const selected = [...candidates].reverse().find(candidate => candidate.status !== 'unknown')
+        || candidates[candidates.length - 1];
+
+    return {
+        found: true,
+        status: selected.status,
+        statusText: selected.statusText,
+        raw: selected.raw
+    };
+}
+
+function parseTaskEchoStatus(body) {
+    const statusMatch = String(body || '').match(/(?:^|[\n\r])\s*(?:\*\*)?状态(?:\*\*)?\s*[:：]\s*([^\n\r]+)/);
+    const statusText = statusMatch
+        ? statusMatch[1].replace(/\*\*/g, '').trim()
+        : '未声明';
     let status = 'unknown';
     if (statusText.includes('已完成')) status = 'completed';
     else if (statusText.includes('未完成')) status = 'failed';
@@ -878,18 +987,20 @@ function parseTaskEcho(text) {
     else if (statusText.includes('确认')) status = 'needs_confirmation';
 
     return {
-        found: true,
         status,
-        statusText,
-        raw
+        statusText
     };
 }
 
 function parseDelegationEchoAsTaskEcho(source) {
     if (!/【[^】]+委托回声】/.test(source)) return null;
-    const completed = /已完成|全部任务项已完成|最终结果[:：]?.*完整履行|任务完成报告|TaskComplete/i.test(source);
-    const waiting = /继续等待|仍在进行|等待/.test(source);
     const failed = /失败|无法完成|TaskFailed/i.test(source);
+    const waiting = !failed && /继续等待|仍在进行|等待/.test(source);
+    const completed = !failed && !waiting && (
+        /已完成|全部任务项已完成|最终结果[:：]?.*完整履行|任务完成报告|TaskComplete/i.test(source)
+        || /(?:巡检|任务|委托|处理|写入|落盘|登记|同步|更新).{0,20}完成/.test(source)
+        || /已(?:登记|落盘|写入|同步|更新|处理)/.test(source)
+    );
     let status = 'unknown';
     let statusText = '委托回声未声明';
     if (completed) {
@@ -1121,7 +1232,7 @@ async function evaluateAcceptanceRule(rule, context) {
 }
 
 function inferDiaryAnchors(task) {
-    const prompt = String(task?.payload?.promptTemplate || '');
+    const prompt = normalizePromptText(task?.payload?.promptTemplate || '');
     const anchors = [];
     const seen = new Set();
     const fileNameSuffix = inferFileNameSuffix(prompt);
@@ -1130,7 +1241,7 @@ function inferDiaryAnchors(task) {
         const name = String(diaryName || '').trim();
         if (!name) return;
         const normalizedName = name.replace(/^\[|\]$/g, '').trim();
-        if (!normalizedName) return;
+        if (!isLikelyDiaryAnchorName(normalizedName)) return;
         const key = `${normalizedName}::${fileNameContains}`;
         if (seen.has(key)) return;
         seen.add(key);
@@ -1153,6 +1264,15 @@ function inferDiaryAnchors(task) {
     }
 
     return anchors;
+}
+
+function isLikelyDiaryAnchorName(name) {
+    const value = String(name || '').trim();
+    if (!value || value.length > 40) return false;
+    if (/^(HH:MM|TaskComplete|TaskFailed|NextHeartbeat|TOOL_REQUEST|END_TOOL_REQUEST|VCP_ASYNC_RESULT)$/i.test(value)) return false;
+    if (/^[A-Z0-9_:-]+$/i.test(value)) return false;
+    if (/[{}<>]/.test(value)) return false;
+    return /[\u4e00-\u9fff]/.test(value);
 }
 
 function inferFileNameSuffix(prompt) {
@@ -1484,7 +1604,7 @@ function resumePendingDelegationRuns() {
 }
 
 async function executeTask(taskId, triggerSource = 'scheduler') {
-    if (!taskCenterData.globalEnabled && triggerSource === 'scheduler') {
+    if (!taskCenterData.globalEnabled && isAutomaticTrigger(triggerSource)) {
         return { skipped: true, reason: 'global-disabled' };
     }
 
@@ -1493,7 +1613,7 @@ async function executeTask(taskId, triggerSource = 'scheduler') {
         throw new Error(`任务不存在: ${taskId}`);
     }
 
-    if (!task.enabled && triggerSource === 'scheduler') {
+    if (!task.enabled && isAutomaticTrigger(triggerSource)) {
         return { skipped: true, reason: 'task-disabled' };
     }
 
@@ -1836,6 +1956,16 @@ function clearTaskTimer(taskId) {
         }
         activeTimers.delete(taskId);
     }
+
+    const deferredTimer = deferredTimers.get(taskId);
+    if (deferredTimer) {
+        if (typeof deferredTimer.cancel === 'function') {
+            deferredTimer.cancel();
+        } else {
+            clearTimeout(deferredTimer);
+        }
+        deferredTimers.delete(taskId);
+    }
 }
 
 function stopAllTimers() {
@@ -1849,6 +1979,16 @@ function stopAllTimers() {
         }
     }
     activeTimers.clear();
+
+    for (const taskId of deferredTimers.keys()) {
+        const timer = deferredTimers.get(taskId);
+        if (timer && typeof timer.cancel === 'function') {
+            timer.cancel();
+        } else {
+            clearTimeout(timer);
+        }
+    }
+    deferredTimers.clear();
 }
 
 function computeNextRunTime(task) {
@@ -1867,7 +2007,38 @@ function computeNextRunTime(task) {
     return new Date(Date.now() + intervalMs).toISOString();
 }
 
+async function deferTaskForDreamWindow(task, triggerSource, executeAfterQuiet) {
+    const deferUntil = getDreamQuietWindowEnd(new Date());
+    const existing = deferredTimers.get(task.id);
+
+    task.runtime.running = false;
+    task.runtime.status = 'deferred_by_dream_window';
+    task.runtime.statusText = '梦时静默，顺延至 08:00';
+    task.runtime.lastResult = `自动任务进入梦系统时间，已顺延：${triggerSource}`;
+    task.runtime.nextRunTime = deferUntil.toISOString();
+    task.meta.updatedAt = new Date().toISOString();
+
+    if (!existing) {
+        const job = schedule.scheduleJob(deferUntil, async () => {
+            deferredTimers.delete(task.id);
+            const latestTask = taskCenterData.tasks.find(item => item.id === task.id);
+            if (!latestTask || !latestTask.enabled) return;
+            try {
+                await executeAfterQuiet(latestTask);
+            } catch (e) {
+                console.error(`[TaskAssistant] dream-window deferred run failed (${task.id}):`, e.message);
+            }
+        });
+        deferredTimers.set(task.id, job);
+    }
+
+    await saveData();
+    broadcastStatusUpdate();
+    return { skipped: true, reason: 'dream-quiet-window', deferredUntil: deferUntil.toISOString() };
+}
+
 function scheduleTask(task) {
+    if (!taskCenterData.globalEnabled) return;
     if (!task.enabled) return;
 
     clearTaskTimer(task.id);
@@ -1883,21 +2054,32 @@ function scheduleTask(task) {
         if (mode === 'once') {
             const runAt = new Date(task.schedule.runAt);
             if (!isNaN(runAt.getTime()) && runAt > new Date()) {
-                job = schedule.scheduleJob(runAt, async () => {
+                const scheduledAt = alignRunTimeAfterDreamWindow(runAt);
+                const runOnceAndDisable = async latestTask => {
                     try {
-                        await executeTask(task.id, 'once-scheduler');
+                        await executeTask(latestTask.id, 'once-scheduler');
                     } catch (e) {
-                        console.error(`[TaskAssistant] once-scheduler 执行失败 (${task.id}):`, e.message);
+                        console.error(`[TaskAssistant] once-scheduler 执行失败 (${latestTask.id}):`, e.message);
                     }
-                    // 一次性任务执行后禁用
-                    const t = taskCenterData.tasks.find(i => i.id === task.id);
+                    const t = taskCenterData.tasks.find(i => i.id === latestTask.id);
                     if (t) {
                         t.enabled = false;
                         await saveData();
                         broadcastStatusUpdate();
                     }
+                };
+
+                job = schedule.scheduleJob(scheduledAt, async () => {
+                    activeTimers.delete(task.id);
+                    const latestTask = taskCenterData.tasks.find(i => i.id === task.id);
+                    if (!latestTask || !latestTask.enabled) return;
+                    if (shouldDeferForDreamWindow('once-scheduler')) {
+                        await deferTaskForDreamWindow(latestTask, 'once-scheduler', runOnceAndDisable);
+                        return;
+                    }
+                    await runOnceAndDisable(latestTask);
                 });
-                task.runtime.nextRunTime = runAt.toISOString();
+                task.runtime.nextRunTime = scheduledAt.toISOString();
             } else {
                 task.runtime.nextRunTime = '时间无效或已过';
             }
@@ -1905,40 +2087,84 @@ function scheduleTask(task) {
             const intervalMinutes = Math.max(task.schedule.intervalMinutes || 60, MIN_INTERVAL_MINUTES);
             const intervalMs = intervalMinutes * 60 * 1000;
 
-            const nextTime = new Date(Date.now() + intervalMs);
-            job = schedule.scheduleJob(nextTime, async function runAndReschedule() {
-                try {
-                    await executeTask(task.id, 'interval-scheduler');
-                } catch (e) {
-                    console.error(`[TaskAssistant] interval-scheduler 执行失败 (${task.id}):`, e.message);
-                }
-                // 无论任务成功与否，都继续调度下一轮
-                const againTime = new Date(Date.now() + intervalMs);
-                const nextJob = schedule.scheduleJob(againTime, runAndReschedule);
-                activeTimers.set(task.id, nextJob);
-                task.runtime.nextRunTime = againTime.toISOString();
-                broadcastStatusUpdate();
-            });
-            task.runtime.nextRunTime = nextTime.toISOString();
+            const scheduleIntervalRun = (runAt) => {
+                const scheduledAt = alignRunTimeAfterDreamWindow(runAt);
+                const intervalJob = schedule.scheduleJob(scheduledAt, async () => {
+                    activeTimers.delete(task.id);
+                    const latestTask = taskCenterData.tasks.find(i => i.id === task.id);
+                    if (!latestTask || !latestTask.enabled) return;
+
+                    const executeAndReschedule = async taskToRun => {
+                        try {
+                            await executeTask(taskToRun.id, 'interval-scheduler');
+                        } catch (e) {
+                            console.error(`[TaskAssistant] interval-scheduler 执行失败 (${taskToRun.id}):`, e.message);
+                        }
+                        const againTime = alignRunTimeAfterDreamWindow(new Date(Date.now() + intervalMs));
+                        scheduleIntervalRun(againTime);
+                        taskToRun.runtime.nextRunTime = againTime.toISOString();
+                        await saveData();
+                        broadcastStatusUpdate();
+                    };
+
+                    if (shouldDeferForDreamWindow('interval-scheduler')) {
+                        await deferTaskForDreamWindow(latestTask, 'interval-scheduler', executeAndReschedule);
+                        return;
+                    }
+                    await executeAndReschedule(latestTask);
+                });
+                activeTimers.set(task.id, intervalJob);
+                task.runtime.nextRunTime = scheduledAt.toISOString();
+                return intervalJob;
+            };
+
+            job = scheduleIntervalRun(new Date(Date.now() + intervalMs));
         } else if (mode === 'cron') {
             const cronValue = task.schedule.cronValue;
             if (cronValue) {
                 job = schedule.scheduleJob(cronValue, async () => {
-                    try {
-                        await executeTask(task.id, 'cron-scheduler');
-                    } catch (e) {
-                        console.error(`[TaskAssistant] cron-scheduler 执行失败 (${task.id}):`, e.message);
+                    const latestTask = taskCenterData.tasks.find(i => i.id === task.id);
+                    if (!latestTask || !latestTask.enabled) return;
+
+                    if (shouldDeferForDreamWindow('cron-scheduler')) {
+                        await deferTaskForDreamWindow(latestTask, 'cron-scheduler', async taskToRun => {
+                            try {
+                                await executeTask(taskToRun.id, 'cron-scheduler');
+                            } catch (e) {
+                                console.error(`[TaskAssistant] cron-scheduler 执行失败 (${taskToRun.id}):`, e.message);
+                            }
+                            const nextInvocation = job.nextInvocation();
+                            taskToRun.runtime.nextRunTime = nextInvocation
+                                ? alignRunTimeAfterDreamWindow(nextInvocation).toISOString()
+                                : null;
+                            await saveData();
+                            broadcastStatusUpdate();
+                        });
+                        return;
                     }
-                    task.runtime.nextRunTime = job.nextInvocation()?.toISOString() || null;
+
+                    try {
+                        await executeTask(latestTask.id, 'cron-scheduler');
+                    } catch (e) {
+                        console.error(`[TaskAssistant] cron-scheduler 执行失败 (${latestTask.id}):`, e.message);
+                    }
+                    const nextInvocation = job.nextInvocation();
+                    latestTask.runtime.nextRunTime = nextInvocation
+                        ? alignRunTimeAfterDreamWindow(nextInvocation).toISOString()
+                        : null;
+                    await saveData();
                     broadcastStatusUpdate();
                 });
-                task.runtime.nextRunTime = job.nextInvocation()?.toISOString() || null;
+                const nextInvocation = job.nextInvocation();
+                task.runtime.nextRunTime = nextInvocation
+                    ? alignRunTimeAfterDreamWindow(nextInvocation).toISOString()
+                    : null;
             } else {
                 task.runtime.nextRunTime = '缺少 CRON 表达式';
             }
         }
 
-        if (job) {
+        if (job && mode !== 'interval') {
             activeTimers.set(task.id, job);
         }
     } catch (err) {
@@ -2043,8 +2269,11 @@ function getConfig() {
 function getStatus() {
     return {
         globalEnabled: taskCenterData.globalEnabled,
+        settings: taskCenterData.settings,
         activeTimerCount: activeTimers.size,
         activeTimers: Array.from(activeTimers.keys()),
+        deferredTimerCount: deferredTimers.size,
+        deferredTimers: Array.from(deferredTimers.keys()),
         tasks: taskCenterData.tasks.map(task => ({
             id: task.id,
             name: task.name,
@@ -2070,7 +2299,10 @@ function listRuns({ taskId, limit = 20 } = {}) {
 async function updateConfig(newConfig) {
     const globalEnabled = !!newConfig.globalEnabled;
     const settings = newConfig.settings && typeof newConfig.settings === 'object'
-        ? { maxHistory: Math.max(parseInt(newConfig.settings.maxHistory, 10) || MAX_HISTORY, 20) }
+        ? {
+            maxHistory: Math.max(parseInt(newConfig.settings.maxHistory, 10) || MAX_HISTORY, 20),
+            dreamQuietWindow: normalizeDreamQuietWindow(newConfig.settings.dreamQuietWindow || taskCenterData.settings.dreamQuietWindow)
+        }
         : taskCenterData.settings;
 
     const existingTaskMap = new Map(taskCenterData.tasks.map(task => [task.id, task]));
@@ -2236,5 +2468,14 @@ module.exports = {
     getRunDetail,
     validateTaskDraft,
     previewTaskFromDraft,
-    createTaskFromDraft
+    createTaskFromDraft,
+    _testHooks: {
+        normalizePromptText,
+        parseTaskEcho,
+        inferDiaryAnchors,
+        normalizeDreamQuietWindow,
+        isInDreamQuietWindow,
+        getDreamQuietWindowEnd,
+        alignRunTimeAfterDreamWindow
+    }
 };

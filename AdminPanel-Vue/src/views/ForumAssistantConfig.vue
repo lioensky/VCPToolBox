@@ -489,6 +489,35 @@
                   <pre>{{ getHistoryDetail(item)?.taskEcho?.raw || "未收到可解析的任务回声。" }}</pre>
                 </section>
 
+                <section
+                  v-if="getAgentEchoes(getHistoryDetail(item)).length"
+                  class="history-detail-block"
+                >
+                  <h4>Agent 回响</h4>
+                  <div class="history-agent-echo-list">
+                    <article
+                      v-for="agentEcho in getAgentEchoes(getHistoryDetail(item))"
+                      :key="`${item.id}-${agentEcho.agentName}-${agentEcho.delegationId || agentEcho.state}`"
+                      class="history-agent-echo"
+                    >
+                      <header class="history-agent-echo-head">
+                        <strong>{{ agentEcho.agentName || "未知 Agent" }}</strong>
+                        <span
+                          class="status-badge"
+                          :class="resolveAgentEchoStatusClass(agentEcho)"
+                        >
+                          {{ formatAgentEchoState(agentEcho) }}
+                        </span>
+                      </header>
+                      <div class="history-agent-echo-meta">
+                        <span v-if="agentEcho.delegationId">委托 ID：{{ agentEcho.delegationId }}</span>
+                        <span v-if="agentEcho.checkedAt">检查时间：{{ formatDateTime(agentEcho.checkedAt) }}</span>
+                      </div>
+                      <pre>{{ agentEcho.text || "暂无可展示的回响文本。" }}</pre>
+                    </article>
+                  </div>
+                </section>
+
                 <section class="history-detail-block">
                   <h4>主动性回响</h4>
                   <div
@@ -587,6 +616,14 @@ interface ForumAssistantTaskDraft {
   runtime: ForumAssistantTaskRuntime | null;
 }
 
+interface AgentEchoDetail {
+  agentName: string;
+  delegationId?: string | null;
+  state?: string | null;
+  checkedAt?: string | null;
+  text?: string | null;
+}
+
 const DEFAULT_TASK_TYPES: ForumAssistantTaskTypeOption[] = [
   {
     type: "forum_patrol",
@@ -639,6 +676,71 @@ function isHistoryDetailLoading(item: ForumAssistantHistoryItem): boolean {
 
 function getHistoryDetail(item: ForumAssistantHistoryItem): ForumAssistantRunDetail | undefined {
   return historyRunDetails.value[getHistoryRunId(item)];
+}
+
+function getAgentEchoes(
+  detail: ForumAssistantRunDetail | undefined
+): AgentEchoDetail[] {
+  if (!detail || detail.legacy) {
+    return [];
+  }
+
+  if (Array.isArray(detail.delegationPolls) && detail.delegationPolls.length > 0) {
+    return detail.delegationPolls.map((item) => ({
+      agentName: item.agentName || "未知 Agent",
+      delegationId: item.delegationId || null,
+      state: item.state || null,
+      checkedAt: item.checkedAt || null,
+      text: item.text || null,
+    }));
+  }
+
+  if (Array.isArray(detail.dispatchResults) && detail.dispatchResults.length > 0) {
+    return detail.dispatchResults.map((item) => ({
+      agentName: item.agentName || "未知 Agent",
+      delegationId: item.delegationId || null,
+      state: item.pluginStatus || (item.httpStatus ? `HTTP ${item.httpStatus}` : null),
+      checkedAt: null,
+      text: item.text || null,
+    }));
+  }
+
+  return [];
+}
+
+function resolveAgentEchoStatusClass(agentEcho: AgentEchoDetail): string {
+  const state = String(agentEcho.state || "").toLowerCase();
+
+  if (state === "completed" || state === "success") {
+    return "status-enabled";
+  }
+
+  if (
+    state === "failed" ||
+    state === "error" ||
+    state === "timeout" ||
+    state.includes("failed") ||
+    state.includes("error")
+  ) {
+    return "status-disabled";
+  }
+
+  if (state === "submitted" || state === "running" || state === "pending") {
+    return "status-running";
+  }
+
+  return "status-neutral";
+}
+
+function formatAgentEchoState(agentEcho: AgentEchoDetail): string {
+  const state = String(agentEcho.state || "").toLowerCase();
+  if (state === "completed") return "已完成";
+  if (state === "success") return "派发成功";
+  if (state === "submitted") return "已提交";
+  if (state === "running" || state === "pending") return "进行中";
+  if (state === "failed" || state === "error") return "失败";
+  if (state === "timeout") return "超时";
+  return agentEcho.state || "未记录";
 }
 
 function resolveHistoryStatusClass(item: ForumAssistantHistoryItem): string {
@@ -1629,6 +1731,40 @@ onMounted(async () => {
   color: var(--primary-text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.history-agent-echo-list {
+  display: grid;
+  gap: 12px;
+}
+
+.history-agent-echo {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--card-bg) 88%, transparent);
+}
+
+.history-agent-echo-head,
+.history-agent-echo-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.history-agent-echo-head {
+  justify-content: space-between;
+}
+
+.history-agent-echo-meta {
+  margin: var(--space-2) 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.history-agent-echo pre {
+  max-height: 220px;
 }
 
 .acceptance-row {
