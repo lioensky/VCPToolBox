@@ -3,6 +3,7 @@
 import axios from 'axios';
 import fs from 'fs/promises';
 import path from 'path';
+import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 
 const API_KEY = process.env.SENSENOVA_API_KEY;
@@ -152,6 +153,22 @@ async function downloadImage(imageUrl) {
     };
 }
 
+async function compressToJpeg(imageBuffer) {
+    const compressedBuffer = await sharp(imageBuffer)
+        .flatten({ background: '#ffffff' })
+        .jpeg({
+            quality: 82,
+            mozjpeg: true
+        })
+        .toBuffer();
+
+    return {
+        imageBuffer: compressedBuffer,
+        mimeType: 'image/jpeg',
+        extension: 'jpg'
+    };
+}
+
 function getImageExtension(mimeType, imageUrl) {
     const extMap = {
         'image/png': 'png',
@@ -204,12 +221,13 @@ async function generateDocumentImage(rawArgs) {
 
     const apiResult = await requestImageGeneration(args);
     const downloaded = await downloadImage(apiResult.remoteImageUrl);
-    const imageExtension = getImageExtension(downloaded.mimeType, apiResult.remoteImageUrl);
-    const saved = await saveImageLocally(downloaded.imageBuffer, imageExtension);
+    const compressed = await compressToJpeg(downloaded.imageBuffer);
+    const imageExtension = compressed.extension;
+    const saved = await saveImageLocally(compressed.imageBuffer, imageExtension);
     const accessibleImageUrl = buildAccessibleImageUrl(saved.generatedFileName);
-    const base64Image = downloaded.imageBuffer.toString('base64');
+    const base64Image = compressed.imageBuffer.toString('base64');
 
-    const imageMimeType = `image/${imageExtension}`;
+    const imageMimeType = compressed.mimeType;
 
     const result = {
         content: [
