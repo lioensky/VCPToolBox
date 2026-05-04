@@ -69,6 +69,7 @@ function handleClientMessage(clientId, message) {
                 pendingCmd.resolve({
                     success: true,
                     message: pendingCmd.executionMessage,
+                    result: pendingCmd.commandResult,
                     page_info: markdown
                 });
                 pendingCommands.delete(requestId);
@@ -78,24 +79,23 @@ function handleClientMessage(clientId, message) {
 }
 
 // 执行单个命令的辅助函数（内部使用）
-async function executeSingleCommand(chromeWs, command, target, text, url, waitForPageInfo = false, isInCommandChain = false) {
-    const requestId = `cb-req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+async function executeSingleCommand(chromeWs, cmdParams, waitForPageInfo = false, isInCommandChain = false) {
+    const bridgeRequestId = `cb-req-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const { command } = cmdParams;
     
-    // 特殊处理：open_url 在命令链中时，总是需要等待页面加载完成
+    // 只有会导致页面导航/交互变化的命令才默认等待页面信息；CDP/查询/脚本执行类指令直接返回结构化结果
+    const pageChangingCommands = new Set(['open_url', 'click', 'type']);
     const needsPageLoad = (command === 'open_url' && isInCommandChain);
-    const actualWaitForPageInfo = waitForPageInfo || needsPageLoad;
+    const actualWaitForPageInfo = (waitForPageInfo && pageChangingCommands.has(command)) || needsPageLoad || cmdParams.wait_for_page_info === true;
     
-    console.log(`[ChromeBridge] 🚀 执行命令: ${command}, requestId: ${requestId}, 等待页面加载: ${actualWaitForPageInfo}`);
+    console.log(`[ChromeBridge] 🚀 执行命令: ${command}, requestId: ${bridgeRequestId}, 等待页面加载: ${actualWaitForPageInfo}`);
     
-    // 构建命令消息
+    // 构建命令消息，透传所有参数，但内部回调 requestId 必须最后写入，避免被 CDP 的网络 requestId 覆盖
     const commandMessage = {
         type: 'command',
         data: {
-            requestId,
-            command,
-            target,
-            text,
-            url,
+            ...cmdParams,
+            requestId: bridgeRequestId,
             wait_for_page_info: actualWaitForPageInfo
         }
     };
@@ -106,18 +106,19 @@ async function executeSingleCommand(chromeWs, command, target, text, url, waitFo
     // 创建Promise等待响应
     return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-            pendingCommands.delete(requestId);
+            pendingCommands.delete(bridgeRequestId);
             reject(new Error(`命令执行超时 (${command})`));
         }, 30000); // 30秒超时
         
         // 注册等待
-        pendingCommands.set(requestId, {
+        pendingCommands.set(bridgeRequestId, {
             resolve,
             reject,
             timeout,
             waitForPageInfo: actualWaitForPageInfo,
             commandExecuted: false,
-            executionMessage: null
+            executionMessage: null,
+            commandResult: null
         });
         
         // 监听命令执行结果
@@ -125,29 +126,31 @@ async function executeSingleCommand(chromeWs, command, target, text, url, waitFo
             try {
                 const msg = JSON.parse(message);
                 
-                if (msg.type === 'command_result' && msg.data?.requestId === requestId) {
-                    const pending = pendingCommands.get(requestId);
+                if (msg.type === 'command_result' && msg.data?.requestId === bridgeRequestId) {
+                    const pending = pendingCommands.get(bridgeRequestId);
                     if (!pending) return;
                     
                     if (msg.data.status === 'error') {
                         clearTimeout(pending.timeout);
-                        pendingCommands.delete(requestId);
+                        pendingCommands.delete(bridgeRequestId);
                         chromeWs.removeListener('message', messageListener);
                         reject(new Error(msg.data.error || '命令执行失败'));
                     } else if (!actualWaitForPageInfo) {
                         // 不需要等待页面信息，直接返回
                         clearTimeout(pending.timeout);
-                        pendingCommands.delete(requestId);
+                        pendingCommands.delete(bridgeRequestId);
                         chromeWs.removeListener('message', messageListener);
                         resolve({
                             success: true,
-                            message: msg.data.message || '命令执行成功'
+                            message: msg.data.message || '命令执行成功',
+                            result: msg.data.result // 透传执行结果（如 HTML, JS 返回值, 网络日志等）
                         });
                     } else {
                         // 命令执行成功，标记并等待页面信息
                         console.log(`[ChromeBridge] ✅ 命令执行成功，等待页面加载/刷新...`);
                         pending.commandExecuted = true;
                         pending.executionMessage = msg.data.message || '命令执行成功';
+                        pending.commandResult = msg.data.result;
                         // 不移除监听器，继续等待pageInfoUpdate
                     }
                 }
@@ -176,23 +179,32 @@ async function processToolCall(params) {
     
     // 检查是否有编号的命令（command1, command2, ...）
     while (params[`command${commandIndex}`]) {
-        commands.push({
+        const cmd = {
             command: params[`command${commandIndex}`],
             target: params[`target${commandIndex}`],
             text: params[`text${commandIndex}`],
-            url: params[`url${commandIndex}`]
-        });
+            url: params[`url${commandIndex}`],
+            urlIncludes: params[`urlIncludes${commandIndex}`],
+            cdpRequestId: params[`requestId${commandIndex}`] || params[`cdpRequestId${commandIndex}`]
+        };
+        // 移除未定义的参数
+        Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
+        commands.push(cmd);
         commandIndex++;
     }
     
     // 如果没有编号命令，检查单个命令
     if (commands.length === 0 && params.command) {
-        commands.push({
+        const cmd = {
             command: params.command,
             target: params.target,
             text: params.text,
-            url: params.url
-        });
+            url: params.url,
+            urlIncludes: params.urlIncludes,
+            cdpRequestId: params.requestId || params.cdpRequestId
+        };
+        Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
+        commands.push(cmd);
     }
     
     if (commands.length === 0) {
@@ -214,10 +226,7 @@ async function processToolCall(params) {
         // open_url 在命令链中时总是需要等待页面加载完成（通过 isInCommandChain 参数）
         const result = await executeSingleCommand(
             chromeWs,
-            cmd.command,
-            cmd.target,
-            cmd.text,
-            cmd.url,
+            cmd,
             isLastCommand,  // waitForPageInfo - 只有最后一个命令返回页面信息
             isCommandChain  // isInCommandChain - 命令链中的 open_url 需要等待页面加载
         );

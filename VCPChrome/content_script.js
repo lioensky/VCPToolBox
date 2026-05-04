@@ -537,53 +537,59 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // 保持消息通道开放
     } else if (request.type === 'EXECUTE_COMMAND') {
         const { command, target, text, requestId, sourceClientId } = request.data;
-        let result = {};
-
-        try {
-            let element = findElementWithLogging(target);
-
-            if (!element) {
-                throw new Error(`未能在页面上找到目标为 '${target}' 的元素。`);
-            }
-
-            if (command === 'type') {
-                if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-                    element.value = text;
-                    result = { status: 'success', message: `成功在ID为 '${target}' 的元素中输入文本。` };
+        
+        const handleCommand = async () => {
+            let result = {};
+            try {
+                if (command === 'query_html') {
+                    const element = target ? findElementWithLogging(target) : document.body;
+                    if (!element) throw new Error(`未找到目标元素: ${target}`);
+                    result = { status: 'success', result: element.outerHTML };
+                } else if (command === 'query_js') {
+                    const scripts = Array.from(document.scripts).map(s => ({
+                        src: s.src || 'inline',
+                        content: s.src ? null : s.textContent.substring(0, 500) + (s.textContent.length > 500 ? '...' : '')
+                    }));
+                    result = { status: 'success', result: scripts };
+                } else if (command === 'execute_script') {
+                    throw new Error('execute_script 已迁移到 background 的 chrome.scripting MAIN world 执行路径');
                 } else {
-                    throw new Error(`ID为 '${target}' 的元素不是一个输入框。`);
-                }
-            } else if (command === 'click') {
-                // 模拟真实用户点击，这对于处理使用现代前端框架（如React, Vue）构建的页面至关重要
-                element.focus(); // 首先聚焦元素
-                const clickEvent = new MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                });
-                element.dispatchEvent(clickEvent);
-                result = { status: 'success', message: `成功点击了ID为 '${target}' 的元素。` };
-            } else {
-                throw new Error(`不支持的命令: ${command}`);
-            }
-        } catch (error) {
-            result = { status: 'error', error: error.message };
-        }
+                    let element = findElementWithLogging(target);
+                    if (!element) throw new Error(`未能在页面上找到目标为 '${target}' 的元素。`);
 
-        chrome.runtime.sendMessage({
-            type: 'COMMAND_RESULT',
-            data: {
-                requestId,
-                sourceClientId,
-                ...result
+                    if (command === 'type') {
+                        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+                            element.value = text;
+                            result = { status: 'success', message: `成功在ID为 '${target}' 的元素中输入文本。` };
+                        } else {
+                            throw new Error(`ID为 '${target}' 的元素不是一个输入框。`);
+                        }
+                    } else if (command === 'click') {
+                        element.focus();
+                        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                        element.dispatchEvent(clickEvent);
+                        result = { status: 'success', message: `成功点击了ID为 '${target}' 的元素。` };
+                    } else {
+                        throw new Error(`不支持的命令: ${command}`);
+                    }
+                }
+            } catch (error) {
+                result = { status: 'error', error: error.message };
             }
-        }, () => {
-            // 捕获当页面跳转等原因导致上下文失效时的错误，这是正常现象
-            if (chrome.runtime.lastError) {
-                console.log("Could not send command result, context likely invalidated:", chrome.runtime.lastError.message);
-            }
-        });
-        setTimeout(sendPageInfoUpdate, 500);
+
+            chrome.runtime.sendMessage({
+                type: 'COMMAND_RESULT',
+                data: { requestId, sourceClientId, ...result }
+            }, () => {
+                if (chrome.runtime.lastError) {
+                    console.log("Could not send command result:", chrome.runtime.lastError.message);
+                }
+            });
+            setTimeout(sendPageInfoUpdate, 500);
+        };
+
+        handleCommand();
+        return true;
     }
 });
 

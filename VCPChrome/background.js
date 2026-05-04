@@ -5,6 +5,8 @@ let isMonitoringEnabled = false; // 页面监控开关
 let heartbeatIntervalId = null;
 let latestPageInfo = null;
 let currentActiveTabId = null;
+let attachedTabId = null;
+let networkLogs = new Map(); // requestId -> { request, response, body }
 const HEARTBEAT_INTERVAL = 30 * 1000;
 const defaultServerUrl = 'ws://localhost:8088';
 const defaultVcpKey = 'your_secret_key';
@@ -138,8 +140,8 @@ function connect() {
                         }
                     });
                 } else {
-                    console.log('Forwarding command to content script:', commandData);
-                    forwardCommandToContentScript(commandData);
+                    console.log('Handling command:', commandData.command);
+                    handleIncomingCommand(commandData);
                 }
             }
         };
@@ -371,16 +373,165 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // 保持消息通道开放以进行异步响应
 });
 
-function forwardCommandToContentScript(commandData) {
+async function handleIncomingCommand(commandData) {
+    const { command, requestId, sourceClientId } = commandData;
+    
+    // 某些指令由 background 直接处理 (CDP 相关 / 主世界脚本执行)
+    if (command.startsWith('cdp_') || command === 'execute_script') {
+        try {
+            const result = command === 'execute_script'
+                ? await executeScriptInMainWorld(commandData)
+                : await processCdpCommand(commandData);
+            sendResponseToWs({
+                type: 'command_result',
+                data: { requestId, sourceClientId, status: 'success', ...result }
+            });
+        } catch (error) {
+            sendResponseToWs({
+                type: 'command_result',
+                data: { requestId, sourceClientId, status: 'error', error: error.message }
+            });
+        }
+        return;
+    }
+
+    // 其他指令转发给 content_script
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) {
             chrome.tabs.sendMessage(tabs[0].id, {
                 type: 'EXECUTE_COMMAND',
                 data: commandData
+            }).catch(err => {
+                sendResponseToWs({
+                    type: 'command_result',
+                    data: { requestId, sourceClientId, status: 'error', error: '无法连接到页面脚本: ' + err.message }
+                });
+            });
+        } else {
+            sendResponseToWs({
+                type: 'command_result',
+                data: { requestId, sourceClientId, status: 'error', error: '没有活动的标签页' }
             });
         }
     });
 }
+
+function sendResponseToWs(message) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+    }
+}
+
+async function executeScriptInMainWorld(commandData) {
+    const tabId = currentActiveTabId;
+    const code = commandData.text || '';
+    if (!tabId) throw new Error('没有活动的标签页');
+    if (!code.trim()) throw new Error('execute_script 缺少 text 代码内容');
+
+    const injectionResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: async (userCode) => {
+            const fn = new Function(`return (async () => {\n${userCode}\n})()`);
+            return await fn();
+        },
+        args: [code]
+    });
+
+    return {
+        message: '脚本执行成功',
+        result: injectionResults?.[0]?.result
+    };
+}
+
+async function processCdpCommand(commandData) {
+    const { command, urlIncludes, cdpRequestId } = commandData;
+    const tabId = currentActiveTabId;
+
+    if (!tabId) throw new Error('没有活动的标签页');
+
+    switch (command) {
+        case 'cdp_start':
+            if (attachedTabId === tabId) return { message: 'CDP 已在该标签页启动' };
+            if (attachedTabId) await detachDebugger(attachedTabId);
+            await attachDebugger(tabId);
+            return { message: 'CDP 启动成功' };
+
+        case 'cdp_stop':
+            if (attachedTabId) await detachDebugger(attachedTabId);
+            return { message: 'CDP 已停止' };
+
+        case 'cdp_network_query':
+            const logs = Array.from(networkLogs.values()).filter(log => {
+                if (urlIncludes && !log.request.url.includes(urlIncludes)) return false;
+                return true;
+            });
+            return { result: logs };
+
+        case 'cdp_get_response_body':
+            if (!attachedTabId) throw new Error('CDP 未启动');
+            return new Promise((resolve, reject) => {
+                chrome.debugger.sendCommand({ tabId: attachedTabId }, "Network.getResponseBody", { requestId: cdpRequestId }, (result) => {
+                    if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+                    else resolve({ result });
+                });
+            });
+
+        case 'cdp_clear_network':
+            networkLogs.clear();
+            return { message: '网络日志已清空' };
+
+        default:
+            throw new Error('未知的 CDP 指令: ' + command);
+    }
+}
+
+function attachDebugger(tabId) {
+    return new Promise((resolve, reject) => {
+        chrome.debugger.attach({ tabId }, "1.3", () => {
+            if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+            attachedTabId = tabId;
+            chrome.debugger.sendCommand({ tabId }, "Network.enable", {}, () => {
+                console.log('[VCP Background] CDP Network enabled');
+                resolve();
+            });
+        });
+    });
+}
+
+function detachDebugger(tabId) {
+    return new Promise((resolve) => {
+        chrome.debugger.detach({ tabId }, () => {
+            attachedTabId = null;
+            networkLogs.clear();
+            resolve();
+        });
+    });
+}
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+    if (method === "Network.requestWillBeSent") {
+        networkLogs.set(params.requestId, {
+            requestId: params.requestId,
+            request: params.request,
+            timestamp: params.timestamp,
+            resourceType: params.type
+        });
+    } else if (method === "Network.responseReceived") {
+        let log = networkLogs.get(params.requestId);
+        if (log) {
+            log.response = params.response;
+        }
+    }
+});
+
+chrome.debugger.onDetach.addListener((source) => {
+    if (source.tabId === attachedTabId) {
+        attachedTabId = null;
+        networkLogs.clear();
+        console.log('[VCP Background] CDP Detached');
+    }
+});
 
 function broadcastStatusUpdate() {
     chrome.runtime.sendMessage({

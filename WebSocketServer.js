@@ -200,8 +200,8 @@ function initialize(httpServer, config) {
             try {
                 const parsedMessage = JSON.parse(message);
                 
-                // 强制日志：ChromeObserver 的消息
-                if (ws.clientType === 'ChromeObserver') {
+                // ChromeObserver 的消息日志降级到 debugMode
+                if (ws.clientType === 'ChromeObserver' && serverConfig.debugMode) {
                     console.log(`[WebSocketServer] 📨 收到 ChromeObserver 消息，类型: ${parsedMessage.type}`);
                 }
                 
@@ -254,15 +254,21 @@ function initialize(httpServer, config) {
 
                             // 新增：检查是否有等待的Control客户端，并转发页面信息
                             if (parsedMessage.type === 'pageInfoUpdate') {
-                                console.log(`[WebSocketServer] 🔔 收到 pageInfoUpdate, 当前等待客户端数: ${waitingControlClients.size}`);
+                                if (serverConfig.debugMode) {
+                                    console.log(`[WebSocketServer] 🔔 收到 pageInfoUpdate, 当前等待客户端数: ${waitingControlClients.size}`);
+                                }
                                 
                                 if (waitingControlClients.size > 0) {
                                     const pageInfoMarkdown = parsedMessage.data.markdown;
-                                    console.log(`[WebSocketServer] 📤 准备转发页面信息，markdown 长度: ${pageInfoMarkdown?.length || 0}`);
+                                    if (serverConfig.debugMode) {
+                                        console.log(`[WebSocketServer] 📤 准备转发页面信息，markdown 长度: ${pageInfoMarkdown?.length || 0}`);
+                                    }
                                     
                                     // 遍历所有等待的客户端
                                     waitingControlClients.forEach((requestId, clientId) => {
-                                        console.log(`[WebSocketServer] 🎯 尝试转发给客户端 ${clientId}, requestId: ${requestId}`);
+                                        if (serverConfig.debugMode) {
+                                            console.log(`[WebSocketServer] 🎯 尝试转发给客户端 ${clientId}, requestId: ${requestId}`);
+                                        }
                                         const messageForControl = {
                                             type: 'page_info_update',
                                             data: {
@@ -272,15 +278,21 @@ function initialize(httpServer, config) {
                                         };
                                         const sent = sendMessageToClient(clientId, messageForControl);
                                         if (sent) {
-                                            console.log(`[WebSocketServer] ✅ 成功转发页面信息给客户端 ${clientId}`);
+                                            if (serverConfig.debugMode) {
+                                                console.log(`[WebSocketServer] ✅ 成功转发页面信息给客户端 ${clientId}`);
+                                            }
                                             // 发送后即从等待列表移除
                                             waitingControlClients.delete(clientId);
                                         } else {
-                                            console.log(`[WebSocketServer] ❌ 转发失败，客户端 ${clientId} 可能已断开`);
+                                            if (serverConfig.debugMode) {
+                                                console.log(`[WebSocketServer] ❌ 转发失败，客户端 ${clientId} 可能已断开`);
+                                            }
                                         }
                                     });
                                 } else {
-                                    console.log(`[WebSocketServer] ⚠️ 收到 pageInfoUpdate 但没有等待的客户端`);
+                                    if (serverConfig.debugMode) {
+                                        console.log(`[WebSocketServer] ⚠️ 收到 pageInfoUpdate 但没有等待的客户端`);
+                                    }
                                 }
                             }
                         }
