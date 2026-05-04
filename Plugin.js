@@ -740,7 +740,7 @@ class PluginManager extends EventEmitter {
         const pluginSpecificArgs = { ...toolArgs };
 
         if (maidNameFromArgs && sourceNode) {
-            console.log(`来自${sourceNode}节点的${maidNameFromArgs}调用了${toolName}`);
+            console.log(`来自${sourceNode}节点(${requestIp || '未知IP'})的${maidNameFromArgs}调用了${toolName}`);
         }
 
         if (maidNameFromArgs) {
