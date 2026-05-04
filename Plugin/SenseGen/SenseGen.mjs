@@ -209,43 +209,44 @@ async function generateDocumentImage(rawArgs) {
     const accessibleImageUrl = buildAccessibleImageUrl(saved.generatedFileName);
     const base64Image = downloaded.imageBuffer.toString('base64');
 
-    const textMessage =
-        `图片类文档已成功生成！\n` +
-        `- 模型: ${MODEL_NAME}\n` +
-        `- 提示词: ${args.prompt}\n` +
-        `- 尺寸: ${args.size}\n` +
-        `- 可访问URL: ${accessibleImageUrl}\n` +
-        `- 服务器路径: ${saved.serverPath}\n` +
-        `\n【重要】这是一张适合图文展示的成品图片，请将上面的图片 URL 直接转发给用户，并优先使用 HTML <img> 标签展示。`;
+    const imageMimeType = String(downloaded.mimeType).split(';')[0].trim().toLowerCase() || `image/${imageExtension}`;
+    const altText = args.prompt
+        ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? '...' : '')
+        : (saved.generatedFileName || '生成的图片');
+    const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="300">`;
 
     const content = [
         {
             type: 'text',
-            text: textMessage
+            text:
+                `图片已成功生成！\n` +
+                `- 提示词: ${args.prompt}\n` +
+                `- 分辨率: ${args.size}\n` +
+                `- 可访问URL: ${accessibleImageUrl}\n` +
+                `请将生成好的图片转发给用户哦。`
         }
     ];
 
-    if (args.showBase64) {
-        content.push({
-            type: 'image_url',
-            image_url: {
-                url: `data:${downloaded.mimeType};base64,${base64Image}`
-            }
-        });
-    }
+    content.push({
+        type: 'image_url',
+        image_url: {
+            url: `data:${imageMimeType};base64,${base64Image}`
+        }
+    });
 
     return {
         content,
         details: {
-            model: MODEL_NAME,
-            prompt: args.prompt,
-            size: args.size,
-            imageUrl: accessibleImageUrl,
-            sourceImageUrl: apiResult.remoteImageUrl,
             serverPath: saved.serverPath,
             fileName: saved.generatedFileName,
+            prompt: args.prompt,
+            resolution: args.size,
+            imageUrl: accessibleImageUrl,
+            sourceImageUrl: apiResult.remoteImageUrl,
+            model: MODEL_NAME,
             showBase64: args.showBase64,
-            created: apiResult.created
+            created: apiResult.created,
+            html: imageHtml
         }
     };
 }
