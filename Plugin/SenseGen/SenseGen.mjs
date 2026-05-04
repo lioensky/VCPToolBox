@@ -209,46 +209,31 @@ async function generateDocumentImage(rawArgs) {
     const accessibleImageUrl = buildAccessibleImageUrl(saved.generatedFileName);
     const base64Image = downloaded.imageBuffer.toString('base64');
 
-    const imageMimeType = String(downloaded.mimeType).split(';')[0].trim().toLowerCase() || `image/${imageExtension}`;
-    const altText = args.prompt
-        ? args.prompt.substring(0, 80) + (args.prompt.length > 80 ? '...' : '')
-        : (saved.generatedFileName || '生成的图片');
-    const imageHtml = `<img src="${accessibleImageUrl}" alt="${altText}" width="300">`;
+    const imageMimeType = `image/${imageExtension}`;
 
-    const content = [
-        {
-            type: 'text',
-            text:
-                `图片已成功生成！\n` +
-                `- 提示词: ${args.prompt}\n` +
-                `- 分辨率: ${args.size}\n` +
-                `- 可访问URL: ${accessibleImageUrl}\n` +
-                `请将生成好的图片转发给用户哦。`
-        }
-    ];
-
-    content.push({
-        type: 'image_url',
-        image_url: {
-            url: `data:${imageMimeType};base64,${base64Image}`
-        }
-    });
-
-    return {
-        content,
+    const result = {
+        content: [
+            {
+                type: 'text',
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${args.size}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
         details: {
             serverPath: saved.serverPath,
             fileName: saved.generatedFileName,
             prompt: args.prompt,
             resolution: args.size,
-            imageUrl: accessibleImageUrl,
-            sourceImageUrl: apiResult.remoteImageUrl,
-            model: MODEL_NAME,
-            showBase64: args.showBase64,
-            created: apiResult.created,
-            html: imageHtml
+            imageUrl: accessibleImageUrl
         }
     };
+
+    return result;
 }
 
 async function main() {
