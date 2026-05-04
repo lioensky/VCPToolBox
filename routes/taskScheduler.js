@@ -39,7 +39,7 @@ async function executeTimedContact(task, filePath) {
         }
 
         console.log(`[TaskScheduler] 正在执行任务 ${task.taskId}: 调用插件 '${tool_name}'...`);
-        const result = await pluginManager.processToolCall(tool_name, toolArgs);
+        const result = await pluginManager.processToolCall(tool_name, toolArgs, null, 'scheduler');
         
         console.log(`[TaskScheduler] 任务 ${task.taskId} (${tool_name}) 已处理。`);
         

@@ -749,51 +749,6 @@ class TagMemoEngine {
             console.log(`[TagMemoEngine] ✅ Loaded ${this.tagIntrinsicResiduals.size} intrinsic residuals`);
         } catch (e) {
             console.warn('[TagMemoEngine] ⚠️ No intrinsic residuals available:', e.message);
-            const diagnostics = {
-                dbName: this.db?.name || 'unknown',
-                errorName: e?.name || 'unknown',
-                errorCode: e?.code || 'unknown',
-                errorMessage: e?.message || String(e),
-                quickCheck: null,
-                integrityCheck: null,
-                schema: null,
-                tableCount: null,
-                minMax: null,
-                pageInfo: null
-            };
-            const safeProbe = (label, fn) => {
-                try {
-                    const value = fn();
-                    console.warn(`[TagMemoEngine][Diag] ${label}:`, value);
-                    return value;
-                } catch (probeErr) {
-                    const probeMessage = `FAILED: ${probeErr.message || probeErr}`;
-                    console.warn(`[TagMemoEngine][Diag] ${label}:`, probeMessage);
-                    return probeMessage;
-                }
-            };
-            diagnostics.quickCheck = safeProbe('PRAGMA quick_check', () =>
-                this.db.prepare('PRAGMA quick_check').all()
-            );
-            diagnostics.integrityCheck = safeProbe('PRAGMA integrity_check', () =>
-                this.db.prepare('PRAGMA integrity_check').all()
-            );
-            diagnostics.schema = safeProbe('sqlite_master(tag_intrinsic_residuals)', () =>
-                this.db.prepare(
-                    "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name = ?"
-                ).get('tag_intrinsic_residuals')
-            );
-            diagnostics.tableCount = safeProbe('COUNT(tag_intrinsic_residuals)', () =>
-                this.db.prepare('SELECT COUNT(*) as count FROM tag_intrinsic_residuals').get()
-            );
-            diagnostics.minMax = safeProbe('MIN/MAX(tag_intrinsic_residuals)', () =>
-                this.db.prepare('SELECT MIN(tag_id) as minTagId, MAX(tag_id) as maxTagId, COUNT(*) as count FROM tag_intrinsic_residuals').get()
-            );
-            diagnostics.pageInfo = safeProbe('PRAGMA page_count/freelist_count', () => ({
-                pageCount: this.db.prepare('PRAGMA page_count').get(),
-                freelistCount: this.db.prepare('PRAGMA freelist_count').get()
-            }));
-            console.warn('[TagMemoEngine][Diag] loadIntrinsicResiduals summary:', diagnostics);
             this.tagIntrinsicResiduals = null;
         }
     }
@@ -853,49 +808,8 @@ class TagMemoEngine {
         console.log('[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation...');
         try {
             const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-            const beforeQuickCheck = (() => {
-                try {
-                    return this.db.prepare('PRAGMA quick_check').all();
-                } catch (probeErr) {
-                    return `FAILED: ${probeErr.message || probeErr}`;
-                }
-            })();
-            const beforeResidualCount = (() => {
-                try {
-                    return this.db.prepare('SELECT COUNT(*) as count FROM tag_intrinsic_residuals').get();
-                } catch (probeErr) {
-                    return `FAILED: ${probeErr.message || probeErr}`;
-                }
-            })();
-            console.log('[TagMemoEngine][Diag] Before Rust precompute:', {
-                dbPath,
-                beforeQuickCheck,
-                beforeResidualCount
-            });
-
             const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
             console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
-
-            const afterQuickCheck = (() => {
-                try {
-                    return this.db.prepare('PRAGMA quick_check').all();
-                } catch (probeErr) {
-                    return `FAILED: ${probeErr.message || probeErr}`;
-                }
-            })();
-            const afterResidualCount = (() => {
-                try {
-                    return this.db.prepare('SELECT COUNT(*) as count FROM tag_intrinsic_residuals').get();
-                } catch (probeErr) {
-                    return `FAILED: ${probeErr.message || probeErr}`;
-                }
-            })();
-            console.log('[TagMemoEngine][Diag] After Rust precompute / before reload:', {
-                dbPath,
-                result,
-                afterQuickCheck,
-                afterResidualCount
-            });
             
             // 重新加载结果
             this.loadIntrinsicResiduals();

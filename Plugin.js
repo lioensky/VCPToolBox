@@ -703,7 +703,7 @@ class PluginManager extends EventEmitter {
         };
     }
 
-    async processToolCall(toolName, toolArgs, requestIp = null) {
+    async processToolCall(toolName, toolArgs, requestIp = null, sourceNode = null) {
         const plugin = this.plugins.get(toolName);
         if (!plugin) {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
@@ -738,6 +738,11 @@ class PluginManager extends EventEmitter {
 
         const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
         const pluginSpecificArgs = { ...toolArgs };
+
+        if (maidNameFromArgs && sourceNode) {
+            console.log(`来自${sourceNode}节点的${maidNameFromArgs}调用了${toolName}`);
+        }
+
         if (maidNameFromArgs) {
             // The 'maid' parameter is intentionally passed through for plugins like DeepMemo.
             // delete pluginSpecificArgs.maid;
