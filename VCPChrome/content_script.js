@@ -477,6 +477,208 @@ function findElementWithLogging(target) {
     return null;
 }
 
+function parseBooleanParam(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return Boolean(value);
+}
+
+function parseNumberParam(value, defaultValue, minValue, maxValue) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return defaultValue;
+    return Math.min(Math.max(parsed, minValue), maxValue);
+}
+
+function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildSearchRegex(query, useRegex, caseSensitive) {
+    if (!query || !String(query).trim()) {
+        throw new Error('page_code_search 缺少 query 参数');
+    }
+
+    const flags = caseSensitive ? 'g' : 'gi';
+    return new RegExp(useRegex ? query : escapeRegExp(String(query)), flags);
+}
+
+function getElementDescriptor(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+        return 'unknown';
+    }
+
+    const tagName = element.tagName.toLowerCase();
+    const idPart = element.id ? `#${element.id}` : '';
+    const classPart = element.className && typeof element.className === 'string'
+        ? '.' + element.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.')
+        : '';
+    const textPart = (element.innerText || element.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80);
+
+    return `${tagName}${idPart}${classPart}${textPart ? ` :: ${textPart}` : ''}`;
+}
+
+function normalizeSearchScope(scope) {
+    if (!scope) {
+        return ['dom', 'inline_script', 'style', 'codeblock'];
+    }
+
+    return String(scope)
+        .split(',')
+        .map(item => item.trim().toLowerCase())
+        .filter(Boolean);
+}
+
+function collectSearchSources(scopeList) {
+    const sources = [];
+
+    if (scopeList.includes('dom')) {
+        sources.push({
+            sourceType: 'dom',
+            sourceLabel: 'document.documentElement.outerHTML',
+            content: document.documentElement?.outerHTML || '',
+            selector: 'html'
+        });
+    }
+
+    if (scopeList.includes('inline_script') || scopeList.includes('script')) {
+        document.querySelectorAll('script').forEach((script, index) => {
+            if (!script.src && script.textContent && script.textContent.trim()) {
+                sources.push({
+                    sourceType: 'inline_script',
+                    sourceLabel: `inline_script[${index}]`,
+                    content: script.textContent,
+                    selector: getElementDescriptor(script)
+                });
+            }
+        });
+    }
+
+    if (scopeList.includes('style')) {
+        document.querySelectorAll('style').forEach((styleEl, index) => {
+            if (styleEl.textContent && styleEl.textContent.trim()) {
+                sources.push({
+                    sourceType: 'style',
+                    sourceLabel: `style[${index}]`,
+                    content: styleEl.textContent,
+                    selector: getElementDescriptor(styleEl)
+                });
+            }
+        });
+    }
+
+    if (scopeList.includes('codeblock') || scopeList.includes('code') || scopeList.includes('pre')) {
+        document.querySelectorAll('pre, code').forEach((codeEl, index) => {
+            const content = codeEl.innerText || codeEl.textContent || '';
+            if (content.trim()) {
+                sources.push({
+                    sourceType: 'codeblock',
+                    sourceLabel: `${codeEl.tagName.toLowerCase()}[${index}]`,
+                    content,
+                    selector: getElementDescriptor(codeEl)
+                });
+            }
+        });
+    }
+
+    return sources;
+}
+
+function searchInSource(source, regex, contextChars, maxResultsPerSource) {
+    const results = [];
+    const content = source.content || '';
+    if (!content) return results;
+
+    regex.lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(content)) !== null) {
+        const matchText = match[0];
+        const start = match.index;
+        const end = start + matchText.length;
+        const contextStart = Math.max(0, start - contextChars);
+        const contextEnd = Math.min(content.length, end + contextChars);
+
+        results.push({
+            sourceType: source.sourceType,
+            sourceLabel: source.sourceLabel,
+            selector: source.selector,
+            matchText,
+            contextBefore: content.slice(contextStart, start),
+            contextAfter: content.slice(end, contextEnd),
+            position: {
+                start,
+                end
+            }
+        });
+
+        if (results.length >= maxResultsPerSource) {
+            break;
+        }
+
+        if (match.index === regex.lastIndex) {
+            regex.lastIndex++;
+        }
+    }
+
+    return results;
+}
+
+function pageCodeSearch(params = {}) {
+    const requestedMode = String(params.searchMode || 'auto').toLowerCase();
+    const effectiveMode = requestedMode === 'enhanced' ? 'light' : (requestedMode === 'light' ? 'light' : 'auto');
+    const useRegex = parseBooleanParam(params.useRegex, false);
+    const caseSensitive = parseBooleanParam(params.caseSensitive, false);
+    const contextChars = parseNumberParam(params.contextChars, 80, 0, 500);
+    const maxResults = parseNumberParam(params.maxResults, 20, 1, 200);
+    const scopeList = normalizeSearchScope(params.scope);
+    const regex = buildSearchRegex(params.query, useRegex, caseSensitive);
+    const sources = collectSearchSources(scopeList);
+    const results = [];
+    const maxResultsPerSource = Math.max(5, Math.ceil(maxResults / Math.max(sources.length, 1)));
+
+    for (const source of sources) {
+        const sourceResults = searchInSource(source, regex, contextChars, maxResultsPerSource);
+        for (const item of sourceResults) {
+            results.push(item);
+            if (results.length >= maxResults) {
+                break;
+            }
+        }
+        if (results.length >= maxResults) {
+            break;
+        }
+    }
+
+    return {
+        status: 'success',
+        result: {
+            query: params.query,
+            requestedMode,
+            effectiveMode,
+            fallbackApplied: requestedMode === 'enhanced',
+            searchedSources: sources.map(source => ({
+                sourceType: source.sourceType,
+                sourceLabel: source.sourceLabel,
+                selector: source.selector
+            })),
+            totalMatches: results.length,
+            truncated: results.length >= maxResults,
+            results
+        },
+        message: requestedMode === 'enhanced'
+            ? 'enhanced 模式暂未接入资源级搜索，已自动降级为 light 模式'
+            : '页面源码搜索完成'
+    };
+}
+
 function sendPageInfoUpdate() {
     // 关键检查：只有活动标签页才发送更新（或页面刚加载完成时）
     if (!isActiveTab && document.hidden) {
@@ -536,7 +738,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         return true; // 保持消息通道开放
     } else if (request.type === 'EXECUTE_COMMAND') {
-        const { command, target, text, requestId, sourceClientId } = request.data;
+        const { command, target, text, requestId, sourceClientId, query, scope, useRegex, caseSensitive, contextChars, maxResults, searchMode } = request.data;
         
         const handleCommand = async () => {
             let result = {};
@@ -551,6 +753,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         content: s.src ? null : s.textContent.substring(0, 500) + (s.textContent.length > 500 ? '...' : '')
                     }));
                     result = { status: 'success', result: scripts };
+                } else if (command === 'page_code_search') {
+                    result = pageCodeSearch({
+                        query,
+                        scope,
+                        useRegex,
+                        caseSensitive,
+                        contextChars,
+                        maxResults,
+                        searchMode
+                    });
                 } else if (command === 'execute_script') {
                     throw new Error('execute_script 已迁移到 background 的 chrome.scripting MAIN world 执行路径');
                 } else {

@@ -185,7 +185,13 @@ async function processToolCall(params) {
             text: params[`text${commandIndex}`],
             url: params[`url${commandIndex}`],
             urlIncludes: params[`urlIncludes${commandIndex}`],
-            cdpRequestId: params[`requestId${commandIndex}`] || params[`cdpRequestId${commandIndex}`]
+            cdpRequestId: params[`requestId${commandIndex}`] || params[`cdpRequestId${commandIndex}`],
+            query: params[`query${commandIndex}`],
+            scope: params[`scope${commandIndex}`],
+            useRegex: params[`useRegex${commandIndex}`],
+            caseSensitive: params[`caseSensitive${commandIndex}`],
+            contextChars: params[`contextChars${commandIndex}`],
+            maxResults: params[`maxResults${commandIndex}`]
         };
         // 移除未定义的参数
         Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
@@ -201,7 +207,13 @@ async function processToolCall(params) {
             text: params.text,
             url: params.url,
             urlIncludes: params.urlIncludes,
-            cdpRequestId: params.requestId || params.cdpRequestId
+            cdpRequestId: params.requestId || params.cdpRequestId,
+            query: params.query,
+            scope: params.scope,
+            useRegex: params.useRegex,
+            caseSensitive: params.caseSensitive,
+            contextChars: params.contextChars,
+            maxResults: params.maxResults
         };
         Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
         commands.push(cmd);
