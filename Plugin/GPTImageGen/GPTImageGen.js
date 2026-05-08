@@ -341,9 +341,9 @@ async function processImageInput(imageInput) {
     const base64 = buffer.toString('base64');
     const ext = path.extname(resolved).toLowerCase();
     const mime = ext === '.png' ? 'image/png' :
-                 ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
-                 ext === '.webp' ? 'image/webp' :
-                 ext === '.gif' ? 'image/gif' : 'image/png';
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+            ext === '.webp' ? 'image/webp' :
+                ext === '.gif' ? 'image/gif' : 'image/png';
     return `data:${mime};base64,${base64}`;
 }
 
@@ -765,13 +765,13 @@ async function main() {
             });
         }
 
-         // 解析并验证通用参数
-         let size = args.size || args.Size || DEFAULT_SIZE;
-         // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
-         if (/^\d+$/.test(size)) {
-             size = `${size}x${size}`;
-             debugLog(`Size auto-corrected to square: ${size}`);
-         }
+        // 解析并验证通用参数
+        let size = args.size || args.Size || DEFAULT_SIZE;
+        // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
+        if (/^\d+$/.test(size)) {
+            size = `${size}x${size}`;
+            debugLog(`Size auto-corrected to square: ${size}`);
+        }
         if (!isValidSize(size)) {
             return outputAndExit({
                 status: 'error',
@@ -796,13 +796,31 @@ async function main() {
 
         if (isEditMode) {
             // ======== 图生图（Edit）模式 ========
-            const imageInput = args.image || args.Image || args.image_url || args.source_image || '';
+            let imageInput = args.image || args.Image || args.image_url || args.source_image || '';
             if (!imageInput) {
                 return outputAndExit({
                     status: 'error',
                     error: 'GPTImageGen [edit]: 缺少 image 参数。请提供要编辑的原始图片（支持 URL、base64 data URI 或本地文件路径）。'
                 });
             }
+
+            // ── 兼容 VCP 工具调用传入 JSON 数组字符串的情况 ──
+            // VCP 的「始」「末」参数解析器可能将 ["a","b"] 作为纯字符串传入，
+            // 而非 JS 原生数组。此处自动检测并解析。
+            // Windows 路径中的 \ 需要转义为 \\ 才能被 JSON.parse 正确解析。
+            if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
+                try {
+                    const sanitized = imageInput.replace(/\\/g, '\\\\');
+                    const parsed = JSON.parse(sanitized);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        imageInput = parsed;
+                        debugLog('Auto-parsed image JSON string to array, count:', parsed.length);
+                    }
+                } catch (e) {
+                    debugLog('Image field starts with [ but failed to parse:', e.message);
+                }
+            }
+
 
             // 处理图片输入（可以是单张或数组）
             const imageInputs = Array.isArray(imageInput) ? imageInput : [imageInput];
