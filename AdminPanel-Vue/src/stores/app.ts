@@ -53,6 +53,10 @@ export const useAppStore = defineStore("app", () => {
     (newTheme) => {
       if (typeof document !== "undefined") {
         document.documentElement.setAttribute("data-theme", newTheme);
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          meta.setAttribute("content", newTheme === "light" ? "#f2f4f8" : "#08090d");
+        }
       }
     },
     { immediate: true }

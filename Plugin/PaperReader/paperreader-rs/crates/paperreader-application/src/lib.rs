@@ -54,8 +54,8 @@ pub use config::RuntimeConfig;
 pub(crate) use deterministic_adapters::{DeterministicLlmClient, StaticMinerUGateway};
 pub(crate) use openai_client::OpenAiChatCompletionsClient;
 pub(crate) use payload_support::{
-    display_path, guess_display_name, payload_string, required_document_ids, required_string,
-    snippet,
+    display_path, guess_display_name, payload_array, payload_string, required_document_ids,
+    required_string, snippet,
 };
 pub(crate) use reading_usecases::{
     best_matching_segment_id, format_constraints_markdown, requested_constraints,

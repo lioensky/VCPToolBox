@@ -437,7 +437,7 @@ onUnmounted(() => {
   font-size: var(--font-size-body);
 }
 
-.command-search input:focus {
+.command-search input:focus:not(:focus-visible) {
   outline: none;
 }
 

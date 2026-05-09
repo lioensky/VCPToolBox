@@ -516,10 +516,7 @@ struct CollectionMemberRole {
 }
 
 fn parse_two_document_ids(payload: &Value) -> Result<(DocumentId, DocumentId)> {
-    if let Some(values) = payload
-        .get("document_ids")
-        .and_then(|value| value.as_array())
-    {
+    if let Some(values) = payload_array(payload, "document_ids") {
         if values.len() != 2 {
             anyhow::bail!("document_ids must have exactly 2 items");
         }

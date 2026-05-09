@@ -15,6 +15,7 @@ export interface EmojiGalleryItem {
   category: string;
   extension: string;
   previewUrl: string;
+  thumbnailUrl: string;
 }
 
 export interface EmojiGalleryCategory {
@@ -38,6 +39,9 @@ export interface EmojiGalleryData {
     scannedAt?: number | null;
     expiresAt?: number | null;
     ttlMs?: number;
+    refreshRequested?: boolean;
+    refreshApplied?: boolean;
+    refreshCooldownMs?: number;
   };
 }
 
@@ -150,16 +154,29 @@ interface EmojiDeleteCategoryEnvelope {
 type EmojiRequestContext = Pick<HttpRequestContext, "signal">;
 
 function normalizeGalleryData(response: EmojiGalleryEnvelope | EmojiGalleryData): EmojiGalleryData {
-  if (
+  const data =
     response &&
     typeof response === "object" &&
     "data" in response &&
     (response as EmojiGalleryEnvelope).data
-  ) {
-    return (response as EmojiGalleryEnvelope).data as EmojiGalleryData;
+      ? ((response as EmojiGalleryEnvelope).data as EmojiGalleryData)
+      : (response as EmojiGalleryData);
+
+  if (!data || typeof data !== "object") {
+    return createFallbackGalleryData();
   }
 
-  return response as EmojiGalleryData;
+  return {
+    ...data,
+    items: Array.isArray(data.items)
+      ? data.items.map((item) => ({
+          ...item,
+          previewUrl: item.previewUrl || emojisApi.buildPreviewUrl(item.relativePath),
+          thumbnailUrl:
+            item.thumbnailUrl || emojisApi.buildThumbnailUrl(item.relativePath),
+        }))
+      : [],
+  };
 }
 
 function createFallbackGalleryData(): EmojiGalleryData {
@@ -204,6 +221,10 @@ export const emojisApi = {
 
   buildPreviewUrl(relativePath: string): string {
     return `/admin_api/emojis/file?path=${encodeURIComponent(relativePath)}`;
+  },
+
+  buildThumbnailUrl(relativePath: string, size = 320): string {
+    return `/admin_api/emojis/file?path=${encodeURIComponent(relativePath)}&variant=thumb&size=${size}`;
   },
 
   async uploadLocal(

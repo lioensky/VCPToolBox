@@ -9,6 +9,16 @@
         "陈词总结梳理簇"
       ],
       "kSequence": [2, 1, 1, 1, 1]
+    },
+    "xiyin_literary": {
+      "clusters": [
+        "汐音-Phase1-意境锚定",
+        "汐音-Phase2-叙事意象拓扑生成",
+        "汐音-Phase3-审美自持",
+        "汐音-Phase4-裁决递归",
+        "汐音-Phase5-终稿传承"
+      ],
+      "kSequence": [1, 5, 3, 2, 2]
     }
   },
   "description": "VCP元思考链配置文件 - 定义递归推理链的簇顺序",

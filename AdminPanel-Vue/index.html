@@ -3,15 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#08090d" />
     <title>VCP ToolBox 控制中心</title>
     <!-- 主题初始化 - 避免首次加载闪烁 -->
     <script>
       (function () {
         const theme = localStorage.getItem("theme") || "dark";
         document.documentElement.setAttribute("data-theme", theme);
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          meta.setAttribute("content", theme === "light" ? "#f2f4f8" : "#08090d");
+        }
       })();
     </script>
+  </head>
 
   <body>
     <div id="app"></div>

@@ -3,26 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/AdminPanel/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#08090d" />
     <title>VCP ToolBox 控制中心</title>
     <!-- 主题初始化 - 避免首次加载闪烁 -->
     <script>
       (function () {
         const theme = localStorage.getItem("theme") || "dark";
         document.documentElement.setAttribute("data-theme", theme);
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          meta.setAttribute("content", theme === "light" ? "#f2f4f8" : "#08090d");
+        }
       })();
     </script>
-
-  <script type="module" crossorigin src="/AdminPanel/assets/js/index-CXXCNZAj.js"></script>
-  <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/rolldown-runtime-DmMX61E0.js">
-  <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-activitychart-CjJ1Boi_.js">
-  <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-calendar-BuAsJFoG.js">
-  <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-news-BnyB_dHU.js">
-  <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/vue-vendor-BUOVPpjf.js">
-  <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-activitychart-YGnIvisH.css">
-  <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-calendar-CgD3w8x7.css">
-  <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-news-Dgf8YUcC.css">
-  <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/index-B5c5AvQl.css">
+    <script type="module" crossorigin src="/AdminPanel/assets/js/index-uKm1jP_5.js"></script>
+    <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/rolldown-runtime-DmMX61E0.js">
+    <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-activitychart-ZIaXViDg.js">
+    <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-news-Dm1qOaN8.js">
+    <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/dashboard-card-calendar-DUWL90eu.js">
+    <link rel="modulepreload" crossorigin href="/AdminPanel/assets/js/vue-vendor-B28FuwcX.js">
+    <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-activitychart-g0VwlHaS.css">
+    <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-news-tcLKSxOD.css">
+    <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/dashboard-card-calendar-kOcyKV7s.css">
+    <link rel="stylesheet" crossorigin href="/AdminPanel/assets/css/index-Zz4R6wK1.css">
+  </head>
 
   <body>
     <div id="app"></div>

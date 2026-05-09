@@ -1,9 +1,11 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const multer = require('multer');
 const extract = require('extract-zip');
 const tar = require('tar');
+const { createCanvas, loadImage } = require('@napi-rs/canvas');
 
 const IMAGE_ROOT_DIR = path.join(__dirname, '..', '..', 'image');
 const EMOJI_LISTS_DIR = path.join(
@@ -28,6 +30,11 @@ const MAX_EXTRACTED_FILE_COUNT = 2000;
 const GALLERY_CACHE_TTL_MS = 30_000;
 const GALLERY_FORCE_REFRESH_COOLDOWN_MS = 5_000;
 const TMP_UPLOAD_DIR = path.join(__dirname, '..', '..', 'tmp', 'emoji-upload');
+const THUMBNAIL_CACHE_DIR = path.join(__dirname, '..', '..', 'tmp', 'emoji-thumb-cache');
+const DEFAULT_THUMBNAIL_SIZE = 320;
+const MIN_THUMBNAIL_SIZE = 96;
+const MAX_THUMBNAIL_SIZE = 640;
+const THUMBNAIL_CACHE_VERSION = 1;
 const ALLOWED_IMAGE_EXTENSIONS = new Set([
     '.png',
     '.jpg',
@@ -84,6 +91,10 @@ function buildPreviewUrl(relativePath) {
     return `/admin_api/emojis/file?path=${encodeURIComponent(relativePath)}`;
 }
 
+function buildThumbnailUrl(relativePath, size = DEFAULT_THUMBNAIL_SIZE) {
+    return `/admin_api/emojis/file?path=${encodeURIComponent(relativePath)}&variant=thumb&size=${size}`;
+}
+
 function parseBooleanValue(rawValue, fallback = false) {
     if (typeof rawValue === 'boolean') {
         return rawValue;
@@ -94,6 +105,11 @@ function parseBooleanValue(rawValue, fallback = false) {
     }
 
     return TRUE_LIKE_VALUES.has(rawValue.trim().toLowerCase());
+}
+
+function parseThumbnailSize(rawValue, fallback = DEFAULT_THUMBNAIL_SIZE) {
+    const parsed = parsePositiveInt(rawValue, fallback, MAX_THUMBNAIL_SIZE);
+    return Math.max(parsed, MIN_THUMBNAIL_SIZE);
 }
 
 function sanitizeCategoryName(rawValue) {
@@ -328,6 +344,60 @@ async function pathExists(targetPath) {
     } catch {
         return false;
     }
+}
+
+function createThumbnailCacheKey(relativePath, size, stat) {
+    return crypto
+        .createHash('sha1')
+        .update(
+            [
+                THUMBNAIL_CACHE_VERSION,
+                relativePath,
+                size,
+                Math.round(Number(stat?.mtimeMs) || 0),
+                Number(stat?.size) || 0,
+            ].join(':')
+        )
+        .digest('hex');
+}
+
+async function renderThumbnailToCache(sourcePath, relativePath, stat, size) {
+    await fs.mkdir(THUMBNAIL_CACHE_DIR, { recursive: true });
+
+    const cacheKey = createThumbnailCacheKey(relativePath, size, stat);
+    const cachedPath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.png`);
+    if (await pathExists(cachedPath)) {
+        return cachedPath;
+    }
+
+    const image = await loadImage(sourcePath);
+    const sourceWidth = Math.max(1, Math.round(image.width || size));
+    const sourceHeight = Math.max(1, Math.round(image.height || size));
+    const longestSide = Math.max(sourceWidth, sourceHeight);
+    const scale = Math.min(1, size / longestSide);
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = createCanvas(targetWidth, targetHeight);
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    const tempPath = path.join(
+        THUMBNAIL_CACHE_DIR,
+        `${cacheKey}.${process.pid}.${Date.now()}.tmp`
+    );
+    const buffer = canvas.toBuffer('image/png');
+    await fs.writeFile(tempPath, buffer);
+    await fs.rename(tempPath, cachedPath).catch(async (error) => {
+        if (error && error.code === 'EEXIST') {
+            await safeUnlink(tempPath);
+            return;
+        }
+
+        throw error;
+    });
+
+    return cachedPath;
 }
 
 async function safeUnlink(targetPath) {
@@ -597,6 +667,7 @@ async function collectImageEntries(rootDir) {
                 category,
                 extension: extension.slice(1),
                 previewUrl: buildPreviewUrl(normalizedRelativePath),
+                thumbnailUrl: buildThumbnailUrl(normalizedRelativePath),
             });
         }
     }
@@ -1197,6 +1268,7 @@ module.exports = function(options) {
                         category: uploadedCategory,
                         extension: extension.slice(1),
                         previewUrl: buildPreviewUrl(relativePath),
+                        thumbnailUrl: buildThumbnailUrl(relativePath),
                         size: candidate.size,
                     });
                 }
@@ -1293,6 +1365,9 @@ module.exports = function(options) {
      */
     router.get('/emojis/file', async (req, res) => {
         const requestedPath = req.query.path;
+        const requestedVariant = typeof req.query.variant === 'string'
+            ? req.query.variant.trim().toLowerCase()
+            : '';
         const resolved = resolveInsideRoot(IMAGE_ROOT_DIR, requestedPath);
 
         if (!resolved) {
@@ -1317,6 +1392,31 @@ module.exports = function(options) {
                     success: false,
                     error: 'Emoji file not found',
                 });
+            }
+
+            if (requestedVariant === 'thumb') {
+                const thumbnailSize = parseThumbnailSize(req.query.size, DEFAULT_THUMBNAIL_SIZE);
+
+                try {
+                    const thumbnailPath = await renderThumbnailToCache(
+                        resolved.resolvedPath,
+                        resolved.safeRelativePath,
+                        stat,
+                        thumbnailSize
+                    );
+                    res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+                    res.setHeader('X-Content-Type-Options', 'nosniff');
+                    return res.sendFile(thumbnailPath, (sendError) => {
+                        if (sendError && !res.headersSent) {
+                            res.status(500).json({
+                                success: false,
+                                error: 'Failed to send emoji thumbnail',
+                            });
+                        }
+                    });
+                } catch (thumbError) {
+                    console.warn('[EmojisRoute] Failed to render emoji thumbnail, falling back to source file:', thumbError);
+                }
             }
 
             res.setHeader('Cache-Control', 'private, max-age=300');

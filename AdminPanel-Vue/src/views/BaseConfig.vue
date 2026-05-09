@@ -1397,7 +1397,7 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   pointer-events: none;
-  transition: all var(--transition-normal);
+  transition: transform var(--transition-normal), opacity var(--transition-normal);
 }
 
 .config-action-capsule {
@@ -1410,7 +1410,10 @@ onBeforeUnmount(() => {
   border-radius: 25px;
   box-shadow: var(--shadow-overlay-soft);
   overflow: hidden;
-  transition: all var(--transition-spring);
+  transition:
+    background-color var(--transition-spring),
+    transform var(--transition-spring),
+    box-shadow var(--transition-spring);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -1478,7 +1481,7 @@ onBeforeUnmount(() => {
 /* 文本切换动画 */
 .fade-text-enter-active,
 .fade-text-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .fade-text-enter-from {

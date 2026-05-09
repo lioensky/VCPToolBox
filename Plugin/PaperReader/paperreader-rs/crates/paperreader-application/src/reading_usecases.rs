@@ -827,10 +827,27 @@ fn compose_rolling_context_limited(
         .collect::<Vec<_>>()
         .join("\n");
 
-    if lines.len() > max_chars {
-        lines = lines[lines.len().saturating_sub(max_chars)..].to_string();
+    if lines.chars().count() > max_chars {
+        lines = tail_chars(&lines, max_chars);
     }
     lines
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text.to_string();
+    }
+    let drop_chars = total_chars - max_chars;
+    let start = text
+        .char_indices()
+        .nth(drop_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    text[start..].to_string()
 }
 
 fn segment_id_sort_key(segment_id: &str) -> (u64, &str) {
@@ -951,9 +968,12 @@ fn shift_markdown_headings(markdown: &str, shift: usize) -> String {
                 return line.to_string();
             }
             let new_hashes = (hashes + shift).min(6);
-            let prefix_spaces = line.len().saturating_sub(trimmed.len());
-            let indent = " ".repeat(prefix_spaces);
-            let rest = &trimmed[hashes..];
+            let prefix_len = line.len().saturating_sub(trimmed.len());
+            let indent = &line[..prefix_len];
+            let hash_prefix = "#".repeat(hashes);
+            let Some(rest) = trimmed.strip_prefix(&hash_prefix) else {
+                return line.to_string();
+            };
             format!("{}{}{}", indent, "#".repeat(new_hashes), rest)
         })
         .collect::<Vec<_>>()
@@ -1105,4 +1125,31 @@ pub(crate) fn best_matching_segment_id(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .and_then(|(score, segment_id)| (score > 0.0).then_some(segment_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tail_chars_handles_multibyte_text() {
+        let text = "甲乙丙丁";
+        assert_eq!(tail_chars(text, 2), "丙丁");
+        assert_eq!(tail_chars(text, 0), "");
+    }
+
+    #[test]
+    fn test_compose_rolling_context_limited_keeps_char_boundaries() {
+        let mut segment_summaries = HashMap::new();
+        segment_summaries.insert("seg-1".to_string(), "（一）教令院".repeat(24));
+
+        let context = compose_rolling_context_limited(&segment_summaries, 1, 64);
+        assert!(context.chars().count() <= 64);
+    }
+
+    #[test]
+    fn test_shift_markdown_headings_with_non_ascii_text() {
+        let shifted = shift_markdown_headings("### 标题", 2);
+        assert_eq!(shifted, "##### 标题");
+    }
 }

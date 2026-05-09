@@ -10,6 +10,7 @@ const projectBasePath = process.env.PROJECT_BASE_PATH;
 const sourceImageBaseDir = projectBasePath ? path.join(projectBasePath, 'image') : null;
 // Output directory for generated .txt lists (within this plugin's directory)
 const outputDirForLists = path.join(__dirname, 'generated_lists');
+const allowedImageExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']);
 
 // --- Debug Logging (to stderr) ---
 function debugLog(message, ...args) {
@@ -50,7 +51,12 @@ async function generateEmojiLists() {
 
             try {
                 const files = await fs.readdir(emojiPackPath);
-                const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+                const imageFiles = files
+                    .filter(file => allowedImageExtensions.has(path.extname(file).toLowerCase()))
+                    .sort((left, right) => left.localeCompare(right, 'zh-Hans-CN', {
+                        numeric: true,
+                        sensitivity: 'base',
+                    }));
                 const listContent = imageFiles.join('|');
 
                 await fs.writeFile(outputFilePath, listContent);

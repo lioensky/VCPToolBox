@@ -73,6 +73,7 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     requiresAuth: false,
     showInSidebar: false,
   },
+  // ── 核心 ──
   {
     id: "dashboard",
     routeName: "Dashboard",
@@ -103,6 +104,7 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     navGroup: "core",
     showInSidebar: true,
   },
+  // ── Agent & 内容 ──
   {
     id: "agent-files-editor",
     routeName: "AgentFilesEditor",
@@ -174,16 +176,6 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     showInSidebar: true,
   },
   {
-    id: "dynamic-tools-manager",
-    routeName: "DynamicToolsManager",
-    path: "/dynamic-tools-manager",
-    title: "动态工具清单",
-    icon: "dynamic_feed",
-    requiresAuth: true,
-    navGroup: "toolsPlugins",
-    showInSidebar: true,
-  },
-  {
     id: "emoji-gallery",
     routeName: "EmojiGallery",
     path: "/emoji-gallery",
@@ -203,6 +195,7 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     navGroup: "agentContent",
     showInSidebar: true,
   },
+  // ── 知识 & RAG ──
   {
     id: "daily-notes-manager",
     routeName: "DailyNotesManager",
@@ -241,6 +234,17 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     icon: "tune",
     requiresAuth: true,
     navGroup: "knowledge",
+    showInSidebar: true,
+  },
+  // ── 工具 & 插件 ──
+  {
+    id: "dynamic-tools-manager",
+    routeName: "DynamicToolsManager",
+    path: "/dynamic-tools-manager",
+    title: "动态工具清单",
+    icon: "dynamic_feed",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
     showInSidebar: true,
   },
   {

@@ -1,9 +1,125 @@
 <template>
   <section class="config-section active-section emoji-gallery-page">
-    <header class="page-heading">
-      <p class="description">
-        浏览 image 目录中的表情包资源，支持关键词检索、分类筛选、分页浏览与大图预览。
-      </p>
+    <header class="hero-card card">
+      <div class="hero-copy">
+        <span class="hero-kicker">Image Workspace</span>
+        <div class="hero-title-row">
+          <div>
+            <h1>表情包画廊</h1>
+            <p class="description">
+              浏览并整理 `image` 目录中的表情包资源，支持检索、目录筛选、上传导入、分页浏览与大图预览。
+            </p>
+          </div>
+          <div class="hero-badges" aria-live="polite">
+            <span class="hero-badge">
+              <strong>{{ matchedEmojiCount }}</strong>
+              <span>命中</span>
+            </span>
+            <span class="hero-badge">
+              <strong>{{ categories.length }}</strong>
+              <span>目录</span>
+            </span>
+            <span class="hero-badge">
+              <strong>{{ items.length }}</strong>
+              <span>当前页</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-toolbar">
+        <div class="hero-search-group">
+          <label class="search-field hero-search-field">
+            <span class="material-symbols-outlined">search</span>
+            <input
+              v-model.trim="searchInput"
+              type="search"
+              aria-label="搜索表情包"
+              placeholder="搜索文件名、路径或目录…"
+              :disabled="isLoading"
+              @keydown.enter.prevent="applySearch"
+            />
+          </label>
+
+          <button
+            type="button"
+            class="btn-primary"
+            :disabled="isLoading"
+            @click="applySearch"
+          >
+            搜索
+          </button>
+
+          <button
+            v-if="activeKeyword"
+            type="button"
+            class="btn-secondary"
+            :disabled="isLoading"
+            @click="clearSearch"
+          >
+            清空
+          </button>
+        </div>
+
+        <div class="hero-toolbar-actions">
+          <label class="page-size-control">
+            <span>每页</span>
+            <select
+              v-model.number="pageSize"
+              :disabled="isLoading"
+              @change="handlePageSizeChange"
+            >
+              <option
+                v-for="size in PAGE_SIZE_OPTIONS"
+                :key="size"
+                :value="size"
+              >
+                {{ size }}
+              </option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            class="btn-secondary"
+            :disabled="isLoading"
+            @click="refreshCurrentPage"
+          >
+            {{ isLoading && hasLoadedOnce ? "刷新中…" : "刷新" }}
+          </button>
+
+          <button
+            type="button"
+            class="btn-secondary"
+            :disabled="isRebuildingList"
+            @click="rebuildGeneratedEmojiLists"
+          >
+            {{ isRebuildingList ? "重建中…" : "重建列表" }}
+          </button>
+
+          <button
+            type="button"
+            class="btn-secondary"
+            :disabled="isLoading || isUploading"
+            @click="createCategory"
+          >
+            新建目录
+          </button>
+        </div>
+      </div>
+
+      <div class="hero-status-row">
+        <p class="hero-status-tip">{{ refreshStateText }}</p>
+        <div class="hero-filter-summary">
+          <span class="filter-pill" :class="{ active: selectedCategory === '' }">
+            {{ selectedCategory ? `目录：${selectedCategory}` : "全部目录" }}
+          </span>
+          <span v-if="activeKeyword" class="filter-pill active">
+            关键词：{{ activeKeyword }}
+          </span>
+          <span class="filter-pill">{{ paginationSummary }}</span>
+        </div>
+      </div>
     </header>
 
     <div class="gallery-workspace" :class="{ 'is-console-collapsed': consoleCollapsed }">
@@ -62,8 +178,8 @@
           <div class="operations-console__section">
             <div class="operations-console__header">
               <div>
-                <span class="operations-console__label">操作台</span>
-                <h3>检索与分页</h3>
+                <span class="operations-console__label">Library Rail</span>
+                <h3>目录导航</h3>
               </div>
               <button
                 type="button"
@@ -75,25 +191,16 @@
                 <span class="material-symbols-outlined">left_panel_close</span>
               </button>
             </div>
-            <p class="panel-hint">支持关键词检索、分页浏览与索引刷新。</p>
+            <p class="panel-hint">用目录快速缩小浏览范围，维护动作留在这里集中处理。</p>
 
             <div class="quick-actions">
-              <button
-                type="button"
-                class="btn-secondary"
-                :disabled="isRebuildingList"
-                @click="rebuildGeneratedEmojiLists"
-              >
-                {{ isRebuildingList ? "重建中…" : "重建表情包列表" }}
-              </button>
-
               <button
                 type="button"
                 class="btn-secondary"
                 :disabled="isLoading"
                 @click="refreshCurrentPage"
               >
-                {{ isLoading ? "刷新中…" : "刷新" }}
+                刷新
               </button>
 
               <button
@@ -104,63 +211,26 @@
               >
                 新建目录
               </button>
-            </div>
-
-            <div class="search-row">
-              <label class="search-field">
-                <span class="material-symbols-outlined">search</span>
-                <input
-                  v-model.trim="searchInput"
-                  type="search"
-                  aria-label="搜索表情包"
-                  placeholder="搜索文件名或路径…"
-                  :disabled="isLoading"
-                  @keydown.enter.prevent="applySearch"
-                />
-              </label>
-
               <button
                 type="button"
                 class="btn-secondary"
-                :disabled="isLoading"
-                @click="applySearch"
+                :disabled="isRebuildingList"
+                @click="rebuildGeneratedEmojiLists"
               >
-                搜索
-              </button>
-
-              <button
-                v-if="activeKeyword"
-                type="button"
-                class="btn-secondary"
-                :disabled="isLoading"
-                @click="clearSearch"
-              >
-                清空
+                重建列表
               </button>
             </div>
 
-            <label class="page-size-control">
-              <span>每页</span>
-              <select
-                v-model.number="pageSize"
-                :disabled="isLoading"
-                @change="handlePageSizeChange"
-              >
-                <option
-                  v-for="size in PAGE_SIZE_OPTIONS"
-                  :key="size"
-                  :value="size"
-                >
-                  {{ size }}
-                </option>
-              </select>
-            </label>
+            <div class="rail-meta">
+              <span>{{ matchedEmojiCount }} 项命中</span>
+              <span>{{ totalEmojiCount }} 项总量</span>
+            </div>
           </div>
 
           <div class="operations-console__section">
             <span class="operations-console__label">目录筛选</span>
             <h3>按目录过滤</h3>
-            <p class="panel-hint">选择左侧目录可筛选右侧内容。</p>
+            <p class="panel-hint">目录计数显示为“当前命中 / 总量”。</p>
 
             <div class="directory-list" aria-label="目录筛选">
               <button
@@ -358,7 +428,7 @@
               @click="showRejectedList = !showRejectedList"
             >
               <span>
-                上次上传有 {{ lastRejectedItems.length }} 个文件被拒绝
+                最近一次校验有 {{ lastRejectedItems.length }} 个文件被过滤
               </span>
               <span>{{ showRejectedList ? "收起" : "展开" }}</span>
             </button>
@@ -393,14 +463,45 @@
           </section>
         </section>
 
-        <p v-if="isLoading" class="status-tip">正在加载表情包列表…</p>
-        <p v-else-if="items.length === 0" class="status-tip">{{ emptyMessage }}</p>
+        <section v-if="showSkeletonGrid" class="emoji-grid emoji-grid--skeleton" aria-label="表情包加载中">
+          <article
+            v-for="index in skeletonCardCount"
+            :key="`skeleton-${index}`"
+            class="emoji-card emoji-card--skeleton"
+            aria-hidden="true"
+          >
+            <div class="preview-shell preview-shell--skeleton"></div>
+            <div class="emoji-meta">
+              <div class="skeleton-line skeleton-line--title"></div>
+              <div class="skeleton-line skeleton-line--meta"></div>
+              <div class="skeleton-line skeleton-line--path"></div>
+            </div>
+            <div class="emoji-actions">
+              <span class="skeleton-chip"></span>
+              <span class="skeleton-chip"></span>
+              <span class="skeleton-chip"></span>
+            </div>
+          </article>
+        </section>
 
-        <section v-else class="emoji-grid" aria-label="表情包列表">
+        <section v-else-if="items.length === 0" class="card empty-state emoji-empty-state">
+          <span class="material-symbols-outlined">sentiment_dissatisfied</span>
+          <h3>暂时没有结果</h3>
+          <p>{{ emptyMessage }}</p>
+        </section>
+
+        <section v-else class="emoji-grid-shell">
+          <div v-if="showRefreshingOverlay" class="grid-refresh-banner" role="status">
+            <span class="material-symbols-outlined">sync</span>
+            <span>正在刷新索引，当前结果会在请求完成后更新</span>
+          </div>
+
+          <section class="emoji-grid" aria-label="表情包列表">
           <article
             v-for="(item, index) in items"
             :key="item.relativePath"
             class="emoji-card"
+            v-memo="[item.relativePath, deletingPaths.has(item.relativePath)]"
             :style="{ '--stagger-delay': `${Math.min(index, 24) * 22}ms` }"
           >
             <button
@@ -410,9 +511,10 @@
               @click="openPreview(item)"
             >
               <img
-                v-lazy="item.previewUrl"
+                v-lazy="item.thumbnailUrl"
                 :alt="item.name"
                 decoding="async"
+                loading="lazy"
               />
             </button>
 
@@ -454,6 +556,7 @@
               </button>
             </div>
           </article>
+          </section>
         </section>
 
         <section class="pagination-controls">
@@ -544,61 +647,64 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { useRoute, useRouter, type LocationQueryRaw } from "vue-router";
 import BaseModal from "@/components/ui/BaseModal.vue";
 import AppCheckbox from "@/components/ui/AppCheckbox.vue";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
 import { useLocalStorage } from "@/composables/useLocalStorage";
 import {
   emojisApi,
+  type EmojiGalleryData,
   type EmojiGalleryCategory,
   type EmojiGalleryItem,
   type EmojiUploadRejectedItem,
   type EmojiUploadResult,
 } from "@/api";
+import {
+  buildEmojiGalleryRouteQuery,
+  readEmojiGalleryRouteState,
+} from "@/features/emoji-gallery/routeState";
+import {
+  ARCHIVE_UPLOAD_ACCEPT,
+  formatFileSize,
+  IMAGE_UPLOAD_ACCEPT,
+  prepareUploadSelection,
+  type UploadMode,
+} from "@/features/emoji-gallery/uploadSelection";
 import { isHttpError } from "@/platform/http/errors";
 import { askConfirm, askInput } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 const PAGE_SIZE_OPTIONS = [30, 60, 120, 180] as const;
-const IMAGE_UPLOAD_ACCEPT = ".png,.jpg,.jpeg,.gif,.webp,.bmp";
-const ARCHIVE_UPLOAD_ACCEPT = ".zip,.tar,.tar.gz,.tgz";
-const MAX_UPLOAD_FILES = 40;
-const MAX_UPLOAD_FILE_SIZE = 8 * 1024 * 1024;
-const MAX_ARCHIVE_FILE_SIZE = 200 * 1024 * 1024;
+const DEFAULT_PAGE_SIZE = 60;
 const DEFAULT_UPLOAD_CATEGORY = "本地上传表情包";
 const ROOT_CATEGORY_NAME = "根目录";
-const ALLOWED_UPLOAD_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".bmp",
-]);
-const ALLOWED_ARCHIVE_EXTENSIONS = new Set([
-  ".zip",
-  ".tar",
-  ".tar.gz",
-  ".tgz",
-]);
-
-type UploadMode = "files" | "folder" | "archive";
 
 interface LoadGalleryOptions {
   forceRefresh?: boolean;
 }
 
+const router = useRouter();
+const route = useRoute();
+const initialRouteState = readEmojiGalleryRouteState(route.query, {
+  defaultPageSize: DEFAULT_PAGE_SIZE,
+  pageSizeOptions: PAGE_SIZE_OPTIONS,
+});
+
 const isLoading = ref(false);
-const searchInput = ref("");
-const activeKeyword = ref("");
-const selectedCategory = ref("");
-const pageSize = ref<number>(60);
-const currentPage = ref(1);
+const hasLoadedOnce = ref(false);
+const searchInput = ref(initialRouteState.keyword);
+const activeKeyword = ref(initialRouteState.keyword);
+const selectedCategory = ref(initialRouteState.category);
+const pageSize = ref<number>(initialRouteState.pageSize);
+const currentPage = ref(initialRouteState.page);
 const totalPages = ref(1);
 const total = ref(0);
 const categories = shallowRef<EmojiGalleryCategory[]>([]);
 const items = shallowRef<EmojiGalleryItem[]>([]);
 const itemsPathIndex = shallowRef<Map<string, number>>(new Map());
+const galleryCache = ref<EmojiGalleryData["cache"] | null>(null);
+const isSyncingRoute = ref(false);
 
 watch(items, (newItems) => {
   itemsPathIndex.value = new Map(
@@ -662,6 +768,9 @@ const canPreviewNext = computed(() => {
 const paginationSummary = computed(
   () => `第 ${currentPage.value} / ${totalPages.value} 页 · 共 ${total.value} 项`
 );
+const skeletonCardCount = computed(() => Math.min(pageSize.value, 12));
+const showSkeletonGrid = computed(() => isLoading.value && !hasLoadedOnce.value);
+const showRefreshingOverlay = computed(() => isLoading.value && hasLoadedOnce.value);
 
 const selectedUploadTotalSize = computed(() =>
   selectedFiles.value.reduce((sum, file) => sum + file.size, 0)
@@ -696,6 +805,23 @@ const cacheScannedAtText = computed(() => {
   });
 });
 
+const refreshStateText = computed(() => {
+  if (!galleryCache.value?.refreshRequested) {
+    return cacheScannedAtText.value
+      ? `当前索引扫描时间：${cacheScannedAtText.value}`
+      : "当前展示为已缓存索引结果";
+  }
+
+  if (galleryCache.value.refreshApplied) {
+    return cacheScannedAtText.value
+      ? `已从磁盘刷新索引：${cacheScannedAtText.value}`
+      : "已从磁盘刷新索引";
+  }
+
+  const cooldownSeconds = Math.ceil((galleryCache.value.refreshCooldownMs ?? 5000) / 1000);
+  return `刷新请求命中冷却窗口，已继续使用缓存结果（${cooldownSeconds} 秒内避免重复全量扫描）`;
+});
+
 const emptyMessage = computed(() => {
   if (activeKeyword.value && selectedCategory.value) {
     return "当前分类下没有匹配关键词的表情包。";
@@ -710,44 +836,15 @@ const emptyMessage = computed(() => {
 });
 
 function normalizeGalleryItem(item: EmojiGalleryItem): EmojiGalleryItem {
-  if (item.previewUrl) {
+  if (item.previewUrl && item.thumbnailUrl) {
     return item;
   }
 
   return {
     ...item,
     previewUrl: emojisApi.buildPreviewUrl(item.relativePath),
+    thumbnailUrl: emojisApi.buildThumbnailUrl(item.relativePath),
   };
-}
-
-function getFileExtension(fileName: string): string {
-  const lowerFileName = fileName.toLowerCase();
-  if (lowerFileName.endsWith(".tar.gz")) {
-    return ".tar.gz";
-  }
-
-  const lastDotIndex = lowerFileName.lastIndexOf(".");
-  if (lastDotIndex <= 0) {
-    return "";
-  }
-
-  return lowerFileName.slice(lastDotIndex);
-}
-
-function normalizeRelativePath(rawPath: string): string {
-  return rawPath.replace(/\\/g, "/").replace(/^\/+/, "").trim();
-}
-
-function formatFileSize(size: number): string {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function sanitizeCategoryName(rawValue: string): string | null {
@@ -767,33 +864,57 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-function validateUploadFile(file: File, mode: UploadMode): string | null {
-  const extension = getFileExtension(file.name);
-
-  if (mode === "archive") {
-    if (!ALLOWED_ARCHIVE_EXTENSIONS.has(extension)) {
-      return `不支持的压缩包格式：${extension || "unknown"}`;
-    }
-
-    if (file.size > MAX_ARCHIVE_FILE_SIZE) {
-      return `压缩包超过大小限制（${Math.floor(MAX_ARCHIVE_FILE_SIZE / 1024 / 1024)}MB）：${file.name}`;
-    }
-
-    return null;
-  }
-
-  if (!ALLOWED_UPLOAD_EXTENSIONS.has(extension)) {
-    return `不支持的文件格式：${extension || "unknown"}`;
-  }
-
-  if (file.size > MAX_UPLOAD_FILE_SIZE) {
-    return `文件超过大小限制（${Math.floor(MAX_UPLOAD_FILE_SIZE / 1024 / 1024)}MB）：${file.name}`;
-  }
-
-  return null;
+function getRouteStateSnapshot(page = currentPage.value) {
+  return {
+    keyword: activeKeyword.value,
+    category: selectedCategory.value,
+    page,
+    pageSize: pageSize.value,
+  } as const;
 }
 
-async function loadGallery(page = 1, options: LoadGalleryOptions = {}): Promise<void> {
+async function syncRouteQuery(page = currentPage.value): Promise<void> {
+    const nextState = getRouteStateSnapshot(page);
+  const currentState = readEmojiGalleryRouteState(route.query, {
+    defaultPageSize: DEFAULT_PAGE_SIZE,
+    pageSizeOptions: PAGE_SIZE_OPTIONS,
+  });
+
+  if (
+    currentState.keyword === nextState.keyword &&
+    currentState.category === nextState.category &&
+    currentState.page === nextState.page &&
+    currentState.pageSize === nextState.pageSize
+  ) {
+    return;
+  }
+
+  const mergedQuery: LocationQueryRaw = { ...route.query };
+  delete mergedQuery.keyword;
+  delete mergedQuery.category;
+  delete mergedQuery.page;
+  delete mergedQuery.pageSize;
+
+  Object.assign(
+    mergedQuery,
+    buildEmojiGalleryRouteQuery(nextState, {
+      page: 1,
+      pageSize: DEFAULT_PAGE_SIZE,
+    })
+  );
+
+  isSyncingRoute.value = true;
+  try {
+    await router.replace({ query: mergedQuery });
+  } finally {
+    isSyncingRoute.value = false;
+  }
+}
+
+async function loadGallery(
+  page = 1,
+  options: LoadGalleryOptions = {}
+): Promise<EmojiGalleryData | null> {
   const requestController = new AbortController();
   if (currentLoadController) {
     currentLoadController.abort();
@@ -824,15 +945,26 @@ async function loadGallery(page = 1, options: LoadGalleryOptions = {}): Promise<
       typeof response.totalPages === "number"
         ? Math.max(response.totalPages, 1)
         : 1;
+    galleryCache.value = response.cache ?? null;
     cacheScannedAt.value =
       response.cache && typeof response.cache.scannedAt === "number"
         ? response.cache.scannedAt
         : null;
+    hasLoadedOnce.value = true;
+
+    await syncRouteQuery(currentPage.value);
+
+    if (options.forceRefresh && response.cache?.refreshRequested && !response.cache.refreshApplied) {
+      showMessage(refreshStateText.value, "warning");
+    }
+
+    return response;
   } catch (error) {
     if (!isAbortError(error)) {
       console.error("[EmojiGallery] Failed to load gallery:", error);
       showMessage("加载表情包列表失败，请稍后重试", "error");
     }
+    return null;
   } finally {
     if (currentLoadController === requestController) {
       currentLoadController = null;
@@ -866,6 +998,35 @@ watch(searchInput, (nextValue) => {
   }
 });
 
+watch(
+  () => route.query,
+  (query) => {
+    if (isSyncingRoute.value) {
+      return;
+    }
+
+    const nextRouteState = readEmojiGalleryRouteState(query, {
+      defaultPageSize: DEFAULT_PAGE_SIZE,
+      pageSizeOptions: PAGE_SIZE_OPTIONS,
+    });
+    const hasMeaningfulChange =
+      nextRouteState.keyword !== activeKeyword.value ||
+      nextRouteState.category !== selectedCategory.value ||
+      nextRouteState.page !== currentPage.value ||
+      nextRouteState.pageSize !== pageSize.value;
+
+    if (!hasMeaningfulChange) {
+      return;
+    }
+
+    searchInput.value = nextRouteState.keyword;
+    activeKeyword.value = nextRouteState.keyword;
+    selectedCategory.value = nextRouteState.category;
+    pageSize.value = nextRouteState.pageSize;
+    void loadGallery(nextRouteState.page);
+  }
+);
+
 function selectCategory(categoryName: string): void {
   if (selectedCategory.value === categoryName) {
     return;
@@ -879,8 +1040,11 @@ function handlePageSizeChange(): void {
   void loadGallery(1);
 }
 
-function refreshCurrentPage(): void {
-  void loadGallery(currentPage.value, { forceRefresh: true });
+async function refreshCurrentPage(): Promise<void> {
+  const response = await loadGallery(currentPage.value, { forceRefresh: true });
+  if (response?.cache?.refreshRequested && response.cache.refreshApplied) {
+    showMessage("已重新扫描 image 目录并刷新当前结果", "success");
+  }
 }
 
 async function createCategory(): Promise<void> {
@@ -930,17 +1094,17 @@ async function createCategory(): Promise<void> {
   }
 }
 
-function goToPreviousPage(): Promise<void> {
+function goToPreviousPage(): Promise<EmojiGalleryData | null> {
   if (currentPage.value <= 1) {
-    return Promise.resolve();
+    return Promise.resolve(null);
   }
 
   return loadGallery(currentPage.value - 1);
 }
 
-function goToNextPage(): Promise<void> {
+function goToNextPage(): Promise<EmojiGalleryData | null> {
   if (currentPage.value >= totalPages.value) {
-    return Promise.resolve();
+    return Promise.resolve(null);
   }
 
   return loadGallery(currentPage.value + 1);
@@ -1187,61 +1351,33 @@ function applyUploadSelection(
   mode: UploadMode,
   relativePaths: string[]
 ): void {
-  if (files.length === 0) {
-    return;
+  const selection = prepareUploadSelection(files, mode, relativePaths);
+
+  if (selection.rejected.length > 0) {
+    lastRejectedItems.value = selection.rejected.map((item) => ({
+      fileName: item.fileName,
+      reason: item.reason,
+    }));
+    showRejectedList.value = true;
+
+    const rejectionMessage =
+      selection.rejected.length === 1
+        ? selection.rejected[0].reason
+        : `已过滤 ${selection.rejected.length} 个不符合要求的文件，请展开查看原因`;
+    showMessage(rejectionMessage, "warning");
+  } else {
+    lastRejectedItems.value = [];
+    showRejectedList.value = false;
   }
 
-  const acceptedFiles: File[] = [];
-  const acceptedRelativePaths: string[] = [];
-
-  if (mode === "archive") {
-    const archiveFile = files[0];
-    const validateError = validateUploadFile(archiveFile, "archive");
-    if (validateError) {
-      showMessage(validateError, "warning");
-      clearSelectedFiles();
-      return;
-    }
-
-    selectedFiles.value = [archiveFile];
-    selectedRelativePaths.value = [archiveFile.name];
-    uploadMode.value = "archive";
-    return;
-  }
-
-  const maxAllowed = files.length;
-  if (files.length > MAX_UPLOAD_FILES) {
-    showMessage(
-      `单次上传最多 ${MAX_UPLOAD_FILES} 个文件，当前选择了 ${files.length} 个，请删减后再试`,
-      "warning"
-    );
+  if (selection.resetSelection) {
     clearSelectedFiles();
     return;
   }
 
-  const dedupeSet = new Set<string>();
-  for (let index = 0; index < maxAllowed; index += 1) {
-    const file = files[index];
-    const relativePath = normalizeRelativePath(relativePaths[index] || file.name);
-    const validateError = validateUploadFile(file, mode);
-    if (validateError) {
-      showMessage(validateError, "warning");
-      continue;
-    }
-
-    const signature = `${relativePath}|${file.size}|${file.lastModified}`;
-    if (dedupeSet.has(signature)) {
-      continue;
-    }
-
-    dedupeSet.add(signature);
-    acceptedFiles.push(file);
-    acceptedRelativePaths.push(relativePath || file.name);
-  }
-
-  selectedFiles.value = acceptedFiles;
-  selectedRelativePaths.value = acceptedRelativePaths;
-  uploadMode.value = mode;
+  selectedFiles.value = selection.acceptedFiles;
+  selectedRelativePaths.value = selection.acceptedRelativePaths;
+  uploadMode.value = selection.mode;
 }
 
 function handleFileSelected(event: Event): void {
@@ -1451,7 +1587,7 @@ async function rebuildGeneratedEmojiLists(): Promise<void> {
 }
 
 onMounted(() => {
-  void loadGallery(1);
+  void loadGallery(initialRouteState.page);
 });
 
 onUnmounted(() => {
@@ -1469,17 +1605,139 @@ onUnmounted(() => {
   gap: var(--space-md);
 }
 
-.page-heading {
+.hero-card {
+  display: grid;
+  gap: var(--space-md);
+  padding: clamp(20px, 3vw, 28px);
+  border-radius: calc(var(--radius-xl) + 4px);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 18%, var(--border-color));
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--highlight-text) 16%, transparent), transparent 34%),
+    linear-gradient(
+      140deg,
+      color-mix(in srgb, var(--secondary-bg) 92%, transparent),
+      color-mix(in srgb, var(--surface-overlay-strong) 88%, transparent)
+    );
+  box-shadow: var(--shadow-overlay-soft);
+}
+
+.hero-copy {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
+}
+
+.hero-kicker {
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.hero-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  align-items: flex-start;
+}
+
+.hero-title-row h1 {
+  margin: 0;
+  font-size: calc(var(--font-size-title) * 1.55);
+  line-height: 1.08;
+}
+
+.hero-badges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
+  gap: var(--space-sm);
+  min-width: min(100%, 320px);
+}
+
+.hero-badge {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 16%, var(--border-color));
+  background: color-mix(in srgb, var(--surface-overlay-soft) 76%, transparent);
+}
+
+.hero-badge strong {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.hero-badge span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.hero-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.hero-search-group,
+.hero-toolbar-actions,
+.hero-status-row,
+.hero-filter-summary {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.hero-search-group {
+  min-width: 0;
+}
+
+.hero-search-field {
+  min-width: min(100%, 380px);
+}
+
+.hero-toolbar-actions {
+  justify-content: flex-end;
+}
+
+.hero-status-row {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.hero-status-tip {
+  margin: 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.6;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  background: color-mix(in srgb, var(--surface-overlay-soft) 82%, transparent);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.filter-pill.active {
+  color: var(--primary-text);
+  border-color: color-mix(in srgb, var(--highlight-text) 32%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 18%, transparent);
 }
 
 .description {
   margin: 0;
   color: var(--secondary-text);
-  white-space: nowrap;
+  white-space: normal;
   line-height: 1.65;
+  max-width: 72ch;
 }
 
 .upload-console {
@@ -1511,7 +1769,7 @@ onUnmounted(() => {
 
 .gallery-workspace {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: var(--space-md);
   align-items: start;
 }
@@ -1531,6 +1789,7 @@ onUnmounted(() => {
   gap: var(--space-md);
   padding: var(--space-md);
   border-radius: var(--radius-xl);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 14%, var(--border-color));
   transition: padding 0.2s ease;
 }
 
@@ -1589,6 +1848,21 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
+}
+
+.rail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+}
+
+.rail-meta span {
+  padding: 4px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
 }
 
 .search-row {
@@ -1819,18 +2093,44 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--surface-overlay-soft) 75%, transparent);
 }
 
-.status-tip {
-  padding: var(--space-md);
-  border-radius: var(--radius-lg);
-  border: 1px dashed color-mix(in srgb, var(--border-color) 88%, transparent);
-  background: color-mix(in srgb, var(--surface-overlay-soft) 82%, transparent);
-  color: var(--secondary-text);
+.emoji-empty-state {
+  display: grid;
+  gap: var(--space-xs);
+  padding: clamp(28px, 5vw, 42px);
+}
+
+.emoji-grid-shell {
+  position: relative;
+}
+
+.grid-refresh-banner {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid color-mix(in srgb, var(--highlight-text) 26%, transparent);
+  background: color-mix(in srgb, var(--highlight-text) 14%, var(--surface-overlay-soft));
+  color: var(--primary-text);
+  box-shadow: var(--shadow-overlay-soft);
+}
+
+.grid-refresh-banner .material-symbols-outlined {
+  font-size: 1rem;
 }
 
 .emoji-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--space-md);
+}
+
+.emoji-grid--skeleton {
+  pointer-events: none;
 }
 
 .emoji-card {
@@ -1847,8 +2147,14 @@ onUnmounted(() => {
     );
   overflow: hidden;
   box-shadow: var(--shadow-overlay-soft);
+  content-visibility: auto;
+  contain-intrinsic-size: 320px;
   animation: emoji-card-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--stagger-delay, 0ms);
+}
+
+.emoji-card--skeleton {
+  overflow: hidden;
 }
 
 .preview-shell {
@@ -1860,10 +2166,59 @@ onUnmounted(() => {
   aspect-ratio: 1 / 1;
 }
 
+.preview-shell--skeleton {
+  position: relative;
+  overflow: hidden;
+}
+
 .preview-shell img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.preview-shell--skeleton::after,
+.skeleton-line::after,
+.skeleton-chip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, white 18%, transparent),
+    transparent
+  );
+  animation: emoji-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-line,
+.skeleton-chip {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--surface-overlay-soft) 88%, transparent);
+}
+
+.skeleton-line--title {
+  height: 16px;
+  width: 72%;
+}
+
+.skeleton-line--meta {
+  height: 12px;
+  width: 40%;
+}
+
+.skeleton-line--path {
+  height: 12px;
+  width: 88%;
+}
+
+.skeleton-chip {
+  display: inline-flex;
+  min-height: 30px;
 }
 
 .emoji-meta {
@@ -1999,6 +2354,12 @@ onUnmounted(() => {
   }
 }
 
+@keyframes emoji-skeleton-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
 .btn-danger {
   border: 1px solid color-mix(in srgb, var(--danger-color, #ef4444) 60%, transparent);
   border-radius: var(--radius-md);
@@ -2118,12 +2479,21 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1200px) {
-  .gallery-workspace {
-    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  .hero-title-row,
+  .hero-toolbar,
+  .hero-status-row {
+    grid-template-columns: 1fr;
+    display: grid;
   }
 
-  .description {
-    white-space: normal;
+  .hero-badges,
+  .hero-toolbar-actions {
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .gallery-workspace {
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   }
 }
 
@@ -2139,6 +2509,17 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
+  .hero-card {
+    padding: var(--space-md);
+  }
+
+  .hero-badges {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-search-group,
+  .hero-toolbar-actions,
+  .hero-filter-summary,
   .quick-actions,
   .upload-entry-actions,
   .upload-actions {
@@ -2146,9 +2527,8 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .search-row {
-    display: grid;
-    grid-template-columns: 1fr;
+  .hero-search-field {
+    min-width: 0;
   }
 
   .upload-file-item {
@@ -2193,6 +2573,12 @@ onUnmounted(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .emoji-card {
+    animation: none;
+  }
+
+  .preview-shell--skeleton::after,
+  .skeleton-line::after,
+  .skeleton-chip::after {
     animation: none;
   }
 }

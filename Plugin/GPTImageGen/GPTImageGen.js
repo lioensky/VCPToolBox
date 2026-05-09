@@ -554,6 +554,150 @@ async function callEditAPI(params) {
     return parseApiResponse(response);
 }
 
+/**
+ * 调用 chat/completions API 进行图片生成（适用于中转站）
+ *
+ * 许多中转站（如 CherryStudio 生态）通过 chat/completions 端点提供图片生成能力，
+ * 响应中图片以 message.images 数组或 content 中的 data URI 形式返回。
+ *
+ * @param {object} params - 生成参数
+ * @param {string} params.prompt - 图片生成提示词
+ * @returns {Promise<object>} 标准化的 API 响应体（与 images/generations 格式对齐）
+ */
+async function callChatImageAPI(params) {
+    const apiUrl = `${OPENAI_BASE_URL}/v1/chat/completions`;
+
+    const requestBody = {
+        model: GPT_IMAGE_MODEL,
+        stream: false,
+        messages: [
+            {
+                role: 'user',
+                content: params.prompt
+            }
+        ]
+    };
+
+    const bodyStr = JSON.stringify(requestBody);
+    debugLog('Chat Image API Request URL:', apiUrl);
+    debugLog('Chat Image API Request Body:', bodyStr.substring(0, 500));
+
+    const response = await httpRequestWithRetry(apiUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Accept': 'application/json',
+            'Content-Length': Buffer.byteLength(bodyStr)
+        },
+        timeout: 300000
+    }, bodyStr);
+
+    return parseChatImageResponse(response);
+}
+
+/**
+ * 解析 chat/completions 响应中的图片数据
+ *
+ * 支持三种响应格式（按优先级）：
+ * 1. choice.message.images 数组（CherryStudio 格式）
+ * 2. choice.message.content 中的 Markdown 图片 ![](data:image/...)
+ * 3. choice.message.content 中的裸 data:image URI
+ *
+ * 返回格式与 images/generations 对齐：{ data: [{ b64_json }] } 或 { data: [{ url }] }
+ *
+ * @param {object} response - httpRequest 返回的响应
+ * @returns {object} 标准化的 API 响应体
+ */
+function parseChatImageResponse(response) {
+    debugLog('Chat Image API Response Status:', response.statusCode);
+    debugLog('Chat Image API Response Body (first 500 chars):', response.body.substring(0, 500));
+
+    if (response.statusCode !== 200) {
+        // 复用通用错误处理
+        let errorDetail = '';
+        try {
+            const errorBody = JSON.parse(response.body);
+            errorDetail = errorBody.error?.message || errorBody.message || JSON.stringify(errorBody);
+        } catch {
+            errorDetail = response.body.substring(0, 300);
+        }
+
+        switch (response.statusCode) {
+            case 429:
+                throw new Error(`Chat API 请求被限流（429），已重试 ${MAX_RETRIES} 次仍失败。详情: ${errorDetail}`);
+            case 401:
+                throw new Error(`Chat API 认证失败（401），请检查 OPENAI_API_KEY。详情: ${errorDetail}`);
+            case 400:
+                throw new Error(`Chat API 请求参数错误（400）。详情: ${errorDetail}`);
+            case 503:
+                throw new Error(`Chat API 服务不可用（503），已重试 ${MAX_RETRIES} 次仍失败。详情: ${errorDetail}`);
+            default:
+                throw new Error(`Chat API 请求失败（HTTP ${response.statusCode}）。详情: ${errorDetail}`);
+        }
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch (e) {
+        throw new Error(`Chat API 返回了无效的 JSON 响应: ${response.body.substring(0, 200)}`);
+    }
+
+    const message = parsed.choices?.[0]?.message;
+    if (!message) {
+        throw new Error(`Chat API 响应中缺少 message 对象。响应: ${JSON.stringify(parsed).substring(0, 300)}`);
+    }
+
+    const images = [];
+
+    // 格式 1: message.images 数组（CherryStudio 格式）
+    if (message.images && Array.isArray(message.images) && message.images.length > 0) {
+        debugLog(`Found ${message.images.length} image(s) in message.images array`);
+        for (const img of message.images) {
+            const url = img?.image_url?.url;
+            if (!url) continue;
+
+            if (url.startsWith('data:')) {
+                const dataMatch = url.match(/^data:(image\/\w+);base64,([\s\S]+)$/);
+                if (dataMatch) {
+                    images.push({ b64_json: dataMatch[2].replace(/\s/g, '') });
+                }
+            } else {
+                images.push({ url });
+            }
+        }
+    }
+
+    // 格式 2/3: 从 content 中提取 data URI（Markdown 图片或裸 URI）
+    if (images.length === 0 && message.content && typeof message.content === 'string') {
+        // Markdown 格式: ![](data:image/xxx;base64,...)
+        const markdownRegex = /!\[.*?\]\((data:image\/\w+;base64,[A-Za-z0-9+/=\s]+)\)/g;
+        let match;
+        while ((match = markdownRegex.exec(message.content)) !== null) {
+            const b64 = match[1].replace(/^data:image\/\w+;base64,/, '').replace(/\s/g, '');
+            images.push({ b64_json: b64 });
+        }
+
+        // 裸 data URI 兜底
+        if (images.length === 0) {
+            const bareDataUriRegex = /data:image\/\w+;base64,[A-Za-z0-9+/=\s]+/g;
+            while ((match = bareDataUriRegex.exec(message.content)) !== null) {
+                const b64 = match[0].replace(/^data:image\/\w+;base64,/, '').replace(/\s/g, '');
+                images.push({ b64_json: b64 });
+            }
+        }
+    }
+
+    if (images.length === 0) {
+        const contentPreview = (message.content || '').substring(0, 300);
+        throw new Error(`Chat API 未返回任何图片。可能原因：提示词触发了安全审核、模型不支持图片生成、或中转站未正确返回图片格式。模型返回内容: ${contentPreview}`);
+    }
+
+    debugLog(`Extracted ${images.length} image(s) from chat response`);
+    return { data: images };
+}
+
 // ============================================================
 // 图像保存
 // ============================================================
@@ -755,6 +899,7 @@ async function main() {
         const command = (args.command || args.Command || args.cmd || 'generate').toLowerCase();
         // 对 invocationCommands 的 commandIdentifier 做兼容
         const isEditMode = command === 'edit' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
+        const isChatMode = command === 'chatimage' || command === 'chat' || command === 'gptchatimage';
 
         // 获取 prompt 参数（兼容多种字段名）
         const prompt = args.prompt || args.Prompt || args.text || '';
@@ -839,6 +984,12 @@ async function main() {
                 size,
                 quality
             });
+        } else if (isChatMode) {
+            // ======== Chat 生图模式（适用于中转站） ========
+            debugLog('Chat Image mode');
+            debugLog('Parsed params:', { prompt: prompt.substring(0, 100), model: GPT_IMAGE_MODEL });
+
+            apiResult = await callChatImageAPI({ prompt });
         } else {
             // ======== 文生图（Generate）模式 ========
             if (!isValidBackground(background)) {
@@ -868,7 +1019,7 @@ async function main() {
             quality,
             n,
             background,
-            command: isEditMode ? 'GPTEditImage' : 'GPTGenerateImage'
+            command: isEditMode ? 'GPTEditImage' : isChatMode ? 'GPTChatImage' : 'GPTGenerateImage'
         });
 
         outputAndExit(response);

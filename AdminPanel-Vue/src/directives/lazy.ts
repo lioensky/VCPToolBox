@@ -5,7 +5,6 @@
 
 interface LazyImageElement extends HTMLImageElement {
   _lazySrc?: string
-  _lazyObserver?: IntersectionObserver
 }
 
 const OBSERVER_OPTIONS: IntersectionObserverInit = {
@@ -13,44 +12,69 @@ const OBSERVER_OPTIONS: IntersectionObserverInit = {
   threshold: 0.01
 }
 
-function cleanupObserver(el: LazyImageElement): void {
-  if (el._lazyObserver) {
-    el._lazyObserver.disconnect()
-    delete el._lazyObserver
+const observedImages = new Map<LazyImageElement, string>()
+let sharedObserver: IntersectionObserver | null = null
+
+function disconnectObserverIfIdle(): void {
+  if (sharedObserver && observedImages.size === 0) {
+    sharedObserver.disconnect()
+    sharedObserver = null
   }
+}
+
+function getSharedObserver(): IntersectionObserver | null {
+  if (typeof window === 'undefined' || !('IntersectionObserver' in window)) {
+    return null
+  }
+
+  if (!sharedObserver) {
+    sharedObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+
+        const img = entry.target as LazyImageElement
+        const src = observedImages.get(img)
+        if (!src) continue
+
+        img.src = src
+        delete img._lazySrc
+        observedImages.delete(img)
+        sharedObserver?.unobserve(img)
+      }
+
+      disconnectObserverIfIdle()
+    }, OBSERVER_OPTIONS)
+  }
+
+  return sharedObserver
+}
+
+function cleanupObserver(el: LazyImageElement): void {
+  if (sharedObserver) {
+    sharedObserver.unobserve(el)
+  }
+  observedImages.delete(el)
   delete el._lazySrc
+  disconnectObserverIfIdle()
 }
 
 function observe(el: LazyImageElement, src: string): void {
   if (!src) {
+    cleanupObserver(el)
     el.src = ''
     return
   }
 
-  if (!('IntersectionObserver' in window)) {
+  const observer = getSharedObserver()
+  if (!observer) {
     el.src = src
     return
   }
 
   el._lazySrc = src
   el.src = ''
-
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        const img = entry.target as LazyImageElement
-        if (img._lazySrc) {
-          img.src = img._lazySrc
-          delete img._lazySrc
-          observer.unobserve(img)
-          delete img._lazyObserver
-        }
-      }
-    }
-  }, OBSERVER_OPTIONS)
-
+  observedImages.set(el, src)
   observer.observe(el)
-  el._lazyObserver = observer
 }
 
 export default {
