@@ -76,7 +76,10 @@ quality:「始」high「末」
 tool_name:「始」GPTImageGen「末」,
 command:「始」GPTEditImage「末」,
 prompt:「始」Transform this photo into a Studio Ghibli anime style illustration with soft watercolor textures「末」,
-image:「始」http://example.com/photo.png「末」,
+image:「始」(必需) 原图来源。支持以下格式：
+  - 单张图片：直接填写 URL、base64 data URI 或本地文件路径
+  - 多张图片：使用 JSON 数组格式 ["path1.png", "path2.jpg"]
+每张图片≤4MB，最多16张。「末」,
 size:「始」1536x1024「末」,
 quality:「始」high「末」
 <<<[END_TOOL_REQUEST]>>>
@@ -85,6 +88,7 @@ quality:「始」high「末」
 ### 参数说明
 
 **文生图参数：**
+
 - `prompt`（必需）：图像生成提示词，建议英文。不支持负面提示词参数，可在 prompt 中用 "Avoid: ..." 模拟
 - `size`（可选）：WIDTHxHEIGHT，最短边≥256，最长边≤3840。也支持纯数字简写（如 `1024` 自动转为 `1024x1024`）
 - `quality`（可选）：low（快速低成本）/ medium / high（精细高成本）/ auto
@@ -92,6 +96,7 @@ quality:「始」high「末」
 - `n`（可选）：生成数量 1-4
 
 **图生图参数：**
+
 - `prompt`（必需）：描述如何修改图片
 - `image`（必需）：原始图片来源（**单张≤4MB**），支持：
   - HTTP/HTTPS URL
@@ -131,6 +136,7 @@ quality:「始」high「末」
 ## 📝 更新日志
 
 ### v1.0.2 (2026-04-29) — by infinite-vector
+
 - **🔒 安全性**：修复源码中 `OPENAI_BASE_URL` 默认值硬编码为开发用反代地址的问题
 - **🔄 自动重试**：新增 `httpRequestWithRetry()` 包装器，对 429/503 自动指数退避重试（可配置 `MAX_RETRIES` / `RETRY_BASE_DELAY_MS`）
 - **✅ 输入校验**：图生图输入图片新增 4MB 大小校验，支持 data URI / URL / 本地文件三种来源
@@ -139,6 +145,7 @@ quality:「始」high「末」
 - **📝 Manifest 完善**：更新 configSchema 为带描述的对象格式，补充 quality 档位、transparent 限制、4MB 限制等说明
 
 ### v1.0.1 (2025-04-25) — by 小飒
+
 - **🐛 修复图生图功能**：`callEditAPI()` 从错误的 `application/json` 格式改为 OpenAI 要求的 `multipart/form-data` 格式
 - **✨ 新增 `buildMultipartBody()`**：零依赖的 multipart/form-data 请求体构建器
 - **✨ 新增 `parseDataURI()`**：data URI → Buffer + MIME 类型解析器
@@ -146,6 +153,7 @@ quality:「始」high「末」
 - 文生图功能不受影响
 
 ### v1.0.0
+
 - 初始版本，支持文生图（GPTGenerateImage）
 - 图生图功能因 API 请求格式错误无法使用
 

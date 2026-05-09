@@ -330,7 +330,7 @@ class ToolExecutor {
     // 执行插件
     try {
       if (this.debugMode) console.log(`[ToolExecutor] Calling processToolCall for ${name} with args keys: ${Object.keys(args).join(', ')}`);
-      const result = await this.pluginManager.processToolCall(name, args, clientIp);
+      const result = await this.pluginManager.processToolCall(name, args, clientIp, 'post');
       return this._processResult(name, result);
     } catch (error) {
       return this._createErrorResult(name, `执行错误: ${error.message}`);
