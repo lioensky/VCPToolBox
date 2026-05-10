@@ -92,11 +92,12 @@ function findClosingQuote(line: string, quoteChar: '"' | "'", startIndex: number
 
 function unescapeDoubleQuotedValue(value: string): string {
   return value
+    .replace(/\\\\/g, '\x00')
     .replace(/\\r/g, '\r')
     .replace(/\\n/g, '\n')
     .replace(/\\t/g, '\t')
     .replace(/\\"/g, '"')
-    .replace(/\\\\/g, '\\')
+    .replace(/\x00/g, '\\')
 }
 
 function escapeDoubleQuotedValue(value: string): string {
@@ -171,6 +172,11 @@ export function serializeEnvValue(value: SerializableEnvValue): string {
 
   if (!shouldQuote) {
     return normalizedValue
+  }
+
+  // dotenv 对单引号值不做转义处理，可正确保留 JSON 等含双引号的值
+  if (!normalizedValue.includes("'")) {
+    return `'${normalizedValue}'`
   }
 
   return `"${escapeDoubleQuotedValue(normalizedValue)}"`
