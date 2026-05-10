@@ -837,16 +837,31 @@ class DynamicToolRegistry {
         const ragPlugin = this.pluginManager?.messagePreprocessors?.get
             ? this.pluginManager.messagePreprocessors.get('RAGDiaryPlugin')
             : null;
-        if (ragPlugin && typeof ragPlugin.getSingleEmbedding === 'function') {
-            return ragPlugin.getSingleEmbedding.bind(ragPlugin);
-        }
-        if (ragPlugin && typeof ragPlugin.getContextBridge === 'function') {
+        if (!ragPlugin) return null;
+
+        let rawEmbeddingFn = null;
+        if (typeof ragPlugin.getSingleEmbeddingCached === 'function') {
+            rawEmbeddingFn = ragPlugin.getSingleEmbeddingCached.bind(ragPlugin);
+        } else if (typeof ragPlugin.getSingleEmbedding === 'function') {
+            rawEmbeddingFn = ragPlugin.getSingleEmbedding.bind(ragPlugin);
+        } else if (typeof ragPlugin.getContextBridge === 'function') {
             const bridge = ragPlugin.getContextBridge();
-            if (bridge && typeof bridge.getSingleEmbedding === 'function') {
-                return bridge.getSingleEmbedding.bind(bridge);
+            if (bridge && typeof bridge.embedText === 'function') {
+                rawEmbeddingFn = bridge.embedText.bind(bridge);
             }
         }
-        return null;
+
+        if (!rawEmbeddingFn) return null;
+
+        const vectorDBManager = this.pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
+        if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {
+            return async (text) => vectorDBManager.getPluginDescriptionVector(
+                `dynamic_tool_registry:${String(text || '').trim()}`,
+                rawEmbeddingFn
+            );
+        }
+
+        return rawEmbeddingFn;
     }
 
     _cosineSimilarity(a, b) {
