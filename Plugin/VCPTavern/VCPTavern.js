@@ -175,6 +175,34 @@ class VCPTavern {
         return resolved;
     }
 
+  // 检测预设是否需要时间追踪（是否使用了 {{LastChatTime}} 或 {{TimeSinceLastChat}}）
+  _presetNeedsTimeTracking(preset) {
+    if (!preset || !Array.isArray(preset.rules)) return false;
+
+    const timeVarRegex = /\{\{(LastChatTime|TimeSinceLastChat)\}\}/;
+
+    for (const rule of preset.rules) {
+      if (!rule.enabled) continue;
+
+      // 提取规则内容的文本（兼容字符串和对象两种格式）
+      let textContent = "";
+      if (typeof rule.content === "string") {
+        textContent = rule.content;
+      } else if (rule.content && typeof rule.content.content === "string") {
+        textContent = rule.content.content;
+      } else if (rule.content && typeof rule.content === "object") {
+        // 兜底：序列化搜索
+        textContent = JSON.stringify(rule.content);
+      }
+
+      if (timeVarRegex.test(textContent)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
     async initialize(config) {
         this.debugMode = config.DebugMode || false;
         await this._loadPresets();
@@ -254,7 +282,13 @@ class VCPTavern {
 
         if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
 
-        // --- 计算时间间隔逻辑 ---
+    // 检测预设是否需要时间追踪（是否使用了 {{LastChatTime}} 或 {{TimeSinceLastChat}}）
+    const needsTimeTracking = this._presetNeedsTimeTracking(preset);
+
+    // --- 计算时间间隔逻辑 (仅当预设使用时间变量时) ---
+    let resolveExtendedVariables;
+
+    if (needsTimeTracking) {
         const now = Date.now();
         let lastChatTimeStr = '';
         let timeSinceLastChatStr = '';
@@ -291,10 +325,7 @@ class VCPTavern {
             if (this.debugMode) console.log(`[VCPTavern] 防抖生效，跳过时间更新 (距上次仅 ${Math.round((now - lastLoggedTime) / 1000)}s)`);
         }
 
-        // 将计算出的时间变量注入到实例中，供 _resolveTimeVariables 使用
-        // 注意：这里我们需要稍微修改 _resolveTimeVariables 来支持这两个新变量
-        // 或者我们直接在这里定义一个临时的替换函数
-        const resolveExtendedVariables = (content) => {
+        resolveExtendedVariables = (content) => {
             if (!content) return content;
             
             const replaceFn = (text) => {
@@ -317,6 +348,36 @@ class VCPTavern {
             }
             return content;
         };
+
+      if (this.debugMode)
+        console.log(
+          `[VCPTavern] 预设 "${presetName}" 已启用时间追踪 (Key: ${logKey})`
+        );
+    } else {
+      if (this.debugMode)
+        console.log(
+          `[VCPTavern] 预设 "${presetName}" 未使用时间变量，跳过时间追踪`
+        );
+
+      resolveExtendedVariables = (content) => {
+        if (!content) return content;
+        const replaceFn = (text) => {
+          if (typeof text !== "string") return text;
+          return this._resolveTimeVariables(text);
+        };
+        if (typeof content === "string") {
+          return replaceFn(content);
+        } else if (Array.isArray(content)) {
+          return content.map((part) => {
+            if (part && part.type === "text" && typeof part.text === "string") {
+              return { ...part, text: replaceFn(part.text) };
+            }
+            return part;
+          });
+        }
+        return content;
+      };
+    }
 
         // 辅助函数：确保注入内容是消息对象格式
         const ensureMessageObject = (content, defaultRole = 'system') => {
