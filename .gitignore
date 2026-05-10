@@ -154,6 +154,10 @@ preprocessor_order.json
 tag-processor-config.env
 
 # ===== 运行时数据 / 缓存 =====
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
@@ -182,6 +186,8 @@ Plugin/VCPLog/log/VCPlog.txt
 Plugin/WeatherReporter/weather_cache.json
 Plugin/WeatherReporter/weather_cache.txt
 Plugin/WeatherReporter/city_cache.txt
+ToolConfigs/dynamic_tool_catalog.json
+ToolConfigs/dynamic_tool_categories.json
 
 # ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...
