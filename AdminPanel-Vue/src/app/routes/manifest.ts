@@ -3,14 +3,41 @@ import type { PluginInfo } from "@/types/api.plugin";
 
 export type AppRouteGroup =
   | "core"
-  | "agent"
-  | "tools"
-  | "rag"
-  | "plugins"
-  | "other";
+  | "agentContent"
+  | "knowledge"
+  | "toolsPlugins";
 
-interface AppRouteDefinition {
-  id: string;
+export type AppRouteId =
+  | "login"
+  | "dashboard"
+  | "base-config"
+  | "dynamic-tools-manager"
+  | "daily-notes-manager"
+  | "vcp-forum"
+  | "image-cache-editor"
+  | "emoji-gallery"
+  | "semantic-groups-editor"
+  | "vcptavern-editor"
+  | "agent-files-editor"
+  | "agent-assistant-config"
+  | "agent-scores"
+  | "toolbox-manager"
+  | "tvs-files-editor"
+  | "tool-list-editor"
+  | "preprocessor-order-manager"
+  | "tool-approval-manager"
+  | "thinking-chains-editor"
+  | "rag-tuning"
+  | "schedule-manager"
+  | "dream-manager"
+  | "server-log-viewer"
+  | "placeholder-viewer"
+  | "plugins"
+  | "plugin-store"
+  | "plugin-config";
+
+export interface AppRouteMeta {
+  id: AppRouteId;
   routeName: string;
   path: string;
   title: string;
@@ -18,7 +45,6 @@ interface AppRouteDefinition {
   requiresAuth: boolean;
   navGroup?: AppRouteGroup;
   showInSidebar: boolean;
-  component: () => Promise<unknown>;
 }
 
 export interface AppNavItem {
@@ -31,15 +57,13 @@ export interface AppNavItem {
 }
 
 const NAV_GROUP_LABELS: Record<AppRouteGroup, string> = {
-  core: "———— 核 心 功 能 ————",
-  agent: "———— Agent 相 关 ————",
-  tools: "———— 工 具 相 关 ————",
-  rag: "———— RAG 相 关 ————",
-  plugins: "———— 插 件 中 心 ————",
-  other: "———— 其 他 ————",
+  core: "核心",
+  agentContent: "Agent & 内容",
+  knowledge: "知识 & RAG",
+  toolsPlugins: "工具 & 插件",
 };
 
-export const APP_ROUTE_MANIFEST = [
+export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
   {
     id: "login",
     routeName: "Login",
@@ -48,8 +72,8 @@ export const APP_ROUTE_MANIFEST = [
     icon: "login",
     requiresAuth: false,
     showInSidebar: false,
-    component: () => import("@/views/Login.vue"),
   },
+  // ── 核心 ──
   {
     id: "dashboard",
     routeName: "Dashboard",
@@ -59,7 +83,6 @@ export const APP_ROUTE_MANIFEST = [
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,
-    component: () => import("@/views/Dashboard.vue"),
   },
   {
     id: "base-config",
@@ -70,106 +93,6 @@ export const APP_ROUTE_MANIFEST = [
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,
-    component: () => import("@/views/BaseConfig.vue"),
-  },
-  {
-    id: "daily-notes-manager",
-    routeName: "DailyNotesManager",
-    path: "/daily-notes-manager",
-    title: "日记知识库管理",
-    icon: "description",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/DailyNotesManager.vue"),
-  },
-  {
-    id: "vcp-forum",
-    routeName: "VcpForum",
-    path: "/vcp-forum",
-    title: "VCP 论坛",
-    icon: "forum",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/VcpForum.vue"),
-  },
-  {
-    id: "forum-assistant-config",
-    routeName: "ForumAssistantConfig",
-    path: "/forum-assistant-config",
-    title: "任务派发中心",
-    icon: "explore",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/ForumAssistantConfig.vue"),
-  },
-  {
-    id: "image-cache-editor",
-    routeName: "ImageCacheEditor",
-    path: "/image-cache-editor",
-    title: "多媒体 Base64 编辑器",
-    icon: "photo_library",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/ImageCacheEditor.vue"),
-  },
-  {
-    id: "semantic-groups-editor",
-    routeName: "SemanticGroupsEditor",
-    path: "/semantic-groups-editor",
-    title: "语义组编辑器",
-    icon: "hub",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/SemanticGroupsEditor.vue"),
-  },
-  {
-    id: "vcptavern-editor",
-    routeName: "VcptavernEditor",
-    path: "/vcptavern-editor",
-    title: "VCPTavern 预设编辑",
-    icon: "casino",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/VcptavernEditor.vue"),
-  },
-  {
-    id: "sarprompt-editor",
-    routeName: "SarPromptEditor",
-    path: "/sarprompt-editor",
-    title: "多模型提示词管理",
-    icon: "psychology_alt",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/SarPromptEditor.vue"),
-  },
-  {
-    id: "schedule-manager",
-    routeName: "ScheduleManager",
-    path: "/schedule-manager",
-    title: "日程管理",
-    icon: "calendar_month",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/ScheduleManager.vue"),
-  },
-  {
-    id: "dream-manager",
-    routeName: "DreamManager",
-    path: "/dream-manager",
-    title: "梦境审批",
-    icon: "nights_stay",
-    requiresAuth: true,
-    navGroup: "core",
-    showInSidebar: true,
-    component: () => import("@/views/DreamManager.vue"),
   },
   {
     id: "server-log-viewer",
@@ -180,8 +103,8 @@ export const APP_ROUTE_MANIFEST = [
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,
-    component: () => import("@/views/ServerLogViewer.vue"),
   },
+  // ── Agent & 内容 ──
   {
     id: "agent-files-editor",
     routeName: "AgentFilesEditor",
@@ -189,20 +112,18 @@ export const APP_ROUTE_MANIFEST = [
     title: "Agent 管理器",
     icon: "smart_toy",
     requiresAuth: true,
-    navGroup: "agent",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/AgentFilesEditor.vue"),
   },
   {
     id: "agent-assistant-config",
     routeName: "AgentAssistantConfig",
     path: "/agent-assistant-config",
-    title: "Agent 助手配置",
+    title: "Agent 通讯配置",
     icon: "diversity_3",
     requiresAuth: true,
-    navGroup: "agent",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/AgentAssistantConfig.vue"),
   },
   {
     id: "agent-scores",
@@ -211,75 +132,89 @@ export const APP_ROUTE_MANIFEST = [
     title: "Agent 积分排行榜",
     icon: "leaderboard",
     requiresAuth: true,
-    navGroup: "agent",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/AgentScores.vue"),
   },
   {
-    id: "toolbox-manager",
-    routeName: "ToolboxManager",
-    path: "/toolbox-manager",
-    title: "Toolbox 管理器",
-    icon: "inventory_2",
+    id: "dream-manager",
+    routeName: "DreamManager",
+    path: "/dream-manager",
+    title: "梦境审批",
+    icon: "nights_stay",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/ToolboxManager.vue"),
   },
   {
-    id: "tvs-files-editor",
-    routeName: "TvsFilesEditor",
-    path: "/tvs-files-editor",
-    title: "高级变量编辑器",
-    icon: "data_object",
+    id: "schedule-manager",
+    routeName: "ScheduleManager",
+    path: "/schedule-manager",
+    title: "日程管理",
+    icon: "calendar_month",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/TvsFilesEditor.vue"),
   },
   {
-    id: "tool-list-editor",
-    routeName: "ToolListEditor",
-    path: "/tool-list-editor",
-    title: "工具列表配置编辑器",
-    icon: "construction",
+    id: "vcptavern-editor",
+    routeName: "VcptavernEditor",
+    path: "/vcptavern-editor",
+    title: "VCPTavern 预设编辑",
+    icon: "casino",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/ToolListEditor.vue"),
   },
   {
-    id: "dynamic-tools-manager",
-    routeName: "DynamicToolsManager",
-    path: "/dynamic-tools-manager",
-    title: "动态工具清单",
-    icon: "dynamic_feed",
+    id: "vcp-forum",
+    routeName: "VcpForum",
+    path: "/vcp-forum",
+    title: "VCP 论坛",
+    icon: "forum",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/DynamicToolsManager.vue"),
   },
   {
-    id: "preprocessor-order-manager",
-    routeName: "PreprocessorOrderManager",
-    path: "/preprocessor-order-manager",
-    title: "预处理器顺序管理",
-    icon: "sort",
+    id: "emoji-gallery",
+    routeName: "EmojiGallery",
+    path: "/emoji-gallery",
+    title: "表情包画廊",
+    icon: "mood",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/PreprocessorOrderManager.vue"),
   },
   {
-    id: "tool-approval-manager",
-    routeName: "ToolApprovalManager",
-    path: "/tool-approval-manager",
-    title: "插件调用审核管理",
-    icon: "verified_user",
+    id: "image-cache-editor",
+    routeName: "ImageCacheEditor",
+    path: "/image-cache-editor",
+    title: "多媒体 Base64 编辑器",
+    icon: "photo_library",
     requiresAuth: true,
-    navGroup: "tools",
+    navGroup: "agentContent",
     showInSidebar: true,
-    component: () => import("@/views/ToolApprovalManager.vue"),
+  },
+  // ── 知识 & RAG ──
+  {
+    id: "daily-notes-manager",
+    routeName: "DailyNotesManager",
+    path: "/daily-notes-manager",
+    title: "日记知识库管理",
+    icon: "description",
+    requiresAuth: true,
+    navGroup: "knowledge",
+    showInSidebar: true,
+  },
+  {
+    id: "semantic-groups-editor",
+    routeName: "SemanticGroupsEditor",
+    path: "/semantic-groups-editor",
+    title: "语义组编辑器",
+    icon: "hub",
+    requiresAuth: true,
+    navGroup: "knowledge",
+    showInSidebar: true,
   },
   {
     id: "thinking-chains-editor",
@@ -288,9 +223,8 @@ export const APP_ROUTE_MANIFEST = [
     title: "思维链编辑器",
     icon: "psychology",
     requiresAuth: true,
-    navGroup: "rag",
+    navGroup: "knowledge",
     showInSidebar: true,
-    component: () => import("@/views/ThinkingChainsEditor.vue"),
   },
   {
     id: "rag-tuning",
@@ -299,20 +233,69 @@ export const APP_ROUTE_MANIFEST = [
     title: "浪潮 RAG 调参",
     icon: "tune",
     requiresAuth: true,
-    navGroup: "rag",
+    navGroup: "knowledge",
     showInSidebar: true,
-    component: () => import("@/views/RagTuning.vue"),
+  },
+  // ── 工具 & 插件 ──
+  {
+    id: "dynamic-tools-manager",
+    routeName: "DynamicToolsManager",
+    path: "/dynamic-tools-manager",
+    title: "动态工具清单",
+    icon: "dynamic_feed",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
   },
   {
-    id: "placeholder-viewer",
-    routeName: "PlaceholderViewer",
-    path: "/placeholder-viewer",
-    title: "占位符查看器",
-    icon: "view_list",
+    id: "toolbox-manager",
+    routeName: "ToolboxManager",
+    path: "/toolbox-manager",
+    title: "Toolbox 管理器",
+    icon: "inventory_2",
     requiresAuth: true,
-    navGroup: "other",
+    navGroup: "toolsPlugins",
     showInSidebar: true,
-    component: () => import("@/views/PlaceholderViewer.vue"),
+  },
+  {
+    id: "tvs-files-editor",
+    routeName: "TvsFilesEditor",
+    path: "/tvs-files-editor",
+    title: "高级变量编辑器",
+    icon: "data_object",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "tool-list-editor",
+    routeName: "ToolListEditor",
+    path: "/tool-list-editor",
+    title: "工具列表配置编辑器",
+    icon: "construction",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "preprocessor-order-manager",
+    routeName: "PreprocessorOrderManager",
+    path: "/preprocessor-order-manager",
+    title: "预处理器顺序管理",
+    icon: "sort",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "tool-approval-manager",
+    routeName: "ToolApprovalManager",
+    path: "/tool-approval-manager",
+    title: "插件调用审核管理",
+    icon: "verified_user",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
   },
   {
     id: "plugins",
@@ -321,9 +304,28 @@ export const APP_ROUTE_MANIFEST = [
     title: "插件中心",
     icon: "extension",
     requiresAuth: true,
-    navGroup: "plugins",
+    navGroup: "toolsPlugins",
     showInSidebar: true,
-    component: () => import("@/views/PluginsHub.vue"),
+  },
+  {
+    id: "plugin-store",
+    routeName: "PluginStore",
+    path: "/plugin-store",
+    title: "插件商店",
+    icon: "storefront",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "placeholder-viewer",
+    routeName: "PlaceholderViewer",
+    path: "/placeholder-viewer",
+    title: "占位符查看器",
+    icon: "view_list",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
   },
   {
     id: "plugin-config",
@@ -333,28 +335,22 @@ export const APP_ROUTE_MANIFEST = [
     icon: "extension",
     requiresAuth: true,
     showInSidebar: false,
-    component: () => import("@/views/PluginConfig.vue"),
   },
-] as const satisfies readonly AppRouteDefinition[];
-
-export type AppRouteId = (typeof APP_ROUTE_MANIFEST)[number]["id"];
-export type AppRouteMeta = (typeof APP_ROUTE_MANIFEST)[number];
+] as const;
 
 export const APP_DEFAULT_ROUTE_ID: AppRouteId = "dashboard";
 
-const APP_ROUTE_BY_ID = new Map<AppRouteId, AppRouteMeta>(
+const APP_ROUTE_BY_ID = new Map(
   APP_ROUTE_MANIFEST.map((route) => [route.id, route] as const)
 );
 
-const APP_ROUTE_IDS = new Set<AppRouteId>(
-  APP_ROUTE_MANIFEST.map((route) => route.id)
-);
+const APP_ROUTE_IDS = new Set(APP_ROUTE_MANIFEST.map((route) => route.id));
 
-const APP_ROUTE_BY_NAME = new Map<string, AppRouteMeta>(
+const APP_ROUTE_BY_NAME = new Map(
   APP_ROUTE_MANIFEST.map((route) => [route.routeName, route] as const)
 );
 
-const APP_ROUTE_BY_PATH = new Map<string, AppRouteMeta>(
+const APP_ROUTE_BY_PATH = new Map(
   APP_ROUTE_MANIFEST.map((route) => [route.path, route] as const)
 );
 
@@ -388,35 +384,6 @@ export function getAppRouteTitle(routeId: AppRouteId): string {
   return getAppRouteMetaById(routeId).title;
 }
 
-function getLegacyPluginNavLabel(
-  pluginName: string,
-  navItems: readonly AppNavItem[] = []
-): string | undefined {
-  return navItems.find(
-    (item) => item.pluginName === pluginName && item.label
-  )?.label;
-}
-
-function getPluginRouteLabel(
-  pluginName: string,
-  plugins: readonly PluginInfo[] = [],
-  navItems: readonly AppNavItem[] = []
-): string {
-  if (!pluginName) {
-    return "Plugin Config";
-  }
-
-  const plugin = plugins.find(
-    (item) => item.manifest.name === pluginName || item.name === pluginName
-  );
-
-  return (
-    plugin?.manifest.displayName?.trim() ||
-    getLegacyPluginNavLabel(pluginName, navItems) ||
-    pluginName
-  );
-}
-
 export function buildSidebarNavItems(): AppNavItem[] {
   const items: AppNavItem[] = [];
   let lastGroup: AppRouteGroup | undefined;
@@ -441,65 +408,65 @@ export function buildSidebarNavItems(): AppNavItem[] {
   return items;
 }
 
+export function resolveAppRouteTitle(
+  route: RouteLocationNormalizedLoaded,
+  context?: {
+    navItems?: readonly AppNavItem[];
+    plugins?: readonly PluginInfo[];
+  }
+): string | undefined {
+  const namedRoute = getAppRouteMetaByRouteName(route.name);
+  if (namedRoute) {
+    if (namedRoute.id === "plugin-config" && context?.plugins) {
+      const pluginNameParam = route.params.pluginName;
+      const pluginName =
+        typeof pluginNameParam === "string" ? pluginNameParam : undefined;
+      if (pluginName) {
+        const plugin = context.plugins.find(
+          (item) => (item.manifest.name || item.name) === pluginName
+        );
+        if (plugin) {
+          const displayName =
+            plugin.manifest.displayName?.trim() ||
+            plugin.manifest.name ||
+            plugin.name;
+          return `${namedRoute.title} · ${displayName}`;
+        }
+      }
+    }
+    return namedRoute.title;
+  }
+
+  const navItem = context?.navItems?.find((item) => item.target === route.path);
+  if (navItem?.label) {
+    return navItem.label;
+  }
+
+  return getAppRouteMetaByPath(route.path)?.title;
+}
+
 export function resolveAppNavigationLocation(
   target: string,
   pluginName?: string
 ): RouteLocationRaw {
   if (pluginName) {
     return {
-      name: "PluginConfig",
+      name: getAppRouteMetaById("plugin-config").routeName,
       params: { pluginName },
     };
   }
 
-  if (isAppRouteId(target)) {
+  const pluginTargetMatch = target.match(/^plugin-(.+)-config$/);
+  if (pluginTargetMatch) {
     return {
-      name: getAppRouteMetaById(target).routeName,
+      name: getAppRouteMetaById("plugin-config").routeName,
+      params: { pluginName: pluginTargetMatch[1] },
     };
   }
 
-  if (target.startsWith("/")) {
-    return { path: target };
+  if (isAppRouteId(target)) {
+    return { name: getAppRouteMetaById(target).routeName };
   }
 
   return { path: `/${target}` };
-}
-
-export function resolveAppRouteTitle(
-  route: RouteLocationNormalizedLoaded,
-  options: {
-    plugins?: readonly PluginInfo[];
-    navItems?: readonly AppNavItem[];
-  } = {}
-): string | undefined {
-  const namedRoute = getAppRouteMetaByRouteName(route.name);
-  if (namedRoute) {
-    if (namedRoute.routeName === "PluginConfig") {
-      return getPluginRouteLabel(
-        String(route.params.pluginName || ""),
-        options.plugins,
-        options.navItems
-      );
-    }
-
-    return namedRoute.title;
-  }
-
-  if (route.name === "PluginConfig") {
-    return getPluginRouteLabel(
-      String(route.params.pluginName || ""),
-      options.plugins,
-      options.navItems
-    );
-  }
-
-  const fallbackTitle = getAppRouteMetaByPath(route.path)?.title;
-  if (fallbackTitle) {
-    return fallbackTitle;
-  }
-
-  const pathTarget = route.path.replace(/^\//, "").split("/")[0] || "dashboard";
-  return options.navItems?.find(
-    (item) => item.target === pathTarget && item.label
-  )?.label;
 }

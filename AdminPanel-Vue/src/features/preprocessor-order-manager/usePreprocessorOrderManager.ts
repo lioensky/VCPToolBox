@@ -17,10 +17,12 @@ export function usePreprocessorOrderManager() {
   const preprocessors = ref<Preprocessor[]>([])
   const statusMessage = ref('')
   const statusType = ref<PreprocessorOrderStatusType>('info')
+  const isSaving = ref(false)
   const previewOrder = ref<string[] | null>(null)
   const draggingPluginName = ref<string | null>(null)
   const dragOverPluginName = ref<string | null>(null)
   const dropPlacement = ref<PointerDropPlacement>('after')
+  const initialOrder = ref<string[]>([])
 
   const orderedPreprocessors = computed<Preprocessor[]>(() => {
     if (!previewOrder.value) {
@@ -46,6 +48,31 @@ export function usePreprocessorOrderManager() {
     preprocessors.value = nextOrder
       .map((name) => itemMap.get(name))
       .filter((item): item is Preprocessor => item !== undefined)
+  }
+
+  const changedItemCount = computed(() => {
+    const committed = getCommittedOrder()
+    const baseline = initialOrder.value
+    const maxLen = Math.max(committed.length, baseline.length)
+    let changedCount = 0
+    for (let index = 0; index < maxLen; index += 1) {
+      if ((committed[index] ?? null) !== (baseline[index] ?? null)) {
+        changedCount += 1
+      }
+    }
+    return changedCount
+  })
+
+  const hasChanges = computed(() => changedItemCount.value > 0)
+
+  function resetOrder() {
+    if (initialOrder.value.length === 0) {
+      return
+    }
+    commitPreviewOrder(initialOrder.value)
+    previewOrder.value = null
+    statusMessage.value = '已撤销改动。'
+    statusType.value = 'info'
   }
 
   function updatePreviewOrder(clientX: number, clientY: number) {
@@ -155,6 +182,8 @@ export function usePreprocessorOrderManager() {
         displayName: item.displayName || item.name,
         description: item.description,
       }))
+      initialOrder.value = preprocessors.value.map((item) => item.name)
+      previewOrder.value = null
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       logger.error('Failed to load preprocessors:', error)
@@ -183,6 +212,12 @@ export function usePreprocessorOrderManager() {
   }
 
   async function saveOrder() {
+      if (isSaving.value || !hasChanges.value) {
+        return
+      }
+
+      isSaving.value = true
+
     try {
       await adminConfigApi.savePreprocessorOrder(
         preprocessors.value.map((item) => item.name),
@@ -190,6 +225,7 @@ export function usePreprocessorOrderManager() {
           loadingKey: 'preprocessors.order.save',
         }
       )
+        initialOrder.value = preprocessors.value.map((item) => item.name)
       statusMessage.value = '顺序已保存！'
       statusType.value = 'success'
       showMessage('顺序已保存！', 'success')
@@ -197,6 +233,8 @@ export function usePreprocessorOrderManager() {
       const errorMessage = error instanceof Error ? error.message : String(error)
       statusMessage.value = `保存失败：${errorMessage}`
       statusType.value = 'error'
+      } finally {
+        isSaving.value = false
     }
   }
 
@@ -214,10 +252,14 @@ export function usePreprocessorOrderManager() {
     dragGhostElement,
     statusMessage,
     statusType,
+    isSaving,
+    hasChanges,
+    changedItemCount,
     loadPreprocessors,
     handleDragHandlePointerDown,
     handlePointerMove,
     handlePointerUp,
+    resetOrder,
     saveOrder,
   }
 }

@@ -64,7 +64,7 @@ const DEFAULT_GROUP_META: GroupMeta = {
   title: "未命名参数组",
   description: "该参数组暂时没有补充说明。",
   icon: "tune",
-  accent: "rgba(56, 189, 248, 0.5)",
+  accent: "oklch(0.78 0.15 230 / 0.5)",
   badge: "待整理",
 };
 
@@ -81,21 +81,21 @@ export const GROUP_METADATA: Record<string, GroupMeta> = {
     title: "上下文折叠层",
     description: "负责根据语义相似度和逻辑聚焦度自动折叠远距离 AI 输出，控制上下文窗口大小。",
     icon: "unfold_less",
-    accent: "rgba(167, 139, 250, 0.55)",
+    accent: "oklch(0.74 0.16 305 / 0.55)",
     badge: "上下文控制",
   },
   RAGDiaryPlugin: {
     title: "感知与裁剪层",
     description: "负责标签感知、时间衰减与主检索权重，是浪潮 RAG 的第一道调制面。",
     icon: "flare",
-    accent: "rgba(56, 189, 248, 0.55)",
+    accent: "oklch(0.78 0.15 230 / 0.55)",
     badge: "输入前置",
   },
   KnowledgeBaseManager: {
     title: "增强与路由层",
     description: "负责残差激活、语言补偿、去重和虫洞传播，决定系统是稳还是敢跳。",
     icon: "hub",
-    accent: "rgba(251, 191, 36, 0.55)",
+    accent: "oklch(0.82 0.16 85 / 0.55)",
     badge: "检索后段",
   },
 };

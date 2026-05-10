@@ -1,11 +1,9 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { diaryApi } from '@/api'
+import { diaryApi, type DiaryOperationError } from '@/api'
 import { showMessage } from '@/utils'
 import {
   DEFAULT_RAG_TAGS_CONFIG,
-  filterDiaryNotes,
-  getMissingCommonRagTags,
   type RagTagsConfig,
 } from '@/stores/diary/helpers'
 
@@ -22,11 +20,12 @@ export const useDiaryStore = defineStore('diary', () => {
   const selectedFolder = ref('')
 
   const notes = ref<DiaryNote[]>([])
-  const filteredNotes = computed(() => filterDiaryNotes(notes.value, searchQuery.value))
+  const searchQuery = ref('')
+  const filteredNotes = computed(() => notes.value)
   const selectedNotes = ref<string[]>([])
   const moveTargetFolder = ref('')
-  const searchQuery = ref('')
   const loadingNotes = ref(false)
+  let notesRequestId = 0
 
   const ragTagsConfig = ref<RagTagsConfig>({ ...DEFAULT_RAG_TAGS_CONFIG })
 
@@ -43,8 +42,8 @@ export const useDiaryStore = defineStore('diary', () => {
     searchQuery.value = query
   }
 
-  function filterNotes() {
-    // 兼容旧调用方：filteredNotes 已由 computed 自动更新
+  async function filterNotes() {
+    await loadNotes()
   }
 
   async function loadFolders() {
@@ -77,11 +76,18 @@ export const useDiaryStore = defineStore('diary', () => {
   }
 
   async function loadNotes() {
-    if (!selectedFolder.value) return
+    const requestId = ++notesRequestId
+    const folder = selectedFolder.value
+    const search = searchQuery.value.trim()
+    if (!folder) return
 
     loadingNotes.value = true
     try {
-      const data = await diaryApi.getDiaryList({ folder: selectedFolder.value })
+      const data = await diaryApi.getDiaryList({ folder, search })
+      if (requestId !== notesRequestId || folder !== selectedFolder.value) {
+        return
+      }
+
       notes.value = data.notes.map((note) => ({
         file: note.file,
         title: note.title,
@@ -89,12 +95,18 @@ export const useDiaryStore = defineStore('diary', () => {
         preview: note.preview
       }))
     } catch (error) {
+      if (requestId !== notesRequestId) {
+        return
+      }
+
       const errorMessage = error instanceof Error ? error.message : String(error)
       notesStatus.value = `加载日记列表失败：${errorMessage}`
       notesStatusType.value = 'error'
       notes.value = []
     } finally {
-      loadingNotes.value = false
+      if (requestId === notesRequestId) {
+        loadingNotes.value = false
+      }
     }
   }
 
@@ -109,14 +121,15 @@ export const useDiaryStore = defineStore('diary', () => {
     }
   }
 
-  function onThresholdToggle() {
-    if (!ragTagsConfig.value.thresholdEnabled) {
+  function onThresholdToggle(enabled: boolean) {
+    ragTagsConfig.value.thresholdEnabled = enabled
+    if (enabled && !Number.isFinite(ragTagsConfig.value.threshold)) {
       ragTagsConfig.value.threshold = 0.7
     }
   }
 
   function updateThreshold(value: number) {
-    ragTagsConfig.value.threshold = value
+    ragTagsConfig.value.threshold = Math.min(1, Math.max(0.1, value))
   }
 
   function clearAllTags() {
@@ -126,18 +139,6 @@ export const useDiaryStore = defineStore('diary', () => {
     }
     ragTagsConfig.value.tags = []
     showMessage('已清空所有标签', 'success')
-  }
-
-  function addAllCommonTags() {
-    const newTags = getMissingCommonRagTags(ragTagsConfig.value.tags)
-
-    if (newTags.length === 0) {
-      showMessage('所有常用标签已存在', 'info')
-      return
-    }
-
-    ragTagsConfig.value.tags.push(...newTags)
-    showMessage(`已添加 ${newTags.length} 个常用标签`, 'success')
   }
 
   function addTag() {
@@ -186,20 +187,20 @@ export const useDiaryStore = defineStore('diary', () => {
     }
   }
 
-  async function getNoteContent(file: string): Promise<string> {
-    if (!selectedFolder.value) {
+  async function getNoteContent(file: string, folder = selectedFolder.value): Promise<string> {
+    if (!folder) {
       throw new Error('请先选择一个知识库')
     }
 
-    return diaryApi.getDiaryContent(`${selectedFolder.value}/${file}`)
+    return diaryApi.getDiaryContent(`${folder}/${file}`)
   }
 
-  async function saveNoteContent(file: string, content: string): Promise<boolean> {
-    if (!selectedFolder.value) return false
+  async function saveNoteContent(file: string, content: string, folder = selectedFolder.value): Promise<boolean> {
+    if (!folder) return false
 
     try {
       await diaryApi.saveDiary(
-        `${selectedFolder.value}/${file}`,
+        `${folder}/${file}`,
         content,
         {
           loadingKey: 'diary.note.save'
@@ -221,9 +222,13 @@ export const useDiaryStore = defineStore('diary', () => {
     if (!selectedFolder.value) return false
 
     try {
-      await diaryApi.deleteDiary([`${selectedFolder.value}/${file}`], {
+      const response = await diaryApi.deleteDiary([`${selectedFolder.value}/${file}`], {
         loadingKey: 'diary.note.delete'
       })
+
+      if ((response.errors || []).length > 0) {
+        throw new Error(formatOperationErrors(response.errors || []))
+      }
 
       notesStatus.value = '日记已删除'
       notesStatusType.value = 'success'
@@ -241,18 +246,29 @@ export const useDiaryStore = defineStore('diary', () => {
     if (!selectedFolder.value || selectedNotes.value.length === 0) return false
 
     try {
-      await diaryApi.deleteDiary(
+      const response = await diaryApi.deleteDiary(
         selectedNotes.value.map((file) => `${selectedFolder.value}/${file}`),
         {
         loadingKey: 'diary.notes.batch-delete'
         }
       )
 
-      notesStatus.value = '已批量删除选中的日记'
-      notesStatusType.value = 'success'
-      selectedNotes.value = []
+      const errors = response.errors || []
+      const deletedFiles = new Set(response.deleted.map((entry) => entry.split(/[\\/]/).pop() || entry))
+      selectedNotes.value = selectedNotes.value.filter((file) => !deletedFiles.has(file))
+
+      if (errors.length > 0) {
+        notesStatus.value = `已删除 ${response.deleted.length} 篇，${errors.length} 篇失败：${formatOperationErrors(errors)}`
+        notesStatusType.value = 'error'
+        showMessage(notesStatus.value, 'error')
+      } else {
+        notesStatus.value = '已批量删除选中的日记'
+        notesStatusType.value = 'success'
+        selectedNotes.value = []
+      }
+
       await loadNotes()
-      return true
+      return errors.length === 0
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       notesStatus.value = `批量删除失败：${errorMessage}`
@@ -265,7 +281,7 @@ export const useDiaryStore = defineStore('diary', () => {
     if (!selectedFolder.value || !moveTargetFolder.value || selectedNotes.value.length === 0) return false
 
     try {
-      await diaryApi.moveDiaries(
+      const response = await diaryApi.moveDiaries(
         selectedNotes.value.map((file) => ({
           folder: selectedFolder.value,
           file
@@ -276,12 +292,24 @@ export const useDiaryStore = defineStore('diary', () => {
         }
       )
 
-      notesStatus.value = `已移动 ${selectedNotes.value.length} 篇日记到 ${moveTargetFolder.value}`
-      notesStatusType.value = 'success'
-      selectedNotes.value = []
-      moveTargetFolder.value = ''
+      const errors = response.errors || []
+      const failedFiles = new Set(errors.map((entry) => entry.note.split(/[\\/]/).pop() || entry.note))
+      const movedCount = response.moved.length
+      selectedNotes.value = selectedNotes.value.filter((file) => failedFiles.has(file))
+
+      if (errors.length > 0) {
+        notesStatus.value = `已移动 ${movedCount} 篇到 ${moveTargetFolder.value}，${errors.length} 篇失败：${formatOperationErrors(errors)}`
+        notesStatusType.value = 'error'
+        showMessage(notesStatus.value, 'error')
+      } else {
+        notesStatus.value = `已移动 ${movedCount} 篇日记到 ${moveTargetFolder.value}`
+        notesStatusType.value = 'success'
+        selectedNotes.value = []
+        moveTargetFolder.value = ''
+      }
+
       await loadNotes()
-      return true
+      return errors.length === 0
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       notesStatus.value = `移动失败：${errorMessage}`
@@ -292,6 +320,13 @@ export const useDiaryStore = defineStore('diary', () => {
 
   async function init() {
     await loadFolders()
+  }
+
+  function formatOperationErrors(errors: DiaryOperationError[]): string {
+    return errors
+      .slice(0, 2)
+      .map((entry) => `${entry.note}: ${entry.error}`)
+      .join('；')
   }
 
   return {
@@ -318,7 +353,6 @@ export const useDiaryStore = defineStore('diary', () => {
     onThresholdToggle,
     updateThreshold,
     clearAllTags,
-    addAllCommonTags,
     addTag,
     updateTag,
     removeTag,

@@ -6,6 +6,22 @@ module.exports = function(options) {
     const router = express.Router();
     const { pluginManager } = options;
 
+    async function readFileIfExists(filePath) {
+        try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            return { exists: true, content };
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return { exists: false, content: '' };
+            }
+            throw error;
+        }
+    }
+
+    function normalizeEnvContent(content) {
+        return String(content || '').replace(/\r\n/g, '\n').trimEnd();
+    }
+
     // --- Tool Approval Config API ---
     router.get('/tool-approval-config', async (req, res) => {
         const configPath = path.join(__dirname, '..', '..', 'toolApprovalConfig.json');
@@ -41,8 +57,44 @@ module.exports = function(options) {
     router.get('/config/main', async (req, res) => {
         try {
             const configPath = path.join(__dirname, '..', '..', 'config.env');
-            const content = await fs.readFile(configPath, 'utf-8');
-            res.json({ content: content });
+            const examplePath = path.join(__dirname, '..', '..', 'config.env.example');
+            const [configResult, exampleResult] = await Promise.all([
+                readFileIfExists(configPath),
+                readFileIfExists(examplePath),
+            ]);
+
+            const configExists = configResult.exists;
+            const exampleExists = exampleResult.exists;
+            const configMatchesExample =
+                configExists &&
+                exampleExists &&
+                normalizeEnvContent(configResult.content) ===
+                    normalizeEnvContent(exampleResult.content);
+            const hasCustomConfig = configExists && (!exampleExists || !configMatchesExample);
+
+            let source = 'none';
+            let content = '';
+
+            if (hasCustomConfig) {
+                source = 'config.env';
+                content = configResult.content;
+            } else if (exampleExists) {
+                source = 'config.env.example';
+                content = exampleResult.content;
+            } else if (configExists) {
+                source = 'config.env';
+                content = configResult.content;
+            }
+
+            res.json({
+                content,
+                exampleContent: exampleExists ? exampleResult.content : '',
+                source,
+                configExists,
+                exampleExists,
+                configMatchesExample,
+                hasCustomConfig,
+            });
         } catch (error) {
             console.error('Error reading main config for admin panel:', error);
             res.status(500).json({ error: 'Failed to read main config file', details: error.message });

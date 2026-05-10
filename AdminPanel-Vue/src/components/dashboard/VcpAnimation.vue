@@ -128,8 +128,8 @@ function drawParticleConnections(ctx: CanvasRenderingContext2D): void {
           ctx.lineTo(to.x, to.y);
           ctx.strokeStyle =
             theme.value === "dark"
-              ? `rgba(56, 189, 248, ${alpha})`
-              : `rgba(2, 132, 199, ${alpha})`;
+              ? `oklch(0.78 0.15 230 / ${alpha})`
+              : `oklch(0.62 0.14 240 / ${alpha})`;
           ctx.lineWidth = 0.5;
           ctx.stroke();
         }
@@ -234,8 +234,8 @@ function animate() {
     ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
     ctx.fillStyle =
       theme.value === "dark"
-        ? `rgba(56, 189, 248, ${particle.alpha})`
-        : `rgba(2, 132, 199, ${particle.alpha})`;
+        ? `oklch(0.78 0.15 230 / ${particle.alpha})`
+        : `oklch(0.62 0.14 240 / ${particle.alpha})`;
     ctx.fill();
   });
 

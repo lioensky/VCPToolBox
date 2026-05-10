@@ -98,13 +98,8 @@ html[data-theme="dark"] {
   --memory-color: var(--memory-color-dark);
   color-scheme: dark;
 
-  /* Variables for EasyMDE editor compatibility */
-  --primary-color: var(--highlight-text-dark);
+  /* EasyMDE state helper */
   --primary-color-translucent: rgba(138, 180, 248, 0.3); /* From #8ab4f8 */
-  --background-color: var(--secondary-bg-dark);
-  --background-color-light: var(--tertiary-bg-dark);
-  --text-color-primary: var(--primary-text-dark);
-  --text-color-secondary: var(--secondary-text-dark);
   --star-color: #ffffff;
   --sun-color: #ffcc33;
   --orbit-color: rgba(255, 255, 255, 0.1);
@@ -139,13 +134,8 @@ html[data-theme="light"] {
   --memory-color: var(--memory-color-light);
   color-scheme: light;
 
-  /* Variables for EasyMDE editor compatibility */
-  --primary-color: var(--highlight-text-light);
+  /* EasyMDE state helper */
   --primary-color-translucent: rgba(26, 115, 232, 0.3); /* From #1a73e8 */
-  --background-color: var(--secondary-bg-light);
-  --background-color-light: var(--tertiary-bg-light);
-  --text-color-primary: var(--primary-text-light);
-  --text-color-secondary: var(--secondary-text-light);
   --star-color: #1a73e8;
   --sun-color: #f9ab00;
   --orbit-color: rgba(0, 0, 0, 0.05);
@@ -4039,7 +4029,7 @@ html[data-theme="light"] .delete-theme-btn {
   border-radius: 4px;
 }
 .placeholder-viewer-table .placeholder-expand-icon:hover {
-  color: var(--primary-color);
+  color: var(--highlight-text);
   background: var(--accent-bg);
 }
 .placeholder-viewer-table td.placeholder-desc {
@@ -4116,7 +4106,7 @@ html[data-theme="light"] .delete-theme-btn {
   padding: 0.25rem;
 }
 .placeholder-detail-modal-close:hover {
-  color: var(--primary-color);
+  color: var(--highlight-text);
 }
 .placeholder-detail-tabs {
   display: flex;
@@ -4139,8 +4129,8 @@ html[data-theme="light"] .delete-theme-btn {
   color: var(--primary-text);
 }
 .placeholder-detail-tab.active {
-  color: var(--primary-color);
-  border-bottom-color: var(--primary-color);
+  color: var(--highlight-text);
+  border-bottom-color: var(--highlight-text);
 }
 .placeholder-detail-modal-body {
   padding: 0;
@@ -4531,7 +4521,7 @@ input:checked + .switch-slider:before {
   background: linear-gradient(
     90deg,
     var(--highlight-text),
-    var(--primary-color)
+    var(--highlight-text)
   );
   border-radius: 2px;
   transition: width 1s ease-out;

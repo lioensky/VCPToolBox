@@ -220,3 +220,8 @@ rust-vexus-lite/target/
 VCPDistributedServer
 # XiaohongshuFetch config
 Plugin/XiaohongshuFetch/config.env
+
+# ==== 插件商店 ====
+pluginStoreSources.json
+tmp/
+Plugin/.backup/

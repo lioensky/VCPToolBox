@@ -42,8 +42,8 @@
       <span>{{ state.lastError }}</span>
     </div>
 
-    <div class="panel-grid">
-      <form class="card config-card" @submit.prevent="saveDynamicConfig">
+    <form class="panel-grid" @submit.prevent="saveDynamicConfig">
+      <div class="card config-card">
         <div class="card-header">
           <h3>注入配置</h3>
           <button type="submit" class="btn-success btn-sm btn-sm-touch">
@@ -94,9 +94,9 @@
             <span class="slider"></span>
           </label>
         </div>
-      </form>
+      </div>
 
-      <form class="card config-card" @submit.prevent="saveDynamicConfig">
+      <div class="card config-card">
         <div class="card-header">
           <h3>小模型分类</h3>
           <button type="button" class="btn-secondary btn-sm btn-sm-touch" @click="openPluginConfig">
@@ -139,8 +139,8 @@
         <p class="field-hint">
           复用主配置时只填模型名；独立端点的 API Key 在插件中心 DynamicToolBridge 私有配置里填写。
         </p>
-      </form>
-    </div>
+      </div>
+    </form>
 
     <div class="card operations-card">
       <div class="card-header">
@@ -184,7 +184,7 @@
 
       <div class="records-table-wrap">
         <table class="records-table">
-          <thead>
+          <thead v-once>
             <tr>
               <th>插件</th>
               <th>来源</th>
@@ -222,10 +222,10 @@
               <td class="brief-cell">{{ record.brief || '-' }}</td>
               <td>
                 <div class="row-actions">
-                  <button type="button" class="btn-secondary btn-sm" @click="togglePinned(record)">
+                  <button type="button" class="btn-secondary btn-sm" @click="toggleOverride(record, 'pinned')">
                     {{ isPinned(record.originKey) ? '取消固定' : '固定' }}
                   </button>
-                  <button type="button" class="btn-secondary btn-sm" @click="toggleExcluded(record)">
+                  <button type="button" class="btn-secondary btn-sm" @click="toggleOverride(record, 'excluded')">
                     {{ isExcluded(record.originKey) ? '恢复' : '排除' }}
                   </button>
                 </div>
@@ -246,7 +246,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   dynamicToolsApi,
@@ -257,8 +257,14 @@ import {
   type DynamicToolsState,
 } from "@/api";
 import { showMessage } from "@/utils";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
+import { useDebounceFn } from "@/composables/useDebounceFn";
 
 const placeholderText = "{{VCPDynamicTools}}";
+
+const SEARCH_DEBOUNCE_MS = 200;
+const POLL_INTERVAL_MS = 2500;
+const MAX_POLL_COUNT = 120;
 
 function createDefaultConfig(): DynamicToolsConfig {
   return {
@@ -304,7 +310,7 @@ function normalizeConfig(config: DynamicToolsConfig | null | undefined): Dynamic
     smallModel: {
       ...defaults.smallModel,
       ...(config?.smallModel || {}),
-      useMainConfig: config?.smallModel?.useMainConfig !== false,
+      useMainConfig: config?.smallModel?.useMainConfig ?? true,
     },
   };
 }
@@ -329,14 +335,45 @@ function parseAliases(text: string): Record<string, string> {
   return aliases;
 }
 
+function validateConfig(c: DynamicToolsConfig): string | null {
+  if (c.maxBriefListItems < 1 || c.maxBriefListItems > 500) return "轻量清单数量需在 1-500 之间";
+  if (c.maxExpandedPlugins < 0 || c.maxExpandedPlugins > 50) return "语义命中展开数需在 0-50 之间";
+  if (c.maxForcedCategoryPlugins < 1 || c.maxForcedCategoryPlugins > 100) return "点名分类展开数需在 1-100 之间";
+  if (c.maxInjectionChars < 1000 || c.maxInjectionChars > 120000) return "最大注入字符数需在 1000-120000 之间";
+  if (c.classificationDebounceMs < 0 || c.classificationDebounceMs > 60000) return "分类去抖需在 0-60000 ms 之间";
+  if (c.classifierTimeoutMs < 100 || c.classifierTimeoutMs > 120000) return "分类超时需在 100-120000 ms 之间";
+  if (c.smallModel.enabled) {
+    if (!c.smallModel.model.trim()) return "启用小模型分类时需填写分类模型名";
+    if (!c.smallModel.useMainConfig && !c.smallModel.endpoint.trim()) return "使用独立端点时需填写 OpenAI 兼容端点";
+  }
+  if (!c.smallModel.useMainConfig && c.smallModel.endpoint.trim()) {
+    const endpoint = c.smallModel.endpoint.trim();
+    const isHttpUrl = endpoint.startsWith("http://") || endpoint.startsWith("https://");
+    if (!isHttpUrl) return "独立端点需以 http:// 或 https:// 开头";
+  }
+  return null;
+}
+
 const router = useRouter();
-const state = ref<DynamicToolsState | null>(null);
+const state = shallowRef<DynamicToolsState | null>(null);
 const config = ref<DynamicToolsConfig>(createDefaultConfig());
 const aliasText = ref("");
 const filterText = ref("");
+const debouncedFilterText = ref("");
 const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "error">("info");
 const rebuildPollingTimer = ref<number | null>(null);
+
+const applyDebouncedFilter = useDebounceFn(
+  (value: unknown) => {
+    debouncedFilterText.value = typeof value === "string" ? value : "";
+  },
+  { delay: SEARCH_DEBOUNCE_MS }
+);
+
+watch(filterText, (val) => {
+  applyDebouncedFilter(val);
+});
 
 const records = computed(() => state.value?.records || []);
 const availableCount = computed(() => records.value.filter((record) => record.available).length);
@@ -345,7 +382,7 @@ const pinnedKeys = computed(() => new Set(config.value.manualOverrides.pinnedOri
 const isClassifying = computed(() => Boolean(state.value?.isClassifying));
 
 const filteredRecords = computed(() => {
-  const query = filterText.value.toLowerCase();
+  const query = debouncedFilterText.value.toLowerCase();
   if (!query) return records.value;
   return records.value.filter((record) => {
     const haystack = [
@@ -381,79 +418,110 @@ async function loadState() {
 
 function stopRebuildPolling() {
   if (rebuildPollingTimer.value !== null) {
-    window.clearInterval(rebuildPollingTimer.value);
+    window.clearTimeout(rebuildPollingTimer.value);
     rebuildPollingTimer.value = null;
   }
 }
 
 function startRebuildPolling() {
   stopRebuildPolling();
-  rebuildPollingTimer.value = window.setInterval(() => {
-    void (async () => {
-      const wasClassifying = isClassifying.value;
-      await loadState();
-      if (wasClassifying && !isClassifying.value) {
-        stopRebuildPolling();
-        statusMessage.value = "动态工具重建已完成";
-        statusType.value = "success";
-        showMessage(statusMessage.value, "success");
-      }
-    })();
-  }, 2500);
+  let pollCount = 0;
+
+  async function poll() {
+    if (pollCount >= MAX_POLL_COUNT) {
+      stopRebuildPolling();
+      statusMessage.value = "重建超时，请手动刷新查看状态";
+      statusType.value = "error";
+      showMessage(statusMessage.value, "error");
+      return;
+    }
+
+    pollCount++;
+    const wasClassifying = isClassifying.value;
+    await loadState();
+
+    if (wasClassifying && !isClassifying.value) {
+      stopRebuildPolling();
+      statusMessage.value = "动态工具重建已完成";
+      statusType.value = "success";
+      showMessage(statusMessage.value, "success");
+      return;
+    }
+
+    rebuildPollingTimer.value = window.setTimeout(poll, POLL_INTERVAL_MS);
+  }
+
+  rebuildPollingTimer.value = window.setTimeout(poll, POLL_INTERVAL_MS);
 }
 
 async function saveDynamicConfig() {
+  const error = validateConfig(config.value);
+  if (error) {
+    showMessage(error, "error");
+    return;
+  }
+
   try {
     const manualOverrides: DynamicToolsManualOverrides = {
       ...config.value.manualOverrides,
       categoryAliases: parseAliases(aliasText.value),
     };
     const saved = await dynamicToolsApi.saveConfig(
-      {
-        enabled: config.value.enabled,
-        maxBriefListItems: config.value.maxBriefListItems,
-        maxExpandedPlugins: config.value.maxExpandedPlugins,
-        maxForcedCategoryPlugins: config.value.maxForcedCategoryPlugins,
-        maxInjectionChars: config.value.maxInjectionChars,
-        classificationDebounceMs: config.value.classificationDebounceMs,
-        classifierTimeoutMs: config.value.classifierTimeoutMs,
-        useRagEmbeddings: config.value.useRagEmbeddings,
-        smallModel: {
-          enabled: config.value.smallModel.enabled,
-          useMainConfig: config.value.smallModel.useMainConfig,
-          endpoint: config.value.smallModel.endpoint,
-          model: config.value.smallModel.model,
-        },
-        manualOverrides,
-      },
-      {
-        loadingKey: "dynamic-tools.config.save",
-      }
+      { ...config.value, manualOverrides },
+      { loadingKey: "dynamic-tools.config.save" }
     );
     config.value = normalizeConfig(saved);
     aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
     statusMessage.value = "动态工具配置已保存";
     statusType.value = "success";
     showMessage(statusMessage.value, "success");
-    await loadState();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     statusMessage.value = `保存失败：${errorMessage}`;
     statusType.value = "error";
     showMessage(statusMessage.value, "error");
+    return;
+  }
+
+  try {
+    await loadState();
+  } catch {
+    // config saved successfully, state reload is non-critical
   }
 }
 
 async function rebuild(mode: DynamicToolsRebuildMode) {
+  if (mode === "all") {
+    const confirmed = await askConfirm({
+      message:
+        "全量重建将重新扫描所有插件并重新分类，可能需要较长时间。确定要继续吗？",
+      confirmText: "全量重建",
+      danger: true,
+    });
+    if (!confirmed) return;
+  }
+
   try {
-    const nextState = await dynamicToolsApi.rebuild(mode, {
-      loadingKey: `dynamic-tools.rebuild.${mode}`,
-    }, { wait: false });
+    const nextState = await dynamicToolsApi.rebuild(
+      mode,
+      {
+        loadingKey: `dynamic-tools.rebuild.${mode}`,
+      },
+      { wait: false }
+    );
     applyState(nextState);
-    statusMessage.value = isClassifying.value ? "重建任务已开始，正在后台分类" : "重建任务已完成";
-    statusType.value = isClassifying.value ? "info" : "success";
-    showMessage(statusMessage.value, "success");
-    if (isClassifying.value) startRebuildPolling();
+
+    if (isClassifying.value) {
+      statusMessage.value = "重建任务已开始，正在后台分类";
+      statusType.value = "info";
+      showMessage(statusMessage.value, "info");
+      startRebuildPolling();
+    } else {
+      statusMessage.value = "重建任务已完成";
+      statusType.value = "success";
+      showMessage(statusMessage.value, "success");
+      await loadState();
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     statusMessage.value = `重建失败：${errorMessage}`;
@@ -470,32 +538,30 @@ function isExcluded(originKey: string): boolean {
   return excludedKeys.value.has(originKey);
 }
 
-async function togglePinned(record: DynamicToolRecord) {
-  const pinned = !isPinned(record.originKey);
-  const saved = await dynamicToolsApi.updateOverride(
-    {
-      originKey: record.originKey,
-      pinned,
-    },
-    { loadingKey: "dynamic-tools.override.pin" }
-  );
-  config.value = normalizeConfig(saved);
-  aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
-  await loadState();
-}
+async function toggleOverride(record: DynamicToolRecord, field: "pinned" | "excluded") {
+  const arrayKey = field === "pinned" ? "pinnedOriginKeys" : "excludedOriginKeys";
+  const arr = config.value.manualOverrides[arrayKey];
+  const originKey = record.originKey;
+  const had = arr.includes(originKey);
+  const previous = [...arr];
 
-async function toggleExcluded(record: DynamicToolRecord) {
-  const excluded = !isExcluded(record.originKey);
-  const saved = await dynamicToolsApi.updateOverride(
-    {
-      originKey: record.originKey,
-      excluded,
-    },
-    { loadingKey: "dynamic-tools.override.exclude" }
-  );
-  config.value = normalizeConfig(saved);
-  aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
-  await loadState();
+  config.value.manualOverrides[arrayKey] = had
+    ? arr.filter((k) => k !== originKey)
+    : [...arr, originKey];
+
+  try {
+    const saved = await dynamicToolsApi.updateOverride(
+      { originKey, [field]: !had },
+      { loadingKey: `dynamic-tools.override.${field}` }
+    );
+    config.value = normalizeConfig(saved);
+    aliasText.value = aliasesToText(config.value.manualOverrides.categoryAliases);
+    await loadState();
+  } catch (error) {
+    config.value.manualOverrides[arrayKey] = previous;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    showMessage(`操作失败：${errorMessage}`, "error");
+  }
 }
 
 async function copyPlaceholder() {

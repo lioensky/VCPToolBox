@@ -7,133 +7,139 @@
     <PlaceholderFilterBar
       :view-mode="viewMode"
       :selected-type="selectedType"
-      :filter-keyword="filterKeyword"
+      :filter-keyword="filterKeywordInput"
       :type-options="typeOptions"
       @update:viewMode="viewMode = $event"
       @update:selectedType="selectedType = $event"
-      @update:filterKeyword="filterKeyword = $event"
+      @update:filterKeyword="handleFilterKeywordUpdate"
     />
 
-    <!-- 分组视图 -->
-    <div v-if="viewMode === 'grouped'" class="placeholder-grouped-view">
-      <div
-        v-for="type in filteredTypes"
-        :key="type"
-        :id="`type-group-${type}`"
-        class="placeholder-type-group"
-      >
-        <div class="type-group-header">
-          <h3>
-            <span class="material-symbols-outlined">folder</span>
-            {{ getTypeLabel(type) }}
-            <span class="type-count">{{
-              getFilteredGroupCount(type)
-            }}</span>
-          </h3>
+    <div
+      v-if="isLoadingPlaceholders"
+      class="placeholder-status"
+      role="status"
+      aria-live="polite"
+    >
+      正在加载占位符...
+    </div>
 
-          <button
-            type="button"
-            class="group-collapse-toggle"
-            :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
-            :aria-expanded="!isTypeGroupCollapsed(type)"
-            :aria-controls="getTypeGroupContentId(type)"
-            @click="toggleTypeGroupCollapsed(type)"
-          >
-            <span>{{ isTypeGroupCollapsed(type) ? "展开" : "折叠" }}</span>
-            <span class="material-symbols-outlined group-collapse-icon"
-              >expand_more</span
-            >
-          </button>
+    <div
+      v-else-if="loadErrorMessage"
+      class="placeholder-status placeholder-status-error"
+      role="status"
+      aria-live="polite"
+    >
+      {{ loadErrorMessage }}
+    </div>
+
+    <template v-else>
+      <!-- 分组视图 -->
+      <div v-if="viewMode === 'grouped'" class="placeholder-grouped-view">
+        <div
+          v-if="shouldShowEmptyState"
+          class="placeholder-status"
+          role="status"
+          aria-live="polite"
+        >
+          {{ emptyStateText }}
         </div>
 
-        <transition name="group-collapse">
-          <div
-            v-show="!isTypeGroupCollapsed(type)"
-            :id="getTypeGroupContentId(type)"
-            class="type-group-content"
-          >
-          <div
-            v-for="placeholder in getFilteredGroupPlaceholders(type)"
-            :key="placeholder.name"
-            class="placeholder-item card"
-          >
-            <div class="placeholder-header">
-              <span class="placeholder-name" :title="placeholder.name">{{
-                placeholder.name
+        <div
+          v-for="type in filteredTypes"
+          :key="type"
+          :id="`type-group-${type}`"
+          class="placeholder-type-group"
+        >
+          <div class="type-group-header">
+            <h3>
+              <span class="material-symbols-outlined">folder</span>
+              {{ getTypeLabel(type) }}
+              <span class="type-count">{{
+                filteredGroupedPlaceholders[type]?.length ?? 0
               }}</span>
-            </div>
-            <div class="placeholder-preview" :title="placeholder.preview">
-              {{ placeholder.preview }}
-            </div>
-            <div v-if="placeholder.description" class="placeholder-description">
-              {{ placeholder.description }}
-            </div>
-            <div class="placeholder-footer">
-              <span class="placeholder-charcount">
-                {{
-                  placeholder.charCount ? `${placeholder.charCount} 字符` : "—"
-                }}
-              </span>
-              <button
-                @click="openDetail(placeholder)"
-                class="btn-secondary btn-sm"
-              >
-                查看详情
-              </button>
-            </div>
-          </div>
-          </div>
-        </transition>
-      </div>
-    </div>
+            </h3>
 
-    <!-- 列表视图 -->
-    <div v-else class="placeholder-list-view">
-      <div
-        v-for="placeholder in filteredPlaceholders"
-        :key="placeholder.name"
-        class="placeholder-item card"
-      >
-        <div class="placeholder-header">
-          <span class="placeholder-name" :title="placeholder.name">{{
-            placeholder.name
-          }}</span>
-          <span class="placeholder-type" :title="placeholder.type">
-            {{ getTypeLabel(placeholder.type) }}
-          </span>
-        </div>
-        <div class="placeholder-preview" :title="placeholder.preview">
-          {{ placeholder.preview }}
-        </div>
-        <div v-if="placeholder.description" class="placeholder-description">
-          {{ placeholder.description }}
-        </div>
-        <div class="placeholder-footer">
-          <span class="placeholder-charcount">
-            {{ placeholder.charCount ? `${placeholder.charCount} 字符` : "—" }}
-          </span>
-          <button @click="openDetail(placeholder)" class="btn-secondary btn-sm">
-            查看详情
-          </button>
+            <button
+              type="button"
+              class="group-collapse-toggle"
+              :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+              :aria-expanded="!isTypeGroupCollapsed(type)"
+              :aria-controls="getTypeGroupContentId(type)"
+              @click="toggleTypeGroupCollapsed(type)"
+            >
+              <span>{{ isTypeGroupCollapsed(type) ? "展开" : "折叠" }}</span>
+              <span class="material-symbols-outlined group-collapse-icon"
+                >expand_more</span
+              >
+            </button>
+          </div>
+
+          <div
+            class="type-group-collapse"
+            :class="{ 'is-collapsed': isTypeGroupCollapsed(type) }"
+          >
+            <div class="type-group-content-shell">
+              <div
+                :id="getTypeGroupContentId(type)"
+                class="type-group-content"
+              >
+                <PlaceholderCard
+                  v-for="placeholder in filteredGroupedPlaceholders[type] ?? []"
+                  :key="`${placeholder.type}-${placeholder.name}`"
+                  :placeholder="placeholder"
+                  @viewDetail="openDetail"
+                  @copyName="handleCopyPlaceholderName"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+
+      <!-- 列表视图 -->
+      <div v-else class="placeholder-list-view">
+        <div
+          v-if="shouldShowEmptyState"
+          class="placeholder-status"
+          role="status"
+          aria-live="polite"
+        >
+          {{ emptyStateText }}
+        </div>
+
+        <PlaceholderCard
+          v-for="placeholder in filteredPlaceholders"
+          :key="`${placeholder.type}-${placeholder.name}`"
+          :placeholder="placeholder"
+          :show-type-badge="true"
+          :type-label="getTypeLabel(placeholder.type)"
+          @viewDetail="openDetail"
+          @copyName="handleCopyPlaceholderName"
+        />
+      </div>
+    </template>
 
     <PlaceholderDetailModal
       :selected-placeholder="selectedPlaceholder"
       :active-tab="activeTab"
       :detail-content="detailContent"
       :rendered-markdown="renderedMarkdown"
-      :get-type-label="getTypeLabel"
+      :json-content="detailJsonContent"
       @close="closeDetail"
       @update:activeTab="activeTab = $event"
+      @copyDetail="handleCopyDetailContent"
+      @copyJson="handleCopyJsonContent"
     />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { placeholderApi } from "@/api";
+import { useDebounceFn } from "@/composables/useDebounceFn";
+import { useMarkdownRenderer } from "@/composables/useMarkdownRenderer";
+import { getPlaceholderTypeLabel } from "@/features/placeholder-viewer/placeholderTypeLabel";
 import type {
   Placeholder,
   PlaceholderDetailTab,
@@ -142,47 +148,150 @@ import type {
 } from "@/features/placeholder-viewer/types";
 import { showMessage } from "@/utils";
 import { createLogger } from "@/utils/logger";
-import { useMarkdownRenderer } from "@/composables/useMarkdownRenderer";
+import PlaceholderCard from "./PlaceholderViewer/PlaceholderCard.vue";
 import PlaceholderFilterBar from "./PlaceholderViewer/PlaceholderFilterBar.vue";
 import PlaceholderDetailModal from "./PlaceholderViewer/PlaceholderDetailModal.vue";
 
 const logger = createLogger("PlaceholderViewer");
-
-const TYPE_LABELS: Record<string, string> = {
-  static_plugin: "Static Plugin",
-  async_placeholder: "Async Placeholder",
-  agent: "Agent",
-  env_tar_var: "Target Variable",
-  env_sar: "Sar Prompt",
-  fixed: "Fixed Value",
-  tool_description: "Tool Description",
-  vcp_all_tools: "All Tools",
-  image_key: "Image Key",
-  diary: "Diary",
-  diary_character: "Diary Character",
-};
+const VIEW_MODE_STORAGE_KEY = "placeholder-viewer:view-mode";
+const COLLAPSED_GROUP_STORAGE_KEY = "placeholder-viewer:collapsed-type-groups";
+const DETAIL_EMPTY_TEXT = "暂无详细内容。";
 
 const { renderMarkdown: renderMarkdownContent } = useMarkdownRenderer();
+const route = useRoute();
+
+function normalizeViewMode(value: unknown): PlaceholderViewMode {
+  const normalized = Array.isArray(value) ? value[0] : value;
+  return normalized === "list" ? "list" : "grouped";
+}
+
+function isBrowserEnvironment(): boolean {
+  return typeof window !== "undefined";
+}
+
+function readStoredViewMode(): PlaceholderViewMode | null {
+  if (!isBrowserEnvironment()) {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+  if (rawValue === "grouped" || rawValue === "list") {
+    return rawValue;
+  }
+
+  return null;
+}
+
+function resolveInitialViewMode(routeValue: unknown): PlaceholderViewMode {
+  const normalizedRoute = Array.isArray(routeValue) ? routeValue[0] : routeValue;
+
+  if (normalizedRoute === "grouped" || normalizedRoute === "list") {
+    return normalizedRoute;
+  }
+
+  return readStoredViewMode() ?? "grouped";
+}
+
+function readCollapsedTypeGroups(): Record<string, boolean> {
+  if (!isBrowserEnvironment()) {
+    return {};
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(COLLAPSED_GROUP_STORAGE_KEY);
+    if (!rawValue) {
+      return {};
+    }
+
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    return Object.entries(parsed).reduce<Record<string, boolean>>(
+      (result, [type, collapsed]) => {
+        if (typeof collapsed === "boolean") {
+          result[type] = collapsed;
+        }
+
+        return result;
+      },
+      {}
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistViewMode(mode: PlaceholderViewMode): void {
+  if (!isBrowserEnvironment()) {
+    return;
+  }
+
+  window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+}
+
+function persistCollapsedTypeGroups(value: Record<string, boolean>): void {
+  if (!isBrowserEnvironment()) {
+    return;
+  }
+
+  window.localStorage.setItem(COLLAPSED_GROUP_STORAGE_KEY, JSON.stringify(value));
+}
 
 const placeholders = ref<Placeholder[]>([]);
+const isLoadingPlaceholders = ref(false);
+const loadErrorMessage = ref("");
 const selectedType = ref("");
+const filterKeywordInput = ref("");
 const filterKeyword = ref("");
-const viewMode = ref<PlaceholderViewMode>("grouped");
+const viewMode = ref<PlaceholderViewMode>(resolveInitialViewMode(route.query.view));
 const selectedPlaceholder = ref<Placeholder | null>(null);
 const activeTab = ref<PlaceholderDetailTab>("raw");
 const detailContent = ref("");
 const renderedMarkdown = ref("");
 const lastFocusedElement = ref<HTMLElement | null>(null);
-const collapsedTypeGroups = ref<Record<string, boolean>>({});
+const detailRequestId = ref(0);
+const collapsedTypeGroups = ref<Record<string, boolean>>(readCollapsedTypeGroups());
 
 function getTypeLabel(type: string): string {
-  return TYPE_LABELS[type] || type;
+  return getPlaceholderTypeLabel(type);
+}
+
+function matchesKeyword(placeholder: Placeholder, normalizedKeyword: string): boolean {
+  if (!normalizedKeyword) {
+    return true;
+  }
+
+  const searchableText = [
+    placeholder.name,
+    placeholder.preview,
+    placeholder.description ?? "",
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  return searchableText.includes(normalizedKeyword);
+}
+
+const applyFilterKeyword = useDebounceFn(
+  (value: unknown) => {
+    filterKeyword.value = String(value ?? "").trim();
+  },
+  { delay: 220 }
+);
+
+function handleFilterKeywordUpdate(value: string): void {
+  filterKeywordInput.value = value;
+  applyFilterKeyword(value);
 }
 
 const availableTypes = computed(() => {
   const types = new Set(placeholders.value.map((placeholder) => placeholder.type));
   return Array.from(types).sort();
 });
+
+const normalizedFilterKeyword = computed(() => filterKeyword.value.toLowerCase());
 
 const groupedPlaceholders = computed(() => {
   const groups: Record<string, Placeholder[]> = {};
@@ -200,26 +309,6 @@ const groupedPlaceholders = computed(() => {
 
 function getTypeCount(type: string): number {
   return groupedPlaceholders.value[type]?.length || 0;
-}
-
-function getFilteredGroupPlaceholders(type: string): Placeholder[] {
-  const items = groupedPlaceholders.value[type] || [];
-  
-  if (!filterKeyword.value) {
-    return items;
-  }
-  
-  const keyword = filterKeyword.value.toLowerCase();
-  return items.filter(
-    (item) =>
-      item.name.toLowerCase().includes(keyword) ||
-      item.preview.toLowerCase().includes(keyword) ||
-      (item.description && item.description.toLowerCase().includes(keyword))
-  );
-}
-
-function getFilteredGroupCount(type: string): number {
-  return getFilteredGroupPlaceholders(type).length;
 }
 
 function isTypeGroupCollapsed(type: string): boolean {
@@ -246,60 +335,105 @@ const typeOptions = computed<PlaceholderTypeOption[]>(() =>
   }))
 );
 
-const filteredTypes = computed(() => {
-  if (filterKeyword.value) {
-    const keyword = filterKeyword.value.toLowerCase();
+const filteredGroupedPlaceholders = computed<Record<string, Placeholder[]>>(() => {
+  const filteredGroups: Record<string, Placeholder[]> = {};
+  const sourceTypes = selectedType.value ? [selectedType.value] : availableTypes.value;
+  const keyword = normalizedFilterKeyword.value;
 
-    return availableTypes.value.filter((type) => {
-      const items = groupedPlaceholders.value[type] || [];
-      return items.some(
-        (item) =>
-          item.name.toLowerCase().includes(keyword) ||
-          item.preview.toLowerCase().includes(keyword)
-      );
-    });
-  }
+  sourceTypes.forEach((type) => {
+    const items = groupedPlaceholders.value[type] || [];
+    const filteredItems = items.filter((item) => matchesKeyword(item, keyword));
 
-  if (selectedType.value) {
-    return [selectedType.value];
-  }
+    if (filteredItems.length > 0) {
+      filteredGroups[type] = filteredItems;
+    }
+  });
 
-  return availableTypes.value;
+  return filteredGroups;
 });
 
-const filteredPlaceholders = computed(() =>
-  placeholders.value.filter((placeholder) => {
+const filteredTypes = computed(() => Object.keys(filteredGroupedPlaceholders.value));
+
+const filteredPlaceholders = computed(() => {
+  const keyword = normalizedFilterKeyword.value;
+
+  return placeholders.value.filter((placeholder) => {
     if (selectedType.value && placeholder.type !== selectedType.value) {
       return false;
     }
 
-    if (!filterKeyword.value) {
-      return true;
-    }
+    return matchesKeyword(placeholder, keyword);
+  });
+});
 
-    const keyword = filterKeyword.value.toLowerCase();
-    return (
-      placeholder.name.toLowerCase().includes(keyword) ||
-      placeholder.preview.toLowerCase().includes(keyword)
-    );
-  })
-);
+const hasAnyPlaceholder = computed(() => placeholders.value.length > 0);
+
+const hasVisibleResults = computed(() => {
+  return viewMode.value === "grouped"
+    ? filteredTypes.value.length > 0
+    : filteredPlaceholders.value.length > 0;
+});
+
+const hasActiveFilter = computed(() => {
+  return Boolean(selectedType.value || filterKeywordInput.value.trim());
+});
+
+const shouldShowEmptyState = computed(() => !hasVisibleResults.value);
+
+const emptyStateText = computed(() => {
+  if (!hasAnyPlaceholder.value) {
+    return "暂无可用占位符。";
+  }
+
+  if (hasActiveFilter.value) {
+    return "没有匹配当前筛选条件的占位符。";
+  }
+
+  return "暂无可展示的占位符。";
+});
+
+const detailJsonContent = computed(() => {
+  if (!selectedPlaceholder.value) {
+    return "{}";
+  }
+
+  const safeDetailPayload = {
+    name: selectedPlaceholder.value.name,
+    type: selectedPlaceholder.value.type,
+    preview: selectedPlaceholder.value.preview,
+    description: selectedPlaceholder.value.description ?? null,
+    charCount: selectedPlaceholder.value.charCount ?? null,
+    content: detailContent.value || selectedPlaceholder.value.content || null,
+  };
+
+  return JSON.stringify(safeDetailPayload, null, 2);
+});
 
 async function loadPlaceholders(): Promise<void> {
+  isLoadingPlaceholders.value = true;
+  loadErrorMessage.value = "";
+
   try {
     placeholders.value = await placeholderApi.getPlaceholders();
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Failed to load placeholders", error);
+    loadErrorMessage.value = `加载占位符失败: ${errorMessage}`;
     showMessage(`Failed to load placeholders: ${errorMessage}`, "error");
+  } finally {
+    isLoadingPlaceholders.value = false;
   }
 }
 
 async function openDetail(placeholder: Placeholder): Promise<void> {
+  const currentRequestId = detailRequestId.value + 1;
+  detailRequestId.value = currentRequestId;
+
   lastFocusedElement.value = document.activeElement as HTMLElement;
   selectedPlaceholder.value = placeholder;
   activeTab.value = "raw";
-  detailContent.value = "Loading detail...";
+  detailContent.value = "正在加载详情...";
+  renderedMarkdown.value = "";
 
   try {
     const detailValue = await placeholderApi.getPlaceholderDetail(
@@ -307,13 +441,26 @@ async function openDetail(placeholder: Placeholder): Promise<void> {
       placeholder.name
     );
 
-    detailContent.value = detailValue ?? placeholder.content ?? placeholder.preview;
-    
-    // 渲染 Markdown
+    if (currentRequestId !== detailRequestId.value) {
+      return;
+    }
+
+    detailContent.value = detailValue ?? placeholder.content ?? DETAIL_EMPTY_TEXT;
+
     if (detailContent.value) {
-      renderedMarkdown.value = await renderMarkdownContent(detailContent.value);
+      const markdown = await renderMarkdownContent(detailContent.value);
+
+      if (currentRequestId !== detailRequestId.value) {
+        return;
+      }
+
+      renderedMarkdown.value = markdown;
     }
   } catch (error: unknown) {
+    if (currentRequestId !== detailRequestId.value) {
+      return;
+    }
+
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Failed to load placeholder detail", error);
     detailContent.value = `Failed to load detail: ${errorMessage}`;
@@ -321,13 +468,107 @@ async function openDetail(placeholder: Placeholder): Promise<void> {
   }
 }
 
+function isClipboardWritable(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.clipboard &&
+    typeof navigator.clipboard.writeText === "function"
+  );
+}
+
+async function copyToClipboard(text: string, successMessage: string): Promise<void> {
+  if (!isClipboardWritable()) {
+    showMessage("当前环境不支持剪贴板写入", "warning");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    showMessage(successMessage, "success");
+  } catch (error) {
+    logger.error("Failed to copy text", error);
+    showMessage("复制失败，请稍后重试", "error");
+  }
+}
+
+function handleCopyPlaceholderName(name: string): void {
+  void copyToClipboard(name, "占位符名称已复制");
+}
+
+function handleCopyDetailContent(): void {
+  const text = detailContent.value.trim();
+  if (!text) {
+    showMessage("当前无可复制内容", "warning");
+    return;
+  }
+
+  void copyToClipboard(text, "占位符内容已复制");
+}
+
+function handleCopyJsonContent(): void {
+  void copyToClipboard(detailJsonContent.value, "占位符 JSON 已复制");
+}
+
 function closeDetail(): void {
+  detailRequestId.value += 1;
   selectedPlaceholder.value = null;
 
   void nextTick(() => {
     lastFocusedElement.value?.focus();
   });
 }
+
+watch(
+  viewMode,
+  (mode) => {
+    persistViewMode(mode);
+  },
+  { immediate: true }
+);
+
+watch(
+  collapsedTypeGroups,
+  (value) => {
+    persistCollapsedTypeGroups(value);
+  },
+  { deep: true }
+);
+
+watch(
+  availableTypes,
+  (types) => {
+    const typeSet = new Set(types);
+    let hasInvalidType = false;
+    const normalizedValue: Record<string, boolean> = {};
+
+    Object.entries(collapsedTypeGroups.value).forEach(([type, collapsed]) => {
+      if (typeSet.has(type)) {
+        normalizedValue[type] = collapsed;
+        return;
+      }
+
+      hasInvalidType = true;
+    });
+
+    if (hasInvalidType) {
+      collapsedTypeGroups.value = normalizedValue;
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => route.query.view,
+  (value) => {
+    const normalized = Array.isArray(value) ? value[0] : value;
+    if (normalized === "grouped" || normalized === "list") {
+      const nextMode = normalizeViewMode(normalized);
+      if (viewMode.value !== nextMode) {
+        viewMode.value = nextMode;
+      }
+    }
+  }
+);
 
 onMounted(() => {
   void loadPlaceholders();
@@ -420,39 +661,30 @@ onMounted(() => {
   transform: rotate(-90deg);
 }
 
+.type-group-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 0.24s ease,
+    opacity 0.24s ease;
+}
+
+.type-group-collapse.is-collapsed {
+  grid-template-rows: 0fr;
+  opacity: 0.7;
+}
+
+.type-group-content-shell {
+  overflow: hidden;
+  min-height: 0;
+}
+
 .type-group-content {
   padding: var(--space-5);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-4);
   align-items: stretch;
-}
-
-.group-collapse-enter-active,
-.group-collapse-leave-active {
-  overflow: hidden;
-  transition:
-    max-height 0.28s ease,
-    opacity 0.24s ease,
-    transform 0.24s ease,
-    padding-top 0.24s ease,
-    padding-bottom 0.24s ease;
-}
-
-.group-collapse-enter-from,
-.group-collapse-leave-to {
-  max-height: 0;
-  opacity: 0;
-  transform: translateY(-6px);
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.group-collapse-enter-to,
-.group-collapse-leave-from {
-  max-height: 2600px;
-  opacity: 1;
-  transform: translateY(0);
 }
 
 /* 列表视图 */
@@ -463,74 +695,24 @@ onMounted(() => {
   align-items: stretch;
 }
 
-/* 卡片样式 */
-.placeholder-item {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  height: 100%;
-  min-height: 210px;
-}
-
-.placeholder-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.placeholder-name {
-  font-weight: 600;
-  font-family: "Consolas", "Monaco", monospace;
+.placeholder-status {
+  padding: var(--space-5);
+  background: var(--tertiary-bg);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--secondary-text);
   font-size: var(--font-size-body);
+}
+
+.placeholder-status-error {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger-color) 32%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
   color: var(--primary-text);
-  word-break: break-all;
 }
 
-.placeholder-type {
-  font-size: var(--font-size-helper);
-  padding: 2px 8px;
-  background: var(--tertiary-bg);
-  border-radius: 4px;
-  color: var(--primary-text);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.placeholder-preview {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  line-height: 1.5;
-}
-
-.placeholder-description {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  padding: 8px;
-  background: var(--tertiary-bg);
-  border-radius: var(--radius-sm);
-  line-height: 1.5;
-}
-
-.placeholder-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-color);
-}
-
-.placeholder-charcount {
-  font-size: var(--font-size-helper);
-  color: var(--secondary-text);
-  font-weight: 600;
+.placeholder-list-view > .placeholder-status {
+  grid-column: 1 / -1;
 }
 
 /* 响应式 */

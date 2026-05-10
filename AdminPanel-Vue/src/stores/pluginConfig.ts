@@ -1,6 +1,7 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { pluginApi } from '@/api'
+import { askConfirm, askInput } from '@/platform/feedback/feedbackBus'
 import { useAppStore } from '@/stores/app'
 import type { PluginInfo, PluginInvocationCommand } from '@/types/api.plugin'
 import { 
@@ -150,25 +151,39 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     return pluginData.value?.manifest.configSchemaDescriptions?.[key] || `Schema 定义: ${key}`
   }
 
-  function removeCustomField(key: string) {
-    if (!confirm(`确定要删除自定义配置项 "${key}" 吗？更改将在保存后生效。`)) {
+  async function removeCustomField(key: string) {
+    if (!(await askConfirm({
+      message: `确定要删除自定义配置项 "${key}" 吗？更改将在保存后生效。`,
+      danger: true,
+      confirmText: '删除'
+    }))) {
       return
     }
+
     configEntries.value = configEntries.value.filter((entry) => entry.isCommentOrEmpty || entry.key !== key)
   }
 
-  function addCustomField() {
-    const key = prompt('请输入新自定义配置项的键名 (例如 MY_PLUGIN_VAR):')
+  async function addCustomField() {
+    const key = await askInput({
+      title: '添加自定义配置项',
+      message: '请输入新自定义配置项的键名（例如 MY_PLUGIN_VAR）',
+      placeholder: 'MY_PLUGIN_VAR',
+      confirmText: '添加',
+      validate: (value) => {
+        const normalized = value.trim().replace(/\s+/g, '_')
+        if (!normalized) return '键名不能为空'
+        const exists = configEntries.value.some(
+          (entry) => !entry.isCommentOrEmpty && entry.key === normalized
+        )
+        if (exists) return `配置项 "${normalized}" 已存在`
+        return null
+      },
+    })
     if (!key || !key.trim()) {
       return
     }
 
     const normalizedKey = key.trim().replace(/\s+/g, '_')
-    const exists = configEntries.value.some((entry) => !entry.isCommentOrEmpty && entry.key === normalizedKey)
-    if (exists) {
-      showMessage(`配置项 "${normalizedKey}" 已存在！`, 'error')
-      return
-    }
 
     configEntries.value.push({
       key: normalizedKey,
@@ -199,7 +214,7 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
       }
 
       pluginData.value = plugin
-      const configText = plugin.configEnvContent ?? plugin.configENVContent ?? ''
+      const configText = plugin.configEnvContent ?? ''
       const entries = parseEnvToList(configText)
 
       configEntries.value = entries.map((entry) => {
@@ -273,7 +288,11 @@ export const usePluginConfigStore = defineStore('plugin-config', () => {
     const enable = !pluginData.value.enabled
     const action = enable ? '启用' : '禁用'
 
-    if (!confirm(`确定要${action}插件 "${pluginData.value?.manifest.displayName || pluginName}" 吗？`)) {
+    if (!(await askConfirm({
+      message: `确定要${action}插件 "${pluginData.value?.manifest.displayName || pluginName}" 吗？`,
+      danger: !enable,
+      confirmText: action
+    }))) {
       return
     }
 

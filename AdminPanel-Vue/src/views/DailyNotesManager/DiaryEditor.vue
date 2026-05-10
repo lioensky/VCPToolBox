@@ -171,7 +171,7 @@ defineEmits<{
 }
 
 :deep(.EasyMDEContainer .CodeMirror .cm-link) {
-  color: var(--primary-color);
+  color: var(--highlight-text);
 }
 
 :deep(.EasyMDEContainer .CodeMirror-cursor) {

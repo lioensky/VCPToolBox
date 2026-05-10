@@ -66,7 +66,6 @@ export interface PluginInfo {
   serverId?: string;
   configEnvContent?: string;
   enabled: boolean;
-  configENVContent?: string;
   configPath?: string;
   dashboardCards?: PluginDashboardCardContribution[];
 }
