@@ -78,7 +78,7 @@ impl PaperReaderApplication {
         let mut document_ids: Vec<String> = Vec::new();
         let mut ingest_results: Vec<Value> = Vec::new();
 
-        if let Some(sources) = payload_array(payload, "sources") {
+        if let Some(sources) = payload.get("sources").and_then(|value| value.as_array()) {
             for source in sources {
                 let mut merged = source
                     .as_object()

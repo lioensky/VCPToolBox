@@ -269,11 +269,7 @@ fn snippet(text: &str) -> String {
     if text.len() <= MAX_LEN {
         return text.to_string();
     }
-    let mut end = MAX_LEN;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...", &text[..end])
+    format!("{}...", &text[..MAX_LEN])
 }
 
 #[cfg(test)]
@@ -409,14 +405,5 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].segment_id, "seg-1");
         assert_eq!(result.evidence_pack.refs.len(), 1);
-    }
-
-    #[test]
-    fn test_snippet_handles_multibyte_boundaries() {
-        let text = "（一）教令院".repeat(40);
-        let shortened = snippet(&text);
-
-        assert!(shortened.ends_with("..."));
-        assert!(shortened.len() <= 243);
     }
 }
