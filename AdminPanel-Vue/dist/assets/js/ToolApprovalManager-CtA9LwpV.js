@@ -4,4 +4,4 @@ import{A as N,N as T,O as h,Ot as u,c as B,d as k,f as A,g as _,jt as d,l as o,n
 SciCalculator
 PowerShellExecutor:Get-ChildItem
 PowerShellExecutor::SilentReject
-PowerShellExecutor:Remove-Item::SilentReject`},null,8,H),[[C,l.value.approvalListText]]),a[8]||(a[8]=o("p",{class:"aa-hint"},"支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。",-1))])],32)])]))}}),oe=R(X,[["__scopeId","data-v-426397b9"]]);export{oe as default};
+PowerShellExecutor:Remove-Item::SilentReject`},null,8,H),[[C,l.value.approvalListText]]),a[8]||(a[8]=o("p",{class:"aa-hint"},"支持四种格式：ToolName、ToolName:Command、ToolName::SilentReject、ToolName:Command::SilentReject。带“::SilentReject”的规则在用户拒绝时不会向 AI 返回拒绝提示。",-1))])],32)])]))}}),oe=R(X,[["__scopeId","data-v-e36971d0"]]);export{oe as default};
