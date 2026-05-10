@@ -15,7 +15,9 @@
     "timeout": 120000
   },
   "configSchema": {
-    "ZIMAGE_API_KEY": "string(可选)，如果留空则使用内置体验密钥"
+    "ZIMAGE_API_KEY": "string(可选)，如果留空则使用内置体验密钥",
+    "HTTP_PROXY": "string(可选)，网络代理地址，例如 http://127.0.0.1:7890，留空则不使用代理",
+    "USE_PUBLIC_URL": "string(可选)，是否使用公网地址返回图片URL，true 使用 VarHttpsUrl，false 使用 VarHttpUrl（局域网），默认 false"
   },
   "capabilities": {
     "invocationCommands": [

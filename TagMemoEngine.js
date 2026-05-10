@@ -21,6 +21,7 @@ class TagMemoEngine {
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
+        this._isMatrixRebuilding = false;
         // 🌟 V8: 距离场缓存（供测地线重排使用）
         this.lastEnergyField = null;
     }
@@ -792,10 +793,43 @@ class TagMemoEngine {
     }
 
     async doMatrixRebuild() {
+        if (this._isMatrixRebuilding) {
+            console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated changes for next debounce window.');
+            if (!this._matrixRebuildTimer && this._accumulatedTagChanges > 0) {
+                this._scheduleMatrixRebuildTimer(300000);
+            }
+            return;
+        }
+
+        const changesAtStart = this._accumulatedTagChanges;
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
-        this.buildDirectedCooccurrenceMatrix();
-        await this.recomputeIntrinsicResiduals();
+        this._isMatrixRebuilding = true;
+
+        try {
+            this.buildDirectedCooccurrenceMatrix();
+            await this.recomputeIntrinsicResiduals();
+        } finally {
+            this._isMatrixRebuilding = false;
+            if (this._accumulatedTagChanges > 0) {
+                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedTagChanges} tag changes arrived during rebuild; scheduling follow-up debounce.`);
+                this._scheduleMatrixRebuildTimer(300000);
+            }
+            console.log(`[TagMemoEngine] Matrix rebuild finished for ${changesAtStart} accumulated tag change(s).`);
+        }
+    }
+
+    _scheduleMatrixRebuildTimer(delayMs) {
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+        }
+
+        this._matrixRebuildTimer = setTimeout(() => {
+            console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedTagChanges} accumulated change(s)...`);
+            this.doMatrixRebuild();
+        }, delayMs);
+
+        if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
     }
 
     // 🌟 TagMemo V7: 触发 Rust 预计算内生残差

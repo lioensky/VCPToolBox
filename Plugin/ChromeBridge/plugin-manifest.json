@@ -9,7 +9,7 @@
     },
     "communication": {
         "protocol": "direct",
-        "timeout": 30000
+        "timeout": 60000
     },
     "capabilities": {
         "systemPromptPlaceholders": [
@@ -34,6 +34,51 @@
                 "command": "open_url",
                 "description": "在新的标签页中打开指定的URL，并等待页面加载完成后返回页面内容。\n- `command`: 固定为 `open_url`。\n- `url`: 要打开的完整URL地址。\n\n**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>",
                 "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」open_url「末」,\nurl: 「始」https://www.google.com「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "query_html",
+                "description": "获取指定元素或整个页面的原始 HTML 源码。\n- `command`: 固定为 `query_html`。\n- `target`: (可选) 目标元素的标识符 (vcp-id, selector, xpath)。如果不提供，则返回整个 body 的 HTML。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」query_html「末」,\ntarget: 「始」vcp-id-5「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "query_js",
+                "description": "获取页面中加载的 JavaScript 脚本信息。\n- `command`: 固定为 `query_js`。\n- `text`: (可选) 过滤关键字，用于查找特定的脚本内容或 URL。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」query_js「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "execute_script",
+                "description": "在当前页面上下文中执行自定义 JavaScript 代码，并获取返回值。\n- `command`: 固定为 `execute_script`。\n- `text`: 要执行的 JavaScript 代码字符串。\n\n**注意:** 该指令允许直接操作 DOM 或调用页面全局函数，执行结果将通过回调返回。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」execute_script「末」,\ntext: 「始」return { width: window.innerWidth, title: document.title }「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_start",
+                "description": "对当前活动标签页开启 CDP (Chrome DevTools Protocol) 调试会话，用于网络监控等高级功能。\n- `command`: 固定为 `cdp_start`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_start「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_stop",
+                "description": "停止当前标签页的 CDP 调试会话。\n- `command`: 固定为 `cdp_stop`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_stop「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_network_query",
+                "description": "查询 CDP 捕获的网络请求日志。\n- `command`: 固定为 `cdp_network_query`。\n- `urlIncludes`: (可选) 过滤 URL 中包含的字符串。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_network_query「末」,\nurlIncludes: 「始」/api/v1「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_get_response_body",
+                "description": "获取指定网络请求的响应体内容。\n- `command`: 固定为 `cdp_get_response_body`。\n- `requestId`: 目标请求的 ID (从 cdp_network_query 结果中获取)。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_get_response_body「末」,\nrequestId: 「始」123.45「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "cdp_clear_network",
+                "description": "清空当前捕获的网络请求日志。\n- `command`: 固定为 `cdp_clear_network`。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」cdp_clear_network「末」\n<<<[END_TOOL_REQUEST]>>>"
+            },
+            {
+                "command": "page_code_search",
+                "description": "在当前页面执行类似 VSCode 的源码搜索。\n- `command`: 固定为 `page_code_search`。\n- `query`: 必填，搜索关键词或正则表达式。\n- `searchMode`: 可选，`light` / `enhanced` / `auto`，默认 `auto`。`light` 搜索当前 DOM、内联脚本、样式与代码块；`enhanced` 预留给基于 CDP 的资源级搜索；`auto` 优先 light，必要时升级。\n- `scope`: 可选，逗号分隔的搜索范围，例如 `dom,inline_script,style,codeblock`。\n- `useRegex`: 可选，是否按正则表达式搜索。\n- `caseSensitive`: 可选，是否区分大小写。\n- `contextChars`: 可选，返回命中前后的上下文字符数。\n- `maxResults`: 可选，最大返回结果数。",
+                "example": "**调用示例:**\n<<<[TOOL_REQUEST]>>>\ntool_name: 「始」ChromeBridge「末」,\ncommand: 「始」page_code_search「末」,\nquery: 「始」fetchUserProfile「末」,\nsearchMode: 「始」light「末」,\nscope: 「始」dom,inline_script,style,codeblock「末」,\nmaxResults: 「始」20「末」\n<<<[END_TOOL_REQUEST]>>>"
             }
         ]
     },
