@@ -93,8 +93,11 @@ class KnowledgeBaseManager {
         this.db = new Database(dbPath); // 同步连接
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('synchronous = NORMAL');
+        // 🛡️ SQLite 默认不启用外键；必须显式开启，避免文件删除后 chunks/file_tags 残留。
+        this.db.pragma('foreign_keys = ON');
 
         this._initSchema();
+        this._cleanupDatabaseOrphans();
 
         // 1. 初始化全局 Tag 索引 (优先从磁盘加载或从 SQLite 重建)
         const tagCapacity = 50000;
@@ -245,6 +248,97 @@ class KnowledgeBaseManager {
         }
     }
 
+    /**
+     * 🧹 启动期数据库修复：
+     * - 清理旧版本在 foreign_keys 未开启时遗留的 chunks/file_tags 孤儿记录
+     * - 清理服务器关闭/重启期间漏掉 unlink 事件造成的已不存在文件记录
+     * - 若清理影响到持久化日记索引，删除旧索引文件，避免 stale chunk id 被再次加载
+     */
+    _cleanupDatabaseOrphans() {
+        try {
+            const affectedDiaries = new Set();
+
+            const missingFiles = this.db.prepare('SELECT id, path, diary_name FROM files').all()
+                .filter(row => !fsSync.existsSync(path.join(this.config.rootPath, row.path)));
+
+            missingFiles.forEach(row => affectedDiaries.add(row.diary_name));
+
+            const orphanChunkCount = this.db.prepare(`
+                SELECT COUNT(*) as count
+                FROM chunks c
+                LEFT JOIN files f ON c.file_id = f.id
+                WHERE f.id IS NULL
+            `).get().count || 0;
+
+            const cleanupTransaction = this.db.transaction(() => {
+                for (const row of missingFiles) {
+                    this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
+                    this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
+                    this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+                }
+
+                this.db.prepare(`
+                    DELETE FROM file_tags
+                    WHERE file_id NOT IN (SELECT id FROM files)
+                       OR tag_id NOT IN (SELECT id FROM tags)
+                `).run();
+
+                this.db.prepare(`
+                    DELETE FROM chunks
+                    WHERE file_id NOT IN (SELECT id FROM files)
+                `).run();
+            });
+
+            cleanupTransaction();
+
+            for (const diaryName of affectedDiaries) {
+                this._deletePersistedDiaryIndex(diaryName);
+            }
+            if (orphanChunkCount > 0) {
+                // 孤儿 chunks 已经丢失 diary_name，只能保守删除全部持久化日记索引，后续从 SQLite 重建。
+                this._deleteAllPersistedDiaryIndexes();
+            }
+
+            if (missingFiles.length > 0 || orphanChunkCount > 0 || affectedDiaries.size > 0) {
+                console.warn(`[KnowledgeBase] 🧹 Startup cleanup complete. Removed ${missingFiles.length} missing file record(s), ${orphanChunkCount} orphan chunk(s), touched ${affectedDiaries.size} diary index(es).`);
+            }
+        } catch (e) {
+            console.error('[KnowledgeBase] ❌ Startup database cleanup failed:', e.message || e);
+        }
+    }
+
+    _deletePersistedDiaryIndex(diaryName) {
+        const shouldPersist = this.config.persistDefault || this.config.persistFolders.has(diaryName) || diaryName.endsWith('簇');
+        if (!shouldPersist) return;
+
+        const safeName = crypto.createHash('md5').update(diaryName).digest('hex');
+        const idxPath = path.join(this.config.storePath, `index_diary_${safeName}.usearch`);
+        const tmpPath = `${idxPath}.tmp`;
+
+        try {
+            if (fsSync.existsSync(idxPath)) {
+                fsSync.unlinkSync(idxPath);
+                console.warn(`[KnowledgeBase] 🧹 Removed stale persisted index for diary "${diaryName}". It will be rebuilt from SQLite.`);
+            }
+            if (fsSync.existsSync(tmpPath)) fsSync.unlinkSync(tmpPath);
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to remove stale persisted index for "${diaryName}": ${e.message}`);
+        }
+    }
+
+    _deleteAllPersistedDiaryIndexes() {
+        try {
+            const files = fsSync.readdirSync(this.config.storePath);
+            for (const file of files) {
+                if (!/^index_diary_[a-f0-9]{32}\.usearch(?:\.tmp)?$/i.test(file)) continue;
+                fsSync.unlinkSync(path.join(this.config.storePath, file));
+            }
+            console.warn('[KnowledgeBase] 🧹 Removed all persisted diary indexes because orphan chunks had lost diary ownership metadata.');
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to remove all persisted diary indexes: ${e.message}`);
+        }
+    }
+
     // 🏭 索引工厂
     async _getOrLoadDiaryIndex(diaryName) {
         // 🌟 每次访问都刷新最后使用时间
@@ -280,11 +374,11 @@ class KnowledgeBaseManager {
             if (fsSync.existsSync(idxPath)) {
                 idx = VexusIndex.load(idxPath, null, this.config.dimension, capacity);
             } else {
-                // 💡 核心修复：如果索引文件不存在，说明是首次创建。
-                // 此时不应从数据库恢复，因为调用者（_flushBatch）正准备写入初始数据。
-                // 从数据库恢复的逻辑只适用于启动时加载或文件损坏后的重建。
-                console.log(`[KnowledgeBase] Index file not found for ${fileName}, creating a new empty one.`);
+                console.log(`[KnowledgeBase] Index file not found for ${fileName}, rebuilding from SQLite when possible.`);
                 idx = new VexusIndex(this.config.dimension, capacity);
+                if (filterDiaryName) {
+                    await this._recoverIndexFromDB(idx, tableType, filterDiaryName);
+                }
             }
         } catch (e) {
             console.error(`[KnowledgeBase] Index load error (${fileName}): ${e.message}`);
@@ -1030,8 +1124,8 @@ class KnowledgeBaseManager {
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
-                const updateFile = this.db.prepare('UPDATE files SET checksum = ?, mtime = ?, size = ?, updated_at = ? WHERE id = ?');
-                const getFile = this.db.prepare('SELECT id FROM files WHERE path = ?');
+                const updateFile = this.db.prepare('UPDATE files SET checksum = ?, mtime = ?, size = ?, updated_at = ?, diary_name = ? WHERE id = ?');
+                const getFile = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?');
                 const getOldChunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?'); // 💡 新增
                 const delChunks = this.db.prepare('DELETE FROM chunks WHERE file_id = ?');
                 const delRels = this.db.prepare('DELETE FROM file_tags WHERE file_id = ?');
@@ -1065,7 +1159,12 @@ class KnowledgeBaseManager {
                                 deletions.get(dName).push(...oldChunkIds);
                             }
 
-                            updateFile.run(doc.checksum, doc.mtime, doc.size, now, fileId);
+                            if (fRow.diary_name !== doc.diaryName) {
+                                if (!deletions.has(fRow.diary_name)) deletions.set(fRow.diary_name, []);
+                                deletions.get(fRow.diary_name).push(...oldChunkIds);
+                            }
+
+                            updateFile.run(doc.checksum, doc.mtime, doc.size, now, doc.diaryName, fileId);
                             delChunks.run(fileId);
                             delRels.run(fileId);
                         } else {
@@ -1103,7 +1202,17 @@ class KnowledgeBaseManager {
                 for (const [dName, chunkIds] of deletions) {
                     const idx = await this._getOrLoadDiaryIndex(dName);
                     if (idx && idx.remove) {
-                        chunkIds.forEach(id => idx.remove(id));
+                        chunkIds.forEach(id => {
+                            try {
+                                idx.remove(id);
+                            } catch (e) {
+                                // usearch 对不存在的 id 可能抛错；删除路径必须保持幂等，避免批处理重试循环。
+                                if (e.message && !/not found|missing|absent/i.test(e.message)) {
+                                    console.warn(`[KnowledgeBase] ⚠️ Failed to remove stale vector ${id} from "${dName}": ${e.message}`);
+                                }
+                            }
+                        });
+                        this._scheduleIndexSave(dName);
                     }
                 }
             }
@@ -1210,11 +1319,28 @@ class KnowledgeBaseManager {
             const row = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?').get(relPath);
             if (!row) return;
             const chunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(row.id);
-            this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+
+            // 🛡️ 不依赖 SQLite 外键级联：历史数据库/连接若未开启 foreign_keys，会留下 file_tags/chunks 垃圾，
+            // 大批量移动后会让 TagMemo 的延迟矩阵重建扫描膨胀数据，造成 CPU 长时间跑满。
+            const deleteTransaction = this.db.transaction(() => {
+                this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
+                this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
+                this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+            });
+            deleteTransaction();
 
             const idx = await this._getOrLoadDiaryIndex(row.diary_name);
             if (idx && idx.remove) {
-                chunkIds.forEach(c => idx.remove(c.id));
+                chunkIds.forEach(c => {
+                    try {
+                        idx.remove(c.id);
+                    } catch (e) {
+                        // 删除事件可能乱序/重复；向量不存在不应导致错误风暴或后续处理停滞。
+                        if (e.message && !/not found|missing|absent/i.test(e.message)) {
+                            console.warn(`[KnowledgeBase] ⚠️ Failed to remove vector ${c.id} from "${row.diary_name}": ${e.message}`);
+                        }
+                    }
+                });
                 this._scheduleIndexSave(row.diary_name);
             }
         } catch (e) { console.error(`[KnowledgeBase] Delete error:`, e); }
