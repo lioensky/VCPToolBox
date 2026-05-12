@@ -20,6 +20,7 @@ export type AppRouteId =
   | "vcptavern-editor"
   | "agent-files-editor"
   | "agent-assistant-config"
+  | "forum-assistant-config"
   | "agent-scores"
   | "toolbox-manager"
   | "tvs-files-editor"
@@ -121,6 +122,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/agent-assistant-config",
     title: "Agent 通讯配置",
     icon: "diversity_3",
+    requiresAuth: true,
+    navGroup: "agentContent",
+    showInSidebar: true,
+  },
+  {
+    id: "forum-assistant-config",
+    routeName: "ForumAssistantConfig",
+    path: "/forum-assistant-config",
+    title: "任务派发中心",
+    icon: "assignment",
     requiresAuth: true,
     navGroup: "agentContent",
     showInSidebar: true,
