@@ -240,6 +240,11 @@ VCPDistributedServer
 # XiaohongshuFetch config
 Plugin/XiaohongshuFetch/config.env
 
+# Plugin store local runtime/cache files
+pluginStoreSources.json
+/tmp/
+Plugin/.backup/
+
 # Local runtime state and generated indexes
 /state/
 /data/candidate-cache.json
