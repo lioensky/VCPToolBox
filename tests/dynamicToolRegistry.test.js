@@ -310,6 +310,44 @@ test('distributed offline state excludes tools while reconnect reuses classifica
   assert.equal(registry.getRecord('distributed:srv-a:RemoteSearch').available, true);
 });
 
+test('admin state hides stale distributed ids when the same cloud tool reconnects under a new id', async () => {
+  const projectRoot = await makeProjectRoot();
+  const calls = [];
+  const pluginManager = makePluginManager([
+    makeManifest('RemoteSearch', 'Remote search service for web lookup.', { serverId: 'srv-old' })
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig(),
+    classifier: classifierFactory(calls)
+  });
+
+  await registry.syncFromPluginManager('distributed_register_old');
+  await registry.flushClassificationQueue();
+  await registry.markDistributedOffline('srv-old');
+
+  pluginManager.plugins.set(
+    'RemoteSearch',
+    makeManifest('RemoteSearch', 'Remote search service for web lookup.', { serverId: 'srv-new' })
+  );
+  await registry.syncFromPluginManager('distributed_register_new');
+  await registry.flushClassificationQueue();
+
+  const oldRecord = registry.getRecord('distributed:srv-old:RemoteSearch');
+  const newRecord = registry.getRecord('distributed:srv-new:RemoteSearch');
+  assert.ok(oldRecord, 'stale distributed id remains in the catalog for cache/history reuse');
+  assert.ok(newRecord, 'new distributed id should be registered');
+  assert.equal(oldRecord.available, false);
+  assert.equal(newRecord.available, true);
+
+  const adminKeys = registry.getAdminState().records.map((record) => record.originKey);
+  assert.equal(adminKeys.includes('distributed:srv-old:RemoteSearch'), false);
+  assert.equal(adminKeys.includes('distributed:srv-new:RemoteSearch'), true);
+});
+
 test('buildInjection exposes brief list, relevant full descriptions, and explicit directives', async () => {
   const projectRoot = await makeProjectRoot();
   const calls = [];
