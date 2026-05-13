@@ -1416,6 +1416,8 @@ class RAGDiaryPlugin {
             let useGroup = false;
             let isAutoMode = false;
             let autoThreshold = 0.65; // 默认自动切换阈值
+            let autoWhitelist = null; // 🌟 auto 白名单
+            let autoBlacklist = null; // 🌟 auto 黑名单
 
             // 分析修饰符字符串
             if (modifiersAndParams) {
@@ -1427,11 +1429,27 @@ class RAGDiaryPlugin {
 
                     if (lowerPart.startsWith('auto')) {
                         isAutoMode = true;
-                        const thresholdMatch = part.match(/:(\d+\.?\d*)/);
-                        if (thresholdMatch) {
-                            const parsedThreshold = parseFloat(thresholdMatch[1]);
-                            if (!isNaN(parsedThreshold)) {
-                                autoThreshold = parsedThreshold;
+                        // 🌟 新语法: auto[:阈值][:范围]
+                        // 示例: auto:0.65:Coding,investigation (白名单)
+                        //       auto:0.65:!disco (黑名单)
+                        //       auto:!disco (黑名单+默认阈值)
+                        const autoMatch = part.match(/^auto(?::([\d.]+))?(?::(.+))?$/i);
+                        if (autoMatch) {
+                            if (autoMatch[1]) {
+                                const parsedThreshold = parseFloat(autoMatch[1]);
+                                if (!isNaN(parsedThreshold)) {
+                                    autoThreshold = parsedThreshold;
+                                }
+                            }
+                            if (autoMatch[2]) {
+                                const scopePart = autoMatch[2];
+                                if (scopePart.startsWith('!')) {
+                                    autoBlacklist = scopePart.slice(1).split(',').map(s => s.trim()).filter(Boolean);
+                                    console.log(`[RAGDiaryPlugin] Auto 黑名单: ${autoBlacklist.join(', ')}`);
+                                } else {
+                                    autoWhitelist = scopePart.split(',').map(s => s.trim()).filter(Boolean);
+                                    console.log(`[RAGDiaryPlugin] Auto 白名单: ${autoWhitelist.join(', ')}`);
+                                }
                             }
                         }
                         // 在自动模式下，链名称将由auto逻辑决定
@@ -1459,7 +1477,9 @@ class RAGDiaryPlugin {
                     null, // kSequence现在从JSON配置中获取，不再从占位符传递
                     useGroup,
                     isAutoMode,
-                    autoThreshold
+                    autoThreshold,
+                    autoWhitelist,
+                    autoBlacklist
                 );
 
                 processedContent = processedContent.replace(placeholder, metaResult);
@@ -3634,7 +3654,7 @@ class RAGDiaryPlugin {
             // ✅ 新增：包含Tag相关信息（如果存在）
             if (r.originalScore !== undefined) cleaned.originalScore = r.originalScore;
             if (r.tagMatchScore !== undefined) cleaned.tagMatchScore = r.tagMatchScore;
-            
+
             let finalTags = [];
             if (r.matchedTags && Array.isArray(r.matchedTags)) {
                 finalTags = r.matchedTags.map(t => {
@@ -3649,7 +3669,7 @@ class RAGDiaryPlugin {
             if (finalTags.length > 0) {
                 cleaned.matchedTags = finalTags;
             }
-            
+
             if (r.tagMatchCount !== undefined) cleaned.tagMatchCount = r.tagMatchCount;
             if (r.boostFactor !== undefined) cleaned.boostFactor = r.boostFactor;
             if (r._associateCoCount !== undefined) cleaned.associateCoCount = r._associateCoCount; // 🌟 V10
@@ -3786,6 +3806,8 @@ class RAGDiaryPlugin {
             useGroup = false,
             isAutoMode = false,
             ghostTags = [],
+            autoWhitelist = null,
+            autoBlacklist = null,
             isFreshTimeConversationStart = false
         } = params;
 
@@ -3807,6 +3829,8 @@ class RAGDiaryPlugin {
             auto: isAutoMode,
             date: currentDate,
             ghosts: ghostTagString,
+            auto_wl: autoWhitelist ? autoWhitelist.sort().join(',') : '',
+            auto_bl: autoBlacklist ? autoBlacklist.sort().join(',') : '',
             fresh_time_start: isFreshTimeConversationStart
         });
     }
@@ -3963,7 +3987,7 @@ class RAGDiaryPlugin {
         // 匹配 http, https, file 协议的链接
         const regex = /(https?:\/\/[^\s\)\"\'\>]+|file:\/\/[^\s\)\"\'\>]+)/gi;
         const matches = text.match(regex) || [];
-        
+
         return matches.filter(url => {
             const lowerUrl = url.toLowerCase();
             // 排除表情包路径
@@ -3992,11 +4016,11 @@ class RAGDiaryPlugin {
                 } else if (filePath.startsWith('/')) {
                     // 可能需要根据系统调整
                 }
-                
+
                 // 尝试解码 URL 编码的路径
                 try {
                     filePath = decodeURIComponent(filePath);
-                } catch (e) {}
+                } catch (e) { }
 
                 buffer = await fs.readFile(filePath);
                 mimeType = mime.lookup(filePath) || 'application/octet-stream';
