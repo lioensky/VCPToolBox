@@ -175,6 +175,29 @@ class VCPTavern {
         return resolved;
     }
 
+    _presetNeedsAccessTimeTracking(preset) {
+        if (!preset || !Array.isArray(preset.rules)) return false;
+
+        const accessTimeVariableRegex = /\{\{(?:LastChatTime|TimeSinceLastChat)\}\}/;
+        for (const rule of preset.rules) {
+            if (!rule || !rule.enabled) continue;
+            let textContent = '';
+            if (typeof rule.content === 'string') {
+                textContent = rule.content;
+            } else if (rule.content && typeof rule.content.content === 'string') {
+                textContent = rule.content.content;
+            } else if (rule.content && typeof rule.content === 'object') {
+                try {
+                    textContent = JSON.stringify(rule.content);
+                } catch {
+                    textContent = '';
+                }
+            }
+            if (accessTimeVariableRegex.test(textContent)) return true;
+        }
+        return false;
+    }
+
     async initialize(config) {
         this.debugMode = config.DebugMode || false;
         await this._loadPresets();
@@ -254,57 +277,13 @@ class VCPTavern {
 
         if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
 
-        // --- 计算时间间隔逻辑 ---
-        const now = Date.now();
-        let lastChatTimeStr = '';
-        let timeSinceLastChatStr = '';
-
-        // 获取会话唯一标识
-        const sessionKey = this._getSessionKey(messages, explicitSessionId);
-        // 组合 Log Key: 预设名 + 会话标识 (例如 "dailychat:Keqing")
-        const logKey = `${presetName}:${sessionKey}`;
-
-        if (this.accessLogs.has(logKey)) {
-            const lastTime = this.accessLogs.get(logKey);
-            const diff = now - lastTime;
-
-            // 格式化上次时间
-            const lastDate = new Date(lastTime);
-            lastChatTimeStr = `上次对话时间：${lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE })}`;
-
-            // 格式化时间间隔
-            timeSinceLastChatStr = `距离上次对话已过去 ${this._formatDuration(diff)}`;
-
-            if (this.debugMode) {
-                console.log(`[VCPTavern] 预设 ${presetName} (ID:${sessionKey}) 上次访问: ${lastChatTimeStr}, 间隔: ${timeSinceLastChatStr}`);
-            }
-        }
-
-        // 更新访问时间并保存 (带防抖：1分钟内的重复请求不刷新时间戳)
-        const DEBOUNCE_MS = 60 * 1000; // 1分钟防抖窗口
-        const lastLoggedTime = this.accessLogs.get(logKey);
-        if (!lastLoggedTime || (now - lastLoggedTime) >= DEBOUNCE_MS) {
-            this.accessLogs.set(logKey, now);
-            this._saveAccessLogs().catch(e => console.error('[VCPTavern] 异步保存日志失败:', e));
-            if (this.debugMode) console.log(`[VCPTavern] 访问时间已更新 (Key: ${logKey})`);
-        } else {
-            if (this.debugMode) console.log(`[VCPTavern] 防抖生效，跳过时间更新 (距上次仅 ${Math.round((now - lastLoggedTime) / 1000)}s)`);
-        }
-
-        // 将计算出的时间变量注入到实例中，供 _resolveTimeVariables 使用
-        // 注意：这里我们需要稍微修改 _resolveTimeVariables 来支持这两个新变量
-        // 或者我们直接在这里定义一个临时的替换函数
-        const resolveExtendedVariables = (content) => {
+        const needsAccessTimeTracking = this._presetNeedsAccessTimeTracking(preset);
+        let resolveExtendedVariables = (content) => {
             if (!content) return content;
-            
             const replaceFn = (text) => {
                 if (typeof text !== 'string') return text;
-                let resolved = this._resolveTimeVariables(text);
-                return resolved
-                    .replace(/\{\{LastChatTime\}\}/g, lastChatTimeStr)
-                    .replace(/\{\{TimeSinceLastChat\}\}/g, timeSinceLastChatStr);
+                return this._resolveTimeVariables(text);
             };
-
             if (typeof content === 'string') {
                 return replaceFn(content);
             } else if (Array.isArray(content)) {
@@ -317,6 +296,74 @@ class VCPTavern {
             }
             return content;
         };
+
+        if (needsAccessTimeTracking) {
+            // --- 计算时间间隔逻辑 ---
+            const now = Date.now();
+            let lastChatTimeStr = '';
+            let timeSinceLastChatStr = '';
+
+            // 获取会话唯一标识
+            const sessionKey = this._getSessionKey(messages, explicitSessionId);
+            // 组合 Log Key: 预设名 + 会话标识 (例如 "dailychat:Keqing")
+            const logKey = `${presetName}:${sessionKey}`;
+
+            if (this.accessLogs.has(logKey)) {
+                const lastTime = this.accessLogs.get(logKey);
+                const diff = now - lastTime;
+
+                // 格式化上次时间
+                const lastDate = new Date(lastTime);
+                lastChatTimeStr = `上次对话时间：${lastDate.toLocaleString('zh-CN', { timeZone: REPORT_TIMEZONE })}`;
+
+                // 格式化时间间隔
+                timeSinceLastChatStr = `距离上次对话已过去 ${this._formatDuration(diff)}`;
+
+                if (this.debugMode) {
+                    console.log(`[VCPTavern] 预设 ${presetName} (ID:${sessionKey}) 上次访问: ${lastChatTimeStr}, 间隔: ${timeSinceLastChatStr}`);
+                }
+            }
+
+            // 更新访问时间并保存 (带防抖：1分钟内的重复请求不刷新时间戳)
+            const DEBOUNCE_MS = 60 * 1000; // 1分钟防抖窗口
+            const lastLoggedTime = this.accessLogs.get(logKey);
+            if (!lastLoggedTime || (now - lastLoggedTime) >= DEBOUNCE_MS) {
+                this.accessLogs.set(logKey, now);
+                this._saveAccessLogs().catch(e => console.error('[VCPTavern] 异步保存日志失败:', e));
+                if (this.debugMode) console.log(`[VCPTavern] 访问时间已更新 (Key: ${logKey})`);
+            } else {
+                if (this.debugMode) console.log(`[VCPTavern] 防抖生效，跳过时间更新 (距上次仅 ${Math.round((now - lastLoggedTime) / 1000)}s)`);
+            }
+
+            // 将计算出的时间变量注入到实例中，供 _resolveTimeVariables 使用
+            // 注意：这里我们需要稍微修改 _resolveTimeVariables 来支持这两个新变量
+            // 或者我们直接在这里定义一个临时的替换函数
+            resolveExtendedVariables = (content) => {
+                if (!content) return content;
+
+                const replaceFn = (text) => {
+                    if (typeof text !== 'string') return text;
+                    let resolved = this._resolveTimeVariables(text);
+                    return resolved
+                        .replace(/\{\{LastChatTime\}\}/g, lastChatTimeStr)
+                        .replace(/\{\{TimeSinceLastChat\}\}/g, timeSinceLastChatStr);
+                };
+
+                if (typeof content === 'string') {
+                    return replaceFn(content);
+                } else if (Array.isArray(content)) {
+                    return content.map(part => {
+                        if (part && part.type === 'text' && typeof part.text === 'string') {
+                            return { ...part, text: replaceFn(part.text) };
+                        }
+                        return part;
+                    });
+                }
+                return content;
+            };
+        } else if (this.debugMode) {
+            console.log(`[VCPTavern] 预设 "${presetName}" 未使用访问时间变量，跳过访问时间记录`);
+        }
 
         // 辅助函数：确保注入内容是消息对象格式
         const ensureMessageObject = (content, defaultRole = 'system') => {
