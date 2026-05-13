@@ -610,6 +610,52 @@ test('classification uses RAG embedding fallback when no small model or classifi
   assert.equal(item.classifiedBy, 'rag_embedding_fallback');
 });
 
+test('RAG embedding fallback uses persistent plugin description vectors when available', async () => {
+  const projectRoot = await makeProjectRoot();
+  const vectorKeys = [];
+  const rawCalls = [];
+  const pluginManager = makePluginManager([
+    makeManifest('PersistentSemanticSearch', 'Search web references with semantic retrieval.')
+  ]);
+  pluginManager.vectorDBManager = {
+    async getPluginDescriptionVector(key, rawEmbeddingFn) {
+      vectorKeys.push(key);
+      return rawEmbeddingFn(key);
+    }
+  };
+  pluginManager.messagePreprocessors = new Map([
+    ['RAGDiaryPlugin', {
+      async getSingleEmbeddingCached(text) {
+        rawCalls.push(text);
+        const lower = String(text).toLowerCase();
+        if (lower.includes('search') || lower.includes('web') || lower.includes('retrieval')) return [1, 0];
+        if (lower.includes('file') || lower.includes('code')) return [0, 1];
+        return [0.1, 0.1];
+      },
+      async getSingleEmbedding() {
+        throw new Error('getSingleEmbedding should not be used when cached embedding is available');
+      }
+    }]
+  ]);
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ useRagEmbeddings: true })
+  });
+
+  await registry.syncFromPluginManager('persistent_embedding_fallback');
+  await registry.flushClassificationQueue();
+
+  assert.ok(vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:PersistentSemanticSearch')));
+  assert.ok(vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:search:')));
+  assert.equal(rawCalls.length, vectorKeys.length);
+  const item = registry.getAdminState().records.find((record) => record.pluginName === 'PersistentSemanticSearch');
+  assert.ok(item.categories.includes('search'));
+  assert.equal(item.classifiedBy, 'rag_embedding_fallback');
+});
+
 test('small model reads private plugin config without leaking api key', async (t) => {
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
