@@ -608,7 +608,7 @@ async function processToolCall(args) {
 
         const responseFromVCP = await axios.post(`${VCP_API_TARGET_URL}/chat/completions`, payloadForVCP, {
             headers: { 'Authorization': `Bearer ${VCP_SERVER_ACCESS_KEY}`, 'Content-Type': 'application/json' },
-            timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 118000)
+            timeout: (parseInt(process.env.PLUGIN_COMMUNICATION_TIMEOUT) || 358000)
         });
 
         const assistantResponseContent = responseFromVCP.data?.choices?.[0]?.message?.content;
