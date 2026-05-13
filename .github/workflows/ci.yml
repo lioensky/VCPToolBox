@@ -69,7 +69,7 @@ jobs:
 
         base_sha="${{ github.event.pull_request.base.sha }}"
         head_sha="${{ github.event.pull_request.head.sha }}"
-        changed_files="$(git diff --name-only "$base_sha" "$head_sha")"
+        changed_files="$(git -c core.quotePath=false diff --name-only "$base_sha" "$head_sha")"
         relevant_files="$(printf '%s\n' "$changed_files" | grep -Ev '^(docs/|.*\.md$|\.github/PULL_REQUEST_TEMPLATE\.md$)' || true)"
 
         if [[ -n "$relevant_files" ]]; then
