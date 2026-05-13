@@ -862,12 +862,30 @@ async function main() {
 
         if (isEditMode) {
             // ======== 图生图（Edit）模式 ========
-            const imageInput = args.image || args.Image || args.image_url || args.source_image || '';
+            let imageInput = args.image || args.Image || args.image_url || args.source_image || '';
             if (!imageInput) {
                 return outputAndExit({
                     status: 'error',
                     error: 'GPTImageGen [edit]: 缺少 image 参数。请提供要编辑的原始图片（支持 URL、base64 data URI 或本地文件路径）。'
                 });
+            }
+
+            // 兼容 VCP 工具调用传入 JSON 数组字符串的情况，例如 ["image/a.png","image/b.png"]。
+            if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
+                try {
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(imageInput);
+                    } catch {
+                        parsed = JSON.parse(imageInput.replace(/\\/g, '\\\\'));
+                    }
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        imageInput = parsed;
+                        debugLog('Auto-parsed image JSON string to array, count:', parsed.length);
+                    }
+                } catch (e) {
+                    debugLog('Image field starts with [ but failed to parse:', e.message);
+                }
             }
 
             // 处理图片输入（可以是单张或数组）

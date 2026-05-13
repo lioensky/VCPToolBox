@@ -79,7 +79,7 @@ quality:「始」high「末」
 tool_name:「始」GPTImageGen「末」,
 command:「始」GPTEditImage「末」,
 prompt:「始」Transform this photo into a Studio Ghibli anime style illustration with soft watercolor textures「末」,
-image:「始」http://example.com/photo.png「末」,
+image:「始」(必需) 原图来源。支持单张 URL、base64 data URI、本地文件路径；多张图片可使用 JSON 数组格式 ["path1.png", "path2.jpg"]。每张图片≤4MB，最多16张。「末」,
 size:「始」1536x1024「末」,
 quality:「始」high「末」
 <<<[END_TOOL_REQUEST]>>>
@@ -100,7 +100,7 @@ quality:「始」high「末」
   - HTTP/HTTPS URL
   - base64 data URI（`data:image/png;base64,...`）
   - 本地文件路径（相对于项目根目录，如 `image/gptimagegen/xxx.png`）
-  - 图片数组（可同时传入多张，最多 16 张）
+  - 图片数组（可同时传入多张，最多 16 张）；VCP 工具参数传入 JSON 数组字符串时会自动兼容解析
 - `size`（可选）：输出尺寸
 - `quality`（可选）：图片质量
 
