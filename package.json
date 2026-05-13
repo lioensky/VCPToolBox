@@ -3,7 +3,7 @@
   "version": "7.1.2",
   "main": "Server.js",
   "scripts": {
-    "test": "node --test tests/channelHub-hardening.test.js tests/codex-memory-bridge.test.js tests/codex-memory-e2e.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js tests/codex-memory-search.test.js tests/codex-memory-mcp.test.js tests/codex-memory-chat-loop.test.js tests/dynamicToolRegistry.test.js tests/pipelineSafetyGate.test.js tests/system-monitor-routes.test.js tests/gptimagegen-safety.test.js",
+    "test": "node --test tests/channelHub-hardening.test.js tests/codex-memory-bridge.test.js tests/codex-memory-e2e.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js tests/codex-memory-search.test.js tests/codex-memory-mcp.test.js tests/codex-memory-chat-loop.test.js tests/dynamicToolRegistry.test.js tests/pipelineSafetyGate.test.js tests/system-monitor-routes.test.js tests/gptimagegen-safety.test.js tests/vsearch-network-robustness.test.js",
     "test:baseline": "node scripts/check-prod-baseline.js",
     "test:photo-studio": "node --test tests/photo-studio/*.test.js",
     "test:dingtalk-cli": "node --test tests/dingtalk-cli/*.test.js",
