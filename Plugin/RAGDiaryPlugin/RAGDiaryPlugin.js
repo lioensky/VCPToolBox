@@ -58,6 +58,9 @@ class RAGDiaryPlugin {
         this.cacheManager = new CacheManager();
         this.queryCacheEnabled = true;
 
+        // 🌟 Embedding 并发去重：同一文本在同一时间只允许一个 API 请求飞行
+        this.pendingEmbeddingRequests = new Map();
+
         // 🌟 V2折叠：FoldingStore 迷你数据库
         this.foldingStore = null;
     }
@@ -3952,16 +3955,29 @@ class RAGDiaryPlugin {
     async getSingleEmbeddingCached(text) {
         if (!text || !text.trim()) return null;
 
-        const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
+        const normalizedText = text.trim();
+        const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
         const cached = this.cacheManager.get('embedding', cacheKey);
         if (cached) return cached;
 
-        const vector = await this.getSingleEmbedding(text);
-        if (vector) {
-            this.cacheManager.set('embedding', cacheKey, vector);
+        if (this.pendingEmbeddingRequests.has(cacheKey)) {
+            return await this.pendingEmbeddingRequests.get(cacheKey);
         }
 
-        return vector;
+        const requestPromise = (async () => {
+            try {
+                const vector = await this.getSingleEmbedding(normalizedText);
+                if (vector) {
+                    this.cacheManager.set('embedding', cacheKey, vector);
+                }
+                return vector;
+            } finally {
+                this.pendingEmbeddingRequests.delete(cacheKey);
+            }
+        })();
+
+        this.pendingEmbeddingRequests.set(cacheKey, requestPromise);
+        return await requestPromise;
     }
 
     /**
