@@ -157,7 +157,27 @@ async function fetchWithRetry(
       });
       cleanup();
 
-      if (response.status === 500 || response.status === 503 || response.status === 429) {
+      let shouldRetryStatus = response.status === 500 || response.status === 503 || response.status === 429;
+      let retryMessage = response.statusText;
+
+      // Gemini / NewAPI 偶发特殊空回：上游可能以 401 返回包含 token 的错误文本
+      // 例如：{"error":{"message":"Invalid token ..."}}
+      // 这类并非 VCP 本地 Key 配置错误，而是上游瞬时 token 异常，可安全纳入重试。
+      if (response.status === 401) {
+        try {
+          const responseBodyText = await response.clone().text();
+          if (responseBodyText.toLowerCase().includes('token')) {
+            shouldRetryStatus = true;
+            retryMessage = responseBodyText || response.statusText;
+          }
+        } catch (bodyReadError) {
+          if (debugMode) {
+            console.warn(`[Fetch Retry] Failed to inspect 401 response body: ${bodyReadError.message}`);
+          }
+        }
+      }
+
+      if (shouldRetryStatus) {
         const currentDelay = delay * (i + 1);
         if (debugMode) {
           console.warn(
@@ -165,7 +185,7 @@ async function fetchWithRetry(
           );
         }
         if (onRetry) {
-          await onRetry(i + 1, { status: response.status, message: response.statusText });
+          await onRetry(i + 1, { status: response.status, message: retryMessage });
         }
         await new Promise(resolve => setTimeout(resolve, currentDelay));
         continue;
