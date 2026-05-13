@@ -618,9 +618,9 @@ test('RAG embedding fallback uses persistent plugin description vectors when ava
     makeManifest('PersistentSemanticSearch', 'Search web references with semantic retrieval.')
   ]);
   pluginManager.vectorDBManager = {
-    async getPluginDescriptionVector(key, rawEmbeddingFn) {
-      vectorKeys.push(key);
-      return rawEmbeddingFn(key);
+    async getPluginDescriptionVector(descText, rawEmbeddingFn) {
+      vectorKeys.push(descText);
+      return rawEmbeddingFn(descText);
     }
   };
   pluginManager.messagePreprocessors = new Map([
@@ -648,8 +648,10 @@ test('RAG embedding fallback uses persistent plugin description vectors when ava
   await registry.syncFromPluginManager('persistent_embedding_fallback');
   await registry.flushClassificationQueue();
 
-  assert.ok(vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:PersistentSemanticSearch')));
-  assert.ok(vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:search:')));
+  assert.ok(vectorKeys.some((key) => key.startsWith('PersistentSemanticSearch')));
+  assert.ok(vectorKeys.some((key) => key.startsWith('search:')));
+  assert.ok(!vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:')));
+  assert.deepEqual(rawCalls, vectorKeys);
   assert.equal(rawCalls.length, vectorKeys.length);
   const item = registry.getAdminState().records.find((record) => record.pluginName === 'PersistentSemanticSearch');
   assert.ok(item.categories.includes('search'));

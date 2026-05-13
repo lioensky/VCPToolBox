@@ -857,10 +857,11 @@ class DynamicToolRegistry {
 
         const vectorDBManager = this.pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
         if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {
-            return async (text) => vectorDBManager.getPluginDescriptionVector(
-                `dynamic_tool_registry:${String(text || '').trim()}`,
-                rawEmbeddingFn
-            );
+            return async (text) => {
+                const descText = String(text || '').trim();
+                if (!descText) return null;
+                return vectorDBManager.getPluginDescriptionVector(descText, rawEmbeddingFn);
+            };
         }
 
         return rawEmbeddingFn;
