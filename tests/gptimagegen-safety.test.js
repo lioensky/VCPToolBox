@@ -66,6 +66,31 @@ test('GPTImageGen rejects private URL edit inputs before network calls', () => {
   assert.equal(child.stderr, '');
 });
 
+test('GPTImageGen parses JSON array string edit inputs before URL safety checks', () => {
+  const child = spawnSync(process.execPath, [pluginScript], {
+    cwd: repoRoot,
+    input: JSON.stringify({
+      command: 'GPTEditImage',
+      prompt: 'offline safety check',
+      image: JSON.stringify(['http://127.0.0.1/latest/meta-data']),
+      size: '1024x1024'
+    }),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: 'test-only-key',
+      PROJECT_BASE_PATH: repoRoot,
+      DebugMode: 'false'
+    }
+  });
+
+  assert.notEqual(child.status, 0);
+  const parsed = JSON.parse(child.stdout);
+  assert.equal(parsed.status, 'error');
+  assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.equal(child.stderr, '');
+});
+
 test('GPTImageGen exits before any API call when API key is absent', () => {
   const child = spawnSync(process.execPath, [pluginScript], {
     cwd: repoRoot,
