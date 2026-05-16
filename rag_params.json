@@ -33,6 +33,20 @@
       "maxEmergentNodes": 50,
       "maxNeighborsPerNode": 20
     },
+    "orderedCooccurrence": {
+      "forwardGain": 1.0,
+      "reverseGain": 0.42,
+      "minReverseGain": 0.25,
+      "maxReverseGain": 0.70,
+      "distanceDecay": 0.0,
+      "reverseAnchorBoost": 1,
+      "reverseAnchorMax": 1.5,
+      "semanticGainEnabled": 1,
+      "semanticGainPeak": 0.65,
+      "semanticGainSigma": 0.25,
+      "semanticGainLowSimFallback": 0.1,
+      "reverseInversionGuard": 0.95
+    },
     "activationMultiplier": [0.5, 1.5],
     "dynamicBoostRange": [0.3, 2.0],
     "coreBoostRange": [1.20, 1.40],

@@ -220,6 +220,19 @@ class KnowledgeBaseManager {
                 neighbor_count INTEGER NOT NULL,
                 computed_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            -- 🌟 TagMemo V8.2: 持久化的 Tag 对语义距离 (Pairwise Cosine Similarity)
+            -- 与 tag_intrinsic_residuals 平级，构成"节点质量 + 边距离"的物理量底座。
+            CREATE TABLE IF NOT EXISTS tag_pair_similarity (
+                tag_a INTEGER NOT NULL,
+                tag_b INTEGER NOT NULL,           -- 约定 tag_a < tag_b，消除重复
+                similarity REAL NOT NULL,         -- [-1, 1] 余弦，不预归一化
+                model_sig TEXT NOT NULL,          -- embedding 模型签名 (含维度)，跨模型自动失效
+                computed_at INTEGER NOT NULL,
+                PRIMARY KEY (tag_a, tag_b),
+                FOREIGN KEY (tag_a) REFERENCES tags(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_b) REFERENCES tags(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pair_sim_model ON tag_pair_similarity(model_sig);
             CREATE TABLE IF NOT EXISTS kv_store (
                 key TEXT PRIMARY KEY,
                 value TEXT,
@@ -1112,6 +1125,11 @@ class KnowledgeBaseManager {
 
                 const insertTag = this.db.prepare('INSERT INTO tags (name, vector) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET vector = excluded.vector');
                 const getTagId = this.db.prepare('SELECT id FROM tags WHERE name = ?');
+                // 🌟 V8.2: 向量更新失效钩子 — tag 向量被(重)写入时，删除涉及该 tag 的 sim 行，
+                // 由 Rust 增量补回，防止陈旧缓存污染。
+                const invalidatePairSim = this.db.prepare(
+                    'DELETE FROM tag_pair_similarity WHERE tag_a = ? OR tag_b = ?'
+                );
 
                 newTags.forEach((t, i) => {
                     if (!tagVectors[i]) return; // 🛡️ 跳过向量化失败的 tag
@@ -1121,6 +1139,8 @@ class KnowledgeBaseManager {
                     const id = getTagId.get(t).id;
                     tagCache.set(t, { id, vector: vecBuf });
                     tagUpdates.push({ id, vec: vecFloat });
+                    // 失效旧的 pairwise similarity 记录
+                    invalidatePairSim.run(id, id);
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
