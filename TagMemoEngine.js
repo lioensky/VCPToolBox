@@ -937,6 +937,30 @@ class TagMemoEngine {
     }
 
     /**
+     * 🛡️ V8.2-fix: Rust 任务（独立 SQLite 连接）写入完成后，
+     * 强制 better-sqlite3 走一次 wal_checkpoint(TRUNCATE)，把 -wal/-shm 清空。
+     *
+     * 背景：Rust 端通过 rusqlite 开新连接做 DELETE+INSERT 后 commit，会写到 -wal。
+     * JS 端 better-sqlite3 是另一个进程内连接，下次读取时本应通过 -shm 的 mmap
+     * frame index 拿到新数据。但在虚拟化/网络文件系统（典型如 Docker Desktop on
+     * Windows/macOS 的 bind mount 走 9P/grpc-fuse）上，跨进程 mmap 共享内存
+     * 一致性保证不足，会让 JS 端读到"半新半旧"的页视图，进而触发 SQLITE_CORRUPT
+     * 这种"幻觉损坏"——整库元数据 / sqlite_master 完好，但特定表 BTree 遍历必崩。
+     *
+     * TRUNCATE 模式会强制把 WAL 全部回写主库并把 -wal 截断到 0 字节，下一次读
+     * 直接走主库的"经典模式"，绕开 mmap 同步路径。
+     *
+     * 健康环境下代价 ~50-200ms（取决于 WAL 累积量），属于可忽略量级。
+     */
+    _checkpointAfterRustWrite(tag) {
+        try {
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (e) {
+            console.warn(`[TagMemoEngine] ⚠️ wal_checkpoint after ${tag} failed: ${e.message}`);
+        }
+    }
+
+    /**
      * 🌟 V8.2-γ: 触发 Rust 预计算成对语义相似度
      * - 默认增量模式（跳过已缓存且 model_sig 一致的 pair）
      * - 与 doMatrixRebuild 共用 _isMatrixRebuilding 锁
@@ -965,6 +989,8 @@ class TagMemoEngine {
                 minSimilarity,
                 fullRebuild
             );
+            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+            this._checkpointAfterRustWrite('pairwise sim');
             console.log(
                 `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
                 `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
@@ -1090,6 +1116,9 @@ class TagMemoEngine {
         try {
             const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
             const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
+            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+            // 否则在 Docker bind mount 等虚拟文件系统上会读到不一致的页视图（SQLITE_CORRUPT 幻觉）
+            this._checkpointAfterRustWrite('intrinsic residuals');
             console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
             
             // 重新加载结果
