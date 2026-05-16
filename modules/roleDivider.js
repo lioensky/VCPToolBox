@@ -32,7 +32,7 @@ const TAGS = {
  */
 function normalizeForIgnore(text) {
     if (typeof text !== 'string') return '';
-    return text.replace(/[\n\\ ]/g, '');
+    return text.replace(/[\\n\\\\ ]/g, '');
 }
 
 /**
@@ -235,7 +235,7 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
                     const innerContent = text.substring(contentStartIndex);
                     
                     if (currentTextBuffer.trim().length > 0) {
-                        resultMessages.push({ role: baseRole, content: currentTextBuffer });
+                        resultMessages.push({ ...message, role: baseRole, content: currentTextBuffer });
                     }
                     currentTextBuffer = "";
 
@@ -264,7 +264,7 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
                     
                     // 1. Push accumulated buffer as base role message (if not empty or just whitespace)
                     if (currentTextBuffer.trim().length > 0) {
-                        resultMessages.push({ role: baseRole, content: currentTextBuffer });
+                        resultMessages.push({ ...message, role: baseRole, content: currentTextBuffer });
                     }
                     currentTextBuffer = "";
 
@@ -280,7 +280,7 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 
     // Push any remaining text in buffer (if not empty or just whitespace)
     if (currentTextBuffer.trim().length > 0) {
-        resultMessages.push({ role: baseRole, content: currentTextBuffer });
+        resultMessages.push({ ...message, role: baseRole, content: currentTextBuffer });
     }
 
     // If the result is empty (e.g. original was empty or only contained tags), return original
@@ -323,7 +323,7 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
             
             // 2. Push the accumulated buffer as a message
             if (currentPartsBuffer.length > 0) {
-                resultMessages.push({ role: baseRole, content: currentPartsBuffer });
+                resultMessages.push({ ...message, role: baseRole, content: currentPartsBuffer });
                 currentPartsBuffer = [];
             }
 
@@ -342,7 +342,7 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
 
     // Push remaining buffer
     if (currentPartsBuffer.length > 0) {
-        resultMessages.push({ role: baseRole, content: currentPartsBuffer });
+        resultMessages.push({ ...message, role: baseRole, content: currentPartsBuffer });
     }
 
     return resultMessages.length > 0 ? resultMessages : [message];
