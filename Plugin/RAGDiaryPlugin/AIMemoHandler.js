@@ -112,9 +112,9 @@ class AIMemoHandler {
 
             // --- 缓存机制 ---
             const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache);
-            const cached = this.cacheManager.get('aiMemo', cacheKey);
+            const cached = this.cacheManager.get('aimemo', cacheKey);
             if (cached) {
-                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aiMemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
+                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aimemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
                 if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
                     this.ragPlugin.pushVcpInfo({
                         ...cached.vcpInfo,
@@ -123,7 +123,7 @@ class AIMemoHandler {
                 }
                 return cached.content;
             }
-            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aiMemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
+            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aimemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
             // --- 缓存机制结束 ---
 
             // 1. 收集所有日记文件（基于文件级别，而非合并后的字符串）
@@ -170,12 +170,16 @@ class AIMemoHandler {
                 }
             }
 
-            this.cacheManager.set('aiMemo', cacheKey, resultObject);
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
             return resultObject.content;
 
         } catch (error) {
-            console.error(`[AIMemoHandler] 聚合处理失败:`, error);
-            return `[AIMemo聚合处理失败: ${error.message}]`;
+            // 显式打印 message/stack，避免某些日志框架 JSON 序列化 Error 时输出空 {}
+            console.error(`[AIMemoHandler] 聚合处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler] Stack:`, error.stack);
+            }
+            return `[AIMemo聚合处理失败: ${error?.message || '未知错误'}]`;
         }
     }
 
@@ -297,6 +301,223 @@ class AIMemoHandler {
     async processAIMemo(dbName, userContent, aiContent, combinedQueryForDisplay) {
         // 直接调用聚合方法，传入单个日记本
         return await this.processAIMemoAggregated([dbName], userContent, aiContent, combinedQueryForDisplay);
+    }
+
+    /**
+     * 🌟 AIMemo+ 模式：先用 TagMemo 做向量级初筛（5x dynamicK），再交给 LLM 提取记忆
+     * 与 processAIMemoAggregated 的区别：知识库来自 TagMemo 召回的 chunks，而非整本日记文件
+     *
+     * @param {string[]} dbNames - 日记本名称数组
+     * @param {string} userContent
+     * @param {string} aiContent
+     * @param {string} combinedQueryForDisplay
+     * @param {string|null} presetName - 预设名称
+     * @param {object} tagMemoOptions - { queryVector, baseK, tagWeight, tagTruncationRatio, metrics, ghostTags }
+     * @returns {Promise<string>}
+     */
+    async processAIMemoPlusAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName, tagMemoOptions) {
+        if (!this.isConfigured() && !presetName) {
+            console.warn('[AIMemoHandler+] AIMemo is not configured. Skipping.');
+            return '[AIMemo功能未配置]';
+        }
+
+        const {
+            queryVector,
+            baseK = 5,
+            tagWeight = null,
+            tagTruncationRatio = 0.5,
+            metrics = {},
+            ghostTags = []
+        } = tagMemoOptions || {};
+
+        if (!queryVector) {
+            console.warn('[AIMemoHandler+] 缺失 queryVector，回退到完整 AIMemo 流程');
+            return await this.processAIMemoAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName);
+        }
+
+        const searchK = Math.max(5, Math.round(baseK * 5));
+        console.log(`[AIMemoHandler+] 启动 TagMemo 初筛: ${dbNames.length} 个日记本, baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}`);
+
+        try {
+            // --- 加载预设配置（与 processAIMemoAggregated 一致）---
+            let currentConfig = { ...this.config };
+            let currentPromptTemplate = this.promptTemplate;
+            let presetContentForCache = '';
+
+            if (presetName) {
+                const presetResult = await this._loadPresetRaw(presetName);
+                if (presetResult) {
+                    const { preset, rawContent } = presetResult;
+                    presetContentForCache = rawContent;
+                    currentConfig = {
+                        model: preset.AIMemoModel || currentConfig.model,
+                        batchSize: parseInt(preset.AIMemoBatch) || currentConfig.batchSize,
+                        url: preset.AIMemoUrl || currentConfig.url,
+                        apiKey: preset.AIMemoApi || currentConfig.apiKey,
+                        maxTokensPerBatch: parseInt(preset.AIMemoMaxTokensPerBatch) || currentConfig.maxTokensPerBatch,
+                        promptFile: preset.AIMemoPrompt || currentConfig.promptFile
+                    };
+                    if (preset.AIMemoPrompt) {
+                        try {
+                            const presetPromptPath = path.join(__dirname, 'MoreAIMemoPresets', preset.AIMemoPrompt);
+                            currentPromptTemplate = await fs.readFile(presetPromptPath, 'utf-8');
+                            presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                        } catch (e) {
+                            try {
+                                const fallbackPromptPath = path.join(__dirname, preset.AIMemoPrompt);
+                                currentPromptTemplate = await fs.readFile(fallbackPromptPath, 'utf-8');
+                                presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                            } catch (e2) {
+                                console.error(`[AIMemoHandler+] Failed to load preset prompt ${preset.AIMemoPrompt}:`, e2.message);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- 缓存机制（key 包含 plus 标识 + searchK）---
+            const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache + `|plus|sK${searchK}`);
+            const cached = this.cacheManager.get('aimemo', cacheKey);
+            if (cached) {
+                console.log(`[AIMemoHandler+] ✅ 命中缓存。Key: ${cacheKey.substring(0, 8)}...`);
+                if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
+                    this.ragPlugin.pushVcpInfo({ ...cached.vcpInfo, fromCache: true });
+                }
+                return cached.content;
+            }
+            console.log(`[AIMemoHandler+] ❌ 缓存未命中。Key: ${cacheKey.substring(0, 8)}...`);
+
+            // --- TagMemo 初筛 ---
+            const chunks = await this._retrieveTagMemoChunks(
+                dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, metrics
+            );
+
+            if (chunks.length === 0) {
+                const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                console.log('[AIMemoHandler+] TagMemo 初筛无结果');
+                return emptyResult;
+            }
+
+            const totalChunkTokens = chunks.reduce((sum, c) => sum + c.tokens, 0);
+            console.log(`[AIMemoHandler+] TagMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${totalChunkTokens}`);
+
+            // --- 将 chunks 包装成 file 结构以复用现有处理流程 ---
+            const fakeFiles = chunks.map((chunk, i) => ({
+                name: `${chunk.dbName}_chunk_${i}`,
+                content: chunk.text,
+                tokens: chunk.tokens,
+                dbName: chunk.dbName
+            }));
+
+            // --- 单批 / 分批处理 ---
+            const FIXED_OVERHEAD = 10000;
+            const totalTokens = totalChunkTokens + FIXED_OVERHEAD;
+            console.log(`[AIMemoHandler+] Token估算 - chunks: ${totalChunkTokens}, 固定开销: ${FIXED_OVERHEAD}, 总计: ${totalTokens}`);
+
+            let resultObject;
+            if (totalTokens > currentConfig.maxTokensPerBatch) {
+                resultObject = await this._processBatchedAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            } else {
+                resultObject = await this._processSingleAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            }
+
+            // 标记为 Plus 模式 + 内容前缀
+            if (resultObject.vcpInfo) {
+                resultObject.vcpInfo.mode = (resultObject.vcpInfo.mode || 'aggregated') + '_plus';
+                resultObject.vcpInfo.tagMemoChunkCount = chunks.length;
+                resultObject.vcpInfo.searchK = searchK;
+                resultObject.vcpInfo.tagWeight = tagWeight;
+            }
+            resultObject.content = `[AIMemo+ TagMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
+
+            // VCP 广播
+            if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
+                try {
+                    this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
+                } catch (e) {
+                    console.error('[AIMemoHandler+] VCP broadcast failed:', e.message);
+                }
+            }
+
+            // 缓存
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
+            return resultObject.content;
+
+        } catch (error) {
+            console.error(`[AIMemoHandler+] 处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler+] Stack:`, error.stack);
+            }
+            return `[AIMemo+处理失败: ${error?.message || '未知错误'}]`;
+        }
+    }
+
+    /**
+     * 🌟 跨日记本 TagMemo 检索 - AIMemo+ 的核心初筛逻辑
+     * 复刻 _processRAGPlaceholder 的 applyTagBoost 感应流程，确保召回质量
+     */
+    async _retrieveTagMemoChunks(dbNames, queryVector, k, tagWeight, ghostTags, tagTruncationRatio, metrics) {
+        const vdb = this.ragPlugin?.vectorDBManager;
+        if (!vdb || typeof vdb.search !== 'function') {
+            console.warn('[AIMemoHandler+] vectorDBManager 不可用');
+            return [];
+        }
+
+        // 1. 用 applyTagBoost 感应 coreTags（与 _processRAGPlaceholder 完全一致）
+        let coreTagsForSearch = [];
+        if (tagWeight !== null && tagWeight !== undefined && typeof vdb.applyTagBoost === 'function') {
+            try {
+                const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
+                const boostResult = vdb.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
+                if (boostResult?.info?.matchedTags) {
+                    const rawTags = boostResult.info.matchedTags;
+                    coreTagsForSearch = typeof this.ragPlugin._truncateCoreTags === 'function'
+                        ? this.ragPlugin._truncateCoreTags(rawTags, tagTruncationRatio, metrics)
+                        : rawTags;
+                    if (ghostTags.length > 0) {
+                        coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
+                    }
+                    console.log(`[AIMemoHandler+] TagBoost 感应到 ${coreTagsForSearch.length} 个核心 Tag (含 ${ghostTags.length} 幽灵)`);
+                } else if (ghostTags.length > 0) {
+                    coreTagsForSearch = ghostTags;
+                }
+            } catch (e) {
+                console.warn('[AIMemoHandler+] applyTagBoost 失败:', e.message);
+                if (ghostTags.length > 0) coreTagsForSearch = ghostTags;
+            }
+        }
+
+        // 2. 跨所有日记本并行搜索
+        const searchPromises = dbNames.map(async (dbName) => {
+            try {
+                const results = await vdb.search(dbName, queryVector, k, tagWeight, coreTagsForSearch);
+                return (results || []).map(r => ({
+                    dbName,
+                    text: r.text || '',
+                    score: r.score || 0,
+                    tokens: this._estimateTokens(r.text || '')
+                }));
+            } catch (e) {
+                console.warn(`[AIMemoHandler+] 搜索 "${dbName}" 失败:`, e.message);
+                return [];
+            }
+        });
+
+        const resultsArrays = await Promise.all(searchPromises);
+        const allChunks = resultsArrays.flat();
+
+        // 3. 按分数排序 + 文本指纹去重
+        allChunks.sort((a, b) => (b.score || 0) - (a.score || 0));
+        const seen = new Set();
+        const uniqueChunks = [];
+        for (const chunk of allChunks) {
+            const key = (chunk.text || '').trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            uniqueChunks.push(chunk);
+        }
+
+        return uniqueChunks;
     }
 
 
