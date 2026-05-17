@@ -106,7 +106,8 @@ class AIMemoHandler {
                         }
                     }
                 } else {
-                    console.warn(`[AIMemoHandler] 预设 ${presetName} 加载失败，将使用默认配置。`);
+                    // ENOENT 等情况：用户没配预设 JSON，直接用 config.env 的默认配置即可
+                    console.warn(`[AIMemoHandler] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
                 }
             }
 
@@ -199,15 +200,20 @@ class AIMemoHandler {
     }
 
     async _loadPresetRaw(presetName) {
+        const presetPath = path.join(__dirname, 'MoreAIMemoPresets', `${presetName}.json`);
         try {
-            const presetPath = path.join(__dirname, 'MoreAIMemoPresets', `${presetName}.json`);
             const rawContent = await fs.readFile(presetPath, 'utf-8');
             return {
                 preset: JSON.parse(rawContent),
                 rawContent: rawContent
             };
         } catch (error) {
-            console.error(`[AIMemoHandler] Failed to load preset ${presetName}:`, error.message);
+            // ENOENT = 用户没配独立预设 JSON，是良性场景，由调用方统一打一条 WARN，这里静默返回 null
+            if (error.code === 'ENOENT') {
+                return null;
+            }
+            // 文件存在但解析失败（JSON 格式错误、权限问题等）才是真正的错误
+            console.error(`[AIMemoHandler] 预设 "${presetName}.json" 加载失败 (${error.code || 'unknown'}):`, error.message);
             return null;
         }
     }
@@ -372,6 +378,9 @@ class AIMemoHandler {
                             }
                         }
                     }
+                } else {
+                    // 与 processAIMemoAggregated 保持一致：未找到预设时给一条良性 WARN
+                    console.warn(`[AIMemoHandler+] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
                 }
             }
 
