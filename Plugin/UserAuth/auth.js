@@ -55,18 +55,23 @@ async function main() {
         const realCode = generateRealAuthCode();
         const bracketSequence = encodeToBrackets(realCode);
         
-        // 将括号序列转换为base64编码
+        // 将括号序列转换为base64编码后存入 code.bin（供后端 captchaDecoder 解码 + 注入 DECRYPTED_AUTH_CODE 环境变量给管理员插件比对）
+        // 落盘加编码是为了防止 code.bin 被简单读取就拿到明文。
         const base64Encoded = Buffer.from(bracketSequence, 'utf-8').toString('base64');
-        
-        // 保存到 code.bin 文件
         const filePath = path.join(__dirname, 'code.bin');
         await fs.writeFile(filePath, base64Encoded, 'utf-8');
         
-        console.log('认证码已生成并保存到 code.bin');
-        // console.log('真实验证码:', realCode); // 调试用，生产环境应删除
+        // ⚠️ static 插件协议：stdout 内容会被 PluginManager 作为 {{USER_AUTH_CODE}} 占位符的值注入到 system prompt。
+        // 这里输出明文 6 位验证码，让被授权的 Agent（即 system prompt 中包含此占位符的 Agent）可以直接将其
+        // 作为 tool_password 参数传递给需要管理员权限的工具（如 LinuxShellExecutor、PowerShellExecutor 等）。
+        // 安全性来自于"是否注入此占位符"的访问控制，而不是 AI 端的解码难度。
+        process.stdout.write(realCode);
+        
+        // 状态信息走 stderr，不会污染占位符值
+        console.error('[UserAuth] 认证码已生成并保存到 code.bin');
         
     } catch (error) {
-        console.error('生成认证码失败:', error);
+        console.error('[UserAuth] 生成认证码失败:', error);
         process.exit(1);
     }
 }
