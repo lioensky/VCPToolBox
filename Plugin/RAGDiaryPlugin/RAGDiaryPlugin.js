@@ -1988,16 +1988,29 @@ class RAGDiaryPlugin {
                             );
                         }
 
-                        // 第一个返回完整结果，后续返回引用提示
-                        group.forEach((req, index) => {
+                        // 🌟 按 placeholder 去重：聚合 AIMemo 已将所有子日记本合并成一份递归总结，
+                        // 同一个聚合占位符（如 [[A|B日记本::AIMemo]]）会拆成多个 dbName 请求，
+                        // 但只对应一个 placeholder，必须只生成一次替换结果，否则 replace 会因占位符
+                        // 已被首次替换吃掉而抛出 "Placeholder not found" 告警。
+                        const uniquePlaceholders = [];
+                        const seenPlaceholders = new Set();
+                        for (const req of group) {
+                            if (!seenPlaceholders.has(req.placeholder)) {
+                                seenPlaceholders.add(req.placeholder);
+                                uniquePlaceholders.push(req.placeholder);
+                            }
+                        }
+
+                        // 第一个唯一占位符返回完整结果，后续唯一占位符返回引用提示
+                        uniquePlaceholders.forEach((placeholder, index) => {
                             if (index === 0) {
                                 processingPromises.push(Promise.resolve({
-                                    placeholder: req.placeholder,
+                                    placeholder,
                                     content: aggregatedResult
                                 }));
                             } else {
                                 processingPromises.push(Promise.resolve({
-                                    placeholder: req.placeholder,
+                                    placeholder,
                                     content: `[${label}语义推理检索模式] 检索结果已在"${dbNames[0]}"日记本中合并展示，本次为跨库联合检索。`
                                 }));
                             }
@@ -2005,12 +2018,16 @@ class RAGDiaryPlugin {
                     } catch (error) {
                         console.error(`[RAGDiaryPlugin] ${label} 聚合处理失败:`, error?.message || error);
                         if (error?.stack) console.error(`[RAGDiaryPlugin] Stack:`, error.stack);
-                        group.forEach(req => {
+                        // 🌟 错误路径同样按 placeholder 去重
+                        const seenErrPlaceholders = new Set();
+                        for (const req of group) {
+                            if (seenErrPlaceholders.has(req.placeholder)) continue;
+                            seenErrPlaceholders.add(req.placeholder);
                             processingPromises.push(Promise.resolve({
                                 placeholder: req.placeholder,
                                 content: `[${label}处理失败: ${error?.message || '未知错误'}]`
                             }));
-                        });
+                        }
                     }
                 };
 
