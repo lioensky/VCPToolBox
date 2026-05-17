@@ -1,0 +1,17 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SSHManagerService",
+  "displayName": "SSH 连接管理服务",
+  "version": "2.0.0",
+  "description": "常驻内存的 SSH 连接池管理服务，通过 UDS 为 stdio 插件提供连接复用。",
+  "author": "VCP Team",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "SSHManagerService.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "capabilities": {}
+}

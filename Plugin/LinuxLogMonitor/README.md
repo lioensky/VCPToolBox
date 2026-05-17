@@ -153,9 +153,12 @@ LinuxLogMonitor/
 - `groupBy`: 分组字段，可选 `level`(日志级别)、`status_code`(HTTP状态码)、`ip`(IP地址)、`hour`(按小时)
 - `top`: 返回前 N 条统计结果（默认 10）
 
+在启用 `LOG_MONITOR_SOCK` 的 Server 模式下，主动查询会优先使用服务端内存缓冲并保持 legacy 返回契约：`searchLog` 仍返回 `success/hostId/logPath/pattern/matchCount/lines/executionTime`，`lastErrors` 仍返回 `errors/errorCount`，`logStats` 仍返回 `stats/totalEntries/groupBy`。
+
 ## 去重策略配置 (v1.3.0)
 
 启动监控时可配置去重策略，避免重复日志触发多次告警。
+Server 模式同样应用 `dedupeMode` 和 `dedupeWindow`，与 legacy SSH 流式监控保持一致。
 
 | 模式 | 说明 | 适用场景 |
 |------|------|----------|

@@ -214,7 +214,7 @@ async function main() {
  * 使用 'full' 模式初始化，会恢复之前的任务
  */
 async function handleStart(manager, args) {
-    const { hostId, logPath, rules, contextLines } = args;
+    const { hostId, logPath, rules, contextLines, afterContextLines } = args;
     
     if (!hostId) {
         return formatVCPResponse('error', null, '缺少必需参数: hostId');
@@ -225,11 +225,14 @@ async function handleStart(manager, args) {
     }
     
     try {
+        const effectiveContextLines = contextLines ?? 10;
+        const effectiveAfterContextLines = afterContextLines ?? effectiveContextLines;
         const taskId = await manager.startMonitor({
             hostId,
             logPath,
             rules: rules || [],
-            contextLines: contextLines || 10
+            contextLines: effectiveContextLines,
+            afterContextLines: effectiveAfterContextLines
         });
         
         return formatVCPResponse('success', {
@@ -238,7 +241,8 @@ async function handleStart(manager, args) {
             config: {
                 hostId,
                 logPath,
-                contextLines: contextLines || 10,
+                contextLines: effectiveContextLines,
+                afterContextLines: effectiveAfterContextLines,
                 rulesCount: (rules || []).length || 'default'
             }
         }, null);

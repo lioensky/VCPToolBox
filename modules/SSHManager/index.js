@@ -120,7 +120,7 @@ function loadSSHManagerClass() {
  * @param {Object} [options] 初始化选项，如 { basePath: __dirname }
  * @returns {Object|null} SSHManager 实例或 null
  */
-function getSSHManager(providedConfig = null, options = {}) {
+function getLocalSSHManager(providedConfig = null, options = {}) {
     if (instance) return instance;
 
     lastError = null;
@@ -145,6 +145,31 @@ function getSSHManager(providedConfig = null, options = {}) {
         console.error(`[SSHManager Module] 创建 SSHManager 实例失败: ${e.message}`);
         return null;
     }
+}
+
+/**
+ * 获取 SSHManager 单例实例
+ * 自动检测环境：如果在 stdio 插件子进程内（SSH_MANAGER_SOCK 存在），使用 UDS 代理模式
+ * @param {Object} [providedConfig] 可选的主机配置，若提供则优先使用
+ * @param {Object} [options] 初始化选项，如 { basePath: __dirname }
+ * @returns {Object|null} SSHManager 实例或 null
+ */
+function getSSHManager(providedConfig = null, options = {}) {
+    // 检查是否在 stdio 插件子进程内（通过环境变量判断）
+    const proxySock = process.env.SSH_MANAGER_SOCK;
+    if (proxySock) {
+        try {
+            const { SSHManagerProxy } = require('./proxy');
+            const proxy = new SSHManagerProxy(proxySock);
+            console.error('[SSHManager Module] 使用 UDS 代理模式连接到常驻服务:', proxySock);
+            return proxy;
+        } catch (e) {
+            console.error('[SSHManager Module] 代理模式初始化失败，回退到本地模式:', e.message);
+        }
+    }
+
+    // 本地模式（原有逻辑）
+    return getLocalSSHManager(providedConfig, options);
 }
 
 /**
@@ -200,7 +225,7 @@ function isAvailable() {
  * @returns {Object} 状态信息
  */
 function getStatus() {
-    return {
+    const result = {
         available: isAvailable(),
         instanceCreated: instance !== null,
         configLoaded: hostsConfig !== null,
@@ -211,6 +236,10 @@ function getStatus() {
         classPath: lastClassPath,
         classError: lastClassError
     };
+    if (instance && typeof instance.getPoolStats === 'function') {
+        result.poolStats = instance.getPoolStats();
+    }
+    return result;
 }
 
 module.exports = {

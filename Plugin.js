@@ -15,6 +15,13 @@ const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtoc
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
+const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
+    'LinuxShellExecutor',
+    'LinuxLogMonitor'
+]);
+const LOG_MONITOR_ENV_PLUGIN_ALLOWLIST = new Set([
+    'LinuxLogMonitor'
+]);
 
 class PluginManager extends EventEmitter {
     constructor() {
@@ -117,6 +124,57 @@ class PluginManager extends EventEmitter {
         }
         const effectiveConfig = this._getPluginConfig(pluginManifest);
         return effectiveConfig ? effectiveConfig[configKey] : undefined;
+    }
+
+    _shouldInjectSSHManagerEnv(pluginName) {
+        return SSH_MANAGER_ENV_PLUGIN_ALLOWLIST.has(pluginName);
+    }
+
+    _shouldInjectLogMonitorEnv(pluginName) {
+        return LOG_MONITOR_ENV_PLUGIN_ALLOWLIST.has(pluginName);
+    }
+
+    _isLinuxShellExecutorLocalUserCommand(plugin, inputData) {
+        if (!plugin || !inputData) return false;
+
+        let args;
+        try {
+            args = typeof inputData === 'string' ? JSON.parse(inputData) : inputData;
+        } catch (e) {
+            return false;
+        }
+
+        if (!args || typeof args !== 'object' || !args.command) {
+            return false;
+        }
+
+        const hostId = args.hostId;
+        if (!hostId) {
+            return true;
+        }
+
+        try {
+            const hostsPath = path.join(plugin.basePath, 'hosts.json');
+            delete require.cache[require.resolve(hostsPath)];
+            const hostsConfig = require(hostsPath);
+            const hostConfig = hostsConfig.hosts?.[hostId];
+            return hostConfig ? hostConfig.type !== 'ssh' : hostId === 'local';
+        } catch (e) {
+            return hostId === 'local';
+        }
+    }
+
+    _shouldInjectSSHManagerEnvForExecution(pluginName, plugin, inputData) {
+        if (!this._shouldInjectSSHManagerEnv(pluginName)) {
+            return false;
+        }
+        if (
+            pluginName === 'LinuxShellExecutor' &&
+            this._isLinuxShellExecutorLocalUserCommand(plugin, inputData)
+        ) {
+            return false;
+        }
+        return true;
     }
 
     async _executeStaticPluginCommand(plugin) {
@@ -451,7 +509,7 @@ class PluginManager extends EventEmitter {
         for (const module of localModulesToShutdown) {
             if (typeof module.shutdown === 'function') {
                 try {
-                    module.shutdown();
+                    await module.shutdown();
                 } catch (e) {
                     console.error(`[PluginManager] Error during hot-reload shutdown of a plugin:`, e.message);
                 }
@@ -1006,6 +1064,30 @@ class PluginManager extends EventEmitter {
         const fileServerKey = this.getResolvedPluginConfigValue('ImageServer', 'File_Key');
         if (fileServerKey) {
             additionalEnv.IMAGESERVER_FILE_KEY = fileServerKey;
+        }
+
+        // 新增：注入 SSHManagerService 的 UDS 路径（如果服务已启动）
+        const sshManagerSock = global.__vcp_ssh_manager_sock;
+        if (sshManagerSock && this._shouldInjectSSHManagerEnvForExecution(pluginName, plugin, inputData)) {
+            additionalEnv.SSH_MANAGER_SOCK = sshManagerSock;
+            if (global.__vcp_ssh_manager_token) {
+                additionalEnv.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+            }
+            if (this.debugMode) console.log(`[PluginManager] 注入 SSH_MANAGER_SOCK=${sshManagerSock} 到插件 ${pluginName}`);
+        } else if (sshManagerSock && this.debugMode) {
+            console.log(`[PluginManager] 跳过向非白名单插件 ${pluginName} 注入 SSH_MANAGER_SOCK`);
+        }
+
+        // 注入 LinuxLogMonitorServer 的 UDS 路径和 token（仅限白名单插件）
+        const logMonitorSock = global.__vcp_log_monitor_sock;
+        if (logMonitorSock && this._shouldInjectLogMonitorEnv(pluginName, plugin)) {
+            additionalEnv.LOG_MONITOR_SOCK = logMonitorSock;
+            if (global.__vcp_log_monitor_token) {
+                additionalEnv.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
+            }
+            if (this.debugMode) console.log(`[PluginManager] 注入 LOG_MONITOR_SOCK=${logMonitorSock} 到插件 ${pluginName}`);
+        } else if (logMonitorSock && this.debugMode) {
+            console.log(`[PluginManager] 跳过向非白名单插件 ${pluginName} 注入 LOG_MONITOR_SOCK`);
         }
 
         // Pass CALLBACK_BASE_URL and PLUGIN_NAME to asynchronous plugins
