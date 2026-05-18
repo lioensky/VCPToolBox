@@ -1,7 +1,11 @@
 // modules/vcpLoop/toolExecutor.js
+const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
+
+const VCP_TIMED_CONTACTS_DIR = path.join(__dirname, '..', '..', 'VCPTimedContacts');
 
 /**
  * 提取消息的纯文本字符串
@@ -314,6 +318,13 @@ class ToolExecutor {
       }
     }
 
+    // 通用未来任务拦截：
+    // 任意工具只要携带 timely_contact，就先写入 VCPTimedContacts 由任务调度器到点执行。
+    // 注意：保存到任务文件时会移除 timely_contact，避免到点执行时再次被调度，兼容 AgentAssistant 旧逻辑。
+    if (args && Object.prototype.hasOwnProperty.call(args, 'timely_contact')) {
+      return await this._scheduleTimedToolCall(toolCall);
+    }
+
     // 验证码校验
     if (this.vcpToolCode) {
       const authResult = await this._verifyAuth(args);
@@ -400,6 +411,105 @@ class ToolExecutor {
       type: 'vcp_log',
       data: { tool_name: toolName, status, content }
     }, 'VCPLog');
+  }
+
+  async _scheduleTimedToolCall(toolCall) {
+    const { name, args } = toolCall;
+    const timelyContact = args?.timely_contact;
+    const targetDate = this._parseAndValidateTimedContact(timelyContact);
+    if (!targetDate) {
+      return this._createErrorResult(name, `无效的 'timely_contact' 时间格式: '${timelyContact}'。请使用 YYYY-MM-DD-HH:mm 格式，或可被 Date 解析的未来时间。`);
+    }
+    if (targetDate === 'past') {
+      return this._createErrorResult(name, `无效的 'timely_contact' 时间: '${timelyContact}'。不能设置为过去或当前时间。`);
+    }
+
+    if (!this.pluginManager.getPlugin(name)) {
+      return this._createErrorResult(name, `未找到名为 "${name}" 的插件`);
+    }
+
+    const scheduledArgs = JSON.parse(JSON.stringify(args || {}));
+    delete scheduledArgs.timely_contact;
+
+    const taskId = `task-${targetDate.getTime()}-${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')}`;
+    const taskData = {
+      taskId,
+      scheduledLocalTime: this._formatToLocalDateTimeWithOffset(targetDate),
+      tool_call: {
+        tool_name: name,
+        arguments: scheduledArgs
+      },
+      requestor: `ToolExecutor: ${name}`
+    };
+
+    try {
+      await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
+      const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${taskId}.json`);
+      await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2), 'utf-8');
+
+      const receipt = `任务已成功调度。\n工具: ${name}\n任务ID: ${taskId}\n计划时间: ${taskData.scheduledLocalTime}\n注意: timely_contact 已从到点执行参数中移除，避免重复调度。`;
+      this._broadcast(name, 'success', receipt);
+      return {
+        success: true,
+        content: [{ type: 'text', text: receipt }],
+        raw: {
+          status: 'success',
+          scheduled: true,
+          taskId,
+          tool_name: name,
+          scheduledTime: taskData.scheduledLocalTime
+        }
+      };
+    } catch (error) {
+      return this._createErrorResult(name, `创建定时任务失败: ${error.message}`);
+    }
+  }
+
+  _parseAndValidateTimedContact(value) {
+    if (!value) return null;
+
+    const raw = String(value).trim();
+    const standardized = raw.replace(/[\/\.]/g, '-');
+    const compactMatch = standardized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})-(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+
+    let date;
+    if (compactMatch) {
+      const [, yearRaw, monthRaw, dayRaw, hourRaw, minuteRaw, secondRaw] = compactMatch;
+      const year = Number(yearRaw);
+      const month = Number(monthRaw);
+      const day = Number(dayRaw);
+      const hour = Number(hourRaw);
+      const minute = Number(minuteRaw);
+      const second = secondRaw === undefined ? 0 : Number(secondRaw);
+
+      date = new Date(year, month - 1, day, hour, minute, second);
+      if (
+        date.getFullYear() !== year ||
+        date.getMonth() !== month - 1 ||
+        date.getDate() !== day ||
+        date.getHours() !== hour ||
+        date.getMinutes() !== minute ||
+        date.getSeconds() !== second
+      ) {
+        return null;
+      }
+    } else {
+      date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return null;
+    }
+
+    if (date.getTime() <= Date.now()) return 'past';
+    return date;
+  }
+
+  _formatToLocalDateTimeWithOffset(date) {
+    const pad = (value, length = 2) => String(value).padStart(length, '0');
+    const timezoneOffsetMinutes = date.getTimezoneOffset();
+    const offsetSign = timezoneOffsetMinutes > 0 ? '-' : '+';
+    const offsetHours = pad(Math.floor(Math.abs(timezoneOffsetMinutes) / 60));
+    const offsetMinutes = pad(Math.abs(timezoneOffsetMinutes) % 60);
+
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offsetSign}${offsetHours}:${offsetMinutes}`;
   }
 
   async _verifyAuth(args) {
