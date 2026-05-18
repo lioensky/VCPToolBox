@@ -26,6 +26,25 @@ async function readJsonIfExists(filePath) {
   }
 }
 
+async function removeFileIfExists(filePath) {
+  try {
+    await fs.unlink(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function isCancelAction(args) {
+  const action = String(args.action || args.command || args.operation || '').trim().toLowerCase();
+  return action === 'cancel' ||
+    action === 'delete' ||
+    action === 'remove' ||
+    action === '取消' ||
+    String(args.cancel || '').trim().toLowerCase() === 'true';
+}
+
 async function main() {
   const chunks = [];
   process.stdin.setEncoding('utf8');
@@ -57,6 +76,49 @@ async function main() {
   const pendingFilePath = path.join(projectBasePath, 'VCPTimedContacts', `${taskId}.json`);
 
   try {
+    const shouldCancel = isCancelAction(args);
+
+    if (shouldCancel) {
+      const resultData = await readJsonIfExists(resultFilePath);
+      if (resultData) {
+        createResponse('success', {
+          queryStatus: 'completed',
+          cancelStatus: 'not_cancelled',
+          taskId,
+          resultFile: resultFilePath,
+          message: `任务 ${taskId} 已经执行完成，不能取消。`,
+          data: resultData
+        });
+        return;
+      }
+
+      const pendingData = await readJsonIfExists(pendingFilePath);
+      if (pendingData) {
+        const removed = await removeFileIfExists(pendingFilePath);
+        createResponse('success', {
+          queryStatus: removed ? 'cancelled' : 'not_found',
+          cancelStatus: removed ? 'cancelled' : 'not_found',
+          taskId,
+          cancelledFile: pendingFilePath,
+          scheduledLocalTime: pendingData.scheduledLocalTime || null,
+          toolName: pendingData.tool_call?.tool_name || null,
+          requestor: pendingData.requestor || null,
+          message: removed
+            ? `任务 ${taskId} 已取消。调度器会在文件删除事件中同步取消内存中的定时 Job。`
+            : `任务 ${taskId} 的待执行文件已不存在，可能已被执行、取消或清理。`
+        });
+        return;
+      }
+
+      createResponse('success', {
+        queryStatus: 'not_found',
+        cancelStatus: 'not_found',
+        taskId,
+        message: `未找到任务 ${taskId} 的待执行记录，无法取消。可能 ID 错误、任务已执行，或已被取消。`
+      });
+      return;
+    }
+
     const resultData = await readJsonIfExists(resultFilePath);
     if (resultData) {
       createResponse('success', {
