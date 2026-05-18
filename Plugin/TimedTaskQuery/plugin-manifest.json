@@ -1,0 +1,29 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TimedTaskQuery",
+  "displayName": "定时任务结果查询",
+  "version": "1.0.0",
+  "description": "查询通用未来工具调用（timely_contact）执行后的持久化结果。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node TimedTaskQuery.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QueryTimedTaskResult",
+        "description": "查询通用未来工具调用的执行结果。仅需提供创建定时任务时返回的 task_id/taskId。若任务尚未到点或尚未执行完成，会返回 pending 状态。\n\n📋 调用格式:\n<<<[TOOL_REQUEST]>>>\nmaid:「始」你的署名「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "permissions": [
+    "read_from_file_system"
+  ]
+}

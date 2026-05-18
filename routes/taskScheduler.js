@@ -9,7 +9,33 @@ let webSocketServer;
 let DEBUG_MODE = false;
 
 const TIMED_CONTACTS_DIR = path.join(__dirname, '..', 'VCPTimedContacts');
+const TIMED_RESULTS_DIR = path.join(__dirname, '..', 'VCPTimedResults');
 const scheduledJobs = new Map(); // 重命名以反映其存储的是 Job 对象
+
+async function persistTimedTaskResult(task, status, payload = {}) {
+    try {
+        await fs.mkdir(TIMED_RESULTS_DIR, { recursive: true });
+        const taskId = task?.taskId || `unknown-${Date.now()}`;
+        const toolName = task?.tool_call?.tool_name || 'UnknownPlugin';
+        const resultFilePath = path.join(TIMED_RESULTS_DIR, `${taskId}.json`);
+        const resultData = {
+            taskId,
+            toolName,
+            status,
+            scheduledLocalTime: task?.scheduledLocalTime || null,
+            executedAt: new Date().toISOString(),
+            requestor: task?.requestor || null,
+            arguments: task?.tool_call?.arguments || null,
+            ...payload
+        };
+        await fs.writeFile(resultFilePath, JSON.stringify(resultData, null, 2), 'utf-8');
+        if (DEBUG_MODE) {
+            console.log(`[TaskScheduler] 已持久化定时任务结果: ${resultFilePath}`);
+        }
+    } catch (persistError) {
+        console.error(`[TaskScheduler] 持久化定时任务 ${task?.taskId || 'unknown'} 结果失败:`, persistError);
+    }
+}
 
 async function executeTimedContact(task, filePath) {
     // 核心逻辑变更：现在执行一个通用的 tool_call
@@ -19,12 +45,17 @@ async function executeTimedContact(task, filePath) {
         
         if (!task.tool_call || !task.tool_call.tool_name || !task.tool_call.arguments) {
             console.error(`[TaskScheduler] 任务文件 ${path.basename(filePath)} 格式无效，缺少 'tool_call' 对象或其 'tool_name', 'arguments' 属性。`);
+            const errorMessage = `执行定时任务 ${task.taskId} 失败: 无效的任务格式。`;
+            await persistTimedTaskResult(task, 'error', {
+                error: errorMessage,
+                details: 'Missing tool_call/tool_name/arguments'
+            });
             webSocketServer.broadcast({
                 type: 'vcp_log',
                 data: {
                     tool_name: 'TaskScheduler',
                     status: 'error',
-                    content: `执行定时任务 ${task.taskId} 失败: 无效的任务格式。`,
+                    content: errorMessage,
                     source: 'task_scheduler_executor_error'
                 }
             }, 'VCPLog');
@@ -48,6 +79,11 @@ async function executeTimedContact(task, filePath) {
             resultSummary = typeof result === 'object' ? JSON.stringify(result) : String(result);
         }
 
+        await persistTimedTaskResult(task, 'success', {
+            result,
+            resultSummary
+        });
+
         webSocketServer.broadcast({
             type: 'vcp_log',
             data: {
@@ -60,6 +96,10 @@ async function executeTimedContact(task, filePath) {
 
     } catch (error) {
         console.error(`[TaskScheduler] 执行任务 ${task.taskId} 时发生错误:`, error);
+        await persistTimedTaskResult(task, 'error', {
+            error: error.message || '未知错误',
+            details: error.stack || JSON.stringify(error)
+        });
         webSocketServer.broadcast({
             type: 'vcp_log',
             data: {
