@@ -45,6 +45,92 @@ function isCancelAction(args) {
     String(args.cancel || '').trim().toLowerCase() === 'true';
 }
 
+function findRichContent(value, seen = new Set()) {
+  if (!value || typeof value !== 'object') return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  if (Array.isArray(value.content)) {
+    return value.content;
+  }
+
+  if (value.data && typeof value.data === 'object' && Array.isArray(value.data.content)) {
+    return value.data.content;
+  }
+
+  if (value.result && typeof value.result === 'object') {
+    const nested = findRichContent(value.result, seen);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
+function stripLargeDataUris(value, seen = new Set()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map(item => stripLargeDataUris(item, seen));
+  }
+
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string' && item.startsWith('data:') && item.length > 200) {
+      output[key] = `${item.slice(0, 120)}...[base64 omitted, length=${item.length}]`;
+    } else if (item && typeof item === 'object') {
+      output[key] = stripLargeDataUris(item, seen);
+    } else {
+      output[key] = item;
+    }
+  }
+  return output;
+}
+
+function buildCompletedResult(taskId, resultFilePath, resultData) {
+  const richContent = findRichContent(resultData);
+  const metadata = {
+    queryStatus: 'completed',
+    taskId,
+    resultFile: resultFilePath,
+    toolName: resultData?.toolName || null,
+    scheduledLocalTime: resultData?.scheduledLocalTime || null,
+    executedAt: resultData?.executedAt || null,
+    status: resultData?.status || null,
+    details: stripLargeDataUris(resultData?.result?.details || resultData?.details || {}),
+    raw: stripLargeDataUris(resultData)
+  };
+
+  if (!richContent) {
+    return {
+      ...metadata,
+      content: [{
+        type: 'text',
+        text: `定时任务 ${taskId} 已完成。\n\n${JSON.stringify(metadata, null, 2)}`
+      }]
+    };
+  }
+
+  const firstTextIndex = richContent.findIndex(part => part && part.type === 'text');
+  const prefixText = `定时任务 ${taskId} 已完成。以下为原始工具返回内容。`;
+  const content = richContent.map(part => JSON.parse(JSON.stringify(part)));
+
+  if (firstTextIndex >= 0) {
+    content[firstTextIndex] = {
+      ...content[firstTextIndex],
+      text: `${prefixText}\n\n${content[firstTextIndex].text || ''}`
+    };
+  } else {
+    content.unshift({ type: 'text', text: prefixText });
+  }
+
+  return {
+    ...metadata,
+    content
+  };
+}
+
 async function main() {
   const chunks = [];
   process.stdin.setEncoding('utf8');
@@ -121,12 +207,7 @@ async function main() {
 
     const resultData = await readJsonIfExists(resultFilePath);
     if (resultData) {
-      createResponse('success', {
-        queryStatus: 'completed',
-        taskId,
-        resultFile: resultFilePath,
-        data: resultData
-      });
+      createResponse('success', buildCompletedResult(taskId, resultFilePath, resultData));
       return;
     }
 
