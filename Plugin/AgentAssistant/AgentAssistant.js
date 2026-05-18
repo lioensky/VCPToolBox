@@ -533,7 +533,7 @@ async function processToolCall(args) {
         throwToolError(errorMsg);
     }
 
-    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools, river_context } = args;
+    const { agent_name, prompt, timely_contact, temporary_contact, maid, task_delegation, query_delegation, inject_tools, river_context, __vcp_timed_call } = args;
 
     // Handle querying a delegation status
     if (query_delegation) {
@@ -595,7 +595,8 @@ async function processToolCall(args) {
         : (promptWithRiverAttachment.find(part => part.type === 'text')?.text || String(prompt || ''));
 
     // Handle future calls (timely_contact)
-    if (timely_contact) {
+    // 如果存在 __vcp_timed_call，说明这是调度器到点触发的真实执行，不再二次调度。
+    if (timely_contact && !__vcp_timed_call) {
         const targetDate = parseAndValidateDate(timely_contact);
         if (!targetDate) throwToolError(`无效的 'timely_contact' 时间格式: '${timely_contact}'。请使用 YYYY-MM-DD-HH:mm 格式。`);
         if (targetDate === 'past') throwToolError(`无效的 'timely_contact' 时间: '${timely_contact}'。不能设置为过去的时间。`);
@@ -678,7 +679,10 @@ async function processToolCall(args) {
 
     try {
         // 注入来源提示词，防止 AI 之间产生“套娃”式工具调用
-        const communicationTip = `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
+        let communicationTip = `[Tips:这是一条来自AgentAssistant通讯中心 ${senderName} 的联络，你可以直接正常回复而无需通过调用AA插件的方式进行回复]\n\n`;
+        if (__vcp_timed_call) {
+            communicationTip += `[定时通讯上下文: 这是一条过去发起并由系统在预定时间转发的通讯。任务ID: ${__vcp_timed_call.taskId || 'unknown'}；原始发起时间: ${__vcp_timed_call.requestedAt || 'unknown'}；计划触发时间: ${__vcp_timed_call.scheduledFor || 'unknown'}；实际触发时间: ${__vcp_timed_call.triggeredAt || 'unknown'}。]\n\n`;
+        }
         const finalPrompt = typeof promptWithRiverAttachment === 'string'
             ? communicationTip + promptWithRiverAttachment
             : [

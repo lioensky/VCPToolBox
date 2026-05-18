@@ -320,7 +320,8 @@ class ToolExecutor {
 
     // 通用未来任务拦截：
     // 任意工具只要携带 timely_contact，就先写入 VCPTimedContacts 由任务调度器到点执行。
-    // 注意：保存到任务文件时会移除 timely_contact，避免到点执行时再次被调度，兼容 AgentAssistant 旧逻辑。
+    // 到点执行时由 TaskScheduler 注入 __vcp_timed_call 标准元信息；
+    // 插件可基于该字段判断原始发起时间、计划触发时间与实际触发时间。
     if (args && Object.prototype.hasOwnProperty.call(args, 'timely_contact')) {
       return await this._scheduleTimedToolCall(toolCall);
     }
@@ -429,11 +430,12 @@ class ToolExecutor {
     }
 
     const scheduledArgs = JSON.parse(JSON.stringify(args || {}));
-    delete scheduledArgs.timely_contact;
+    const requestedAt = this._formatToLocalDateTimeWithOffset(new Date());
 
     const taskId = `task-${targetDate.getTime()}-${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')}`;
     const taskData = {
       taskId,
+      createdAt: requestedAt,
       scheduledLocalTime: this._formatToLocalDateTimeWithOffset(targetDate),
       tool_call: {
         tool_name: name,
@@ -447,7 +449,7 @@ class ToolExecutor {
       const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${taskId}.json`);
       await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2), 'utf-8');
 
-      const receipt = `任务已成功调度。\n工具: ${name}\n任务ID: ${taskId}\n计划时间: ${taskData.scheduledLocalTime}\n注意: timely_contact 已从到点执行参数中移除，避免重复调度。`;
+      const receipt = `任务已成功调度。\n工具: ${name}\n任务ID: ${taskId}\n发起时间: ${requestedAt}\n计划时间: ${taskData.scheduledLocalTime}\n到点执行时系统会注入 __vcp_timed_call 标准元信息。`;
       this._broadcast(name, 'success', receipt);
       return {
         success: true,
@@ -457,6 +459,7 @@ class ToolExecutor {
           scheduled: true,
           taskId,
           tool_name: name,
+          requestedAt,
           scheduledTime: taskData.scheduledLocalTime
         }
       };

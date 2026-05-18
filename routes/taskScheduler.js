@@ -12,6 +12,16 @@ const TIMED_CONTACTS_DIR = path.join(__dirname, '..', 'VCPTimedContacts');
 const TIMED_RESULTS_DIR = path.join(__dirname, '..', 'VCPTimedResults');
 const scheduledJobs = new Map(); // 重命名以反映其存储的是 Job 对象
 
+function formatToLocalDateTimeWithOffset(date) {
+    const pad = (value, length = 2) => String(value).padStart(length, '0');
+    const timezoneOffsetMinutes = date.getTimezoneOffset();
+    const offsetSign = timezoneOffsetMinutes > 0 ? '-' : '+';
+    const offsetHours = pad(Math.floor(Math.abs(timezoneOffsetMinutes) / 60));
+    const offsetMinutes = pad(Math.abs(timezoneOffsetMinutes) % 60);
+
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${offsetSign}${offsetHours}:${offsetMinutes}`;
+}
+
 async function persistTimedTaskResult(task, status, payload = {}) {
     try {
         await fs.mkdir(TIMED_RESULTS_DIR, { recursive: true });
@@ -22,10 +32,12 @@ async function persistTimedTaskResult(task, status, payload = {}) {
             taskId,
             toolName,
             status,
+            createdAt: task?.createdAt || null,
             scheduledLocalTime: task?.scheduledLocalTime || null,
             executedAt: new Date().toISOString(),
             requestor: task?.requestor || null,
             arguments: task?.tool_call?.arguments || null,
+            timedCall: task?.timedCall || null,
             ...payload
         };
         await fs.writeFile(resultFilePath, JSON.stringify(resultData, null, 2), 'utf-8');
@@ -63,12 +75,21 @@ async function executeTimedContact(task, filePath) {
         }
 
         const { tool_name, arguments: toolArgs } = task.tool_call;
+        const executedAt = formatToLocalDateTimeWithOffset(new Date());
+        const timedCallMeta = {
+            taskId: task.taskId,
+            requestedAt: task.createdAt || null,
+            scheduledFor: task.scheduledLocalTime || null,
+            triggeredAt: executedAt,
+            originalTimelyContact: toolArgs.timely_contact || null,
+            source: task.requestor || null
+        };
+        task.timedCall = timedCallMeta;
+        toolArgs.__vcp_timed_call = timedCallMeta;
+        delete toolArgs.timely_contact;
 
-        // 为了向后兼容和提供上下文，如果目标是AgentAssistant，则将预定时间注入其prompt
-        if (tool_name === 'AgentAssistant' && toolArgs.prompt) {
-            toolArgs.prompt = `[预定通讯: ${formattedTime}] ${toolArgs.prompt}`;
-        }
-
+        // 定时调用上下文统一通过 __vcp_timed_call 传递给目标工具。
+        // 不再对 AgentAssistant 做 prompt 特判，避免不同工具出现不一致的定时语义。
         console.log(`[TaskScheduler] 正在执行任务 ${task.taskId}: 调用插件 '${tool_name}'...`);
         const result = await pluginManager.processToolCall(tool_name, toolArgs, null, 'scheduler');
         
