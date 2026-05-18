@@ -1393,6 +1393,8 @@ VCP-Agent 拥有完整的自主主观能动性。
 1. **时间线规划行动 (AgentAssistant 总线)**：
    - Agent 可以调用 AgentAssistant 总线，给"未来的自己打电话"
    - 从而引发一个 post 递归，实现时间线规划行动
+   - 允许Agent调用工具时使用全局计时器，让工具调用在未来被触发
+   - 允许Agent查询过去，现在，未来的工具调用进度和结果。
 
 2. **自我心跳驱动 (FlowInvite 总线)**：
    - Agent 可以调用一个 FlowInvite 总线
