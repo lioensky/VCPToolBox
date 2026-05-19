@@ -30,6 +30,39 @@ const ToolExecutor = require('./vcpLoop/toolExecutor');
 const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
 
+const VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER = '[[VCPToolUse=Forbidden]]';
+
+/**
+ * 从顶层 system 提示词中检测并移除 VCP 工具禁用占位符。
+ * 只扫描首个连续 system 消息区间，避免普通上下文/用户内容误触发。
+ * @param {Array} messages
+ * @returns {boolean}
+ */
+function consumeVcpToolUseForbiddenPlaceholder(messages) {
+  if (!Array.isArray(messages)) return false;
+
+  let found = false;
+  for (const msg of messages) {
+    if (!msg || msg.role !== 'system') break;
+
+    if (typeof msg.content === 'string') {
+      if (msg.content.includes(VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER)) {
+        found = true;
+        msg.content = msg.content.split(VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER).join('');
+      }
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part?.type === 'text' && typeof part.text === 'string' && part.text.includes(VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER)) {
+          found = true;
+          part.text = part.text.split(VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER).join('');
+        }
+      }
+    }
+  }
+
+  return found;
+}
+
 /**
  * 检测工具返回结果是否为错误
  * @param {any} result - 工具返回的结果
@@ -508,6 +541,11 @@ class ChatCompletionHandler {
         if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
       }
 
+      const vcpToolUseForbidden = consumeVcpToolUseForbiddenPlaceholder(originalBody.messages);
+      if (vcpToolUseForbidden && DEBUG_MODE) {
+        console.log(`[VCPToolUse] Detected ${VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER} in top-level system prompt. Tool parsing/execution is disabled for this request.`);
+      }
+
       let shouldProcessMedia = false;
       let shouldProcessMediaPlus = false;
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
@@ -817,7 +855,8 @@ class ChatCompletionHandler {
         _refreshRagBlocksIfNeeded,
         fetchWithRetry,
         isToolResultError,
-        formatToolResult
+        formatToolResult,
+        vcpToolUseForbidden
       };
 
       if (isUpstreamStreaming) {
