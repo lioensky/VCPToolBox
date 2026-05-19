@@ -95,7 +95,7 @@
                   </div>
                   <AppSwitch v-model="enabledSuffixes.time" />
                 </div>
-                <p>解析“上周、最近、三个月前”等自然语言时间线索，并融合时间范围召回。</p>
+                <p>解析“上周、最近、三个月前”等自然语言时间线索，并融合时间范围召回。该语法还支持新建聊天时自动传递上一个聊天的记忆，无视任意前端。</p>
               </div>
 
               <div class="syntax-card syntax-option-card">
@@ -413,7 +413,7 @@
                 <p>
                   两个 AI 语法都需要在前端系统提示词中加入 <code>[[AIMemo=True]]</code> 特殊占位符才会触发。
                   <strong>AIMemo</strong> 是独立 AI 召回管线，触发时其它 RAG 后缀不会工作，但可写在一起；
-                  <strong>AIMemo+</strong> 会先复用完整后缀管线构建候选池，再交给 AI 总结，支持与任意语法兼容。
+                  <strong>AIMemo+</strong> 会先复用完整后缀管线构建5倍K候选池，再交给 AI 总结，支持与任意语法兼容。
                 </p>
                 <div class="ai-mode-row">
                   <button
