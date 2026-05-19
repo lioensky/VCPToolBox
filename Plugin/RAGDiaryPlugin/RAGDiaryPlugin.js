@@ -1586,7 +1586,7 @@ class RAGDiaryPlugin {
                     console.log(`[RAGDiaryPlugin] 🌟 聚合AIMemo${isAIMemoPlus ? '+' : ''}模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                     for (const name of aggregateInfo.diaryNames) {
                         if (!processedDiaries.has(name)) {
-                            aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus });
+                            aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus, modifiers });
                         }
                     }
                 } else {
@@ -1643,7 +1643,7 @@ class RAGDiaryPlugin {
 
             if (shouldUseAIMemo) {
                 console.log(`[RAGDiaryPlugin] AIMemo${isAIMemoPlus ? '+' : ''} licensed and activated for "${dbName}"${presetName ? ` (预设: ${presetName})` : ''}. Overriding other RAG modes.`);
-                aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus });
+                aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus, modifiers });
             } else {
                 // 标准 RAG 立即处理
                 processingPromises.push((async () => {
@@ -1814,7 +1814,7 @@ class RAGDiaryPlugin {
                             console.log(`[RAGDiaryPlugin] 🌟 《《》》聚合AIMemo${isAIMemoPlus ? '+' : ''}模式: ${aggregateInfo.diaryNames.join(', ')}${presetName ? ` (预设: ${presetName})` : ''}`);
                             for (const name of aggregateInfo.diaryNames) {
                                 if (!processedDiaries.has(name)) {
-                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus });
+                                    aiMemoRequests.push({ placeholder: placeholder, dbName: name, presetName, isPlus: isAIMemoPlus, modifiers });
                                 }
                             }
                             return { placeholder, content: '' };
@@ -1907,7 +1907,7 @@ class RAGDiaryPlugin {
                         if (shouldUseAIMemo) {
                             console.log(`[RAGDiaryPlugin] AIMemo${isAIMemoPlus ? '+' : ''} licensed and activated for "${dbName}" in hybrid mode${presetName ? ` (预设: ${presetName})` : ''}. Similarity: ${finalSimilarity.toFixed(4)} >= ${localThreshold}`);
                             // ✅ 修复：只有在阈值匹配时才收集 AIMemo 请求
-                            aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus });
+                            aiMemoRequests.push({ placeholder, dbName, presetName, isPlus: isAIMemoPlus, modifiers });
                             return { placeholder, content: '' }; // ⚠️ AIMemo不缓存，因为聚合处理
                         } else {
                             // ✅ 混合模式也传递TagMemo参数
@@ -1971,6 +1971,19 @@ class RAGDiaryPlugin {
                     try {
                         let aggregatedResult;
                         if (isPlus) {
+                            const sourceFiles = await this._collectAIMemoPlusSourceFiles(group, {
+                                queryVector, userContent, aiContent, combinedQueryForDisplay,
+                                dynamicK, timeRanges,
+                                defaultTagWeight: dynamicTagWeight,
+                                tagTruncationRatio,
+                                metrics,
+                                historySegments,
+                                contextDiaryPrefixes,
+                                ghostTags,
+                                collectedAttachments,
+                                isFreshTimeConversationStart
+                            });
+
                             aggregatedResult = await this.aiMemoHandler.processAIMemoPlusAggregated(
                                 dbNames, userContent, aiContent, combinedQueryForDisplay, presetName,
                                 {
@@ -1979,7 +1992,9 @@ class RAGDiaryPlugin {
                                     tagWeight: dynamicTagWeight,
                                     tagTruncationRatio,
                                     metrics,
-                                    ghostTags
+                                    ghostTags,
+                                    sourceFiles,
+                                    cacheSalt: group.map(req => `${req.dbName}:${req.modifiers || ''}`).sort().join('|')
                                 }
                             );
                         } else {
@@ -2171,6 +2186,95 @@ class RAGDiaryPlugin {
             isAggregate: true,
             cleanedModifiers: modifiers
         };
+    }
+
+    /**
+     * 🌟 AIMemo+ 召回源构建器：复用完整后缀语法管线
+     * AIMemo+ 不再只做固定 TagMemo 初筛，而是先按原占位符后缀执行标准 RAG 管线
+     * （::Time / ::Group / ::Rerank / ::TagMemo+ / ::TimeDecay / ::Expand / ::Associate / ::Truncate 等），
+     * 并把最终候选结果作为 5x K 的知识源交给 AIMemo LLM 总结。
+     */
+    async _collectAIMemoPlusSourceFiles(requests, options) {
+        const {
+            queryVector,
+            userContent,
+            aiContent,
+            combinedQueryForDisplay,
+            dynamicK,
+            timeRanges,
+            defaultTagWeight,
+            tagTruncationRatio,
+            metrics,
+            historySegments,
+            contextDiaryPrefixes = new Set(),
+            ghostTags = [],
+            collectedAttachments = [],
+            isFreshTimeConversationStart = false
+        } = options;
+
+        const seenRequestKeys = new Set();
+        const allFiles = [];
+
+        for (const req of requests) {
+            const requestKey = `${req.dbName}::${req.modifiers || ''}`;
+            if (seenRequestKeys.has(requestKey)) continue;
+            seenRequestKeys.add(requestKey);
+
+            const cleanedModifiers = (req.modifiers || '').replace(/::AIMemo\+?(?::[\w-]+)?/g, '');
+
+            try {
+                const rawResults = await this._processRAGPlaceholder({
+                    dbName: req.dbName,
+                    modifiers: cleanedModifiers,
+                    queryVector,
+                    userContent,
+                    aiContent,
+                    combinedQueryForDisplay,
+                    dynamicK: Math.max(1, dynamicK * 5),
+                    timeRanges,
+                    allowTimeAndGroup: true,
+                    defaultTagWeight,
+                    tagTruncationRatio,
+                    metrics,
+                    historySegments,
+                    contextDiaryPrefixes,
+                    ghostTags,
+                    collectedAttachments,
+                    isFreshTimeConversationStart,
+                    returnRawResults: true
+                });
+
+                const resultFiles = (rawResults || [])
+                    .filter(r => r && r.text && r.text.trim())
+                    .map((r, idx) => ({
+                        name: `${req.dbName}_aimemo_plus_${idx}`,
+                        content: r.text,
+                        text: r.text,
+                        tokens: this._estimateTokens(r.text),
+                        dbName: req.dbName,
+                        score: r.rerank_score ?? r.score ?? 0,
+                        source: r.source || 'rag'
+                    }));
+
+                allFiles.push(...resultFiles);
+                console.log(`[RAGDiaryPlugin] AIMemo+ suffix pipeline: "${req.dbName}" ${cleanedModifiers || '(default)'} -> ${resultFiles.length} candidates`);
+            } catch (error) {
+                console.error(`[RAGDiaryPlugin] AIMemo+ suffix pipeline failed for "${req.dbName}":`, error?.message || error);
+            }
+        }
+
+        allFiles.sort((a, b) => (b.score || 0) - (a.score || 0));
+        const seenTexts = new Set();
+        const uniqueFiles = [];
+        for (const file of allFiles) {
+            const key = file.text.trim();
+            if (!key || seenTexts.has(key)) continue;
+            seenTexts.add(key);
+            uniqueFiles.push(file);
+        }
+
+        console.log(`[RAGDiaryPlugin] AIMemo+ suffix pipeline collected ${uniqueFiles.length}/${allFiles.length} unique candidates.`);
+        return uniqueFiles;
     }
 
     /**
@@ -2447,7 +2551,8 @@ class RAGDiaryPlugin {
             ghostTags = [], // 🌟 V6: 幽灵节点
             collectedAttachments = [], // 🌟 V7
             associateDiaries = [], // 🌟 V10: Associate 联想共现搜索范围（聚合模式传入所有日记本名）
-            isFreshTimeConversationStart = false // 🌟 Time 新对话补充召回
+            isFreshTimeConversationStart = false, // 🌟 Time 新对话补充召回
+            returnRawResults = false // 🌟 AIMemo+: 返回完整后缀管线处理后的候选结果，供 LLM 总结
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -2809,6 +2914,10 @@ class RAGDiaryPlugin {
                     retrievedContent = this.formatStandardResults(finalResultsForBroadcast, displayName, metadata);
                 }
             }
+        }
+
+        if (returnRawResults) {
+            return finalResultsForBroadcast || [];
         }
 
         // 🌟 V7: Base64Memo 附件提取逻辑

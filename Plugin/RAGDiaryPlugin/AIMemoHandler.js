@@ -333,16 +333,24 @@ class AIMemoHandler {
             tagWeight = null,
             tagTruncationRatio = 0.5,
             metrics = {},
-            ghostTags = []
+            ghostTags = [],
+            sourceFiles = null,
+            cacheSalt = ''
         } = tagMemoOptions || {};
 
-        if (!queryVector) {
-            console.warn('[AIMemoHandler+] 缺失 queryVector，回退到完整 AIMemo 流程');
+        const hasSourceFiles = Array.isArray(sourceFiles) && sourceFiles.length > 0;
+
+        if (!queryVector && !hasSourceFiles) {
+            console.warn('[AIMemoHandler+] 缺失 queryVector 且没有传入后缀管线来源，回退到完整 AIMemo 流程');
             return await this.processAIMemoAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName);
         }
 
         const searchK = Math.max(5, Math.round(baseK * 5));
-        console.log(`[AIMemoHandler+] 启动 TagMemo 初筛: ${dbNames.length} 个日记本, baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}`);
+        console.log(
+            `[AIMemoHandler+] 启动 AIMemo+ 处理: ${dbNames.length} 个日记本, ` +
+            `baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}, ` +
+            `sourceMode=${hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank'}`
+        );
 
         try {
             // --- 加载预设配置（与 processAIMemoAggregated 一致）---
@@ -379,13 +387,42 @@ class AIMemoHandler {
                         }
                     }
                 } else {
-                    // 与 processAIMemoAggregated 保持一致：未找到预设时给一条良性 WARN
                     console.warn(`[AIMemoHandler+] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
                 }
             }
 
-            // --- 缓存机制（key 包含 plus 标识 + searchK）---
-            const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache + `|plus|sK${searchK}`);
+            let sourceFingerprint = hasSourceFiles ? cacheSalt || 'suffix_pipeline' : 'tagmemo_prerank';
+            let normalizedSourceFiles = [];
+
+            if (hasSourceFiles) {
+                normalizedSourceFiles = sourceFiles
+                    .map((file, index) => ({
+                        name: file.name || `${file.dbName || dbNames[0] || 'AIMemoPlus'}_source_${index}`,
+                        content: file.content || file.text || '',
+                        tokens: Number.isFinite(file.tokens) ? file.tokens : this._estimateTokens(file.content || file.text || ''),
+                        dbName: file.dbName || dbNames[0] || 'AIMemoPlus',
+                        source: file.source || 'suffix_pipeline',
+                        score: file.score ?? file.rerank_score ?? 0
+                    }))
+                    .filter(file => file.content && file.content.trim().length > 0);
+
+                const fingerprintPayload = normalizedSourceFiles.map(file => ({
+                    name: file.name,
+                    dbName: file.dbName,
+                    source: file.source,
+                    content: file.content
+                }));
+                sourceFingerprint = crypto.createHash('sha256').update(JSON.stringify(fingerprintPayload)).digest('hex');
+                console.log(`[AIMemoHandler+] 复用完整后缀管线来源: ${normalizedSourceFiles.length} 个候选片段, fingerprint=${sourceFingerprint.substring(0, 8)}...`);
+            }
+
+            // --- 缓存机制 ---
+            const cacheKey = this._getCacheKey(
+                dbNames,
+                userContent,
+                aiContent,
+                `${presetContentForCache}|plus|sK${searchK}|src:${sourceFingerprint}`
+            );
             const cached = this.cacheManager.get('aimemo', cacheKey);
             if (cached) {
                 console.log(`[AIMemoHandler+] ✅ 命中缓存。Key: ${cacheKey.substring(0, 8)}...`);
@@ -396,33 +433,67 @@ class AIMemoHandler {
             }
             console.log(`[AIMemoHandler+] ❌ 缓存未命中。Key: ${cacheKey.substring(0, 8)}...`);
 
-            // --- TagMemo 初筛 ---
-            const chunks = await this._retrieveTagMemoChunks(
-                dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, metrics
-            );
+            let chunks = [];
+
+            if (hasSourceFiles) {
+                chunks = normalizedSourceFiles
+                    .map((file, index) => ({
+                        dbName: file.dbName,
+                        text: file.content,
+                        tokens: file.tokens,
+                        score: file.score || 0,
+                        source: file.source,
+                        name: file.name || `${file.dbName}_suffix_${index}`
+                    }))
+                    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+                const seenTexts = new Set();
+                chunks = chunks.filter(chunk => {
+                    const key = chunk.text.trim();
+                    if (!key || seenTexts.has(key)) return false;
+                    seenTexts.add(key);
+                    return true;
+                });
+
+                console.log(`[AIMemoHandler+] 后缀管线候选整理完成: ${chunks.length} 个唯一片段`);
+            } else {
+                chunks = await this._retrieveTagMemoChunks(
+                    dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, metrics
+                );
+
+                if (chunks.length === 0) {
+                    const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                    console.log('[AIMemoHandler+] TagMemo 初筛无结果');
+                    return emptyResult;
+                }
+
+                console.log(`[AIMemoHandler+] TagMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${chunks.reduce((sum, c) => sum + c.tokens, 0)}`);
+            }
 
             if (chunks.length === 0) {
-                const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
-                console.log('[AIMemoHandler+] TagMemo 初筛无结果');
+                const emptyResult = hasSourceFiles
+                    ? `[AIMemo+ 后缀管线: ${dbNames.join(' + ')} 未获得可总结片段]`
+                    : `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                console.log('[AIMemoHandler+] AIMemo+ 无有效候选');
                 return emptyResult;
             }
 
             const totalChunkTokens = chunks.reduce((sum, c) => sum + c.tokens, 0);
-            console.log(`[AIMemoHandler+] TagMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${totalChunkTokens}`);
+            console.log(`[AIMemoHandler+] Token估算 - chunks: ${totalChunkTokens}, 固定开销: ${10000}, 总计: ${totalChunkTokens + 10000}`);
 
             // --- 将 chunks 包装成 file 结构以复用现有处理流程 ---
             const fakeFiles = chunks.map((chunk, i) => ({
-                name: `${chunk.dbName}_chunk_${i}`,
+                name: chunk.name || `${chunk.dbName}_chunk_${i}`,
                 content: chunk.text,
                 tokens: chunk.tokens,
-                dbName: chunk.dbName
+                dbName: chunk.dbName,
+                source: chunk.source,
+                score: chunk.score
             }));
 
             // --- 单批 / 分批处理 ---
             const FIXED_OVERHEAD = 10000;
             const totalTokens = totalChunkTokens + FIXED_OVERHEAD;
-            console.log(`[AIMemoHandler+] Token估算 - chunks: ${totalChunkTokens}, 固定开销: ${FIXED_OVERHEAD}, 总计: ${totalTokens}`);
-
             let resultObject;
             if (totalTokens > currentConfig.maxTokensPerBatch) {
                 resultObject = await this._processBatchedAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
@@ -434,12 +505,16 @@ class AIMemoHandler {
             if (resultObject.vcpInfo) {
                 resultObject.vcpInfo.mode = (resultObject.vcpInfo.mode || 'aggregated') + '_plus';
                 resultObject.vcpInfo.tagMemoChunkCount = chunks.length;
-                resultObject.vcpInfo.searchK = searchK;
+                resultObject.vcpInfo.searchK = hasSourceFiles ? null : searchK;
                 resultObject.vcpInfo.tagWeight = tagWeight;
+                resultObject.vcpInfo.sourceMode = hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank';
+                resultObject.vcpInfo.sourceFingerprint = sourceFingerprint.substring(0, 16);
             }
-            resultObject.content = `[AIMemo+ TagMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
 
-            // VCP 广播
+            resultObject.content = hasSourceFiles
+                ? `[AIMemo+ 后缀管线: ${chunks.length}片段, 跨${dbNames.length}库]\n${resultObject.content}`
+                : `[AIMemo+ TagMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
+
             if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
                 try {
                     this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
@@ -448,10 +523,8 @@ class AIMemoHandler {
                 }
             }
 
-            // 缓存
             this.cacheManager.set('aimemo', cacheKey, resultObject);
             return resultObject.content;
-
         } catch (error) {
             console.error(`[AIMemoHandler+] 处理失败: ${error?.message || error}`);
             if (error?.stack) {
