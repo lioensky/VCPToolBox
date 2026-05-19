@@ -178,6 +178,16 @@
           <div class="pane-toolbar-main">
             <button
               type="button"
+              @click="openDiarySyntaxEditor"
+              class="btn-secondary btn-sm btn-sm-touch"
+              aria-label="打开日记本语法编辑器"
+              title="日记本语法编辑器"
+            >
+              <span class="material-symbols-outlined">auto_fix_high</span>
+              日记本语法编辑器
+            </button>
+            <button
+              type="button"
               @click="saveAgentFile"
               :disabled="!fileDirty || isSavingFile"
               class="btn-success btn-sm btn-sm-touch"
@@ -221,6 +231,11 @@
       </option>
     </datalist>
 
+    <DiarySyntaxEditorModal
+      v-model="isDiarySyntaxEditorOpen"
+      @insert="insertDiarySyntax"
+    />
+
     <span
       v-if="statusMessage"
       :class="['status-message', 'floating-status', statusType]"
@@ -235,6 +250,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { agentApi } from "@/api";
 import DualPaneEditor from "@/components/DualPaneEditor.vue";
+import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentFilesStatusType,
@@ -276,6 +292,7 @@ const fileStatusType = ref<AgentFilesStatusType>("info");
 const isSavingMap = ref(false);
 const isSavingFile = ref(false);
 const initialAgentMapSnapshot = ref("[]");
+const isDiarySyntaxEditorOpen = ref(false);
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -659,6 +676,20 @@ async function selectAgentFile(fileName: string): Promise<void> {
     fileContent.value = "";
     originalFileContent.value = "";
   }
+}
+
+function openDiarySyntaxEditor(): void {
+  isDiarySyntaxEditorOpen.value = true;
+}
+
+function insertDiarySyntax(syntax: string): void {
+  if (!syntax) {
+    return;
+  }
+
+  const separator = fileContent.value && !fileContent.value.endsWith("\n") ? "\n" : "";
+  fileContent.value = `${fileContent.value}${separator}${syntax}`;
+  isDiarySyntaxEditorOpen.value = false;
 }
 
 async function saveAgentFile(): Promise<void> {
