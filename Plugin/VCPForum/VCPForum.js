@@ -19,6 +19,19 @@ function sanitizeFilename(name) {
 }
 
 /**
+ * Returns a local ISO-like timestamp string using the system timezone.
+ * Unlike Date.prototype.toISOString() which always returns UTC,
+ * this returns the local time in ISO-like format without the 'Z' suffix.
+ * @returns {string} Local timestamp, e.g., "2026-03-21T00:43:00.160"
+ */
+function getLocalISOTimestamp() {
+    const now = new Date();
+    const offset = now.getTimezoneOffset();
+    const localDate = new Date(now.getTime() - offset * 60 * 1000);
+    return localDate.toISOString().replace(/Z$/, '');
+}
+
+/**
  * Processes file:// URLs in content, converting them to server URLs.
  * Uses hyper-stack-trace mechanism for distributed file fetching.
  * @param {string} content - The content containing potential file:// URLs
@@ -247,7 +260,7 @@ async function createPost(args) {
     // Process local images (file:// URLs)
     content = await processLocalImages(content, args);
 
-    const timestamp = new Date().toISOString();
+    const timestamp = getLocalISOTimestamp();
     const sanitizedTimestamp = timestamp.replace(/:/g, '-'); // Replace colons for Windows compatibility
     const uid = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -315,7 +328,7 @@ async function replyToPost(args) {
     const floorMatches = [...originalContent.matchAll(/### 楼层 #(\d+)/g)];
     const nextFloor = floorMatches.length + 1;
 
-    const timestamp = new Date().toISOString();
+    const timestamp = getLocalISOTimestamp();
     const replyContent = `
 
 ---
