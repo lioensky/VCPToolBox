@@ -9,7 +9,12 @@
         aria-labelledby="diary-syntax-title"
         @click.self="close"
       >
-        <section class="diary-syntax-panel">
+        <section
+          class="diary-syntax-panel"
+          @click.stop
+          @mousedown.stop
+          @keydown.stop
+        >
           <header class="diary-syntax-header">
             <div>
               <span class="eyebrow">DailyNote DSL</span>
@@ -252,7 +257,7 @@
                 <p>
                   对旧记忆做时间衰减，支持 <code>::TimeDecay半衰期天数/最低分/白名单标签</code>。
                   第三段是固定衰减内容的标签白名单，多个标签用英文逗号分隔；不写第三段则衰减所有可解析日期的非时间路召回结果。
-                  由于当前解析正则对中文标签不够稳，推荐使用英文、数字或下划线标签，例如 <code>box_archive</code>。
+                  标签会按原文保留，支持中文、英文、数字和下划线，例如 <code>box归档,临时记忆,box_archive</code>。
                 </p>
                 <div class="time-decay-grid" :class="{ disabled: !enabledSuffixes.timeDecay }">
                   <label class="inline-number">
@@ -260,11 +265,10 @@
                     <input
                       v-model="timeDecayHalfLifeDays"
                       :disabled="!enabledSuffixes.timeDecay"
-                      type="number"
-                      min="1"
-                      step="1"
+                      type="text"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
                       placeholder="30"
-                      @keydown.stop
                     />
                   </label>
                   <label class="inline-number">
@@ -272,12 +276,9 @@
                     <input
                       v-model="timeDecayMinScore"
                       :disabled="!enabledSuffixes.timeDecay"
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
+                      type="text"
+                      inputmode="decimal"
                       placeholder="0.5"
-                      @keydown.stop
                     />
                   </label>
                   <label class="syntax-field">
@@ -286,11 +287,10 @@
                       v-model="timeDecayTargetTags"
                       :disabled="!enabledSuffixes.timeDecay"
                       type="text"
-                      placeholder="box_archive,temp_memory,expired_items"
-                      @keydown.stop
+                      placeholder="box归档,临时记忆,box_archive"
                     />
                     <small>
-                      推荐在日记里写稳定标签：<code>Tag: 2026-05-19, box_archive</code>，
+                      推荐在日记里写稳定标签：<code>Tag: 2026-05-19, box归档, 临时记忆</code>，
                       再用第三段选择固定衰减内容。
                     </small>
                   </label>
@@ -648,7 +648,7 @@ function sanitizeTimeDecayTags(value: string): string {
   return value
     .split(",")
     .map((tag) => tag.trim())
-    .filter((tag) => /^[A-Za-z0-9_]+$/.test(tag))
+    .filter((tag) => tag.length > 0)
     .join(",");
 }
 
