@@ -3,17 +3,19 @@
  * MonitorTask - 单个监控任务实例
  *
  * 负责：
- * - 管理单个 SSH 流式会话
- * - 行缓冲处理
+ * - UDS 代理模式：通过 LogMonitorProxy 调用 Server（v1.4.0 默认）
+ * - Legacy 模式：管理单个 SSH 流式会话（fallback）
  * - 上下文维护（before/after 上下文）
- * - 重连机制（无限重连）
  * - 状态机管理
- * - 看门狗机制
- * - 旁路探测
  * - 日志去重（可配置策略）
  * - 异常上下文增强（v1.3.0）
  *
- * @version 1.3.0
+ * @version 1.4.0
+ *
+ * v1.4.0 更新：
+ * - 新增 UDS 代理模式，优先通过 LogMonitorProxy 调用 Server
+ * - 保留 legacy tail -f 模式作为 fallback
+ * - Server 模式下移除看门狗、旁路探测、重连逻辑（Server 内部处理）
  *
  * v1.3.0 更新：
  * - 新增 after 上下文收集机制
@@ -85,9 +87,12 @@ class MonitorTask {
         this.taskId = options.taskId;
         this.hostId = options.hostId;
         this.logPath = options.logPath;
-        this.contextLines = options.contextLines || 10;
-        this.afterContextLines = options.afterContextLines || this.contextLines; // v1.3.0: after 上下文行数
+        this.contextLines = options.contextLines ?? 10;
+        this.afterContextLines = options.afterContextLines ?? this.contextLines; // v1.3.0: after 上下文行数
         this.debug = options.debug || false;
+        
+        // v1.4.0: 规则（UDS 模式传递给 Server）
+        this.rules = options.rules || [];
         
         // 回调函数
         this.onData = options.onData || (() => {});
@@ -104,6 +109,9 @@ class MonitorTask {
         this.session = null;
         this.isActive = false;
         this.startTime = null;
+        
+        // v1.4.0: Server 任务 ID（UDS 模式）
+        this.serverTaskId = null;
         
         // 行缓冲
         this.lineBuffer = '';
@@ -147,6 +155,12 @@ class MonitorTask {
         
         // 使用 Map 存储哈希和时间戳（支持时间窗口去重）
         this.seenHashes = new Map();  // hash -> timestamp
+        
+        // 连接池复用信息
+        this._connectionPoolInfo = null;
+        
+        // v1.4.0: 代理实例缓存
+        this._proxy = null;
     }
     
     // ==================== 状态管理方法 (MEU-1.2, MEU-1.4) ====================
@@ -191,6 +205,104 @@ class MonitorTask {
             throw new Error(`无法从状态 ${this.state} 启动监控`);
         }
         
+        // v1.4.0: 优先尝试 UDS 代理模式
+        const { getLogMonitorProxy } = require('../../../modules/LogMonitor');
+        this._proxy = getLogMonitorProxy();
+        
+        if (this._proxy) {
+            return this._startUDS();
+        }
+        
+        // Fallback: legacy tail -f 模式
+        return this._startLegacy();
+    }
+    
+    /**
+     * v1.4.0: UDS 代理模式启动
+     */
+    async _startUDS() {
+        this._updateState(TaskState.CONNECTING, '正在连接日志监控服务');
+        const requestedTaskId = this.taskId;
+        
+        try {
+            this._proxy.subscribeNotifications(requestedTaskId, {
+                onAnomaly: (data) => this._handleServerAnomaly(data),
+                onError: (error) => this._handleServerError(error),
+                onStopped: (data) => this._handleServerStopped(data)
+            });
+
+            const result = await this._proxy.startMonitor({
+                taskId: this.taskId,
+                hostId: this.hostId,
+                logPath: this.logPath,
+                rules: this.rules,
+                contextLines: this.contextLines,
+                prefetchLines: this.contextLines,
+                afterContextLines: this.afterContextLines,
+                dedupeMode: this.dedupeConfig.mode,
+                dedupeWindow: this.dedupeConfig.windowSeconds,
+                maxLines: 5000,
+                maxBytes: 10 * 1024 * 1024
+            });
+            
+            this.serverTaskId = result.taskId;
+            
+            if (this.serverTaskId !== requestedTaskId) {
+                this._proxy.unsubscribeNotifications(requestedTaskId);
+                this._proxy.subscribeNotifications(this.serverTaskId, {
+                    onAnomaly: (data) => this._handleServerAnomaly(data),
+                    onError: (error) => this._handleServerError(error),
+                    onStopped: (data) => this._handleServerStopped(data)
+                });
+            }
+
+            // 确认 Server 侧订阅；Server 会在启动期间预订阅 owner，避免首批通知丢失。
+            const subscribeResult = await this._proxy.subscribe({
+                taskId: this.serverTaskId
+            });
+            if (!subscribeResult || subscribeResult.error) {
+                this._proxy.unsubscribeNotifications(this.serverTaskId);
+                throw new Error(subscribeResult?.error || 'Server 订阅失败');
+            }
+            
+            this.startTime = new Date().toISOString();
+            this.reconnectAttempts = 0;
+            this.lastDataTime = Date.now();
+            
+            this._updateState(TaskState.CONNECTED, '监控已启动（Server 模式）');
+            this._log('监控已启动（Server 模式）');
+        } catch (error) {
+            if (this.serverTaskId) {
+                const taskId = this.serverTaskId;
+                this._proxy.unsubscribeNotifications(taskId);
+                try {
+                    await this._proxy.unsubscribe({ taskId });
+                } catch (e) {
+                    this._log(`取消 Server 订阅失败: ${e.message}`);
+                }
+                try {
+                    await this._proxy.stopMonitor({
+                        taskId,
+                        reason: 'client_start_failed',
+                        requireOwner: true
+                    });
+                } catch (e) {
+                    this._log(`清理 Server 任务失败: ${e.message}`);
+                }
+                this.serverTaskId = null;
+            } else {
+                this._proxy.unsubscribeNotifications(requestedTaskId);
+            }
+            this._updateState(TaskState.ERROR, `UDS 启动失败: ${error.message}`);
+            this._log(`UDS 启动失败: ${error.message}`);
+            throw error;
+        }
+    }
+    
+    /**
+     * Legacy 模式启动（保留兼容）
+     */
+    async _startLegacy() {
         this._updateState(TaskState.CONNECTING, '正在建立 SSH 连接');
         
         const manager = getSSHManager();
@@ -198,10 +310,31 @@ class MonitorTask {
         const command = `tail -f -n ${this.contextLines} "${this.logPath}"`;
         
         try {
+            // 检查连接池状态（如果支持）
+            let poolStatsBefore = null;
+            if (manager.getPoolStats) {
+                poolStatsBefore = manager.getPoolStats();
+                this._log(`连接池状态: 活跃连接=${poolStatsBefore.activeConnections}, 池大小=${poolStatsBefore.poolSize}/${poolStatsBefore.maxPoolSize}, 队列=${poolStatsBefore.queueLength}`);
+            }
+            
             // 创建流式会话
             this.session = await manager.createStreamSession(this.hostId, command, {
                 timeout: 0 // 无超时
             });
+            
+            // 记录连接复用信息
+            if (manager.getPoolStats && poolStatsBefore) {
+                const poolStatsAfter = manager.getPoolStats();
+                const connectionReused = poolStatsAfter.activeConnections === poolStatsBefore.activeConnections && poolStatsAfter.poolSize > 0;
+                this._log(`连接复用: ${connectionReused ? '是' : '否'} (池大小: ${poolStatsBefore.poolSize} -> ${poolStatsAfter.poolSize})`);
+                this._connectionPoolInfo = {
+                    connectionReused,
+                    poolSizeBefore: poolStatsBefore.poolSize,
+                    poolSizeAfter: poolStatsAfter.poolSize,
+                    activeConnectionsBefore: poolStatsBefore.activeConnections,
+                    activeConnectionsAfter: poolStatsAfter.activeConnections
+                };
+            }
             
             // 设置回调
             this.session.onData = (data) => this._handleData(data);
@@ -209,7 +342,7 @@ class MonitorTask {
             this.session.onClose = () => this._handleClose();
             
             // 启动会话
-            this.session.start();
+            await this.session.start();
             
             this.startTime = new Date().toISOString();
             this.reconnectAttempts = 0;
@@ -262,10 +395,29 @@ class MonitorTask {
             this.flushPendingAnomalies();
         }
         
-        // 停止会话
+        // v1.4.0: UDS 模式停止
+        if (this._proxy && this.serverTaskId) {
+            const taskId = this.serverTaskId;
+            try {
+                await this._proxy.stopMonitor({ taskId, requireOwner: true });
+                this._log('Server 监控任务已停止');
+            } catch (e) {
+                this._log(`停止 Server 任务失败: ${e.message}`);
+            }
+            try {
+                await this._proxy.unsubscribe({ taskId });
+            } catch (e) {
+                this._log(`取消 Server 订阅失败: ${e.message}`);
+            }
+            this._proxy.unsubscribeNotifications(taskId);
+            this.serverTaskId = null;
+        }
+        
+        // Legacy 模式停止
         if (this.session) {
             try {
-                this.session.stop();
+                await this.session.stop();
+                this._log('流式会话已停止，底层 SSH 连接保留在连接池中');
             } catch (error) {
                 this._log(`停止会话失败: ${error.message}`);
             }
@@ -300,7 +452,22 @@ class MonitorTask {
             reconnectAttempts: this.reconnectAttempts,  // MEU-2.1: 新增重连次数
             lastDataTime: this.lastDataTime,            // MEU-2.1: 新增最后数据时间
             dedupeConfig: { ...this.dedupeConfig },     // v1.2: 新增去重配置
-            pendingAnomalies: this.pendingAnomalies.length // v1.3.0: 待处理异常数
+            pendingAnomalies: this.pendingAnomalies.length, // v1.3.0: 待处理异常数
+            serverTaskId: this.serverTaskId, // v1.4.0
+            mode: this.serverTaskId ? 'uds' : this.session ? 'legacy' : 'none' // v1.4.0
+        };
+    }
+    
+    /**
+     * 获取连接池复用信息
+     * @returns {Object}
+     */
+    getConnectionPoolInfo() {
+        return {
+            taskId: this.taskId,
+            hostId: this.hostId,
+            logPath: this.logPath,
+            ...this._connectionPoolInfo
         };
     }
     
@@ -438,6 +605,86 @@ class MonitorTask {
         this.pendingAnomalies = [];
     }
     
+    // ==================== v1.4.0 Server 通知处理 ====================
+    
+    /**
+     * 处理 Server 异常通知
+     * @param {Object} data - { taskId, line, anomaly, rule, severity, timestamp, context: {before, after} }
+     */
+    _handleServerAnomaly(data) {
+        this.lastDataTime = Date.now();
+        this.stats.linesProcessed++;
+        
+        const serverContext = data.context || {};
+        const beforeContext = Array.isArray(serverContext)
+            ? serverContext
+            : Array.isArray(serverContext.before)
+                ? serverContext.before
+                : [];
+        const afterContext =
+            !Array.isArray(serverContext) && Array.isArray(serverContext.after)
+                ? serverContext.after
+                : [];
+        const context = beforeContext.join('\n');
+        const anomaly = data.anomaly || {
+            rule: data.rule,
+            severity: data.severity
+        };
+        
+        // 调用数据回调（与现有 onData 兼容）
+        try {
+            this.onData(data.line, {
+                anomaly,
+                rule: data.rule ?? anomaly.rule,
+                severity: data.severity ?? anomaly.severity,
+                context,
+                afterContext,
+                timestamp: data.timestamp ?? anomaly.timestamp
+            });
+        } catch (error) {
+            this._log(`数据回调错误: ${error.message}`);
+        }
+    }
+    
+    /**
+     * 处理 Server 错误通知
+     * @param {Object} error
+     */
+    _handleServerError(error) {
+        this._log(`Server 错误: ${error.message || error}`);
+        try {
+            this.onError(new Error(error.message || 'Server error'));
+        } catch (e) {
+            this._log(`错误回调失败: ${e.message}`);
+        }
+    }
+    
+    /**
+     * 处理 Server 停止通知
+     * @param {string} reason
+     */
+    _handleServerStopped(data) {
+        const taskId = data && data.taskId ? data.taskId : this.serverTaskId;
+        const reason = data && data.reason ? data.reason : 'stopped';
+        this._log(`Server 监控已停止: ${reason}`);
+        this.isActive = false;
+        if (taskId) {
+            if (this._proxy) {
+                this._proxy.unsubscribe({ taskId }).catch((error) => {
+                    this._log(`清理 Server 订阅失败: ${error.message}`);
+                });
+                this._proxy.unsubscribeNotifications(taskId);
+            }
+        }
+        this.serverTaskId = null;
+        try {
+            this.onClose();
+        } catch (error) {
+            this._log(`关闭回调失败: ${error.message}`);
+        }
+        this._updateState(TaskState.DISCONNECTED, `Server 停止: ${reason}`);
+    }
+    
     // ==================== 看门狗机制 (MEU-2.2, MEU-2.3) ====================
     
     /**
@@ -483,7 +730,7 @@ class MonitorTask {
                 // 探测失败，触发重连
                 if (this.session) {
                     try {
-                        this.session.stop();
+                        await this.session.stop();
                     } catch (e) {
                         // 忽略停止错误
                     }
@@ -682,6 +929,13 @@ class MonitorTask {
         
         const manager = getSSHManager();
         
+        // 检查连接池状态（如果支持）
+        let poolStatsBefore = null;
+        if (manager.getPoolStats) {
+            poolStatsBefore = manager.getPoolStats();
+            this._log(`重连前连接池状态: 活跃连接=${poolStatsBefore.activeConnections}, 池大小=${poolStatsBefore.poolSize}/${poolStatsBefore.maxPoolSize}`);
+        }
+        
         // 重连时读取最近 50 行，通过哈希去重 (MEU-4.2)
         const command = `tail -f -n ${RECONNECT_TAIL_LINES} "${this.logPath}"`;
         
@@ -689,11 +943,25 @@ class MonitorTask {
             timeout: 0
         });
         
+        // 记录连接复用信息
+        if (manager.getPoolStats && poolStatsBefore) {
+            const poolStatsAfter = manager.getPoolStats();
+            const connectionReused = poolStatsAfter.activeConnections === poolStatsBefore.activeConnections && poolStatsAfter.poolSize > 0;
+            this._log(`重连连接复用: ${connectionReused ? '是' : '否'} (池大小: ${poolStatsBefore.poolSize} -> ${poolStatsAfter.poolSize})`);
+            this._connectionPoolInfo = {
+                connectionReused,
+                poolSizeBefore: poolStatsBefore.poolSize,
+                poolSizeAfter: poolStatsAfter.poolSize,
+                activeConnectionsBefore: poolStatsBefore.activeConnections,
+                activeConnectionsAfter: poolStatsAfter.activeConnections
+            };
+        }
+        
         this.session.onData = (data) => this._handleData(data);
         this.session.onError = (error) => this._handleError(error);
         this.session.onClose = () => this._handleClose();
         
-        this.session.start();
+        await this.session.start();
         
         // 重置重连计数
         this.reconnectAttempts = 0;

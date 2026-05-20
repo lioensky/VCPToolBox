@@ -156,6 +156,12 @@
         "defaultTimeout": 30000,
         "retryAttempts": 3,
         "retryDelay": 1000,
-        "logConnections": true
+        "logConnections": true,
+        "usePool": false,
+        "idleTimeout": 300000,
+        "idleCheckInterval": 60000,
+        "healthCheckInterval": 30000,
+        "warmupHosts": [],
+        "persistPoolState": true
     }
 }

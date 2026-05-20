@@ -1,0 +1,20 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "LinuxLogMonitorServer",
+  "displayName": "Linux 日志监控服务",
+  "version": "1.0.0",
+  "description": "常驻内存的日志监控与查询服务，支持轮询+块级引入+内存缓存。",
+  "author": "VCP Team",
+  "pluginType": "service",
+  "entryPoint": {
+    "type": "nodejs",
+    "script": "LinuxLogMonitorServer.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "capabilities": {},
+  "dependencies": {
+    "shared": ["SSHManager"]
+  }
+}

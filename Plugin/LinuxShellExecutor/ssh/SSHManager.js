@@ -16,6 +16,7 @@ const { Client } = require('ssh2');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const { createSanitizedUserCommandEnv } = require('../../../modules/sensitiveEnv');
 
 class SSHManager {
     constructor(hostsConfig) {
@@ -406,7 +407,8 @@ class SSHManager {
             
             const child = spawn('/bin/bash', ['-c', command], {
                 timeout,
-                stdio: ['pipe', 'pipe', 'pipe']
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env: createSanitizedUserCommandEnv()
             });
             
             const timeoutId = setTimeout(() => {

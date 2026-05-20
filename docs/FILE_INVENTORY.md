@@ -208,13 +208,15 @@
 | `VCPForum` | service | VCP论坛服务 | - |
 | `VCPTaskAssistant` | static | 论坛小助手 | - |
 
-### 4.7 系统监控与Shell类 (5个)
+### 4.7 系统监控与Shell类 (7个)
 
 | 插件目录 | 类型 | 职责 | 主要文件 |
 |---------|------|------|---------|
-| `LinuxShellExecutor` | synchronous | Linux Shell执行 | - |
+| `LinuxShellExecutor` | synchronous | Linux Shell执行；stdio 进程通过 `modules/SSHManager/proxy.js` 复用常驻 SSH 连接池，普通命令未显式设置时由服务端决定池化策略 | LinuxShellExecutor.js |
+| `SSHManagerService` | service | 常驻 SSH 连接池服务；通过 UDS 为短生命周期插件提供 RPC，`connect` 仅返回可序列化连接状态 | SSHManagerService.js |
 | `PowerShellExecutor` | synchronous | PowerShell执行 | - |
-| `LinuxLogMonitor` | service | Linux日志监控 | LinuxLogMonitor.js, core/*.js |
+| `LinuxLogMonitor` | asynchronous | Linux日志监控 stdio 客户端；通过 `modules/LogMonitor/proxy.js` 携带 token 调用常驻服务 | LinuxLogMonitor.js, core/*.js |
+| `LinuxLogMonitorServer` | service | 常驻日志监控服务；持有 watcher 状态、内存缓冲和规则检测器，查询 fallback 可返回 `partial/fallbackError` | LinuxLogMonitorServer.js, core/*.js |
 | `1PanelInfoProvider` | static | 1Panel信息 | 1PanelInfoProvider.js, utils.js |
 | `FRPSInfoProvider` | static | FRPS信息 | - |
 

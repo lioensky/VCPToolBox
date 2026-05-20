@@ -33,6 +33,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const { createSanitizedUserCommandEnv } = require('../../modules/sensitiveEnv');
 
 // 加载配置
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
@@ -120,6 +121,18 @@ try {
         defaultHost: 'local',
         globalSettings: {}
     };
+}
+
+// 确保连接池配置包含默认值
+if (hostsConfig) {
+    if (!hostsConfig.globalSettings) {
+        hostsConfig.globalSettings = {};
+    }
+    const gs = hostsConfig.globalSettings;
+    if (gs.idleTimeout === undefined) gs.idleTimeout = 300000;
+    if (gs.idleCheckInterval === undefined) gs.idleCheckInterval = 60000;
+    if (gs.healthCheckInterval === undefined) gs.healthCheckInterval = 30000;
+    if (gs.warmupHosts === undefined) gs.warmupHosts = [];
 }
 
 // SSH 管理器（延迟加载，优先使用共享模块）
@@ -1344,7 +1357,10 @@ class SandboxManager {
             let stdout = '';
             let stderr = '';
             
-            const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+            const child = spawn(cmd, args, {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env: createSanitizedUserCommandEnv()
+            });
             
             const timeoutId = setTimeout(() => {
                 child.kill('SIGKILL');
@@ -1722,12 +1738,14 @@ class LinuxShellExecutor {
     /**
      * 获取连接状态
      */
-    getConnectionStatus() {
+    async getConnectionStatus() {
         const manager = getSSHManager();
         if (manager) {
-            return manager.getStatus();
+            const status = await manager.getStatus();
+            const poolStats = typeof manager.getPoolStats === 'function' ? await manager.getPoolStats() : null;
+            return { ...status, poolStats };
         }
-        return { local: { name: '本地执行', enabled: true, type: 'local', connectionStatus: 'ready' } };
+        return { local: { name: '本地执行', enabled: true, type: 'local', connectionStatus: 'ready' }, poolStats: null };
     }
     
     /**
@@ -1905,7 +1923,14 @@ class LinuxShellExecutor {
                 if (hostConfig.type === 'ssh') {
                     const manager = getSSHManager();
                     if (!manager) throw new Error('SSH 模块未加载，无法启动后台任务');
-                    const bgExec = await manager.execute(hostId, backgroundWrappedCmd, { timeout: 10000 });
+                    const isProxyManager = manager.constructor?.name === 'SSHManagerProxy';
+                    const bgOptions = { timeout: 10000 };
+                    if (options.usePool !== undefined) {
+                        bgOptions.usePool = options.usePool;
+                    } else if (!isProxyManager && hostsConfig.globalSettings?.usePool !== undefined) {
+                        bgOptions.usePool = hostsConfig.globalSettings.usePool;
+                    }
+                    const bgExec = await manager.execute(hostId, backgroundWrappedCmd, bgOptions);
                     backgroundPid = bgExec.stdout.trim();
                 } else {
                     const bgExec = await this.sandboxManager.executeDirectly(backgroundWrappedCmd, { timeout: 10000 });
@@ -1937,7 +1962,14 @@ class LinuxShellExecutor {
                 if (!manager) {
                     throw new Error('SSH 模块未加载，无法执行远程命令');
                 }
-                execResult = await manager.execute(hostId, patchedCommand, { timeout });
+                const isProxyManager = manager.constructor?.name === 'SSHManagerProxy';
+                const execOptions = { timeout };
+                if (options.usePool !== undefined) {
+                    execOptions.usePool = options.usePool;
+                } else if (!isProxyManager && hostsConfig.globalSettings?.usePool !== undefined) {
+                    execOptions.usePool = hostsConfig.globalSettings.usePool;
+                }
+                execResult = await manager.execute(hostId, patchedCommand, execOptions);
             } else {
                 // 本地执行（可选沙箱）
                 if (enabledLayers.includes('sandbox')) {
@@ -2010,7 +2042,11 @@ class LinuxShellExecutor {
      */
     async disconnectAll() {
         const manager = getSSHManager();
-        if (manager) {
+        if (manager && manager.isProxy && typeof manager.destroy === 'function') {
+            manager.destroy();
+            return;
+        }
+        if (manager && typeof manager.disconnectAll === 'function') {
             await manager.disconnectAll();
         }
     }
@@ -2267,7 +2303,7 @@ async function main() {
             
             if (args.action === 'getStatus') {
                 // 修复：使用 VCP 期望的 result 字段包装数据
-                console.log(JSON.stringify({ status: 'success', result: { connections: executor.getConnectionStatus() } }));
+                console.log(JSON.stringify({ status: 'success', result: { connections: await executor.getConnectionStatus() } }));
                 process.exit(0);
                 return;
             }
@@ -2292,22 +2328,30 @@ async function main() {
             let finalOutput = '';
             let allResults = [];
             const outputFormat = args.outputFormat || (presetInfo ? presetInfo.outputFormat : 'formatted');
+            const hasExplicitUsePool = Object.prototype.hasOwnProperty.call(args, 'usePool');
+            const explicitUsePool = hasExplicitUsePool ? parseBoolean(args.usePool) : undefined;
             
             for (let i = 0; i < commandsToExecute.length; i++) {
                 const cmd = commandsToExecute[i];
                 console.error(`[LinuxShellExecutor][${requestId}] 执行命令 ${i + 1}/${commandsToExecute.length}: "${cmd.substring(0, 80)}..."`);
-                
-                const execResult = await executor.execute(cmd, {
+
+                const executeOptions = {
                     hostId: args.hostId,
                     timeout: presetInfo ? presetInfo.timeout : args.timeout,
                     securityLevel: args.securityLevel,
                     memory: args.memory,
                     cpus: args.cpus,
                     isPresetCommand: isPresetExecution,  // 标记为预设命令
-                    usePool: isPresetExecution,          // 预设批量执行时启用临时连接池
                     bypassWhitelist: args.requireAdmin && process.env.DECRYPTED_AUTH_CODE && String(args.requireAdmin) === process.env.DECRYPTED_AUTH_CODE
-                });
-                
+                };
+                if (hasExplicitUsePool) {
+                    executeOptions.usePool = explicitUsePool;
+                } else if (isPresetExecution) {
+                    executeOptions.usePool = true;
+                }
+
+                const execResult = await executor.execute(cmd, executeOptions);
+
                 // 检查非标准成功返回（如资产发现、后台运行、交互请求等）
                 if (execResult.status && execResult.status !== 'success') {
                     console.error(`[LinuxShellExecutor][${requestId}] 收到特殊返回状态: ${execResult.status}`);
