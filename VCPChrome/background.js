@@ -376,12 +376,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function handleIncomingCommand(commandData) {
     const { command, requestId, sourceClientId } = commandData;
     
-    // 某些指令由 background 直接处理 (CDP 相关 / 主世界脚本执行)
-    if (command.startsWith('cdp_') || command === 'execute_script') {
+    // 某些指令由 background 直接处理 (CDP 相关 / 主世界脚本执行 / 标签页管理)
+    if (command.startsWith('cdp_') || command === 'execute_script' || command === 'list_tabs' || command === 'switch_tab' || command === 'close_tab') {
         try {
-            const result = command === 'execute_script'
-                ? await executeScriptInMainWorld(commandData)
-                : await processCdpCommand(commandData);
+            let result;
+            if (command === 'execute_script') {
+                result = await executeScriptInMainWorld(commandData);
+            } else if (command === 'list_tabs') {
+                result = await listTabs();
+            } else if (command === 'switch_tab') {
+                result = await switchTab(commandData);
+            } else if (command === 'close_tab') {
+                result = await closeTab(commandData);
+            } else {
+                result = await processCdpCommand(commandData);
+            }
             sendResponseToWs({
                 type: 'command_result',
                 data: { requestId, sourceClientId, status: 'success', ...result }
@@ -442,6 +451,109 @@ async function executeScriptInMainWorld(commandData) {
         message: '脚本执行成功',
         result: injectionResults?.[0]?.result
     };
+}
+
+function listTabs() {
+    return new Promise((resolve) => {
+        chrome.tabs.query({}, (tabs) => {
+            const tabList = tabs.map(tab => ({
+                id: tab.id,
+                title: tab.title,
+                url: tab.url,
+                active: tab.active
+            }));
+            resolve({
+                message: '获取标签页列表成功',
+                result: tabList
+            });
+        });
+    });
+}
+
+function switchTab(commandData) {
+    const target = commandData.target;
+    if (!target) {
+        throw new Error('switch_tab 缺少 target 参数');
+    }
+    return new Promise((resolve, reject) => {
+        chrome.tabs.query({}, (tabs) => {
+            let targetTab = null;
+            
+            // 1. 尝试作为 tabId 匹配
+            const tabId = parseInt(target, 10);
+            if (!isNaN(tabId)) {
+                targetTab = tabs.find(t => t.id === tabId);
+            }
+            
+            // 2. 如果没找到，尝试模糊匹配标题或 URL
+            if (!targetTab) {
+                const normalizedTarget = target.toLowerCase();
+                targetTab = tabs.find(t =>
+                    (t.title && t.title.toLowerCase().includes(normalizedTarget)) ||
+                    (t.url && t.url.toLowerCase().includes(normalizedTarget))
+                );
+            }
+            
+            if (!targetTab) {
+                return reject(new Error(`未找到匹配的标签页: ${target}`));
+            }
+            
+            chrome.tabs.update(targetTab.id, { active: true }, (tab) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(`切换标签页失败: ${chrome.runtime.lastError.message}`));
+                } else {
+                    currentActiveTabId = targetTab.id;
+                    resolve({
+                        message: `成功切换到标签页: ${targetTab.title || targetTab.url}`,
+                        result: { id: targetTab.id, title: targetTab.title, url: targetTab.url }
+                    });
+                }
+            });
+        });
+    });
+}
+
+function closeTab(commandData) {
+    const target = commandData.target;
+    return new Promise((resolve, reject) => {
+        chrome.tabs.query({}, (tabs) => {
+            let targetTab = null;
+            
+            if (!target) {
+                targetTab = tabs.find(t => t.active);
+            } else {
+                // 1. 尝试作为 tabId 匹配
+                const tabId = parseInt(target, 10);
+                if (!isNaN(tabId)) {
+                    targetTab = tabs.find(t => t.id === tabId);
+                }
+                
+                // 2. 如果没找到，尝试模糊匹配标题或 URL
+                if (!targetTab) {
+                    const normalizedTarget = target.toLowerCase();
+                    targetTab = tabs.find(t =>
+                        (t.title && t.title.toLowerCase().includes(normalizedTarget)) ||
+                        (t.url && t.url.toLowerCase().includes(normalizedTarget))
+                    );
+                }
+            }
+            
+            if (!targetTab) {
+                return reject(new Error(`未找到要关闭的标签页: ${target || '当前活动标签页'}`));
+            }
+            
+            chrome.tabs.remove(targetTab.id, () => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(`关闭标签页失败: ${chrome.runtime.lastError.message}`));
+                } else {
+                    resolve({
+                        message: `成功关闭标签页: ${targetTab.title || targetTab.url}`,
+                        result: { id: targetTab.id, title: targetTab.title, url: targetTab.url }
+                    });
+                }
+            });
+        });
+    });
 }
 
 async function processCdpCommand(commandData) {

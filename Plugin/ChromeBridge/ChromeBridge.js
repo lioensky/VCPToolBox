@@ -164,6 +164,9 @@ async function executeSingleCommand(chromeWs, cmdParams, waitForPageInfo = false
 }
 
 // Direct调用接口（hybridservice 使用 processToolCall）
+const fs = require('fs');
+const path = require('path');
+
 async function processToolCall(params) {
     // 检查是否有连接的Chrome客户端
     if (connectedChromes.size === 0) {
@@ -191,7 +194,8 @@ async function processToolCall(params) {
             useRegex: params[`useRegex${commandIndex}`],
             caseSensitive: params[`caseSensitive${commandIndex}`],
             contextChars: params[`contextChars${commandIndex}`],
-            maxResults: params[`maxResults${commandIndex}`]
+            maxResults: params[`maxResults${commandIndex}`],
+            scriptName: params[`scriptName${commandIndex}`]
         };
         // 移除未定义的参数
         Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
@@ -213,7 +217,8 @@ async function processToolCall(params) {
             useRegex: params.useRegex,
             caseSensitive: params.caseSensitive,
             contextChars: params.contextChars,
-            maxResults: params.maxResults
+            maxResults: params.maxResults,
+            scriptName: params.scriptName
         };
         Object.keys(cmd).forEach(key => cmd[key] === undefined && delete cmd[key]);
         commands.push(cmd);
@@ -233,6 +238,36 @@ async function processToolCall(params) {
         const isLastCommand = (i === commands.length - 1);
         
         console.log(`[ChromeBridge] 执行命令 ${i + 1}/${commands.length}: ${cmd.command}`);
+        
+        // 如果是执行持久化脚本命令，先在服务端读取脚本内容
+        if (cmd.command === 'execute_saved_script') {
+            if (!cmd.scriptName) {
+                throw new Error('execute_saved_script 缺少 scriptName 参数');
+            }
+            
+            // 确保文件名安全，防止路径穿越
+            const safeScriptName = path.basename(cmd.scriptName);
+            const scriptsDir = path.join(__dirname, 'ChromeScripts');
+            const scriptPath = path.join(scriptsDir, safeScriptName);
+            
+            try {
+                if (!fs.existsSync(scriptsDir)) {
+                    fs.mkdirSync(scriptsDir, { recursive: true });
+                }
+                
+                if (!fs.existsSync(scriptPath)) {
+                    throw new Error(`持久化脚本文件不存在: ${safeScriptName}，请确保它存放在 Plugin/ChromeBridge/ChromeScripts 目录下。`);
+                }
+                
+                const scriptContent = fs.readFileSync(scriptPath, 'utf8');
+                // 转换为 execute_script 命令，并将脚本内容填入 text 参数
+                cmd.command = 'execute_script';
+                cmd.text = scriptContent;
+                console.log(`[ChromeBridge] 📄 成功读取持久化脚本: ${safeScriptName}，转换为 execute_script 执行`);
+            } catch (err) {
+                throw new Error(`读取持久化脚本失败: ${err.message}`);
+            }
+        }
         
         // 最后一个命令需要等待并返回页面信息
         // open_url 在命令链中时总是需要等待页面加载完成（通过 isInCommandChain 参数）
