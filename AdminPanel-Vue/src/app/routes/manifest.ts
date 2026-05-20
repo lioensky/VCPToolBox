@@ -24,6 +24,7 @@ export type AppRouteId =
   | "agent-scores"
   | "toolbox-manager"
   | "tvs-files-editor"
+  | "sar-prompt-editor"
   | "tool-list-editor"
   | "preprocessor-order-manager"
   | "tool-approval-manager"
@@ -274,6 +275,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/tvs-files-editor",
     title: "高级变量编辑器",
     icon: "data_object",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "sar-prompt-editor",
+    routeName: "SarPromptEditor",
+    path: "/sar-prompt-editor",
+    title: "多模型提示词管理",
+    icon: "settings_suggest",
     requiresAuth: true,
     navGroup: "toolsPlugins",
     showInSidebar: true,

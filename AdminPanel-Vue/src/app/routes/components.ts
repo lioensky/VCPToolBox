@@ -14,6 +14,7 @@ export const APP_ROUTE_COMPONENTS = {
   "agent-scores": () => import("@/views/AgentScores.vue"),
   "toolbox-manager": () => import("@/views/ToolboxManager.vue"),
   "tvs-files-editor": () => import("@/views/TvsFilesEditor.vue"),
+  "sar-prompt-editor": () => import("@/views/SarPromptEditor.vue"),
   "tool-list-editor": () => import("@/views/ToolListEditor.vue"),
   "dynamic-tools-manager": () => import("@/views/DynamicToolsManager.vue"),
   "preprocessor-order-manager": () =>
