@@ -941,71 +941,126 @@ class KnowledgeBaseManager {
     }
 
     _startWatcher() {
-        if (!this.watcher) {
-            const handleFile = (filePath) => {
-                const relPath = path.relative(this.config.rootPath, filePath);
-                // 提取第一级目录作为日记本名称
-                const parts = relPath.split(path.sep);
-                const diaryName = parts.length > 1 ? parts[0] : 'Root';
+        if (this.watcher) return;
 
-                if (this.config.ignoreFolders.includes(diaryName)) return;
-                // 🛠️ 修复：ignorePrefixes/ignoreSuffixes 同时应用于日记本（文件夹）名和文件名
-                if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix))) return;
-                if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix))) return;
-                const fileName = path.basename(relPath);
-                if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
-                if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;
-                if (!filePath.match(/\.(md|txt)$/i)) return;
-
-                this.pendingFiles.add(filePath);
-                if (this.pendingFiles.size >= this.config.maxBatchSize) {
-                    this._flushBatch();
-                } else {
-                    this._scheduleBatch();
-                }
-            };
-
-            const handleFileWithLock = async (filePath) => {
-                // 🛡️ BUG 2 修复：文件系统竞态保护
-                // 如果文件正在被快速修改，等待其稳定后再处理
-                try {
-                    const stats1 = await fs.stat(filePath);
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    const stats2 = await fs.stat(filePath);
-
-                    if (stats1.size === stats2.size && stats1.mtimeMs === stats2.mtimeMs) {
-                        handleFile(filePath);
-                    } else {
-                        // 如果还在变动，推迟 1 秒再试
-                        // console.log(`[KnowledgeBase] ⏳ File "${path.basename(filePath)}" is still being written, deferring...`);
-                        setTimeout(() => handleFileWithLock(filePath), 1000);
-                    }
-                } catch (e) {
-                    // 如果文件在检查期间被删除了，忽略即可
-                    if (e.code !== 'ENOENT') console.warn(`[KnowledgeBase] Stability check error:`, e.message);
-                }
-            };
-
-            const ignoredPatterns = [
-                '**/node_modules/**',
-                '**/.git/**',
-                '**/dist/**',
-                '**/target/**',
-                '**/image/**',
-                '**/.*'
-            ];
-            if (Array.isArray(this.config.ignoreFolders)) {
-                this.config.ignoreFolders.forEach(folder => {
-                    if (folder) ignoredPatterns.push(`**/${folder}/**`);
-                });
+        const handleFile = (filePath) => {
+            this.pendingFiles.add(filePath);
+            if (this.pendingFiles.size >= this.config.maxBatchSize) {
+                this._flushBatch();
+            } else {
+                this._scheduleBatch();
             }
+        };
 
-            this.watcher = chokidar.watch(this.config.rootPath, {
-                ignored: ignoredPatterns,
-                ignoreInitial: !this.config.fullScanOnStartup
-            });
-            this.watcher.on('add', handleFileWithLock).on('change', handleFileWithLock).on('unlink', fp => this._handleDelete(fp));
+        const handleFileWithLock = async (filePath) => {
+            // 🛡️ BUG 2 修复：文件系统竞态保护
+            // 如果文件正在被快速修改，等待其稳定后再处理
+            try {
+                const stats1 = await fs.stat(filePath);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const stats2 = await fs.stat(filePath);
+
+                if (stats1.size === stats2.size && stats1.mtimeMs === stats2.mtimeMs) {
+                    handleFile(filePath);
+                } else {
+                    // 如果还在变动，推迟 1 秒再试
+                    setTimeout(() => handleFileWithLock(filePath), 1000);
+                }
+            } catch (e) {
+                if (e.code !== 'ENOENT') console.warn(`[KnowledgeBase] Stability check error:`, e.message);
+            }
+        };
+
+        // 尝试加载并启动 Rust 高性能原生监听器
+        if (VexusIndex && VexusIndex.prototype && typeof VexusIndex.prototype.start_watch === 'undefined') {
+            // 动态获取导出的 VexusWatcher 类
+            try {
+                const vexusModule = require('./rust-vexus-lite');
+                if (vexusModule.VexusWatcher) {
+                    const rustWatcher = new vexusModule.VexusWatcher();
+                    
+                    const handleRustEvent = (...args) => {
+                        try {
+                            // napi-rs ThreadsafeFunction 在不同签名/版本下可能以
+                            // (payload) 或 (error, payload) 形式调用 JS 回调。
+                            // 因此这里从所有参数中选取第一个字符串作为事件载荷。
+                            const jsonPayload = args.find(arg => typeof arg === 'string');
+                            if (!jsonPayload) {
+                                console.warn('[KnowledgeBase] Ignored Rust watcher callback without string payload:', args);
+                                return;
+                            }
+
+                            const { event, path: filePath } = JSON.parse(jsonPayload);
+                            if (event === 'unlink') {
+                                this._handleDelete(filePath);
+                            } else {
+                                handleFileWithLock(filePath);
+                            }
+                        } catch (err) {
+                            console.error('[KnowledgeBase] Failed to parse Rust watcher event:', err);
+                        }
+                    };
+
+                    const startWatch = rustWatcher.startWatch || rustWatcher.start_watch;
+                    if (typeof startWatch !== 'function') {
+                        throw new Error('VexusWatcher startWatch/start_watch method not found');
+                    }
+
+                    startWatch.call(rustWatcher, {
+                        rootPath: this.config.rootPath,
+                        ignoreFolders: this.config.ignoreFolders || [],
+                        ignorePrefixes: this.config.ignorePrefixes || [],
+                        ignoreSuffixes: this.config.ignoreSuffixes || [],
+                    }, handleRustEvent);
+
+                    this.watcher = rustWatcher;
+                    this.watcherType = 'rust';
+                    console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
+                    return;
+                }
+            } catch (e) {
+                console.warn('[KnowledgeBase] ⚠️ Failed to initialize Rust Watcher, falling back to Chokidar:', e.message);
+            }
         }
+
+        // 降级方案：使用 Chokidar 监听
+        console.log('[KnowledgeBase] 🔄 Using Chokidar watcher fallback...');
+        const handleChokidarFile = (filePath) => {
+            const relPath = path.relative(this.config.rootPath, filePath);
+            const parts = relPath.split(path.sep);
+            const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+            if (this.config.ignoreFolders.includes(diaryName)) return;
+            if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix))) return;
+            if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix))) return;
+            const fileName = path.basename(relPath);
+            if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
+            if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;
+            if (!filePath.match(/\.(md|txt)$/i)) return;
+
+            handleFileWithLock(filePath);
+        };
+
+        const ignoredPatterns = [
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/dist/**',
+            '**/target/**',
+            '**/image/**',
+            '**/.*'
+        ];
+        if (Array.isArray(this.config.ignoreFolders)) {
+            this.config.ignoreFolders.forEach(folder => {
+                if (folder) ignoredPatterns.push(`**/${folder}/**`);
+            });
+        }
+
+        this.watcher = chokidar.watch(this.config.rootPath, {
+            ignored: ignoredPatterns,
+            ignoreInitial: !this.config.fullScanOnStartup
+        });
+        this.watcher.on('add', handleChokidarFile).on('change', handleChokidarFile).on('unlink', fp => this._handleDelete(fp));
+        this.watcherType = 'chokidar';
     }
 
     _scheduleBatch() {
@@ -1546,7 +1601,17 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
-        await this.watcher?.close();
+        if (this.watcher) {
+            if (this.watcherType === 'rust') {
+                const stopWatch = this.watcher.stopWatch || this.watcher.stop_watch;
+                if (typeof stopWatch === 'function') {
+                    stopWatch.call(this.watcher);
+                }
+            } else if (typeof this.watcher.close === 'function') {
+                await this.watcher.close();
+            }
+            this.watcher = null;
+        }
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;

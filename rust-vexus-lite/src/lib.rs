@@ -1142,3 +1142,144 @@ impl Task for RecoverTask {
         Ok(output)
     }
 }
+
+// ============================================================================
+// 🦀 高性能原生文件监听器 (VexusWatcher)
+// ============================================================================
+
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use notify::{Watcher, RecursiveMode, Event, EventKind};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+#[napi(object)]
+pub struct WatcherConfig {
+    pub root_path: String,
+    pub ignore_folders: Vec<String>,
+    pub ignore_prefixes: Vec<String>,
+    pub ignore_suffixes: Vec<String>,
+}
+
+#[napi]
+pub struct VexusWatcher {
+    watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+}
+
+#[napi]
+impl VexusWatcher {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            watcher: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 启动高性能原生文件监听
+    #[napi]
+    pub fn start_watch(
+        &self,
+        config: WatcherConfig,
+        js_callback: ThreadsafeFunction<String>,
+    ) -> Result<()> {
+        let root_path_buf = PathBuf::from(&config.root_path);
+        let root_path_buf_clone = root_path_buf.clone();
+        let ignore_folders: HashSet<String> = config.ignore_folders.into_iter().collect();
+        let ignore_prefixes = config.ignore_prefixes;
+        let ignore_suffixes = config.ignore_suffixes;
+
+        let js_cb = Arc::new(js_callback);
+        let watcher_ref = self.watcher.clone();
+
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            match res {
+                Ok(event) => {
+                    if let Some(path) = event.paths.first() {
+                        // 1. 基础后缀拦截：只允许 .md 和 .txt
+                        if let Some(ext) = path.extension() {
+                            let ext_str = ext.to_string_lossy().to_lowercase();
+                            if ext_str != "md" && ext_str != "txt" {
+                                return;
+                            }
+                        } else {
+                            return;
+                        }
+
+                        // 2. 计算相对路径
+                        if let Ok(rel_path) = path.strip_prefix(&root_path_buf_clone) {
+                            // 提取第一级目录作为日记本名称 (diary_name)
+                            let mut components = rel_path.components();
+                            let diary_name = components.next()
+                                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                                .unwrap_or_else(|| "Root".to_string());
+
+                            // 3. 匹配 ignore_folders
+                            if ignore_folders.contains(&diary_name) {
+                                return;
+                            }
+
+                            // 4. 匹配 ignore_prefixes 和 ignore_suffixes
+                            let file_name = path.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_default();
+
+                            // 检查日记本名或文件名是否匹配前缀
+                            if ignore_prefixes.iter().any(|p| diary_name.starts_with(p) || file_name.starts_with(p)) {
+                                return;
+                            }
+
+                            // 检查日记本名或文件名是否匹配后缀
+                            if ignore_suffixes.iter().any(|s| diary_name.ends_with(s) || file_name.ends_with(s)) {
+                                return;
+                            }
+
+                            // 5. 识别事件类型 (Create, Modify, Remove)
+                            let event_type = match event.kind {
+                                EventKind::Create(_) => "add",
+                                EventKind::Modify(_) => "change",
+                                EventKind::Remove(_) => "unlink",
+                                _ => return,
+                            };
+
+                            // 组装 JSON 传递给 JS
+                            let payload = format!(
+                                r#"{{"event": "{}", "path": "{}"}}"#,
+                                event_type,
+                                path.to_string_lossy().replace('\\', "/")
+                            );
+
+                            // 6. 通过线程安全函数，无阻塞地推送到 Node.js
+                            js_cb.call(Ok(payload), ThreadsafeFunctionCallMode::NonBlocking);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[VexusWatcher] ❌ Native watch error: {:?}", e);
+                }
+            }
+        })
+        .map_err(|e| Error::from_reason(format!("Failed to create native watcher: {:?}", e)))?;
+
+        // 开始递归监听
+        watcher
+            .watch(&root_path_buf, RecursiveMode::Recursive)
+            .map_err(|e| Error::from_reason(format!("Failed to start watching path: {:?}", e)))?;
+
+        let mut lock = watcher_ref.lock().unwrap();
+        *lock = Some(watcher);
+
+        println!(
+            "[VexusWatcher] 🦀 Native high-performance watcher started for: {}",
+            config.root_path
+        );
+        Ok(())
+    }
+
+    /// 停止监听
+    #[napi]
+    pub fn stop_watch(&self) {
+        let mut lock = self.watcher.lock().unwrap();
+        *lock = None;
+        println!("[VexusWatcher] 🦀 Native watcher stopped.");
+    }
+}

@@ -53,6 +53,12 @@ export interface VexusStats {
   capacity: number
   memoryUsage: number
 }
+export interface WatcherConfig {
+  rootPath: string
+  ignoreFolders: Array<string>
+  ignorePrefixes: Array<string>
+  ignoreSuffixes: Array<string>
+}
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {
   /** 创建新的空索引 */
@@ -110,4 +116,11 @@ export declare class VexusIndex {
    * - `full_rebuild`: 是否清空旧 sim 后重算 (默认 false 增量)
    */
   computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
+}
+export declare class VexusWatcher {
+  constructor()
+  /** 启动高性能原生文件监听 */
+  startWatch(config: WatcherConfig, jsCallback: (err: Error | null, arg: string) => any): void
+  /** 停止监听 */
+  stopWatch(): void
 }
