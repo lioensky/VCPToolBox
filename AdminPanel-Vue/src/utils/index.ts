@@ -4,6 +4,7 @@
 
 // UI 工具
 export { showLoading, showMessage } from "@/platform/feedback/feedbackBus";
+export { copyToClipboard } from "./ui";
 
 // API 工具
 

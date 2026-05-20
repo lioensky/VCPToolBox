@@ -5,7 +5,7 @@ import { usePolling } from '@/composables/usePolling'
 import { useVirtualScroll } from '@/composables/useVirtualScroll'
 import { useLocalStorage } from '@/composables/useLocalStorage'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
-import { showMessage } from '@/utils'
+import { showMessage, copyToClipboard } from '@/utils'
 import { createLogger } from '@/utils/logger'
 
 const logger = createLogger('ServerLogViewer')
@@ -143,10 +143,14 @@ export function useServerLogViewer() {
     isReverse.value = !isReverse.value
   }
 
-  function copyLog() {
+  async function copyLog() {
     const text = displayedLines.value.map((line) => line.content).join('\n')
-    navigator.clipboard.writeText(text)
-    showMessage('日志已复制到剪贴板', 'success')
+    const success = await copyToClipboard(text)
+    if (success) {
+      showMessage('日志已复制到剪贴板', 'success')
+    } else {
+      showMessage('复制失败，请手动选择文本复制', 'error')
+    }
   }
 
   async function clearLog() {
