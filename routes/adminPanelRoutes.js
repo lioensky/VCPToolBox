@@ -72,6 +72,7 @@ module.exports = function (
 
   mount("/", "system"); // Handles /system-monitor/*, /user-auth-code, /weather
   mount("/", "logs"); // Handles /logs/*
+  mount("/", "finalContext"); // Handles /final-context
   mount("/", "config"); // Handles /tool-approval-config, /config/main
   mount("/", "plugins"); // Handles /plugins/*, /preprocessors/*
   mount("/", "server"); // Handles /verify-login, /logout, /check-auth, /server/restart

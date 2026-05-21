@@ -33,6 +33,7 @@ export type AppRouteId =
   | "schedule-manager"
   | "dream-manager"
   | "server-log-viewer"
+  | "final-context-viewer"
   | "placeholder-viewer"
   | "plugins"
   | "plugin-store"
@@ -102,6 +103,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/server-log-viewer",
     title: "服务器日志",
     icon: "terminal",
+    requiresAuth: true,
+    navGroup: "core",
+    showInSidebar: true,
+  },
+  {
+    id: "final-context-viewer",
+    routeName: "FinalContextViewer",
+    path: "/final-context-viewer",
+    title: "最终上下文处理",
+    icon: "schema",
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,

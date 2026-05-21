@@ -25,6 +25,7 @@ export const APP_ROUTE_COMPONENTS = {
   "schedule-manager": () => import("@/views/ScheduleManager.vue"),
   "dream-manager": () => import("@/views/DreamManager.vue"),
   "server-log-viewer": () => import("@/views/ServerLogViewer.vue"),
+  "final-context-viewer": () => import("@/views/FinalContextViewer.vue"),
   "theme-editor": () => import("@/views/ThemeEditor.vue"),
   "placeholder-viewer": () => import("@/views/PlaceholderViewer.vue"),
   plugins: () => import("@/views/PluginsHub.vue"),

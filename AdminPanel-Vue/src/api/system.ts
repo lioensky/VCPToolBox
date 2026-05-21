@@ -6,6 +6,7 @@ import {
 } from "./requestWithUi";
 import type { UserAuthCodeResponse } from "@/types/api.auth";
 import type {
+  FinalContextResponse,
   PM2Process,
   PM2ProcessesResponse,
   RawSystemResourcesResponse,
@@ -14,7 +15,7 @@ import type {
   SystemResources,
 } from "@/types/api.system";
 
-export type { ServerLogQuery, ServerLogResponse } from "@/types/api.system";
+export type { FinalContextResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
 export type { UserAuthCodeResponse } from "@/types/api.auth";
 
 export type SystemResourcesResponse = SystemResources;
@@ -106,6 +107,19 @@ export const systemApi = {
     return requestWithUi(
       {
         url: "/admin_api/user-auth-code",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async getFinalContext(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<FinalContextResponse> {
+    return requestWithUi<FinalContextResponse>(
+      {
+        url: "/admin_api/final-context",
         ...requestContext,
       },
       uiOptions

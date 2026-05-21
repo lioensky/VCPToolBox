@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const finalContextStore = require('./finalContextStore.js');
 
 // 🌟 核心网络优化：引入防御性长连接池 (Keep-Alive Pool)
 // 解决 "-1s Socket Hang Up" 与上游代理秒断僵尸连接的问题
@@ -882,9 +883,18 @@ class ChatCompletionHandler {
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
 
       originalBody.messages = processedMessages;
-      await writeDebugLog('LogOutputAfterProcessing', originalBody);
-
       const willStreamResponse = isOriginalRequestStreaming;
+      const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
+
+      finalContextStore.setLastFinalContext(finalUpstreamBody, {
+        requestId: req.body.requestId || null,
+        messageId: req.body.messageId || null,
+        clientIp,
+        forceShowVCP,
+        capturedStage: 'before_upstream_fetch'
+      });
+
+      await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
 
       let firstAiAPIResponse = await fetchWithRetry(
         `${apiUrl}/v1/chat/completions`,
@@ -896,7 +906,7 @@ class ChatCompletionHandler {
             ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
             Accept: willStreamResponse ? 'text/event-stream' : req.headers['accept'] || 'application/json',
           },
-          body: JSON.stringify({ ...originalBody, stream: willStreamResponse }),
+          body: JSON.stringify(finalUpstreamBody),
           signal: abortController.signal,
         },
         {
