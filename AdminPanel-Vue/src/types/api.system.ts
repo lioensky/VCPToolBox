@@ -88,6 +88,9 @@ export interface FinalContextAttachmentSummary {
   type: string;
   mediaType: string;
   filename?: string;
+  tokenCount?: number;
+  tokenMethod?: string;
+  byteLength?: number;
 }
 
 export interface FinalContextBlockSummary {
@@ -96,6 +99,8 @@ export interface FinalContextBlockSummary {
   contentType: string;
   text: string;
   textLength: number;
+  textTokenCount?: number;
+  attachmentTokenCount?: number;
   tokenCount: number;
   tokenMethod?: string;
   attachments: FinalContextAttachmentSummary[];
@@ -116,6 +121,8 @@ export interface FinalContextSnapshot {
     stream: boolean;
     messageCount: number;
     totalTextLength: number;
+    totalTextTokenCount?: number;
+    totalAttachmentTokenCount?: number;
     totalTokenCount: number;
     tokenMethod?: string;
     roleCounts: Record<string, number>;

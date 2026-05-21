@@ -71,6 +71,14 @@
             <strong>{{ formatNumber(snapshot.summary.totalTokenCount) }}</strong>
           </div>
           <div class="summary-item">
+            <span>文本 Token</span>
+            <strong>{{ formatNumber(snapshot.summary.totalTextTokenCount) }}</strong>
+          </div>
+          <div class="summary-item">
+            <span>附件估算 Token</span>
+            <strong>{{ formatNumber(snapshot.summary.totalAttachmentTokenCount) }}</strong>
+          </div>
+          <div class="summary-item">
             <span>总字符</span>
             <strong>{{ formatNumber(snapshot.summary.totalTextLength) }}</strong>
           </div>
@@ -118,6 +126,8 @@
               <div class="block-meta">
                 <span>{{ formatNumber(block.textLength) }} 字符</span>
                 <span>{{ formatNumber(block.tokenCount) }} tokens</span>
+                <span>文本 {{ formatNumber(block.textTokenCount) }}</span>
+                <span v-if="block.attachmentTokenCount">附件估算 {{ formatNumber(block.attachmentTokenCount) }}</span>
                 <span>{{ block.tokenMethod || snapshot.summary.tokenMethod || 'unknown' }}</span>
                 <span v-if="block.attachments.length > 0">
                   附件 {{ block.attachments.length }} 个：{{ attachmentCountsText(block) }}
@@ -228,7 +238,10 @@ function attachmentCountsText(block: FinalContextBlockSummary): string {
 
 function attachmentDescription(block: FinalContextBlockSummary): string {
   const countText = attachmentCountsText(block)
-  return `本块包含多模态/非文本附件 ${block.attachments.length} 个：${countText}`
+  const tokenText = block.attachmentTokenCount
+    ? `，估算 ${formatNumber(block.attachmentTokenCount)} tokens`
+    : ''
+  return `本块包含多模态/非文本附件 ${block.attachments.length} 个：${countText}${tokenText}`
 }
 
 function formatNumber(value: number | undefined): string {
@@ -242,6 +255,8 @@ function blockToSearchText(block: FinalContextBlockSummary): string {
     normalizeRoleLabel(block.role),
     block.contentType,
     String(block.tokenCount || 0),
+    String(block.textTokenCount || 0),
+    String(block.attachmentTokenCount || 0),
     block.tokenMethod || '',
     block.text,
     attachmentCountsText(block),
@@ -308,7 +323,7 @@ function formatBlockAsText(block: FinalContextBlockSummary): string {
   return [
     `===== #${block.index} ${normalizeRoleLabel(block.role)} (${block.contentType}) =====`,
     `字符数：${formatNumber(block.textLength)}`,
-    `Token：${formatNumber(block.tokenCount)} (${block.tokenMethod || snapshot.value?.summary.tokenMethod || 'unknown'})`,
+    `Token：${formatNumber(block.tokenCount)} = 文本 ${formatNumber(block.textTokenCount)} + 附件估算 ${formatNumber(block.attachmentTokenCount)} (${block.tokenMethod || snapshot.value?.summary.tokenMethod || 'unknown'})`,
     attachmentLine,
     block.text || '(空文本块)',
   ].filter(Boolean).join('\n')
