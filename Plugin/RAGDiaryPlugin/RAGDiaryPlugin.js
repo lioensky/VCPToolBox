@@ -61,6 +61,11 @@ class RAGDiaryPlugin {
         // 🌟 Embedding 并发去重：同一文本在同一时间只允许一个 API 请求飞行
         this.pendingEmbeddingRequests = new Map();
 
+        // 🌟 Embedding 文本索引：供 ContextBridge / ContextFoldingV2 做高阈值近似复用
+        // 注意：RAG 主链路不会自动 fuzzy 复用，避免影响主检索精度；只暴露只读查询能力给折叠链路按需使用。
+        this.embeddingTextIndex = new Map();
+        this.embeddingTextIndexMaxSize = parseInt(process.env.EMBEDDING_TEXT_INDEX_MAX_SIZE, 10) || 500;
+
         // 🌟 V2折叠：FoldingStore 迷你数据库
         this.foldingStore = null;
     }
@@ -4172,7 +4177,10 @@ class RAGDiaryPlugin {
         const normalizedText = text.trim();
         const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
         const cached = this.cacheManager.get('embedding', cacheKey);
-        if (cached) return cached;
+        if (cached) {
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+            return cached;
+        }
 
         if (this.pendingEmbeddingRequests.has(cacheKey)) {
             return await this.pendingEmbeddingRequests.get(cacheKey);
@@ -4183,6 +4191,7 @@ class RAGDiaryPlugin {
                 const vector = await this.getSingleEmbedding(normalizedText);
                 if (vector) {
                     this.cacheManager.set('embedding', cacheKey, vector);
+                    this._rememberEmbeddingText(cacheKey, normalizedText);
                 }
                 return vector;
             } finally {
@@ -4194,14 +4203,103 @@ class RAGDiaryPlugin {
         return await requestPromise;
     }
 
+    _rememberEmbeddingText(cacheKey, normalizedText) {
+        if (!cacheKey || !normalizedText) return;
+        if (this.embeddingTextIndex.has(cacheKey)) {
+            this.embeddingTextIndex.delete(cacheKey);
+        }
+        this.embeddingTextIndex.set(cacheKey, normalizedText);
+
+        while (this.embeddingTextIndex.size > this.embeddingTextIndexMaxSize) {
+            const oldestKey = this.embeddingTextIndex.keys().next().value;
+            this.embeddingTextIndex.delete(oldestKey);
+        }
+    }
+
+    _textDiceSimilarity(textA, textB) {
+        if (textA === textB) return 1;
+        if (!textA || !textB || textA.length < 2 || textB.length < 2) return 0;
+
+        const buildBigrams = (text) => {
+            const bigrams = new Map();
+            for (let i = 0; i < text.length - 1; i++) {
+                const gram = text.slice(i, i + 2);
+                bigrams.set(gram, (bigrams.get(gram) || 0) + 1);
+            }
+            return bigrams;
+        };
+
+        const bigramsA = buildBigrams(textA);
+        const bigramsB = buildBigrams(textB);
+        let intersection = 0;
+
+        for (const [gram, countA] of bigramsA.entries()) {
+            const countB = bigramsB.get(gram) || 0;
+            intersection += Math.min(countA, countB);
+        }
+
+        const totalA = Array.from(bigramsA.values()).reduce((sum, count) => sum + count, 0);
+        const totalB = Array.from(bigramsB.values()).reduce((sum, count) => sum + count, 0);
+        return totalA + totalB > 0 ? (2 * intersection) / (totalA + totalB) : 0;
+    }
+
+    _findFuzzyEmbeddingFromCache(text, options = {}) {
+        if (!text || typeof text !== 'string') return null;
+
+        const normalizedText = text.trim();
+        const threshold = Number.isFinite(options.threshold) ? options.threshold : 0.985;
+        const minLength = Number.isFinite(options.minLength) ? options.minLength : 80;
+        const maxScan = Number.isFinite(options.maxScan) ? options.maxScan : 200;
+        const maxLengthDiffRatio = Number.isFinite(options.maxLengthDiffRatio) ? options.maxLengthDiffRatio : 0.02;
+        const maxLengthDiffAbs = Number.isFinite(options.maxLengthDiffAbs) ? options.maxLengthDiffAbs : 80;
+
+        if (normalizedText.length < minLength || this.embeddingTextIndex.size === 0) {
+            return null;
+        }
+
+        const entries = Array.from(this.embeddingTextIndex.entries()).slice(-maxScan);
+        let best = null;
+
+        for (const [cacheKey, cachedText] of entries) {
+            if (!cachedText || cachedText.length < minLength) continue;
+
+            const lengthDiff = Math.abs(normalizedText.length - cachedText.length);
+            const allowedLengthDiff = Math.max(maxLengthDiffAbs, normalizedText.length * maxLengthDiffRatio);
+            if (lengthDiff > allowedLengthDiff) continue;
+
+            const similarity = this._textDiceSimilarity(normalizedText, cachedText);
+            if (similarity < threshold) continue;
+
+            const vector = this.cacheManager.get('embedding', cacheKey);
+            if (!vector) continue;
+
+            if (!best || similarity > best.similarity) {
+                best = {
+                    cacheKey,
+                    vector,
+                    textPreview: cachedText.substring(0, 80),
+                    similarity,
+                    length: cachedText.length
+                };
+            }
+        }
+
+        return best;
+    }
+
     /**
      * ✅ 仅从缓存获取向量（不触发 API）
      * 恢复此方法以保持与 ContextVectorManager 等模块的兼容性
      */
     _getEmbeddingFromCacheOnly(text) {
         if (!text) return null;
-        const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-        return this.cacheManager.get('embedding', cacheKey);
+        const normalizedText = text.trim();
+        const cacheKey = this.cacheManager.generateKey({ text: normalizedText });
+        const vector = this.cacheManager.get('embedding', cacheKey);
+        if (vector) {
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+        }
+        return vector;
     }
 
     /**
@@ -4448,6 +4546,18 @@ class RAGDiaryPlugin {
             getEmbeddingFromCache(text) {
                 if (!text || typeof text !== 'string') return null;
                 return self._getEmbeddingFromCacheOnly(text);
+            },
+
+            /**
+             * 从 RAGDiaryPlugin 的 embedding 文本索引中按高阈值模糊匹配缓存向量（不触发 API）。
+             * 主要供 ContextFoldingV2 在 RAG 主链路之后复用近似相同的最新 AI 向量。
+             * @param {string} text - 要查询的文本
+             * @param {object} [options] - { threshold, minLength, maxScan, maxLengthDiffRatio, maxLengthDiffAbs }
+             * @returns {{vector:Array<number>, similarity:number, textPreview:string, length:number}|null}
+             */
+            getFuzzyEmbeddingFromCache(text, options = {}) {
+                if (!text || typeof text !== 'string') return null;
+                return self._findFuzzyEmbeddingFromCache(text, options);
             },
 
             // ═══════════════════════════════════════════════════

@@ -2,7 +2,7 @@
     "name": "ContextFoldingV2",
     "displayName": "上下文语义折叠V2",
     "version": "1.0.0",
-    "description": "基于向量语义相似度，对正文中远距离、低相关性的AI输出进行摘要折叠，减少Token消耗同时保留上下文连贯性。",
+    "description": "基于向量语义相似度，对正文中远距离、低相关性的AI输出进行摘要折叠，减少Token消耗同时保留上下文连贯性。通过在系统提示词引入[[ContextFoldingV2]]激活功能",
     "author": "VCP",
     "pluginType": "messagePreprocessor",
     "entryPoint": {
