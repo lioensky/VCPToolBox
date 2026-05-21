@@ -21,7 +21,30 @@ const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const util = require('util');
 const { createSanitizedUserCommandEnv } = require('../sensitiveEnv');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class SSHManager {
     constructor(hostsConfig) {
@@ -87,12 +110,12 @@ class SSHManager {
     }
     
     /**
-     * 添加调试日志（同时输出到 stderr 和收集到数组）
+     * 添加调试日志（主进程按 info 分层，stdio 插件子进程仍写 stderr 以保护 stdout 响应）
      */
     _log(message) {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] [SSHManager] ${message}`;
-        console.error(logEntry);  // 输出到 stderr（VCP 会在 DebugMode 下显示）
+        logInfo(logEntry);
         if (!this.debugLogs) {
             this.debugLogs = [];
         }
