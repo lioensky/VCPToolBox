@@ -58,6 +58,9 @@ export type * from './placeholder'
 export { ragApi } from './rag'
 export type * from './rag'
 
+export { codexMemoryApi } from './codexMemory'
+export type * from './codexMemory'
+
 export { scheduleApi } from './schedule'
 export type * from './schedule'
 

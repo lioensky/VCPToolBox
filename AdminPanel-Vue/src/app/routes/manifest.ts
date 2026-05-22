@@ -315,6 +315,17 @@ export const APP_ROUTE_MANIFEST = [
     component: () => import("@/views/RagTuning.vue"),
   },
   {
+    id: "codex-memory-monitor",
+    routeName: "CodexMemoryMonitor",
+    path: "/codex-memory-monitor",
+    title: "Codex 记忆总览",
+    icon: "neurology",
+    requiresAuth: true,
+    navGroup: "rag",
+    showInSidebar: true,
+    component: () => import("@/views/CodexMemoryMonitor.vue"),
+  },
+  {
     id: "placeholder-viewer",
     routeName: "PlaceholderViewer",
     path: "/placeholder-viewer",
