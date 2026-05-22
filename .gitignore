@@ -183,6 +183,7 @@ Plugin/RAGDiaryPlugin/rag_tags.json
 Plugin/RAGDiaryPlugin/semantic_groups.json
 Plugin/RAGDiaryPlugin/semantic_groups.edit.json
 Plugin/RAGDiaryPlugin/semantic_vectors/
+Plugin/SkillBridge/skill-index.txt
 Plugin/TavilySearch/.vcptoolbox_tavily_cache.json
 Plugin/UserAuth/code.bin
 Plugin/VCPLog/log/VCPlog.txt

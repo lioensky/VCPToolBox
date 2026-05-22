@@ -10,7 +10,7 @@ const OUTPUT_FILE = path.join(PLUGIN_ROOT, 'skill-index.txt');
 const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config.env');
 const DEFAULT_HEADER_TEXT = '这里是Skill技能目录，若你需要对应技能，请使用文件管理插件的Ink模式读取技能。';
 const DEFAULT_SKILL_THRESHOLD = 0.35;
-const DEFAULT_PATH_MODE = 'absolute_windows';
+const DEFAULT_PATH_MODE = 'relative';
 
 function loadLocalConfigEnv() {
   try {
@@ -31,7 +31,7 @@ function loadLocalConfigEnv() {
       const key = line.slice(0, eqIndex).trim();
       const value = line.slice(eqIndex + 1).trim();
 
-      if (key && !Object.prototype.hasOwnProperty.call(process.env, key)) {
+      if (key) {
         process.env[key] = value;
       }
     }
