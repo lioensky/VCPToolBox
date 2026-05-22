@@ -120,3 +120,35 @@ test('tool approval config route writes normalized canonical config', async () =
         });
     });
 });
+
+test('tool approval config route rejects typo-only payloads instead of saving defaults', async () => {
+    const writes = [];
+
+    await withConfigApp({
+        async readFile() {
+            throw Object.assign(new Error('not needed'), { code: 'ENOENT' });
+        },
+        async writeFile(...args) {
+            writes.push(args);
+        }
+    }, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/tool-approval-config`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                config: {
+                    enbaled: true
+                }
+            })
+        });
+
+        assert.equal(response.status, 400);
+        const body = await response.json();
+        assert.equal(body.error, 'Invalid tool approval configuration.');
+        assert.deepEqual(body.details, [
+            'unknown config keys: enbaled',
+            'config must include at least one supported field'
+        ]);
+        assert.equal(writes.length, 0);
+    });
+});

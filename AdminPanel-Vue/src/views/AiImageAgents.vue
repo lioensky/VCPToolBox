@@ -232,8 +232,8 @@ async function handleDryRun() {
   try {
     const res = await aiImageAgentsApi.dryRun(
       {
-        pipelineId: pipelineId.value || "default-pipeline",
-        taskId: taskId.value || "default-task",
+        pipelineId: pipelineId.value.trim(),
+        taskId: taskId.value.trim(),
         plan,
       },
       {},
@@ -265,8 +265,8 @@ async function handleExecute() {
   isLoading.value = true;
   try {
     const res = await aiImageAgentsApi.execute(
-      pipelineId.value || "execute-pipeline",
-      taskId.value || "execute-task",
+      pipelineId.value.trim(),
+      taskId.value.trim(),
       plan,
       {},
       { showLoader: false }

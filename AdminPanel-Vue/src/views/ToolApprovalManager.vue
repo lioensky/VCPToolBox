@@ -22,6 +22,16 @@
           <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
         </div>
         <div class="config-item">
+          <label class="switch-container">
+            <span>是否输出审核调试日志</span>
+            <label class="switch">
+              <input type="checkbox" v-model="config.debugMode">
+              <span class="slider"></span>
+            </label>
+          </label>
+          <p class="aa-hint">开启后会输出更详细的审核规则匹配日志，便于排查配置问题。</p>
+        </div>
+        <div class="config-item">
           <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
           <input type="number" id="tool-approval-timeout" v-model.number="config.timeoutMinutes" min="1" max="60">
           <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
@@ -49,6 +59,7 @@ import { showMessage } from '@/utils'
 interface ToolApprovalFormState {
   enabled: boolean
   approveAll: boolean
+  debugMode: boolean
   timeoutMinutes: number
   approvalListText: string
 }
@@ -57,6 +68,7 @@ function createDefaultConfig(): ToolApprovalFormState {
   return {
     enabled: false,
     approveAll: false,
+    debugMode: false,
     timeoutMinutes: 5,
     approvalListText: ''
   }
@@ -72,6 +84,7 @@ function normalizeToolApprovalConfig(data: ToolApprovalConfig): ToolApprovalForm
   return {
     enabled: Boolean(data.enabled),
     approveAll: Boolean(data.approveAll),
+    debugMode: Boolean(data.debugMode),
     timeoutMinutes: data.timeoutMinutes ?? data.timeout ?? 5,
     approvalListText: approvalList.join('\n')
   }
@@ -100,6 +113,7 @@ async function saveConfig() {
     await adminConfigApi.saveToolApprovalConfig({
       enabled: config.value.enabled,
       approveAll: config.value.approveAll,
+      debugMode: config.value.debugMode,
       timeoutMinutes: config.value.timeoutMinutes,
       approvalList: config.value.approvalListText.split('\n').map(line => line.trim()).filter(Boolean)
     }, {

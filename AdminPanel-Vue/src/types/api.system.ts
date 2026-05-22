@@ -69,6 +69,9 @@ export interface PM2Process {
 
 export interface PM2ProcessesResponse {
   success?: boolean;
+  source?: string;
+  degraded?: boolean;
+  warning?: string;
   processes?: PM2Process[];
 }
 

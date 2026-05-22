@@ -8,6 +8,16 @@ const DEFAULT_TOOL_APPROVAL_CONFIG = Object.freeze({
     debugMode: false
 });
 
+const SUPPORTED_TOOL_APPROVAL_KEYS = Object.freeze([
+    'enabled',
+    'approveAll',
+    'debugMode',
+    'timeoutMinutes',
+    'timeout',
+    'approvalList',
+    'toolList'
+]);
+
 function cloneDefaultConfig() {
     return {
         enabled: DEFAULT_TOOL_APPROVAL_CONFIG.enabled,
@@ -74,6 +84,17 @@ function validateToolApprovalConfig(rawConfig) {
         };
     }
 
+    const keys = Object.keys(rawConfig);
+    const unknownKeys = keys.filter((key) => !SUPPORTED_TOOL_APPROVAL_KEYS.includes(key));
+    if (unknownKeys.length > 0) {
+        errors.push(`unknown config keys: ${unknownKeys.join(', ')}`);
+    }
+
+    const hasSupportedKey = keys.some((key) => SUPPORTED_TOOL_APPROVAL_KEYS.includes(key));
+    if (!hasSupportedKey) {
+        errors.push('config must include at least one supported field');
+    }
+
     if (
         Object.prototype.hasOwnProperty.call(rawConfig, 'enabled') &&
         typeof rawConfig.enabled !== 'boolean'
@@ -130,6 +151,7 @@ function validateToolApprovalConfig(rawConfig) {
 
 module.exports = {
     DEFAULT_TOOL_APPROVAL_CONFIG,
+    SUPPORTED_TOOL_APPROVAL_KEYS,
     normalizeToolApprovalConfig,
     validateToolApprovalConfig
 };

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
     DEFAULT_TOOL_APPROVAL_CONFIG,
+    SUPPORTED_TOOL_APPROVAL_KEYS,
     normalizeToolApprovalConfig,
     validateToolApprovalConfig
 } = require('../modules/toolApprovalConfigSchema');
@@ -40,15 +41,41 @@ test('validateToolApprovalConfig rejects semantic schema errors', () => {
         approveAll: 1,
         timeoutMinutes: 0,
         approvalList: ['ok', ''],
+        unexpectedKey: true,
         debugMode: 'verbose'
     });
 
     assert.equal(result.valid, false);
     assert.deepEqual(result.errors, [
+        'unknown config keys: unexpectedKey',
         'enabled must be a boolean',
         'approveAll must be a boolean',
         'debugMode must be a boolean',
         'timeoutMinutes must be a positive number',
         'approvalList must contain only non-empty strings'
+    ]);
+});
+
+test('supported tool approval keys list stays explicit', () => {
+    assert.deepEqual(SUPPORTED_TOOL_APPROVAL_KEYS, [
+        'enabled',
+        'approveAll',
+        'debugMode',
+        'timeoutMinutes',
+        'timeout',
+        'approvalList',
+        'toolList'
+    ]);
+});
+
+test('validateToolApprovalConfig rejects typo-only objects', () => {
+    const result = validateToolApprovalConfig({
+        enbaled: true
+    });
+
+    assert.equal(result.valid, false);
+    assert.deepEqual(result.errors, [
+        'unknown config keys: enbaled',
+        'config must include at least one supported field'
     ]);
 });
