@@ -70,6 +70,8 @@ function normalizePipelineInput(input = {}) {
 async function executeAiImagePipelineV2(input = {}, options = {}) {
   const normalizedInput = normalizePipelineInput(input);
   const dryRun = options.dryRun !== false;
+  const executionContext = options.executionContext || null;
+  const requestIp = options.requestIp || null;
 
   // 1. 创建初始状态
   let state = createInitialPipelineState({
@@ -107,6 +109,8 @@ async function executeAiImagePipelineV2(input = {}, options = {}) {
     message: safety.action || 'unknown',
     payload: {
       dryRun,
+      requestIp,
+      executionContext,
       safety,
     },
   });
@@ -210,6 +214,8 @@ async function executeAiImagePipelineV2(input = {}, options = {}) {
 
     const execResult = await executeImagePlan(normalizedInput.plan, {
       pluginManager,
+      requestIp,
+      executionContext,
     });
 
     // 7a-iv. 审计
@@ -223,6 +229,8 @@ async function executeAiImagePipelineV2(input = {}, options = {}) {
         ? `completed: ${execResult.images.length} images`
         : `failed: ${execResult.errors.join('; ')}`,
       payload: {
+        requestIp,
+        executionContext,
         images: execResult.images.map((img) => ({
           plugin: img.plugin,
           path: img.path,

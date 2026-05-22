@@ -13,6 +13,7 @@
 
 const express = require('express');
 const { executeAiImagePipelineV2 } = require('../../modules/aiImagePipelineExecutor');
+const { getClientIp } = require('../../modules/toolExecution');
 
 // ── Router 工厂 ──────────────────────────────────────────────────────────
 
@@ -65,6 +66,8 @@ async function handleAiImagePipelineRequest(req, options = {}) {
 
     const routeInput = normalizeRouteInput(body);
     const dryRun = resolveDryRunMode(body, options);
+    const executionContext = buildAiImageExecutionContext(req, routeInput);
+    const requestIp = getClientIp(req);
 
     // 真实执行：仅当 dryRun=false 且 server 已注入 pluginManager 时
     const allowRealExecution = !dryRun && options.pluginManager;
@@ -82,6 +85,8 @@ async function handleAiImagePipelineRequest(req, options = {}) {
     const executorOptions = {
       dryRun,
       auditFilePath: options.auditFilePath,
+      requestIp,
+      executionContext,
     };
 
     if (allowRealExecution) {
@@ -120,6 +125,42 @@ function normalizeRouteInput(body = {}) {
       operator: body.operator || null,
     },
   };
+}
+
+function normalizeOptionalString(value) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim()
+    : null;
+}
+
+function buildAiImageExecutionContext(req, routeInput = {}) {
+  const trustedOperatorId = normalizeOptionalString(req && req.adminAuthUser);
+  const fallbackOperatorId = normalizeOptionalString(
+    routeInput &&
+    routeInput.context &&
+    routeInput.context.operator
+  );
+
+  const executionContext = {
+    requestSource: 'ai-image-pipeline',
+  };
+
+  const operatorId = trustedOperatorId || fallbackOperatorId;
+  if (operatorId) {
+    executionContext.operatorId = operatorId;
+  }
+
+  const taskId = normalizeOptionalString(routeInput && routeInput.taskId);
+  if (taskId) {
+    executionContext.taskId = taskId;
+  }
+
+  const invocationId = normalizeOptionalString(routeInput && routeInput.pipelineId);
+  if (invocationId) {
+    executionContext.invocationId = invocationId;
+  }
+
+  return executionContext;
 }
 
 /**
@@ -167,6 +208,7 @@ module.exports = {
   createAiImageAgentsRouter,
   handleAiImagePipelineRequest,
   normalizeRouteInput,
+  buildAiImageExecutionContext,
   resolveDryRunMode,
   sendJson,
 };

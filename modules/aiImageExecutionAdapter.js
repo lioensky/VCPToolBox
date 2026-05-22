@@ -8,6 +8,8 @@
  *   { ok, images, errors, steps }
  */
 
+const { normalizeExecutionContext } = require('./toolExecutionContext');
+
 // ---------------------------------------------------------------------------
 // 插件路由表 — step.plugin → pluginManager toolName
 // ---------------------------------------------------------------------------
@@ -266,6 +268,10 @@ function parsePluginResult(result) {
 // ---------------------------------------------------------------------------
 async function executeImagePlan(plan, options = {}) {
   const pluginManager = options.pluginManager || null;
+  const requestIp = options.requestIp || '127.0.0.1';
+  const executionContext = normalizeExecutionContext(options.executionContext, {
+    defaultRequestSource: 'ai-image-pipeline',
+  });
   const results = {
     ok: false,
     images: [],
@@ -314,8 +320,8 @@ async function executeImagePlan(plan, options = {}) {
       const rawResult = await pluginManager.processToolCall(
         mapped.toolName,
         toolArgs,
-        '127.0.0.1',            // requestIp
-        { requestSource: 'ai-image-pipeline' }  // executionContext
+        requestIp,
+        executionContext
       );
 
       const parsed = parsePluginResult(rawResult);
