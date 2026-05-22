@@ -591,6 +591,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ragApi, type ParamGroup, type ParamValue, type RagParams } from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
+import { useAppStore } from "@/stores/app";
 import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
@@ -659,6 +660,7 @@ const CONTENT_CONTAINER_ID = "config-details-container";
 const GROUP_SCROLL_OFFSET = 16;
 const semanticSimulationUrl = `${import.meta.env.BASE_URL}tagmemo-simulation.html`;
 
+const appStore = useAppStore();
 const params = ref<RagParams>({});
 const originalParams = ref<RagParams>({});
 const isLoading = ref(true);
@@ -1098,6 +1100,7 @@ function postSemanticSimulationParams(): void {
     {
       type: "tagmemo-simulation-params",
       params: semanticSimulationParams.value,
+      theme: appStore.theme,
     },
     window.location.origin
   );
@@ -1177,6 +1180,15 @@ watch(
     }
   },
   { deep: true }
+);
+
+watch(
+  () => appStore.theme,
+  () => {
+    if (semanticSimulationOpen.value) {
+      postSemanticSimulationParams();
+    }
+  }
 );
 
 onMounted(() => {
@@ -2038,7 +2050,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   border: 0;
-  background: #000;
+  background: var(--primary-bg);
 }
 
 @media (max-width: 860px) {
