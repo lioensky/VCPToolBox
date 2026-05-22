@@ -964,9 +964,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 #base-config-section {
-  max-width: 1200px;
+  width: 100%;
+  max-width: min(1680px, calc(100vw - var(--space-6) * 2));
   margin: 0 auto;
-  padding: 0 var(--space-4) var(--space-6);
+  padding: 0 var(--space-5) var(--space-6);
 }
 
 #base-config-form {
@@ -975,8 +976,8 @@ onBeforeUnmount(() => {
 
 .base-config-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
-  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 400px);
+  gap: var(--space-6);
   align-items: start;
 }
 
@@ -1501,6 +1502,18 @@ onBeforeUnmount(() => {
 
 #base-config-section {
   padding-bottom: 100px;
+}
+
+@media (max-width: 1200px) {
+  #base-config-section {
+    max-width: 100%;
+    padding-inline: var(--space-4);
+  }
+
+  .base-config-workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+    gap: var(--space-4);
+  }
 }
 
 @media (max-width: 768px) {
