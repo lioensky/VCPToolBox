@@ -203,12 +203,39 @@ function buildFoldOutput(entries) {
   return lines.join('\n').trim();
 }
 
+async function persistOutput(output, options = {}) {
+  const {
+    writeFile = fs.writeFile.bind(fs),
+    outputFile = OUTPUT_FILE,
+    warn = console.warn
+  } = options;
+
+  try {
+    await writeFile(outputFile, output + '\n', 'utf8');
+    return true;
+  } catch (error) {
+    warn(`[SkillBridge] 写入本地索引失败，将继续使用 stdout 输出：${error.message}`);
+    return false;
+  }
+}
+
+async function runSkillBridge(options = {}) {
+  const {
+    collectEntries = collectSkillEntries,
+    buildOutput = buildFoldOutput,
+    stdout = process.stdout
+  } = options;
+
+  const entries = await collectEntries();
+  const output = buildOutput(entries);
+  const persisted = await persistOutput(output, options);
+  stdout.write(output);
+  return { output, persisted };
+}
+
 async function main() {
   try {
-    const entries = await collectSkillEntries();
-    const output = buildFoldOutput(entries);
-    await fs.writeFile(OUTPUT_FILE, output + '\n', 'utf8');
-    process.stdout.write(output);
+    await runSkillBridge();
   } catch (error) {
     const fallback = [
       '[===vcp_fold: 0.0 ===]',
@@ -221,4 +248,14 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  buildFoldOutput,
+  collectSkillEntries,
+  main,
+  persistOutput,
+  runSkillBridge
+};
