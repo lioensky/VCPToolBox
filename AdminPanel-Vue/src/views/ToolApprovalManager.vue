@@ -25,6 +25,10 @@
           <p class="aa-hint">如果开启，所有工具调用都将进入审核流程，无论是否在名单中。</p>
         </div>
         <div class="config-item">
+          <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
+          <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。保存后后端通过 chokidar 热加载，无需重启。</p>
+        </div>
+        <div class="config-item">
           <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
           <input type="number" id="tool-approval-timeout" v-model.number="config.timeoutMinutes" min="1" max="60" :disabled="saving">
           <p class="aa-hint">超时后，该审核请求将自动拒绝。</p>
@@ -52,6 +56,7 @@ interface ToolApprovalFormState {
   enabled: boolean
   approveAll: boolean
   timeoutMinutes: number
+  fuzzyToolMatching: boolean
   approvalListText: string
 }
 
@@ -60,6 +65,7 @@ function createDefaultConfig(): ToolApprovalFormState {
     enabled: false,
     approveAll: false,
     timeoutMinutes: 5,
+    fuzzyToolMatching: false,
     approvalListText: ''
   }
 }
@@ -75,6 +81,7 @@ function normalizeToolApprovalConfig(data: ToolApprovalConfig): ToolApprovalForm
     enabled: Boolean(data.enabled),
     approveAll: Boolean(data.approveAll),
     timeoutMinutes: data.timeoutMinutes ?? data.timeout ?? 5,
+    fuzzyToolMatching: Boolean(data.fuzzyToolMatching),
     approvalListText: approvalList.join('\n')
   }
 }
@@ -90,6 +97,7 @@ function buildPayload(state: ToolApprovalFormState) {
     enabled: state.enabled,
     approveAll: state.approveAll,
     timeoutMinutes: state.timeoutMinutes,
+    fuzzyToolMatching: state.fuzzyToolMatching,
     approvalList: state.approvalListText
       .split('\n')
       .map((line) => line.trim())

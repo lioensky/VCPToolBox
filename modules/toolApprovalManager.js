@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
 
+const toolMarkerFuzzyMatcher = require('./vcpLoop/toolMarkerFuzzyMatcher');
+
 class ToolApprovalManager {
     constructor(configPath) {
         this.configPath = configPath;
@@ -9,7 +11,8 @@ class ToolApprovalManager {
             enabled: false,
             timeoutMinutes: 5,
             approveAll: false,
-            approvalList: []
+            approvalList: [],
+            fuzzyToolMatching: false
         };
         this.watcher = null;
         this.loadConfig();
@@ -20,17 +23,38 @@ class ToolApprovalManager {
         try {
             if (fs.existsSync(this.configPath)) {
                 const content = fs.readFileSync(this.configPath, 'utf8');
-                this.config = JSON.parse(content);
+                const loadedConfig = JSON.parse(content);
+                this.config = {
+                    enabled: Boolean(loadedConfig.enabled),
+                    timeoutMinutes: loadedConfig.timeoutMinutes || 5,
+                    approveAll: Boolean(loadedConfig.approveAll),
+                    approvalList: Array.isArray(loadedConfig.approvalList) ? loadedConfig.approvalList : [],
+                    fuzzyToolMatching: Boolean(loadedConfig.fuzzyToolMatching),
+                    debugMode: Boolean(loadedConfig.debugMode)
+                };
+                this.applyRuntimeConfig();
                 console.log(`[ToolApprovalManager] Configuration loaded from ${this.configPath}`);
                 if (this.config.debugMode) {
                     console.log('[ToolApprovalManager] Current Config:', JSON.stringify(this.config, null, 2));
                 }
             } else {
+                this.applyRuntimeConfig();
                 console.warn(`[ToolApprovalManager] Config file not found at ${this.configPath}, using defaults.`);
             }
         } catch (error) {
             console.error(`[ToolApprovalManager] Error loading config: ${error.message}`);
         }
+    }
+
+    applyRuntimeConfig() {
+        toolMarkerFuzzyMatcher.configure({
+            enabled: this.config.fuzzyToolMatching === true,
+            debugMode: this.config.debugMode === true
+        });
+
+        console.log(
+            `[ToolApprovalManager] Fuzzy tool marker matching: ${this.config.fuzzyToolMatching === true ? 'enabled' : 'disabled'}`
+        );
     }
 
     startWatching() {

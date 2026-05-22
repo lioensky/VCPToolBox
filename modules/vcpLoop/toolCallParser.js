@@ -1,4 +1,6 @@
 // modules/vcpLoop/toolCallParser.js
+const toolMarkerFuzzyMatcher = require('./toolMarkerFuzzyMatcher');
+
 class ToolCallParser {
   static MARKERS = {
     START: '<<<[TOOL_REQUEST]>>>',
@@ -109,8 +111,8 @@ class ToolCallParser {
 
   static _findBlockEnd(content, fromIndex) {
     let cursor = fromIndex;
-    const escapeStartRegex = /[「{]始ESCAPE[」}]/i;
-    const escapeEndRegex = /[「{]末ESCAPE[」}]/i;
+    const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(false);
+    const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
 
     while (cursor < content.length) {
       const remaining = content.slice(cursor);
@@ -167,7 +169,7 @@ class ToolCallParser {
       let endIndex = -1;
       let isEscape = false;
 
-      const escapeStartRegex = /^[「{]始ESCAPE[」}]/i;
+      const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(true);
       const escapeMatch = escapeStartRegex.exec(blockContent.slice(cursor));
 
       if (escapeMatch) {
@@ -175,42 +177,26 @@ class ToolCallParser {
         startMarker = escapeMatch[0];
         cursor += startMarker.length;
 
-        const escapeEndRegex = /[「{]末ESCAPE[」}]/i;
+        const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
         const endMatch = escapeEndRegex.exec(blockContent.slice(cursor));
         if (endMatch) {
           endIndex = cursor + endMatch.index;
           endMarker = endMatch[0];
         }
       } else {
-        const startCandidates = ['「始」', '{始}', '{始」', '「始}'];
-        for (const candidate of startCandidates) {
-          if (blockContent.startsWith(candidate, cursor)) {
-            startMarker = candidate;
-            break;
-          }
-        }
+        const startMatch = toolMarkerFuzzyMatcher.matchFieldStartMarker(blockContent, cursor);
 
-        if (!startMarker) {
+        if (!startMatch) {
           continue;
         }
 
+        startMarker = startMatch.marker;
         cursor += startMarker.length;
 
-        const endCandidates = ['「末」', '{末}', '{末」', '「末}'];
-        let minIndex = Infinity;
-        let matchedEndCandidate = null;
-
-        for (const candidate of endCandidates) {
-          const idx = blockContent.indexOf(candidate, cursor);
-          if (idx !== -1 && idx < minIndex) {
-            minIndex = idx;
-            matchedEndCandidate = candidate;
-          }
-        }
-
-        if (minIndex !== Infinity) {
-          endIndex = minIndex;
-          endMarker = matchedEndCandidate;
+        const endMatch = toolMarkerFuzzyMatcher.findFieldEndMarker(blockContent, cursor);
+        if (endMatch) {
+          endIndex = endMatch.index;
+          endMarker = endMatch.marker;
         }
       }
 
@@ -240,8 +226,8 @@ class ToolCallParser {
     for (const [escapedValue, literalValue] of Object.entries(this.ESCAPED_LITERAL_MAP)) {
       restored = restored.split(escapedValue).join(literalValue);
     }
-    restored = restored.replace(/[「{]始ESCAPE[」}]/gi, '「始」');
-    restored = restored.replace(/[「{]末ESCAPE[」}]/gi, '「末」');
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeStartRegex(false), '「始」');
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeEndRegex(false), '「末」');
     return restored;
   }
 
