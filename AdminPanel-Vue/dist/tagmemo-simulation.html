@@ -1,0 +1,2214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>VCP 浪潮语义地形沙盘 / TagMemo Terrain Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000000;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      color: #eaf7ff;
+    }
+
+    #app {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      background: #000000;
+    }
+
+    #scene {
+      position: relative;
+      min-width: 0;
+      height: 100vh;
+    }
+
+    #hud {
+      position: absolute;
+      left: 18px;
+      top: 16px;
+      width: 420px;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .title {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-shadow: 0 0 18px rgba(0, 234, 255, 0.75);
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: rgba(220, 245, 255, 0.78);
+    }
+
+    #legend {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: rgba(230, 250, 255, 0.88);
+    }
+
+    .chip {
+      padding: 4px 8px;
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 999px;
+      background: rgba(8, 16, 38, 0.62);
+      box-shadow: 0 0 12px rgba(0, 234, 255, 0.08);
+      backdrop-filter: blur(8px);
+    }
+
+    #panel {
+      height: 100vh;
+      overflow-y: auto;
+      box-sizing: border-box;
+      border-left: 1px solid rgba(140, 220, 255, 0.18);
+      background:
+        linear-gradient(180deg, rgba(8, 13, 32, 0.92), rgba(4, 8, 20, 0.96));
+      box-shadow: -20px 0 60px rgba(0,0,0,0.38);
+      padding: 18px 18px 26px;
+      z-index: 10;
+    }
+
+    .panel-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 6px;
+      color: #ffffff;
+    }
+
+    .panel-desc {
+      font-size: 12px;
+      color: rgba(225, 244, 255, 0.68);
+      line-height: 1.6;
+      margin-bottom: 14px;
+    }
+
+    .section {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .section h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      color: #8feeff;
+      text-shadow: 0 0 14px rgba(0, 234, 255, 0.35);
+    }
+
+    .control {
+      margin: 12px 0;
+    }
+
+    .control-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .control-name {
+      color: rgba(255,255,255,0.92);
+      font-weight: 700;
+    }
+
+    .control-value {
+      color: #7df8ff;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hint {
+      margin-top: 4px;
+      color: rgba(220, 240, 255, 0.48);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #00eaff;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 72px;
+      resize: vertical;
+      box-sizing: border-box;
+      border-radius: 10px;
+      border: 1px solid rgba(130, 220, 255, 0.22);
+      background: rgba(0,0,0,0.28);
+      color: #eafaff;
+      padding: 10px;
+      outline: none;
+      font-family: inherit;
+      line-height: 1.45;
+      box-shadow: inset 0 0 20px rgba(0, 234, 255, 0.04);
+    }
+
+    .btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    button {
+      cursor: pointer;
+      border: 1px solid rgba(110, 230, 255, 0.36);
+      border-radius: 10px;
+      color: #eaffff;
+      background: linear-gradient(180deg, rgba(0, 205, 255, 0.24), rgba(0, 100, 180, 0.15));
+      padding: 9px 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      box-shadow: 0 0 18px rgba(0, 234, 255, 0.12);
+    }
+
+    button:hover {
+      border-color: rgba(160, 245, 255, 0.72);
+      box-shadow: 0 0 26px rgba(0, 234, 255, 0.28);
+    }
+
+    .button-secondary {
+      background: linear-gradient(180deg, rgba(190, 90, 255, 0.20), rgba(70, 40, 150, 0.14));
+      border-color: rgba(210, 140, 255, 0.34);
+    }
+
+    #readout {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.26);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-size: 12px;
+      line-height: 1.55;
+      color: rgba(230, 248, 255, 0.82);
+      white-space: pre-wrap;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: rgba(235,250,255,0.85);
+      margin: 10px 0;
+    }
+
+    .toggle-row input {
+      accent-color: #00eaff;
+    }
+
+    #timeline {
+      position: absolute;
+      left: 18px;
+      right: 382px;
+      bottom: 16px;
+      height: 54px;
+      border: 1px solid rgba(120, 230, 255, 0.16);
+      border-radius: 14px;
+      background: rgba(5, 12, 32, 0.58);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 0 28px rgba(0,0,0,0.32);
+      z-index: 5;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      box-sizing: border-box;
+      font-size: 12px;
+      color: rgba(230, 250, 255, 0.74);
+    }
+
+    .phase {
+      flex: 1;
+      height: 6px;
+      border-radius: 99px;
+      background: rgba(255,255,255,0.10);
+      overflow: hidden;
+    }
+
+    .phase span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #ffd76a, #00eaff, #d778ff);
+      box-shadow: 0 0 16px rgba(0, 234, 255, 0.8);
+    }
+
+    canvas {
+      display: block;
+    }
+
+    @media (max-width: 980px) {
+      #app {
+        grid-template-columns: 1fr;
+      }
+      #panel {
+        position: absolute;
+        right: 10px;
+        top: 10px;
+        width: 330px;
+        max-height: calc(100vh - 20px);
+        border: 1px solid rgba(140, 220, 255, 0.18);
+        border-radius: 16px;
+      }
+      #timeline {
+        right: 18px;
+      }
+    }
+    .sync-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 5px 9px;
+      border: 1px solid rgba(125, 248, 255, 0.25);
+      border-radius: 999px;
+      background: rgba(0, 234, 255, 0.08);
+      color: rgba(225, 250, 255, 0.86);
+      font-size: 11px;
+      box-shadow: 0 0 18px rgba(0, 234, 255, 0.10);
+    }
+
+    .sync-pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #00eaff;
+      box-shadow: 0 0 12px rgba(0, 234, 255, 0.9);
+    }
+
+    body.embedded-mode #app {
+      grid-template-columns: 1fr 320px;
+    }
+
+    body.embedded-mode #hud {
+      width: min(390px, calc(100vw - 360px));
+    }
+
+    body.embedded-mode .title {
+      font-size: 20px;
+    }
+
+    body.embedded-mode .subtitle,
+    body.embedded-mode #legend {
+      font-size: 11px;
+    }
+
+    body.embedded-mode #panel {
+      padding: 16px;
+    }
+
+    body.embedded-mode .panel-title {
+      font-size: 16px;
+    }
+
+    body.embedded-mode .panel-desc,
+    body.embedded-mode .hint,
+    body.embedded-mode #readout {
+      font-size: 11px;
+    }
+
+    body.embedded-mode #timeline {
+      right: 342px;
+    }
+  </style>
+</head>
+
+<body>
+<div id="app">
+  <div id="scene">
+    <div id="hud">
+      <div class="title">VCP Semantic Terrain / 浪潮语义地形沙盘</div>
+      <div class="subtitle">
+        残差能量塑造山峰，tag 共现形成河流。查询向量先像传统 KNN 一样随机击中若干最相似支点，
+        然后触发 LIF 脉冲扩散、逆流回溯、虫洞跃迁与测地线能量场。
+      </div>
+      <div id="legend">
+        <span class="chip">金色：coreTag / 初始击中</span>
+        <span class="chip">青色：顺流脉冲</span>
+        <span class="chip">紫色：逆流</span>
+        <span class="chip">洋红：虫洞跃迁</span>
+        <span class="chip">地形：深蓝低地 → 土黄/橙红山峰</span>
+        <span class="chip">能量场：黄 → 橙 → 红热力</span>
+      </div>
+    </div>
+
+    <div id="timeline">
+      <span>Query</span>
+      <div class="phase"><span id="timelineBar"></span></div>
+      <span id="phaseText">等待查询向量坠入地形</span>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <div class="panel-title">浪潮调参演示台</div>
+    <div class="panel-desc">
+      这里是前端轻量复刻版，不连数据库。参数映射基本对齐 TagMemoEngine.js：
+      有序双向共现矩阵、钟形语义增益、脉冲传播、虫洞张力。
+      <span id="syncStatus" class="sync-pill">等待调参工作台同步参数</span>
+    </div>
+
+    <div class="section">
+      <h3>查询向量 / KNN 初始击中</h3>
+      <textarea id="queryText">为什么浪潮引擎像流体力学、神经脉冲和虫洞跃迁的混合？</textarea>
+      <div class="btn-row">
+        <button id="runQuery">坠入地形并传播</button>
+        <button id="randomQuery" class="button-secondary">随机查询</button>
+      </div>
+      <div id="readout">等待模拟...</div>
+    </div>
+
+    <div class="section">
+      <h3>Ordered Cooccurrence / 有序双向河道</h3>
+
+      <div class="control" data-param="forwardGain">
+        <div class="control-head">
+          <span class="control-name">forwardGain 顺流增益</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.2" max="2.2" step="0.01" />
+        <div class="hint">越高，叙事方向 A → B 的河流越宽、越亮、流速越快。</div>
+      </div>
+
+      <div class="control" data-param="reverseGain">
+        <div class="control-head">
+          <span class="control-name">reverseGain 逆流增益</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.05" max="1.0" step="0.01" />
+        <div class="hint">越高，B → A 的回溯暗流越强，但会被反转守卫限制。</div>
+      </div>
+
+      <div class="control" data-param="distanceDecay">
+        <div class="control-head">
+          <span class="control-name">distanceDecay 序位距离衰减</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0" max="0.7" step="0.01" />
+        <div class="hint">越高，长河越容易干涸；越低，远距离河道会重新显现。</div>
+      </div>
+
+      <div class="toggle-row">
+        <input id="semanticGainEnabled" type="checkbox" checked />
+        <label for="semanticGainEnabled">启用 semanticGain 钟形阻尼器</label>
+      </div>
+
+      <div class="control" data-param="semanticGainPeak">
+        <div class="control-head">
+          <span class="control-name">semanticGainPeak 钟形峰值</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.15" max="0.95" step="0.01" />
+        <div class="hint">决定哪种语义相似度的边最容易被放大。低 peak 更跨域，高 peak 更同域。</div>
+      </div>
+
+      <div class="control" data-param="semanticGainSigma">
+        <div class="control-head">
+          <span class="control-name">semanticGainSigma 钟形宽度</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.04" max="0.55" step="0.01" />
+        <div class="hint">越小越挑剔，只有少数河道发亮；越大越宽容，整个流域泛光。</div>
+      </div>
+
+      <div class="toggle-row">
+        <input id="reverseAnchorBoost" type="checkbox" checked />
+        <label for="reverseAnchorBoost">启用 reverseAnchorBoost 锚点逆流增强</label>
+      </div>
+
+      <div class="control" data-param="reverseAnchorMax">
+        <div class="control-head">
+          <span class="control-name">reverseAnchorMax 锚点增强上限</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="1.0" max="2.2" step="0.01" />
+        <div class="hint">高残差山峰对逆流的吸引力上限。</div>
+      </div>
+
+      <div class="control" data-param="reverseInversionGuard">
+        <div class="control-head">
+          <span class="control-name">reverseInversionGuard 反转守卫</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.35" max="0.99" step="0.01" />
+        <div class="hint">逆流不得超过顺流的该比例，防止叙事方向被反转。</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Spike Routing / LIF 脉冲扩散</h3>
+
+      <div class="control" data-param="maxSafeHops">
+        <div class="control-head">
+          <span class="control-name">maxSafeHops 最大跳数</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="1" max="7" step="1" />
+        <div class="hint">控制联想可以走多远。高了会更跨域，也更容易泛亮。</div>
+      </div>
+
+      <div class="control" data-param="baseMomentum">
+        <div class="control-head">
+          <span class="control-name">baseMomentum 初始动量</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.5" max="5.0" step="0.1" />
+        <div class="hint">查询脉冲的冲击力，越高越能穿过多层节点。</div>
+      </div>
+
+      <div class="control" data-param="firingThreshold">
+        <div class="control-head">
+          <span class="control-name">firingThreshold 点火阈值</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.01" max="0.45" step="0.01" />
+        <div class="hint">能量低于该值的节点不会继续传播。越高越干净，越低越敏感。</div>
+      </div>
+
+      <div class="control" data-param="baseDecay">
+        <div class="control-head">
+          <span class="control-name">baseDecay 普通边衰减</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.05" max="0.75" step="0.01" />
+        <div class="hint">普通河道保留多少电流。越大，常规联想越远。</div>
+      </div>
+
+      <div class="control" data-param="wormholeDecay">
+        <div class="control-head">
+          <span class="control-name">wormholeDecay 虫洞衰减</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.2" max="1.25" step="0.01" />
+        <div class="hint">虫洞跃迁时保留多少能量。虫洞不消耗动量。</div>
+      </div>
+
+      <div class="control" data-param="tensionThreshold">
+        <div class="control-head">
+          <span class="control-name">tensionThreshold 虫洞张力阈值</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="0.25" max="2.2" step="0.01" />
+        <div class="hint">coocWeight × neighborResidual 超过该值触发虫洞。越低，跨域飞溅越多。</div>
+      </div>
+
+      <div class="control" data-param="maxNeighborsPerNode">
+        <div class="control-head">
+          <span class="control-name">maxNeighborsPerNode 单节点最大邻居</span>
+          <span class="control-value"></span>
+        </div>
+        <input type="range" min="3" max="24" step="1" />
+        <div class="hint">每个节点每跳最多向多少条强边传播。</div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function loadSimulationDependencies() {
+  const dependencyQueue = [
+    {
+      local: "vendor/tagmemo-simulation/three.min.js",
+      fallback: "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+    },
+    {
+      local: "vendor/tagmemo-simulation/OrbitControls.js",
+      fallback: "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"
+    },
+    {
+      local: "vendor/tagmemo-simulation/anime.min.js",
+      fallback: "https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"
+    }
+  ];
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = false;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
+  async function loadNext(index = 0) {
+    if (index >= dependencyQueue.length) {
+      window.dispatchEvent(new Event("tagmemo-simulation-deps-ready"));
+      return;
+    }
+
+    const dependency = dependencyQueue[index];
+
+    try {
+      await loadScript(dependency.local);
+    } catch (error) {
+      await loadScript(dependency.fallback);
+    }
+
+    await loadNext(index + 1);
+  }
+
+  loadNext().catch(error => {
+    const syncStatus = document.getElementById("syncStatus");
+    if (syncStatus) {
+      syncStatus.textContent = "依赖加载失败，请检查 three.js / anime.js 本地文件";
+    }
+    console.error("Failed to load TagMemo simulation dependencies:", error);
+  });
+})();
+</script>
+
+<script>
+/* ============================================================
+   1. Demo Data：更复杂的 tag 地形、水系、交点
+   ============================================================ */
+
+const TAGS = [
+  // VCP / 浪潮引擎
+  { id: 1, name: "浪潮引擎", group: "vcp", residual: 1.98, pos: [-5.2, 0, -1.0], keywords: ["浪潮", "vcp", "语义", "引擎", "tagmemo"] },
+  { id: 2, name: "TagMemo", group: "vcp", residual: 1.74, pos: [-6.3, 0, 0.7], keywords: ["tag", "tagmemo", "标签", "记忆"] },
+  { id: 3, name: "残差金字塔", group: "vcp", residual: 1.88, pos: [-4.6, 0, 1.2], keywords: ["残差", "金字塔", "能量", "地形"] },
+  { id: 4, name: "EPA投影", group: "vcp", residual: 1.55, pos: [-7.0, 0, -1.5], keywords: ["epa", "投影", "世界观", "逻辑"] },
+  { id: 5, name: "LIF脉冲", group: "vcp", residual: 1.70, pos: [-3.8, 0, -2.2], keywords: ["lif", "神经", "脉冲", "电流"] },
+  { id: 6, name: "有序共现矩阵", group: "vcp", residual: 1.65, pos: [-5.9, 0, -3.1], keywords: ["共现", "矩阵", "顺流", "逆流"] },
+  { id: 7, name: "semanticGain", group: "vcp", residual: 1.48, pos: [-3.2, 0, 0.1], keywords: ["semantic", "gain", "钟形", "阻尼"] },
+  { id: 8, name: "coreTag", group: "vcp", residual: 1.62, pos: [-2.2, 0, -1.1], keywords: ["coretag", "核心", "初始", "knn"] },
+  { id: 9, name: "测地线重排", group: "vcp", residual: 1.73, pos: [-2.4, 0, 1.7], keywords: ["测地线", "rerank", "重排", "距离"] },
+  { id: 10, name: "记忆系统", group: "bridge", residual: 1.92, pos: [-1.1, 0, 0.8], keywords: ["记忆", "系统", "长期", "召回"] },
+
+  // Physics / 物理前沿
+  { id: 11, name: "物理前沿", group: "physics", residual: 1.50, pos: [0.4, 0, -3.7], keywords: ["物理", "前沿", "科学"] },
+  { id: 12, name: "广义相对论", group: "physics", residual: 1.82, pos: [1.8, 0, -4.8], keywords: ["相对论", "引力", "爱因斯坦"] },
+  { id: 13, name: "黎曼几何", group: "physics", residual: 1.86, pos: [0.0, 0, -5.8], keywords: ["黎曼", "几何", "曲率", "空间"] },
+  { id: 14, name: "流体力学", group: "physics", residual: 1.78, pos: [-0.1, 0, -2.0], keywords: ["流体", "河流", "流速", "水系"] },
+  { id: 15, name: "虫洞", group: "physics", residual: 1.96, pos: [2.7, 0, -2.6], keywords: ["虫洞", "跃迁", "飞溅", "跨域"] },
+  { id: 16, name: "黑洞", group: "physics", residual: 1.65, pos: [4.1, 0, -3.9], keywords: ["黑洞", "引力", "事件视界"] },
+  { id: 17, name: "量子场论", group: "physics", residual: 1.52, pos: [3.6, 0, -5.6], keywords: ["量子", "场论", "粒子"] },
+  { id: 18, name: "非线性系统", group: "physics", residual: 1.58, pos: [1.0, 0, -1.5], keywords: ["非线性", "复杂", "动力学"] },
+  { id: 19, name: "能量场", group: "bridge", residual: 1.89, pos: [1.3, 0, 0.0], keywords: ["能量", "场", "激活", "传播"] },
+  { id: 20, name: "数学结构", group: "bridge", residual: 1.70, pos: [2.8, 0, -0.8], keywords: ["数学", "结构", "模型"] },
+
+  // Geo Politics / 地缘政治
+  { id: 21, name: "地缘政治", group: "geo", residual: 1.62, pos: [5.6, 0, -0.1], keywords: ["地缘", "政治", "国际"] },
+  { id: 22, name: "美国", group: "geo", residual: 1.35, pos: [7.1, 0, -1.2], keywords: ["美国", "usa", "华盛顿"] },
+  { id: 23, name: "中国", group: "geo", residual: 1.42, pos: [7.0, 0, 0.8], keywords: ["中国", "北京", "产业"] },
+  { id: 24, name: "俄罗斯", group: "geo", residual: 1.36, pos: [6.2, 0, -2.6], keywords: ["俄罗斯", "俄乌", "能源"] },
+  { id: 25, name: "中东", group: "geo", residual: 1.30, pos: [5.0, 0, -3.7], keywords: ["中东", "石油", "冲突"] },
+  { id: 26, name: "能源", group: "bridge", residual: 1.64, pos: [4.2, 0, -1.0], keywords: ["能源", "石油", "电力"] },
+  { id: 27, name: "供应链", group: "bridge", residual: 1.72, pos: [4.7, 0, 1.6], keywords: ["供应链", "物流", "贸易"] },
+  { id: 28, name: "舆论", group: "geo", residual: 1.18, pos: [6.3, 0, 2.8], keywords: ["舆论", "媒体", "信息"] },
+  { id: 29, name: "历史周期", group: "bridge", residual: 1.67, pos: [3.5, 0, 2.8], keywords: ["历史", "周期", "演化"] },
+  { id: 30, name: "风险判断", group: "bridge", residual: 1.76, pos: [2.4, 0, 1.8], keywords: ["风险", "判断", "预测"] },
+
+  // Daily / 日常聊天
+  { id: 31, name: "日常聊天", group: "daily", residual: 1.20, pos: [-2.8, 0, 4.1], keywords: ["日常", "聊天", "生活"] },
+  { id: 32, name: "情绪", group: "daily", residual: 1.45, pos: [-1.0, 0, 5.0], keywords: ["情绪", "心情", "压力"] },
+  { id: 33, name: "朋友", group: "daily", residual: 1.15, pos: [-3.6, 0, 5.7], keywords: ["朋友", "社交", "聚会"] },
+  { id: 34, name: "工作压力", group: "daily", residual: 1.34, pos: [-4.9, 0, 4.6], keywords: ["工作", "压力", "加班"] },
+  { id: 35, name: "睡眠", group: "daily", residual: 1.12, pos: [-5.7, 0, 6.2], keywords: ["睡眠", "休息", "困"] },
+  { id: 36, name: "咖啡", group: "daily", residual: 1.08, pos: [-4.0, 0, 7.2], keywords: ["咖啡", "饮品", "提神"] },
+  { id: 37, name: "周末计划", group: "bridge", residual: 1.38, pos: [-1.8, 0, 6.6], keywords: ["周末", "计划", "出门"] },
+  { id: 38, name: "AI陪伴", group: "daily", residual: 1.46, pos: [-0.2, 0, 3.8], keywords: ["ai", "陪伴", "助手"] },
+  { id: 39, name: "个人偏好", group: "bridge", residual: 1.54, pos: [0.6, 0, 5.8], keywords: ["偏好", "喜欢", "用户"] },
+
+  // Food / 地区美食
+  { id: 40, name: "地区美食", group: "food", residual: 1.28, pos: [2.3, 0, 5.2], keywords: ["美食", "地区", "吃"] },
+  { id: 41, name: "四川", group: "food", residual: 1.20, pos: [3.9, 0, 5.7], keywords: ["四川", "成都", "川菜"] },
+  { id: 42, name: "火锅", group: "food", residual: 1.36, pos: [5.3, 0, 5.1], keywords: ["火锅", "麻辣", "聚餐"] },
+  { id: 43, name: "辣椒", group: "food", residual: 1.18, pos: [6.1, 0, 3.9], keywords: ["辣椒", "辣", "风味"] },
+  { id: 44, name: "地方文化", group: "bridge", residual: 1.44, pos: [3.2, 0, 4.0], keywords: ["文化", "地方", "习俗"] },
+
+  // Frontier AI / 工程与智能体
+  { id: 45, name: "多智能体协同", group: "ai", residual: 1.78, pos: [-9.2, 0, 2.9], keywords: ["多智能体", "agent", "协同", "规划"] },
+  { id: 46, name: "工具调用协议", group: "ai", residual: 1.66, pos: [-10.4, 0, 0.1], keywords: ["工具", "调用", "协议", "tool"] },
+  { id: 47, name: "上下文压缩", group: "ai", residual: 1.58, pos: [-8.7, 0, 5.2], keywords: ["上下文", "压缩", "摘要", "窗口"] },
+  { id: 48, name: "动态路由", group: "ai", residual: 1.71, pos: [-7.7, 0, -5.2], keywords: ["动态", "路由", "模型", "分流"] },
+  { id: 49, name: "向量索引", group: "ai", residual: 1.84, pos: [-1.5, 0, -8.6], keywords: ["向量", "索引", "embedding", "检索"] },
+
+  // Cyber / 网络与系统
+  { id: 50, name: "分布式节点", group: "cyber", residual: 1.62, pos: [8.9, 0, -5.0], keywords: ["分布式", "节点", "websocket", "集群"] },
+  { id: 51, name: "安全网关", group: "cyber", residual: 1.70, pos: [10.2, 0, -2.8], keywords: ["安全", "网关", "鉴权", "审计"] },
+  { id: 52, name: "日志监控", group: "cyber", residual: 1.44, pos: [9.5, 0, 2.5], keywords: ["日志", "监控", "异常", "告警"] },
+  { id: 53, name: "任务调度", group: "cyber", residual: 1.50, pos: [7.8, 0, 5.3], keywords: ["任务", "调度", "定时", "队列"] },
+
+  // Cognition / 认知与创作
+  { id: 54, name: "梦境生成", group: "cog", residual: 1.56, pos: [-6.8, 0, 9.0], keywords: ["梦境", "生成", "联想", "创作"] },
+  { id: 55, name: "情节记忆", group: "cog", residual: 1.74, pos: [-3.0, 0, 9.4], keywords: ["情节", "记忆", "故事", "叙事"] },
+  { id: 56, name: "世界模型", group: "cog", residual: 1.88, pos: [0.4, 0, 8.7], keywords: ["世界", "模型", "认知", "预测"] },
+  { id: 57, name: "符号推理", group: "cog", residual: 1.68, pos: [4.2, 0, 8.2], keywords: ["符号", "推理", "逻辑", "因果"] }
+];
+
+const EDGES = [
+  // VCP long rivers
+  e(1,2,.82,.92,.34,1), e(2,3,.74,.72,.30,2), e(3,4,.58,.55,.22,3),
+  e(1,5,.68,.88,.35,2), e(5,6,.70,.76,.28,1), e(6,7,.66,.65,.25,2),
+  e(7,8,.72,.78,.30,1), e(8,9,.61,.68,.24,2), e(9,10,.70,.86,.36,1),
+  e(1,10,.76,.90,.38,3), e(3,10,.69,.80,.35,2), e(4,30,.44,.44,.16,5),
+
+  // Physics rivers
+  e(11,12,.73,.70,.25,1), e(12,13,.84,.83,.31,1), e(13,14,.62,.74,.28,3),
+  e(14,15,.64,.86,.30,2,true), e(15,16,.66,.76,.28,1), e(16,17,.60,.58,.21,2),
+  e(17,18,.50,.46,.18,4), e(18,19,.67,.71,.28,2), e(19,20,.72,.78,.33,1),
+  e(13,20,.69,.62,.24,3), e(15,20,.58,.66,.20,2,true),
+
+  // VCP <-> Physics intersections
+  e(1,14,.66,.90,.34,4), e(5,18,.70,.82,.30,2), e(7,19,.73,.78,.28,3),
+  e(9,13,.57,.55,.20,5), e(10,19,.76,.92,.40,2), e(15,1,.43,.50,.16,7,true),
+  e(15,30,.46,.48,.15,8,true),
+
+  // Geo rivers
+  e(21,22,.67,.70,.26,1), e(21,23,.68,.72,.27,1), e(21,24,.64,.65,.24,2),
+  e(24,25,.58,.54,.21,2), e(25,26,.72,.76,.30,1), e(26,27,.62,.82,.33,2),
+  e(27,28,.56,.58,.20,3), e(28,29,.48,.44,.16,4), e(29,30,.64,.70,.25,1),
+  e(22,27,.55,.52,.19,5), e(23,27,.70,.80,.31,3),
+
+  // Daily rivers
+  e(31,32,.75,.72,.30,1), e(31,33,.68,.60,.24,2), e(33,34,.52,.50,.18,3),
+  e(34,35,.64,.62,.22,1), e(35,36,.58,.44,.18,2), e(36,37,.54,.50,.18,3),
+  e(37,38,.59,.58,.20,2), e(38,39,.70,.72,.29,1), e(39,10,.72,.84,.34,3),
+  e(32,10,.64,.68,.26,4), e(31,10,.60,.72,.26,3),
+
+  // Food rivers
+  e(40,41,.70,.68,.25,1), e(41,42,.78,.82,.31,1), e(42,43,.74,.70,.27,1),
+  e(43,44,.56,.50,.18,3), e(44,40,.66,.66,.24,2),
+  e(40,39,.58,.64,.24,3), e(42,37,.54,.55,.20,5), e(44,27,.62,.72,.28,4),
+
+  // Cross-domain longer rivers
+  e(27,40,.59,.72,.26,5), e(27,44,.64,.70,.25,3), e(26,19,.51,.54,.18,7),
+  e(29,13,.45,.42,.15,8,true), e(30,9,.62,.74,.28,4), e(30,21,.60,.68,.24,2),
+  e(32,40,.50,.48,.18,5), e(32,42,.44,.38,.14,7), e(38,1,.66,.72,.28,5),
+  e(39,8,.61,.68,.26,4), e(37,27,.52,.54,.18,8), e(14,27,.42,.38,.14,9,true),
+  e(20,21,.47,.48,.16,6), e(19,30,.74,.86,.34,2), e(10,30,.70,.80,.32,3),
+  e(6,21,.40,.34,.12,9,true), e(7,28,.38,.32,.10,10), e(5,32,.42,.36,.12,8,true),
+
+  // Extended long rivers / 扩展长河与远距交汇
+  e(45,46,.74,.80,.28,1), e(45,47,.68,.72,.24,2), e(46,1,.58,.70,.22,5),
+  e(47,55,.62,.74,.27,4), e(48,6,.70,.86,.32,2), e(48,50,.46,.58,.18,9,true),
+  e(49,13,.66,.78,.28,3), e(49,20,.74,.82,.34,2), e(49,10,.76,.88,.36,3),
+  e(50,51,.76,.84,.30,1), e(51,52,.66,.70,.24,2), e(52,53,.64,.68,.22,2),
+  e(50,21,.54,.60,.20,5), e(51,27,.50,.58,.18,6), e(53,37,.48,.56,.18,7),
+  e(54,55,.72,.82,.31,1), e(55,56,.78,.88,.34,1), e(56,57,.68,.76,.27,2),
+  e(57,20,.62,.70,.24,4), e(56,10,.70,.84,.32,3), e(54,32,.58,.66,.24,5),
+  e(45,10,.66,.78,.30,4), e(46,51,.42,.50,.16,10,true), e(47,39,.60,.68,.25,5),
+  e(55,29,.56,.64,.22,6), e(57,30,.61,.72,.26,5), e(56,19,.76,.90,.38,2),
+  e(49,50,.44,.52,.16,11,true), e(52,28,.57,.62,.20,4), e(53,44,.54,.61,.20,6)
+];
+
+function e(from, to, sim, fw, rw, delta, wormholeCandidate=false) {
+  return { from, to, sim, forwardWeight: fw, reverseWeight: rw, delta, wormholeCandidate };
+}
+
+/* ============================================================
+   2. Params
+   ============================================================ */
+
+const params = {
+  forwardGain: 1.0,
+  reverseGain: 0.42,
+  distanceDecay: 0.16,
+  semanticGainEnabled: true,
+  semanticGainPeak: 0.65,
+  semanticGainSigma: 0.25,
+  reverseAnchorBoost: true,
+  reverseAnchorMax: 1.5,
+  reverseInversionGuard: 0.95,
+
+  maxSafeHops: 4,
+  baseMomentum: 2.2,
+  firingThreshold: 0.10,
+  baseDecay: 0.25,
+  wormholeDecay: 0.70,
+  tensionThreshold: 1.0,
+  maxNeighborsPerNode: 12
+};
+
+function semanticGain(sim, p) {
+  if (!p.semanticGainEnabled) return 1.0;
+  const peak = p.semanticGainPeak ?? 0.65;
+  const sigma = p.semanticGainSigma ?? 0.25;
+  if (sim < 0.15) return 0.4 + sim;
+  return 0.5 + 0.8 * Math.exp(-((sim - peak) ** 2) / (2 * sigma * sigma));
+}
+
+function computeEdgeWeight(edge, p, direction = "forward", tagMap = null) {
+  const distanceFactor = p.distanceDecay > 0
+    ? Math.exp(-p.distanceDecay * Math.max(0, edge.delta - 1))
+    : 1.0;
+
+  const sem = semanticGain(edge.sim, p);
+
+  const forward = edge.forwardWeight * p.forwardGain * distanceFactor * sem;
+
+  if (direction === "forward") return forward;
+
+  let reverse = edge.reverseWeight * p.reverseGain * distanceFactor * sem;
+
+  if (p.reverseAnchorBoost && tagMap) {
+    const targetAnchor = tagMap.get(edge.to);
+    if (targetAnchor) {
+      const boost = Math.min(p.reverseAnchorMax, targetAnchor.residual);
+      reverse *= boost;
+    }
+  }
+
+  const cap = forward * p.reverseInversionGuard;
+  return Math.min(reverse, cap);
+}
+
+/* ============================================================
+   3. Query KNN：带随机扰动的 top-k 初始击中
+   ============================================================ */
+
+const randomQueries = [
+  "周末想和朋友去吃四川火锅，顺便聊聊最近工作压力",
+  "美国、中国、供应链和能源风险会怎样影响中东局势？",
+  "为什么黎曼几何可以描述广义相对论里的空间曲率？",
+  "TagMemo 的 semanticGain 和残差金字塔怎么影响召回？",
+  "AI 陪伴如何记住我的个人偏好和情绪变化？",
+  "虫洞跃迁是不是像浪潮引擎里的跨域记忆联想？",
+  "地方美食、地方文化和供应链之间有什么隐藏联系？"
+];
+
+function tokenize(text) {
+  const lower = text.toLowerCase();
+  const chunks = lower.match(/[a-z0-9_.-]+|[\u4e00-\u9fa5]{1,4}/g) || [];
+  return chunks;
+}
+
+function knnInitialTags(query, k = 5) {
+  const tokens = tokenize(query);
+  const text = query.toLowerCase();
+
+  const scored = TAGS.map(tag => {
+    let score = 0;
+
+    for (const kw of tag.keywords) {
+      if (text.includes(String(kw).toLowerCase())) score += 1.3;
+    }
+
+    for (const tk of tokens) {
+      if (tag.name.toLowerCase().includes(tk)) score += 0.9;
+      for (const kw of tag.keywords) {
+        if (String(kw).toLowerCase().includes(tk) || tk.includes(String(kw).toLowerCase())) {
+          score += 0.18;
+        }
+      }
+    }
+
+    // group prior
+    if (/浪潮|tag|vcp|残差|语义|召回|记忆|矩阵|core|knn|lif|脉冲|阻尼/i.test(query) && tag.group === "vcp") score += 0.55;
+    if (/物理|相对论|黎曼|虫洞|黑洞|流体|量子|曲率/i.test(query) && tag.group === "physics") score += 0.55;
+    if (/美国|中国|俄罗斯|中东|政治|能源|供应链|风险|舆论/i.test(query) && tag.group === "geo") score += 0.55;
+    if (/朋友|情绪|工作|睡眠|咖啡|周末|聊天|陪伴/i.test(query) && tag.group === "daily") score += 0.55;
+    if (/美食|四川|火锅|辣椒|地方|文化|吃/i.test(query) && tag.group === "food") score += 0.55;
+    if (/记忆|能量|供应链|风险|周期|偏好|文化/i.test(query) && tag.group === "bridge") score += 0.35;
+
+    // residual like prior: high residual tags are more likely to be stable anchors
+    score += (tag.residual - 1.0) * 0.22;
+
+    // 模拟传统 KNN 的近邻抖动：不是绝对确定，有随机局部扰动
+    const noise = (Math.random() - 0.5) * 0.9;
+    const gumbel = -Math.log(-Math.log(Math.random() + 1e-9) + 1e-9) * 0.12;
+
+    return { tag, score: score + noise + gumbel };
+  });
+
+  scored.sort((a,b) => b.score - a.score);
+
+  // 如果 query 太陌生，保底随机命中几个支点
+  const top = scored.slice(0, k);
+  return top.map(x => ({
+    id: x.tag.id,
+    name: x.tag.name,
+    score: Math.max(0.05, x.score)
+  }));
+}
+
+/* ============================================================
+   4. Spike Routing
+   ============================================================ */
+
+function simulateSpikeRouting(coreHits) {
+  const tagMap = new Map(TAGS.map(t => [t.id, t]));
+  const adjacency = new Map();
+
+  for (const edge of EDGES) {
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
+    adjacency.get(edge.from).push({ ...edge, isReverse: false });
+
+    if (!adjacency.has(edge.to)) adjacency.set(edge.to, []);
+    adjacency.get(edge.to).push({
+      ...edge,
+      from: edge.to,
+      to: edge.from,
+      isReverse: true
+    });
+  }
+
+  let activeSpikes = new Map();
+  const accumulatedEnergy = new Map();
+  const events = [];
+
+  const maxScore = Math.max(...coreHits.map(h => h.score), 1);
+
+  for (const h of coreHits) {
+    const energy = 0.62 + 0.55 * (h.score / maxScore);
+    activeSpikes.set(h.id, { energy, momentum: params.baseMomentum });
+    accumulatedEnergy.set(h.id, energy);
+    events.push({ type: "core", tagId: h.id, energy, hop: 0 });
+  }
+
+  for (let hop = 0; hop < params.maxSafeHops; hop++) {
+    const nextSpikes = new Map();
+
+    for (const [nodeId, spike] of activeSpikes.entries()) {
+      if (spike.energy < params.firingThreshold || spike.momentum < 0) continue;
+
+      const synapses = adjacency.get(nodeId) || [];
+
+      const sorted = synapses
+        .map(edge => {
+          const weight = computeEdgeWeight(
+            edge,
+            params,
+            edge.isReverse ? "reverse" : "forward",
+            tagMap
+          );
+          return { edge, weight };
+        })
+        .filter(x => x.weight > 0.01)
+        .sort((a,b) => b.weight - a.weight)
+        .slice(0, params.maxNeighborsPerNode);
+
+      for (const { edge, weight } of sorted) {
+        const neighbor = tagMap.get(edge.to);
+        if (!neighbor) continue;
+
+        const tension = weight * neighbor.residual;
+        const isWormhole = tension >= params.tensionThreshold || edge.wormholeCandidate && tension >= params.tensionThreshold * 0.72;
+
+        const decayFactor = isWormhole ? params.wormholeDecay : params.baseDecay;
+        const momentumCost = isWormhole ? 0 : 1.0;
+
+        let injectedCurrent = spike.energy * weight * decayFactor;
+
+        // 逆流视觉上保留，但传播稍微软一点
+        if (edge.isReverse) injectedCurrent *= 0.78;
+
+        if (injectedCurrent < 0.012) continue;
+
+        const nextMomentum = spike.momentum - momentumCost;
+        if (nextMomentum < 0 && !isWormhole) continue;
+
+        const old = nextSpikes.get(edge.to);
+        if (old) {
+          old.energy += injectedCurrent;
+          old.momentum = Math.max(old.momentum, nextMomentum);
+        } else {
+          nextSpikes.set(edge.to, {
+            energy: injectedCurrent,
+            momentum: nextMomentum
+          });
+        }
+
+        accumulatedEnergy.set(
+          edge.to,
+          (accumulatedEnergy.get(edge.to) || 0) + injectedCurrent
+        );
+
+        events.push({
+          type: isWormhole ? "wormhole" : "spike",
+          from: edge.from,
+          to: edge.to,
+          energy: injectedCurrent,
+          weight,
+          tension,
+          reverse: !!edge.isReverse,
+          hop: hop + 1
+        });
+      }
+    }
+
+    if (nextSpikes.size === 0) break;
+    activeSpikes = nextSpikes;
+  }
+
+  return { accumulatedEnergy, events };
+}
+
+/* ============================================================
+   5. Three.js Scene
+   ============================================================ */
+
+class SemanticTerrainScene {
+  constructor(container) {
+    this.container = container;
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color("#000000");
+    this.scene.fog = new THREE.FogExp2("#000000", 0.01);
+
+    this.camera = new THREE.PerspectiveCamera(
+      55,
+      container.clientWidth / container.clientHeight,
+      0.1,
+      1000
+    );
+    this.camera.position.set(3.2, 16.5, 21.0);
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(this.renderer.domElement);
+
+    this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.target.set(0, 0.6, 0.6);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.06;
+    this.controls.maxPolarAngle = Math.PI * 0.48;
+    this.controls.minDistance = 9;
+    this.controls.maxDistance = 38;
+
+    this.tagMap = new Map(TAGS.map(t => [t.id, t]));
+    this.tagMeshes = new Map();
+    this.labelSprites = new Map();
+    this.edgeMeshes = [];
+    this.energyDisks = [];
+    this.pulses = [];
+    this.wormholes = [];
+    this.flowParticles = [];
+    this.transientObjects = [];
+    this.activeTimeline = null;
+    this.scheduledTimers = [];
+    this.runToken = 0;
+
+    this.clock = new THREE.Clock();
+
+    this.initLights();
+    this.createStars();
+    this.createTerrain();
+    this.createTags();
+    this.rebuildEdges();
+
+    window.addEventListener("resize", () => this.resize());
+    this.animate();
+  }
+
+  initLights() {
+    this.scene.add(new THREE.AmbientLight("#ffffff", 1.2));
+
+    const sun = new THREE.DirectionalLight("#ffffff", 0.8);
+    sun.position.set(-4, 12, 6);
+    this.scene.add(sun);
+  }
+
+  createStars() {
+    const geo = new THREE.BufferGeometry();
+    const count = 800;
+    const arr = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      arr[i*3] = (Math.random() - 0.5) * 60;
+      arr[i*3+1] = Math.random() * 22 + 3;
+      arr[i*3+2] = (Math.random() - 0.5) * 60;
+    }
+    geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+    const mat = new THREE.PointsMaterial({
+      color: "#9feeff",
+      size: 0.035,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false
+    });
+    this.scene.add(new THREE.Points(geo, mat));
+  }
+
+  terrainHeightAt(x, z) {
+    let h = 0;
+
+    for (const tag of TAGS) {
+      const [tx,,tz] = tag.pos;
+      const dx = x - tx;
+      const dz = z - tz;
+      const d2 = dx * dx + dz * dz;
+      const amp = (tag.residual - 0.52) * 0.82;
+
+      // 高残差是山峰，但交汇处形成更复杂的山谷叠加
+      h += amp * Math.exp(-d2 / 3.9);
+      h -= 0.08 * Math.exp(-d2 / 0.65);
+    }
+
+    // 地形褶皱
+    h += Math.sin(x * 0.75 + z * 0.18) * 0.12;
+    h += Math.cos(z * 0.62 - x * 0.22) * 0.10;
+    h += Math.sin((x + z) * 1.15) * 0.035;
+
+    return h;
+  }
+
+  createTerrain() {
+    const size = 25;
+    const seg = 210;
+    const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position;
+    const colors = [];
+
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const z = pos.getZ(i);
+      const h = this.terrainHeightAt(x, z);
+      pos.setY(i, h);
+
+      const c = new THREE.Color();
+      const t = THREE.MathUtils.clamp((h + 0.12) / 2.28, 0, 1);
+      if (t < 0.38) {
+        c.lerpColors(new THREE.Color("#06101f"), new THREE.Color("#102742"), t / 0.38);
+      } else if (t < 0.74) {
+        c.lerpColors(new THREE.Color("#102742"), new THREE.Color("#4b3a1d"), (t - 0.38) / 0.36);
+      } else {
+        c.lerpColors(new THREE.Color("#4b3a1d"), new THREE.Color("#8a3a1f"), (t - 0.74) / 0.26);
+      }
+
+      colors.push(c.r, c.g, c.b);
+    }
+
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.86,
+      metalness: 0.06,
+      emissive: "#070b12",
+      emissiveIntensity: 0.035,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    this.scene.add(mesh);
+    this.terrain = mesh;
+
+    // 地形网格线
+    const wire = new THREE.Mesh(
+      geo.clone(),
+      new THREE.MeshBasicMaterial({
+        color: "#5f748c",
+        transparent: true,
+        opacity: 0.018,
+        wireframe: true,
+        depthWrite: false
+      })
+    );
+    wire.position.y += 0.012;
+    this.scene.add(wire);
+  }
+
+  getTagPosition(tag) {
+    const [x,,z] = tag.pos;
+    return new THREE.Vector3(x, this.terrainHeightAt(x, z) + 0.36 + (tag.residual - 1) * 0.38, z);
+  }
+
+  groupColor(group) {
+    return {
+      vcp: "#00d9e8",
+      physics: "#9b6dff",
+      geo: "#ff4f5e",
+      daily: "#ffd84d",
+      food: "#48e06f",
+      bridge: "#cbd5e1",
+      ai: "#4da3ff",
+      cyber: "#ff9a3c",
+      cog: "#ff66b3"
+    }[group] || "#8fbaff";
+  }
+
+  createTags() {
+    for (const tag of TAGS) {
+      const position = this.getTagPosition(tag);
+      const radius = 0.095 + tag.residual * 0.036;
+
+      const geo = new THREE.SphereGeometry(radius, 28, 28);
+      const color = this.groupColor(tag.group);
+      const groupBase = new THREE.Color(color);
+      const dormantColor = groupBase.clone().lerp(new THREE.Color("#000000"), 0.85);
+      const mat = new THREE.MeshStandardMaterial({
+        color: dormantColor,
+        emissive: groupBase,
+        emissiveIntensity: 0.05,
+        roughness: 0.6,
+        metalness: 0.1,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false
+      });
+
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(position);
+      mesh.userData = { tag, baseScale: 1, activeColor: color };
+      this.scene.add(mesh);
+      this.tagMeshes.set(tag.id, mesh);
+
+      const haloGeo = new THREE.SphereGeometry(radius * 1.72, 24, 24);
+      const haloMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const halo = new THREE.Mesh(haloGeo, haloMat);
+      halo.position.copy(position);
+      halo.userData = { tagId: tag.id, baseOpacity: 0.10 };
+      mesh.userData.halo = halo;
+      this.scene.add(halo);
+
+      // 小型残差光柱
+      const cylGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.45 + tag.residual * 0.32, 8);
+      const cylMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.015,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const cyl = new THREE.Mesh(cylGeo, cylMat);
+      cyl.position.set(position.x, position.y - 0.22, position.z);
+      mesh.userData.column = cyl;
+      this.scene.add(cyl);
+
+      this.createLabel(tag, position);
+    }
+  }
+
+  createLabel(tag, position) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 128;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, 512, 128);
+    
+    // Draw Tag Name
+    ctx.font = "bold 64px Microsoft YaHei, PingFang SC, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    
+    // Thick black stroke for readability
+    ctx.lineWidth = 12;
+    ctx.strokeStyle = "#000000";
+    ctx.strokeText(tag.name, 256, 52);
+    
+    // White text fill
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(tag.name, 256, 52);
+    
+    // Group color glow
+    ctx.shadowColor = this.groupColor(tag.group);
+    ctx.shadowBlur = 15;
+    ctx.fillText(tag.name, 256, 52);
+    ctx.shadowBlur = 0; // reset
+
+    // Draw Residual
+    ctx.font = "bold 32px Consolas, monospace";
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = "#000000";
+    ctx.strokeText("R=" + tag.residual.toFixed(2), 256, 104);
+    
+    ctx.fillStyle = this.groupColor(tag.group);
+    ctx.fillText("R=" + tag.residual.toFixed(2), 256, 104);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.encoding = THREE.sRGBEncoding;
+
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      opacity: tag.group === "bridge" ? 0.32 : 0.26
+    });
+
+    const sp = new THREE.Sprite(mat);
+    sp.position.set(position.x, position.y + 0.58, position.z);
+    sp.scale.set(2.05, 0.52, 1);
+    sp.renderOrder = 1000;
+    this.scene.add(sp);
+    this.labelSprites.set(tag.id, sp);
+  }
+
+  clearEdges() {
+    for (const mesh of this.edgeMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+    this.edgeMeshes = [];
+
+    for (const fp of this.flowParticles) {
+      this.scene.remove(fp.mesh);
+      fp.mesh.geometry.dispose();
+      fp.mesh.material.dispose();
+    }
+    this.flowParticles = [];
+  }
+
+  rebuildEdges() {
+    this.clearEdges();
+
+    for (const edge of EDGES) {
+      this.createEdge(edge, false);
+      // 逆流也画出来，但更细更暗
+      this.createEdge(edge, true);
+    }
+  }
+
+  createEdge(edge, reverse) {
+    const fromId = reverse ? edge.to : edge.from;
+    const toId = reverse ? edge.from : edge.to;
+    const fromMesh = this.tagMeshes.get(fromId);
+    const toMesh = this.tagMeshes.get(toId);
+    if (!fromMesh || !toMesh) return;
+
+    const start = fromMesh.position.clone();
+    const end = toMesh.position.clone();
+
+    const mid = start.clone().lerp(end, 0.5);
+    const dist = start.distanceTo(end);
+    mid.y += 0.34 + dist * 0.082 + edge.sim * 0.36;
+    mid.x += Math.sin((fromId + toId) * 1.7) * (0.18 + dist * 0.018);
+    mid.z += Math.cos((fromId - toId) * 1.3) * (0.18 + dist * 0.018);
+
+    const curve = new THREE.CatmullRomCurve3([start, mid, end]);
+    const weight = computeEdgeWeight(edge, params, reverse ? "reverse" : "forward", this.tagMap);
+
+    const radius = reverse
+      ? 0.004 + weight * 0.008
+      : 0.006 + weight * 0.016;
+
+    const geo = new THREE.TubeGeometry(curve, 44, radius, 7, false);
+    const color = reverse ? "#8e63ff" : this.edgeColor(edge, weight);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: reverse ? 0.6 + weight * 0.2 : 0.8 + weight * 0.4,
+      transparent: true,
+      opacity: reverse
+        ? Math.min(0.4, 0.15 + weight * 0.15)
+        : Math.min(0.7, 0.3 + weight * 0.3),
+      roughness: 0.38,
+      metalness: 0.1,
+      depthWrite: false
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData = { edge, reverse, curve, weight, radius, baseOpacity: mat.opacity };
+    this.scene.add(mesh);
+    this.edgeMeshes.push(mesh);
+
+    // 常驻流动粒子会造成“能量球一直在播放”的误读；
+    // 查询传播时只使用 animateEdgePulse 生成一次性脉冲。
+  }
+
+  edgeColor(edge, weight) {
+    const gain = semanticGain(edge.sim, params);
+    if (edge.wormholeCandidate) return "#ff2bd6";
+    if (edge.delta >= 8) return "#fb8c00";
+    if (edge.sim < 0.32) return "#e53935";
+    if (gain > 1.12) return "#43a047";
+    if (weight > 0.75) return "#00e5ff";
+    return "#1e88e5";
+  }
+
+  addFlowParticle(curve, edge, weight, offset = 0) {
+    const geo = new THREE.SphereGeometry(0.025 + weight * 0.028, 10, 10);
+    const color = edge.wormholeCandidate ? "#d778ff" : "#aafcff";
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.0
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    this.scene.add(mesh);
+
+    this.flowParticles.push({
+      mesh,
+      curve,
+      t: offset,
+      speed: 0.045 + weight * 0.055,
+      weight
+    });
+  }
+
+  updateParams() {
+    this.rebuildEdges();
+  }
+
+  resetEnergyVisuals() {
+    if (this.activeTimeline) {
+      this.activeTimeline.pause();
+      this.activeTimeline = null;
+    }
+
+    for (const timer of this.scheduledTimers) {
+      clearTimeout(timer);
+    }
+    this.scheduledTimers = [];
+
+    for (const obj of this.transientObjects) {
+      this.scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+    this.transientObjects = [];
+
+    for (const disk of this.energyDisks) {
+      this.scene.remove(disk);
+      disk.geometry.dispose();
+      disk.material.dispose();
+    }
+    this.energyDisks = [];
+
+    for (const [id, mesh] of this.tagMeshes) {
+      const baseColor = new THREE.Color(mesh.userData.activeColor);
+      mesh.material.color = baseColor.clone().lerp(new THREE.Color("#000000"), 0.85);
+      mesh.material.emissive = baseColor;
+      mesh.material.emissiveIntensity = 0.05;
+      mesh.material.opacity = 0.4;
+      mesh.scale.set(0.82,0.82,0.82);
+
+      if (mesh.userData.halo) {
+        anime.remove(mesh.userData.halo.material);
+        mesh.userData.halo.material.opacity = 0;
+      }
+
+      if (mesh.userData.column) {
+        anime.remove(mesh.userData.column.material);
+        mesh.userData.column.material.opacity = 0.015;
+      }
+
+      const label = this.labelSprites.get(id);
+      if (label) {
+        anime.remove(label.material);
+        label.material.opacity = mesh.userData.tag.group === "bridge" ? 0.32 : 0.26;
+      }
+    }
+  }
+
+  playQuery(coreHits) {
+    const runToken = ++this.runToken;
+    this.resetEnergyVisuals();
+
+    const queryBall = this.spawnQueryBall(coreHits);
+    const result = simulateSpikeRouting(coreHits);
+
+    const maxHop = Math.max(...result.events.map(ev => ev.hop), 1);
+    const timelineBar = document.getElementById("timelineBar");
+    const phaseText = document.getElementById("phaseText");
+    timelineBar.style.width = "0%";
+
+    anime({
+      targets: timelineBar,
+      width: "100%",
+      duration: 980 + maxHop * 660,
+      easing: "linear"
+    });
+
+    anime({
+      targets: queryBall.position,
+      y: [9, 2.0],
+      duration: 760,
+      easing: "easeInCubic",
+      update: () => {
+        queryBall.rotation.y += 0.08;
+      },
+      complete: () => {
+        this.scene.remove(queryBall);
+        queryBall.geometry.dispose();
+        queryBall.material.dispose();
+      }
+    });
+
+    phaseText.textContent = "Query Vector 坠入语义地形，执行 noisy KNN 初始支点命中";
+
+    const schedule = (delay, fn) => {
+      const timer = setTimeout(() => {
+        if (runToken !== this.runToken) return;
+        fn();
+      }, delay);
+      this.scheduledTimers.push(timer);
+      return timer;
+    };
+
+    schedule(760, () => {
+      for (const h of coreHits) {
+        this.highlightTag(h.id, "#ffd76a", 2.15, 2.4);
+        this.spawnRing(h.id, "#ffd76a", 1.15);
+        this.spawnEnergyBloom(h.id, "#ffd76a", 1.45, 0.46);
+      }
+    });
+
+    const hopEventIndex = new Map();
+    let lastEventAt = 760;
+
+    for (const ev of result.events) {
+      if (ev.type === "core") continue;
+
+      const indexInHop = hopEventIndex.get(ev.hop) || 0;
+      hopEventIndex.set(ev.hop, indexInHop + 1);
+      const at = 900 + (ev.hop - 1) * 620 + indexInHop * 72;
+      lastEventAt = Math.max(lastEventAt, at);
+
+      schedule(at, () => {
+        phaseText.textContent = ev.type === "wormhole"
+          ? `Hop ${ev.hop}: 张力 ${ev.tension.toFixed(2)} 触发虫洞跃迁`
+          : `Hop ${ev.hop}: ${ev.reverse ? "逆流回溯" : "顺流传播"} energy=${ev.energy.toFixed(3)}`;
+
+        if (ev.type === "wormhole") {
+          this.animateWormhole(ev.from, ev.to, ev.energy, () => {
+            if (runToken !== this.runToken) return;
+            this.highlightTag(ev.to, "#d778ff", 2.25, Math.min(3.2, 1.5 + ev.energy * 2.6));
+            this.spawnRing(ev.to, "#d778ff", 1.55);
+            this.spawnEnergyBloom(ev.to, "#d778ff", 1.65, 0.50);
+          }, runToken);
+        } else {
+          this.animateEdgePulse(ev.from, ev.to, {
+            color: ev.reverse ? "#b299ff" : "#00f7ff",
+            energy: ev.energy,
+            reverse: ev.reverse,
+            runToken,
+            onArrive: () => {
+              if (runToken !== this.runToken) return;
+              this.highlightTag(ev.to, ev.reverse ? "#b7a6ff" : "#9fffff", 1.45 + ev.energy * 1.05, 1.15 + ev.energy * 1.5);
+              this.spawnRing(ev.to, ev.reverse ? "#9a82ff" : "#00eaff", 0.62 + ev.energy * 0.7);
+              this.spawnEnergyBloom(ev.to, ev.reverse ? "#9a82ff" : "#00eaff", 1.0 + ev.energy * 1.5, 0.28 + ev.energy * 0.35);
+            }
+          });
+        }
+      });
+    }
+
+    schedule(lastEventAt + 980, () => {
+      phaseText.textContent = "最终 accumulatedEnergy 形成测地线能量场";
+      this.showEnergyField(result.accumulatedEnergy);
+    });
+
+    return result;
+  }
+
+  spawnQueryBall(coreHits) {
+    const avg = new THREE.Vector3();
+    for (const h of coreHits) {
+      avg.add(this.tagMeshes.get(h.id).position);
+    }
+    avg.multiplyScalar(1 / coreHits.length);
+    avg.y = 9;
+
+    const geo = new THREE.IcosahedronGeometry(0.26, 2);
+    const mat = new THREE.MeshStandardMaterial({
+      color: "#fff2a8",
+      emissive: "#ffd76a",
+      emissiveIntensity: 2.8,
+      roughness: 0.18,
+      metalness: 0.2,
+      transparent: true,
+      opacity: 0.95
+    });
+
+    const ball = new THREE.Mesh(geo, mat);
+    ball.position.copy(avg);
+    this.scene.add(ball);
+
+    return ball;
+  }
+
+  highlightTag(tagId, color, scale = 1.8, intensity = 1.5) {
+    const mesh = this.tagMeshes.get(tagId);
+    if (!mesh) return;
+
+    mesh.material.emissive = new THREE.Color(color);
+    mesh.material.color = new THREE.Color(color);
+    mesh.material.opacity = 1.0;
+    mesh.material.emissiveIntensity = intensity;
+
+    if (mesh.userData.halo) {
+      mesh.userData.halo.material.color = new THREE.Color(color);
+      anime.remove(mesh.userData.halo.material);
+      anime({
+        targets: mesh.userData.halo.material,
+        opacity: [mesh.userData.halo.material.opacity, 0.34, 0.16],
+        duration: 520,
+        easing: "easeOutQuad"
+      });
+    }
+
+    if (mesh.userData.column) {
+      mesh.userData.column.material.color = new THREE.Color(color);
+      anime.remove(mesh.userData.column.material);
+      anime({
+        targets: mesh.userData.column.material,
+        opacity: [mesh.userData.column.material.opacity, 0.46, 0.20],
+        duration: 620,
+        easing: "easeOutQuad"
+      });
+    }
+
+    const label = this.labelSprites.get(tagId);
+    if (label) {
+      anime.remove(label.material);
+      label.material.transparent = true;
+      label.material.opacity = 1.0;
+      label.material.needsUpdate = true;
+    }
+
+    anime.remove(mesh.scale);
+    anime({
+      targets: mesh.scale,
+      x: [mesh.scale.x, scale, 1.05],
+      y: [mesh.scale.y, scale, 1.05],
+      z: [mesh.scale.z, scale, 1.05],
+      duration: 430,
+      easing: "easeOutExpo"
+    });
+
+    anime({
+      targets: mesh.material,
+      emissiveIntensity: [intensity, 0.46],
+      duration: 760,
+      easing: "easeOutQuad"
+    });
+  }
+
+  spawnRing(tagId, color, scale = 1.0) {
+    const mesh = this.tagMeshes.get(tagId);
+    if (!mesh) return;
+
+    const geo = new THREE.RingGeometry(0.16, 0.18, 64);
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.36,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    const ring = new THREE.Mesh(geo, mat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(mesh.position);
+    ring.position.y += 0.035;
+    ring.scale.set(scale, scale, scale);
+    this.scene.add(ring);
+    this.transientObjects.push(ring);
+
+    anime({
+      targets: ring.scale,
+      x: scale * 5.2,
+      y: scale * 5.2,
+      z: scale * 5.2,
+      duration: 920,
+      easing: "easeOutExpo"
+    });
+
+    anime({
+      targets: mat,
+      opacity: 0,
+      duration: 920,
+      easing: "easeOutQuad",
+      complete: () => {
+        this.scene.remove(ring);
+        this.transientObjects = this.transientObjects.filter(obj => obj !== ring);
+        geo.dispose();
+        mat.dispose();
+      }
+    });
+  }
+
+  spawnEnergyBloom(tagId, color, scale = 1.0, peakOpacity = 0.36) {
+    const mesh = this.tagMeshes.get(tagId);
+    if (!mesh) return;
+
+    const geo = new THREE.CircleGeometry(0.20, 72);
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+
+    const disk = new THREE.Mesh(geo, mat);
+    disk.rotation.x = -Math.PI / 2;
+    disk.position.copy(mesh.position);
+    disk.position.y += 0.026;
+    disk.scale.set(0.18, 0.18, 0.18);
+    this.scene.add(disk);
+    this.energyDisks.push(disk);
+    this.transientObjects.push(disk);
+
+    anime({
+      targets: disk.scale,
+      x: scale * 2.7,
+      y: scale * 2.7,
+      z: scale * 2.7,
+      duration: 520,
+      easing: "easeOutExpo"
+    });
+
+    anime({
+      targets: mat,
+      opacity: [0, peakOpacity * 0.46, peakOpacity * 0.14],
+      duration: 620,
+      easing: "easeOutQuad"
+    });
+  }
+
+  animateEdgePulse(fromId, toId, options = {}) {
+    let edgeMesh = this.edgeMeshes.find(m => {
+      const e = m.userData.edge;
+      const r = m.userData.reverse;
+      return !r && e.from === fromId && e.to === toId;
+    });
+
+    if (!edgeMesh) {
+      edgeMesh = this.edgeMeshes.find(m => {
+        const e = m.userData.edge;
+        const r = m.userData.reverse;
+        return r && e.to === fromId && e.from === toId;
+      });
+    }
+
+    if (!edgeMesh) {
+      // fallback: direct line curve
+      const a = this.tagMeshes.get(fromId)?.position;
+      const b = this.tagMeshes.get(toId)?.position;
+      if (!a || !b) return;
+      const mid = a.clone().lerp(b, 0.5);
+      mid.y += 0.8;
+      edgeMesh = { userData: { curve: new THREE.CatmullRomCurve3([a, mid, b]) } };
+    }
+
+    const curve = edgeMesh.userData.curve;
+    const energy = Math.min(1.2, options.energy || 0.2);
+    const pulseColor = options.color || "#00eaff";
+    const travelDuration = options.reverse ? 980 : 880;
+    const geo = new THREE.SphereGeometry(0.10 + energy * 0.10, 24, 24);
+    const mat = new THREE.MeshBasicMaterial({
+      color: pulseColor,
+      transparent: true,
+      opacity: 1.0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const pulse = new THREE.Mesh(geo, mat);
+    this.scene.add(pulse);
+    this.transientObjects.push(pulse);
+
+    if (edgeMesh.material && edgeMesh.userData.baseOpacity !== undefined) {
+      anime.remove(edgeMesh.material);
+      edgeMesh.userData.activated = true;
+      edgeMesh.userData.activeOpacity = edgeMesh.userData.reverse
+        ? Math.min(0.58, 0.34 + energy * 0.22)
+        : Math.min(0.78, 0.48 + energy * 0.30);
+      edgeMesh.userData.activeEmissiveIntensity = edgeMesh.userData.reverse
+        ? 0.95 + energy * 0.80
+        : 1.25 + energy * 1.05;
+      edgeMesh.material.opacity = edgeMesh.userData.activeOpacity;
+      edgeMesh.material.emissiveIntensity = edgeMesh.userData.activeEmissiveIntensity;
+    }
+
+    const glowGeo = new THREE.TubeGeometry(curve, 72, 0.040 + energy * 0.045, 12, false);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: pulseColor,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    this.scene.add(glow);
+    this.transientObjects.push(glow);
+
+    anime({
+      targets: glowMat,
+      opacity: [0, 0.38, 0.12, 0],
+      duration: travelDuration + 180,
+      easing: "easeOutQuad",
+      complete: () => {
+        this.scene.remove(glow);
+        this.transientObjects = this.transientObjects.filter(obj => obj !== glow);
+        glowGeo.dispose();
+        glowMat.dispose();
+      }
+    });
+
+    const state = { t: 0 };
+    anime({
+      targets: state,
+      t: 1,
+      duration: travelDuration,
+      easing: "easeInOutCubic",
+      update: () => {
+        if (options.runToken && options.runToken !== this.runToken) return;
+        pulse.position.copy(curve.getPoint(state.t));
+        const flare = 0.92 + 0.10 * Math.sin(state.t * Math.PI * 6);
+        pulse.scale.setScalar(flare);
+      },
+      complete: () => {
+        if (!options.runToken || options.runToken === this.runToken) {
+          if (typeof options.onArrive === "function") options.onArrive();
+        }
+
+        if (edgeMesh.material && edgeMesh.userData.baseOpacity !== undefined) {
+          if (edgeMesh.userData.activated) {
+            edgeMesh.material.opacity = edgeMesh.userData.activeOpacity;
+            edgeMesh.material.emissiveIntensity = edgeMesh.userData.activeEmissiveIntensity;
+          } else {
+            edgeMesh.material.opacity = edgeMesh.userData.baseOpacity;
+            edgeMesh.material.emissiveIntensity = edgeMesh.userData.reverse
+              ? 0.20 + edgeMesh.userData.weight * 0.10
+              : 0.24 + edgeMesh.userData.weight * 0.18;
+          }
+        }
+
+        this.scene.remove(pulse);
+        this.transientObjects = this.transientObjects.filter(obj => obj !== pulse);
+        geo.dispose();
+        mat.dispose();
+      }
+    });
+  }
+
+  animateWormhole(fromId, toId, energy, onArrive = null, runToken = null) {
+    const a = this.tagMeshes.get(fromId)?.position;
+    const b = this.tagMeshes.get(toId)?.position;
+    if (!a || !b) return;
+
+    const start = a.clone();
+    const end = b.clone();
+    const mid = start.clone().lerp(end, 0.5);
+    mid.y += 2.6 + start.distanceTo(end) * 0.10;
+
+    const curve = new THREE.CatmullRomCurve3([start, mid, end]);
+
+    const geo = new THREE.TubeGeometry(
+      curve,
+      80,
+      0.030 + Math.min(0.08, energy * 0.05),
+      12,
+      false
+    );
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: "#d778ff",
+      emissive: "#d778ff",
+      emissiveIntensity: 1.8,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false
+    });
+
+    const arc = new THREE.Mesh(geo, mat);
+    this.scene.add(arc);
+    this.transientObjects.push(arc);
+
+    anime({
+      targets: mat,
+      opacity: [0, 0.42, 0],
+      duration: 760,
+      easing: "easeOutExpo",
+      complete: () => {
+        this.scene.remove(arc);
+        this.transientObjects = this.transientObjects.filter(obj => obj !== arc);
+        geo.dispose();
+        mat.dispose();
+      }
+    });
+
+    this.animateEdgePulse(fromId, toId, {
+      color: "#f3a1ff",
+      energy: energy * 1.4,
+      onArrive,
+      runToken
+    });
+  }
+
+  showEnergyField(accumulatedEnergy) {
+    let maxE = 0;
+    for (const v of accumulatedEnergy.values()) maxE = Math.max(maxE, v);
+
+    for (const [id, energy] of accumulatedEnergy.entries()) {
+      const mesh = this.tagMeshes.get(id);
+      if (!mesh) continue;
+
+      const n = energy / maxE;
+      const color = new THREE.Color();
+      if (n < 0.5) {
+        color.lerpColors(new THREE.Color("#ffe066"), new THREE.Color("#fb8c00"), n / 0.5);
+      } else {
+        color.lerpColors(new THREE.Color("#fb8c00"), new THREE.Color("#e53935"), (n - 0.5) / 0.5);
+      }
+
+      mesh.material.color = color;
+      mesh.material.emissive = color;
+      mesh.material.opacity = 1.0;
+      mesh.material.emissiveIntensity = 1.2 + n * 2.1;
+
+      const label = this.labelSprites.get(id);
+      if (label) {
+        anime.remove(label.material);
+        label.material.opacity = 1.0;
+        label.material.needsUpdate = true;
+      }
+
+      if (mesh.userData.halo) {
+        mesh.userData.halo.material.color = color;
+        anime({
+          targets: mesh.userData.halo.material,
+          opacity: 0.08 + n * 0.14,
+          duration: 520 + n * 360,
+          easing: "easeOutQuad"
+        });
+      }
+
+      if (mesh.userData.column) {
+        mesh.userData.column.material.color = color;
+        anime({
+          targets: mesh.userData.column.material,
+          opacity: 0.10 + n * 0.20,
+          duration: 520 + n * 360,
+          easing: "easeOutQuad"
+        });
+      }
+
+      const geo = new THREE.CircleGeometry(0.18 + n * 0.82, 64);
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+
+      const disk = new THREE.Mesh(geo, mat);
+      disk.rotation.x = -Math.PI / 2;
+      disk.position.copy(mesh.position);
+      disk.position.y += 0.018;
+      disk.scale.set(0.12, 0.12, 0.12);
+      this.scene.add(disk);
+      this.energyDisks.push(disk);
+
+      anime({
+        targets: disk.scale,
+        x: 1,
+        y: 1,
+        z: 1,
+        duration: 520 + n * 360,
+        easing: "easeOutExpo"
+      });
+
+      anime({
+        targets: mat,
+        opacity: 0.07 + n * 0.16,
+        duration: 520 + n * 360,
+        easing: "easeOutQuad"
+      });
+    }
+  }
+
+  resize() {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+  }
+
+  animate() {
+    requestAnimationFrame(() => this.animate());
+
+    const dt = this.clock.getDelta();
+
+    for (const [, sp] of this.labelSprites) {
+      const d = sp.position.distanceTo(this.camera.position);
+      const s = THREE.MathUtils.clamp(d / 13, 0.72, 1.25);
+      sp.scale.set(2.05 * s, 0.52 * s, 1);
+    }
+
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+}
+
+/* ============================================================
+   6. UI Binding
+   ============================================================ */
+
+let terrainScene = null;
+
+function initializeSimulationApp() {
+const sceneContainer = document.getElementById("scene");
+terrainScene = new SemanticTerrainScene(sceneContainer);
+
+if (window.self !== window.top) {
+  document.body.classList.add("embedded-mode");
+}
+
+const TUNING_PARAM_KEYS = [
+  "forwardGain",
+  "reverseGain",
+  "distanceDecay",
+  "semanticGainPeak",
+  "semanticGainSigma",
+  "reverseAnchorMax",
+  "reverseInversionGuard",
+  "maxSafeHops",
+  "baseMomentum",
+  "firingThreshold",
+  "baseDecay",
+  "wormholeDecay",
+  "tensionThreshold",
+  "maxNeighborsPerNode"
+];
+
+const EDGE_REBUILD_PARAM_KEYS = new Set([
+  "forwardGain",
+  "reverseGain",
+  "distanceDecay",
+  "semanticGainPeak",
+  "semanticGainSigma",
+  "reverseAnchorMax",
+  "reverseInversionGuard"
+]);
+
+function applyExternalParams(nextParams = {}) {
+  let shouldRebuildEdges = false;
+  let changedCount = 0;
+
+  for (const key of TUNING_PARAM_KEYS) {
+    if (typeof nextParams[key] !== "number" || Number.isNaN(nextParams[key])) continue;
+
+    const nextValue = Number.isInteger(params[key]) ? Math.round(nextParams[key]) : nextParams[key];
+
+    if (params[key] !== nextValue) {
+      params[key] = nextValue;
+      changedCount += 1;
+
+      if (EDGE_REBUILD_PARAM_KEYS.has(key)) {
+        shouldRebuildEdges = true;
+      }
+    }
+  }
+
+  if (typeof nextParams.semanticGainEnabled === "number") {
+    const nextValue = nextParams.semanticGainEnabled >= 0.5;
+
+    if (params.semanticGainEnabled !== nextValue) {
+      params.semanticGainEnabled = nextValue;
+      shouldRebuildEdges = true;
+      changedCount += 1;
+    }
+  }
+
+  if (typeof nextParams.reverseAnchorBoost === "number") {
+    const nextValue = nextParams.reverseAnchorBoost >= 0.5;
+
+    if (params.reverseAnchorBoost !== nextValue) {
+      params.reverseAnchorBoost = nextValue;
+      shouldRebuildEdges = true;
+      changedCount += 1;
+    }
+  }
+
+  syncControlsFromParams();
+
+  if (shouldRebuildEdges) {
+    terrainScene.updateParams();
+  }
+
+  const syncStatus = document.getElementById("syncStatus");
+  if (syncStatus) {
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    syncStatus.textContent = changedCount > 0
+      ? `已同步调参工作台参数 · ${time}`
+      : `参数已是最新 · ${time}`;
+  }
+}
+
+function postParamsToParent() {
+  if (window.self === window.top) return;
+
+  const payload = {};
+  for (const key of TUNING_PARAM_KEYS) {
+    payload[key] = params[key];
+  }
+
+  payload.semanticGainEnabled = params.semanticGainEnabled ? 1 : 0;
+  payload.reverseAnchorBoost = params.reverseAnchorBoost ? 1 : 0;
+
+  window.parent.postMessage(
+    {
+      type: "tagmemo-simulation-params-changed",
+      params: payload
+    },
+    window.location.origin
+  );
+}
+
+function syncControlsFromParams() {
+  document.querySelectorAll(".control").forEach(ctrl => {
+    const key = ctrl.dataset.param;
+    const input = ctrl.querySelector("input");
+    const value = ctrl.querySelector(".control-value");
+
+    if (!key || !input || !value || params[key] === undefined) return;
+
+    input.value = params[key];
+    value.textContent = formatParam(params[key]);
+  });
+
+  const semanticGainToggle = document.getElementById("semanticGainEnabled");
+  if (semanticGainToggle) {
+    semanticGainToggle.checked = !!params.semanticGainEnabled;
+  }
+
+  const reverseAnchorToggle = document.getElementById("reverseAnchorBoost");
+  if (reverseAnchorToggle) {
+    reverseAnchorToggle.checked = !!params.reverseAnchorBoost;
+  }
+}
+
+window.addEventListener("message", event => {
+  if (event.origin !== window.location.origin) return;
+  if (!event.data || event.data.type !== "tagmemo-simulation-params") return;
+
+  applyExternalParams(event.data.params);
+});
+
+function bindControls() {
+  document.querySelectorAll(".control").forEach(ctrl => {
+    const key = ctrl.dataset.param;
+    const input = ctrl.querySelector("input");
+    const value = ctrl.querySelector(".control-value");
+
+    input.value = params[key];
+    value.textContent = formatParam(params[key]);
+
+    input.addEventListener("input", () => {
+      const raw = Number(input.value);
+      params[key] = Number.isInteger(params[key]) ? Math.round(raw) : raw;
+      value.textContent = formatParam(params[key]);
+
+      if ([
+        "forwardGain",
+        "reverseGain",
+        "distanceDecay",
+        "semanticGainPeak",
+        "semanticGainSigma",
+        "reverseAnchorMax",
+        "reverseInversionGuard"
+      ].includes(key)) {
+        terrainScene.updateParams();
+      }
+
+      postParamsToParent();
+    });
+  });
+
+  document.getElementById("semanticGainEnabled").addEventListener("change", ev => {
+    params.semanticGainEnabled = ev.target.checked;
+    terrainScene.updateParams();
+    postParamsToParent();
+  });
+
+  document.getElementById("reverseAnchorBoost").addEventListener("change", ev => {
+    params.reverseAnchorBoost = ev.target.checked;
+    terrainScene.updateParams();
+    postParamsToParent();
+  });
+
+  document.getElementById("runQuery").addEventListener("click", runQuery);
+  document.getElementById("randomQuery").addEventListener("click", () => {
+    const q = randomQueries[Math.floor(Math.random() * randomQueries.length)];
+    document.getElementById("queryText").value = q;
+    runQuery();
+  });
+}
+
+function formatParam(v) {
+  return Number(v).toFixed(Number.isInteger(v) ? 0 : 2);
+}
+
+function runQuery() {
+  const query = document.getElementById("queryText").value.trim();
+  const readout = document.getElementById("readout");
+
+  const hits = knnInitialTags(query, 5);
+  const result = terrainScene.playQuery(hits);
+
+  const maxEnergy = Math.max(...result.accumulatedEnergy.values());
+  const activated = [...result.accumulatedEnergy.entries()]
+    .map(([id, e]) => ({
+      name: TAGS.find(t => t.id === id)?.name,
+      energy: e,
+      n: e / maxEnergy
+    }))
+    .sort((a,b) => b.energy - a.energy)
+    .slice(0, 12);
+
+  const wormholes = result.events.filter(ev => ev.type === "wormhole").length;
+  const reverse = result.events.filter(ev => ev.reverse).length;
+
+  readout.textContent =
+`KNN 初始击中 coreTags:
+${hits.map(h => `  - ${h.name}  score=${h.score.toFixed(2)}`).join("\n")}
+
+传播统计:
+  events=${result.events.length}
+  wormholes=${wormholes}
+  reverseFlow=${reverse}
+  activatedTags=${result.accumulatedEnergy.size}
+
+Top Energy Field:
+${activated.map(x => `  - ${x.name}  energy=${x.energy.toFixed(3)}`).join("\n")}`;
+}
+
+bindControls();
+
+// 初始自动播放一次，像展台启动动画
+setTimeout(runQuery, 800);
+}
+
+window.addEventListener("tagmemo-simulation-deps-ready", initializeSimulationApp, { once: true });
+</script>
+</body>
+</html>
