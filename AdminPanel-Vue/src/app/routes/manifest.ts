@@ -293,6 +293,17 @@ export const APP_ROUTE_MANIFEST = [
     component: () => import("@/views/ToolApprovalManager.vue"),
   },
   {
+    id: "ai-image-agents",
+    routeName: "AiImageAgents",
+    path: "/ai-image-agents",
+    title: "AI 图像 Agent 测试",
+    icon: "image",
+    requiresAuth: true,
+    navGroup: "tools",
+    showInSidebar: true,
+    component: () => import("@/views/AiImageAgents.vue"),
+  },
+  {
     id: "thinking-chains-editor",
     routeName: "ThinkingChainsEditor",
     path: "/thinking-chains-editor",

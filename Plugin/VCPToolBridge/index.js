@@ -217,7 +217,16 @@ class VCPToolBridge {
         if (this.debugMode) console.log(`[VCPToolBridge] ⚡ Executing bridged tool: ${toolName} (Req: ${requestId})`);
 
         try {
-            const result = await pluginManager.processToolCall(toolName, toolArgs);
+            const result = await pluginManager.processToolCall(
+                toolName,
+                toolArgs,
+                null,
+                {
+                    requestSource: 'vcp-tool-bridge',
+                    bridgeId: serverId,
+                    invocationId: requestId
+                }
+            );
 
             // 如果是异步任务（返回了 taskId），记录映射关系
             // 这样当 vcp_log 或 plugin_async_callback 事件触发时，我们知道发回给谁

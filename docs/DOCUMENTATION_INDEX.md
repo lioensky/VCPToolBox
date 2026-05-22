@@ -47,6 +47,8 @@
 | [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 所有重要文件的职责、入口、依赖关系 | ⭐ |
 | [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 每项功能的入口、触发条件、处理流程、配置项 | ⭐ |
 | [OPERATIONS.md](./OPERATIONS.md) | 启动方式、依赖要求、Docker配置、故障排查 | ⭐ |
+| [PROD_STABLE_BASELINE.md](./PROD_STABLE_BASELINE.md) | prod/stable 稳定线基线、禁入文件、默认安全态、验证矩阵、治理门 | ⭐⭐⭐ |
+| [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md) | prod/stable 服务区部署预检、启动、smoke check 与回滚流程 | ⭐⭐⭐ |
 
 ---
 
@@ -64,6 +66,8 @@
 | 优化RAG检索 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § TagMemo算法 |
 | 了解 Codex 记忆写入 | [CODEX_MEMORY_BRIDGE.md](./CODEX_MEMORY_BRIDGE.md) § 约束规则 |
 | 查看 Codex 记忆监控 | [CODEX_MEMORY_BRIDGE.md](./CODEX_MEMORY_BRIDGE.md) § Admin Monitoring |
+| 维护 prod/stable 稳定线 | [PROD_STABLE_BASELINE.md](./PROD_STABLE_BASELINE.md) |
+| 部署 prod/stable 到服务区 | [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md) |
 | 部署分布式节点 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 节点注册 |
 | 调试向量索引 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) § 错误处理 |
 | 定制管理面板 | [FRONTEND_COMPONENTS.md](./FRONTEND_COMPONENTS.md) § AdminPanel |

@@ -93,6 +93,9 @@ dist
 # 但保留 AdminPanel-Vue 构建产物，让用户开箱即用
 !AdminPanel-Vue/dist/
 !AdminPanel-Vue/dist/**
+# DailyHot 的 dist 是插件运行源码，不是本仓根层构建产物
+!Plugin/DailyHot/dist/
+!Plugin/DailyHot/dist/**
 
 # Gatsby files
 .cache/
@@ -161,6 +164,7 @@ tag-processor-config.env
 DebugLog/
 dailynote/*
 !dailynote/VCP桌面知识/
+!dailynote/VCP桌面知识/**
 ip_blacklist.json
 /VectorStore
 
@@ -193,6 +197,7 @@ Plugin/WeatherReporter/city_cache.txt
 ToolConfigs/dynamic_tool_catalog.json
 ToolConfigs/dynamic_tool_categories.json
 ToolConfigs/dynamic_tool_catalog.json.*.tmp
+Plugin/**/state/
 
 # ===== 本地开发临时产物 =====
 /.tmp/
@@ -210,6 +215,8 @@ image/通用表情包/*
 
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
+# 忽略 GPTImageGen 生成的图片
+image/gptimagegen/
 
 # ===== IDE / OS 文件 =====
 .vscode/
@@ -242,6 +249,11 @@ rust-vexus-lite/target/
 VCPDistributedServer
 # XiaohongshuFetch config
 Plugin/XiaohongshuFetch/config.env
+
+# Plugin store local runtime/cache files
+pluginStoreSources.json
+/tmp/
+Plugin/.backup/
 
 # Local runtime state and generated indexes
 /state/

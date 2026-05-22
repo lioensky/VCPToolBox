@@ -1034,7 +1034,16 @@ class SnowBridge {
 			);
 			this.activeInvocations.set(invocationId, context);
 
-			const result = await pluginManager.processToolCall(toolName, toolArgs);
+			const result = await pluginManager.processToolCall(
+				toolName,
+				toolArgs,
+				null,
+				{
+					requestSource: 'snowbridge',
+					bridgeId: serverId,
+					invocationId,
+				},
+			);
 			const latestContext = this.activeInvocations.get(invocationId);
 
 			if (result && result.taskId) {

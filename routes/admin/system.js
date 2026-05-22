@@ -8,29 +8,71 @@ const execAsync = util.promisify(exec);
 const pm2 = require('pm2');
 const { getAuthCode } = require('../../modules/captchaDecoder');
 
+function buildCurrentProcessSnapshot() {
+    return {
+        name: 'vcptoolbox',
+        pid: process.pid,
+        status: 'online',
+        cpu: 0,
+        memory: process.memoryUsage().rss,
+        uptime: process.uptime(),
+        restarts: 0,
+        source: 'process'
+    };
+}
+
+function buildCurrentProcessResponse(extra = {}) {
+    return {
+        success: true,
+        source: 'process',
+        processes: [buildCurrentProcessSnapshot()],
+        ...extra
+    };
+}
+
+function normalizePm2Process(proc) {
+    return {
+        name: proc.name,
+        pid: proc.pid,
+        status: proc.pm2_env?.status || 'unknown',
+        cpu: proc.monit?.cpu || 0,
+        memory: proc.monit?.memory || 0,
+        uptime: proc.pm2_env?.pm_uptime || 0,
+        restarts: proc.pm2_env?.restart_time || 0,
+        source: 'pm2'
+    };
+}
+
 module.exports = function(options) {
     const router = express.Router();
     // const { DEBUG_MODE } = options; // Currently unused in this module but available
+
+    // 获取当前 VCP 进程快照；用于非 PM2 启动方式下的只读监控
+    router.get('/system-monitor/processes', (req, res) => {
+        res.json(buildCurrentProcessResponse());
+    });
 
     // 获取PM2进程列表和资源使用情况
     router.get('/system-monitor/pm2/processes', (req, res) => {
         pm2.list((err, list) => {
             if (err) {
-                console.error('[SystemMonitor] PM2 API Error:', err);
-                return res.status(500).json({ success: false, error: 'Failed to get PM2 processes via API', details: err.message });
+                console.warn('[SystemMonitor] PM2 API unavailable, returning current process snapshot:', err.message);
+                return res.json(buildCurrentProcessResponse({
+                    degraded: true,
+                    warning: 'PM2 process list unavailable; returned current VCP process snapshot.'
+                }));
             }
 
-            const processInfo = list.map(proc => ({
-                name: proc.name,
-                pid: proc.pid,
-                status: proc.pm2_env.status,
-                cpu: proc.monit.cpu,
-                memory: proc.monit.memory,
-                uptime: proc.pm2_env.pm_uptime,
-                restarts: proc.pm2_env.restart_time
-            }));
+            if (!Array.isArray(list) || list.length === 0) {
+                return res.json(buildCurrentProcessResponse({
+                    degraded: true,
+                    warning: 'No PM2 processes found; returned current VCP process snapshot.'
+                }));
+            }
 
-            res.json({ success: true, processes: processInfo });
+            const processInfo = list.map(normalizePm2Process);
+
+            res.json({ success: true, source: 'pm2', processes: processInfo });
         });
     });
 

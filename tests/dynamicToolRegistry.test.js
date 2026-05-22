@@ -310,6 +310,44 @@ test('distributed offline state excludes tools while reconnect reuses classifica
   assert.equal(registry.getRecord('distributed:srv-a:RemoteSearch').available, true);
 });
 
+test('admin state hides stale distributed ids when the same cloud tool reconnects under a new id', async () => {
+  const projectRoot = await makeProjectRoot();
+  const calls = [];
+  const pluginManager = makePluginManager([
+    makeManifest('RemoteSearch', 'Remote search service for web lookup.', { serverId: 'srv-old' })
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig(),
+    classifier: classifierFactory(calls)
+  });
+
+  await registry.syncFromPluginManager('distributed_register_old');
+  await registry.flushClassificationQueue();
+  await registry.markDistributedOffline('srv-old');
+
+  pluginManager.plugins.set(
+    'RemoteSearch',
+    makeManifest('RemoteSearch', 'Remote search service for web lookup.', { serverId: 'srv-new' })
+  );
+  await registry.syncFromPluginManager('distributed_register_new');
+  await registry.flushClassificationQueue();
+
+  const oldRecord = registry.getRecord('distributed:srv-old:RemoteSearch');
+  const newRecord = registry.getRecord('distributed:srv-new:RemoteSearch');
+  assert.ok(oldRecord, 'stale distributed id remains in the catalog for cache/history reuse');
+  assert.ok(newRecord, 'new distributed id should be registered');
+  assert.equal(oldRecord.available, false);
+  assert.equal(newRecord.available, true);
+
+  const adminKeys = registry.getAdminState().records.map((record) => record.originKey);
+  assert.equal(adminKeys.includes('distributed:srv-old:RemoteSearch'), false);
+  assert.equal(adminKeys.includes('distributed:srv-new:RemoteSearch'), true);
+});
+
 test('buildInjection exposes brief list, relevant full descriptions, and explicit directives', async () => {
   const projectRoot = await makeProjectRoot();
   const calls = [];
@@ -606,6 +644,54 @@ test('classification uses RAG embedding fallback when no small model or classifi
 
   const state = registry.getAdminState();
   const item = state.records.find((record) => record.pluginName === 'SemanticSearch');
+  assert.ok(item.categories.includes('search'));
+  assert.equal(item.classifiedBy, 'rag_embedding_fallback');
+});
+
+test('RAG embedding fallback uses persistent plugin description vectors when available', async () => {
+  const projectRoot = await makeProjectRoot();
+  const vectorKeys = [];
+  const rawCalls = [];
+  const pluginManager = makePluginManager([
+    makeManifest('PersistentSemanticSearch', 'Search web references with semantic retrieval.')
+  ]);
+  pluginManager.vectorDBManager = {
+    async getPluginDescriptionVector(descText, rawEmbeddingFn) {
+      vectorKeys.push(descText);
+      return rawEmbeddingFn(descText);
+    }
+  };
+  pluginManager.messagePreprocessors = new Map([
+    ['RAGDiaryPlugin', {
+      async getSingleEmbeddingCached(text) {
+        rawCalls.push(text);
+        const lower = String(text).toLowerCase();
+        if (lower.includes('search') || lower.includes('web') || lower.includes('retrieval')) return [1, 0];
+        if (lower.includes('file') || lower.includes('code')) return [0, 1];
+        return [0.1, 0.1];
+      },
+      async getSingleEmbedding() {
+        throw new Error('getSingleEmbedding should not be used when cached embedding is available');
+      }
+    }]
+  ]);
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ useRagEmbeddings: true })
+  });
+
+  await registry.syncFromPluginManager('persistent_embedding_fallback');
+  await registry.flushClassificationQueue();
+
+  assert.ok(vectorKeys.some((key) => key.startsWith('PersistentSemanticSearch')));
+  assert.ok(vectorKeys.some((key) => key.startsWith('search:')));
+  assert.ok(!vectorKeys.some((key) => key.startsWith('dynamic_tool_registry:')));
+  assert.deepEqual(rawCalls, vectorKeys);
+  assert.equal(rawCalls.length, vectorKeys.length);
+  const item = registry.getAdminState().records.find((record) => record.pluginName === 'PersistentSemanticSearch');
   assert.ok(item.categories.includes('search'));
   assert.equal(item.classifiedBy, 'rag_embedding_fallback');
 });

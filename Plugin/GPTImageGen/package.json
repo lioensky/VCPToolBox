@@ -1,0 +1,9 @@
+{
+  "name": "gptimagegen",
+  "version": "1.0.0",
+  "description": "GPT Image Generation plugin for VCPToolBox",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
