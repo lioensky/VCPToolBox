@@ -62,6 +62,7 @@ export interface PM2Process {
   cpu: number;
   memory: number;
   uptime: number;
+  startedAt?: number;
   restarts: number;
   errors?: number;
 }

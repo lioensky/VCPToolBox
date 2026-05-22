@@ -2,6 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
 const {
+    normalizeToolApprovalConfig,
+    validateToolApprovalConfig
+} = require('./toolApprovalConfigSchema');
+const {
     getAliasesForCanonical,
     resolveToolIdentity
 } = require('./toolIdentityResolver');
@@ -9,12 +13,7 @@ const {
 class ToolApprovalManager {
     constructor(configPath) {
         this.configPath = configPath;
-        this.config = {
-            enabled: false,
-            timeoutMinutes: 5,
-            approveAll: false,
-            approvalList: []
-        };
+        this.config = normalizeToolApprovalConfig();
         this.watcher = null;
         this.loadConfig();
         this.startWatching();
@@ -24,7 +23,12 @@ class ToolApprovalManager {
         try {
             if (fs.existsSync(this.configPath)) {
                 const content = fs.readFileSync(this.configPath, 'utf8');
-                this.config = JSON.parse(content);
+                const rawConfig = JSON.parse(content);
+                const validation = validateToolApprovalConfig(rawConfig);
+                if (!validation.valid) {
+                    console.warn(`[ToolApprovalManager] Invalid config values detected, falling back to normalized defaults where needed: ${validation.errors.join('; ')}`);
+                }
+                this.config = normalizeToolApprovalConfig(rawConfig);
                 console.log(`[ToolApprovalManager] Configuration loaded from ${this.configPath}`);
                 if (this.config.debugMode) {
                     console.log('[ToolApprovalManager] Current Config:', JSON.stringify(this.config, null, 2));
@@ -235,7 +239,7 @@ class ToolApprovalManager {
     }
 
     getTimeoutMs() {
-        return (this.config.timeoutMinutes || 5) * 60 * 1000;
+        return this.config.timeoutMinutes * 60 * 1000;
     }
 
     shutdown() {

@@ -1,6 +1,11 @@
 const express = require('express');
 const fs = require('fs').promises;
 const path = require('path');
+const {
+    DEFAULT_TOOL_APPROVAL_CONFIG,
+    normalizeToolApprovalConfig,
+    validateToolApprovalConfig
+} = require('../../modules/toolApprovalConfigSchema');
 
 module.exports = function(options) {
     const router = express.Router();
@@ -11,10 +16,10 @@ module.exports = function(options) {
         const configPath = path.join(__dirname, '..', '..', 'toolApprovalConfig.json');
         try {
             const content = await fs.readFile(configPath, 'utf-8');
-            res.json(JSON.parse(content));
+            res.json(normalizeToolApprovalConfig(JSON.parse(content)));
         } catch (error) {
             if (error.code === 'ENOENT') {
-                res.json({ enabled: false, timeoutMinutes: 5, approveAll: false, approvalList: [] });
+                res.json(normalizeToolApprovalConfig(DEFAULT_TOOL_APPROVAL_CONFIG));
             } else {
                 console.error('[AdminPanelRoutes API] Error reading tool approval config:', error);
                 res.status(500).json({ error: 'Failed to read tool approval config', details: error.message });
@@ -24,12 +29,17 @@ module.exports = function(options) {
 
     router.post('/tool-approval-config', async (req, res) => {
         const { config } = req.body;
-        if (typeof config !== 'object' || config === null) {
-            return res.status(400).json({ error: 'Invalid configuration data. Object expected.' });
+        const validation = validateToolApprovalConfig(config);
+        if (!validation.valid) {
+            return res.status(400).json({
+                error: 'Invalid tool approval configuration.',
+                details: validation.errors
+            });
         }
         const configPath = path.join(__dirname, '..', '..', 'toolApprovalConfig.json');
         try {
-            await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+            const normalizedConfig = normalizeToolApprovalConfig(config);
+            await fs.writeFile(configPath, JSON.stringify(normalizedConfig, null, 2), 'utf-8');
             res.json({ success: true, message: '工具调用审核配置已成功保存。' });
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error writing tool approval config:', error);

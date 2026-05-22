@@ -8,14 +8,28 @@ const execAsync = util.promisify(exec);
 const pm2 = require('pm2');
 const { getAuthCode } = require('../../modules/captchaDecoder');
 
+function getStartedAtFromUptimeSeconds(uptimeSeconds) {
+    return Date.now() - Math.max(0, Math.floor(uptimeSeconds * 1000));
+}
+
+function getUptimeSecondsFromStartedAt(startedAt) {
+    if (!Number.isFinite(startedAt) || startedAt <= 0) {
+        return 0;
+    }
+
+    return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+}
+
 function buildCurrentProcessSnapshot() {
+    const uptime = process.uptime();
     return {
         name: 'vcptoolbox',
         pid: process.pid,
         status: 'online',
         cpu: 0,
         memory: process.memoryUsage().rss,
-        uptime: process.uptime(),
+        uptime,
+        startedAt: getStartedAtFromUptimeSeconds(uptime),
         restarts: 0,
         source: 'process'
     };
@@ -31,13 +45,15 @@ function buildCurrentProcessResponse(extra = {}) {
 }
 
 function normalizePm2Process(proc) {
+    const startedAt = proc.pm2_env?.pm_uptime || 0;
     return {
         name: proc.name,
         pid: proc.pid,
         status: proc.pm2_env?.status || 'unknown',
         cpu: proc.monit?.cpu || 0,
         memory: proc.monit?.memory || 0,
-        uptime: proc.pm2_env?.pm_uptime || 0,
+        uptime: getUptimeSecondsFromStartedAt(startedAt),
+        startedAt,
         restarts: proc.pm2_env?.restart_time || 0,
         source: 'pm2'
     };
