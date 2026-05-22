@@ -842,6 +842,9 @@ class KnowledgeBaseManager {
                 const diaryName = parts.length > 1 ? parts[0] : 'Root';
 
                 if (this.config.ignoreFolders.includes(diaryName)) return;
+                // 🛠️ 修复：ignorePrefixes/ignoreSuffixes 同时应用于日记本（文件夹）名和文件名
+                if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix))) return;
+                if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix))) return;
                 const fileName = path.basename(relPath);
                 if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
                 if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;

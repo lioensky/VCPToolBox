@@ -101,6 +101,21 @@ function formatToolResult(result) {
   return String(result);
 }
 
+function buildExecutionContext(processingContext = {}, configuredExecutionContext = null) {
+  const configuredAgentAlias = typeof configuredExecutionContext?.agentAlias === 'string'
+    ? configuredExecutionContext.agentAlias.trim()
+    : null;
+  const configuredRequestSource = typeof configuredExecutionContext?.requestSource === 'string'
+    ? configuredExecutionContext.requestSource.trim()
+    : null;
+
+  return {
+    agentAlias: configuredAgentAlias || processingContext.expandedAgentName || null,
+    agentId: configuredExecutionContext?.agentId || null,
+    requestSource: configuredRequestSource || 'chatCompletionHandler'
+  };
+}
+
 async function getRealAuthCode(debugMode = false) {
   try {
     const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
@@ -348,6 +363,7 @@ class ChatCompletionHandler {
       roleDividerRemoveDisabledTags, // 新增
       chinaModel1, // 新增
       chinaModel1Cot, // 新增
+      executionContext: configuredExecutionContext,
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -619,6 +635,7 @@ class ChatCompletionHandler {
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
 
       originalBody.messages = processedMessages;
+      const executionContext = buildExecutionContext(processingContext, configuredExecutionContext);
       await writeDebugLog('LogOutputAfterProcessing', originalBody);
 
       const willStreamResponse = isOriginalRequestStreaming;
@@ -744,6 +761,7 @@ class ChatCompletionHandler {
         abortController,
         originalBody,
         clientIp,
+        executionContext,
         forceShowVCP,
         _refreshRagBlocksIfNeeded,
         fetchWithRetry,
@@ -868,5 +886,7 @@ class ChatCompletionHandler {
     }
   }
 }
+
+ChatCompletionHandler._buildExecutionContext = buildExecutionContext;
 
 module.exports = ChatCompletionHandler;

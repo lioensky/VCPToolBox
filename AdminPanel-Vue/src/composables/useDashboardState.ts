@@ -24,6 +24,7 @@ import type { DashboardWeatherDisplay, NewsItem } from "@/dashboard/types";
 import { createLogger } from "@/utils/logger";
 import { sanitizeExternalUrl } from "@/utils/url";
 import type { NodeProcessInfo } from "@/types/api.system";
+import type { PM2ProcessListResult } from "@/api/system";
 
 interface PollingController {
   start: () => void;
@@ -197,7 +198,10 @@ export function useDashboardState(
   const memUsage = ref(0);
   const memInfo = ref("加载中…");
   const vcpMemUsage = ref(0);
-  const pm2Processes = ref<Awaited<ReturnType<typeof systemApi.getPM2Processes>>>([]);
+  const pm2Processes = ref<PM2ProcessListResult>({
+    degraded: false,
+    processes: [],
+  });
   const nodeInfo = ref<Partial<NodeProcessInfo>>({});
   const userAuthCode = ref("加载中…");
   const weather = ref<DashboardWeatherDisplay>({

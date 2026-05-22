@@ -11,6 +11,8 @@ const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
 const ToolApprovalManager = require('./modules/toolApprovalManager');
 const { hasFoldMarkers, buildDynamicFoldObject } = require('./modules/foldProtocol');
+const { normalizeExecutionContext } = require('./modules/toolExecutionContext');
+const { buildToolApprovalEvidence } = require('./modules/toolApprovalEvidence');
 
 const LEGACY_PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const LEGACY_MANIFEST_FILE_NAME = 'plugin-manifest.json';
@@ -36,7 +38,7 @@ class PluginManager extends EventEmitter {
         this.reloadTimeout = null;
         this.vectorDBManager = null; // 修复：不再自己创建，等待注入
         this.toolApprovalManager = new ToolApprovalManager(path.join(__dirname, 'toolApprovalConfig.json'));
-        this.pendingApprovals = new Map(); // requestId -> { resolve, reject, timeoutId }
+        this.pendingApprovals = new Map(); // requestId -> { resolve, reject, timeoutId, notifyAiOnReject }
     }
 
     setWebSocketServer(wss) {
@@ -814,19 +816,7 @@ class PluginManager extends EventEmitter {
         if (!plugin) {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
         }
-        const normalizedExecutionContext = (executionContext && typeof executionContext === 'object')
-            ? {
-                agentAlias: typeof executionContext.agentAlias === 'string' && executionContext.agentAlias.trim()
-                    ? executionContext.agentAlias.trim()
-                    : null,
-                agentId: typeof executionContext.agentId === 'string' && executionContext.agentId.trim()
-                    ? executionContext.agentId.trim()
-                    : null,
-                requestSource: typeof executionContext.requestSource === 'string' && executionContext.requestSource.trim()
-                    ? executionContext.requestSource.trim()
-                    : 'unknown'
-            }
-            : null;
+        const normalizedExecutionContext = normalizeExecutionContext(executionContext, { nullWhenMissing: true });
 
         // Helper function to generate a timestamp string
         const _getFormattedLocalTimestamp = () => {
@@ -893,9 +883,22 @@ class PluginManager extends EventEmitter {
         // --- 透明化处理结束 ---
 
         // --- 人工审核逻辑 (新增) ---
-        if (this.toolApprovalManager.shouldApprove(toolName, pluginSpecificArgs)) {
+        const approvalDecision = this.toolApprovalManager.getApprovalDecision(toolName, pluginSpecificArgs, {
+            pluginRegistry: this.plugins
+        });
+        if (approvalDecision.requiresApproval) {
             const requestId = `approve-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-            if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" requires manual approval. Request ID: ${requestId}`);
+            const approvalEvidence = buildToolApprovalEvidence({
+                toolName,
+                approvalDecision,
+                executionContext: normalizedExecutionContext,
+                toolArgs: pluginSpecificArgs
+            });
+            if (this.debugMode) {
+                console.log(
+                    `[PluginManager] Tool call for "${toolName}" requires manual approval. Request ID: ${requestId}. notifyAiOnReject=${approvalDecision.notifyAiOnReject !== false}`
+                );
+            }
 
             const approvalPromise = new Promise((resolve, reject) => {
                 const timeoutDuration = this.toolApprovalManager.getTimeoutMs();
@@ -906,7 +909,12 @@ class PluginManager extends EventEmitter {
                     }
                 }, timeoutDuration);
 
-                this.pendingApprovals.set(requestId, { resolve, reject, timeoutId });
+                this.pendingApprovals.set(requestId, {
+                    resolve,
+                    reject,
+                    timeoutId,
+                    notifyAiOnReject: approvalDecision.notifyAiOnReject !== false
+                });
             });
 
             // 发送审核请求到管理面板
@@ -918,6 +926,7 @@ class PluginManager extends EventEmitter {
                         toolName,
                         maid: maidNameFromArgs,
                         args: pluginSpecificArgs,
+                        approvalEvidence,
                         timestamp: _getFormattedLocalTimestamp()
                     }
                 };
@@ -929,7 +938,13 @@ class PluginManager extends EventEmitter {
             }
 
             try {
-                await approvalPromise;
+                const approvalResult = await approvalPromise;
+                if (approvalResult && approvalResult.silentRejected === true) {
+                    if (this.debugMode) {
+                        console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) was rejected silently. Returning empty result to AI.`);
+                    }
+                    return undefined;
+                }
                 if (this.debugMode) console.log(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) approved.`);
             } catch (error) {
                 if (this.debugMode) console.warn(`[PluginManager] Tool call for "${toolName}" (ID: ${requestId}) rejected: ${error.message}`);
@@ -1088,19 +1103,8 @@ class PluginManager extends EventEmitter {
         if (fileServerKey) {
             additionalEnv.IMAGESERVER_FILE_KEY = fileServerKey;
         }
-        if (executionContext && typeof executionContext === 'object') {
-            const normalizedExecutionContext = {
-                agentAlias: typeof executionContext.agentAlias === 'string' && executionContext.agentAlias.trim()
-                    ? executionContext.agentAlias.trim()
-                    : null,
-                agentId: typeof executionContext.agentId === 'string' && executionContext.agentId.trim()
-                    ? executionContext.agentId.trim()
-                    : null,
-                requestSource: typeof executionContext.requestSource === 'string' && executionContext.requestSource.trim()
-                    ? executionContext.requestSource.trim()
-                    : 'unknown'
-            };
-
+        const normalizedExecutionContext = normalizeExecutionContext(executionContext, { nullWhenMissing: true });
+        if (normalizedExecutionContext) {
             additionalEnv.VCP_EXECUTION_CONTEXT = JSON.stringify(normalizedExecutionContext);
             additionalEnv.VCP_REQUEST_SOURCE = normalizedExecutionContext.requestSource;
             if (normalizedExecutionContext.agentAlias) {
@@ -1294,6 +1298,8 @@ class PluginManager extends EventEmitter {
             clearTimeout(approval.timeoutId);
             if (approved) {
                 approval.resolve();
+            } else if (approval.notifyAiOnReject === false) {
+                approval.resolve({ silentRejected: true });
             } else {
                 approval.reject(new Error(JSON.stringify({ plugin_error: 'Manual approval was REJECTED by user.' })));
             }

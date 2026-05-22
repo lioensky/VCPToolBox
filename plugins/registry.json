@@ -1,6 +1,12 @@
 {
   "schema_version": "2026-04-22",
   "source_guide": "A:\\docs\\VCP_Photo_Studio_Implementation_Guide.md",
+  "prod_stable_gate": {
+    "phase": "photo_studio_guide_contract_phase2_first_batch",
+    "enabled_scope": "P0/P1/P2 local-only guide-contract plugins",
+    "deferred_scope": "P3/P5/P6/P7 external sync, delivery queue, reporting, and scheduling plugins",
+    "default_policy": "deferred plugins stay present for tests and review but are not runtime-discovered on prod/stable"
+  },
   "plugins": [
     {
       "name": "create_customer_record",
@@ -84,7 +90,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; P3 audit/reporting scope remains review-only."
     },
     {
       "name": "create_project_tasks",
@@ -154,7 +161,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; external delivery queue and live publish paths stay disabled by default."
     },
     {
       "name": "archive_project_assets",
@@ -182,7 +190,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; reporting plugins are not part of the P0/P1/P2 local-only cut."
     },
     {
       "name": "generate_delivery_queue_schedule",
@@ -196,7 +205,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; scheduling plugins are not enabled until a separate governance PR."
     },
     {
       "name": "generate_weekly_project_digest",
@@ -210,7 +220,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; weekly reporting is P3+ scope."
     },
     {
       "name": "inspect_delivery_audit_trail",
@@ -224,7 +235,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; audit trail reporting is P6 scope."
     },
     {
       "name": "prioritize_pending_delivery_actions",
@@ -238,7 +250,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; delivery prioritization is P7 scheduling scope."
     },
     {
       "name": "sync_to_external_sheet_or_notion",
@@ -252,7 +265,8 @@
       "output_schema_hash": "badb1e2892ad6702f1c349b9edebdd429516e5615c0b1046556e8ffa6cd7eb98",
       "vcp_min": "7.1.2",
       "vcp_max_tested": "7.1.2",
-      "enabled": true
+      "enabled": false,
+      "disabled_reason": "Deferred from prod/stable Phase 2 first batch; external sheet/Notion sync remains off by default."
     }
   ]
 }

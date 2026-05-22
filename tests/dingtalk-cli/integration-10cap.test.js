@@ -60,6 +60,7 @@ function buildRuntime(tempDir, calls) {
       dwsClientId: '',
       dwsClientSecret: '',
       trustedDomains: [],
+      grayStage: 'full_write',
       timeoutMs: 30000,
       schemaCacheTtlMs: 30000,
       maxArgBytes: 1024 * 32,

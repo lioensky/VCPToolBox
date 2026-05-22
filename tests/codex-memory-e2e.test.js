@@ -5,12 +5,41 @@ const os = require('node:os');
 const path = require('node:path');
 
 const pluginManager = require('../Plugin.js');
+const ChatCompletionHandler = require('../modules/chatCompletionHandler.js');
 const ToolExecutor = require('../modules/vcpLoop/toolExecutor');
 
 after(() => {
     if (pluginManager.toolApprovalManager && typeof pluginManager.toolApprovalManager.shutdown === 'function') {
         pluginManager.toolApprovalManager.shutdown();
     }
+});
+
+test('ChatCompletionHandler should keep configured agent context authoritative', () => {
+    const configuredContext = ChatCompletionHandler._buildExecutionContext(
+        { expandedAgentName: 'Nova' },
+        {
+            agentAlias: 'Codex',
+            agentId: 'codex-desktop',
+            requestSource: 'trusted-route'
+        }
+    );
+
+    assert.deepEqual(configuredContext, {
+        agentAlias: 'Codex',
+        agentId: 'codex-desktop',
+        requestSource: 'trusted-route'
+    });
+
+    const expandedContext = ChatCompletionHandler._buildExecutionContext(
+        { expandedAgentName: 'Nova' },
+        null
+    );
+
+    assert.deepEqual(expandedContext, {
+        agentAlias: 'Nova',
+        agentId: null,
+        requestSource: 'chatCompletionHandler'
+    });
 });
 
 test('ToolExecutor should pass executionContext through PluginManager into CodexMemoryBridge', async () => {

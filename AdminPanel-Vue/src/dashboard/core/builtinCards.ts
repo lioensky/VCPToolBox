@@ -107,7 +107,9 @@ export function getBuiltinDashboardCards(
         kind: "builtin",
         componentKey: "process",
         buildProps: () => ({
-          processes: state.pm2Processes.value,
+          processes: state.pm2Processes.value.processes,
+          degraded: state.pm2Processes.value.degraded,
+          warning: state.pm2Processes.value.warning,
           authCode: state.userAuthCode.value,
           maxDisplay: 20,
         }),

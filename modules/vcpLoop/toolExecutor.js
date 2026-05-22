@@ -2,6 +2,7 @@
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { getEmbeddingsBatch, cosineSimilarity } = require('../../EmbeddingUtils');
+const { normalizeExecutionContext } = require('../toolExecutionContext');
 
 function getMessageTextContent(msg) {
   if (!msg) return '';
@@ -273,11 +274,7 @@ class ToolExecutor {
   }
 
   _normalizeExecutionContext(executionContext) {
-    return {
-      agentAlias: executionContext?.agentAlias || null,
-      agentId: executionContext?.agentId || null,
-      requestSource: executionContext?.requestSource || 'unknown'
-    };
+    return normalizeExecutionContext(executionContext);
   }
 
   _getPrimaryMaidArg(args = {}) {

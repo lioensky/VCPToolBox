@@ -5,6 +5,7 @@
 export interface ToolApprovalConfig {
   enabled?: boolean;
   approveAll?: boolean;
+  debugMode?: boolean;
   timeoutMinutes?: number;
   approvalList?: string[];
   timeout?: number;

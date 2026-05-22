@@ -791,6 +791,7 @@ const adminAuth = (req, res, next) => {
         if (clientIp) {
             loginAttempts.delete(clientIp); // 成功后清除尝试记录
         }
+        req.adminAuthUser = credentials.name;
         return next();
     }
 
@@ -1239,7 +1240,12 @@ app.post('/v1/human/tool', async (req, res) => {
         if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
             clientIp = clientIp.substr(7);
         }
-        const result = await pluginManager.processToolCall(requestedToolName, parsedToolArgs, clientIp);
+        const result = await pluginManager.processToolCall(
+            requestedToolName,
+            parsedToolArgs,
+            clientIp,
+            { requestSource: 'human-tool-route' }
+        );
 
         // processToolCall 的结果已经是正确的对象格式
         res.status(200).json(result);
@@ -1498,6 +1504,21 @@ async function initialize() {
 app.use("/api/image-rating", imageRatingApiRoutes);
     app.use('/admin_api/channelHub', channelHubAdminRoutes.router);
     app.use('/internal/channelHub', channelHubInternalRoutes.router);
+    // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
+    if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
+      const { createAiImageAgentsRouter } = require('./routes/admin/aiImageAgents');
+
+      const routeOptions = {
+        auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
+      };
+
+      if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
+        routeOptions.pluginManager = pluginManager;
+        console.log('[server] AI Image Agent real execution ENABLED (pluginManager injected)');
+      }
+
+      app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
+    }
     console.log('服务类插件初始化完成，管理面板 API 路由、VCP 论坛 API 路由和 ChannelHub 路由已挂载。');
 
     // --- 新增：通用依赖注入 ---

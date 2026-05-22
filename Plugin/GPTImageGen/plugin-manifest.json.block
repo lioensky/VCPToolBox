@@ -1,0 +1,83 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "GPTImageGen",
+  "displayName": "GPT Image 2 图像生成器",
+  "version": "1.1.0",
+  "description": "GPT Image 2 图像生成插件 - 支持通过 OpenAI 兼容 API 调用 gpt-image-2 模型进行高质量图像生成和图片编辑",
+  "author": "小飒 (Xiaosa) & infinite-vector",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node GPTImageGen.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 300000
+  },
+  "configSchema": {
+    "OPENAI_API_KEY": {
+      "type": "string",
+      "description": "OpenAI 兼容 API 密钥",
+      "required": true
+    },
+    "OPENAI_BASE_URL": {
+      "type": "string",
+      "description": "API 基础地址（OpenAI 官方或兼容反代）",
+      "default": "https://api.openai.com"
+    },
+    "GPT_IMAGE_MODEL": {
+      "type": "string",
+      "description": "模型名称，支持版本快照如 gpt-image-2-2026-04-21",
+      "default": "gpt-image-2"
+    },
+    "DEFAULT_SIZE": {
+      "type": "string",
+      "description": "默认图片尺寸 WIDTHxHEIGHT（最短边≥256，最长边≤3840）",
+      "default": "1024x1024"
+    },
+    "DEFAULT_QUALITY": {
+      "type": "string",
+      "description": "默认质量：low（快速/低成本）、medium、high（精细/高成本）、auto",
+      "default": "auto"
+    },
+    "DEFAULT_RESPONSE_FORMAT": {
+      "type": "string",
+      "description": "返回格式：b64_json（推荐，无过期问题）或 url（60分钟内有效）",
+      "default": "b64_json"
+    },
+    "DEFAULT_BACKGROUND": {
+      "type": "string",
+      "description": "默认背景：opaque / auto。注意：gpt-image-2 官方 API 不支持 transparent，部分反代可能兼容",
+      "default": "auto"
+    },
+    "MAX_RETRIES": {
+      "type": "string",
+      "description": "API 请求失败（429/503）时的最大重试次数",
+      "default": "2"
+    },
+    "RETRY_BASE_DELAY_MS": {
+      "type": "string",
+      "description": "重试基础延迟（毫秒），实际延迟按指数退避递增",
+      "default": "2000"
+    },
+    "DebugMode": {
+      "type": "boolean",
+      "description": "调试模式，开启后在 stderr 输出详细日志",
+      "default": false
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GPTGenerateImage",
+        "description": "【GPT文生图】调用此工具通过 OpenAI 兼容 API 使用 gpt-image-2 模型生成高质量图像。\n\n支持的命令：generate（文生图）\n\n参数说明：\n- prompt（必需）：图像生成的详细提示词，建议使用英文以获得最佳效果\n- size（可选）：图片尺寸，格式 WIDTHxHEIGHT，最长边≤3840，最短边≥256。常用值：\"1024x1024\"（1K正方形）、\"1536x1024\"（横版）、\"1024x1536\"（竖版）、\"2048x2048\"（2K）、\"3840x2160\"（4K横版·Beta）、\"2160x3840\"（4K竖版·Beta），默认 \"1024x1024\"\n- quality（可选）：图片质量。\"low\"=快速低成本、\"medium\"=平衡、\"high\"=精细高成本、\"auto\"=自动选择。默认 \"auto\"\n- background（可选）：背景设置。\"opaque\"（不透明）、\"auto\"（自动）。注意：gpt-image-2 官方不支持 transparent，部分反代可能兼容。默认 \"auto\"\n- n（可选）：生成图片数量，1-4张，默认 1\n\n注意事项：\n1. prompt 建议用英文描述以获得最佳效果，模型不支持负面提示词参数，可在 prompt 中用 \"Avoid: ...\" 模拟\n2. 生成高质量图片可能需要较长时间（30-120秒），插件已内置 429/503 自动重试\n3. 4K 分辨率（3840px）目前为 Beta 特性，生产环境建议使用 2K\n4. 支持版本快照锁定（如 gpt-image-2-2026-04-21），可在 config.env 中配置\n\n请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GPTImageGen「末」,\ncommand:「始」GPTGenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，建议英文。「末」,\nsize:「始」(可选) 图片尺寸 WIDTHxHEIGHT，最长边≤3840。如 1024x1024、2048x2048、3840x2160。默认 1024x1024。「末」,\nquality:「始」(可选) 图片质量: low / medium / high / auto。默认 auto。「末」,\nbackground:「始」(可选) 背景: opaque / auto。默认 auto。「末」,\nn:「始」(可选) 生成数量 1-4。默认 1。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」GPTImageGen「末」,\ncommand:「始」GPTGenerateImage「末」,\nprompt:「始」A cute cat wearing a tiny astronaut helmet, floating in space with stars and nebula in the background, digital art style「末」,\nsize:「始」1024x1024「末」,\nquality:「始」high「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "GPTEditImage",
+        "description": "【GPT图生图/垫图】调用此工具使用 gpt-image-2 模型对已有图片进行编辑、修改或以图片为基础生成新图。\n\n支持的命令：edit（图生图）\n\n参数说明：\n- prompt（必需）：描述希望如何修改图片的提示词，建议使用英文\n- image（必需）：原始图片来源（单张图片≤4MB），支持以下格式：\n  1. HTTP/HTTPS URL（如 http://example.com/photo.png）\n  2. base64 data URI（如 data:image/png;base64,...）\n  3. 本地文件路径（相对于项目根目录，如 image/gptimagegen/xxx.png）\n  4. 图片数组（可同时传入多张图片作为参考，最多16张）\n- size（可选）：输出图片尺寸 WIDTHxHEIGHT，最长边≤3840。默认 \"1024x1024\"\n- quality（可选）：图片质量。\"low\"=快速低成本、\"medium\"=平衡、\"high\"=精细高成本、\"auto\"=自动选择。默认 \"auto\"\n\n典型用途：\n1. 垫图/参考图：以用户提供的图片为基础，按描述生成新图\n2. 风格转换：将照片转为插画、油画、动漫等风格\n3. 局部修改：修改图片中的某些元素（gpt-image-2 无需手动遮罩，通过文本指令引导）\n4. 图片增强：提升画质、添加细节\n\n注意事项：\n1. 单张输入图片大小不超过 4MB，超过会被拒绝\n2. 支持 PNG/JPEG/WebP/GIF 格式\n3. 插件已内置 429/503 自动重试机制\n\n请在您的回复中，使用以下精确格式来请求图片编辑：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」GPTImageGen「末」,\ncommand:「始」GPTEditImage「末」,\nprompt:「始」(必需) 描述如何修改图片的提示词，建议英文。「末」,\nimage:「始」(必需) 原始图片的 URL 或本地路径（≤4MB）。「末」,\nsize:「始」(可选) 输出尺寸 WIDTHxHEIGHT。默认 1024x1024。「末」,\nquality:「始」(可选) 图片质量: low / medium / high / auto。默认 auto。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到图片的URL和路径，请使用 `<img>` 标签直接展示图片给用户。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」GPTImageGen「末」,\ncommand:「始」GPTEditImage「末」,\nprompt:「始」Transform this photo into a Studio Ghibli anime style illustration with soft watercolor textures「末」,\nimage:「始」http://example.com/photo.png「末」,\nsize:「始」1536x1024「末」,\nquality:「始」high「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

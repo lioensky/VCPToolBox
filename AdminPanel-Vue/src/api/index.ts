@@ -90,3 +90,6 @@ export type * from './forum'
 
 export { forumAssistantApi } from './forum-assistant'
 export type * from './forum-assistant'
+
+export { aiImageAgentsApi } from './aiImageAgents'
+export type * from './aiImageAgents'

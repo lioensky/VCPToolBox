@@ -16,11 +16,17 @@ Plugin/*/config.env
 Plugin/*/.env
 
 # Cache and data directories (to be mounted as volumes or handled by named volumes)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
 Plugin/WeatherReporter/city_cache.txt
 Plugin/VCPLog/log/
 Plugin/ImageProcessor/cache/ # 假设插件的缓存目录是这个，如果不是，需要确认
+Plugin/**/state/
 dailynote/
 image/fluxgen/
+image/gptimagegen/
 image/小克表情包/
 image/通用表情包/
 image/邵神韵表情包/

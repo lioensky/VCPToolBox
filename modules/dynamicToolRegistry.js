@@ -540,8 +540,7 @@ class DynamicToolRegistry {
     }
 
     getAdminState() {
-        const records = Array.from(this.catalog.values())
-            .sort((a, b) => this._compareRecordsWithPinned(a, b))
+        const records = this._getAdminRecords()
             .map((record) => {
                 const classification = this.categories.get(record.originKey);
                 return {
@@ -572,6 +571,34 @@ class DynamicToolRegistry {
             config: this._redactConfig(this.config),
             records
         };
+    }
+
+    _getAdminRecords() {
+        const records = Array.from(this.catalog.values());
+        const availableIdentityKeys = new Set(
+            records
+                .filter((record) => record?.originKind === 'distributed' && this._isAvailable(record) && record.available !== false)
+                .map((record) => this._stableDistributedIdentityKey(record))
+                .filter(Boolean)
+        );
+
+        return records
+            .filter((record) => {
+                if (!record || record.originKind !== 'distributed') return true;
+                if (this._isAvailable(record) && record.available !== false) return true;
+                const identityKey = this._stableDistributedIdentityKey(record);
+                return !identityKey || !availableIdentityKeys.has(identityKey);
+            })
+            .sort((a, b) => this._compareRecordsWithPinned(a, b));
+    }
+
+    _stableDistributedIdentityKey(record) {
+        if (!record || record.originKind !== 'distributed') return '';
+        return [
+            record.pluginName || '',
+            record.displayName || '',
+            record.descriptionHash || record.sourceHash || ''
+        ].map((item) => String(item).trim()).join('::');
     }
 
     async updateConfig(nextConfig = {}) {
@@ -837,16 +864,34 @@ class DynamicToolRegistry {
         const ragPlugin = this.pluginManager?.messagePreprocessors?.get
             ? this.pluginManager.messagePreprocessors.get('RAGDiaryPlugin')
             : null;
-        if (ragPlugin && typeof ragPlugin.getSingleEmbedding === 'function') {
-            return ragPlugin.getSingleEmbedding.bind(ragPlugin);
-        }
-        if (ragPlugin && typeof ragPlugin.getContextBridge === 'function') {
+        if (!ragPlugin) return null;
+
+        let rawEmbeddingFn = null;
+        if (typeof ragPlugin.getSingleEmbeddingCached === 'function') {
+            rawEmbeddingFn = ragPlugin.getSingleEmbeddingCached.bind(ragPlugin);
+        } else if (typeof ragPlugin.getSingleEmbedding === 'function') {
+            rawEmbeddingFn = ragPlugin.getSingleEmbedding.bind(ragPlugin);
+        } else if (typeof ragPlugin.getContextBridge === 'function') {
             const bridge = ragPlugin.getContextBridge();
-            if (bridge && typeof bridge.getSingleEmbedding === 'function') {
-                return bridge.getSingleEmbedding.bind(bridge);
+            if (bridge && typeof bridge.embedText === 'function') {
+                rawEmbeddingFn = bridge.embedText.bind(bridge);
+            } else if (bridge && typeof bridge.getSingleEmbedding === 'function') {
+                rawEmbeddingFn = bridge.getSingleEmbedding.bind(bridge);
             }
         }
-        return null;
+
+        if (!rawEmbeddingFn) return null;
+
+        const vectorDBManager = this.pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
+        if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {
+            return async (text) => {
+                const descText = String(text || '').trim();
+                if (!descText) return null;
+                return vectorDBManager.getPluginDescriptionVector(descText, rawEmbeddingFn);
+            };
+        }
+
+        return rawEmbeddingFn;
     }
 
     _cosineSimilarity(a, b) {
