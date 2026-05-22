@@ -26,7 +26,7 @@ async function withRouteModule(stub, run) {
     }
 }
 
-test('aiImageAgents execute route forwards trusted admin attribution into executor options', async () => {
+test('aiImageAgents execute route allows real execution from trusted admin attribution even without body.operator', async () => {
     const calls = [];
 
     await withRouteModule({
@@ -44,7 +44,6 @@ test('aiImageAgents execute route forwards trusted admin attribution into execut
                 taskId: 'task-1',
                 dryRun: false,
                 confirm: true,
-                operator: 'ui-operator-label',
                 plan: {
                     steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
                 },
@@ -67,7 +66,7 @@ test('aiImageAgents execute route forwards trusted admin attribution into execut
             ticket: 'AIG-42'
         });
         assert.deepEqual(calls[0].input.context, {
-            operator: 'ui-operator-label'
+            operator: null
         });
         assert.equal(calls[0].options.dryRun, false);
         assert.equal(calls[0].options.pluginManager, pluginManager);
@@ -81,7 +80,7 @@ test('aiImageAgents execute route forwards trusted admin attribution into execut
     });
 });
 
-test('aiImageAgents execute route stays dry-run when confirmation is incomplete and falls back to body operator id', async () => {
+test('aiImageAgents execute route stays dry-run when no trusted or fallback operator is available', async () => {
     const calls = [];
 
     await withRouteModule({
@@ -96,8 +95,7 @@ test('aiImageAgents execute route stays dry-run when confirmation is incomplete 
                 pipelineId: 'pipe-2',
                 taskId: 'task-2',
                 dryRun: false,
-                confirm: false,
-                operator: 'manual-operator',
+                confirm: true,
                 plan: {
                     steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
                 }
@@ -111,9 +109,46 @@ test('aiImageAgents execute route stays dry-run when confirmation is incomplete 
         assert.equal(Object.prototype.hasOwnProperty.call(calls[0].options, 'pluginManager'), false);
         assert.deepEqual(calls[0].options.executionContext, {
             requestSource: 'ai-image-pipeline',
-            operatorId: 'manual-operator',
             taskId: 'task-2',
             invocationId: 'pipe-2'
+        });
+    });
+});
+
+test('aiImageAgents execute route can still use body.operator as a fallback outside admin middleware', async () => {
+    const calls = [];
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = { processToolCall() {} };
+        await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.7',
+            body: {
+                pipelineId: 'pipe-3',
+                taskId: 'task-3',
+                dryRun: false,
+                confirm: true,
+                operator: 'manual-operator',
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'fallback test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.dryRun, false);
+        assert.equal(calls[0].options.pluginManager, pluginManager);
+        assert.deepEqual(calls[0].options.executionContext, {
+            requestSource: 'ai-image-pipeline',
+            operatorId: 'manual-operator',
+            taskId: 'task-3',
+            invocationId: 'pipe-3'
         });
     });
 });

@@ -65,8 +65,8 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       : {};
 
     const routeInput = normalizeRouteInput(body);
-    const dryRun = resolveDryRunMode(body, options);
     const executionContext = buildAiImageExecutionContext(req, routeInput);
+    const dryRun = resolveDryRunMode(body, options, executionContext);
     const requestIp = getClientIp(req);
 
     // 真实执行：仅当 dryRun=false 且 server 已注入 pluginManager 时
@@ -168,14 +168,15 @@ function buildAiImageExecutionContext(req, routeInput = {}) {
  *
  * /dry-run        → 永远 true
  * /execute        → body.dryRun !== false 时 true
- * /execute        → body.dryRun === false 但缺 confirm/operator → 强制 true
- * /execute        → body.dryRun === false + confirm=true + operator 存在 → false
+ * /execute        → body.dryRun === false 但缺 confirm/可信 operator → 强制 true
+ * /execute        → body.dryRun === false + confirm=true + 存在可信 operatorId → false
  *
  * @param {object} body     - 请求 body
  * @param {object} options  - route options
+ * @param {object} [executionContext] - 已解析的执行上下文
  * @returns {boolean}
  */
-function resolveDryRunMode(body = {}, options = {}) {
+function resolveDryRunMode(body = {}, options = {}, executionContext = null) {
   if (options.forceDryRun === true) {
     return true;
   }
@@ -184,7 +185,12 @@ function resolveDryRunMode(body = {}, options = {}) {
     return true;
   }
 
-  if (body.confirm !== true || !body.operator) {
+  if (
+    body.confirm !== true ||
+    !executionContext ||
+    typeof executionContext.operatorId !== 'string' ||
+    !executionContext.operatorId.trim()
+  ) {
     return true;
   }
 
