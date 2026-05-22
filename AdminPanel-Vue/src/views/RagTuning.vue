@@ -86,6 +86,7 @@
                 {
                   'param-row--changed': entry.changedLeaves > 0,
                   'param-row--wormhole': isWormholeEntry(section.name, entry),
+                  'param-row--ordered': isOrderedCooccurrenceEntry(section.name, entry),
                 },
               ]"
             >
@@ -141,6 +142,75 @@
                     <div class="wormhole-launchpad__footer">
                       <button type="button" class="btn-primary" @click="openWormholeModal">
                         打开虫洞控制舱
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else-if="isOrderedCooccurrenceEntry(section.name, entry)">
+                <div class="wormhole-launchpad ordered-launchpad">
+                  <div class="wormhole-launchpad__copy">
+                    <div class="param-row__heading">
+                      <div class="param-row__title-block">
+                        <h4>{{ entry.meta.label }}</h4>
+                        <p class="param-row__key">{{ entry.key }}</p>
+                      </div>
+
+                      <div class="param-row__pills">
+                        <span class="mini-pill mini-pill--critical">
+                          {{ getToneLabel(entry.meta.tone) }}
+                        </span>
+                        <span
+                          v-if="entry.changedLeaves > 0"
+                          class="mini-pill mini-pill--changed"
+                        >
+                          已修改 {{ entry.changedLeaves }}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p class="param-row__summary">{{ entry.meta.summary }}</p>
+
+                    <p v-if="entry.meta.range" class="param-row__range">
+                      <span class="material-symbols-outlined">account_tree</span>
+                      {{ entry.meta.range }}
+                    </p>
+
+                    <details v-if="entry.meta.logic" class="param-row__details">
+                      <summary>展开 V8.2 调优逻辑</summary>
+                      <div class="param-row__details-body">
+                        <p>{{ entry.meta.logic }}</p>
+                      </div>
+                    </details>
+                  </div>
+
+                  <div class="wormhole-launchpad__control ordered-launchpad__control">
+                    <div class="ordered-launchpad__axis">
+                      <article
+                        v-for="axis in ORDERED_COOCCURRENCE_PANELS.slice(0, 3)"
+                        :key="axis.id"
+                        class="ordered-launchpad__axis-card"
+                      >
+                        <span>{{ axis.title }}</span>
+                        <strong>{{ axis.axis }}</strong>
+                      </article>
+                    </div>
+
+                    <div class="wormhole-launchpad__stats">
+                      <article
+                        v-for="subKey in ORDERED_COOCCURRENCE_PRIMARY_KEYS"
+                        :key="subKey"
+                        class="wormhole-launchpad__stat"
+                      >
+                        <span>{{ getOrderedQuickLabel(subKey) }}</span>
+                        <strong>{{ getOrderedQuickValue(entry, subKey) }}</strong>
+                      </article>
+                    </div>
+
+                    <div class="wormhole-launchpad__footer">
+                      <button type="button" class="btn-primary" @click="openOrderedCooccurrenceModal">
+                        打开 V8.2 流形舱
                       </button>
                     </div>
                   </div>
@@ -434,6 +504,23 @@
       @restore="resetWormholeParams"
       @update-field="updateWormholeField"
     />
+
+    <OrderedCooccurrenceModal
+      v-if="orderedCooccurrenceEntry"
+      :model-value="orderedCooccurrenceModalOpen"
+      :group-name="ORDERED_COOCCURRENCE_GROUP_NAME"
+      :param-key="ORDERED_COOCCURRENCE_PARAM_KEY"
+      :values="orderedCooccurrenceCurrentValues"
+      :original-values="orderedCooccurrenceOriginalValues"
+      :changed-leaves="orderedCooccurrenceEntry.changedLeaves"
+      :total-leaves="orderedCooccurrenceEntry.totalLeaves"
+      :is-saving="isSaving"
+      :is-dirty="isDirty"
+      :form-id="formId"
+      @close="closeOrderedCooccurrenceModal"
+      @restore="resetOrderedCooccurrenceParams"
+      @update-field="updateOrderedCooccurrenceField"
+    />
   </section>
 </template>
 
@@ -441,9 +528,12 @@
 import { computed, onMounted, ref } from "vue";
 import { ragApi, type ParamGroup, type ParamValue, type RagParams } from "@/api";
 import { useConsoleCollapse } from "@/composables/useConsoleCollapse";
+import OrderedCooccurrenceModal from "@/features/rag-tuning/OrderedCooccurrenceModal.vue";
 import WormholeRoutingModal from "@/features/rag-tuning/WormholeRoutingModal.vue";
 import {
   GROUP_ORDER,
+  ORDERED_COOCCURRENCE_PANELS,
+  ORDERED_COOCCURRENCE_PRIMARY_KEYS,
   WORMHOLE_PRIMARY_KEYS,
   getGroupMeta,
   getParamMeta,
@@ -452,6 +542,7 @@ import {
   getTupleLabel,
   type GroupMeta,
   type ParamMeta,
+  type OrderedCooccurrencePrimaryKey,
   type WormholePrimaryKey,
 } from "@/features/rag-tuning/metadata";
 import { showMessage } from "@/utils";
@@ -498,6 +589,8 @@ interface GroupSection {
 
 const WORMHOLE_GROUP_NAME = "KnowledgeBaseManager";
 const WORMHOLE_PARAM_KEY = "spikeRouting";
+const ORDERED_COOCCURRENCE_GROUP_NAME = "KnowledgeBaseManager";
+const ORDERED_COOCCURRENCE_PARAM_KEY = "orderedCooccurrence";
 const formId = "rag-tuning-form";
 const CONTENT_CONTAINER_ID = "config-details-container";
 const GROUP_SCROLL_OFFSET = 16;
@@ -510,6 +603,7 @@ const loadError = ref("");
 const statusMessage = ref("");
 const statusType = ref<StatusType>("info");
 const wormholeModalOpen = ref(false);
+const orderedCooccurrenceModalOpen = ref(false);
 
 const { collapsed: asideCollapsed, toggle: toggleAside } = useConsoleCollapse(
   "rag-tuning-aside"
@@ -673,12 +767,36 @@ const wormholeOriginalValues = computed<NumericRecord>(() => {
   return isNumericRecord(raw) ? raw : {};
 });
 
+const orderedCooccurrenceEntry = computed<NestedParamEntry | null>(() => {
+  const section = groupSections.value.find((item) => item.name === ORDERED_COOCCURRENCE_GROUP_NAME);
+  const entry = section?.entries.find((item) => item.key === ORDERED_COOCCURRENCE_PARAM_KEY);
+  return entry && entry.kind === "nested" ? entry : null;
+});
+
+const orderedCooccurrenceCurrentValues = computed<NumericRecord>(() => {
+  const raw = params.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+  return isNumericRecord(raw) ? raw : {};
+});
+
+const orderedCooccurrenceOriginalValues = computed<NumericRecord>(() => {
+  const raw = originalParams.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+  return isNumericRecord(raw) ? raw : {};
+});
+
 function isWormholeNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
   return entry.kind === "nested" && entry.key === WORMHOLE_PARAM_KEY;
 }
 
 function isWormholeEntry(sectionName: string, entry: ParamEntry): boolean {
   return sectionName === WORMHOLE_GROUP_NAME && isWormholeNestedEntry(entry);
+}
+
+function isOrderedCooccurrenceNestedEntry(entry: ParamEntry): entry is NestedParamEntry {
+  return entry.kind === "nested" && entry.key === ORDERED_COOCCURRENCE_PARAM_KEY;
+}
+
+function isOrderedCooccurrenceEntry(sectionName: string, entry: ParamEntry): boolean {
+  return sectionName === ORDERED_COOCCURRENCE_GROUP_NAME && isOrderedCooccurrenceNestedEntry(entry);
 }
 
 function getKindLabel(kind: ParamEntryKind): string {
@@ -737,6 +855,22 @@ function getWormholeQuickLabel(subKey: WormholePrimaryKey): string {
 
 function getWormholeQuickValue(entry: ParamEntry, subKey: WormholePrimaryKey): string {
   if (!isWormholeNestedEntry(entry)) {
+    return "--";
+  }
+
+  return formatNumber(entry.value[subKey]);
+}
+
+function getOrderedQuickLabel(subKey: OrderedCooccurrencePrimaryKey): string {
+  return getNestedMeta(
+    ORDERED_COOCCURRENCE_GROUP_NAME,
+    ORDERED_COOCCURRENCE_PARAM_KEY,
+    subKey
+  ).label;
+}
+
+function getOrderedQuickValue(entry: ParamEntry, subKey: OrderedCooccurrencePrimaryKey): string {
+  if (!isOrderedCooccurrenceNestedEntry(entry)) {
     return "--";
   }
 
@@ -808,6 +942,39 @@ function resetWormholeParams(): void {
 
   params.value[WORMHOLE_GROUP_NAME][WORMHOLE_PARAM_KEY] = { ...original };
   statusMessage.value = "已恢复虫洞脉冲路由的未保存修改。";
+  statusType.value = "info";
+}
+
+function openOrderedCooccurrenceModal(): void {
+  if (orderedCooccurrenceEntry.value) {
+    orderedCooccurrenceModalOpen.value = true;
+  }
+}
+
+function closeOrderedCooccurrenceModal(): void {
+  orderedCooccurrenceModalOpen.value = false;
+}
+
+function updateOrderedCooccurrenceField(subKey: string, value: number): void {
+  const raw = params.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+
+  if (isNumericRecord(raw)) {
+    raw[subKey] = value;
+  }
+}
+
+function resetOrderedCooccurrenceParams(): void {
+  const original =
+    originalParams.value[ORDERED_COOCCURRENCE_GROUP_NAME]?.[ORDERED_COOCCURRENCE_PARAM_KEY];
+
+  if (!params.value[ORDERED_COOCCURRENCE_GROUP_NAME] || !isNumericRecord(original)) {
+    return;
+  }
+
+  params.value[ORDERED_COOCCURRENCE_GROUP_NAME][ORDERED_COOCCURRENCE_PARAM_KEY] = {
+    ...original,
+  };
+  statusMessage.value = "已恢复 V8.2 有序双向势能流形的未保存修改。";
   statusType.value = "info";
 }
 
@@ -1397,6 +1564,40 @@ onMounted(() => {
   justify-content: center;
 }
 
+.ordered-launchpad__control {
+  border-color: color-mix(in srgb, var(--highlight-text) 20%, var(--border-color));
+  background:
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--highlight-text) 12%, transparent), transparent 42%),
+    var(--surface-overlay-soft);
+}
+
+.ordered-launchpad__axis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.ordered-launchpad__axis-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--surface-overlay);
+}
+
+.ordered-launchpad__axis-card span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.ordered-launchpad__axis-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rag-lab__aside {
   position: sticky;
   top: var(--space-4);
@@ -1608,7 +1809,8 @@ onMounted(() => {
   }
 
   .tuple-grid,
-  .wormhole-launchpad__stats {
+  .wormhole-launchpad__stats,
+  .ordered-launchpad__axis {
     grid-template-columns: 1fr;
   }
 }

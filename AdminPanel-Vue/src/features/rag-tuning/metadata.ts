@@ -36,6 +36,17 @@ export interface WormholeRoutingPanel {
   keys: readonly string[];
 }
 
+export type OrderedCooccurrencePanelId = "topology" | "direction" | "semantic" | "guard";
+
+export interface OrderedCooccurrencePanel {
+  id: OrderedCooccurrencePanelId;
+  title: string;
+  axis: string;
+  summary: string;
+  icon: string;
+  keys: readonly string[];
+}
+
 export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
   {
     id: "trigger",
@@ -57,6 +68,50 @@ export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
     summary: "控制常规传播与虫洞传播的能量保留，决定探索能走多远也决定噪声会不会放大。",
     icon: "vital_signs",
     keys: ["baseDecay", "wormholeDecay"],
+  },
+] as const;
+
+export const ORDERED_COOCCURRENCE_PRIMARY_KEYS = [
+  "reverseGain",
+  "reverseAnchorBoost",
+  "semanticGainEnabled",
+  "reverseInversionGuard",
+] as const;
+
+export type OrderedCooccurrencePrimaryKey = (typeof ORDERED_COOCCURRENCE_PRIMARY_KEYS)[number];
+
+export const ORDERED_COOCCURRENCE_PANELS: readonly OrderedCooccurrencePanel[] = [
+  {
+    id: "topology",
+    title: "拓扑层：形",
+    axis: "双向共现",
+    summary: "决定标签是否互为邻接，以及序位距离如何压低远距离共现边。",
+    icon: "account_tree",
+    keys: ["forwardGain", "distanceDecay"],
+  },
+  {
+    id: "direction",
+    title: "方向层：色",
+    axis: "顺逆流阻尼",
+    summary: "控制叙事顺流与逆流回溯之间的能量差，避免 V7 的硬墙又保留方向偏置。",
+    icon: "swap_calls",
+    keys: ["reverseGain", "minReverseGain", "maxReverseGain", "reverseAnchorBoost", "reverseAnchorMax"],
+  },
+  {
+    id: "semantic",
+    title: "语义层：质",
+    axis: "向量距离调制",
+    summary: "用钟形语义增益放大概念邻接黄金区，同时压制噪声边与同义词回音壁。",
+    icon: "scatter_plot",
+    keys: ["semanticGainEnabled", "semanticGainPeak", "semanticGainSigma", "semanticGainLowSimFallback"],
+  },
+  {
+    id: "guard",
+    title: "工程守卫",
+    axis: "叙事方向公理",
+    summary: "确保逆流永远不会突破顺流上限，是 V8.2 灰度调参的最后保险。",
+    icon: "security",
+    keys: ["reverseInversionGuard"],
   },
 ] as const;
 
