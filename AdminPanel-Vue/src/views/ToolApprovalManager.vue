@@ -26,7 +26,7 @@
         </div>
         <div class="config-item">
           <AppSwitch v-model="config.fuzzyToolMatching" :disabled="saving" label="是否开启模糊工具匹配" />
-          <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。保存后后端通过 chokidar 热加载，无需重启。</p>
+          <p class="aa-hint">开启后，工具参数值边界除标准「始」「末」外，还会兼容「始}、{始」、以及「始`」「始text」「始``」「始%20」等异常标记。</p>
         </div>
         <div class="config-item">
           <label for="tool-approval-timeout">设置审核最大等待时间 (分钟)</label>
