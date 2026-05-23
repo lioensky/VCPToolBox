@@ -4375,7 +4375,8 @@ class RAGDiaryPlugin {
 
     /**
      * 将当前上下文中的 assistant 消息同步到 FoldingStore
-     * 仅在 vectorMap 中已有向量的消息才会被写入（不触发额外 API 调用）
+     * 仅在内存缓存中已有向量的消息才会被写入（不触发额外 API 调用）
+     * 若 assistant 块未被向量化，则不创建数据库条目，避免无意义的空向量记录。
      */
     _syncContextToFoldingStore(messages) {
         if (!this.foldingStore) return;
@@ -4400,14 +4401,16 @@ class RAGDiaryPlugin {
             if (existing && existing.vector) continue; // 已有完整条目，跳过
 
             // 尝试从内存缓存获取向量（不触发 API）
-            let vector = this._getEmbeddingFromCacheOnly(sanitized);
+            const vector = this._getEmbeddingFromCacheOnly(sanitized);
 
-            // 重启恢复：如果内存缓存为空但 store 中已有旧条目（无向量），保留旧条目等待 V2 补充
-            if (!vector && existing) continue;
+            // 关键修复：未被向量化的 assistant 块不写入 FoldingStore。
+            // 空向量条目既无法参与相似度判断，也无法安全触发摘要状态机，应等待 ContextFoldingV2
+            // 在真正需要折叠时向量化成功后再创建条目。
+            if (!vector) continue;
 
             this.foldingStore.upsertVector(hash, {
                 textPreview: sanitized.substring(0, 80),
-                vector: vector // 可能为 null，后续由 ContextFoldingV2 的 embedText 补充
+                vector
             });
             syncCount++;
         }
