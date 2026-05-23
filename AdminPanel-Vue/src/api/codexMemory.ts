@@ -5,7 +5,12 @@ import {
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
-export interface CodexMemoryOverviewPaths {
+export interface CodexMemoryOverviewQuery {
+  auditWindow?: number;
+  limit?: number;
+}
+
+export interface CodexMemoryPaths {
   auditLogPath: string;
   recallLogPath: string;
   processDiaryPath: string;
@@ -26,6 +31,118 @@ export interface CodexMemoryWriteSummary {
   latestRejectedAt: string | null;
 }
 
+export interface CodexMemoryAuditEntry {
+  timestamp: string | null;
+  decision: string;
+  target: "process" | "knowledge" | string | null;
+  title: string | null;
+  memoryId: string | null;
+  reason: string;
+  filePath: string | null;
+  agentAlias: string | null;
+  agentId: string | null;
+}
+
+export interface CodexMemoryReasonBucket {
+  reason: string;
+  count: number;
+}
+
+export interface CodexMemoryRecentFile {
+  name: string;
+  path: string;
+  size: number;
+  updatedAt: string;
+}
+
+export interface CodexMemoryLink {
+  memoryId: string | null;
+  title: string;
+  target: "process" | "knowledge" | string | null;
+  filePath: string | null;
+  writtenAt: string | null;
+  recallCount: number;
+  cacheRecallCount: number;
+  lastRecallAt: string | null;
+  lastTopScore: number | null;
+}
+
+export interface CodexAdaptiveConfig {
+  enabled: boolean;
+  targetHitRate: number;
+  minWritesBeforeAdjust: number;
+  lowScoreThreshold: number;
+  maxThresholdDrop: number;
+  maxTagWeightBoost: number;
+  maxKBoost: number;
+  maxTruncationBoost: number;
+  thresholdDropScale: number;
+  tagWeightBoostScale: number;
+  truncationBoostScale: number;
+  scoreThresholdScale: number;
+  scoreTagWeightScale: number;
+  scoreTruncationScale: number;
+  kBoostStep: number;
+  tagContributionLimit: number;
+  profileWindow: number;
+  profileBytes: number;
+}
+
+export interface CodexAdaptiveDiaryProfile {
+  dbName: string;
+  target: "process" | "knowledge" | string;
+  enabled: boolean;
+  writeCount: number;
+  totalHits: number;
+  snippetHits: number;
+  fullTextHits: number;
+  directHits: number;
+  cacheHits: number;
+  avgTopScore: number | null;
+  hitRate: number;
+  thresholdDelta: number;
+  tagWeightDelta: number;
+  kDelta: number;
+  truncationDelta: number;
+  lowScorePenalty: number;
+  lastWriteAt: string | null;
+  lastHitAt: string | null;
+  status: "disabled" | "warming" | "steady" | "boosted" | string;
+  reasons: string[];
+}
+
+export interface CodexAdaptiveTagContribution {
+  dbName: string;
+  target: "process" | "knowledge" | string;
+  tag: string;
+  hitCount: number;
+  matchedHitCount: number;
+  coreHitCount: number;
+  cacheHits: number;
+  avgTopScore: number | null;
+  latestHitAt: string | null;
+  uniqueMemoryCount: number;
+}
+
+export interface CodexAdaptiveTagContributionByDiary {
+  dbName: string;
+  target: "process" | "knowledge" | string;
+  tags: CodexAdaptiveTagContribution[];
+}
+
+export interface CodexAdaptiveState {
+  config: CodexAdaptiveConfig;
+  profiles: CodexAdaptiveDiaryProfile[];
+  tagContribution: {
+    flat: CodexAdaptiveTagContribution[];
+    byDiary: CodexAdaptiveTagContributionByDiary[];
+  };
+  paths: {
+    recallLogPath: string;
+    writeLogPath: string;
+  };
+}
+
 export interface CodexMemoryRecallSummary {
   sampleSize: number;
   totalHits: number;
@@ -43,7 +160,7 @@ export interface CodexMemoryRecallSummary {
 export interface CodexMemoryRecallEntry {
   timestamp: string | null;
   dbName: string | null;
-  target: string | null;
+  target: "process" | "knowledge" | string | null;
   recallType: string;
   resultCount: number;
   topScore: number | null;
@@ -58,93 +175,46 @@ export interface CodexMemoryRecallEntry {
   sourceFiles: string[];
 }
 
-export interface CodexMemoryAdaptiveProfile {
-  dbName: string;
-  target: string;
-  enabled: boolean;
-  writeCount: number;
-  totalHits: number;
-  snippetHits: number;
-  fullTextHits: number;
-  directHits: number;
-  cacheHits: number;
-  avgTopScore: number | null;
-  hitRate: number;
-  thresholdDelta: number;
-  tagWeightDelta: number;
-  kDelta: number;
-  truncationDelta: number;
-  lowScorePenalty: number;
-  lastWriteAt: string | null;
-  lastHitAt: string | null;
-  status: string;
-  reasons: string[];
-}
-
-export interface CodexMemoryTagContribution {
-  dbName: string;
-  target: string;
-  tag: string;
-  hitCount: number;
-  matchedHitCount: number;
-  coreHitCount: number;
-  cacheHits: number;
-  avgTopScore: number | null;
-  latestHitAt: string | null;
-  uniqueMemoryCount: number;
-}
-
-export interface CodexMemoryLink {
-  memoryId: string | null;
-  title: string;
-  target: string | null;
-  filePath: string | null;
-  writtenAt: string | null;
-  recallCount: number;
-  cacheRecallCount: number;
-  lastRecallAt: string | null;
-  lastTopScore: number | null;
-}
-
-export interface CodexMemoryRejectionReason {
-  reason: string;
-  count: number;
+export interface CodexMemoryRecallState {
+  available: boolean;
+  status: "enabled" | "active" | string;
+  message: string;
+  summary: CodexMemoryRecallSummary;
+  recent: CodexMemoryRecallEntry[];
 }
 
 export interface CodexMemoryOverview {
-  paths: CodexMemoryOverviewPaths;
+  paths: CodexMemoryPaths;
   summary: CodexMemoryWriteSummary;
-  rejectionReasons: CodexMemoryRejectionReason[];
-  memoryLinks: CodexMemoryLink[];
-  adaptive: {
-    config: Record<string, unknown>;
-    profiles: CodexMemoryAdaptiveProfile[];
-    tagContribution: {
-      flat: CodexMemoryTagContribution[];
-    };
+  recentAudit: CodexMemoryAuditEntry[];
+  rejectionReasons: CodexMemoryReasonBucket[];
+  recentFiles: {
+    process: CodexMemoryRecentFile[];
+    knowledge: CodexMemoryRecentFile[];
   };
-  recall: {
-    available: boolean;
-    status: string;
-    message: string;
-    summary: CodexMemoryRecallSummary;
-    recent: CodexMemoryRecallEntry[];
+  memoryLinks: CodexMemoryLink[];
+  adaptive: CodexAdaptiveState;
+  recall: CodexMemoryRecallState;
+}
+
+function toOverviewQuery(
+  query: CodexMemoryOverviewQuery
+): Record<string, string | number | boolean | undefined> {
+  return {
+    auditWindow: query.auditWindow,
+    limit: query.limit,
   };
 }
 
 export const codexMemoryApi = {
   async getOverview(
-    params: { limit?: number; auditWindow?: number } = {},
+    query: CodexMemoryOverviewQuery = {},
     uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
   ): Promise<CodexMemoryOverview> {
-    const query = new URLSearchParams({
-      limit: String(params.limit ?? 12),
-      auditWindow: String(params.auditWindow ?? 500),
-    });
-
     return requestWithUi<CodexMemoryOverview>(
       {
-        url: `/admin_api/codex-memory/overview?${query.toString()}`,
+        url: "/admin_api/codex-memory/overview",
+        query: toOverviewQuery(query),
       },
       uiOptions
     );

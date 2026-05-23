@@ -62,12 +62,16 @@ export interface PM2Process {
   cpu: number;
   memory: number;
   uptime: number;
+  startedAt?: number;
   restarts: number;
   errors?: number;
 }
 
 export interface PM2ProcessesResponse {
   success?: boolean;
+  source?: string;
+  degraded?: boolean;
+  warning?: string;
   processes?: PM2Process[];
 }
 

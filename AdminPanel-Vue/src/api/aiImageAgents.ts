@@ -67,7 +67,7 @@ function buildExecuteRequest(
     plan: unknown;
     dryRun: false;
     confirm: true;
-    operator: string;
+    operator?: string;
   },
   requestContext: HttpRequestContext = {}
 ): HttpRequest {
@@ -95,7 +95,6 @@ export const aiImageAgentsApi = {
     pipelineId: string,
     taskId: string,
     plan: unknown,
-    operator: string,
     requestContext: HttpRequestContext = {},
     uiOptions: RequestUiOptions = {}
   ): Promise<AiImageExecuteResponse> {
@@ -107,7 +106,6 @@ export const aiImageAgentsApi = {
           plan,
           dryRun: false as const,
           confirm: true as const,
-          operator,
         },
         requestContext
       ),

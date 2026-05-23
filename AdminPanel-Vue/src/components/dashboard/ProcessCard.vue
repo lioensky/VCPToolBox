@@ -1,10 +1,15 @@
 <template>
   <div class="dashboard-card-shell dashboard-card-shell--amber process-card">
-    <h3 class="dashboard-card-title">PM2 进程状态</h3>
+    <h3 class="dashboard-card-title">
+      {{ degraded ? "进程状态（降级）" : "PM2 进程状态" }}
+    </h3>
     <div class="process-layout">
       <div class="status-card-content">
+        <div v-if="degraded && warning" class="dashboard-card-panel process-warning">
+          {{ warning }}
+        </div>
         <div v-if="processes.length === 0" class="dashboard-card-empty empty-state">
-          <p>没有正在运行的 PM2 进程。</p>
+          <p>{{ degraded ? "当前没有可展示的进程快照。" : "没有正在运行的 PM2 进程。" }}</p>
         </div>
         <div v-else class="process-list">
           <div
@@ -39,6 +44,8 @@ import type { PM2Process } from "@/types/api.system";
 
 const props = defineProps<{
   processes: PM2Process[];
+  degraded?: boolean;
+  warning?: string;
   authCode: string;
   maxDisplay?: number;
 }>();
@@ -88,7 +95,9 @@ function formatProcessMemory(bytes: number): string {
 .status-card-content {
   display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
+  gap: 12px;
 }
 
 .status-card-content .empty-state {
@@ -103,6 +112,12 @@ function formatProcessMemory(bytes: number): string {
   min-height: 0;
   gap: 12px;
   overflow-y: auto;
+}
+
+.process-warning {
+  padding: 10px 12px;
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
 }
 
 .process-item {

@@ -19,6 +19,12 @@ export type { UserAuthCodeResponse } from "@/types/api.auth";
 
 export type SystemResourcesResponse = SystemResources;
 export type PM2ProcessInfo = PM2Process;
+export interface PM2ProcessListResult {
+  source?: string;
+  degraded: boolean;
+  warning?: string;
+  processes: PM2ProcessInfo[];
+}
 
 const DEFAULT_READ_UI_OPTIONS: RequestUiOptions = { showLoader: false };
 
@@ -88,7 +94,7 @@ export const systemApi = {
   async getPM2Processes(
     requestContext: HttpRequestContext = {},
     uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
-  ): Promise<PM2ProcessInfo[]> {
+  ): Promise<PM2ProcessListResult> {
     const response = await requestWithUi<PM2ProcessesResponse>(
       {
         url: "/admin_api/system-monitor/pm2/processes",
@@ -96,7 +102,12 @@ export const systemApi = {
       },
       uiOptions
     );
-    return response.processes ?? [];
+    return {
+      source: response.source,
+      degraded: response.degraded === true,
+      warning: response.warning,
+      processes: response.processes ?? [],
+    };
   },
 
   async getUserAuthCode(

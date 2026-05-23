@@ -172,6 +172,7 @@ ip_blacklist.json
 Plugin/AIGentStyle/datasets/
 Plugin/AIGentStyle/outputs/
 Plugin/ArtistMatcher/artist_cache.json
+Plugin/DailyNoteWrite/dailynote/
 Plugin/DailyHot/dailyhot_cache.md
 Plugin/EmojiListGenerator/generated_lists/
 Plugin/FRPSInfoProvider/frps_info_cache.txt
@@ -186,6 +187,7 @@ Plugin/RAGDiaryPlugin/rag_tags.json
 Plugin/RAGDiaryPlugin/semantic_groups.json
 Plugin/RAGDiaryPlugin/semantic_groups.edit.json
 Plugin/RAGDiaryPlugin/semantic_vectors/
+Plugin/SkillBridge/skill-index.txt
 Plugin/TavilySearch/.vcptoolbox_tavily_cache.json
 Plugin/UserAuth/code.bin
 Plugin/VCPLog/log/VCPlog.txt
@@ -194,7 +196,15 @@ Plugin/WeatherReporter/weather_cache.txt
 Plugin/WeatherReporter/city_cache.txt
 ToolConfigs/dynamic_tool_catalog.json
 ToolConfigs/dynamic_tool_categories.json
+ToolConfigs/dynamic_tool_catalog.json.*.tmp
 Plugin/**/state/
+
+# ===== 本地开发临时产物 =====
+/.tmp/
+/admin-*.err
+/server-*.err
+AdminPanel-Vue/.vite-cache/
+AdminPanel-Vue/vite-*.err
 
 # ===== 图片 / 媒体 =====
 # 忽略通用表情包目录下的所有内容...

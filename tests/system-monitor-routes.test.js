@@ -68,6 +68,10 @@ test('system monitor exposes a current VCP process snapshot endpoint', async () 
 });
 
 test('system monitor keeps the PM2 process endpoint compatible', async () => {
+    const originalDateNow = Date.now;
+    Date.now = () => 1777454600000;
+
+    try {
     await withSystemMonitorApp({
         list(callback) {
             callback(null, [{
@@ -97,11 +101,15 @@ test('system monitor keeps the PM2 process endpoint compatible', async () => {
             status: 'online',
             cpu: 3.5,
             memory: 456789,
-            uptime: 1777451000000,
+            uptime: 3600,
+            startedAt: 1777451000000,
             restarts: 2,
             source: 'pm2'
         }]);
     });
+    } finally {
+        Date.now = originalDateNow;
+    }
 });
 
 test('system monitor falls back to the current process when PM2 is unavailable', async () => {

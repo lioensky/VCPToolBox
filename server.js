@@ -791,6 +791,7 @@ const adminAuth = (req, res, next) => {
         if (clientIp) {
             loginAttempts.delete(clientIp); // 成功后清除尝试记录
         }
+        req.adminAuthUser = credentials.name;
         return next();
     }
 

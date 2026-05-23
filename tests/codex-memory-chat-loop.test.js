@@ -357,6 +357,8 @@ test('chatCompletionHandler completes tool loop write and subsequent RAG recall'
     const originalEnv = {
         API_URL: process.env.API_URL,
         API_Key: process.env.API_Key,
+        EMBEDDING_API_URL: process.env.EMBEDDING_API_URL,
+        EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY,
         PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH,
         KNOWLEDGEBASE_ROOT_PATH: process.env.KNOWLEDGEBASE_ROOT_PATH,
         KNOWLEDGEBASE_STORE_PATH: process.env.KNOWLEDGEBASE_STORE_PATH,
@@ -394,6 +396,8 @@ test('chatCompletionHandler completes tool loop write and subsequent RAG recall'
 
         process.env.API_URL = fakeUpstream.baseUrl;
         process.env.API_Key = 'test-key';
+        process.env.EMBEDDING_API_URL = fakeUpstream.baseUrl;
+        process.env.EMBEDDING_API_KEY = 'test-key';
         process.env.PROJECT_BASE_PATH = tempRoot;
         process.env.KNOWLEDGEBASE_ROOT_PATH = dailynoteRoot;
         process.env.KNOWLEDGEBASE_STORE_PATH = storeRoot;

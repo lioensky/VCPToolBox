@@ -10,7 +10,7 @@ const OUTPUT_FILE = path.join(PLUGIN_ROOT, 'skill-index.txt');
 const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config.env');
 const DEFAULT_HEADER_TEXT = '这里是Skill技能目录，若你需要对应技能，请使用文件管理插件的Ink模式读取技能。';
 const DEFAULT_SKILL_THRESHOLD = 0.35;
-const DEFAULT_PATH_MODE = 'absolute_windows';
+const DEFAULT_PATH_MODE = 'relative';
 
 function loadLocalConfigEnv() {
   try {
@@ -31,7 +31,7 @@ function loadLocalConfigEnv() {
       const key = line.slice(0, eqIndex).trim();
       const value = line.slice(eqIndex + 1).trim();
 
-      if (key && !Object.prototype.hasOwnProperty.call(process.env, key)) {
+      if (key) {
         process.env[key] = value;
       }
     }
@@ -203,12 +203,39 @@ function buildFoldOutput(entries) {
   return lines.join('\n').trim();
 }
 
+async function persistOutput(output, options = {}) {
+  const {
+    writeFile = fs.writeFile.bind(fs),
+    outputFile = OUTPUT_FILE,
+    warn = console.warn
+  } = options;
+
+  try {
+    await writeFile(outputFile, output + '\n', 'utf8');
+    return true;
+  } catch (error) {
+    warn(`[SkillBridge] 写入本地索引失败，将继续使用 stdout 输出：${error.message}`);
+    return false;
+  }
+}
+
+async function runSkillBridge(options = {}) {
+  const {
+    collectEntries = collectSkillEntries,
+    buildOutput = buildFoldOutput,
+    stdout = process.stdout
+  } = options;
+
+  const entries = await collectEntries();
+  const output = buildOutput(entries);
+  const persisted = await persistOutput(output, options);
+  stdout.write(output);
+  return { output, persisted };
+}
+
 async function main() {
   try {
-    const entries = await collectSkillEntries();
-    const output = buildFoldOutput(entries);
-    await fs.writeFile(OUTPUT_FILE, output + '\n', 'utf8');
-    process.stdout.write(output);
+    await runSkillBridge();
   } catch (error) {
     const fallback = [
       '[===vcp_fold: 0.0 ===]',
@@ -221,4 +248,14 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  buildFoldOutput,
+  collectSkillEntries,
+  main,
+  persistOutput,
+  runSkillBridge
+};

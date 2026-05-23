@@ -29,6 +29,47 @@ test('executeImagePlan passes ai-image-pipeline as requestSource', async () => {
     });
     assert.equal(calls[0].requestIp, '127.0.0.1');
     assert.deepEqual(calls[0].executionContext, {
+        agentAlias: null,
+        agentId: null,
         requestSource: 'ai-image-pipeline'
+    });
+});
+
+test('executeImagePlan preserves requestIp and governance execution metadata when provided', async () => {
+    const calls = [];
+    const pluginManager = {
+        async processToolCall(toolName, toolArgs, requestIp, executionContext) {
+            calls.push({ toolName, toolArgs, requestIp, executionContext });
+            return { path: 'A:\\images\\governed.png' };
+        }
+    };
+
+    const result = await executeImagePlan({
+        steps: [{
+            type: 'generate_image',
+            plugin: 'DoubaoGen',
+            prompt: 'governed attribution test'
+        }]
+    }, {
+        pluginManager,
+        requestIp: '10.0.0.8',
+        executionContext: {
+            requestSource: ' ai-image-pipeline ',
+            operatorId: ' admin-user ',
+            taskId: ' task-123 ',
+            invocationId: ' pipe-456 '
+        }
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].requestIp, '10.0.0.8');
+    assert.deepEqual(calls[0].executionContext, {
+        agentAlias: null,
+        agentId: null,
+        requestSource: 'ai-image-pipeline',
+        operatorId: 'admin-user',
+        taskId: 'task-123',
+        invocationId: 'pipe-456'
     });
 });

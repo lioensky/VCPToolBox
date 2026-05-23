@@ -55,15 +55,9 @@
         </div>
 
         <form class="execute-form" @submit.prevent="handleExecute">
-          <div class="form-group">
-            <label for="operator">Operator（谁在执行）</label>
-            <input
-              id="operator"
-              v-model="operator"
-              type="text"
-              placeholder="输入操作者名称"
-            />
-          </div>
+          <p class="execute-note">
+            当前管理员认证身份将自动写入审计与执行归因。
+          </p>
 
           <div class="form-group-check">
             <label>
@@ -76,7 +70,7 @@
             <button
               type="submit"
               class="action-btn action-btn-danger"
-              :disabled="isLoading || !operator.trim() || !confirmed || planError !== null || stepCount !== 1"
+              :disabled="isLoading || !confirmed || planError !== null || stepCount !== 1"
             >
               <span v-if="isLoading" class="loading-spinner-sm"></span>
               <span v-else class="material-symbols-outlined">bolt</span>
@@ -184,7 +178,6 @@ const result = ref<AiImageDryRunResult | null>(null);
 const errorMessage = ref("");
 
 // Execute 专属
-const operator = ref("");
 const confirmed = ref(false);
 const resultImages = ref<AiImageExecuteImage[]>([]);
 const resultErrors = ref<string[]>([]);
@@ -239,8 +232,8 @@ async function handleDryRun() {
   try {
     const res = await aiImageAgentsApi.dryRun(
       {
-        pipelineId: pipelineId.value || "default-pipeline",
-        taskId: taskId.value || "default-task",
+        pipelineId: pipelineId.value.trim(),
+        taskId: taskId.value.trim(),
         plan,
       },
       {},
@@ -257,7 +250,7 @@ async function handleDryRun() {
 async function handleExecute() {
   resetResult();
 
-  if (!operator.value.trim() || !confirmed.value) return;
+  if (!confirmed.value) return;
   if (planError.value) return;
   if (stepCount.value !== 1) return;
 
@@ -272,10 +265,9 @@ async function handleExecute() {
   isLoading.value = true;
   try {
     const res = await aiImageAgentsApi.execute(
-      pipelineId.value || "execute-pipeline",
-      taskId.value || "execute-task",
+      pipelineId.value.trim(),
+      taskId.value.trim(),
       plan,
-      operator.value.trim(),
       {},
       { showLoader: false }
     );
@@ -357,6 +349,12 @@ async function handleExecute() {
 .field-error {
   font-size: var(--font-size-helper);
   color: #fca5a5;
+}
+
+.execute-note {
+  margin: 0;
+  font-size: var(--font-size-helper);
+  color: var(--secondary-text);
 }
 
 .action-btn {
