@@ -250,13 +250,42 @@ class VCPTavern {
         }
 
         // 支持解析 {{VCPTavern::PresetName::SessionID}} 格式
+        // 以及 {{VCPTavern::PresetName::blacklist:规则名}} 格式
         const triggerContent = match[1];
-        let [presetName, explicitSessionId] = triggerContent.split('::');
+        const parts = triggerContent.split('::');
+        const presetName = parts[0];
+        let explicitSessionId;
+        let blacklistRules = [];
+
+        for (let i = 1; i < parts.length; i++) {
+            const part = parts[i];
+            if (part.startsWith('blacklist:')) {
+                const listStr = part.slice('blacklist:'.length);
+                blacklistRules = listStr
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(s => s.length > 0);
+            } else {
+                explicitSessionId = part;
+            }
+        }
 
         const preset = this.presets.get(presetName);
         if (!preset || !Array.isArray(preset.rules)) {
             console.warn(`[VCPTavern] 预设 "${presetName}" 未找到或其 'rules' 格式无效。`);
             return messages;
+        }
+
+        // 根据黑名单过滤规则（静默跳过指定规则）
+        const skipRuleByName = (rule) => {
+            return blacklistRules.length > 0 && blacklistRules.includes(rule.name);
+        };
+
+        const activeRules = preset.rules.filter(r => !skipRuleByName(r));
+        const skippedRules = preset.rules.filter(r => r.enabled && skipRuleByName(r));
+
+        if (this.debugMode && skippedRules.length > 0) {
+            console.log(`[VCPTavern] 黑名单已静默规则: ${skippedRules.map(r => `"${r.name}"`).join(', ')}`);
         }
 
         // 构建全局正则，清除所有同名占位符（含可选 SessionID 部分）
@@ -283,7 +312,7 @@ class VCPTavern {
         if (this.debugMode) console.log(`[VCPTavern] 检测到触发器，使用预设: ${presetName}`);
 
     // 检测预设是否需要时间追踪（是否使用了 {{LastChatTime}} 或 {{TimeSinceLastChat}}）
-    const needsTimeTracking = this._presetNeedsTimeTracking(preset);
+    const needsTimeTracking = this._presetNeedsTimeTracking({ ...preset, rules: activeRules });
 
     // --- 计算时间间隔逻辑 (仅当预设使用时间变量时) ---
     let resolveExtendedVariables;
@@ -391,9 +420,9 @@ class VCPTavern {
 
         // 按照注入规则处理
         // 为了处理深度注入，我们先处理嵌入注入，再处理相对注入，最后处理深度注入
-        const embedRules = preset.rules.filter(r => r.enabled && r.type === 'embed');
-        const relativeRules = preset.rules.filter(r => r.enabled && r.type === 'relative').sort((a, b) => (a.position === 'before' ? -1 : 1));
-        const depthRules = preset.rules.filter(r => r.enabled && r.type === 'depth').sort((a, b) => b.depth - a.depth);
+        const embedRules = activeRules.filter(r => r.enabled && r.type === 'embed');
+        const relativeRules = activeRules.filter(r => r.enabled && r.type === 'relative').sort((a, b) => (a.position === 'before' ? -1 : 1));
+        const depthRules = activeRules.filter(r => r.enabled && r.type === 'depth').sort((a, b) => b.depth - a.depth);
 
         // 1. 嵌入注入 (直接修改现有消息内容) - 恢复兼容老版本
         for (const rule of embedRules) {
