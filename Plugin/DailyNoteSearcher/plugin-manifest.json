@@ -1,0 +1,48 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "DailyNoteSearcher",
+  "version": "1.0.0",
+  "displayName": "日记搜索器 (Rust)",
+  "description": "一个使用Rust编写的高性能日记搜索插件，支持在日记目录中进行快速、精准的文本或正则表达式搜索，并返回完整日记或匹配上下文。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "executable",
+    "command": "DailyNoteSearcher.exe"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "configSchema": {
+    "DAILY_NOTE_ROOT": {
+      "type": "string",
+      "description": "日记本根目录的相对路径（相对于项目根目录）。",
+      "default": "dailynote"
+    },
+    "MAX_RESULTS": {
+      "type": "integer",
+      "description": "单次搜索返回的最大结果数量。",
+      "default": 200
+    },
+    "IGNORED_FOLDERS": {
+      "type": "string",
+      "description": "搜索时需要忽略的文件夹列表，用逗号分隔。",
+      "default": "VectorStore,DebugLog"
+    },
+    "ALLOWED_EXTENSIONS": {
+      "type": "string",
+      "description": "允许搜索的文件扩展名白名单，用逗号分隔。",
+      "default": ".md,.txt"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SearchDailyNote",
+        "description": "调用此工具在日记本中搜索指定的文本或关键词。支持使用正则表达式进行高级搜索，并返回匹配的完整日记内容。\n参数:\n- query (字符串, 必需): 需要搜索的关键词、文本片段或正则表达式。\n- folder (字符串, 可选): 指定要搜索的子文件夹。如果未提供，则默认为整个日记本目录。\n- is_regex (布尔值, 可选, 默认false): 是否使用正则表达式搜索。\n- case_sensitive (布尔值, 可选, 默认false): 是否区分大小写搜索。\n- whole_word (布尔值, 可选, 默认false): 是否进行全词匹配。\n- context_lines (整数, 可选, 默认2): 返回结果时，在匹配行前后额外显示的上下文行数。\n\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteSearcher「末」,\nquery:「始」关键词或正则表达式「末」,\nfolder:「始」(可选)子文件夹名称「末」,\nis_regex:「始」(可选)true/false「末」,\ncase_sensitive:「始」(可选)true/false「末」,\nwhole_word:「始」(可选)true/false「末」,\ncontext_lines:「始」(可选)数字「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNoteSearcher「末」,\nquery:「始」灵感「末」,\nfolder:「始」DreamDiary「末」,\nis_regex:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

@@ -216,6 +216,7 @@ Thumbs.db
 
 # ===== 编译产物 =====
 rust-vexus-lite/target/
+Plugin/DailyNoteSearcher/src/target/
 
 # ==== 分布式开发 ====
 VCPDistributedServer
