@@ -26,6 +26,15 @@ test('normalizeToolApprovalConfig preserves valid fields and canonicalizes legac
     });
 });
 
+test('normalizeToolApprovalConfig does not floor fractional timeouts to zero', () => {
+    const normalized = normalizeToolApprovalConfig({
+        enabled: true,
+        timeoutMinutes: 0.5
+    });
+
+    assert.equal(normalized.timeoutMinutes, 1);
+});
+
 test('normalizeToolApprovalConfig falls back to defaults for malformed input', () => {
     assert.deepEqual(normalizeToolApprovalConfig(null), DEFAULT_TOOL_APPROVAL_CONFIG);
     assert.deepEqual(normalizeToolApprovalConfig({

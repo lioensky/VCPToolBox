@@ -64,7 +64,7 @@ function normalizeToolApprovalConfig(rawConfig = {}) {
 
     const timeoutCandidate = rawConfig.timeoutMinutes ?? rawConfig.timeout;
     if (Number.isFinite(timeoutCandidate) && timeoutCandidate > 0) {
-        normalized.timeoutMinutes = Math.floor(timeoutCandidate);
+        normalized.timeoutMinutes = Math.max(1, Math.floor(timeoutCandidate));
     }
 
     normalized.approvalList = normalizeRuleList(
