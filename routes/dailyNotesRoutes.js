@@ -270,11 +270,17 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
                         return settleReject(new Error(output.error || 'Unknown Rust search error'));
                     }
 
-                    const notes = (output.notes || []).map(note => ({
-                        name: note.name,
-                        folderName: note.folder_name,
-                        lastModified: note.last_modified,
-                        preview: note.preview
+                    const payload = output.result && typeof output.result === 'object'
+                        ? output.result
+                        : output;
+
+                    const rawNotes = Array.isArray(payload.notes) ? payload.notes : [];
+                    const notes = rawNotes.map(note => ({
+                        name: note.name ?? note.file_name ?? '',
+                        folderName: note.folder_name ?? note.folderName ?? '',
+                        lastModified: note.last_modified ?? note.lastModified ?? '',
+                        preview: note.preview ?? '',
+                        content: note.content ?? undefined
                     }));
 
                     settleResolve(notes);

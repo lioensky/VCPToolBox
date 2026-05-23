@@ -1,6 +1,7 @@
 use ignore::{WalkBuilder, WalkState};
 use regex::Regex;
 use serde::{de::{self, Deserializer, Unexpected}, Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -144,9 +145,13 @@ struct MatchLine {
 #[derive(Serialize, Debug)]
 struct Output {
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
     notes: Option<Vec<SearchResult>>,
     total: usize,
     limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     error: Option<String>,
 }
 
@@ -287,11 +292,21 @@ fn main() {
             // 按最后修改时间倒序排序
             results.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
+            let output_content = build_output_content(&results, total, limited);
+            let result_payload = json!({
+                "notes": results,
+                "total": total,
+                "limited": limited,
+                "content": output_content
+            });
+
             let output = Output {
                 status: "success".to_string(),
-                notes: Some(results),
+                result: Some(result_payload),
+                notes: None,
                 total,
                 limited,
+                content: None,
                 error: None,
             };
             if let Ok(json) = serde_json::to_string(&output) {
@@ -478,12 +493,41 @@ fn extract_matches(content: &str, regex: &Regex, context_lines: usize) -> Vec<Ma
     matches
 }
 
+fn build_output_content(results: &[SearchResult], total: usize, limited: bool) -> String {
+    if results.is_empty() {
+        return format!("未找到匹配内容。总结果数：{}。", total);
+    }
+
+    let mut parts = Vec::new();
+    parts.push(format!(
+        "共找到 {} 条匹配结果{}。",
+        total,
+        if limited { "（已截断显示）" } else { "" }
+    ));
+
+    for (idx, note) in results.iter().enumerate() {
+        parts.push(format!(
+            "\n===== 结果 {} =====\n文件: {}/{}\n最后修改: {}\n预览: {}\n\n{}\n",
+            idx + 1,
+            note.folder_name,
+            note.name,
+            note.last_modified,
+            note.preview,
+            note.content.as_deref().unwrap_or("")
+        ));
+    }
+
+    parts.join("\n")
+}
+
 fn print_error(message: String) {
     let output = Output {
         status: "error".to_string(),
+        result: None,
         notes: None,
         total: 0,
         limited: false,
+        content: None,
         error: Some(message),
     };
     if let Ok(json) = serde_json::to_string(&output) {
