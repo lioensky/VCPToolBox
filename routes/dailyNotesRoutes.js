@@ -203,13 +203,34 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
      */
     async function executeRustSearch(searchTerms, folder, signal) {
         const { execFile } = require('child_process');
-        const exePath = path.join(__dirname, '../Plugin/DailyNoteSearcher/DailyNoteSearcher.exe');
+        
+        // 🌟 架构自动适配逻辑
+        const platform = process.platform; // win32, linux, darwin
+        const arch = process.arch;         // x64, arm64
+        
+        let binaryName = 'DailyNoteSearcher';
+        if (platform === 'linux') {
+            binaryName += (arch === 'arm64' ? '-aarch64-unknown-linux-musl' : '-x86_64-unknown-linux-musl');
+        } else if (platform === 'win32') {
+            binaryName += (arch === 'arm64' ? '-aarch64-pc-windows-msvc.exe' : '-x86_64-pc-windows-msvc.exe');
+        } else if (platform === 'darwin') {
+            binaryName += (arch === 'arm64' ? '-aarch64-apple-darwin' : '-x86_64-apple-darwin');
+        }
 
-        // 检查可执行文件是否存在
+        let exePath = path.join(__dirname, '../Plugin/DailyNoteSearcher', binaryName);
+        const fallbackName = platform === 'win32' ? 'DailyNoteSearcher.exe' : 'DailyNoteSearcher';
+        const fallbackPath = path.join(__dirname, '../Plugin/DailyNoteSearcher', fallbackName);
+
+        // 🌟 智能探测：优先尝试架构匹配名，失败后回退至通用名
         try {
             await fs.access(exePath);
         } catch {
-            throw new Error('Rust DailyNoteSearcher executable not found');
+            try {
+                await fs.access(fallbackPath);
+                exePath = fallbackPath; // 找到通用名，使用它
+            } catch {
+                throw new Error(`Rust DailyNoteSearcher executable not found for ${platform}-${arch} (Tried: ${binaryName} and ${fallbackName})`);
+            }
         }
 
         // 构造 Rust 搜索器所需的参数。
