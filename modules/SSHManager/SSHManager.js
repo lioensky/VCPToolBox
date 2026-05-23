@@ -21,7 +21,30 @@ const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const util = require('util');
 const { createSanitizedUserCommandEnv } = require('../sensitiveEnv');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class SSHManager {
     constructor(hostsConfig) {
@@ -78,6 +101,13 @@ class SSHManager {
         // 主机级并发队列 (防止针对同一主机的认证冲击导致 PAM 锁定)
         this.hostQueues = new Map();
 
+        // 主机级命令执行队列：同一 hostId 的普通 SSH 命令默认串行执行。
+        this.enableExecutionQueue = this.globalSettings.enableExecutionQueue !== false;
+        this.maxExecutionQueueLength = this.globalSettings.maxExecutionQueueLength || 50;
+        this.queueWaitTimeout = this.globalSettings.queueWaitTimeout || 120000;
+        this.disconnectOnCommandTimeout = this.globalSettings.disconnectOnCommandTimeout !== false;
+        this.executionQueues = new Map();
+
         // 如果启用连接池，启动定时器和预热
         if (this.usePool) {
             this._startIdleCleanupTimer();
@@ -87,12 +117,12 @@ class SSHManager {
     }
     
     /**
-     * 添加调试日志（同时输出到 stderr 和收集到数组）
+     * 添加调试日志（主进程按 info 分层，stdio 插件子进程仍写 stderr 以保护 stdout 响应）
      */
     _log(message) {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] [SSHManager] ${message}`;
-        console.error(logEntry);  // 输出到 stderr（VCP 会在 DebugMode 下显示）
+        logInfo(logEntry);
         if (!this.debugLogs) {
             this.debugLogs = [];
         }
@@ -881,23 +911,161 @@ class SSHManager {
             );
         });
     }
+
+    _getExecutionQueueState(hostId) {
+        if (!this.executionQueues.has(hostId)) {
+            this.executionQueues.set(hostId, {
+                running: false,
+                queue: [],
+                activeSince: null,
+                lastQueuedAt: null
+            });
+        }
+        return this.executionQueues.get(hostId);
+    }
+
+    _removeQueuedExecution(state, entry) {
+        const index = state.queue.indexOf(entry);
+        if (index >= 0) {
+            state.queue.splice(index, 1);
+            return true;
+        }
+        return false;
+    }
+
+    _runHostExecution(hostId, state, task) {
+        state.running = true;
+        state.activeSince = Date.now();
+
+        return Promise.resolve()
+            .then(task)
+            .finally(() => {
+                this._releaseHostExecution(hostId);
+            });
+    }
+
+    _releaseHostExecution(hostId) {
+        const state = this.executionQueues.get(hostId);
+        if (!state) return;
+
+        while (state.queue.length > 0) {
+            const next = state.queue.shift();
+            if (next.timer) {
+                clearTimeout(next.timer);
+                next.timer = null;
+            }
+            if (next.timedOut) {
+                continue;
+            }
+
+            this._log(`[ExecQueue] 开始执行排队命令: ${hostId} (剩余队列: ${state.queue.length})`);
+            this._runHostExecution(hostId, state, next.task)
+                .then(next.resolve, next.reject);
+            return;
+        }
+
+        state.running = false;
+        state.activeSince = null;
+        if (state.queue.length === 0) {
+            this.executionQueues.delete(hostId);
+        }
+    }
+
+    _enqueueHostExecution(hostId, task, options = {}) {
+        if (!this.enableExecutionQueue || options.bypassExecutionQueue === true) {
+            return Promise.resolve().then(task);
+        }
+
+        const state = this._getExecutionQueueState(hostId);
+        const maxQueueLength = Number.isFinite(Number(options.maxExecutionQueueLength))
+            ? Number(options.maxExecutionQueueLength)
+            : this.maxExecutionQueueLength;
+        const queueWaitTimeout = Number.isFinite(Number(options.queueWaitTimeout))
+            ? Number(options.queueWaitTimeout)
+            : this.queueWaitTimeout;
+
+        if (!state.running) {
+            this._log(`[ExecQueue] 直接执行命令: ${hostId}`);
+            return this._runHostExecution(hostId, state, task);
+        }
+
+        if (maxQueueLength >= 0 && state.queue.length >= maxQueueLength) {
+            throw new Error(`SSH 命令队列已满 (${hostId}, ${state.queue.length}/${maxQueueLength})`);
+        }
+
+        return new Promise((resolve, reject) => {
+            const entry = {
+                task,
+                resolve,
+                reject,
+                enqueuedAt: Date.now(),
+                timer: null,
+                timedOut: false
+            };
+
+            if (queueWaitTimeout > 0) {
+                entry.timer = setTimeout(() => {
+                    entry.timedOut = true;
+                    const removed = this._removeQueuedExecution(state, entry);
+                    if (removed) {
+                        this._log(`[ExecQueue] 排队等待超时: ${hostId} (${queueWaitTimeout}ms)`);
+                        reject(new Error(`SSH 命令排队超时 (${hostId}, ${queueWaitTimeout}ms)`));
+                    }
+                }, queueWaitTimeout);
+            }
+
+            state.lastQueuedAt = entry.enqueuedAt;
+            state.queue.push(entry);
+            this._log(`[ExecQueue] 命令已排队: ${hostId} (队列长度: ${state.queue.length})`);
+        });
+    }
+
+    _clearExecutionQueues(reason) {
+        const error = reason instanceof Error
+            ? reason
+            : new Error(reason || 'SSHManager execution queues cleared');
+
+        for (const [hostId, state] of this.executionQueues) {
+            for (const entry of state.queue) {
+                if (entry.timer) {
+                    clearTimeout(entry.timer);
+                    entry.timer = null;
+                }
+                entry.timedOut = true;
+                entry.reject(error);
+            }
+            state.queue = [];
+            state.running = false;
+            state.activeSince = null;
+            this._log(`[ExecQueue] 已清空命令队列: ${hostId}`);
+        }
+        this.executionQueues.clear();
+    }
     
     /**
      * 执行远程命令
      */
     async execute(hostId, command, options = {}) {
-        // 如果是批量执行或显式要求池化，则不 bypass
-        const connection = await this.connect(hostId, {
-            bypassPool: options.usePool === undefined ? !this.usePool : !options.usePool
-        });
+        const config = await this.getHostConfig(hostId);
         
         // 本地执行
-        if (connection.type === 'local') {
+        if (config.type === 'local') {
             return this.executeLocal(command, options);
         }
-        
-        // SSH 远程执行
-        return this.executeSSH(connection, command, options);
+
+        return this._enqueueHostExecution(hostId, async () => {
+            // 如果是批量执行或显式要求池化，则不 bypass
+            const connection = await this.connect(hostId, {
+                bypassPool: options.usePool === undefined ? !this.usePool : !options.usePool
+            });
+
+            if (connection.type === 'local') {
+                return this.executeLocal(command, options);
+            }
+
+            // SSH 远程执行
+            return this.executeSSH(connection, command, options);
+        }, options);
     }
     
     /**
@@ -960,6 +1128,9 @@ class SSHManager {
     async executeSSH(connection, command, options = {}) {
         const timeout = options.timeout || connection.config.timeout || 30000;
         const maxOutputLength = options.maxOutputLength || 5 * 1024 * 1024; // 默认 5MB
+        const disconnectOnTimeout = options.disconnectOnCommandTimeout !== undefined
+            ? options.disconnectOnCommandTimeout !== false
+            : this.disconnectOnCommandTimeout;
         
         return new Promise((resolve, reject) => {
             let stdout = '';
@@ -968,6 +1139,7 @@ class SSHManager {
             let streamRef = null;
             let settled = false;
             let operationStarted = false;
+            let timeoutTriggered = false;
 
             const beginOperation = () => {
                 if (operationStarted) return;
@@ -985,8 +1157,27 @@ class SSHManager {
                 clearTimeout(timeoutId);
                 reject(error);
             };
+            const disconnectDirtyConnection = () => {
+                if (!disconnectOnTimeout || !connection || connection.type !== 'ssh') {
+                    return;
+                }
+                this._log(`SSH 命令超时，断开脏连接: ${connection.hostId}`);
+                if (connection.isPooled) {
+                    this.disconnect(connection.hostId).catch(err => {
+                        this._log(`断开超时连接失败: ${connection.hostId} - ${err.message}`);
+                    });
+                } else if (connection.client) {
+                    try {
+                        connection.client.end();
+                        connection.isConnected = false;
+                    } catch (err) {
+                        this._log(`关闭非池化超时连接失败: ${connection.hostId} - ${err.message}`);
+                    }
+                }
+            };
             
             const timeoutId = setTimeout(() => {
+                timeoutTriggered = true;
                 if (streamRef) {
                     try {
                         if (typeof streamRef.close === 'function') {
@@ -997,7 +1188,11 @@ class SSHManager {
                     } catch (_) {}
                     releaseOperation();
                 }
-                rejectOnce(new Error(`SSH 命令执行超时 (${timeout}ms)`));
+                const timeoutError = new Error(`SSH 命令执行超时 (${timeout}ms)`);
+                timeoutError.code = 'SSH_COMMAND_TIMEOUT';
+                timeoutError.hostId = connection.hostId;
+                disconnectDirtyConnection();
+                rejectOnce(timeoutError);
             }, timeout);
             
             connection.client.exec(command, (err, stream) => {
@@ -1013,7 +1208,7 @@ class SSHManager {
                     releaseOperation();
 
                     // 如果是非池化连接，执行完毕后立即断开
-                    if (!connection.isPooled && connection.client) {
+                    if (!timeoutTriggered && !connection.isPooled && connection.client) {
                         this._log(`非池化连接任务完成，正在断开: ${connection.hostId}`);
                         connection.client.end();
                         connection.isConnected = false;
@@ -1549,6 +1744,8 @@ class SSHManager {
      * 断开所有连接
      */
     async disconnectAll() {
+        this._clearExecutionQueues('SSHManager 正在断开所有连接，已取消等待中的命令');
+
         // 先停止所有流式会话
         await this.stopAllStreamSessions();
 
@@ -1589,7 +1786,10 @@ class SSHManager {
     getPoolStats() {
         const now = Date.now();
         const poolEntries = [];
+        const executionQueues = [];
         let idleCount = 0;
+        let queuedExecutionCount = 0;
+        let runningExecutionCount = 0;
         for (const [hostId, connection] of this.connectionPool) {
             const isBusy = this._isConnectionBusy(connection);
             const isIdle = !isBusy && connection.lastUsedAt && now - connection.lastUsedAt > this.idleTimeout;
@@ -1607,6 +1807,20 @@ class SSHManager {
                 activeStreamSessions: connection.activeStreamSessions || 0
             });
         }
+        for (const [hostId, state] of this.executionQueues) {
+            const queueLength = state.queue.length;
+            queuedExecutionCount += queueLength;
+            if (state.running) runningExecutionCount++;
+            executionQueues.push({
+                hostId,
+                running: state.running,
+                queueLength,
+                activeFor: state.activeSince ? now - state.activeSince : null,
+                oldestQueuedFor: queueLength > 0
+                    ? now - Math.min(...state.queue.map(entry => entry.enqueuedAt))
+                    : null
+            });
+        }
         return {
             activeConnections: this.activeConnections,
             maxConcurrentConnections: this.maxConcurrentConnections,
@@ -1622,6 +1836,13 @@ class SSHManager {
             healthCheckInterval: this.healthCheckInterval,
             idleCheckInterval: this.idleCheckInterval,
             warmupHosts: this.warmupHosts,
+            executionQueueEnabled: this.enableExecutionQueue,
+            maxExecutionQueueLength: this.maxExecutionQueueLength,
+            queueWaitTimeout: this.queueWaitTimeout,
+            disconnectOnCommandTimeout: this.disconnectOnCommandTimeout,
+            runningExecutionCount,
+            queuedExecutionCount,
+            executionQueues,
             poolEntries
         };
     }
