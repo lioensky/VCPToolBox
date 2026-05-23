@@ -209,6 +209,7 @@ image/fluxgen/
 # Qwen Code / Snow 工具配置
 **/.qwen/
 **/.snow/
+helloagents/
 
 # Windows 缩略图缓存
 Thumbs.db

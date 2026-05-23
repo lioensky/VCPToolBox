@@ -182,10 +182,14 @@ class SSHManagerProxy {
 
     _rpcTimeoutFromCommandOptions(options = {}) {
         const commandTimeout = Number.parseInt(options.timeout, 10);
+        const queueWaitTimeout = Number.parseInt(options.queueWaitTimeout, 10);
+        const queueBudget = Number.isFinite(queueWaitTimeout) && queueWaitTimeout > 0
+            ? queueWaitTimeout
+            : 120000;
         if (!Number.isFinite(commandTimeout) || commandTimeout <= 0) {
-            return 30000;
+            return queueBudget + 30000;
         }
-        return commandTimeout + 1000;
+        return commandTimeout + queueBudget + 5000;
     }
 
     // === 与真实 SSHManager 一致的 API ===
