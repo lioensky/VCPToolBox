@@ -171,7 +171,7 @@ function buildListDomainsArguments(payload) {
     return { domains };
   }
 
-  if (!domain) fail("Missing required argument: domain or domains.");
+  if (!domain) return {};
   validateAllowed(domain, AVAILABLE_DOMAINS, "domain");
   return { domain };
 }
@@ -301,6 +301,25 @@ function callAnySearch(toolName, args) {
   });
 }
 
+function formatMarkdownResult(command, args, apiResult) {
+  const lines = [
+    `## AnySearch 执行结果`,
+    ``,
+    `- **命令**: \`${command}\``,
+    `- **参数**: \`${JSON.stringify(args)}\``,
+    ``,
+  ];
+
+  const content = typeof apiResult.content === "string" ? apiResult.content.trim() : "";
+  if (content) {
+    lines.push(content);
+  } else {
+    lines.push("_AnySearch API 未返回可读文本内容。_");
+  }
+
+  return lines.join("\n");
+}
+
 async function main() {
   try {
     const payload = parsePayload(await readStdin());
@@ -309,12 +328,7 @@ async function main() {
     const apiResult = await callAnySearch(command, args);
     emit({
       status: "success",
-      result: {
-        command,
-        arguments: args,
-        content: apiResult.content,
-        raw_jsonrpc_result: apiResult.raw_jsonrpc_result,
-      },
+      result: formatMarkdownResult(command, args, apiResult),
     });
   } catch (error) {
     fail(error.message || String(error));
