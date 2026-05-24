@@ -523,6 +523,92 @@ class RAGDiaryPlugin {
         return characterDiaryContent;
     }
 
+    /**
+     * 解析全量召回专用的 ::Last 后缀。
+     * 支持 ::Last（默认10）、::Last5、::Last20。
+     * 仅由 <<...>> 与 {{...}} 两类全量召回入口调用。
+     */
+    _extractLastLimit(modifiers) {
+        if (!modifiers || typeof modifiers !== 'string') return null;
+        const lastMatch = modifiers.match(/::Last(\d*)\b/);
+        if (!lastMatch) return null;
+
+        if (!lastMatch[1]) return 10;
+
+        const limit = parseInt(lastMatch[1], 10);
+        if (!Number.isFinite(limit) || limit <= 0) return 10;
+        return limit;
+    }
+
+    /**
+     * 获取指定日记本内最近创建/编辑的 N 个日记文件内容。
+     * 排序依据为文件系统时间：max(mtimeMs, birthtimeMs, ctimeMs)，不读取文件名和内容做判定。
+     */
+    async getLastDiaryContent(characterName, limit = 10) {
+        const characterDirPath = path.join(dailyNoteRootPath, characterName);
+        const safeLimit = Math.max(1, parseInt(limit, 10) || 10);
+
+        try {
+            const files = await fs.readdir(characterDirPath);
+            const diaryFiles = files.filter(file => {
+                const lowerCaseFile = file.toLowerCase();
+                return lowerCaseFile.endsWith('.txt') || lowerCaseFile.endsWith('.md');
+            });
+
+            if (diaryFiles.length === 0) {
+                return `[${characterName}日记本内容为空]`;
+            }
+
+            const fileMetas = await Promise.all(
+                diaryFiles.map(async (file) => {
+                    const filePath = path.join(characterDirPath, file);
+                    try {
+                        const stat = await fs.stat(filePath);
+                        return {
+                            file,
+                            filePath,
+                            timeMs: Math.max(stat.mtimeMs || 0, stat.birthtimeMs || 0, stat.ctimeMs || 0)
+                        };
+                    } catch (statErr) {
+                        console.warn(`[RAGDiaryPlugin] ::Last stat failed for ${filePath}:`, statErr.message);
+                        return null;
+                    }
+                })
+            );
+
+            const sortedFileMetas = fileMetas
+                .filter(Boolean)
+                .sort((a, b) => b.timeMs - a.timeMs);
+
+            if (safeLimit > sortedFileMetas.length) {
+                console.warn(`[RAGDiaryPlugin] ::Last${safeLimit}: "${characterName}" 仅有 ${sortedFileMetas.length} 个日记文件，将返回全部可用文件。`);
+            }
+
+            const recentFiles = sortedFileMetas.slice(0, safeLimit);
+
+            if (recentFiles.length === 0) {
+                return `[${characterName}日记本内容为空]`;
+            }
+
+            const fileContents = await Promise.all(
+                recentFiles.map(async ({ file, filePath }) => {
+                    try {
+                        return await fs.readFile(filePath, 'utf-8');
+                    } catch (readErr) {
+                        return `[Error reading file: ${file}]`;
+                    }
+                })
+            );
+
+            return fileContents.join('\n\n---\n\n');
+        } catch (charDirError) {
+            if (charDirError.code !== 'ENOENT') {
+                console.error(`[RAGDiaryPlugin] Error reading recent diary files in ${characterDirPath}:`, charDirError.message);
+            }
+            return `[无法读取“${characterName}”的日记本，可能不存在]`;
+        }
+    }
+
     _sigmoid(x) {
         return 1 / (1 + Math.exp(-x));
     }
@@ -1695,12 +1781,14 @@ class RAGDiaryPlugin {
             }
             processedDiaries.add(dbName);
 
+            const lastLimit = this._extractLastLimit(modifiers);
+
             // ✅ 新增：为<<>>模式生成缓存键
             const cacheKey = this._generateCacheKey({
                 userContent,
                 aiContent: aiContent || '',
                 dbName,
-                modifiers: '', // 全文模式无修饰符
+                modifiers,
                 dynamicK
             });
 
@@ -1728,7 +1816,9 @@ class RAGDiaryPlugin {
                 const finalSimilarity = Math.max(baseSimilarity, enhancedSimilarity);
 
                 if (finalSimilarity >= localThreshold) {
-                    const diaryContent = await this.getDiaryContent(dbName);
+                    const diaryContent = lastLimit
+                        ? await this.getLastDiaryContent(dbName, lastLimit)
+                        : await this.getDiaryContent(dbName);
                     const safeContent = diaryContent
                         .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
                         .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
@@ -1740,7 +1830,9 @@ class RAGDiaryPlugin {
                             type: 'DailyNote',
                             action: 'FullTextRecall',
                             dbName: dbName,
-                            message: `[RAGDiary] 已全文召回日记本：${dbName}，共 1 条全量记录`
+                            message: lastLimit
+                                ? `[RAGDiary] 已全文召回日记本：${dbName}，按文件时间召回最新 ${lastLimit} 条记录`
+                                : `[RAGDiary] 已全文召回日记本：${dbName}，共 1 条全量记录`
                         });
                     }
 
@@ -2087,22 +2179,28 @@ class RAGDiaryPlugin {
             // 标记以防其他模式循环
             processedDiaries.add(dbName);
 
+            const lastLimit = this._extractLastLimit(modifiers);
+
             // 直接获取内容，跳过阈值判断
             processingPromises.push((async () => {
                 try {
-                    const diaryContent = await this.getDiaryContent(dbName);
+                    const diaryContent = lastLimit
+                        ? await this.getLastDiaryContent(dbName, lastLimit)
+                        : await this.getDiaryContent(dbName);
                     const safeContent = diaryContent
                         .replace(/\[\[.*日记本.*\]\]/g, '[循环占位符已移除]')
-                        .replace(/<<.*日记本>>/g, '[循环占位符已移除]')
+                        .replace(/<<.*日记本.*>>/g, '[循环占位符已移除]')
                         .replace(/《《.*日记本.*》》/g, '[循环占位符已移除]')
-                        .replace(/\{\{.*日记本\}\}/g, '[循环占位符已移除]');
+                        .replace(/\{\{.*日记本.*\}\}/g, '[循环占位符已移除]');
 
                     if (this.pushVcpInfo) {
                         this.pushVcpInfo({
                             type: 'DailyNote',
                             action: 'DirectRecall',
                             dbName: dbName,
-                            message: `[RAGDiary] 已直接引入日记本：${dbName}，共 1 条全量记录`
+                            message: lastLimit
+                                ? `[RAGDiary] 已直接引入日记本：${dbName}，按文件时间召回最新 ${lastLimit} 条记录`
+                                : `[RAGDiary] 已直接引入日记本：${dbName}，共 1 条全量记录`
                         });
                     }
 
