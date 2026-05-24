@@ -17,7 +17,7 @@
   "configSchema": {
     "ANYSEARCH_API_KEY": {
       "type": "string",
-      "description": "AnySearch API Key。可选；不配置时使用匿名访问，额度较低。",
+      "description": "AnySearch API Key。可选；不配置时使用匿名访问，额度较低。支持填写多个 Key，并用英文逗号分隔，插件每次请求会随机选择一个 Key，例如: as_sk_xxx,as_sk_yyy。",
       "default": ""
     },
     "ANYSEARCH_ENDPOINT": {

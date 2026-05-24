@@ -224,6 +224,21 @@ function buildArguments(command, payload) {
   }
 }
 
+function parseApiKeys() {
+  const raw = (process.env.ANYSEARCH_API_KEY || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function pickApiKey() {
+  const apiKeys = parseApiKeys();
+  if (apiKeys.length === 0) return "";
+  return apiKeys[Math.floor(Math.random() * apiKeys.length)];
+}
+
 function getTimeoutMs() {
   const parsed = Number.parseInt(process.env.ANYSEARCH_TIMEOUT_MS || "", 10);
   if (Number.isNaN(parsed)) return 30000;
@@ -248,7 +263,7 @@ function callAnySearch(toolName, args) {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(payload),
   };
-  const apiKey = (process.env.ANYSEARCH_API_KEY || "").trim();
+  const apiKey = pickApiKey();
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const options = {
