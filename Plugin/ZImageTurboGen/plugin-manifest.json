@@ -23,8 +23,8 @@
     "invocationCommands": [
       {
         "commandIdentifier": "GenerateImage",
-        "description": "【文生图】调用此工具使用 Gitee 提供的 Z-Image-Turbo 生成图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nsize:「始」(可选) 图片分辨率或比例，默认 1024x1024。支持任意\"宽x高\"格式，系统会自动匹配最接近的支持比例（如 1:1, 4:3, 3:4, 16:9, 9:16 等）。「末」,\nnegative_prompt:「始」(可选) 负面提示词，描述不希望在图片中出现的内容，例如 \"模糊, 低质量, 变形\"。「末」,\nnum_inference_steps:「始」(可选) 推理步数，整数，范围 4-25，步数越高质量越好但耗时更长，默认值为 8。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到生成的图片可访问URL，请直接为用户以 Markdown 或 HTML `<img>` 标签展示。",
-        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一只戴着宇航员头盔的猫，背景是太空「末」,\nsize:「始」1024x1024「末」,\nnegative_prompt:「始」模糊, 低质量, 变形「末」,\nnum_inference_steps:「始」9「末」\n<<<[END_TOOL_REQUEST]>>>"
+        "description": "【文生图】调用此工具使用 Gitee 提供的 Z-Image-Turbo 生成图片。支持 1k 和 2k 高清分辨率，支持中文和英文提示词。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」(必需) 用于图片生成的详细提示词，支持中文或英文。「末」,\nsize:「始」(可选) 图片分辨率或比例，默认 1024x1024。支持 1k 分辨率（如 1024x1024, 1024x768, 768x1024, 1024x576, 576x1024 等）和 2k 高清分辨率（如 2048x2048, 2048x1536, 1536x2048, 2048x1152, 1152x2048 等）。系统会自动匹配最接近的支持比例。「末」,\nnegative_prompt:「始」(可选) 负面提示词，描述不希望在图片中出现的内容，例如 \"模糊, 低质量, 变形\"。「末」,\nnum_inference_steps:「始」(可选) 推理步数，整数，范围 4-25，步数越高质量越好但耗时更长，默认值为 9。「末」,\nseed:「始」(可选) 随机种子，整数，用于控制生成图片的确定性，默认值为 0。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n执行完毕后，您将收到生成的图片可访问URL，请直接为用户以 Markdown 或 HTML `<img>` 标签展示。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageTurboGen「末」,\ncommand:「始」GenerateImage「末」,\nprompt:「始」一张虚构的英语电影《回忆之味》（The Taste of Memory）的电影海报。场景设置在一个质朴的19世纪风格厨房里。画面中央，一位红棕色头发、留着小胡子的中年男子站在一张木桌后，他身穿白色衬衫、黑色马甲和米色围裙，正看着一位女士，手中拿着一大块生红肉，下方是一个木制切菜板。整体风格是写实主义，采用温暖柔和的灯光方案，营造出一种亲密的氛围。「末」,\nsize:「始」2048x2048「末」,\nnegative_prompt:「始」指导模型避免生成所描述的内容。「末」,\nnum_inference_steps:「始」9「末」,\nseed:「始」0「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

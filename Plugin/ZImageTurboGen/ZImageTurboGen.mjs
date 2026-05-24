@@ -40,6 +40,10 @@ function isValidArgs(args) {
         const steps = parseInt(args.num_inference_steps, 10);
         if (isNaN(steps) || steps < 4 || steps > 25) return false;
     }
+    if (args.seed !== undefined) {
+        const seed = parseInt(args.seed, 10);
+        if (isNaN(seed)) return false;
+    }
     return true;
 }
 
@@ -52,13 +56,13 @@ async function processApiRequest(args) {
     }
 
     const payload = {
-        model: "Z-Image-Turbo",
+        model: "z-image-turbo",
         prompt: args.prompt,
         n: 1,
     };
 
     // --- Size Optimization Logic ---
-    const allowedSizes = [
+    const allowedSizes1k = [
         { w: 1024, h: 1024, str: '1024x1024' },
         { w: 1024, h: 768, str: '1024x768' },
         { w: 768, h: 1024, str: '768x1024' },
@@ -69,9 +73,26 @@ async function processApiRequest(args) {
         { w: 512, h: 512, str: '512x512' }
     ];
 
+    const allowedSizes2k = [
+        { w: 2048, h: 2048, str: '2048x2048' },
+        { w: 2048, h: 1536, str: '2048x1536' },
+        { w: 1536, h: 2048, str: '1536x2048' },
+        { w: 2048, h: 1152, str: '2048x1152' },
+        { w: 1152, h: 2048, str: '1152x2048' },
+        { w: 2048, h: 1280, str: '2048x1280' },
+        { w: 1280, h: 2048, str: '1280x2048' }
+    ];
+
+    let width = 1024;
+    let height = 1024;
+
     if (args.size) {
         const [inputW, inputH] = args.size.split(/[:x]/).map(Number);
         const inputRatio = inputW / inputH;
+        
+        // Determine whether to use 1k or 2k sizes based on input dimensions
+        const use2k = (inputW > 1024 || inputH > 1024 || (inputW * inputH) > 1048576);
+        const allowedSizes = use2k ? allowedSizes2k : allowedSizes1k;
         
         // Find the size with the closest aspect ratio
         let bestMatch = allowedSizes[0];
@@ -86,24 +107,54 @@ async function processApiRequest(args) {
             }
         }
         payload.size = bestMatch.str;
+        width = bestMatch.w;
+        height = bestMatch.h;
     } else {
         payload.size = '1024x1024';
+        width = 1024;
+        height = 1024;
+    }
+
+    // --- Extra Body Parameters ---
+    payload.width = width;
+    payload.height = height;
+    payload.lora_weights = Array.isArray(args.lora_weights) ? args.lora_weights : [];
+    payload.lora_scale = parseFloat(args.lora_scale) || 0;
+
+    if (args.seed !== undefined) {
+        payload.seed = parseInt(args.seed, 10) || 0;
+    } else {
+        payload.seed = 0;
     }
 
     if (args.negative_prompt && typeof args.negative_prompt === 'string' && args.negative_prompt.trim()) {
         payload.negative_prompt = args.negative_prompt.trim();
+    } else {
+        payload.negative_prompt = "";
     }
 
     const steps = args.num_inference_steps !== undefined
-        ? Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 8))
-        : 8;
+        ? Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 9))
+        : 9;
     payload.num_inference_steps = steps;
+
+    // Double insurance: provide both root-level and extra_body parameters
+    payload.extra_body = {
+        negative_prompt: payload.negative_prompt,
+        width: payload.width,
+        height: payload.height,
+        num_inference_steps: payload.num_inference_steps,
+        seed: payload.seed,
+        lora_weights: payload.lora_weights,
+        lora_scale: payload.lora_scale
+    };
 
     const response = await fetchWithProxy(API_ENDPOINT, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${API_KEY}`,
             'Content-Type': 'application/json',
+            'X-Failover-Enabled': 'true',
         },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(120000),
@@ -167,7 +218,7 @@ async function processApiRequest(args) {
         content: [
             {
                 type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}${args.negative_prompt ? `\n- 负面提示词: ${args.negative_prompt}` : ''}\n- 推理步数: ${payload.num_inference_steps}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}${payload.negative_prompt ? `\n- 负面提示词: ${payload.negative_prompt}` : ''}\n- 分辨率: ${payload.size}\n- 推理步数: ${payload.num_inference_steps}\n- 随机种子(Seed): ${payload.seed}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
             },
             {
                 type: 'image_url',
