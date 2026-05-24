@@ -36,4 +36,42 @@
 ## 注意事项
 
 -   确保 `PROJECT_BASE_PATH` 环境变量被正确设置。
--   插件会覆盖 `generated_lists/` 目录中已存在的同名 `.txt` 文件。
+-   插件会覆盖 `generated_lists/` 目录中已存在的同名 `.txt` 文件。## 前端表情包修复器配置
+
+VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能自动修复 AI 生成的错误表情包 URL。该修复器依赖本插件生成的列表数据作为匹配知识库。
+
+### 配置步骤
+
+1. **复制列表文件**：将本插件目录下的 `generated_lists/` 整个文件夹复制到 VCPChat 的 `AppData/` 目录下
+   - 最终路径：`VCPChat/AppData/generated_lists/`
+
+2. **配置图床密码**：在 `VCPChat/AppData/generated_lists/` 目录下创建 `config.env` 文件，写入：
+   ```
+   file_key=你的图床密码
+   ```
+   > **重要**：`file_key` 的值必须与 VCPToolBox 根目录 `config.env` 中的 `Image_Key` 保持一致。
+
+3. **重启 VCPChat 客户端**，修复器会自动加载表情包库。
+
+### 验证配置
+
+启动 VCPChat 后，打开开发者工具（`Ctrl+Shift+I`）→ Console，搜索 `EmoticonFixer`：
+- 成功：`[EmoticonFixer] Library loaded with N items.`
+- 失败：`[EmoticonFixer] Library unavailable, fixer running in degraded passthrough mode.`
+
+## 表情包 URL 修复器工作原理
+
+当 AI 生成的表情包 URL 存在错误时（文件夹名错误、文件格式错误、文件名拼写错误等），前端修复器会自动尝试修复：
+
+### 修复机制（按优先级）
+
+1. **完美匹配检查**：URL 与库中某项完全一致 → 直接通过，不做修改
+2. **精确文件名匹配**：剥离扩展名后进行精确比对，忽略文件夹差异和格式差异。当 AI 写对了文件名但文件夹或格式错误时，能准确跨文件夹匹配到正确的表情包
+3. **模糊匹配**（降级方案）：使用编辑距离算法计算加权相似度（70% 文件夹名权重 + 30% 文件名权重），选择得分最高且超过阈值（0.6）的结果
+
+### 注意事项
+
+- 新增表情包目录后需**重启 VCPToolBox 后端**，本插件才会重新扫描生成列表
+- 重新生成列表后需**再次复制** `generated_lists/` 到前端 `AppData/` 目录
+- 修复器在库为空时自动降级为直通模式（passthrough），不做任何 URL 修改
+- 后端 ImageServer 提供了额外的图片格式回退机制（`.png`↔`.jpg`↔`.webp` 等），作为前端修复器的补充防御层

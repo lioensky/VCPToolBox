@@ -362,8 +362,39 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
             console.log(`[SecureStatic] 安全检查通过，请求文件: ${requestedFile}`);
         }
 
-        // 直接使用express.static中间件
-        staticMiddleware(req, res, next);
+        // 先尝试 express.static 精确匹配
+        staticMiddleware(req, res, () => {
+            // 精确匹配失败 → 尝试图片格式回退（仅限 Image 服务）
+            if (serviceType !== 'Image') return next();
+
+            // 关键：req.path 是 URL 编码的，必须解码后才能匹配文件系统路径
+            let decodedPath;
+            try {
+                decodedPath = decodeURIComponent(req.path);
+            } catch (e) {
+                return next(); // URL 解码失败，跳过回退
+            }
+
+            const ext = path.extname(decodedPath).toLowerCase();
+            if (!ext) return next(); // 无扩展名，跳过
+
+            const baseName = decodedPath.slice(0, -ext.length);
+            const fallbackExts = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].filter(e => e !== ext);
+
+            for (const tryExt of fallbackExts) {
+                const tryPath = path.join(rootDir, baseName + tryExt);
+                const normalizedTry = path.resolve(tryPath);
+                // 安全检查：确保回退路径仍在允许目录内
+                if (!normalizedTry.startsWith(normalizedRoot)) continue;
+                if (fs.existsSync(tryPath)) {
+                    if (pluginDebugMode) {
+                        console.log(`[SecureStatic] 🔄 格式回退: ${decodedPath} -> ${baseName + tryExt}`);
+                    }
+                    return res.sendFile(normalizedTry);
+                }
+            }
+            next(); // 所有回退格式都找不到 → 404
+        });
     };
 }
 
