@@ -36,7 +36,9 @@
 ## 注意事项
 
 -   确保 `PROJECT_BASE_PATH` 环境变量被正确设置。
--   插件会覆盖 `generated_lists/` 目录中已存在的同名 `.txt` 文件。## 前端表情包修复器配置
+-   插件会覆盖 `generated_lists/` 目录中已存在的同名 `.txt` 文件。
+
+## 前端表情包修复器配置
 
 VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能自动修复 AI 生成的错误表情包 URL。该修复器依赖本插件生成的列表数据作为匹配知识库。
 
@@ -53,7 +55,7 @@ VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能
 
 3. **重启 VCPChat 客户端**，修复器会自动加载表情包库。
 
-### 验证配置
+### 验证配置（可选）
 
 启动 VCPChat 后，打开开发者工具（`Ctrl+Shift+I`）→ Console，搜索 `EmoticonFixer`：
 - 成功：`[EmoticonFixer] Library loaded with N items.`
