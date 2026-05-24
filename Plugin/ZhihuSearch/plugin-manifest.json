@@ -1,0 +1,60 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ZhihuSearch",
+  "displayName": "知乎搜索插件",
+  "version": "1.1.2",
+  "description": "调用知乎开放平台 zhihu_search 与 global_search API 搜索知乎内容，返回面向 AI 阅读的 Markdown content、sources，以及标题、链接、作者、摘要、编辑时间等结构化结果；站内搜索额外返回点赞数和评论数。",
+  "author": "OpenClaw / VCP",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python ZhihuSearch.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 15000
+  },
+  "configSchema": {
+    "ZHIHU_ACCESS_SECRET": {
+      "type": "string",
+      "description": "知乎开放平台 Access Secret，用于 Bearer 认证。",
+      "required": true
+    },
+    "ZHIHU_OPENAPI_BASE_URL": {
+      "type": "string",
+      "description": "知乎开放平台 Base URL，默认 https://developer.zhihu.com。",
+      "default": "https://developer.zhihu.com"
+    },
+    "ZHIHU_ZHIHU_SEARCH_URL": {
+      "type": "string",
+      "description": "zhihu_search 完整 endpoint 覆盖地址。设置后优先于 Base URL。",
+      "default": ""
+    },
+    "ZHIHU_GLOBAL_SEARCH_URL": {
+      "type": "string",
+      "description": "global_search 完整 endpoint 覆盖地址。设置后优先于 Base URL。",
+      "default": ""
+    },
+    "ZHIHU_SEARCH_TIMEOUT_SECONDS": {
+      "type": "integer",
+      "description": "HTTP 请求超时时间，单位秒。",
+      "default": 5
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ZhihuSearch",
+        "description": "调用此工具搜索知乎内容。\n参数:\n- query/q/text (string, 必需): 搜索关键词，会自动去除首尾空白。\n- search_type/type/scope/command (string, 可选, 默认 zhihu_search): 搜索类型。zhihu_search 表示知乎站内内容搜索，count 范围 1-10；global_search 表示全局搜索，count 范围 1-20。也可传 zhihu、global 作为别名。\n- count/max_results (integer, 可选, 默认 10): 返回结果数量，会按搜索类型自动限制上限。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZhihuSearch「末」,\nsearch_type:「始」global_search「末」,\nquery:「始」如何理解 rave 文化「末」,\ncount:「始」8「末」\n<<<[END_TOOL_REQUEST]>>>\n\n返回字段包含 message、content、sources、search_type、code、api_message、item_count、items。message/content 是面向 AI 阅读的 Markdown 搜索结果；api_message 是知乎 API 原始状态；sources 是统一来源列表；items 是完整结构化数据。zhihu_search 的 items 内含 title、url、author_name、summary、vote_up_count、comment_count、edit_time；global_search 的 items 内含 title、url、author_name、summary、edit_time。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZhihuSearch「末」,\nsearch_type:「始」zhihu_search「末」,\nquery:「始」AI Agent 应用实践「末」,\ncount:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "dependencies": {
+    "pip": [],
+    "system": []
+  },
+  "compatibility": {
+    "pythonVersion": ">=3.8"
+  }
+}
