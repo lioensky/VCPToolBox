@@ -15,14 +15,13 @@ Critical distinctions:
 - `A:/VCP/VCPToolBox-staging-custom-integration` was removed.
 - `A:/VCP/VCPToolBox` is not latest main; it is dirty `feature/latest-updates`.
 - `prod/stable` is permanently protected and never a cleanup candidate.
-- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` no longer appears in `git worktree list`, but a plain residual folder remains due Windows long-path deletion failure.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` no longer appears in `git worktree list` and the plain residual folder has been raw-deleted after explicit approval.
 
 Open risks:
 
 - `A:/VCP/VCPToolBox` contains many local changes, including config/runtime-sensitive paths. Treat all as user-owned.
-- Residual folder cleanup for `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` requires explicit approval for raw recursive deletion.
 - Temporary `6005/6006` test services have been stopped; existing `3000` service was left untouched.
 
 Next safe action:
 
-- Commit the V3 / Branch-Final evidence update, then request explicit approval before raw recursive cleanup of the residual preflight folder.
+- Commit the final residual-cleanup evidence update, then request explicit approval before any additional remote write.

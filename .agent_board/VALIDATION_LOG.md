@@ -71,3 +71,21 @@ Not validated:
 - No service functional test was run.
 - No raw recursive deletion of the residual preflight folder was performed.
 - No cleanup was performed inside `A:/VCP/VCPToolBox`.
+
+## 2026-05-25 20:15 Asia/Shanghai
+
+Checks performed:
+
+- Resolved `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` and verified it was inside `A:/VCP/`.
+- Verified the residual folder had no `.git` marker.
+- Verified the residual folder no longer appeared in `git worktree list`.
+- Verified `stash@{0}` still preserved the Package R3 detached preflight dist snapshot.
+- Verified `main` / `origin/main` were synchronized at `ed24a54b3414a88c490350bbe481946d43b429bb` before deletion.
+- Verified `prod/stable` / `origin/prod/stable` were synchronized at `a1870b398fc82eb34c5764a9c60de9e127548494`.
+- Executed raw recursive deletion only after explicit user approval.
+- Verified `Test-Path A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` returned `False`.
+
+Not validated:
+
+- No service functional test was run.
+- No additional remote write was performed after the residual cleanup evidence update.

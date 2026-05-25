@@ -8,7 +8,7 @@ Completed:
 - Package G2: cherry-picked governance evidence from `562e907` onto `main` as `39d860f` and pushed `origin/main`.
 - Package R1: removed `A:/VCP/VCPToolBox-staging-custom-integration`.
 - Package R2: stashed photo-studio-next dirty tail in `stash@{1}` and left that worktree clean.
-- Package R3: stashed detached preflight `AdminPanel-Vue/dist` build snapshot in `stash@{0}` and removed the Git worktree registry entry.
+- Package R3: stashed detached preflight `AdminPanel-Vue/dist` build snapshot in `stash@{0}`, removed the Git worktree registry entry, then raw-deleted the plain residual folder after explicit approval.
 - Verified `A:/VCP/VCPToolBox` is not latest main; it is `feature/latest-updates` and has many local changes.
 - Verified `prod/stable` remains synchronized with `origin/prod/stable`.
 - Added current-state governance notes to `docs/governance/BRANCH_CLEANUP_AUDIT_20260525.md`.
@@ -27,12 +27,11 @@ Completed:
 
 Not completed:
 
-- Residual folder `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` still exists as a plain folder due Windows `Filename too long`.
 - No branch was deleted.
 - Local test services on `6005/6006` have been stopped.
 
 Next:
 
-1. Commit V3 / Branch-Final evidence update.
-2. Await explicit approval for raw recursive cleanup of the residual preflight folder.
-3. Continue only with separate packages for `A:/VCP/VCPToolBox` ideas.
+1. Commit final residual-cleanup evidence update.
+2. Continue only with separate packages for `A:/VCP/VCPToolBox` ideas.
+3. Request explicit approval before any additional remote write.

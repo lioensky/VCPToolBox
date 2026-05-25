@@ -15,7 +15,7 @@ Important worktrees:
 - `A:/VCP/VCPToolBox`: dirty `feature/latest-updates`, not latest main.
 - `A:/VCP/VCPToolBox-photo-studio-next`: clean after Package R2 stash.
 - `A:/VCP/VCPToolBox-staging-custom-integration`: removed.
-- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`: removed from Git worktree registry, but a plain residual folder remains because Windows long paths blocked deletion.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`: removed from Git worktree registry, then raw-deleted after explicit approval because Windows long paths had blocked normal deletion.
 
 Preserved local state:
 

@@ -35,13 +35,13 @@ Removed from Git worktree registry:
 - `A:/VCP/VCPToolBox-staging-custom-integration`
 - `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`
 
-Important residual:
+Final residual cleanup:
 
-- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` still exists as a plain folder after `git worktree remove` failed to delete it because of Windows `Filename too long`.
-- It no longer appears in `git worktree list`.
-- It no longer has `.git`.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` no longer exists on disk.
+- It was first removed from the Git worktree registry.
+- It had no `.git` marker before raw deletion.
 - Its dirty `AdminPanel-Vue/dist` build snapshot was preserved in `stash@{0}` before removal.
-- Raw recursive directory deletion remains pending explicit approval.
+- The plain residual folder was raw-deleted only after explicit user approval, using PowerShell long-path handling and an `A:/VCP/` boundary check.
 
 ## 4. Preserved Stashes
 
@@ -59,7 +59,6 @@ Do not delete:
 
 Pending explicit approval:
 
-- Raw recursive cleanup of the residual folder `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`.
 - Any branch deletion.
 - Any cleanup of runtime/state/secret-bearing paths in `A:/VCP/VCPToolBox`.
 
@@ -72,4 +71,4 @@ Recommended future feature/doc packages:
 
 ## 6. Current Result
 
-Branch/worktree governance is mostly complete, but not fully closed because one orphaned residual directory remains on disk and needs a separate long-path deletion action.
+Branch/worktree governance is complete for the requested packages. Remaining items are future feature/doc packages or separate user-owned dirty worktree retention decisions, not blockers for this governance closeout.

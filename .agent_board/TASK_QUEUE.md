@@ -9,7 +9,7 @@ Updated: 2026-05-25 19:50 Asia/Shanghai.
 - Package G2 completed: governance evidence from `562e907` was cherry-picked to `main` as `39d860f` and pushed to `origin/main`.
 - Package R1 completed: `A:/VCP/VCPToolBox-staging-custom-integration` was removed by non-force `git worktree remove`.
 - Package R2 completed: `A:/VCP/VCPToolBox-photo-studio-next` dirty tail was preserved in `stash@{1}` and the worktree is now clean.
-- Package R3 partially completed: detached preflight dirty dist was preserved in `stash@{0}` and removed from Git worktree registry; plain residual folder remains due Windows long path deletion failure.
+- Package R3 completed: detached preflight dirty dist was preserved in `stash@{0}`, removed from Git worktree registry, and the plain residual folder was raw-deleted after explicit approval.
 - Branch cleanup audit has a Package M post-state addendum.
 - `A:/VCP/VCPToolBox` dirty worktree has a read-only classification audit.
 - `A:/VCP/VCPToolBox` source candidate review has been split into V2A-V2E packages.
@@ -22,17 +22,16 @@ Updated: 2026-05-25 19:50 Asia/Shanghai.
 
 ## In Progress
 
-- Branch-Final closeout evidence update.
+- Branch-Final residual cleanup evidence update.
 
 ## Next Safe Local Tasks
 
-1. Commit this V3 / Branch-Final evidence update locally.
-2. Request explicit approval before raw recursive deletion of the residual preflight folder.
-3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
+1. Commit this final residual-cleanup evidence update locally.
+2. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
+3. Request explicit approval before any additional remote write.
 
 ## Blocked / Needs Explicit Approval
 
-- Raw recursive deletion of `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`.
 - Deleting any branch.
 - Force-removing dirty files or runtime directories.
 - Any additional remote write.
