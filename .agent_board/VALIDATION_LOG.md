@@ -37,3 +37,37 @@ Not validated:
 
 - No service functional test beyond earlier HTTP checks.
 - No branch deletion/removal dry run yet.
+
+## 2026-05-25 19:50 Asia/Shanghai
+
+Checks performed:
+
+- `git cherry-pick 562e9078b67a8378edba644a8c76666a55d12875` on `main`
+- `git diff --check origin/main..main`
+- `git push origin main`
+- `git fetch origin main --prune`
+- `git rev-list --left-right --count origin/main...main`
+- `git worktree remove A:/VCP/VCPToolBox-staging-custom-integration`
+- `git stash push -u` for Package R2 dirty tail
+- `git stash push -u` for Package R3 detached preflight dist snapshot
+- `git worktree remove A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`
+- `git worktree list --porcelain`
+- `git status --short -uall` in reviewed worktrees
+
+Verified:
+
+- `main` / `origin/main`: `39d860fa07bf55c07acb3eaed70dc9178e81716b`.
+- `A:/VCP/VCPToolBox-staging-custom-integration` was removed.
+- `A:/VCP/VCPToolBox-photo-studio-next` is clean after `stash@{1}`.
+- `stash@{1}` contains `Plugin/DailyNoteManager/daily-note-manager.js`, `280ed91.patch`, and `desktop.ini`.
+- `stash@{0}` contains the detached preflight `AdminPanel-Vue/dist` generated build snapshot.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` no longer appears in `git worktree list`.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` still exists as a plain folder because Git failed to delete it with `Filename too long`.
+- `A:/VCP/VCPToolBox` remains dirty `feature/latest-updates`, behind `15`, ahead `10`, with `254` dirty entries.
+- V3 reviewed DingTalkTable compatibility shim, interaction-middleware docs, OneBot docs, and runtime/sensitive paths.
+
+Not validated:
+
+- No service functional test was run.
+- No raw recursive deletion of the residual preflight folder was performed.
+- No cleanup was performed inside `A:/VCP/VCPToolBox`.

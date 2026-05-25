@@ -1,21 +1,26 @@
 # VCPToolBox Governance Run State
 
-Status: active local governance.
+Status: active local governance closeout.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
-Current branch: `integration/main-absorb-prod-stable-upstream-20260525`.
+Current branch: `main`.
 Worktree status at last check: clean.
 
 Current verified heads:
 
-- `main` / `origin/main`: `55b51ca07dd6635e3a4ecbaf1709dd1f053c7720`.
+- `main` / `origin/main`: `39d860fa07bf55c07acb3eaed70dc9178e81716b`.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 
 Important worktrees:
 
-- `A:/VCP/VCPToolBox-staging-custom-integration`: clean `main`, latest verified main.
 - `A:/VCP/VCPToolBox`: dirty `feature/latest-updates`, not latest main.
-- `A:/VCP/VCPToolBox-photo-studio-next`: dirty `codex/photo-studio-baserow-provider-batch`.
-- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`: dirty detached worktree.
+- `A:/VCP/VCPToolBox-photo-studio-next`: clean after Package R2 stash.
+- `A:/VCP/VCPToolBox-staging-custom-integration`: removed.
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`: removed from Git worktree registry, but a plain residual folder remains because Windows long paths blocked deletion.
+
+Preserved local state:
+
+- `stash@{0}`: Package R3 detached preflight dist snapshot.
+- `stash@{1}`: Package R2 photo-studio-next dirty tail.
 
 Running local services:
 
