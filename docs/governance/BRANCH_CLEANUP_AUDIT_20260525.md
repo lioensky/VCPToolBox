@@ -235,6 +235,31 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 
 结论：三个冻结对象状态与前次治理记录一致，未出现可直接清理或可直接吸收的新证据。
 
+### 2026-05-25 latest handoff snapshot
+
+本节为最新交接快照；前文带具体 HEAD 的章节保留其当时观测值，不作为最新计数替代。
+
+当前基线：
+
+- 当前工作区：`A:/VCP/VCPToolBox-staging-custom-integration`。
+- 当前分支：`main`。
+- 当前 HEAD：`d67ad63`。
+- 当前工作树：干净。
+- 本地分支数量：26。
+- worktree 数量：9。
+- 已并入且未占用 worktree 的剩余本地候选：5；不包含 `main`，不包含 `prod/stable`。
+- `git branch --no-merged main`：19 个，其中 7 个占用 worktree，12 个未占用 worktree。
+- `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先；`origin/main` 仍不是 `main` 祖先。
+- 当前 left/right：`main...prod/stable = 173 / 0`，`main...origin/prod/stable = 173 / 0`，`main...upstream/main = 275 / 0`，`main...origin/main = 412 / 18`。
+
+当前最小可批准动作：
+
+1. D2-safe：批准后可尝试 `git branch -d` 删除 3 个本地分支：`lane9-photo-studio-next-guide-contract-intake-20260425`、`main-upstream-absorb-20260420`、`revert/pr-35-identity-evidence-20260430`。
+2. C2-safe：批准后可逐项移除 2 个干净 worktree 并尝试删除对应本地分支：`A:/VCP/VCPToolBox-channelhub-core`、`A:/VCP/VCPToolBox-dingtalk-adapters`。
+3. 其余对象继续保留或冻结：D2-upstream-blocked、E-historical、C-protected-worktree、F-frozen-dirty、F-true-unabsorbed。
+
+仍禁止：push、远端修改、force、reset/clean、删除 `prod/stable`、触碰或记录真实密钥。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
