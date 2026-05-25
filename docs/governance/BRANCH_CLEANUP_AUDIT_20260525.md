@@ -637,6 +637,64 @@ Package K 结论：
 3. `origin/main` 的分叉状态未因刷新改变；仍不得整分支 merge 或直接 push。
 4. 下一步若继续治理，应处理 `origin/main` 拓扑闭合方案，或继续按真实未吸收对照线做专项小任务；任何远端同步或 push 仍需单独明确批准。
 
+#### Package L 方案：`origin/main` 拓扑闭合预案
+
+本节是方案，不是授权。未执行 merge、cherry-pick、push、force、reset、clean 或远端写入。
+
+当前问题：
+
+- 当前 `main` 是本地最新整合主线，并已包含 `prod/stable`、`origin/prod/stable` 与 `upstream/main`。
+- `origin/main` 仍与 `main` 分叉；复核时 `main...origin/main = 429 / 18`。
+- `git cherry -v main origin/main` 仍显示 14 个 patch-equivalent 提交和 3 个正向补丁。
+- J1 已复核 3 个正向补丁：`server.js` AI Image Agents route 与 `modules/dynamicToolRegistry.js` 已被当前 `main` 更完整实现覆盖；`AdminPanel-Vue/dist/*` 是构建产物，不直接吸收。
+- 因此不能通过“整分支 merge origin/main”或“直接 push main 到 origin/main”来安全闭合拓扑。
+
+可选路径：
+
+| 路径 | 操作形态 | 风险 | 当前建议 |
+| --- | --- | --- | --- |
+| 保持分叉 | 不做 merge/push，只保留文档说明 | 远端 `origin/main` 继续显示 behind/ahead 差异 | 安全，但治理未完全闭合 |
+| 逐补丁迁移 | 针对 3 个正向补丁逐项重审并在当前 `main` 上小补丁实现 | 需要代码改动和测试；`AdminPanel-Vue/dist` 仍不应直接吸收 | 仅当发现当前实现缺口时采用 |
+| 本地拓扑桥 | 在 `main` 上创建记录型 merge commit，保留当前 `main` 文件树，同时把 `origin/main` 作为父提交纳入历史 | 会改变本地 `main` 历史；后续若推送仍是远端写入 | 可作为后续单独批准的本地预案，但必须严格验证 tree 未变化 |
+| 远端闭合 | 将本地闭合后的 `main` 推送到 `origin/main` | 远端写入；可能影响协作者和默认分支 | 必须单独明确批准，且应在本地验证后再做 |
+
+若后续批准“Package L-local：`origin/main` 本地拓扑桥预演”，建议先在临时本地分支上验证，不直接改 `main`：
+
+```powershell
+git switch -c governance/origin-main-topology-bridge-preview main
+git merge -s ours --no-ff origin/main -m "Record origin main topology closure without content changes"
+git diff --exit-code main
+git rev-list --left-right --count HEAD...origin/main
+git merge-base --is-ancestor origin/main HEAD
+git switch main
+```
+
+预演通过标准：
+
+- `git diff --exit-code main` 必须无输出，证明文件树未变化。
+- `git merge-base --is-ancestor origin/main HEAD` 必须成功，证明拓扑已闭合。
+- 预演分支不得 push。
+- 预演分支不得合入 `main`，除非用户随后单独批准本地 `main` 拓扑桥。
+
+若后续批准在 `main` 上执行本地拓扑桥，必须重新验证：
+
+- 当前分支为 `main`。
+- 工作树干净。
+- `prod/stable`、`origin/prod/stable`、`upstream/main` 仍为 `main` 祖先。
+- `git cherry -v main origin/main` 仍只包含已复核的正向补丁，且没有新的未审查提交。
+- merge 后 `git diff --exit-code <merge前main>` 无输出。
+- 不执行 push。
+
+停止条件：
+
+- `origin/main` 出现新的未审查正向提交。
+- 本地拓扑桥导致文件树变化。
+- merge 产生冲突。
+- 需要修改 `AdminPanel-Vue/dist`、secret/env、运行态数据或 dirty worktree。
+- 任何步骤要求 push、force、reset、clean 或远端写入。
+
+结论：当前推荐先保留分叉并记录风险；若用户要闭合拓扑，先批准本地临时分支预演，而不是直接改 `main` 或 push。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
