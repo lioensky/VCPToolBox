@@ -340,6 +340,52 @@ git branch -D feature/gov-patch-1b-vcptoolbridge-request-source-20260430
 - 未删除 worktree，未触碰 `main`、`prod/stable`、D2-upstream-blocked、dirty worktree 或真实未吸收分支。
 - 未执行 reset/clean，未修改 `.env`、`config.env` 或 secret 文件。
 
+#### Package H1 后剩余分支闭环审计
+
+本节为只读复核，不是删除、merge、cherry-pick、push 或远端同步授权。复核时当前分支为 `main`，HEAD 为 `5ea2329`，主工作树干净。
+
+当前剩余状态：
+
+- 本地分支数量：14。
+- worktree 数量：6。
+- `git branch --no-merged main`：10 个，其中 4 个占用 worktree，6 个未占用 worktree。
+- `git branch --merged main`：`main`、`prod/stable`、`lane8/upstream-intake-20260425`、`staging/vcptoolbox-custom-integration-20260425`。
+- `prod/stable` 仍是永久保护稳定生产线，不进入任何清理候选。
+
+6 个未占用且未并入 `main` 的剩余分支：
+
+| 分支 | HEAD | upstream | `main...branch` | `git cherry` | 当前判断 |
+| --- | --- | --- | --- | --- | --- |
+| `feature/ai-image-agent-clean-pr` | `fca8f44` | `origin/feature/ai-image-agent-clean-pr` | `421 / 17` | `plus=3 / minus=14` | 真实未吸收且包含 `AdminPanel-Vue/dist` 构建产物和 AI Image runtime/admin 改动；不整分支 merge，不清理 |
+| `feature/ai-image-pipeline-dgp-refactor` | `546b684` |  | `332 / 2` | `plus=1 / minus=1` | 与 `feature/ai-image-pipeline-dgp-v2` 和 rescue 分支同 HEAD；含 `AdminPanel-Vue/dist` 产物和 AI Image Agent runtime hardening；需专项拆分，不直接吸收 |
+| `feature/ai-image-pipeline-dgp-v2` | `546b684` |  | `332 / 2` | `plus=1 / minus=1` | 与 dgp-refactor 和 rescue 分支同 HEAD；作为同一历史切片对待，不直接吸收或清理 |
+| `feature/photo-studio-guide-contract-migration` | `1e1b0ca` | `origin/feature/photo-studio-guide-contract-migration` | `504 / 11` | `plus=10 / minus=0` | Photo Studio guide-contract 迁移线；真实未吸收，不整分支 merge |
+| `feature/photo-studio-next-guide-contract` | `5d01212` | `origin/feature/photo-studio-next-guide-contract` | `504 / 17` | `plus=10 / minus=6` | Photo Studio / DingTalk guide-contract 后续线；真实未吸收，不整分支 merge |
+| `rescue/ai-image-pipeline-mixed-20260427_195303` | `546b684` |  | `332 / 2` | `plus=1 / minus=1` | 与两个 DGP 分支同 HEAD；保留为 rescue 引用，除非后续单独批准去重策略 |
+
+4 个占用 worktree 的未并入分支继续冻结或保留：
+
+| 分支 | worktree | status 行数 | 当前判断 |
+| --- | --- | ---: | --- |
+| `feature/latest-updates` | `A:/VCP/VCPToolBox` | 254 | dirty / 疑似密钥样式值 / 冲突标记 / 运行态和 mixed diff 风险已归类；继续冻结 |
+| `lane10-codex-memory-intake-20260425` | `A:/VCP/VCPToolBox-photo-studio-export` | 0 | 干净但有正向提交；真实未吸收对照线，只能按小主题复核 |
+| `codex/photo-studio-baserow-provider-batch` | `A:/VCP/VCPToolBox-photo-studio-next` | 3 | dirty；A2 已确认 `DailyNoteManager` 小改动不迁移，继续冻结 |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `A:/VCP/VCPToolBox-prod-stable` | 0 | 承载稳定线工作环境，继续保留；不纳入清理 |
+
+D2-upstream-blocked 当前事实：
+
+| 分支 | HEAD | upstream | 是否为 `main` 祖先 | `main...branch` | `upstream...branch` | 当前判断 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lane8/upstream-intake-20260425` | `d523782` | `origin/main` | yes | `382 / 0` | `18 / 39` | 已被 `main` 包含，但未并入其 upstream；继续保留或另行批准 local upstream 处理后温和删除 |
+| `staging/vcptoolbox-custom-integration-20260425` | `947fa6e` | `origin/main` | yes | `372 / 0` | `18 / 49` | 已被 `main` 包含，但未并入其 upstream；继续保留或另行批准 local upstream 处理后温和删除 |
+
+Post-H1 推荐下一步：
+
+1. 不再对未占用未并入的 6 个分支做批量清理；它们应进入专项复核或保留。
+2. 若继续做本地清理，最小可控包是 `D2-upstream-blocked`：先单独批准是否允许修改本地 upstream 配置，再用 `git branch -d` 温和删除；不建议直接 `git branch -D`。
+3. dirty/frozen worktree 继续冻结，不 reset、不 clean、不吸收、不删除。
+4. 任何远端同步、push、merge 到生产线或修改远端引用仍需单独明确批准。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
