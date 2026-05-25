@@ -62,6 +62,21 @@
 
 因此本文不是“治理已完成”证明，而是继续执行治理前的控制台账。
 
+### 2026-05-25 候选清单一致性复核
+
+本轮只读复核当前 Git 现实与本文候选清单是否一致，未执行删除、push、reset、clean、merge、cherry-pick 或 worktree remove。
+
+当前基线：
+
+- worktree 数量：9。
+- `git branch --no-merged main`：19 个。
+- 未并入且占用 worktree：7 个，均已在第 2 节和占用 worktree 复核补充中记录。
+- 未并入且未占用 worktree：12 个，其中 6 个 Governance Patch 1B 分支为执行包 E 候选，其余 6 个为真实未吸收或高风险混合对照线。
+- 已并入且未占用 worktree：48 个，为执行包 D 候选。
+- `prod/stable` 不在任何清理候选中；即使它已被 `main` 包含，也仍是永久保护稳定生产线。
+
+执行状态：Package B 已执行；Package A1/A2/A3、占用 worktree、未占用未并入分支均已完成只读复核。Package C/D/E 仍只是候选或 preflight 记录，任何清理都需要后续单独明确批准。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
