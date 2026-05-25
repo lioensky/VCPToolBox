@@ -536,6 +536,62 @@ J1 结论：
 3. `AdminPanel-Vue/dist/*` 属于构建产物，继续排除直接吸收；如需更新必须走明确 frontend build/release 流程。
 4. 因为本节未执行 fetch，以上结论只适用于当前本地 `origin/main` ref；若后续批准 fetch-only，需要重新审计刷新后的 refs。
 
+#### Package K 方案：fetch-only 远端跟踪引用刷新
+
+本节是方案，不是授权。未执行 `git fetch`、未修改本地 remote-tracking refs、未 merge、未 pull、未 push、未 prune。
+
+目的：
+
+- 刷新 `origin` 与 `upstream` 的本地 remote-tracking refs，使后续 `main` / `origin/main` / `origin/prod/stable` / `upstream/main` 关系审计基于最新远端状态。
+- fetch-only 只读远端、写本地 refs；不修改远端仓库、不修改当前工作树文件。
+- 因为它会改变本地 `refs/remotes/*`，仍需用户单独明确批准。
+
+推荐命令形态：
+
+```powershell
+git fetch origin
+git fetch upstream
+```
+
+本包明确不包含：
+
+- 不执行 `git pull`。
+- 不执行 `git merge`、`git rebase`、`git cherry-pick`。
+- 不执行 `git push`。
+- 不执行 `git fetch --prune` 或任何会删除本地 remote-tracking refs 的 prune 操作。
+- 不更新、删除、创建远端分支。
+- 不修改 `main`、`prod/stable` 或任何 worktree 文件。
+
+执行前必须重新验证：
+
+- 当前分支为 `main`。
+- 主工作树干净。
+- remote URL 仍为当前记录的 `origin=https://github.com/JENN2046/VCPToolBox.git`、`upstream=https://github.com/lioensky/VCPToolBox.git`。
+- 当前没有正在进行的 merge/rebase/cherry-pick。
+- 用户明确批准 “Package K：fetch-only 远端跟踪引用刷新”。
+
+执行后必须重新审计并记录：
+
+- `git status --short -uall`。
+- `git branch -vv`。
+- `main...origin/main`、`main...origin/prod/stable`、`main...upstream/main`、`main...prod/stable`。
+- `git cherry -v main origin/main`。
+- `git log --oneline main..origin/main`。
+- `prod/stable` 是否仍被 `main` 包含，并再次声明其永久保护状态。
+
+停止条件：
+
+- `fetch` 失败或要求凭据/交互。
+- remote URL 与记录不一致。
+- fetch 后 `origin/prod/stable` 或 `prod/stable` 出现意外分叉，需要单独复核。
+- fetch 后 `origin/main` 出现新的正向提交；不得自动 merge，必须按专项继续审查。
+- 任一命令尝试写远端、修改工作树、删除 refs 或触发合并。
+
+回滚说明：
+
+- fetch-only 不修改远端、不修改工作树文件。
+- 如 remote-tracking refs 更新后需要回滚，只能通过 reflog 或重新 fetch 指定远端状态进行本地引用恢复；不得使用 reset/clean/force 作为常规回滚手段。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
