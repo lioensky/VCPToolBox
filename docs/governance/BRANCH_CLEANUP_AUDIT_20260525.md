@@ -183,6 +183,31 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 | F-frozen-dirty | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、detached release-preflight | dirty / 构建产物 / 疑似密钥样式值 / 冲突标记等风险已归类 | 继续冻结，不吸收、不清理、不 reset/clean |
 | F-true-unabsorbed | `lane10-codex-memory-intake-20260425` 及 AI Image / Photo Studio guide-contract 对照线 | 仍有正向提交或宽 diff | 不整分支 merge；只允许后续按专项小主题重新实现 |
 
+### 2026-05-25 Package C-worktree-clean preflight
+
+本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；未删除分支、未移除 worktree、未 push、未修改远端。
+
+共同事实：
+
+- 3 个 worktree 的 `git status --short` 和 `git status --short -uall` 均为空。
+- 3 个 worktree 当前 checkout 分支均与目标分支一致。
+- 3 个分支均为 `cherry_plus=0 / cherry_minus=1`，说明内容已等价进入当前 `main`。
+- 3 个分支拓扑上仍不是 `main` 的祖先，`main...branch` 右侧计数均为 1。
+- `git diff --stat main...branch` 仍展示各自历史切片的大块文件改动；这不代表需要吸收 diff，治理判断以 patch-equivalence 和当前 `main` 文件现实为准。
+
+| 分支 | worktree | dirty | upstream | `main...branch` | 切片范围 | 判断 |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `codex/vcptoolbox-channelhub-core-20260425` | `A:/VCP/VCPToolBox-channelhub-core` | 0 |  | `407 / 1` | `modules/channelHub/*`、`routes/admin/channelHub.js`、`routes/internal/channelHub.js`、`tests/channelHub-hardening.test.js` 等 34 个文件 | 可作为 C2-safe 候选；仅在单独批准后先移除该 worktree，再尝试 `git branch -d` |
+| `codex/vcptoolbox-dingtalk-adapters-20260425` | `A:/VCP/VCPToolBox-dingtalk-adapters` | 0 |  | `408 / 1` | DingTalk / WeeklyReport / WorkLog 插件与 adapter 文件等 28 个文件 | 可作为 C2-safe 候选；仅在单独批准后先移除该 worktree，再尝试 `git branch -d` |
+| `codex/vcptoolbox-memory-rag-governance-20260425` | `A:/VCP/VCPToolBox-memory-rag-governance` | 0 | `origin/main` | `409 / 1` | `EmbeddingUtils.js`、`KnowledgeBaseManager.js`、`Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js`、`server.js` 等 5 个文件 | worktree 干净且 patch-equivalent，但 upstream 指向 `origin/main`；若后续 `git branch -d` 被 upstream 保护拦截，必须停止，不得 `git branch -D` |
+
+执行门槛：
+
+- 当前未授权移除这些 worktree。
+- 执行前必须再次确认每个 worktree 路径精确匹配上表，且 dirty 仍为 0。
+- 只能先 `git worktree remove <path>`，再尝试 `git branch -d <branch>`。
+- 如果 `git worktree remove` 或 `git branch -d` 失败，停止并记录，不得 reset、clean、force 或 `git branch -D`。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
