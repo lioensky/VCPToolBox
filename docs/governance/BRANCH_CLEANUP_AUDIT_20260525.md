@@ -592,6 +592,61 @@ git fetch upstream
 - fetch-only 不修改远端、不修改工作树文件。
 - 如 remote-tracking refs 更新后需要回滚，只能通过 reflog 或重新 fetch 指定远端状态进行本地引用恢复；不得使用 reset/clean/force 作为常规回滚手段。
 
+#### Package K 执行记录：fetch-only 远端跟踪引用刷新
+
+授权：用户已明确批准 `Package K：fetch-only 远端跟踪引用刷新`。
+
+执行前复核：
+
+- 当前分支为 `main`。
+- `A:/VCP/VCPToolBox-staging-custom-integration` 工作树干净。
+- remote URL 与方案记录一致：
+  - `origin=https://github.com/JENN2046/VCPToolBox.git`
+  - `upstream=https://github.com/lioensky/VCPToolBox.git`
+- 未检测到 merge/rebase/cherry-pick/revert/bisect 状态。
+
+执行动作：
+
+```powershell
+git fetch origin
+git fetch upstream
+```
+
+执行后状态：
+
+- `git status --short -uall`：干净。
+- 本地分支数量：12。
+- `git branch --merged main`：只剩 `main` 和永久保护的 `prod/stable`。
+- `git branch --no-merged main`：10 个，其中 4 个占用 worktree，6 个未占用 worktree。
+- worktree 数量：6。
+- 未执行 prune、pull、merge、rebase、cherry-pick、push。
+- 未删除本地或远端分支，未修改远端，未修改 worktree 文件。
+
+fetch 后关键引用关系：
+
+| ref | HEAD | `main...ref` | ref 是否为 `main` 祖先 | `main` 是否为 ref 祖先 | 判断 |
+| --- | --- | --- | --- | --- | --- |
+| `prod/stable` | `a1870b3` | `188 / 0` | yes | no | 仍被 `main` 包含；永久保护，不清理 |
+| `origin/prod/stable` | `a1870b3` | `188 / 0` | yes | no | 仍被 `main` 包含；远端稳定线不清理 |
+| `upstream/main` | `8b8a71d` | `290 / 0` | yes | no | fetch 后仍被 `main` 包含 |
+| `origin/main` | `ee2d324` | `427 / 18` | no | no | 仍与当前 `main` 分叉 |
+
+fetch 后 `origin/main` 复核：
+
+- `main..origin/main` 仍显示 18 个 AI Image Agent pipeline 相关提交。
+- `git cherry -v main origin/main` 仍显示 14 个 patch-equivalent 提交和 3 个正向补丁。
+- 3 个正向补丁仍是：
+  - `c4290fe`：`server.js` AI Image Agents route env-flag 挂载；当前 `main` 已有更完整实现。
+  - `84e9007`：`AdminPanel-Vue/dist/*` 构建产物；继续排除直接吸收。
+  - `fca8f44`：`modules/dynamicToolRegistry.js` no-op stub；当前 `main` 已有完整实现和测试。
+
+Package K 结论：
+
+1. fetch-only 已完成，未发现 `origin/prod/stable` 或 `upstream/main` 新分叉风险。
+2. `prod/stable` 仍是稳定生产线永久保护分支，且仍被 `main` 包含。
+3. `origin/main` 的分叉状态未因刷新改变；仍不得整分支 merge 或直接 push。
+4. 下一步若继续治理，应处理 `origin/main` 拓扑闭合方案，或继续按真实未吸收对照线做专项小任务；任何远端同步或 push 仍需单独明确批准。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
