@@ -76,13 +76,13 @@
 | worktree | 分支 / 状态 | 相对 `main` | 状态摘要 | 治理结论 |
 | --- | --- | --- | --- | --- |
 | `A:/VCP/VCPToolBox` | `feature/latest-updates` | `+461 / -14` | 254 项状态；41 项 tracked，213 项 untracked；含 28 项修改、13 项删除；命中 131 项敏感或运行态路径 | 高风险混合工作树。禁止直接清理；先按“源码候选 / 运行态数据 / 本地配置或密钥 / 生成产物 / 插件启停”分桶复核 |
-| `A:/VCP/VCPToolBox-photo-studio-next` | `codex/photo-studio-baserow-provider-batch` | `+379 / -12` | 3 项状态；1 个代码改动，2 个未跟踪文件 | 小范围可复核。`daily-note-manager.js` 的写锁改动可单独评估；`280ed91.patch` 是作者线补丁文件；`desktop.ini` 是本地元数据候选 |
+| `A:/VCP/VCPToolBox-photo-studio-next` | `codex/photo-studio-baserow-provider-batch` | `+379 / -12` | 3 项状态；1 个代码改动，2 个未跟踪文件 | 小范围已复核。`daily-note-manager.js` 的写锁思路已存在于当前 `main`，无需吸收旧版文件改动；`280ed91.patch` 是作者线补丁文件；`desktop.ini` 是本地元数据候选 |
 | `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` | detached `43a6bbb` | `+234 / -0` | 137 项状态；100 项 tracked，37 项 untracked，全部位于 `AdminPanel-Vue/dist` | 前端构建产物替换痕迹。不要手工混入主线；如需保留，应从对应源码重建并以专门前端构建 PR 处理 |
 
 下一步优先级：
 
 1. `feature/latest-updates` 先做路径级分桶，尤其隔离 `config.env`、`code.bin`、SQLite、`state/`、`VectorStore*`、日志、用户数据和运行态日记。
-2. `codex/photo-studio-baserow-provider-batch` 可先单独审查 `Plugin/DailyNoteManager/daily-note-manager.js` 的写锁改动，决定是否作为小补丁吸收。
+2. `codex/photo-studio-baserow-provider-batch` 的 `Plugin/DailyNoteManager/daily-note-manager.js` 写锁改动已复核：当前 `main` 已有 `withWriteLock()`，并将整个 `organize` 流程串行化，覆盖创建新日记和归档移动；该 worktree 中的旧版 `processDailyNotes` 写入器改动不再吸收。
 3. detached release-preflight 只保留为前端构建参考，不作为源码吸收来源。
 
 ## 3. 未并入需复核
