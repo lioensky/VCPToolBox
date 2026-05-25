@@ -35,6 +35,126 @@ const AD_SELECTORS = [
     '[aria-hidden="true"]'
 ];
 
+const BLOCK_TAGS = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BR', 'DD', 'DETAILS', 'DIALOG',
+    'DIV', 'DL', 'DT', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3',
+    'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE',
+    'SECTION', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL'
+]);
+
+const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+
+function normalizeInlineText(text) {
+    return (text || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t\r\f\v]+/g, ' ')
+        .replace(/\s*\n\s*/g, '\n')
+        .trim();
+}
+
+function getListDepth(element) {
+    let depth = 0;
+    let current = element.parentElement;
+    while (current) {
+        if (current.tagName === 'UL' || current.tagName === 'OL') {
+            depth++;
+        }
+        current = current.parentElement;
+    }
+    return Math.max(0, depth - 1);
+}
+
+function appendTextWithSpacing(output, text) {
+    if (!text) return;
+
+    const lastIndex = output.length - 1;
+    const previous = lastIndex >= 0 ? output[lastIndex] : '';
+    const needsSpace = previous &&
+        !previous.endsWith('\n') &&
+        !previous.endsWith(' ') &&
+        !/^[,.;:!?，。；：！？、）)]/.test(text) &&
+        !/[（(]$/.test(previous);
+
+    output.push(needsSpace ? ` ${text}` : text);
+}
+
+function renderNodeAsText(node, output) {
+    if (!node) return;
+
+    if (node.nodeType === 3) {
+        appendTextWithSpacing(output, normalizeInlineText(node.textContent));
+        return;
+    }
+
+    if (node.nodeType !== 1) return;
+
+    const tagName = node.tagName;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS'].includes(tagName)) return;
+
+    if (tagName === 'BR') {
+        output.push('\n');
+        return;
+    }
+
+    const isBlock = BLOCK_TAGS.has(tagName);
+    const isHeading = HEADING_TAGS.has(tagName);
+
+    if (isBlock) {
+        output.push('\n');
+        if (isHeading || tagName === 'HR') {
+            output.push('\n');
+        }
+    }
+
+    if (tagName === 'LI') {
+        const depth = getListDepth(node);
+        output.push(`${'  '.repeat(depth)}- `);
+    }
+
+    for (const child of node.childNodes) {
+        renderNodeAsText(child, output);
+    }
+
+    if (isBlock) {
+        output.push('\n');
+        if (isHeading || tagName === 'P' || tagName === 'BLOCKQUOTE' || tagName === 'PRE' || tagName === 'TABLE') {
+            output.push('\n');
+        }
+    }
+}
+
+function formatExtractedArticleContent(article) {
+    if (!article) return '';
+
+    let rawText = '';
+    if (article.content) {
+        const articleDom = new JSDOM(article.content);
+        const output = [];
+
+        for (const selector of AD_SELECTORS) {
+            articleDom.window.document.querySelectorAll(selector).forEach(el => el.remove());
+        }
+
+        renderNodeAsText(articleDom.window.document.body, output);
+        rawText = output.join('');
+    }
+
+    if (!rawText && article.textContent) {
+        rawText = article.textContent;
+    }
+
+    return rawText
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .split('\n')
+        .map(line => line.trimEnd())
+        .join('\n')
+        .trim();
+}
+
 // A more robust auto-scroll function to handle lazy-loading content
 async function autoScroll(page, mode = 'text') {
     let lastHeight = await page.evaluate('document.body.scrollHeight');
@@ -441,9 +561,10 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             const reader = new Readability(doc.window.document);
             const article = reader.parse();
 
-            if (article && article.textContent) {
-                // Format the output with title and content
-                const result = `标题: ${article.title}\n\n${article.textContent.trim()}`;
+            if (article && (article.content || article.textContent)) {
+                // Format the output with title and content while preserving paragraph/list/heading boundaries.
+                const formattedContent = formatExtractedArticleContent(article);
+                const result = `标题: ${article.title}\n\n${formattedContent}`;
                 return result;
             } else {
                 // Fallback if Readability fails to extract content

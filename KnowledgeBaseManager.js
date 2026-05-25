@@ -1030,6 +1030,65 @@ class KnowledgeBaseManager {
             }
         };
 
+        const scanInitialFiles = () => {
+            if (!this.config.fullScanOnStartup) return;
+
+            let queued = 0;
+            const walk = (dir) => {
+                let entries;
+                try {
+                    entries = fsSync.readdirSync(dir, { withFileTypes: true });
+                } catch (e) {
+                    console.warn(`[KnowledgeBase] Initial scan skipped unreadable directory "${dir}": ${e.message}`);
+                    return;
+                }
+
+                for (const entry of entries) {
+                    const absPath = path.join(dir, entry.name);
+                    const relPath = path.relative(this.config.rootPath, absPath);
+                    const parts = relPath.split(path.sep);
+                    const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+                    if (entry.isDirectory()) {
+                        if (
+                            entry.name === 'node_modules' ||
+                            entry.name === '.git' ||
+                            entry.name === 'dist' ||
+                            entry.name === 'target' ||
+                            entry.name === 'image' ||
+                            entry.name.startsWith('.') ||
+                            this.config.ignoreFolders.includes(entry.name) ||
+                            this.config.ignoreFolders.includes(diaryName) ||
+                            this.config.ignorePrefixes.some(prefix => entry.name.startsWith(prefix)) ||
+                            this.config.ignoreSuffixes.some(suffix => entry.name.endsWith(suffix))
+                        ) {
+                            continue;
+                        }
+                        walk(absPath);
+                        continue;
+                    }
+
+                    if (!entry.isFile()) continue;
+                    if (!absPath.match(/\.(md|txt)$/i)) continue;
+
+                    const fileName = path.basename(absPath);
+                    if (this.config.ignoreFolders.includes(diaryName)) continue;
+                    if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix) || fileName.startsWith(prefix))) continue;
+                    if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix) || fileName.endsWith(suffix))) continue;
+
+                    handleFile(absPath);
+                    queued++;
+                }
+            };
+
+            walk(this.config.rootPath);
+            if (queued > 0) {
+                console.log(`[KnowledgeBase] 🔍 Initial full scan queued ${queued} file(s).`);
+            } else {
+                console.log('[KnowledgeBase] 🔍 Initial full scan found no indexable files.');
+            }
+        };
+
         const handleFileWithLock = async (filePath) => {
             // 🛡️ BUG 2 修复：文件系统竞态保护
             // 如果文件正在被快速修改，等待其稳定后再处理
@@ -1094,6 +1153,7 @@ class KnowledgeBaseManager {
                     this.watcher = rustWatcher;
                     this.watcherType = 'rust';
                     console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
+                    scanInitialFiles();
                     return;
                 }
             } catch (e) {
