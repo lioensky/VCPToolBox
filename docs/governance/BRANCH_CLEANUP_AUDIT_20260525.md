@@ -55,7 +55,7 @@
 | `codex/vcptoolbox-memory-rag-governance-20260425` | `5e9274e` | 未并入 | 0 | `A:/VCP/VCPToolBox-memory-rag-governance` |
 | `lane10-codex-memory-intake-20260425` | `fb17dd0` | 未并入 | 0 | `A:/VCP/VCPToolBox-photo-studio-export` |
 | `codex/photo-studio-baserow-provider-batch` | `79911d5` | 未并入 | 3 | `A:/VCP/VCPToolBox-photo-studio-next` |
-| `integration/main-absorb-prod-stable-upstream-20260525` | `current HEAD` | 未并入 | 0 | `A:/VCP/VCPToolBox-prod-stable` |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `1e0a803` | 未并入 | 0 | `A:/VCP/VCPToolBox-prod-stable` |
 | `feature/gov-patch-1a-identity-approval-20260429` | `ba79d73` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-clean` |
 | `feature/gov-patch-2b-effect-classification-20260430` | `5309dd9` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` |
 | `(detached)` | `43a6bbb` | detached | 137 | `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` |
