@@ -173,6 +173,18 @@
 
 A1 决策：`feature/latest-updates` 仍保持冻结，不执行 reset、clean、merge、cherry-pick 或 worktree 删除。当前仅可从中提取明确的小主题重新实现；不得直接搬运 dirty diff。
 
+### 2026-05-25 审计文档敏感信息卫生检查
+
+本轮只检查治理审计文档本身，未读取 dirty worktree 中的真实配置或密钥内容。
+
+检查结果：
+
+- 严格长 token 模式 `sk-[A-Za-z0-9]{20,}` 未命中。
+- `API_KEY` / `API_Key` / `TOKEN` / `PASSWORD` / `SECRET` 的直接赋值样式未命中。
+- 文档只记录了“疑似真实 `sk-*` 密钥样式值”这一风险事实，没有复制具体值。
+
+结论：当前 `docs/governance/BRANCH_CLEANUP_AUDIT_20260525.md` 未发现原始密钥值。后续继续维护本文时，仍只能记录脱敏事实和占位符，不能粘贴 dirty worktree 中的真实值。
+
 ### 2026-05-25 release-preflight 前端产物复核
 
 `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` 是 detached `43a6bbb` 工作树。本轮只做只读复核：
