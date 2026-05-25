@@ -9,6 +9,7 @@ const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
 const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
+const https = require('https');
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -23,6 +24,8 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
+const JINA_API_KEY = process.env.JINA_API_KEY;
+const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -237,6 +240,72 @@ function isImageUrl(url) {
     } catch {
         return false;
     }
+}
+
+function isUsableJinaApiKey(apiKey) {
+    return typeof apiKey === 'string' &&
+        apiKey.trim() &&
+        !/^YOUR_/i.test(apiKey.trim()) &&
+        !/你的API_KEY|your[_-]?api[_-]?key/i.test(apiKey.trim());
+}
+
+function requestJinaReader(targetUrl, apiKey = null) {
+    return new Promise((resolve, reject) => {
+        const jinaUrl = `https://r.jina.ai/${targetUrl}`;
+        const headers = {
+            'Accept': 'text/markdown, text/plain;q=0.9, */*;q=0.8',
+            'User-Agent': 'VCPToolBox-UrlFetch/0.3'
+        };
+
+        if (apiKey) {
+            headers.Authorization = `Bearer ${apiKey}`;
+        }
+
+        const req = https.get(jinaUrl, { headers, timeout: JINA_READER_TIMEOUT_MS }, (res) => {
+            const chunks = [];
+
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                const statusCode = res.statusCode || 0;
+
+                if (statusCode >= 200 && statusCode < 300 && body.trim()) {
+                    resolve(body.trim());
+                    return;
+                }
+
+                const message = body.trim().slice(0, 500) || `HTTP ${statusCode}`;
+                reject(new Error(`Jina Reader 请求失败: ${message}`));
+            });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`Jina Reader 请求超时: ${JINA_READER_TIMEOUT_MS}ms`));
+        });
+
+        req.on('error', reject);
+    });
+}
+
+async function fetchWithJinaReader(url) {
+    const apiKey = isUsableJinaApiKey(JINA_API_KEY) ? JINA_API_KEY.trim() : null;
+    const errors = [];
+
+    if (apiKey) {
+        try {
+            return await requestJinaReader(url, apiKey);
+        } catch (error) {
+            errors.push(`鉴权模式失败: ${error.message}`);
+        }
+    }
+
+    try {
+        return await requestJinaReader(url);
+    } catch (error) {
+        errors.push(`免费模式失败: ${error.message}`);
+    }
+
+    throw new Error(errors.join('；'));
 }
 
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
@@ -595,7 +664,7 @@ async function main() {
 
             const data = JSON.parse(inputData);
             const url = data.url;
-            let mode = data.mode || 'text'; // 'text', 'snapshot', or 'image'
+            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', or 'jina'
 
             if (!url) {
                 throw new Error("缺少必需的参数: url");
@@ -624,7 +693,11 @@ async function main() {
                 }
 
                 try {
-                    fetchedData = await fetchWithPuppeteer(url, mode);
+                    if (mode === 'jina') {
+                        fetchedData = await fetchWithJinaReader(url);
+                    } else {
+                        fetchedData = await fetchWithPuppeteer(url, mode);
+                    }
                 } catch (e) {
                     const proxyPort = process.env.FETCH_PROXY_PORT;
                     if (proxyPort) {
