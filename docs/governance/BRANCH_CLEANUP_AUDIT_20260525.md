@@ -149,6 +149,28 @@
 
 结论：这三个分支不是可清理候选，也不能整体 merge。后续若要吸收，只能作为独立 AI Image Agent 专项，先拆分源码、前端构建产物、runtime hardening、测试和文档，再逐项评估。
 
+### 2026-05-25 Photo Studio guide-contract 分支复核
+
+`feature/photo-studio-guide-contract-migration` 与 `feature/photo-studio-next-guide-contract` 已用当前 `main` 重新复核。
+
+| 分支 | 复核结果 | 结论 |
+| --- | --- | --- |
+| `feature/photo-studio-guide-contract-migration` | `git cherry -v main` 仍显示 10 个正向提交；diff 涉及 ChannelHub、Codex memory、Photo Studio guide-contract、adapter、运行态 SQLite、`code.bin`、package 和大量新增文件 | 不能整体 merge，不能清理；只能作为 Photo Studio guide-contract 专项对照线 |
+| `feature/photo-studio-next-guide-contract` | 包含同组 guide-contract 提交，另有 live publish / DingTalk 相关提交；其中 6 个后续提交已显示 patch-equivalent，但分支 diff 仍非常宽 | 不能整体 merge，不能清理；live publish / DingTalk 只能单独复核，不得随 guide-contract 一起吸收 |
+
+历史结论仍成立：Photo Studio guide-contract 分支含有潜在有用工作，但分支级 diff 不安全，会混入旧 ChannelHub、Codex memory、运行态文件、适配器和前端/配置变更。后续吸收必须从 `plugins/custom/...`、`tests/photo-studio/...` 等小范围重新切片。
+
+### 2026-05-25 AI image clean-pr 分支复核
+
+`feature/ai-image-agent-clean-pr` 已用当前 `main` 复核：
+
+- `git cherry -v main` 显示多数 AI image pipeline / safety / executor / admin dry-run 提交已等价进入 `main`。
+- 仍有 3 个未等价提交：路由挂载方式、AdminPanel dist bundle、`dynamicToolRegistry` bootstrap 恢复。
+- 当前 `main` 已存在 `ENABLE_AI_IMAGE_AGENTS_ROUTE` 路由门、`routes/admin/aiImageAgents.js`、`modules/dynamicToolRegistry.js`、AI image source 与相关测试。
+- 剩余 diff 仍包含 `AdminPanel-Vue/dist` hash 产物和旧版本源码差异。
+
+结论：该分支不是清理候选，也不需要整体吸收；保留为 AI Image Agent 历史对照线。后续若继续 AI image 专项，应以当前 `main` 实现为基线，只挑选明确缺口，不从该分支批量 cherry-pick 或照搬 dist。
+
 ### 2026-05-25 Governance Patch 1B 分支复核
 
 `feature/gov-patch-1b-*` 已按 patch-equivalence 复核：
