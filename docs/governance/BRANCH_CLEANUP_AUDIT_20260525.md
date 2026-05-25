@@ -712,6 +712,31 @@ feature/photo-studio-p6-operator-reporting
 - 如要继续，只能在再次复核 upstream 与用途后获得单独明确批准。
 - 仍不得使用 `git branch -D`。
 
+#### 5.3.2 执行包 D 剩余 5 个分支复核
+
+本轮只读复核 Package D 剩余项，未继续删除分支、未删除 worktree、未 push、未修改远端。
+
+共同事实：
+
+- 5 个分支均未占用 worktree。
+- 5 个分支均为当前 `main` 的祖先，即 `main...branch` 右侧计数均为 0。
+- `git cherry -v main <branch>` 对这 5 个分支均无输出，说明相对当前 `main` 没有正向提交。
+- `prod/stable` 不在剩余清单中。
+
+| 分支 | HEAD | upstream | `main...branch` | upstream 关系 | 判断 |
+| --- | --- | --- | --- | --- | --- |
+| `lane8/upstream-intake-20260425` | `d523782` | `origin/main` | `367 / 0` | 未并入 `origin/main`，`upstream...branch = 367 / 18` | `git branch -d` 已拒绝；不强删。若继续，需要单独批准是否允许解除 upstream 或使用仍然温和的删除路径 |
+| `lane9-photo-studio-next-guide-contract-intake-20260425` | `e89cddf` |  | `354 / 0` | 无 upstream | 可作为 D2 温和删除候选；仍需单独批准 |
+| `main-upstream-absorb-20260420` | `37db901` |  | `483 / 0` | 无 upstream | 可作为 D2 温和删除候选；仍需单独批准 |
+| `revert/pr-35-identity-evidence-20260430` | `a300839` | `origin/revert/pr-35-identity-evidence-20260430` | `223 / 0` | 已并入其 upstream，`upstream...branch = 223 / 0` | 可作为 D2 温和删除候选；仍需单独批准 |
+| `staging/vcptoolbox-custom-integration-20260425` | `947fa6e` | `origin/main` | `357 / 0` | 未并入 `origin/main`，`upstream...branch = 357 / 18` | 预计 `git branch -d` 也可能因 upstream 规则拒绝；不强删。若继续，需要单独批准是否允许解除 upstream 或跳过 |
+
+建议拆成 D2：
+
+1. D2-safe：先只处理 3 个不会被 upstream 保护拦截的候选：`lane9-photo-studio-next-guide-contract-intake-20260425`、`main-upstream-absorb-20260420`、`revert/pr-35-identity-evidence-20260430`。
+2. D2-upstream-blocked：`lane8/upstream-intake-20260425` 和 `staging/vcptoolbox-custom-integration-20260425` 保留，除非单独批准修改本地 upstream 配置后再用 `git branch -d`，或决定继续保留为本地历史引用。
+3. 仍不得使用 `git branch -D`，不得删除远端分支。
+
 ### 5.4 执行包 E preflight：未并入但 patch-equivalent 的本地分支
 
 本节是待批准执行包，不是执行记录。以下 6 个分支仍显示在 `git branch --no-merged main`，但 `git cherry -v main <branch>` 均显示为 `-`，即 patch-equivalent；且均未占用 worktree：
