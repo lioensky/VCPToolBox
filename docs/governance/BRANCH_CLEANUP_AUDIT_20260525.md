@@ -137,6 +137,18 @@
 - `feature/gov-patch-1b-*` 多数 upstream 指向 `origin/prod/stable`，可能是阶段性切片分支。建议按提交内容与当前治理模块逐项比对。
 - `feature/ai-image-pipeline-dgp-refactor`、`feature/ai-image-pipeline-dgp-v2`、`rescue/ai-image-pipeline-mixed-20260427_195303` 指向同一提交 `546b684`，可能可合并成一个复核对象。
 
+### 2026-05-25 AI image pipeline 同头分支复核
+
+以下三个分支指向同一 HEAD `546b684`，应作为一个复核对象，不应重复评估：
+
+- `feature/ai-image-pipeline-dgp-refactor`
+- `feature/ai-image-pipeline-dgp-v2`
+- `rescue/ai-image-pipeline-mixed-20260427_195303`
+
+`git cherry -v main feature/ai-image-pipeline-dgp-refactor` 显示 `511d82b docs: add durable project memory` 已等价进入 `main`，但 `546b684 feat: add AI Image Agent admin panel and runtime hardening` 仍未吸收。该提交涉及 AdminPanel-Vue 源码与 dist、AI Image Agent 后端路由、pipeline runtime 模块、`package.json`、测试和文档，变更面较大。
+
+结论：这三个分支不是可清理候选，也不能整体 merge。后续若要吸收，只能作为独立 AI Image Agent 专项，先拆分源码、前端构建产物、runtime hardening、测试和文档，再逐项评估。
+
 ## 4. 已并入可清理
 
 以下分支未被 worktree 占用，并且已经并入当前 `main`。它们是本地分支清理候选。
