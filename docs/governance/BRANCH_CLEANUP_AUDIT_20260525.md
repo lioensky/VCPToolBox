@@ -270,6 +270,45 @@
 2. 若用户不批准拓扑桥：选择一个真实未吸收对照线做只读专项审查。
 3. 继续禁止：push、远端修改、删除 `prod/stable`、reset/clean、触碰真实密钥。
 
+### 2026-05-25 Photo Studio guide-contract 专项只读复核
+
+本节只复核分支元数据、提交列表和文件路径级 diff，不读取文件内容，不迁移代码，不 cherry-pick，不 merge，不删除分支或 worktree。
+
+复核对象：
+
+| 分支 | HEAD | upstream | `git cherry -v main <branch>` | `git diff --shortstat main...<branch>` |
+| --- | --- | --- | --- | --- |
+| `feature/photo-studio-guide-contract-migration` | `1e1b0ca` | `origin/feature/photo-studio-guide-contract-migration` | 10 个正向提交，0 个 patch-equivalent 提交 | 335 files, 58275 insertions, 784 deletions |
+| `feature/photo-studio-next-guide-contract` | `5d01212` | `origin/feature/photo-studio-next-guide-contract` | 10 个正向提交，6 个 patch-equivalent 提交 | 337 files, 59959 insertions, 784 deletions |
+
+共同目录热点：
+
+- `plugins/custom`：guide-contract 迁移主体，约 137-139 个路径。
+- `modules/channelHub`、`AdminPanel/js`、`routes/admin`：ChannelHub / admin 相关改动。
+- `Plugin/vcp-onebot-adapter`、`Plugin/vcp-dingtalk-adapter`、`Plugin/vcp-wecom-adapter`、`Plugin/vcp-feishu-adapter`：多平台适配器改动。
+- `tests/photo-studio`：Photo Studio 测试。
+- `docs/interaction-middleware`、`sheetai/workbooks`：文档和表格模板类改动。
+
+风险路径级信号：
+
+- diff 路径包含 `Plugin/UserAuth/code.bin`，不得直接吸收或覆盖。
+- diff 路径包含 `Plugin/ImageProcessor/multimodal_cache.sqlite*`，属于缓存 / 运行态数据形态，不得直接吸收。
+- diff 路径包含 `.env.example` / `config.env.example` 示例文件；虽然不是实密钥文件，仍必须逐项复核，不能随宽 diff 整体迁移。
+- diff 路径包含 `modules/channelHub/StateStore.js` 等状态相关实现，后续若迁移必须单独设计验证。
+
+`feature/photo-studio-next-guide-contract` 相对 migration 线的增量：
+
+- 多出 6 个提交：Notion live publish path、external publish adapter reinit、DingTalk AI table live publish adapter、Windows runnable fixes、DwsBin Windows semantics、literal DingTalk field map values。
+- 增量 diff 为 8 个文件、1691 insertions、7 deletions。
+- 增量集中在 `plugins/custom/delivery/process_external_delivery_queue`、`plugins/custom/shared/photo_studio_data/*PublishAdapter.js`、`plugins/registry.json`、`tests/photo-studio/delivery-queue.test.js`。
+
+结论：
+
+1. 两条 Photo Studio guide-contract 分支均为真实未吸收对照线，不是清理候选。
+2. 不得整体 merge，不得直接 cherry-pick 整组提交。
+3. 后续若要吸收，只能拆成小主题：`plugins/custom` guide-contract 迁移、ChannelHub/admin、各平台 adapter、delivery queue、DingTalk live publish、测试和文档分别复核。
+4. `Plugin/UserAuth/code.bin`、SQLite 缓存形态文件、运行态 / 状态相关路径必须继续排除或单独审查，不能随迁移一起进入 `main`。
+
 ### 2026-05-25 Package H preflight：高风险本地强删候选审计
 
 历史快照说明：本节记录 Package H 执行前的只读 preflight，当时列出的 C-branch-blocked、E-historical 与 D2-upstream-blocked 状态已分别由后续 Package H1 和 Package I 闭合。不要把本节候选表当作当前待办队列。
