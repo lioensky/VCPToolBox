@@ -386,6 +386,63 @@ Post-H1 推荐下一步：
 3. dirty/frozen worktree 继续冻结，不 reset、不 clean、不吸收、不删除。
 4. 任何远端同步、push、merge 到生产线或修改远端引用仍需单独明确批准。
 
+#### Package I 方案：D2-upstream-blocked 本地温和闭合
+
+本节是方案，不是授权。未执行 `git branch --unset-upstream`、未删除分支、未 push、未修改远端。
+
+问题定义：
+
+- `lane8/upstream-intake-20260425` 与 `staging/vcptoolbox-custom-integration-20260425` 均已是当前 `main` 的祖先。
+- 两者 `git cherry -v main <branch>` 均无正向提交，说明相对当前 `main` 没有需要吸收的新增补丁。
+- 两者 upstream 都指向 `origin/main`，而本地 `origin/main` 不是当前 `main` 的祖先；因此普通 `git branch -d` 会按 upstream 保护规则拒绝删除。
+- 这不是内容未被 `main` 吸收的问题，而是本地分支 upstream 配置与当前治理主线不匹配的问题。
+
+当前证据：
+
+| 分支 | HEAD | upstream | 是否为 `main` 祖先 | 是否并入 upstream | `main...branch` | `origin/main...branch` | `git cherry main` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `lane8/upstream-intake-20260425` | `d523782` | `origin/main` | yes | no | `383 / 0` | `18 / 39` | `plus=0 / minus=0` |
+| `staging/vcptoolbox-custom-integration-20260425` | `947fa6e` | `origin/main` | yes | no | `373 / 0` | `18 / 49` | `plus=0 / minus=0` |
+
+可选路径：
+
+1. 保留现状：不改 upstream、不删分支。风险最低，但本地分支清单继续保留两个已被 `main` 包含的历史引用。
+2. 推荐路径：单独批准本地 upstream 闭合。对这两个本地分支执行 `git branch --unset-upstream <branch>`，再执行 `git branch -d <branch>`。这只修改本地分支配置和本地分支引用，不修改远端。
+3. 不推荐路径：直接 `git branch -D <branch>`。虽然内容已被 `main` 包含，但没有必要绕过温和删除路径。
+
+推荐路径执行前必须重新验证：
+
+- 当前分支为 `main`。
+- 主工作树干净。
+- 两个候选都仍是本地分支，且未被 worktree 占用。
+- 两个候选都仍是 `main` 祖先。
+- 两个候选的 `git cherry -v main <branch>` 仍无输出。
+- 候选不包含 `main`、`prod/stable`、远端分支、dirty worktree 或真实未吸收对照线。
+
+若用户单独批准“Package I：D2-upstream-blocked 本地温和闭合”，命令形态为：
+
+```powershell
+git branch --unset-upstream lane8/upstream-intake-20260425
+git branch -d lane8/upstream-intake-20260425
+
+git branch --unset-upstream staging/vcptoolbox-custom-integration-20260425
+git branch -d staging/vcptoolbox-custom-integration-20260425
+```
+
+停止条件：
+
+- 任一候选不再是 `main` 祖先。
+- 任一候选出现 `git cherry -v main <branch>` 正向输出。
+- 任一候选被 worktree 占用。
+- 任一命令失败。
+- 候选列表漂移到 `main`、`prod/stable`、远端引用、dirty worktree 或真实未吸收分支。
+
+回滚方式：
+
+- 如果只 unset upstream 但未删除分支，可用 `git branch --set-upstream-to=origin/main <branch>` 恢复本地 upstream 配置。
+- 如果分支已删除，可用记录的 HEAD 重建本地分支：`git branch <branch> <recorded-head>`。
+- 不涉及远端回滚，因为本方案不 push、不删除远端分支、不修改远端配置。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
