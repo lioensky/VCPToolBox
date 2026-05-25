@@ -13,10 +13,16 @@ async function withTaskSchedulerStubs(callback) {
         tool_call: {
             tool_name: 'AgentAssistant',
             arguments: {
-                prompt: 'scheduled hello'
+                prompt: 'scheduled hello',
+                apiKey: 'secret-token'
             }
         }
     };
+    const capturedWrites = [];
+    let resolveWrite;
+    const writePromise = new Promise((resolve) => {
+        resolveWrite = resolve;
+    });
 
     const fakeFs = {
         constants: { F_OK: 0 },
@@ -29,7 +35,11 @@ async function withTaskSchedulerStubs(callback) {
                 return JSON.stringify(taskPayload);
             },
             async access() {},
-            async unlink() {}
+            async unlink() {},
+            async writeFile(filePath, content) {
+                capturedWrites.push({ filePath, content });
+                resolveWrite();
+            }
         },
         watch() {
             return { close() {} };
@@ -56,7 +66,7 @@ async function withTaskSchedulerStubs(callback) {
 
     try {
         const taskScheduler = require('../routes/taskScheduler');
-        await callback(taskScheduler);
+        await callback(taskScheduler, { capturedWrites, writePromise });
         taskScheduler.shutdown();
     } finally {
         Module._load = originalLoad;
@@ -91,7 +101,41 @@ test('taskScheduler tags plugin tool calls with task-scheduler context', async (
         assert.equal(capturedCalls[0].requestIp, null);
         assert.equal(capturedCalls[0].executionContext.requestSource, 'task-scheduler');
         assert.equal(capturedCalls[0].executionContext.taskId, 'task-scheduler-context-test');
-        assert.match(capturedCalls[0].toolArgs.prompt, /^\[预定通讯: /u);
-        assert.match(capturedCalls[0].toolArgs.prompt, /scheduled hello$/u);
+        assert.equal(capturedCalls[0].toolArgs.prompt, 'scheduled hello');
+        assert.equal(capturedCalls[0].toolArgs.__vcp_timed_call.taskId, 'task-scheduler-context-test');
+    });
+});
+
+test('taskScheduler persists sanitized timed task result metadata', async () => {
+    await withTaskSchedulerStubs(async (taskScheduler, { capturedWrites, writePromise }) => {
+        const pluginManager = {
+            async processToolCall() {
+                return { ok: true, token: 'result-secret' };
+            }
+        };
+        const webSocketServer = {
+            broadcast() {}
+        };
+
+        taskScheduler.initialize(pluginManager, webSocketServer, false);
+
+        await writePromise;
+
+        assert.equal(capturedWrites.length, 1);
+        const persistedText = capturedWrites[0].content;
+        assert.doesNotMatch(persistedText, /scheduled hello/u);
+        assert.doesNotMatch(persistedText, /secret-token/u);
+        assert.doesNotMatch(persistedText, /result-secret/u);
+
+        const persisted = JSON.parse(persistedText);
+        assert.equal(persisted.status, 'success');
+        assert.deepEqual(persisted.argumentsSummary, {
+            type: 'object',
+            keys: ['prompt', 'apiKey', '__vcp_timed_call'],
+            keyCount: 3,
+            truncated: false
+        });
+        assert.equal(persisted.payloadSummary.type, 'object');
+        assert.equal(persisted.payloadSummary.keyCount, 2);
     });
 });

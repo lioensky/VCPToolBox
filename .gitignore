@@ -259,6 +259,8 @@ Plugin/.backup/
 
 # Local runtime state and generated indexes
 /state/
+/VCPTimedContacts/
+/VCPTimedResults/
 /data/candidate-cache.json
 /data/chat-history-index.json
 /data/memory-vectors.json
