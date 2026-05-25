@@ -339,6 +339,36 @@
 | F. 真实未吸收对照线 | AI Image、Photo Studio guide-contract、lane10、`codex/photo-studio-baserow-provider-batch` 等 | 仍有真实未吸收或高风险混合内容 | 不清理，不整分支 merge；后续按专项拆分 |
 | G. 远端同步 | `main` 与 `origin/main`、`origin/prod/stable`、`upstream/main` | 本地 `main` 已包含 `prod/stable`、`origin/prod/stable`、`upstream/main`；对 `origin/main` 仍拓扑分叉 | 不自动 push；如需远端主线同步，先做专门 preflight，再由人工批准 push |
 
+### 5.1.1 执行包 A2 决策记录：photo-studio-next DailyNoteManager 小改动
+
+执行日期：2026-05-25。
+
+范围：
+
+- worktree：`A:/VCP/VCPToolBox-photo-studio-next`
+- 分支：`codex/photo-studio-baserow-provider-batch`
+- dirty 状态：`Plugin/DailyNoteManager/daily-note-manager.js`、`280ed91.patch`、`desktop.ini`
+
+审查结论：不迁移 `Plugin/DailyNoteManager/daily-note-manager.js` 的未提交小改动到当前 `main`。
+
+理由：
+
+- 该改动针对旧版 `processDailyNotes(inputContent)` 写入器，只是在 `fs.writeFile(filePath, content, 'utf-8')` 外层增加进程内 `withWriteLock()`。
+- 当前 `main` 的 `Plugin/DailyNoteManager/daily-note-manager.js` 已不是这条旧入口；它是 `list / organize / associate` 命令式管理器。
+- 当前 `main` 已有 `withWriteLock()`，并将整个 `organize` 流程串行化；实际创建新日记时还使用 `{ flag: 'wx' }`，避免覆盖同名文件。
+- 因此旧版 dirty 改动的意图已被当前 `main` 的新结构覆盖，直接迁移会降低代码一致性，并可能把旧入口语义重新带回主线。
+
+附带文件判断：
+
+- `280ed91.patch` 对应提交 `280ed918ae6c65a1085afe9714ef1a11eaecd948` 已可被当前 `main` 覆盖；保留价值仅为本地历史归档。
+- `desktop.ini` 是 Windows 本地目录元数据，不是项目源码。
+
+后续处理建议：
+
+- 不吸收该 worktree 的 `DailyNoteManager` 未提交改动。
+- 不整分支 merge `codex/photo-studio-baserow-provider-batch`。
+- 若后续目标是清理该 worktree，需另行明确批准后再处理本地未提交内容；不得自动丢弃用户工作树。
+
 ### 5.2 执行包 B 执行记录：已并入且干净的 worktree
 
 执行日期：2026-05-25。
