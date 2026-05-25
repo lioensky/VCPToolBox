@@ -1001,14 +1001,14 @@ class TagMemoEngine {
 
         if (!this.tagIndex || !this.tagIndex.computePairwiseSimilarities) {
             console.warn('[TagMemoEngine] ⚠️ computePairwiseSimilarities is not available in VexusIndex (Rust binary may need rebuild)');
-            return;
+            return null;
         }
 
         // 锁串行：避免与矩阵重建撞车产生"嵌合矩阵"
         // blocking=true 用于冷启动场景，由调用方持锁
         if (!blocking && this._isMatrixRebuilding) {
             console.log('[TagMemoEngine] 🛡️ V8.2 sim recompute deferred: matrix rebuild in progress');
-            return;
+            return null;
         }
 
         console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
@@ -1028,9 +1028,11 @@ class TagMemoEngine {
                 `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
                 `elapsed=${result.elapsedMs.toFixed(2)}ms`
             );
+            return result;
         } catch (e) {
             console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
             if (e.stack) console.error(e.stack);
+            return null;
         }
     }
 

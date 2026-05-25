@@ -300,6 +300,27 @@ class KnowledgeBaseManager {
     _cleanupStalePairwiseSimilarityModels() {
         try {
             if (!this.tagMemoEngine?.modelSig) return;
+
+            // 单模型缓存策略下也不能在冷启动/空库/新签名尚未产出数据时清掉旧缓存。
+            // 否则部分用户在模型签名变化但当前 tags 尚未恢复/尚未计算完成时，会出现“旧数据被删、新数据为 0”的真空窗口。
+            const currentRows = this.db.prepare(
+                'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig = ?'
+            ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+            if (currentRows <= 0) {
+                const staleRows = this.db.prepare(
+                    'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig != ?'
+                ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+                if (staleRows > 0) {
+                    console.warn(
+                        `[KnowledgeBase] 🛡️ Preserved ${staleRows} stale pairwise similarity row(s): ` +
+                        `current model_sig=${this.tagMemoEngine.modelSig} has no cached rows yet.`
+                    );
+                }
+                return;
+            }
+
             const result = this.db.prepare(
                 'DELETE FROM tag_pair_similarity WHERE model_sig != ?'
             ).run(this.tagMemoEngine.modelSig);
