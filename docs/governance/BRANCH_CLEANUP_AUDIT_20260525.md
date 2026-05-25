@@ -390,6 +390,44 @@ Package L-main 后当前分支分类：
 3. 若后续要清理该本地分支，必须单独批准一个“拓扑桥后历史分支清理”包，并在删除前再次确认不依赖该分支作为远端对照线。
 4. 若后续要吸收该分支遗留内容，只能按 AI Image 前端源码、后端路由、pipeline runtime、测试、文档等小主题重新审查；`dist`、真实配置、state、`code.bin` 和运行态路径继续排除。
 
+#### AI Image DGP 同头组三分支专项只读复核
+
+本节只读复核三个同 HEAD 分支，不删除分支，不读取文件内容，不 cherry-pick，不 merge，不 push。
+
+复核对象：
+
+| 分支 | HEAD | upstream |
+| --- | --- | --- |
+| `feature/ai-image-pipeline-dgp-refactor` | `546b684` | none |
+| `feature/ai-image-pipeline-dgp-v2` | `546b684` | none |
+| `rescue/ai-image-pipeline-mixed-20260427_195303` | `546b684` | none |
+
+共同证据：
+
+- 三个分支指向同一个提交 `546b684`，应作为同一个治理对象复核，避免重复处理。
+- `main...feature/ai-image-pipeline-dgp-refactor = 366 / 2`。
+- `git cherry -v main feature/ai-image-pipeline-dgp-refactor` 显示：
+  - `511d82b docs: add durable project memory` 为 patch-equivalent。
+  - `546b684 feat: add AI Image Agent admin panel and runtime hardening` 为正向提交。
+- `git diff --shortstat main...feature/ai-image-pipeline-dgp-refactor`：73 files, 5740 insertions, 1780 deletions。
+
+目录级热点：
+
+- `AdminPanel-Vue/dist`：45 个路径，属于前端构建产物，不随分支整体吸收。
+- `AdminPanel-Vue/src`：7 个路径，AI Image Agents 前端源码需单独复核。
+- `AdminPanel-Vue/public`、`AdminPanel-Vue/vite.config.ts`、`AdminPanel-Vue/eslint.config.js`：前端工程配置 / 静态入口变更。
+- `modules/aiImagePipelineExecutor.js`、`modules/pipelineSafetyGate.js`、`modules/pipelineStateManager.js`：AI Image pipeline runtime 相关模块。
+- `routes/admin/aiImageAgents.js`、`routes/admin/server.js`、`routes/adminPanelRoutes.js`、`server.js`、`adminServer.js`：后端路由和挂载点变更。
+- `package.json`、`tests/admin-ai-image-agents-status.test.js`、AI Image 相关文档：依赖 / 测试 / 文档变更需单独验证。
+
+结论：
+
+1. DGP 三分支是真实未吸收对照线，不是清理候选。
+2. 三者同 HEAD，应作为一个对象处理；不得分别重复 merge 或重复清理。
+3. 不得整体 merge，不得直接 cherry-pick `546b684`。
+4. 后续若要吸收，只能拆成小主题：AI Image admin 前端源码、后端路由挂载、pipeline runtime、测试、文档分别复核；`AdminPanel-Vue/dist` 构建产物继续排除。
+5. `rescue/ai-image-pipeline-mixed-20260427_195303` 是 rescue 引用，删除或合并去重必须另行明确批准。
+
 结论：
 
 1. `origin/main` 本地拓扑已闭合，当前本地 `main` 是包含 `prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 的最新主线。
