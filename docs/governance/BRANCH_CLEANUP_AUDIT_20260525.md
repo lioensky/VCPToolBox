@@ -33,7 +33,7 @@
 
 | 类别 | 数量 | 操作建议 |
 | --- | ---: | --- |
-| 占用 worktree 待处理 | 13 | 先检查对应目录状态，再决定保留、合并、归档或删除 worktree |
+| 占用 worktree 待处理 | 9 | 先检查对应目录状态，再决定保留、合并、归档或删除 worktree |
 | 未并入需复核（未占用 worktree） | 12 | 逐分支做 `git log main..branch` / `git diff main...branch` 审查 |
 | 已并入可清理（未占用 worktree） | 48 | 可作为本地分支删除候选，删除前确认无需保留本地标签/引用 |
 | 永久保护分支 | 1 | `prod/stable` 永久保留，永不清理 |
@@ -48,11 +48,12 @@
 - `prod/stable` 已明确为稳定生产线永久保护分支，不进入任何清理候选。
 - dirty worktree、release-preflight 前端构建产物、未并入分支、worktree 占用分支、`origin/main` 本地引用差异均已做本地只读复核并记录。
 - 当前 `git branch --no-merged main` 显示的 19 个分支均已在本文中有记录。
+- 执行包 B 已完成：4 个已并入且干净的 worktree 已移除，对应 4 个本地分支已用 `git branch -d` 删除。
 
 未完成：
 
-- 未删除任何本地分支。
-- 未删除任何 worktree。
+- 除执行包 B 外，尚未删除其他本地分支。
+- 除执行包 B 外，尚未删除其他 worktree。
 - 未 push，未修改远端。
 - `feature/latest-updates` dirty worktree 仍有 94 行 `git status --short` 状态，展开未跟踪文件后为 254 行。
 - `codex/photo-studio-baserow-provider-batch` dirty worktree 仍有 3 项状态。
@@ -74,15 +75,11 @@
 | `feature/latest-updates` | `a82c8f2` | 未并入 | 94 | `A:/VCP/VCPToolBox` |
 | `codex/vcptoolbox-channelhub-core-20260425` | `9f00142` | 未并入 | 0 | `A:/VCP/VCPToolBox-channelhub-core` |
 | `codex/vcptoolbox-dingtalk-adapters-20260425` | `e41f243` | 未并入 | 0 | `A:/VCP/VCPToolBox-dingtalk-adapters` |
-| `feature/photo-studio-p7-queue-scheduler` | `12b9b4a` | 已并入 | 0 | `A:/VCP/VCPToolBox-main` |
 | `codex/vcptoolbox-memory-rag-governance-20260425` | `5e9274e` | 未并入 | 0 | `A:/VCP/VCPToolBox-memory-rag-governance` |
 | `lane10-codex-memory-intake-20260425` | `fb17dd0` | 未并入 | 0 | `A:/VCP/VCPToolBox-photo-studio-export` |
 | `codex/photo-studio-baserow-provider-batch` | `79911d5` | 未并入 | 3 | `A:/VCP/VCPToolBox-photo-studio-next` |
 | `integration/main-absorb-prod-stable-upstream-20260525` | `1e0a803` | 未并入 | 0 | `A:/VCP/VCPToolBox-prod-stable` |
-| `feature/gov-patch-1a-identity-approval-20260429` | `ba79d73` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-clean` |
-| `feature/gov-patch-2b-effect-classification-20260430` | `5309dd9` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` |
 | `(detached)` | `43a6bbb` | detached | 137 | `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` |
-| `codex/prod-stable-closeout-check-20260513` | `fe586ce` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-upstream-gptimagegen-20260429` |
 | `main` | `current HEAD` | 当前基准 | 0 | `A:/VCP/VCPToolBox-staging-custom-integration` |
 
 ### Worktree 处理建议
@@ -90,7 +87,7 @@
 - `feature/latest-updates`：dirty files 为 94，且未并入。先审查工作树改动，禁止直接删除。
 - `codex/photo-studio-baserow-provider-batch`：dirty files 为 3，且未并入。先查看这 3 项改动，再决定是否吸收或归档。
 - detached worktree `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`：dirty files 为 137，风险最高。先单独做状态审计，避免丢失预检产物或本地记录。
-- 已并入且干净的 worktree 分支，可以在确认不再需要目录后，先移除 worktree，再删除本地分支。
+- 执行包 B 中的 4 个已并入且干净 worktree 已移除，并已删除对应本地分支。
 
 ### 2026-05-25 dirty worktree 复核补充
 
@@ -319,11 +316,7 @@
    - `A:/VCP/VCPToolBox`
    - `A:/VCP/VCPToolBox-photo-studio-next`
    - `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`
-2. 再处理已并入且干净的 worktree 分支：
-   - `feature/gov-patch-1a-identity-approval-20260429`
-   - `feature/gov-patch-2b-effect-classification-20260430`
-   - `codex/prod-stable-closeout-check-20260513`
-   - `feature/photo-studio-p7-queue-scheduler`
+2. 执行包 B 已完成：已移除 4 个已并入且干净的 worktree，并删除对应本地分支。
 3. 对已复核为 patch-equivalent 或 superseded、但仍占用 worktree 的分支，只记录为“可在获批后处理 worktree 的候选”，不得自动删除：
    - `codex/vcptoolbox-channelhub-core-20260425`
    - `codex/vcptoolbox-dingtalk-adapters-20260425`
@@ -339,25 +332,27 @@
 | 执行包 | 范围 | 当前状态 | 建议 |
 | --- | --- | --- | --- |
 | A. dirty worktree 冻结处理 | `A:/VCP/VCPToolBox`、`A:/VCP/VCPToolBox-photo-studio-next`、`A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` | 有未提交或未跟踪内容 | 先只读复核并决定“保留 / 归档 / 丢弃 / 拆分吸收”；禁止自动删除 |
-| B. 已并入且干净的 worktree | `feature/gov-patch-1a-identity-approval-20260429`、`feature/gov-patch-2b-effect-classification-20260430`、`codex/prod-stable-closeout-check-20260513`、`feature/photo-studio-p7-queue-scheduler` | 已并入 `main`，worktree 干净 | 可作为第一批 worktree 移除候选，但必须逐项批准 |
+| B. 已并入且干净的 worktree | `feature/gov-patch-1a-identity-approval-20260429`、`feature/gov-patch-2b-effect-classification-20260430`、`codex/prod-stable-closeout-check-20260513`、`feature/photo-studio-p7-queue-scheduler` | 已执行 | 已移除 4 个 worktree，并删除对应 4 个本地分支 |
 | C. patch-equivalent / superseded 但仍占用 worktree | `codex/vcptoolbox-channelhub-core-20260425`、`codex/vcptoolbox-dingtalk-adapters-20260425`、`codex/vcptoolbox-memory-rag-governance-20260425`、`integration/main-absorb-prod-stable-upstream-20260525` | 不需要吸收，但仍占用 worktree | 先保留；若清理，必须先确认 worktree 用途，再逐项批准移除 |
 | D. 未占用且已并入本地分支 | 第 4 节 48 个分支 | 可清理候选 | 可批量生成删除预案；执行前再次确认 `prod/stable` 不在清单内 |
 | E. 未并入但 patch-equivalent 的本地分支 | `feature/gov-patch-1b-*` 相关分支 | 拓扑未并入，但内容已等价 | 可作为本地清理候选；删除前需单独批准 |
 | F. 真实未吸收对照线 | AI Image、Photo Studio guide-contract、lane10、`codex/photo-studio-baserow-provider-batch` 等 | 仍有真实未吸收或高风险混合内容 | 不清理，不整分支 merge；后续按专项拆分 |
 | G. 远端同步 | `main` 与 `origin/main`、`origin/prod/stable`、`upstream/main` | 本地 `main` 已包含 `prod/stable`、`origin/prod/stable`、`upstream/main`；对 `origin/main` 仍拓扑分叉 | 不自动 push；如需远端主线同步，先做专门 preflight，再由人工批准 push |
 
-### 5.2 执行包 B preflight：已并入且干净的 worktree
+### 5.2 执行包 B 执行记录：已并入且干净的 worktree
 
-本节是待批准执行包，不是执行记录。以下 4 个 worktree 已重新只读复核：
+执行日期：2026-05-25。
 
-| worktree | 分支 | 状态证据 | 建议 |
+执行结果：已移除以下 4 个 worktree，并删除对应 4 个本地分支。
+
+| worktree | 分支 | preflight 证据 | 执行结果 |
 | --- | --- | --- | --- |
-| `A:/VCP/VCPToolBox-prod-stable-clean` | `feature/gov-patch-1a-identity-approval-20260429` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
-| `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` | `feature/gov-patch-2b-effect-classification-20260430` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
-| `A:/VCP/VCPToolBox-prod-stable-upstream-gptimagegen-20260429` | `codex/prod-stable-closeout-check-20260513` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
-| `A:/VCP/VCPToolBox-main` | `feature/photo-studio-p7-queue-scheduler` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
+| `A:/VCP/VCPToolBox-prod-stable-clean` | `feature/gov-patch-1a-identity-approval-20260429` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | `git worktree remove` 遇到 `Filename too long` 后留下非 Git 残留目录；该目录为批准目标，已清理；本地分支已用 `git branch -d` 删除 |
+| `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` | `feature/gov-patch-2b-effect-classification-20260430` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | worktree 已移除；本地分支已用 `git branch -d` 删除 |
+| `A:/VCP/VCPToolBox-prod-stable-upstream-gptimagegen-20260429` | `codex/prod-stable-closeout-check-20260513` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | worktree 已移除；本地分支已用 `git branch -d` 删除 |
+| `A:/VCP/VCPToolBox-main` | `feature/photo-studio-p7-queue-scheduler` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | worktree 已移除；本地分支已用 `git branch -d` 删除 |
 
-建议命令形态，仅供批准后执行；当前未执行：
+执行命令形态：
 
 ```powershell
 git worktree remove <worktree-path>
@@ -369,7 +364,7 @@ git branch -d <branch-name>
 - 本执行包不包含 `prod/stable`。
 - 本执行包不包含 dirty worktree。
 - 本执行包不包含远端删除或 push。
-- 若执行后发现目录仍有未跟踪文件或 Git 拒绝移除，应停止，不使用 `--force`。
+- 分支删除使用 `git branch -d`，未使用 `git branch -D`。
 
 ### 5.3 执行包 D preflight：未占用且已并入本地分支
 
