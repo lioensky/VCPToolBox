@@ -83,7 +83,7 @@
 - 已并入且未占用 worktree 的本地清理候选：0；`git branch --merged main` 当前只剩 `main` 和永久保护的 `prod/stable`。
 - `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
 - 当前本地引用关系：`prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 的祖先；`origin/main` 仍不是 `main` 的祖先。
-- 当前 left/right：`main...prod/stable = 192 / 0`，`main...origin/prod/stable = 192 / 0`，`main...upstream/main = 294 / 0`，`main...origin/main = 431 / 18`。
+- 当前 left/right：`main...prod/stable = 193 / 0`，`main...origin/prod/stable = 193 / 0`，`main...upstream/main = 295 / 0`，`main...origin/main = 432 / 18`。
 
 逐条核对：
 
@@ -159,7 +159,7 @@
 - worktree 数量：6。
 - `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
 - `git branch --merged main` 当前只剩 `main` 和永久保护的 `prod/stable`。
-- 当前 left/right：`main...prod/stable = 192 / 0`，`main...origin/prod/stable = 192 / 0`，`main...upstream/main = 294 / 0`，`main...origin/main = 431 / 18`。
+- 当前 left/right：`main...prod/stable = 193 / 0`，`main...origin/prod/stable = 193 / 0`，`main...upstream/main = 295 / 0`，`main...origin/main = 432 / 18`。
 - `prod/stable` 仍是永久保护稳定生产线，不进入任何清理候选。
 
 已被当前证据覆盖：
@@ -170,7 +170,7 @@
 - Package A1/A2/A3 已完成只读审查；相关 dirty worktree、疑似密钥样式值、运行态数据、构建产物和冲突标记文件均不得直接吸收或清理。
 - 未并入分支已按“占用 worktree / 未占用 worktree / patch-equivalent / 真实未吸收或高风险混合”分组。
 - Package D 已继续执行；D2-safe 已删除。Package I 已获批并温和删除 D2-upstream-blocked 两个本地分支。Package C2-safe 和 C-memory-rag-worktree 已获批并合计移除 3 个 worktree。Package H1 已获批并删除 9 个 patch-equivalent 本地分支。
-- Package K 已获批并执行 fetch-only 刷新；`origin/prod/stable` 和 `upstream/main` 仍被 `main` 包含，`origin/main` 在当前 `main` 上仍保持 `431 / 18` 分叉。
+- Package K 已获批并执行 fetch-only 刷新；`origin/prod/stable` 和 `upstream/main` 仍被 `main` 包含，`origin/main` 在当前 `main` 上仍保持 `432 / 18` 分叉。
 - Package L-local 已获批并在 `governance/origin-main-topology-bridge-preview` 上完成本地预演：预演 HEAD 为 `c5ce5d9`，`origin/main` 已成为预演分支祖先，且预演分支文件树相对预演前 `main`（`d03d511`）无变化。
 
 仍需单独明确批准的动作：
@@ -190,7 +190,53 @@
 | C-protected-worktree | `integration/main-absorb-prod-stable-upstream-20260525` | worktree 干净，但路径 `A:/VCP/VCPToolBox-prod-stable` 承载 `prod/stable` 工作环境；`cherry_plus=4` | 不纳入清理；继续保留，除非单独批准重建该工作环境 |
 | F-frozen-dirty | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、detached release-preflight | dirty / 构建产物 / 疑似密钥样式值 / 冲突标记等风险已归类 | 继续冻结，不吸收、不清理、不 reset/clean |
 | F-true-unabsorbed | `lane10-codex-memory-intake-20260425` 及 AI Image / Photo Studio guide-contract 对照线 | 仍有正向提交或宽 diff | 不整分支 merge；只允许后续按专项小主题重新实现 |
-| G-origin-main-topology | `origin/main` | Package L-local 后当前 `main...origin/main = 431 / 18`；预演分支 `c5ce5d9` 已证明本地 `ours` 拓扑桥可保持预演前文件树不变并让 `origin/main` 成为祖先 | 下一步只能单独批准真实 `main` 本地拓扑桥并重新验证，或继续远端写入 preflight；不得自动 merge/push |
+| G-origin-main-topology | `origin/main` | Package L-local 后当前 `main...origin/main = 432 / 18`；预演分支 `c5ce5d9` 已证明本地 `ours` 拓扑桥可保持预演前文件树不变并让 `origin/main` 成为祖先 | 下一步只能单独批准真实 `main` 本地拓扑桥并重新验证，或继续远端写入 preflight；不得自动 merge/push |
+
+### 2026-05-25 Package L-local 后只读现实复核
+
+本节是 Package L-local 文档提交后的只读复核，不是新的清理授权。未执行 push、merge、cherry-pick、reset、clean、worktree remove、分支删除或远端写入。
+
+当前基线：
+
+- 当前工作区：`A:/VCP/VCPToolBox-staging-custom-integration`。
+- 当前分支：`main`。
+- 当前 HEAD：本文档所在的 `main` 提交。
+- 当前工作树：干净。
+- worktree 数量：6。
+- 本地分支数量：13。
+- `git branch --merged main`：只剩 `main` 与永久保护的 `prod/stable`。
+- `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree。
+
+引用关系：
+
+| ref | `main...ref` | 是否为 `main` 祖先 | 结论 |
+| --- | --- | --- | --- |
+| `prod/stable` | `193 / 0` | yes | 稳定生产线永久保护，继续保留 |
+| `origin/prod/stable` | `193 / 0` | yes | 远端稳定生产线仍被 `main` 包含，不清理 |
+| `upstream/main` | `295 / 0` | yes | 原作者主线仍被当前 `main` 包含 |
+| `origin/main` | `432 / 18` | no | 仍未真实闭合到 `main`；只在预演分支闭合 |
+
+冻结 worktree 状态：
+
+| worktree | 分支 / 状态 | `git status --short` | `git status --short -uall` | 结论 |
+| --- | --- | ---: | ---: | --- |
+| `A:/VCP/VCPToolBox` | `feature/latest-updates` | 94 | 254 | 继续冻结；不吸收、不清理、不 reset/clean |
+| `A:/VCP/VCPToolBox-photo-studio-next` | `codex/photo-studio-baserow-provider-batch` | 3 | 3 | 继续冻结；A2 结论仍是不迁移旧版 DailyNoteManager 小改动 |
+| `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` | detached | 137 | 137 | 继续冻结；`AdminPanel-Vue/dist` 构建产物不吸收 |
+| `A:/VCP/VCPToolBox-photo-studio-export` | `lane10-codex-memory-intake-20260425` | 0 | 0 | 干净但真实未吸收；只能专项复核 |
+| `A:/VCP/VCPToolBox-prod-stable` | `integration/main-absorb-prod-stable-upstream-20260525` | 0 | 0 | 干净但承载受保护工作环境；不清理 |
+
+`origin/main` 正向补丁复核：
+
+- `git cherry -v main origin/main` 仍显示 14 个 patch-equivalent 提交与 3 个正向补丁。
+- 3 个正向补丁仍为 `c4290fe`、`84e9007`、`fca8f44`。
+- Package J1 判断不变：不直接 cherry-pick，不整分支 merge。
+
+结论：
+
+1. Package L-local 后治理文档与当前 Git 现实一致。
+2. `prod/stable` 仍永久保护，不进入任何清理候选。
+3. `origin/main` 真实闭合、远端写入、dirty/frozen worktree 处理和真实未吸收对照线专项仍需单独明确批准。
 
 ### 2026-05-25 Package H preflight：高风险本地强删候选审计
 
@@ -739,7 +785,7 @@ git merge -s ours --no-ff origin/main -m "Record origin main topology closure wi
 结论：
 
 1. Package L-local 已证明本地 `ours` 拓扑桥可以在不改变文件树的前提下闭合 `origin/main` 拓扑。
-2. 这不是对 `main` 的真实执行；`main` 仍保持与 `origin/main` 分叉，写入本文档后当前 `main...origin/main = 431 / 18`。
+2. 这不是对 `main` 的真实执行；`main` 仍保持与 `origin/main` 分叉，写入本文档后当前 `main...origin/main = 432 / 18`。
 3. 预演分支 `governance/origin-main-topology-bridge-preview` 保留为本地验证 artifact，不是清理候选；删除它需要后续单独批准。
 4. 下一步若要继续闭合，只能另行批准“真实 `main` 本地拓扑桥”；任何 push 或远端写入仍需再单独批准。
 
@@ -872,7 +918,7 @@ git merge -s ours --no-ff origin/main -m "Record origin main topology closure wi
 - 已并入且未占用 worktree 的剩余本地候选：0；`git branch --merged main` 当前只剩 `main` 与永久保护的 `prod/stable`。
 - `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
 - `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先；`origin/main` 仍不是 `main` 祖先。
-- 当前 left/right：`main...prod/stable = 192 / 0`，`main...origin/prod/stable = 192 / 0`，`main...upstream/main = 294 / 0`，`main...origin/main = 431 / 18`。
+- 当前 left/right：`main...prod/stable = 193 / 0`，`main...origin/prod/stable = 193 / 0`，`main...upstream/main = 295 / 0`，`main...origin/main = 432 / 18`。
 - Package L-local 预演分支：`governance/origin-main-topology-bridge-preview` @ `c5ce5d9`；`origin/main` 是该预演分支祖先，且预演分支文件树相对预演前 `main`（`d03d511`）无变化。
 
 当前最小可批准动作：
