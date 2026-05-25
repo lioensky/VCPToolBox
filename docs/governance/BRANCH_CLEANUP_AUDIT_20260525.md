@@ -121,6 +121,22 @@
 
 `feature/latest-updates` 结论：不能作为整体分支吸收或清理。下一步只允许从“源码候选”和“文档 / 测试 / 脚本候选”中挑选小主题；所有本地配置、密钥、运行态数据、用户数据、缓存、日志和批量插件启停改动必须排除。
 
+### 2026-05-25 `feature/latest-updates` 源码候选审查补充
+
+本轮只读抽查 tracked diff，不修改 `A:/VCP/VCPToolBox` 工作树，不读取真实运行态数据内容。
+
+关键发现：
+
+- `plugins/custom/reporting/sync_to_external_sheet_or_notion/src/index.js` 与 `tests/photo-studio/external-sync.test.js` 仍含 `<<<<<<< ours` / `>>>>>>> theirs` 冲突标记；该主题不能迁移，必须先在独立工作树中解决冲突并跑测试。
+- `Plugin/FlashDeepSearch/config.env.example` 的 diff 中出现疑似真实 `sk-*` 密钥样式值；该文件改动禁止吸收，需后续用占位符重写或丢弃，不能把该值写入文档、提交或远端。
+- `EmbeddingUtils.js`、`KnowledgeBaseManager.js`、`diary-semantic-classifier.js`、`Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js`、`server.js` 形成一个“embedding fallback / fallback stats endpoint”主题，但它会新增状态写入 `state/embedding-fallback-stats.json` 和公开统计接口，不能从 dirty worktree 直接吸收；如需保留，必须拆成单独设计包，审查接口权限、状态路径和回退密钥配置。
+- `AdminPanel/index.html`、`AdminPanel/script.js`、`AdminPanel/style.css`、`docs/ADMINPANEL_DEVELOPMENT.md` 形成一个“Codex Memory Monitor 管理面板入口”主题，但缺少配套文件审查和后端接口完整性检查；不能单独迁移这几处。
+- `Plugin/ZImageGen/ZImageGen.mjs` 与 `Plugin/ZImageGen2/ZImageGen.mjs` 形成“生成图片自动注册评分系统”主题，会触碰生成产物登记和评分数据库，属于运行态耦合变更，不能在当前治理清理中吸收。
+- 多个 plugin manifest 删除属于插件启停/禁用行为，不能批量吸收，需逐插件确认稳定线默认安全态。
+- `TVStxt/supertool.txt` 是 3695 行大文本改动，不适合作为治理合并输入；如有价值，需单独文档审查。
+
+A1 决策：`feature/latest-updates` 仍保持冻结，不执行 reset、clean、merge、cherry-pick 或 worktree 删除。当前仅可从中提取明确的小主题重新实现；不得直接搬运 dirty diff。
+
 ### 2026-05-25 release-preflight 前端产物复核
 
 `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` 是 detached `43a6bbb` 工作树。本轮只做只读复核：
