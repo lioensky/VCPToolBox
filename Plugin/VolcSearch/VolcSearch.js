@@ -4,7 +4,7 @@ const stdin = require('process').stdin;
 
 const API_ENDPOINT = 'open.feedcoopapi.com';
 const API_PATH = '/search_api/web_search';
-const STAGGER_INTERVAL_MS = 1000; // 并发搜索时每个子查询的启动间隔(ms)，用于控制 QPS
+const STAGGER_INTERVAL_MS = 250; // 并发搜索时每个子查询的启动间隔(ms)，用于控制 QPS
 const MAX_CONCURRENCY = 5; // 最大并发请求数（VolcEngine 默认 QPS 5，留有余量避免限流）
 
 /**
@@ -53,17 +53,14 @@ async function main() {
             const data = JSON.parse(inputData);
 
             const query = data.query;
-            let searchType = data.search_type || 'web';
             let count = data.count || 10;
-            const needSummary = data.need_summary;
             const contentFormat = data.content_format || 'text';
-            const snippetsOnly = data.snippets_only !== false; // default true
+
             const timeRange = data.time_range;
             const sites = data.sites;
             const blockHosts = data.block_hosts;
             const industry = data.industry;
-            const queryRewrite = data.query_rewrite;
-            const needUrl = data.need_url;
+
             const authInfoLevel = data.auth_info_level;
 
             if (!query) {
@@ -95,11 +92,6 @@ async function main() {
                 }
             }
 
-            // Validate search_type
-            const validSearchTypes = ['web', 'web_summary'];
-            if (!validSearchTypes.includes(searchType)) {
-                searchType = 'web';
-            }
 
             // Build request body per Volc Engine API spec
             // 搜索逻辑已封装到 executeSingleSearch(subQuery) 中
@@ -110,16 +102,9 @@ async function main() {
             async function executeSingleSearch(subQuery) {
                 const body = {
                     Query: subQuery,
-                    SearchType: searchType,
+                    SearchType: 'web',
                     Count: count
                 };
-
-                // NeedSummary: automatically true for web_summary, otherwise optional
-                if (searchType === 'web_summary') {
-                    body.NeedSummary = true;
-                } else if (needSummary === true || needSummary === 'true') {
-                    body.NeedSummary = true;
-                }
 
                 // Optional: ContentFormats
                 if (contentFormat === 'markdown' || contentFormat === 'text') {
@@ -129,11 +114,6 @@ async function main() {
                 // Optional: Filter
                 const filter = {};
                 let hasFilter = false;
-
-                if (!snippetsOnly) {
-                    filter.NeedContent = true;
-                    hasFilter = true;
-                }
                 if (sites) {
                     filter.Sites = sites;
                     hasFilter = true;
@@ -141,10 +121,7 @@ async function main() {
                 if (blockHosts) {
                     filter.BlockHosts = blockHosts;
                     hasFilter = true;
-                }
-                if (needUrl === true || needUrl === 'true') {
-                    filter.NeedUrl = true;
-                    hasFilter = true;
+
                 }
                 if (authInfoLevel !== undefined && authInfoLevel !== null) {
                     const level = parseInt(authInfoLevel, 10);
@@ -172,11 +149,6 @@ async function main() {
                     if (validIndustries.includes(industry)) {
                         body.Industry = industry;
                     }
-                }
-
-                // Optional: QueryControl.QueryRewrite
-                if (queryRewrite === true || queryRewrite === 'true') {
-                    body.QueryControl = { QueryRewrite: true };
                 }
 
                 // Send request to Volc Engine API
@@ -262,32 +234,11 @@ async function main() {
                 // Convert results to Markdown
                 let md = '';
 
-                // For web_summary mode, extract LLM summary from Choices
-                if (searchType === 'web_summary' && apiResult.Choices && apiResult.Choices.length > 0) {
-                    const choice = apiResult.Choices[0];
-                    let summaryText = '';
-
-                    // Non-streaming mode: Message.content (or already aggregated from streaming)
-                    if (choice.Message && choice.Message.content) {
-                        summaryText = choice.Message.content;
-                    }
-                    // Fallback: raw Delta.content (if streaming aggregation didn't run)
-                    if (!summaryText && choice.Delta && choice.Delta.Content) {
-                        summaryText = choice.Delta.Content;
-                    }
-
-                    if (summaryText) {
-                        md += `### 搜索总结\n${summaryText}\n\n---\n\n`;
-                    }
-                }
-
                 if (apiResult.WebResults && apiResult.WebResults.length > 0) {
-                    md += `### 搜索结果 (共 ${apiResult.ResultCount || apiResult.WebResults.length} 条)\n\n`;
+                    md += `\n### 搜索结果 (共 ${apiResult.ResultCount || apiResult.WebResults.length} 条)\n\n`;
                     apiResult.WebResults.forEach((item, index) => {
                         const title = item.Title || '无标题';
                         const url = item.Url || '';
-                        const snippet = item.Snippet || '';
-                        const summary = item.Summary || '';
                         const content = item.Content || '';
                         const publishTime = item.PublishTime || '';
                         const siteName = item.SiteName || '';
@@ -309,24 +260,30 @@ async function main() {
                             md += '\n';
                         }
 
-                        // Prefer Summary over Snippet if needSummary is enabled
-                        if (needSummary && summary) {
-                            md += `   ${summary}\n\n`;
-                        } else if (snippet) {
-                            md += `   ${snippet}\n\n`;
+                        // Show full content
+                        if (content) {
+                            md += `   > ${content.replace(/\n/g, '\n   > ')}\n\n`;
                         }
 
-                        // Include full content if snippets_only is false
-                        if (!snippetsOnly && content) {
-                            const trimmedContent = content.length > 2000 ? content.substring(0, 2000) + '...' : content;
-                            md += `   > ${trimmedContent.replace(/\n/g, '\n   > ')}\n\n`;
-                        }
+
                     });
                 } else {
                     md += '未找到相关搜索结果。\n';
                 }
 
-                return md;
+                // Prepare structured data (strip fields not relevant to web search)
+                const cleanData = JSON.parse(JSON.stringify(apiResult));
+                if (cleanData.WebResults) {
+                    cleanData.WebResults = cleanData.WebResults.map(item => {
+                        const { LogoUrl, Summary, ...rest } = item;
+                        return rest;
+                    });
+                }
+                delete cleanData.Choices;
+                delete cleanData.Usage;
+                delete cleanData.ImageResults;
+
+                return { md, data: cleanData };
             }
 
             // 检测是否包含 || 分隔的多个查询
@@ -364,8 +321,8 @@ async function main() {
                 settledResults.forEach((settled, index) => {
                     if (settled.status === 'fulfilled') {
                         hasAnySuccess = true;
-                        markdownResult += `## 🔍 查询: ${settled.value.subQuery}\n\n`;
-                        markdownResult += settled.value.result;
+                        markdownResult += `\n## 🔍 查询: ${settled.value.subQuery}\n\n`;
+                        markdownResult += settled.value.result.md;
                         markdownResult += '\n\n---\n\n';
                     } else {
                         failedResults.push({ subQuery: subQueries[index], error: settled.reason?.message || '未知错误' });
@@ -385,12 +342,15 @@ async function main() {
                     throw new Error(`All searches failed. First error: ${failedResults[0].error}`);
                 }
 
-                output = { status: "success", result: markdownResult };
+                const queriesData = settledResults
+                    .filter(s => s.status === 'fulfilled')
+                    .map(s => ({ query: s.value.subQuery, data: s.value.result.data }));
+                output = { status: "success", result: markdownResult, queries: queriesData };
 
             } else {
                 // 单个查询 => 原有流程
                 const singleResult = await executeSingleSearch(query);
-                output = { status: "success", result: singleResult };
+                output = { status: "success", result: singleResult.md, data: singleResult.data };
             }
 
         } catch (e) {
