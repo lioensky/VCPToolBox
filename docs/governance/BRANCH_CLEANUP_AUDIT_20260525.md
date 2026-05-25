@@ -100,6 +100,39 @@
 - 治理执行仍未完成，因为 Package C/D/E、真实未吸收对照线拆分、`origin/main` 拓扑闭合或远端同步都需要后续单独明确批准。
 - 因此当前不能把整个治理 goal 标记为完成；下一步只能在获得具体批准后执行 Package C/D/E 或进入某条未吸收对照线的专项小任务。
 
+### 2026-05-25 下一执行门槛复核
+
+本节用于把后续可批准动作拆清楚，避免把“可执行 preflight”误认为“已授权执行”。复核时当前分支为 `main`，HEAD 为 `02cce0c`，工作树干净。
+
+Package C：占用 worktree 的 patch-equivalent / superseded 分支。
+
+| 分支 | worktree | dirty | 当前证据 | 门槛 |
+| --- | --- | ---: | --- | --- |
+| `codex/vcptoolbox-channelhub-core-20260425` | `A:/VCP/VCPToolBox-channelhub-core` | 0 | `cherry_plus=0 / cherry_minus=1`，内容已等价进入 `main`，但拓扑未并入且占用 worktree | 需单独批准后，先移除对应 worktree，再尝试 `git branch -d` |
+| `codex/vcptoolbox-dingtalk-adapters-20260425` | `A:/VCP/VCPToolBox-dingtalk-adapters` | 0 | `cherry_plus=0 / cherry_minus=1`，内容已等价进入 `main`，但拓扑未并入且占用 worktree | 需单独批准后，先移除对应 worktree，再尝试 `git branch -d` |
+| `codex/vcptoolbox-memory-rag-governance-20260425` | `A:/VCP/VCPToolBox-memory-rag-governance` | 0 | `cherry_plus=0 / cherry_minus=1`，内容已等价进入 `main`，但拓扑未并入且占用 worktree | 需单独批准后，先移除对应 worktree，再尝试 `git branch -d` |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `A:/VCP/VCPToolBox-prod-stable` | 0 | `cherry_plus=4 / cherry_minus=0`，且该路径承载 `prod/stable` 工作环境 | 不列入 Package C 清理；继续保留，除非用户单独批准重建该工作环境 |
+
+Package D：未占用且已并入本地分支。
+
+- 当前候选数量仍为 48。
+- 候选中不包含 `main`、`prod/stable` 或任何占用 worktree 的分支。
+- 只能在单独批准后逐项或批量执行 `git branch -d <branch-name>`。
+- 如果 `git branch -d` 拒绝删除，必须停止复核，不能升级为 `git branch -D`。
+
+Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
+
+- 当前候选数量仍为 6。
+- 6 个 `feature/gov-patch-1b-*` 分支均为 `cherry_plus=0 / cherry_minus=1`。
+- 这些分支未占用 worktree，且不包含 `main`、`prod/stable`、dirty worktree 或远端分支。
+- 只能在单独批准后尝试 `git branch -d <branch-name>`；若 Git 因拓扑未并入拒绝删除，必须停止，不得强删。
+
+推荐批准顺序：
+
+1. Package D：风险最低，都是已并入且未占用的本地分支；执行前再次跑保护检查。
+2. Package E：内容等价但拓扑未并入；只允许温和删除，失败即停。
+3. Package C：涉及 worktree 移除，必须逐目录确认路径和 clean 状态；`integration/main-absorb-prod-stable-upstream-20260525` 不纳入清理。
+
 ### 2026-05-25 候选清单一致性复核
 
 本轮只读复核当前 Git 现实与本文候选清单是否一致，未执行删除、push、reset、clean、merge、cherry-pick 或 worktree remove。
