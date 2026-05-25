@@ -237,6 +237,72 @@ Package H 结论：
 3. Package H 不包含 `prod/stable`、`main`、远端分支、仍占用 worktree 的分支、dirty worktree 或真实未吸收对照线。
 4. 任何 `git branch -D`、upstream 修改、远端同步或 push 都必须再次单独明确批准。
 
+#### Package H1 执行方案：高风险本地强删 9 个 patch-equivalent 分支
+
+本节是执行方案，不是删除授权。只有在用户明确发出“批准 Package H1：高风险本地强删 9 个 patch-equivalent 分支”后，才能执行本节命令。
+
+H1 候选：
+
+```text
+codex/vcptoolbox-channelhub-core-20260425
+codex/vcptoolbox-dingtalk-adapters-20260425
+codex/vcptoolbox-memory-rag-governance-20260425
+feature/gov-patch-1b-ai-image-request-source-20260430
+feature/gov-patch-1b-execution-context-helper-20260430
+feature/gov-patch-1b-human-tool-request-source-20260430
+feature/gov-patch-1b-snowbridge-request-source-20260430
+feature/gov-patch-1b-task-scheduler-request-source-20260430
+feature/gov-patch-1b-vcptoolbridge-request-source-20260430
+```
+
+执行前必须重新验证：
+
+- 当前分支为 `main`。
+- 主工作树干净。
+- 9 个候选均为本地分支。
+- 9 个候选均未被 worktree 占用。
+- 9 个候选均仍为 `cherry_plus=0 / cherry_minus=1`。
+- 候选不包含 `main`、`prod/stable`、D2-upstream-blocked、dirty worktree、真实未吸收对照线或远端分支。
+
+批准后的命令形态：
+
+```powershell
+git branch -D codex/vcptoolbox-channelhub-core-20260425
+git branch -D codex/vcptoolbox-dingtalk-adapters-20260425
+git branch -D codex/vcptoolbox-memory-rag-governance-20260425
+git branch -D feature/gov-patch-1b-ai-image-request-source-20260430
+git branch -D feature/gov-patch-1b-execution-context-helper-20260430
+git branch -D feature/gov-patch-1b-human-tool-request-source-20260430
+git branch -D feature/gov-patch-1b-snowbridge-request-source-20260430
+git branch -D feature/gov-patch-1b-task-scheduler-request-source-20260430
+git branch -D feature/gov-patch-1b-vcptoolbridge-request-source-20260430
+```
+
+停止条件：
+
+- 任一候选不存在。
+- 任一候选被 worktree 占用。
+- 任一候选不再是 patch-equivalent。
+- 候选列表漂移到 `main`、`prod/stable`、dirty worktree、真实未吸收分支或远端引用。
+- 任一 `git branch -D` 失败。
+
+回滚方式：
+
+- 本地强删只删除本地分支引用，不删除提交对象本身；短期内可用提交 hash 重建。
+- H1 候选 HEAD 已记录在 Package H preflight 表中。
+- 如需恢复，可执行 `git branch <branch-name> <recorded-head>`。
+- 如需恢复 worktree，另行使用 `git worktree add <path> <branch-name>`，但不得覆盖现有路径。
+
+执行后必须记录：
+
+- 实际删除成功的分支列表。
+- 未删除或失败的分支及原因。
+- `git status --short -uall`。
+- `git branch --format='%(refname:short)'` 数量。
+- `git branch --no-merged main` 数量。
+- worktree 数量。
+- 明确确认未触碰 `main`、`prod/stable`、远端、dirty worktree、真实未吸收分支、reset/clean 或 secret 文件。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
