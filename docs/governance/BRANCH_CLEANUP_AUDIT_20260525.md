@@ -371,6 +371,51 @@ git branch -d <branch-name>
 - 本执行包不包含远端删除或 push。
 - 若执行后发现目录仍有未跟踪文件或 Git 拒绝移除，应停止，不使用 `--force`。
 
+### 5.3 执行包 D preflight：未占用且已并入本地分支
+
+本节是待批准执行包，不是执行记录。当前只读复核结果：
+
+- 候选数量：48。
+- 来源命令口径：`git branch --merged main --format='%(refname:short)|%(objectname:short)|%(worktreepath)'`，排除 `main`、`prod/stable` 和仍占用 worktree 的分支。
+- 保护检查：候选清单不包含 `main`，不包含 `prod/stable`，不包含任何 worktree 占用分支。
+- 候选明细：见第 4 节“已并入可清理”。
+
+建议命令形态，仅供批准后逐项或批量执行；当前未执行：
+
+```powershell
+git branch -d <branch-name>
+```
+
+执行规则：
+
+- 只允许使用 `git branch -d`，不使用 `git branch -D`。
+- 如果 Git 拒绝删除，停止并复核，不强删。
+- 不删除远端分支。
+- 删除前再次运行保护检查，确认 `prod/stable` 不在候选清单内。
+
+### 5.4 执行包 E preflight：未并入但 patch-equivalent 的本地分支
+
+本节是待批准执行包，不是执行记录。以下 6 个分支仍显示在 `git branch --no-merged main`，但 `git cherry -v main <branch>` 均显示为 `-`，即 patch-equivalent；且均未占用 worktree：
+
+- `feature/gov-patch-1b-ai-image-request-source-20260430`
+- `feature/gov-patch-1b-execution-context-helper-20260430`
+- `feature/gov-patch-1b-human-tool-request-source-20260430`
+- `feature/gov-patch-1b-snowbridge-request-source-20260430`
+- `feature/gov-patch-1b-task-scheduler-request-source-20260430`
+- `feature/gov-patch-1b-vcptoolbridge-request-source-20260430`
+
+建议命令形态，仅供批准后逐项执行；当前未执行：
+
+```powershell
+git branch -d <branch-name>
+```
+
+执行规则：
+
+- 只允许使用 `git branch -d`。
+- 如果 Git 因拓扑未合并拒绝删除，停止并复核，不使用 `git branch -D`。
+- 本执行包不包含 `prod/stable`、`main`、任何 dirty worktree 或远端分支。
+
 ## 6. 建议使用的只读复核命令
 
 ```powershell
