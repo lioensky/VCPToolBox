@@ -149,6 +149,22 @@
 
 结论：这三个分支不是可清理候选，也不能整体 merge。后续若要吸收，只能作为独立 AI Image Agent 专项，先拆分源码、前端构建产物、runtime hardening、测试和文档，再逐项评估。
 
+### 2026-05-25 Governance Patch 1B 分支复核
+
+`feature/gov-patch-1b-*` 已按 patch-equivalence 复核：
+
+| 分支组 | 复核结果 | 结论 |
+| --- | --- | --- |
+| `feature/gov-patch-1b-ai-image-request-source-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-execution-context-helper-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-human-tool-request-source-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-snowbridge-request-source-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-task-scheduler-request-source-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-vcptoolbridge-request-source-20260430` | `git cherry -v main` 显示提交已等价吸收 | 可作为本地清理候选，删除仍需单独批准 |
+| `feature/gov-patch-1b-context-observability-rollup-20260430` | 对 `main` 无净增量 | 可作为本地清理候选，删除仍需单独批准 |
+
+注意：这些分支仍可能被 `git branch --no-merged main` 列出，因为提交血缘不同；治理判断以 patch-equivalence 和当前 `main` 文件现实为准。
+
 ## 4. 已并入可清理
 
 以下分支未被 worktree 占用，并且已经并入当前 `main`。它们是本地分支清理候选。
