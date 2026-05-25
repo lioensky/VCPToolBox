@@ -62,6 +62,44 @@
 
 因此本文不是“治理已完成”证明，而是继续执行治理前的控制台账。
 
+### 2026-05-25 目标完成度审计
+
+本节用于逐条核对当前 `/goal`，不是清理授权，也不是远端同步授权。本轮只做本地只读复核与文档记录；未执行 push、fetch 后合并、merge、cherry-pick、reset、clean、branch delete、worktree remove 或远端修改。
+
+当前事实基线：
+
+- 当前工作区：`A:/VCP/VCPToolBox-staging-custom-integration`。
+- 当前分支：`main`，复核时 `git status --short -uall` 为空。
+- 当前 `main` 复核前 HEAD：`a3c8415`。
+- worktree 数量：9。
+- 本地分支数量：69。
+- 已并入且未占用 worktree 的本地清理候选：48；候选中不包含 `main`，不包含 `prod/stable`。
+- `git branch --no-merged main`：19 个，其中 7 个占用 worktree，12 个未占用 worktree。
+- 当前本地引用关系：`prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 的祖先；`origin/main` 仍不是 `main` 的祖先。
+- 当前 left/right：`main...prod/stable = 164 / 0`，`main...origin/prod/stable = 164 / 0`，`main...upstream/main = 266 / 0`，`main...origin/main = 403 / 18`。
+
+逐条核对：
+
+| 目标要求 | 当前证据 | 状态 |
+| --- | --- | --- |
+| 以 `main` 作为最先进最新主分支 | 项目 `AGENTS.md` 和本文头部均已声明；当前 `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先 | 已记录并验证当前本地 refs |
+| 永久保护 `prod/stable` 稳定生产线 | 本文第 0 节、第 1.1 节和候选复核均明确 `prod/stable` 永不清理；当前候选检查显示 `prod/stable_in_merged_unoccupied=0` | 已记录并验证候选排除 |
+| 只做本地审计、文档记录和安全小补丁 | 当前治理提交均为本地文档记录；本轮未做远端、删除、reset、clean 或生产线动作 | 满足当前授权范围 |
+| 持续更新本治理文档 | Package B、A1、A2、A3、未并入分支、占用 worktree、引用差异、密钥卫生检查均已写入本文 | 已执行 |
+| 复核 release-preflight 前端构建产物 | 第 2 节和第 5.1.2 节记录 detached release-preflight worktree 的 137 项 `AdminPanel-Vue/dist` 产物，结论是不迁移、不吸收 | 已完成只读审查 |
+| 复核未并入分支 | 第 3 节、第 3.1 节、第 5.4 节记录 12 个未占用未并入分支；第 2 节和占用 worktree 补充记录 7 个占用未并入分支 | 已完成只读分组 |
+| 复核剩余 worktree | 第 2 节和占用 worktree 复核补充记录当前 9 个 worktree；其中 dirty、高风险和 patch-equivalent/superseded 均已分类 | 已完成只读分组 |
+| dirty worktree、疑似密钥、运行态数据、构建产物、冲突标记先审查归类 | A1/A2/A3、release-preflight、occupied worktree 复核和密钥卫生检查已记录；疑似 `sk-*` 样式值只保留为风险描述，未记录原值 | 已完成审查归类 |
+| 不直接吸收或清理高风险内容 | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、release-preflight dist、AI Image / Photo Studio 对照线均记录为冻结或专项复核 | 已遵守 |
+| 禁止 push、删除分支、删除 worktree、修改远端、force、reset/clean、触碰真实密钥 | Package B 之外无新增删除；本轮只读复核和文档记录；未触碰 `.env` / `config.env`，未记录真实密钥值 | 已遵守当前阶段 |
+| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | Package C/D/E 和远端同步均仍记录为待批准，不作为当前动作 | 未执行，等待单独批准 |
+
+完成度结论：
+
+- 本地审计和文档覆盖已经达到当前 goal 的审查记录要求。
+- 治理执行仍未完成，因为 Package C/D/E、真实未吸收对照线拆分、`origin/main` 拓扑闭合或远端同步都需要后续单独明确批准。
+- 因此当前不能把整个治理 goal 标记为完成；下一步只能在获得具体批准后执行 Package C/D/E 或进入某条未吸收对照线的专项小任务。
+
 ### 2026-05-25 候选清单一致性复核
 
 本轮只读复核当前 Git 现实与本文候选清单是否一致，未执行删除、push、reset、clean、merge、cherry-pick 或 worktree remove。
