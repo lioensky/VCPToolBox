@@ -443,6 +443,46 @@ git branch -d staging/vcptoolbox-custom-integration-20260425
 - 如果分支已删除，可用记录的 HEAD 重建本地分支：`git branch <branch> <recorded-head>`。
 - 不涉及远端回滚，因为本方案不 push、不删除远端分支、不修改远端配置。
 
+#### Package J preflight：远端同步前只读引用审计
+
+本节为只读审计，不是 fetch、merge、push、PR、远端修改或生产线动作授权。本节只使用当前本地已有 refs；未刷新远端跟踪引用。
+
+当前 remotes：
+
+| remote | fetch URL | push URL |
+| --- | --- | --- |
+| `origin` | `https://github.com/JENN2046/VCPToolBox.git` | `https://github.com/JENN2046/VCPToolBox.git` |
+| `upstream` | `https://github.com/lioensky/VCPToolBox.git` | `https://github.com/lioensky/VCPToolBox.git` |
+
+当前关键引用关系：
+
+| ref | HEAD | `main...ref` | ref 是否为 `main` 祖先 | `main` 是否为 ref 祖先 | 判断 |
+| --- | --- | --- | --- | --- | --- |
+| `prod/stable` | `a1870b3` | `184 / 0` | yes | no | 已被 `main` 包含；仍永久保护，不清理、不削弱 |
+| `origin/prod/stable` | `a1870b3` | `184 / 0` | yes | no | 已被 `main` 包含；远端稳定线不清理 |
+| `upstream/main` | `8b8a71d` | `286 / 0` | yes | no | 当前本地 refs 显示原作者主线已被 `main` 包含 |
+| `origin/main` | `ee2d324` | `423 / 18` | no | no | 与当前 `main` 分叉；不能直接当作已闭合 |
+
+`origin/main` 风险说明：
+
+- `main..origin/main` 当前显示 18 个提交，多数是 AI Image Agent pipeline 相关历史提交。
+- `git cherry -v main origin/main` 显示 14 个提交已 patch-equivalent，3 个提交仍为正向补丁；merge commit 不在该 cherry 输出中。
+- 仍为正向补丁的提交包括：
+
+| commit | 主题 | 涉及范围 | 当前判断 |
+| --- | --- | --- | --- |
+| `c4290fe` | `Mount AI image agents route behind env flag` | `server.js` | 可能仍需专项复核；不得整分支 merge |
+| `84e9007` | `build(admin): bundle AdminPanel assets for AI image agent` | `AdminPanel-Vue/dist/*` | 构建产物，不直接吸收 |
+| `fca8f44` | `fix: restore dynamicToolRegistry bootstrap module` | `modules/dynamicToolRegistry.js` | 可能仍需专项复核；不得整分支 merge |
+
+Package J 结论：
+
+1. 当前本地 `main` 已包含 `prod/stable`、`origin/prod/stable` 和当前本地 `upstream/main`。
+2. `origin/main` 仍与 `main` 分叉，且含 AI Image / AdminPanel dist / dynamicToolRegistry 相关未完全等价内容。
+3. 后续不能用整分支 merge 或直接 push 来“同步”这一差异；应先做 fetch-only 刷新授权，再重新审计当前远端 refs。
+4. 若刷新后仍存在 `origin/main` 正向补丁，只能按小主题专项复核：`server.js` env-flag 路由、`modules/dynamicToolRegistry.js`、以及是否明确排除或重建 `AdminPanel-Vue/dist` 构建产物。
+5. 任何 push、远端分支更新、PR、merge 到远端、或修改 `origin/main` / `origin/prod/stable` / `upstream/main` 都必须单独明确批准。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
