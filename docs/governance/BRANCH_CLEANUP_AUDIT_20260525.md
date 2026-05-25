@@ -38,6 +38,29 @@
 | 已并入可清理（未占用 worktree） | 48 | 可作为本地分支删除候选，删除前确认无需保留本地标签/引用 |
 | 永久保护分支 | 1 | `prod/stable` 永久保留，永不清理 |
 
+## 1.0 当前治理执行状态
+
+状态：审计覆盖已完成，治理执行未完成。
+
+已完成：
+
+- `main` 已明确为最先进、最新整合状态的主分支。
+- `prod/stable` 已明确为稳定生产线永久保护分支，不进入任何清理候选。
+- dirty worktree、release-preflight 前端构建产物、未并入分支、worktree 占用分支、`origin/main` 本地引用差异均已做本地只读复核并记录。
+- 当前 `git branch --no-merged main` 显示的 19 个分支均已在本文中有记录。
+
+未完成：
+
+- 未删除任何本地分支。
+- 未删除任何 worktree。
+- 未 push，未修改远端。
+- `feature/latest-updates` dirty worktree 仍有 94 行 `git status --short` 状态，展开未跟踪文件后为 254 行。
+- `codex/photo-studio-baserow-provider-batch` dirty worktree 仍有 3 项状态。
+- detached release-preflight worktree 仍有 137 项 `AdminPanel-Vue/dist` 构建产物状态。
+- 48 个“已并入可清理（未占用 worktree）”本地分支仍未执行清理。
+
+因此本文不是“治理已完成”证明，而是继续执行治理前的控制台账。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
@@ -308,6 +331,20 @@
    - `integration/main-absorb-prod-stable-upstream-20260525`
 4. 对仍有真实未吸收内容的未并入分支做拆分复核，不直接删除。
 5. 最后批量删除“已并入可清理”本地分支。
+
+## 5.1 后续执行包
+
+以下执行包均未获授权，本文只记录建议顺序。任何删除、移除 worktree、push、远端同步都必须单独明确批准。
+
+| 执行包 | 范围 | 当前状态 | 建议 |
+| --- | --- | --- | --- |
+| A. dirty worktree 冻结处理 | `A:/VCP/VCPToolBox`、`A:/VCP/VCPToolBox-photo-studio-next`、`A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` | 有未提交或未跟踪内容 | 先只读复核并决定“保留 / 归档 / 丢弃 / 拆分吸收”；禁止自动删除 |
+| B. 已并入且干净的 worktree | `feature/gov-patch-1a-identity-approval-20260429`、`feature/gov-patch-2b-effect-classification-20260430`、`codex/prod-stable-closeout-check-20260513`、`feature/photo-studio-p7-queue-scheduler` | 已并入 `main`，worktree 干净 | 可作为第一批 worktree 移除候选，但必须逐项批准 |
+| C. patch-equivalent / superseded 但仍占用 worktree | `codex/vcptoolbox-channelhub-core-20260425`、`codex/vcptoolbox-dingtalk-adapters-20260425`、`codex/vcptoolbox-memory-rag-governance-20260425`、`integration/main-absorb-prod-stable-upstream-20260525` | 不需要吸收，但仍占用 worktree | 先保留；若清理，必须先确认 worktree 用途，再逐项批准移除 |
+| D. 未占用且已并入本地分支 | 第 4 节 48 个分支 | 可清理候选 | 可批量生成删除预案；执行前再次确认 `prod/stable` 不在清单内 |
+| E. 未并入但 patch-equivalent 的本地分支 | `feature/gov-patch-1b-*` 相关分支 | 拓扑未并入，但内容已等价 | 可作为本地清理候选；删除前需单独批准 |
+| F. 真实未吸收对照线 | AI Image、Photo Studio guide-contract、lane10、`codex/photo-studio-baserow-provider-batch` 等 | 仍有真实未吸收或高风险混合内容 | 不清理，不整分支 merge；后续按专项拆分 |
+| G. 远端同步 | `main` 与 `origin/main`、`origin/prod/stable`、`upstream/main` | 本地 `main` 已包含 `prod/stable`、`origin/prod/stable`、`upstream/main`；对 `origin/main` 仍拓扑分叉 | 不自动 push；如需远端主线同步，先做专门 preflight，再由人工批准 push |
 
 ## 6. 建议使用的只读复核命令
 
