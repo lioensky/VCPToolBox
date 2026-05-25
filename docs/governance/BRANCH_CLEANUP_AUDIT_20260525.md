@@ -126,6 +126,25 @@
 
 注意：前三个 20260425 分支虽然仍显示为 `git branch --no-merged main`，但当前证据表明是拓扑未合并、补丁已等价或已由后续实现覆盖；判断时不能只看 `--no-merged`，也不能把旧分支树整体 merge 回当前 `main`。
 
+### 2026-05-25 `codex/photo-studio-baserow-provider-batch` 分支级复核
+
+该分支当前占用 `A:/VCP/VCPToolBox-photo-studio-next`，worktree 仍有 3 项本地状态：
+
+- `Plugin/DailyNoteManager/daily-note-manager.js`：写锁方向已单独复核，当前 `main` 已有更完整的 `withWriteLock()` 串行化实现，不吸收该旧改动。
+- `280ed91.patch`：22,836 bytes，补丁标题为“将涟漪共现语法下沉到日记本dsl管理器”，涉及 `Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js` 与 `dailynote.md`。
+- `desktop.ini`：本地系统元数据，不吸收。
+
+分支级复核结论：
+
+| 证据 | 结果 |
+| --- | --- |
+| `git cherry -v main codex/photo-studio-baserow-provider-batch` | 12 个分支提交中，7 个仍显示为正向补丁，5 个显示 patch-equivalent |
+| `git diff --stat main...codex/photo-studio-baserow-provider-batch` | 21 个文件，约 3,392 insertions / 139 deletions |
+| 主要路径 | `Plugin/RAGDiaryPlugin/`、`Plugin/GitSearch/`、`Agent/`、`Plugin/FileOperator/`、`Plugin/VSearch/`、`TVStxt/Dailynote.txt`、`adminServer.js`、`dailynote.md` |
+| 当前 `main` 现实 | 已存在 `Plugin/GitSearch/`、`Agent/MemoMaster.txt`、`RAGDiaryPlugin` 中的 `::Expand` / `associate` 相关实现、以及后续更新过的 RAG 日记逻辑 |
+
+结论：该分支不是清理候选，也不能整体 merge。它混合了 RAGDiary 语法、GitSearch、Agent 提示词、FileOperator、VSearch、admin auth redirect 和本地 dirty 写锁改动；后续如需吸收，只能按主题做小范围复核，且必须以当前 `main` 代码为基线，不得从该 worktree 批量照搬。
+
 ## 3. 未并入需复核
 
 以下分支未被 worktree 占用，但仍有相对 `main` 的独有提交。删除前必须确认这些提交已被其他路径吸收，或确认为废弃。
