@@ -28,6 +28,14 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const ENABLE_RECURSIVE_OPERATIONS = process.env.ENABLE_RECURSIVE_OPERATIONS !== 'false';
 const ENABLE_HIDDEN_FILES = process.env.ENABLE_HIDDEN_FILES === 'true';
 
+// WebReadFile/DownloadFile default file storage directory
+// Priority: WEB_FILE_DIR > DEFAULT_DOWNLOAD_DIR > VCPToolBox/file/
+const WEB_FILE_DIR = process.env.WEB_FILE_DIR
+  ? path.resolve(process.env.WEB_FILE_DIR)
+  : (process.env.DEFAULT_DOWNLOAD_DIR
+    ? path.resolve(process.env.DEFAULT_DOWNLOAD_DIR)
+    : path.join(__dirname, '..', '..', 'file'));
+
 // Utility functions
 function debugLog(message, data = null) {
   if (DEBUG_MODE) {
@@ -293,7 +301,7 @@ async function runValidationAndAttachResults(result, filePath, fileContent) {
 // File operation functions
 async function webReadFile(fileUrl) {
   try {
-    const fileDir = path.join(__dirname, '..', '..', '..', 'AppData', 'file');
+    const fileDir = WEB_FILE_DIR;
     await fs.mkdir(fileDir, { recursive: true }); // Ensure directory exists
 
     // Extract filename from URL, handling potential query strings
@@ -1058,7 +1066,7 @@ async function downloadFile(url, downloadDir, customFileName) {
     } else if (process.env.DEFAULT_DOWNLOAD_DIR) {
       baseDir = path.resolve(process.env.DEFAULT_DOWNLOAD_DIR);
     } else {
-      baseDir = path.join(__dirname, '..', '..', '..', 'AppData', 'file');
+      baseDir = WEB_FILE_DIR;
     }
 
     const destinationPath = path.join(baseDir, fileName);
