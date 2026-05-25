@@ -346,6 +346,31 @@
 | F. 真实未吸收对照线 | AI Image、Photo Studio guide-contract、lane10、`codex/photo-studio-baserow-provider-batch` 等 | 仍有真实未吸收或高风险混合内容 | 不清理，不整分支 merge；后续按专项拆分 |
 | G. 远端同步 | `main` 与 `origin/main`、`origin/prod/stable`、`upstream/main` | 本地 `main` 已包含 `prod/stable`、`origin/prod/stable`、`upstream/main`；对 `origin/main` 仍拓扑分叉 | 不自动 push；如需远端主线同步，先做专门 preflight，再由人工批准 push |
 
+### 5.2 执行包 B preflight：已并入且干净的 worktree
+
+本节是待批准执行包，不是执行记录。以下 4 个 worktree 已重新只读复核：
+
+| worktree | 分支 | 状态证据 | 建议 |
+| --- | --- | --- | --- |
+| `A:/VCP/VCPToolBox-prod-stable-clean` | `feature/gov-patch-1a-identity-approval-20260429` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
+| `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` | `feature/gov-patch-2b-effect-classification-20260430` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
+| `A:/VCP/VCPToolBox-prod-stable-upstream-gptimagegen-20260429` | `codex/prod-stable-closeout-check-20260513` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
+| `A:/VCP/VCPToolBox-main` | `feature/photo-studio-p7-queue-scheduler` | `git status --short -uall` 为空；`HEAD` 是 `main` 的祖先 | 可在批准后先移除 worktree，再删除本地分支 |
+
+建议命令形态，仅供批准后执行；当前未执行：
+
+```powershell
+git worktree remove <worktree-path>
+git branch -d <branch-name>
+```
+
+保护确认：
+
+- 本执行包不包含 `prod/stable`。
+- 本执行包不包含 dirty worktree。
+- 本执行包不包含远端删除或 push。
+- 若执行后发现目录仍有未跟踪文件或 Git 拒绝移除，应停止，不使用 `--force`。
+
 ## 6. 建议使用的只读复核命令
 
 ```powershell
