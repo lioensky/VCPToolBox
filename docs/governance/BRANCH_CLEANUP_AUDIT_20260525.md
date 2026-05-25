@@ -204,6 +204,19 @@
 
 结论：该分支不是清理候选，也不需要整体吸收；保留为 AI Image Agent 历史对照线。后续若继续 AI image 专项，应以当前 `main` 实现为基线，只挑选明确缺口，不从该分支批量 cherry-pick 或照搬 dist。
 
+### 2026-05-25 `origin/main` 本地引用差异复核
+
+当前本地 `main` 已包含 `prod/stable`、`origin/prod/stable` 与 `upstream/main`：只读检查显示它们均为 `main` 的祖先。但本地 `origin/main` 引用仍显示 `main` ahead 387 / behind 18。
+
+这 18 个 `origin/main` 提交是 AI Image Agent PR 线。`git cherry -v main origin/main` 显示其中大部分已 patch-equivalent，仅剩 3 个正向提交和 1 个 merge commit：
+
+- `c4290fe Mount AI image agents route behind env flag`
+- `84e9007 build(admin): bundle AdminPanel assets for AI image agent`
+- `fca8f44 fix: restore dynamicToolRegistry bootstrap module`
+- `ee2d324 feat: add AI Image Agent pipeline with guarded real execution (#17)`
+
+当前 `main` 已存在 `ENABLE_AI_IMAGE_AGENTS_ROUTE` 路由门、`routes/admin/aiImageAgents.js`、`modules/dynamicToolRegistry.js`、AI image pipeline / executor / safety 模块、AdminPanel-Vue AI image source 和相关测试。结论与 `feature/ai-image-agent-clean-pr` 一致：不要为了消除拓扑 behind 而整体 merge `origin/main`，否则会混入旧前端 dist hash 和旧源文件差异。若后续需要使远端拓扑完全闭合，应先做专门的 AI Image Agent current-main 对照审查，再由人工明确批准 merge / push。
+
 ### 2026-05-25 Governance Patch 1B 分支复核
 
 `feature/gov-patch-1b-*` 已按 patch-equivalence 复核：
