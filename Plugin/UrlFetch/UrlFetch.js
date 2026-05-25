@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
 const https = require('https');
+const http = require('http');
 
 // 图片扩展名常量
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif'];
@@ -26,6 +27,8 @@ const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
 const VAR_HTTP_URL = process.env.VarHttpUrl; // Read VarHttpUrl from env
 const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
+const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
+const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -306,6 +309,118 @@ async function fetchWithJinaReader(url) {
     }
 
     throw new Error(errors.join('；'));
+}
+
+function requestDirectHttp(targetUrl, redirectCount = 0) {
+    return new Promise((resolve, reject) => {
+        if (redirectCount > 5) {
+            reject(new Error('直接读取失败: 重定向次数过多'));
+            return;
+        }
+
+        let urlObj;
+        try {
+            urlObj = new URL(targetUrl);
+        } catch {
+            reject(new Error(`直接读取失败: URL 无效: ${targetUrl}`));
+            return;
+        }
+
+        const transport = urlObj.protocol === 'https:' ? https : http;
+        const req = transport.get(urlObj, {
+            timeout: DIRECT_FETCH_TIMEOUT_MS,
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        }, (res) => {
+            const statusCode = res.statusCode || 0;
+            const location = res.headers.location;
+
+            if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+                res.resume();
+                const nextUrl = new URL(location, urlObj).toString();
+                requestDirectHttp(nextUrl, redirectCount + 1).then(resolve, reject);
+                return;
+            }
+
+            if (statusCode < 200 || statusCode >= 300) {
+                res.resume();
+                reject(new Error(`直接读取失败: HTTP ${statusCode}`));
+                return;
+            }
+
+            const contentType = String(res.headers['content-type'] || '').toLowerCase();
+            if (contentType && !contentType.includes('text/') && !contentType.includes('html') && !contentType.includes('xml')) {
+                res.resume();
+                reject(new Error(`直接读取失败: 非文本响应 ${contentType}`));
+                return;
+            }
+
+            const chunks = [];
+            let totalBytes = 0;
+
+            res.on('data', chunk => {
+                totalBytes += chunk.length;
+                if (totalBytes > DIRECT_FETCH_MAX_BYTES) {
+                    req.destroy(new Error(`直接读取失败: 响应超过 ${(DIRECT_FETCH_MAX_BYTES / 1024 / 1024).toFixed(1)}MB 限制`));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf8');
+                if (!body.trim()) {
+                    reject(new Error('直接读取失败: 响应为空'));
+                    return;
+                }
+
+                resolve({
+                    body,
+                    contentType,
+                    finalUrl: urlObj.toString()
+                });
+            });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`直接读取超时: ${DIRECT_FETCH_TIMEOUT_MS}ms`));
+        });
+
+        req.on('error', reject);
+    });
+}
+
+async function fetchWithDirectHttp(url) {
+    const { body, contentType, finalUrl } = await requestDirectHttp(url);
+
+    if (contentType.includes('text/plain') || !/<html[\s>]/i.test(body)) {
+        const text = body.trim();
+        if (text.length < 80) {
+            throw new Error('直接读取失败: 文本内容过短');
+        }
+        return text;
+    }
+
+    const doc = new JSDOM(body, { url: finalUrl });
+    const reader = new Readability(doc.window.document);
+    const article = reader.parse();
+
+    if (article && (article.content || article.textContent)) {
+        const formattedContent = formatExtractedArticleContent(article);
+        if (formattedContent && formattedContent.length >= 80) {
+            return `标题: ${article.title || doc.window.document.title || finalUrl}\n\n${formattedContent}`;
+        }
+    }
+
+    const fallbackText = normalizeInlineText(doc.window.document.body?.textContent || '');
+    if (fallbackText.length >= 80) {
+        return `标题: ${doc.window.document.title || finalUrl}\n\n${fallbackText}`;
+    }
+
+    throw new Error('直接读取失败: 无法提取有效正文');
 }
 
 async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
@@ -695,6 +810,13 @@ async function main() {
                 try {
                     if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
+                    } else if (mode === 'text') {
+                        try {
+                            fetchedData = await fetchWithDirectHttp(url);
+                        } catch (directError) {
+                            console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                            fetchedData = await fetchWithPuppeteer(url, mode);
+                        }
                     } else {
                         fetchedData = await fetchWithPuppeteer(url, mode);
                     }
