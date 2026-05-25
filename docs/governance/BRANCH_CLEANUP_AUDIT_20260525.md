@@ -34,8 +34,8 @@
 | 类别 | 数量 | 操作建议 |
 | --- | ---: | --- |
 | 占用 worktree 待处理 | 6 | 先检查对应目录状态，再决定保留、合并、归档或删除 worktree |
-| 未并入需复核（未占用 worktree） | 7 | 其中 1 个为 Package L-local 本地预演证据分支；其余 6 个逐分支做 `git log main..branch` / `git diff main...branch` 审查 |
-| 已并入可清理（未占用 worktree） | 0 | Package I 已闭合最后 2 个 D2-upstream-blocked 本地分支；当前只剩 `main` 与永久保护的 `prod/stable` 显示为已并入 |
+| 未并入需复核（未占用 worktree） | 6 | 其中 1 个为 Package L-local 本地预演证据分支；其余 5 个逐分支做专项复核 |
+| 已并入可清理（未占用 worktree） | 0 | Package L-main 后 `feature/ai-image-agent-clean-pr` 因拓扑桥显示为已并入，但这不是普通内容吸收候选；不得自动清理 |
 | 永久保护分支 | 1 | `prod/stable` 永久保留，永不清理 |
 
 ## 1.0 当前治理执行状态
@@ -47,7 +47,7 @@
 - `main` 已明确为最先进、最新整合状态的主分支。
 - `prod/stable` 已明确为稳定生产线永久保护分支，不进入任何清理候选。
 - dirty worktree、release-preflight 前端构建产物、未并入分支、worktree 占用分支、`origin/main` 本地引用差异均已做本地只读复核并记录。
-- 当前 `git branch --no-merged main` 显示的 11 个分支均已在本文中有记录；其中 `governance/origin-main-topology-bridge-preview` 是 Package L-local 本地验证 artifact，不是清理候选。
+- 当前 `git branch --no-merged main` 显示的 10 个分支均已在本文中有记录；其中 `governance/origin-main-topology-bridge-preview` 是 Package L-local 本地验证 artifact，不是清理候选。
 - 执行包 B 已完成：4 个已并入且干净的 worktree 已移除，对应 4 个本地分支已用 `git branch -d` 删除。
 - 执行包 D 已继续执行：获批后使用 `git branch -d` 删除 46 个本地分支；`D2-safe` 的 3 个剩余温和候选已删除，`lane8/upstream-intake-20260425` 与 `staging/vcptoolbox-custom-integration-20260425` 因 upstream 保护规则保留，未使用 `git branch -D`。
 - 执行包 C2-safe 已获批并部分执行：2 个干净 worktree 已移除；对应 2 个本地分支因 `git branch -d` 拒绝删除而保留，未使用 `git branch -D`。
@@ -56,10 +56,11 @@
 - 执行包 I 已获批并完成：2 个 D2-upstream-blocked 本地分支已先解除本地 upstream，再用 `git branch -d` 温和删除；未使用 `git branch -D`，未修改远端。
 - 执行包 K 已获批并完成：fetch-only 刷新 `origin` 与 `upstream` remote-tracking refs；未 prune、pull、merge、push。
 - 执行包 L-local 已获批并完成：在本地临时分支 `governance/origin-main-topology-bridge-preview` 上用 `-s ours --no-ff origin/main` 预演拓扑闭合，文件树相对预演前 `main`（`d03d511`）无变化；未把拓扑桥写入 `main`，未 push。
+- 执行包 L-main 已获批并完成：在本地 `main` 上用 `-s ours --no-ff origin/main` 建立拓扑桥，merge commit 为 `ef96812`，文件树相对执行前 `main`（`bb66415`）无变化；未 push，未修改远端。
 
 未完成：
 
-- 执行包 D / I 清理链路已闭合；当前没有已并入且未占用 worktree 的普通清理候选。
+- 执行包 D / I 清理链路已闭合；当前没有已并入且未占用 worktree 的普通内容吸收清理候选。
 - 除执行包 B、C2-safe 和 C-memory-rag-worktree 外，尚未删除其他 worktree。
 - C2-safe 和 C-memory-rag-worktree 对应的 3 个本地分支已在 Package H1 明确批准后作为 patch-equivalent 分支本地强删。
 - 未 push，未修改远端。
@@ -71,7 +72,7 @@
 
 ### 2026-05-25 目标完成度审计
 
-本节用于逐条核对当前 `/goal`，不是清理授权，也不是远端同步授权。Package K 已在当前回合获批并执行 fetch-only 刷新；Package L-local 已在本地临时分支完成拓扑桥预演。除此之外，未执行 push、真实 `main` 合并、cherry-pick、reset、clean、worktree remove 或远端修改。
+本节用于逐条核对当前 `/goal`，不是清理授权，也不是远端同步授权。Package K 已在当前回合获批并执行 fetch-only 刷新；Package L-local 已在本地临时分支完成拓扑桥预演；Package L-main 已在获得明确批准后把 `origin/main` 拓扑闭合进本地 `main`。除此之外，未执行 push、cherry-pick、reset、clean、worktree remove 或远端修改。
 
 当前事实基线：
 
@@ -81,9 +82,10 @@
 - worktree 数量：6。
 - 本地分支数量：13。
 - 已并入且未占用 worktree 的本地清理候选：0；`git branch --merged main` 当前只剩 `main` 和永久保护的 `prod/stable`。
-- `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
-- 当前本地引用关系：`prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 的祖先；`origin/main` 仍不是 `main` 的祖先。
-- 当前 left/right：`main...prod/stable = 193 / 0`，`main...origin/prod/stable = 193 / 0`，`main...upstream/main = 295 / 0`，`main...origin/main = 432 / 18`。
+- `git branch --merged main`：`feature/ai-image-agent-clean-pr`、`main`、永久保护的 `prod/stable`。其中 `feature/ai-image-agent-clean-pr` 是拓扑桥后历史可达，不等于当前文件树已吸收该分支内容。
+- `git branch --no-merged main`：10 个，其中 4 个占用 worktree，6 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
+- 当前本地引用关系：`prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 均为 `main` 的祖先。
+- 当前 left/right：`main...prod/stable = 215 / 0`，`main...origin/prod/stable = 215 / 0`，`main...upstream/main = 317 / 0`，`main...origin/main = 436 / 0`。
 
 逐条核对：
 
@@ -91,21 +93,21 @@
 | --- | --- | --- |
 | 以 `main` 作为最先进最新主分支 | 项目 `AGENTS.md` 和本文头部均已声明；当前 `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先 | 已记录并验证当前本地 refs |
 | 永久保护 `prod/stable` 稳定生产线 | 本文第 0 节、第 1.1 节和候选复核均明确 `prod/stable` 永不清理；当前候选检查显示 `prod/stable_in_merged_unoccupied=0` | 已记录并验证候选排除 |
-| 只做本地审计、文档记录和安全小补丁 | 当前治理提交均为本地文档记录；Package H1 与 Package I 分支删除、Package K fetch-only、Package L-local 本地拓扑桥预演均已获单独明确批准；未 push、未改远端、未 reset、未 clean 或生产线动作 | 满足当前授权范围 |
+| 只做本地审计、文档记录和安全小补丁 | 当前治理提交均为本地文档记录或获批本地拓扑桥；Package H1、Package I、Package K、Package L-local、Package L-main 均已获单独明确批准；未 push、未改远端、未 reset、未 clean 或生产线动作 | 满足当前授权范围 |
 | 持续更新本治理文档 | Package B、A1、A2、A3、未并入分支、占用 worktree、引用差异、密钥卫生检查均已写入本文 | 已执行 |
 | 复核 release-preflight 前端构建产物 | 第 2 节和第 5.1.2 节记录 detached release-preflight worktree 的 137 项 `AdminPanel-Vue/dist` 产物，结论是不迁移、不吸收 | 已完成只读审查 |
-| 复核未并入分支 | 第 3 节、第 3.1 节、第 5.4 节记录未占用未并入分支；Package L-local 后当前为 7 个未占用未并入分支、4 个占用未并入分支，其中 1 个未占用项是预演证据分支 | 已完成只读分组 |
+| 复核未并入分支 | 第 3 节、第 3.1 节、第 5.4 节记录未占用未并入分支；Package L-main 后当前为 6 个未占用未并入分支、4 个占用未并入分支，其中 1 个未占用项是预演证据分支 | 已完成只读分组 |
 | 复核剩余 worktree | 第 2 节和占用 worktree 复核补充记录当前 6 个 worktree；其中 dirty、高风险和 patch-equivalent/superseded 均已分类 | 已完成只读分组 |
 | dirty worktree、疑似密钥、运行态数据、构建产物、冲突标记先审查归类 | A1/A2/A3、release-preflight、occupied worktree 复核和密钥卫生检查已记录；疑似 `sk-*` 样式值只保留为风险描述，未记录原值 | 已完成审查归类 |
 | 不直接吸收或清理高风险内容 | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、release-preflight dist、AI Image / Photo Studio 对照线均记录为冻结或专项复核 | 已遵守 |
-| 禁止 push、删除分支、删除 worktree、修改远端、force、reset/clean、触碰真实密钥 | Package D 分支删除、Package C2-safe worktree 移除、C-memory-rag worktree 移除、Package H1 本地强删、Package I 本地温和闭合、Package K fetch-only 和 Package L-local 预演均已获明确批准；未 push、未修改远端、未 force、未 reset/clean，未触碰 `.env` / `config.env`，未记录真实密钥值 | 已遵守当前阶段 |
-| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | Package D、Package C2-safe、C-memory-rag-worktree、Package H1、Package I、Package K 和 Package L-local 均已获得明确批准后执行；push/真实 `main` 拓扑桥/远端写入仍记录为待批准 | D2-safe/D2-upstream-blocked 已闭合；C/E patch-equivalent 分支已在 H1 删除；其余等待单独批准 |
+| 禁止 push、删除分支、删除 worktree、修改远端、force、reset/clean、触碰真实密钥 | Package D 分支删除、Package C2-safe worktree 移除、C-memory-rag worktree 移除、Package H1 本地强删、Package I 本地温和闭合、Package K fetch-only、Package L-local 预演和 Package L-main 本地拓扑桥均已获明确批准；未 push、未修改远端、未 force、未 reset/clean，未触碰 `.env` / `config.env`，未记录真实密钥值 | 已遵守当前阶段 |
+| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | Package D、Package C2-safe、C-memory-rag-worktree、Package H1、Package I、Package K、Package L-local 和 Package L-main 均已获得明确批准后执行；push/远端写入仍记录为待批准 | D2-safe/D2-upstream-blocked 已闭合；C/E patch-equivalent 分支已在 H1 删除；其余等待单独批准 |
 
 完成度结论：
 
 - 本地审计和文档覆盖已经达到当前 goal 的审查记录要求。
-- 治理执行仍未完成，因为真实未吸收对照线拆分、dirty/frozen worktree、`main` 真实拓扑桥或远端写入同步都需要后续单独明确批准或复核。
-- 因此当前不能把整个治理 goal 标记为完成；下一步只能在获得具体批准后处理某条未吸收对照线专项小任务，或把已通过的 Package L-local 预演升级为真实 `main` 本地拓扑桥 / 远端写入 preflight。
+- 治理执行仍未完成，因为真实未吸收对照线拆分、dirty/frozen worktree、拓扑桥后本地分支归类刷新和远端写入同步都需要后续单独明确批准或复核。
+- 因此当前不能把整个治理 goal 标记为完成；下一步只能在获得具体批准后处理某条未吸收对照线专项小任务、刷新拓扑桥后的分支清理审计，或做远端写入 preflight。
 
 ### 2026-05-25 Package L-local 后下一执行门槛复核
 
@@ -147,6 +149,8 @@
 
 ### 2026-05-25 Package L-local 后当前交接快照
 
+历史快照说明：本节记录 Package L-local 后、Package L-main 前的交接状态。Package L-main 已在后续获批并执行，最新状态以 “Package L-main 执行记录” 和最新 handoff 为准。
+
 本快照用于后续接手治理，不是清理授权。
 
 当前事实基线：
@@ -182,6 +186,8 @@
 
 ### 2026-05-25 Package L-local 后当前剩余治理队列
 
+历史快照说明：本节记录 Package L-local 后、Package L-main 前的剩余队列。Package L-main 已闭合 `origin/main` 本地拓扑，后续不得再把本节的 `432 / 18` 作为当前计数。
+
 本节是当前行动队列，不是授权。复核时当前分支为 `main`，HEAD 为本文档所在提交，工作树干净。历史已闭合包保留为完成记录，不再作为当前待办。
 
 | 队列 | 对象 | 当前证据 | 下一步门槛 |
@@ -193,6 +199,8 @@
 | G-origin-main-topology | `origin/main` | Package L-local 后当前 `main...origin/main = 432 / 18`；预演分支 `c5ce5d9` 已证明本地 `ours` 拓扑桥可保持预演前文件树不变并让 `origin/main` 成为祖先 | 下一步只能单独批准真实 `main` 本地拓扑桥并重新验证，或继续远端写入 preflight；不得自动 merge/push |
 
 ### 2026-05-25 Package L-local 后只读现实复核
+
+历史快照说明：本节记录 Package L-local 后、Package L-main 前的只读现实复核。Package L-main 后 `origin/main` 已成为本地 `main` 祖先。
 
 本节是 Package L-local 文档提交后的只读复核，不是新的清理授权。未执行 push、merge、cherry-pick、reset、clean、worktree remove、分支删除或远端写入。
 
@@ -246,28 +254,28 @@
 
 | 目标要求 | 当前权威证据 | 审计判断 |
 | --- | --- | --- |
-| `main` 是最先进最新主分支 | 当前 `prod/stable = 193 / 0`、`origin/prod/stable = 193 / 0`、`upstream/main = 295 / 0`，均为 `main` 祖先；治理声明已写入本文头部 | 已证明当前本地口径成立 |
-| 永久保护 `prod/stable` 稳定生产线 | `git branch --merged main` 只显示 `main` 和 `prod/stable`；本文多处明确 `prod/stable` 永不清理 | 已证明且必须持续保护 |
-| 只做本地审计、文档记录和安全小补丁 | 当前新增提交均为 `docs/governance/BRANCH_CLEANUP_AUDIT_20260525.md` 文档；本轮工作树干净，无代码 diff | 已遵守 |
-| 持续更新治理文档 | 本文已记录 Package B、A1/A2/A3、C、D、H1、I、J、K、L-local 与 Package L-local 后现实复核 | 已持续更新 |
+| `main` 是最先进最新主分支 | 当前 `prod/stable = 215 / 0`、`origin/prod/stable = 215 / 0`、`upstream/main = 317 / 0`、`origin/main = 436 / 0`，均为 `main` 祖先；治理声明已写入本文头部 | 已证明当前本地口径成立 |
+| 永久保护 `prod/stable` 稳定生产线 | `git branch --merged main` 显示 `main`、永久保护的 `prod/stable` 与拓扑桥后的 `feature/ai-image-agent-clean-pr`；本文多处明确 `prod/stable` 永不清理 | 已证明且必须持续保护 |
+| 只做本地审计、文档记录和安全小补丁 | 当前新增提交为治理文档；Package L-main 为获批本地拓扑桥；本轮未产生代码 diff | 已遵守 |
+| 持续更新治理文档 | 本文已记录 Package B、A1/A2/A3、C、D、H1、I、J、K、L-local、L-main 与后续专项复核 | 已持续更新 |
 | 复核 release-preflight 前端构建产物 | detached release-preflight worktree 仍为 `short=137 / all=137`，归类为 `AdminPanel-Vue/dist` 构建产物，不吸收 | 已复核，继续冻结 |
-| 复核未并入分支和剩余 worktree | 当前 6 个 worktree、13 个本地分支、11 个 `--no-merged main` 分支均已归类；预演分支单独标为验证 artifact | 已复核，仍有待批准对象 |
+| 复核未并入分支和剩余 worktree | 当前 6 个 worktree、13 个本地分支、10 个 `--no-merged main` 分支均已归类；预演分支单独标为验证 artifact | 已复核，仍有待批准对象 |
 | dirty worktree、疑似密钥、运行态数据、构建产物、冲突标记必须先审查归类 | `feature/latest-updates`、photo-studio-next、release-preflight 均已按 dirty/frozen 分类；未读取或记录真实密钥值 | 已审查归类，继续冻结 |
 | 不得直接吸收或清理高风险对象 | dirty/frozen worktree、真实未吸收对照线、`origin/main` 正向补丁均记录为不得整分支吸收或清理 | 已遵守 |
 | 禁止 push、删除分支、删除 worktree、修改远端、force、reset/clean、触碰真实密钥 | 本轮未执行这些动作；历史删除/移除动作均已记录为单独获批包 | 已遵守当前回合 |
-| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | 当前剩余动作均列为待单独批准：真实 `main` 本地拓扑桥、远端写入、dirty/frozen 处理、真实未吸收专项 | 已落实为门槛 |
+| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | 当前剩余动作均列为待单独批准：远端写入、dirty/frozen 处理、拓扑桥后的本地分支归类刷新、真实未吸收专项 | 已落实为门槛 |
 
 未完成原因：
 
-1. `origin/main` 仍未真实闭合到 `main`，当前 `main...origin/main = 432 / 18`；Package L-local 只证明临时分支预演可行。
+1. `origin/main` 已在本地 `main` 上拓扑闭合，但尚未 push；远端写入仍需单独明确批准。
 2. dirty/frozen worktree 仍存在，且按规则不得 reset、clean、吸收或删除。
 3. 真实未吸收对照线仍存在，只能后续按小主题专项复核。
-4. 远端写入、真实拓扑桥、任何剩余清理动作都超出自动授权边界。
+4. Package L-main 后 `feature/ai-image-agent-clean-pr` 显示为已并入，但这是拓扑桥造成的历史可达，仍需单独归类，不能自动清理。
 
 下一安全动作：
 
-1. 若用户批准：执行“真实 `main` 本地拓扑桥”本地方案，仍不 push。
-2. 若用户不批准拓扑桥：选择一个真实未吸收对照线做只读专项审查。
+1. 刷新 Package L-main 后分支清理审计，尤其标明 `feature/ai-image-agent-clean-pr` 的拓扑已并入但非普通内容吸收状态。
+2. 继续选择一个真实未吸收对照线做只读专项审查。
 3. 继续禁止：push、远端修改、删除 `prod/stable`、reset/clean、触碰真实密钥。
 
 ### 2026-05-25 Photo Studio guide-contract 专项只读复核
@@ -308,6 +316,58 @@
 2. 不得整体 merge，不得直接 cherry-pick 整组提交。
 3. 后续若要吸收，只能拆成小主题：`plugins/custom` guide-contract 迁移、ChannelHub/admin、各平台 adapter、delivery queue、DingTalk live publish、测试和文档分别复核。
 4. `Plugin/UserAuth/code.bin`、SQLite 缓存形态文件、运行态 / 状态相关路径必须继续排除或单独审查，不能随迁移一起进入 `main`。
+
+### 2026-05-25 Package L-main 执行记录：真实 `main` 本地拓扑桥
+
+授权：用户已明确批准 `批准真实 main 本地拓扑桥`。
+
+执行边界：
+
+- 只修改本地 `main` 拓扑。
+- 使用 `ours` merge，保持当前文件树不变。
+- 不 push，不创建 PR，不修改远端分支。
+- 不 cherry-pick，不 reset/clean，不删除分支或 worktree。
+- 不触碰 `.env`、`config.env`、真实密钥、运行态数据或生产线。
+
+执行前 preflight：
+
+- 当前分支：`main`。
+- 执行前 HEAD：`bb66415`。
+- 工作树：`git status --short -uall` 为空。
+- 无 merge / rebase / cherry-pick / revert / bisect 状态。
+- `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先。
+- `origin/main` 执行前不是 `main` 祖先，`main...origin/main = 434 / 18`。
+- `git cherry -v main origin/main` 仍为 14 个 patch-equivalent 提交与 3 个已复核正向补丁。
+
+执行命令形态：
+
+```powershell
+git merge -s ours --no-ff origin/main -m "Record origin main topology closure on local main"
+```
+
+执行结果：
+
+- merge commit：`ef96812`。
+- `git diff --exit-code bb66415 HEAD`：通过，无输出，证明文件树相对执行前 `main` 无变化。
+- `git merge-base --is-ancestor origin/main main`：通过。
+- `main...origin/main = 435 / 0`。
+- 未 push，未修改远端，未删除分支或 worktree，未 reset/clean。
+
+Package L-main 后当前分支分类：
+
+| 类别 | 当前对象 | 说明 |
+| --- | --- | --- |
+| 永久保护 | `prod/stable` | 仍永久保护，不进入清理候选 |
+| 拓扑已并入但非普通清理候选 | `feature/ai-image-agent-clean-pr` | 因 `origin/main` 拓扑桥成为 `main` 祖先；这不等于当前文件树吸收该分支宽 diff，不能自动删除 |
+| 未并入且占用 worktree | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、`integration/main-absorb-prod-stable-upstream-20260525`、`lane10-codex-memory-intake-20260425` | 继续按各自冻结 / 受保护 / 真实未吸收结论处理 |
+| 未并入且未占用 worktree | `feature/ai-image-pipeline-dgp-refactor`、`feature/ai-image-pipeline-dgp-v2`、`feature/photo-studio-guide-contract-migration`、`feature/photo-studio-next-guide-contract`、`governance/origin-main-topology-bridge-preview`、`rescue/ai-image-pipeline-mixed-20260427_195303` | 继续专项复核；预演分支是本地验证 artifact |
+
+结论：
+
+1. `origin/main` 本地拓扑已闭合，当前本地 `main` 是包含 `prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 的最新主线。
+2. 这是本地拓扑闭合，不是远端同步；`origin/main` 远端仍未被写入。
+3. `feature/ai-image-agent-clean-pr` 现在显示在 `git branch --merged main` 中，但属于拓扑桥后的历史可达对象，不得按“普通内容已吸收分支”自动清理。
+4. 下一步如果继续治理，应先刷新拓扑桥后的分支清理审计，或继续真实未吸收分支专项复核；任何 push 或远端写入仍需单独明确批准。
 
 ### 2026-05-25 Package H preflight：高风险本地强删候选审计
 
@@ -986,16 +1046,18 @@ git merge -s ours --no-ff origin/main -m "Record origin main topology closure wi
 - 当前工作树：干净。
 - 本地分支数量：13。
 - worktree 数量：6。
-- 已并入且未占用 worktree 的剩余本地候选：0；`git branch --merged main` 当前只剩 `main` 与永久保护的 `prod/stable`。
-- `git branch --no-merged main`：11 个，其中 4 个占用 worktree，7 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
-- `prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 祖先；`origin/main` 仍不是 `main` 祖先。
-- 当前 left/right：`main...prod/stable = 193 / 0`，`main...origin/prod/stable = 193 / 0`，`main...upstream/main = 295 / 0`，`main...origin/main = 432 / 18`。
+- 已并入且未占用 worktree 的普通内容吸收清理候选：0；`git branch --merged main` 当前显示 `feature/ai-image-agent-clean-pr`、`main` 与永久保护的 `prod/stable`。
+- `feature/ai-image-agent-clean-pr` 因 Package L-main 拓扑桥显示为已并入，但不是普通内容吸收清理候选，不得自动删除。
+- `git branch --no-merged main`：10 个，其中 4 个占用 worktree，6 个未占用 worktree；未占用项中 1 个为 Package L-local 本地预演证据分支。
+- `prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 均为 `main` 祖先。
+- 当前 left/right：`main...prod/stable = 215 / 0`，`main...origin/prod/stable = 215 / 0`，`main...upstream/main = 317 / 0`，`main...origin/main = 436 / 0`。
 - Package L-local 预演分支：`governance/origin-main-topology-bridge-preview` @ `c5ce5d9`；`origin/main` 是该预演分支祖先，且预演分支文件树相对预演前 `main`（`d03d511`）无变化。
+- Package L-main merge commit：`ef96812`；文件树相对执行前 `bb66415` 无变化，`origin/main` 已成为本地 `main` 祖先。
 
 当前最小可批准动作：
 
-1. 真实 `main` 本地拓扑桥或远端写入 preflight：Package L-local 已完成临时分支预演；真实写入 `main` 或 push 仍需单独批准，不得自动 merge/push。
-2. 真实未吸收对照线专项：`lane10-codex-memory-intake-20260425`、AI Image、Photo Studio guide-contract 等只能按小主题重新实现。
+1. 刷新 Package L-main 后分支清理审计，尤其是 `feature/ai-image-agent-clean-pr` 的拓扑已并入但非普通内容吸收状态。
+2. 真实未吸收对照线专项：`lane10-codex-memory-intake-20260425`、AI Image DGP、Photo Studio guide-contract 等只能按小主题重新实现。
 3. 其余对象继续保留或冻结：C-protected-worktree、F-frozen-dirty、F-true-unabsorbed。
 
 仍禁止：push、远端修改、force、reset/clean、删除 `prod/stable`、触碰或记录真实密钥。
