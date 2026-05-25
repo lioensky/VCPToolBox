@@ -77,6 +77,27 @@
 
 执行状态：Package B 已执行；Package A1/A2/A3、占用 worktree、未占用未并入分支均已完成只读复核。Package C/D/E 仍只是候选或 preflight 记录，任何清理都需要后续单独明确批准。
 
+### 2026-05-25 当前交接快照
+
+本快照用于后续接手治理，不是清理授权。
+
+已被当前证据覆盖：
+
+- `main` 是当前本地治理口径下的最新整合主线。
+- `prod/stable` 是永久保护稳定生产线，不进入任何清理候选。
+- Package B 已执行完成，且仅包含 4 个已并入且干净的 worktree 与对应本地分支。
+- Package A1/A2/A3 已完成只读审查；相关 dirty worktree、疑似密钥样式值、运行态数据、构建产物和冲突标记文件均不得直接吸收或清理。
+- 未并入分支已按“占用 worktree / 未占用 worktree / patch-equivalent / 真实未吸收或高风险混合”分组。
+- Package D、Package E 已有 preflight 候选清单与保护检查口径，但仍未执行。
+
+仍需单独明确批准的动作：
+
+- 删除 Package D 的 48 个已并入且未占用 worktree 的本地分支。
+- 删除 Package E 的 6 个 patch-equivalent 本地分支。
+- 处理 Package C 中仍占用 worktree 的 patch-equivalent / superseded 分支。
+- 对 `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、`lane10-codex-memory-intake-20260425` 等真实未吸收对照线做专项小主题实现。
+- 任何 `origin/main` / `origin/prod/stable` / `upstream/main` 相关同步、merge、push 或远端操作。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
