@@ -4,6 +4,8 @@
 >
 > 审计基准：`main` @ `current HEAD`
 >
+> 历史快照说明：本文 1-6 节保留最初审计时的历史快照，部分 HEAD、dirty files、worktree 数量和分类可能已经被后续 Package B/K/L/M 等治理动作改变。继续治理时，应优先参考下面的“Package M 后当前状态增补”，再回看历史表格。
+>
 > 本文只记录本地分支和 worktree 状态，不授权删除分支、删除 worktree、推送远端或修改远端分支。
 >
 > 主干声明：`main` 是 VCPToolBox 永远保持最先进、最新整合状态的主分支，代表项目当前最完整状态。
@@ -11,6 +13,28 @@
 > 强保护声明：`prod/stable` 是稳定生产线分支，必须永久保留。无论它是否已并入 `main`，都不能被列入清理候选，不能删除本地或远端分支。
 >
 > 职责边界：`main` 负责最新主线整合；`prod/stable` 负责稳定生产使用。二者职责不同，不能因为 `main` 已吸收 `prod/stable` 就清理或削弱 `prod/stable`。
+
+## Package M 后当前状态增补
+
+更新时间：2026-05-25 17:30 Asia/Shanghai。
+
+当前已核实状态：
+
+- `main` / `origin/main` 已同步到 `55b51ca07dd6635e3a4ecbaf1709dd1f053c7720`。
+- `prod/stable` / `origin/prod/stable` 已同步到 `a1870b398fc82eb34c5764a9c60de9e127548494`，并继续作为永久保护稳定生产线。
+- `A:/VCP/VCPToolBox-staging-custom-integration` 当前是干净的 `main` worktree，HEAD 为 `55b51ca`，与 `origin/main` ahead/behind 为 `0/0`。
+- `A:/VCP/VCPToolBox` 当前不是 main；它是 `feature/latest-updates` worktree，HEAD 为 `a82c8f2`，相对其 upstream 显示 behind/ahead 为 `15/10`，且存在大量未提交/未跟踪改动。不得当作最新 main 使用，不得直接删除或重置。
+- `A:/VCP/VCPToolBox-photo-studio-next` 当前是 `codex/photo-studio-baserow-provider-batch` worktree，HEAD 为 `79911d5`，仍有 3 项未提交/未跟踪改动。
+- `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` 当前为 detached worktree，HEAD 为 `43a6bbb`，仍有 137 项未提交/未跟踪改动。
+- 本地测试服务曾监听主服务 `6005`、Admin 配置服务 `6006`；V2A 审查后已停止，当前仅保留原本存在的 `3000` 服务，未触碰。
+
+当前治理优先级：
+
+1. 保留并保护 `prod/stable`，不列入任何删除候选。
+2. 明确 `A:/VCP/VCPToolBox-staging-custom-integration` 是当前最新 main worktree；`6005/6006` 测试服务已停止，若确认不需要该目录运行日志，可进入 `git worktree remove` 删除预演。
+3. 对 `A:/VCP/VCPToolBox` 做 dirty worktree 专项审计，区分配置/密钥、运行态数据、源码改动、文档改动和可归档产物；在完成专项审计前不得删除、重置或切换该 worktree。
+4. 对 `A:/VCP/VCPToolBox-photo-studio-next` 的 3 项改动做复核，决定是否迁移到 main、归档或丢弃。
+5. 对 detached 预检 worktree `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` 做单独归档/删除预案；该目录 dirty 数高，不能批量处理。
 
 ## 0. 分类口径
 
