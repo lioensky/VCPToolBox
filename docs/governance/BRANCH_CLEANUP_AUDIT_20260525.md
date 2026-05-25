@@ -199,6 +199,44 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 | F-frozen-dirty | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、detached release-preflight | dirty / 构建产物 / 疑似密钥样式值 / 冲突标记等风险已归类 | 继续冻结，不吸收、不清理、不 reset/clean |
 | F-true-unabsorbed | `lane10-codex-memory-intake-20260425` 及 AI Image / Photo Studio guide-contract 对照线 | 仍有正向提交或宽 diff | 不整分支 merge；只允许后续按专项小主题重新实现 |
 
+### 2026-05-25 Package H preflight：高风险本地强删候选审计
+
+本节是只读 preflight，不是删除授权。未执行 `git branch -D`、未修改 upstream、未删除分支、未删除 worktree、未 push、未修改远端。
+
+审计范围：
+
+- C 系列 3 个 worktree 已移除但本地分支保留的 patch-equivalent 分支。
+- Package E 的 6 个 `feature/gov-patch-1b-*` patch-equivalent 分支。
+- D2-upstream-blocked 的 2 个 `main` 祖先分支。
+
+共同排除：
+
+- 不包含 `main`。
+- 不包含 `prod/stable`。
+- 不包含任何仍占用 worktree 的分支。
+- 不包含 dirty worktree、运行态数据、疑似密钥、构建产物或真实未吸收对照线。
+
+| 组 | 分支 | HEAD | upstream | 证据 | Package H 归类 |
+| --- | --- | --- | --- | --- | --- |
+| C-branch-blocked | `codex/vcptoolbox-channelhub-core-20260425` | `9f00142` |  | `cherry_plus=0 / cherry_minus=1`，`main...branch = 416 / 1`，worktree 已移除，普通 `git branch -d` 被拒绝 | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| C-branch-blocked | `codex/vcptoolbox-dingtalk-adapters-20260425` | `e41f243` |  | `cherry_plus=0 / cherry_minus=1`，`main...branch = 417 / 1`，worktree 已移除，普通 `git branch -d` 被拒绝 | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| C-branch-blocked | `codex/vcptoolbox-memory-rag-governance-20260425` | `5e9274e` | `origin/main` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 418 / 1`，`upstream...branch = 418 / 19`，worktree 已移除，普通 `git branch -d` 被拒绝 | 可考虑高风险本地强删；因 upstream 指向 `origin/main`，也可选择继续保留 |
+| E-historical | `feature/gov-patch-1b-ai-image-request-source-20260430` | `26a43ce` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| E-historical | `feature/gov-patch-1b-execution-context-helper-20260430` | `ba6fce7` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| E-historical | `feature/gov-patch-1b-human-tool-request-source-20260430` | `129fddf` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| E-historical | `feature/gov-patch-1b-snowbridge-request-source-20260430` | `46ac065` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| E-historical | `feature/gov-patch-1b-task-scheduler-request-source-20260430` | `2fa86f2` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| E-historical | `feature/gov-patch-1b-vcptoolbridge-request-source-20260430` | `87505fc` | `origin/prod/stable` | `cherry_plus=0 / cherry_minus=1`，`main...branch = 247 / 1`，`upstream...branch = 247 / 1` | 可考虑高风险本地强删；需单独明确批准 `git branch -D` |
+| D2-upstream-blocked | `lane8/upstream-intake-20260425` | `d523782` | `origin/main` | 是 `main` 祖先，`main...branch = 379 / 0`，`upstream...branch = 379 / 18`，普通 `git branch -d` 已因 upstream 规则拒绝 | 建议优先保留或另行批准修改本地 upstream 后再试温和删除；不建议直接强删 |
+| D2-upstream-blocked | `staging/vcptoolbox-custom-integration-20260425` | `947fa6e` | `origin/main` | 是 `main` 祖先，`main...branch = 369 / 0`，`upstream...branch = 369 / 18`，预计普通 `git branch -d` 会被 upstream 规则拒绝 | 建议优先保留或另行批准修改本地 upstream 后再试温和删除；不建议直接强删 |
+
+Package H 结论：
+
+1. 可考虑高风险本地强删的候选共 9 个：C-branch-blocked 3 个、E-historical 6 个。
+2. 不建议直接强删的候选共 2 个：D2-upstream-blocked 2 个；更稳路径是保留，或单独批准修改本地 upstream 后再尝试温和删除。
+3. Package H 不包含 `prod/stable`、`main`、远端分支、仍占用 worktree 的分支、dirty worktree 或真实未吸收对照线。
+4. 任何 `git branch -D`、upstream 修改、远端同步或 push 都必须再次单独明确批准。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
