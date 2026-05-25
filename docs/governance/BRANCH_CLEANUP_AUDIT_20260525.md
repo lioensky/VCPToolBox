@@ -223,6 +223,18 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 
 结论：`lane10-codex-memory-intake-20260425` 是真实未吸收对照线，不是清理候选，也不能整体 merge。后续若要吸收，只能拆成 Codex memory monitor、RAGDiary recall audit、adaptive tuning 参数、文档和测试几个小主题，在当前 `main` 上重新实现并单独验证。
 
+### 2026-05-25 frozen dirty worktree refresh
+
+本轮只读刷新冻结对象状态，未读取真实配置或密钥内容，未修改、删除、reset、clean 或移除任何 worktree。复核时当前 `main` HEAD 为 `e028aa3`。
+
+| worktree | 分支 / 状态 | 当前状态 | 风险归类 | 结论 |
+| --- | --- | --- | --- | --- |
+| `A:/VCP/VCPToolBox` | `feature/latest-updates` @ `a82c8f2` | `git status --short = 94`，`git status --short -uall = 254`；41 项 tracked，213 项 untracked | 仍包含本地配置、疑似密钥样式风险、运行态数据、SQLite、插件启停、用户数据和源码混合改动 | 继续冻结；不吸收、不清理、不 reset/clean，只能按小主题重新实现 |
+| `A:/VCP/VCPToolBox-photo-studio-next` | `codex/photo-studio-baserow-provider-batch` @ `79911d5` | `git status --short = 3`，`git status --short -uall = 3` | `DailyNoteManager` 未提交代码改动、`280ed91.patch`、`desktop.ini` | 继续冻结；A2 已判断不迁移旧版 DailyNoteManager 改动 |
+| `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` | detached `43a6bbb` | `git status --short = 137`，`git status --short -uall = 137`；100 项 tracked，37 项 untracked | 全部位于 `AdminPanel-Vue/dist`，属于前端构建产物替换痕迹 | 继续冻结；不吸收 dist，不删除 worktree，除非单独批准处理构建残留 |
+
+结论：三个冻结对象状态与前次治理记录一致，未出现可直接清理或可直接吸收的新证据。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
