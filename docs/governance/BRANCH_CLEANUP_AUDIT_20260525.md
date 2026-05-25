@@ -112,6 +112,20 @@
 
 结论：这是构建产物替换，不作为源码吸收来源；后续如果需要该前端状态，必须找到对应源码变更，在 `main` 上从源码重新构建并单独验证。
 
+### 2026-05-25 干净 worktree 占用分支复核
+
+本轮只做只读复核，未切换分支，未删除 worktree，未修改这些 worktree 中的文件。
+
+| 分支 | worktree | 当前证据 | 治理结论 |
+| --- | --- | --- | --- |
+| `codex/vcptoolbox-channelhub-core-20260425` | `A:/VCP/VCPToolBox-channelhub-core` | `git cherry -v main` 显示 `9f00142 feat: add channelhub core runtime` 已 patch-equivalent；当前 `main` 已存在 `modules/channelHub/`、`routes/admin/channelHub.js`、`routes/internal/channelHub.js`、`tests/channelHub-hardening.test.js` | 不需要吸收该分支。它仍占用 worktree，不能直接删；如后续清理，必须先获批处理 worktree，再删本地分支 |
+| `codex/vcptoolbox-dingtalk-adapters-20260425` | `A:/VCP/VCPToolBox-dingtalk-adapters` | `git cherry -v main` 显示 `e41f243 feat: add dingtalk workspace adapters` 已 patch-equivalent；当前 `main` 已存在 `Plugin/DingTalkTable/`、`Plugin/WorkLogScheduler/`、`Plugin/vcp-dingtalk-adapter/src/adapter/contract.js`、DingTalk sender 等文件 | 不需要吸收该分支。该分支树比当前 `main` 旧，不能作为 merge 来源；清理仍需单独批准 |
+| `codex/vcptoolbox-memory-rag-governance-20260425` | `A:/VCP/VCPToolBox-memory-rag-governance` | `git cherry -v main` 显示 `5e9274e feat: add embedding fallback governance` 已 patch-equivalent；当前差异集中在 `EmbeddingUtils.js`、`KnowledgeBaseManager.js`、`RAGDiaryPlugin`、`server.js` 等旧实现差异 | 不需要整体吸收。保留为历史对照线；如清理，先处理 worktree 并单独批准 |
+| `lane10-codex-memory-intake-20260425` | `A:/VCP/VCPToolBox-photo-studio-export` | `git cherry -v main` 仍显示两个正向提交：`551f017`、`fb17dd0`；`git diff --stat main...lane10-codex-memory-intake-20260425` 涉及 `AdminPanel/js/codex-memory-monitor.js`、`RAGDiaryPlugin`、`rag_params.json`、文档和测试 | 不是清理候选，不能整体 merge。仍按历史结论拆分复核：Vue 监控页、运行时 recall audit、adaptive tuning、文档分别处理；运行时写日志行为必须单独设计和验证 |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `A:/VCP/VCPToolBox-prod-stable` | `git cherry -v main` 显示 4 个正向治理文档提交；但当前 `main` 已有更新的治理提交 `dde11f8`、`03c85b7`、`b6b4274`、`4143677`、`eb18584`、`a9579d7`、`67803bd`、`d255055`、`0d7e0fd` | 不作为当前 `main` 的吸收来源。该 worktree 路径承载稳定线工作环境，先保留；是否移除或重建必须另行明确批准 |
+
+注意：前三个 20260425 分支虽然仍显示为 `git branch --no-merged main`，但当前证据表明是拓扑未合并、补丁已等价或已由后续实现覆盖；判断时不能只看 `--no-merged`，也不能把旧分支树整体 merge 回当前 `main`。
+
 ## 3. 未并入需复核
 
 以下分支未被 worktree 占用，但仍有相对 `main` 的独有提交。删除前必须确认这些提交已被其他路径吸收，或确认为废弃。
@@ -251,13 +265,17 @@
    - `A:/VCP/VCPToolBox-photo-studio-next`
    - `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`
 2. 再处理已并入且干净的 worktree 分支：
-   - `integration/main-absorb-prod-stable-upstream-20260525`
    - `feature/gov-patch-1a-identity-approval-20260429`
    - `feature/gov-patch-2b-effect-classification-20260430`
    - `codex/prod-stable-closeout-check-20260513`
    - `feature/photo-studio-p7-queue-scheduler`
-3. 对未并入分支做复核，不直接删除。
-4. 最后批量删除“已并入可清理”本地分支。
+3. 对已复核为 patch-equivalent 或 superseded、但仍占用 worktree 的分支，只记录为“可在获批后处理 worktree 的候选”，不得自动删除：
+   - `codex/vcptoolbox-channelhub-core-20260425`
+   - `codex/vcptoolbox-dingtalk-adapters-20260425`
+   - `codex/vcptoolbox-memory-rag-governance-20260425`
+   - `integration/main-absorb-prod-stable-upstream-20260525`
+4. 对仍有真实未吸收内容的未并入分支做拆分复核，不直接删除。
+5. 最后批量删除“已并入可清理”本地分支。
 
 ## 6. 建议使用的只读复核命令
 
