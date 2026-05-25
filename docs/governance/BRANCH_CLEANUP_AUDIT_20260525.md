@@ -208,6 +208,21 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 - 只能先 `git worktree remove <path>`，再尝试 `git branch -d <branch>`。
 - 如果 `git worktree remove` 或 `git branch -d` 失败，停止并记录，不得 reset、clean、force 或 `git branch -D`。
 
+### 2026-05-25 lane10 true-unabsorbed recheck
+
+本轮只读复核 `lane10-codex-memory-intake-20260425`，未修改 worktree，未 cherry-pick，未 merge，未删除分支。
+
+当前事实：
+
+- worktree：`A:/VCP/VCPToolBox-photo-studio-export`。
+- HEAD：`fb17dd0`。
+- dirty：`git status --short` 和 `git status --short -uall` 均为空。
+- `main...lane10-codex-memory-intake-20260425 = 358 / 2`。
+- `git cherry -v main lane10-codex-memory-intake-20260425` 显示 2 个正向提交：`551f017 feat: add Codex memory recall analytics and adaptive tuning`、`fb17dd0 fix: wire codex recall audit into rag diary runtime`。
+- diff 范围：7 个文件、800 insertions、53 deletions，涉及 `AdminPanel/js/codex-memory-monitor.js`、`Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js`、`rag_params.json`、记忆系统文档和 `tests/codex-memory-recall.test.js`。
+
+结论：`lane10-codex-memory-intake-20260425` 是真实未吸收对照线，不是清理候选，也不能整体 merge。后续若要吸收，只能拆成 Codex memory monitor、RAGDiary recall audit、adaptive tuning 参数、文档和测试几个小主题，在当前 `main` 上重新实现并单独验证。
+
 ## 1.1 永久保护分支
 
 | 分支 | HEAD | 日期 | upstream | 保护规则 |
