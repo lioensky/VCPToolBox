@@ -205,11 +205,14 @@ class FoldingStore {
 
     /**
      * 写入/更新向量（不覆盖已有摘要）
+     * 注意：无向量数据时不创建条目。FoldingStore 只保存已向量化的 assistant 块，
+     * 避免产生无法参与相似度判断/摘要状态机的空记录。
      * @param {string} contentHash
      * @param {object} data - { textPreview: string, vector: Float32Array|Array<number> }
      */
     upsertVector(contentHash, data) {
         if (!this.db) return;
+        if (!data || !data.vector) return;
         try {
             this._evictIfNeeded();
             this._stmts.upsertVector.run({

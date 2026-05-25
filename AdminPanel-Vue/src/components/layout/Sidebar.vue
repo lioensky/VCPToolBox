@@ -170,7 +170,7 @@ function buildPluginSearchItems(searchTerm: string): NavItem[] {
     return [];
   }
 
-  return [{ category: "———— 插 件 搜 索 ————" }, ...matchedPlugins];
+  return [{ category: "插件搜索结果" }, ...matchedPlugins];
 }
 
 function buildPinnedPluginItems(): NavItem[] {

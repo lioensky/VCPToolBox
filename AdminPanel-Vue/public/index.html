@@ -16,12 +16,12 @@
     <style>
         /* EasyMDE 主题适配 */
         .editor-toolbar {
-            background-color: var(--background-color-light) !important;
+            background-color: var(--tertiary-bg) !important;
             border-color: var(--border-color) !important;
         }
 
         .editor-toolbar button {
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
         }
 
         .editor-toolbar button:hover,
@@ -31,8 +31,8 @@
         }
 
         .CodeMirror {
-            background-color: var(--background-color) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--secondary-bg) !important;
+            color: var(--primary-text) !important;
             border-color: var(--border-color) !important;
             height: auto !important;
             min-height: 500px !important;
@@ -43,7 +43,7 @@
         }
 
         .CodeMirror-cursor {
-            border-left-color: var(--text-color-primary) !important;
+            border-left-color: var(--primary-text) !important;
         }
 
         body .CodeMirror-selected {
@@ -51,13 +51,13 @@
         }
 
         .CodeMirror-gutters {
-            background-color: var(--background-color-light) !important;
+            background-color: var(--tertiary-bg) !important;
             border-right: 1px solid var(--border-color) !important;
         }
 
         .log-content-area .highlight {
-            background-color: var(--primary-color);
-            color: var(--background-color);
+            background-color: var(--highlight-text);
+            color: var(--secondary-bg);
             border-radius: 3px;
             padding: 0 2px;
         }
@@ -69,16 +69,16 @@
 
         /* 并排预览模式样式 */
         .editor-preview-side {
-            background-color: var(--background-color) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--secondary-bg) !important;
+            color: var(--primary-text) !important;
             border-left: 1px solid var(--border-color) !important;
             padding: 10px 20px !important;
         }
 
         /* 全屏预览模式样式 - 只设置颜色，让EasyMDE处理布局 */
         .editor-preview {
-            background-color: var(--background-color) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--secondary-bg) !important;
+            color: var(--primary-text) !important;
             padding: 20px !important;
         }
 
@@ -89,26 +89,26 @@
         .editor-preview-side h2,
         .editor-preview h3,
         .editor-preview-side h3 {
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
         }
 
         .editor-preview a,
         .editor-preview-side a {
-            color: var(--primary-color) !important;
+            color: var(--highlight-text) !important;
         }
 
         .editor-preview code,
         .editor-preview-side code {
-            background-color: var(--background-color-light) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--tertiary-bg) !important;
+            color: var(--primary-text) !important;
             padding: 2px 4px;
             border-radius: 3px;
         }
 
         .editor-preview pre,
         .editor-preview-side pre {
-            background-color: var(--background-color-light) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--tertiary-bg) !important;
+            color: var(--primary-text) !important;
             padding: 10px;
             border-radius: 5px;
         }
@@ -126,28 +126,28 @@
         .editor-preview-side h5,
         .editor-preview h6,
         .editor-preview-side h6 {
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
             margin-top: 1em;
             margin-bottom: 0.5em;
         }
 
         .editor-preview a,
         .editor-preview-side a {
-            color: var(--primary-color) !important;
+            color: var(--highlight-text) !important;
         }
 
         .editor-preview code,
         .editor-preview-side code {
-            background-color: var(--background-color-light) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--tertiary-bg) !important;
+            color: var(--primary-text) !important;
             padding: 2px 4px;
             border-radius: 3px;
         }
 
         .editor-preview pre,
         .editor-preview-side pre {
-            background-color: var(--background-color-light) !important;
-            color: var(--text-color-primary) !important;
+            background-color: var(--tertiary-bg) !important;
+            color: var(--primary-text) !important;
             padding: 10px;
             border-radius: 5px;
             overflow-x: auto;
@@ -163,7 +163,7 @@
             border-left: 4px solid var(--border-color) !important;
             padding-left: 10px;
             margin-left: 0;
-            color: var(--text-color-secondary) !important;
+            color: var(--secondary-text) !important;
         }
 
         .editor-preview table,
@@ -179,12 +179,12 @@
         .editor-preview-side td {
             border: 1px solid var(--border-color) !important;
             padding: 8px;
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
         }
 
         .editor-preview th,
         .editor-preview-side th {
-            background-color: var(--background-color-light) !important;
+            background-color: var(--tertiary-bg) !important;
             font-weight: bold;
         }
 
@@ -199,13 +199,13 @@
         .editor-preview-side ul,
         .editor-preview ol,
         .editor-preview-side ol {
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
             padding-left: 2em;
         }
 
         .editor-preview p,
         .editor-preview-side p {
-            color: var(--text-color-primary) !important;
+            color: var(--primary-text) !important;
             line-height: 1.6;
         }
 
@@ -216,7 +216,7 @@
         }
 
         .draggable-list li {
-            background-color: var(--background-color-light);
+            background-color: var(--tertiary-bg);
             padding: 15px 20px;
             margin-bottom: 10px;
             border-radius: 8px;
@@ -241,12 +241,12 @@
 
         .draggable-list li .plugin-name {
             font-weight: bold;
-            color: var(--text-color-primary);
+            color: var(--primary-text);
         }
 
         .draggable-list li .plugin-description {
             font-size: 0.9em;
-            color: var(--text-color-secondary);
+            color: var(--secondary-text);
             margin-top: 4px;
         }
 
@@ -270,7 +270,7 @@
         #plugin-nav .plugin-original-name {
             display: block;
             font-size: 0.75em;
-            color: var(--text-color-secondary);
+            color: var(--secondary-text);
             font-weight: normal;
             font-style: italic;
             margin-top: 1px;
@@ -298,7 +298,7 @@
         }
 
         .forum-post-item {
-            background-color: var(--background-color-light);
+            background-color: var(--tertiary-bg);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 1rem;
@@ -318,13 +318,13 @@
 
         .forum-post-meta {
             font-size: 0.9em;
-            color: var(--text-color-secondary);
+            color: var(--secondary-text);
         }
 
         .forum-post-content-view {
             margin-top: 1rem;
             padding: 1rem;
-            background-color: var(--background-color);
+            background-color: var(--secondary-bg);
             border-radius: 8px;
         }
 
@@ -346,12 +346,12 @@
         }
 
         .forum-posts-list tr.pinned-post:hover {
-            background-color: var(--primary-color);
-            color: var(--background-color);
+            background-color: var(--highlight-text);
+            color: var(--secondary-bg);
         }
 
         .forum-posts-list tr.pinned-post .post-meta {
-            color: var(--text-color-primary);
+            color: var(--primary-text);
         }
     </style>
 </head>

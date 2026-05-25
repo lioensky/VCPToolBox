@@ -6,8 +6,13 @@
           <span class="material-symbols-outlined">arrow_back</span>
           返回列表
         </button>
-        <button @click="emit('deletePost')" class="btn-danger btn-sm">
-          删除整个帖子
+        <button
+          v-if="canDelete"
+          @click="emit('deletePost')"
+          class="btn-danger btn-sm"
+          :disabled="isDeletingPost"
+        >
+          {{ isDeletingPost ? "删除中..." : "删除整个帖子" }}
         </button>
       </div>
       <span class="post-title">{{ selectedPost.title }}</span>
@@ -30,7 +35,8 @@
       </p>
       <div
         v-for="reply in selectedPost.repliesList"
-        :key="reply.floor"
+        :id="getReplyAnchorId(reply.floor)"
+        :key="`${reply.floor}-${reply.createdAt}`"
         class="reply-item"
       >
         <div class="reply-header">
@@ -40,10 +46,12 @@
             <span class="reply-time">{{ formatDate(reply.createdAt) }}</span>
           </div>
           <button
+            v-if="canDelete"
             class="btn-danger btn-sm"
+            :disabled="deletingReplyFloor === reply.floor"
             @click="emit('deleteReply', reply.floor)"
           >
-            删除此楼层
+            {{ deletingReplyFloor === reply.floor ? "删除中..." : "删除此楼层" }}
           </button>
         </div>
         <div class="reply-content" v-html="reply.contentHtml"></div>
@@ -52,24 +60,47 @@
 
     <div class="reply-form card">
       <h3>发表回复</h3>
+      <label class="reply-author-field">
+        <span class="reply-author-label">昵称</span>
+        <input
+          type="text"
+          maxlength="50"
+          :value="replyAuthor"
+          placeholder="请输入回复昵称"
+          @input="emit('update:replyAuthor', ($event.target as HTMLInputElement).value)"
+        >
+      </label>
       <textarea
         :value="newReplyContent"
         rows="4"
         placeholder="输入您的回复内容（支持 Markdown）..."
         @input="emit('update:newReplyContent', ($event.target as HTMLTextAreaElement).value)"
       ></textarea>
-      <button @click="emit('submitReply')" class="btn-primary">发表回复</button>
+      <button
+        @click="emit('submitReply')"
+        class="btn-primary"
+        :disabled="isSubmitting || !newReplyContent.trim() || !replyAuthor.trim()"
+      >
+        {{ isSubmitting ? "提交中..." : "发表回复" }}
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { nextTick, watch } from "vue";
 import { formatDate } from "@/utils";
 import type { ForumPostDetail } from "@/features/vcp-forum/types";
 
-defineProps<{
+const props = defineProps<{
   selectedPost: ForumPostDetail | null;
   newReplyContent: string;
+  replyAuthor: string;
+  isSubmitting: boolean;
+  canDelete: boolean;
+  isDeletingPost: boolean;
+  deletingReplyFloor: number | null;
+  scrollToReplyFloor: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -78,7 +109,25 @@ const emit = defineEmits<{
   deletePost: [];
   deleteReply: [floor: number];
   "update:newReplyContent": [value: string];
+  "update:replyAuthor": [value: string];
 }>();
+
+function getReplyAnchorId(floor: number): string {
+  return `forum-reply-floor-${floor}`;
+}
+
+watch(
+  () => props.scrollToReplyFloor,
+  async (floor) => {
+    if (!floor || floor <= 0) {
+      return;
+    }
+
+    await nextTick();
+    const target = document.getElementById(getReplyAnchorId(floor));
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+);
 </script>
 
 <style scoped>
@@ -100,7 +149,8 @@ const emit = defineEmits<{
   font-size: var(--font-size-display);
   font-weight: 600;
   line-height: 1.3;
-  max-width: 65ch;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .post-detail-meta {
@@ -116,7 +166,13 @@ const emit = defineEmits<{
   padding: var(--space-5);
   margin-bottom: var(--space-6);
   line-height: 1.6;
-  max-width: 90ch;
+  width: 100%;
+  max-width: none;
+}
+
+.post-detail-content :deep(img) {
+  max-width: 100%;
+  height: auto;
 }
 
 .post-replies h3 {
@@ -149,6 +205,7 @@ const emit = defineEmits<{
   margin-bottom: 0;
   border-bottom: 1px solid var(--border-color);
   background: transparent;
+  scroll-margin-top: var(--space-6);
 }
 
 .reply-item:last-child {
@@ -197,6 +254,19 @@ const emit = defineEmits<{
   margin: 0 0 var(--space-4);
 }
 
+.reply-author-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--space-3);
+}
+
+.reply-author-label {
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.reply-form input,
 .reply-form textarea {
   width: 100%;
   padding: 12px;
@@ -205,6 +275,16 @@ const emit = defineEmits<{
   border-radius: var(--radius-sm);
   color: var(--primary-text);
   font-family: inherit;
+}
+
+.reply-form input:focus-visible,
+.reply-form textarea:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--button-bg) 46%, var(--border-color));
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.reply-form textarea {
   resize: vertical;
   margin-bottom: var(--space-3);
 }

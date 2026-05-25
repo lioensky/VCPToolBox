@@ -51,6 +51,16 @@ pub struct IntrinsicResidualResult {
     pub elapsed_ms: f64,
 }
 
+/// 🌟 TagMemo V8.2: 成对语义距离预计算结果
+#[napi(object)]
+pub struct PairwiseSimResult {
+    pub pair_count: u32,           // 实际共现 pair 总数 (经单文件≤100守恒后)
+    pub computed_count: u32,       // 本次实际完成余弦计算的 pair 数
+    pub skipped_count: u32,        // 已有缓存、缺失向量或 sim 低于阈值被丢弃的 pair 数
+    pub stored_count: u32,         // 实际写入数据库的 pair 数 (sim >= min_similarity)
+    pub elapsed_ms: f64,
+}
+
 /// 统计信息
 #[napi(object)]
 pub struct VexusStats {
@@ -544,6 +554,36 @@ impl VexusIndex {
             min_neighbors: min_neighbors.unwrap_or(3),
         })
     }
+
+    /// 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
+    ///
+    /// - 仅对实际共现的 pair 进行计算（避免 N² 爆炸）
+    /// - 单文件 Tag 数 > 100 的脏文件跳过（与 JS / V7 守恒一致）
+    /// - 增量模式：已存在且 model_sig 一致的 pair 直接跳过
+    /// - sim < min_similarity 的 pair 不写入（默认丢弃噪声）
+    /// - 单模型缓存策略：full_rebuild 会清空整张 sim 表，避免旧模型签名残留
+    ///
+    /// # 参数
+    /// - `db_path`: SQLite 路径
+    /// - `model_sig`: embedding 模型签名 (含维度)，跨模型自动失效
+    /// - `min_similarity`: 噪声阈值，默认 0.05
+    /// - `full_rebuild`: 是否清空 sim 表后重算 (默认 false 增量)
+    #[napi]
+    pub fn compute_pairwise_similarities(
+        &self,
+        db_path: String,
+        model_sig: String,
+        min_similarity: Option<f64>,
+        full_rebuild: Option<bool>,
+    ) -> AsyncTask<PairwiseSimTask> {
+        AsyncTask::new(PairwiseSimTask {
+            db_path,
+            dimensions: self.dimensions,
+            model_sig,
+            min_similarity: min_similarity.unwrap_or(0.05),
+            full_rebuild: full_rebuild.unwrap_or(false),
+        })
+    }
 }
 
 pub struct IntrinsicResidualTask {
@@ -755,6 +795,264 @@ impl Task for IntrinsicResidualTask {
     }
 }
 
+/// 🌟 TagMemo V8.2: PairwiseSimTask
+/// 预计算实际共现的 Tag 对的余弦相似度，并写入 tag_pair_similarity。
+pub struct PairwiseSimTask {
+    db_path: String,
+    dimensions: u32,
+    model_sig: String,
+    min_similarity: f64,
+    full_rebuild: bool,
+}
+
+impl Task for PairwiseSimTask {
+    type Output = PairwiseSimResult;
+    type JsValue = PairwiseSimResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use std::time::Instant;
+        use std::collections::{HashMap, HashSet};
+
+        let start = Instant::now();
+        let dim = self.dimensions as usize;
+
+        let mut conn = Connection::open(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB open failed: {}", e)))?;
+
+        // ====================================================================
+        // Step 1: 加载 Tag 向量到内存 HashMap
+        // ====================================================================
+        let mut tag_vectors: HashMap<i64, Vec<f32>> = HashMap::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
+                .map_err(|e| Error::from_reason(format!("Prepare tags query failed: {}", e)))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(|e| Error::from_reason(format!("Query tags failed: {}", e)))?;
+
+            for row in rows {
+                if let Ok((id, bytes)) = row {
+                    if bytes.len() == dim * 4 {
+                        let vec: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+                            .collect();
+                        tag_vectors.insert(id, vec);
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // Step 2: 在 Rust 侧聚合 file_tags，构建实际共现的 (tag_a, tag_b) 集合
+        // 单文件 Tag 数 > 100 的脏文件跳过（与 JS/V7 守恒）
+        // 约定 tag_a < tag_b
+        // ====================================================================
+        let mut pair_set: HashSet<(i64, i64)> = HashSet::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT file_id, tag_id FROM file_tags ORDER BY file_id")
+                .map_err(|e| Error::from_reason(format!("Prepare file_tags query failed: {}", e)))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| Error::from_reason(format!("Query file_tags failed: {}", e)))?;
+
+            let mut current_file_id = -1_i64;
+            let mut file_tags: Vec<i64> = Vec::with_capacity(64);
+
+            let flush = |tags: &Vec<i64>, set: &mut HashSet<(i64, i64)>| {
+                if tags.len() < 2 || tags.len() > 100 {
+                    return;
+                }
+                for i in 0..tags.len() {
+                    for j in (i + 1)..tags.len() {
+                        let a = tags[i];
+                        let b = tags[j];
+                        if a == b {
+                            continue;
+                        }
+                        let pair = if a < b { (a, b) } else { (b, a) };
+                        set.insert(pair);
+                    }
+                }
+            };
+
+            for row in rows {
+                if let Ok((fid, tid)) = row {
+                    if fid != current_file_id {
+                        flush(&file_tags, &mut pair_set);
+                        file_tags.clear();
+                        current_file_id = fid;
+                    }
+                    file_tags.push(tid);
+                }
+            }
+            flush(&file_tags, &mut pair_set);
+        }
+
+        let pair_count = pair_set.len() as u32;
+
+        // ====================================================================
+        // Step 3: 增量模式 — 加载已缓存且 model_sig 一致的 pair 集合
+        // full_rebuild = true 时按单模型缓存策略清空整张旧表
+        // ====================================================================
+        if self.full_rebuild {
+            conn.execute("DELETE FROM tag_pair_similarity", [])
+                .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
+        } else {
+            conn.execute(
+                "DELETE FROM tag_pair_similarity WHERE model_sig != ?1",
+                rusqlite::params![&self.model_sig],
+            )
+            .map_err(|e| Error::from_reason(format!("Stale model cleanup failed: {}", e)))?;
+        }
+
+        let mut cached: HashSet<(i64, i64)> = HashSet::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tag_a, tag_b FROM tag_pair_similarity WHERE model_sig = ?1",
+                )
+                .map_err(|e| Error::from_reason(format!("Prepare cached query failed: {}", e)))?;
+            let rows = stmt
+                .query_map(rusqlite::params![&self.model_sig], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| Error::from_reason(format!("Query cached failed: {}", e)))?;
+
+            for row in rows {
+                if let Ok((a, b)) = row {
+                    cached.insert((a, b));
+                }
+            }
+        }
+
+        // ====================================================================
+        // Step 4: 遍历待计算 pair，计算余弦相似度
+        // 假设 tag 向量已归一化（embedding 模型默认输出归一化向量），
+        // 若未归一化，下方会按需 fallback 到带分母的余弦
+        // ====================================================================
+        let mut to_insert: Vec<(i64, i64, f64, i64)> = Vec::new();
+        let mut computed = 0_u32;
+        let mut skipped = 0_u32;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        // 预先为每个 tag 计算并缓存模长（仅在第一次需要时）
+        let mut norm_cache: HashMap<i64, f32> = HashMap::new();
+        let get_norm = |id: i64, vec: &Vec<f32>, cache: &mut HashMap<i64, f32>| -> f32 {
+            if let Some(&n) = cache.get(&id) {
+                return n;
+            }
+            let mut s = 0.0_f32;
+            for &x in vec.iter() {
+                s += x * x;
+            }
+            let n = s.sqrt();
+            cache.insert(id, n);
+            n
+        };
+
+        for &(a, b) in pair_set.iter() {
+            if cached.contains(&(a, b)) {
+                skipped += 1;
+                continue;
+            }
+
+            let va = match tag_vectors.get(&a) {
+                Some(v) => v,
+                None => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let vb = match tag_vectors.get(&b) {
+                Some(v) => v,
+                None => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            // 安全的余弦：dot / (|a| * |b|)
+            let mut dot = 0.0_f64;
+            for d in 0..dim {
+                dot += (va[d] as f64) * (vb[d] as f64);
+            }
+
+            let na = get_norm(a, va, &mut norm_cache) as f64;
+            let nb = get_norm(b, vb, &mut norm_cache) as f64;
+            let denom = na * nb;
+            let sim = if denom > 1e-9 { dot / denom } else { 0.0 };
+
+            computed += 1;
+
+            if sim < self.min_similarity {
+                // 噪声阈值以下不写入数据库（既减表大小又自带去噪）
+                skipped += 1;
+                continue;
+            }
+
+            to_insert.push((a, b, sim, now_ms));
+        }
+
+        // ====================================================================
+        // Step 5: 事务批量写入（chunks(1000)）
+        // ====================================================================
+        let stored_count = to_insert.len() as u32;
+
+        if !to_insert.is_empty() {
+            let tx = conn
+                .transaction()
+                .map_err(|e| Error::from_reason(format!("Begin tx failed: {}", e)))?;
+
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "INSERT OR REPLACE INTO tag_pair_similarity \
+                         (tag_a, tag_b, similarity, model_sig, computed_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .map_err(|e| Error::from_reason(format!("Prepare insert failed: {}", e)))?;
+
+                for chunk in to_insert.chunks(1000) {
+                    for (a, b, sim, ts) in chunk {
+                        stmt.execute(rusqlite::params![a, b, sim, &self.model_sig, ts])
+                            .map_err(|e| {
+                                Error::from_reason(format!("Insert pair failed: {}", e))
+                            })?;
+                    }
+                }
+            }
+
+            tx.commit()
+                .map_err(|e| Error::from_reason(format!("Commit tx failed: {}", e)))?;
+        }
+
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+        Ok(PairwiseSimResult {
+            pair_count,
+            computed_count: computed,
+            skipped_count: skipped,
+            stored_count,
+            elapsed_ms: elapsed,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 pub struct RecoverTask {
     index: Arc<RwLock<Index>>,
     db_path: String,
@@ -847,5 +1145,146 @@ impl Task for RecoverTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
+    }
+}
+
+// ============================================================================
+// 🦀 高性能原生文件监听器 (VexusWatcher)
+// ============================================================================
+
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use notify::{Watcher, RecursiveMode, Event, EventKind};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+#[napi(object)]
+pub struct WatcherConfig {
+    pub root_path: String,
+    pub ignore_folders: Vec<String>,
+    pub ignore_prefixes: Vec<String>,
+    pub ignore_suffixes: Vec<String>,
+}
+
+#[napi]
+pub struct VexusWatcher {
+    watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+}
+
+#[napi]
+impl VexusWatcher {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            watcher: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 启动高性能原生文件监听
+    #[napi]
+    pub fn start_watch(
+        &self,
+        config: WatcherConfig,
+        js_callback: ThreadsafeFunction<String>,
+    ) -> Result<()> {
+        let root_path_buf = PathBuf::from(&config.root_path);
+        let root_path_buf_clone = root_path_buf.clone();
+        let ignore_folders: HashSet<String> = config.ignore_folders.into_iter().collect();
+        let ignore_prefixes = config.ignore_prefixes;
+        let ignore_suffixes = config.ignore_suffixes;
+
+        let js_cb = Arc::new(js_callback);
+        let watcher_ref = self.watcher.clone();
+
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            match res {
+                Ok(event) => {
+                    if let Some(path) = event.paths.first() {
+                        // 1. 基础后缀拦截：只允许 .md 和 .txt
+                        if let Some(ext) = path.extension() {
+                            let ext_str = ext.to_string_lossy().to_lowercase();
+                            if ext_str != "md" && ext_str != "txt" {
+                                return;
+                            }
+                        } else {
+                            return;
+                        }
+
+                        // 2. 计算相对路径
+                        if let Ok(rel_path) = path.strip_prefix(&root_path_buf_clone) {
+                            // 提取第一级目录作为日记本名称 (diary_name)
+                            let mut components = rel_path.components();
+                            let diary_name = components.next()
+                                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                                .unwrap_or_else(|| "Root".to_string());
+
+                            // 3. 匹配 ignore_folders
+                            if ignore_folders.contains(&diary_name) {
+                                return;
+                            }
+
+                            // 4. 匹配 ignore_prefixes 和 ignore_suffixes
+                            let file_name = path.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_default();
+
+                            // 检查日记本名或文件名是否匹配前缀
+                            if ignore_prefixes.iter().any(|p| diary_name.starts_with(p) || file_name.starts_with(p)) {
+                                return;
+                            }
+
+                            // 检查日记本名或文件名是否匹配后缀
+                            if ignore_suffixes.iter().any(|s| diary_name.ends_with(s) || file_name.ends_with(s)) {
+                                return;
+                            }
+
+                            // 5. 识别事件类型 (Create, Modify, Remove)
+                            let event_type = match event.kind {
+                                EventKind::Create(_) => "add",
+                                EventKind::Modify(_) => "change",
+                                EventKind::Remove(_) => "unlink",
+                                _ => return,
+                            };
+
+                            // 组装 JSON 传递给 JS
+                            let payload = format!(
+                                r#"{{"event": "{}", "path": "{}"}}"#,
+                                event_type,
+                                path.to_string_lossy().replace('\\', "/")
+                            );
+
+                            // 6. 通过线程安全函数，无阻塞地推送到 Node.js
+                            js_cb.call(Ok(payload), ThreadsafeFunctionCallMode::NonBlocking);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[VexusWatcher] ❌ Native watch error: {:?}", e);
+                }
+            }
+        })
+        .map_err(|e| Error::from_reason(format!("Failed to create native watcher: {:?}", e)))?;
+
+        // 开始递归监听
+        watcher
+            .watch(&root_path_buf, RecursiveMode::Recursive)
+            .map_err(|e| Error::from_reason(format!("Failed to start watching path: {:?}", e)))?;
+
+        let mut lock = watcher_ref.lock().unwrap();
+        *lock = Some(watcher);
+
+        println!(
+            "[VexusWatcher] 🦀 Native high-performance watcher started for: {}",
+            config.root_path
+        );
+        Ok(())
+    }
+
+    /// 停止监听
+    #[napi]
+    pub fn stop_watch(&self) {
+        let mut lock = self.watcher.lock().unwrap();
+        *lock = None;
+        println!("[VexusWatcher] 🦀 Native watcher stopped.");
     }
 }

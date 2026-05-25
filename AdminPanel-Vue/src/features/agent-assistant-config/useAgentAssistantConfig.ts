@@ -1,5 +1,6 @@
 import { onMounted, ref } from "vue";
 import { agentApi, pluginApi } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import type {
   AgentAssistantConfigAgent,
   AgentAssistantConfigResponse,
@@ -529,10 +530,16 @@ export function useAgentAssistantConfig() {
     }));
   }
 
-  function removeAgent(index: number) {
-    if (confirm("确定要删除这个 Agent 助手配置吗？")) {
-      agents.value.splice(index, 1);
+  async function removeAgent(index: number) {
+    if (!(await askConfirm({
+      message: "确定要删除这个 Agent 助手配置吗？",
+      danger: true,
+      confirmText: "删除",
+    }))) {
+      return;
     }
+
+    agents.value.splice(index, 1);
   }
 
   async function saveConfig() {

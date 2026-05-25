@@ -2,8 +2,11 @@
   "enabled": true,
   "timeoutMinutes": 5,
   "approveAll": false,
+  "fuzzyToolMatching": false,
   "approvalList": [
-    "SciCalculator",
-    "PowerShellExecutor"
+    "PowerShellExecutor",
+    "ServerPowerShellExecutor",
+    "FileOperator",
+    "ServerFileOperator"
   ]
 }

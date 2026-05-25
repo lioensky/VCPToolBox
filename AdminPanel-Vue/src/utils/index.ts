@@ -4,6 +4,7 @@
 
 // UI 工具
 export { showLoading, showMessage } from "@/platform/feedback/feedbackBus";
+export { copyToClipboard } from "./ui";
 
 // API 工具
 
@@ -23,14 +24,21 @@ export { storage } from "./storage";
 
 // ENV 工具
 export {
+  inferEnvValueType,
   parseEnvToList,
-  buildEnvString,
   serializeEnvAssignment,
   serializeEnvValue,
   castEnvValue,
   isSensitiveConfigKey,
   type EnvEntry,
 } from "./env";
+
+// 主配置合并工具
+export {
+  buildMergedMainConfigContent,
+  normalizeValue as normalizeMainConfigValue,
+  type ConfigValueType,
+} from "./mainConfigMerge";
 
 // 性能监控
 export { performanceMonitor, fetchWithPerformance } from "./performance";

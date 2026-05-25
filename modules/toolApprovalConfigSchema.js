@@ -5,13 +5,15 @@ const DEFAULT_TOOL_APPROVAL_CONFIG = Object.freeze({
     timeoutMinutes: 5,
     approveAll: false,
     approvalList: [],
-    debugMode: false
+    debugMode: false,
+    fuzzyToolMatching: false
 });
 
 const SUPPORTED_TOOL_APPROVAL_KEYS = Object.freeze([
     'enabled',
     'approveAll',
     'debugMode',
+    'fuzzyToolMatching',
     'timeoutMinutes',
     'timeout',
     'approvalList',
@@ -24,7 +26,8 @@ function cloneDefaultConfig() {
         timeoutMinutes: DEFAULT_TOOL_APPROVAL_CONFIG.timeoutMinutes,
         approveAll: DEFAULT_TOOL_APPROVAL_CONFIG.approveAll,
         approvalList: [...DEFAULT_TOOL_APPROVAL_CONFIG.approvalList],
-        debugMode: DEFAULT_TOOL_APPROVAL_CONFIG.debugMode
+        debugMode: DEFAULT_TOOL_APPROVAL_CONFIG.debugMode,
+        fuzzyToolMatching: DEFAULT_TOOL_APPROVAL_CONFIG.fuzzyToolMatching
     };
 }
 
@@ -60,6 +63,10 @@ function normalizeToolApprovalConfig(rawConfig = {}) {
 
     if (typeof rawConfig.debugMode === 'boolean') {
         normalized.debugMode = rawConfig.debugMode;
+    }
+
+    if (typeof rawConfig.fuzzyToolMatching === 'boolean') {
+        normalized.fuzzyToolMatching = rawConfig.fuzzyToolMatching;
     }
 
     const timeoutCandidate = rawConfig.timeoutMinutes ?? rawConfig.timeout;
@@ -114,6 +121,13 @@ function validateToolApprovalConfig(rawConfig) {
         typeof rawConfig.debugMode !== 'boolean'
     ) {
         errors.push('debugMode must be a boolean');
+    }
+
+    if (
+        Object.prototype.hasOwnProperty.call(rawConfig, 'fuzzyToolMatching') &&
+        typeof rawConfig.fuzzyToolMatching !== 'boolean'
+    ) {
+        errors.push('fuzzyToolMatching must be a boolean');
     }
 
     const timeoutKey = Object.prototype.hasOwnProperty.call(rawConfig, 'timeoutMinutes')

@@ -55,5 +55,24 @@ module.exports = function(options) {
         }
     });
 
+    // DELETE specific TVS file
+    router.delete('/tvsvars/:fileName', async (req, res) => {
+        const { fileName } = req.params;
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name.' });
+        }
+
+        const filePath = path.join(TVS_FILES_DIR, fileName);
+        try {
+            await fs.unlink(filePath);
+            res.json({ message: `TVS file '${fileName}' deleted successfully.` });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ error: 'TVS file not found.' });
+            }
+            res.status(500).json({ error: 'Failed to delete TVS file', details: error.message });
+        }
+    });
+
     return router;
 };

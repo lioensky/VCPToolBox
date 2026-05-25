@@ -47,7 +47,6 @@
   --cpu-color: var(--cpu-color-dark);
   --memory-color: var(--memory-color-dark);
   --on-accent-text: oklch(1 0 0);
-  --primary-color: var(--highlight-text);
   --primary-color-translucent: color-mix(
     in srgb,
     var(--highlight-text) 30%,
@@ -72,6 +71,15 @@
   --danger-shadow: color-mix(in srgb, var(--danger-color) 40%, transparent);
   --success-shadow: color-mix(in srgb, var(--success-color) 40%, transparent);
   --focus-ring: color-mix(in srgb, var(--highlight-text) 24%, transparent);
+  --switch-track-width: 42px;
+  --switch-track-height: 24px;
+  --switch-thumb-size: 18px;
+  --switch-thumb-offset: 2px;
+  --switch-thumb-translate: 18px;
+  --switch-track-off-bg: color-mix(in srgb, var(--border-color) 42%, transparent);
+  --switch-track-off-border: color-mix(in srgb, var(--border-color) 82%, transparent);
+  --switch-track-on-bg: color-mix(in srgb, var(--highlight-text) 70%, transparent);
+  --switch-track-on-border: color-mix(in srgb, var(--highlight-text) 86%, transparent);
 
   /* --- 语义表面层级 --- */
   --surface-overlay-soft: color-mix(in srgb, var(--primary-text) 4%, transparent);
@@ -94,8 +102,8 @@
 
   /* --- Dashboard 专用变量 --- */
   --dashboard-radius: var(--radius-xl, 20px);
-  --dashboard-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.4));
-  --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.5));
+  --dashboard-shadow: var(--shadow-md, 0 4px 12px oklch(0 0 0 / 0.40));
+  --dashboard-shadow-hover: var(--shadow-lg, 0 8px 32px oklch(0 0 0 / 0.50));
 
   /* 行星颜色变量 - OKLCH */
   --sun-color: oklch(0.85 0.18 95);
@@ -111,10 +119,10 @@
   --orbit-color: oklch(1 0 0 / 0.1);
 
   /* 阴影系统 - 暗色主题 */
-  --shadow-sm-dark: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md-dark: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg-dark: 0 8px 32px rgba(0, 0, 0, 0.5);
-  --shadow-xl-dark: 0 20px 40px rgba(0, 0, 0, 0.6);
+  --shadow-sm-dark: 0 1px 2px oklch(0 0 0 / 0.30);
+  --shadow-md-dark: 0 4px 12px oklch(0 0 0 / 0.40);
+  --shadow-lg-dark: 0 8px 32px oklch(0 0 0 / 0.50);
+  --shadow-xl-dark: 0 20px 40px oklch(0 0 0 / 0.60);
 
   /* --- 优化亮色主题 (纯净/柔和) - OKLCH 色彩空间 --- */
   --primary-bg-light: oklch(0.96 0.008 230);
@@ -139,10 +147,10 @@
   --memory-color-light: oklch(0.60 0.20 145);
 
   /* 阴影系统 - 亮色主题 */
-  --shadow-sm-light: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md-light: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg-light: 0 8px 32px rgba(0, 0, 0, 0.12);
-  --shadow-xl-light: 0 20px 40px rgba(0, 0, 0, 0.15);
+  --shadow-sm-light: 0 1px 2px oklch(0 0 0 / 0.05);
+  --shadow-md-light: 0 4px 12px oklch(0 0 0 / 0.08);
+  --shadow-lg-light: 0 8px 32px oklch(0 0 0 / 0.12);
+  --shadow-xl-light: 0 20px 40px oklch(0 0 0 / 0.15);
 
   /* --- Z-Index System --- */
   --z-index-sidebar-overlay: 998;
@@ -180,6 +188,9 @@
   --space-xl: var(--space-6);
   --space-2xl: var(--space-7);
   --space-3xl: var(--space-8);
+
+  /* --- 等宽字体栈（代码/变量展示） --- */
+  --font-mono: "Consolas", "Monaco", "Fira Code", monospace;
 
   /* --- 排版系统（流体字号 Token）--- */
   --font-fluid-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.8rem);
@@ -239,21 +250,7 @@ html[data-theme="dark"] {
   --memory-color: var(--memory-color-dark);
   color-scheme: dark;
 
-  /* --- Legacy Variable Support (style.css fallback) --- */
-  --bg: var(--primary-bg);
-  --text: var(--primary-text);
-  --text-h: var(--primary-text);
-  --border: var(--border-color);
-  --accent: var(--button-bg);
-  --accent-bg: oklch(0.60 0.20 290 / 0.15);
-
-  /* Variables for EasyMDE editor compatibility */
-  --primary-color: var(--highlight-text-dark);
   --primary-color-translucent: oklch(0.70 0.12 240 / 0.3);
-  --background-color: var(--secondary-bg-dark);
-  --background-color-light: var(--tertiary-bg-dark);
-  --text-color-primary: var(--primary-text-dark);
-  --text-color-secondary: var(--secondary-text-dark);
   --star-color: oklch(0.96 0.003 230);
   --sun-color: oklch(0.85 0.18 95);
   --orbit-color: oklch(1 0 0 / 0.1);
@@ -301,21 +298,7 @@ html[data-theme="light"] {
   --shadow-overlay-soft: 0 2px 10px oklch(0.12 0.01 230 / 0.12);
   color-scheme: light;
 
-  /* --- Legacy Variable Support (style.css fallback) --- */
-  --bg: var(--primary-bg);
-  --text: var(--primary-text);
-  --text-h: var(--primary-text);
-  --border: var(--border-color);
-  --accent: var(--button-bg);
-  --accent-bg: oklch(0.68 0.16 230 / 0.1);
-
-  /* Variables for EasyMDE editor compatibility */
-  --primary-color: var(--highlight-text-light);
   --primary-color-translucent: oklch(0.68 0.16 230 / 0.3);
-  --background-color: var(--secondary-bg-light);
-  --background-color-light: var(--tertiary-bg-light);
-  --text-color-primary: var(--primary-text-light);
-  --text-color-secondary: var(--secondary-text-light);
   --star-color: oklch(0.55 0.18 250);
   --sun-color: oklch(0.75 0.18 85);
   --orbit-color: oklch(0 0 0 / 0.05);
@@ -377,6 +360,109 @@ select:focus-visible,
 [role="button"]:focus-visible {
   outline: 2px solid var(--highlight-text);
   outline-offset: 2px;
+}
+
+/* ToolListEditor 共享标题与复选框行样式 */
+.tle-section-header {
+  margin: 0 0 20px;
+  font-size: var(--font-size-title);
+  color: var(--primary-text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tle-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-body);
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .tle-section-header {
+    margin-bottom: 14px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+}
+
+/* 统一原生多选框样式：跟随主题主色 + 指针光标 + 一致尺寸。
+   .switch / .switch-toggle 内的 checkbox 由各自样式覆盖（前者 opacity:0，后者 appearance:none），不受影响。 */
+input[type="checkbox"] {
+  accent-color: var(--highlight-text);
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+
+/* 统一的自定义勾选指示器（用于非原生 checkbox 交互） */
+.app-check-indicator {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: transparent;
+  background: var(--secondary-bg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  transition:
+    border-color var(--transition-fast),
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.app-check-indicator--active {
+  border-color: var(--highlight-text);
+  color: var(--highlight-text);
+  background: color-mix(in srgb, var(--highlight-text) 20%, var(--secondary-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--highlight-text) 26%, transparent);
+}
+
+/* 通用加载指示器：页面按需叠加尺寸/间距修饰类 */
+.loading-spinner {
+  display: inline-block;
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--highlight-text);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-spinner--sm {
+  width: 32px;
+  height: 32px;
+}
+
+.loading-spinner--lg {
+  width: 48px;
+  height: 48px;
+}
+
+.loading-spinner--thick {
+  border-width: 4px;
+}
+
+.loading-spinner--primary {
+  border-top-color: var(--highlight-text);
+}
+
+.loading-spinner--mb-4 {
+  margin-bottom: var(--space-4);
+}
+
+.loading-spinner--mb-3 {
+  margin-bottom: var(--space-3);
 }
 
 /* 滚动条样式已统一在 layout.css 中管理 */
@@ -638,17 +724,17 @@ select:focus-visible,
 
 .status-message.info {
   color: var(--highlight-text);
-  background: rgba(56, 189, 248, 0.1);
+  background: color-mix(in srgb, var(--highlight-text) 10%, transparent);
 }
 
 .status-message.success {
-  color: oklch(0.65 0.18 145);
-  background: rgba(30, 142, 62, 0.15);
+  color: var(--success-text);
+  background: var(--success-bg);
 }
 
 .status-message.error {
   color: var(--danger-color);
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--danger-bg);
 }
 
 .switch-container {
@@ -660,8 +746,8 @@ select:focus-visible,
 .switch {
   position: relative;
   display: inline-block;
-  width: 48px;
-  height: 26px;
+  width: var(--switch-track-width);
+  height: var(--switch-track-height);
 }
 
 .switch input {
@@ -677,30 +763,94 @@ select:focus-visible,
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: var(--tertiary-bg);
-  transition: background-color var(--transition-normal);
-  border-radius: 26px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--switch-track-off-border);
+  background: var(--switch-track-off-bg);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .slider:before {
   position: absolute;
   content: "";
-  height: 20px;
-  width: 20px;
-  left: 3px;
-  bottom: 3px;
-  background-color: var(--secondary-text);
-  transition: transform var(--transition-normal);
+  height: var(--switch-thumb-size);
+  width: var(--switch-thumb-size);
+  left: var(--switch-thumb-offset);
+  bottom: var(--switch-thumb-offset);
+  background-color: var(--primary-bg);
+  box-shadow: var(--shadow-overlay-soft);
+  transition: transform var(--transition-fast);
   border-radius: 50%;
 }
 
-input:checked + .slider {
-  background-color: var(--button-bg);
+.switch input:checked + .slider {
+  background: var(--switch-track-on-bg);
+  border-color: var(--switch-track-on-border);
 }
 
-input:checked + .slider:before {
-  transform: translateX(22px);
-  background-color: var(--on-accent-text);
+.switch input:checked + .slider:before {
+  transform: translateX(var(--switch-thumb-translate));
+}
+
+.switch input:focus-visible + .slider {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+/* input + 文案结构的统一 Switch（不依赖 .slider 元素） */
+.switch-toggle input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: var(--switch-track-width);
+  height: var(--switch-track-height);
+  margin: 0;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--switch-track-off-border);
+  background: var(--switch-track-off-bg);
+  cursor: pointer;
+  position: relative;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.switch-toggle input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: var(--switch-thumb-offset);
+  left: var(--switch-thumb-offset);
+  width: var(--switch-thumb-size);
+  height: var(--switch-thumb-size);
+  border-radius: 50%;
+  background: var(--primary-bg);
+  box-shadow: var(--shadow-overlay-soft);
+  transition: transform var(--transition-fast);
+}
+
+.switch-toggle input[type="checkbox"]:checked {
+  background: var(--switch-track-on-bg);
+  border-color: var(--switch-track-on-border);
+}
+
+.switch-toggle input[type="checkbox"]:checked::after {
+  transform: translateX(var(--switch-thumb-translate));
+}
+
+.switch-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .description {
@@ -708,6 +858,20 @@ input:checked + .slider:before {
   font-size: var(--font-size-helper);
   color: var(--secondary-text);
   margin-bottom: 8px;
+}
+
+.config-section.active-section > .description {
+  margin: 0 0 var(--space-4);
+}
+
+#config-details-container > [data-page] {
+  margin-top: var(--space-4);
+}
+
+/* 收紧主标题到副标题的节奏：带副标题/页头的页面上方使用更紧凑间距 */
+#config-details-container > [data-page]:has(> .description),
+#config-details-container > [data-page]:has(> .page-header) {
+  margin-top: var(--space-3);
 }
 
 .key-name {

@@ -69,12 +69,10 @@ const currentNavGroup = computed<AppRouteGroup | undefined>(() => {
 
 // 导航分组标签映射（本地定义，因为 manifest 未导出）
 const NAV_GROUP_LABELS: Record<AppRouteGroup, string> = {
-  core: "核心功能",
-  agent: "Agent 相关",
-  tools: "工具相关",
-  rag: "RAG 相关",
-  plugins: "插件中心",
-  other: "其他",
+  core: "核心",
+  agentContent: "Agent & 内容",
+  knowledge: "知识 & RAG",
+  toolsPlugins: "工具 & 插件",
 };
 
 const breadcrumbs = computed<BreadcrumbItem[]>(() => {
@@ -137,7 +135,7 @@ function navigateTo(location: RouteLocationRaw) {
   color: var(--secondary-text);
   text-decoration: none;
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition:
     color var(--transition-fast),
     background-color var(--transition-fast);
@@ -164,7 +162,7 @@ function navigateTo(location: RouteLocationRaw) {
   font-weight: 500;
   padding: 6px 10px;
   background-color: var(--accent-bg);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   max-width: 400px;
   overflow: hidden;
   text-overflow: ellipsis;

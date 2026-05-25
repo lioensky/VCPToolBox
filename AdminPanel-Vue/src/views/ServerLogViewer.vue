@@ -2,76 +2,88 @@
   <section class="config-section active-section">
     <div class="log-viewer-container">
       <!-- 日志头部控制栏 -->
-      <div class="log-header">
-        <span class="log-path">
-          <span class="material-symbols-outlined">description</span>
-          {{ logPath }}
-        </span>
-
-        <input
-          type="search"
-          v-model="filterText"
-          placeholder="🔍 过滤日志内容…"
-          class="log-filter"
-          @input="handleFilter"
-        />
-
-        <div class="log-stats">
-          <span class="stat-item">
-            <span class="stat-label">总行数:</span>
-            <strong>{{ totalLines }}</strong>
-          </span>
-          <span class="stat-item">
-            <span class="stat-label">显示:</span>
-            <strong>{{ displayedLines.length }}</strong>
-          </span>
-          <span class="stat-item">
-            <span class="stat-label">匹配:</span>
-            <strong>{{ filteredLines.length }}</strong>
-          </span>
-        </div>
-
-        <div class="log-controls">
-          <label class="control-item">
-            <span>行数限制:</span>
-            <input
-              type="number"
-              v-model.number="logLimit"
-              min="100"
-              max="100000"
-              step="500"
-              class="limit-input"
-            />
+      <div class="log-header">  
+        <!-- “log-path”和“行数限制”共占一行的容器 -->
+        <div class="path-limit-row">
+          <span class="log-path">  
+            <span class="material-symbols-outlined">description</span>  
+            {{ logPath }}  
+          </span>  
+          
+          <label class="control-item">  
+            <span>行数限制:</span>  
+            <input  
+              type="number"  
+              v-model.number="logLimit"  
+              min="100"  
+              max="100000"  
+              step="500"  
+              class="limit-input"  
+            />  
           </label>
-
-          <button
-            type="button"
-            @click="toggleReverse"
-            :class="['btn-secondary', { active: isReverse }]"
-            aria-label="切换日志顺序"
-            title="切换顺序"
-          >
-            <span class="material-symbols-outlined">swap_vert</span>
-          </button>
-
-          <button type="button" @click="copyLog" class="btn-secondary" aria-label="复制日志" title="复制日志">
-            <span class="material-symbols-outlined">content_copy</span>
-          </button>
-
-          <button type="button" @click="clearLog" class="btn-secondary" aria-label="清空日志显示" title="清空显示">
-            <span class="material-symbols-outlined">delete</span>
-          </button>
-
-          <button
-            type="button"
-            @click="toggleAutoScroll"
-            :class="['btn-secondary', { active: autoScroll }]"
-            aria-label="切换自动滚动"
-            title="自动滚动"
-          >
-            <span class="material-symbols-outlined">autoplay</span>
-          </button>
         </div>
+        
+        <input  
+          type="search"  
+          v-model="filterText"  
+          placeholder="🔍 过滤日志内容…"  
+          class="log-filter"  
+          @input="handleFilter"  
+        />  
+        
+        <div class="log-stats">  
+          <span class="stat-item">  
+            <span class="stat-label">总行数:</span>  
+            <strong>{{ totalLines }}</strong>  
+          </span>  
+          <span class="stat-item">  
+            <span class="stat-label">显示:</span>  
+            <strong>{{ displayedLines.length }}</strong>  
+          </span>  
+          <span class="stat-item">  
+            <span class="stat-label">匹配:</span>  
+            <strong>{{ filteredLines.length }}</strong>  
+          </span>  
+        </div>  
+        
+        <div class="log-controls">  
+          <!-- 只保留四个按钮 -->  
+          <button  
+            type="button"  
+            @click="toggleReverse"  
+            :class="['btn-secondary', { active: isReverse }]"  
+            aria-label="切换日志顺序"  
+            title="切换顺序"  
+          >  
+            <span class="material-symbols-outlined">swap_vert</span>  
+          </button>  
+        
+          <button 
+            type="button" 
+            @click="copyLog" 
+            @touchend.prevent="copyLog"
+            class="btn-secondary" 
+            aria-label="复制日志" 
+            title="复制日志"
+          >  
+            <span class="material-symbols-outlined">content_copy</span>  
+            <span v-if="showCopyTip" class="copy-tip">已复制</span>
+          </button>  
+        
+          <button type="button" @click="clearLog" class="btn-secondary" aria-label="清空日志显示" title="清空显示">  
+            <span class="material-symbols-outlined">delete</span>  
+          </button>  
+        
+          <button  
+            type="button"  
+            @click="toggleAutoScroll"  
+            :class="['btn-secondary', { active: autoScroll }]"  
+            aria-label="切换自动滚动"  
+            title="自动滚动"  
+          >  
+            <span class="material-symbols-outlined">autoplay</span>  
+          </button>  
+        </div>  
       </div>
 
       <!-- 虚拟滚动日志区域 -->
@@ -124,6 +136,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useServerLogViewer } from "@/features/server-log-viewer/useServerLogViewer";
 
 const {
@@ -146,11 +159,37 @@ const {
   scrollToBottom,
   toggleAutoScroll,
   toggleReverse,
-  copyLog,
+  copyLog: originalCopyLog,
   clearLog,
   getLineClass,
   highlightText,
 } = useServerLogViewer();
+// 复制提示状态
+const showCopyTip = ref(false);
+
+// 包装复制功能，添加提示
+const copyLog = async (event?: Event) => {
+  // 阻止移动端的默认行为和事件冒泡
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  
+  await originalCopyLog();
+  showCopyTip.value = true;
+  
+  // 清除之前的定时器，避免快速点击时提示消失异常
+  if (copyTipTimer) {
+    clearTimeout(copyTipTimer);
+  }
+  
+  copyTipTimer = setTimeout(() => {
+    showCopyTip.value = false;
+  }, 2000);
+};
+
+// 定时器变量
+let copyTipTimer: ReturnType<typeof setTimeout> | null = null;
 
 void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法判定为未使用
 </script>
@@ -173,6 +212,14 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   background: var(--secondary-bg);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
+}
+
+/* 新增：让 log-path 和 control-item 共占一行的弹性容器 */
+.path-limit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
 .log-path {
@@ -251,6 +298,7 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 .btn-secondary .material-symbols-outlined {
@@ -263,10 +311,45 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   color: var(--highlight-text);
 }
 
+/* 复制成功提示 */
+.copy-tip {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--button-bg);
+  color: var(--on-accent-text);
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: fadeInOut 2s ease;
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(5px);
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  85% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-5px);
+  }
+}
+
 /* 虚拟滚动日志区域 */
 .log-content-virtual {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
   background: var(--tertiary-bg);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
@@ -284,7 +367,7 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
+  min-width: 100%;
   padding-bottom: 22px; /* 增加底部内边距，防止最后一行被截断 */
 }
 
@@ -303,17 +386,18 @@ void logContainerRef; // 显式读取，避免 TS 将模板 ref 字符串用法�
 
 .line-number {
   flex-shrink: 0;
-  width: 50px;
-  text-align: right;
+  width: auto;
+  min-width: 0;
+  text-align: center;
   color: var(--secondary-text);
   user-select: none;
   opacity: 0.75;
+  padding: 0 8px;
 }
 
 .line-content {
   flex: 1;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
 }
 
 /* 日志级别样式 */
@@ -432,6 +516,57 @@ mark {
 
   .limit-input {
     width: 100%;
+  }
+}
+
+/* 移动端优化 */  
+@media (max-width: 768px) {  
+  /* 确保 path-limit-row 始终保持横向排列，不换行 */
+  .path-limit-row {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  /* 让 log-path 收缩，给输入框留出空间 */
+  .log-path {
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* control-item 不收缩，保证输入框完整显示 */
+  .control-item {
+    flex-shrink: 0;
+  }
+
+  .log-controls {  
+    flex-direction: row;  
+    flex-wrap: nowrap;  
+    gap: 4px;  
+  }  
+  
+  .control-item {  
+    flex: 1;
+    min-width: 0;  
+  }  
+  
+  .limit-input {  
+    width: 100%;  
+  }  
+  
+  .btn-secondary {  
+    flex: 1;
+    min-width: 0;  
+    padding: 6px;  
+    min-height: 36px;  
+  }
+
+  /* 日志内容在移动端自动换行 */
+  .line-content {
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 }
 </style>

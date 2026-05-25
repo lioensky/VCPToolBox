@@ -34,7 +34,7 @@
         class="btn-primary"
         type="button"
         :disabled="!selectedPresetName || isLoading"
-        @click="loadPreset(selectedPresetName)"
+        @click="selectPreset(selectedPresetName)"
       >
         加载
       </button>
@@ -241,7 +241,7 @@ const {
   orderedRules,
   editorState,
   fetchPresets,
-  loadPreset,
+  selectPreset,
   createNewPreset,
   addRule,
   removeRule,

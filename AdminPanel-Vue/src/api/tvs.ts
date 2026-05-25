@@ -53,5 +53,18 @@ export const tvsApi = {
       uiOptions
     );
   },
+
+  async deleteTvsFile(
+    fileName: string,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<void> {
+    await requestWithUi(
+      {
+        url: `/admin_api/tvsvars/${encodeURIComponent(fileName)}`,
+        method: "DELETE",
+      },
+      uiOptions
+    );
+  },
 };
 

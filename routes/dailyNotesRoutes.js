@@ -183,7 +183,175 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
      * @param {string|null} folder
      * @param {AbortSignal} signal
      */
+    /**
+     * 使用 Rust 搜索器执行高性能搜索，如果失败则回退到 JS Worker 搜索
+     */
     async function executeSearch(searchTerms, folder, signal) {
+        try {
+            return await executeRustSearch(searchTerms, folder, signal);
+        } catch (err) {
+            if (err.name === 'AbortError' || signal.aborted) {
+                throw err;
+            }
+            console.warn('[Search] Rust search failed, falling back to JS Worker:', err.message);
+            return await executeJsFallbackSearch(searchTerms, folder, signal);
+        }
+    }
+
+    /**
+     * 调用 Rust 编写的高性能日记搜索器
+     */
+    async function executeRustSearch(searchTerms, folder, signal) {
+        const { execFile } = require('child_process');
+        
+        // 🌟 架构自动适配逻辑
+        const platform = process.platform; // win32, linux, darwin
+        const arch = process.arch;         // x64, arm64
+        
+        let binaryName = 'DailyNoteSearcher';
+        if (platform === 'linux') {
+            binaryName += (arch === 'arm64' ? '-aarch64-unknown-linux-musl' : '-x86_64-unknown-linux-musl');
+        } else if (platform === 'win32') {
+            binaryName += (arch === 'arm64' ? '-aarch64-pc-windows-msvc.exe' : '-x86_64-pc-windows-msvc.exe');
+        } else if (platform === 'darwin') {
+            binaryName += (arch === 'arm64' ? '-aarch64-apple-darwin' : '-x86_64-apple-darwin');
+        }
+
+        let exePath = path.join(__dirname, '../Plugin/DailyNoteSearcher', binaryName);
+        const fallbackName = platform === 'win32' ? 'DailyNoteSearcher.exe' : 'DailyNoteSearcher';
+        const fallbackPath = path.join(__dirname, '../Plugin/DailyNoteSearcher', fallbackName);
+
+        // 🌟 智能探测：优先尝试架构匹配名，失败后回退至通用名
+        try {
+            await fs.access(exePath);
+        } catch {
+            try {
+                await fs.access(fallbackPath);
+                exePath = fallbackPath; // 找到通用名，使用它
+            } catch {
+                throw new Error(`Rust DailyNoteSearcher executable not found for ${platform}-${arch} (Tried: ${binaryName} and ${fallbackName})`);
+            }
+        }
+
+        // 构造 Rust 搜索器所需的参数。
+        // Rust regex crate 不支持 look-around，因此多关键词 AND 搜索通过 queries 数组交给 Rust 内部逐项匹配。
+        const inputArgs = {
+            query: searchTerms[0] || '',
+            queries: searchTerms,
+            folder: folder || undefined,
+            is_regex: false,
+            case_sensitive: false,
+            whole_word: false,
+            context_lines: 2,
+            preview_length: SEARCH_CONFIG.PREVIEW_LENGTH,
+            root_path: path.resolve(dailyNoteRootPath),
+            max_results: SEARCH_CONFIG.MAX_RESULTS,
+            ignored_folders: "VectorStore,DebugLog",
+            allowed_extensions: "md,txt"
+        };
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let killFallbackTimer = null;
+
+            const cleanup = () => {
+                signal.removeEventListener('abort', onAbort);
+                if (killFallbackTimer) {
+                    clearTimeout(killFallbackTimer);
+                    killFallbackTimer = null;
+                }
+            };
+
+            const settleResolve = (value) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(value);
+            };
+
+            const settleReject = (error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(error);
+            };
+
+            const child = execFile(exePath, [], { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+                if (error && child.killed) {
+                    return settleReject(new DOMException('Search aborted', 'AbortError'));
+                }
+
+                if (error) {
+                    return settleReject(new Error(`Rust search process error: ${error.message}. Stderr: ${stderr}`));
+                }
+
+                try {
+                    const output = JSON.parse(stdout);
+                    if (output.status === 'error') {
+                        return settleReject(new Error(output.error || 'Unknown Rust search error'));
+                    }
+
+                    const payload = output.result && typeof output.result === 'object'
+                        ? output.result
+                        : output;
+
+                    const rawNotes = Array.isArray(payload.notes) ? payload.notes : [];
+                    const notes = rawNotes.map(note => ({
+                        name: note.name ?? note.file_name ?? '',
+                        folderName: note.folder_name ?? note.folderName ?? '',
+                        lastModified: note.last_modified ?? note.lastModified ?? '',
+                        preview: note.preview ?? '',
+                        content: note.content ?? undefined
+                    }));
+
+                    settleResolve(notes);
+                } catch (parseErr) {
+                    settleReject(new Error(`Failed to parse Rust search output: ${parseErr.message}. Raw: ${stdout}`));
+                }
+            });
+
+            const onAbort = () => {
+                if (settled) return;
+
+                // Windows 上 child.kill() 会终止子进程；这里额外设置兜底检查，避免 Promise 悬挂。
+                if (!child.killed) {
+                    child.kill();
+                }
+
+                killFallbackTimer = setTimeout(() => {
+                    settleReject(new DOMException('Search aborted and process termination timed out', 'AbortError'));
+                }, 3000);
+
+                settleReject(new DOMException('Search aborted', 'AbortError'));
+            };
+
+            child.once('exit', () => {
+                cleanup();
+            });
+
+            if (signal.aborted) {
+                onAbort();
+            } else {
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+
+            // 将参数通过 stdin 写入 Rust 进程
+            child.stdin.write(JSON.stringify(inputArgs));
+            child.stdin.end();
+        });
+    }
+
+    /**
+     * 辅助函数：转义正则特殊字符
+     */
+    function escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * 传统的 JS Worker 搜索（作为 Fallback）
+     */
+    async function executeJsFallbackSearch(searchTerms, folder, signal) {
         const checkAbort = () => {
             if (signal.aborted) throw new DOMException('Search aborted', 'AbortError');
         };
@@ -245,8 +413,6 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         if (filesToScan.length === 0) return [];
 
         // 2. 使用 Worker Thread 进行并行搜索
-        // 将文件列表分块（如果文件很多），这里简单起见先用一个 Worker 处理所有文件
-        // 但为了防止单个 Worker 运行太久，我们可以限制文件数量或分块
         const results = await new Promise((resolve, reject) => {
             const worker = new Worker(path.join(__dirname, 'searchWorker.js'), {
                 workerData: {
@@ -285,7 +451,7 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
         matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
 
         if (DEBUG_MODE) {
-            console.log(`[Search] Completed: ${filesToScan.length} files scanned, ${matchedNotes.length} matches`);
+            console.log(`[Search] Fallback Completed: ${filesToScan.length} files scanned, ${matchedNotes.length} matches`);
         }
 
         return matchedNotes.slice(0, SEARCH_CONFIG.MAX_RESULTS);

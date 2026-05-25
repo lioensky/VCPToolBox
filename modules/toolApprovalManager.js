@@ -10,6 +10,8 @@ const {
     resolveToolIdentity
 } = require('./toolIdentityResolver');
 
+const toolMarkerFuzzyMatcher = require('./vcpLoop/toolMarkerFuzzyMatcher');
+
 class ToolApprovalManager {
     constructor(configPath) {
         this.configPath = configPath;
@@ -29,16 +31,29 @@ class ToolApprovalManager {
                     console.warn(`[ToolApprovalManager] Invalid config values detected, falling back to normalized defaults where needed: ${validation.errors.join('; ')}`);
                 }
                 this.config = normalizeToolApprovalConfig(rawConfig);
+                this.applyRuntimeConfig();
                 console.log(`[ToolApprovalManager] Configuration loaded from ${this.configPath}`);
                 if (this.config.debugMode) {
                     console.log('[ToolApprovalManager] Current Config:', JSON.stringify(this.config, null, 2));
                 }
             } else {
+                this.applyRuntimeConfig();
                 console.warn(`[ToolApprovalManager] Config file not found at ${this.configPath}, using defaults.`);
             }
         } catch (error) {
             console.error(`[ToolApprovalManager] Error loading config: ${error.message}`);
         }
+    }
+
+    applyRuntimeConfig() {
+        toolMarkerFuzzyMatcher.configure({
+            enabled: this.config.fuzzyToolMatching === true,
+            debugMode: this.config.debugMode === true
+        });
+
+        console.log(
+            `[ToolApprovalManager] Fuzzy tool marker matching: ${this.config.fuzzyToolMatching === true ? 'enabled' : 'disabled'}`
+        );
     }
 
     startWatching() {

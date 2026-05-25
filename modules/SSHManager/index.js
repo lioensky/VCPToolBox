@@ -9,6 +9,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const util = require('util');
 
 let SSHManagerClass = null;
 let instance = null;
@@ -19,6 +20,39 @@ let lastConfigPath = null;
 let lastConfigError = null;
 let lastClassPath = null;
 let lastClassError = null;
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function writeProcessLog(...args) {
+    process.stderr.write(`${util.format(...args)}\n`);
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    writeProcessLog(...args);
+}
+
+function logWarn(...args) {
+    if (isServerLoggerActive()) {
+        console.warn(...args);
+        return;
+    }
+    writeProcessLog(...args);
+}
 
 /**
  * 加载主机配置
@@ -43,7 +77,7 @@ function loadHostsConfig() {
                 delete require.cache[require.resolve(configPath)];
                 hostsConfig = require(configPath);
                 lastConfigPath = configPath;
-                console.error(`[SSHManager Module] 加载主机配置: ${configPath}`);
+                logInfo(`[SSHManager Module] 加载主机配置: ${configPath}`);
                 return hostsConfig;
             }
         } catch (e) {
@@ -54,7 +88,7 @@ function loadHostsConfig() {
     }
     
     // 默认配置（仅本地执行）
-    console.error('[SSHManager Module] 未找到主机配置文件，使用默认配置');
+    logWarn('[SSHManager Module] 未找到主机配置文件，使用默认配置');
     hostsConfig = {
         hosts: {
             local: {
@@ -101,7 +135,7 @@ function loadSSHManagerClass() {
                 delete require.cache[require.resolve(classPath)];
                 SSHManagerClass = require(classPath);
                 lastClassPath = classPath;
-                console.error(`[SSHManager Module] 加载 SSHManager 类: ${classPath}`);
+                logInfo(`[SSHManager Module] 加载 SSHManager 类: ${classPath}`);
                 return SSHManagerClass;
             }
         } catch (e) {
@@ -120,7 +154,7 @@ function loadSSHManagerClass() {
  * @param {Object} [options] 初始化选项，如 { basePath: __dirname }
  * @returns {Object|null} SSHManager 实例或 null
  */
-function getSSHManager(providedConfig = null, options = {}) {
+function getLocalSSHManager(providedConfig = null, options = {}) {
     if (instance) return instance;
 
     lastError = null;
@@ -138,13 +172,38 @@ function getSSHManager(providedConfig = null, options = {}) {
     try {
         // 将 config 和 options (包含 basePath) 传递给构造函数
         instance = new ManagerClass(config, options);
-        console.error('[SSHManager Module] 创建新的 SSHManager 单例实例', options.basePath ? `(basePath: ${options.basePath})` : '');
+        logInfo('[SSHManager Module] 创建新的 SSHManager 单例实例', options.basePath ? `(basePath: ${options.basePath})` : '');
         return instance;
     } catch (e) {
         lastError = e.message;
         console.error(`[SSHManager Module] 创建 SSHManager 实例失败: ${e.message}`);
         return null;
     }
+}
+
+/**
+ * 获取 SSHManager 单例实例
+ * 自动检测环境：如果在 stdio 插件子进程内（SSH_MANAGER_SOCK 存在），使用 UDS 代理模式
+ * @param {Object} [providedConfig] 可选的主机配置，若提供则优先使用
+ * @param {Object} [options] 初始化选项，如 { basePath: __dirname }
+ * @returns {Object|null} SSHManager 实例或 null
+ */
+function getSSHManager(providedConfig = null, options = {}) {
+    // 检查是否在 stdio 插件子进程内（通过环境变量判断）
+    const proxySock = process.env.SSH_MANAGER_SOCK;
+    if (proxySock) {
+        try {
+            const { SSHManagerProxy } = require('./proxy');
+            const proxy = new SSHManagerProxy(proxySock);
+            logInfo('[SSHManager Module] 使用 UDS 代理模式连接到常驻服务:', proxySock);
+            return proxy;
+        } catch (e) {
+            console.error('[SSHManager Module] 代理模式初始化失败，回退到本地模式:', e.message);
+        }
+    }
+
+    // 本地模式（原有逻辑）
+    return getLocalSSHManager(providedConfig, options);
 }
 
 /**
@@ -157,7 +216,7 @@ async function resetSSHManager() {
             if (typeof instance.disconnectAll === 'function') {
                 await instance.disconnectAll();
             }
-            console.error('[SSHManager Module] SSHManager 实例已断开所有连接');
+            logInfo('[SSHManager Module] SSHManager 实例已断开所有连接');
         } catch (e) {
             console.error(`[SSHManager Module] 断开连接时出错: ${e.message}`);
         }
@@ -165,7 +224,7 @@ async function resetSSHManager() {
         instance = null;
         hostsConfig = null;
         SSHManagerClass = null;
-        console.error('[SSHManager Module] SSHManager 实例已重置');
+        logInfo('[SSHManager Module] SSHManager 实例已重置');
     }
 }
 
@@ -200,7 +259,7 @@ function isAvailable() {
  * @returns {Object} 状态信息
  */
 function getStatus() {
-    return {
+    const result = {
         available: isAvailable(),
         instanceCreated: instance !== null,
         configLoaded: hostsConfig !== null,
@@ -211,6 +270,10 @@ function getStatus() {
         classPath: lastClassPath,
         classError: lastClassError
     };
+    if (instance && typeof instance.getPoolStats === 'function') {
+        result.poolStats = instance.getPoolStats();
+    }
+    return result;
 }
 
 module.exports = {

@@ -131,7 +131,7 @@
         toolItemsCache.clear(); // 清空DOM缓存
         
         if (allTools.length === 0) {
-            elements.toolsList.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-color-secondary);">暂无可用工具</p>';
+            elements.toolsList.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--secondary-text);">暂无可用工具</p>';
             return;
         }
 

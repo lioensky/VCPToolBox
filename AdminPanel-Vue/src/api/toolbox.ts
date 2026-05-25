@@ -82,5 +82,29 @@ export const toolboxApi = {
       uiOptions
     );
   },
+
+  async listToolboxFiles(
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<{ files: string[]; folderStructure: Record<string, unknown> }> {
+    return requestWithUi(
+      {
+        url: "/admin_api/toolbox/files",
+      },
+      uiOptions
+    );
+  },
+
+  async deleteToolboxFile(
+    fileName: string,
+    uiOptions: RequestUiOptions = {}
+  ): Promise<void> {
+    await requestWithUi(
+      {
+        url: `/admin_api/toolbox/file/${encodeURIComponent(fileName)}`,
+        method: "DELETE",
+      },
+      uiOptions
+    );
+  },
 };
 

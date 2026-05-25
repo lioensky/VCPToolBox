@@ -19,7 +19,7 @@
 
   <!-- 筛选器 -->
   <div class="placeholder-viewer-filters">
-    <label for="placeholder-filter-type">快速跳转：</label>
+    <label for="placeholder-filter-type">类型筛选：</label>
     <select
       id="placeholder-filter-type"
       :value="selectedType"
@@ -43,7 +43,7 @@
       id="placeholder-filter-keyword"
       :value="filterKeyword"
       class="placeholder-filter-input"
-      placeholder="搜索占位符名称或预览…"
+      placeholder="搜索占位符名称、预览或描述…"
       @input="
         emit('update:filterKeyword', ($event.target as HTMLInputElement).value)
       "

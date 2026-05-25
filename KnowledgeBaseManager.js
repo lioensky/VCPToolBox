@@ -28,8 +28,8 @@ class KnowledgeBaseManager {
         this.config = {
             rootPath: config.rootPath || process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote'),
             storePath: config.storePath || process.env.KNOWLEDGEBASE_STORE_PATH || path.join(__dirname, 'VectorStore'),
-            apiKey: process.env.EMBEDDING_API_KEY || process.env.API_Key,
-            apiUrl: process.env.EMBEDDING_API_URL || process.env.API_URL,
+            apiKey: process.env.API_Key,
+            apiUrl: process.env.API_URL,
             model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
             dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
@@ -93,8 +93,11 @@ class KnowledgeBaseManager {
         this.db = new Database(dbPath); // 同步连接
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('synchronous = NORMAL');
+        // 🛡️ SQLite 默认不启用外键；必须显式开启，避免文件删除后 chunks/file_tags 残留。
+        this.db.pragma('foreign_keys = ON');
 
         this._initSchema();
+        this._cleanupDatabaseOrphans();
 
         // 1. 初始化全局 Tag 索引 (优先从磁盘加载或从 SQLite 重建)
         const tagCapacity = 50000;
@@ -140,6 +143,7 @@ class KnowledgeBaseManager {
         // 初始化浪潮引擎
         this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams);
         await this.tagMemoEngine.initialize();
+        this._cleanupStalePairwiseSimilarityModels();
 
         this._startWatcher();
         this._startRagParamsWatcher();
@@ -217,6 +221,19 @@ class KnowledgeBaseManager {
                 neighbor_count INTEGER NOT NULL,
                 computed_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            -- 🌟 TagMemo V8.2: 持久化的 Tag 对语义距离 (Pairwise Cosine Similarity)
+            -- 与 tag_intrinsic_residuals 平级，构成"节点质量 + 边距离"的物理量底座。
+            CREATE TABLE IF NOT EXISTS tag_pair_similarity (
+                tag_a INTEGER NOT NULL,
+                tag_b INTEGER NOT NULL,           -- 约定 tag_a < tag_b，消除重复
+                similarity REAL NOT NULL,         -- [-1, 1] 余弦，不预归一化
+                model_sig TEXT NOT NULL,          -- embedding 模型签名 (含维度)，跨模型自动失效
+                computed_at INTEGER NOT NULL,
+                PRIMARY KEY (tag_a, tag_b),
+                FOREIGN KEY (tag_a) REFERENCES tags(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_b) REFERENCES tags(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pair_sim_model ON tag_pair_similarity(model_sig);
             CREATE TABLE IF NOT EXISTS kv_store (
                 key TEXT PRIMARY KEY,
                 value TEXT,
@@ -242,6 +259,147 @@ class KnowledgeBaseManager {
             this.db.prepare("ALTER TABLE file_tags ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
         } catch (e) {
             // 如果列已存在，SQLite 会报错，忽略即可
+        }
+    }
+
+    _decodeVectorBlob(blob, dim, label = 'vector') {
+        if (blob instanceof Float32Array) {
+            return blob.length === dim ? blob : null;
+        }
+        if (!blob || typeof blob.length !== 'number') {
+            return null;
+        }
+
+        const expectedBytes = dim * Float32Array.BYTES_PER_ELEMENT;
+        if (blob.length !== expectedBytes) {
+            console.warn(`[KnowledgeBase] ⚠️ Invalid ${label} blob length: expected ${expectedBytes}, got ${blob.length}`);
+            return null;
+        }
+
+        if (blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+            return new Float32Array(blob.buffer, blob.byteOffset, dim);
+        }
+
+        const copied = Buffer.from(blob);
+        return new Float32Array(copied.buffer, copied.byteOffset, dim);
+    }
+
+    _queryByChunks(sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
+        if (!Array.isArray(values) || values.length === 0) return [];
+        const rows = [];
+
+        for (let i = 0; i < values.length; i += chunkSize) {
+            const batch = values.slice(i, i + chunkSize);
+            const placeholders = batch.map(() => '?').join(',');
+            rows.push(...this.db.prepare(`${sqlPrefix} IN (${placeholders})${sqlSuffix}`).all(...batch));
+        }
+
+        return rows;
+    }
+
+    _cleanupStalePairwiseSimilarityModels() {
+        try {
+            if (!this.tagMemoEngine?.modelSig) return;
+            const result = this.db.prepare(
+                'DELETE FROM tag_pair_similarity WHERE model_sig != ?'
+            ).run(this.tagMemoEngine.modelSig);
+
+            if (result.changes > 0) {
+                console.warn(`[KnowledgeBase] 🧹 Removed ${result.changes} stale pairwise similarity row(s) from old embedding model signatures.`);
+            }
+        } catch (e) {
+            console.warn('[KnowledgeBase] ⚠️ Failed to cleanup stale pairwise similarity model rows:', e.message);
+        }
+    }
+
+    /**
+     * 🧹 启动期数据库修复：
+     * - 清理旧版本在 foreign_keys 未开启时遗留的 chunks/file_tags 孤儿记录
+     * - 清理服务器关闭/重启期间漏掉 unlink 事件造成的已不存在文件记录
+     * - 若清理影响到持久化日记索引，删除旧索引文件，避免 stale chunk id 被再次加载
+     */
+    _cleanupDatabaseOrphans() {
+        try {
+            const affectedDiaries = new Set();
+
+            const missingFiles = this.db.prepare('SELECT id, path, diary_name FROM files').all()
+                .filter(row => !fsSync.existsSync(path.join(this.config.rootPath, row.path)));
+
+            missingFiles.forEach(row => affectedDiaries.add(row.diary_name));
+
+            const orphanChunkCount = this.db.prepare(`
+                SELECT COUNT(*) as count
+                FROM chunks c
+                LEFT JOIN files f ON c.file_id = f.id
+                WHERE f.id IS NULL
+            `).get().count || 0;
+
+            const cleanupTransaction = this.db.transaction(() => {
+                for (const row of missingFiles) {
+                    this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
+                    this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
+                    this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+                }
+
+                this.db.prepare(`
+                    DELETE FROM file_tags
+                    WHERE file_id NOT IN (SELECT id FROM files)
+                       OR tag_id NOT IN (SELECT id FROM tags)
+                `).run();
+
+                this.db.prepare(`
+                    DELETE FROM chunks
+                    WHERE file_id NOT IN (SELECT id FROM files)
+                `).run();
+            });
+
+            cleanupTransaction();
+
+            for (const diaryName of affectedDiaries) {
+                this._deletePersistedDiaryIndex(diaryName);
+            }
+            if (orphanChunkCount > 0) {
+                // 孤儿 chunks 已经丢失 diary_name，只能保守删除全部持久化日记索引，后续从 SQLite 重建。
+                this._deleteAllPersistedDiaryIndexes();
+            }
+
+            if (missingFiles.length > 0 || orphanChunkCount > 0 || affectedDiaries.size > 0) {
+                console.warn(`[KnowledgeBase] 🧹 Startup cleanup complete. Removed ${missingFiles.length} missing file record(s), ${orphanChunkCount} orphan chunk(s), touched ${affectedDiaries.size} diary index(es).`);
+            }
+        } catch (e) {
+            console.error('[KnowledgeBase] ❌ Startup database cleanup failed:', e.message || e);
+        }
+    }
+
+    _deletePersistedDiaryIndex(diaryName) {
+        const shouldPersist = this.config.persistDefault || this.config.persistFolders.has(diaryName) || diaryName.endsWith('簇');
+        if (!shouldPersist) return;
+
+        const safeName = crypto.createHash('md5').update(diaryName).digest('hex');
+        const idxPath = path.join(this.config.storePath, `index_diary_${safeName}.usearch`);
+        const tmpPath = `${idxPath}.tmp`;
+
+        try {
+            if (fsSync.existsSync(idxPath)) {
+                fsSync.unlinkSync(idxPath);
+                console.warn(`[KnowledgeBase] 🧹 Removed stale persisted index for diary "${diaryName}". It will be rebuilt from SQLite.`);
+            }
+            if (fsSync.existsSync(tmpPath)) fsSync.unlinkSync(tmpPath);
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to remove stale persisted index for "${diaryName}": ${e.message}`);
+        }
+    }
+
+    _deleteAllPersistedDiaryIndexes() {
+        try {
+            const files = fsSync.readdirSync(this.config.storePath);
+            for (const file of files) {
+                if (!/^index_diary_[a-f0-9]{32}\.usearch(?:\.tmp)?$/i.test(file)) continue;
+                fsSync.unlinkSync(path.join(this.config.storePath, file));
+            }
+            console.warn('[KnowledgeBase] 🧹 Removed all persisted diary indexes because orphan chunks had lost diary ownership metadata.');
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to remove all persisted diary indexes: ${e.message}`);
         }
     }
 
@@ -280,11 +438,11 @@ class KnowledgeBaseManager {
             if (fsSync.existsSync(idxPath)) {
                 idx = VexusIndex.load(idxPath, null, this.config.dimension, capacity);
             } else {
-                // 💡 核心修复：如果索引文件不存在，说明是首次创建。
-                // 此时不应从数据库恢复，因为调用者（_flushBatch）正准备写入初始数据。
-                // 从数据库恢复的逻辑只适用于启动时加载或文件损坏后的重建。
-                console.log(`[KnowledgeBase] Index file not found for ${fileName}, creating a new empty one.`);
+                console.log(`[KnowledgeBase] Index file not found for ${fileName}, rebuilding from SQLite when possible.`);
                 idx = new VexusIndex(this.config.dimension, capacity);
+                if (filterDiaryName) {
+                    await this._recoverIndexFromDB(idx, tableType, filterDiaryName);
+                }
             }
         } catch (e) {
             console.error(`[KnowledgeBase] Index load error (${fileName}): ${e.message}`);
@@ -469,10 +627,10 @@ class KnowledgeBaseManager {
         if (hydratedResults.length > 0 && tagInfo) {
             const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id',
+                    uniqueFileIds
+                );
 
                 // 构建 file_id → [tagName, ...] 映射
                 const fileTagNameMap = new Map();
@@ -579,10 +737,10 @@ class KnowledgeBaseManager {
         if (hydratedResults.length > 0 && tagInfo) {
             const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id',
+                    uniqueFileIds
+                );
 
                 const fileTagNameMap = new Map();
                 for (const row of fileTagRows) {
@@ -674,9 +832,12 @@ class KnowledgeBaseManager {
         try {
             const row = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?").get(`diary_name:${diaryName}`);
             if (row && row.vector) {
-                const vec = Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
-                this.diaryNameVectorCache.set(diaryName, vec);
-                return vec;
+                const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, `diary_name:${diaryName}`);
+                if (decoded) {
+                    const vec = Array.from(decoded);
+                    this.diaryNameVectorCache.set(diaryName, vec);
+                    return vec;
+                }
             }
         } catch (e) {
             console.warn(`[KnowledgeBase] DB lookup failed for diary name: ${diaryName}`);
@@ -694,8 +855,9 @@ class KnowledgeBaseManager {
         let count = 0;
         for (const row of stmt.iterate()) {
             const name = row.key.split(':')[1];
-            if (row.vector.length === this.config.dimension * 4) {
-                const vec = Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, row.key);
+            if (decoded) {
+                const vec = Array.from(decoded);
                 this.diaryNameVectorCache.set(name, vec);
                 count++;
             }
@@ -732,7 +894,8 @@ class KnowledgeBaseManager {
             const row = stmt.get(key);
 
             if (row && row.vector) {
-                return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+                const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, key);
+                return decoded ? Array.from(decoded) : null;
             }
 
             // 2. 未命中，去查 Embedding API
@@ -761,7 +924,8 @@ class KnowledgeBaseManager {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
         const row = stmt.get(text);
         if (row && row.vector) {
-            return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, 'chunk:content_lookup');
+            return decoded ? Array.from(decoded) : null;
         }
         return null;
     }
@@ -791,7 +955,7 @@ class KnowledgeBaseManager {
             const processed = rows.map(r => ({
                 id: r.id,
                 text: r.text,
-                vector: r.vector ? new Float32Array(r.vector.buffer, r.vector.byteOffset, this.config.dimension) : null,
+                vector: this._decodeVectorBlob(r.vector, this.config.dimension, `chunk:${r.id}`),
                 sourceFile: r.sourceFile
             }));
             allResults.push(...processed);
@@ -834,78 +998,133 @@ class KnowledgeBaseManager {
     }
 
     _startWatcher() {
-        if (!this.watcher) {
-            const handleFile = (filePath) => {
-                const relPath = path.relative(this.config.rootPath, filePath);
-                // 提取第一级目录作为日记本名称
-                const parts = relPath.split(path.sep);
-                const diaryName = parts.length > 1 ? parts[0] : 'Root';
+        if (this.watcher) return;
 
-                if (this.config.ignoreFolders.includes(diaryName)) return;
-                // 🛠️ 修复：ignorePrefixes/ignoreSuffixes 同时应用于日记本（文件夹）名和文件名
-                if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix))) return;
-                if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix))) return;
-                const fileName = path.basename(relPath);
-                if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
-                if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;
-                if (!filePath.match(/\.(md|txt)$/i)) return;
+        const handleFile = (filePath) => {
+            const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
+            const deferEmbeddingProcessing = !hasEmbeddingBackend(embeddingConfig);
 
-                const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
-                const deferEmbeddingProcessing = !hasEmbeddingBackend(embeddingConfig);
-
-                this.pendingFiles.add(filePath);
-                if (this.pendingFiles.size >= this.config.maxBatchSize) {
-                    if (deferEmbeddingProcessing) {
-                        this._scheduleBatch();
-                    } else {
-                        this._flushBatch();
-                    }
-                } else {
+            this.pendingFiles.add(filePath);
+            if (this.pendingFiles.size >= this.config.maxBatchSize) {
+                if (deferEmbeddingProcessing) {
                     this._scheduleBatch();
+                } else {
+                    this._flushBatch();
                 }
-            };
-
-            const handleFileWithLock = async (filePath) => {
-                // 🛡️ BUG 2 修复：文件系统竞态保护
-                // 如果文件正在被快速修改，等待其稳定后再处理
-                try {
-                    const stats1 = await fs.stat(filePath);
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    const stats2 = await fs.stat(filePath);
-
-                    if (stats1.size === stats2.size && stats1.mtimeMs === stats2.mtimeMs) {
-                        handleFile(filePath);
-                    } else {
-                        // 如果还在变动，推迟 1 秒再试
-                        // console.log(`[KnowledgeBase] ⏳ File "${path.basename(filePath)}" is still being written, deferring...`);
-                        setTimeout(() => handleFileWithLock(filePath), 1000);
-                    }
-                } catch (e) {
-                    // 如果文件在检查期间被删除了，忽略即可
-                    if (e.code !== 'ENOENT') console.warn(`[KnowledgeBase] Stability check error:`, e.message);
-                }
-            };
-
-            const ignoredPatterns = [
-                '**/node_modules/**',
-                '**/.git/**',
-                '**/dist/**',
-                '**/target/**',
-                '**/image/**',
-                '**/.*'
-            ];
-            if (Array.isArray(this.config.ignoreFolders)) {
-                this.config.ignoreFolders.forEach(folder => {
-                    if (folder) ignoredPatterns.push(`**/${folder}/**`);
-                });
+            } else {
+                this._scheduleBatch();
             }
+        };
 
-            this.watcher = chokidar.watch(this.config.rootPath, {
-                ignored: ignoredPatterns,
-                ignoreInitial: !this.config.fullScanOnStartup
-            });
-            this.watcher.on('add', handleFileWithLock).on('change', handleFileWithLock).on('unlink', fp => this._handleDelete(fp));
+        const handleFileWithLock = async (filePath) => {
+            // 🛡️ BUG 2 修复：文件系统竞态保护
+            // 如果文件正在被快速修改，等待其稳定后再处理
+            try {
+                const stats1 = await fs.stat(filePath);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const stats2 = await fs.stat(filePath);
+
+                if (stats1.size === stats2.size && stats1.mtimeMs === stats2.mtimeMs) {
+                    handleFile(filePath);
+                } else {
+                    // 如果还在变动，推迟 1 秒再试
+                    setTimeout(() => handleFileWithLock(filePath), 1000);
+                }
+            } catch (e) {
+                if (e.code !== 'ENOENT') console.warn(`[KnowledgeBase] Stability check error:`, e.message);
+            }
+        };
+
+        // 尝试加载并启动 Rust 高性能原生监听器
+        if (VexusIndex && VexusIndex.prototype && typeof VexusIndex.prototype.start_watch === 'undefined') {
+            // 动态获取导出的 VexusWatcher 类
+            try {
+                const vexusModule = require('./rust-vexus-lite');
+                if (vexusModule.VexusWatcher) {
+                    const rustWatcher = new vexusModule.VexusWatcher();
+                    
+                    const handleRustEvent = (...args) => {
+                        try {
+                            // napi-rs ThreadsafeFunction 在不同签名/版本下可能以
+                            // (payload) 或 (error, payload) 形式调用 JS 回调。
+                            // 因此这里从所有参数中选取第一个字符串作为事件载荷。
+                            const jsonPayload = args.find(arg => typeof arg === 'string');
+                            if (!jsonPayload) {
+                                console.warn('[KnowledgeBase] Ignored Rust watcher callback without string payload:', args);
+                                return;
+                            }
+
+                            const { event, path: filePath } = JSON.parse(jsonPayload);
+                            if (event === 'unlink') {
+                                this._handleDelete(filePath);
+                            } else {
+                                handleFileWithLock(filePath);
+                            }
+                        } catch (err) {
+                            console.error('[KnowledgeBase] Failed to parse Rust watcher event:', err);
+                        }
+                    };
+
+                    const startWatch = rustWatcher.startWatch || rustWatcher.start_watch;
+                    if (typeof startWatch !== 'function') {
+                        throw new Error('VexusWatcher startWatch/start_watch method not found');
+                    }
+
+                    startWatch.call(rustWatcher, {
+                        rootPath: this.config.rootPath,
+                        ignoreFolders: this.config.ignoreFolders || [],
+                        ignorePrefixes: this.config.ignorePrefixes || [],
+                        ignoreSuffixes: this.config.ignoreSuffixes || [],
+                    }, handleRustEvent);
+
+                    this.watcher = rustWatcher;
+                    this.watcherType = 'rust';
+                    console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
+                    return;
+                }
+            } catch (e) {
+                console.warn('[KnowledgeBase] ⚠️ Failed to initialize Rust Watcher, falling back to Chokidar:', e.message);
+            }
         }
+
+        // 降级方案：使用 Chokidar 监听
+        console.log('[KnowledgeBase] 🔄 Using Chokidar watcher fallback...');
+        const handleChokidarFile = (filePath) => {
+            const relPath = path.relative(this.config.rootPath, filePath);
+            const parts = relPath.split(path.sep);
+            const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+            if (this.config.ignoreFolders.includes(diaryName)) return;
+            if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix))) return;
+            if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix))) return;
+            const fileName = path.basename(relPath);
+            if (this.config.ignorePrefixes.some(prefix => fileName.startsWith(prefix))) return;
+            if (this.config.ignoreSuffixes.some(suffix => fileName.endsWith(suffix))) return;
+            if (!filePath.match(/\.(md|txt)$/i)) return;
+
+            handleFileWithLock(filePath);
+        };
+
+        const ignoredPatterns = [
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/dist/**',
+            '**/target/**',
+            '**/image/**',
+            '**/.*'
+        ];
+        if (Array.isArray(this.config.ignoreFolders)) {
+            this.config.ignoreFolders.forEach(folder => {
+                if (folder) ignoredPatterns.push(`**/${folder}/**`);
+            });
+        }
+
+        this.watcher = chokidar.watch(this.config.rootPath, {
+            ignored: ignoredPatterns,
+            ignoreInitial: !this.config.fullScanOnStartup
+        });
+        this.watcher.on('add', handleChokidarFile).on('change', handleChokidarFile).on('unlink', fp => this._handleDelete(fp));
+        this.watcherType = 'chokidar';
     }
 
     _scheduleBatch() {
@@ -1007,6 +1226,7 @@ class KnowledgeBaseManager {
 
             const newTags = Array.from(newTagsSet);
             // 3. Embedding API Calls
+
             let chunkVectors = [];
             if (allChunksWithMeta.length > 0) {
                 const texts = allChunksWithMeta.map(i => i.text);
@@ -1035,6 +1255,14 @@ class KnowledgeBaseManager {
 
                 const insertTag = this.db.prepare('INSERT INTO tags (name, vector) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET vector = excluded.vector');
                 const getTagId = this.db.prepare('SELECT id FROM tags WHERE name = ?');
+                // 🌟 V8.2: 向量更新失效钩子 — tag 向量被(重)写入时，删除涉及该 tag 的 sim 行，
+                // 由 Rust 增量补回，防止陈旧缓存污染。
+                const invalidatePairSim = this.db.prepare(
+                    'DELETE FROM tag_pair_similarity WHERE tag_a = ? OR tag_b = ?'
+                );
+                const invalidateIntrinsicResidual = this.db.prepare(
+                    'DELETE FROM tag_intrinsic_residuals WHERE tag_id = ?'
+                );
 
                 newTags.forEach((t, i) => {
                     if (!tagVectors[i]) return; // 🛡️ 跳过向量化失败的 tag
@@ -1044,11 +1272,14 @@ class KnowledgeBaseManager {
                     const id = getTagId.get(t).id;
                     tagCache.set(t, { id, vector: vecBuf });
                     tagUpdates.push({ id, vec: vecFloat });
+                    // 失效旧的 pairwise similarity / intrinsic residual 记录
+                    invalidatePairSim.run(id, id);
+                    invalidateIntrinsicResidual.run(id);
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
-                const updateFile = this.db.prepare('UPDATE files SET checksum = ?, mtime = ?, size = ?, updated_at = ? WHERE id = ?');
-                const getFile = this.db.prepare('SELECT id FROM files WHERE path = ?');
+                const updateFile = this.db.prepare('UPDATE files SET checksum = ?, mtime = ?, size = ?, updated_at = ?, diary_name = ? WHERE id = ?');
+                const getFile = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?');
                 const getOldChunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?'); // 💡 新增
                 const delChunks = this.db.prepare('DELETE FROM chunks WHERE file_id = ?');
                 const delRels = this.db.prepare('DELETE FROM file_tags WHERE file_id = ?');
@@ -1082,7 +1313,12 @@ class KnowledgeBaseManager {
                                 deletions.get(dName).push(...oldChunkIds);
                             }
 
-                            updateFile.run(doc.checksum, doc.mtime, doc.size, now, fileId);
+                            if (fRow.diary_name !== doc.diaryName) {
+                                if (!deletions.has(fRow.diary_name)) deletions.set(fRow.diary_name, []);
+                                deletions.get(fRow.diary_name).push(...oldChunkIds);
+                            }
+
+                            updateFile.run(doc.checksum, doc.mtime, doc.size, now, doc.diaryName, fileId);
                             delChunks.run(fileId);
                             delRels.run(fileId);
                         } else {
@@ -1120,7 +1356,17 @@ class KnowledgeBaseManager {
                 for (const [dName, chunkIds] of deletions) {
                     const idx = await this._getOrLoadDiaryIndex(dName);
                     if (idx && idx.remove) {
-                        chunkIds.forEach(id => idx.remove(id));
+                        chunkIds.forEach(id => {
+                            try {
+                                idx.remove(id);
+                            } catch (e) {
+                                // usearch 对不存在的 id 可能抛错；删除路径必须保持幂等，避免批处理重试循环。
+                                if (e.message && !/not found|missing|absent/i.test(e.message)) {
+                                    console.warn(`[KnowledgeBase] ⚠️ Failed to remove stale vector ${id} from "${dName}": ${e.message}`);
+                                }
+                            }
+                        });
+                        this._scheduleIndexSave(dName);
                     }
                 }
             }
@@ -1231,11 +1477,28 @@ class KnowledgeBaseManager {
             const row = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?').get(relPath);
             if (!row) return;
             const chunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(row.id);
-            this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+
+            // 🛡️ 不依赖 SQLite 外键级联：历史数据库/连接若未开启 foreign_keys，会留下 file_tags/chunks 垃圾，
+            // 大批量移动后会让 TagMemo 的延迟矩阵重建扫描膨胀数据，造成 CPU 长时间跑满。
+            const deleteTransaction = this.db.transaction(() => {
+                this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
+                this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
+                this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+            });
+            deleteTransaction();
 
             const idx = await this._getOrLoadDiaryIndex(row.diary_name);
             if (idx && idx.remove) {
-                chunkIds.forEach(c => idx.remove(c.id));
+                chunkIds.forEach(c => {
+                    try {
+                        idx.remove(c.id);
+                    } catch (e) {
+                        // 删除事件可能乱序/重复；向量不存在不应导致错误风暴或后续处理停滞。
+                        if (e.message && !/not found|missing|absent/i.test(e.message)) {
+                            console.warn(`[KnowledgeBase] ⚠️ Failed to remove vector ${c.id} from "${row.diary_name}": ${e.message}`);
+                        }
+                    }
+                });
                 this._scheduleIndexSave(row.diary_name);
             }
         } catch (e) { console.error(`[KnowledgeBase] Delete error:`, e); }
@@ -1421,7 +1684,17 @@ class KnowledgeBaseManager {
 
     async shutdown() {
         console.log('[KnowledgeBase] shutting down...');
-        await this.watcher?.close();
+        if (this.watcher) {
+            if (this.watcherType === 'rust') {
+                const stopWatch = this.watcher.stopWatch || this.watcher.stop_watch;
+                if (typeof stopWatch === 'function') {
+                    stopWatch.call(this.watcher);
+                }
+            } else if (typeof this.watcher.close === 'function') {
+                await this.watcher.close();
+            }
+            this.watcher = null;
+        }
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;

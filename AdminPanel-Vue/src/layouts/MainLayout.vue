@@ -6,6 +6,8 @@
       'sidebar-collapsed': isSidebarCollapsed,
     }"
   >
+    <a class="skip-link" href="#config-details-container">跳到主要内容</a>
+
     <SolarSystemBg />
 
     <!-- 顶栏组件（包裹在过渡容器中） -->
@@ -70,7 +72,7 @@
         <!-- 路由视图 -->
         <router-view v-slot="{ Component, route }">
           <transition name="fade" mode="out-in">
-            <component :is="Component" :key="route.fullPath" />
+            <component :is="Component" :key="route.fullPath" :data-page="String(route.name || '')" />
           </transition>
         </router-view>
       </main>
@@ -168,6 +170,25 @@ void contentRef;
   transition:
     background-color var(--transition-normal),
     color var(--transition-normal);
+}
+
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 12px;
+  z-index: 10004;
+  padding: 10px 20px;
+  background: var(--button-bg);
+  color: var(--on-accent-text);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: var(--font-size-helper);
+  text-decoration: none;
+  transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+  top: 12px;
 }
 
 .container {

@@ -12,6 +12,22 @@ export type { Preprocessor, ToolApprovalConfig } from "@/types/api.admin-config"
 
 interface MainConfigResponse {
   content?: string;
+  exampleContent?: string;
+  source?: "config.env" | "config.env.example" | "none";
+  hasCustomConfig?: boolean;
+  configExists?: boolean;
+  exampleExists?: boolean;
+  configMatchesExample?: boolean;
+}
+
+export interface MainConfigData {
+  content: string;
+  exampleContent: string;
+  source: "config.env" | "config.env.example" | "none";
+  hasCustomConfig: boolean;
+  configExists: boolean;
+  exampleExists: boolean;
+  configMatchesExample: boolean;
 }
 
 interface PreprocessorOrderResponse {
@@ -22,14 +38,33 @@ interface PreprocessorOrderResponse {
 export const adminConfigApi = {
   async getMainConfig(
     uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
-  ): Promise<string> {
+  ): Promise<MainConfigData> {
     const response = await requestWithUi<MainConfigResponse>(
       {
         url: "/admin_api/config/main",
       },
       uiOptions
     );
-    return response.content || "";
+
+    const source =
+      response.source === "config.env" ||
+      response.source === "config.env.example" ||
+      response.source === "none"
+        ? response.source
+        : "config.env";
+
+    return {
+      content: response.content || "",
+      exampleContent: response.exampleContent || "",
+      source,
+      hasCustomConfig:
+        response.hasCustomConfig === true ||
+        (response.hasCustomConfig !== false && source === "config.env"),
+      configExists: response.configExists !== false,
+      exampleExists:
+        response.exampleExists === true || source === "config.env.example",
+      configMatchesExample: response.configMatchesExample === true,
+    };
   },
 
   async saveMainConfig(

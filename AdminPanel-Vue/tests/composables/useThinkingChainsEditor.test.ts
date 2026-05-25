@@ -336,6 +336,18 @@ describe("useThinkingChainsEditor", () => {
     expect(state.thinkingChains.value[0].kSequence).toEqual([5, 1]);
   });
 
+  it("adds clusters in batch mode and skips duplicates", () => {
+    const state = useThinkingChainsEditor();
+    state.thinkingChains.value = [
+      createTestChain("batch-theme", ["base"], [5]),
+    ];
+
+    state.addClusters(0, ["alpha", "base", "beta", "alpha", " "]);
+
+    expect(state.thinkingChains.value[0].clusters).toEqual(["base", "alpha", "beta"]);
+    expect(state.thinkingChains.value[0].kSequence).toEqual([5, 1, 1]);
+  });
+
   it("keeps available-cluster preview stable when the pointer hovers the preview item itself", () => {
     const state = useThinkingChainsEditor();
     state.thinkingChains.value = [
@@ -509,6 +521,7 @@ describe("useThinkingChainsEditor", () => {
     expect(Object.keys(state).sort()).toEqual(
       [
         "addCluster",
+        "addClusters",
         "addThinkingChain",
         "availableClusters",
         "dragGhost",

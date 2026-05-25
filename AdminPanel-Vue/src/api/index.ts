@@ -67,6 +67,9 @@ export type * from './schedule'
 export { dreamApi } from './dream'
 export type * from './dream'
 
+export { emojisApi } from './emojis'
+export type * from './emojis'
+
 export { toolboxApi } from './toolbox'
 export type * from './toolbox'
 
@@ -93,3 +96,7 @@ export type * from './forum-assistant'
 
 export { aiImageAgentsApi } from './aiImageAgents'
 export type * from './aiImageAgents'
+
+// 插件商店 API
+export { pluginStoreApi } from './pluginStore'
+export type * from './pluginStore'

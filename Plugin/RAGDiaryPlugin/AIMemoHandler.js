@@ -106,15 +106,16 @@ class AIMemoHandler {
                         }
                     }
                 } else {
-                    console.warn(`[AIMemoHandler] 预设 ${presetName} 加载失败，将使用默认配置。`);
+                    // ENOENT 等情况：用户没配预设 JSON，直接用 config.env 的默认配置即可
+                    console.warn(`[AIMemoHandler] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
                 }
             }
 
             // --- 缓存机制 ---
             const cacheKey = this._getCacheKey(dbNames, userContent, aiContent, presetContentForCache);
-            const cached = this.cacheManager.get('aiMemo', cacheKey);
+            const cached = this.cacheManager.get('aimemo', cacheKey);
             if (cached) {
-                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aiMemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
+                console.log(`[AIMemoHandler] ✅ 命中统一缓存 (aimemo)，直接返回结果。Key: ${cacheKey.substring(0, 8)}...`);
                 if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
                     this.ragPlugin.pushVcpInfo({
                         ...cached.vcpInfo,
@@ -123,7 +124,7 @@ class AIMemoHandler {
                 }
                 return cached.content;
             }
-            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aiMemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
+            console.log(`[AIMemoHandler] ❌ 缓存未命中 (aimemo)，继续处理。Key: ${cacheKey.substring(0, 8)}...`);
             // --- 缓存机制结束 ---
 
             // 1. 收集所有日记文件（基于文件级别，而非合并后的字符串）
@@ -170,12 +171,16 @@ class AIMemoHandler {
                 }
             }
 
-            this.cacheManager.set('aiMemo', cacheKey, resultObject);
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
             return resultObject.content;
 
         } catch (error) {
-            console.error(`[AIMemoHandler] 聚合处理失败:`, error);
-            return `[AIMemo聚合处理失败: ${error.message}]`;
+            // 显式打印 message/stack，避免某些日志框架 JSON 序列化 Error 时输出空 {}
+            console.error(`[AIMemoHandler] 聚合处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler] Stack:`, error.stack);
+            }
+            return `[AIMemo聚合处理失败: ${error?.message || '未知错误'}]`;
         }
     }
 
@@ -195,15 +200,20 @@ class AIMemoHandler {
     }
 
     async _loadPresetRaw(presetName) {
+        const presetPath = path.join(__dirname, 'MoreAIMemoPresets', `${presetName}.json`);
         try {
-            const presetPath = path.join(__dirname, 'MoreAIMemoPresets', `${presetName}.json`);
             const rawContent = await fs.readFile(presetPath, 'utf-8');
             return {
                 preset: JSON.parse(rawContent),
                 rawContent: rawContent
             };
         } catch (error) {
-            console.error(`[AIMemoHandler] Failed to load preset ${presetName}:`, error.message);
+            // ENOENT = 用户没配独立预设 JSON，是良性场景，由调用方统一打一条 WARN，这里静默返回 null
+            if (error.code === 'ENOENT') {
+                return null;
+            }
+            // 文件存在但解析失败（JSON 格式错误、权限问题等）才是真正的错误
+            console.error(`[AIMemoHandler] 预设 "${presetName}.json" 加载失败 (${error.code || 'unknown'}):`, error.message);
             return null;
         }
     }
@@ -297,6 +307,299 @@ class AIMemoHandler {
     async processAIMemo(dbName, userContent, aiContent, combinedQueryForDisplay) {
         // 直接调用聚合方法，传入单个日记本
         return await this.processAIMemoAggregated([dbName], userContent, aiContent, combinedQueryForDisplay);
+    }
+
+    /**
+     * 🌟 AIMemo+ 模式：先用 TagMemo 做向量级初筛（5x dynamicK），再交给 LLM 提取记忆
+     * 与 processAIMemoAggregated 的区别：知识库来自 TagMemo 召回的 chunks，而非整本日记文件
+     *
+     * @param {string[]} dbNames - 日记本名称数组
+     * @param {string} userContent
+     * @param {string} aiContent
+     * @param {string} combinedQueryForDisplay
+     * @param {string|null} presetName - 预设名称
+     * @param {object} tagMemoOptions - { queryVector, baseK, tagWeight, tagTruncationRatio, metrics, ghostTags }
+     * @returns {Promise<string>}
+     */
+    async processAIMemoPlusAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName, tagMemoOptions) {
+        if (!this.isConfigured() && !presetName) {
+            console.warn('[AIMemoHandler+] AIMemo is not configured. Skipping.');
+            return '[AIMemo功能未配置]';
+        }
+
+        const {
+            queryVector,
+            baseK = 5,
+            tagWeight = null,
+            tagTruncationRatio = 0.5,
+            metrics = {},
+            ghostTags = [],
+            sourceFiles = null,
+            cacheSalt = ''
+        } = tagMemoOptions || {};
+
+        const hasSourceFiles = Array.isArray(sourceFiles) && sourceFiles.length > 0;
+
+        if (!queryVector && !hasSourceFiles) {
+            console.warn('[AIMemoHandler+] 缺失 queryVector 且没有传入后缀管线来源，回退到完整 AIMemo 流程');
+            return await this.processAIMemoAggregated(dbNames, userContent, aiContent, combinedQueryForDisplay, presetName);
+        }
+
+        const searchK = Math.max(5, Math.round(baseK * 5));
+        console.log(
+            `[AIMemoHandler+] 启动 AIMemo+ 处理: ${dbNames.length} 个日记本, ` +
+            `baseK=${baseK}, searchK=${searchK}, tagWeight=${tagWeight}, ` +
+            `sourceMode=${hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank'}`
+        );
+
+        try {
+            // --- 加载预设配置（与 processAIMemoAggregated 一致）---
+            let currentConfig = { ...this.config };
+            let currentPromptTemplate = this.promptTemplate;
+            let presetContentForCache = '';
+
+            if (presetName) {
+                const presetResult = await this._loadPresetRaw(presetName);
+                if (presetResult) {
+                    const { preset, rawContent } = presetResult;
+                    presetContentForCache = rawContent;
+                    currentConfig = {
+                        model: preset.AIMemoModel || currentConfig.model,
+                        batchSize: parseInt(preset.AIMemoBatch) || currentConfig.batchSize,
+                        url: preset.AIMemoUrl || currentConfig.url,
+                        apiKey: preset.AIMemoApi || currentConfig.apiKey,
+                        maxTokensPerBatch: parseInt(preset.AIMemoMaxTokensPerBatch) || currentConfig.maxTokensPerBatch,
+                        promptFile: preset.AIMemoPrompt || currentConfig.promptFile
+                    };
+                    if (preset.AIMemoPrompt) {
+                        try {
+                            const presetPromptPath = path.join(__dirname, 'MoreAIMemoPresets', preset.AIMemoPrompt);
+                            currentPromptTemplate = await fs.readFile(presetPromptPath, 'utf-8');
+                            presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                        } catch (e) {
+                            try {
+                                const fallbackPromptPath = path.join(__dirname, preset.AIMemoPrompt);
+                                currentPromptTemplate = await fs.readFile(fallbackPromptPath, 'utf-8');
+                                presetContentForCache += `|prompt:${currentPromptTemplate}`;
+                            } catch (e2) {
+                                console.error(`[AIMemoHandler+] Failed to load preset prompt ${preset.AIMemoPrompt}:`, e2.message);
+                            }
+                        }
+                    }
+                } else {
+                    console.warn(`[AIMemoHandler+] 未找到预设 "${presetName}.json"，使用 config.env 默认 AIMemo 配置。`);
+                }
+            }
+
+            let sourceFingerprint = hasSourceFiles ? cacheSalt || 'suffix_pipeline' : 'tagmemo_prerank';
+            let normalizedSourceFiles = [];
+
+            if (hasSourceFiles) {
+                normalizedSourceFiles = sourceFiles
+                    .map((file, index) => ({
+                        name: file.name || `${file.dbName || dbNames[0] || 'AIMemoPlus'}_source_${index}`,
+                        content: file.content || file.text || '',
+                        tokens: Number.isFinite(file.tokens) ? file.tokens : this._estimateTokens(file.content || file.text || ''),
+                        dbName: file.dbName || dbNames[0] || 'AIMemoPlus',
+                        source: file.source || 'suffix_pipeline',
+                        score: file.score ?? file.rerank_score ?? 0
+                    }))
+                    .filter(file => file.content && file.content.trim().length > 0);
+
+                const fingerprintPayload = normalizedSourceFiles.map(file => ({
+                    name: file.name,
+                    dbName: file.dbName,
+                    source: file.source,
+                    content: file.content
+                }));
+                sourceFingerprint = crypto.createHash('sha256').update(JSON.stringify(fingerprintPayload)).digest('hex');
+                console.log(`[AIMemoHandler+] 复用完整后缀管线来源: ${normalizedSourceFiles.length} 个候选片段, fingerprint=${sourceFingerprint.substring(0, 8)}...`);
+            }
+
+            // --- 缓存机制 ---
+            const cacheKey = this._getCacheKey(
+                dbNames,
+                userContent,
+                aiContent,
+                `${presetContentForCache}|plus|sK${searchK}|src:${sourceFingerprint}`
+            );
+            const cached = this.cacheManager.get('aimemo', cacheKey);
+            if (cached) {
+                console.log(`[AIMemoHandler+] ✅ 命中缓存。Key: ${cacheKey.substring(0, 8)}...`);
+                if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
+                    this.ragPlugin.pushVcpInfo({ ...cached.vcpInfo, fromCache: true });
+                }
+                return cached.content;
+            }
+            console.log(`[AIMemoHandler+] ❌ 缓存未命中。Key: ${cacheKey.substring(0, 8)}...`);
+
+            let chunks = [];
+
+            if (hasSourceFiles) {
+                chunks = normalizedSourceFiles
+                    .map((file, index) => ({
+                        dbName: file.dbName,
+                        text: file.content,
+                        tokens: file.tokens,
+                        score: file.score || 0,
+                        source: file.source,
+                        name: file.name || `${file.dbName}_suffix_${index}`
+                    }))
+                    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+                const seenTexts = new Set();
+                chunks = chunks.filter(chunk => {
+                    const key = chunk.text.trim();
+                    if (!key || seenTexts.has(key)) return false;
+                    seenTexts.add(key);
+                    return true;
+                });
+
+                console.log(`[AIMemoHandler+] 后缀管线候选整理完成: ${chunks.length} 个唯一片段`);
+            } else {
+                chunks = await this._retrieveTagMemoChunks(
+                    dbNames, queryVector, searchK, tagWeight, ghostTags, tagTruncationRatio, metrics
+                );
+
+                if (chunks.length === 0) {
+                    const emptyResult = `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                    console.log('[AIMemoHandler+] TagMemo 初筛无结果');
+                    return emptyResult;
+                }
+
+                console.log(`[AIMemoHandler+] TagMemo 初筛召回 ${chunks.length} 个 chunks，总 token: ${chunks.reduce((sum, c) => sum + c.tokens, 0)}`);
+            }
+
+            if (chunks.length === 0) {
+                const emptyResult = hasSourceFiles
+                    ? `[AIMemo+ 后缀管线: ${dbNames.join(' + ')} 未获得可总结片段]`
+                    : `[AIMemo+ 初筛: ${dbNames.join(' + ')} 未召回任何相关片段]`;
+                console.log('[AIMemoHandler+] AIMemo+ 无有效候选');
+                return emptyResult;
+            }
+
+            const totalChunkTokens = chunks.reduce((sum, c) => sum + c.tokens, 0);
+            console.log(`[AIMemoHandler+] Token估算 - chunks: ${totalChunkTokens}, 固定开销: ${10000}, 总计: ${totalChunkTokens + 10000}`);
+
+            // --- 将 chunks 包装成 file 结构以复用现有处理流程 ---
+            const fakeFiles = chunks.map((chunk, i) => ({
+                name: chunk.name || `${chunk.dbName}_chunk_${i}`,
+                content: chunk.text,
+                tokens: chunk.tokens,
+                dbName: chunk.dbName,
+                source: chunk.source,
+                score: chunk.score
+            }));
+
+            // --- 单批 / 分批处理 ---
+            const FIXED_OVERHEAD = 10000;
+            const totalTokens = totalChunkTokens + FIXED_OVERHEAD;
+            let resultObject;
+            if (totalTokens > currentConfig.maxTokensPerBatch) {
+                resultObject = await this._processBatchedAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            } else {
+                resultObject = await this._processSingleAggregated(dbNames, fakeFiles, userContent, aiContent, combinedQueryForDisplay, currentConfig, currentPromptTemplate);
+            }
+
+            // 标记为 Plus 模式 + 内容前缀
+            if (resultObject.vcpInfo) {
+                resultObject.vcpInfo.mode = (resultObject.vcpInfo.mode || 'aggregated') + '_plus';
+                resultObject.vcpInfo.tagMemoChunkCount = chunks.length;
+                resultObject.vcpInfo.searchK = hasSourceFiles ? null : searchK;
+                resultObject.vcpInfo.tagWeight = tagWeight;
+                resultObject.vcpInfo.sourceMode = hasSourceFiles ? 'suffix_pipeline' : 'tagmemo_prerank';
+                resultObject.vcpInfo.sourceFingerprint = sourceFingerprint.substring(0, 16);
+            }
+
+            resultObject.content = hasSourceFiles
+                ? `[AIMemo+ 后缀管线: ${chunks.length}片段, 跨${dbNames.length}库]\n${resultObject.content}`
+                : `[AIMemo+ TagMemo初筛: ${chunks.length}片段/${searchK}K, 跨${dbNames.length}库]\n${resultObject.content}`;
+
+            if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
+                try {
+                    this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
+                } catch (e) {
+                    console.error('[AIMemoHandler+] VCP broadcast failed:', e.message);
+                }
+            }
+
+            this.cacheManager.set('aimemo', cacheKey, resultObject);
+            return resultObject.content;
+        } catch (error) {
+            console.error(`[AIMemoHandler+] 处理失败: ${error?.message || error}`);
+            if (error?.stack) {
+                console.error(`[AIMemoHandler+] Stack:`, error.stack);
+            }
+            return `[AIMemo+处理失败: ${error?.message || '未知错误'}]`;
+        }
+    }
+
+    /**
+     * 🌟 跨日记本 TagMemo 检索 - AIMemo+ 的核心初筛逻辑
+     * 复刻 _processRAGPlaceholder 的 applyTagBoost 感应流程，确保召回质量
+     */
+    async _retrieveTagMemoChunks(dbNames, queryVector, k, tagWeight, ghostTags, tagTruncationRatio, metrics) {
+        const vdb = this.ragPlugin?.vectorDBManager;
+        if (!vdb || typeof vdb.search !== 'function') {
+            console.warn('[AIMemoHandler+] vectorDBManager 不可用');
+            return [];
+        }
+
+        // 1. 用 applyTagBoost 感应 coreTags（与 _processRAGPlaceholder 完全一致）
+        let coreTagsForSearch = [];
+        if (tagWeight !== null && tagWeight !== undefined && typeof vdb.applyTagBoost === 'function') {
+            try {
+                const initialCoreTags = ghostTags.length > 0 ? [...ghostTags] : [];
+                const boostResult = vdb.applyTagBoost(new Float32Array(queryVector), tagWeight, initialCoreTags);
+                if (boostResult?.info?.matchedTags) {
+                    const rawTags = boostResult.info.matchedTags;
+                    coreTagsForSearch = typeof this.ragPlugin._truncateCoreTags === 'function'
+                        ? this.ragPlugin._truncateCoreTags(rawTags, tagTruncationRatio, metrics)
+                        : rawTags;
+                    if (ghostTags.length > 0) {
+                        coreTagsForSearch = [...coreTagsForSearch, ...ghostTags];
+                    }
+                    console.log(`[AIMemoHandler+] TagBoost 感应到 ${coreTagsForSearch.length} 个核心 Tag (含 ${ghostTags.length} 幽灵)`);
+                } else if (ghostTags.length > 0) {
+                    coreTagsForSearch = ghostTags;
+                }
+            } catch (e) {
+                console.warn('[AIMemoHandler+] applyTagBoost 失败:', e.message);
+                if (ghostTags.length > 0) coreTagsForSearch = ghostTags;
+            }
+        }
+
+        // 2. 跨所有日记本并行搜索
+        const searchPromises = dbNames.map(async (dbName) => {
+            try {
+                const results = await vdb.search(dbName, queryVector, k, tagWeight, coreTagsForSearch);
+                return (results || []).map(r => ({
+                    dbName,
+                    text: r.text || '',
+                    score: r.score || 0,
+                    tokens: this._estimateTokens(r.text || '')
+                }));
+            } catch (e) {
+                console.warn(`[AIMemoHandler+] 搜索 "${dbName}" 失败:`, e.message);
+                return [];
+            }
+        });
+
+        const resultsArrays = await Promise.all(searchPromises);
+        const allChunks = resultsArrays.flat();
+
+        // 3. 按分数排序 + 文本指纹去重
+        allChunks.sort((a, b) => (b.score || 0) - (a.score || 0));
+        const seen = new Set();
+        const uniqueChunks = [];
+        for (const chunk of allChunks) {
+            const key = (chunk.text || '').trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            uniqueChunks.push(chunk);
+        }
+
+        return uniqueChunks;
     }
 
 

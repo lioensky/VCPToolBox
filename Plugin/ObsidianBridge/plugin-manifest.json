@@ -1,0 +1,131 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ObsidianBridge",
+  "displayName": "Obsidian 笔记桥接器",
+  "version": "1.1.2",
+  "description": "通过 Obsidian CLI (v1.12.7) 桥接 VCP 与 Obsidian 笔记库。支持笔记读写、全文搜索(含上下文)、每日笔记、文件/文件夹浏览、任务管理、反向链接/出站链接查询、标签统计、属性管理、大纲查看、字数统计、模板列表等 22 项能力。v1.1.1 修复多行 content 写入时字面量反斜杠被过度转义导致换行符失效的问题。",
+  "author": "Nova & 小夜 | 扩展: infinite-vector",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node obsidian_bridge.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "read",
+        "description": "读取指定 Obsidian 笔记的完整内容。参数: file(笔记名,wikilink风格) 或 path(精确相对路径), vault(可选,指定vault)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」read「末」,\nfile:「始」品牌洞察思考「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "search",
+        "description": "在 Obsidian 笔记库中全文搜索。参数: query(必需,搜索关键词), limit(可选,返回数量), folder(可选,限定文件夹)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」search「末」,\nquery:「始」Cauchy积分「末」,\nlimit:「始」10「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "search_context",
+        "description": "带上下文的全文搜索,返回匹配行及其周围内容,更适合AI阅读。参数: query(必需), limit(可选), folder(可选), case_sensitive(可选,布尔)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」search_context「末」,\nquery:「始」测度论「末」,\nlimit:「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "create",
+        "description": "创建新的 Obsidian 笔记。参数: name(必需,笔记名), content(可选,正文,支持字面量\\n换行), folder(可选,存放文件夹), template(可选,模板名), overwrite(可选,布尔)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」create「末」,\nname:「始」测试笔记「末」,\ncontent:「始」# 标题\\n\\n正文内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "append",
+        "description": "向已有笔记末尾追加内容。参数: file 或 path(必需), content(必需)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」append「末」,\nfile:「始」测试笔记「末」,\ncontent:「始」追加的内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "prepend",
+        "description": "向已有笔记开头插入内容。参数: file 或 path(必需), content(必需), inline(可选,不加换行)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」prepend「末」,\nfile:「始」测试笔记「末」,\ncontent:「始」插入到开头的内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "daily_read",
+        "description": "读取今日每日笔记(Daily Note)内容。参数: vault(可选)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」daily_read「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "daily_append",
+        "description": "向今日每日笔记末尾追加内容。参数: content(必需)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」daily_append「末」,\ncontent:「始」追加内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "daily_prepend",
+        "description": "向今日每日笔记开头插入内容。参数: content(必需), inline(可选,不加换行)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」daily_prepend「末」,\ncontent:「始」插入到开头的内容「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "daily_path",
+        "description": "获取今日每日笔记的文件路径。无必需参数。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」daily_path「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "files",
+        "description": "列出vault中的文件。参数: folder(可选,限定文件夹), ext(可选,限定扩展名), total(可选,布尔,仅返回数量)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」files「末」,\nfolder:「始」数学maths/分析「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "folders",
+        "description": "列出vault中的文件夹。参数: folder(可选,限定父文件夹), total(可选,布尔,仅返回数量)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」folders「末」,\nfolder:「始」数学maths「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "backlinks",
+        "description": "查询指定笔记的所有反向链接(谁链接了它)。参数: file 或 path(必需)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」backlinks「末」,\nfile:「始」中心思想「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "links",
+        "description": "查询指定笔记的出站链接(它链接了谁)。参数: file 或 path(必需), total(可选,布尔)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」links「末」,\nfile:「始」中心思想「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "tags",
+        "description": "统计笔记库中所有标签及使用次数,按使用频率排序。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」tags「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "tasks",
+        "description": "获取待办任务列表。参数: file 或 path(可选,指定文件), scope(可选,'daily'或'all',默认daily；指定file/path时自动查该文件), done(可选,查已完成), status(可选,按任务状态字符筛选)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」tasks「末」,\nscope:「始」daily「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "property_set",
+        "description": "设置笔记的 frontmatter/Properties 属性。参数: file 或 path(必需), name(必需,属性名), value(必需,属性值), type(可选,text/list/number/checkbox/date/datetime)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」property_set「末」,\nfile:「始」测试笔记「末」,\nname:「始」status「末」,\nvalue:「始」done「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "property_read",
+        "description": "读取笔记的某个 frontmatter/Properties 属性值。参数: name(必需,属性名), file 或 path(可选,省略则读活跃文件)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」property_read「末」,\nname:「始」tags「末」,\nfile:「始」测试笔记「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "properties",
+        "description": "列出vault或指定文件的所有属性。参数: file 或 path(可选), format(可选,yaml/json/tsv), total(可选), counts(可选), sort(可选,'count')。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」properties「末」,\nformat:「始」json「末」,\ncounts:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "wordcount",
+        "description": "统计笔记的字数和字符数。参数: file 或 path(可选,省略则统计活跃文件), words(可选,仅返回字数), characters(可选,仅返回字符数)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」wordcount「末」,\nfile:「始」中心思想「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "outline",
+        "description": "显示笔记的标题大纲结构。参数: file 或 path(可选), format(可选,tree/md/json), total(可选,仅返回标题数)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」outline「末」,\nfile:「始」中心思想「末」,\nformat:「始」tree「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "templates",
+        "description": "列出vault中所有可用模板。参数: total(可选,布尔,仅返回数量)。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」ObsidianBridge「末」,\ncommand:「始」templates「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

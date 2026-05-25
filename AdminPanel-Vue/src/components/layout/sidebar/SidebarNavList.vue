@@ -4,7 +4,7 @@
       <ul :style="{ transform: `translateY(${offsetY}px)` }">
       <template v-for="item in filteredNavItems" :key="item.category ? `category-${item.category}` : `nav-${item.target || item.pluginName || item.label}`">
         <li v-if="item.category" class="nav-category" :class="{ 'fade-label-hidden': !isExpandedState }">
-          {{ item.category }}
+          <span class="nav-category-text">{{ item.category }}</span>
         </li>
         <li v-else>
           <a
@@ -32,7 +32,7 @@
     <ul v-else>
       <template v-for="item in filteredNavItems" :key="item.category ? `category-${item.category}` : `nav-${item.target || item.pluginName || item.label}`">
         <li v-if="item.category" class="nav-category" :class="{ 'fade-label-hidden': !isExpandedState }">
-          {{ item.category }}
+          <span class="nav-category-text">{{ item.category }}</span>
         </li>
         <li v-else>
           <a
@@ -210,17 +210,38 @@ onUnmounted(() => {
 }
 
 #plugin-nav li.nav-category {
-  padding: 15px 15px 5px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 6px 8px;
   font-size: var(--font-size-helper);
-  color: var(--primary-text);
-  text-transform: uppercase;
+  color: var(--secondary-text);
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.12em;
   opacity: 1;
   transform: translateX(0);
   transition: opacity 0.25s ease, transform 0.25s ease, padding 0.25s ease;
   overflow: hidden;
   white-space: nowrap;
+  text-transform: none;
+}
+
+#plugin-nav li.nav-category::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    var(--border-color) 0%,
+    transparent 100%
+  );
+  opacity: 0.7;
+}
+
+.nav-category-text {
+  color: var(--primary-text);
+  padding: 0;
+  font-size: calc(var(--font-size-helper) + 1px);
 }
 
 .nav-category.fade-label-hidden {

@@ -103,7 +103,7 @@ class MetaThinkingManager {
     /**
      * 处理VCP元思考链 - 递归向量增强的多阶段推理
      */
-    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
+    async processMetaThinkingChain(chainName, queryVector, userContent, aiContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65, autoWhitelist = null, autoBlacklist = null) {
 
         // 🌟 兜底：如果配置尚未加载，先执行加载
         if (!this.metaThinkingChains.chains || Object.keys(this.metaThinkingChains.chains).length === 0) {
@@ -121,6 +121,9 @@ class MetaThinkingManager {
             }
 
             for (const [themeName, themeVector] of themeEntries) {
+                // 🌟 白名单/黑名单过滤
+                if (autoWhitelist && !autoWhitelist.includes(themeName)) continue;
+                if (autoBlacklist && autoBlacklist.includes(themeName)) continue;
                 const similarity = this.ragPlugin.cosineSimilarity(queryVector, themeVector);
                 if (similarity > maxSimilarity) {
                     maxSimilarity = similarity;
@@ -272,7 +275,7 @@ class MetaThinkingManager {
                         const avgResultVector = this._getAverageVector(resultVectors);
                         const config = this.ragPlugin.ragParams?.RAGDiaryPlugin || {};
                         const metaWeights = config.metaThinkingWeights || [0.8, 0.2];
-                        
+
                         currentQueryVector = this.ragPlugin._getWeightedAverageVector(
                             [queryVector, avgResultVector],
                             metaWeights

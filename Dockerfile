@@ -104,7 +104,7 @@ RUN apk add --no-cache \
   zlib-dev \
   freetype-dev \
   libffi \
-ffmpeg
+  ffmpeg
 # 设置 PYTHONPATH 环境变量，让 Python 能找到我们安装的依赖
 ENV PYTHONPATH=/usr/src/app/pydeps
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser

@@ -1202,17 +1202,19 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 | EmojiListGenerator | static | 表情包列表 |
 | ProjectAnalyst | synchronous | 项目分析 |
 
-### 9.4 系统控制 (10 个)
+### 9.4 系统控制 (12 个)
 
 | 插件名 | 类型 | 功能 |
 |--------|------|------|
-| LinuxShellExecutor | synchronous | Linux Shell 执行 |
+| LinuxShellExecutor | synchronous | Linux Shell 执行；stdio 客户端通过 SSHManager UDS 代理复用连接池，普通命令未显式设置时由服务端决定池化策略 |
+| SSHManagerService | service | 常驻 SSH 连接池服务，通过 UDS 提供 RPC；连接池构造期预热一次，connect RPC 仅返回可序列化连接状态；退出由主进程 gracefulShutdown 统一调用 shutdown |
 | PowerShellExecutor | synchronous | PowerShell 执行 |
 | ChromeBridge | hybridservice | Chrome 浏览器控制 |
 | CapturePreprocessor | messagePreprocessor | 屏幕截图 |
 | PyScreenshot | synchronous | Python 截图 |
 | PyCameraCapture | synchronous | 摄像头捕获 |
-| LinuxLogMonitor | service | Linux 日志监控 |
+| LinuxLogMonitor | asynchronous | Linux 日志监控客户端；白名单内接收 `LOG_MONITOR_SOCK` 与 `LOG_MONITOR_TOKEN` |
+| LinuxLogMonitorServer | service | 常驻日志监控服务，持有 watcher 状态与自定义规则；after-context 默认 5 秒超时刷新告警，查询 fallback 支持 `partial/fallbackError`，并按 legacy 契约适配结果 |
 | ScheduleManager | service | 日程管理 |
 | ScheduleBriefing | static | 日程摘要 |
 | FRPSInfoProvider | static | FRP 状态 |

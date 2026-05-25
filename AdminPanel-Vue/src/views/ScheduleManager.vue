@@ -107,6 +107,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { scheduleApi } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 interface Schedule {
@@ -255,7 +256,11 @@ async function addSchedule() {
 }
 
 async function deleteSchedule(id: string) {
-  if (!confirm("确定删除这条日程吗？")) return;
+  if (!(await askConfirm({
+    message: "确定删除这条日程吗？",
+    danger: true,
+    confirmText: "删除",
+  }))) return;
 
   try {
     await scheduleApi.deleteSchedule(

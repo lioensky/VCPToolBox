@@ -115,9 +115,6 @@ async function handleLogin() {
       message.value = "登录成功，正在跳转…";
       messageType.value = "success";
 
-      // 等待状态更新后跳转
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
       // 优先回跳到登录前目标页（无效 redirect 自动回退到仪表盘）
       const redirect = resolveSafeAppRedirect(router, route.query.redirect);
       router.push(redirect);
@@ -132,18 +129,6 @@ async function handleLogin() {
   } finally {
     isLoading.value = false;
   }
-}
-
-// 页面加载时检查是否已登录（异步执行）
-if (!authStore.isLoading && authStore.isAuthenticated) {
-  router.push({ name: "Dashboard" });
-} else if (!authStore.isLoading) {
-  // 仅在未加载时检查一次
-  authStore.checkAuth().then((isAuth) => {
-    if (isAuth) {
-      router.push({ name: "Dashboard" });
-    }
-  });
 }
 </script>
 

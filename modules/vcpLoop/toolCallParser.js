@@ -1,4 +1,6 @@
 // modules/vcpLoop/toolCallParser.js
+const toolMarkerFuzzyMatcher = require('./toolMarkerFuzzyMatcher');
+
 class ToolCallParser {
   static MARKERS = {
     START: '<<<[TOOL_REQUEST]>>>',
@@ -109,9 +111,14 @@ class ToolCallParser {
 
   static _findBlockEnd(content, fromIndex) {
     let cursor = fromIndex;
+    const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(false);
+    const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
 
     while (cursor < content.length) {
-      const nextEscapeStart = content.indexOf(this.ESCAPE_MARKERS.START, cursor);
+      const remaining = content.slice(cursor);
+      const startMatch = escapeStartRegex.exec(remaining);
+      const nextEscapeStart = startMatch ? cursor + startMatch.index : -1;
+      
       const nextBlockEnd = content.indexOf(this.MARKERS.END, cursor);
 
       if (nextBlockEnd === -1) return -1;
@@ -119,16 +126,15 @@ class ToolCallParser {
         return nextBlockEnd;
       }
 
-      const escapedEnd = content.indexOf(
-        this.ESCAPE_MARKERS.END,
-        nextEscapeStart + this.ESCAPE_MARKERS.START.length
-      );
+      const searchStartFrom = nextEscapeStart + startMatch[0].length;
+      const endMatch = escapeEndRegex.exec(content.slice(searchStartFrom));
 
-      if (escapedEnd === -1) {
+      if (!endMatch) {
         return -1;
       }
 
-      cursor = escapedEnd + this.ESCAPE_MARKERS.END.length;
+      const escapedEnd = searchStartFrom + endMatch.index;
+      cursor = escapedEnd + endMatch[0].length;
     }
 
     return -1;
@@ -158,26 +164,48 @@ class ToolCallParser {
       cursor += 1;
       cursor = this._skipWhitespace(blockContent, cursor);
 
-      let startMarker;
-      let endMarker;
-      if (blockContent.startsWith(this.ESCAPE_MARKERS.START, cursor)) {
-        startMarker = this.ESCAPE_MARKERS.START;
-        endMarker = this.ESCAPE_MARKERS.END;
-      } else if (blockContent.startsWith('「始」', cursor)) {
-        startMarker = '「始」';
-        endMarker = '「末」';
+      let startMarker = null;
+      let endMarker = null;
+      let endIndex = -1;
+      let isEscape = false;
+
+      const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(true);
+      const escapeMatch = escapeStartRegex.exec(blockContent.slice(cursor));
+
+      if (escapeMatch) {
+        isEscape = true;
+        startMarker = escapeMatch[0];
+        cursor += startMarker.length;
+
+        const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
+        const endMatch = escapeEndRegex.exec(blockContent.slice(cursor));
+        if (endMatch) {
+          endIndex = cursor + endMatch.index;
+          endMarker = endMatch[0];
+        }
       } else {
-        continue;
+        const startMatch = toolMarkerFuzzyMatcher.matchFieldStartMarker(blockContent, cursor);
+
+        if (!startMatch) {
+          continue;
+        }
+
+        startMarker = startMatch.marker;
+        cursor += startMarker.length;
+
+        const endMatch = toolMarkerFuzzyMatcher.findFieldEndMarker(blockContent, cursor);
+        if (endMatch) {
+          endIndex = endMatch.index;
+          endMarker = endMatch.marker;
+        }
       }
 
-      cursor += startMarker.length;
-      const endIndex = blockContent.indexOf(endMarker, cursor);
       if (endIndex === -1) {
         break;
       }
 
       const rawValue = blockContent.slice(cursor, endIndex);
-      const restoredValue = startMarker === this.ESCAPE_MARKERS.START
+      const restoredValue = isEscape
         ? this._restoreEscapedLiterals(rawValue)
         : rawValue;
 
@@ -198,6 +226,8 @@ class ToolCallParser {
     for (const [escapedValue, literalValue] of Object.entries(this.ESCAPED_LITERAL_MAP)) {
       restored = restored.split(escapedValue).join(literalValue);
     }
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeStartRegex(false), '「始」');
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeEndRegex(false), '「末」');
     return restored;
   }
 

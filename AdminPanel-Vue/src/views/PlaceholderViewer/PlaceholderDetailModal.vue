@@ -1,27 +1,27 @@
 <template>
-  <div
-    v-if="selectedPlaceholder"
-    class="placeholder-detail-modal"
-    role="dialog"
-    aria-modal="true"
+  <BaseModal
+    :model-value="Boolean(selectedPlaceholder)"
+    :lock-scroll="true"
     aria-labelledby="placeholder-detail-title"
+    @update:modelValue="handleModalVisibility"
   >
-    <div class="placeholder-detail-modal-backdrop" @click="emit('close')"></div>
-    <div
-      class="placeholder-detail-modal-content"
-      ref="modalContentRef"
-      tabindex="-1"
-      @keydown.escape="emit('close')"
-    >
-      <div class="placeholder-detail-modal-header">
-        <h3 id="placeholder-detail-title">
-          <span class="placeholder-name-large">{{
-            selectedPlaceholder.name
-          }}</span>
-          <span class="placeholder-detail-type">{{
-            getTypeLabel(selectedPlaceholder.type)
-          }}</span>
-        </h3>
+    <template #default="{ overlayAttrs, panelAttrs, panelRef }">
+      <div v-bind="overlayAttrs" class="placeholder-detail-modal">
+        <div :ref="panelRef" v-bind="panelAttrs" class="placeholder-detail-modal-content">
+    <div class="placeholder-detail-modal-header">
+      <h3 id="placeholder-detail-title">
+        <span class="placeholder-name-large">{{
+          selectedPlaceholder?.name
+        }}</span>
+        <span class="placeholder-detail-type">{{ placeholderTypeLabel }}</span>
+      </h3>
+      <div class="placeholder-detail-header-actions">
+        <button type="button" class="btn-secondary btn-sm" @click="emit('copyDetail')">
+          复制内容
+        </button>
+        <button type="button" class="btn-secondary btn-sm" @click="emit('copyJson')">
+          复制 JSON
+        </button>
         <button
           type="button"
           class="placeholder-detail-modal-close"
@@ -31,107 +31,131 @@
           &times;
         </button>
       </div>
-      <div class="placeholder-detail-tabs" role="tablist">
-        <button
-          type="button"
-          :class="['placeholder-detail-tab', { active: activeTab === 'raw' }]"
-          @click="emit('update:activeTab', 'raw')"
-        >
-          原始文本
-        </button>
-        <button
-          type="button"
-          :class="[
-            'placeholder-detail-tab',
-            { active: activeTab === 'markdown' },
-          ]"
-          @click="emit('update:activeTab', 'markdown')"
-        >
-          Markdown 渲染
-        </button>
-        <button
-          type="button"
-          :class="['placeholder-detail-tab', { active: activeTab === 'json' }]"
-          @click="emit('update:activeTab', 'json')"
-        >
-          JSON 格式化
-        </button>
+    </div>
+    <div class="placeholder-detail-tabs" role="tablist" aria-label="详情展示模式">
+      <button
+        type="button"
+        role="tab"
+        :id="getTabId('raw')"
+        :aria-selected="activeTab === 'raw'"
+        :aria-controls="getPanelId('raw')"
+        :tabindex="activeTab === 'raw' ? 0 : -1"
+        :class="['placeholder-detail-tab', { active: activeTab === 'raw' }]"
+        @click="emit('update:activeTab', 'raw')"
+      >
+        原始文本
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :id="getTabId('markdown')"
+        :aria-selected="activeTab === 'markdown'"
+        :aria-controls="getPanelId('markdown')"
+        :tabindex="activeTab === 'markdown' ? 0 : -1"
+        :class="[
+          'placeholder-detail-tab',
+          { active: activeTab === 'markdown' },
+        ]"
+        @click="emit('update:activeTab', 'markdown')"
+      >
+        Markdown 渲染
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :id="getTabId('json')"
+        :aria-selected="activeTab === 'json'"
+        :aria-controls="getPanelId('json')"
+        :tabindex="activeTab === 'json' ? 0 : -1"
+        :class="['placeholder-detail-tab', { active: activeTab === 'json' }]"
+        @click="emit('update:activeTab', 'json')"
+      >
+        JSON 格式化
+      </button>
+    </div>
+    <div id="placeholder-detail-body" class="placeholder-detail-modal-body">
+      <div
+        v-show="activeTab === 'raw'"
+        :id="getPanelId('raw')"
+        class="placeholder-detail-panel"
+        role="tabpanel"
+        :aria-labelledby="getTabId('raw')"
+      >
+        <pre>{{ detailContent }}</pre>
       </div>
-      <div id="placeholder-detail-body" class="placeholder-detail-modal-body">
-        <div v-if="activeTab === 'raw'" class="placeholder-detail-panel active">
-          <pre>{{ detailContent }}</pre>
-        </div>
-        <div
-          v-if="activeTab === 'markdown'"
-          class="placeholder-detail-panel"
-          v-html="renderedMarkdown"
-        ></div>
-        <div v-if="activeTab === 'json'" class="placeholder-detail-panel">
-          <pre>{{ JSON.stringify(selectedPlaceholder, null, 2) }}</pre>
-        </div>
+      <div
+        v-show="activeTab === 'markdown'"
+        :id="getPanelId('markdown')"
+        class="placeholder-detail-panel"
+        role="tabpanel"
+        :aria-labelledby="getTabId('markdown')"
+        v-html="renderedMarkdown"
+      ></div>
+      <div
+        v-show="activeTab === 'json'"
+        :id="getPanelId('json')"
+        class="placeholder-detail-panel"
+        role="tabpanel"
+        :aria-labelledby="getTabId('json')"
+      >
+        <pre>{{ jsonContent }}</pre>
       </div>
     </div>
-  </div>
+        </div>
+      </div>
+    </template>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed } from "vue";
 import type {
   Placeholder,
   PlaceholderDetailTab,
 } from "@/features/placeholder-viewer/types";
+import { getPlaceholderTypeLabel } from "@/features/placeholder-viewer/placeholderTypeLabel";
+import BaseModal from "@/components/ui/BaseModal.vue";
 
 const props = defineProps<{
   selectedPlaceholder: Placeholder | null;
   activeTab: PlaceholderDetailTab;
   detailContent: string;
   renderedMarkdown: string;
-  getTypeLabel: (type: string) => string;
+  jsonContent: string;
 }>();
 
 const emit = defineEmits<{
   close: [];
   "update:activeTab": [tab: PlaceholderDetailTab];
+  copyDetail: [];
+  copyJson: [];
 }>();
 
-const modalContentRef = ref<HTMLElement | null>(null);
-
-watch(
-  () => props.selectedPlaceholder,
-  async (placeholder) => {
-    if (!placeholder) {
-      return;
-    }
-    await nextTick();
-    modalContentRef.value?.focus();
-  }
+const placeholderTypeLabel = computed(() =>
+  getPlaceholderTypeLabel(props.selectedPlaceholder?.type ?? "")
 );
+
+function getTabId(tab: PlaceholderDetailTab): string {
+  return `placeholder-detail-tab-${tab}`;
+}
+
+function getPanelId(tab: PlaceholderDetailTab): string {
+  return `placeholder-detail-panel-${tab}`;
+}
+
+function handleModalVisibility(visible: boolean): void {
+  if (!visible) {
+    emit("close");
+  }
+}
 </script>
 
 <style scoped>
 .placeholder-detail-modal {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
   z-index: var(--z-index-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.placeholder-detail-modal-backdrop {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: var(--overlay-backdrop);
 }
 
 .placeholder-detail-modal-content {
-  position: relative;
   background: var(--secondary-bg);
   border-radius: var(--radius-md);
   width: 90%;
@@ -146,6 +170,7 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);
 }
@@ -157,6 +182,13 @@ watch(
   gap: 12px;
   flex: 1;
   font-size: var(--font-size-title);
+}
+
+.placeholder-detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .placeholder-name-large {
@@ -249,14 +281,6 @@ watch(
   padding: 20px;
 }
 
-.placeholder-detail-panel {
-  display: none;
-}
-
-.placeholder-detail-panel.active {
-  display: block;
-}
-
 .placeholder-detail-panel pre {
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -288,6 +312,11 @@ watch(
     gap: 6px;
     min-width: 0;
     font-size: var(--font-size-emphasis);
+  }
+
+  .placeholder-detail-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .placeholder-name-large {

@@ -121,7 +121,7 @@ export const dynamicToolsApi = {
         method: "POST",
         body: {
           mode,
-          wait: options.wait !== false,
+          wait: options.wait ?? true,
         },
       },
       uiOptions

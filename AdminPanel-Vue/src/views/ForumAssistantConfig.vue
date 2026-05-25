@@ -7,14 +7,11 @@
 
     <section class="card toolbar-card">
       <div class="toolbar-row">
-        <label class="switch-row">
-          <input v-model="globalEnabled" type="checkbox" />
-          <span>启用任务派发中心</span>
-        </label>
+        <AppSwitch v-model="globalEnabled" label="启用任务派发中心" />
 
         <label class="field compact-field">
           <span>保留历史条数</span>
-          <input v-model.number="maxHistory" type="number" min="20" step="1" />
+          <input v-model.number="maxHistory" type="number" min="20" max="10000" step="1" />
         </label>
       </div>
 
@@ -100,39 +97,13 @@
       <div class="composer-head">
         <div>
           <h3 class="card-title">任务列表</h3>
-          <p class="hint-text">先创建草稿，再继续填写目标 Agent、调度方式和提示词。</p>
+          <p class="hint-text">先新增空白任务，再在任务卡片里填写名称、类型、目标 Agent 和调度参数。</p>
         </div>
 
         <form class="composer-controls" aria-label="快速创建任务" @submit.prevent="addTask">
-          <label class="field quick-create-field">
-            <span>新任务名称</span>
-            <input
-              v-model.trim="newTaskName"
-              type="text"
-              name="newTaskName"
-              placeholder="输入新任务名称"
-              autocomplete="off"
-            />
-          </label>
-          <label class="field quick-create-field">
-            <span>任务类型</span>
-            <select
-              v-model="newTaskType"
-              name="newTaskType"
-              autocomplete="off"
-            >
-              <option
-                v-for="taskType in resolvedTaskTypes"
-                :key="taskType.type"
-                :value="taskType.type"
-              >
-                {{ taskType.label }}
-              </option>
-            </select>
-          </label>
           <div class="quick-create-actions">
             <button type="submit" class="btn-primary">
-              添加任务
+              新增空白任务
             </button>
           </div>
         </form>
@@ -153,7 +124,15 @@
           <header class="task-card-header">
             <div>
               <h4>{{ task.name || "未命名任务" }}</h4>
-              <p>{{ resolveTaskTypeLabel(task.type) }}</p>
+              <p>
+                {{ resolveTaskTypeLabel(task.type) }}
+                <span
+                  v-if="isOnceTaskExpired(task)"
+                  class="status-badge status-disabled once-expired-badge"
+                >
+                  已过期
+                </span>
+              </p>
             </div>
 
             <div class="task-card-actions">
@@ -183,12 +162,12 @@
           <div class="task-grid">
             <label class="field">
               <span>任务名称</span>
-              <input v-model.trim="task.name" type="text" placeholder="例如：论坛巡航可可" />
+              <input v-model.trim="task.name" type="text" maxlength="100" placeholder="例如：论坛巡航可可" />
             </label>
 
             <label class="field">
               <span>任务类型</span>
-              <select v-model="task.type">
+              <select v-model="task.type" @change="handleTaskTypeChange(task)">
                 <option
                   v-for="taskType in resolvedTaskTypes"
                   :key="taskType.type"
@@ -205,6 +184,7 @@
                 <input
                   v-model="task.targetAgentsText"
                   type="text"
+                  maxlength="500"
                   placeholder="多个 Agent 用英文逗号分隔"
                   :list="`agent-suggestions-${task.localKey}`"
                   @input="updateRandomOptions(task)"
@@ -250,74 +230,62 @@
 
             <label class="field">
               <span>请求发送者</span>
-              <input v-model.trim="task.maid" type="text" placeholder="默认 VCP系统" />
+              <input v-model.trim="task.maid" type="text" maxlength="50" placeholder="默认 VCP系统" />
             </label>
 
-            <label class="field">
-              <span>注入工具</span>
-              <input
-                v-model="task.injectToolsText"
-                type="text"
-                placeholder="例如：VCPForum"
-              />
-            </label>
-
-            <label class="field">
+            <div class="field full-field schedule-field">
               <span>调度方式</span>
-              <select v-model="task.scheduleMode">
-                <option value="interval">循环任务</option>
-                <option value="cron">CRON 定时</option>
-                <option value="manual">仅手动触发</option>
-                <option value="once">一次性任务</option>
-              </select>
-            </label>
+              <div class="schedule-inline-row">
+                <select v-model="task.scheduleMode" class="schedule-mode-select">
+                  <option value="interval">循环任务</option>
+                  <option value="cron">CRON 定时</option>
+                  <option value="manual">仅手动触发</option>
+                  <option value="once">一次性任务</option>
+                </select>
 
-            <label class="field">
-              <span>循环间隔（分钟）</span>
-              <input
-                v-model.number="task.intervalMinutes"
-                type="number"
-                min="10"
-                step="1"
-                :disabled="task.scheduleMode !== 'interval'"
-              />
-            </label>
+                <input
+                  v-if="task.scheduleMode === 'interval'"
+                  v-model.number="task.intervalMinutes"
+                  class="schedule-mode-input"
+                  type="number"
+                  min="10"
+                  step="1"
+                  placeholder="循环间隔（分钟）"
+                />
 
-            <label class="field">
-              <span>CRON 表达式</span>
-              <input
-                v-model.trim="task.cronValue"
-                type="text"
-                placeholder="例如：0 0 * * * (每日凌晨)"
-                :disabled="task.scheduleMode !== 'cron'"
-              />
-            </label>
+                <input
+                  v-else-if="task.scheduleMode === 'cron'"
+                  v-model.trim="task.cronValue"
+                  class="schedule-mode-input"
+                  type="text"
+                  maxlength="100"
+                  placeholder="例如：0 0 * * * (每日凌晨)"
+                />
 
-            <label class="field">
-              <span>一次性执行时间</span>
-              <input
-                v-model="task.runAtLocal"
-                type="datetime-local"
-                :disabled="task.scheduleMode !== 'once'"
-              />
-            </label>
+                <input
+                  v-else-if="task.scheduleMode === 'once'"
+                  v-model="task.runAtLocal"
+                  class="schedule-mode-input"
+                  type="datetime-local"
+                />
+
+                <p v-else class="hint-text schedule-manual-hint">
+                  当前为“仅手动触发”，无需填写定时参数。
+                </p>
+              </div>
+            </div>
           </div>
 
-          <label class="switch-row section-switch">
-            <input v-model="task.enabled" type="checkbox" />
-            <span>启用该任务</span>
-          </label>
+          <AppSwitch v-model="task.enabled" class="section-switch" label="启用该任务" />
 
-          <label class="switch-row section-switch">
-            <input v-model="task.taskDelegation" type="checkbox" />
-            <span>异步高级委托</span>
-          </label>
+          <AppSwitch v-model="task.taskDelegation" class="section-switch" label="异步高级委托" />
 
           <template v-if="task.type === 'forum_patrol'">
-            <label class="switch-row section-switch">
-              <input v-model="task.includeForumPostList" type="checkbox" />
-              <span>执行前自动读取论坛帖子列表</span>
-            </label>
+            <AppSwitch
+              v-model="task.includeForumPostList"
+              class="section-switch"
+              label="执行前自动读取论坛帖子列表"
+            />
 
             <div class="task-grid">
               <label class="field">
@@ -326,6 +294,7 @@
                   v-model.trim="task.forumListPlaceholder"
                   type="text"
                   placeholder="{{forum_post_list}}"
+                  :disabled="!task.includeForumPostList"
                 />
               </label>
 
@@ -336,6 +305,7 @@
                   type="number"
                   min="1"
                   step="1"
+                  :disabled="!task.includeForumPostList"
                 />
               </label>
             </div>
@@ -346,23 +316,29 @@
             <textarea
               v-model="task.promptTemplate"
               rows="8"
+              maxlength="20000"
               placeholder="这里是任务的提示词模板"
             ></textarea>
           </label>
 
           <div class="placeholder-row">
             <span class="placeholder-label">可用占位符</span>
-            <span
-              v-for="placeholder in resolveTaskPlaceholders(task)"
-              :key="`${task.localKey}-${placeholder}`"
-              class="placeholder-chip"
-            >
-              {{ placeholder }}
-            </span>
-            <span v-if="resolveTaskPlaceholders(task).length === 0" class="placeholder-empty">
+            <template v-if="getPlaceholdersForTask(task).length > 0">
+              <span
+                v-for="placeholder in getPlaceholdersForTask(task)"
+                :key="`${task.localKey}-${placeholder}`"
+                class="placeholder-chip"
+              >
+                {{ placeholder }}
+              </span>
+            </template>
+            <span v-else class="placeholder-empty">
               当前任务没有额外占位符
             </span>
           </div>
+          <p class="placeholder-hint">
+            列表为最终去重后的占位符预览，不会与上方“论坛列表占位符”输入框重复写入。
+          </p>
 
           <div class="runtime-panel">
             <div class="runtime-state-row">
@@ -420,7 +396,7 @@
 
       <div v-else class="history-list">
         <article
-          v-for="item in historyItems.slice(0, 8)"
+          v-for="item in visibleHistoryItems"
           :key="item.id"
           class="history-item"
         >
@@ -440,14 +416,26 @@
             <span>耗时：{{ formatDuration(item.durationMs) }}</span>
           </div>
         </article>
+
+        <button
+          v-if="hasMoreHistory"
+          type="button"
+          class="btn-secondary history-more-btn"
+          @click="showMoreHistory"
+        >
+          查看更多（已显示 {{ visibleHistoryItems.length }} / {{ historyItems.length }} 条）
+        </button>
       </div>
     </section>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
+import AppSwitch from "@/components/ui/AppSwitch.vue";
 import {
+  agentApi,
   forumAssistantApi,
   type ForumAssistantConfigResponse,
   type ForumAssistantHistoryItem,
@@ -459,6 +447,7 @@ import {
   type ForumAssistantTaskType,
   type ForumAssistantTaskTypeOption,
 } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { showMessage } from "@/utils";
 
 type StatusType = "info" | "success" | "error";
@@ -472,7 +461,6 @@ interface ForumAssistantTaskDraft {
   taskDelegation: boolean;
   targetAgentsText: string;
   randomCount: number;
-  injectToolsText: string;
   maid: string;
   scheduleMode: string;
   intervalMinutes: number;
@@ -499,10 +487,12 @@ const DEFAULT_TASK_TYPES: ForumAssistantTaskTypeOption[] = [
   },
 ];
 
+const FORUM_POST_PLACEHOLDER = "{{forum_post_list}}";
+const DEFAULT_INJECT_TOOL = "VCPForum";
+const PLACEHOLDER_REGEX = /\{\{[^{}]+\}\}/g;
+
 const globalEnabled = ref(false);
 const maxHistory = ref(200);
-const newTaskName = ref("");
-const newTaskType = ref<string>("forum_patrol");
 const availableTaskTypes = ref<ForumAssistantTaskTypeOption[]>([]);
 const taskTemplates = ref<Record<string, ForumAssistantTask>>({});
 const taskDrafts = ref<ForumAssistantTaskDraft[]>([]);
@@ -513,12 +503,23 @@ const isLoading = ref(false);
 const isSaving = ref(false);
 const pendingTriggerTaskIds = ref<string[]>([]);
 const availableAgents = ref<Array<{ chineseName: string }>>([]);
+const agentsLoaded = ref(false);
+const isDirty = ref(false);
+const historyDisplayCount = ref(8);
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const resolvedTaskTypes = computed(() =>
   availableTaskTypes.value.length > 0 ? availableTaskTypes.value : DEFAULT_TASK_TYPES
 );
 const historyItems = computed<ForumAssistantHistoryItem[]>(
   () => runtimeStatus.value?.history ?? []
+);
+const visibleHistoryItems = computed(() =>
+  historyItems.value.slice(0, historyDisplayCount.value)
+);
+const hasMoreHistory = computed(() =>
+  historyItems.value.length > historyDisplayCount.value
 );
 
 function createDefaultRuntime(): ForumAssistantTaskRuntime {
@@ -545,6 +546,59 @@ function splitCommaSeparated(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const unique = new Set<string>();
+  const result: string[] = [];
+
+  for (const rawValue of values) {
+    const value = rawValue.trim();
+    if (!value || unique.has(value)) {
+      continue;
+    }
+
+    unique.add(value);
+    result.push(value);
+  }
+
+  return result;
+}
+
+function extractPlaceholdersFromTemplate(template: string): string[] {
+  const matches = template.match(PLACEHOLDER_REGEX);
+  return dedupeStrings(matches ?? []);
+}
+
+function getRealAgentsFromText(value: string): string[] {
+  const unique = new Set<string>();
+  const result: string[] = [];
+
+  for (const item of splitCommaSeparated(value)) {
+    if (/^random(\d+)$/i.test(item)) {
+      continue;
+    }
+
+    if (unique.has(item)) {
+      continue;
+    }
+
+    unique.add(item);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function syncAgentTargets(task: ForumAssistantTaskDraft): string[] {
+  const realAgents = getRealAgentsFromText(task.targetAgentsText);
+  const maxRandomCount = Math.min(realAgents.length, 30);
+
+  if (task.randomCount > maxRandomCount) {
+    task.randomCount = maxRandomCount;
+  }
+
+  return realAgents;
 }
 
 function toDatetimeLocalValue(isoString: string | null | undefined): string {
@@ -579,14 +633,28 @@ function resolveTaskTypeLabel(type: string): string {
   return matched?.label || type;
 }
 
-function resolveTaskPlaceholders(task: ForumAssistantTaskDraft): string[] {
+function resolveForumPlaceholderToken(task: ForumAssistantTaskDraft): string {
+  return task.forumListPlaceholder.trim() || FORUM_POST_PLACEHOLDER;
+}
+
+function collectTaskPlaceholders(task: ForumAssistantTaskDraft): string[] {
+  const fromPrompt = extractPlaceholdersFromTemplate(task.promptTemplate);
+  const fromConfig = dedupeStrings(task.availablePlaceholders);
+
   if (resolveTaskType(task.type) === "forum_patrol") {
-    return task.availablePlaceholders.length > 0
-      ? task.availablePlaceholders
-      : ["{{forum_post_list}}"];
+    return dedupeStrings([
+      resolveForumPlaceholderToken(task),
+      ...fromConfig,
+      ...fromPrompt,
+      FORUM_POST_PLACEHOLDER,
+    ]);
   }
 
-  return task.availablePlaceholders;
+  return dedupeStrings([...fromConfig, ...fromPrompt]);
+}
+
+function getPlaceholdersForTask(task: ForumAssistantTaskDraft): string[] {
+  return collectTaskPlaceholders(task);
 }
 
 function buildFallbackTemplate(type: string): ForumAssistantTask {
@@ -648,9 +716,9 @@ function buildFallbackTemplate(type: string): ForumAssistantTask {
     payload: {
       promptTemplate:
         "[论坛小助手] 现在是论坛时间，请先阅读帖子列表，再选择你感兴趣的主题互动。\n\n{{forum_post_list}}",
-      availablePlaceholders: ["{{forum_post_list}}"],
+      availablePlaceholders: [FORUM_POST_PLACEHOLDER],
       includeForumPostList: true,
-      forumListPlaceholder: "{{forum_post_list}}",
+      forumListPlaceholder: FORUM_POST_PLACEHOLDER,
       maxPosts: 200,
     },
     runtime: createDefaultRuntime(),
@@ -671,8 +739,16 @@ function toTaskDraft(
   // 解析 randomN 标签
   const agents = task.targets.agents;
   const randomTag = agents.find(a => /^random(\d+)$/i.test(a));
-  const randomCount = randomTag ? parseInt(randomTag.match(/random(\d+)/i)![1], 10) : 0;
+  const rawRandomCount = randomTag ? parseInt(randomTag.match(/random(\d+)/i)![1], 10) : 0;
   const realAgents = agents.filter(a => !/^random(\d+)$/i.test(a));
+  const randomCount = Math.min(rawRandomCount, Math.min(realAgents.length, 30));
+  const forumListPlaceholder =
+    task.payload.forumListPlaceholder || FORUM_POST_PLACEHOLDER;
+  const payloadPlaceholders = dedupeStrings(task.payload.availablePlaceholders);
+  const availablePlaceholders =
+    taskType === "forum_patrol"
+      ? dedupeStrings([forumListPlaceholder, ...payloadPlaceholders, FORUM_POST_PLACEHOLDER])
+      : payloadPlaceholders;
 
   return {
     localKey: createLocalKey(task.id),
@@ -683,7 +759,6 @@ function toTaskDraft(
     taskDelegation: task.dispatch.taskDelegation || false,
     targetAgentsText: realAgents.join(", "),
     randomCount,
-    injectToolsText: task.dispatch.injectTools.join(", "),
     maid: task.dispatch.maid || "VCP系统",
     scheduleMode: task.schedule.mode,
     intervalMinutes: task.schedule.intervalMinutes,
@@ -691,12 +766,43 @@ function toTaskDraft(
     runAtLocal: toDatetimeLocalValue(task.schedule.runAt),
     promptTemplate: task.payload.promptTemplate,
     includeForumPostList: task.payload.includeForumPostList !== false,
-    forumListPlaceholder:
-      task.payload.forumListPlaceholder || "{{forum_post_list}}",
+    forumListPlaceholder,
     maxPosts: task.payload.maxPosts ?? 200,
-    availablePlaceholders: [...task.payload.availablePlaceholders],
+    availablePlaceholders,
     runtime,
   };
+}
+
+function handleTaskTypeChange(task: ForumAssistantTaskDraft): void {
+  const taskType = resolveTaskType(task.type);
+  const template = taskTemplates.value[taskType] ?? buildFallbackTemplate(taskType);
+  const templatePayload = template.payload;
+  const templatePrompt = templatePayload.promptTemplate || "";
+  const templatePlaceholders = dedupeStrings(templatePayload.availablePlaceholders);
+
+  task.promptTemplate = templatePrompt;
+
+  if (taskType === "forum_patrol") {
+    task.includeForumPostList = templatePayload.includeForumPostList !== false;
+    task.forumListPlaceholder =
+      templatePayload.forumListPlaceholder?.trim() || FORUM_POST_PLACEHOLDER;
+    task.maxPosts = Math.max(
+      Math.trunc(templatePayload.maxPosts || task.maxPosts || 0) || 200,
+      1
+    );
+    task.availablePlaceholders = dedupeStrings([
+      task.forumListPlaceholder,
+      ...templatePlaceholders,
+      FORUM_POST_PLACEHOLDER,
+    ]);
+
+    return;
+  }
+
+  task.includeForumPostList = false;
+  task.forumListPlaceholder = FORUM_POST_PLACEHOLDER;
+  task.maxPosts = Math.max(Math.trunc(task.maxPosts || 0) || 200, 1);
+  task.availablePlaceholders = templatePlaceholders;
 }
 
 function mergeStatusIntoDrafts(
@@ -737,10 +843,6 @@ function applyLoadedData(
     toTaskDraft(task, statusMap.get(task.id))
   );
   runtimeStatus.value = status;
-
-  if (!resolvedTaskTypes.value.some((item) => item.type === newTaskType.value)) {
-    newTaskType.value = resolvedTaskTypes.value[0]?.type || "forum_patrol";
-  }
 }
 
 async function refreshAll(showSuccessMessage = false): Promise<void> {
@@ -753,19 +855,25 @@ async function refreshAll(showSuccessMessage = false): Promise<void> {
     ]);
 
     applyLoadedData(configResponse, status);
-    
-    // --- 获取可用 Agent 列表以供快选 ---
-    try {
-      const agentConfig = await fetch('/admin_api/agent-assistant/config').then(r => r.json());
-      if (agentConfig && Array.isArray(agentConfig.agents)) {
-        availableAgents.value = agentConfig.agents;
+
+    // 获取可用 Agent 列表（仅首次加载）
+    if (!agentsLoaded.value) {
+      try {
+        const agentConfig = await agentApi.getAgentConfig();
+        if (agentConfig && Array.isArray(agentConfig.agents)) {
+          availableAgents.value = agentConfig.agents
+            .filter((a): a is { chineseName: string } => !!a.chineseName)
+            .map((a) => ({ chineseName: a.chineseName! }));
+        }
+      } catch (agentErr) {
+        console.warn('[TaskAssistant] Failed to fetch agent list:', agentErr);
+        showMessage("Agent 列表加载失败，快选功能不可用", "warning");
       }
-    } catch (agentErr) {
-      console.warn('[TaskAssistant] Failed to fetch agent list for suggestions:', agentErr);
+      agentsLoaded.value = true;
     }
-    // ---------------------------------
-    
+
     setStatus("", "info");
+    isDirty.value = false;
 
     if (showSuccessMessage) {
       showMessage("任务派发中心配置已刷新", "success");
@@ -791,18 +899,15 @@ async function refreshStatusOnly(): Promise<void> {
 }
 
 function addTask(): void {
-  if (!newTaskName.value.trim()) {
-    showMessage("请输入任务名称", "warning");
-    return;
-  }
+  const defaultTaskType = resolvedTaskTypes.value[0]?.type || "forum_patrol";
 
   const template =
-    taskTemplates.value[newTaskType.value] ?? buildFallbackTemplate(newTaskType.value);
+    taskTemplates.value[defaultTaskType] ?? buildFallbackTemplate(defaultTaskType);
   const draft = toTaskDraft(
     {
       ...template,
       id: "",
-      name: newTaskName.value.trim(),
+      name: "",
       runtime: createDefaultRuntime(),
       meta: {
         createdAt: null,
@@ -813,8 +918,13 @@ function addTask(): void {
   );
 
   taskDrafts.value = [...taskDrafts.value, draft];
-  newTaskName.value = "";
-  showMessage(`已添加任务草稿：${draft.name}`, "success");
+  showMessage("已新增空白任务，请在任务卡片中填写任务名称和类型", "success");
+
+  nextTick(() => {
+    const cards = document.querySelectorAll(".task-card");
+    const lastCard = cards[cards.length - 1];
+    lastCard?.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
 }
 
 function handleAgentQuickSelect(task: ForumAssistantTaskDraft, event: Event): void {
@@ -822,27 +932,17 @@ function handleAgentQuickSelect(task: ForumAssistantTaskDraft, event: Event): vo
   const val = select.value;
   if (!val) return;
 
-  const current = task.targetAgentsText.trim();
-  if (current) {
-    const agents = current.split(',').map(s => s.trim()).filter(Boolean);
-    if (!agents.includes(val)) {
-      agents.push(val);
-      task.targetAgentsText = agents.join(', ');
-    }
-  } else {
-    task.targetAgentsText = val;
+  const agents = syncAgentTargets(task);
+  if (!agents.includes(val)) {
+    agents.push(val);
+    task.targetAgentsText = agents.join(', ');
   }
 
   select.value = '';
 }
 
 function getDynamicRandomOptions(task: ForumAssistantTaskDraft): number[] {
-  const agents = task.targetAgentsText
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .filter(a => !/^random(\d+)$/i.test(a));
-  
+  const agents = getRealAgentsFromText(task.targetAgentsText);
   const count = Math.min(agents.length, 30);
   return Array.from({ length: count }, (_, i) => i + 1);
 }
@@ -850,47 +950,40 @@ function getDynamicRandomOptions(task: ForumAssistantTaskDraft): number[] {
 function handleRandomSelect(task: ForumAssistantTaskDraft, event: Event): void {
   const select = event.target as HTMLSelectElement;
   const val = select.value;
-  
-  let agents = task.targetAgentsText
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  
-  agents = agents.filter(a => !/^random(\d+)$/i.test(a));
-  
+
+  const agents = syncAgentTargets(task);
+
   if (val) {
     const match = val.match(/^random(\d+)$/i);
     if (match) {
-      task.randomCount = parseInt(match[1], 10);
-      agents.push(val);
+      const selectedCount = parseInt(match[1], 10);
+      task.randomCount = Math.min(selectedCount, Math.min(agents.length, 30));
     }
   } else {
     task.randomCount = 0;
   }
-  
+
   task.targetAgentsText = agents.join(', ');
   select.value = '';
 }
 
 function updateRandomOptions(task: ForumAssistantTaskDraft): void {
-  let agents = task.targetAgentsText
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  
-  const hasRandom = agents.some(a => /^random(\d+)$/i.test(a));
-  const realAgents = agents.filter(a => !/^random(\d+)$/i.test(a));
-  
-  if (hasRandom && realAgents.length < task.randomCount) {
-    agents = realAgents;
-    task.randomCount = 0;
-    task.targetAgentsText = agents.join(', ');
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
   }
+  debounceTimer = setTimeout(() => {
+    syncAgentTargets(task);
+    debounceTimer = null;
+  }, 200);
 }
 
-function removeTask(task: ForumAssistantTaskDraft): void {
+async function removeTask(task: ForumAssistantTaskDraft): Promise<void> {
   const taskName = task.name.trim() || "未命名任务";
-  if (!window.confirm(`确定移除任务 "${taskName}" 吗？`)) {
+  if (!(await askConfirm({
+    message: `确定移除任务 "${taskName}" 吗？移除后需点击"保存任务配置"才会生效。`,
+    danger: true,
+    confirmText: "移除",
+  }))) {
     return;
   }
 
@@ -935,26 +1028,31 @@ function buildTaskPayload(
     draft.scheduleMode === "manual" || draft.scheduleMode === "once" || draft.scheduleMode === "cron"
       ? draft.scheduleMode
       : "interval";
+  const placeholders = collectTaskPlaceholders(draft);
+  const forumPlaceholder = resolveForumPlaceholderToken(draft);
 
   const payload =
     taskType === "forum_patrol"
       ? {
           promptTemplate: draft.promptTemplate,
-          availablePlaceholders: ["{{forum_post_list}}"],
+          availablePlaceholders:
+            placeholders.length > 0 ? placeholders : [FORUM_POST_PLACEHOLDER],
           includeForumPostList: draft.includeForumPostList,
-          forumListPlaceholder:
-            draft.forumListPlaceholder.trim() || "{{forum_post_list}}",
+          forumListPlaceholder: forumPlaceholder,
           maxPosts: Math.max(Math.trunc(draft.maxPosts || 0) || 200, 1),
         }
       : {
           promptTemplate: draft.promptTemplate,
-          availablePlaceholders: [],
+          availablePlaceholders: placeholders,
         };
 
-  // 构建 agents 数组，如果有 randomCount 则添加 randomN 标签
-  const agents = splitCommaSeparated(draft.targetAgentsText);
-  if (draft.randomCount > 0) {
-    agents.push(`random${draft.randomCount}`);
+  // 构建 agents 数组：文本框仅保存真实 Agent，randomN 仅在提交时附加一次
+  const agents = getRealAgentsFromText(draft.targetAgentsText);
+  if (draft.randomCount > 0 && agents.length > 0) {
+    const randomCount = Math.min(draft.randomCount, Math.min(agents.length, 30));
+    if (randomCount > 0) {
+      agents.push(`random${randomCount}`);
+    }
   }
 
   return {
@@ -979,7 +1077,7 @@ function buildTaskPayload(
     dispatch: {
       channel: "AgentAssistant",
       temporaryContact: true,
-      injectTools: splitCommaSeparated(draft.injectToolsText),
+      injectTools: [DEFAULT_INJECT_TOOL],
       maid: draft.maid.trim() || "VCP系统",
       taskDelegation: draft.taskDelegation,
     },
@@ -988,6 +1086,21 @@ function buildTaskPayload(
 }
 
 async function saveConfig(): Promise<void> {
+  if (taskDrafts.value.some((task) => !task.name.trim())) {
+    const message = "存在未命名任务，请先填写任务名称后再保存。";
+    setStatus(message, "error");
+    showMessage(message, "warning");
+    return;
+  }
+
+  // 校验 intervalMinutes 最小值并给出反馈
+  for (const task of taskDrafts.value) {
+    if (task.scheduleMode === "interval" && task.intervalMinutes < 10) {
+      task.intervalMinutes = 10;
+      showMessage(`任务 "${task.name}" 的循环间隔已修正为最小值 10 分钟`, "warning");
+    }
+  }
+
   isSaving.value = true;
 
   try {
@@ -1004,6 +1117,7 @@ async function saveConfig(): Promise<void> {
     });
 
     await refreshAll(false);
+    isDirty.value = false;
     setStatus(result.message, "success");
     showMessage(result.message, "success");
   } catch (error) {
@@ -1042,8 +1156,57 @@ function formatDuration(value: number | null | undefined): string {
   return `${(value / 1000).toFixed(2)} s`;
 }
 
+function showMoreHistory(): void {
+  historyDisplayCount.value += 20;
+}
+
+function isOnceTaskExpired(task: ForumAssistantTaskDraft): boolean {
+  if (task.scheduleMode !== "once" || !task.runAtLocal) {
+    return false;
+  }
+  const runAt = new Date(task.runAtLocal);
+  return !Number.isNaN(runAt.getTime()) && runAt.getTime() < Date.now();
+}
+
+function handleBeforeUnload(e: BeforeUnloadEvent): void {
+  if (isDirty.value) {
+    e.preventDefault();
+  }
+}
+
+watch(
+  [globalEnabled, maxHistory, taskDrafts],
+  () => {
+    if (!isLoading.value && !isSaving.value) {
+      isDirty.value = true;
+    }
+  },
+  { deep: true }
+);
+
+onBeforeRouteLeave(async () => {
+  if (!isDirty.value) {
+    return true;
+  }
+
+  return askConfirm({
+    title: "有未保存的更改",
+    message: "任务配置有未保存的更改，确定要离开吗？",
+    confirmText: "离开页面",
+    cancelText: "留在此页",
+  });
+});
+
 onMounted(async () => {
+  window.addEventListener("beforeunload", handleBeforeUnload);
   await refreshAll(false);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", handleBeforeUnload);
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+  }
 });
 </script>
 
@@ -1052,6 +1215,14 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.forum-assistant-view > .description {
+  margin-bottom: 0;
+}
+
+.forum-assistant-view > .description + * {
+  margin-top: calc(var(--space-4) - 24px);
 }
 
 .toolbar-card,
@@ -1087,13 +1258,6 @@ onMounted(async () => {
 .composer-controls,
 .task-card-actions {
   flex-wrap: wrap;
-}
-
-.switch-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 600;
 }
 
 .field {
@@ -1195,24 +1359,35 @@ onMounted(async () => {
   max-width: 220px;
 }
 
-.quick-create-field {
-  min-width: 220px;
-  max-width: 280px;
-}
-
-.quick-create-field > span {
-  color: var(--secondary-text);
-  font-size: var(--font-size-helper);
-}
-
-.quick-create-field input,
-.quick-create-field select {
-  max-width: none;
-}
-
 .quick-create-actions {
   display: flex;
   align-items: flex-end;
+}
+
+.schedule-field {
+  grid-column: 1 / -1;
+}
+
+.schedule-inline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.schedule-mode-select {
+  flex: 0 0 200px;
+  max-width: 230px;
+}
+
+.schedule-mode-input {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.schedule-manual-hint {
+  margin: 0;
+  flex: 1 1 260px;
 }
 
 .empty-state,
@@ -1284,6 +1459,12 @@ onMounted(async () => {
 
 .placeholder-empty {
   color: var(--secondary-text);
+}
+
+.placeholder-hint {
+  margin-top: 6px;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
 }
 
 .runtime-panel {
@@ -1406,7 +1587,18 @@ onMounted(async () => {
 
 .agent-quick-select:hover,
 .agent-random-select:hover {
-  border-color: var(--primary-color);
+  border-color: var(--highlight-text);
+}
+
+.once-expired-badge {
+  margin-left: 8px;
+  font-size: var(--font-size-helper);
+  vertical-align: middle;
+}
+
+.history-more-btn {
+  align-self: center;
+  margin-top: 4px;
 }
 
 @media (max-width: 900px) {
@@ -1426,7 +1618,14 @@ onMounted(async () => {
     max-width: none;
   }
 
-  .quick-create-field {
+  .schedule-inline-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .schedule-mode-select,
+  .schedule-mode-input {
+    width: 100%;
     min-width: 0;
     max-width: none;
   }

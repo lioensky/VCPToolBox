@@ -36,6 +36,17 @@ export interface WormholeRoutingPanel {
   keys: readonly string[];
 }
 
+export type OrderedCooccurrencePanelId = "topology" | "direction" | "semantic" | "guard";
+
+export interface OrderedCooccurrencePanel {
+  id: OrderedCooccurrencePanelId;
+  title: string;
+  axis: string;
+  summary: string;
+  icon: string;
+  keys: readonly string[];
+}
+
 export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
   {
     id: "trigger",
@@ -60,11 +71,55 @@ export const WORMHOLE_ROUTING_PANELS: readonly WormholeRoutingPanel[] = [
   },
 ] as const;
 
+export const ORDERED_COOCCURRENCE_PRIMARY_KEYS = [
+  "reverseGain",
+  "reverseAnchorBoost",
+  "semanticGainEnabled",
+  "reverseInversionGuard",
+] as const;
+
+export type OrderedCooccurrencePrimaryKey = (typeof ORDERED_COOCCURRENCE_PRIMARY_KEYS)[number];
+
+export const ORDERED_COOCCURRENCE_PANELS: readonly OrderedCooccurrencePanel[] = [
+  {
+    id: "topology",
+    title: "拓扑层：形",
+    axis: "双向共现",
+    summary: "决定标签是否互为邻接，以及序位距离如何压低远距离共现边。",
+    icon: "account_tree",
+    keys: ["forwardGain", "distanceDecay"],
+  },
+  {
+    id: "direction",
+    title: "方向层：色",
+    axis: "顺逆流阻尼",
+    summary: "控制叙事顺流与逆流回溯之间的能量差，避免 V7 的硬墙又保留方向偏置。",
+    icon: "swap_calls",
+    keys: ["reverseGain", "minReverseGain", "maxReverseGain", "reverseAnchorBoost", "reverseAnchorMax"],
+  },
+  {
+    id: "semantic",
+    title: "语义层：质",
+    axis: "向量距离调制",
+    summary: "用钟形语义增益放大概念邻接黄金区，同时压制噪声边与同义词回音壁。",
+    icon: "scatter_plot",
+    keys: ["semanticGainEnabled", "semanticGainPeak", "semanticGainSigma", "semanticGainLowSimFallback"],
+  },
+  {
+    id: "guard",
+    title: "工程守卫",
+    axis: "叙事方向公理",
+    summary: "确保逆流永远不会突破顺流上限，是 V8.2 灰度调参的最后保险。",
+    icon: "security",
+    keys: ["reverseInversionGuard"],
+  },
+] as const;
+
 const DEFAULT_GROUP_META: GroupMeta = {
   title: "未命名参数组",
   description: "该参数组暂时没有补充说明。",
   icon: "tune",
-  accent: "rgba(56, 189, 248, 0.5)",
+  accent: "oklch(0.78 0.15 230 / 0.5)",
   badge: "待整理",
 };
 
@@ -81,21 +136,21 @@ export const GROUP_METADATA: Record<string, GroupMeta> = {
     title: "上下文折叠层",
     description: "负责根据语义相似度和逻辑聚焦度自动折叠远距离 AI 输出，控制上下文窗口大小。",
     icon: "unfold_less",
-    accent: "rgba(167, 139, 250, 0.55)",
+    accent: "oklch(0.74 0.16 305 / 0.55)",
     badge: "上下文控制",
   },
   RAGDiaryPlugin: {
     title: "感知与裁剪层",
     description: "负责标签感知、时间衰减与主检索权重，是浪潮 RAG 的第一道调制面。",
     icon: "flare",
-    accent: "rgba(56, 189, 248, 0.55)",
+    accent: "oklch(0.78 0.15 230 / 0.55)",
     badge: "输入前置",
   },
   KnowledgeBaseManager: {
     title: "增强与路由层",
     description: "负责残差激活、语言补偿、去重和虫洞传播，决定系统是稳还是敢跳。",
     icon: "hub",
-    accent: "rgba(251, 191, 36, 0.55)",
+    accent: "oklch(0.82 0.16 85 / 0.55)",
     badge: "检索后段",
   },
 };
@@ -229,6 +284,97 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       logic: "调高：更严格，只有 Tag 密度高的 chunk 才会被测地线影响；调低：更宽松，但可能因采样不足导致估计不可靠。莱恩建议 4 作为基准。",
       range: "建议区间: 2 ~ 8 (整数，默认 4)",
       tone: "sensitive",
+    },
+    orderedCooccurrence: {
+      label: "有序双向势能流形 (V8.2)",
+      summary: "TagMemo V8.2 核心：把共现拓扑、叙事方向、语义距离三轴解耦——形(双向) × 色(顺逆阻尼) × 质(向量距离)。",
+      logic: "三层灰度叠加 (α 双向 → β 锚 boost → γ 语义增益)。每层都改完观察一周再叠下一层；共用矩阵重建锁，重建时自动串行。",
+      range: "共 12 个子参数，优先关注 reverseGain、reverseAnchorBoost、semanticGainEnabled、reverseInversionGuard。",
+      tone: "critical",
+    },
+    "orderedCooccurrence.forwardGain": {
+      label: "顺流增益",
+      summary: "叙事顺向边 A→B 的基础权重倍率。1.0 表示与原 V7 保持一致。",
+      logic: "几乎不需要调整。除非主路径明显偏弱才考虑提升到 1.1~1.2。",
+      range: "建议 0.8 ~ 1.2 (默认 1.0)",
+      tone: "stable",
+    },
+    "orderedCooccurrence.reverseGain": {
+      label: "逆流基础增益",
+      summary: "回溯方向 B→A 的基础权重倍率。0.42 是经过审计的初始档位。",
+      logic: "调高: 概念回溯通畅，但有同义词回卷风险；调低: 偏向 V7 单向行为，逆向联想被压制。",
+      range: "建议 0.30 ~ 0.65 (默认 0.42)",
+      tone: "critical",
+    },
+    "orderedCooccurrence.minReverseGain": {
+      label: "逆流增益下限",
+      summary: "动态调制后的逆流增益的安全下限。",
+      logic: "保证锚 boost 与 semantic gain 调制后逆流不会跌破完全切断。",
+      range: "建议 0.20 ~ 0.40 (默认 0.25)",
+      tone: "stable",
+    },
+    "orderedCooccurrence.maxReverseGain": {
+      label: "逆流增益上限",
+      summary: "动态调制后的逆流增益的安全上限，配合反转守卫双重保险。",
+      logic: "调高: 允许概念锚回溯更激进；调低: 严格保叙事方向偏置。",
+      range: "建议 0.55 ~ 0.80 (默认 0.70)",
+      tone: "sensitive",
+    },
+    "orderedCooccurrence.distanceDecay": {
+      label: "序位距离衰减",
+      summary: "Tag 在同一篇日记里序位相邻强、远距离弱。0 表示关闭距离衰减 (V8.2-α 默认)。",
+      logic: "灰度上线建议先关 (0)，验证一周后再开到 0.05~0.12。开启后长日记的首尾标签共现权重会被压低。",
+      range: "建议 0 / 0.05 ~ 0.20 (默认 0)",
+      tone: "sensitive",
+    },
+    "orderedCooccurrence.reverseAnchorBoost": {
+      label: "概念锚逆流增强 (β 开关)",
+      summary: "是否允许高内生残差的概念锚获得额外的逆流回溯权重。1=开启，0=关闭。",
+      logic: "效果：哲学命题等概念锚 tag 容易从任何枝干被召回，但事件 tag 不会无故回卷。建议先观察 α 一周再开启。",
+      range: "0 (关闭) / 1 (开启)，默认 1",
+      tone: "sensitive",
+    },
+    "orderedCooccurrence.reverseAnchorMax": {
+      label: "概念锚逆流最大倍率",
+      summary: "概念锚 boost 的能量天花板。残差越大的锚 tag 逆流能力越强，但不超过此倍率。",
+      logic: "调高: 概念锚回流更猛；调低: 锚效应温和。配合 maxReverseGain 双重夹逼。",
+      range: "建议 1.2 ~ 2.0 (默认 1.5)",
+      tone: "stable",
+    },
+    "orderedCooccurrence.semanticGainEnabled": {
+      label: "语义增益开关 (γ 开关)",
+      summary: "是否启用基于向量距离的钟形语义增益。1=开启，0=关闭。",
+      logic: "开启后噪声边自然弱化，黄金区放大，同义词冗余被抑制。建议在 β 验证稳定后再开。",
+      range: "0 (关闭) / 1 (开启)，默认 1",
+      tone: "critical",
+    },
+    "orderedCooccurrence.semanticGainPeak": {
+      label: "语义钟形峰值 (peak)",
+      summary: "黄金联想区的余弦相似度位置。Gemini 模型分布右移，必要时调整。",
+      logic: "OpenAI 系建议 0.55~0.65；Gemini-embedding-001 建议先扫真实分布再定。peak 越高越偏好概念邻接型。",
+      range: "建议 0.50 ~ 0.75 (默认 0.65)",
+      tone: "critical",
+    },
+    "orderedCooccurrence.semanticGainSigma": {
+      label: "语义钟形宽度 (σ)",
+      summary: "钟形函数的标准差，决定峰值附近的宽度。",
+      logic: "调大: 黄金区平台更宽，更宽容；调小: 峰值更尖锐，仅最近邻获得最高增益。",
+      range: "建议 0.15 ~ 0.35 (默认 0.25)",
+      tone: "sensitive",
+    },
+    "orderedCooccurrence.semanticGainLowSimFallback": {
+      label: "未命中 sim 兜底值",
+      summary: "持久化 sim 表里查不到的 pair 默认相似度。0.1 比噪声阈值 0.05 略高。",
+      logic: "刻意区别于 0：保留弱共现，避免与‘低于阈值被丢’语义混淆。",
+      range: "建议 0.05 ~ 0.20 (默认 0.10)",
+      tone: "stable",
+    },
+    "orderedCooccurrence.reverseInversionGuard": {
+      label: "反转守卫上限",
+      summary: "逆流权重相对顺流权重的最大占比。0.95 表示逆流永远不超过顺流 95%。",
+      logic: "保 V8.2 叙事方向公理不被锚 boost × 语义增益的乘积突破。极少需要调整。",
+      range: "建议 0.85 ~ 0.99 (默认 0.95)",
+      tone: "critical",
     },
     spikeRouting: {
       label: "虫洞脉冲路由",
@@ -429,6 +575,33 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   // 🆕 V8: 最小采样密度门槛
   if (key.includes('samples')) {
     return { min: 1, max: 20, step: 1 };
+  }
+
+  // 🆕 V8.2: 有序双向势能流形参数
+  if (key === 'forwardgain' || key === 'reversegain'
+      || key === 'minreversegain' || key === 'maxreversegain') {
+    return { min: 0, max: 1.5, step: 0.01 };
+  }
+  if (key === 'distancedecay') {
+    return { min: 0, max: 0.5, step: 0.01 };
+  }
+  if (key === 'reverseanchorboost' || key === 'semanticgainenabled') {
+    return { min: 0, max: 1, step: 1 }; // toggle 用 0/1 表达
+  }
+  if (key === 'reverseanchormax') {
+    return { min: 1, max: 3, step: 0.05 };
+  }
+  if (key === 'semanticgainpeak') {
+    return { min: 0, max: 1, step: 0.01 };
+  }
+  if (key === 'semanticgainsigma') {
+    return { min: 0.05, max: 0.6, step: 0.01 };
+  }
+  if (key === 'semanticgainlowsimfallback') {
+    return { min: 0, max: 0.5, step: 0.01 };
+  }
+  if (key === 'reverseinversionguard') {
+    return { min: 0.5, max: 1, step: 0.01 };
   }
 
   if (key.includes("days")) {

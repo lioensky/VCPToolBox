@@ -20,7 +20,18 @@ module.exports = function(options) {
     router.post('/rag-tags', async (req, res) => {
         const ragTagsPath = path.join(__dirname, '..', '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');
         try {
-            await fs.writeFile(ragTagsPath, JSON.stringify(req.body, null, 2), 'utf-8');
+            if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+                return res.status(400).json({ error: 'Invalid request body' });
+            }
+
+            let existing = {};
+            try {
+                existing = JSON.parse(await fs.readFile(ragTagsPath, 'utf-8'));
+            } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+            }
+
+            await fs.writeFile(ragTagsPath, JSON.stringify({ ...existing, ...req.body }, null, 2), 'utf-8');
             res.json({ message: 'Saved' });
         } catch (error) { res.status(500).json({ error: 'Failed' }); }
     });

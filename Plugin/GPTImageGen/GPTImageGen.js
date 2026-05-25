@@ -28,7 +28,7 @@ const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com'
 const GPT_IMAGE_MODEL = process.env.GPT_IMAGE_MODEL || 'gpt-image-2';
 const DEFAULT_SIZE = process.env.DEFAULT_SIZE || '1024x1024';
 const DEFAULT_QUALITY = process.env.DEFAULT_QUALITY || 'auto';
-const DEFAULT_RESPONSE_FORMAT = process.env.DEFAULT_RESPONSE_FORMAT || 'b64_json';
+const DEFAULT_RESPONSE_FORMAT = process.env.DEFAULT_RESPONSE_FORMAT || 'url';
 const DEFAULT_BACKGROUND = process.env.DEFAULT_BACKGROUND || 'auto';
 const DEBUG = process.env.DebugMode === 'true';
 
@@ -57,7 +57,13 @@ const GPTIMAGEGEN_OUTPUT_DIR = path.join(PROJECT_IMAGE_ROOT, 'gptimagegen');
  */
 function outputAndExit(result) {
     const code = result.status === 'success' ? 0 : 1;
-    process.stdout.write(JSON.stringify(result), () => process.exit(code));
+    const payload = JSON.stringify(result);
+
+    // 先结束 stdout，尽量确保父进程在 Windows/shell 场景下稳定收到完整 JSON
+    process.stdout.write(payload);
+    process.stdout.end(() => {
+        process.exit(code);
+    });
 }
 
 /**
@@ -171,6 +177,60 @@ function inferImageExtension(contentType, urlOrPath) {
  * @param {string|Buffer|null} body - 请求体
  * @returns {Promise<{statusCode: number, headers: object, body: string}>}
  */
+function tryExtractCompleteJson(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+
+    try {
+        return JSON.parse(trimmed);
+    } catch {
+        // 继续尝试从前缀中提取完整 JSON
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    const opening = trimmed[0];
+    const closing = opening === '{' ? '}' : ']';
+
+    for (let i = 0; i < trimmed.length; i++) {
+        const ch = trimmed[i];
+
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+
+        if (ch === opening) depth++;
+        if (ch === closing) {
+            depth--;
+            if (depth === 0) {
+                const candidate = trimmed.slice(0, i + 1);
+                try {
+                    return JSON.parse(candidate);
+                } catch {
+                    return null;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 function httpRequest(url, options = {}, body = null) {
     return new Promise((resolve, reject) => {
         const parsedUrl = new URL(url);
@@ -187,26 +247,76 @@ function httpRequest(url, options = {}, body = null) {
 
         debugLog(`HTTP ${reqOptions.method} ${url}`);
 
+        let settled = false;
+        const settle = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            fn(value);
+        };
+
         const req = transport.request(reqOptions, (res) => {
             const chunks = [];
-            res.on('data', (chunk) => chunks.push(chunk));
-            res.on('end', () => {
+            let chunkCount = 0;
+
+            const finalize = () => {
                 const responseBody = Buffer.concat(chunks).toString('utf-8');
-                resolve({
+                settle(resolve, {
                     statusCode: res.statusCode,
                     headers: res.headers,
                     body: responseBody
                 });
+            };
+
+            res.on('data', (chunk) => {
+                if (settled) return;
+
+                chunks.push(chunk);
+                chunkCount++;
+
+                // 对 200 + JSON 响应尝试提前提取完整 JSON，避免兼容渠道迟迟不结束连接
+                const contentType = String(res.headers['content-type'] || '').toLowerCase();
+                const shouldTryEarlyJson =
+                    res.statusCode === 200 &&
+                    (contentType.includes('application/json') || contentType.includes('text/json') || contentType === '');
+
+                if (shouldTryEarlyJson) {
+                    const partialBody = Buffer.concat(chunks).toString('utf-8');
+                    const parsed = tryExtractCompleteJson(partialBody);
+
+                    if (parsed) {
+                        debugLog(`HTTP early JSON extraction succeeded after ${chunkCount} chunk(s), destroying response stream early.`);
+                        settled = true;
+                        res.destroy();
+                        req.destroy();
+                        resolve({
+                            statusCode: res.statusCode,
+                            headers: res.headers,
+                            body: JSON.stringify(parsed)
+                        });
+                    }
+                }
+            });
+
+            res.on('end', () => {
+                if (settled) return;
+                finalize();
+            });
+
+            res.on('error', (err) => {
+                if (settled) return;
+                settle(reject, new Error(`HTTP response failed: ${err.message}`));
             });
         });
 
         req.on('error', (err) => {
-            reject(new Error(`HTTP request failed: ${err.message}`));
+            if (settled) return;
+            settle(reject, new Error(`HTTP request failed: ${err.message}`));
         });
 
         req.on('timeout', () => {
+            if (settled) return;
             req.destroy();
-            reject(new Error('HTTP request timed out'));
+            settle(reject, new Error('HTTP request timed out'));
         });
 
         if (body) {
@@ -407,15 +517,67 @@ async function processImageInput(imageInput) {
     const base64 = buffer.toString('base64');
     const ext = path.extname(resolved).toLowerCase();
     const mime = ext === '.png' ? 'image/png' :
-                 ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
-                 ext === '.webp' ? 'image/webp' :
-                 ext === '.gif' ? 'image/gif' : 'image/png';
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+            ext === '.webp' ? 'image/webp' :
+                ext === '.gif' ? 'image/gif' : 'image/png';
     return `data:${mime};base64,${base64}`;
 }
 
 // ============================================================
 // 核心 API 调用
 // ============================================================
+
+function normalizeImageItem(item) {
+    if (!item) return {};
+
+    if (typeof item === 'string') {
+        if (/^https?:\/\//i.test(item)) return { url: item };
+        if (/^data:image\/[^;]+;base64,/i.test(item)) return { data_uri: item };
+        return { b64_json: item };
+    }
+
+    if (typeof item !== 'object') return {};
+
+    return {
+        b64_json: item.b64_json || item.base64 || item.image_base64,
+        data_uri: item.data_uri || item.dataUrl || item.image_data || item.image,
+        url: item.url || item.image_url
+    };
+}
+
+function normalizeImageApiResponseBody(parsed) {
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('API 响应不是有效对象');
+    }
+
+    if (Array.isArray(parsed.data) && parsed.data.length > 0) {
+        return {
+            ...parsed,
+            data: parsed.data.map(normalizeImageItem)
+        };
+    }
+
+    // 兼容部分 OpenAI 兼容渠道：直接返回单个图片对象而不是 { data: [...] }
+    if (parsed.b64_json || parsed.base64 || parsed.image_base64 || parsed.url || parsed.data_uri || parsed.image) {
+        return {
+            ...parsed,
+            data: [normalizeImageItem(parsed)]
+        };
+    }
+
+    // 兼容部分渠道：返回 images/imageUrls/urls 数组
+    const candidateArrays = [parsed.images, parsed.imageUrls, parsed.urls];
+    for (const arr of candidateArrays) {
+        if (Array.isArray(arr) && arr.length > 0) {
+            return {
+                ...parsed,
+                data: arr.map(normalizeImageItem)
+            };
+        }
+    }
+
+    throw new Error(`API 响应中缺少有效的图像数据。响应: ${JSON.stringify(parsed).substring(0, 300)}`);
+}
 
 /**
  * 通用 API 响应解析器
@@ -434,11 +596,7 @@ function parseApiResponse(response) {
             throw new Error(`API 返回了无效的 JSON 响应: ${response.body.substring(0, 200)}`);
         }
 
-        if (!parsed.data || !Array.isArray(parsed.data) || parsed.data.length === 0) {
-            throw new Error(`API 响应中缺少有效的图像数据。响应: ${JSON.stringify(parsed).substring(0, 300)}`);
-        }
-
-        return parsed;
+        return normalizeImageApiResponseBody(parsed);
     }
 
     // 错误处理
@@ -459,6 +617,10 @@ function parseApiResponse(response) {
             throw new Error(`API 访问被拒绝（403 Forbidden），请检查 API Key 权限。详情: ${errorDetail}`);
         case 400:
             throw new Error(`API 请求参数错误（400 Bad Request）。详情: ${errorDetail}`);
+        case 404:
+            throw new Error(`API 端点不存在（404 Not Found）。详情: ${errorDetail}`);
+        case 405:
+            throw new Error(`API 方法不被允许（405 Method Not Allowed）。详情: ${errorDetail}`);
         case 503:
             throw new Error(`API 服务不可用（503 Service Unavailable），已重试 ${MAX_RETRIES} 次仍失败。详情: ${errorDetail}`);
         default:
@@ -466,14 +628,33 @@ function parseApiResponse(response) {
     }
 }
 
+function buildImageGenerationUrls() {
+    const normalizedBase = OPENAI_BASE_URL.replace(/\/+$/, '');
+    const urls = [];
+
+    // 标准 OpenAI 兼容写法
+    urls.push(`${normalizedBase}/v1/images/generations`);
+
+    // 某些兼容渠道直接把文生图挂在 /v1/images
+    if (!/\/v1\/images$/i.test(normalizedBase)) {
+        urls.push(`${normalizedBase}/v1/images`);
+    }
+
+    return [...new Set(urls)];
+}
+
 /**
  * 调用 OpenAI 兼容的 images/generations API（文生图）
+ *
+ * 兼容两类渠道：
+ * 1. 标准端点：/v1/images/generations
+ * 2. 某些反代端点：/v1/images
  *
  * @param {object} params - 生成参数
  * @returns {Promise<object>} API 响应体
  */
 async function callImageAPI(params) {
-    const apiUrl = `${OPENAI_BASE_URL}/v1/images/generations`;
+    const apiUrls = buildImageGenerationUrls();
 
     const requestBody = {
         model: GPT_IMAGE_MODEL,
@@ -486,21 +667,49 @@ async function callImageAPI(params) {
     };
 
     const bodyStr = JSON.stringify(requestBody);
-    debugLog('API Request URL:', apiUrl);
+    debugLog('API Request Candidate URLs:', JSON.stringify(apiUrls));
     debugLog('API Request Body:', bodyStr.substring(0, 500));
 
-    const response = await httpRequestWithRetry(apiUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${OPENAI_API_KEY}`,
-            'Accept': 'application/json',
-            'Content-Length': Buffer.byteLength(bodyStr)
-        },
-        timeout: 300000
-    }, bodyStr);
+    let lastError = null;
 
-    return parseApiResponse(response);
+    for (let i = 0; i < apiUrls.length; i++) {
+        const apiUrl = apiUrls[i];
+        try {
+            debugLog(`Trying image generation endpoint [${i + 1}/${apiUrls.length}]:`, apiUrl);
+
+            const response = await httpRequestWithRetry(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                    'Accept': 'application/json',
+                    'Content-Length': Buffer.byteLength(bodyStr)
+                },
+                timeout: 300000
+            }, bodyStr);
+
+            // 若当前候选端点返回 404/405，则自动尝试下一个候选端点
+            if ((response.statusCode === 404 || response.statusCode === 405) && i < apiUrls.length - 1) {
+                debugLog(`Endpoint ${apiUrl} returned ${response.statusCode}, trying next candidate endpoint.`);
+                continue;
+            }
+
+            return parseApiResponse(response);
+        } catch (error) {
+            lastError = error;
+            const msg = error && error.message ? error.message : String(error);
+
+            // 仅对明显的“端点不匹配”错误尝试下一个候选端点
+            if ((/HTTP 404|HTTP 405|404 Not Found|405 Method Not Allowed/i.test(msg)) && i < apiUrls.length - 1) {
+                debugLog(`Endpoint ${apiUrl} failed with endpoint-like error, trying next candidate. Error: ${msg}`);
+                continue;
+            }
+
+            throw error;
+        }
+    }
+
+    throw lastError || new Error('图像生成请求失败：没有可用的 API 端点');
 }
 
 /**
@@ -690,6 +899,14 @@ async function buildResponse(apiResult, params) {
             // base64 模式：直接解码
             imageBuffer = Buffer.from(item.b64_json, 'base64');
             contentType = 'image/png'; // b64_json 模式下 gpt-image-2 默认返回 PNG
+        } else if (item.data_uri && typeof item.data_uri === 'string' && item.data_uri.startsWith('data:image/')) {
+            const match = item.data_uri.match(/^data:(image\/[^;]+);base64,(.+)$/s);
+            if (!match) {
+                debugLog(`Warning: Image ${i} data_uri format invalid, skipping`);
+                continue;
+            }
+            imageBuffer = Buffer.from(match[2], 'base64');
+            contentType = match[1];
         } else if (item.url) {
             // URL 模式：下载图片（现在返回 contentType）
             debugLog(`Downloading image ${i} from URL: ${item.url}`);
@@ -697,7 +914,7 @@ async function buildResponse(apiResult, params) {
             imageBuffer = downloaded.data;
             contentType = downloaded.contentType;
         } else {
-            debugLog(`Warning: Image ${i} has no b64_json or url field, skipping`);
+            debugLog(`Warning: Image ${i} has no b64_json, data_uri or url field, skipping`);
             continue;
         }
 
@@ -831,13 +1048,13 @@ async function main() {
             });
         }
 
-         // 解析并验证通用参数
-         let size = args.size || args.Size || DEFAULT_SIZE;
-         // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
-         if (/^\d+$/.test(size)) {
-             size = `${size}x${size}`;
-             debugLog(`Size auto-corrected to square: ${size}`);
-         }
+        // 解析并验证通用参数
+        let size = args.size || args.Size || DEFAULT_SIZE;
+        // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
+        if (/^\d+$/.test(size)) {
+            size = `${size}x${size}`;
+            debugLog(`Size auto-corrected to square: ${size}`);
+        }
         if (!isValidSize(size)) {
             return outputAndExit({
                 status: 'error',
@@ -870,7 +1087,10 @@ async function main() {
                 });
             }
 
-            // 兼容 VCP 工具调用传入 JSON 数组字符串的情况，例如 ["image/a.png","image/b.png"]。
+            // ── 兼容 VCP 工具调用传入 JSON 数组字符串的情况 ──
+            // VCP 的「始」「末」参数解析器可能将 ["a","b"] 作为纯字符串传入，
+            // 而非 JS 原生数组。此处自动检测并解析。
+            // Windows 路径中的 \ 需要转义为 \\ 才能被 JSON.parse 正确解析。
             if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
                 try {
                     let parsed;

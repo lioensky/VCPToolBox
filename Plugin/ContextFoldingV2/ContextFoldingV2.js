@@ -339,9 +339,11 @@ class ContextFoldingV2 {
         const sanitizedAi = lastAiContent ? bridge.sanitize(lastAiContent, 'assistant') : null;
 
         // 向量化
+        // ContextFoldingV2 在 RAGDiaryPlugin 之后执行：先尝试精确缓存，再尝试高阈值 fuzzy 复用 RAG 刚生成的近似向量，
+        // 最后才触发 Embedding API，避免“最新 AI 发言仅有微小文本差异却重复向量化”。
         const [userVec, aiVec] = await Promise.all([
-            sanitizedUser ? bridge.embedText(sanitizedUser) : null,
-            sanitizedAi ? bridge.embedText(sanitizedAi) : null
+            sanitizedUser ? this._embedTextForFolding(sanitizedUser, bridge, 'user_context') : null,
+            sanitizedAi ? this._embedTextForFolding(sanitizedAi, bridge, 'assistant_context') : null
         ]);
 
         // 加权平均（默认 user 0.7, AI 0.3，可通过 rag_params.json 的 ContextFoldingV2.contextWeights 调整）
@@ -350,6 +352,38 @@ class ContextFoldingV2 {
             [userVec, aiVec].filter(Boolean),
             userVec && aiVec ? weights : [1.0]
         );
+    }
+
+    async _embedTextForFolding(text, bridge, label = 'unknown') {
+        if (!text || typeof text !== 'string' || !bridge) return null;
+
+        if (typeof bridge.getEmbeddingFromCache === 'function') {
+            const exact = bridge.getEmbeddingFromCache(text);
+            if (exact) return exact;
+        }
+
+        // 仅在折叠链路中启用高阈值 fuzzy 复用，不影响 RAG 主检索精度。
+        // 阈值保守：长文本、长度接近、Dice 相似度 >= 0.985 才复用。
+        if (typeof bridge.getFuzzyEmbeddingFromCache === 'function') {
+            const fuzzy = bridge.getFuzzyEmbeddingFromCache(text, {
+                threshold: 0.985,
+                minLength: 80,
+                maxScan: 200,
+                maxLengthDiffRatio: 0.02,
+                maxLengthDiffAbs: 80
+            });
+
+            if (fuzzy && fuzzy.vector) {
+                console.log(
+                    `[ContextFoldingV2] Fuzzy embedding cache hit (${label}): ` +
+                    `sim=${fuzzy.similarity.toFixed(4)}, len=${text.length}/${fuzzy.length}`
+                );
+                return fuzzy.vector;
+            }
+        }
+
+        if (typeof bridge.embedText !== 'function') return null;
+        return await bridge.embedText(text);
     }
 
     /**

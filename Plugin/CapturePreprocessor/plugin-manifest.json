@@ -3,7 +3,7 @@
   "name": "CapturePreprocessor",
   "version": "1.0.0",
   "displayName": "捕获预处理器",
-  "description": "预消息处理器: 检测 {{VCPScreenShot}}, {{VCPScreenShot:窗口标题}} 和 {{VCPCameraCapture}} 占位符。通过 /v1/human/tool 透明调用分布式 ScreenPilot 获取截图，注入为即时视觉上下文。",
+  "description": "预消息处理器: 检测 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口标题}}, {{VCPScreenShotMini:窗口标题}}, {{VCPScreenShot:28182346}}, {{VCPScreenShot:[很长的标题带空格和标点]}} 和 {{VCPCameraCapture(N)}} 占位符。通过 /v1/human/tool 透明调用分布式 ScreenPilot 获取截图，注入为即时视觉上下文；冒号后的纯数字目标会按 hwnd 精确窗口句柄截图，方括号目标用于兼容带空格、冒号、逗号等标点的长窗口标题。",
   "author": "VCPToolBox",
   "pluginType": "messagePreprocessor",
   "entryPoint": {

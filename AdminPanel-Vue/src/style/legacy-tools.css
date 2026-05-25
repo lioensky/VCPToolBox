@@ -990,7 +990,7 @@ body {
     padding: 8px 12px;
     background: color-mix(in srgb, oklch(0.70 0.20 25) 10%, transparent);
     border-radius: 6px;
-    border-left: 3px solid oklch(0.70 0.20 25);
+    border: 1px solid color-mix(in srgb, oklch(0.70 0.20 25) 30%, transparent);
 }
 
 .inline-form-actions {

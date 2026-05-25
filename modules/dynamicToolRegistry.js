@@ -634,6 +634,34 @@ class DynamicToolRegistry {
         return this.getAdminState();
     }
 
+    _getAdminRecords() {
+        const records = Array.from(this.catalog.values());
+        const availableIdentityKeys = new Set(
+            records
+                .filter((record) => record?.originKind === 'distributed' && this._isAvailable(record) && record.available !== false)
+                .map((record) => this._stableDistributedIdentityKey(record))
+                .filter(Boolean)
+        );
+
+        return records
+            .filter((record) => {
+                if (!record || record.originKind !== 'distributed') return true;
+                if (this._isAvailable(record) && record.available !== false) return true;
+                const identityKey = this._stableDistributedIdentityKey(record);
+                return !identityKey || !availableIdentityKeys.has(identityKey);
+            })
+            .sort((a, b) => this._compareRecordsWithPinned(a, b));
+    }
+
+    _stableDistributedIdentityKey(record) {
+        if (!record || record.originKind !== 'distributed') return '';
+        return [
+            record.pluginName || '',
+            record.displayName || '',
+            record.descriptionHash || record.sourceHash || ''
+        ].map((item) => String(item).trim()).join('::');
+    }
+
     _extractRecords(pluginManager, now) {
         const descriptions = typeof pluginManager.getIndividualPluginDescriptions === 'function'
             ? pluginManager.getIndividualPluginDescriptions()

@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # NAPI-RS核心依赖
-napi = "2.16"
+napi = { version = "2.16", features = ["napi4"] }
 napi-derive = "2.16"
 
 # 异步运行时
@@ -29,6 +29,9 @@ nalgebra = "0.32"
 
 # SQLite 数据库驱动
 rusqlite = { version = "0.29", features = ["bundled"] }
+
+# 高性能跨平台文件监听
+notify = "6.1"
 
 [build-dependencies]
 napi-build = "2.1"

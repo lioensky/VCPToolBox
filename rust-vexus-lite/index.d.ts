@@ -38,12 +38,26 @@ export interface IntrinsicResidualResult {
   skippedCount: number
   elapsedMs: number
 }
+/** 🌟 TagMemo V8.2: 成对语义距离预计算结果 */
+export interface PairwiseSimResult {
+  pairCount: number
+  computedCount: number
+  skippedCount: number
+  storedCount: number
+  elapsedMs: number
+}
 /** 统计信息 */
 export interface VexusStats {
   totalVectors: number
   dimensions: number
   capacity: number
   memoryUsage: number
+}
+export interface WatcherConfig {
+  rootPath: string
+  ignoreFolders: Array<string>
+  ignorePrefixes: Array<string>
+  ignoreSuffixes: Array<string>
 }
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {
@@ -87,4 +101,27 @@ export declare class VexusIndex {
   project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
   computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
+  /**
+   * 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
+   *
+   * - 仅对实际共现的 pair 进行计算（避免 N² 爆炸）
+   * - 单文件 Tag 数 > 100 的脏文件跳过（与 JS / V7 守恒一致）
+   * - 增量模式：已存在且 model_sig 一致的 pair 直接跳过
+   * - sim < min_similarity 的 pair 不写入（默认丢弃噪声）
+   * - 单模型缓存策略：full_rebuild 会清空整张 sim 表，避免旧模型签名残留
+   *
+   * # 参数
+   * - `db_path`: SQLite 路径
+   * - `model_sig`: embedding 模型签名 (含维度)，跨模型自动失效
+   * - `min_similarity`: 噪声阈值，默认 0.05
+   * - `full_rebuild`: 是否清空 sim 表后重算 (默认 false 增量)
+   */
+  computePairwiseSimilarities(dbPath: string, modelSig: string, minSimilarity?: number | undefined | null, fullRebuild?: boolean | undefined | null): Promise<unknown>
+}
+export declare class VexusWatcher {
+  constructor()
+  /** 启动高性能原生文件监听 */
+  startWatch(config: WatcherConfig, jsCallback: (err: Error | null, arg: string) => any): void
+  /** 停止监听 */
+  stopWatch(): void
 }

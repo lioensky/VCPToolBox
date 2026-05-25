@@ -5,14 +5,6 @@
         <h3>知识库标签列表 - {{ selectedFolder }}</h3>
         <div class="rag-tags-actions">
           <button
-            class="btn-secondary btn-sm"
-            title="添加常用标签"
-            @click="$emit('addCommonTags')"
-          >
-            <span class="material-symbols-outlined">add_reaction</span>
-            常用标签
-          </button>
-          <button
             class="btn-danger btn-sm"
             title="清空所有标签"
             @click="$emit('clearAllTags')"
@@ -29,17 +21,13 @@
 
     <div class="kb-entry">
       <div class="threshold-controls">
-        <label class="switch-container">
+        <div class="switch-container">
           <span>启用阈值:</span>
-          <label class="switch">
-            <input
-              :checked="ragTagsConfig.thresholdEnabled"
-              type="checkbox"
-              @change="$emit('toggleThreshold')"
-            />
-            <span class="slider"></span>
-          </label>
-        </label>
+          <AppSwitch
+            :model-value="ragTagsConfig.thresholdEnabled"
+            @change="$emit('toggleThreshold', $event)"
+          />
+        </div>
         <input
           :value="ragTagsConfig.threshold"
           type="range"
@@ -57,7 +45,7 @@
       <div class="tags-container">
         <div v-if="ragTagsConfig.tags.length === 0" class="empty-tags-hint">
           <span class="material-symbols-outlined">tag</span>
-          <p>暂无标签，点击上方"常用标签"或"添加标签"按钮添加</p>
+          <p>暂无标签，点击上方"添加标签"按钮添加</p>
         </div>
         <div
           v-for="(tag, index) in ragTagsConfig.tags"
@@ -109,6 +97,8 @@
 </template>
 
 <script setup lang="ts">
+import AppSwitch from '@/components/ui/AppSwitch.vue'
+
 interface RagTagsConfig {
   thresholdEnabled: boolean;
   threshold: number;
@@ -123,9 +113,8 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "addCommonTags"): void;
   (e: "clearAllTags"): void;
-  (e: "toggleThreshold"): void;
+  (e: "toggleThreshold", enabled: boolean): void;
   (e: "updateThreshold", value: number): void;
   (e: "addTag"): void;
   (e: "updateTag", payload: { index: number; value: string }): void;

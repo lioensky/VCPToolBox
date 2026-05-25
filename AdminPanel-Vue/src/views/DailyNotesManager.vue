@@ -1,10 +1,11 @@
 <template>
   <section class="config-section active-section">
-    <div class="daily-notes-manager">
+    <div class="daily-notes-manager" :class="{ 'is-sidebar-collapsed': folderSidebarCollapsed }">
       <FolderList
         :folders="folders"
         :selected-folder="selectedFolder"
         @selectFolder="selectFolder"
+        @update:collapsed="folderSidebarCollapsed = $event"
       />
 
       <div class="notes-main-area">
@@ -13,7 +14,6 @@
           :rag-tags-config="ragTagsConfig"
           :rag-tags-status="ragTagsStatus"
           :rag-tags-status-type="ragTagsStatusType"
-          @addCommonTags="addAllCommonTags"
           @clearAllTags="clearAllTags"
           @toggleThreshold="onThresholdToggle"
           @updateThreshold="updateThreshold"
@@ -79,6 +79,8 @@
 import { storeToRefs } from 'pinia'
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useDiaryStore, type DiaryNote } from '@/stores/diary'
+import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
+import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
 import 'easymde/dist/easymde.min.css'
 import DiaryEditor from './DailyNotesManager/DiaryEditor.vue'
@@ -88,6 +90,7 @@ import NoteList from './DailyNotesManager/NoteList.vue'
 import RagTagsConfig from './DailyNotesManager/RagTagsConfig.vue'
 
 const diaryStore = useDiaryStore()
+const { initializeRenderer, renderMarkdownSync } = useMarkdownRenderer()
 const {
   folders,
   selectedFolder,
@@ -103,11 +106,17 @@ const {
   notesStatusType
 } = storeToRefs(diaryStore)
 
-const editingNote = ref<DiaryNote | null>(null)
+interface EditingDiaryNote extends DiaryNote {
+  folder: string
+}
+
+const editingNote = ref<EditingDiaryNote | null>(null)
 const savingNote = ref(false)
 const isEditorInitializing = ref(false)
 const editorStatus = ref('')
 const editorStatusType = ref<'info' | 'success' | 'error'>('info')
+
+const folderSidebarCollapsed = ref(false)
 
 const showDiscoveryModal = ref(false)
 const discoverySourceNote = ref<{ file: string; title?: string } | null>(null)
@@ -150,6 +159,7 @@ async function initMarkdownEditor(content = ''): Promise<void> {
 
   if (markdownEditorRef.value) {
     const EasyMDE = await loadEasyMDE()
+    await initializeRenderer()
 
     easyMDE = new EasyMDE({
       element: markdownEditorRef.value,
@@ -183,7 +193,8 @@ async function initMarkdownEditor(content = ''): Promise<void> {
       renderingConfig: {
         singleLineBreaks: false,
         codeSyntaxHighlighting: true
-      }
+      },
+      previewRender: (plainText: string) => renderMarkdownSync(plainText)
     })
 
     if (content) {
@@ -199,27 +210,27 @@ async function selectFolder(folder: string): Promise<void> {
 }
 
 function filterNotes(): void {
-  diaryStore.filterNotes()
+  void diaryStore.filterNotes()
 }
 
-function onThresholdToggle(): void {
-  diaryStore.onThresholdToggle()
+function onThresholdToggle(enabled: boolean): void {
+  diaryStore.onThresholdToggle(enabled)
 }
 
 function updateThreshold(value: number): void {
   diaryStore.updateThreshold(value)
 }
 
-function clearAllTags(): void {
-  if (!confirm(`确定要清空所有 ${ragTagsConfig.value.tags.length} 个标签吗？此操作不可撤销。`)) {
+async function clearAllTags(): Promise<void> {
+  if (!(await askConfirm({
+    message: `确定要清空所有 ${ragTagsConfig.value.tags.length} 个标签吗？此操作不可撤销。`,
+    danger: true,
+    confirmText: '清空标签',
+  }))) {
     return
   }
 
   diaryStore.clearAllTags()
-}
-
-function addAllCommonTags(): void {
-  diaryStore.addAllCommonTags()
 }
 
 function addTag(): void {
@@ -239,16 +250,18 @@ async function saveRagTags(): Promise<void> {
 }
 
 async function editNote(note: DiaryNote): Promise<void> {
-  if (!selectedFolder.value) {
+  const sourceFolder = selectedFolder.value
+  if (!sourceFolder) {
     showMessage('请先选择一个知识库', 'error')
     return
   }
 
   try {
-    const content = await diaryStore.getNoteContent(note.file)
+    const content = await diaryStore.getNoteContent(note.file, sourceFolder)
 
     editingNote.value = {
       ...note,
+      folder: sourceFolder,
       content
     }
 
@@ -296,7 +309,11 @@ async function saveNote(): Promise<void> {
 
   try {
     const content = easyMDE ? easyMDE.value() : editingNote.value.content
-    const saved = await diaryStore.saveNoteContent(editingNote.value.file, content || '')
+    const saved = await diaryStore.saveNoteContent(
+      editingNote.value.file,
+      content || '',
+      editingNote.value.folder
+    )
 
     if (!saved) {
       throw new Error('保存失败')
@@ -333,7 +350,11 @@ function cancelEdit(): void {
 }
 
 async function deleteNote(note: DiaryNote): Promise<void> {
-  if (!confirm(`确定要删除日记 "${note.title || note.file}" 吗？`)) {
+  if (!(await askConfirm({
+    message: `确定要删除日记 "${note.title || note.file}" 吗？`,
+    danger: true,
+    confirmText: '删除',
+  }))) {
     return
   }
 
@@ -341,7 +362,11 @@ async function deleteNote(note: DiaryNote): Promise<void> {
 }
 
 async function deleteSelectedNotes(): Promise<void> {
-  if (!confirm(`确定要删除选中的 ${selectedNotes.value.length} 篇日记吗？`)) {
+  if (!(await askConfirm({
+    message: `确定要删除选中的 ${selectedNotes.value.length} 篇日记吗？`,
+    danger: true,
+    confirmText: '批量删除',
+  }))) {
     return
   }
 
@@ -367,8 +392,13 @@ onMounted(() => {
 <style scoped>
 .daily-notes-manager {
   display: grid;
-  grid-template-columns: 250px 1fr;
-  gap: 24px;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.daily-notes-manager.is-sidebar-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
 }
 
 .notes-main-area {
@@ -379,7 +409,8 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .daily-notes-manager {
+  .daily-notes-manager,
+  .daily-notes-manager.is-sidebar-collapsed {
     grid-template-columns: 1fr;
   }
 }

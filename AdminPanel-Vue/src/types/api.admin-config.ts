@@ -8,6 +8,7 @@ export interface ToolApprovalConfig {
   debugMode?: boolean;
   timeoutMinutes?: number;
   approvalList?: string[];
+  fuzzyToolMatching?: boolean;
   timeout?: number;
   toolList?: string[];
 }

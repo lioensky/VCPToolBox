@@ -1,0 +1,29 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SenseGen",
+  "displayName": "SenseGen 图文文档型图片生成器",
+  "version": "1.0.0",
+  "description": "通过 SenseNova 的 sensenova-u1-fast 模型生成适合 PPT、PDF、杂志、信息图、海报等图文并茂风格的高分辨率图片文档。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SenseGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "configSchema": {
+    "SENSENOVA_API_KEY": "string"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "SenseGenerateDocumentImage",
+        "description": "调用此工具通过 SenseNova 官方图像模型 sensenova-u1-fast 生成图文并茂的图片类文档。该模型尤其适合生成信息图、PPT风格单页、PDF视觉页、杂志排版页、海报、流程图、知识卡片等内容。返回的结果依旧是图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SenseGen「末」,\ncommand:「始」SenseGenerateDocumentImage「末」,\nprompt:「始」(必需) 用于生成图片类文档的详细提示词。应尽量写清主题、版式、文字内容、色彩、风格、结构分区、图标元素与信息层级。最大 4096 token。「末」,\nsize:「始」(可选) 图片尺寸，默认 2752x1536。仅支持以下 11 个固定值之一：1664x2496、2496x1664、1760x2368、2368x1760、1824x2272、2272x1824、2048x2048、2752x1536、1536x2752、3072x1376、1344x3136。「末」,\nshowbase64:「始」(可选) 是否在返回结果中附带 base64 图片数据供 AI 直接查看，默认 true。可填 true 或 false。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n1. 当用户希望制作 PPT 页、海报、信息图、杂志页、图解卡片、流程图页面时，优先考虑此工具。\n2. prompt 中应尽量包含完整文案、标题层级、栏目结构、配色、插图风格、版式说明。\n3. 执行完成后，您将收到图片 URL，请务必使用返回的图片 URL 为用户生成 HTML `<img>` 标签直接展示图片。",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」SenseGen「末」,\ncommand:「始」SenseGenerateDocumentImage「末」,\nprompt:「始」制作一张 16:9 的高质量信息图海报，主题是“AI 时代的个人知识管理系统”。要求包含主标题、副标题、三栏结构、流程箭头、卡片式模块、柔和蓝紫色科技风、简洁图标，并把每个模块的说明文字直接排版在画面中。左栏介绍输入源，中栏介绍处理流程，右栏介绍输出成果。整体风格像高端演示文稿封面与内容页的结合。「末」,\nsize:「始」2752x1536「末」,\nshowbase64:「始」true「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+当前Vchat客户端支持高级流式输出渲染器，支持HTML/Div元素/CSS/JS/MD/PY/Latex/Mermaid渲染。可用于输出图表，数据图，数学公式，函数图，网页渲染模块，脚本执行。支持本地/在线音频数据，视频数据，网络字体的气泡内调用。简单表格可以通过MD,Mermaid输出，复杂表格可以通过div-Css或者draw-io(代码块)输出，div/Script类直接发送会在气泡内渲染，且支持完整的anmie.js与three.js语法动画。Py脚本需要添加```python头，来构建CodeBlock来让脚本可以在气泡内直接执行获取结果(用户可见)。
+Vchat支持多种流式HTML渲染器。
+例如以<div id="vcp-root" style=xxx> …… </div>的完整div内容来演示动画和复杂排版。
+或者以html代码块输出一个独立网页渲染窗(通常用于演示复杂交互元素):
+```html
+<!DOCTYPE html>
+</html>
+```
+**引擎兼容**: Vchat内置'const container = document.querySelector('.message-item[data-message-id="..."] .md-content')'，所以无需声明container作用域，直接<script src="..."></script>即可。但请避免使用document.getElementById('canvas') 或 #canvas { ... }污染全局，使用唯一的类名（如 .vcp-fluid-canvas-unique），并推荐使用 IIFE 隔离变量作用域。

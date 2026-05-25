@@ -113,6 +113,7 @@
 import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { systemApi } from "@/api";
+import { askConfirm } from "@/platform/feedback/feedbackBus";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
 import { showMessage, createLogger } from "@/utils";
@@ -173,7 +174,11 @@ function toggleAnimations() {
 }
 
 async function restartServer() {
-  if (!confirm("您确定要重启服务器吗？")) return;
+  if (!(await askConfirm({
+    message: "您确定要重启服务器吗？",
+    danger: true,
+    confirmText: "重启",
+  }))) return;
   try {
     showMessage("正在发送重启服务器命令...", "info");
     const response = await systemApi.restartServer();
@@ -188,7 +193,7 @@ async function restartServer() {
 }
 
 async function logout() {
-  if (!confirm("确定要退出登录吗？")) return;
+  if (!(await askConfirm("确定要退出登录吗？"))) return;
   try {
     await systemApi.logout();
     authStore.logout();

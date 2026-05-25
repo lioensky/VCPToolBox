@@ -1,20 +1,60 @@
 <template>
   <div ref="containerRef" class="dual-pane-editor" :class="containerClass">
-    <aside class="pane pane-left" :style="{ width: leftPaneWidth + 'px' }">
-      <div class="pane-header">
-        <h3>{{ leftTitle }}</h3>
-        <slot name="left-actions"></slot>
+    <aside
+      class="pane pane-left"
+      :class="{ collapsed: isPaneCollapsed }"
+      :style="isPaneCollapsed ? { width: props.collapsedWidth + 'px' } : { width: leftPaneWidth + 'px' }"
+      :aria-label="isPaneCollapsed ? `${leftTitle}（已折叠）` : leftTitle"
+    >
+      <div v-if="isPaneCollapsed" class="pane-header pane-header--collapsed">
+        <button
+          type="button"
+          class="pane-toggle-btn"
+          :aria-expanded="false"
+          :aria-label="`展开${leftTitle}`"
+          :title="`展开${leftTitle}`"
+          @click="expandLeftPane"
+        >
+          <span class="material-symbols-outlined">left_panel_open</span>
+        </button>
       </div>
-      <div class="pane-content">
+
+      <div v-else class="pane-header">
+        <h3>{{ leftTitle }}</h3>
+        <div class="pane-header-actions">
+          <slot name="left-actions"></slot>
+          <button
+            v-if="canCollapse"
+            type="button"
+            class="pane-toggle-btn"
+            :aria-expanded="true"
+            :aria-label="`折叠${leftTitle}`"
+            :title="`折叠${leftTitle}`"
+            @click="collapseLeftPane"
+          >
+            <span class="material-symbols-outlined">left_panel_close</span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="isPaneCollapsed" class="pane-content pane-content--collapsed">
+        <slot name="left-collapsed">
+          <div class="collapsed-placeholder">
+            <span class="material-symbols-outlined">view_agenda</span>
+          </div>
+        </slot>
+      </div>
+      <div v-else class="pane-content">
         <slot name="left-content"></slot>
       </div>
     </aside>
 
     <div
       class="pane-resizer"
-      :class="{ 'is-resizing': isResizing }"
+      :class="{ 'is-resizing': isResizing, collapsed: isPaneCollapsed }"
       @mousedown="startResize"
       @touchstart="startResize"
+      @dblclick="toggleCollapseFromResizer"
       @keydown="handleResizerKeydown"
       role="separator"
       tabindex="0"
@@ -40,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 interface Props {
   leftTitle: string
@@ -49,6 +89,9 @@ interface Props {
   minLeftWidth?: number
   maxLeftWidth?: number
   layout?: 'horizontal' | 'vertical'
+  collapsible?: boolean
+  collapsedWidth?: number
+  persistKey?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -56,23 +99,78 @@ const props = withDefaults(defineProps<Props>(), {
   minLeftWidth: 300,
   maxLeftWidth: 800,
   layout: 'horizontal',
+  collapsible: false,
+  collapsedWidth: 48,
 })
 
 const RESIZER_SIZE = 16
 const KEYBOARD_STEP = 24
+const COLLAPSE_DISABLED_BREAKPOINT = 1024
 
 const containerRef = ref<HTMLElement | null>(null)
 const leftPaneWidth = ref(props.initialLeftWidth)
 const rightPaneWidth = ref(800)
 const containerWidth = ref(1300)
 const isResizing = ref(false)
+const isCollapsed = ref(false)
+const isCompactViewport = ref(false)
 
+let lastExpandedWidth = props.initialLeftWidth
 let resizeObserver: ResizeObserver | null = null
+
+const canCollapse = computed(() => props.collapsible && !isCompactViewport.value)
+const isPaneCollapsed = computed(() => canCollapse.value && isCollapsed.value)
 
 const containerClass = computed(() => ({
   'is-resizing': isResizing.value,
   'layout-vertical': props.layout === 'vertical',
 }))
+
+function storageKey(): string | null {
+  if (!props.persistKey) return null
+  return `dualPane:${props.persistKey}`
+}
+
+function loadPersistedState() {
+  const key = storageKey()
+  if (!key) return
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw) as { width?: number; collapsed?: boolean }
+      if (typeof parsed.width === 'number') {
+        lastExpandedWidth = clampLeftPaneWidth(parsed.width)
+      }
+      if (typeof parsed.collapsed === 'boolean') {
+        isCollapsed.value = parsed.collapsed
+      }
+    }
+  } catch {
+    // ignore corrupted storage
+  }
+}
+
+function persistState() {
+  const key = storageKey()
+  if (!key) return
+  try {
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        width: lastExpandedWidth,
+        collapsed: canCollapse.value ? isCollapsed.value : false,
+      })
+    )
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function updateCompactViewport() {
+  const container = containerRef.value
+  const nextWidth = container?.offsetWidth ?? window.innerWidth
+  isCompactViewport.value = nextWidth <= COLLAPSE_DISABLED_BREAKPOINT
+}
 
 function clampLeftPaneWidth(width: number): number {
   return Math.max(props.minLeftWidth, Math.min(props.maxLeftWidth, width))
@@ -86,14 +184,45 @@ function syncPaneWidths(totalWidth: number, preferredLeftWidth = leftPaneWidth.v
 
 function initContainerWidth() {
   const container = containerRef.value
-  if (!container) {
-    return
-  }
+  if (!container) return
 
-  syncPaneWidths(container.offsetWidth)
+  if (isPaneCollapsed.value) {
+    containerWidth.value = container.offsetWidth
+    rightPaneWidth.value = Math.max(0, container.offsetWidth - props.collapsedWidth - RESIZER_SIZE)
+    leftPaneWidth.value = props.collapsedWidth
+  } else {
+    syncPaneWidths(container.offsetWidth, lastExpandedWidth)
+  }
+}
+
+function collapseLeftPane() {
+  if (!canCollapse.value) return
+  lastExpandedWidth = clampLeftPaneWidth(leftPaneWidth.value)
+  isCollapsed.value = true
+  initContainerWidth()
+  persistState()
+}
+
+function expandLeftPane() {
+  if (leftPaneWidth.value <= props.collapsedWidth) {
+    leftPaneWidth.value = clampLeftPaneWidth(lastExpandedWidth)
+  }
+  isCollapsed.value = false
+  initContainerWidth()
+  persistState()
+}
+
+function toggleCollapseFromResizer() {
+  if (!canCollapse.value) return
+  if (isPaneCollapsed.value) {
+    expandLeftPane()
+  } else {
+    collapseLeftPane()
+  }
 }
 
 function startResize(event: MouseEvent | TouchEvent) {
+  if (isPaneCollapsed.value) return
   event.preventDefault()
   isResizing.value = true
   document.addEventListener('mousemove', onResize)
@@ -108,9 +237,7 @@ function onResize(event: MouseEvent | TouchEvent) {
   event.preventDefault()
 
   const containerRect = containerRef.value?.getBoundingClientRect()
-  if (!containerRect) {
-    return
-  }
+  if (!containerRect) return
 
   const clientPosition =
     'touches' in event
@@ -143,9 +270,16 @@ function stopResize() {
   document.removeEventListener('touchend', stopResize)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  persistState()
 }
 
 function handleResizerKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    if (!canCollapse.value) return
+    event.preventDefault()
+    toggleCollapseFromResizer()
+    return
+  }
   const horizontal = props.layout === 'horizontal'
   const decreaseKeys = horizontal ? ['ArrowLeft'] : ['ArrowUp']
   const increaseKeys = horizontal ? ['ArrowRight'] : ['ArrowDown']
@@ -158,16 +292,41 @@ function handleResizerKeydown(event: KeyboardEvent) {
   const delta = decreaseKeys.includes(event.key) ? -KEYBOARD_STEP : KEYBOARD_STEP
   leftPaneWidth.value = clampLeftPaneWidth(leftPaneWidth.value + delta)
   rightPaneWidth.value = Math.max(0, containerWidth.value - leftPaneWidth.value - RESIZER_SIZE)
+  persistState()
 }
 
 onMounted(() => {
+  loadPersistedState()
+  updateCompactViewport()
+
+  if (!canCollapse.value) {
+    isCollapsed.value = false
+  }
+
   initContainerWidth()
 
   if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
     resizeObserver = new ResizeObserver(() => {
+      updateCompactViewport()
+      if (!canCollapse.value && isCollapsed.value) {
+        isCollapsed.value = false
+      }
       initContainerWidth()
     })
     resizeObserver.observe(containerRef.value)
+  }
+})
+
+watch(canCollapse, (nextCanCollapse) => {
+  if (!nextCanCollapse && isCollapsed.value) {
+    isCollapsed.value = false
+    initContainerWidth()
+    persistState()
+    return
+  }
+
+  if (nextCanCollapse) {
+    initContainerWidth()
   }
 })
 
@@ -179,10 +338,15 @@ onUnmounted(() => {
 
 defineExpose({
   setLeftWidth: (width: number) => {
+    if (isCollapsed.value) return
     leftPaneWidth.value = clampLeftPaneWidth(width)
     rightPaneWidth.value = Math.max(0, containerWidth.value - leftPaneWidth.value - RESIZER_SIZE)
+    persistState()
   },
   getLeftWidth: () => leftPaneWidth.value,
+  collapseLeftPane,
+  expandLeftPane,
+  toggleCollapse: toggleCollapseFromResizer,
 })
 </script>
 
@@ -208,7 +372,11 @@ defineExpose({
 
 .pane-left {
   flex-shrink: 0;
-  transition: width 0.1s linear;
+  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pane-left.collapsed {
+  border-radius: var(--radius-md);
 }
 
 .pane-right {
@@ -219,24 +387,97 @@ defineExpose({
 .pane-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);
   background: var(--tertiary-bg);
-  gap: 12px;
+  gap: 10px 12px;
+  min-height: 56px;
+}
+
+.pane-header--collapsed {
+  justify-content: center;
+  padding: 12px 4px;
 }
 
 .pane-header h3 {
+  flex: 1 1 auto;
+  min-width: 120px;
   margin: 0;
   font-size: var(--font-size-body);
+  line-height: 1.3;
   color: var(--primary-text);
-  white-space: nowrap;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+}
+
+.pane-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+}
+
+.pane-left .pane-header-actions {
+  width: 100%;
+}
+
+.pane-toggle-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.pane-toggle-btn:hover {
+  background: var(--accent-bg);
+  color: var(--primary-text);
+  border-color: var(--border-color);
+}
+
+.pane-toggle-btn:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: -2px;
+}
+
+.pane-toggle-btn .material-symbols-outlined {
+  font-size: 20px;
 }
 
 .pane-content {
   flex: 1;
   overflow-y: auto;
   padding: 16px 20px;
+}
+
+.pane-content--collapsed {
+  padding: 8px 4px;
+}
+
+.collapsed-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding-top: 8px;
+  color: var(--secondary-text);
+}
+
+.collapsed-placeholder .material-symbols-outlined {
+  font-size: 24px;
 }
 
 .pane-resizer {
@@ -251,6 +492,11 @@ defineExpose({
   transition: background 0.2s;
   flex-shrink: 0;
   z-index: 10;
+  user-select: none;
+}
+
+.pane-resizer.collapsed {
+  cursor: pointer;
 }
 
 .pane-resizer:hover,
@@ -343,6 +589,10 @@ defineExpose({
 
   .pane-resizer {
     display: none;
+  }
+
+  .pane-left .pane-header-actions {
+    justify-content: flex-start;
   }
 }
 

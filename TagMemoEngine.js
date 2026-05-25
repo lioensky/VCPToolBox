@@ -1,8 +1,9 @@
 // TagMemoEngine.js
 // 🌟 浪潮算法独立模块 (TagMemo Engine)
-// 包含：浪潮增强、EPA 投影、残差金字塔分析、有向共现矩阵、脉冲传播等核心逻辑
+// 包含：浪潮增强、EPA 投影、残差金字塔分析、有序双向共现矩阵 (V8.2)、脉冲传播等核心逻辑
 
 const path = require('path');
+const crypto = require('crypto');
 const EPAModule = require('./EPAModule');
 const ResidualPyramid = require('./ResidualPyramid');
 
@@ -21,8 +22,66 @@ class TagMemoEngine {
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
+        this._matrixRebuildScheduleLogged = false;
+        this._isMatrixRebuilding = false;
         // 🌟 V8: 距离场缓存（供测地线重排使用）
         this.lastEnergyField = null;
+
+        // 🌟 V8.2-γ: 持久化的 Tag 对语义距离 (内存 Map: "a:b" → cosineSim)
+        // 边视角的语义邻近度，与 tagIntrinsicResiduals (节点视角) 正交。
+        this.tagPairSimilarities = new Map();
+        // embedding 模型签名 (含维度)，跨模型自动失效
+        this.modelSig = this._computeModelSig();
+        // 是否在本进程内已经触发过冷启动 sim 预计算
+        this._pairSimColdStartDone = false;
+    }
+
+    /**
+     * 🌟 V8.2: 计算 embedding 模型签名（必须包含维度，
+     * 防止 VECTORDB_DIMENSION 切换后读到维度错位的 BLOB）
+     */
+    _computeModelSig() {
+        const modelName = this.config?.model || 'unknown-model';
+        const dim = this.config?.dimension || 0;
+        return crypto.createHash('sha256')
+            .update(`${modelName}:${dim}`)
+            .digest('hex')
+            .slice(0, 16);
+    }
+
+    _decodeVectorBlob(blob, dim, label = 'vector') {
+        if (blob instanceof Float32Array) {
+            return blob.length === dim ? blob : null;
+        }
+        if (!blob || typeof blob.length !== 'number') {
+            return null;
+        }
+
+        const expectedBytes = dim * Float32Array.BYTES_PER_ELEMENT;
+        if (blob.length !== expectedBytes) {
+            console.warn(`[TagMemoEngine] ⚠️ Invalid ${label} blob length: expected ${expectedBytes}, got ${blob.length}`);
+            return null;
+        }
+
+        if (blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+            return new Float32Array(blob.buffer, blob.byteOffset, dim);
+        }
+
+        const copied = Buffer.from(blob);
+        return new Float32Array(copied.buffer, copied.byteOffset, dim);
+    }
+
+    _queryByChunks(sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
+        if (!Array.isArray(values) || values.length === 0) return [];
+        const rows = [];
+
+        for (let i = 0; i < values.length; i += chunkSize) {
+            const batch = values.slice(i, i + chunkSize);
+            const placeholders = batch.map(() => '?').join(',');
+            rows.push(...this.db.prepare(`${sqlPrefix} IN (${placeholders})${sqlSuffix}`).all(...batch));
+        }
+
+        return rows;
     }
 
     async initialize() {
@@ -38,10 +97,32 @@ class TagMemoEngine {
             dimension: this.config.dimension
         });
 
-        // 启动时构建共现矩阵
-        this.buildDirectedCooccurrenceMatrix();
-        // 加载内生残差
+        // 🌟 V8.2-γ: 冷启动钩子
+        // 若 tag_pair_similarity 表为空（首次启动 / 模型签名变化），
+        // 必须 await 阻塞预计算，否则 buildDirectedCooccurrenceMatrix 拿到的 getSim() 全是 fallback，
+        // semanticGain 会均匀压平整张矩阵，当天召回质量异常。
+        try {
+            const cnt = this.db.prepare(
+                'SELECT COUNT(*) as c FROM tag_pair_similarity WHERE model_sig = ?'
+            ).get(this.modelSig)?.c || 0;
+
+            if (cnt === 0) {
+                console.log(`[TagMemoEngine] 🧊 V8.2 cold start: pairwise similarity cache empty for model_sig=${this.modelSig}, computing now...`);
+                await this.recomputePairwiseSimilarities({ blocking: true });
+                this._pairSimColdStartDone = true;
+            } else {
+                console.log(`[TagMemoEngine] 🌡️ V8.2 warm start: ${cnt} cached pairwise similarities for model_sig=${this.modelSig}`);
+            }
+        } catch (e) {
+            console.warn('[TagMemoEngine] ⚠️ V8.2 cold start check failed (table may not exist yet):', e.message);
+        }
+
+        // 加载矩阵依赖的持久化底座：边相似度 + 节点内生残差
+        this.loadPairwiseSimilarities();
         this.loadIntrinsicResiduals();
+
+        // 启动时构建共现矩阵：确保 reverseAnchorBoost 能吃到已加载残差
+        this.buildDirectedCooccurrenceMatrix();
     }
 
     /**
@@ -372,11 +453,9 @@ class TagMemoEngine {
 
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 
-            // [5] 批量获取向量与名称 (性能优化：1次查询替代 N次循环查询)
+            // [5] 批量获取向量与名称（chunked IN，避免 SQLite 参数数量上限）
             const dbTagIds = allTags.filter(t => t.id > 0).map(t => t.id);
-            const tagRows = dbTagIds.length > 0
-                ? this.db.prepare(`SELECT id, name, vector FROM tags WHERE id IN (${dbTagIds.map(() => '?').join(',')})`).all(...dbTagIds)
-                : [];
+            const tagRows = this._queryByChunks('SELECT id, name, vector FROM tags WHERE id', dbTagIds);
             const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
 
             // 🌟 终极闭环：把幽灵向量混入正规军的 Map 里！
@@ -391,14 +470,15 @@ class TagMemoEngine {
 
             for (const tag of sortedTags) {
                 const data = tagDataMap.get(tag.id);
-                if (!data || !data.vector) continue;
+                const vec = data ? this._decodeVectorBlob(data.vector, dim, `tag:${tag.id}`) : null;
+                if (!vec) continue;
 
-                const vec = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                 let isRedundant = false;
 
                 for (const existing of deduplicatedTags) {
                     const existingData = tagDataMap.get(existing.id);
-                    const existingVec = new Float32Array(existingData.vector.buffer, existingData.vector.byteOffset, dim);
+                    const existingVec = existingData ? this._decodeVectorBlob(existingData.vector, dim, `tag:${existing.id}`) : null;
+                    if (!existingVec) continue;
 
                     // 计算余弦相似度
                     let dot = 0, normA = 0, normB = 0;
@@ -431,8 +511,8 @@ class TagMemoEngine {
 
             for (const t of deduplicatedTags) {
                 const data = tagDataMap.get(t.id);
-                if (data && data.vector) {
-                    const v = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
+                const v = data ? this._decodeVectorBlob(data.vector, dim, `tag:${t.id}`) : null;
+                if (v) {
                     for (let d = 0; d < dim; d++) contextVec[d] += v[d] * t.adjustedWeight;
                     totalWeight += t.adjustedWeight;
                 }
@@ -546,12 +626,9 @@ class TagMemoEngine {
         const minGeoSamples = options.minGeoSamples ?? 4;
 
         try {
-            // Step 1: 批量查询 chunk_id → file_id 映射（方案 A：自查映射）
-            const chunkIds = candidates.map(c => Number(c.id));
-            const chunkPlaceholders = chunkIds.map(() => '?').join(',');
-            const chunkFileRows = this.db.prepare(
-                `SELECT id, file_id FROM chunks WHERE id IN (${chunkPlaceholders})`
-            ).all(...chunkIds);
+            // Step 1: 批量查询 chunk_id → file_id 映射（chunked IN，避免 SQLite 参数数量上限）
+            const chunkIds = candidates.map(c => Number(c.id)).filter(Number.isFinite);
+            const chunkFileRows = this._queryByChunks('SELECT id, file_id FROM chunks WHERE id', chunkIds);
             const chunkFileMap = new Map(chunkFileRows.map(r => [r.id, r.file_id]));
 
             // Step 2: 收集所有需要查询的 file_ids，批量查询 file_id → tag_id[] 映射
@@ -559,10 +636,10 @@ class TagMemoEngine {
             const fileTagsMap = new Map(); // file_id → [tag_id, ...]
 
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT file_id, tag_id FROM file_tags WHERE file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT file_id, tag_id FROM file_tags WHERE file_id',
+                    uniqueFileIds
+                );
 
                 for (const row of fileTagRows) {
                     if (!fileTagsMap.has(row.file_id)) {
@@ -638,26 +715,87 @@ class TagMemoEngine {
         }
     }
 
-    // 🌟 TagMemo V7: 有向序位势能共现矩阵
+    // ============================================================
+    // 🌟 TagMemo V8.2-γ: 有序双向势能共现矩阵
+    // 三轴解耦：
+    //   - 拓扑层 (形): 双向共现 (是否邻接)
+    //   - 方向层 (色): 顺逆流阻尼 (叙事方向)
+    //   - 语义层 (质): 向量距离阻尼 (semanticGain) + 概念锚 boost (节点残差)
+    // 七条工程纪律：
+    //   1) 反转守卫 backwardWeight ≤ forwardWeight × 95% (保叙事方向公理)
+    //   2) 冷启动阻塞 (在 initialize 中处理)
+    //   3) model_sig 含 dimension (在 _computeModelSig 中处理)
+    //   4) sim 预计算与矩阵重建共用 _isMatrixRebuilding 锁 (在 doMatrixRebuild 中处理)
+    //   5) getSim 未命中 fallback = 0.1 (与噪声阈值 0.05 解耦)
+    //   6) Gemini 分布建议先扫描再调 peak (留作运行时 ops 任务)
+    //   7) tags.vector 重写时 DELETE 涉及该 tag 的 sim 行 (在 KnowledgeBaseManager 中处理)
+    // ============================================================
     buildDirectedCooccurrenceMatrix() {
-        console.log('[TagMemoEngine] 🧠 Building DIRECTED tag co-occurrence matrix...');
+        console.log('[TagMemoEngine] 🧠 V8.2 Building ORDERED-BIDIRECTIONAL tag co-occurrence matrix (γ)...');
         try {
             // 势能参数
             const PHI_MAX = 0.9;
             const PHI_MIN = 0.5;
 
-            // Step 1: 获取每篇日记的 Tag 数量（用于计算势能）
-            const tagCountStmt = this.db.prepare(`
-                SELECT file_id, COUNT(*) as tag_count
-                FROM file_tags
-                GROUP BY file_id
-            `);
-            const tagCounts = new Map();
-            for (const row of tagCountStmt.iterate()) {
-                tagCounts.set(row.file_id, row.tag_count);
-            }
+            // ---------- V8.2 灰度参数（rag_params.json: orderedCooccurrence） ----------
+            const matrixConfig = this.ragParams?.KnowledgeBaseManager?.orderedCooccurrence || {};
 
-            // Step 2: 逐文件处理共现关系，规避 SQL Join 爆炸风险
+            // 顺流：叙事方向 A → B
+            const FORWARD_GAIN = matrixConfig.forwardGain ?? 1.0;
+
+            // 逆流：回溯方向 B → A，默认保留但明显阻尼
+            const RAW_REVERSE_GAIN = matrixConfig.reverseGain ?? 0.42;
+            const MIN_REVERSE_GAIN = matrixConfig.minReverseGain ?? 0.25;
+            const MAX_REVERSE_GAIN = matrixConfig.maxReverseGain ?? 0.70;
+            const reverseGain = Math.max(
+                MIN_REVERSE_GAIN,
+                Math.min(MAX_REVERSE_GAIN, RAW_REVERSE_GAIN)
+            );
+
+            // Tag 序位距离衰减：相邻 Tag 强，远距离 Tag 弱（默认关闭，灰度逐步开）
+            const DISTANCE_DECAY = matrixConfig.distanceDecay ?? 0.0;
+
+            // β: 概念锚逆流增强（基于节点残差）
+            // boolean 兼容数值 1/0（前端 UI 用数值表达 toggle）
+            const rawAnchorBoost = matrixConfig.reverseAnchorBoost;
+            const REVERSE_ANCHOR_BOOST = (rawAnchorBoost === true || rawAnchorBoost === 1)
+                || (typeof rawAnchorBoost === 'number' && rawAnchorBoost >= 1);
+            const REVERSE_ANCHOR_MAX = matrixConfig.reverseAnchorMax ?? 1.5;
+
+            // γ: 语义增益（基于边向量距离）
+            // 同时兼容嵌套对象 (semanticGain.{enabled,peak,sigma,lowSimFallback})
+            // 与平铺数值字段 (semanticGainEnabled / semanticGainPeak / semanticGainSigma / semanticGainLowSimFallback)
+            // 平铺写法是为了适配 AdminPanel-Vue RagTuning UI 的 nested 单层渲染约束。
+            const semGainCfg = matrixConfig.semanticGain || {};
+            const rawSemEnabled = semGainCfg.enabled ?? matrixConfig.semanticGainEnabled;
+            const SEM_GAIN_ENABLED = (rawSemEnabled === true || rawSemEnabled === 1)
+                || (typeof rawSemEnabled === 'number' && rawSemEnabled >= 1);
+            const SEM_PEAK = semGainCfg.peak ?? matrixConfig.semanticGainPeak ?? 0.65;
+            const SEM_SIGMA = semGainCfg.sigma ?? matrixConfig.semanticGainSigma ?? 0.25;
+            const SEM_LOW_FALLBACK = semGainCfg.lowSimFallback ?? matrixConfig.semanticGainLowSimFallback ?? 0.1;
+
+            // 反转守卫：逆流永远不超过顺流的 95%
+            const REVERSE_INVERSION_GUARD = matrixConfig.reverseInversionGuard ?? 0.95;
+
+            // ---------- 钟形语义增益 ----------
+            // 低 sim 软底（0.40~0.55）+ 中段高斯钟形（peak 黄金区放大）+ 高 sim 抑制
+            const semanticGain = (sim) => {
+                if (!SEM_GAIN_ENABLED) return 1.0;
+                if (!Number.isFinite(sim)) return 1.0;
+                if (sim < 0.15) return 0.4 + sim * 1.0; // 软底 0.40 ~ 0.55
+                return 0.5 + 0.8 * Math.exp(
+                    -((sim - SEM_PEAK) ** 2) / (2 * SEM_SIGMA * SEM_SIGMA)
+                );
+            };
+
+            // 包装 getSim，未命中走配置化 fallback
+            const getSimSafe = (a, b) => {
+                if (!SEM_GAIN_ENABLED) return SEM_LOW_FALLBACK;
+                const v = this.getSim(a, b);
+                return Number.isFinite(v) && v > 0 ? v : SEM_LOW_FALLBACK;
+            };
+
+            // ---------- Step 1: 双向共现 ----------
             const stmt = this.db.prepare(`
                 SELECT file_id, tag_id, position
                 FROM file_tags
@@ -669,24 +807,83 @@ class TagMemoEngine {
             let currentFileId = -1;
             let fileTags = [];
 
+            // 可观测性指标
+            let forwardEdges = 0;
+            let backwardEdges = 0;
+            let anchorBoostedEdges = 0;
+            let invertedClampedEdges = 0;
+
+            const addEdge = (from, to, weight) => {
+                if (!Number.isFinite(weight) || weight <= 0) return false;
+                if (!matrix.has(from)) matrix.set(from, new Map());
+                const targetMap = matrix.get(from);
+                targetMap.set(to, (targetMap.get(to) || 0) + weight);
+                return true;
+            };
+
             const processFileGroup = (tags, fid) => {
                 const n = tags.length;
-                if (n < 2 || n > 100) return; // 🛡️ 性能保护：跳过孤立点或超大脏文件
+                if (n < 2 || n > 100) return; // 性能保护
 
                 for (let i = 0; i < n; i++) {
                     for (let j = i + 1; j < n; j++) {
                         const t1 = tags[i];
                         const t2 = tags[j];
 
-                        // 计算序位势能 (基于 position 的衰减)
-                        const phi1 = n > 1 ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t1.pos - 1) / (n - 1) : PHI_MAX;
-                        const phi2 = n > 1 ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t2.pos - 1) / (n - 1) : PHI_MAX;
-                        const weight = phi1 * phi2;
+                        // 序位势能：越靠前的 tag 越像叙事源头
+                        const phi1 = n > 1
+                            ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t1.pos - 1) / (n - 1)
+                            : PHI_MAX;
+                        const phi2 = n > 1
+                            ? PHI_MAX - (PHI_MAX - PHI_MIN) * (t2.pos - 1) / (n - 1)
+                            : PHI_MAX;
 
-                        // 有向边：source → target (i < j 保证了顺序)
-                        if (!matrix.has(t1.id)) matrix.set(t1.id, new Map());
-                        const targetMap = matrix.get(t1.id);
-                        targetMap.set(t2.id, (targetMap.get(t2.id) || 0) + weight);
+                        const delta = Math.max(1, t2.pos - t1.pos);
+
+                        // 距离衰减
+                        const distanceFactor = DISTANCE_DECAY > 0
+                            ? Math.exp(-DISTANCE_DECAY * (delta - 1))
+                            : 1.0;
+
+                        const baseWeight = phi1 * phi2 * distanceFactor;
+
+                        // γ: 语义增益（对称项，余弦距离天然对称）
+                        const sim = getSimSafe(t1.id, t2.id);
+                        const semGain = semanticGain(sim);
+
+                        // 顺流：A → B
+                        const forwardWeight = baseWeight * FORWARD_GAIN * semGain;
+
+                        // 逆流：B → A
+                        let dynamicReverseGain = reverseGain;
+
+                        // β: 概念锚增强 — 高内生残差的源头 (t1) 更适合作为逆流回溯目标
+                        // (B → A 时 A=t1，t1 的残差越大 → t1 越像独立锚点 → 逆流越通畅)
+                        if (REVERSE_ANCHOR_BOOST && this.tagIntrinsicResiduals) {
+                            const anchorMass = this.tagIntrinsicResiduals.get(t1.id) ?? 1.0;
+                            const boost = Math.min(REVERSE_ANCHOR_MAX, anchorMass);
+                            if (boost > 1.0) anchorBoostedEdges++;
+                            dynamicReverseGain *= boost;
+                        }
+
+                        // 安全夹逼
+                        dynamicReverseGain = Math.max(
+                            MIN_REVERSE_GAIN,
+                            Math.min(MAX_REVERSE_GAIN, dynamicReverseGain)
+                        );
+
+                        let backwardWeight = baseWeight * dynamicReverseGain * semGain;
+
+                        // 🛡️ 反转守卫：逆流永远不超过顺流 × 95%
+                        // 保 V8.2 的根本前提:叙事方向不对称
+                        const cap = forwardWeight * REVERSE_INVERSION_GUARD;
+                        if (backwardWeight > cap) {
+                            backwardWeight = cap;
+                            invertedClampedEdges++;
+                        }
+
+                        if (addEdge(t1.id, t2.id, forwardWeight)) forwardEdges++;
+                        if (addEdge(t2.id, t1.id, backwardWeight)) backwardEdges++;
                     }
                 }
             };
@@ -701,35 +898,139 @@ class TagMemoEngine {
             }
             if (fileTags.length > 0) processFileGroup(fileTags, currentFileId);
 
-            // Step 3: 处理旧数据（position = 0 的回退为无向等权重）
+            // ---------- Step 2: 旧数据 (position=0) 回退为无向等权重 ----------
             const legacyStmt = this.db.prepare(`
                 SELECT ft1.tag_id as tag1, ft2.tag_id as tag2, COUNT(ft1.file_id) as cnt
                 FROM file_tags ft1
-                JOIN file_tags ft2 
-                    ON ft1.file_id = ft2.file_id 
+                JOIN file_tags ft2
+                    ON ft1.file_id = ft2.file_id
                     AND ft1.tag_id < ft2.tag_id
                 WHERE ft1.position = 0 OR ft2.position = 0
                 GROUP BY ft1.tag_id, ft2.tag_id
             `);
 
-            const LEGACY_PHI = 0.7; // 旧数据统一势能
+            const LEGACY_PHI = 0.7;
             for (const row of legacyStmt.iterate()) {
-                const weight = row.cnt * LEGACY_PHI * LEGACY_PHI;
-                
-                if (!matrix.has(row.tag1)) matrix.set(row.tag1, new Map());
-                if (!matrix.has(row.tag2)) matrix.set(row.tag2, new Map());
-                
-                const e1 = matrix.get(row.tag1).get(row.tag2) || 0;
-                matrix.get(row.tag1).set(row.tag2, e1 + weight);
-                const e2 = matrix.get(row.tag2).get(row.tag1) || 0;
-                matrix.get(row.tag2).set(row.tag1, e2 + weight);
+                // legacy 数据天然无方向，仍走 sim 调制保持语义一致性
+                const sim = getSimSafe(row.tag1, row.tag2);
+                const semGain = semanticGain(sim);
+                const weight = row.cnt * LEGACY_PHI * LEGACY_PHI * semGain;
+
+                if (addEdge(row.tag1, row.tag2, weight)) forwardEdges++;
+                if (addEdge(row.tag2, row.tag1, weight)) backwardEdges++;
             }
 
             this.tagCooccurrenceMatrix = matrix;
-            console.log(`[TagMemoEngine] ✅ Directed co-occurrence matrix built. (${matrix.size} source nodes)`);
+
+            console.log(
+                `[TagMemoEngine] ✅ V8.2 Ordered-bidirectional matrix built. ` +
+                `sources=${matrix.size}, forward=${forwardEdges}, backward=${backwardEdges}, ` +
+                `anchor_boosted=${anchorBoostedEdges}, inversion_clamped=${invertedClampedEdges}, ` +
+                `reverseGain=${reverseGain.toFixed(3)}, distanceDecay=${DISTANCE_DECAY}, ` +
+                `semGain=${SEM_GAIN_ENABLED ? `bell(peak=${SEM_PEAK}, σ=${SEM_SIGMA})` : 'disabled'}, ` +
+                `anchorBoost=${REVERSE_ANCHOR_BOOST ? `≤${REVERSE_ANCHOR_MAX}x` : 'disabled'}, ` +
+                `simCacheSize=${this.tagPairSimilarities.size}`
+            );
         } catch (e) {
-            console.error('[TagMemoEngine] ❌ Failed to build directed matrix:', e);
+            console.error('[TagMemoEngine] ❌ Failed to build V8.2 ordered-bidirectional matrix:', e);
             this.tagCooccurrenceMatrix = new Map();
+        }
+    }
+
+    // 🌟 V8.2-γ: 加载持久化的 Tag 对语义相似度到内存 Map
+    // 矩阵构建是热路径，不能每对 pair 查 SQLite。
+    loadPairwiseSimilarities() {
+        try {
+            const rows = this.db.prepare(
+                'SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?'
+            ).all(this.modelSig);
+
+            this.tagPairSimilarities = new Map();
+            for (const row of rows) {
+                this.tagPairSimilarities.set(`${row.tag_a}:${row.tag_b}`, row.similarity);
+            }
+            console.log(`[TagMemoEngine] ✅ V8.2 Loaded ${this.tagPairSimilarities.size} pairwise similarities (model_sig=${this.modelSig})`);
+        } catch (e) {
+            console.warn('[TagMemoEngine] ⚠️ V8.2 pairwise similarity table not yet available:', e.message);
+            this.tagPairSimilarities = new Map();
+        }
+    }
+
+    /**
+     * 🌟 V8.2-γ: 查询两个 tag 的持久化余弦相似度
+     * 约定 a < b，未命中返回 0（由 buildDirectedCooccurrenceMatrix 包装为配置化 fallback）
+     */
+    getSim(idA, idB) {
+        if (idA === idB) return 1.0;
+        const [a, b] = idA < idB ? [idA, idB] : [idB, idA];
+        const v = this.tagPairSimilarities.get(`${a}:${b}`);
+        return Number.isFinite(v) ? v : 0;
+    }
+
+    /**
+     * 🛡️ V8.2-fix: Rust 任务（独立 SQLite 连接）写入完成后，
+     * 强制 better-sqlite3 走一次 wal_checkpoint(TRUNCATE)，把 -wal/-shm 清空。
+     *
+     * 背景：Rust 端通过 rusqlite 开新连接做 DELETE+INSERT 后 commit，会写到 -wal。
+     * JS 端 better-sqlite3 是另一个进程内连接，下次读取时本应通过 -shm 的 mmap
+     * frame index 拿到新数据。但在虚拟化/网络文件系统（典型如 Docker Desktop on
+     * Windows/macOS 的 bind mount 走 9P/grpc-fuse）上，跨进程 mmap 共享内存
+     * 一致性保证不足，会让 JS 端读到"半新半旧"的页视图，进而触发 SQLITE_CORRUPT
+     * 这种"幻觉损坏"——整库元数据 / sqlite_master 完好，但特定表 BTree 遍历必崩。
+     *
+     * TRUNCATE 模式会强制把 WAL 全部回写主库并把 -wal 截断到 0 字节，下一次读
+     * 直接走主库的"经典模式"，绕开 mmap 同步路径。
+     *
+     * 健康环境下代价 ~50-200ms（取决于 WAL 累积量），属于可忽略量级。
+     */
+    _checkpointAfterRustWrite(tag) {
+        try {
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (e) {
+            console.warn(`[TagMemoEngine] ⚠️ wal_checkpoint after ${tag} failed: ${e.message}`);
+        }
+    }
+
+    /**
+     * 🌟 V8.2-γ: 触发 Rust 预计算成对语义相似度
+     * - 默认增量模式（跳过已缓存且 model_sig 一致的 pair）
+     * - 与 doMatrixRebuild 共用 _isMatrixRebuilding 锁
+     */
+    async recomputePairwiseSimilarities(opts = {}) {
+        const { fullRebuild = false, blocking = false, minSimilarity = 0.05 } = opts;
+
+        if (!this.tagIndex || !this.tagIndex.computePairwiseSimilarities) {
+            console.warn('[TagMemoEngine] ⚠️ computePairwiseSimilarities is not available in VexusIndex (Rust binary may need rebuild)');
+            return;
+        }
+
+        // 锁串行：避免与矩阵重建撞车产生"嵌合矩阵"
+        // blocking=true 用于冷启动场景，由调用方持锁
+        if (!blocking && this._isMatrixRebuilding) {
+            console.log('[TagMemoEngine] 🛡️ V8.2 sim recompute deferred: matrix rebuild in progress');
+            return;
+        }
+
+        console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
+        try {
+            const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
+            const result = await this.tagIndex.computePairwiseSimilarities(
+                dbPath,
+                this.modelSig,
+                minSimilarity,
+                fullRebuild
+            );
+            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+            this._checkpointAfterRustWrite('pairwise sim');
+            console.log(
+                `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
+                `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
+                `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
+                `elapsed=${result.elapsedMs.toFixed(2)}ms`
+            );
+        } catch (e) {
+            console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
+            if (e.stack) console.error(e.stack);
         }
     }
 
@@ -782,20 +1083,60 @@ class TagMemoEngine {
             
             if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
 
-            // 仅在第一次开启计时器时提示
-            if (!this._matrixRebuildTimer._isLogged) {
+            // 仅在本轮防抖第一次达到阈值时提示
+            if (!this._matrixRebuildScheduleLogged) {
                 console.log(`[TagMemoEngine] 🛡️ Threshold reached. Matrix rebuild scheduled after 5min of quiescence.`);
-                this._matrixRebuildTimer._isLogged = true;
+                this._matrixRebuildScheduleLogged = true;
             }
         }
         // 低于阈值时不执行任何操作，不计入倒计时。
     }
 
     async doMatrixRebuild() {
+        if (this._isMatrixRebuilding) {
+            console.warn('[TagMemoEngine] Matrix rebuild already running; keeping accumulated changes for next debounce window.');
+            if (!this._matrixRebuildTimer && this._accumulatedTagChanges > 0) {
+                this._scheduleMatrixRebuildTimer(300000);
+            }
+            return;
+        }
+
+        const changesAtStart = this._accumulatedTagChanges;
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
-        this.buildDirectedCooccurrenceMatrix();
-        await this.recomputeIntrinsicResiduals();
+        this._matrixRebuildScheduleLogged = false;
+        this._isMatrixRebuilding = true;
+
+        try {
+            // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
+            // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
+            await this.recomputePairwiseSimilarities({ blocking: true });
+            this.loadPairwiseSimilarities();
+            await this.recomputeIntrinsicResiduals();
+            this.loadIntrinsicResiduals();
+            this.buildDirectedCooccurrenceMatrix();
+        } finally {
+            this._isMatrixRebuilding = false;
+            if (this._accumulatedTagChanges > 0) {
+                console.log(`[TagMemoEngine] 🔁 ${this._accumulatedTagChanges} tag changes arrived during rebuild; scheduling follow-up debounce.`);
+                this._scheduleMatrixRebuildTimer(300000);
+            }
+            console.log(`[TagMemoEngine] Matrix rebuild finished for ${changesAtStart} accumulated tag change(s).`);
+        }
+    }
+
+    _scheduleMatrixRebuildTimer(delayMs) {
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+        }
+
+        this._matrixRebuildScheduleLogged = true;
+        this._matrixRebuildTimer = setTimeout(() => {
+            console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedTagChanges} accumulated change(s)...`);
+            this.doMatrixRebuild();
+        }, delayMs);
+
+        if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
     }
 
     // 🌟 TagMemo V7: 触发 Rust 预计算内生残差
@@ -809,6 +1150,9 @@ class TagMemoEngine {
         try {
             const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
             const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
+            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+            // 否则在 Docker bind mount 等虚拟文件系统上会读到不一致的页视图（SQLITE_CORRUPT 幻觉）
+            this._checkpointAfterRustWrite('intrinsic residuals');
             console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
             
             // 重新加载结果

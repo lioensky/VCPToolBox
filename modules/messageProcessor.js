@@ -34,6 +34,25 @@ function resolveTvsDir() {
 const TVS_DIR = resolveTvsDir();
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceFirstAliasPlaceholder(text, alias, replacementText, prefix = '') {
+    const escapedAlias = escapeRegExp(alias);
+    const escapedPrefix = prefix ? `${escapeRegExp(prefix)}:` : '';
+    const aliasPlaceholderRegex = new RegExp(`\\{\\{(?:${escapedPrefix})?${escapedAlias}\\}\\}`, 'g');
+    let hasReplacedFirst = false;
+
+    return String(text).replace(aliasPlaceholderRegex, () => {
+        if (hasReplacedFirst) {
+            return '';
+        }
+        hasReplacedFirst = true;
+        return replacementText;
+    });
+}
+
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
     if (text == null) return '';
     let processedText = String(text);
@@ -128,9 +147,7 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                 );
                 processingStack.delete(stackKey);
 
-                processedText = processedText
-                    .replaceAll(`{{${alias}}}`, expandedText)
-                    .replaceAll(`{{toolbox:${alias}}}`, expandedText);
+                processedText = replaceFirstAliasPlaceholder(processedText, alias, expandedText, 'toolbox');
 
                 // 标记此 Toolbox 已展开
                 if (context.expandedToolboxes) {
@@ -539,15 +556,20 @@ async function replaceOtherVariables(text, model, role, context) {
         }
     }
 
-    const asyncResultPlaceholderRegex = /\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}/g;
+    // 同时兼容标准双花括号、异常三花括号、以及被字符串转义后常见的四花括号格式
+    // 例如：
+    // {{VCP_ASYNC_RESULT::Plugin::id}}
+    // {{{VCP_ASYNC_RESULT::Plugin::id}}}
+    // {{{{VCP_ASYNC_RESULT::Plugin::id}}}}
+    const asyncResultPlaceholderRegex = /\{\{\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}\}\}|\{\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}\}|\{\{VCP_ASYNC_RESULT::([a-zA-Z0-9_.-]+)::([a-zA-Z0-9_-]+)\}\}/g;
     let asyncMatch;
     let tempAsyncProcessedText = processedText;
     const promises = [];
 
     while ((asyncMatch = asyncResultPlaceholderRegex.exec(processedText)) !== null) {
         const placeholder = asyncMatch[0];
-        const pluginName = asyncMatch[1];
-        const requestId = asyncMatch[2];
+        const pluginName = asyncMatch[1] || asyncMatch[3] || asyncMatch[5];
+        const requestId = asyncMatch[2] || asyncMatch[4] || asyncMatch[6];
 
         promises.push(
             (async () => {

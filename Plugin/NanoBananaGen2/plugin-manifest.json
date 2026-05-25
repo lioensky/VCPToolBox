@@ -1,10 +1,10 @@
 {
   "manifestVersion": "1.0.0",
   "name": "NanoBananaGen2",
-  "displayName": "Gemini 3 NanoBanana 图像生成 (官方)",
-  "version": "1.0.0",
-  "description": "使用 Vercel 接口调用 Google Gemini 3 pro Image Preview 模型进行高级的图像生成和编辑。支持代理和多密钥随机选择。",
-  "author": "Kilo Code",
+  "displayName": "NanoBanana 图像生成 (自定义渠道)",
+  "version": "1.1.0",
+  "description": "通过 OpenAI Chat Completions 兼容接口调用 Gemini/NanoBanana 图像生成模型。支持自定义 API 地址（可接入任何 /v1/chat/completions 兼容服务）、多渠道绑定轮询（URL+KEY+多MODEL 对应）、单渠道多模型随机、1K/2K/4K 尺寸选择、内置安全过滤绕过。",
+  "author": "Kilo Code (魔改: CodeCC & infinite-vector)",
   "pluginType": "synchronous",
   "entryPoint": {
     "type": "nodejs",
@@ -14,26 +14,54 @@
     "protocol": "stdio"
   },
   "configSchema": {
-    "NanoBananaKeyImage": "string",
-    "NanoBananaProxy": "string",
-    "DIST_IMAGE_SERVERS": "string"
+    "API_URL": {
+      "type": "string",
+      "description": "单渠道模式：API 地址（填到 /v1 为止）。",
+      "default": "http://127.0.0.1:3106/v1"
+    },
+    "API_KEY": {
+      "type": "string",
+      "description": "单渠道模式：API 密钥。留空=无鉴权。"
+    },
+    "NANO_BANANA_MODEL": {
+      "type": "string",
+      "description": "单渠道模式：模型名称，多个用逗号隔开可随机轮询。",
+      "default": "hyb-Optimal/antigravity/gemini-3-pro-image"
+    },
+    "MULTI_CHANNEL": {
+      "type": "boolean",
+      "description": "设为 true 启用多渠道绑定模式。",
+      "default": false
+    },
+    "API_CHANNELS": {
+      "type": "string",
+      "description": "多渠道模式：URL|KEY|MODEL1,MODEL2 为一组，分号隔开多组。"
+    },
+    "NanoBananaProxy": {
+      "type": "string",
+      "description": "代理地址，如 http://127.0.0.1:7890"
+    },
+    "DIST_IMAGE_SERVERS": {
+      "type": "string",
+      "description": "分布式图床地址，用于 file:// 路径降级处理"
+    }
   },
   "capabilities": {
     "invocationCommands": [
       {
-        "commandIdentifier": "NanoBananaGenerateImage",
-        "description": "调用此工具通过 Gemini 2.5 NanoBanana 模型生成一张全新的图片。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」generate「末」,\nprompt:「始」(必需) 请生成图片，用于图片生成的详细英文提示词。「末」,\nimage_size:「始」(可选) 图片尺寸，可选值为 1K, 2K, 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」generate「末」,\nprompt:「始」A beautiful sunset over a mountain landscape with vibrant colors and dramatic clouds「末」,\nimage_size:「始」4K「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "commandIdentifier": "NanoBananaGenerate",
+        "description": "文生图。通过 NanoBanana 模型生成图片。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」generate「末」,\nprompt:「始」(必需) 详细的图片生成提示词，建议英文。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K，默认由模型决定。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」generate「末」,\nprompt:「始」A beautiful sunset over mountains with dramatic clouds「末」,\nimage_size:「始」4K「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
-        "commandIdentifier": "NanoBananaEditImage",
-        "description": "调用此工具通过 Gemini 2.5 NanoBanana 模型编辑一张现有的图片。请在您的回复中，使用以下精确格式来请求图片编辑，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」edit「末」,\nprompt:「始」(必需) 请编辑图片，用于描述如何编辑图片的详细英文指令。「末」,\nimage_url:「始」(必需) 要编辑的图片的URL。可以是 http/https, 也可以是本地文件的URL类似file://C: 「末」,\nimage_size:「始」(可选) 图片尺寸，可选值为 1K, 2K, 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」edit「末」,\nprompt:「始」Add a rainbow in the sky and make the colors more vibrant「末」,\nimage_url:「始」https://example.com/landscape.jpg「末」,\nimage_size:「始」2K「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "commandIdentifier": "NanoBananaEdit",
+        "description": "图生图/编辑。基于已有图片进行修改。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」edit「末」,\nprompt:「始」(必需) 描述如何编辑图片的指令。「末」,\nimage_url:「始」(必需) 图片URL，支持 http/https/file://。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」edit「末」,\nprompt:「始」Add a rainbow and make colors more vibrant「末」,\nimage_url:「始」https://example.com/photo.jpg「末」\n<<<[END_TOOL_REQUEST]>>>"
       },
       {
-        "commandIdentifier": "NanoBananaComposeImage",
-        "description": "调用此工具通过 Gemini 2.5 NanoBanana 模型合成多张图片，例如参考图1的背景，图2的角色等。请在您的回复中，使用以下精确格式来请求多图片合成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」(必需) 请合成图片，用于描述如何合成多张图片的详细英文指令，例如：使用第一张图的背景，第二张图的角色，创建一个新的场景。「末」,\nimage_url_1:「始」(必需) 第一张图片的URL。「末」,\nimage_url_2:「始」(可选) 第二张图片的URL。「末」,\nimage_url_3:「始」(可选) 第三张图片的URL... 以此类推。「末」,\nimage_size:「始」(可选) 图片尺寸，可选值为 1K, 2K, 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
-        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGenOR「末」,\ncommand:「始」compose「末」,\nprompt:「始」Use the background from the first image and the character from the second image to create a fantasy scene where the character is standing in that landscape「末」,\nimage_url_1:「始」https://example.com/background.jpg「末」,\nimage_url_2:「始」https://example.com/character.png「末」,\nimage_size:「始」1K「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+        "commandIdentifier": "NanoBananaCompose",
+        "description": "多图合成。将多张图片按指令合成新图。\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」compose「末」,\nprompt:「始」(必需) 描述如何合成多张图片的指令。「末」,\nimage_url_1:「始」(必需) 第一张图片URL。「末」,\nimage_url_2:「始」(可选) 第二张图片URL。「末」,\nimage_url_3:「始」(可选) 第三张...以此类推。「末」,\nimage_size:「始」(可选) 1K / 2K / 4K。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」NanoBananaGen2「末」,\ncommand:「始」compose「末」,\nprompt:「始」Use background from first image, character from second「末」,\nimage_url_1:「始」https://example.com/bg.jpg「末」,\nimage_url_2:「始」https://example.com/char.png「末」\n<<<[END_TOOL_REQUEST]>>>"
       }
     ]
   }

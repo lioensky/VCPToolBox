@@ -20,6 +20,13 @@ const MODERN_PLUGIN_DIR = path.join(__dirname, 'plugins');
 const MODERN_PLUGIN_REGISTRY_FILE = path.join(MODERN_PLUGIN_DIR, 'registry.json');
 const MODERN_MANIFEST_FILE_NAME = 'plugin.json';
 const PREPROCESSOR_ORDER_FILE = path.join(__dirname, 'preprocessor_order.json');
+const SSH_MANAGER_ENV_PLUGIN_ALLOWLIST = new Set([
+    'LinuxShellExecutor',
+    'LinuxLogMonitor'
+]);
+const LOG_MONITOR_ENV_PLUGIN_ALLOWLIST = new Set([
+    'LinuxLogMonitor'
+]);
 
 class PluginManager extends EventEmitter {
     constructor() {
@@ -122,6 +129,57 @@ class PluginManager extends EventEmitter {
         }
         const effectiveConfig = this._getPluginConfig(pluginManifest);
         return effectiveConfig ? effectiveConfig[configKey] : undefined;
+    }
+
+    _shouldInjectSSHManagerEnv(pluginName) {
+        return SSH_MANAGER_ENV_PLUGIN_ALLOWLIST.has(pluginName);
+    }
+
+    _shouldInjectLogMonitorEnv(pluginName) {
+        return LOG_MONITOR_ENV_PLUGIN_ALLOWLIST.has(pluginName);
+    }
+
+    _isLinuxShellExecutorLocalUserCommand(plugin, inputData) {
+        if (!plugin || !inputData) return false;
+
+        let args;
+        try {
+            args = typeof inputData === 'string' ? JSON.parse(inputData) : inputData;
+        } catch (e) {
+            return false;
+        }
+
+        if (!args || typeof args !== 'object' || !args.command) {
+            return false;
+        }
+
+        const hostId = args.hostId;
+        if (!hostId) {
+            return true;
+        }
+
+        try {
+            const hostsPath = path.join(plugin.basePath, 'hosts.json');
+            delete require.cache[require.resolve(hostsPath)];
+            const hostsConfig = require(hostsPath);
+            const hostConfig = hostsConfig.hosts?.[hostId];
+            return hostConfig ? hostConfig.type !== 'ssh' : hostId === 'local';
+        } catch (e) {
+            return hostId === 'local';
+        }
+    }
+
+    _shouldInjectSSHManagerEnvForExecution(pluginName, plugin, inputData) {
+        if (!this._shouldInjectSSHManagerEnv(pluginName)) {
+            return false;
+        }
+        if (
+            pluginName === 'LinuxShellExecutor' &&
+            this._isLinuxShellExecutorLocalUserCommand(plugin, inputData)
+        ) {
+            return false;
+        }
+        return true;
     }
 
     async _executeStaticPluginCommand(plugin) {
@@ -598,7 +656,7 @@ class PluginManager extends EventEmitter {
         for (const module of localModulesToShutdown) {
             if (typeof module.shutdown === 'function') {
                 try {
-                    module.shutdown();
+                    await module.shutdown();
                 } catch (e) {
                     console.error(`[PluginManager] Error during hot-reload shutdown of a plugin:`, e.message);
                 }
@@ -817,6 +875,7 @@ class PluginManager extends EventEmitter {
             throw new Error(`[PluginManager] Plugin "${toolName}" not found for tool call.`);
         }
         const normalizedExecutionContext = normalizeExecutionContext(executionContext, { nullWhenMissing: true });
+        const sourceNode = normalizedExecutionContext?.requestSource || null;
 
         // Helper function to generate a timestamp string
         const _getFormattedLocalTimestamp = () => {
@@ -836,8 +895,22 @@ class PluginManager extends EventEmitter {
             return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${timezoneString}`;
         };
 
+        // Helper to clean up fuzzyDiff output for error/success responses
+        const _filterFuzzyDiff = (resultObj, timestamp) => {
+            if (resultObj && typeof resultObj === 'object' &&
+                resultObj.fuzzyDiff && typeof resultObj.fuzzyDiff === 'object') {
+                const { candidateFile, diff } = resultObj.fuzzyDiff;
+                resultObj.fuzzyDiff = { candidateFile, diff, timestamp };
+            }
+        };
+
         const maidNameFromArgs = toolArgs && toolArgs.maid ? toolArgs.maid : null;
         const pluginSpecificArgs = { ...toolArgs };
+
+        if (maidNameFromArgs && sourceNode) {
+            console.log(`[VCPToolUse]来自${sourceNode}节点(${requestIp || '未知IP'})的${maidNameFromArgs}调用了${toolName}`);
+        }
+
         if (maidNameFromArgs) {
             // The 'maid' parameter is intentionally passed through for plugins like DeepMemo.
             // delete pluginSpecificArgs.maid;
@@ -1015,7 +1088,13 @@ class PluginManager extends EventEmitter {
                         resultFromPlugin = pluginOutput.result;
                     }
                 } else {
-                    throw new Error(JSON.stringify({ plugin_error: pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.` }));
+                    const normalizedPluginOutput = {};
+                    if (pluginOutput.result) {
+                        normalizedPluginOutput.result = pluginOutput.result;
+                    }
+                    normalizedPluginOutput.plugin_error = pluginOutput.error || `Plugin "${toolName}" reported an unspecified error.`;
+                    _filterFuzzyDiff(normalizedPluginOutput, _getFormattedLocalTimestamp());
+                    throw new Error(JSON.stringify(normalizedPluginOutput));
                 }
             }
 
@@ -1026,6 +1105,7 @@ class PluginManager extends EventEmitter {
                 finalResultObject.MaidName = maidNameFromArgs;
             }
             finalResultObject.timestamp = _getFormattedLocalTimestamp();
+            _filterFuzzyDiff(finalResultObject, _getFormattedLocalTimestamp());
 
             return finalResultObject;
 
@@ -1044,6 +1124,7 @@ class PluginManager extends EventEmitter {
             if (!errorObject.timestamp) {
                 errorObject.timestamp = _getFormattedLocalTimestamp();
             }
+            _filterFuzzyDiff(errorObject, _getFormattedLocalTimestamp());
             throw new Error(JSON.stringify(errorObject));
         }
     }
@@ -1113,6 +1194,30 @@ class PluginManager extends EventEmitter {
             if (normalizedExecutionContext.agentId) {
                 additionalEnv.VCP_AGENT_ID = normalizedExecutionContext.agentId;
             }
+        }
+
+        // 新增：注入 SSHManagerService 的 UDS 路径（如果服务已启动）
+        const sshManagerSock = global.__vcp_ssh_manager_sock;
+        if (sshManagerSock && this._shouldInjectSSHManagerEnvForExecution(pluginName, plugin, inputData)) {
+            additionalEnv.SSH_MANAGER_SOCK = sshManagerSock;
+            if (global.__vcp_ssh_manager_token) {
+                additionalEnv.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+            }
+            if (this.debugMode) console.log(`[PluginManager] 注入 SSH_MANAGER_SOCK=${sshManagerSock} 到插件 ${pluginName}`);
+        } else if (sshManagerSock && this.debugMode) {
+            console.log(`[PluginManager] 跳过向非白名单插件 ${pluginName} 注入 SSH_MANAGER_SOCK`);
+        }
+
+        // 注入 LinuxLogMonitorServer 的 UDS 路径和 token（仅限白名单插件）
+        const logMonitorSock = global.__vcp_log_monitor_sock;
+        if (logMonitorSock && this._shouldInjectLogMonitorEnv(pluginName, plugin)) {
+            additionalEnv.LOG_MONITOR_SOCK = logMonitorSock;
+            if (global.__vcp_log_monitor_token) {
+                additionalEnv.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
+            }
+            if (this.debugMode) console.log(`[PluginManager] 注入 LOG_MONITOR_SOCK=${logMonitorSock} 到插件 ${pluginName}`);
+        } else if (logMonitorSock && this.debugMode) {
+            console.log(`[PluginManager] 跳过向非白名单插件 ${pluginName} 注入 LOG_MONITOR_SOCK`);
         }
 
         // Pass CALLBACK_BASE_URL and PLUGIN_NAME to asynchronous plugins

@@ -26,7 +26,9 @@ tool_name:「始」ScreenPilot「末」,
 command:「始」ScreenCapture「末」,
 ocr:「始」false「末」`;
 
-        if (params.windowTitle) {
+        if (params.hwnd) {
+            toolRequestBody += `,\nhwnd:「始」${params.hwnd}「末」`;
+        } else if (params.windowTitle) {
             toolRequestBody += `,\nwindowTitle:「始」${params.windowTitle}「末」`;
         }
 
@@ -230,8 +232,10 @@ class CapturePreprocessor {
             return messages;
         }
 
-        // 新正则支持 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口}} 和 {{VCPCameraCapture(N)}}
-        const placeholderRegex = /{{\s*(VCPScreenShotMini(?::([^}]+))?|VCPScreenShot(?::([^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
+        // 支持 {{VCPScreenShot}}, {{VCPScreenShotMini}}, {{VCPScreenShot:窗口}},
+        // {{VCPScreenShot:[长窗口标题]}}, {{VCPScreenShot:28182346}} 和 {{VCPCameraCapture(N)}}。
+        // 说明：纯数字目标会被视为 hwnd；方括号包裹用于兼容带空格、冒号、逗号等标点的长标题。
+        const placeholderRegex = /{{\s*(?:(VCPScreenShotMini|VCPScreenShot)(?::(\[[\s\S]*?\]|[^}]+))?|VCPCameraCapture(?:\((\d+)\))?)\s*}}/g;
         const matches = [...systemPromptText.matchAll(placeholderRegex)];
 
         if (matches.length === 0) {
@@ -243,24 +247,42 @@ class CapturePreprocessor {
         const seenTargets = new Set(); // 防止对同一个窗口截获多次
 
         for (const match of matches) {
-            const fullMatch = match[1];
+            const screenCommand = match[1];
 
-            if (fullMatch.startsWith('VCPScreenShot')) {
-                const isMini = fullMatch.startsWith('VCPScreenShotMini');
-                // 如果是 Mini，windowTitle 在 match[2]；如果是标准，在 match[3]
-                const windowTitle = isMini ? (match[2] ? match[2].trim() : null) : (match[3] ? match[3].trim() : null);
-                const taskKey = `${isMini ? 'mini_' : ''}${windowTitle ? `screen_${windowTitle}` : 'screen_full'}`;
+            if (screenCommand) {
+                const isMini = screenCommand === 'VCPScreenShotMini';
+                let target = match[2] ? match[2].trim() : null;
+
+                if (target && target.startsWith('[') && target.endsWith(']')) {
+                    target = target.slice(1, -1).trim();
+                }
+
+                const params = {};
+                let targetLabel = 'FullScreen';
+
+                if (target) {
+                    if (/^\d+$/.test(target)) {
+                        params.hwnd = target;
+                        targetLabel = `hwnd:${target}`;
+                    } else {
+                        params.windowTitle = target;
+                        targetLabel = target;
+                    }
+                }
+
+                const taskKey = `${isMini ? 'mini_' : ''}${params.hwnd ? `hwnd_${params.hwnd}` : params.windowTitle ? `screen_${params.windowTitle}` : 'screen_full'}`;
 
                 if (!seenTargets.has(taskKey)) {
                     seenTargets.add(taskKey);
                     captureTasks.push({
                         type: 'screen',
                         isMini: isMini,
-                        params: windowTitle ? { windowTitle } : {}
+                        params,
+                        targetLabel
                     });
                 }
-            } else if (fullMatch.startsWith('VCPCameraCapture')) {
-                const cameraIndex = match[4] ? parseInt(match[4], 10) : 0;
+            } else {
+                const cameraIndex = match[3] ? parseInt(match[3], 10) : 0;
                 const taskKey = `camera_${cameraIndex}`;
 
                 if (!seenTargets.has(taskKey)) {
@@ -291,9 +313,9 @@ class CapturePreprocessor {
                                 }
                             }
                         }
-                        return { type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'success', data: finalData, isMini: task.isMini };
+                        return { type: 'screen', title: task.targetLabel || task.params.windowTitle || task.params.hwnd || 'FullScreen', status: 'success', data: finalData, isMini: task.isMini };
                     })
-                    .catch(e => ({ type: 'screen', title: task.params.windowTitle || 'FullScreen', status: 'error', message: e.message }));
+                    .catch(e => ({ type: 'screen', title: task.targetLabel || task.params.windowTitle || task.params.hwnd || 'FullScreen', status: 'error', message: e.message }));
             } else {
                 // 目前分布式架构仅接管了屏幕截图，未开发分布式的摄像头工具。
                 return Promise.resolve({

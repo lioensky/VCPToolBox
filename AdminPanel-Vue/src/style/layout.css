@@ -53,7 +53,7 @@ body {
 
 /* 选中文本 */
 ::selection {
-  background: var(--primary-color);
+  background: var(--highlight-text);
   color: var(--on-accent-text);
 }
 
@@ -71,7 +71,7 @@ button {
   background: linear-gradient(
     135deg,
     var(--button-bg),
-    var(--primary-color, var(--button-hover-bg))
+    var(--highlight-text, var(--button-hover-bg))
   );
   border: 1px solid color-mix(in srgb, var(--button-bg) 72%, var(--border-color));
   border-radius: var(--radius-md);
@@ -224,6 +224,233 @@ button {
   border-color: var(--border-color);
   box-shadow: none;
   transform: none;
+}
+
+/* ========== Dual Pane 工具条（统一） ========== */
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.pane-toolbar-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.pane-toolbar--right {
+  justify-content: flex-end;
+}
+
+.pane-toolbar .btn-primary,
+.pane-toolbar .btn-secondary,
+.pane-toolbar .btn-danger,
+.pane-toolbar .btn-success {
+  white-space: nowrap;
+}
+
+.pane-toolbar-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--tertiary-bg);
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pane-toolbar-chip--active {
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+.pane-toolbar-menu {
+  position: relative;
+}
+
+.pane-toolbar-menu > summary {
+  list-style: none;
+}
+
+.pane-toolbar-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pane-toolbar-menu-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--tertiary-bg);
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+
+.pane-toolbar-menu-trigger:hover {
+  color: var(--primary-text);
+  border-color: color-mix(in srgb, var(--button-bg) 30%, var(--border-color));
+}
+
+.pane-toolbar-menu-content {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--secondary-bg);
+  box-shadow: var(--shadow-lg);
+  z-index: 12;
+}
+
+.pane-toolbar-menu-content--right {
+  right: 0;
+  left: auto;
+}
+
+.pane-toolbar-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary-text);
+  cursor: pointer;
+}
+
+.pane-toolbar-menu-item:hover {
+  background: var(--accent-bg);
+  border-color: var(--border-color);
+}
+
+.pane-toolbar-menu-item--danger {
+  color: var(--danger-text);
+}
+
+@media (max-width: 1280px) {
+  .pane-toolbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .pane-toolbar-main {
+    max-width: 100%;
+  }
+
+  .pane-left .pane-toolbar-chip {
+    min-width: 28px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  .pane-left .pane-toolbar-chip::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+}
+
+/* ========== 操作台折叠：共享样式 ========== */
+/* 供带有「操作台」侧栏卡片的页面复用。页面只需：
+ *   1. 在侧栏卡片根元素上切换 is-collapsed 类
+ *   2. 调整自身 grid-template-columns（折叠时把卡片列改成 auto）
+ *   3. 放置 .console-rail-toggle 按钮，并在折叠态放置 .console-rail 容器
+ */
+.console-rail-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-overlay-soft);
+  color: var(--secondary-text);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.console-rail-toggle:hover {
+  background: var(--info-bg);
+  color: var(--highlight-text);
+  border-color: var(--highlight-text);
+}
+
+.console-rail-toggle:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+}
+
+.console-rail-toggle .material-symbols-outlined {
+  font-size: 18px !important;
+}
+
+.console-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 6px;
+  color: var(--secondary-text);
+}
+
+.console-rail-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--surface-overlay-soft);
+  color: var(--secondary-text);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.console-rail-icon:hover,
+.console-rail-icon.is-active {
+  background: var(--info-bg);
+  color: var(--highlight-text);
+  border-color: var(--highlight-text);
+}
+
+.console-rail-icon .material-symbols-outlined {
+  font-size: 20px !important;
+}
+
+.console-rail-divider {
+  align-self: stretch;
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 4px;
 }
 
 /* ========== 输入框样式 ========== */
@@ -457,17 +684,17 @@ td {
 }
 
 .tag-success {
-  background: rgba(30, 142, 62, 0.2);
+  background: var(--success-bg);
   color: var(--success-color);
 }
 
 .tag-danger {
-  background: rgba(217, 48, 37, 0.2);
+  background: var(--danger-bg);
   color: var(--danger-color);
 }
 
 .tag-warning {
-  background: rgba(249, 171, 0, 0.2);
+  background: var(--warning-bg);
   color: var(--warning-color);
 }
 
@@ -539,7 +766,7 @@ td {
     padding: 48px 16px;
   }
 
-  .empty-state .material-symbols-outlined {
+  .empty-state > .material-symbols-outlined {
     font-size: var(--font-size-icon-hero) !important;
     margin-bottom: 16px;
   }
@@ -583,7 +810,7 @@ td {
   color: var(--secondary-text);
 }
 
-.empty-state .material-symbols-outlined {
+.empty-state > .material-symbols-outlined {
   font-size: var(--font-size-icon-hero) !important;
   margin-bottom: 0;
   opacity: 0.3;
@@ -715,6 +942,192 @@ td {
 
 .text-muted {
   color: var(--secondary-text);
+}
+
+/* ========== 共享组件：筛选药丸 ========== */
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--surface-overlay-soft);
+  color: var(--secondary-text);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: var(--font-size-helper);
+  box-shadow: inset 0 1px 0 var(--surface-overlay-soft);
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.filter-pill:hover,
+.filter-pill.active {
+  background: color-mix(in srgb, var(--button-bg) 14%, var(--tertiary-bg));
+  color: var(--primary-text);
+  border-color: color-mix(in srgb, var(--button-bg) 36%, transparent);
+}
+
+.filter-pill:focus-visible {
+  border-color: color-mix(in srgb, var(--button-bg) 50%, var(--border-color));
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.filter-pill .material-symbols-outlined {
+  font-size: var(--font-size-emphasis);
+}
+
+/* ========== 共享组件：搜索字段 ========== */
+.search-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--input-bg);
+}
+
+.search-field .material-symbols-outlined {
+  color: var(--secondary-text);
+  flex-shrink: 0;
+}
+
+.search-field input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 14px 0;
+}
+
+.search-field input:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: -2px;
+}
+
+.search-field input:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ========== 共享组件：眉标徽章 ========== */
+.eyebrow {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--button-bg) 16%, transparent);
+  color: var(--highlight-text);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ========== 共享组件：状态药丸 ========== */
+.mini-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mini-pill-icon {
+  font-size: var(--font-size-helper) !important;
+}
+
+.mini-pill--sensitive {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.mini-pill--changed {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.mini-pill--neutral {
+  background: var(--surface-overlay-strong);
+  color: var(--secondary-text);
+}
+
+.mini-pill--critical {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.mini-pill--stable {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+/* ========== 共享组件：模态背景 ========== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-backdrop);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-index-modal);
+  padding: var(--space-4);
+}
+
+.modal-panel {
+  background: var(--secondary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  width: 100%;
+  box-shadow: var(--overlay-panel-shadow);
+}
+
+/* ========== 共享组件：Hero 区域 ========== */
+.page-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) auto;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.page-hero h2 {
+  font-size: var(--font-size-headline);
+  line-height: 1.2;
+  margin-bottom: var(--space-3);
+}
+
+.page-hero .description {
+  max-width: 56ch;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .page-hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+
+  .filter-pill {
+    padding: 6px 10px;
+  }
+
+  .filter-pill .material-symbols-outlined {
+    font-size: var(--font-size-body);
+  }
 }
 
 /* ========== 减少动画支持 ========== */

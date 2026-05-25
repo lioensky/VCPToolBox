@@ -228,6 +228,7 @@ image/gptimagegen/
 # Qwen Code / Snow 工具配置
 **/.qwen/
 **/.snow/
+helloagents/
 
 # Windows 缩略图缓存
 Thumbs.db
@@ -244,6 +245,7 @@ __pycache__/
 
 # ===== 编译产物 =====
 rust-vexus-lite/target/
+Plugin/DailyNoteSearcher/src/target/
 
 # ==== 分布式开发 ====
 VCPDistributedServer

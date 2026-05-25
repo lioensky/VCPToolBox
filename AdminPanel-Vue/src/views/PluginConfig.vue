@@ -37,15 +37,12 @@
             </label>
 
             <div v-if="entry.type === 'boolean'" class="switch-container">
-              <label class="switch">
-                <input
-                  type="checkbox"
-                  :id="`plugin-${entry.key}`"
-                  v-model="entry.value"
-                >
-                <span class="slider"></span>
-              </label>
-              <span>{{ entry.value ? '启用' : '禁用' }}</span>
+              <AppSwitch
+                :input-id="`plugin-${entry.key}`"
+                :model-value="Boolean(entry.value)"
+                :label="entry.value ? '启用' : '禁用'"
+                @update:model-value="entry.value = $event"
+              />
             </div>
 
             <input
@@ -136,15 +133,12 @@
               </label>
 
               <div v-if="entry.type === 'boolean'" class="switch-container">
-                <label class="switch">
-                  <input
-                    type="checkbox"
-                    :id="`plugin-${entry.key}`"
-                    v-model="entry.value"
-                  >
-                  <span class="slider"></span>
-                </label>
-                <span>{{ entry.value ? '启用' : '禁用' }}</span>
+                <AppSwitch
+                  :input-id="`plugin-${entry.key}`"
+                  :model-value="Boolean(entry.value)"
+                  :label="entry.value ? '启用' : '禁用'"
+                  @update:model-value="entry.value = $event"
+                />
               </div>
 
               <input
@@ -256,6 +250,7 @@
 import { computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
 import { usePluginConfigStore, type InvocationCommand } from '@/stores/pluginConfig'
 
 type TextareaValue = string | number | readonly string[] | null

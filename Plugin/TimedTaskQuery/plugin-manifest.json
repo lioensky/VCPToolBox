@@ -1,0 +1,30 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "TimedTaskQuery",
+  "displayName": "定时任务结果查询",
+  "version": "1.0.0",
+  "description": "查询或取消通用未来工具调用（timely_contact）的待执行任务，并查询执行后的持久化结果。",
+  "author": "VCPToolBox",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node TimedTaskQuery.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 30000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QueryTimedTaskResult",
+        "description": "查询或取消通用未来工具调用。仅需提供创建定时任务时返回的 task_id/taskId。若任务尚未到点或尚未执行完成，查询会返回 pending 状态。取消仅对尚未执行的任务有效；已完成任务不可取消，只能查询结果。\n\n📋 查询格式:\n<<<[TOOL_REQUEST]>>>\nmaid:「始」你的署名「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」\n<<<[END_TOOL_REQUEST]>>>\n\n📋 取消格式:\n<<<[TOOL_REQUEST]>>>\nmaid:「始」你的署名「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」,\naction:「始」cancel「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\nmaid:「始」Nova「末」,\ntool_name:「始」TimedTaskQuery「末」,\ntask_id:「始」task-1779106560000-650e398d「末」,\naction:「始」cancel「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "permissions": [
+    "read_from_file_system",
+    "write_to_file_system"
+  ]
+}

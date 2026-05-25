@@ -239,20 +239,21 @@ const localAdminRouter = express.Router();
 
 // 本地可独立运行的模块列表
 const localModules = [
-    'system',
-    'logs',
-    'server',
-    'config',
-    'rag',
-    'codexMemory',
-    'toolbox',
-    'agents',
-    'tvs',
-    'schedules',
-    'newapiMonitor',
-    'cache',
-    'dailyNotes',
-    'agentAssistant'
+    'system',          // PM2/系统资源/认证码/天气/热榜
+    'logs',            // 服务器日志读取
+    'server',          // 登录/登出/认证状态
+    'config',          // config.env / toolApprovalConfig 读写
+    'rag',             // RAG 标签/参数/语义组/思维链（文件读写）
+    'codexMemory',     // Codex 记忆监控
+    'toolbox',         // Toolbox 映射与文件管理
+    'agents',          // Agent 映射与文件管理
+    'tvs',             // TVS 变量文件管理
+    'schedules',       // 日程管理
+    'newapiMonitor',   // NewAPI 监控（外部 HTTP）
+    'cache',           // 多媒体/图像缓存管理
+    'emojis',          // 表情包列表与 image 目录画廊
+    'dailyNotes',      // 日记知识库文件管理
+    'agentAssistant',  // Agent 助手配置（纯文件 I/O）
 ];
 
 function getCurrentServerLogPath() {
@@ -408,9 +409,14 @@ app.use('/admin_api', (req, res, next) => {
         timeout: 30000,
     };
 
+    const incomingContentType = String(req.headers['content-type'] || '').toLowerCase();
+    const isMultipartBody = incomingContentType.includes('multipart/form-data');
+
     // 移除可能干扰的 headers
     delete proxyOptions.headers['host'];
-    delete proxyOptions.headers['content-length'];
+    if (!isMultipartBody) {
+        delete proxyOptions.headers['content-length'];
+    }
 
     const proxyReq = http.request(proxyUrl, proxyOptions, (proxyRes) => {
         res.status(proxyRes.statusCode);
@@ -446,8 +452,25 @@ app.use('/admin_api', (req, res, next) => {
 
     // 转发请求体
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-        const bodyData = JSON.stringify(req.body);
-        proxyReq.setHeader('Content-Type', 'application/json');
+        // multipart/form-data 需要原样流式透传，否则会破坏 boundary 与文件体
+        if (isMultipartBody) {
+            req.pipe(proxyReq);
+            return;
+        }
+
+        let bodyData = '';
+
+        if (incomingContentType.includes('application/x-www-form-urlencoded')) {
+            bodyData = new URLSearchParams(req.body || {}).toString();
+            proxyReq.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+        } else if (incomingContentType.includes('text/plain')) {
+            bodyData = typeof req.body === 'string' ? req.body : String(req.body || '');
+            proxyReq.setHeader('Content-Type', 'text/plain');
+        } else {
+            bodyData = JSON.stringify(req.body || {});
+            proxyReq.setHeader('Content-Type', 'application/json');
+        }
+
         proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
         proxyReq.write(bodyData);
     }
