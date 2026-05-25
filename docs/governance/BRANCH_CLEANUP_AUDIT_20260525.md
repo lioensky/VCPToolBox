@@ -2,11 +2,15 @@
 
 > 审计日期：2026-05-25
 >
-> 审计基准：`main` @ `973723f`
+> 审计基准：`main` @ `current HEAD`
 >
 > 本文只记录本地分支和 worktree 状态，不授权删除分支、删除 worktree、推送远端或修改远端分支。
 >
+> 主干声明：`main` 是 VCPToolBox 永远保持最先进、最新整合状态的主分支，代表项目当前最完整状态。
+>
 > 强保护声明：`prod/stable` 是稳定生产线分支，必须永久保留。无论它是否已并入 `main`，都不能被列入清理候选，不能删除本地或远端分支。
+>
+> 职责边界：`main` 负责最新主线整合；`prod/stable` 负责稳定生产使用。二者职责不同，不能因为 `main` 已吸收 `prod/stable` 就清理或削弱 `prod/stable`。
 
 ## 0. 分类口径
 
@@ -20,6 +24,7 @@
 注意：
 
 - 本文的“可清理”只指本地分支候选，不代表可删除远端分支。
+- `main` 是最新主线基准，不是稳定生产部署线。
 - `prod/stable` 是明确例外：它既不能删除本地分支，也不能删除远端分支。
 - `ahead / behind` 口径为相对当前 `main`，格式为 `分支独有提交数 / main 独有提交数`。
 - `dirty files` 是 `git status --short` 的行数，用来提示该 worktree 是否有未提交或未跟踪改动。
@@ -50,12 +55,12 @@
 | `codex/vcptoolbox-memory-rag-governance-20260425` | `5e9274e` | 未并入 | 0 | `A:/VCP/VCPToolBox-memory-rag-governance` |
 | `lane10-codex-memory-intake-20260425` | `fb17dd0` | 未并入 | 0 | `A:/VCP/VCPToolBox-photo-studio-export` |
 | `codex/photo-studio-baserow-provider-batch` | `79911d5` | 未并入 | 3 | `A:/VCP/VCPToolBox-photo-studio-next` |
-| `integration/main-absorb-prod-stable-upstream-20260525` | `80ee923` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable` |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `current HEAD` | 未并入 | 0 | `A:/VCP/VCPToolBox-prod-stable` |
 | `feature/gov-patch-1a-identity-approval-20260429` | `ba79d73` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-clean` |
 | `feature/gov-patch-2b-effect-classification-20260430` | `5309dd9` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-phase3-run-clean` |
 | `(detached)` | `43a6bbb` | detached | 137 | `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` |
 | `codex/prod-stable-closeout-check-20260513` | `fe586ce` | 已并入 | 0 | `A:/VCP/VCPToolBox-prod-stable-upstream-gptimagegen-20260429` |
-| `main` | `973723f` | 当前基准 | 0 | `A:/VCP/VCPToolBox-staging-custom-integration` |
+| `main` | `current HEAD` | 当前基准 | 0 | `A:/VCP/VCPToolBox-staging-custom-integration` |
 
 ### Worktree 处理建议
 
