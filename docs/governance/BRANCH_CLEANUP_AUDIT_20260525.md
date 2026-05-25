@@ -72,13 +72,13 @@
 
 - 当前工作区：`A:/VCP/VCPToolBox-staging-custom-integration`。
 - 当前分支：`main`，复核时 `git status --short -uall` 为空。
-- 当前 `main` 复核前 HEAD：`808c13f`。
+- 当前 `main` 复核 HEAD：`90647f8`。
 - worktree 数量：7。
 - 本地分支数量：23。
 - 已并入且未占用 worktree 的本地清理候选：2；候选中不包含 `main`，不包含 `prod/stable`。
 - `git branch --no-merged main`：19 个，其中 5 个占用 worktree，14 个未占用 worktree。
 - 当前本地引用关系：`prod/stable`、`origin/prod/stable`、`upstream/main` 均为 `main` 的祖先；`origin/main` 仍不是 `main` 的祖先。
-- 当前 left/right：`main...prod/stable = 169 / 0`，`main...origin/prod/stable = 169 / 0`，`main...upstream/main = 271 / 0`，`main...origin/main = 408 / 18`。
+- 当前 left/right：`main...prod/stable = 177 / 0`，`main...origin/prod/stable = 177 / 0`，`main...upstream/main = 279 / 0`，`main...origin/main = 416 / 18`。
 
 逐条核对：
 
@@ -154,6 +154,19 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 
 本快照用于后续接手治理，不是清理授权。
 
+当前事实基线：
+
+- 当前工作区：`A:/VCP/VCPToolBox-staging-custom-integration`。
+- 当前分支：`main`。
+- 当前 HEAD：`90647f8`。
+- 当前工作树：干净。
+- 本地分支数量：23。
+- worktree 数量：7。
+- `git branch --no-merged main`：19 个，其中 5 个占用 worktree，14 个未占用 worktree。
+- `git branch --merged main` 除 `main` / `prod/stable` 外，只剩 `lane8/upstream-intake-20260425` 和 `staging/vcptoolbox-custom-integration-20260425` 两个 upstream-blocked 候选。
+- 当前 left/right：`main...prod/stable = 177 / 0`，`main...origin/prod/stable = 177 / 0`，`main...upstream/main = 279 / 0`，`main...origin/main = 416 / 18`。
+- `prod/stable` 仍是永久保护稳定生产线，不进入任何清理候选。
+
 已被当前证据覆盖：
 
 - `main` 是当前本地治理口径下的最新整合主线。
@@ -173,7 +186,7 @@ Package E：未占用、拓扑未并入但 patch-equivalent 的本地分支。
 
 ### 2026-05-25 当前剩余治理队列
 
-本节是当前行动队列，不是授权。复核时当前分支为 `main`，HEAD 为 `808c13f`，工作树干净。
+本节是当前行动队列，不是授权。复核时当前分支为 `main`，HEAD 为 `90647f8`，工作树干净。
 
 | 队列 | 对象 | 当前证据 | 下一步门槛 |
 | --- | --- | --- | --- |
