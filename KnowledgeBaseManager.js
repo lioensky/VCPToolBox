@@ -300,6 +300,27 @@ class KnowledgeBaseManager {
     _cleanupStalePairwiseSimilarityModels() {
         try {
             if (!this.tagMemoEngine?.modelSig) return;
+
+            // 单模型缓存策略下也不能在冷启动/空库/新签名尚未产出数据时清掉旧缓存。
+            // 否则部分用户在模型签名变化但当前 tags 尚未恢复/尚未计算完成时，会出现“旧数据被删、新数据为 0”的真空窗口。
+            const currentRows = this.db.prepare(
+                'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig = ?'
+            ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+            if (currentRows <= 0) {
+                const staleRows = this.db.prepare(
+                    'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig != ?'
+                ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+                if (staleRows > 0) {
+                    console.warn(
+                        `[KnowledgeBase] 🛡️ Preserved ${staleRows} stale pairwise similarity row(s): ` +
+                        `current model_sig=${this.tagMemoEngine.modelSig} has no cached rows yet.`
+                    );
+                }
+                return;
+            }
+
             const result = this.db.prepare(
                 'DELETE FROM tag_pair_similarity WHERE model_sig != ?'
             ).run(this.tagMemoEngine.modelSig);
@@ -1016,6 +1037,65 @@ class KnowledgeBaseManager {
             }
         };
 
+        const scanInitialFiles = () => {
+            if (!this.config.fullScanOnStartup) return;
+
+            let queued = 0;
+            const walk = (dir) => {
+                let entries;
+                try {
+                    entries = fsSync.readdirSync(dir, { withFileTypes: true });
+                } catch (e) {
+                    console.warn(`[KnowledgeBase] Initial scan skipped unreadable directory "${dir}": ${e.message}`);
+                    return;
+                }
+
+                for (const entry of entries) {
+                    const absPath = path.join(dir, entry.name);
+                    const relPath = path.relative(this.config.rootPath, absPath);
+                    const parts = relPath.split(path.sep);
+                    const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+                    if (entry.isDirectory()) {
+                        if (
+                            entry.name === 'node_modules' ||
+                            entry.name === '.git' ||
+                            entry.name === 'dist' ||
+                            entry.name === 'target' ||
+                            entry.name === 'image' ||
+                            entry.name.startsWith('.') ||
+                            this.config.ignoreFolders.includes(entry.name) ||
+                            this.config.ignoreFolders.includes(diaryName) ||
+                            this.config.ignorePrefixes.some(prefix => entry.name.startsWith(prefix)) ||
+                            this.config.ignoreSuffixes.some(suffix => entry.name.endsWith(suffix))
+                        ) {
+                            continue;
+                        }
+                        walk(absPath);
+                        continue;
+                    }
+
+                    if (!entry.isFile()) continue;
+                    if (!absPath.match(/\.(md|txt)$/i)) continue;
+
+                    const fileName = path.basename(absPath);
+                    if (this.config.ignoreFolders.includes(diaryName)) continue;
+                    if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix) || fileName.startsWith(prefix))) continue;
+                    if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix) || fileName.endsWith(suffix))) continue;
+
+                    handleFile(absPath);
+                    queued++;
+                }
+            };
+
+            walk(this.config.rootPath);
+            if (queued > 0) {
+                console.log(`[KnowledgeBase] 🔍 Initial full scan queued ${queued} file(s).`);
+            } else {
+                console.log('[KnowledgeBase] 🔍 Initial full scan found no indexable files.');
+            }
+        };
+
         const handleFileWithLock = async (filePath) => {
             // 🛡️ BUG 2 修复：文件系统竞态保护
             // 如果文件正在被快速修改，等待其稳定后再处理
@@ -1080,6 +1160,7 @@ class KnowledgeBaseManager {
                     this.watcher = rustWatcher;
                     this.watcherType = 'rust';
                     console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
+                    scanInitialFiles();
                     return;
                 }
             } catch (e) {

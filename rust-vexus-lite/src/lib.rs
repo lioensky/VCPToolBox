@@ -900,17 +900,16 @@ impl Task for PairwiseSimTask {
 
         // ====================================================================
         // Step 3: 增量模式 — 加载已缓存且 model_sig 一致的 pair 集合
-        // full_rebuild = true 时按单模型缓存策略清空整张旧表
+        // full_rebuild = true 时才按显式重建语义清空整张旧表。
+        //
+        // 注意：非 full_rebuild 冷启动不能在 Rust 侧主动删除旧 model_sig。
+        // 部分用户可能处于“签名变化 / tag 索引尚未恢复 / 空库初始化”窗口；
+        // 如果此时先 DELETE 旧模型行，而本轮 pair_set 又为 0，就会造成旧缓存被清空且新缓存未生成。
+        // 旧模型行的安全清理交给 JS 侧在确认当前 model_sig 已有可用缓存后执行。
         // ====================================================================
         if self.full_rebuild {
             conn.execute("DELETE FROM tag_pair_similarity", [])
                 .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
-        } else {
-            conn.execute(
-                "DELETE FROM tag_pair_similarity WHERE model_sig != ?1",
-                rusqlite::params![&self.model_sig],
-            )
-            .map_err(|e| Error::from_reason(format!("Stale model cleanup failed: {}", e)))?;
         }
 
         let mut cached: HashSet<(i64, i64)> = HashSet::new();
