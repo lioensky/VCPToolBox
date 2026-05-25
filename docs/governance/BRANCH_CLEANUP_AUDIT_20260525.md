@@ -362,6 +362,34 @@ Package L-main 后当前分支分类：
 | 未并入且占用 worktree | `feature/latest-updates`、`codex/photo-studio-baserow-provider-batch`、`integration/main-absorb-prod-stable-upstream-20260525`、`lane10-codex-memory-intake-20260425` | 继续按各自冻结 / 受保护 / 真实未吸收结论处理 |
 | 未并入且未占用 worktree | `feature/ai-image-pipeline-dgp-refactor`、`feature/ai-image-pipeline-dgp-v2`、`feature/photo-studio-guide-contract-migration`、`feature/photo-studio-next-guide-contract`、`governance/origin-main-topology-bridge-preview`、`rescue/ai-image-pipeline-mixed-20260427_195303` | 继续专项复核；预演分支是本地验证 artifact |
 
+#### Package L-main 后 `feature/ai-image-agent-clean-pr` 归类复核
+
+本节只读复核拓扑桥后的 `feature/ai-image-agent-clean-pr`。未删除分支，未读取文件内容，未 cherry-pick，未 merge，未 push。
+
+复核事实：
+
+- `feature/ai-image-agent-clean-pr` HEAD：`fca8f44`。
+- upstream：`origin/feature/ai-image-agent-clean-pr`。
+- `git branch --merged main` 已显示该分支。
+- `git cherry -v main feature/ai-image-agent-clean-pr` 为空，因为该分支已被 Package L-main 拓扑桥纳入历史。
+- `main...feature/ai-image-agent-clean-pr` 的三点 diff 已不适合作为内容差异证据，因为 merge-base 已变成该分支本身。
+- 直接 tree diff `git diff --shortstat feature/ai-image-agent-clean-pr main` 仍显示 `1133 files changed, 122399 insertions, 132096 deletions`。
+
+直接 tree diff 路径级热点：
+
+- `AdminPanel-Vue/dist`：201 个路径，属于前端构建产物，不随分支整体吸收。
+- `AdminPanel-Vue/src`：123 个路径，需按前端源码专项复核。
+- `dailynote/*`、`image/*`：大量内容 / 运行态或用户数据形态路径，不随分支整体吸收。
+- `Plugin/DigitalOracle`、`modules/channelHub`、多项 `Plugin/*`：插件和运行逻辑混合改动。
+- 路径级风险命中包含真实 `config.env`、`Plugin/UserAuth/code.bin`、`Plugin/LinuxLogMonitor/state/*`、`AdminPanel-Vue/dist/*` 等；不得直接吸收、覆盖或清理。
+
+结论：
+
+1. `feature/ai-image-agent-clean-pr` 是“拓扑已并入”，不是“内容已安全吸收”。
+2. 不得把它作为普通已并入干净分支自动删除。
+3. 若后续要清理该本地分支，必须单独批准一个“拓扑桥后历史分支清理”包，并在删除前再次确认不依赖该分支作为远端对照线。
+4. 若后续要吸收该分支遗留内容，只能按 AI Image 前端源码、后端路由、pipeline runtime、测试、文档等小主题重新审查；`dist`、真实配置、state、`code.bin` 和运行态路径继续排除。
+
 结论：
 
 1. `origin/main` 本地拓扑已闭合，当前本地 `main` 是包含 `prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 的最新主线。
