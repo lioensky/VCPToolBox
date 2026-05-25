@@ -517,6 +517,25 @@ Package J 结论：
 4. 若刷新后仍存在 `origin/main` 正向补丁，只能按小主题专项复核：`server.js` env-flag 路由、`modules/dynamicToolRegistry.js`、以及是否明确排除或重建 `AdminPanel-Vue/dist` 构建产物。
 5. 任何 push、远端分支更新、PR、merge 到远端、或修改 `origin/main` / `origin/prod/stable` / `upstream/main` 都必须单独明确批准。
 
+#### Package J1 review：`origin/main` 3 个正向补丁专项判断
+
+本节为只读专项复核，不是 merge、cherry-pick、push、fetch 或远端同步授权。复核时当前分支为 `main`，HEAD 为 `cf2c145`，主工作树干净。
+
+复核对象来自 `git cherry -v main origin/main` 中仍显示为 `+` 的 3 个提交：
+
+| commit | 主题 | 当前 `main` 证据 | 判断 |
+| --- | --- | --- | --- |
+| `c4290fe` | `Mount AI image agents route behind env flag` | 当前 `server.js` 已有 `ENABLE_AI_IMAGE_AGENTS_ROUTE` 条件挂载 `/admin_api/ai-image-agents`，并在 `ENABLE_AI_IMAGE_REAL_EXECUTION=true` 时向 route 注入 `pluginManager`；当前也已有 `routes/admin/aiImageAgents.js` 与对应测试 | 不直接 cherry-pick。当前 `main` 已覆盖并扩展该意图；后续只需在 fetch-only 后复核是否还有更细差异 |
+| `84e9007` | `build(admin): bundle AdminPanel assets for AI image agent` | 该提交主要改动 `AdminPanel-Vue/dist/*` hash 构建产物，包含大量删除、重命名和新增 dist 文件 | 不吸收。构建产物继续按 release-preflight / frontend build 专项处理，不能用远端历史 dist 直接覆盖 |
+| `fca8f44` | `fix: restore dynamicToolRegistry bootstrap module` | 当前 `modules/dynamicToolRegistry.js` 已存在完整实现，导出 singleton、`DynamicToolRegistry` 和 `DEFAULT_CONFIG`，并已有 `tests/dynamicToolRegistry.test.js`；该提交只是 31 行 no-op bootstrap stub | 不直接 cherry-pick。当前 `main` 已明显超越该 stub；保留当前实现 |
+
+J1 结论：
+
+1. `origin/main` 的 3 个正向补丁不适合作为整分支 merge 或直接 cherry-pick 对象。
+2. `server.js` AI Image Agents route 与 `dynamicToolRegistry` bootstrap 均已在当前 `main` 有更完整实现，暂不迁移。
+3. `AdminPanel-Vue/dist/*` 属于构建产物，继续排除直接吸收；如需更新必须走明确 frontend build/release 流程。
+4. 因为本节未执行 fetch，以上结论只适用于当前本地 `origin/main` ref；若后续批准 fetch-only，需要重新审计刷新后的 refs。
+
 ### 2026-05-25 Package C-worktree-clean preflight
 
 本轮只读复核 3 个干净但仍占用 worktree 的 patch-equivalent 分支；当时未删除分支、未移除 worktree、未 push、未修改远端。后续 C2-safe 已在获批后移除其中 2 个 worktree，执行记录见下方。
