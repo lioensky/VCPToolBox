@@ -34,6 +34,25 @@ function resolveTvsDir() {
 const TVS_DIR = resolveTvsDir();
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceFirstAliasPlaceholder(text, alias, replacementText, prefix = '') {
+    const escapedAlias = escapeRegExp(alias);
+    const escapedPrefix = prefix ? `${escapeRegExp(prefix)}:` : '';
+    const aliasPlaceholderRegex = new RegExp(`\\{\\{(?:${escapedPrefix})?${escapedAlias}\\}\\}`, 'g');
+    let hasReplacedFirst = false;
+
+    return String(text).replace(aliasPlaceholderRegex, () => {
+        if (hasReplacedFirst) {
+            return '';
+        }
+        hasReplacedFirst = true;
+        return replacementText;
+    });
+}
+
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
     if (text == null) return '';
     let processedText = String(text);
@@ -128,9 +147,7 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                 );
                 processingStack.delete(stackKey);
 
-                processedText = processedText
-                    .replaceAll(`{{${alias}}}`, expandedText)
-                    .replaceAll(`{{toolbox:${alias}}}`, expandedText);
+                processedText = replaceFirstAliasPlaceholder(processedText, alias, expandedText, 'toolbox');
 
                 // 标记此 Toolbox 已展开
                 if (context.expandedToolboxes) {

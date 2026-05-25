@@ -143,6 +143,7 @@ class KnowledgeBaseManager {
         // 初始化浪潮引擎
         this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams);
         await this.tagMemoEngine.initialize();
+        this._cleanupStalePairwiseSimilarityModels();
 
         this._startWatcher();
         this._startRagParamsWatcher();
@@ -258,6 +259,77 @@ class KnowledgeBaseManager {
             this.db.prepare("ALTER TABLE file_tags ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
         } catch (e) {
             // 如果列已存在，SQLite 会报错，忽略即可
+        }
+    }
+
+    _decodeVectorBlob(blob, dim, label = 'vector') {
+        if (blob instanceof Float32Array) {
+            return blob.length === dim ? blob : null;
+        }
+        if (!blob || typeof blob.length !== 'number') {
+            return null;
+        }
+
+        const expectedBytes = dim * Float32Array.BYTES_PER_ELEMENT;
+        if (blob.length !== expectedBytes) {
+            console.warn(`[KnowledgeBase] ⚠️ Invalid ${label} blob length: expected ${expectedBytes}, got ${blob.length}`);
+            return null;
+        }
+
+        if (blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+            return new Float32Array(blob.buffer, blob.byteOffset, dim);
+        }
+
+        const copied = Buffer.from(blob);
+        return new Float32Array(copied.buffer, copied.byteOffset, dim);
+    }
+
+    _queryByChunks(sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
+        if (!Array.isArray(values) || values.length === 0) return [];
+        const rows = [];
+
+        for (let i = 0; i < values.length; i += chunkSize) {
+            const batch = values.slice(i, i + chunkSize);
+            const placeholders = batch.map(() => '?').join(',');
+            rows.push(...this.db.prepare(`${sqlPrefix} IN (${placeholders})${sqlSuffix}`).all(...batch));
+        }
+
+        return rows;
+    }
+
+    _cleanupStalePairwiseSimilarityModels() {
+        try {
+            if (!this.tagMemoEngine?.modelSig) return;
+
+            // 单模型缓存策略下也不能在冷启动/空库/新签名尚未产出数据时清掉旧缓存。
+            // 否则部分用户在模型签名变化但当前 tags 尚未恢复/尚未计算完成时，会出现“旧数据被删、新数据为 0”的真空窗口。
+            const currentRows = this.db.prepare(
+                'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig = ?'
+            ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+            if (currentRows <= 0) {
+                const staleRows = this.db.prepare(
+                    'SELECT COUNT(*) as count FROM tag_pair_similarity WHERE model_sig != ?'
+                ).get(this.tagMemoEngine.modelSig)?.count || 0;
+
+                if (staleRows > 0) {
+                    console.warn(
+                        `[KnowledgeBase] 🛡️ Preserved ${staleRows} stale pairwise similarity row(s): ` +
+                        `current model_sig=${this.tagMemoEngine.modelSig} has no cached rows yet.`
+                    );
+                }
+                return;
+            }
+
+            const result = this.db.prepare(
+                'DELETE FROM tag_pair_similarity WHERE model_sig != ?'
+            ).run(this.tagMemoEngine.modelSig);
+
+            if (result.changes > 0) {
+                console.warn(`[KnowledgeBase] 🧹 Removed ${result.changes} stale pairwise similarity row(s) from old embedding model signatures.`);
+            }
+        } catch (e) {
+            console.warn('[KnowledgeBase] ⚠️ Failed to cleanup stale pairwise similarity model rows:', e.message);
         }
     }
 
@@ -576,10 +648,10 @@ class KnowledgeBaseManager {
         if (hydratedResults.length > 0 && tagInfo) {
             const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id',
+                    uniqueFileIds
+                );
 
                 // 构建 file_id → [tagName, ...] 映射
                 const fileTagNameMap = new Map();
@@ -686,10 +758,10 @@ class KnowledgeBaseManager {
         if (hydratedResults.length > 0 && tagInfo) {
             const uniqueFileIds = [...new Set(hydratedResults.map(r => r._fileId))];
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.file_id',
+                    uniqueFileIds
+                );
 
                 const fileTagNameMap = new Map();
                 for (const row of fileTagRows) {
@@ -781,9 +853,12 @@ class KnowledgeBaseManager {
         try {
             const row = this.db.prepare("SELECT vector FROM kv_store WHERE key = ?").get(`diary_name:${diaryName}`);
             if (row && row.vector) {
-                const vec = Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
-                this.diaryNameVectorCache.set(diaryName, vec);
-                return vec;
+                const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, `diary_name:${diaryName}`);
+                if (decoded) {
+                    const vec = Array.from(decoded);
+                    this.diaryNameVectorCache.set(diaryName, vec);
+                    return vec;
+                }
             }
         } catch (e) {
             console.warn(`[KnowledgeBase] DB lookup failed for diary name: ${diaryName}`);
@@ -801,8 +876,9 @@ class KnowledgeBaseManager {
         let count = 0;
         for (const row of stmt.iterate()) {
             const name = row.key.split(':')[1];
-            if (row.vector.length === this.config.dimension * 4) {
-                const vec = Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, row.key);
+            if (decoded) {
+                const vec = Array.from(decoded);
                 this.diaryNameVectorCache.set(name, vec);
                 count++;
             }
@@ -839,7 +915,8 @@ class KnowledgeBaseManager {
             const row = stmt.get(key);
 
             if (row && row.vector) {
-                return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+                const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, key);
+                return decoded ? Array.from(decoded) : null;
             }
 
             // 2. 未命中，去查 Embedding API
@@ -868,7 +945,8 @@ class KnowledgeBaseManager {
         const stmt = this.db.prepare('SELECT vector FROM chunks WHERE content = ? LIMIT 1');
         const row = stmt.get(text);
         if (row && row.vector) {
-            return Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, this.config.dimension));
+            const decoded = this._decodeVectorBlob(row.vector, this.config.dimension, 'chunk:content_lookup');
+            return decoded ? Array.from(decoded) : null;
         }
         return null;
     }
@@ -898,7 +976,7 @@ class KnowledgeBaseManager {
             const processed = rows.map(r => ({
                 id: r.id,
                 text: r.text,
-                vector: r.vector ? new Float32Array(r.vector.buffer, r.vector.byteOffset, this.config.dimension) : null,
+                vector: this._decodeVectorBlob(r.vector, this.config.dimension, `chunk:${r.id}`),
                 sourceFile: r.sourceFile
             }));
             allResults.push(...processed);
@@ -949,6 +1027,65 @@ class KnowledgeBaseManager {
                 this._flushBatch();
             } else {
                 this._scheduleBatch();
+            }
+        };
+
+        const scanInitialFiles = () => {
+            if (!this.config.fullScanOnStartup) return;
+
+            let queued = 0;
+            const walk = (dir) => {
+                let entries;
+                try {
+                    entries = fsSync.readdirSync(dir, { withFileTypes: true });
+                } catch (e) {
+                    console.warn(`[KnowledgeBase] Initial scan skipped unreadable directory "${dir}": ${e.message}`);
+                    return;
+                }
+
+                for (const entry of entries) {
+                    const absPath = path.join(dir, entry.name);
+                    const relPath = path.relative(this.config.rootPath, absPath);
+                    const parts = relPath.split(path.sep);
+                    const diaryName = parts.length > 1 ? parts[0] : 'Root';
+
+                    if (entry.isDirectory()) {
+                        if (
+                            entry.name === 'node_modules' ||
+                            entry.name === '.git' ||
+                            entry.name === 'dist' ||
+                            entry.name === 'target' ||
+                            entry.name === 'image' ||
+                            entry.name.startsWith('.') ||
+                            this.config.ignoreFolders.includes(entry.name) ||
+                            this.config.ignoreFolders.includes(diaryName) ||
+                            this.config.ignorePrefixes.some(prefix => entry.name.startsWith(prefix)) ||
+                            this.config.ignoreSuffixes.some(suffix => entry.name.endsWith(suffix))
+                        ) {
+                            continue;
+                        }
+                        walk(absPath);
+                        continue;
+                    }
+
+                    if (!entry.isFile()) continue;
+                    if (!absPath.match(/\.(md|txt)$/i)) continue;
+
+                    const fileName = path.basename(absPath);
+                    if (this.config.ignoreFolders.includes(diaryName)) continue;
+                    if (this.config.ignorePrefixes.some(prefix => diaryName.startsWith(prefix) || fileName.startsWith(prefix))) continue;
+                    if (this.config.ignoreSuffixes.some(suffix => diaryName.endsWith(suffix) || fileName.endsWith(suffix))) continue;
+
+                    handleFile(absPath);
+                    queued++;
+                }
+            };
+
+            walk(this.config.rootPath);
+            if (queued > 0) {
+                console.log(`[KnowledgeBase] 🔍 Initial full scan queued ${queued} file(s).`);
+            } else {
+                console.log('[KnowledgeBase] 🔍 Initial full scan found no indexable files.');
             }
         };
 
@@ -1016,6 +1153,7 @@ class KnowledgeBaseManager {
                     this.watcher = rustWatcher;
                     this.watcherType = 'rust';
                     console.log('[KnowledgeBase] 🦀 Using Rust native watcher.');
+                    scanInitialFiles();
                     return;
                 }
             } catch (e) {
@@ -1185,6 +1323,9 @@ class KnowledgeBaseManager {
                 const invalidatePairSim = this.db.prepare(
                     'DELETE FROM tag_pair_similarity WHERE tag_a = ? OR tag_b = ?'
                 );
+                const invalidateIntrinsicResidual = this.db.prepare(
+                    'DELETE FROM tag_intrinsic_residuals WHERE tag_id = ?'
+                );
 
                 newTags.forEach((t, i) => {
                     if (!tagVectors[i]) return; // 🛡️ 跳过向量化失败的 tag
@@ -1194,8 +1335,9 @@ class KnowledgeBaseManager {
                     const id = getTagId.get(t).id;
                     tagCache.set(t, { id, vector: vecBuf });
                     tagUpdates.push({ id, vec: vecFloat });
-                    // 失效旧的 pairwise similarity 记录
+                    // 失效旧的 pairwise similarity / intrinsic residual 记录
                     invalidatePairSim.run(id, id);
+                    invalidateIntrinsicResidual.run(id);
                 });
 
                 const insertFile = this.db.prepare('INSERT INTO files (path, diary_name, checksum, mtime, size, updated_at) VALUES (?, ?, ?, ?, ?, ?)');

@@ -22,6 +22,7 @@ class TagMemoEngine {
         // 🌟 TagMemo V7.1: 矩阵计算防抖系统
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
+        this._matrixRebuildScheduleLogged = false;
         this._isMatrixRebuilding = false;
         // 🌟 V8: 距离场缓存（供测地线重排使用）
         this.lastEnergyField = null;
@@ -46,6 +47,41 @@ class TagMemoEngine {
             .update(`${modelName}:${dim}`)
             .digest('hex')
             .slice(0, 16);
+    }
+
+    _decodeVectorBlob(blob, dim, label = 'vector') {
+        if (blob instanceof Float32Array) {
+            return blob.length === dim ? blob : null;
+        }
+        if (!blob || typeof blob.length !== 'number') {
+            return null;
+        }
+
+        const expectedBytes = dim * Float32Array.BYTES_PER_ELEMENT;
+        if (blob.length !== expectedBytes) {
+            console.warn(`[TagMemoEngine] ⚠️ Invalid ${label} blob length: expected ${expectedBytes}, got ${blob.length}`);
+            return null;
+        }
+
+        if (blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+            return new Float32Array(blob.buffer, blob.byteOffset, dim);
+        }
+
+        const copied = Buffer.from(blob);
+        return new Float32Array(copied.buffer, copied.byteOffset, dim);
+    }
+
+    _queryByChunks(sqlPrefix, values, sqlSuffix = '', chunkSize = 500) {
+        if (!Array.isArray(values) || values.length === 0) return [];
+        const rows = [];
+
+        for (let i = 0; i < values.length; i += chunkSize) {
+            const batch = values.slice(i, i + chunkSize);
+            const placeholders = batch.map(() => '?').join(',');
+            rows.push(...this.db.prepare(`${sqlPrefix} IN (${placeholders})${sqlSuffix}`).all(...batch));
+        }
+
+        return rows;
     }
 
     async initialize() {
@@ -81,13 +117,12 @@ class TagMemoEngine {
             console.warn('[TagMemoEngine] ⚠️ V8.2 cold start check failed (table may not exist yet):', e.message);
         }
 
-        // 加载内存 sim 表
+        // 加载矩阵依赖的持久化底座：边相似度 + 节点内生残差
         this.loadPairwiseSimilarities();
-
-        // 启动时构建共现矩阵
-        this.buildDirectedCooccurrenceMatrix();
-        // 加载内生残差
         this.loadIntrinsicResiduals();
+
+        // 启动时构建共现矩阵：确保 reverseAnchorBoost 能吃到已加载残差
+        this.buildDirectedCooccurrenceMatrix();
     }
 
     /**
@@ -418,11 +453,9 @@ class TagMemoEngine {
 
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 
-            // [5] 批量获取向量与名称 (性能优化：1次查询替代 N次循环查询)
+            // [5] 批量获取向量与名称（chunked IN，避免 SQLite 参数数量上限）
             const dbTagIds = allTags.filter(t => t.id > 0).map(t => t.id);
-            const tagRows = dbTagIds.length > 0
-                ? this.db.prepare(`SELECT id, name, vector FROM tags WHERE id IN (${dbTagIds.map(() => '?').join(',')})`).all(...dbTagIds)
-                : [];
+            const tagRows = this._queryByChunks('SELECT id, name, vector FROM tags WHERE id', dbTagIds);
             const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
 
             // 🌟 终极闭环：把幽灵向量混入正规军的 Map 里！
@@ -437,14 +470,15 @@ class TagMemoEngine {
 
             for (const tag of sortedTags) {
                 const data = tagDataMap.get(tag.id);
-                if (!data || !data.vector) continue;
+                const vec = data ? this._decodeVectorBlob(data.vector, dim, `tag:${tag.id}`) : null;
+                if (!vec) continue;
 
-                const vec = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                 let isRedundant = false;
 
                 for (const existing of deduplicatedTags) {
                     const existingData = tagDataMap.get(existing.id);
-                    const existingVec = new Float32Array(existingData.vector.buffer, existingData.vector.byteOffset, dim);
+                    const existingVec = existingData ? this._decodeVectorBlob(existingData.vector, dim, `tag:${existing.id}`) : null;
+                    if (!existingVec) continue;
 
                     // 计算余弦相似度
                     let dot = 0, normA = 0, normB = 0;
@@ -477,8 +511,8 @@ class TagMemoEngine {
 
             for (const t of deduplicatedTags) {
                 const data = tagDataMap.get(t.id);
-                if (data && data.vector) {
-                    const v = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
+                const v = data ? this._decodeVectorBlob(data.vector, dim, `tag:${t.id}`) : null;
+                if (v) {
                     for (let d = 0; d < dim; d++) contextVec[d] += v[d] * t.adjustedWeight;
                     totalWeight += t.adjustedWeight;
                 }
@@ -592,12 +626,9 @@ class TagMemoEngine {
         const minGeoSamples = options.minGeoSamples ?? 4;
 
         try {
-            // Step 1: 批量查询 chunk_id → file_id 映射（方案 A：自查映射）
-            const chunkIds = candidates.map(c => Number(c.id));
-            const chunkPlaceholders = chunkIds.map(() => '?').join(',');
-            const chunkFileRows = this.db.prepare(
-                `SELECT id, file_id FROM chunks WHERE id IN (${chunkPlaceholders})`
-            ).all(...chunkIds);
+            // Step 1: 批量查询 chunk_id → file_id 映射（chunked IN，避免 SQLite 参数数量上限）
+            const chunkIds = candidates.map(c => Number(c.id)).filter(Number.isFinite);
+            const chunkFileRows = this._queryByChunks('SELECT id, file_id FROM chunks WHERE id', chunkIds);
             const chunkFileMap = new Map(chunkFileRows.map(r => [r.id, r.file_id]));
 
             // Step 2: 收集所有需要查询的 file_ids，批量查询 file_id → tag_id[] 映射
@@ -605,10 +636,10 @@ class TagMemoEngine {
             const fileTagsMap = new Map(); // file_id → [tag_id, ...]
 
             if (uniqueFileIds.length > 0) {
-                const filePlaceholders = uniqueFileIds.map(() => '?').join(',');
-                const fileTagRows = this.db.prepare(
-                    `SELECT file_id, tag_id FROM file_tags WHERE file_id IN (${filePlaceholders})`
-                ).all(...uniqueFileIds);
+                const fileTagRows = this._queryByChunks(
+                    'SELECT file_id, tag_id FROM file_tags WHERE file_id',
+                    uniqueFileIds
+                );
 
                 for (const row of fileTagRows) {
                     if (!fileTagsMap.has(row.file_id)) {
@@ -970,14 +1001,14 @@ class TagMemoEngine {
 
         if (!this.tagIndex || !this.tagIndex.computePairwiseSimilarities) {
             console.warn('[TagMemoEngine] ⚠️ computePairwiseSimilarities is not available in VexusIndex (Rust binary may need rebuild)');
-            return;
+            return null;
         }
 
         // 锁串行：避免与矩阵重建撞车产生"嵌合矩阵"
         // blocking=true 用于冷启动场景，由调用方持锁
         if (!blocking && this._isMatrixRebuilding) {
             console.log('[TagMemoEngine] 🛡️ V8.2 sim recompute deferred: matrix rebuild in progress');
-            return;
+            return null;
         }
 
         console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
@@ -997,9 +1028,11 @@ class TagMemoEngine {
                 `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
                 `elapsed=${result.elapsedMs.toFixed(2)}ms`
             );
+            return result;
         } catch (e) {
             console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
             if (e.stack) console.error(e.stack);
+            return null;
         }
     }
 
@@ -1052,10 +1085,10 @@ class TagMemoEngine {
             
             if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
 
-            // 仅在第一次开启计时器时提示
-            if (!this._matrixRebuildTimer._isLogged) {
+            // 仅在本轮防抖第一次达到阈值时提示
+            if (!this._matrixRebuildScheduleLogged) {
                 console.log(`[TagMemoEngine] 🛡️ Threshold reached. Matrix rebuild scheduled after 5min of quiescence.`);
-                this._matrixRebuildTimer._isLogged = true;
+                this._matrixRebuildScheduleLogged = true;
             }
         }
         // 低于阈值时不执行任何操作，不计入倒计时。
@@ -1073,15 +1106,17 @@ class TagMemoEngine {
         const changesAtStart = this._accumulatedTagChanges;
         this._accumulatedTagChanges = 0;
         this._matrixRebuildTimer = null;
+        this._matrixRebuildScheduleLogged = false;
         this._isMatrixRebuilding = true;
 
         try {
-            // 🌟 V8.2-γ: 先增量补齐 sim 表（共用锁，串行执行）
-            // 顺序：sim 预计算 → 加载内存 sim Map → 构建 V8.2 双向矩阵 → 内生残差
+            // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
+            // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
             await this.recomputePairwiseSimilarities({ blocking: true });
             this.loadPairwiseSimilarities();
-            this.buildDirectedCooccurrenceMatrix();
             await this.recomputeIntrinsicResiduals();
+            this.loadIntrinsicResiduals();
+            this.buildDirectedCooccurrenceMatrix();
         } finally {
             this._isMatrixRebuilding = false;
             if (this._accumulatedTagChanges > 0) {
@@ -1097,6 +1132,7 @@ class TagMemoEngine {
             clearTimeout(this._matrixRebuildTimer);
         }
 
+        this._matrixRebuildScheduleLogged = true;
         this._matrixRebuildTimer = setTimeout(() => {
             console.log(`[TagMemoEngine] 📈 Follow-up quiet period finished. Rebuilding matrix for ${this._accumulatedTagChanges} accumulated change(s)...`);
             this.doMatrixRebuild();

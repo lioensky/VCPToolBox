@@ -171,7 +171,7 @@ function buildListDomainsArguments(payload) {
     return { domains };
   }
 
-  if (!domain) fail("Missing required argument: domain or domains.");
+  if (!domain) return {};
   validateAllowed(domain, AVAILABLE_DOMAINS, "domain");
   return { domain };
 }
@@ -224,6 +224,21 @@ function buildArguments(command, payload) {
   }
 }
 
+function parseApiKeys() {
+  const raw = (process.env.ANYSEARCH_API_KEY || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function pickApiKey() {
+  const apiKeys = parseApiKeys();
+  if (apiKeys.length === 0) return "";
+  return apiKeys[Math.floor(Math.random() * apiKeys.length)];
+}
+
 function getTimeoutMs() {
   const parsed = Number.parseInt(process.env.ANYSEARCH_TIMEOUT_MS || "", 10);
   if (Number.isNaN(parsed)) return 30000;
@@ -248,7 +263,7 @@ function callAnySearch(toolName, args) {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(payload),
   };
-  const apiKey = (process.env.ANYSEARCH_API_KEY || "").trim();
+  const apiKey = pickApiKey();
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const options = {
@@ -301,6 +316,25 @@ function callAnySearch(toolName, args) {
   });
 }
 
+function formatMarkdownResult(command, args, apiResult) {
+  const lines = [
+    `## AnySearch 执行结果`,
+    ``,
+    `- **命令**: \`${command}\``,
+    `- **参数**: \`${JSON.stringify(args)}\``,
+    ``,
+  ];
+
+  const content = typeof apiResult.content === "string" ? apiResult.content.trim() : "";
+  if (content) {
+    lines.push(content);
+  } else {
+    lines.push("_AnySearch API 未返回可读文本内容。_");
+  }
+
+  return lines.join("\n");
+}
+
 async function main() {
   try {
     const payload = parsePayload(await readStdin());
@@ -309,12 +343,7 @@ async function main() {
     const apiResult = await callAnySearch(command, args);
     emit({
       status: "success",
-      result: {
-        command,
-        arguments: args,
-        content: apiResult.content,
-        raw_jsonrpc_result: apiResult.raw_jsonrpc_result,
-      },
+      result: formatMarkdownResult(command, args, apiResult),
     });
   } catch (error) {
     fail(error.message || String(error));

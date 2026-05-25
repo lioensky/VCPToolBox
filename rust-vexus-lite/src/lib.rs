@@ -55,8 +55,8 @@ pub struct IntrinsicResidualResult {
 #[napi(object)]
 pub struct PairwiseSimResult {
     pub pair_count: u32,           // 实际共现 pair 总数 (经单文件≤100守恒后)
-    pub computed_count: u32,       // 本次新计算的 pair 数
-    pub skipped_count: u32,        // 已有缓存或 sim 低于阈值被丢弃的 pair 数
+    pub computed_count: u32,       // 本次实际完成余弦计算的 pair 数
+    pub skipped_count: u32,        // 已有缓存、缺失向量或 sim 低于阈值被丢弃的 pair 数
     pub stored_count: u32,         // 实际写入数据库的 pair 数 (sim >= min_similarity)
     pub elapsed_ms: f64,
 }
@@ -561,12 +561,13 @@ impl VexusIndex {
     /// - 单文件 Tag 数 > 100 的脏文件跳过（与 JS / V7 守恒一致）
     /// - 增量模式：已存在且 model_sig 一致的 pair 直接跳过
     /// - sim < min_similarity 的 pair 不写入（默认丢弃噪声）
+    /// - 单模型缓存策略：full_rebuild 会清空整张 sim 表，避免旧模型签名残留
     ///
     /// # 参数
     /// - `db_path`: SQLite 路径
     /// - `model_sig`: embedding 模型签名 (含维度)，跨模型自动失效
     /// - `min_similarity`: 噪声阈值，默认 0.05
-    /// - `full_rebuild`: 是否清空旧 sim 后重算 (默认 false 增量)
+    /// - `full_rebuild`: 是否清空 sim 表后重算 (默认 false 增量)
     #[napi]
     pub fn compute_pairwise_similarities(
         &self,
@@ -899,14 +900,16 @@ impl Task for PairwiseSimTask {
 
         // ====================================================================
         // Step 3: 增量模式 — 加载已缓存且 model_sig 一致的 pair 集合
-        // full_rebuild = true 时跳过本步并清空旧表
+        // full_rebuild = true 时才按显式重建语义清空整张旧表。
+        //
+        // 注意：非 full_rebuild 冷启动不能在 Rust 侧主动删除旧 model_sig。
+        // 部分用户可能处于“签名变化 / tag 索引尚未恢复 / 空库初始化”窗口；
+        // 如果此时先 DELETE 旧模型行，而本轮 pair_set 又为 0，就会造成旧缓存被清空且新缓存未生成。
+        // 旧模型行的安全清理交给 JS 侧在确认当前 model_sig 已有可用缓存后执行。
         // ====================================================================
         if self.full_rebuild {
-            conn.execute(
-                "DELETE FROM tag_pair_similarity WHERE model_sig = ?1",
-                rusqlite::params![&self.model_sig],
-            )
-            .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
+            conn.execute("DELETE FROM tag_pair_similarity", [])
+                .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
         }
 
         let mut cached: HashSet<(i64, i64)> = HashSet::new();
@@ -993,6 +996,7 @@ impl Task for PairwiseSimTask {
 
             if sim < self.min_similarity {
                 // 噪声阈值以下不写入数据库（既减表大小又自带去噪）
+                skipped += 1;
                 continue;
             }
 
