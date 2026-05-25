@@ -428,6 +428,43 @@ Package L-main 后当前分支分类：
 4. 后续若要吸收，只能拆成小主题：AI Image admin 前端源码、后端路由挂载、pipeline runtime、测试、文档分别复核；`AdminPanel-Vue/dist` 构建产物继续排除。
 5. `rescue/ai-image-pipeline-mixed-20260427_195303` 是 rescue 引用，删除或合并去重必须另行明确批准。
 
+### 2026-05-25 Package M preflight：远端写入前只读审计
+
+本节是远端写入 preflight，不是 push 授权。未执行 `git fetch`、`git push`、`git push --dry-run`、merge、cherry-pick、reset、clean、分支删除或 worktree 删除。
+
+当前本地状态：
+
+- 当前分支：`main`。
+- 当前 HEAD：`4ce4b46`。
+- 工作树：`git status --short -uall` 为空。
+- 本地 `origin/main`：`ee2d324`。
+- 本地 `origin/prod/stable`：`a1870b3`。
+- 本地 `upstream/main`：`8b8a71d`。
+
+真实远端只读查询：
+
+| remote ref | `git ls-remote` HEAD | 本地 tracking ref | 是否一致 |
+| --- | --- | --- | --- |
+| `origin/main` | `ee2d324` | `origin/main = ee2d324` | yes |
+| `origin/prod/stable` | `a1870b3` | `origin/prod/stable = a1870b3` | yes |
+| `upstream/main` | `8b8a71d` | `upstream/main = 8b8a71d` | yes |
+
+当前 ancestry / left-right：
+
+| ref | `main...ref` | ref 是否为 `main` 祖先 | 判断 |
+| --- | --- | --- | --- |
+| `origin/main` | `438 / 0` | yes | 本地 `main` 已包含当前真实 `origin/main` |
+| `origin/prod/stable` | `217 / 0` | yes | 稳定生产线远端仍被 `main` 包含；不写、不清理 |
+| `upstream/main` | `319 / 0` | yes | 原作者主线仍被 `main` 包含 |
+
+preflight 结论：
+
+1. 按当前 `ls-remote` 证据，`origin/main` 远端 HEAD 与本地 `origin/main` 一致，且已是本地 `main` 祖先。
+2. 若后续获批执行 `git push origin main:main`，按当前证据应为 fast-forward 更新，不需要 force。
+3. 该结论不授权 push；push 仍是远端写入，必须单独明确批准。
+4. 执行 push 前应重新做一次最小 preflight：`git status --short -uall`、`git ls-remote origin refs/heads/main`、`git merge-base --is-ancestor origin/main main`。
+5. `prod/stable` 和 `origin/prod/stable` 继续永久保护，不作为 push 目标，不删除，不改写。
+
 结论：
 
 1. `origin/main` 本地拓扑已闭合，当前本地 `main` 是包含 `prod/stable`、`origin/prod/stable`、`upstream/main`、`origin/main` 的最新主线。
