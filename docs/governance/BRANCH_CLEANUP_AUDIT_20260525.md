@@ -238,6 +238,38 @@
 2. `prod/stable` 仍永久保护，不进入任何清理候选。
 3. `origin/main` 真实闭合、远端写入、dirty/frozen worktree 处理和真实未吸收对照线专项仍需单独明确批准。
 
+### 2026-05-25 当前目标完成度证据审计
+
+本节用于判断当前治理 goal 是否可标记完成。结论先行：当前不能标记完成；本地审计与文档记录已充分推进，但目标内仍有若干对象只能在单独明确批准后继续处理。
+
+逐项证据：
+
+| 目标要求 | 当前权威证据 | 审计判断 |
+| --- | --- | --- |
+| `main` 是最先进最新主分支 | 当前 `prod/stable = 193 / 0`、`origin/prod/stable = 193 / 0`、`upstream/main = 295 / 0`，均为 `main` 祖先；治理声明已写入本文头部 | 已证明当前本地口径成立 |
+| 永久保护 `prod/stable` 稳定生产线 | `git branch --merged main` 只显示 `main` 和 `prod/stable`；本文多处明确 `prod/stable` 永不清理 | 已证明且必须持续保护 |
+| 只做本地审计、文档记录和安全小补丁 | 当前新增提交均为 `docs/governance/BRANCH_CLEANUP_AUDIT_20260525.md` 文档；本轮工作树干净，无代码 diff | 已遵守 |
+| 持续更新治理文档 | 本文已记录 Package B、A1/A2/A3、C、D、H1、I、J、K、L-local 与 Package L-local 后现实复核 | 已持续更新 |
+| 复核 release-preflight 前端构建产物 | detached release-preflight worktree 仍为 `short=137 / all=137`，归类为 `AdminPanel-Vue/dist` 构建产物，不吸收 | 已复核，继续冻结 |
+| 复核未并入分支和剩余 worktree | 当前 6 个 worktree、13 个本地分支、11 个 `--no-merged main` 分支均已归类；预演分支单独标为验证 artifact | 已复核，仍有待批准对象 |
+| dirty worktree、疑似密钥、运行态数据、构建产物、冲突标记必须先审查归类 | `feature/latest-updates`、photo-studio-next、release-preflight 均已按 dirty/frozen 分类；未读取或记录真实密钥值 | 已审查归类，继续冻结 |
+| 不得直接吸收或清理高风险对象 | dirty/frozen worktree、真实未吸收对照线、`origin/main` 正向补丁均记录为不得整分支吸收或清理 | 已遵守 |
+| 禁止 push、删除分支、删除 worktree、修改远端、force、reset/clean、触碰真实密钥 | 本轮未执行这些动作；历史删除/移除动作均已记录为单独获批包 | 已遵守当前回合 |
+| 任何清理、删除、远端同步或生产线动作必须单独明确批准 | 当前剩余动作均列为待单独批准：真实 `main` 本地拓扑桥、远端写入、dirty/frozen 处理、真实未吸收专项 | 已落实为门槛 |
+
+未完成原因：
+
+1. `origin/main` 仍未真实闭合到 `main`，当前 `main...origin/main = 432 / 18`；Package L-local 只证明临时分支预演可行。
+2. dirty/frozen worktree 仍存在，且按规则不得 reset、clean、吸收或删除。
+3. 真实未吸收对照线仍存在，只能后续按小主题专项复核。
+4. 远端写入、真实拓扑桥、任何剩余清理动作都超出自动授权边界。
+
+下一安全动作：
+
+1. 若用户批准：执行“真实 `main` 本地拓扑桥”本地方案，仍不 push。
+2. 若用户不批准拓扑桥：选择一个真实未吸收对照线做只读专项审查。
+3. 继续禁止：push、远端修改、删除 `prod/stable`、reset/clean、触碰真实密钥。
+
 ### 2026-05-25 Package H preflight：高风险本地强删候选审计
 
 历史快照说明：本节记录 Package H 执行前的只读 preflight，当时列出的 C-branch-blocked、E-historical 与 D2-upstream-blocked 状态已分别由后续 Package H1 和 Package I 闭合。不要把本节候选表当作当前待办队列。
