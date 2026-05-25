@@ -101,6 +101,17 @@
 
 `feature/latest-updates` 结论：不能作为整体分支吸收或清理。下一步只允许从“源码候选”和“文档 / 测试 / 脚本候选”中挑选小主题；所有本地配置、密钥、运行态数据、用户数据、缓存、日志和批量插件启停改动必须排除。
 
+### 2026-05-25 release-preflight 前端产物复核
+
+`A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429` 是 detached `43a6bbb` 工作树。本轮只做只读复核：
+
+- 137 项状态全部位于 `AdminPanel-Vue/dist`。
+- 分布为 45 个 CSS 资源、91 个 JS 资源、1 个 `dist/index.html`。
+- 未发现 `AdminPanel-Vue/src`、前端构建配置、`package.json` 或 lockfile 改动。
+- `dist/index.html` 仅表现为引用的构建 hash 资源变化。
+
+结论：这是构建产物替换，不作为源码吸收来源；后续如果需要该前端状态，必须找到对应源码变更，在 `main` 上从源码重新构建并单独验证。
+
 ## 3. 未并入需复核
 
 以下分支未被 worktree 占用，但仍有相对 `main` 的独有提交。删除前必须确认这些提交已被其他路径吸收，或确认为废弃。
