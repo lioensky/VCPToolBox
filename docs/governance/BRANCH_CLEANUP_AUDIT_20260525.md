@@ -85,6 +85,22 @@
 2. `codex/photo-studio-baserow-provider-batch` 的 `Plugin/DailyNoteManager/daily-note-manager.js` 写锁改动已复核：当前 `main` 已有 `withWriteLock()`，并将整个 `organize` 流程串行化，覆盖创建新日记和归档移动；该 worktree 中的旧版 `processDailyNotes` 写入器改动不再吸收。
 3. detached release-preflight 只保留为前端构建参考，不作为源码吸收来源。
 
+### 2026-05-25 `feature/latest-updates` 路径级分桶
+
+本轮只读取 `git status --short -uall` 的路径和状态，不读取 `config.env`、`code.bin`、SQLite、`state/`、`VectorStore*`、日志、日记或用户数据内容。
+
+| 分桶 | 数量 | 处理规则 |
+| --- | ---: | --- |
+| 本地配置或密钥 | 5 | 禁止吸收；包括 `config.env`、`code.bin`、`.claude/settings.local.json` 等 |
+| 运行态数据 | 124 | 禁止吸收；包括 SQLite、`state/`、`VectorStore*`、日志、运行日记、用户数据等 |
+| 插件启停 manifest | 28 | 高风险；不得批量照搬，需逐插件确认启停意图和稳定线默认安全态 |
+| 源码候选 | 33 | 可后续逐文件审查；不得和运行态、密钥、manifest 启停混提交 |
+| 文档 / 测试 / 脚本候选 | 43 | 可后续按主题审查；报告类生成文件需确认是否应归档或忽略 |
+| 生成或本地产物 | 5 | 默认不吸收；如有价值，需找到对应源码或生成流程 |
+| 其他待复核 | 16 | 先判定是否本地工具记忆、临时文件或真实源码，再决定处理 |
+
+`feature/latest-updates` 结论：不能作为整体分支吸收或清理。下一步只允许从“源码候选”和“文档 / 测试 / 脚本候选”中挑选小主题；所有本地配置、密钥、运行态数据、用户数据、缓存、日志和批量插件启停改动必须排除。
+
 ## 3. 未并入需复核
 
 以下分支未被 worktree 占用，但仍有相对 `main` 的独有提交。删除前必须确认这些提交已被其他路径吸收，或确认为废弃。
