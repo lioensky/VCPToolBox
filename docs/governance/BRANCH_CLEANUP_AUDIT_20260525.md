@@ -5,6 +5,8 @@
 > 审计基准：`main` @ `973723f`
 >
 > 本文只记录本地分支和 worktree 状态，不授权删除分支、删除 worktree、推送远端或修改远端分支。
+>
+> 强保护声明：`prod/stable` 是稳定生产线分支，必须永久保留。无论它是否已并入 `main`，都不能被列入清理候选，不能删除本地或远端分支。
 
 ## 0. 分类口径
 
@@ -13,10 +15,12 @@
 1. 占用 worktree 待处理：分支当前被某个 worktree checkout，不能直接删除。即使已经并入 `main`，也需要先处理 worktree。
 2. 未并入需复核：未被 worktree 占用，且 `git branch --no-merged main` 仍显示未并入。删除前必须逐项复核。
 3. 已并入可清理：未被 worktree 占用，且 `git branch --merged main` 显示已并入。可作为本地分支删除候选，但仍建议先确认远端/用途。
+4. 永久保护分支：`prod/stable` 永远不进入清理候选。即使 Git 显示已合并，也只能视为受保护稳定线。
 
 注意：
 
 - 本文的“可清理”只指本地分支候选，不代表可删除远端分支。
+- `prod/stable` 是明确例外：它既不能删除本地分支，也不能删除远端分支。
 - `ahead / behind` 口径为相对当前 `main`，格式为 `分支独有提交数 / main 独有提交数`。
 - `dirty files` 是 `git status --short` 的行数，用来提示该 worktree 是否有未提交或未跟踪改动。
 
@@ -26,7 +30,14 @@
 | --- | ---: | --- |
 | 占用 worktree 待处理 | 13 | 先检查对应目录状态，再决定保留、合并、归档或删除 worktree |
 | 未并入需复核（未占用 worktree） | 12 | 逐分支做 `git log main..branch` / `git diff main...branch` 审查 |
-| 已并入可清理（未占用 worktree） | 49 | 可作为本地分支删除候选，删除前确认无需保留本地标签/引用 |
+| 已并入可清理（未占用 worktree） | 48 | 可作为本地分支删除候选，删除前确认无需保留本地标签/引用 |
+| 永久保护分支 | 1 | `prod/stable` 永久保留，永不清理 |
+
+## 1.1 永久保护分支
+
+| 分支 | HEAD | 日期 | upstream | 保护规则 |
+| --- | --- | --- | --- | --- |
+| `prod/stable` | `a1870b3` | 2026-05-23 | `origin/prod/stable` | 稳定生产线，永久保留，不得删除，不得列入清理候选 |
 
 ## 2. 占用 worktree 待处理
 
@@ -82,6 +93,8 @@
 
 以下分支未被 worktree 占用，并且已经并入当前 `main`。它们是本地分支清理候选。
 
+明确例外：`prod/stable` 虽然已并入当前 `main`，但它是稳定生产线永久保护分支，已从本表移出，不能清理。
+
 | 分支 | HEAD | 日期 | upstream |
 | --- | --- | --- | --- |
 | `codex/pr25-adaptive-cache-key-fix` | `c04d860` | 2026-04-29 | `origin/codex/prod-stable-codex-memory-analytics` |
@@ -130,7 +143,6 @@
 | `lane8/upstream-intake-20260425` | `d523782` | 2026-04-25 | `origin/main` |
 | `lane9-photo-studio-next-guide-contract-intake-20260425` | `e89cddf` | 2026-04-25 |  |
 | `main-upstream-absorb-20260420` | `37db901` | 2026-04-20 |  |
-| `prod/stable` | `a1870b3` | 2026-05-23 | `origin/prod/stable` |
 | `revert/pr-35-identity-evidence-20260430` | `a300839` | 2026-04-30 | `origin/revert/pr-35-identity-evidence-20260430` |
 | `staging/vcptoolbox-custom-integration-20260425` | `947fa6e` | 2026-04-25 | `origin/main` |
 
