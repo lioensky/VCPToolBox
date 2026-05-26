@@ -2,8 +2,8 @@
   "manifestVersion": "1.0.0",
   "name": "ObsidianBridge",
   "displayName": "Obsidian 笔记桥接器",
-  "version": "1.1.2",
-  "description": "通过 Obsidian CLI (v1.12.7) 桥接 VCP 与 Obsidian 笔记库。支持笔记读写、全文搜索(含上下文)、每日笔记、文件/文件夹浏览、任务管理、反向链接/出站链接查询、标签统计、属性管理、大纲查看、字数统计、模板列表等 22 项能力。v1.1.1 修复多行 content 写入时字面量反斜杠被过度转义导致换行符失效的问题。",
+  "version": "1.3.0",
+  "description": "通过 Obsidian CLI (v1.12+) 桥接 VCP 与 Obsidian 笔记库。支持笔记读写、全文搜索(含上下文)、每日笔记、文件/文件夹浏览、任务管理、反向链接/出站链接查询、标签统计、属性管理、大纲查看、字数统计、模板列表等 22 项能力。v1.3.0 安全加固：execSync→execFileSync 迁移，消除 Shell 注入面；.bat/.cmd 自动降级兼容。",
   "author": "Nova & 小夜 | 扩展: infinite-vector",
   "pluginType": "synchronous",
   "entryPoint": {
