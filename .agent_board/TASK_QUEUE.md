@@ -109,6 +109,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 - A3-C2 tracked restore executed after explicit approval; `8` tracked modified
   files were restored in `A:/VCP/VCPToolBox`, reducing dirty status count from
   `221` to `213`.
+- Remaining `213` dirty entries reassessed in
+  `docs/governance/DIRTY_WORKTREE_REMAINING_213_REASSESSMENT_20260526.md`.
 
 ## In Progress
 
@@ -145,6 +147,9 @@ Updated: 2026-05-26 Asia/Shanghai.
     the A2 archive artifact.
 16. Remaining `213` dirty entries require a fresh read-only reassessment before
     any further cleanup package.
+17. Remaining future packages are generated artifacts, manifest toggles, manual
+    retain-review, or protected/runtime retention policy; none are approved for
+    execution yet.
 
 ## Blocked / Needs Explicit Approval
 

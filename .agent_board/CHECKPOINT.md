@@ -4,6 +4,38 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed read-only reassessment of the remaining `213` dirty entries after
+  A3-C1 and A3-C2.
+- Pushed A3-C2 preflight and execution records to `origin/main`; verified
+  `HEAD`, `origin/main`, and `origin/HEAD` at
+  `a62d637614a63d34dc37e3f525832916c05d8ae5`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `213` dirty entries.
+- Classified remaining dirty entries: protected/runtime `128`, generated
+  report/log/cache `41`, manifest toggle review `28`, A2 blocked `9`, and
+  retain-review manual `7`.
+- Added `docs/governance/DIRTY_WORKTREE_REMAINING_213_REASSESSMENT_20260526.md`.
+
+Not completed:
+
+- No file in `A:/VCP/VCPToolBox` was edited, deleted, moved, reset, cleaned,
+  stashed, checked out, restored, or archived.
+- No remaining cleanup package was executed.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
+Next:
+
+1. Commit this remaining-dirty reassessment locally.
+2. Push records only after explicit approval.
+3. Choose one future package: generated artifacts, manifest toggles, manual
+   retain-review, or protected/runtime retention policy.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A3-C2 tracked restore execution after explicit approval.
 - First restore attempt was blocked by stale
   `A:/VCP/VCPToolBox/.git/index.lock`; after explicit approval, removed the

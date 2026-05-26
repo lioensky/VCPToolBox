@@ -390,6 +390,17 @@ A3-C2 tracked restore execution:
   `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
 - Added `docs/governance/DIRTY_WORKTREE_RESTORE_C2_EXECUTION_20260526.md`.
 
+Remaining 213 dirty reassessment:
+
+- Pushed A3-C2 records to `origin/main`; `main` and `origin/main` synchronized
+  at `a62d637614a63d34dc37e3f525832916c05d8ae5`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_REMAINING_213_REASSESSMENT_20260526.md`.
+- Remaining dirty count is `213`: `33` tracked and `180` untracked.
+- Remaining categories: protected/runtime `128`, generated report/log/cache
+  `41`, manifest toggle review `28`, A2 blocked `9`, retain-review manual `7`.
+- No further cleanup/restore/delete was executed during reassessment.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

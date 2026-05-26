@@ -1,5 +1,44 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Remaining 213 Dirty Reassessment
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Control worktree: `git push origin main` for A3-C2 records after explicit
+  approval.
+- Control worktree: `git fetch origin main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Parsed dirty status with `git status --porcelain=v1 -z --untracked-files=all`
+  to preserve spaces, Unicode, and special characters.
+- Classified all remaining dirty entries into protected/runtime, generated,
+  manifest toggle, A2 blocked, and retain-review buckets.
+
+Verified:
+
+- `HEAD`, `origin/main`, and `origin/HEAD` are synchronized at
+  `a62d637614a63d34dc37e3f525832916c05d8ae5`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `213`: `33` tracked, `180` untracked, `13` deleted,
+  and `20` modified.
+- Remaining category counts are protected/runtime `128`, generated
+  report/log/cache `41`, manifest toggle review `28`, A2 blocked `9`, and
+  retain-review manual `7`.
+
+Not validated:
+
+- No cleanup/delete/restore was executed in this reassessment.
+- No service functional test was run because this is governance documentation.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A3-C2 Tracked Restore Execution
 
 Checks performed:
