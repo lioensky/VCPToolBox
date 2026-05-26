@@ -127,6 +127,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 - G1A generated artifacts delete executed after explicit approval; `37`
   archived untracked generated-artifact paths were deleted from
   `A:/VCP/VCPToolBox`, reducing dirty status count from `213` to `176`.
+- G1B sanitize/quarantine preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_SANITIZE_QUARANTINE_PREFLIGHT_20260526.md`;
+  no G1B file was copied, archived, deleted, or printed.
 
 ## In Progress
 
@@ -175,6 +178,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 21. Remaining generated-artifact cleanup is G1B only and requires a separate
     sanitize/quarantine review because those report files matched sensitive
     patterns.
+22. G1B has four untracked generated report files; next action should be one
+    explicit package: retain, quarantine preflight, delete without raw archive,
+    or delete after quarantine.
 
 ## Blocked / Needs Explicit Approval
 

@@ -4,6 +4,38 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed G1B sanitize/quarantine preflight as a read-only check.
+- Reverified control `main` was clean at local `d42725b`, ahead of
+  `origin/main` by `1 / 0` before drafting this preflight; no push was
+  performed.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count after G1A delete is `176`.
+- Confirmed G1B scope has `4` untracked existing valid JSON generated reports.
+- Confirmed sanitized sensitive-pattern counts: `28` matching lines and `32`
+  total matches; no matching values were recorded.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_SANITIZE_QUARANTINE_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No G1B file was copied, archived, deleted, moved, reset, cleaned, restored,
+  or checked out.
+- No matching sensitive/config-like values were printed or recorded.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Choose an explicit G1B package: retain, quarantine preflight, delete without
+   raw archive, or delete after quarantine.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed G1A generated artifacts delete execution after explicit approval.
 - Pushed `f72e543` to `origin/main`; verified `HEAD` and `origin/main` both
   at `f72e543c089db599a3bbe65702e79a3851bd6b78` with ahead/behind `0 / 0`

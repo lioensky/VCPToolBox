@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after G1A delete execution record commit.
+Worktree status at last check: clean after G1B preflight commit.
 
 Current verified heads and sync state:
 
@@ -230,6 +230,24 @@ G1A generated artifacts delete execution:
   `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
 - No G1B, runtime/protected path, config/env-like file, manifest toggle, A2
   blocked path, manual retain-review path, or tracked file was touched.
+
+G1B sanitize/quarantine preflight:
+
+- Drafted a read-only G1B sanitize/quarantine preflight.
+- G1B scope is `4` untracked generated DingTalk capability-matrix report files
+  left after G1A deletion.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- G1B files are existing valid JSON files and remain untracked.
+- Sanitized sensitive-pattern counts are `28` matching lines and `32` total
+  matches; no matching values were recorded.
+- No G1B file was copied, archived, deleted, restored, reset, cleaned, or
+  checked out.
+- The G1B preflight is committed locally; local `main` is ahead of
+  `origin/main` until explicit push approval is given.
+- Next G1B action requires explicit choice among retain, quarantine preflight,
+  delete without raw archive, or delete after quarantine.
 
 N5 clean worktree feature-line audit:
 

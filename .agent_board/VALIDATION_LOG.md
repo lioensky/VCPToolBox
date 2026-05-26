@@ -1,5 +1,37 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1B Sanitize Quarantine Preflight
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Read generated-artifacts G1/G1A governance records.
+- Rechecked the `4` G1B paths for git status, existence, byte count, SHA256,
+  JSON parseability, and sensitive-pattern counts.
+- Used sanitized counting only; no matching values were printed or recorded.
+
+Verified:
+
+- Control `main` is local-only ahead of `origin/main` by `1 / 0` at `d42725b`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- G1B count is `4`; existing count `4`; untracked count `4`; valid JSON count
+  `4`.
+- Sensitive-pattern line count is `28`; total exact-pattern match count is
+  `32`.
+- Sensitive-like JSON key path count is `0`.
+
+Not validated:
+
+- No G1B quarantine archive was created.
+- No G1B delete was executed.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Delete Execution
 
 Checks performed:
