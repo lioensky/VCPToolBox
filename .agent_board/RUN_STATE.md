@@ -426,6 +426,19 @@ G1A generated artifacts archive preflight:
   uncreated.
 - No archive/copy/delete was executed.
 
+G1A generated artifacts archive execution:
+
+- User explicitly approved G1A generated artifacts archive.
+- Created archive artifact at
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/`.
+- Copied `37` G1A files and generated `ARCHIVE_MANIFEST.json`.
+- Verified archive total file count `38`, hash mismatch count `0`, and
+  manifest SHA256
+  `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
+- Dirty worktree remained untouched at `213` dirty entries.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_EXECUTION_20260526.md`.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

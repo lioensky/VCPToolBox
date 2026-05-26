@@ -4,6 +4,39 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed G1A generated artifacts archive execution after explicit approval.
+- Rechecked G1A gate: `37` unique untracked existing files, sensitive match
+  files `0`, G1B overlap `0`, failure count `0`, total bytes `1,167,943`.
+- Created archive artifact at
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/`.
+- Copied `37` G1A generated artifact files and generated
+  `ARCHIVE_MANIFEST.json`.
+- Verified archive total file count is `38`, hash mismatch count is `0`, and
+  archive sensitive-pattern scan produced no matches.
+- Verified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `213` dirty entries.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_EXECUTION_20260526.md`.
+
+Not completed:
+
+- No source generated artifact was deleted.
+- No dirty worktree file was edited, moved, reset, cleaned, restored, or
+  checked out.
+- No protected/runtime path was touched.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+
+Next:
+
+1. Commit this G1A archive execution record locally.
+2. Push records only after explicit approval.
+3. G1A delete remains a separate future package after archive verification.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed G1A generated artifacts archive preflight.
 - Pushed generated-artifacts preflight record `a465fad` to `origin/main`;
   verified `HEAD`, `origin/main`, and `origin/HEAD` at

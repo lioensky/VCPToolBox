@@ -118,6 +118,10 @@ Updated: 2026-05-26 Asia/Shanghai.
 - G1A generated artifacts archive preflight drafted in
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_PREFLIGHT_20260526.md`;
   proposed archive destination is not created.
+- G1A generated artifacts archive executed after explicit approval; archive
+  artifact created at
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/` with `37`
+  copied files plus `ARCHIVE_MANIFEST.json`.
 
 ## In Progress
 
@@ -161,6 +165,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     G1B requires a separate sanitize/quarantine review.
 19. G1A archive execution requires explicit destination/include/exclude/dry-run
     approval; G1A delete remains a later package after archive verification.
+20. G1A archive is complete; any G1A delete requires fresh pre-delete gate and
+    separate explicit approval.
 
 ## Blocked / Needs Explicit Approval
 

@@ -1,5 +1,45 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Archive Execution
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Rechecked all `37` G1A paths for untracked status, existence,
+  sensitive-pattern matches, and G1B overlap.
+- Verified approved destination did not exist and is outside both worktrees.
+- Copied the `37` G1A files to the approved destination.
+- Generated `ARCHIVE_MANIFEST.json`.
+- Verified source and archived SHA256 for all copied files.
+- Ran sensitive-pattern scan over the archive directory.
+- Rechecked dirty worktree status after archive.
+
+Verified:
+
+- G1A copied source file count is `37`.
+- Archive total file count is `38`.
+- Manifest hash mismatch count is `0`.
+- Manifest SHA256 is
+  `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
+- Archive sensitive-pattern scan produced no matches.
+- Dirty worktree branch remained `feature/latest-updates`.
+- Dirty worktree head remained `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison remained `10 / 15`.
+- Dirty status count remained `213`.
+
+Not validated:
+
+- No generated artifact delete was executed.
+- No service functional test was run because this was archive/governance work.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Archive Preflight
 
 Checks performed:
