@@ -6,7 +6,7 @@
 tool_name:「始」VSearch「末」,
 SearchTopic:「始」探讨AI在医疗诊断中的最新应用「末」,
 Keywords:「始」AI medical diagnosis 2024, 深度学习 医疗影像 突破, transformer models in healthcare「末」,
-SearchMode:「始」grounding「末」,  //三个模式，'grounding' (Gemini-Google搜索-快),  'tavily' (claude-Tavily搜索-中速)，'grok' (Grok推理级搜索-缓慢),默认grouding
+SearchMode:「始」grounding「末」,  //三个模式，'grounding' (Gemini-Google搜索-快),  'grok' (Grok推理级搜索-缓慢-支持舆论媒体搜索-注意偏见),默认grouding
 ShowURL:「始」false「末」,
 ink:「始」mark_history「末」 //可选，是否将检索结果写入history.json
 
@@ -14,12 +14,9 @@ ink:「始」mark_history「末」 //可选，是否将检索结果写入history
 用于获取特定网页、在线文件或本地文件的文本/快照。
 tool_name:「始」UrlFetch「末」,
 url:「始」(必需) 网页/文件 URL (本地路径请以 file:// 开头)「末」, 
-mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照)「末」
+mode:「始」(可选) 'text' (默认) 或 'snapshot' (多模态网页快照) 或 'jina' (AI级网页转md，推荐该模式) 或 'image' (读取网络图片)「末」
 
-额外小技巧，使用JinaAPI讲HTML转化为MD格式 例如 https://r.jina.ai/https://www.bilibili.com 格式，可以把任意网页以MD文档的方式请求。
-
-
-[===vcp_fold:0.3===]
+[===vcp_fold:0.35::desc:B站视频工具===]
 
 ## 3. B站视频/内容爬虫 (BilibiliFetch)
 获取 B 站视频文本（TTS 转化）、弹幕、评论及高清快照。
@@ -52,19 +49,28 @@ topic:「始」general / news / finance「末」,
 search_depth:「始」advanced「末」, //语义搜索模式
 include_raw_content:「始」'markdown'「末」 //获取原始内容
 
-[===vcp_fold:0.7===]
+## 5. 专业级信息深度垂直检索，AnySearch，支持1000并发的超级聚类爬虫
+调用 AnySearch 进行实时搜索、垂直领域搜索、批量搜索、领域目录查询或网页正文提取。
+参数:
+- command/action (string, 可选, 默认 search): search、list_domains、batch_search、extract。
+- query/q/text (string, search 必需): 搜索词。垂直搜索时必须遵循 list_domains 返回的 query_format。
+- domain (string, 可选): 垂直领域，如 finance、academic、security、code、tech、legal 等。
+- sub_domain (string, 垂直搜索建议/通常必需): 子领域路由，如 finance.us_stock、academic.doi、security.cve。
+- sub_domain_params (object|string, 可选): 子领域额外参数。
+- content_types (string|array, 可选): web、news、code、doc、academic、data、image、video、audio。
+- zone (string, 可选): cn 或 intl；当 list_domains 标记 zone=CN 时必须传 cn。
+- max_results (integer, 可选): 结果数量，范围 1-100。
+- freshness (string, 可选): day、week、month、year。
+- domains (string|array, list_domains 可选): 批量查询最多 5 个领域；与 domain 二选一。
+- queries (array|string, batch_search 必需): 1-5 个查询对象或字符串。
+- url (string, extract 必需): 需要提取正文的网页 URL。
+调用格式示例:
 
-## 5. 深度信息研究插件 (FlashDeepSearch)
-进行多维度深度搜索，返回详实的学术研究报告。比较耗时。
-tool_name:「始」FlashDeepSearch「末」,
-SearchContent:「始」研究的主题内容「末」,  
-SearchBroadness:「始」7「末」 //搜索广度 5-20
+tool_name:「始」AnySearch「末」,
+command:「始」search「末」,
+query:「始」AI regulation 2026「末」,
+content_types:「始」news「末」,
+freshness:「始」week「末」,
+max_results:「始」5「末」
 
-## 6. 通用搜索与反向搜图 (SerpSearch)
-基于 SerpAPI 的 DuckDuckGo 搜索与谷歌反向搜图。
-### 网页搜索 (DuckDuckGo)
-command:「始」duckduckgo_search「末」,
-q:「始」关键词「末」
-### 谷歌反向搜图
-command:「始」google_reverse_image_search「末」,
-image_url:「始」图片 URL (支持 file:// 或 https)「末」
+复杂垂直搜索前建议先调用 list_domains 获取 sub_domain、query_format、params_schema 和 zone 约束。
