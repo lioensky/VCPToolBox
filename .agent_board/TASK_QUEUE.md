@@ -80,6 +80,8 @@ Updated: 2026-05-26 Asia/Shanghai.
   `509d6e2` were pushed to `origin/main` and verified synchronized.
 - N1 push-closure record `13c54dc` was pushed to `origin/main` and verified
   synchronized.
+- Dirty worktree retention/archive/cleanup execution packages drafted in
+  `docs/governance/DIRTY_WORKTREE_RETENTION_ARCHIVE_CLEANUP_EXECUTION_PACKAGES_20260526.md`.
 
 ## In Progress
 
@@ -100,6 +102,8 @@ Updated: 2026-05-26 Asia/Shanghai.
    treat either clean worktree line as a branch cleanup candidate.
 8. The latest N1 push is complete; any further push is a new remote write and
    requires explicit approval.
+9. Dirty worktree archive or cleanup execution requires separate explicit
+   approval with exact destination, paths, exclusions, and rollback.
 
 ## Blocked / Needs Explicit Approval
 

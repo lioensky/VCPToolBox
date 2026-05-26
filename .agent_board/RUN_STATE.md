@@ -286,6 +286,18 @@ Final N1 push-closure sync verification:
 - No additional push or other A5/high-risk action was performed while recording
   this final sync-state checkpoint.
 
+Dirty worktree retention/archive/cleanup execution package:
+
+- Added `docs/governance/DIRTY_WORKTREE_RETENTION_ARCHIVE_CLEANUP_EXECUTION_PACKAGES_20260526.md`.
+- Current recommendation remains retain untouched; no archive or cleanup by
+  default.
+- Archive execution is blocked until exact destination, inclusion list,
+  exclusion rules, dry-run count, sensitive scan, and rollback path are
+  explicitly approved.
+- Cleanup execution is blocked until retention/archive decision, exact targets,
+  exact operation, and rollback path are explicitly approved.
+- No file in `A:/VCP/VCPToolBox` was touched.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

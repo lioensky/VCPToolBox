@@ -1,5 +1,61 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Dirty Worktree Retention/Archive/Cleanup Execution Packages
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 6`
+- Dirty worktree: `git branch --show-current`
+- Dirty worktree: `git status -sb`
+- Read existing dirty worktree governance docs.
+- Dirty worktree: counted `git status --short --untracked-files=all`.
+- Dirty worktree: `git rev-parse HEAD`
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`
+- Dirty worktree: filename-only conflict-marker scan.
+- Dirty worktree: filename-only secret/config-like pattern scan.
+- Dirty worktree: top-level dirty path grouping.
+- Dirty worktree: tracked and untracked path sampling.
+- Dirty worktree: risk category path count.
+- Control worktree: `git diff --check`.
+- Control worktree: sensitive-pattern scan over `.agent_board` and the new
+  execution package document.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: checked the new execution package path is untracked before
+  commit.
+
+Verified:
+
+- Control branch is `main`; control worktree was clean and synchronized with
+  `origin/main` before drafting.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status remains `260` entries: `41` tracked and `219` untracked.
+- Tracked dirty shape remains `28` modified-like and `13` deleted-like entries.
+- Filename-only scans found `4` files with conflict markers and `73`
+  files matching secret/config-like patterns.
+- Largest dirty top-level groups remain `Plugin`, `docs`, vector-store folders,
+  `state`, `.claude`, `.agent_board`, `VCPChat`, and `vcp-panel-extension`.
+- Execution packages now separate retain, archive planning, archive execution,
+  cleanup preflight, and cleanup execution.
+- Local diff touches `.agent_board` and adds
+  `docs/governance/DIRTY_WORKTREE_RETENTION_ARCHIVE_CLEANUP_EXECUTION_PACKAGES_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches after removing a
+  false-positive `sk-` substring from the wording.
+
+Not validated:
+
+- No file content from sensitive/runtime paths was copied into `main`.
+- No file in `A:/VCP/VCPToolBox` was edited, copied, archived, deleted, moved,
+  reset, cleaned, stashed, checked out, or hashed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - Final N1 Push-Closure Sync Verification
 
 Checks performed:
