@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Archive Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Control worktree: `git push origin main` for `a465fad` after explicit
+  approval.
+- Control worktree: `git fetch origin main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Read `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_PREFLIGHT_20260526.md`.
+- Rechecked all `37` G1A candidates for status, existence, SHA256, sensitive
+  pattern matches, and G1B overlap.
+- Checked proposed archive destination existence.
+
+Verified:
+
+- `HEAD`, `origin/main`, and `origin/HEAD` are synchronized at
+  `a465fadd4786e249bc433d4218ed92f28e771f3e`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `213`.
+- G1A count is `37`; unique G1A count is `37`.
+- All `37` G1A paths are untracked and exist.
+- Sensitive match file count is `0`.
+- G1B overlap count is `0`.
+- Total G1A bytes are `1,167,943`.
+- Proposed destination does not exist.
+
+Not validated:
+
+- No G1A archive was created.
+- No generated artifact delete was executed.
+- No service functional test was run because this is governance documentation.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - Generated Artifacts Preflight
 
 Checks performed:

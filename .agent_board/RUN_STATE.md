@@ -413,6 +413,19 @@ Generated artifacts preflight:
   G1B `4` sensitive-pattern report files.
 - No generated artifact cleanup/archive/delete was executed.
 
+G1A generated artifacts archive preflight:
+
+- Pushed `a465fad` to `origin/main`; `main` and `origin/main` synchronized at
+  `a465fadd4786e249bc433d4218ed92f28e771f3e`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_PREFLIGHT_20260526.md`.
+- Rechecked `37` G1A candidates: all untracked, existing, non-sensitive by
+  pattern scan, and not overlapping G1B.
+- Proposed destination
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/` remains
+  uncreated.
+- No archive/copy/delete was executed.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

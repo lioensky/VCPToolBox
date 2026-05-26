@@ -115,6 +115,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_PREFLIGHT_20260526.md`;
   strict G1 has `41` files split into G1A `37` non-sensitive candidates and
   G1B `4` sensitive-pattern report files.
+- G1A generated artifacts archive preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_PREFLIGHT_20260526.md`;
+  proposed archive destination is not created.
 
 ## In Progress
 
@@ -156,6 +159,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     execution yet.
 18. Generated artifact cleanup should start with G1A archive preflight only;
     G1B requires a separate sanitize/quarantine review.
+19. G1A archive execution requires explicit destination/include/exclude/dry-run
+    approval; G1A delete remains a later package after archive verification.
 
 ## Blocked / Needs Explicit Approval
 
