@@ -8,8 +8,8 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- At the latest N3 read-only refresh start, local `main` was `70f13d4`.
-- Ahead/behind at latest N3 read-only refresh start: `4 / 0`.
+- At the latest N4 read-only refresh start, local `main` was `53c3a1b`.
+- Ahead/behind at latest N4 read-only refresh start: `5 / 0`.
 - Recheck local `HEAD` before any approved push because each local evidence
   commit advances the local-only head.
 - Push remains an A5 remote-write boundary requiring explicit approval.
@@ -234,6 +234,19 @@ N3 topology-branch read-only audit:
   showed no file changes while reporting multiple merge bases.
 - It remains a harmless retain-by-default topology label; deletion is EP2 and
   requires explicit approval.
+
+N4 remote old-line read-only refresh:
+
+- `git ls-remote --heads origin` showed `14` current remote heads.
+- Local `origin/*` remote-tracking hashes matched the corresponding current
+  remote head hashes for all observed refs.
+- `11` remote-tracking refs remain unmerged into `origin/main`: old `backup-*`,
+  `custom*`, `feature-2026-04-19`, `feature/latest-updates`, photo-studio guide
+  lines, and `safe-upstream-main-*`.
+- Their behind counts remain hundreds of commits, and each has positive cherry
+  deltas and/or substantive file deltas.
+- Default remains retain-as-archive; no remote rename, remote delete, fetch,
+  prune, push, merge, checkout, or branch movement was performed.
 
 D4F Noir Architect new-agent proposal:
 

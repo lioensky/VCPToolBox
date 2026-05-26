@@ -70,6 +70,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   still has no file delta by `git cherry`/`diff --stat`, but remains a
   non-ancestor topology label, so retain by default unless EP2 deletion is
   explicitly approved.
+- N4 remote old-line refresh completed locally: `11` current remote-tracking
+  refs remain unmerged into `origin/main`; current `git ls-remote` hashes match
+  local `origin/*` tracking hashes, and the lines remain archive/retention refs
+  rather than wholesale merge candidates.
 
 ## In Progress
 

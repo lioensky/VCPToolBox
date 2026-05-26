@@ -4,6 +4,36 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed N4 remote old-line read-only refresh.
+- Verified control `main` was clean before the refresh and local `main` was
+  ahead of `origin/main` by `5 / 0`.
+- Verified `git ls-remote --heads origin` reports `14` current remote heads.
+- Verified all local `origin/*` remote-tracking hashes match the corresponding
+  current `git ls-remote` remote head hashes.
+- Verified `11` remote-tracking refs remain unmerged into `origin/main`.
+- Verified those `11` unmerged old lines still have positive cherry deltas
+  and/or substantive file deltas; they remain archive/retention refs, not
+  wholesale merge candidates.
+- Updated the post-D4 N4 decision facts with current counts and per-ref
+  behind/ahead, cherry, and diff-file summary.
+
+Not completed:
+
+- No remote ref was renamed, deleted, created, or pushed.
+- No fetch/prune was run; remote truth was checked via read-only `ls-remote`.
+- No branch was deleted, moved, merged, rebased, reset, or checked out.
+- No tag, release, deploy, live DingTalk/MCP/DWS command, dirty worktree
+  cleanup, or production write was performed.
+
+Next:
+
+1. Commit this N4 read-only refresh record locally.
+2. Pause before any push or remote archive/delete action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed N3 topology-branch read-only audit.
 - Verified control `main` was clean before the audit and local `main` was ahead
   of `origin/main` by `4 / 0`.

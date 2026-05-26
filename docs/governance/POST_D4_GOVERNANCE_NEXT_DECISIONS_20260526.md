@@ -22,6 +22,10 @@ tagging, releasing, deploying, or touching production/runtime state.
   `70f13d4` ahead of `origin/main`.
 - Ahead/behind at latest N3 read-only refresh start:
   `HEAD...origin/main = 4 / 0`.
+- At the latest N4 read-only refresh start, local `main` had checkpoint record
+  `53c3a1b` ahead of `origin/main`.
+- Ahead/behind at latest N4 read-only refresh start:
+  `HEAD...origin/main = 5 / 0`.
 - Recheck `HEAD` before any approved push because each local evidence commit
   advances the local-only head.
 - Control worktree was clean at the read-only refresh.
@@ -136,9 +140,29 @@ Default: retain as archive/retention refs.
 Facts:
 
 - Remaining old remote lines are still unmerged into `origin/main`.
-- They have positive cherry deltas.
+- Current read-only count: `11` remote-tracking refs are not merged into
+  `origin/main`.
+- `git ls-remote --heads origin` confirms `14` current remote heads, and every
+  local `origin/*` tracking hash matches the corresponding remote head hash.
+- The unmerged old lines have positive cherry deltas and/or large file deltas.
 - They are not safe wholesale merge candidates.
 - Remote rename or deletion is a remote write and requires explicit approval.
+
+Current unmerged old remote line summary:
+
+| Remote ref | Behind / ahead vs `origin/main` | Cherry + / - | Diff files |
+| --- | ---: | ---: | ---: |
+| `origin/backup-20260409` | `621 / 4` | `3 / 0` | `219` |
+| `origin/backup-merged-20260408210007` | `621 / 3` | `2 / 0` | `2` |
+| `origin/custom` | `626 / 24` | `21 / 0` | `246` |
+| `origin/custom-20260408205646` | `621 / 4` | `3 / 0` | `219` |
+| `origin/feature-2026-04-19` | `542 / 6` | `4 / 0` | `181` |
+| `origin/feature/latest-updates` | `579 / 19` | `10 / 6` | `337` |
+| `origin/feature/photo-studio-guide-contract-migration` | `579 / 11` | `10 / 0` | `335` |
+| `origin/feature/photo-studio-next-guide-contract` | `579 / 17` | `10 / 6` | `337` |
+| `origin/safe-upstream-main-20260407` | `626 / 2` | `2 / 0` | `2` |
+| `origin/safe-upstream-main-20260408205646` | `621 / 4` | `3 / 0` | `219` |
+| `origin/safe-upstream-main-20260409` | `607 / 9` | `5 / 0` | `234` |
 
 No automatic action is recommended.
 

@@ -1,5 +1,57 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - N4 Remote Old-Line Read-Only Refresh
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 10`
+- `git branch -r --no-merged origin/main`
+- `git branch -r --merged origin/main`
+- `git ls-remote --heads origin`
+- Current remote-tracking count/grouping for refs not merged into `origin/main`.
+- Per unmerged old remote line: `git rev-list --left-right --count origin/main...<ref>`
+- Per unmerged old remote line: `git cherry -v origin/main <ref>`
+- Per unmerged old remote line: `git diff --name-only origin/main...<ref>`
+- Local `origin/*` hash comparison against `git ls-remote --heads origin`.
+- Control worktree: `git diff --stat`
+- Control worktree: `git diff --check`
+- Control worktree: sensitive-pattern scan over `.agent_board` and the updated
+  N1-N5 governance document.
+- Control worktree: `git status --short --untracked-files=all`
+
+Verified:
+
+- Control branch is `main`; control worktree was clean before refresh.
+- Control `main` was ahead of `origin/main` by `5 / 0` before this record.
+- `git ls-remote --heads origin` reported `14` current remote heads.
+- All observed local `origin/*` tracking hashes match their corresponding
+  current remote head hashes.
+- `11` local remote-tracking refs remain unmerged into `origin/main`.
+- Unmerged old-line groups remain `backup-*`, `custom*`, `feature-2026-04-19`,
+  `feature/latest-updates`, photo-studio guide branches, and
+  `safe-upstream-main-*`.
+- Each unmerged old remote line has positive cherry deltas and/or substantive
+  file deltas; none is a safe wholesale merge-cleanup candidate.
+- Default remains retain-as-archive unless a separate remote archive/delete
+  policy is explicitly approved.
+- Local record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No feature-level code review or service test was run for old remote lines.
+- No fetch/prune was run; remote truth was checked via read-only `ls-remote`.
+- No remote ref was renamed, deleted, created, or pushed.
+- No branch was deleted, moved, merged, rebased, reset, or checked out.
+- No tag, release, deploy, live DingTalk/MCP/DWS command, dirty worktree
+  cleanup, or production write was performed.
+- This local N4 refresh is not pushed.
+
 ## 2026-05-26 Asia/Shanghai - N3 Topology Branch Read-Only Audit
 
 Checks performed:
