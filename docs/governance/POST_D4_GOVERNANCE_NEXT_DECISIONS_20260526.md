@@ -9,7 +9,7 @@ tagging, releasing, deploying, or touching production/runtime state.
 
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Control branch: `main`
-- Latest verified `origin/main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`
+- Latest verified `origin/main`: `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`
 - At the latest N2 read-only refresh start, local `main` had checkpoint record
   `dc8beb4` ahead of `origin/main`.
 - Ahead/behind at latest N2 read-only refresh start:
@@ -32,6 +32,8 @@ tagging, releasing, deploying, or touching production/runtime state.
   `HEAD...origin/main = 6 / 0`.
 - Latest approved N1 push advanced `origin/main` from `e8b0c1d` to `509d6e2`
   and verified `HEAD...origin/main = 0 / 0`.
+- Follow-up approved push advanced `origin/main` from `509d6e2` to `13c54dc`
+  and verified `HEAD...origin/main = 0 / 0`.
 - Recheck `HEAD` before any future approved push because each local evidence
   commit advances the local-only head.
 - Control worktree was clean at the read-only refresh.
@@ -50,8 +52,8 @@ Default: pause until explicit push approval.
 
 Facts:
 
-- Local post-D4 governance records through `509d6e2` have been pushed to
-  `origin/main` and verified synchronized.
+- Local post-D4 governance records and N1 push-closure record through
+  `13c54dc` have been pushed to `origin/main` and verified synchronized.
 - Pushed records include the post-sync closure, plan-state
   refresh, N2 dirty worktree refresh, N5 clean worktree audit, N3 topology
   branch audit, and N4 remote old-line refresh.

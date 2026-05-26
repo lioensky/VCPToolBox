@@ -7,11 +7,13 @@ Worktree status at last check: clean.
 
 Current verified heads and sync state:
 
-- Latest verified `origin/main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
-- Latest verified local `main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
+- Latest verified `origin/main`: `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
+- Latest verified local `main`: `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
 - Latest verified ahead/behind relative to `origin/main`: `0 / 0`.
-- After this push-closure record is committed, local `main` may be ahead again
-  until an explicit push approval is given.
+- The `13c54dc` N1 push-closure record has itself been pushed and verified on
+  `origin/main`.
+- After this final sync-state record is committed, local `main` may be ahead
+  again until an explicit push approval is given.
 - Push remains an A5 remote-write boundary requiring explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
@@ -274,6 +276,15 @@ N1 push closure:
 - No tag, release, deploy, branch deletion, remote ref deletion/rename, dirty
   worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
   production write was performed.
+
+Final N1 push-closure sync verification:
+
+- Rechecked local `main` after pushing `13c54dc`.
+- Verified `HEAD`, `origin/main`, and `origin/HEAD` all point to
+  `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
+- Verified `HEAD...origin/main = 0 / 0` and the control worktree is clean.
+- No additional push or other A5/high-risk action was performed while recording
+  this final sync-state checkpoint.
 
 D4F Noir Architect new-agent proposal:
 

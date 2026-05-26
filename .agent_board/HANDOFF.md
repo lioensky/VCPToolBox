@@ -9,9 +9,9 @@ Current safe state:
 - Work is in `A:/VCP/VCPToolBox-prod-stable`.
 - Branch is `main`.
 - Worktree was clean before the latest local handoff refresh.
-- `origin/main` is verified at `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
-- Local `main` is verified at `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`
-  after the latest approved N1 push.
+- `origin/main` is verified at `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
+- Local `main` is verified at `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`
+  after the latest approved push of the N1 push-closure record.
 - `HEAD...origin/main` was verified as `0 / 0` after push and fetch.
 - After this local push-closure record is committed, recheck `HEAD` before any
   approved push because the local-only head may advance again.
@@ -38,8 +38,8 @@ Open risks:
 - Post-D4 next decisions N1-N5 are documented in
   `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
 - N2, N3, N4, and N5 have been rechecked read-only and recorded locally.
-- The local post-D4 governance record queue through `509d6e2` has been pushed
-  to `origin/main` and verified synchronized.
+- The local post-D4 governance record queue and N1 push-closure record through
+  `13c54dc` have been pushed to `origin/main` and verified synchronized.
 
 Next safe action:
 

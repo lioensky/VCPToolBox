@@ -4,7 +4,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 
 ## Done
 
-- `origin/main` has been pushed and verified at `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
+- `origin/main` has been pushed and verified at `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
 - `prod/stable` protection rule is documented: stable production line, permanently retained, never a cleanup candidate.
 - Package G2 completed: governance evidence from `562e907` was cherry-picked to `main` as `39d860f` and pushed to `origin/main`.
 - Package R1 completed: `A:/VCP/VCPToolBox-staging-custom-integration` was removed by non-force `git worktree remove`.
@@ -78,6 +78,8 @@ Updated: 2026-05-26 Asia/Shanghai.
   now reflects current post-D4 governance state and the local-only record queue.
 - N1 push closure completed: local post-D4 governance records through
   `509d6e2` were pushed to `origin/main` and verified synchronized.
+- N1 push-closure record `13c54dc` was pushed to `origin/main` and verified
+  synchronized.
 
 ## In Progress
 
@@ -89,10 +91,10 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. D4A-D4F packages, post-D4 decision docs, and N2/N3/N4/N5 governance refresh
-   records have remote closure on `origin/main` through `509d6e2`; after this
-   local push-closure record is committed, checkpoint records may again be
-   ahead until explicitly pushed.
+5. D4A-D4F packages, post-D4 decision docs, N2/N3/N4/N5 governance refresh
+   records, and the N1 push-closure record have remote closure on `origin/main`
+   through `13c54dc`; after this final sync-state record is committed,
+   checkpoint records may again be ahead until explicitly pushed.
 6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
 7. Any N5 intake must be separately scoped as feature/archive review; do not
    treat either clean worktree line as a branch cleanup candidate.
