@@ -401,6 +401,18 @@ Remaining 213 dirty reassessment:
   `41`, manifest toggle review `28`, A2 blocked `9`, retain-review manual `7`.
 - No further cleanup/restore/delete was executed during reassessment.
 
+Generated artifacts preflight:
+
+- Pushed `64f9f99` to `origin/main`; `main` and `origin/main` synchronized at
+  `64f9f994f9b5d00cbd65dd5c8570101f3f6d27e3`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_PREFLIGHT_20260526.md`.
+- Strict G1 generated-artifact scope contains `41` untracked files and
+  `1,568,688` bytes.
+- Sensitive-pattern scan split candidates into G1A `37` non-sensitive files and
+  G1B `4` sensitive-pattern report files.
+- No generated artifact cleanup/archive/delete was executed.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

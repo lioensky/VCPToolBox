@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Generated Artifacts Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Control worktree: `git push origin main` for `64f9f99` after explicit
+  approval.
+- Control worktree: `git fetch origin main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Parsed dirty status with `git status --porcelain=v1 -z --untracked-files=all`.
+- Collected strict G1 generated-artifact metadata and SHA256 values.
+- Ran sensitive-pattern scan over strict G1 candidates without recording
+  matching values.
+- Identified runtime/protected cache-like paths excluded from generated cleanup.
+
+Verified:
+
+- `HEAD`, `origin/main`, and `origin/HEAD` are synchronized at
+  `64f9f994f9b5d00cbd65dd5c8570101f3f6d27e3`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `213`.
+- Strict G1 generated-artifact count is `41`, all untracked and existing.
+- Strict G1 byte total is `1,568,688`.
+- Sensitive-pattern scan found `4` files and `28` line-level matches.
+- G1A non-sensitive candidate count is `37`.
+- G1B sensitive-pattern report count is `4`.
+
+Not validated:
+
+- No generated artifact archive/delete was executed.
+- No runtime/protected path cleanup was executed.
+- No service functional test was run because this is governance documentation.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - Remaining 213 Dirty Reassessment
 
 Checks performed:

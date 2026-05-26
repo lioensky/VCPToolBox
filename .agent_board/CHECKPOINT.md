@@ -4,6 +4,40 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed generated-artifacts read-only preflight for the remaining dirty
+  worktree.
+- Pushed `64f9f99` to `origin/main`; verified `HEAD`, `origin/main`, and
+  `origin/HEAD` at `64f9f994f9b5d00cbd65dd5c8570101f3f6d27e3`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `213` dirty entries.
+- Strict G1 generated-artifact scope contains `41` untracked files.
+- Sensitive-pattern scan over strict G1 found `4` files and `28` line-level
+  matches, with no matching values recorded.
+- Split generated-artifact follow-up into G1A `37` non-sensitive candidates and
+  G1B `4` sensitive-pattern report files.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No generated artifact was archived, deleted, restored, moved, reset, cleaned,
+  or checked out.
+- No runtime/protected cache-like path was touched beyond read-only metadata.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
+Next:
+
+1. Commit this generated-artifacts preflight locally.
+2. Push records only after explicit approval.
+3. If continuing, prepare G1A archive preflight for the `37` non-sensitive
+   generated artifacts.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed read-only reassessment of the remaining `213` dirty entries after
   A3-C1 and A3-C2.
 - Pushed A3-C2 preflight and execution records to `origin/main`; verified

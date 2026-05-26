@@ -111,6 +111,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   `221` to `213`.
 - Remaining `213` dirty entries reassessed in
   `docs/governance/DIRTY_WORKTREE_REMAINING_213_REASSESSMENT_20260526.md`.
+- Generated artifacts preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_PREFLIGHT_20260526.md`;
+  strict G1 has `41` files split into G1A `37` non-sensitive candidates and
+  G1B `4` sensitive-pattern report files.
 
 ## In Progress
 
@@ -150,6 +154,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 17. Remaining future packages are generated artifacts, manifest toggles, manual
     retain-review, or protected/runtime retention policy; none are approved for
     execution yet.
+18. Generated artifact cleanup should start with G1A archive preflight only;
+    G1B requires a separate sanitize/quarantine review.
 
 ## Blocked / Needs Explicit Approval
 
