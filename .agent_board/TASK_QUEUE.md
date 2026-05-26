@@ -45,6 +45,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - D4B completed locally: repaired OneBot operational docs/config template to use `/internal/channelHub/events` and reject stale `/internal/channel-hub/events`.
 - D4C completed locally: added current-main `docs/INTERACTION_MIDDLEWARE.md` and linked it from the documentation index.
 - D4E completed locally: locked CodexMemoryBridge knowledge-write API response fields and rejected direct `.new.js` i18n replacement.
+- D4F completed locally: documented `Agent/Noir Architect.txt` as a candidate-only new-agent proposal and did not add or enable it.
 
 ## In Progress
 
@@ -56,7 +57,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. If implementation value is desired, select the next future rewrite package from D4A, D4D, or D4F and build it from current `main`.
+5. If implementation value is desired, select the next future rewrite package from D4A or D4D and build it from current `main`.
 
 ## Blocked / Needs Explicit Approval
 

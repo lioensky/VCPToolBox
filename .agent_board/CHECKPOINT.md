@@ -4,6 +4,26 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed D4F Noir Architect new-agent proposal from current `main`.
+- Verified `Agent/Noir Architect.txt` is absent from current `main` and present only as an untracked dirty-worktree candidate.
+- Added `docs/governance/NOIR_ARCHITECT_AGENT_PROPOSAL_20260526.md`.
+- Updated `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md` with the D4F execution record.
+- Did not add, enable, or copy the Agent prompt body.
+
+Not completed:
+
+- No live Agent/admin server validation was run.
+- No remote write was performed.
+
+Next:
+
+1. Commit the D4F checkpoint locally after final diff checks.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed D4E CodexMemoryBridge i18n/API-contract review from current `main`.
 - Rejected direct intake of the dirty `.new.js` i18n variant.
 - Documented the stable knowledge-write return contract in `docs/CODEX_MEMORY_BRIDGE.md`.

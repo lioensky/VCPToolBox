@@ -251,3 +251,38 @@ Not validated:
 
 - No live Codex memory write was performed outside test temp directories.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - D4F Noir Architect Agent Proposal
+
+Checks performed:
+
+- Listed current `Agent/` prompt files in `main`.
+- Inspected `modules/agentManager.js`.
+- Inspected `routes/admin/agents.js`.
+- Checked current `main` for `agent_map.json`.
+- Checked dirty candidate path existence and file size:
+  `A:/VCP/VCPToolBox/Agent/Noir Architect.txt`.
+- Ran targeted conflict-marker and secret-like pattern scan on the dirty
+  candidate path.
+- Ran `git diff --check`.
+- Ran sensitive-token pattern scan over the D4F proposal, dirty worktree
+  strategy package, and `.agent_board`.
+
+Verified:
+
+- Current `main` does not contain `Agent/Noir Architect.txt`.
+- Current `main` Agent discovery scans `.txt` and `.md` prompt files under
+  `Agent/`.
+- Current `main` has no checked-in `agent_map.json`.
+- The dirty candidate exists as an untracked prompt draft and was not copied.
+- No unresolved conflict marker or real secret-like value was found in the
+  targeted dirty candidate scan.
+- `git diff --check` reported no whitespace errors.
+- The final D4F governance diff sensitive-token scan produced no matches.
+
+Not validated:
+
+- No live Agent prompt load was performed.
+- No admin server was started.
+- No new Agent file was created.
+- No remote write was performed for this checkpoint.

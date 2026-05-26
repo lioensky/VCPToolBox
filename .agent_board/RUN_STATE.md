@@ -158,3 +158,11 @@ D4E CodexMemoryBridge i18n/API-contract review:
 - Added regression assertions for the current `targetDiary` and `reason` fields.
 - Ran Codex memory bridge/e2e/MCP/admin tests; all 12 tests passed.
 - No content was copied from the dirty worktree.
+
+D4F Noir Architect new-agent proposal:
+
+- Reviewed current `main` Agent discovery and admin Agent file behavior.
+- Verified `Agent/Noir Architect.txt` is absent from current `main` and present only as an untracked dirty-worktree candidate.
+- Added `docs/governance/NOIR_ARCHITECT_AGENT_PROPOSAL_20260526.md`.
+- Decision: do not add or enable the candidate automatically; future adoption requires a dedicated user-facing capability package.
+- No Agent prompt body was copied from the dirty worktree.

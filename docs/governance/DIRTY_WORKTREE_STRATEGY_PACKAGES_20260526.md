@@ -131,7 +131,7 @@ Prepared future packages:
 | `D4C` | Interaction middleware documentation intake | Future docs merge with implemented/future labels |
 | `D4D` | VS Code panel / `vcp-panel-extension` product review | Future standalone product proposal |
 | `D4E` | CodexMemoryBridge `.new.js` i18n/API contract review | Future targeted code review with tests |
-| `D4F` | `Agent/Noir Architect.txt` new-agent proposal | Future user-facing capability decision |
+| `D4F` | `Agent/Noir Architect.txt` new-agent proposal | Proposal completed; no automatic enablement |
 
 Shared requirements:
 
@@ -228,3 +228,35 @@ Validation:
 Remaining risk:
 
 - No live Codex memory write was performed outside the test temp directory.
+
+## D4F Execution - Noir Architect New-Agent Proposal
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Reviewed current `main` Agent discovery and admin Agent file behavior.
+- Confirmed `Agent/Noir Architect.txt` is not present in current `main`.
+- Confirmed the dirty candidate exists only in `A:/VCP/VCPToolBox` as an
+  untracked prompt draft.
+- Added `docs/governance/NOIR_ARCHITECT_AGENT_PROPOSAL_20260526.md` as a
+  candidate-only adoption proposal.
+
+Decision:
+
+- Do not add or enable `Agent/Noir Architect.txt` automatically.
+- Treat any future adoption as a dedicated user-facing capability package with
+  explicit decisions for prompt text, display name, alias registration, safety
+  review, UI/listing behavior, and validation.
+
+Validation:
+
+- Current `main` Agent directory, `modules/agentManager.js`,
+  `routes/admin/agents.js`, and `agent_map.json` absence were checked.
+- Dirty candidate was scanned only for conflict markers and secret-like
+  patterns; no prompt body was copied.
+
+Remaining risk:
+
+- No live Agent/admin server validation was run.
+- No new Agent file was created.
