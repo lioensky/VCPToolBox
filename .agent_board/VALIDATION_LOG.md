@@ -1,5 +1,51 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A3-C2 Tracked Restore Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Read A2 `ARCHIVE_MANIFEST.json`.
+- Rechecked all `8` C2 paths from A3 cleanup preflight.
+- Parsed dirty status with `git status --porcelain=v1 -z --untracked-files=all`
+  to preserve spaces, Unicode, and special characters.
+- Recomputed current SHA256 for all `8` C2 paths and compared them with A2
+  manifest SHA256 values.
+- Checked archive-file existence for all `8` C2 paths.
+- Checked overlap with A2 blocked paths.
+
+Verified:
+
+- Control branch is `main` and synchronized with `origin/main` at
+  `2d3ea6ff23903b86a9dcde974afc01e039f7fedf`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `221`.
+- C2 count is `8`; unique C2 count is `8`.
+- All `8` C2 paths still have tracked modified status.
+- All `8` C2 paths still exist on disk.
+- All `8` C2 paths are present in the A2 manifest.
+- All `8` C2 archive files exist.
+- All `8` C2 paths match archived SHA256 values.
+- Blocked overlap count is `0`.
+- Failure count is `0`.
+- Expected dirty status count after a future C2 restore is `213`, assuming no
+  intervening changes.
+
+Not validated:
+
+- No tracked restore was executed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A3-C1 Cleanup Execution
 
 Checks performed:

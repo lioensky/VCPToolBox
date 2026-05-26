@@ -4,6 +4,34 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A3-C2 tracked restore preflight as a read-only check.
+- Reverified control `main` is synchronized with `origin/main` at
+  `2d3ea6ff23903b86a9dcde974afc01e039f7fedf`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `221` dirty entries.
+- Confirmed C2 count `8`, unique count `8`, tracked modified count `8`,
+  existing path count `8`, manifest membership count `8`, archive exists count
+  `8`, hash match count `8`, blocked overlap `0`, and failure count `0`.
+- Added `docs/governance/DIRTY_WORKTREE_RESTORE_C2_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No tracked file in `A:/VCP/VCPToolBox` was restored or modified.
+- No file was deleted, moved, reset, cleaned, stashed, or checked out.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A3-C2 restore preflight locally.
+2. Execute A3-C2 only after explicit tracked-restore approval.
+3. Push records only after explicit approval.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A3-C1 cleanup execution after explicit approval.
 - Pre-delete gate verified `39` C1 paths: inside workspace, untracked, existing,
   in A2 manifest, SHA256 matched, blocked overlap `0`, C2 overlap `0`, failure

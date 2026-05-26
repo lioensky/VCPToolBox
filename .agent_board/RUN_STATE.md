@@ -367,6 +367,16 @@ A3-C1 cleanup execution:
   change, or remote write was performed.
 - Added `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_EXECUTION_20260526.md`.
 
+A3-C2 tracked restore preflight:
+
+- Added `docs/governance/DIRTY_WORKTREE_RESTORE_C2_PREFLIGHT_20260526.md`.
+- Confirmed all `8` C2 candidates still exist, remain tracked modified, are
+  present in A2 manifest, have matching archive files, and match archived
+  SHA256 values.
+- Confirmed C2 blocked overlap is `0` and failure count is `0`.
+- A3-C2 remains not executed; actual tracked restore still requires explicit
+  approval.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.
