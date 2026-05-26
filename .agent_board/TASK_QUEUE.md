@@ -91,6 +91,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   archive artifact created at
   `A:/VCP/_archives/VCPToolBox/dirty-feature-latest-updates-20260526/` with
   `47` copied files plus `ARCHIVE_MANIFEST.json`.
+- A3 dirty worktree cleanup preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_CLEANUP_PREFLIGHT_20260526.md`; C1 has `39`
+  archived-untracked delete candidates, and C2 has `8` archived-tracked
+  revert candidates.
 
 ## In Progress
 
@@ -117,6 +121,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     generated archive artifact at the approved destination.
 11. The current A2 archive excluded sensitive-pattern and path-ambiguous A1
     candidates.
+12. A3-C1 delete and A3-C2 tracked restore are separate future packages and
+    require explicit approval before execution.
 
 ## Blocked / Needs Explicit Approval
 

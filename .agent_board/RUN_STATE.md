@@ -332,6 +332,18 @@ A2 dirty worktree archive execution:
 - Dirty worktree remained untouched and still reports `260` dirty entries.
 - Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_EXECUTION_20260526.md`.
 
+A3 dirty worktree cleanup preflight:
+
+- Added `docs/governance/DIRTY_WORKTREE_CLEANUP_PREFLIGHT_20260526.md`.
+- Reverified A2 manifest: `47` copied files, `0` hash mismatches, and manifest
+  SHA256 `56612B88F302E9573D1D8D946451B4842A025FBC709C02831913EED50331A8FE`.
+- Classified all `260` dirty entries.
+- C1 future delete candidates: `39` archived, untracked, hash-matched paths.
+- C2 future tracked-revert candidates: `8` archived, tracked, hash-matched
+  paths.
+- A3 executed no cleanup, delete, restore, reset, clean, stash, branch change,
+  or remote write.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

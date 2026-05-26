@@ -1,5 +1,48 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A3 Dirty Worktree Cleanup Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Read A2 `ARCHIVE_MANIFEST.json`.
+- Recomputed current source SHA256 for all `47` archived paths.
+- Parsed dirty status with `git status --porcelain=v1 -z --untracked-files=all`
+  to preserve spaces, Unicode, and special characters.
+- Classified all dirty entries against A2 archive paths, A2 blocked paths, and
+  protected/generated/manifest rules.
+
+Verified:
+
+- Control branch is `main` and synchronized with `origin/main`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `260`: `41` tracked and `219` untracked.
+- A2 manifest copied-file count is `47`.
+- A2 manifest hash mismatch count is `0`.
+- Current source hash still matches archive hash for all `47` archived paths.
+- A3 C1 delete candidates: `39` archived, untracked, hash-matched paths.
+- A3 C2 tracked-revert candidates: `8` archived, tracked, hash-matched paths.
+- A2 blocked paths in status: `9`.
+- Protected secret/runtime/data bucket: `128`.
+- Generated report/log/cache bucket: `41`.
+- Manifest toggle review bucket: `28`.
+- Retain-review unarchived bucket: `7`.
+
+Not validated:
+
+- No cleanup/delete/restore was executed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A2 Dirty Worktree Archive Execution
 
 Checks performed:

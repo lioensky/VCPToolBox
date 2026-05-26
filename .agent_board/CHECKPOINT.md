@@ -4,6 +4,38 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A3 dirty worktree cleanup preflight.
+- Reverified A2 archive manifest: `47` copied files, `0` hash mismatches, and
+  manifest SHA256
+  `56612B88F302E9573D1D8D946451B4842A025FBC709C02831913EED50331A8FE`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Classified all `260` dirty entries into cleanup preflight buckets.
+- Identified C1 delete candidates: `39` archived, untracked, hash-matched
+  paths.
+- Identified C2 tracked-revert candidates: `8` archived, tracked,
+  hash-matched paths.
+- Added `docs/governance/DIRTY_WORKTREE_CLEANUP_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No file in `A:/VCP/VCPToolBox` was edited, deleted, moved, reset, cleaned,
+  stashed, checked out, or restored.
+- No cleanup package was executed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A3 cleanup preflight locally.
+2. Execute A3-C1 or A3-C2 only after explicit package-specific approval.
+3. Push records only after explicit approval.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A2 dirty worktree archive execution after explicit approval.
 - Dry-run verified destination, include list, blocked exclusions, duplicate
   count, and missing count.
