@@ -69,8 +69,25 @@ async function handleAiImagePipelineRequest(req, options = {}) {
     const dryRun = resolveDryRunMode(body, options, executionContext);
     const requestIp = getClientIp(req);
 
-    // 真实执行：仅当 dryRun=false 且 server 已注入 pluginManager 时
-    const allowRealExecution = !dryRun && options.pluginManager;
+    const hasPluginManager = Boolean(
+      options.pluginManager &&
+      typeof options.pluginManager.processToolCall === 'function'
+    );
+    const hasNativeDoubaoSecretlessRuntimeDelegate =
+      typeof options.nativeDoubaoSecretlessRuntimeDelegate === 'function';
+    const requireNativeDoubaoSecretlessRuntimeDelegate =
+      options.requireNativeDoubaoSecretlessRuntimeDelegate === true;
+
+    // 真实执行：仅当 dryRun=false、server 已注入 pluginManager，且要求的
+    // Native Doubao secretless delegate 可调用时才放行。
+    const allowRealExecution = (
+      !dryRun &&
+      hasPluginManager &&
+      (
+        !requireNativeDoubaoSecretlessRuntimeDelegate ||
+        hasNativeDoubaoSecretlessRuntimeDelegate
+      )
+    );
 
     if (allowRealExecution) {
       // route 内部覆盖 requestFlags — 不信任前端自由传入
@@ -90,7 +107,12 @@ async function handleAiImagePipelineRequest(req, options = {}) {
     };
 
     if (allowRealExecution) {
-      executorOptions.pluginManager = options.pluginManager;
+      executorOptions.pluginManager = hasNativeDoubaoSecretlessRuntimeDelegate
+        ? createNativeDoubaoDelegatePluginManagerFacade({
+            pluginManager: options.pluginManager,
+            nativeDoubaoSecretlessRuntimeDelegate: options.nativeDoubaoSecretlessRuntimeDelegate,
+          })
+        : options.pluginManager;
     }
 
     const result = await executeAiImagePipelineV2(routeInput, executorOptions);
@@ -107,6 +129,43 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       message: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
+  const pluginManager = options.pluginManager || null;
+  const nativeDoubaoSecretlessRuntimeDelegate =
+    options.nativeDoubaoSecretlessRuntimeDelegate;
+
+  return {
+    async processToolCall(toolName, toolArgs, requestIp, executionContext) {
+      if (toolName !== 'DoubaoGen') {
+        throw new Error(`native_doubao_delegate_tool_not_allowed:${toolName || '<empty>'}`);
+      }
+
+      if (typeof nativeDoubaoSecretlessRuntimeDelegate !== 'function') {
+        throw new Error('native_doubao_secretless_runtime_delegate_not_callable');
+      }
+
+      const delegateResult = await nativeDoubaoSecretlessRuntimeDelegate({
+        toolName,
+        toolArgs,
+        requestIp,
+        executionContext,
+      });
+
+      if (!delegateResult || delegateResult.ok !== true) {
+        const blocker = delegateResult && (delegateResult.blocker || delegateResult.error);
+        throw new Error(blocker || 'native_doubao_secretless_runtime_delegate_failed_closed');
+      }
+
+      return delegateResult.result;
+    },
+    getPlugin(name) {
+      return pluginManager && typeof pluginManager.getPlugin === 'function'
+        ? pluginManager.getPlugin(name)
+        : null;
+    },
+  };
 }
 
 // ── 输入处理 ─────────────────────────────────────────────────────────────
@@ -213,6 +272,7 @@ function sendJson(res, payload) {
 module.exports = {
   createAiImageAgentsRouter,
   handleAiImagePipelineRequest,
+  createNativeDoubaoDelegatePluginManagerFacade,
   normalizeRouteInput,
   buildAiImageExecutionContext,
   resolveDryRunMode,
