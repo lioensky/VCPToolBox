@@ -134,3 +134,11 @@ Dirty worktree strategy package:
 - Direct source absorption from `A:/VCP/VCPToolBox` is closed by default after C1-C6.
 - Remaining actions are explicit packages only: path-only preservation, archive planning, cleanup planning, or future rewrites D4A-D4F based on current `main`.
 - No dirty worktree file was touched while drafting the strategy package.
+
+D4B OneBot operational docs repair:
+
+- Corrected `Plugin/vcp-onebot-adapter/.env.example` to use `/internal/channelHub/events`.
+- Added README troubleshooting guidance that rejects stale `/internal/channel-hub/events`.
+- Recorded the D4B execution in `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
+- Ran `npm test` in `Plugin/vcp-onebot-adapter`; all 12 tests passed.
+- No content was copied from the dirty worktree.

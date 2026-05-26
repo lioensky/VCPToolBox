@@ -153,3 +153,25 @@ Shared requirements:
    and build it on current `main`.
 5. If the user wants cleanup, first produce an exact destructive-operation
    preflight and wait for explicit approval.
+
+## D4B Execution - OneBot Operational Docs Repair
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Corrected `Plugin/vcp-onebot-adapter/.env.example` to use the current
+  ChannelHub B2 endpoint `/internal/channelHub/events`.
+- Added a README troubleshooting note that warns against the stale
+  `/internal/channel-hub/events` path.
+
+Validation:
+
+- Current source default, plugin manifest, README, and tests all use
+  `/internal/channelHub/events`.
+- The dirty worktree was not used as a content source.
+
+Remaining risk:
+
+- No live OneBot or ChannelHub service was started.
+- This package only repairs documentation/config template accuracy.

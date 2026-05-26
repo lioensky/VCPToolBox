@@ -195,6 +195,16 @@ LOG_LEVEL=debug
 2. 检查 VCP ChannelHub 是否正常运行
 3. 查看日志中的错误信息
 
+### ChannelHub 入口路径
+
+`VCP_CHANNEL_HUB_URL` 应使用当前 B2 事件入口：
+
+```env
+VCP_CHANNEL_HUB_URL=http://127.0.0.1:6010/internal/channelHub/events
+```
+
+不要使用旧写法 `/internal/channel-hub/events`。如果只配置到主机或基础路径，适配器会自动补齐 `/events`，但不会把旧的连字符路径改写成当前的驼峰路径。
+
 ## License
 
 MIT

@@ -4,6 +4,26 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed D4B OneBot operational docs repair from current `main`.
+- Corrected `Plugin/vcp-onebot-adapter/.env.example` from stale `/internal/channel-hub/events` to `/internal/channelHub/events`.
+- Added a README troubleshooting note for the canonical ChannelHub B2 endpoint.
+- Updated `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md` with the D4B execution record.
+- Did not copy content from `A:/VCP/VCPToolBox`.
+
+Not completed:
+
+- Local OneBot adapter unit tests passed; no live OneBot or ChannelHub runtime validation was run.
+- No remote write was performed.
+
+Next:
+
+1. Commit the D4B checkpoint locally after final diff checks.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Advanced the dirty worktree governance checkpoint from candidate review to strategy packaging.
 - Added `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
 - Converted reviewed dirty worktree state into packages D0-D4: stop direct absorption, path-only preservation, archive planning, cleanup planning, and future rewrite packages.

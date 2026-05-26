@@ -184,3 +184,24 @@ Not validated:
 
 - No service functional test was run.
 - No additional remote write was performed after the residual cleanup evidence update.
+
+## 2026-05-26 Asia/Shanghai - D4B OneBot Docs Repair
+
+Checks performed:
+
+- `rg` over `Plugin/vcp-onebot-adapter` for `internal/channel-hub`, `internal/channelHub/events`, and `VCP_CHANNEL_HUB_URL`.
+- Sensitive-token pattern scan over `Plugin/vcp-onebot-adapter`, `.agent_board`, and the dirty worktree strategy package.
+- `npm test` in `Plugin/vcp-onebot-adapter`.
+
+Verified:
+
+- `Plugin/vcp-onebot-adapter/.env.example` now uses `/internal/channelHub/events`.
+- The stale `/internal/channel-hub/events` path remains only as a documented "do not use" warning and governance note.
+- OneBot adapter local test suite passed: 12 tests, 0 failures.
+- No dirty worktree content was copied into the D4B repair.
+
+Not validated:
+
+- No live OneBot implementation was started.
+- No live ChannelHub service call was made.
+- No remote write was performed for this checkpoint.
