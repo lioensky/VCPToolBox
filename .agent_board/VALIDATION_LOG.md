@@ -45,6 +45,17 @@ Not validated after remote cleanup:
 - No service functional test was run because only remote branch refs changed.
 - The local governance evidence commit is not pushed yet.
 
+Local cleanup execution:
+
+- User approved deleting `backup/absorb-upstream-main-20260526-merge` and `feature/ai-image-agent-clean-pr`.
+- Preflight verified both were listed by `git branch --merged main`.
+- Preflight verified neither was occupied by a registered worktree.
+- Ran `git branch -d backup/absorb-upstream-main-20260526-merge feature/ai-image-agent-clean-pr`.
+- Verified `git branch --list backup/absorb-upstream-main-20260526-merge feature/ai-image-agent-clean-pr` returned no refs.
+- Verified `main` remained synchronized with `origin/main` and worktree status stayed clean.
+- Classified remaining local branches with `git rev-list --left-right --count main...<branch>`, `git merge-base --is-ancestor`, `git cherry`, and `git worktree list --porcelain`.
+- Verified no remaining non-protected local branch is both an ancestor of `main` and free of worktree concerns.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:

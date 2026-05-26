@@ -50,3 +50,18 @@ Hard rules:
 - Deleted those 31 merged remote branches with `git push origin --delete`.
 - Verified all 31 deleted refs are absent after `git fetch origin --prune`.
 - Verified protected/excluded refs still exist: `origin/main`, `origin/prod/stable`, `origin/codex/photo-studio-baserow-provider-batch`, `origin/feature/ai-image-agent-clean-pr`, and `origin/feature/latest-updates`.
+
+2026-05-26 local cleanup execution:
+
+- User approved deleting `backup/absorb-upstream-main-20260526-merge` and `feature/ai-image-agent-clean-pr`.
+- Deleted both with ordinary `git branch -d`.
+- Verified both local refs are absent.
+- Verified `main` remains synchronized with `origin/main` and worktrees are unchanged.
+
+Remaining local branch classification:
+
+- Protected: `prod/stable`.
+- Worktree-occupied: `feature/latest-updates`, `integration/latest-updates-selective-absorb`, `lane10-codex-memory-intake-20260425`, `codex/photo-studio-baserow-provider-batch`.
+- Duplicate local heads requiring explicit deletion policy: `feature/ai-image-pipeline-dgp-refactor`, `feature/ai-image-pipeline-dgp-v2`, and `rescue/ai-image-pipeline-mixed-20260427_195303` all point to `546b684`; they are not ancestors of `main`.
+- Patch-equivalent/topology-only candidate: `governance/origin-main-topology-bridge-preview` has no positive cherry delta but is not an ancestor of `main`; ordinary `git branch -d` is expected to refuse.
+- Substantive unmerged local branches: `feature/photo-studio-guide-contract-migration`, `feature/photo-studio-next-guide-contract`, and `integration/main-absorb-prod-stable-upstream-20260525`.

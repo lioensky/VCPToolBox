@@ -25,7 +25,9 @@ Open risks:
 - Unmerged old remote lines are hundreds of commits behind current `main`; do not merge them wholesale.
 - Remote branch deletion is a remote write and needs explicit approval with branch names.
 - 31 explicitly listed merged remote branches were deleted after user approval and verified absent.
+- Two fully merged local branches were deleted after user approval: `backup/absorb-upstream-main-20260526-merge` and `feature/ai-image-agent-clean-pr`.
+- Remaining local branch classification is recorded in `RUN_STATE.md`; there are no remaining ordinary `git branch -d` cleanup candidates except protected `prod/stable`.
 
 Next safe action:
 
-- Review remaining unmerged old remote lines only as separate archival/retention decisions; request explicit approval before any branch deletion or additional remote write.
+- Continue only with explicit retention/deletion decisions for non-merged local branches, occupied worktrees, or unmerged old remote lines.

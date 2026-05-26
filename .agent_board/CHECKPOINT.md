@@ -12,6 +12,8 @@ Completed:
 - After explicit approval, deleted the explicitly listed merged remote cleanup package.
 - Corrected the preflight count: 31 branches were listed and deleted, not 32.
 - Verified all 31 deleted remote refs are absent.
+- Deleted two fully merged local branches with ordinary `git branch -d`: `backup/absorb-upstream-main-20260526-merge` and `feature/ai-image-agent-clean-pr`.
+- Verified both deleted local branches are absent and all registered worktrees are unchanged.
 
 Not completed:
 
