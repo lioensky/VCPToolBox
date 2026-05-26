@@ -182,3 +182,10 @@ D4A DingTalkTable compatibility layer:
 - Updated DingTalkTable README and manifest for dry-run/gray-stage behavior.
 - Added mocked no-real-write compatibility tests.
 - No live DingTalk, MCP, or DWS command was executed.
+
+Post-D4A validation hardening:
+
+- Added `tests/dingtalk-table-compat.test.js` to the root `npm test` script.
+- Root `npm test` passed with 80 tests.
+- `npm run test:dingtalk-cli` passed with 18 tests.
+- Test execution left no runtime dirty files in the control worktree.

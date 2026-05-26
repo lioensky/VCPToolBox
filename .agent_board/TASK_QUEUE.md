@@ -48,6 +48,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - D4F completed locally: documented `Agent/Noir Architect.txt` as a candidate-only new-agent proposal and did not add or enable it.
 - D4D completed locally: documented `vcp-panel-extension/**` as a standalone editor-extension product proposal and did not add extension source.
 - D4A completed locally: rewired `Plugin/DingTalkTable` through `DingTalkCLI` dry-run/gray-stage gates with mocked no-real-write tests.
+- Post-D4A validation hardening completed locally: root `npm test` now includes the DingTalkTable compatibility test and passes.
 
 ## In Progress
 

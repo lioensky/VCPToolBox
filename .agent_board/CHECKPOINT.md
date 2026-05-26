@@ -4,6 +4,26 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed post-D4A validation hardening.
+- Added `tests/dingtalk-table-compat.test.js` to the root `npm test` command in
+  `package.json`.
+- Ran the root test suite after the script update.
+- Ran the DingTalkCLI专项 suite after the D4A rewrite.
+
+Not completed:
+
+- No live DingTalk, MCP, or DWS command was executed.
+- No remote write was performed.
+
+Next:
+
+1. Commit the validation-hardening checkpoint locally.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed D4A DingTalkTable compatibility-layer rewrite from current `main`.
 - Reworked `Plugin/DingTalkTable` to forward legacy actions through `Plugin/DingTalkCLI`.
 - Removed direct DingTalk MCP URL/key settings from the DingTalkTable config example.

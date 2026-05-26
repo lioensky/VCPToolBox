@@ -360,3 +360,24 @@ Not validated:
 - No live DingTalk, MCP, or DWS command was executed.
 - No real AI-table dry-run was executed against a configured DWS environment.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - Post-D4A Validation Hardening
+
+Checks performed:
+
+- Added `tests/dingtalk-table-compat.test.js` to the root `npm test` command.
+- Ran `npm test`.
+- Ran `npm run test:dingtalk-cli`.
+- Checked `git status --short --untracked-files=all` after the tests.
+
+Verified:
+
+- Root `npm test` passed: 80 tests, 0 failures.
+- `npm run test:dingtalk-cli` passed: 18 tests, 0 failures.
+- The root test suite now includes the DingTalkTable compatibility test.
+- Test execution left no runtime/cache/log dirty files in the control worktree.
+
+Not validated:
+
+- No live DingTalk, MCP, or DWS command was executed.
+- No remote write was performed for this checkpoint.
