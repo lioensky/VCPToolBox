@@ -1507,6 +1507,9 @@ app.use("/api/image-rating", imageRatingApiRoutes);
     // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
     if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
       const { createAiImageAgentsRouter } = require('./routes/admin/aiImageAgents');
+      const {
+        createNativeDoubaoSecretlessRuntimeDelegate,
+      } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
 
       const routeOptions = {
         auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
@@ -1514,7 +1517,20 @@ app.use("/api/image-rating", imageRatingApiRoutes);
 
       if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
         routeOptions.pluginManager = pluginManager;
-        console.log('[server] AI Image Agent real execution ENABLED (pluginManager injected)');
+        routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
+
+        if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
+          routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
+            createNativeDoubaoSecretlessRuntimeDelegate({
+              enabled: true,
+              pluginManager,
+              requestIp: '127.0.0.1',
+              bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
+            });
+          console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
+        } else {
+          console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
+        }
       }
 
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
