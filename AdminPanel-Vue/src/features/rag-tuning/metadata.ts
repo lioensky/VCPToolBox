@@ -186,6 +186,48 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "建议区间: 0.02 ~ 0.15",
       tone: "sensitive",
     },
+    fuzzyEmbedding: {
+      label: "Embedding Fuzzy 复用",
+      summary: "折叠链路与动态工具折叠用于复用近似相同上下文向量的高阈值模糊缓存策略，避免 AI 输出因微小文本差异重复向量化。",
+      logic: "阈值越高越保守，只有几乎一致的长文本才复用；maxScan 越大越容易命中但会增加扫描成本。建议保持 0.985 附近。",
+      range: "共 5 个子参数：threshold、minLength、maxScan、maxLengthDiffRatio、maxLengthDiffAbs。",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.threshold": {
+      label: "Fuzzy 命中阈值",
+      summary: "Dice bigram 文本相似度达到该阈值才复用已有 embedding。",
+      logic: "调低会提升复用率但增加误复用风险；调高更安全但可能仍重复向量化。0.985 是保守默认值。",
+      range: "建议 0.970 ~ 0.995",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.minLength": {
+      label: "最小文本长度",
+      summary: "低于该长度的文本不参与 fuzzy 复用，避免短文本相似度虚高。",
+      logic: "短文本更容易偶然相似，因此应保留长度门槛；长对话建议 80 起步。",
+      range: "建议 40 ~ 200 字符",
+      tone: "stable",
+    },
+    "fuzzyEmbedding.maxScan": {
+      label: "最大扫描缓存数",
+      summary: "每次 fuzzy 查询最多扫描最近多少条 embedding 文本索引。",
+      logic: "调高会提升旧缓存命中概率，但每次动态折叠扫描成本也会增加。",
+      range: "建议 100 ~ 500",
+      tone: "stable",
+    },
+    "fuzzyEmbedding.maxLengthDiffRatio": {
+      label: "最大长度差比例",
+      summary: "候选缓存文本与当前文本允许的最大相对长度差。",
+      logic: "用于过滤长度明显不同的文本。调大更宽松，调小更严格。",
+      range: "建议 0.01 ~ 0.05",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.maxLengthDiffAbs": {
+      label: "最大绝对长度差",
+      summary: "候选缓存文本与当前文本允许的最大绝对字符数差。",
+      logic: "与比例门槛取较大值，避免长文本少量系统尾巴差异导致无法复用。",
+      range: "建议 40 ~ 200 字符",
+      tone: "stable",
+    },
   },
   RAGDiaryPlugin: {
     noise_penalty: {
@@ -602,6 +644,14 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   }
   if (key === 'reverseinversionguard') {
     return { min: 0.5, max: 1, step: 0.01 };
+  }
+
+  if (key === "minlength" || key === "maxscan" || key === "maxlengthdiffabs") {
+    return { min: 1, max: key === "maxscan" ? 1000 : 500, step: 1 };
+  }
+
+  if (key === "maxlengthdiffratio") {
+    return { min: 0, max: 0.2, step: 0.001 };
   }
 
   if (key.includes("days")) {

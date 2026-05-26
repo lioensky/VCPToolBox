@@ -248,6 +248,14 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
 
         const config = ragPlugin.ragParams?.RAGDiaryPlugin || {};
         const mainWeights = config.mainSearchWeights || [0.7, 0.3];
+        const fuzzyConfig = ragPlugin.ragParams?.ContextFoldingV2?.fuzzyEmbedding || {};
+        const fuzzyOptions = {
+            threshold: Number.isFinite(Number(fuzzyConfig.threshold)) ? Number(fuzzyConfig.threshold) : 0.985,
+            minLength: Number.isFinite(Number(fuzzyConfig.minLength)) ? Number(fuzzyConfig.minLength) : 80,
+            maxScan: Number.isFinite(Number(fuzzyConfig.maxScan)) ? Number(fuzzyConfig.maxScan) : 200,
+            maxLengthDiffRatio: Number.isFinite(Number(fuzzyConfig.maxLengthDiffRatio)) ? Number(fuzzyConfig.maxLengthDiffRatio) : 0.02,
+            maxLengthDiffAbs: Number.isFinite(Number(fuzzyConfig.maxLengthDiffAbs)) ? Number(fuzzyConfig.maxLengthDiffAbs) : 80
+        };
 
         // DynamicFold 专用向量获取：精确缓存 → 高阈值 fuzzy 缓存 → Embedding API。
         // 这里常在 RAGDiaryPlugin 主链路之后运行，AI 文本可能只有极小差异；
@@ -261,13 +269,7 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
             }
 
             if (typeof ragPlugin._findFuzzyEmbeddingFromCache === 'function') {
-                const fuzzy = ragPlugin._findFuzzyEmbeddingFromCache(text, {
-                    threshold: 0.985,
-                    minLength: 80,
-                    maxScan: 200,
-                    maxLengthDiffRatio: 0.02,
-                    maxLengthDiffAbs: 80
-                });
+                const fuzzy = ragPlugin._findFuzzyEmbeddingFromCache(text, fuzzyOptions);
 
                 if (fuzzy && fuzzy.vector) {
                     if (context.DEBUG_MODE) {
