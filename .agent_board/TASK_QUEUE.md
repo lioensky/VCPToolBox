@@ -24,6 +24,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - 2026-05-26 remote cleanup package executed: 31 explicitly listed merged remote branches deleted and verified absent.
 - 2026-05-26 local cleanup package executed: two fully merged local branches deleted with ordinary `git branch -d`.
 - 2026-05-26 remaining local branches classified by protection/worktree/substantive-unmerged/duplicate-head status.
+- 2026-05-26 remaining remote old lines classified as archival/retention decisions rather than merge cleanup candidates.
 
 ## In Progress
 
@@ -32,8 +33,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 ## Next Safe Local Tasks
 
 1. Decide whether duplicate local AI image branches should be retained or deleted under an explicit non-merged-branch deletion policy.
-2. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-3. Review remaining unmerged remote old lines only as archival/retention decisions.
+2. Decide retention/archive policy for old unmerged remote lines.
+3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Request explicit approval before deleting any local or remote branch.
 5. Request explicit approval before any additional remote write.
 

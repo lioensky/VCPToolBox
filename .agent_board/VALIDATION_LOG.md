@@ -55,6 +55,8 @@ Local cleanup execution:
 - Verified `main` remained synchronized with `origin/main` and worktree status stayed clean.
 - Classified remaining local branches with `git rev-list --left-right --count main...<branch>`, `git merge-base --is-ancestor`, `git cherry`, and `git worktree list --porcelain`.
 - Verified no remaining non-protected local branch is both an ancestor of `main` and free of worktree concerns.
+- Classified remaining remote branches with `git branch -r --no-merged origin/main`, `git branch -r --merged origin/main`, `git rev-list --left-right --count origin/main...<branch>`, and `git cherry origin/main <branch>`.
+- Verified remaining unmerged remote old lines still have positive cherry deltas and are not safe merge-cleanup candidates.
 
 ## 2026-05-25 17:30 Asia/Shanghai
 

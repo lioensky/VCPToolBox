@@ -65,3 +65,10 @@ Remaining local branch classification:
 - Duplicate local heads requiring explicit deletion policy: `feature/ai-image-pipeline-dgp-refactor`, `feature/ai-image-pipeline-dgp-v2`, and `rescue/ai-image-pipeline-mixed-20260427_195303` all point to `546b684`; they are not ancestors of `main`.
 - Patch-equivalent/topology-only candidate: `governance/origin-main-topology-bridge-preview` has no positive cherry delta but is not an ancestor of `main`; ordinary `git branch -d` is expected to refuse.
 - Substantive unmerged local branches: `feature/photo-studio-guide-contract-migration`, `feature/photo-studio-next-guide-contract`, and `integration/main-absorb-prod-stable-upstream-20260525`.
+
+Remaining remote branch classification:
+
+- Only these remote refs are merged into `origin/main`: `origin/codex/photo-studio-baserow-provider-batch`, `origin/feature/ai-image-agent-clean-pr`, `origin/main`, and `origin/prod/stable`.
+- `origin/codex/photo-studio-baserow-provider-batch` and `origin/feature/ai-image-agent-clean-pr` were intentionally retained because local branches still track them.
+- Unmerged old remote lines remain: `origin/backup-*`, `origin/custom*`, `origin/feature-2026-04-19`, `origin/feature/latest-updates`, `origin/feature/photo-studio-guide-contract-migration`, `origin/feature/photo-studio-next-guide-contract`, and `origin/safe-upstream-main-*`.
+- These unmerged old remote lines have positive cherry deltas and hundreds of file differences; treat them as archival/retention decisions, not cleanup-by-merge candidates.
