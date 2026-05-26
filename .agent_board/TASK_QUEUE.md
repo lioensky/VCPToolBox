@@ -50,6 +50,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - D4A completed locally: rewired `Plugin/DingTalkTable` through `DingTalkCLI` dry-run/gray-stage gates with mocked no-real-write tests.
 - Post-D4A validation hardening completed locally: root `npm test` now includes the DingTalkTable compatibility test and passes.
 - Post-D4A push closure completed: `0d6c210` pushed to `origin/main` and verified synchronized.
+- Post-D4 local governance refresh completed: no new safe automatic branch/worktree cleanup candidate was found.
 
 ## In Progress
 
@@ -61,7 +62,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. D4A-D4F packages have remote closure on `origin/main`; remaining actions are archive/cleanup decisions or a separately scoped new task.
+5. D4A-D4F packages have remote closure on `origin/main`; local checkpoint records may still be ahead until explicitly pushed.
+6. Remaining governance actions are archive/cleanup decisions or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval
 

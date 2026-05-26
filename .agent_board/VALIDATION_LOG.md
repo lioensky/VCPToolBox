@@ -410,3 +410,47 @@ Not validated:
 
 - No tag, release, deploy, branch deletion, dirty worktree cleanup, live
   DingTalk/MCP/DWS command, or production write was performed.
+
+## 2026-05-26 Asia/Shanghai - Post-D4 Local Governance Refresh
+
+Checks performed:
+
+- `git branch --show-current`.
+- `git status --short --untracked-files=all`.
+- `git log --oneline --decorate -n 10`.
+- `git rev-list --left-right --count HEAD...origin/main`.
+- `git worktree list --porcelain`.
+- `git branch --format`.
+- `git branch --merged main`.
+- `git branch --no-merged main`.
+- `git branch -r --merged origin/main`.
+- `git branch -r --no-merged origin/main`.
+- Local branch `main...<branch>` ahead/behind and `git cherry -v` line counts.
+- Remote branch `origin/main...<branch>` ahead/behind and `git cherry -v` line
+  counts.
+- Dirty worktree `A:/VCP/VCPToolBox` status count and corrected upstream
+  comparison.
+- Clean worktree status for `A:/VCP/VCPToolBox-photo-studio-export` and
+  `A:/VCP/VCPToolBox-photo-studio-next`.
+
+Verified:
+
+- Control worktree was clean at refresh start.
+- Local `main` was ahead of `origin/main` by one local checkpoint commit.
+- `origin/main` remained at `0d6c210`.
+- Registered worktrees are unchanged: dirty `feature/latest-updates`, clean
+  `lane10-codex-memory-intake-20260425`, clean
+  `codex/photo-studio-baserow-provider-batch`, and control `main`.
+- Dirty `A:/VCP/VCPToolBox` still has 260 dirty entries and is `10 / 15`
+  against `origin/feature/latest-updates`.
+- No local non-protected branch is both merged into `main` and safe to delete.
+- `governance/origin-main-topology-bridge-preview` remains patch-equivalent by
+  cherry count but is not a topological ancestor; deletion remains an explicit
+  branch-deletion decision.
+- Remaining unmerged remote old lines still have positive cherry deltas and are
+  not safe merge-cleanup candidates.
+
+Not validated:
+
+- No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
+  live DingTalk/MCP/DWS command, or production write was performed.

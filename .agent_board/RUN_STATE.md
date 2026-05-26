@@ -5,9 +5,11 @@ Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
 Worktree status at last check: clean.
 
-Current verified heads:
+Current verified heads and sync state:
 
-- `main` / `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- Latest pushed `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- Local `main` currently carries additional local checkpoint records ahead of
+  `origin/main`; push still requires explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -198,3 +200,23 @@ Post-D4A push closure:
 - Fetched `origin/main` after push and verified `HEAD`, `origin/main`, and
   `origin/HEAD` all point to `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
 - Verified `HEAD...origin/main = 0 / 0` and the control worktree stayed clean.
+
+Post-D4 local governance refresh:
+
+- Control worktree remained on `main` and clean at refresh start.
+- Local `main` had one local checkpoint commit ahead of `origin/main`:
+  `c2b1009 docs: record d4 push closure`.
+- Registered worktrees: protected dirty `A:/VCP/VCPToolBox`, clean
+  `A:/VCP/VCPToolBox-photo-studio-export`, clean
+  `A:/VCP/VCPToolBox-photo-studio-next`, and control
+  `A:/VCP/VCPToolBox-prod-stable`.
+- `A:/VCP/VCPToolBox` still has 260 dirty entries and remains
+  `10 / 15` against `origin/feature/latest-updates`.
+- Clean worktree branches `lane10-codex-memory-intake-20260425` and
+  `codex/photo-studio-baserow-provider-batch` still have positive cherry
+  deltas and are not cleanup candidates.
+- Local `governance/origin-main-topology-bridge-preview` remains the only
+  patch-equivalent/topology-only local branch candidate; deleting it still
+  requires explicit branch-deletion approval.
+- Remaining unmerged remote old lines still have positive cherry deltas; they
+  remain archive/retention decisions, not merge-cleanup candidates.
