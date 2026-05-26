@@ -133,6 +133,10 @@ Updated: 2026-05-26 Asia/Shanghai.
 - G1B-R0 retain decision recorded in
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_RETAIN_DECISION_20260526.md`;
   the four G1B files remain in the dirty worktree.
+- Manifest toggles M1 preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_MANIFEST_TOGGLES_PREFLIGHT_20260526.md`;
+  `28` behavior-affecting entries remain retain-by-default pending explicit
+  plugin-level decisions.
 
 ## In Progress
 
@@ -183,6 +187,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     patterns.
 22. G1B-R0 retain is selected; the four untracked G1B generated reports remain
     in `A:/VCP/VCPToolBox` until a future explicit reopen instruction.
+23. Manifest toggles M1 are behavior-affecting plugin enablement changes; do
+    not bulk restore/delete/import them without explicit per-package approval.
 
 ## Blocked / Needs Explicit Approval
 

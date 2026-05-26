@@ -1,5 +1,40 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Manifest Toggles M1 Preflight
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Read the remaining-dirty reassessment M1 manifest-toggle bucket.
+- Rechecked all `28` M1 paths for git status, existence, HEAD tracking,
+  current-main existence, byte count, SHA256, and JSON parseability.
+- Ran a sensitive-pattern scan over existing M1 files.
+
+Verified:
+
+- Control `main` is synchronized with `origin/main` at
+  `3d3046149a885d88d4db960ad300f702c33de04d`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- M1 candidate count is `28`; dirty-status count `28`; deleted status count
+  `13`; modified status count `1`; untracked status count `14`.
+- Existing M1 file count is `15`; all `15` existing files parse as JSON.
+- Sensitive-pattern files `0`; sensitive-pattern matches `0`.
+
+Not validated:
+
+- No plugin runtime load or functional test was run because this is a
+  read-only governance preflight.
+- No manifest file was copied, archived, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
+- No plugin enablement state was changed.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - G1B-R0 Retain Decision
 
 Checks performed:

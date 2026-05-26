@@ -4,6 +4,37 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed manifest toggles M1 read-only preflight.
+- Reverified control `main` is synchronized with `origin/main` at
+  `3d3046149a885d88d4db960ad300f702c33de04d`.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Confirmed M1 count `28`: deleted `13`, modified `1`, untracked `14`,
+  existing files `15`, valid JSON existing files `15`, and sensitive-pattern
+  matches `0`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_MANIFEST_TOGGLES_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No manifest file was copied, archived, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
+- No plugin enablement state was changed.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Continue with manual retain-review R1 or protected/runtime retention policy
+   as the next non-destructive package.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Recorded user-selected G1B-R0 retain decision.
 - Reverified control `main` was clean at local `b712562`, ahead of
   `origin/main` by `2 / 0` before drafting this retain decision; no push was

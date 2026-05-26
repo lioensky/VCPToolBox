@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after G1B preflight commit.
+Worktree status at last check: clean after manifest toggles preflight commit.
 
 Current verified heads and sync state:
 
@@ -258,6 +258,21 @@ G1B-R0 retain decision:
   cleaned, or checked out.
 - G1B should be considered closed as retain-by-user-choice unless reopened by a
   future explicit quarantine/delete instruction.
+
+Manifest toggles M1 preflight:
+
+- Drafted a read-only manifest toggles preflight.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- M1 count is `28`: deleted `13`, modified `1`, untracked `14`, existing files
+  `15`, valid JSON existing files `15`, sensitive-pattern matches `0`.
+- M1 entries are behavior-affecting plugin enablement changes and remain
+  retain-by-default pending explicit plugin-level decisions.
+- No manifest file was copied, archived, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
+- The M1 preflight is committed locally; local `main` is ahead of
+  `origin/main` until explicit push approval is given.
 
 N5 clean worktree feature-line audit:
 
