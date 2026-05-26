@@ -265,14 +265,17 @@ async function processLocalFiles(content) {
 
 // --- 'create' Command Logic ---
 async function handleCreateCommand(args) {
-    // 兼容 'Date'/'dateString', 'Content'/'contentText', 和 'maid'/'maidName' (case-insensitive for maid)
+    // 兼容 'Date'/'dateString', 'Content'/'contentText', 'maid'/'maidName' (case-insensitive for maid)
+    // 新增 folder 字段：用于直接指定存储目录，避免必须把目录塞进 maid 的 [文件夹]署名格式。
+    // 额外兼容 fold，降低模型误拼写导致目录未生效的概率。
     const maid = args.maid || args.maidName || args.Maid || args.MAID;
+    const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
     const dateString = args.dateString || args.Date;
     const contentText = args.contentText || args.Content;
     const tag = args.Tag || args.tag;
     const fileName = args.fileName || args.FileName;
 
-    debugLog(`Processing 'create' for Maid: ${maid}, Date: ${dateString}, fileName: ${fileName}`);
+    debugLog(`Processing 'create' for Maid: ${maid}, Folder: ${folder || 'Not specified'}, Date: ${dateString}, fileName: ${fileName}`);
     if (!maid || !dateString || !contentText) {
         return { status: "error", error: 'Invalid input for create: Missing maid/maidName, dateString/Date, or contentText/Content.' };
     }
@@ -284,11 +287,14 @@ async function handleCreateCommand(args) {
         debugLog('Content after tag processing (length):', processedContent.length);
 
         const trimmedMaidName = maid.trim();
-        let folderName = trimmedMaidName;
+        const trimmedFolderName = typeof folder === 'string' ? folder.trim() : '';
+        let folderName = trimmedFolderName || trimmedMaidName;
         let actualMaidName = trimmedMaidName;
         const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
 
-        if (tagMatch) {
+        if (trimmedFolderName) {
+            debugLog(`Explicit folder provided. Folder: ${folderName}, Actual Maid: ${actualMaidName}`);
+        } else if (tagMatch) {
             folderName = tagMatch[1].trim();
             actualMaidName = tagMatch[2].trim();
             debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
@@ -667,6 +673,7 @@ async function handleUpdateCommand(args) {
     debugLog("Processing 'update' command with args:", args);
 
     const { target, replace, maid } = args;
+    const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
 
     if (typeof target !== 'string' || typeof replace !== 'string') {
         return {
@@ -686,7 +693,7 @@ async function handleUpdateCommand(args) {
     debugLog(
         `Validated input for update. Target length: ${target.length}. Maid: ${
             maid || 'Not specified'
-        }`
+        }. Folder: ${folder || 'Not specified'}`
     );
 
     try {
@@ -715,7 +722,35 @@ async function handleUpdateCommand(args) {
             )}. Remaining directories: ${allDirs.map((d) => d.name).join(', ')}`
         );
 
-        if (maid) {
+        if (folder && typeof folder === 'string' && folder.trim()) {
+            // 显式 folder 优先级最高：格式如 folder: 小克的知识, maid: 小克
+            const priorityFolder = sanitizePathComponent(folder.trim());
+            debugLog(
+                `Explicit folder specified for update (sanitized): '${priorityFolder}'`
+            );
+
+            for (const dirEntry of allDirs) {
+                const dirPath = path.join(dailyNoteRootPath, dirEntry.name);
+
+                // 安全检查：确保路径在 dailyNoteRootPath 内
+                if (!isPathWithinBase(dirPath, dailyNoteRootPath)) {
+                    debugLog(`Skipping unsafe directory during update: ${dirPath}`);
+                    continue;
+                }
+
+                if (sanitizePathComponent(dirEntry.name) === priorityFolder) {
+                    priorityDirs.push({ name: dirEntry.name, path: dirPath });
+                } else {
+                    otherDirs.push({ name: dirEntry.name, path: dirPath });
+                }
+            }
+
+            if (priorityDirs.length === 0) {
+                debugLog(
+                    `Explicit folder '${priorityFolder}' not found, will search all folders.`
+                );
+            }
+        } else if (maid) {
             const maidRegex = /^\[(.+?)\]/;
             const match = maid.match(maidRegex);
 
@@ -904,8 +939,13 @@ async function handleUpdateCommand(args) {
                 result: `Successfully edited diary file: ${modifiedFilePath}`,
             };
         } else {
-            const errorMessage = maid
-                ? `Target content not found in any diary files for maid '${maid}'.`
+            const scopeDescription = folder
+                ? `folder '${folder}'`
+                : maid
+                    ? `maid '${maid}'`
+                    : '';
+            const errorMessage = scopeDescription
+                ? `Target content not found in any diary files for ${scopeDescription}.`
                 : 'Target content not found in any diary files.';
 
             // Layer 3: Emergency Fallback

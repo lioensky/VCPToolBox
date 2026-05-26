@@ -18,12 +18,18 @@
     "invocationCommands": [
       {
         "commandIdentifier": "create",
-        "description": "“创建日记”: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。可选提供fileName字段，作为文件名后缀追加到时间戳命名之后（例如：2026-04-08-05_11_20-测试日记创建功能）。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径会根据maid中的[tag]自动归类。\n调用格式 (两种方式):\n1. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...\\nTag: VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "“创建日记”: 用于创建一篇新的日记。AI必须提供maid, Date, 和 Content。可选提供folder字段直接指定存储目录（例如 folder: 小克的知识, maid: 小克），也兼容旧的maid中[文件夹]署名格式。可选提供fileName字段，作为文件名后缀追加到时间戳命名之后（例如：2026-04-08-05_11_20-测试日记创建功能）。标签(Tag)可以通过两种方式提供：1) 作为Content的最后一行 (例如 'Tag: ...')。2) 使用独立的'Tag'字段。如果同时提供，独立的'Tag'字段将覆盖Content中的标签行。文件夹路径优先使用folder字段；未提供folder时根据maid中的[tag]自动归类。\n调用格式 (三种方式):\n1. 使用folder字段指定目录，maid作为署名:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nfolder:「始」小克的知识「末」,\nmaid:「始」小克「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」知识记录「末」,\nContent:「始」今天记录了一条知识...\\nTag: 知识, 小克「末」\n<<<[END_TOOL_REQUEST]>>>\n2. 标签在Content末尾:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...\\nTag: VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>\n3. 使用独立Tag字段:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」create「末」,\nmaid:「始」[VCP开发]Roo「末」,\nDate:「始」2025-11-23「末」,\nfileName:「始」重构记录「末」,\nContent:「始」今天我重构了DailyNote插件...「末」,\nTag:「始」VCP开发, 插件重构, Node.js「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "maid",
             "description": "作者署名，支持使用[文件夹]署名格式来指定存储目录。",
             "required": true,
+            "type": "string"
+          },
+          {
+            "name": "folder",
+            "description": "可选存储目录。提供后会优先使用此字段作为文件夹名，maid只作为正文署名；例如 folder=小克的知识, maid=小克。未提供时仍兼容maid的[文件夹]署名格式。",
+            "required": false,
             "type": "string"
           },
           {
@@ -54,11 +60,17 @@
       },
       {
         "commandIdentifier": "update",
-        "description": "“更新日记”: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)。可选定'maid'来指定编辑范围。\n安全性检查: target字段长度不能少于15字符。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」update「末」,\nmaid:「始」[VCP开发]Roo「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "description": "“更新日记”: 用于编辑已存在的日记内容。AI需要提供要查找的旧内容(target)和替换的新内容(replace)。可选用folder直接指定优先搜索目录，也可用maid指定编辑范围；folder优先级高于maid中的[文件夹]格式。\n安全性检查: target字段长度不能少于15字符。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」DailyNote「末」,\ncommand:「始」update「末」,\nfolder:「始」小克的知识「末」,\nmaid:「始」小克「末」,\ntarget:「始」这是日记中要被替换掉的旧内容，至少15个字符长。「末」,\nreplace:「始」这是将要写入日记的新内容。「末」\n<<<[END_TOOL_REQUEST]>>>",
         "parameters": [
           {
             "name": "maid",
             "description": "指定要编辑哪个角色的日记本。支持[文件夹]格式。如果未提供，则会在所有日记本中搜索。",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "folder",
+            "description": "可选优先搜索目录。提供后会优先在该文件夹中查找要更新的内容；例如 folder=小克的知识, maid=小克。未提供时仍兼容maid的[文件夹]格式或maid前缀匹配。",
             "required": false,
             "type": "string"
           },
