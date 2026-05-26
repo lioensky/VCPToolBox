@@ -66,6 +66,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   `lane10-codex-memory-intake-20260425` and
   `codex/photo-studio-baserow-provider-batch` are clean but carry substantive
   non-cleanup deltas, so they remain retained feature/archive review lines.
+- N3 topology branch audit completed locally: `governance/origin-main-topology-bridge-preview`
+  still has no file delta by `git cherry`/`diff --stat`, but remains a
+  non-ancestor topology label, so retain by default unless EP2 deletion is
+  explicitly approved.
 
 ## In Progress
 

@@ -1,5 +1,60 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - N3 Topology Branch Read-Only Audit
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 8`
+- Control worktree: `git branch --list governance/origin-main-topology-bridge-preview`
+- `git rev-parse governance/origin-main-topology-bridge-preview`
+- Ancestor checks between `main` and
+  `governance/origin-main-topology-bridge-preview`
+- `git rev-list --left-right --count main...governance/origin-main-topology-bridge-preview`
+- `git cherry -v main governance/origin-main-topology-bridge-preview`
+- `git diff --stat main...governance/origin-main-topology-bridge-preview`
+- Worktree occupancy check via `git worktree list --porcelain`
+- `git merge-base --all main governance/origin-main-topology-bridge-preview`
+- Branch-side log checks in both directions.
+- Control worktree: `git diff --stat`
+- Control worktree: `git diff --check`
+- Control worktree: sensitive-pattern scan over `.agent_board` and the updated
+  N1-N5 governance document.
+- Control worktree: `git status --short --untracked-files=all`
+
+Verified:
+
+- Control branch is `main`; control worktree was clean before audit.
+- Control `main` was ahead of `origin/main` by `4 / 0` before this record.
+- `governance/origin-main-topology-bridge-preview` exists at
+  `c5ce5d933560081650e55b160433b37283c1f506`.
+- The branch is not occupied by a registered worktree.
+- The branch is not a topological ancestor of `main`, and `main` is not a
+  topological ancestor of the branch.
+- Ahead/behind from `main...branch` is `52 / 1`.
+- `git cherry` returned `0` rows: `0` positive and `0`
+  patch-equivalent/reapplied entries.
+- `git diff --stat main...branch` reported no file changes while warning about
+  multiple merge bases.
+- Branch-side log contains `c5ce5d9 Record origin main topology closure without
+  content changes`.
+- Interpretation remains retain-by-default; EP2 deletion requires explicit
+  branch-deletion approval.
+- Local record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No branch deletion dry run was executed.
+- No branch was deleted, moved, merged, rebased, reset, or checked out.
+- No push, tag, release, deploy, live DingTalk/MCP/DWS command, dirty worktree
+  cleanup, or production write was performed.
+- This local N3 audit is not pushed.
+
 ## 2026-05-26 Asia/Shanghai - N5 Clean Worktree Feature-Line Audit
 
 Checks performed:

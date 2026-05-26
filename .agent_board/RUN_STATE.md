@@ -8,8 +8,8 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- At the latest N5 read-only refresh start, local `main` was `2ef54db`.
-- Ahead/behind at latest N5 read-only refresh start: `3 / 0`.
+- At the latest N3 read-only refresh start, local `main` was `70f13d4`.
+- Ahead/behind at latest N3 read-only refresh start: `4 / 0`.
 - Recheck local `HEAD` before any approved push because each local evidence
   commit advances the local-only head.
 - Push remains an A5 remote-write boundary requiring explicit approval.
@@ -221,6 +221,19 @@ N5 clean worktree feature-line audit:
   `21` files by `main...HEAD`.
 - Both remain retained feature/archive lines; no branch deletion, merge,
   cherry-pick, archive, remote write, or file modification was performed.
+
+N3 topology-branch read-only audit:
+
+- `governance/origin-main-topology-bridge-preview` remains present at
+  `c5ce5d933560081650e55b160433b37283c1f506`.
+- It is not occupied by a registered worktree.
+- It is not a topological ancestor of `main`, and `main` is not a topological
+  ancestor of it.
+- `git cherry -v main governance/origin-main-topology-bridge-preview` returned
+  `0` rows, and `git diff --stat main...governance/origin-main-topology-bridge-preview`
+  showed no file changes while reporting multiple merge bases.
+- It remains a harmless retain-by-default topology label; deletion is EP2 and
+  requires explicit approval.
 
 D4F Noir Architect new-agent proposal:
 

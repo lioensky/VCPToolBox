@@ -4,6 +4,34 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed N3 topology-branch read-only audit.
+- Verified control `main` was clean before the audit and local `main` was ahead
+  of `origin/main` by `4 / 0`.
+- Verified `governance/origin-main-topology-bridge-preview` still exists at
+  `c5ce5d933560081650e55b160433b37283c1f506`.
+- Verified it is not occupied by a registered worktree.
+- Verified it is not a topological ancestor of `main`, and `main` is not a
+  topological ancestor of it.
+- Verified `git cherry` reports `0` rows and `git diff --stat main...branch`
+  reports no file changes, with Git noting multiple merge bases.
+- Updated the post-D4 N3 decision facts to retain the branch by default unless
+  EP2 deletion is explicitly approved.
+
+Not completed:
+
+- No branch was deleted, moved, merged, rebased, reset, or checked out.
+- No push, tag, release, deploy, live DingTalk/MCP/DWS command, dirty worktree
+  cleanup, or production write was performed.
+
+Next:
+
+1. Commit this N3 read-only audit record locally.
+2. Pause before any push or EP2 branch-deletion action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed N5 clean worktree feature-line read-only audit.
 - Verified control `main` was clean before the audit and local `main` was ahead
   of `origin/main` by `3 / 0`.

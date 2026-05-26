@@ -18,6 +18,10 @@ tagging, releasing, deploying, or touching production/runtime state.
   `2ef54db` ahead of `origin/main`.
 - Ahead/behind at latest N5 read-only refresh start:
   `HEAD...origin/main = 3 / 0`.
+- At the latest N3 read-only refresh start, local `main` had checkpoint record
+  `70f13d4` ahead of `origin/main`.
+- Ahead/behind at latest N3 read-only refresh start:
+  `HEAD...origin/main = 4 / 0`.
 - Recheck `HEAD` before any approved push because each local evidence commit
   advances the local-only head.
 - Control worktree was clean at the read-only refresh.
@@ -95,10 +99,23 @@ Branch:
 
 Current interpretation:
 
-- Patch-equivalent by `git cherry` count, but not a topological ancestor of
-  `main`.
+- Current head: `c5ce5d933560081650e55b160433b37283c1f506`.
+- Patch-equivalent by `git cherry` count: `0` rows, `0` positive, `0`
+  patch-equivalent/reapplied.
+- `git diff --stat main...governance/origin-main-topology-bridge-preview`
+  produces no file changes, though Git reports multiple merge bases.
+- The branch is still not a topological ancestor of `main`.
+- Branch-side log contains one topology record commit:
+  `c5ce5d9 Record origin main topology closure without content changes`.
 - Not occupied by a worktree.
 - Deletion is still branch deletion and needs explicit approval.
+
+Interpretation:
+
+- Retain by default because it is harmless and deleting it is still destructive
+  local branch cleanup.
+- If a strict local branch list is desired, delete only as a separately
+  approved EP2 package.
 
 If deletion is approved, expected command:
 
