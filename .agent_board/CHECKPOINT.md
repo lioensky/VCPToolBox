@@ -4,6 +4,35 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A1 dirty worktree archive planning.
+- Verified control `main` was clean and synchronized with `origin/main` at
+  `79a9ea420e458b41b8fa6bee1119c2a30dec6ec4`.
+- Rechecked dirty worktree `A:/VCP/VCPToolBox` on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Reconfirmed dirty upstream comparison `10 / 15` and dirty status `260`
+  entries.
+- Classified dirty paths into `56` archive candidates, `40` manual-review
+  paths, and `164` default-exclude paths.
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
+
+Not completed:
+
+- No archive was created.
+- No file in `A:/VCP/VCPToolBox` was edited, copied, archived, deleted, moved,
+  reset, cleaned, stashed, checked out, or hashed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A1 archive planning document locally.
+2. Pause before A2 archive execution, cleanup, dirty-worktree write, or remote
+   action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed dirty worktree retention/archive/cleanup execution-package plan.
 - Verified control `main` was clean and synchronized with `origin/main` at
   `bb68b42e570af610394743de82d1b13affe05880`.

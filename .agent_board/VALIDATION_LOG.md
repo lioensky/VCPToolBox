@@ -1,5 +1,53 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A1 Dirty Worktree Archive Planning
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Dirty worktree: `git branch --show-current`
+- Dirty worktree: `git rev-parse HEAD`
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`
+- Dirty worktree: counted `git status --short --untracked-files=all`
+- Dirty worktree: path-level inclusion/manual/default-exclusion classification.
+- Dirty worktree: risk category counts from path/status scan.
+- Dirty worktree: filename-only conflict-marker scan.
+- Dirty worktree: filename-only sensitive/config-like pattern scan.
+- Control worktree: `git diff --check`.
+- Control worktree: sensitive-pattern scan over `.agent_board` and the new A1
+  archive plan document.
+- Control worktree: `git status --short --untracked-files=all`.
+
+Verified:
+
+- Control branch is `main`; control worktree was clean and synchronized with
+  `origin/main` before drafting.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status remains `260` entries.
+- A1 classification produced `56` archive candidates, `40` manual-review
+  paths, and `164` default-exclude paths.
+- Filename-only scans found `4` files with conflict markers and `73` files
+  matching sensitive/config-like patterns.
+- A2 preconditions are documented and remain blocked.
+- Local diff touches `.agent_board` and adds
+  `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No archive was created.
+- No file content from sensitive/runtime paths was copied into `main`.
+- No file in `A:/VCP/VCPToolBox` was edited, copied, archived, deleted, moved,
+  reset, cleaned, stashed, checked out, or hashed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - Dirty Worktree Retention/Archive/Cleanup Execution Packages
 
 Checks performed:

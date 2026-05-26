@@ -82,6 +82,8 @@ Updated: 2026-05-26 Asia/Shanghai.
   synchronized.
 - Dirty worktree retention/archive/cleanup execution packages drafted in
   `docs/governance/DIRTY_WORKTREE_RETENTION_ARCHIVE_CLEANUP_EXECUTION_PACKAGES_20260526.md`.
+- A1 dirty worktree archive plan drafted in
+  `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
 
 ## In Progress
 
@@ -104,6 +106,9 @@ Updated: 2026-05-26 Asia/Shanghai.
    requires explicit approval.
 9. Dirty worktree archive or cleanup execution requires separate explicit
    approval with exact destination, paths, exclusions, and rollback.
+10. A2 archive execution remains blocked until exact destination, inclusion
+    list, exclusion rules, dry-run count, sensitive scan, and rollback are
+    approved.
 
 ## Blocked / Needs Explicit Approval
 

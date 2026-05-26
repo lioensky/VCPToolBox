@@ -298,6 +298,17 @@ Dirty worktree retention/archive/cleanup execution package:
   exact operation, and rollback path are explicitly approved.
 - No file in `A:/VCP/VCPToolBox` was touched.
 
+A1 dirty worktree archive planning:
+
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
+- Classified dirty paths into `56` archive candidates, `40` manual-review
+  paths, and `164` default-exclude paths.
+- Proposed archive destination remains a template only and is not approved.
+- A2 archive execution remains blocked until exact destination, inclusion list,
+  exclusion rules, dry-run count, sensitive scan, and rollback path are
+  explicitly approved.
+- No dirty worktree file was touched and no archive artifact was created.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.
