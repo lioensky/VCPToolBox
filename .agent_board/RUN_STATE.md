@@ -7,11 +7,11 @@ Worktree status at last check: clean.
 
 Current verified heads and sync state:
 
-- Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- At the latest local handoff refresh start, local `main` was `05c1cf9`.
-- Ahead/behind at latest local handoff refresh start: `6 / 0`.
-- Recheck local `HEAD` before any approved push because each local evidence
-  commit advances the local-only head.
+- Latest verified `origin/main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
+- Latest verified local `main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
+- Latest verified ahead/behind relative to `origin/main`: `0 / 0`.
+- After this push-closure record is committed, local `main` may be ahead again
+  until an explicit push approval is given.
 - Push remains an A5 remote-write boundary requiring explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
@@ -257,6 +257,21 @@ Post-N2/N3/N4/N5 local handoff refresh:
 - Local-only governance records since `origin/main` are currently queued for a
   future explicitly approved N1 push.
 - No push, tag, release, deploy, branch deletion, remote ref update, dirty
+  worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
+N1 push closure:
+
+- User explicitly approved pushing to `origin/main`.
+- Preflight verified local `main` was clean and ahead of `origin/main` by
+  `7 / 0`, with local-only commits `6db847b` through `509d6e2`.
+- Ran `git push origin main`; remote `main` advanced from `e8b0c1d` to
+  `509d6e2`.
+- Ran `git fetch origin main --prune`.
+- Verified local `HEAD` and `origin/main` both point to
+  `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`, `HEAD...origin/main = 0 / 0`,
+  and the control worktree is clean.
+- No tag, release, deploy, branch deletion, remote ref deletion/rename, dirty
   worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
   production write was performed.
 

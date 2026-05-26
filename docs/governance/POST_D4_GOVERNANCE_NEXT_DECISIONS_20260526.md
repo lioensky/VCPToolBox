@@ -9,7 +9,7 @@ tagging, releasing, deploying, or touching production/runtime state.
 
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Control branch: `main`
-- Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`
+- Latest verified `origin/main`: `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`
 - At the latest N2 read-only refresh start, local `main` had checkpoint record
   `dc8beb4` ahead of `origin/main`.
 - Ahead/behind at latest N2 read-only refresh start:
@@ -30,8 +30,10 @@ tagging, releasing, deploying, or touching production/runtime state.
   `05c1cf9` ahead of `origin/main`.
 - Ahead/behind at latest local handoff refresh start:
   `HEAD...origin/main = 6 / 0`.
-- Recheck `HEAD` before any approved push because each local evidence commit
-  advances the local-only head.
+- Latest approved N1 push advanced `origin/main` from `e8b0c1d` to `509d6e2`
+  and verified `HEAD...origin/main = 0 / 0`.
+- Recheck `HEAD` before any future approved push because each local evidence
+  commit advances the local-only head.
 - Control worktree was clean at the read-only refresh.
 - Dirty worktree `A:/VCP/VCPToolBox` remains on `feature/latest-updates`.
 - Dirty worktree upstream comparison: `10 / 15` against
@@ -48,13 +50,12 @@ Default: pause until explicit push approval.
 
 Facts:
 
-- Local `main` contains local governance checkpoint commits beyond
-  `origin/main`.
-- Local-only checkpoint head at latest local handoff refresh start: `05c1cf9`.
-- Local-only records currently include the post-sync closure, plan-state
+- Local post-D4 governance records through `509d6e2` have been pushed to
+  `origin/main` and verified synchronized.
+- Pushed records include the post-sync closure, plan-state
   refresh, N2 dirty worktree refresh, N5 clean worktree audit, N3 topology
   branch audit, and N4 remote old-line refresh.
-- Pushing is a remote write and remains an A5 boundary.
+- Any future push is a new remote write and remains an A5 boundary.
 
 Minimum preflight before push:
 

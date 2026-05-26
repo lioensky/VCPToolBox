@@ -1,5 +1,51 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - N1 Push Closure
+
+Checks performed:
+
+- `git branch --show-current`
+- `git status --short --untracked-files=all`
+- `git rev-list --left-right --count HEAD...origin/main`
+- `git log --oneline --decorate origin/main..HEAD`
+- `git log --oneline --decorate -n 12`
+- `git push origin main`
+- `git fetch origin main --prune`
+- `git rev-parse HEAD`
+- `git rev-parse origin/main`
+- `git rev-list --left-right --count HEAD...origin/main`
+- `git status --short --untracked-files=all`
+- `git log --oneline --decorate -n 10`
+- `git diff --stat`
+- `git diff --check`
+- Sensitive-pattern scan over `.agent_board` and the updated N1-N5 governance
+  document.
+
+Verified:
+
+- Current branch is `main`.
+- Worktree was clean before push.
+- Pre-push `HEAD...origin/main = 7 / 0`.
+- Pushed local commits `6db847b`, `dc8beb4`, `2ef54db`, `70f13d4`,
+  `53c3a1b`, `05c1cf9`, and `509d6e2`.
+- `git push origin main` advanced remote `main` from `e8b0c1d` to `509d6e2`.
+- Post-fetch local `HEAD` and `origin/main` both point to
+  `509d6e23858ac3da6f6a86d9f437f32a4e8bc4e2`.
+- Post-push `HEAD...origin/main = 0 / 0`.
+- Worktree was clean after push and fetch.
+- Local push-closure record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No service functional test was run because this was a governance-record push.
+- No tag, release, deploy, branch deletion, remote ref deletion/rename, dirty
+  worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
+  production write was performed.
+- This local push-closure record is not pushed yet.
+
 ## 2026-05-26 Asia/Shanghai - Post-N2/N3/N4/N5 Local Handoff Refresh
 
 Checks performed:
