@@ -73,6 +73,8 @@ EP1 execution:
 - Prepared EP3 old remote line archive policy with current remote branch hashes and ahead/behind counts; confirmed no remote action was taken.
 - Audited P1 worktrees with `git status -sb`, `git status --short`, `git cherry -v main HEAD`, `git rev-list --left-right --count main...HEAD`, and `git diff --stat main...HEAD`.
 - Confirmed `A:/VCP/VCPToolBox` is dirty/protected, `integration/latest-updates-selective-absorb` is clean and patch-equivalent, and the two photo-studio/codex memory worktrees retain positive cherry deltas.
+- Audited P4 branches with `git log --oneline main..<branch>`, `git diff --stat main...<branch>`, and `git cherry -v main <branch>`.
+- Confirmed P4 branches are not safe merge-cleanup candidates; no deletion or merge was performed.
 
 ## 2026-05-25 17:30 Asia/Shanghai
 

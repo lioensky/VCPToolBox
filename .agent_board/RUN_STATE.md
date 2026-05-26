@@ -94,3 +94,9 @@ P1 worktree audit:
 - `integration/latest-updates-selective-absorb` worktree is clean and patch-equivalent to `main`; it is an optional cleanup candidate only after explicit worktree removal approval.
 - `lane10-codex-memory-intake-20260425` worktree is clean but has positive cherry commits; retain pending feature/archive review.
 - `codex/photo-studio-baserow-provider-batch` worktree is clean but has positive cherry commits and is ahead of its upstream; retain pending feature/archive review.
+
+P4 local unmerged branch audit:
+
+- `feature/photo-studio-guide-contract-migration` and `feature/photo-studio-next-guide-contract` remain broad historical feature/archive labels; do not merge wholesale.
+- `integration/main-absorb-prod-stable-upstream-20260525` remains a historical governance label; current `main` has newer governance evidence, but this branch is not patch-equivalent by `git cherry`.
+- No P4 deletion or merge was performed.

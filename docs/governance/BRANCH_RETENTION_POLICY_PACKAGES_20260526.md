@@ -216,6 +216,23 @@ Rollback:
 
 - Preserve branch heads before deletion by recording hashes in the approval note.
 
+### P4 Audit - 2026-05-26
+
+Read-only audit result:
+
+| Branch | Head | Finding | Recommendation |
+| --- | --- | --- | --- |
+| `feature/photo-studio-guide-contract-migration` | `1e1b0caa3629f8714540593be83b55121c409431` | 10 positive cherry commits remain. Diff is broad and includes legacy ChannelHub UI, adapter plugins, sqlite/runtime-like files, photo-studio guide migration, Codex memory material, and docs. | Retain as historical feature/archive label. Do not merge wholesale. |
+| `feature/photo-studio-next-guide-contract` | `5d012125a6faf9dad6321facd4264077e2567da9` | Contains the guide migration plus newer DingTalk/live publish commits. Some commits are patch-equivalent to current `main`, but 10 positive cherry commits remain and diff is still broad. | Retain as historical feature/archive label. Do not merge wholesale. |
+| `integration/main-absorb-prod-stable-upstream-20260525` | `562e9078b67a8378edba644a8c76666a55d12875` | Contains old governance evidence commits. Current `main` now has newer governance documents and `.agent_board` records, but this branch is not patch-equivalent by `git cherry`. | Retain as local historical governance label unless a future explicit non-merged local branch deletion policy is chosen. |
+
+P4 prepared decision:
+
+- No branch deletion recommended by default.
+- No wholesale merge recommended.
+- If future migration is desired, review by domain and cherry-pick only narrowly scoped current-value files.
+- If future deletion is desired, record exact branch heads and use an explicit non-merged local branch deletion approval.
+
 ## Package P5 - Old Unmerged Remote Lines
 
 Action options:
