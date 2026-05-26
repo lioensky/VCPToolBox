@@ -27,7 +27,8 @@ Open risks:
 - 31 explicitly listed merged remote branches were deleted after user approval and verified absent.
 - Two fully merged local branches were deleted after user approval: `backup/absorb-upstream-main-20260526-merge` and `feature/ai-image-agent-clean-pr`.
 - Remaining local branch classification is recorded in `RUN_STATE.md`; there are no remaining ordinary `git branch -d` cleanup candidates except protected `prod/stable`.
+- Branch retention policy packages P0-P5 are documented in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
 
 Next safe action:
 
-- Continue only with explicit retention/deletion decisions for non-merged local branches, occupied worktrees, or unmerged old remote lines.
+- Review the P0-P5 policy packages. Continue only with explicit retention/deletion decisions for non-merged local branches, occupied worktrees, or unmerged old remote lines.

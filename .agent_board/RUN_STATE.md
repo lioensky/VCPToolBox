@@ -72,3 +72,4 @@ Remaining remote branch classification:
 - `origin/codex/photo-studio-baserow-provider-batch` and `origin/feature/ai-image-agent-clean-pr` were intentionally retained because local branches still track them.
 - Unmerged old remote lines remain: `origin/backup-*`, `origin/custom*`, `origin/feature-2026-04-19`, `origin/feature/latest-updates`, `origin/feature/photo-studio-guide-contract-migration`, `origin/feature/photo-studio-next-guide-contract`, and `origin/safe-upstream-main-*`.
 - These unmerged old remote lines have positive cherry deltas and hundreds of file differences; treat them as archival/retention decisions, not cleanup-by-merge candidates.
+- Branch retention policy packages are documented in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
