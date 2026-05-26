@@ -8,8 +8,8 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- At the latest N2 read-only refresh start, local `main` was `dc8beb4`.
-- Ahead/behind at latest N2 read-only refresh start: `2 / 0`.
+- At the latest N5 read-only refresh start, local `main` was `2ef54db`.
+- Ahead/behind at latest N5 read-only refresh start: `3 / 0`.
 - Recheck local `HEAD` before any approved push because each local evidence
   commit advances the local-only head.
 - Push remains an A5 remote-write boundary requiring explicit approval.
@@ -205,6 +205,22 @@ N2 dirty worktree read-only refresh:
   matching secret/config-like patterns.
 - No dirty worktree file was touched, and no remote write or production action
   was performed.
+
+N5 clean worktree feature-line audit:
+
+- `lane10-codex-memory-intake-20260425` worktree remains clean at
+  `fb17dd091b88167a37101e2975ba5765447fc841`.
+- It has no upstream configured, is neither an ancestor nor a descendant of
+  `main`, has `2` positive cherry commits, and changes `7` files by
+  `main...HEAD`.
+- `codex/photo-studio-baserow-provider-batch` worktree remains clean at
+  `79911d5845dfe3c329745a5c215100b956143122`.
+- It tracks `origin/codex/photo-studio-baserow-provider-batch`, is ahead of
+  that upstream by `12`, is neither an ancestor nor a descendant of `main`, has
+  `7` positive and `5` patch-equivalent/reapplied cherry entries, and changes
+  `21` files by `main...HEAD`.
+- Both remain retained feature/archive lines; no branch deletion, merge,
+  cherry-pick, archive, remote write, or file modification was performed.
 
 D4F Noir Architect new-agent proposal:
 

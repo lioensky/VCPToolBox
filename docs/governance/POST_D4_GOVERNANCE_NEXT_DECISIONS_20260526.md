@@ -14,6 +14,10 @@ tagging, releasing, deploying, or touching production/runtime state.
   `dc8beb4` ahead of `origin/main`.
 - Ahead/behind at latest N2 read-only refresh start:
   `HEAD...origin/main = 2 / 0`.
+- At the latest N5 read-only refresh start, local `main` had checkpoint record
+  `2ef54db` ahead of `origin/main`.
+- Ahead/behind at latest N5 read-only refresh start:
+  `HEAD...origin/main = 3 / 0`.
 - Recheck `HEAD` before any approved push because each local evidence commit
   advances the local-only head.
 - Control worktree was clean at the read-only refresh.
@@ -133,8 +137,22 @@ Branches:
 Facts:
 
 - Their worktrees are clean.
-- Both still have positive cherry deltas relative to current `main`.
+- Both still have substantive deltas relative to current `main`.
+- `lane10-codex-memory-intake-20260425` is clean, has no upstream configured,
+  has `2` positive cherry commits, is not an ancestor of `main`, and touches
+  Codex memory/RAG/admin/test documentation surfaces across `7` files.
+- `codex/photo-studio-baserow-provider-batch` is clean, tracks
+  `origin/codex/photo-studio-baserow-provider-batch`, is ahead of that upstream
+  by `12`, has `7` positive and `5` patch-equivalent/reapplied cherry entries
+  relative to `main`, is not an ancestor of `main`, and touches Agent,
+  GitSearch, RAG, VSearch, admin, and note surfaces across `21` files.
 - Neither is an automatic cleanup candidate.
+
+Interpretation:
+
+- Treat both as retained feature/archive lines.
+- Any future action should be a separate feature/archive review, not branch
+  cleanup.
 
 ## Recommended Next Order
 

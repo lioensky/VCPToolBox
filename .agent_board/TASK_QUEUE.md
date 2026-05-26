@@ -62,6 +62,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   still has `260` dirty entries (`41` tracked, `219` untracked), remains
   `10 / 15` against `origin/feature/latest-updates`, and still carries
   conflict-marker plus secret/config-like risk signals.
+- N5 clean worktree feature-line audit completed locally: both
+  `lane10-codex-memory-intake-20260425` and
+  `codex/photo-studio-baserow-provider-batch` are clean but carry substantive
+  non-cleanup deltas, so they remain retained feature/archive review lines.
 
 ## In Progress
 
@@ -77,6 +81,8 @@ Updated: 2026-05-26 Asia/Shanghai.
    `origin/main`; local checkpoint/plan-state records are ahead until
    explicitly pushed.
 6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
+7. Any N5 intake must be separately scoped as feature/archive review; do not
+   treat either clean worktree line as a branch cleanup candidate.
 
 ## Blocked / Needs Explicit Approval
 

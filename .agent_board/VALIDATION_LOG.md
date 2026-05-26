@@ -1,5 +1,59 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - N5 Clean Worktree Feature-Line Audit
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 8`
+- Control worktree: `git worktree list --porcelain`
+- Each N5 worktree: `git branch --show-current`
+- Each N5 worktree: `git status --short --untracked-files=all`
+- Each N5 worktree: `git rev-parse HEAD`
+- Each N5 worktree: `git rev-list --left-right --count main...HEAD`
+- Each N5 worktree: `git cherry -v main HEAD`
+- Each N5 worktree: `git diff --stat main...HEAD`
+- Each N5 worktree: upstream/ancestor checks.
+- Control worktree: `git diff --stat`
+- Control worktree: `git diff --check`
+- Control worktree: sensitive-pattern scan over `.agent_board` and the updated
+  N1-N5 governance document.
+- Control worktree: `git status --short --untracked-files=all`
+
+Verified:
+
+- Control branch is `main`; control worktree was clean before audit.
+- Control `main` was ahead of `origin/main` by `3 / 0` before this record.
+- `lane10-codex-memory-intake-20260425` worktree is clean at
+  `fb17dd091b88167a37101e2975ba5765447fc841`.
+- `lane10-codex-memory-intake-20260425` has no upstream configured, is neither
+  an ancestor nor a descendant of `main`, has `2` positive cherry commits, and
+  changes `7` files by `main...HEAD`.
+- `codex/photo-studio-baserow-provider-batch` worktree is clean at
+  `79911d5845dfe3c329745a5c215100b956143122`.
+- `codex/photo-studio-baserow-provider-batch` tracks
+  `origin/codex/photo-studio-baserow-provider-batch`, is ahead of that upstream
+  by `12`, is neither an ancestor nor a descendant of `main`, has `7` positive
+  and `5` patch-equivalent/reapplied cherry entries, and changes `21` files by
+  `main...HEAD`.
+- Both lines remain retained feature/archive review candidates, not automatic
+  cleanup candidates.
+- Local record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No feature-level code review or service test was run for either branch.
+- No worktree file was edited, deleted, moved, stashed, reset, cleaned, copied,
+  archived, merged, or cherry-picked.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+- This local N5 audit is not pushed.
+
 ## 2026-05-26 Asia/Shanghai - N2 Dirty Worktree Read-Only Refresh
 
 Checks performed:

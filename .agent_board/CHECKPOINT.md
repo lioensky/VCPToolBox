@@ -4,6 +4,37 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed N5 clean worktree feature-line read-only audit.
+- Verified control `main` was clean before the audit and local `main` was ahead
+  of `origin/main` by `3 / 0`.
+- Verified `lane10-codex-memory-intake-20260425` worktree is clean, has no
+  upstream configured, has `2` positive cherry commits relative to `main`, is
+  not an ancestor of `main`, and changes `7` files by `main...HEAD`.
+- Verified `codex/photo-studio-baserow-provider-batch` worktree is clean,
+  tracks `origin/codex/photo-studio-baserow-provider-batch`, is ahead of that
+  upstream by `12`, has `7` positive and `5` patch-equivalent/reapplied cherry
+  entries relative to `main`, is not an ancestor of `main`, and changes `21`
+  files by `main...HEAD`.
+- Updated the post-D4 N5 decision facts to retain both lines as feature/archive
+  review candidates rather than cleanup candidates.
+
+Not completed:
+
+- No worktree file was edited, deleted, moved, stashed, reset, cleaned, copied,
+  archived, merged, or cherry-picked.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+
+Next:
+
+1. Commit this N5 read-only audit record locally.
+2. Pause before any push, branch cleanup, merge, cherry-pick, archive, or
+   feature intake action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed N2 dirty worktree read-only refresh.
 - Verified control `main` was clean before the refresh and local `main` was
   ahead of `origin/main` by `2 / 0`.
