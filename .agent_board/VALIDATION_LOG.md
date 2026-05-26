@@ -1,5 +1,51 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A2 Dirty Worktree Archive Execution
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- A2 dry-run path and destination preflight.
+- A2 copy of strict include list to approved destination.
+- Generated archive manifest with source and archived SHA256 per copied file.
+- Archive file count and manifest mismatch check.
+- Sensitive-token pattern scan over the archive directory.
+- Post-execution dirty worktree status count and upstream comparison.
+
+Verified:
+
+- Approved destination:
+  `A:/VCP/_archives/VCPToolBox/dirty-feature-latest-updates-20260526/`.
+- Destination did not exist before execution.
+- Destination is outside both the dirty worktree and control worktree.
+- Include count is `47`.
+- Missing include count is `0`.
+- Blocked-in-include count is `0`.
+- Duplicate include count is `0`.
+- Copied source files: `47`.
+- Generated manifest files: `1`.
+- Archive total file count: `48`.
+- Manifest hash mismatch count: `0`.
+- Manifest SHA256:
+  `56612B88F302E9573D1D8D946451B4842A025FBC709C02831913EED50331A8FE`.
+- Sensitive-token pattern scan over the archive directory produced no matches.
+- Dirty worktree remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty worktree status count after execution remained `260`.
+
+Not validated:
+
+- No service functional test was run because this was archive/governance work.
+- No dirty worktree cleanup/delete was performed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A2 Dirty Worktree Archive Preflight
 
 Checks performed:

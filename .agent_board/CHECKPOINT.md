@@ -4,6 +4,36 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A2 dirty worktree archive execution after explicit approval.
+- Dry-run verified destination, include list, blocked exclusions, duplicate
+  count, and missing count.
+- Created archive artifact at
+  `A:/VCP/_archives/VCPToolBox/dirty-feature-latest-updates-20260526/`.
+- Copied `47` strict-include files from `A:/VCP/VCPToolBox`.
+- Generated `ARCHIVE_MANIFEST.json`.
+- Verified archive total file count is `48`: `47` copied files plus `1`
+  generated manifest.
+- Verified manifest hash mismatch count is `0`.
+- Verified archive sensitive-token pattern scan produced no matches.
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_EXECUTION_20260526.md`.
+
+Not completed:
+
+- No file in `A:/VCP/VCPToolBox` was edited, deleted, moved, reset, cleaned,
+  stashed, or checked out.
+- No dirty worktree cleanup was performed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Push A2 preflight/execution records only after explicit approval.
+2. Any dirty worktree cleanup/delete remains a separate explicit decision.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A2 dirty worktree archive execution preflight.
 - Verified control `main` was clean and synchronized with `origin/main` at
   `f09cbccbeada55c8bad3ea8060c7b9272f6a148e`.

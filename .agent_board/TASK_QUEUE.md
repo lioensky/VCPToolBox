@@ -86,7 +86,11 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
 - A2 dirty worktree archive preflight drafted in
   `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`; strict
-  include list is `47` paths and execution remains blocked.
+  include list is `47` paths.
+- A2 dirty worktree archive execution completed locally after explicit approval;
+  archive artifact created at
+  `A:/VCP/_archives/VCPToolBox/dirty-feature-latest-updates-20260526/` with
+  `47` copied files plus `ARCHIVE_MANIFEST.json`.
 
 ## In Progress
 
@@ -107,13 +111,12 @@ Updated: 2026-05-26 Asia/Shanghai.
    treat either clean worktree line as a branch cleanup candidate.
 8. The latest N1 push is complete; any further push is a new remote write and
    requires explicit approval.
-9. Dirty worktree archive or cleanup execution requires separate explicit
-   approval with exact destination, paths, exclusions, and rollback.
-10. A2 archive execution remains blocked until exact destination, inclusion
-    list, exclusion rules, dry-run count, sensitive scan, and rollback are
-    approved.
-11. The current A2 preflight excludes sensitive-pattern and path-ambiguous A1
-    candidates by default.
+9. Dirty worktree cleanup/delete still requires separate explicit approval with
+   exact targets, exclusions, and rollback.
+10. A2 archive execution is complete locally; any rollback must delete only the
+    generated archive artifact at the approved destination.
+11. The current A2 archive excluded sensitive-pattern and path-ambiguous A1
+    candidates.
 
 ## Blocked / Needs Explicit Approval
 
@@ -121,3 +124,4 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Force-removing dirty files or runtime directories.
 - Any additional remote write.
 - Any action touching real secrets or runtime state without a separate approval.
+- Any cleanup/delete inside `A:/VCP/VCPToolBox`.

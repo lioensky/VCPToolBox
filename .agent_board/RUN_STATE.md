@@ -319,6 +319,19 @@ A2 dirty worktree archive preflight:
 - Destination remains unapproved; no archive directory/file was created.
 - No dirty worktree file was touched.
 
+A2 dirty worktree archive execution:
+
+- User explicitly approved destination, include, exclude, dry-run, and rollback.
+- Created archive artifact at
+  `A:/VCP/_archives/VCPToolBox/dirty-feature-latest-updates-20260526/`.
+- Copied `47` strict-include files and generated `ARCHIVE_MANIFEST.json`.
+- Verified archive total file count is `48` and manifest hash mismatch count is
+  `0`.
+- Manifest SHA256 is
+  `56612B88F302E9573D1D8D946451B4842A025FBC709C02831913EED50331A8FE`.
+- Dirty worktree remained untouched and still reports `260` dirty entries.
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_EXECUTION_20260526.md`.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.
