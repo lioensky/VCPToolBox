@@ -55,6 +55,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Post-D4 next-decision package push/sync closure completed locally: explicit
   `git push origin main` returned `Everything up-to-date`, and `main` /
   `origin/main` were reverified at `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
+- Post-sync local plan-state refresh completed locally: the N1-N5 decision
+  document now reflects `origin/main=e8b0c1d`, local `main=6db847b`, and
+  ahead/behind `1 / 0`.
 
 ## In Progress
 
@@ -67,8 +70,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
 5. D4A-D4F packages and post-D4 decision docs have remote closure on
-   `origin/main`; after this local record is committed, checkpoint records may
-   again be ahead until explicitly pushed.
+   `origin/main`; local checkpoint/plan-state records are ahead until
+   explicitly pushed.
 6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval

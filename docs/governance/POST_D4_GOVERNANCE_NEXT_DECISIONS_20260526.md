@@ -9,8 +9,10 @@ tagging, releasing, deploying, or touching production/runtime state.
 
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Control branch: `main`
-- Latest pushed `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`
-- Local `main` currently has local checkpoint records ahead of `origin/main`.
+- Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`
+- Local `main` currently has local checkpoint record
+  `6db847b` ahead of `origin/main`.
+- Current ahead/behind: `HEAD...origin/main = 1 / 0`.
 - Control worktree was clean at the read-only refresh.
 - Dirty worktree `A:/VCP/VCPToolBox` remains on `feature/latest-updates`.
 - Dirty worktree upstream comparison: `10 / 15` against
@@ -26,6 +28,7 @@ Facts:
 
 - Local `main` contains local governance checkpoint commits beyond
   `origin/main`.
+- Current local-only checkpoint head: `6db847b`.
 - Pushing is a remote write and remains an A5 boundary.
 
 Minimum preflight before push:

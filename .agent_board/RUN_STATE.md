@@ -8,10 +8,9 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- Local `main` and `origin/main` are synchronized at
-  `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0` as of the last no-op push check.
-- After this local checkpoint record is committed, `main` may be ahead again
-  until an explicit push approval is given.
+- Local `main`: `6db847b` at the latest post-sync checkpoint record.
+- Current ahead/behind relative to `origin/main`: `1 / 0`.
+- Push remains an A5 remote-write boundary requiring explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -175,6 +174,18 @@ Post-D4 next-decision package push/sync closure:
   `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`, ahead/behind remains `0 / 0`,
   and the control worktree is clean.
 - No tag, release, deploy, branch deletion, dirty worktree cleanup, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Post-sync local plan-state refresh:
+
+- Rechecked current `main`, status, ahead/behind, log, and N1-N5 decision
+  package after committing `6db847b`.
+- Verified the control worktree was clean before the refresh.
+- Verified local `main` is ahead of `origin/main` by `1 / 0`.
+- Updated `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md` to
+  replace stale `0d6c210` state with current `origin/main=e8b0c1d` and
+  local-only checkpoint head `6db847b`.
+- No push, tag, release, deploy, branch deletion, dirty worktree cleanup, live
   DingTalk/MCP/DWS command, or production write was performed.
 
 D4F Noir Architect new-agent proposal:
