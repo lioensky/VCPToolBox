@@ -4341,15 +4341,43 @@ class RAGDiaryPlugin {
         return totalA + totalB > 0 ? (2 * intersection) / (totalA + totalB) : 0;
     }
 
+    _getFuzzyEmbeddingOptions(options = {}) {
+        const hotConfig = this.ragParams?.ContextFoldingV2?.fuzzyEmbedding || {};
+        const defaults = {
+            threshold: 0.985,
+            minLength: 80,
+            maxScan: 200,
+            maxLengthDiffRatio: 0.02,
+            maxLengthDiffAbs: 80
+        };
+
+        const readNumber = (key) => {
+            const optionValue = options[key];
+            if (Number.isFinite(Number(optionValue))) return Number(optionValue);
+            const hotValue = hotConfig[key];
+            if (Number.isFinite(Number(hotValue))) return Number(hotValue);
+            return defaults[key];
+        };
+
+        return {
+            threshold: readNumber('threshold'),
+            minLength: readNumber('minLength'),
+            maxScan: readNumber('maxScan'),
+            maxLengthDiffRatio: readNumber('maxLengthDiffRatio'),
+            maxLengthDiffAbs: readNumber('maxLengthDiffAbs')
+        };
+    }
+
     _findFuzzyEmbeddingFromCache(text, options = {}) {
         if (!text || typeof text !== 'string') return null;
 
         const normalizedText = text.trim();
-        const threshold = Number.isFinite(options.threshold) ? options.threshold : 0.985;
-        const minLength = Number.isFinite(options.minLength) ? options.minLength : 80;
-        const maxScan = Number.isFinite(options.maxScan) ? options.maxScan : 200;
-        const maxLengthDiffRatio = Number.isFinite(options.maxLengthDiffRatio) ? options.maxLengthDiffRatio : 0.02;
-        const maxLengthDiffAbs = Number.isFinite(options.maxLengthDiffAbs) ? options.maxLengthDiffAbs : 80;
+        const fuzzyOptions = this._getFuzzyEmbeddingOptions(options);
+        const threshold = fuzzyOptions.threshold;
+        const minLength = fuzzyOptions.minLength;
+        const maxScan = fuzzyOptions.maxScan;
+        const maxLengthDiffRatio = fuzzyOptions.maxLengthDiffRatio;
+        const maxLengthDiffAbs = fuzzyOptions.maxLengthDiffAbs;
 
         if (normalizedText.length < minLength || this.embeddingTextIndex.size === 0) {
             return null;
