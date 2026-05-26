@@ -4,6 +4,39 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed G1A generated artifacts delete preflight.
+- Pushed G1A archive execution record `3dd22fe` to `origin/main`; verified
+  `HEAD`, `origin/main`, and `origin/HEAD` at
+  `3dd22fe238b38cc4bd5b3b1a21af5853e30a7b91`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `213` dirty entries.
+- Rechecked G1A delete candidates: `37` unique paths, inside workspace `37`,
+  untracked `37`, existing `37`, hash matched `37`, sensitive match files `0`,
+  failure count `0`.
+- Expected dirty count after a future G1A delete is `176`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_DELETE_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No G1A source file was deleted.
+- No dirty worktree file was edited, moved, reset, cleaned, restored, or
+  checked out.
+- No protected/runtime path was touched.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
+Next:
+
+1. Commit this G1A delete preflight locally.
+2. Execute G1A delete only after explicit delete approval.
+3. Push records only after explicit approval.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed G1A generated artifacts archive execution after explicit approval.
 - Rechecked G1A gate: `37` unique untracked existing files, sensitive match
   files `0`, G1B overlap `0`, failure count `0`, total bytes `1,167,943`.

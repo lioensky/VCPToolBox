@@ -122,6 +122,8 @@ Updated: 2026-05-26 Asia/Shanghai.
   artifact created at
   `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/` with `37`
   copied files plus `ARCHIVE_MANIFEST.json`.
+- G1A generated artifacts delete preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_DELETE_PREFLIGHT_20260526.md`.
 
 ## In Progress
 
@@ -167,6 +169,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     approval; G1A delete remains a later package after archive verification.
 20. G1A archive is complete; any G1A delete requires fresh pre-delete gate and
     separate explicit approval.
+21. G1A delete is eligible after explicit approval; no source file has been
+    deleted in the delete preflight.
 
 ## Blocked / Needs Explicit Approval
 

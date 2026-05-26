@@ -439,6 +439,17 @@ G1A generated artifacts archive execution:
 - Added
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_ARCHIVE_EXECUTION_20260526.md`.
 
+G1A generated artifacts delete preflight:
+
+- Pushed `3dd22fe` to `origin/main`; `main` and `origin/main` synchronized at
+  `3dd22fe238b38cc4bd5b3b1a21af5853e30a7b91`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_DELETE_PREFLIGHT_20260526.md`.
+- Rechecked `37` G1A delete candidates: all untracked, existing, archive-hash
+  matched, and no sensitive-pattern matches.
+- Expected dirty count after future G1A delete is `176`.
+- No delete was executed.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

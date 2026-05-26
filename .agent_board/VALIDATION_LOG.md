@@ -1,5 +1,44 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Delete Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Control worktree: `git push origin main` for `3dd22fe` after explicit
+  approval.
+- Control worktree: `git fetch origin main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Read G1A archive `ARCHIVE_MANIFEST.json`.
+- Rechecked all `37` G1A manifest paths for workspace boundary, untracked
+  status, existence, SHA256 match, and sensitive-pattern matches.
+
+Verified:
+
+- `HEAD`, `origin/main`, and `origin/HEAD` are synchronized at
+  `3dd22fe238b38cc4bd5b3b1a21af5853e30a7b91`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count is `213`.
+- G1A delete candidate count is `37`.
+- All `37` G1A candidates are inside the dirty worktree, untracked, existing,
+  and archive-hash matched.
+- Sensitive match file count is `0`.
+- Expected dirty status count after a future G1A delete is `176`.
+
+Not validated:
+
+- No G1A source delete was executed.
+- No service functional test was run because this is governance documentation.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Archive Execution
 
 Checks performed:
