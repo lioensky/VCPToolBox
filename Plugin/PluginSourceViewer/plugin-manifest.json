@@ -1,0 +1,33 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "PluginSourceViewer",
+  "displayName": "插件源码查询器",
+  "version": "1.0.0",
+  "description": "一个特殊同步插件：输入指定 targettool 后，在本地 Plugin 目录的启用 manifest 中查找对应插件，解析 entryPoint.command 或 entryPoint.script，返回主入口源码、manifest 内容和插件目录树。若找不到本地插件，则提示该工具可能是分布式插件或不存在。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node PluginSourceViewer.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 60000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "ViewPluginSource",
+        "commandIdentifier": "ViewPluginSource",
+        "description": "功能: 查询指定 VCP 工具插件在本地的源码。插件会先扫描 Plugin 目录下所有启用的 plugin-manifest.json，按 manifest.name 匹配 targettool，然后根据 entryPoint.command 或 entryPoint.script 推断主入口文件。对于 node/python/shell 等文本源码，会返回主代码文件内容；对于 exe、node 原生模块、压缩包等二进制入口，只说明其为二进制/非文本对象；同时返回对应插件目录树，展示除主代码文件外的其它文件分布，并自动忽略 node_modules、target、dist、build、__pycache__ 等依赖/构建缓存目录。\n参数:\n- targettool (字符串, 必需): 要查询源码的插件工具名，必须对应 manifest.name，例如 AnySearch、DigitalOracle、AgentAssistant、ServerFileOperator。\n找不到时: 返回“可能是分布式插件或者不存在/已禁用/拼写不一致”的提示，并列出本地可见工具名。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」PluginSourceViewer「末」,\ntargettool:「始」AnySearch「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "dependencies": {
+    "npm": [],
+    "system": []
+  },
+  "compatibility": {
+    "nodeVersion": ">=14.0.0"
+  }
+}
