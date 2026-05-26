@@ -37,6 +37,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - 2026-05-26 dirty worktree preservation manifest drafted in `docs/governance/DIRTY_WORKTREE_PRESERVATION_MANIFEST_20260526.md`.
 - Dirty candidate review C1 completed: old root `AdminPanel/` static Codex Memory edits rejected because current `main` already carries the Vue admin implementation and backend/test coverage.
 - Dirty candidate review C2 completed: dirty `Agent/Nova.txt` rejected as a downgrade/fork risk; `Agent/Noir Architect.txt` retained as candidate-only new-agent draft.
+- Dirty candidate review C3 completed: `Plugin/CodexMemoryBridge/*.js` has no immediate source absorption; `.fixed.js` is format-only, `.new.js` is candidate-only for i18n/API-contract review.
 
 ## In Progress
 
@@ -48,7 +49,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, cleanup, or source-intake package for `A:/VCP/VCPToolBox`.
-5. Continue candidate review one package at a time, preferably `Plugin/CodexMemoryBridge/*.js` or `Plugin/DingTalkTable/**`.
+5. Continue candidate review one package at a time, preferably `Plugin/DingTalkTable/**`, plugin documentation templates, OneBot docs, or tool execution draft route.
 
 ## Blocked / Needs Explicit Approval
 

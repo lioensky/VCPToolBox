@@ -172,6 +172,32 @@ Decision:
 - Keep `Agent/Noir Architect.txt` as a candidate-only prompt draft; do not add it automatically because adding an agent persona is a user-facing capability change.
 - If future intake is desired, review `Noir Architect` as a single new-agent package with naming, trigger, prompt safety, and UI/listing behavior checked explicitly.
 
+### 5.3 CodexMemoryBridge JS Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Read-only checks:
+
+- Dirty worktree entries reviewed: `Plugin/CodexMemoryBridge/codex-memory-bridge.fixed.js` and `Plugin/CodexMemoryBridge/codex-memory-bridge.new.js`.
+- The dirty worktree also contains tracked `Plugin/CodexMemoryBridge/codex-memory-bridge.js`.
+- Current `main` already contains `Plugin/CodexMemoryBridge/codex-memory-bridge.js` and `Plugin/CodexMemoryBridge/plugin-manifest.json`.
+- Current `main` tracked bridge JS and dirty tracked bridge JS are content-equivalent when ignoring CR line endings.
+- No unresolved conflict marker was found in the bridge JS files.
+- No real secret value was found; matches were limited to `process.env` reads and built-in sensitive-key detection rules.
+
+Observed variants:
+
+- `codex-memory-bridge.fixed.js` differs from the tracked bridge by only BOM/trailing-newline normalization.
+- `codex-memory-bridge.new.js` changes user-facing validation/rejection messages and diary payload labels from English to Chinese, and changes the returned knowledge `targetDiary` display from `Codex knowledge` to `Codex的知识`.
+- Existing tests and docs already verify the canonical knowledge write folder is `dailynote/Codex的知识/`, while the returned `targetDiary`/reason strings remain an observable API surface.
+
+Decision:
+
+- Reject `codex-memory-bridge.fixed.js` for migration; it is only file-format cleanup and should not be absorbed from an untracked sidecar.
+- Keep `codex-memory-bridge.new.js` as candidate-only for a future dedicated i18n/API-contract review.
+- Do not replace the main entry point with `.new.js` automatically, because it changes returned messages and display strings and needs targeted regression tests before intake.
+- No immediate source absorption is needed for `Plugin/CodexMemoryBridge/*.js`.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.
