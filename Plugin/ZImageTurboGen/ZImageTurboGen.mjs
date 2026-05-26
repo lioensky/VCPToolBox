@@ -22,8 +22,22 @@ const TASK_API_ENDPOINT = 'https://ai.gitee.com/v1/task';
 // --- Proxy Setup ---
 const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : null;
 
+function shouldBypassProxy(url) {
+    try {
+        const { hostname } = new URL(url);
+        return hostname === 'localhost'
+            || hostname === '127.0.0.1'
+            || hostname === '::1'
+            || hostname.startsWith('10.')
+            || hostname.startsWith('192.168.')
+            || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+    } catch {
+        return false;
+    }
+}
+
 async function fetchWithProxy(url, options = {}) {
-    if (proxyAgent) {
+    if (proxyAgent && !shouldBypassProxy(url)) {
         return fetch(url, { ...options, agent: proxyAgent });
     }
     return fetch(url, options);
@@ -307,6 +321,22 @@ async function processApiRequest(rawArgs) {
     };
 }
 
+function dataUriToBlob(dataUri, index) {
+    const match = dataUri.match(/^data:(image\/[^;]+);base64,([\s\S]+)$/);
+    if (!match) {
+        throw new Error("Plugin Error: Invalid image data URI.");
+    }
+
+    const mimeType = match[1];
+    const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+    const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+    const extension = extMap[mimeType] || 'png';
+    return {
+        blob: new Blob([buffer], { type: mimeType }),
+        filename: `input_${index + 1}.${extension}`
+    };
+}
+
 async function imageInputToDataUri(imageInput) {
     if (!imageInput || typeof imageInput !== 'string') {
         throw new Error("Plugin Error: Image input must be a non-empty string.");
@@ -322,7 +352,8 @@ async function imageInputToDataUri(imageInput) {
             signal: AbortSignal.timeout(60000),
         });
         if (!response.ok) {
-            throw new Error(`Plugin Error: Failed to download input image from URL: ${input}`);
+            const errorBody = await response.text().catch(() => '');
+            throw new Error(`Plugin Error: Failed to download input image from URL: ${input}. HTTP ${response.status}. ${errorBody}`);
         }
         const arrayBuf = await response.arrayBuffer();
         const buffer = Buffer.from(arrayBuf);
@@ -399,8 +430,16 @@ async function processEditRequest(args) {
     }
 
     const formData = new FormData();
+    const editSize = args.size || args.resolution || '2048x2048';
+    const editModel = args.model || args.edit_model || 'LongCat-Image-Edit';
+
+    formData.append('model', editModel);
     formData.append('prompt', args.prompt);
-    formData.append('model', args.model || 'Qwen-Image-Edit-2511');
+    formData.append('mask', args.mask || '');
+    formData.append('size', editSize);
+    formData.append('user', args.user || 'VCPToolBox');
+    formData.append('n', String(Math.min(Math.max(parseInt(args.n || args.count || '1', 10) || 1, 1), 1)));
+    formData.append('response_format', args.response_format || 'b64_json');
     formData.append('num_inference_steps', String(Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 4))));
     formData.append('seed', String(parseInt(args.seed, 10) || 0));
     formData.append('guidance_scale', String(parseFloat(args.guidance_scale) || 1));
@@ -413,12 +452,12 @@ async function processEditRequest(args) {
         formData.append('task_types', taskType);
     }
 
-    for (const dataUri of dataUris) {
-        // Gitee async edit accepts image references through multipart form fields.
-        // We deliberately submit base64/data URI strings here instead of local URLs,
-        // because local image-server URLs are meaningless to the remote API.
-        formData.append('image', dataUri);
-    }
+    dataUris.forEach((dataUri, index) => {
+        // Do not submit local/LAN image-server URLs to Gitee.
+        // Convert every input to base64/data URI first, then upload it as a multipart file field.
+        const { blob, filename } = dataUriToBlob(dataUri, index);
+        formData.append('image', blob, filename);
+    });
 
     const taskResponse = await fetchWithProxy(EDIT_API_ENDPOINT, {
         method: 'POST',
@@ -446,20 +485,26 @@ async function processEditRequest(args) {
     }
 
     const outputUrl = task.output?.file_url;
-    if (!outputUrl) {
-        throw new Error("Plugin Error: Edit task succeeded but no output.file_url was returned. Response: " + JSON.stringify(task));
-    }
+    const outputBase64 = task.output?.b64_json || task.output?.image_base64 || task.output?.base64;
+    let imageBuffer;
+    let imageMimeType = 'image/png';
 
-    const imageResponse = await fetchWithProxy(outputUrl, {
-        signal: AbortSignal.timeout(60000),
-    });
-    if (!imageResponse.ok) {
-        throw new Error(`Failed to download edited image from URL: ${outputUrl}`);
-    }
+    if (outputBase64) {
+        imageBuffer = Buffer.from(String(outputBase64).replace(/^data:image\/[^;]+;base64,/, '').replace(/\s/g, ''), 'base64');
+    } else if (outputUrl) {
+        const imageResponse = await fetchWithProxy(outputUrl, {
+            signal: AbortSignal.timeout(60000),
+        });
+        if (!imageResponse.ok) {
+            throw new Error(`Failed to download edited image from URL: ${outputUrl}`);
+        }
 
-    const arrayBuf = await imageResponse.arrayBuffer();
-    const imageBuffer = Buffer.from(arrayBuf);
-    const imageMimeType = imageResponse.headers.get('content-type') || 'image/png';
+        const arrayBuf = await imageResponse.arrayBuffer();
+        imageBuffer = Buffer.from(arrayBuf);
+        imageMimeType = imageResponse.headers.get('content-type') || 'image/png';
+    } else {
+        throw new Error("Plugin Error: Edit task succeeded but no output.file_url or output base64 was returned. Response: " + JSON.stringify(task));
+    }
     const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
     const imageExtension = extMap[imageMimeType] || 'png';
 
@@ -481,7 +526,7 @@ async function processEditRequest(args) {
         content: [
             {
                 type: 'text',
-                text: `图片已成功编辑！\n- 提示词: ${args.prompt}\n- 参考图数量: ${dataUris.length}\n- 模型: ${args.model || 'Qwen-Image-Edit-2511'}\n- 任务ID: ${taskId}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
+                text: `图片已成功编辑！\n- 提示词: ${args.prompt}\n- 参考图数量: ${dataUris.length}\n- 模型: ${editModel}\n- 尺寸: ${editSize}\n- 任务ID: ${taskId}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
             },
             {
                 type: 'image_url',
