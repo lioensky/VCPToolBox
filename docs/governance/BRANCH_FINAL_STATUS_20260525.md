@@ -32,7 +32,6 @@ policy packaging.
 Current registered worktrees:
 
 - `A:/VCP/VCPToolBox`: `feature/latest-updates`, dirty high-risk user-owned worktree.
-- `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`: `integration/latest-updates-selective-absorb`, clean and patch-equivalent to current `main`; optional cleanup candidate after explicit worktree removal approval.
 - `A:/VCP/VCPToolBox-photo-studio-export`: `lane10-codex-memory-intake-20260425`.
 - `A:/VCP/VCPToolBox-photo-studio-next`: `codex/photo-studio-baserow-provider-batch`, clean and ahead of its upstream.
 - `A:/VCP/VCPToolBox-prod-stable`: `main`, current control worktree.
@@ -41,6 +40,7 @@ Removed from Git worktree registry:
 
 - `A:/VCP/VCPToolBox-staging-custom-integration`
 - `A:/VCP/VCPToolBox-prod-stable-release-preflight-20260429`
+- `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`
 
 Final residual cleanup:
 
@@ -87,4 +87,4 @@ Branch/worktree governance is closed to a documented retention state:
 - The only remaining remote branch merged into `origin/main` outside protected refs is `origin/codex/photo-studio-baserow-provider-batch`, retained because a local worktree branch still tracks it.
 - `prod/stable` remains protected.
 - `A:/VCP/VCPToolBox` remains protected as dirty user-owned state.
-- P1B is the only low-risk optional cleanup candidate, but still requires explicit approval because it removes a registered worktree.
+- P1B has been completed; no low-risk optional cleanup candidate remains.

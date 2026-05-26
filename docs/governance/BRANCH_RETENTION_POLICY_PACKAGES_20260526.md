@@ -86,7 +86,7 @@ Read-only audit result:
 Prepared P1 follow-up:
 
 - P1A: protect `A:/VCP/VCPToolBox`; no action.
-- P1B: optional cleanup candidate for `integration/latest-updates-selective-absorb` worktree and local branch after explicit approval.
+- P1B: completed after explicit approval. Removed `integration/latest-updates-selective-absorb` worktree and local branch.
 - P1C: retain `lane10-codex-memory-intake-20260425`.
 - P1D: retain `codex/photo-studio-baserow-provider-batch`.
 
@@ -100,8 +100,16 @@ git branch -d integration/latest-updates-selective-absorb
 P1B rollback:
 
 ```powershell
+git branch integration/latest-updates-selective-absorb 0e2890e7e03d801d57202c82d6432e9a51198b51
 git worktree add A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb integration/latest-updates-selective-absorb
 ```
+
+P1B execution result:
+
+- Removed worktree `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`.
+- Ordinary `git branch -d integration/latest-updates-selective-absorb` was refused because the branch was not a topological ancestor of `main`.
+- After explicit approval, deleted the patch-equivalent local branch with `git branch -D integration/latest-updates-selective-absorb`.
+- Verified the worktree path is absent, the worktree registry no longer lists it, and the local branch is absent.
 
 ## Package P2 - Duplicate Local AI Image Heads
 

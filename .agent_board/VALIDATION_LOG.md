@@ -86,6 +86,15 @@ Residual merged remote cleanup:
 - Verified `remote_still_present=no`.
 - Verified `main...origin/main = 0 / 0` and `prod/stable...origin/prod/stable = 0 / 0`.
 
+P1B cleanup execution:
+
+- Verified worktree was clean and branch head was `0e2890e7e03d801d57202c82d6432e9a51198b51`.
+- Verified `git cherry -v main HEAD` showed the branch as patch-equivalent.
+- Ran `git worktree remove A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`.
+- `git branch -d integration/latest-updates-selective-absorb` was refused because the branch is not a topological ancestor of `main`.
+- After explicit approval, ran `git branch -D integration/latest-updates-selective-absorb`.
+- Verified the worktree path is absent, the local branch is absent, and `main` worktree remains clean.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:

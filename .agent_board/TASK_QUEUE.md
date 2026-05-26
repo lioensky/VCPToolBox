@@ -32,6 +32,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - P1 worktree audit completed; only `integration/latest-updates-selective-absorb` is an optional cleanup candidate after explicit worktree removal approval.
 - P4 local unmerged branch audit completed; retain all P4 branches as historical feature/governance labels by default.
 - Residual merged remote branch `origin/feature/ai-image-agent-clean-pr` deleted and verified absent.
+- P1B cleanup completed: `integration/latest-updates-selective-absorb` worktree and local branch removed.
 
 ## In Progress
 
@@ -39,10 +40,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 
 ## Remaining Explicit Decisions
 
-1. Optional P1B cleanup for `integration/latest-updates-selective-absorb` worktree and local branch.
-2. Optional EP2 deletion only if a stricter local branch list is desired.
-3. Optional EP3 remote archive rename/delete only with explicit remote approval.
-4. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
+1. Optional EP2 deletion only if a stricter local branch list is desired.
+2. Optional EP3 remote archive rename/delete only with explicit remote approval.
+3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 
 ## Blocked / Needs Explicit Approval
 
