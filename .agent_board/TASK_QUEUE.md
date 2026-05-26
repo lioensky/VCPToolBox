@@ -29,6 +29,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - EP1 completed locally: duplicate AI image feature labels deleted, rescue label retained.
 - EP2 prepared as retain-by-default; no action taken.
 - EP3 prepared for old remote line archive policy; no remote action taken.
+- P1 worktree audit completed; only `integration/latest-updates-selective-absorb` is an optional cleanup candidate after explicit worktree removal approval.
 
 ## In Progress
 
@@ -37,11 +38,12 @@ Updated: 2026-05-26 Asia/Shanghai.
 ## Next Safe Local Tasks
 
 1. Review policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
-2. Decide whether to keep EP2 retained or delete it under explicit non-merged local branch approval.
-3. Decide whether EP3 old unmerged remote lines should remain as-is, be renamed to an archive namespace, or be deleted.
-4. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-5. Request explicit approval before deleting any local or remote branch.
-6. Request explicit approval before any additional remote write.
+2. Decide P1B optional cleanup for `integration/latest-updates-selective-absorb` worktree and local branch.
+3. Decide whether to keep EP2 retained or delete it under explicit non-merged local branch approval.
+4. Decide whether EP3 old unmerged remote lines should remain as-is, be renamed to an archive namespace, or be deleted.
+5. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
+6. Request explicit approval before deleting any local or remote branch.
+7. Request explicit approval before any additional remote write.
 
 ## Blocked / Needs Explicit Approval
 

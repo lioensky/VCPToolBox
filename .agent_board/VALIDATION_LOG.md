@@ -71,6 +71,8 @@ EP1 execution:
 - Verified worktree status remained clean and synchronized with `origin/main`.
 - Prepared EP2 as retain-by-default and confirmed no branch action was taken.
 - Prepared EP3 old remote line archive policy with current remote branch hashes and ahead/behind counts; confirmed no remote action was taken.
+- Audited P1 worktrees with `git status -sb`, `git status --short`, `git cherry -v main HEAD`, `git rev-list --left-right --count main...HEAD`, and `git diff --stat main...HEAD`.
+- Confirmed `A:/VCP/VCPToolBox` is dirty/protected, `integration/latest-updates-selective-absorb` is clean and patch-equivalent, and the two photo-studio/codex memory worktrees retain positive cherry deltas.
 
 ## 2026-05-25 17:30 Asia/Shanghai
 

@@ -72,6 +72,37 @@ Rollback:
 - If a worktree cleanup is later approved, preserve dirty state first with a named stash,
   patch export, or archive plan before branch deletion.
 
+### P1 Audit - 2026-05-26
+
+Read-only audit result:
+
+| Worktree | Branch | Status | Finding | Recommendation |
+| --- | --- | --- | --- | --- |
+| `A:/VCP/VCPToolBox` | `feature/latest-updates` | dirty, ahead 10 / behind 15 | Expanded dirty count observed as 261 entries; includes config, sqlite/runtime, deleted manifests, source/docs/tests, and untracked state paths. | Protect. Do not reset, remove, delete, or archive without a separate backup/retention decision. |
+| `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb` | `integration/latest-updates-selective-absorb` | clean | `git cherry -v main HEAD` reports the single commit as patch-equivalent (`- 0e2890e`). | Local worktree/branch cleanup candidate, but only after explicit worktree removal approval because it is a registered worktree. |
+| `A:/VCP/VCPToolBox-photo-studio-export` | `lane10-codex-memory-intake-20260425` | clean | Two positive cherry commits remain: Codex memory recall analytics and RAG diary wiring. | Retain pending feature/archive review. |
+| `A:/VCP/VCPToolBox-photo-studio-next` | `codex/photo-studio-baserow-provider-batch` | clean, ahead 12 of upstream | Multiple positive cherry commits remain, including RAGDiary expand, GitSearch, VSearch config, and prompt/template changes. | Retain pending feature/archive review. |
+
+Prepared P1 follow-up:
+
+- P1A: protect `A:/VCP/VCPToolBox`; no action.
+- P1B: optional cleanup candidate for `integration/latest-updates-selective-absorb` worktree and local branch after explicit approval.
+- P1C: retain `lane10-codex-memory-intake-20260425`.
+- P1D: retain `codex/photo-studio-baserow-provider-batch`.
+
+P1B expected command shape only after explicit approval:
+
+```powershell
+git worktree remove A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb
+git branch -d integration/latest-updates-selective-absorb
+```
+
+P1B rollback:
+
+```powershell
+git worktree add A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb integration/latest-updates-selective-absorb
+```
+
 ## Package P2 - Duplicate Local AI Image Heads
 
 Action options:

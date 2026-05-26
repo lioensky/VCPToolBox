@@ -87,3 +87,10 @@ EP2/EP3 policy continuation:
 - EP2 remains a prepared no-op by recommendation: retain `governance/origin-main-topology-bridge-preview` unless a stricter local branch list is desired.
 - EP3 documents old unmerged remote line heads and recommends retaining them as archive refs for now.
 - No EP2 deletion, EP3 remote rename, or EP3 remote deletion has been performed.
+
+P1 worktree audit:
+
+- `A:/VCP/VCPToolBox` remains dirty and protected; expanded dirty count observed as 261 entries.
+- `integration/latest-updates-selective-absorb` worktree is clean and patch-equivalent to `main`; it is an optional cleanup candidate only after explicit worktree removal approval.
+- `lane10-codex-memory-intake-20260425` worktree is clean but has positive cherry commits; retain pending feature/archive review.
+- `codex/photo-studio-baserow-provider-batch` worktree is clean but has positive cherry commits and is ahead of its upstream; retain pending feature/archive review.
