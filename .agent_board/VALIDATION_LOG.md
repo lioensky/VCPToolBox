@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A3-C2 Tracked Restore Execution
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count before and
+  after restore.
+- Checked stale `A:/VCP/VCPToolBox/.git/index.lock` and git-related processes.
+- Removed stale `index.lock` after explicit approval.
+- Reran pre-restore gate over all `8` C2 paths: workspace boundary, tracked
+  modified status, file existence, A2 manifest membership, archive file
+  existence, SHA256 match, and blocked overlap.
+- Restored the `8` C2 files with targeted `git restore -- <path>` commands.
+- Post-restore check for C2 paths still present in dirty status.
+- Rechecked A2 `ARCHIVE_MANIFEST.json`.
+
+Verified:
+
+- Pre-restore gate failure count was `0`.
+- Restored count was `8`.
+- Dirty status count dropped from `221` to `213`.
+- C2 paths still present in dirty status after restore: `0`.
+- Dirty worktree branch remained `feature/latest-updates`.
+- Dirty worktree head remained
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison remained `10 / 15`.
+- A2 manifest copied-file count remained `47`.
+- A2 manifest hash mismatch count remained `0`.
+
+Not validated:
+
+- No service functional test was run because this was cleanup/governance work.
+- No untracked delete was executed in this package.
+- No generated/runtime/manifest cleanup was executed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A3-C2 Tracked Restore Preflight
 
 Checks performed:

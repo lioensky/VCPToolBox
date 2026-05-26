@@ -106,6 +106,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_RESTORE_C2_PREFLIGHT_20260526.md`; all `8`
   C2 candidates remain tracked modified, present, archive-hash matched, and
   non-overlapping with blocked paths.
+- A3-C2 tracked restore executed after explicit approval; `8` tracked modified
+  files were restored in `A:/VCP/VCPToolBox`, reducing dirty status count from
+  `221` to `213`.
 
 ## In Progress
 
@@ -138,8 +141,10 @@ Updated: 2026-05-26 Asia/Shanghai.
     the A2 archive artifact.
 14. A3-C2 remains a separate tracked-restore decision and must not be bundled
     with generated/runtime/manifest cleanup.
-15. A3-C2 is eligible for explicit restore approval, but no tracked restore has
-    been executed.
+15. A3-C2 is complete; any rollback must restore only the `8` dirty copies from
+    the A2 archive artifact.
+16. Remaining `213` dirty entries require a fresh read-only reassessment before
+    any further cleanup package.
 
 ## Blocked / Needs Explicit Approval
 

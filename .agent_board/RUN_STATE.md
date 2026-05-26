@@ -377,6 +377,19 @@ A3-C2 tracked restore preflight:
 - A3-C2 remains not executed; actual tracked restore still requires explicit
   approval.
 
+A3-C2 tracked restore execution:
+
+- User explicitly approved A3-C2 tracked restore.
+- Removed stale `A:/VCP/VCPToolBox/.git/index.lock` after explicit approval and
+  no remaining git-related processes.
+- Restored exactly `8` tracked modified files with targeted `git restore --
+  <path>` commands.
+- Dirty status count dropped from `221` to `213`.
+- Post-restore verification found `0` C2 paths still in dirty status.
+- Dirty worktree remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Added `docs/governance/DIRTY_WORKTREE_RESTORE_C2_EXECUTION_20260526.md`.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

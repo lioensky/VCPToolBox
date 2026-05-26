@@ -4,6 +4,41 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A3-C2 tracked restore execution after explicit approval.
+- First restore attempt was blocked by stale
+  `A:/VCP/VCPToolBox/.git/index.lock`; after explicit approval, removed the
+  stale lock and reran the A3-C2 hard gate.
+- Pre-restore gate verified `8` C2 paths: inside workspace, tracked modified,
+  existing, in A2 manifest, archive exists, SHA256 matched, blocked overlap
+  `0`, failure count `0`.
+- Restored exactly `8` tracked files from `A:/VCP/VCPToolBox` with targeted
+  `git restore -- <path>` commands.
+- Verified dirty status count dropped from `221` to `213`.
+- Verified C2 paths still present in dirty status: `0`.
+- Verified dirty worktree remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Verified A2 archive manifest remains available with `47` copied files and
+  hash mismatch count `0`.
+- Added `docs/governance/DIRTY_WORKTREE_RESTORE_C2_EXECUTION_20260526.md`.
+
+Not completed:
+
+- No untracked file was deleted.
+- No A2 blocked/protected/generated/manifest-toggle bucket was touched.
+- No `git reset`, broad checkout, broad restore, recursive deletion, branch
+  change, stash, worktree removal, push, tag, release, deploy, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A3-C2 execution record locally.
+2. Push records only after explicit approval.
+3. Reassess remaining `213` dirty entries before any further cleanup package.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A3-C2 tracked restore preflight as a read-only check.
 - Reverified control `main` is synchronized with `origin/main` at
   `2d3ea6ff23903b86a9dcde974afc01e039f7fedf`.
