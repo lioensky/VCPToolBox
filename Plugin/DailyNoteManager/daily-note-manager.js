@@ -241,12 +241,13 @@ async function handleListCommand(args) {
 async function handleOrganizeCommand(args) {
     const urls = args.urls || args.Urls || args.URL;
     const maid = args.maid || args.maidName || args.Maid;
+    const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
     const dateString = args.dateString || args.Date || args.date;
     const contentText = args.contentText || args.Content || args.content;
     const tag = args.Tag || args.tag;
     const fileName = args.fileName || args.FileName;
 
-    debugLog(`Processing 'organize' command (queued)`);
+    debugLog(`Processing 'organize' command (queued) - folder: ${folder || 'Not specified'}, maid: ${maid || 'Not specified'}`);
 
     // 通过写入队列串行化，确保并发调用获得不同时间戳
     return withWriteLock(() => _handleOrganizeInternal(args));
@@ -255,6 +256,7 @@ async function handleOrganizeCommand(args) {
 async function _handleOrganizeInternal(args) {
     const urls = args.urls || args.Urls || args.URL;
     const maid = args.maid || args.maidName || args.Maid;
+    const folder = args.folder || args.Folder || args.folderName || args.FolderName || args.fold || args.Fold;
     const dateString = args.dateString || args.Date || args.date;
     const contentText = args.contentText || args.Content || args.content;
     const tag = args.Tag || args.tag;
@@ -280,11 +282,14 @@ async function _handleOrganizeInternal(args) {
         const processedContent = processTags(contentText, tag);
 
         const trimmedMaidName = maid.trim();
-        let folderName = trimmedMaidName;
+        const trimmedFolderName = typeof folder === 'string' ? folder.trim() : '';
+        let folderName = trimmedFolderName || trimmedMaidName;
         let actualMaidName = trimmedMaidName;
         const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
 
-        if (tagMatch) {
+        if (trimmedFolderName) {
+            debugLog(`Explicit folder provided for organize: folder=${folderName}, maid=${actualMaidName}`);
+        } else if (tagMatch) {
             folderName = tagMatch[1].trim();
             actualMaidName = tagMatch[2].trim();
             debugLog(`Tagged note: folder=${folderName}, maid=${actualMaidName}`);
