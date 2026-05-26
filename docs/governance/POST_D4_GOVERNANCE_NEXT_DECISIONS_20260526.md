@@ -26,6 +26,10 @@ tagging, releasing, deploying, or touching production/runtime state.
   `53c3a1b` ahead of `origin/main`.
 - Ahead/behind at latest N4 read-only refresh start:
   `HEAD...origin/main = 5 / 0`.
+- At the latest local handoff refresh start, local `main` had checkpoint record
+  `05c1cf9` ahead of `origin/main`.
+- Ahead/behind at latest local handoff refresh start:
+  `HEAD...origin/main = 6 / 0`.
 - Recheck `HEAD` before any approved push because each local evidence commit
   advances the local-only head.
 - Control worktree was clean at the read-only refresh.
@@ -46,7 +50,10 @@ Facts:
 
 - Local `main` contains local governance checkpoint commits beyond
   `origin/main`.
-- Local-only checkpoint head at latest N2 refresh start: `dc8beb4`.
+- Local-only checkpoint head at latest local handoff refresh start: `05c1cf9`.
+- Local-only records currently include the post-sync closure, plan-state
+  refresh, N2 dirty worktree refresh, N5 clean worktree audit, N3 topology
+  branch audit, and N4 remote old-line refresh.
 - Pushing is a remote write and remains an A5 boundary.
 
 Minimum preflight before push:

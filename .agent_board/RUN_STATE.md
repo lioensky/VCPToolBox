@@ -8,8 +8,8 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- At the latest N4 read-only refresh start, local `main` was `53c3a1b`.
-- Ahead/behind at latest N4 read-only refresh start: `5 / 0`.
+- At the latest local handoff refresh start, local `main` was `05c1cf9`.
+- Ahead/behind at latest local handoff refresh start: `6 / 0`.
 - Recheck local `HEAD` before any approved push because each local evidence
   commit advances the local-only head.
 - Push remains an A5 remote-write boundary requiring explicit approval.
@@ -247,6 +247,18 @@ N4 remote old-line read-only refresh:
   deltas and/or substantive file deltas.
 - Default remains retain-as-archive; no remote rename, remote delete, fetch,
   prune, push, merge, checkout, or branch movement was performed.
+
+Post-N2/N3/N4/N5 local handoff refresh:
+
+- `.agent_board/HANDOFF.md` was updated from stale `b5fd3a3` state to current
+  post-D4 governance state.
+- N2 dirty worktree retention, N3 topology branch, N4 remote old lines, and N5
+  clean worktree feature lines are all locally refreshed and recorded.
+- Local-only governance records since `origin/main` are currently queued for a
+  future explicitly approved N1 push.
+- No push, tag, release, deploy, branch deletion, remote ref update, dirty
+  worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
+  production write was performed.
 
 D4F Noir Architect new-agent proposal:
 

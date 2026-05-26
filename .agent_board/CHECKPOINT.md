@@ -4,6 +4,30 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed post-N2/N3/N4/N5 local governance handoff refresh.
+- Verified control `main` was clean before the refresh and local `main` was
+  ahead of `origin/main` by `6 / 0`.
+- Verified local `HEAD` was `05c1cf9` and `origin/main` was `e8b0c1d`.
+- Updated `.agent_board/HANDOFF.md` from stale `b5fd3a3` state to the current
+  post-D4 N1-N5 governance state.
+- Recorded that N2, N3, N4, and N5 read-only refreshes are locally complete and
+  that local governance records remain unpushed.
+
+Not completed:
+
+- No push, tag, release, deploy, branch deletion, remote ref update, dirty
+  worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
+  production write was performed.
+
+Next:
+
+1. Commit this handoff refresh locally.
+2. Pause before N1 push or any other A5/high-risk action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed N4 remote old-line read-only refresh.
 - Verified control `main` was clean before the refresh and local `main` was
   ahead of `origin/main` by `5 / 0`.

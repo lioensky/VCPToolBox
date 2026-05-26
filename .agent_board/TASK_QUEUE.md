@@ -74,6 +74,8 @@ Updated: 2026-05-26 Asia/Shanghai.
   refs remain unmerged into `origin/main`; current `git ls-remote` hashes match
   local `origin/*` tracking hashes, and the lines remain archive/retention refs
   rather than wholesale merge candidates.
+- Post-N2/N3/N4/N5 local handoff refresh completed locally: `.agent_board/HANDOFF.md`
+  now reflects current post-D4 governance state and the local-only record queue.
 
 ## In Progress
 
@@ -91,6 +93,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
 7. Any N5 intake must be separately scoped as feature/archive review; do not
    treat either clean worktree line as a branch cleanup candidate.
+8. The next natural checkpoint is N1 push, but it is a remote write and requires
+   explicit approval.
 
 ## Blocked / Needs Explicit Approval
 

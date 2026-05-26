@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Post-N2/N3/N4/N5 Local Handoff Refresh
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 12`
+- Control worktree: `git rev-parse HEAD`
+- Control worktree: `git rev-parse origin/main`
+- Read `.agent_board/HANDOFF.md`
+- Read `.agent_board/RUN_STATE.md`
+- Read `.agent_board/TASK_QUEUE.md`
+- Read `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`
+- Control worktree: `git diff --stat`
+- Control worktree: `git diff --check`
+- Control worktree: sensitive-pattern scan over `.agent_board` and the updated
+  N1-N5 governance document.
+- Control worktree: `git status --short --untracked-files=all`
+
+Verified:
+
+- Control branch is `main`; control worktree was clean before refresh.
+- Local `HEAD` was `05c1cf99e256f7b9dc65f54a5fd1abeab3412831`.
+- `origin/main` was `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
+- Control `main` was ahead of `origin/main` by `6 / 0` before this record.
+- `.agent_board/HANDOFF.md` was stale at `b5fd3a3` and needed refresh.
+- N2, N3, N4, and N5 read-only governance records were present locally.
+- Local record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No service functional test was run because this is a governance handoff
+  refresh.
+- No push, tag, release, deploy, branch deletion, remote ref update, dirty
+  worktree cleanup, merge, cherry-pick, live DingTalk/MCP/DWS command, or
+  production write was performed.
+- This local handoff refresh is not pushed.
+
 ## 2026-05-26 Asia/Shanghai - N4 Remote Old-Line Read-Only Refresh
 
 Checks performed:
