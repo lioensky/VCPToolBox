@@ -2,7 +2,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import fetch from 'node-fetch';
+import fetch, { FormData } from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // --- Configuration ---
@@ -16,6 +16,8 @@ const USE_PUBLIC_URL = process.env.USE_PUBLIC_URL === 'true' || process.env.USE_
 const HTTP_PROXY = process.env.HTTP_PROXY || process.env.http_proxy || process.env.HTTPS_PROXY || process.env.https_proxy;
 
 const API_ENDPOINT = 'https://ai.gitee.com/v1/images/generations';
+const EDIT_API_ENDPOINT = 'https://ai.gitee.com/v1/async/images/edits';
+const TASK_API_ENDPOINT = 'https://ai.gitee.com/v1/task';
 
 // --- Proxy Setup ---
 const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : null;
@@ -29,12 +31,78 @@ async function fetchWithProxy(url, options = {}) {
 
 // --- Helper Functions ---
 
+function parseImageArrayInput(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string') return value ? [value] : [];
+
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.filter(Boolean);
+        } catch {
+            // Keep as a single image string if JSON parsing fails.
+        }
+    }
+
+    return [trimmed];
+}
+
+function collectImageInputs(args) {
+    const images = [];
+    const seen = new Set();
+    const pushImage = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                const image = item.trim();
+                if (!seen.has(image)) {
+                    seen.add(image);
+                    images.push(image);
+                }
+            }
+        }
+    };
+
+    pushImage(args.image || args.Image || args.image_url || args.source_image || args.image_base64);
+
+    const indexedKeys = Object.keys(args)
+        .map((key) => {
+            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
+            return match ? { key, index: parseInt(match[1], 10) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+    for (const { key } of indexedKeys) {
+        pushImage(args[key]);
+    }
+
+    return images;
+}
+
+function normalizeArgs(args) {
+    const normalized = { ...(args || {}) };
+    const images = collectImageInputs(normalized);
+    const rawCommand = String(normalized.command || normalized.Command || normalized.cmd || '').toLowerCase();
+
+    normalized.prompt = normalized.prompt || normalized.Prompt || normalized.text || '';
+    normalized.size = normalized.size || normalized.Size || normalized.resolution || normalized.Resolution || normalized.image_size || normalized.imageSize;
+    normalized.images = images;
+
+    const wantsEdit = rawCommand.includes('edit') || rawCommand.includes('compose') || rawCommand.includes('image2image') || rawCommand.includes('i2i') || rawCommand.includes('修图') || rawCommand.includes('改图') || rawCommand.includes('合成');
+    normalized.command = (wantsEdit || images.length > 0) ? 'EditImage' : 'GenerateImage';
+
+    return normalized;
+}
+
 function isValidArgs(args) {
-    if (!args || typeof args !== 'object' || !args.command) return false;
+    if (!args || typeof args !== 'object') return false;
     if (typeof args.prompt !== 'string' || !args.prompt.trim()) return false;
-    if (args.command !== 'GenerateImage') return false;
+    if (args.command === 'EditImage' && (!Array.isArray(args.images) || args.images.length === 0)) return false;
     
-    if (args.size && !/^\d+[:x]\d+$/.test(args.size)) return false;
+    if (args.command === 'GenerateImage' && args.size && !/^\d+[:x]\d+$/.test(args.size)) return false;
 
     if (args.num_inference_steps !== undefined) {
         const steps = parseInt(args.num_inference_steps, 10);
@@ -47,12 +115,18 @@ function isValidArgs(args) {
     return true;
 }
 
-async function processApiRequest(args) {
+async function processApiRequest(rawArgs) {
+    const args = normalizeArgs(rawArgs);
+
     if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
         throw new Error("Plugin Error: Missing one or more required environment variables (PROJECT_BASE_PATH, SERVER_PORT, etc).");
     }
     if (!isValidArgs(args)) {
-        throw new Error(`Plugin Error: Invalid arguments provided: ${JSON.stringify(args)}.`);
+        throw new Error(`Plugin Error: Invalid arguments provided: ${JSON.stringify(rawArgs)}.`);
+    }
+
+    if (args.command === 'EditImage') {
+        return await processEditRequest(args);
     }
 
     const payload = {
@@ -229,6 +303,197 @@ async function processApiRequest(args) {
         ],
         details: {
             url: accessibleImageUrl
+        }
+    };
+}
+
+async function imageInputToDataUri(imageInput) {
+    if (!imageInput || typeof imageInput !== 'string') {
+        throw new Error("Plugin Error: Image input must be a non-empty string.");
+    }
+
+    const input = imageInput.trim();
+    if (input.startsWith('data:image/')) {
+        return input;
+    }
+
+    if (input.startsWith('http://') || input.startsWith('https://')) {
+        const response = await fetchWithProxy(input, {
+            signal: AbortSignal.timeout(60000),
+        });
+        if (!response.ok) {
+            throw new Error(`Plugin Error: Failed to download input image from URL: ${input}`);
+        }
+        const arrayBuf = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const mimeType = response.headers.get('content-type') || 'image/png';
+        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    }
+
+    if (input.startsWith('file://')) {
+        try {
+            const { fileURLToPath } = await import('url');
+            const filePath = fileURLToPath(input);
+            const buffer = await fs.readFile(filePath);
+            const ext = path.extname(filePath).toLowerCase();
+            const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+                ext === '.webp' ? 'image/webp' :
+                    ext === '.gif' ? 'image/gif' : 'image/png';
+            return `data:${mimeType};base64,${buffer.toString('base64')}`;
+        } catch (e) {
+            if (e.code === 'ENOENT' || e.code === 'ERR_INVALID_FILE_URL_PATH') {
+                const structuredError = new Error(`File not found locally, requesting remote fetch for: ${input}`);
+                structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
+                structuredError.fileUrl = input;
+                throw structuredError;
+            }
+            throw e;
+        }
+    }
+
+    // Bare base64 compatibility.
+    if (/^[A-Za-z0-9+/=\s]+$/.test(input) && input.length > 100) {
+        return `data:image/png;base64,${input.replace(/\s/g, '')}`;
+    }
+
+    throw new Error("Plugin Error: Unsupported image input. Please use image data URI, HTTP(S) URL, file:// URL, or raw base64.");
+}
+
+async function pollEditTask(taskId) {
+    const retryIntervalMs = 10000;
+    const maxAttempts = 180;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const response = await fetchWithProxy(`${TASK_API_ENDPOINT}/${taskId}`, {
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+            signal: AbortSignal.timeout(60000),
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`Task polling failed with status ${response.status}: ${errorBody}`);
+        }
+
+        const result = await response.json();
+        if (result.error) {
+            throw new Error(`${result.error}: ${result.message || "Unknown task error"}`);
+        }
+
+        const status = result.status || "unknown";
+        if (status === "success" || status === "failed" || status === "cancelled") {
+            return result;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
+    }
+
+    throw new Error(`Task polling timed out after ${maxAttempts} attempts.`);
+}
+
+async function processEditRequest(args) {
+    const dataUris = [];
+    for (const imageInput of args.images) {
+        dataUris.push(await imageInputToDataUri(imageInput));
+    }
+
+    const formData = new FormData();
+    formData.append('prompt', args.prompt);
+    formData.append('model', args.model || 'Qwen-Image-Edit-2511');
+    formData.append('num_inference_steps', String(Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 4))));
+    formData.append('seed', String(parseInt(args.seed, 10) || 0));
+    formData.append('guidance_scale', String(parseFloat(args.guidance_scale) || 1));
+    formData.append('negative_prompt', typeof args.negative_prompt === 'string' ? args.negative_prompt : '');
+
+    const taskTypes = Array.isArray(args.task_types)
+        ? args.task_types
+        : (dataUris.length > 1 ? ['id', 'style'].slice(0, dataUris.length) : ['id']);
+    for (const taskType of taskTypes) {
+        formData.append('task_types', taskType);
+    }
+
+    for (const dataUri of dataUris) {
+        // Gitee async edit accepts image references through multipart form fields.
+        // We deliberately submit base64/data URI strings here instead of local URLs,
+        // because local image-server URLs are meaningless to the remote API.
+        formData.append('image', dataUri);
+    }
+
+    const taskResponse = await fetchWithProxy(EDIT_API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${API_KEY}`,
+        },
+        body: formData,
+        signal: AbortSignal.timeout(120000),
+    });
+
+    if (!taskResponse.ok) {
+        const errorBody = await taskResponse.text();
+        throw new Error(`Edit API request failed with status ${taskResponse.status}: ${errorBody}`);
+    }
+
+    const taskJson = await taskResponse.json();
+    const taskId = taskJson.task_id;
+    if (!taskId) {
+        throw new Error("Plugin Error: Edit API did not return task_id. Response: " + JSON.stringify(taskJson));
+    }
+
+    const task = await pollEditTask(taskId);
+    if (task.status !== 'success') {
+        throw new Error(`Plugin Error: Edit task ${taskId} ended with status ${task.status}. Response: ${JSON.stringify(task)}`);
+    }
+
+    const outputUrl = task.output?.file_url;
+    if (!outputUrl) {
+        throw new Error("Plugin Error: Edit task succeeded but no output.file_url was returned. Response: " + JSON.stringify(task));
+    }
+
+    const imageResponse = await fetchWithProxy(outputUrl, {
+        signal: AbortSignal.timeout(60000),
+    });
+    if (!imageResponse.ok) {
+        throw new Error(`Failed to download edited image from URL: ${outputUrl}`);
+    }
+
+    const arrayBuf = await imageResponse.arrayBuffer();
+    const imageBuffer = Buffer.from(arrayBuf);
+    const imageMimeType = imageResponse.headers.get('content-type') || 'image/png';
+    const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+    const imageExtension = extMap[imageMimeType] || 'png';
+
+    const generatedFileName = `${uuidv4()}.${imageExtension}`;
+    const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'zimageturbogen');
+    const localImagePath = path.join(imageDir, generatedFileName);
+
+    await fs.mkdir(imageDir, { recursive: true });
+    await fs.writeFile(localImagePath, imageBuffer);
+
+    const relativePathForUrl = path.join('zimageturbogen', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = USE_PUBLIC_URL
+        ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`
+        : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+
+    const base64Image = imageBuffer.toString('base64');
+
+    return {
+        content: [
+            {
+                type: 'text',
+                text: `图片已成功编辑！\n- 提示词: ${args.prompt}\n- 参考图数量: ${dataUris.length}\n- 模型: ${args.model || 'Qwen-Image-Edit-2511'}\n- 任务ID: ${taskId}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${base64Image}`
+                }
+            }
+        ],
+        details: {
+            url: accessibleImageUrl,
+            taskId,
+            mode: dataUris.length > 1 ? 'compose' : 'edit'
         }
     };
 }
