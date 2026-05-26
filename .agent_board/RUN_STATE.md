@@ -166,3 +166,11 @@ D4F Noir Architect new-agent proposal:
 - Added `docs/governance/NOIR_ARCHITECT_AGENT_PROPOSAL_20260526.md`.
 - Decision: do not add or enable the candidate automatically; future adoption requires a dedicated user-facing capability package.
 - No Agent prompt body was copied from the dirty worktree.
+
+D4D VCP panel extension product proposal:
+
+- Reviewed current `main` admin/Agent/RAG route shape.
+- Verified `vcp-panel-extension/**` is absent from current `main` and present only as a dirty-worktree standalone prototype.
+- Added `docs/governance/VCP_PANEL_EXTENSION_PRODUCT_PROPOSAL_20260526.md`.
+- Decision: do not add extension source automatically; future adoption requires a separate product package with API, auth, webview CSP, packaging, and validation decisions.
+- No extension source body was copied from the dirty worktree.

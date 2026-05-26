@@ -286,3 +286,41 @@ Not validated:
 - No admin server was started.
 - No new Agent file was created.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - D4D VCP Panel Extension Product Proposal
+
+Checks performed:
+
+- Listed dirty candidate files under
+  `A:/VCP/VCPToolBox/vcp-panel-extension`.
+- Inspected dirty `vcp-panel-extension/package.json`.
+- Searched the dirty candidate for localhost defaults, `/api/agents/*`,
+  `/api/rag/*`, webview, and CSP usage.
+- Searched current `main` for admin, Agent, RAG, ChannelHub, and tool execution
+  route prefixes.
+- Ran targeted conflict-marker and secret-like pattern scan on the dirty
+  candidate path.
+- Ran `git diff --check`.
+- Ran sensitive-token pattern scan over the D4D proposal, dirty worktree
+  strategy package, and `.agent_board`.
+
+Verified:
+
+- Current `main` does not contain `vcp-panel-extension/**`.
+- Dirty candidate is a 4-file VS Code webview prototype.
+- Dirty candidate defaults to `http://localhost:5050`.
+- Dirty candidate assumes `/api/agents/*` and `/api/rag/*` paths.
+- Current `main` admin/Agent/RAG surface is mounted primarily under
+  `/admin_api/*`.
+- No unresolved conflict marker or real secret-like value was found in the
+  targeted dirty candidate scan.
+- `git diff --check` reported no whitespace errors.
+- The final D4D governance diff sensitive-token scan produced no matches.
+
+Not validated:
+
+- No VS Code extension host was started.
+- No extension package was built.
+- No webview was rendered.
+- No live VCP server was called.
+- No remote write was performed for this checkpoint.

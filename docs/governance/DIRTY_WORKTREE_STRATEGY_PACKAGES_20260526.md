@@ -129,7 +129,7 @@ Prepared future packages:
 | `D4A` | DingTalkTable compatibility layer through DingTalkCLI policy gates | Future implementation package only |
 | `D4B` | OneBot operational docs repair against current route names | Future docs package only |
 | `D4C` | Interaction middleware documentation intake | Future docs merge with implemented/future labels |
-| `D4D` | VS Code panel / `vcp-panel-extension` product review | Future standalone product proposal |
+| `D4D` | VS Code panel / `vcp-panel-extension` product review | Proposal completed; do not absorb as-is |
 | `D4E` | CodexMemoryBridge `.new.js` i18n/API contract review | Future targeted code review with tests |
 | `D4F` | `Agent/Noir Architect.txt` new-agent proposal | Proposal completed; no automatic enablement |
 
@@ -260,3 +260,35 @@ Remaining risk:
 
 - No live Agent/admin server validation was run.
 - No new Agent file was created.
+
+## D4D Execution - VCP Panel Extension Product Proposal
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Reviewed current `main` admin/Agent/RAG route shape.
+- Confirmed `vcp-panel-extension/**` is absent from current `main`.
+- Confirmed the dirty candidate is a 4-file VS Code webview prototype under
+  `A:/VCP/VCPToolBox/vcp-panel-extension/**`.
+- Added `docs/governance/VCP_PANEL_EXTENSION_PRODUCT_PROPOSAL_20260526.md` as
+  a standalone product proposal.
+
+Decision:
+
+- Do not add `vcp-panel-extension/**` automatically.
+- Treat any future adoption as a separate editor-extension product package with
+  explicit API contract, auth, webview CSP, packaging, and validation decisions.
+
+Validation:
+
+- Dirty candidate files, package metadata, localhost/API-path assumptions,
+  webview/CSP references, and current `main` admin route prefixes were checked.
+- Dirty candidate was scanned only for conflict markers and secret-like
+  patterns; no extension source body was copied.
+
+Remaining risk:
+
+- No VS Code extension host was started.
+- No extension package was built or installed.
+- No live VCP server was called.
