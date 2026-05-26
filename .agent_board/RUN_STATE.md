@@ -220,3 +220,12 @@ Post-D4 local governance refresh:
   requires explicit branch-deletion approval.
 - Remaining unmerged remote old lines still have positive cherry deltas; they
   remain archive/retention decisions, not merge-cleanup candidates.
+
+Post-D4 next-decision package:
+
+- Added `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- Clarified that next actions are N1 push local checkpoint records, N2 dirty
+  worktree retention, N3 optional EP2 local topology branch, N4 remote old-line
+  archive/retention, and N5 clean worktree feature-line retention.
+- Updated historical baseline wording in the dirty-worktree and branch-retention
+  policy docs to prevent old head hashes from being read as current state.

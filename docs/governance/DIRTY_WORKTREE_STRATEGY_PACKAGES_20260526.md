@@ -7,7 +7,7 @@ It is a governance planning and checkpoint artifact only. It does not authorize
 copying, archiving, deleting, resetting, cleaning, merging, pushing, or touching
 the dirty worktree.
 
-Baseline:
+Original package baseline:
 
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Control branch: `main`
@@ -19,6 +19,14 @@ Baseline:
 - Expanded dirty entries: `260`
 - Dirty tracked entries: `41`
 - Dirty untracked entries: `219`
+
+Post-D4 current note:
+
+- Latest pushed `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- Local `main` may carry additional checkpoint records ahead of `origin/main`
+  until an explicit push is approved.
+- D4A-D4F have remote closure on `origin/main` as of `0d6c210`, except local
+  governance checkpoint records created after that push.
 
 Hard protections:
 
@@ -127,10 +135,10 @@ Prepared future packages:
 | Package | Direction | Default decision |
 | --- | --- | --- |
 | `D4A` | DingTalkTable compatibility layer through DingTalkCLI policy gates | Completed with dry-run/mock validation |
-| `D4B` | OneBot operational docs repair against current route names | Future docs package only |
-| `D4C` | Interaction middleware documentation intake | Future docs merge with implemented/future labels |
+| `D4B` | OneBot operational docs repair against current route names | Completed |
+| `D4C` | Interaction middleware documentation intake | Completed |
 | `D4D` | VS Code panel / `vcp-panel-extension` product review | Proposal completed; do not absorb as-is |
-| `D4E` | CodexMemoryBridge `.new.js` i18n/API contract review | Future targeted code review with tests |
+| `D4E` | CodexMemoryBridge `.new.js` i18n/API contract review | Completed with tests |
 | `D4F` | `Agent/Noir Architect.txt` new-agent proposal | Proposal completed; no automatic enablement |
 
 Shared requirements:

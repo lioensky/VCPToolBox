@@ -51,6 +51,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Post-D4A validation hardening completed locally: root `npm test` now includes the DingTalkTable compatibility test and passes.
 - Post-D4A push closure completed: `0d6c210` pushed to `origin/main` and verified synchronized.
 - Post-D4 local governance refresh completed: no new safe automatic branch/worktree cleanup candidate was found.
+- Post-D4 next-decision package drafted in `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
 
 ## In Progress
 
@@ -63,7 +64,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
 5. D4A-D4F packages have remote closure on `origin/main`; local checkpoint records may still be ahead until explicitly pushed.
-6. Remaining governance actions are archive/cleanup decisions or a separately scoped new task.
+6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval
 

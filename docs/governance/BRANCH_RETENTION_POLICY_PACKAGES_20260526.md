@@ -5,12 +5,22 @@ retention, archive, and deletion policy packages. It is a planning artifact only
 it does not authorize deletion, force deletion, worktree removal, reset, merge, or
 push.
 
-Current baseline:
+Original classification baseline:
 
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Current branch: `main`
 - `main` / `origin/main`: `765e2fa`
 - Worktree status during this classification: clean
+
+Post-D4 current note:
+
+- Latest pushed `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- Local `main` may carry additional checkpoint records ahead of `origin/main`
+  until an explicit push is approved.
+- `integration/latest-updates-selective-absorb` has already been removed by the
+  completed P1B execution.
+- No new automatically safe branch/worktree cleanup candidate was found during
+  the post-D4 refresh.
 
 Hard protections:
 

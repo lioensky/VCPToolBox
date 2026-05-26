@@ -4,6 +4,29 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Drafted the post-D4 next-decision package.
+- Added `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- Clarified stale historical baselines in dirty-worktree and branch-retention
+  policy docs with current post-D4 notes.
+- Preserved A5 boundaries: push, branch deletion, remote archive/delete,
+  dirty-worktree cleanup, release, deploy, and production writes remain blocked
+  until explicit approval.
+
+Not completed:
+
+- No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
+  live DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this next-decision package locally.
+2. Pause before any push, branch deletion, dirty worktree cleanup, or other A5
+   action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed post-D4 read-only governance refresh.
 - Verified control worktree was clean at refresh start.
 - Verified local `main` was ahead of `origin/main` by one local checkpoint

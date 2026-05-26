@@ -454,3 +454,36 @@ Not validated:
 
 - No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
   live DingTalk/MCP/DWS command, or production write was performed.
+
+## 2026-05-26 Asia/Shanghai - Post-D4 Next-Decision Package
+
+Checks performed:
+
+- Reviewed current `.agent_board` remaining decisions.
+- Reviewed `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
+- Reviewed `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
+- Added `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- Updated historical baseline wording in the dirty-worktree and branch-retention
+  policy docs.
+- Ran `git diff --check`.
+- Ran sensitive-token pattern scan over the new decision package, updated
+  governance docs, and `.agent_board`.
+- Searched for old baseline hashes and stale D4 status wording in the updated
+  governance docs.
+
+Verified:
+
+- The next-decision package keeps push, branch deletion, dirty-worktree cleanup,
+  remote archive/delete, tag, release, deploy, live DingTalk/MCP/DWS command,
+  and production write behind explicit approval.
+- D4A-D4F are represented as closed or proposal-only packages.
+- Remaining actions are expressed as explicit N1-N5 decision packages.
+- `git diff --check` reported no whitespace errors.
+- Sensitive-token pattern scan produced no matches.
+- Old baseline hashes still appear only in historical baseline sections, while
+  current post-D4 notes identify `origin/main` as `0d6c210`.
+
+Not validated:
+
+- No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
+  live DingTalk/MCP/DWS command, or production write was performed.
