@@ -218,7 +218,8 @@ function httpsDownload(url) {
 
 const MAX_MODEL_FALLBACK = 3;
 
-async function callAPI(requestBody, retryCount = 0, _failedModels = null) {
+async function callAPI(requestBody, retryCount = 0, _failedModels = null, options = {}) {
+    const allowModelFallback = options.allowModelFallback !== false;
     const kc = apiKeyPool.getNextKey();
     if (!kc) throw new Error('没有可用的API密钥（所有密钥都已失效）');
     const apiKey = kc.key;
@@ -246,7 +247,7 @@ async function callAPI(requestBody, retryCount = 0, _failedModels = null) {
         apiKeyPool.markError(apiKey, 'quota_exceeded');
         if (retryCount < API_KEYS.length - 1) {
             log('info', `配额耗尽，切换密钥重试 (${retryCount + 1}/${API_KEYS.length - 1})`);
-            return callAPI(requestBody, retryCount + 1, _failedModels);
+            return callAPI(requestBody, retryCount + 1, _failedModels, options);
         }
         throw new Error('所有API密钥的配额都已用完');
     }
@@ -256,13 +257,13 @@ async function callAPI(requestBody, retryCount = 0, _failedModels = null) {
         const failedModels = _failedModels || new Set();
         failedModels.add(requestBody.model);
 
-        if (failedModels.size <= MAX_MODEL_FALLBACK) {
+        if (allowModelFallback && failedModels.size <= MAX_MODEL_FALLBACK) {
             log('warn', `模型 "${requestBody.model}" 请求失败(400)，尝试自动降级... (${failedModels.size}/${MAX_MODEL_FALLBACK})`);
             const fallbackModel = await discoverFallbackModel(failedModels);
             if (fallbackModel) {
                 log('info', `自动降级到模型: ${fallbackModel}`);
                 requestBody.model = fallbackModel;
-                return callAPI(requestBody, 0, failedModels);
+                return callAPI(requestBody, 0, failedModels, options);
             }
         }
         const triedList = _failedModels ? ` 已尝试模型: ${[..._failedModels].join(', ')}` : '';
@@ -446,7 +447,8 @@ async function handleGenerate(args) {
     const resolution = resolveResolution(args.resolution || args.size || args.Resolution);
     const watermark = args.watermark !== undefined ? args.watermark : DEFAULT_WATERMARK;
     const seed = args.seed ?? -1;
-    const model = args.model || DEFAULT_MODEL_ID;
+    const modelExplicit = typeof args.model === 'string' && args.model.trim();
+    const model = modelExplicit ? args.model.trim() : DEFAULT_MODEL_ID;
 
     const body = {
         model, prompt, size: resolution, watermark,
@@ -455,7 +457,7 @@ async function handleGenerate(args) {
     if (seed !== -1) body.seed = seed;
     if (args.guidance_scale !== undefined) body.guidance_scale = args.guidance_scale;
 
-    return callAPI(body);
+    return callAPI(body, 0, null, { allowModelFallback: !modelExplicit });
 }
 
 async function handleEdit(args) {
@@ -469,7 +471,8 @@ async function handleEdit(args) {
     resolution = resolveResolution(resolution);
 
     const watermark = args.watermark !== undefined ? args.watermark : DEFAULT_WATERMARK;
-    const model = args.model || DEFAULT_MODEL_ID;
+    const modelExplicit = typeof args.model === 'string' && args.model.trim();
+    const model = modelExplicit ? args.model.trim() : DEFAULT_MODEL_ID;
 
     const body = {
         model, prompt, image, size: resolution, watermark,
@@ -477,7 +480,7 @@ async function handleEdit(args) {
     };
     if (args.seed !== undefined && args.seed !== -1) body.seed = args.seed;
 
-    return callAPI(body);
+    return callAPI(body, 0, null, { allowModelFallback: !modelExplicit });
 }
 
 async function handleCompose(args) {
@@ -503,7 +506,8 @@ async function handleCompose(args) {
     resolution = resolveResolution(resolution);
 
     const watermark = args.watermark !== undefined ? args.watermark : DEFAULT_WATERMARK;
-    const model = args.model || DEFAULT_MODEL_ID;
+    const modelExplicit = typeof args.model === 'string' && args.model.trim();
+    const model = modelExplicit ? args.model.trim() : DEFAULT_MODEL_ID;
 
     const body = {
         model, prompt, image: processed, size: resolution, watermark,
@@ -511,7 +515,7 @@ async function handleCompose(args) {
         sequential_image_generation: 'disabled'
     };
 
-    return callAPI(body);
+    return callAPI(body, 0, null, { allowModelFallback: !modelExplicit });
 }
 
 async function handleGroup(args) {
@@ -523,7 +527,8 @@ async function handleGroup(args) {
 
     const resolution = resolveResolution(args.resolution || args.size || args.Resolution);
     const watermark = args.watermark !== undefined ? args.watermark : DEFAULT_WATERMARK;
-    const model = args.model || DEFAULT_MODEL_ID;
+    const modelExplicit = typeof args.model === 'string' && args.model.trim();
+    const model = modelExplicit ? args.model.trim() : DEFAULT_MODEL_ID;
     const image = args.image ? await processImageInput(args.image) : null;
 
     const body = {
@@ -534,7 +539,7 @@ async function handleGroup(args) {
     };
     if (image) body.image = image;
 
-    return callAPI(body);
+    return callAPI(body, 0, null, { allowModelFallback: !modelExplicit });
 }
 
 function resolveResolution(input) {

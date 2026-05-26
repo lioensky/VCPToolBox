@@ -37,6 +37,7 @@ function normalizeExecutionContext(executionContext = null, options = {}) {
     appendOptionalString(normalizedContext, executionContext, 'bridgeId');
     appendOptionalString(normalizedContext, executionContext, 'taskId');
     appendOptionalString(normalizedContext, executionContext, 'invocationId');
+    appendOptionalString(normalizedContext, executionContext, 'doubaoProjectBasePathOverride');
 
     return normalizedContext;
 }

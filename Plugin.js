@@ -1152,8 +1152,18 @@ class PluginManager extends EventEmitter {
             }
         }
 
+        const normalizedExecutionContext = normalizeExecutionContext(executionContext, { nullWhenMissing: true });
+        const doubaoProjectBasePathOverride = normalizedExecutionContext &&
+            pluginName === 'DoubaoGen' &&
+            typeof normalizedExecutionContext.doubaoProjectBasePathOverride === 'string' &&
+            normalizedExecutionContext.doubaoProjectBasePathOverride.trim()
+            ? normalizedExecutionContext.doubaoProjectBasePathOverride.trim()
+            : null;
+
         const additionalEnv = {};
-        if (this.projectBasePath) {
+        if (doubaoProjectBasePathOverride) {
+            additionalEnv.PROJECT_BASE_PATH = doubaoProjectBasePathOverride;
+        } else if (this.projectBasePath) {
             additionalEnv.PROJECT_BASE_PATH = this.projectBasePath;
         } else {
             if (this.debugMode) console.warn("[PluginManager executePlugin] projectBasePath not set, PROJECT_BASE_PATH will not be available to plugins.");
@@ -1184,7 +1194,6 @@ class PluginManager extends EventEmitter {
         if (fileServerKey) {
             additionalEnv.IMAGESERVER_FILE_KEY = fileServerKey;
         }
-        const normalizedExecutionContext = normalizeExecutionContext(executionContext, { nullWhenMissing: true });
         if (normalizedExecutionContext) {
             additionalEnv.VCP_EXECUTION_CONTEXT = JSON.stringify(normalizedExecutionContext);
             additionalEnv.VCP_REQUEST_SOURCE = normalizedExecutionContext.requestSource;

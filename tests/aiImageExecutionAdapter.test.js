@@ -73,3 +73,33 @@ test('executeImagePlan preserves requestIp and governance execution metadata whe
         invocationId: 'pipe-456'
     });
 });
+
+test('executeImagePlan forwards explicit Doubao model to plugin args', async () => {
+    const calls = [];
+    const pluginManager = {
+        async processToolCall(toolName, toolArgs, requestIp, executionContext) {
+            calls.push({ toolName, toolArgs, requestIp, executionContext });
+            return { url: 'https://example.test/doubao-seedream-5.png' };
+        }
+    };
+
+    const result = await executeImagePlan({
+        steps: [{
+            type: 'generate_image',
+            plugin: 'DoubaoGen',
+            prompt: 'seedream 5 model passthrough test',
+            model: 'doubao-seedream-5-0-260128',
+            resolution: '864x1152'
+        }]
+    }, { pluginManager });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].toolName, 'DoubaoGen');
+    assert.deepEqual(calls[0].toolArgs, {
+        command: 'generate',
+        prompt: 'seedream 5 model passthrough test',
+        resolution: '864x1152',
+        model: 'doubao-seedream-5-0-260128'
+    });
+});

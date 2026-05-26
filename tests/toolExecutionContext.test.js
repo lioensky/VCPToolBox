@@ -58,7 +58,8 @@ test('normalizeExecutionContext preserves optional execution metadata when prese
         operatorId: ' operator-1 ',
         bridgeId: ' bridge-main ',
         taskId: ' task-123 ',
-        invocationId: ' invocation-abc '
+        invocationId: ' invocation-abc ',
+        doubaoProjectBasePathOverride: ' A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_006 '
     }), {
         agentAlias: 'Codex',
         agentId: 'codex-desktop',
@@ -66,7 +67,8 @@ test('normalizeExecutionContext preserves optional execution metadata when prese
         operatorId: 'operator-1',
         bridgeId: 'bridge-main',
         taskId: 'task-123',
-        invocationId: 'invocation-abc'
+        invocationId: 'invocation-abc',
+        doubaoProjectBasePathOverride: 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_006'
     });
 });
 

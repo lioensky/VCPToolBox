@@ -15,6 +15,17 @@ const express = require('express');
 const { executeAiImagePipelineV2 } = require('../../modules/aiImagePipelineExecutor');
 const { getClientIp } = require('../../modules/toolExecution');
 
+const AUTHORIZED_DOUBAO_PROJECT_BASE_PATH_OVERRIDES = Object.freeze({
+  'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-003':
+    'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_003',
+  'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-004':
+    'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_004',
+  'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-005':
+    'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_005',
+  'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-006':
+    'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_006',
+});
+
 // ── Router 工厂 ──────────────────────────────────────────────────────────
 
 /**
@@ -90,6 +101,22 @@ async function handleAiImagePipelineRequest(req, options = {}) {
     );
 
     if (allowRealExecution) {
+      const pluginLoad = await ensureRequiredPluginsRegistered(routeInput, options.pluginManager);
+      if (pluginLoad.ok !== true) {
+        return {
+          ok: false,
+          mode: 'requested_execute',
+          result: {
+            ok: false,
+            status: 'plugin_not_registered',
+            mode: 'requested_execute',
+            errors: pluginLoad.errors,
+            missingPlugins: pluginLoad.missingPlugins,
+            pluginLoadAttempted: pluginLoad.loadAttempted,
+          },
+        };
+      }
+
       // route 内部覆盖 requestFlags — 不信任前端自由传入
       routeInput.requestFlags = {
         execute_pipeline: true,
@@ -103,10 +130,30 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       dryRun,
       auditFilePath: options.auditFilePath,
       requestIp,
-      executionContext,
+      executionContext: {
+        ...executionContext,
+      },
     };
 
     if (allowRealExecution) {
+      const projectBasePathOverride = resolveAuthorizedDoubaoProjectBasePathOverride(routeInput);
+      if (projectBasePathOverride.ok !== true) {
+        return {
+          ok: false,
+          mode: 'requested_execute',
+          result: {
+            ok: false,
+            status: 'project_base_path_override_not_authorized',
+            mode: 'requested_execute',
+            error: projectBasePathOverride.error,
+          },
+        };
+      }
+
+      if (projectBasePathOverride.path) {
+        executorOptions.executionContext.doubaoProjectBasePathOverride = projectBasePathOverride.path;
+      }
+
       executorOptions.pluginManager = hasNativeDoubaoSecretlessRuntimeDelegate
         ? createNativeDoubaoDelegatePluginManagerFacade({
             pluginManager: options.pluginManager,
@@ -129,6 +176,84 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       message: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function normalizePathForComparison(value) {
+  return typeof value === 'string'
+    ? value.trim().replace(/\//g, '\\').replace(/\\+$/, '')
+    : '';
+}
+
+function resolveAuthorizedDoubaoProjectBasePathOverride(routeInput = {}) {
+  const context = routeInput.context && typeof routeInput.context === 'object'
+    ? routeInput.context
+    : {};
+  const requested = context.doubaoProjectBasePathOverride;
+  if (requested === undefined || requested === null || requested === '') {
+    return { ok: true, path: null };
+  }
+
+  const authorizedPath = AUTHORIZED_DOUBAO_PROJECT_BASE_PATH_OVERRIDES[routeInput.taskId];
+  if (!authorizedPath) {
+    return { ok: false, path: null, error: 'doubao_project_base_path_override_task_not_authorized' };
+  }
+
+  const expected = normalizePathForComparison(authorizedPath);
+  const actual = normalizePathForComparison(requested);
+  if (actual !== expected) {
+    return { ok: false, path: null, error: 'doubao_project_base_path_override_path_not_authorized' };
+  }
+
+  return { ok: true, path: authorizedPath };
+}
+
+function collectRequiredPlugins(routeInput = {}) {
+  const steps = Array.isArray(routeInput.plan && routeInput.plan.steps)
+    ? routeInput.plan.steps
+    : [];
+  const plugins = new Set();
+
+  for (const step of steps) {
+    if (step && typeof step.plugin === 'string' && step.plugin.trim()) {
+      plugins.add(step.plugin.trim());
+    }
+  }
+
+  return Array.from(plugins);
+}
+
+async function ensureRequiredPluginsRegistered(routeInput, pluginManager) {
+  const requiredPlugins = collectRequiredPlugins(routeInput);
+  if (requiredPlugins.length === 0) {
+    return { ok: true, loadAttempted: false, missingPlugins: [] };
+  }
+
+  if (!pluginManager || typeof pluginManager.getPlugin !== 'function') {
+    return { ok: true, loadAttempted: false, missingPlugins: [] };
+  }
+
+  let missingPlugins = requiredPlugins.filter((name) => !pluginManager.getPlugin(name));
+  if (missingPlugins.length === 0) {
+    return { ok: true, loadAttempted: false, missingPlugins: [] };
+  }
+
+  if (typeof pluginManager.loadPlugins !== 'function') {
+    return {
+      ok: false,
+      loadAttempted: false,
+      missingPlugins,
+      errors: missingPlugins.map((name) => `plugin_not_registered:${name}`),
+    };
+  }
+
+  await pluginManager.loadPlugins();
+  missingPlugins = requiredPlugins.filter((name) => !pluginManager.getPlugin(name));
+  return {
+    ok: missingPlugins.length === 0,
+    loadAttempted: true,
+    missingPlugins,
+    errors: missingPlugins.map((name) => `plugin_not_registered_after_load:${name}`),
+  };
 }
 
 function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
@@ -273,6 +398,9 @@ module.exports = {
   createAiImageAgentsRouter,
   handleAiImagePipelineRequest,
   createNativeDoubaoDelegatePluginManagerFacade,
+  resolveAuthorizedDoubaoProjectBasePathOverride,
+  collectRequiredPlugins,
+  ensureRequiredPluginsRegistered,
   normalizeRouteInput,
   buildAiImageExecutionContext,
   resolveDryRunMode,

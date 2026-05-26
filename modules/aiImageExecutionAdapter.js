@@ -130,6 +130,7 @@ function normalizeImageStep(step) {
       type: step.type,
       plugin: step.plugin,
       prompt: step.prompt.trim(),
+      model: step.model || null,
       resolution: step.resolution || null,
       seed: Number.isFinite(step.seed) ? step.seed : null,
       negativePrompt: step.negativePrompt || null,
@@ -159,6 +160,9 @@ function mapStepToPlugin(step) {
 
   if (s.resolution) {
     args.resolution = s.resolution;
+  }
+  if (s.model) {
+    args.model = s.model;
   }
   if (s.seed !== null) {
     args.seed = s.seed;

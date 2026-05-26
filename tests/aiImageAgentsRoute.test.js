@@ -152,3 +152,303 @@ test('aiImageAgents execute route can still use body.operator as a fallback outs
         });
     });
 });
+
+test('aiImageAgents execute route loads missing DoubaoGen before real execution', async () => {
+    const calls = [];
+    let loaded = false;
+    let loadCount = 0;
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return loaded && name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            async loadPlugins() {
+                loadCount += 1;
+                loaded = true;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.8',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-4',
+                taskId: 'task-4',
+                dryRun: false,
+                confirm: true,
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(loadCount, 1);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.pluginManager, pluginManager);
+    });
+});
+
+test('aiImageAgents execute route fails closed when required plugin remains missing after load', async () => {
+    const calls = [];
+    let loadCount = 0;
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin() {
+                return null;
+            },
+            async loadPlugins() {
+                loadCount += 1;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.9',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-5',
+                taskId: 'task-5',
+                dryRun: false,
+                confirm: true,
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.result.status, 'plugin_not_registered');
+        assert.deepEqual(result.result.missingPlugins, ['DoubaoGen']);
+        assert.equal(result.result.pluginLoadAttempted, true);
+        assert.equal(loadCount, 1);
+        assert.equal(calls.length, 0);
+    });
+});
+
+test('aiImageAgents execute route forwards exact retry 003 Doubao project base path override', async () => {
+    const calls = [];
+    const exactOutputRoot = 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_003';
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.10',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-6',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-003',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: exactOutputRoot
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.doubaoProjectBasePathOverride, exactOutputRoot);
+    });
+});
+
+test('aiImageAgents execute route forwards exact retry 004 Doubao project base path override', async () => {
+    const calls = [];
+    const exactOutputRoot = 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_004';
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.12',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-8',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-004',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: exactOutputRoot
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.doubaoProjectBasePathOverride, exactOutputRoot);
+    });
+});
+
+test('aiImageAgents execute route forwards exact retry 005 Doubao project base path override', async () => {
+    const calls = [];
+    const exactOutputRoot = 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_005';
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.13',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-9',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-005',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: exactOutputRoot
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.doubaoProjectBasePathOverride, exactOutputRoot);
+    });
+});
+
+test('aiImageAgents execute route forwards exact retry 006 Doubao project base path override', async () => {
+    const calls = [];
+    const exactOutputRoot = 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_006';
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.14',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-10',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-006',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: exactOutputRoot
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.doubaoProjectBasePathOverride, exactOutputRoot);
+    });
+});
+
+test('aiImageAgents execute route rejects unapproved Doubao project base path override', async () => {
+    const calls = [];
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.11',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-7',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-003',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: 'A:\\VCP\\apps\\VCPToolBox'
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.result.status, 'project_base_path_override_not_authorized');
+        assert.equal(result.result.error, 'doubao_project_base_path_override_path_not_authorized');
+        assert.equal(calls.length, 0);
+    });
+});
