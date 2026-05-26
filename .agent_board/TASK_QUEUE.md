@@ -4,7 +4,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 
 ## Done
 
-- `origin/main` has been pushed and verified at `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- `origin/main` has been pushed and verified at `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
 - `prod/stable` protection rule is documented: stable production line, permanently retained, never a cleanup candidate.
 - Package G2 completed: governance evidence from `562e907` was cherry-picked to `main` as `39d860f` and pushed to `origin/main`.
 - Package R1 completed: `A:/VCP/VCPToolBox-staging-custom-integration` was removed by non-force `git worktree remove`.
@@ -52,6 +52,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Post-D4A push closure completed: `0d6c210` pushed to `origin/main` and verified synchronized.
 - Post-D4 local governance refresh completed: no new safe automatic branch/worktree cleanup candidate was found.
 - Post-D4 next-decision package drafted in `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- Post-D4 next-decision package push/sync closure completed locally: explicit
+  `git push origin main` returned `Everything up-to-date`, and `main` /
+  `origin/main` were reverified at `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
 
 ## In Progress
 
@@ -63,7 +66,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. D4A-D4F packages have remote closure on `origin/main`; local checkpoint records may still be ahead until explicitly pushed.
+5. D4A-D4F packages and post-D4 decision docs have remote closure on
+   `origin/main`; after this local record is committed, checkpoint records may
+   again be ahead until explicitly pushed.
 6. Remaining governance actions are explicit next-decision packages N1-N5 or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval

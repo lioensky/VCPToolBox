@@ -7,9 +7,11 @@ Worktree status at last check: clean.
 
 Current verified heads and sync state:
 
-- Latest pushed `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
-- Local `main` currently carries additional local checkpoint records ahead of
-  `origin/main`; push still requires explicit approval.
+- Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
+- Local `main` and `origin/main` are synchronized at
+  `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0` as of the last no-op push check.
+- After this local checkpoint record is committed, `main` may be ahead again
+  until an explicit push approval is given.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -160,6 +162,20 @@ D4E CodexMemoryBridge i18n/API-contract review:
 - Added regression assertions for the current `targetDiary` and `reason` fields.
 - Ran Codex memory bridge/e2e/MCP/admin tests; all 12 tests passed.
 - No content was copied from the dirty worktree.
+
+Post-D4 next-decision package push/sync closure:
+
+- User explicitly requested `push` after the post-D4 next-decision package was
+  already present on `origin/main`.
+- Preflight verified `main` was clean, `HEAD` and `origin/main` were both
+  `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`, and
+  `HEAD...origin/main = 0 / 0`.
+- Ran `git push origin main`; Git reported `Everything up-to-date`.
+- Post-check reverified `HEAD` and `origin/main` still match at
+  `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`, ahead/behind remains `0 / 0`,
+  and the control worktree is clean.
+- No tag, release, deploy, branch deletion, dirty worktree cleanup, live
+  DingTalk/MCP/DWS command, or production write was performed.
 
 D4F Noir Architect new-agent proposal:
 
