@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after R1 manual retain-review preflight commit.
+Worktree status at last check: clean after B1 blocked preflight commit.
 
 Current verified heads and sync state:
 
@@ -288,6 +288,19 @@ Manual retain-review R1 preflight:
   out, or imported into `main`.
 - The R1 preflight is committed locally; local `main` is ahead of
   `origin/main` until explicit push approval is given.
+
+Blocked B1 preflight:
+
+- Drafted a read-only B1 blocked/excluded-path preflight.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- B1 count is `9`: tracked modified `7`, untracked `2`, existing `9`.
+- B1 risk signals: sensitive-pattern files `8`, sensitive-pattern matches
+  `30`, conflict-marker files `0`.
+- B1 remains blocked pending explicit source/security or retain decisions.
+- No B1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
 
 N5 clean worktree feature-line audit:
 

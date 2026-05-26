@@ -4,6 +4,37 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed blocked B1 read-only preflight.
+- Reverified control `main` is synchronized with `origin/main` at
+  `db1d40feda0a9b5fc0dceee7b510771042ec1420`.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Confirmed B1 count `9`: tracked modified `7`, untracked `2`, existing `9`,
+  sensitive-pattern files `8`, sensitive-pattern matches `30`, conflict-marker
+  files `0`.
+- Added `docs/governance/DIRTY_WORKTREE_BLOCKED_B1_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No B1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
+- No matching sensitive/config-like values were printed or recorded.
+- No dependency lockfile was accepted.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Continue with protected/runtime retention policy or choose an explicit B1
+   retain/source-review/quarantine package.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed manual retain-review R1 read-only preflight.
 - Reverified control `main` is local-only ahead of `origin/main` by `1 / 0`
   at `08c33ee`; no push was performed.

@@ -140,6 +140,10 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Manual retain-review R1 preflight drafted in
   `docs/governance/DIRTY_WORKTREE_MANUAL_RETAIN_REVIEW_R1_PREFLIGHT_20260526.md`;
   `7` entries remain retain-by-default pending explicit path/package decisions.
+- Blocked B1 preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_BLOCKED_B1_PREFLIGHT_20260526.md`;
+  `9` A2-excluded entries remain blocked pending explicit source/security or
+  retain decisions.
 
 ## In Progress
 
@@ -195,6 +199,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 24. Manual retain-review R1 contains auth/binary-named state, conflict-marked
     source/test files, sensitive-pattern text files, large tool lists, and a
     standalone extension asset; do not bulk absorb or clean.
+25. B1 remains blocked because it contains shared runtime/source/admin/startup
+    files, dependency-lock-like data, and a path-ambiguous response artifact.
 
 ## Blocked / Needs Explicit Approval
 

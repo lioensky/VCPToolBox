@@ -1,5 +1,44 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Blocked B1 Preflight
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Read the remaining-dirty reassessment B1 A2-excluded bucket.
+- Rechecked all `9` B1 paths for git status, existence, tracked/head state,
+  byte count, SHA256, text/binary shape, JSON parseability, line count,
+  sensitive-pattern counts, and conflict-marker counts.
+- Ran `git diff --numstat`, `git diff --stat`, and `git diff --check` over the
+  tracked B1 paths.
+
+Verified:
+
+- Control `main` is synchronized with `origin/main` at
+  `db1d40feda0a9b5fc0dceee7b510771042ec1420`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- B1 count is `9`; tracked modified count `7`; untracked count `2`; existing
+  count `9`.
+- Sensitive-pattern files `8`; sensitive-pattern matches `30`; no matching
+  values were recorded.
+- Conflict-marker files `0`; conflict-marker lines `0`.
+- `git diff --check` over tracked B1 paths reported no whitespace or conflict
+  marker errors.
+
+Not validated:
+
+- No B1 source/runtime/admin/startup behavior was executed.
+- No B1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
+- No dependency lockfile was accepted.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - Manual Retain Review R1 Preflight
 
 Checks performed:
