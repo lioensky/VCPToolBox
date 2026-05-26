@@ -81,3 +81,9 @@ EP1 local duplicate label cleanup:
 - Deleted local branches `feature/ai-image-pipeline-dgp-refactor` and `feature/ai-image-pipeline-dgp-v2` with `git branch -D`.
 - Retained `rescue/ai-image-pipeline-mixed-20260427_195303` as the local label for `546b684`.
 - Verified only the rescue label remains for `546b684`.
+
+EP2/EP3 policy continuation:
+
+- EP2 remains a prepared no-op by recommendation: retain `governance/origin-main-topology-bridge-preview` unless a stricter local branch list is desired.
+- EP3 documents old unmerged remote line heads and recommends retaining them as archive refs for now.
+- No EP2 deletion, EP3 remote rename, or EP3 remote deletion has been performed.

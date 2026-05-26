@@ -27,6 +27,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 - 2026-05-26 remaining remote old lines classified as archival/retention decisions rather than merge cleanup candidates.
 - 2026-05-26 branch retention policy packages drafted in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
 - EP1 completed locally: duplicate AI image feature labels deleted, rescue label retained.
+- EP2 prepared as retain-by-default; no action taken.
+- EP3 prepared for old remote line archive policy; no remote action taken.
 
 ## In Progress
 
@@ -35,8 +37,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 ## Next Safe Local Tasks
 
 1. Review policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
-2. Decide EP2 topology-only local branch policy: recommended retain unless a stricter local branch list is desired.
-3. Decide P5 old unmerged remote line retention/archive policy.
+2. Decide whether to keep EP2 retained or delete it under explicit non-merged local branch approval.
+3. Decide whether EP3 old unmerged remote lines should remain as-is, be renamed to an archive namespace, or be deleted.
 4. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 5. Request explicit approval before deleting any local or remote branch.
 6. Request explicit approval before any additional remote write.

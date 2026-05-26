@@ -297,6 +297,8 @@ git branch feature/ai-image-pipeline-dgp-v2 546b684e4f4f69003006aadd5ab968c4bffe
 
 ## Prepared Execution Package EP2 - Local Topology Evidence Branch
 
+Status: prepared; no action taken.
+
 Recommended action: retain unless the user wants a stricter local branch list.
 
 Branch:
@@ -320,4 +322,52 @@ Rollback:
 
 ```powershell
 git branch governance/origin-main-topology-bridge-preview c5ce5d933560081650e55b160433b37283c1f506
+```
+
+## Prepared Execution Package EP3 - Old Remote Line Archive Policy
+
+Status: prepared; no remote action taken.
+
+Recommended action: retain these remote branches as archive refs for now.
+
+Reason:
+
+- They are not merged into `origin/main`.
+- They have positive cherry deltas.
+- They are hundreds of commits behind current `origin/main`.
+- Some local branches still track old remote lines.
+- Deleting or renaming them would be a remote write and should be a separate explicit archive policy decision.
+
+Current remote heads:
+
+| Remote branch | Head | `origin/main...branch` | Current interpretation |
+| --- | --- | --- | --- |
+| `origin/backup-20260409` | `d7935ace74765b39c8629138a3c022a88f7d7893` | `595 / 4` | archive candidate, not merge cleanup |
+| `origin/backup-merged-20260408210007` | `4628ac28b5c917cd023b12407a854cc69285dcd0` | `595 / 3` | archive candidate, not merge cleanup |
+| `origin/custom` | `6f83d92cd9e6143344d24559132dd85ec5292f5f` | `600 / 24` | archive candidate, not merge cleanup |
+| `origin/custom-20260408205646` | `d7935ace74765b39c8629138a3c022a88f7d7893` | `595 / 4` | archive candidate, not merge cleanup |
+| `origin/feature-2026-04-19` | `a9525a1e33ce8cdd516b2bb0eb42733f2ce8b9d7` | `516 / 6` | archive candidate, not merge cleanup |
+| `origin/feature/latest-updates` | `eba0969a156a24b498255778f539e0a08ee10f37` | `553 / 19` | retain while local dirty worktree tracks related line |
+| `origin/feature/photo-studio-guide-contract-migration` | `1e1b0caa3629f8714540593be83b55121c409431` | `553 / 11` | retain while local tracking branch exists |
+| `origin/feature/photo-studio-next-guide-contract` | `5d012125a6faf9dad6321facd4264077e2567da9` | `553 / 17` | retain while local tracking branch exists |
+| `origin/safe-upstream-main-20260407` | `702bc4e7cf3dbdf42306c38a150058c674060fdc` | `600 / 2` | archive candidate, not merge cleanup |
+| `origin/safe-upstream-main-20260408205646` | `d7935ace74765b39c8629138a3c022a88f7d7893` | `595 / 4` | archive candidate, not merge cleanup |
+| `origin/safe-upstream-main-20260409` | `659daad3917b540eb4d96decd1eac263ecc62d49` | `581 / 9` | archive candidate, not merge cleanup |
+
+If a future archive rename is desired, choose a naming convention first. Example:
+
+```text
+archive/2026-05-26/<original-branch-name>
+```
+
+Renaming on GitHub is a create-new-ref plus delete-old-ref operation, so it requires
+explicit remote write approval and a branch-by-branch rollback list.
+
+If a future deletion is desired, record the exact head hashes above in the approval
+note and delete only the explicitly named remote branches.
+
+Rollback for deleted remote branches:
+
+```powershell
+git push origin <hash>:refs/heads/<branch-name>
 ```

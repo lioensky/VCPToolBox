@@ -69,6 +69,8 @@ EP1 execution:
 - Ran `git branch -D feature/ai-image-pipeline-dgp-refactor feature/ai-image-pipeline-dgp-v2`.
 - Verified `git branch --contains 546b684` now lists only `rescue/ai-image-pipeline-mixed-20260427_195303`.
 - Verified worktree status remained clean and synchronized with `origin/main`.
+- Prepared EP2 as retain-by-default and confirmed no branch action was taken.
+- Prepared EP3 old remote line archive policy with current remote branch hashes and ahead/behind counts; confirmed no remote action was taken.
 
 ## 2026-05-25 17:30 Asia/Shanghai
 
