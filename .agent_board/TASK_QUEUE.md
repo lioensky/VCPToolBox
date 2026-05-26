@@ -21,10 +21,11 @@ Updated: 2026-05-26 Asia/Shanghai.
 - `A:/VCP/VCPToolBox` V3 remaining high-risk dirty review completed.
 - `origin/main` has absorbed and pushed `origin/codex/absorb-upstream-main-20260526` as merge commit `b5fd3a3`.
 - 2026-05-26 read-only remote branch classification completed.
+- 2026-05-26 remote cleanup package executed: 31 explicitly listed merged remote branches deleted and verified absent.
 
 ## In Progress
 
-- Branch governance follow-up evidence update.
+- Post-cleanup evidence update.
 
 ## Next Safe Local Tasks
 
@@ -36,7 +37,6 @@ Updated: 2026-05-26 Asia/Shanghai.
 ## Blocked / Needs Explicit Approval
 
 - Deleting any branch.
-- Deleting merged remote branches such as `origin/codex/absorb-upstream-main-20260526`.
 - Force-removing dirty files or runtime directories.
 - Any additional remote write.
 - Any action touching real secrets or runtime state without a separate approval.

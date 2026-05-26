@@ -42,3 +42,11 @@ Hard rules:
 - Remote branches still not merged into `origin/main`: old `backup-*`, `custom*`, `feature-2026-04-19`, `feature/latest-updates`, `feature/photo-studio-guide-contract-migration`, `feature/photo-studio-next-guide-contract`, and old `safe-upstream-main-*` lines.
 - These unmerged remote branches are hundreds of commits behind current `main`; do not absorb them wholesale.
 - Next remote cleanup or branch deletion requires explicit approval.
+
+2026-05-26 remote cleanup execution:
+
+- User approved deleting the explicitly listed remote cleanup package.
+- Preflight count correction: the explicit list contained 31 branches, not 32.
+- Deleted those 31 merged remote branches with `git push origin --delete`.
+- Verified all 31 deleted refs are absent after `git fetch origin --prune`.
+- Verified protected/excluded refs still exist: `origin/main`, `origin/prod/stable`, `origin/codex/photo-studio-baserow-provider-batch`, `origin/feature/ai-image-agent-clean-pr`, and `origin/feature/latest-updates`.

@@ -9,7 +9,7 @@ Current safe state:
 - Worktree was clean before the 2026-05-26 branch governance evidence update.
 - `main` and `origin/main` are synchronized at `b5fd3a3`.
 - `prod/stable` and `origin/prod/stable` are synchronized at `a1870b3`.
-- `origin/codex/absorb-upstream-main-20260526` is already an ancestor of `origin/main`.
+- `origin/codex/absorb-upstream-main-20260526` was absorbed into `origin/main` and then deleted during the approved remote cleanup package.
 
 Critical distinctions:
 
@@ -24,7 +24,8 @@ Open risks:
 - Temporary `6005/6006` test services have been stopped; existing `3000` service was left untouched.
 - Unmerged old remote lines are hundreds of commits behind current `main`; do not merge them wholesale.
 - Remote branch deletion is a remote write and needs explicit approval with branch names.
+- 31 explicitly listed merged remote branches were deleted after user approval and verified absent.
 
 Next safe action:
 
-- Report cleanup candidates and request explicit approval before any branch deletion or additional remote write.
+- Review remaining unmerged old remote lines only as separate archival/retention decisions; request explicit approval before any branch deletion or additional remote write.

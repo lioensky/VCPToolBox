@@ -9,16 +9,18 @@ Completed:
 - Ran read-only branch classification against `origin/main`.
 - Identified many already-merged remote cleanup candidates.
 - Identified unmerged old lines that should not be absorbed wholesale: `backup-*`, `custom*`, `feature-2026-04-19`, `feature/latest-updates`, `feature/photo-studio-guide-contract-migration`, `feature/photo-studio-next-guide-contract`, and `safe-upstream-main-*`.
+- After explicit approval, deleted the explicitly listed merged remote cleanup package.
+- Corrected the preflight count: 31 branches were listed and deleted, not 32.
+- Verified all 31 deleted remote refs are absent.
 
 Not completed:
 
-- No branch was deleted.
-- No remote branch was deleted.
+- No unlisted branch was deleted.
 - No worktree was removed.
 
 Next:
 
-1. If approved, delete only explicitly named merged remote branches.
+1. If continuing, review remaining unmerged old remote lines as separate archival/retention decisions.
 2. Keep `prod/stable` protected.
 3. Keep dirty/user-owned `A:/VCP/VCPToolBox` untouched unless a separate retention plan is approved.
 

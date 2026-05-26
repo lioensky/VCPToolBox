@@ -30,6 +30,21 @@ Not validated:
 - No branch deletion was performed.
 - No remote write was performed during this follow-up classification.
 
+Remote cleanup execution:
+
+- User approved deleting the explicitly listed remote branch cleanup package.
+- Corrected preflight count: the list contained 31 branches, not 32.
+- Recorded each target branch and pre-deletion commit hash locally in command output.
+- Ran `git push origin --delete` for exactly those 31 branch names.
+- Ran `git fetch origin --prune`.
+- Verified `deleted_ref_count=31` and `still_present_count=0`.
+- Verified these protected/excluded refs still exist: `origin/main`, `origin/prod/stable`, `origin/codex/photo-studio-baserow-provider-batch`, `origin/feature/ai-image-agent-clean-pr`, and `origin/feature/latest-updates`.
+
+Not validated after remote cleanup:
+
+- No service functional test was run because only remote branch refs changed.
+- The local governance evidence commit is not pushed yet.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:
