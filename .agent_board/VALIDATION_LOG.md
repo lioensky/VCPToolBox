@@ -1,5 +1,55 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A2 Dirty Worktree Archive Preflight
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Read `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`
+- Dirty worktree: `git branch --show-current`
+- Dirty worktree: `git rev-parse HEAD`
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`
+- Dirty worktree: existence check over the `56` A1 candidate paths.
+- Dirty worktree: conflict-marker scan over A1 candidate paths.
+- Dirty worktree: sensitive/config-like pattern scan over A1 candidate paths.
+- Dirty worktree: status membership check over A1 candidate paths.
+- Control worktree: `git diff --check`.
+- Control worktree: sensitive-token pattern scan over `.agent_board` and
+  `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`.
+- Control worktree: `git status --short --untracked-files=all`.
+
+Verified:
+
+- Control branch is `main`; control worktree was clean and synchronized with
+  `origin/main` before drafting.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- All `56` A1 archive candidates exist on disk.
+- `0` A1 candidates were missing.
+- `0` strict include candidates had conflict markers after excluding blocked
+  paths.
+- `8` A1 candidates matched sensitive/config-like patterns.
+- `2` A1 candidates had path/status ambiguity.
+- The blocked categories overlap by `1` candidate, so the unique excluded set is
+  `9` paths.
+- Strict executable include list is reduced to `47` paths.
+- `git diff --check` reported no whitespace errors.
+- Sensitive-token pattern scan produced no matches.
+- Control worktree dirty set contains only `.agent_board` record updates and
+  `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`.
+
+Not validated:
+
+- No archive directory or archive file was created.
+- No file in `A:/VCP/VCPToolBox` was edited, copied, archived, deleted, moved,
+  reset, cleaned, stashed, checked out, or hashed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A1 Dirty Worktree Archive Planning
 
 Checks performed:

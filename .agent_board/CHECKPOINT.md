@@ -4,6 +4,32 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A2 dirty worktree archive execution preflight.
+- Verified control `main` was clean and synchronized with `origin/main` at
+  `f09cbccbeada55c8bad3ea8060c7b9272f6a148e`.
+- Verified all `56` A1 candidates exist on disk.
+- Verified `8` A1 candidates match sensitive/config-like patterns.
+- Verified `2` A1 candidates have path/status ambiguity.
+- Reduced the strict executable include list to `47` paths.
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No archive directory or archive file was created.
+- No file in `A:/VCP/VCPToolBox` was edited, copied, archived, deleted, moved,
+  reset, cleaned, stashed, checked out, or hashed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A2 preflight document locally.
+2. Pause before A2 archive execution or any other dirty-worktree write.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A1 dirty worktree archive planning.
 - Verified control `main` was clean and synchronized with `origin/main` at
   `79a9ea420e458b41b8fa6bee1119c2a30dec6ec4`.

@@ -84,6 +84,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_RETENTION_ARCHIVE_CLEANUP_EXECUTION_PACKAGES_20260526.md`.
 - A1 dirty worktree archive plan drafted in
   `docs/governance/DIRTY_WORKTREE_ARCHIVE_PLAN_20260526.md`.
+- A2 dirty worktree archive preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`; strict
+  include list is `47` paths and execution remains blocked.
 
 ## In Progress
 
@@ -109,6 +112,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 10. A2 archive execution remains blocked until exact destination, inclusion
     list, exclusion rules, dry-run count, sensitive scan, and rollback are
     approved.
+11. The current A2 preflight excludes sensitive-pattern and path-ambiguous A1
+    candidates by default.
 
 ## Blocked / Needs Explicit Approval
 

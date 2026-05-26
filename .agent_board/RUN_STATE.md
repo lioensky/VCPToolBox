@@ -309,6 +309,16 @@ A1 dirty worktree archive planning:
   explicitly approved.
 - No dirty worktree file was touched and no archive artifact was created.
 
+A2 dirty worktree archive preflight:
+
+- Added `docs/governance/DIRTY_WORKTREE_ARCHIVE_PREFLIGHT_20260526.md`.
+- A1 had `56` archive candidates; all exist on disk.
+- `8` candidates matched sensitive/config-like patterns and `2` candidates had
+  path/status ambiguity.
+- Strict executable include list is `47` paths.
+- Destination remains unapproved; no archive directory/file was created.
+- No dirty worktree file was touched.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.
