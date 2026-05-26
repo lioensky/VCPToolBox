@@ -1,5 +1,34 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Final Dirty Classification Closure
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Reviewed G1B, M1, R1, B1, and P1 governance records.
+- Recorded final bucket coverage and closure policy.
+
+Verified:
+
+- Control `main` is synchronized with `origin/main` at
+  `b0e2426cee4b891b37e7a7cf009bf31f23f48b90`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- Remaining dirty entries are fully covered: G1B `4`, M1 `28`, R1 `7`, B1
+  `9`, P1 `128`, unclassified `0`.
+
+Not validated:
+
+- No functional tests were run because this is a governance closure document.
+- No dirty worktree file was edited, copied, archived, deleted, restored,
+  reset, cleaned, checked out, or imported into `main`.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - Protected Runtime P1 Retention Preflight
 
 Checks performed:

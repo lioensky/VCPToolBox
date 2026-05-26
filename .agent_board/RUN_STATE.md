@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after P1 protected/runtime preflight commit.
+Worktree status at last check: clean after final dirty classification closure commit.
 
 Current verified heads and sync state:
 
@@ -315,6 +315,19 @@ Protected/runtime P1 retention preflight:
 - P1 remains retain-by-default pending explicit backup/delete/retain policy.
 - No P1 file was copied, archived, hashed, deleted, restored, reset, cleaned,
   checked out, or imported into `main`.
+
+Final dirty worktree classification closure:
+
+- Drafted final classification closure for `A:/VCP/VCPToolBox`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- Final buckets cover all remaining dirty entries: G1B `4`, M1 `28`, R1 `7`,
+  B1 `9`, P1 `128`, unclassified `0`.
+- Default policy is retain/no bulk action.
+- Future work requires an explicit named package and approval.
+- The final classification closure is committed locally; local `main` is ahead
+  of `origin/main` until explicit push approval is given.
 
 N5 clean worktree feature-line audit:
 

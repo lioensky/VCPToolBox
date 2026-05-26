@@ -148,6 +148,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_PROTECTED_RUNTIME_P1_RETENTION_PREFLIGHT_20260526.md`;
   `128` protected entries remain retain-by-default pending explicit
   backup/delete/retain policy.
+- Final dirty worktree classification closure drafted in
+  `docs/governance/DIRTY_WORKTREE_FINAL_CLASSIFICATION_CLOSURE_20260526.md`;
+  remaining `176` entries are fully classified with unclassified count `0`.
 
 ## In Progress
 
@@ -208,6 +211,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 26. P1 protected/runtime entries are not cleanup candidates; do not bulk
     archive/delete/restore env/config, SQLite, vector-store, state, dailynote,
     VCPChat, or `.claude` data.
+27. Dirty worktree classification is closed for this phase; future work requires
+    an explicit named package such as B1-S1, P1-R0, M1-R0, or R1-R0.
 
 ## Blocked / Needs Explicit Approval
 

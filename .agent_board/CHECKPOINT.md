@@ -4,6 +4,35 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed final dirty worktree classification closure.
+- Reverified control `main` is synchronized with `origin/main` at
+  `b0e2426cee4b891b37e7a7cf009bf31f23f48b90`.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Recorded final bucket coverage: G1B `4`, M1 `28`, R1 `7`, B1 `9`, P1 `128`,
+  unclassified `0`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_FINAL_CLASSIFICATION_CLOSURE_20260526.md`.
+
+Not completed:
+
+- No dirty worktree file was edited, copied, archived, deleted, restored,
+  reset, cleaned, checked out, or imported into `main`.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Future work must name an explicit package such as B1-S1, P1-R0, M1-R0, or
+   R1-R0.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed protected/runtime P1 retention preflight.
 - Reverified control `main` is local-only ahead of `origin/main` by `1 / 0`
   at `9f9e2bb`; no push was performed.
