@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after B1 blocked preflight commit.
+Worktree status at last check: clean after P1 protected/runtime preflight commit.
 
 Current verified heads and sync state:
 
@@ -301,6 +301,20 @@ Blocked B1 preflight:
 - B1 remains blocked pending explicit source/security or retain decisions.
 - No B1 file was copied, archived, deleted, restored, reset, cleaned, checked
   out, or imported into `main`.
+
+Protected/runtime P1 retention preflight:
+
+- Drafted a read-only P1 protected/runtime retention preflight.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- P1 current count is `128`: existing `128`, tracked modified `8`, untracked
+  `120`, approximate total bytes `267,320,880`.
+- P1 includes env/config-like files, SQLite/WAL/SHM, vector stores,
+  channelHub/DingTalk state, `.claude/**`, VCPChat, and daily-note data.
+- P1 remains retain-by-default pending explicit backup/delete/retain policy.
+- No P1 file was copied, archived, hashed, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
 
 N5 clean worktree feature-line audit:
 

@@ -144,6 +144,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_BLOCKED_B1_PREFLIGHT_20260526.md`;
   `9` A2-excluded entries remain blocked pending explicit source/security or
   retain decisions.
+- Protected/runtime P1 retention preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_PROTECTED_RUNTIME_P1_RETENTION_PREFLIGHT_20260526.md`;
+  `128` protected entries remain retain-by-default pending explicit
+  backup/delete/retain policy.
 
 ## In Progress
 
@@ -201,6 +205,9 @@ Updated: 2026-05-26 Asia/Shanghai.
     standalone extension asset; do not bulk absorb or clean.
 25. B1 remains blocked because it contains shared runtime/source/admin/startup
     files, dependency-lock-like data, and a path-ambiguous response artifact.
+26. P1 protected/runtime entries are not cleanup candidates; do not bulk
+    archive/delete/restore env/config, SQLite, vector-store, state, dailynote,
+    VCPChat, or `.claude` data.
 
 ## Blocked / Needs Explicit Approval
 

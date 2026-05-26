@@ -1,5 +1,42 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Protected Runtime P1 Retention Preflight
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Re-read existing protected/runtime governance context.
+- Reclassified the current `176` dirty entries against closed G1B/M1/R1/B1
+  buckets and protected/runtime P1 rules.
+- Collected read-only metadata only: status, prefix group, extension group,
+  tracked/untracked shape, existence, and byte counts.
+
+Verified:
+
+- Control `main` was local-only ahead of `origin/main` by `1 / 0` at
+  `9f9e2bb` before this record.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- P1 count is `128`; existing count `128`; tracked modified count `8`;
+  untracked count `120`.
+- Approximate P1 byte count is `267,320,880`.
+- Current dirty status is fully covered by G1B, M1, R1, B1, and P1;
+  unclassified count is `0`.
+
+Not validated:
+
+- No P1 content was read into the governance record.
+- No blanket content hash or sensitive-content scan was run over P1 because
+  that would touch secret/runtime-heavy data.
+- No P1 file was copied, archived, hashed, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - Blocked B1 Preflight
 
 Checks performed:

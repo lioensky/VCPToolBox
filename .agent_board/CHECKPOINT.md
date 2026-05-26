@@ -4,6 +4,40 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed protected/runtime P1 retention preflight.
+- Reverified control `main` is local-only ahead of `origin/main` by `1 / 0`
+  at `9f9e2bb`; no push was performed.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Recalculated P1 from current dirty status: `128` protected entries, existing
+  `128`, tracked `8`, untracked `120`, approximate total bytes `267,320,880`.
+- Confirmed current status is fully classified by G1B/M1/R1/B1/P1 with
+  unclassified count `0`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_PROTECTED_RUNTIME_P1_RETENTION_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No P1 file content was read into the governance record.
+- No P1 file was copied, archived, hashed, deleted, restored, reset, cleaned,
+  checked out, or imported into `main`.
+- No env/config, SQLite/WAL/SHM, vector-store, state, dailynote, VCPChat, or
+  `.claude` path was touched beyond read-only metadata.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Choose whether to record explicit retain decisions for B1/P1, or stop with
+   all remaining dirty buckets classified.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed blocked B1 read-only preflight.
 - Reverified control `main` is synchronized with `origin/main` at
   `db1d40feda0a9b5fc0dceee7b510771042ec1420`.
