@@ -288,6 +288,20 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       tone: "sensitive",
       tupleLabels: ["用户输入", "AI 意图"],
     },
+    shotgunDecayFactor: {
+      label: "霰弹历史衰减因子",
+      summary: "控制 Tagmemo V4 Shotgun Query 中历史语义分段召回结果的分数保留比例。",
+      logic: "值越高，历史主题段对最终候选的影响越强；值越低，检索越偏向当前输入。0.85 表示历史分段按距离进行温和指数衰减。",
+      range: "建议 0.60 ~ 0.95，默认 0.85",
+      tone: "sensitive",
+    },
+    shotgunHistorySegmentLimit: {
+      label: "霰弹历史分段数",
+      summary: "控制 Shotgun Query 最多取最近多少个历史语义分段参与并行检索。",
+      logic: "调高会扩大上下文覆盖，但并行搜索次数和历史噪音也会上升；调低更聚焦当前问题。0 表示只使用当前查询向量。",
+      range: "建议 0 ~ 5，默认 3",
+      tone: "sensitive",
+    },
     refreshWeights: {
       label: "流内刷新权重",
       summary: "控制工具刷新阶段里用户、AI 和工具结果三者的占比。",
@@ -652,6 +666,14 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
 
   if (key === "maxlengthdiffratio") {
     return { min: 0, max: 0.2, step: 0.001 };
+  }
+
+  if (key === "shotgundecayfactor") {
+    return { min: 0, max: 1, step: 0.01 };
+  }
+
+  if (key === "shotgunhistorysegmentlimit") {
+    return { min: 0, max: 10, step: 1 };
   }
 
   if (key.includes("days")) {

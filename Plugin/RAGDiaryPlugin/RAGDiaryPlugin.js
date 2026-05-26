@@ -2666,7 +2666,9 @@ class RAGDiaryPlugin {
             modifiers,
             dynamicK,
             ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
-            isFreshTimeConversationStart
+            isFreshTimeConversationStart,
+            shotgunDecayFactor: this.ragParams?.RAGDiaryPlugin?.shotgunDecayFactor,
+            shotgunHistorySegmentLimit: this.ragParams?.RAGDiaryPlugin?.shotgunHistorySegmentLimit
         });
 
         // 2️⃣ 尝试从缓存获取
@@ -2869,8 +2871,13 @@ class RAGDiaryPlugin {
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
             if (historySegments && historySegments.length > 0) {
-                const recentSegments = historySegments.slice(-3);
-                const decayFactor = 0.85;
+                const config = this.ragParams?.RAGDiaryPlugin || {};
+                const historySegmentLimit = Math.max(0, parseInt(config.shotgunHistorySegmentLimit, 10) || 3);
+                const rawDecayFactor = Number(config.shotgunDecayFactor);
+                const decayFactor = Number.isFinite(rawDecayFactor)
+                    ? Math.max(0, Math.min(1, rawDecayFactor))
+                    : 0.85;
+                const recentSegments = historySegments.slice(-historySegmentLimit);
                 recentSegments.forEach((seg, idx) => {
                     const distance = recentSegments.length - idx;
                     const weightMultiplier = Math.pow(decayFactor, distance);
@@ -2878,7 +2885,7 @@ class RAGDiaryPlugin {
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches (historyLimit=${Math.max(0, searchVectors.length - 1)}, decay=${searchVectors.length > 1 ? (searchVectors[1].weight ** (1 / Math.max(1, searchVectors.length - 1))).toFixed(3) : 'n/a'}).`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
@@ -4128,7 +4135,9 @@ class RAGDiaryPlugin {
             ghostTags = [],
             autoWhitelist = null,
             autoBlacklist = null,
-            isFreshTimeConversationStart = false
+            isFreshTimeConversationStart = false,
+            shotgunDecayFactor = null,
+            shotgunHistorySegmentLimit = null
         } = params;
 
         const currentDate = modifiers.includes('::Time')
@@ -4151,7 +4160,9 @@ class RAGDiaryPlugin {
             ghosts: ghostTagString,
             auto_wl: autoWhitelist ? autoWhitelist.sort().join(',') : '',
             auto_bl: autoBlacklist ? autoBlacklist.sort().join(',') : '',
-            fresh_time_start: isFreshTimeConversationStart
+            fresh_time_start: isFreshTimeConversationStart,
+            shotgun_decay: shotgunDecayFactor,
+            shotgun_history_limit: shotgunHistorySegmentLimit
         });
     }
 
