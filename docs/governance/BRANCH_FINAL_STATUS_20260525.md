@@ -1,8 +1,10 @@
 # Branch / Worktree Governance Final Status
 
-Updated: 2026-05-25 19:50 Asia/Shanghai.
+Updated: 2026-05-26 Asia/Shanghai.
 
-This file records the current governance state after Package G2, R1, R2, R3, and V3 progress.
+This file records the current governance state after Package G2, R1, R2, R3, V3,
+the 2026-05-26 upstream absorb, remote cleanup, local cleanup, and retention
+policy packaging.
 
 ## 1. Main And Stable Branch Rules
 
@@ -13,21 +15,25 @@ This file records the current governance state after Package G2, R1, R2, R3, and
 
 ## 2. Verified Heads
 
-- `main` / `origin/main`: `39d860fa07bf55c07acb3eaed70dc9178e81716b`
+- `main` / `origin/main`: `d985622f5081b0bc95f9fed46d1a0b90f51c0f32` before the final local P1/P4 evidence commits.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`
 
-Package G2 result:
+2026-05-26 main results:
 
-- Governance evidence was cherry-picked from `562e907` onto `main` as `39d860f`.
-- `origin/main` was pushed and verified at `39d860f`.
+- `origin/codex/absorb-upstream-main-20260526` was absorbed into `main` as merge commit `b5fd3a3`.
+- 31 explicitly listed merged remote branches were deleted and verified absent.
+- Duplicate local AI image feature labels were deleted; `rescue/ai-image-pipeline-mixed-20260427_195303` was retained.
+- Branch retention policy packages are documented in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
+- P1 worktree audit and P4 local unmerged branch audit were completed locally.
 
 ## 3. Worktree Status
 
 Current registered worktrees:
 
 - `A:/VCP/VCPToolBox`: `feature/latest-updates`, dirty high-risk user-owned worktree.
+- `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`: `integration/latest-updates-selective-absorb`, clean and patch-equivalent to current `main`; optional cleanup candidate after explicit worktree removal approval.
 - `A:/VCP/VCPToolBox-photo-studio-export`: `lane10-codex-memory-intake-20260425`.
-- `A:/VCP/VCPToolBox-photo-studio-next`: `codex/photo-studio-baserow-provider-batch`, now clean after Package R2 stash.
+- `A:/VCP/VCPToolBox-photo-studio-next`: `codex/photo-studio-baserow-provider-batch`, clean and ahead of its upstream.
 - `A:/VCP/VCPToolBox-prod-stable`: `main`, current control worktree.
 
 Removed from Git worktree registry:
@@ -59,7 +65,9 @@ Do not delete:
 
 Pending explicit approval:
 
-- Any branch deletion.
+- Optional cleanup of `integration/latest-updates-selective-absorb` worktree and local branch.
+- Any non-merged local branch deletion, including `governance/origin-main-topology-bridge-preview`.
+- Any old unmerged remote line rename or deletion.
 - Any cleanup of runtime/state/secret-bearing paths in `A:/VCP/VCPToolBox`.
 
 Recommended future feature/doc packages:
@@ -71,4 +79,10 @@ Recommended future feature/doc packages:
 
 ## 6. Current Result
 
-Branch/worktree governance is complete for the requested packages. Remaining items are future feature/doc packages or separate user-owned dirty worktree retention decisions, not blockers for this governance closeout.
+Branch/worktree governance is closed to a documented retention state:
+
+- Every remaining branch/worktree has a documented retain, archive, or explicit-approval path.
+- No remaining branch is an unclassified cleanup candidate.
+- `prod/stable` remains protected.
+- `A:/VCP/VCPToolBox` remains protected as dirty user-owned state.
+- P1B is the only low-risk optional cleanup candidate, but still requires explicit approval because it removes a registered worktree.

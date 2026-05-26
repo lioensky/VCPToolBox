@@ -100,3 +100,9 @@ P4 local unmerged branch audit:
 - `feature/photo-studio-guide-contract-migration` and `feature/photo-studio-next-guide-contract` remain broad historical feature/archive labels; do not merge wholesale.
 - `integration/main-absorb-prod-stable-upstream-20260525` remains a historical governance label; current `main` has newer governance evidence, but this branch is not patch-equivalent by `git cherry`.
 - No P4 deletion or merge was performed.
+
+Current governance closure:
+
+- Remaining branches/worktrees are classified in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
+- No unclassified cleanup candidate remains.
+- Remaining possible actions are explicit decisions only: P1B optional worktree cleanup, EP2 optional topology branch deletion, EP3 optional remote archive/delete policy, or separate dirty worktree backup/retention work.

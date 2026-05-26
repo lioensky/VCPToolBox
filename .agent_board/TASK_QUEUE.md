@@ -34,17 +34,14 @@ Updated: 2026-05-26 Asia/Shanghai.
 
 ## In Progress
 
-- Post-cleanup evidence update.
+- Final governance status evidence update.
 
-## Next Safe Local Tasks
+## Remaining Explicit Decisions
 
-1. Review policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
-2. Decide P1B optional cleanup for `integration/latest-updates-selective-absorb` worktree and local branch.
-3. Decide whether to keep EP2 retained or delete it under explicit non-merged local branch approval.
-4. Decide whether EP3 old unmerged remote lines should remain as-is, be renamed to an archive namespace, or be deleted.
-5. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-6. Request explicit approval before deleting any local or remote branch.
-7. Request explicit approval before any additional remote write.
+1. Optional P1B cleanup for `integration/latest-updates-selective-absorb` worktree and local branch.
+2. Optional EP2 deletion only if a stricter local branch list is desired.
+3. Optional EP3 remote archive rename/delete only with explicit remote approval.
+4. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 
 ## Blocked / Needs Explicit Approval
 
