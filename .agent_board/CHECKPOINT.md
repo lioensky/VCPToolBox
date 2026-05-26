@@ -1,5 +1,27 @@
 # Checkpoint
 
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
+- Pushed `origin/main` to `b5fd3a3385fd6439a2d0462c6442d253201b7c24`.
+- Verified `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
+- Ran read-only branch classification against `origin/main`.
+- Identified many already-merged remote cleanup candidates.
+- Identified unmerged old lines that should not be absorbed wholesale: `backup-*`, `custom*`, `feature-2026-04-19`, `feature/latest-updates`, `feature/photo-studio-guide-contract-migration`, `feature/photo-studio-next-guide-contract`, and `safe-upstream-main-*`.
+
+Not completed:
+
+- No branch was deleted.
+- No remote branch was deleted.
+- No worktree was removed.
+
+Next:
+
+1. If approved, delete only explicitly named merged remote branches.
+2. Keep `prod/stable` protected.
+3. Keep dirty/user-owned `A:/VCP/VCPToolBox` untouched unless a separate retention plan is approved.
+
 Time: 2026-05-25 19:50 Asia/Shanghai.
 
 Completed:

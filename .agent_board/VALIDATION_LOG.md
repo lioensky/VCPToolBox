@@ -1,5 +1,35 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai
+
+Checks performed:
+
+- `git status -sb`
+- `git log --oneline --decorate --graph -n 8`
+- `git fetch origin main codex/absorb-upstream-main-20260526`
+- `git merge-base --is-ancestor origin/codex/absorb-upstream-main-20260526 origin/main`
+- `git branch -r --merged origin/main`
+- `git branch -r --no-merged origin/main`
+- `git branch --merged main`
+- `git branch --no-merged main`
+- `git rev-list --left-right --count origin/main...<remote-branch>` for unmerged remote branches
+- `git worktree list --porcelain`
+
+Verified:
+
+- `main` / `origin/main`: `b5fd3a3385fd6439a2d0462c6442d253201b7c24`.
+- `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
+- `A:/VCP/VCPToolBox-prod-stable` was clean before this evidence update.
+- Several remote branches are now merged into `origin/main` and are cleanup candidates only after explicit approval.
+- Old `backup-*`, `custom*`, `feature-2026-04-19`, `feature/latest-updates`, photo-studio guide, and `safe-upstream-main-*` remote lines remain unmerged and are not safe wholesale absorption candidates.
+
+Not validated:
+
+- No service functional test was run for branch classification.
+- `git remote prune origin --dry-run` timed out and produced no actionable prune result.
+- No branch deletion was performed.
+- No remote write was performed during this follow-up classification.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:

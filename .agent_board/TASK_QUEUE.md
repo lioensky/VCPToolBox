@@ -1,6 +1,6 @@
 # VCPToolBox Governance Task Queue
 
-Updated: 2026-05-25 19:50 Asia/Shanghai.
+Updated: 2026-05-26 Asia/Shanghai.
 
 ## Done
 
@@ -19,20 +19,24 @@ Updated: 2026-05-25 19:50 Asia/Shanghai.
 - Package V2D tool execution route review completed; JSON human-tool route rejected as a security-sensitive API expansion.
 - Package V2E image/plugin source review completed; DeepWiki downgrade rejected, ZImageGen rating writes deferred, OneBot docs rejected as-is.
 - `A:/VCP/VCPToolBox` V3 remaining high-risk dirty review completed.
+- `origin/main` has absorbed and pushed `origin/codex/absorb-upstream-main-20260526` as merge commit `b5fd3a3`.
+- 2026-05-26 read-only remote branch classification completed.
 
 ## In Progress
 
-- Branch-Final residual cleanup evidence update.
+- Branch governance follow-up evidence update.
 
 ## Next Safe Local Tasks
 
-1. Commit this final residual-cleanup evidence update locally.
+1. Inspect and report cleanup candidates only.
 2. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-3. Request explicit approval before any additional remote write.
+3. Request explicit approval before deleting any local or remote branch.
+4. Request explicit approval before any additional remote write.
 
 ## Blocked / Needs Explicit Approval
 
 - Deleting any branch.
+- Deleting merged remote branches such as `origin/codex/absorb-upstream-main-20260526`.
 - Force-removing dirty files or runtime directories.
 - Any additional remote write.
 - Any action touching real secrets or runtime state without a separate approval.
