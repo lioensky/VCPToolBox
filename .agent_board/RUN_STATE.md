@@ -142,3 +142,11 @@ D4B OneBot operational docs repair:
 - Recorded the D4B execution in `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
 - Ran `npm test` in `Plugin/vcp-onebot-adapter`; all 12 tests passed.
 - No content was copied from the dirty worktree.
+
+D4C interaction middleware documentation intake:
+
+- Added `docs/INTERACTION_MIDDLEWARE.md` from current `main` source facts.
+- Linked it from `docs/DOCUMENTATION_INDEX.md`.
+- Recorded D4C execution in `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
+- Ran `node --test tests/channelHub-hardening.test.js`; all 20 tests passed.
+- No content was copied from the dirty worktree.

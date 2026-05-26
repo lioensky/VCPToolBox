@@ -35,6 +35,7 @@
 |------|------|--------|
 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) | TagMemo算法、EPA模块、残差金字塔、向量索引 | ⭐⭐⭐ |
 | [CODEX_MEMORY_BRIDGE.md](./CODEX_MEMORY_BRIDGE.md) | Codex 专用记忆写入通道、执行上下文、审计日志、管理面板监控 | ⭐⭐ |
+| [INTERACTION_MIDDLEWARE.md](./INTERACTION_MIDDLEWARE.md) | ChannelHub 交互中间层入口、处理链、安全边界、运维面 | ⭐⭐ |
 | [CONTEXT_BRIDGE.md](./CONTEXT_BRIDGE.md) | 上下文向量引力场公开接口、插件间向量共享机制 | ⭐⭐⭐ |
 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) | WebSocket协议、节点注册、工具执行、文件传输 | ⭐⭐ |
 | [RUST_VECTOR_ENGINE.md](./RUST_VECTOR_ENGINE.md) | N-API接口、向量操作、性能特性 | ⭐⭐ |
@@ -66,6 +67,7 @@
 | 优化RAG检索 | [MEMORY_SYSTEM.md](./MEMORY_SYSTEM.md) § TagMemo算法 |
 | 了解 Codex 记忆写入 | [CODEX_MEMORY_BRIDGE.md](./CODEX_MEMORY_BRIDGE.md) § 约束规则 |
 | 查看 Codex 记忆监控 | [CODEX_MEMORY_BRIDGE.md](./CODEX_MEMORY_BRIDGE.md) § Admin Monitoring |
+| 维护 ChannelHub 交互中间层 | [INTERACTION_MIDDLEWARE.md](./INTERACTION_MIDDLEWARE.md) |
 | 维护 prod/stable 稳定线 | [PROD_STABLE_BASELINE.md](./PROD_STABLE_BASELINE.md) |
 | 部署 prod/stable 到服务区 | [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md) |
 | 部署分布式节点 | [DISTRIBUTED_ARCHITECTURE.md](./DISTRIBUTED_ARCHITECTURE.md) § 节点注册 |

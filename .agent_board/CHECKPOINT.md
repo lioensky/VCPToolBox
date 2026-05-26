@@ -4,6 +4,26 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed D4C interaction middleware documentation intake from current `main`.
+- Added `docs/INTERACTION_MIDDLEWARE.md`.
+- Linked the new document from `docs/DOCUMENTATION_INDEX.md`.
+- Updated `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md` with the D4C execution record.
+- Did not copy content from `A:/VCP/VCPToolBox`.
+
+Not completed:
+
+- ChannelHub hardening tests passed; no live ChannelHub/platform webhook runtime validation was run.
+- No remote write was performed.
+
+Next:
+
+1. Commit the D4C checkpoint locally after final diff checks.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed D4B OneBot operational docs repair from current `main`.
 - Corrected `Plugin/vcp-onebot-adapter/.env.example` from stale `/internal/channel-hub/events` to `/internal/channelHub/events`.
 - Added a README troubleshooting note for the canonical ChannelHub B2 endpoint.

@@ -205,3 +205,25 @@ Not validated:
 - No live OneBot implementation was started.
 - No live ChannelHub service call was made.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - D4C Interaction Middleware Docs
+
+Checks performed:
+
+- `rg` over `server.js`, `modules/channelHub/**`, `routes/internal/channelHub.js`, `routes/admin/channelHub.js`, `docs/API_ROUTES.md`, and `docs/ARCHITECTURE.md` for ChannelHub routes and pipeline facts.
+- `rg` over D4C docs and governance records for stale `/internal/channel-hub`, `/internal/channelHub/events`, `/api/`, and D4C references.
+- Sensitive-token pattern scan over `docs/INTERACTION_MIDDLEWARE.md`, docs index, governance records, and `.agent_board`.
+- `node --test tests/channelHub-hardening.test.js`.
+
+Verified:
+
+- `docs/INTERACTION_MIDDLEWARE.md` is based on current `main` route names and module names.
+- The document uses `/internal/channelHub/events` as the B2 endpoint and treats `/internal/channel-hub/events` only as a "do not use" path.
+- ChannelHub hardening test suite passed: 20 tests, 0 failures.
+- No dirty worktree content was copied into the D4C documentation package.
+
+Not validated:
+
+- No live platform webhook was sent.
+- No live ChannelHub service was started for end-to-end runtime validation.
+- No remote write was performed for this checkpoint.

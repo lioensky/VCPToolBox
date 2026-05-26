@@ -175,3 +175,28 @@ Remaining risk:
 
 - No live OneBot or ChannelHub service was started.
 - This package only repairs documentation/config template accuracy.
+
+## D4C Execution - Interaction Middleware Documentation Intake
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Added `docs/INTERACTION_MIDDLEWARE.md` as a current-main ChannelHub operations
+  map.
+- Linked it from `docs/DOCUMENTATION_INDEX.md`.
+- Documented implemented-vs-not-implemented boundaries for inbound routes,
+  admin operations, security, state, and validation.
+
+Validation:
+
+- Rewritten from current `server.js`, `modules/channelHub/**`,
+  `routes/internal/channelHub.js`, `routes/admin/channelHub.js`, schemas, and
+  tests.
+- `node --test tests/channelHub-hardening.test.js` passed locally.
+- Dirty worktree interaction-middleware docs were not copied.
+
+Remaining risk:
+
+- No live platform webhook or ChannelHub runtime call was made.
+- This package is documentation-only.
