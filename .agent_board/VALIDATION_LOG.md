@@ -60,6 +60,16 @@ Local cleanup execution:
 - Drafted branch retention policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
 - Prepared EP1/EP2 execution packages with exact branch names, hashes, post-checks, and rollback commands.
 
+EP1 execution:
+
+- Pushed `1ca9cb0` to `origin/main`.
+- Verified `main...origin/main = 0 / 0` before EP1 deletion.
+- Verified all EP1 branches pointed to `546b684e4f4f69003006aadd5ab968c4bffebae8`.
+- Verified EP1 branches were not registered worktree branches.
+- Ran `git branch -D feature/ai-image-pipeline-dgp-refactor feature/ai-image-pipeline-dgp-v2`.
+- Verified `git branch --contains 546b684` now lists only `rescue/ai-image-pipeline-mixed-20260427_195303`.
+- Verified worktree status remained clean and synchronized with `origin/main`.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:

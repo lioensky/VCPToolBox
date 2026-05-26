@@ -73,3 +73,11 @@ Remaining remote branch classification:
 - Unmerged old remote lines remain: `origin/backup-*`, `origin/custom*`, `origin/feature-2026-04-19`, `origin/feature/latest-updates`, `origin/feature/photo-studio-guide-contract-migration`, `origin/feature/photo-studio-next-guide-contract`, and `origin/safe-upstream-main-*`.
 - These unmerged old remote lines have positive cherry deltas and hundreds of file differences; treat them as archival/retention decisions, not cleanup-by-merge candidates.
 - Branch retention policy packages are documented in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
+
+EP1 local duplicate label cleanup:
+
+- User approved pushing the execution package document, then executing EP1.
+- Pushed `1ca9cb0` to `origin/main`.
+- Deleted local branches `feature/ai-image-pipeline-dgp-refactor` and `feature/ai-image-pipeline-dgp-v2` with `git branch -D`.
+- Retained `rescue/ai-image-pipeline-mixed-20260427_195303` as the local label for `546b684`.
+- Verified only the rescue label remains for `546b684`.
