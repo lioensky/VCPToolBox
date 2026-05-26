@@ -1,17 +1,17 @@
 # DingTalkTable 插件
 
-> 钉钉 AI 表格写入插件 - 将 AI 生成的日报/周报写入钉钉 AI 表格
-
----
+> 钉钉 AI 表格兼容层。旧的 DingTalkTable 调用会转发到
+> `Plugin/DingTalkCLI`，由统一的 `dry_run` 和 `DWS_GRAY_STAGE` 策略门控保护。
 
 ## 功能特性
 
-- **写入日报**: 将 AI 生成的日报内容写入钉钉 AI 表格
-- **写入周报**: 将 AI 生成的周报内容写入钉钉 AI 表格
-- **MCP 工具调用**: 直接调用底层钉钉 MCP 工具
-- **列出表格**: 获取可用的钉钉 AI 表格列表
-
----
+- 兼容旧动作：`write_daily_report`、`write_weekly_report`、`list_tables`、
+  `call_mcp_tool`。
+- 支持记录级动作：`add_record`、`batch_add_records`、`update_record`、
+  `delete_record`、`get_record`。
+- 默认写动作保持 dry-run，只有显式 `apply=true` 才请求真实执行。
+- `DingTalkCLI` 的 `DWS_GRAY_STAGE=query_only` 会阻止写动作，即使传入
+  `apply=true`。
 
 ## 配置
 
@@ -21,29 +21,25 @@
 cp config.env.example config.env
 ```
 
-编辑 `config.env`:
+可选配置:
 
 ```env
-# MCP 服务器地址
-DINGTALK_MCP_URL=http://127.0.0.1:9000
-
-# MCP 服务器 API 密钥
-DINGTALK_MCP_KEY=vcp-mcpo-secret
-
-# 默认表格 UUID（可选）
-DINGTALK_TABLE_UUID=your_table_uuid
-
-# 时区设置
+DINGTALK_TABLE_UUID=
 DEFAULT_TIMEZONE=Asia/Shanghai
 ```
 
----
+真实钉钉/DWS 访问配置请放在 `Plugin/DingTalkCLI/config.env`。生产或未确认
+环境建议保持：
+
+```env
+DWS_GRAY_STAGE=query_only
+```
 
 ## 使用方法
 
-### 1. 写入日报
+### 写入日报 dry-run
 
-```
+```text
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」DingTalkTable「末」,
 action:「始」write_daily_report「末」,
@@ -52,81 +48,63 @@ report_date:「始」2026-03-30「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-### 2. 写入周报
+### 显式请求真实写入
 
-```
+```text
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」DingTalkTable「末」,
-action:「始」write_weekly_report「末」,
-content:「始」本周完成：项目 A 上线、项目 B 开发中...「末」,
-summary:「始」第 13 周工作总结「末」
+action:「始」add_record「末」,
+table_uuid:「始」your_table_id「末」,
+data:「始」{"field1":"value1"}「末」,
+apply:「始」true「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-### 3. 列出可用表格
+注意：如果 `DingTalkCLI` 当前处于 `DWS_GRAY_STAGE=query_only`，该写入仍会被
+策略门控阻止。
 
-```
+### 查询记录
+
+```text
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」DingTalkTable「末」,
-action:「始」list_tables「末」
+action:「始」get_record「末」,
+table_uuid:「始」your_table_id「末」,
+record_id:「始」record_id「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
-### 4. 调用 MCP 工具
+### 调用底层 DingTalkCLI 工具
 
-```
+```text
 <<<[TOOL_REQUEST]>>>
 tool_name:「始」DingTalkTable「末」,
 action:「始」call_mcp_tool「末」,
-tool_name:「始」add_record「末」,
-arguments:「始」{"table_uuid": "xxx", "data": {"field1": "value1"}}「末」
+tool_name:「始」record create「末」,
+arguments:「始」{"data":{"field1":"value1"}}「末」
 <<<[END_TOOL_REQUEST]>>>
 ```
 
----
-
 ## 架构
 
+```text
+用户请求 -> VCP 服务器 -> DingTalkTable -> DingTalkCLI -> dingtalk-workspace-cli
+                                      |
+                                      +-> dry_run / DWS_GRAY_STAGE / 参数校验
 ```
-用户请求 → VCP 服务器 → DingTalkTable 插件 → MCP 客户端 → 钉钉 AI 表格 API
-                                      ↓
-                              MCP 服务器 (mcporter)
+
+## 验证
+
+本插件应通过 mock runtime 测试验证，不需要真实钉钉或 MCP 服务：
+
+```bash
+node --test tests/dingtalk-table-compat.test.js
 ```
-
----
-
-## 依赖
-
-- Node.js 18+
-- MCP 服务器 (mcporter)
-- 钉钉 AI 表格访问权限
-
----
-
-## 故障排除
-
-### 问题：MCP 连接失败
-
-**解决方案**:
-1. 检查 MCP 服务器是否运行
-2. 确认 `DINGTALK_MCP_URL` 配置正确
-3. 验证 API 密钥是否正确
-
-### 问题：表格 UUID 无效
-
-**解决方案**:
-1. 使用 `list_tables` 命令查看可用表格
-2. 确认表格 UUID 格式正确
-3. 检查表格访问权限
-
----
 
 ## 相关文档
 
-- [工作日志系统实现方案](../../docs/VCP 交互联通钉钉文档系统/01-工作日志系统实现方案.md)
-- [适配器架构文档](../../docs/VCP 交互联通钉钉文档系统/02-适配器架构文档.md)
+- [DingTalkCLI 架构](../../docs/dingtalk-cli/01-architecture.md)
+- [DingTalkCLI API 规范](../../docs/dingtalk-cli/02-api-spec.md)
+- [DingTalkCLI 灰度发布](../../docs/dingtalk-cli/05-gray-release.md)
 
----
-
-_版本：1.0.0_
-_创建日期：2026-03-30_
+_版本：1.1.0_

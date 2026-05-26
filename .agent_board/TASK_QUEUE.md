@@ -47,6 +47,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - D4E completed locally: locked CodexMemoryBridge knowledge-write API response fields and rejected direct `.new.js` i18n replacement.
 - D4F completed locally: documented `Agent/Noir Architect.txt` as a candidate-only new-agent proposal and did not add or enable it.
 - D4D completed locally: documented `vcp-panel-extension/**` as a standalone editor-extension product proposal and did not add extension source.
+- D4A completed locally: rewired `Plugin/DingTalkTable` through `DingTalkCLI` dry-run/gray-stage gates with mocked no-real-write tests.
 
 ## In Progress
 
@@ -58,7 +59,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. If implementation value is desired, select D4A as the remaining future rewrite package and build it from current `main`.
+5. D4A-D4F packages have local closure; remaining actions are push approval, archive/cleanup decisions, or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval
 

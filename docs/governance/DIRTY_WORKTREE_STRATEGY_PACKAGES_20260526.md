@@ -126,7 +126,7 @@ Prepared future packages:
 
 | Package | Direction | Default decision |
 | --- | --- | --- |
-| `D4A` | DingTalkTable compatibility layer through DingTalkCLI policy gates | Future implementation package only |
+| `D4A` | DingTalkTable compatibility layer through DingTalkCLI policy gates | Completed with dry-run/mock validation |
 | `D4B` | OneBot operational docs repair against current route names | Future docs package only |
 | `D4C` | Interaction middleware documentation intake | Future docs merge with implemented/future labels |
 | `D4D` | VS Code panel / `vcp-panel-extension` product review | Proposal completed; do not absorb as-is |
@@ -292,3 +292,39 @@ Remaining risk:
 - No VS Code extension host was started.
 - No extension package was built or installed.
 - No live VCP server was called.
+
+## D4A Execution - DingTalkTable Compatibility Layer
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Reworked `Plugin/DingTalkTable/DingTalkTable.js` as a compatibility layer
+  that forwards legacy AI-table actions to `Plugin/DingTalkCLI`.
+- Removed direct DingTalk MCP URL/key configuration from
+  `Plugin/DingTalkTable/config.env.example`.
+- Updated the DingTalkTable manifest and README to describe DingTalkCLI
+  forwarding, default dry-run behavior, and gray-stage blocking.
+- Added `tests/dingtalk-table-compat.test.js` with a mocked runtime so no real
+  DingTalk/MCP call is made.
+
+Decision:
+
+- Preserve legacy DingTalkTable action names, but route execution through the
+  DingTalkCLI policy gates.
+- Default write-like actions, including old `call_mcp_tool` write tool names,
+  to dry-run unless `apply=true` is explicitly requested.
+- Rely on DingTalkCLI `DWS_GRAY_STAGE=query_only` to block write execution even
+  when `apply=true`.
+
+Validation:
+
+- `node --test tests/dingtalk-table-compat.test.js` passed locally.
+- `node --test tests/dingtalk-cli/security-handler.test.js tests/dingtalk-cli/runtime-execute.test.js` passed locally.
+- `Plugin/DingTalkTable/plugin-manifest.json` parsed as valid JSON.
+
+Remaining risk:
+
+- No live DingTalk, MCP, or DWS command was executed.
+- The exact production DWS AI-table tool names remain contract-sensitive and
+  should be confirmed with a real dry-run in a separately approved environment.

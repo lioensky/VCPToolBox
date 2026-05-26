@@ -174,3 +174,11 @@ D4D VCP panel extension product proposal:
 - Added `docs/governance/VCP_PANEL_EXTENSION_PRODUCT_PROPOSAL_20260526.md`.
 - Decision: do not add extension source automatically; future adoption requires a separate product package with API, auth, webview CSP, packaging, and validation decisions.
 - No extension source body was copied from the dirty worktree.
+
+D4A DingTalkTable compatibility layer:
+
+- Reworked `Plugin/DingTalkTable` to forward legacy table actions through `Plugin/DingTalkCLI`.
+- Removed direct DingTalk MCP URL/key configuration from the DingTalkTable config example.
+- Updated DingTalkTable README and manifest for dry-run/gray-stage behavior.
+- Added mocked no-real-write compatibility tests.
+- No live DingTalk, MCP, or DWS command was executed.

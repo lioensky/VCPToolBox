@@ -4,6 +4,27 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed D4A DingTalkTable compatibility-layer rewrite from current `main`.
+- Reworked `Plugin/DingTalkTable` to forward legacy actions through `Plugin/DingTalkCLI`.
+- Removed direct DingTalk MCP URL/key settings from the DingTalkTable config example.
+- Updated README and manifest to document dry-run and `DWS_GRAY_STAGE` behavior.
+- Added `tests/dingtalk-table-compat.test.js`.
+- Updated `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md` with the D4A execution record.
+
+Not completed:
+
+- No live DingTalk, MCP, or DWS command was executed.
+- No remote write was performed.
+
+Next:
+
+1. Commit the D4A checkpoint locally after final diff checks.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed D4D VCP panel extension product proposal from current `main`.
 - Verified `vcp-panel-extension/**` is absent from current `main` and present only as a dirty-worktree standalone prototype.
 - Added `docs/governance/VCP_PANEL_EXTENSION_PRODUCT_PROPOSAL_20260526.md`.

@@ -324,3 +324,39 @@ Not validated:
 - No webview was rendered.
 - No live VCP server was called.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - D4A DingTalkTable Compatibility Layer
+
+Checks performed:
+
+- Inspected current `Plugin/DingTalkTable` source, manifest, README, and config
+  example.
+- Inspected `Plugin/DingTalkCLI/lib/runtime.js`,
+  `Plugin/DingTalkCLI/lib/security-handler.js`, and existing DingTalkCLI tests.
+- Reworked DingTalkTable to forward legacy table actions through DingTalkCLI.
+- Added `tests/dingtalk-table-compat.test.js`.
+- Ran `node --test tests/dingtalk-table-compat.test.js`.
+- Ran `node --test tests/dingtalk-cli/security-handler.test.js tests/dingtalk-cli/runtime-execute.test.js`.
+- Parsed `Plugin/DingTalkTable/plugin-manifest.json` as JSON.
+- Ran `git diff --check`.
+- Ran direct MCP key/config scan over `Plugin/DingTalkTable` and the new test.
+- Ran sensitive-token pattern scan over DingTalkTable, the new test,
+  governance strategy record, and `.agent_board`.
+
+Verified:
+
+- DingTalkTable write-like actions now forward to DingTalkCLI `execute_tool`.
+- Write-like actions default to dry-run unless `apply=true` is explicit.
+- Old `call_mcp_tool` write-like tool names also default to dry-run.
+- DingTalkCLI security/runtime tests still pass and preserve query-only write
+  blocking.
+- DingTalkTable config example no longer carries direct MCP URL/key settings.
+- `git diff --check` reported no whitespace errors.
+- Direct MCP key/config scan and sensitive-token scan produced no matches in the
+  D4A scope.
+
+Not validated:
+
+- No live DingTalk, MCP, or DWS command was executed.
+- No real AI-table dry-run was executed against a configured DWS environment.
+- No remote write was performed for this checkpoint.
