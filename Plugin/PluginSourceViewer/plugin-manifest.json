@@ -1,6 +1,6 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "PluginSourceViewer",
+  "name": "ServerPluginSourceViewer",
   "displayName": "插件源码查询器",
   "version": "1.0.0",
   "description": "一个特殊同步插件：输入指定 targettool 后，在本地 Plugin 目录的启用 manifest 中查找对应插件，解析 entryPoint.command 或 entryPoint.script，返回主入口源码、manifest 内容和插件目录树。若找不到本地插件，则提示该工具可能是分布式插件或不存在。",
