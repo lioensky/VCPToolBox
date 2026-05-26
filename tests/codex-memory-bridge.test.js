@@ -122,6 +122,8 @@ test('CodexMemoryBridge should accept validated reusable knowledge records', asy
 
         assert.equal(accepted.decision, 'accepted');
         assert.equal(accepted.agentAlias, 'Codex');
+        assert.equal(accepted.targetDiary, 'Codex knowledge');
+        assert.equal(accepted.reason, 'written to Codex knowledge.');
         assert.match(accepted.memoryId, /^codex-knowledge-/);
         assert.ok(accepted.filePath, 'accepted response should include filePath');
         assert.match(accepted.filePath, /dailynote[\\/]Codex的知识[\\/]/);

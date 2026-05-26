@@ -227,3 +227,27 @@ Not validated:
 - No live platform webhook was sent.
 - No live ChannelHub service was started for end-to-end runtime validation.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - D4E CodexMemoryBridge Contract
+
+Checks performed:
+
+- `rg` over `Plugin/CodexMemoryBridge`, tests, docs, and governance records for
+  `targetDiary`, `Codex knowledge`, `Codex的知识`, and bridge rejection/acceptance
+  strings.
+- Sensitive-token pattern scan over the bridge plugin, D4E tests, Codex memory
+  docs, governance records, and `.agent_board`.
+- `node --test tests/codex-memory-bridge.test.js tests/codex-memory-e2e.test.js tests/codex-memory-mcp.test.js tests/codex-memory-admin.test.js`.
+
+Verified:
+
+- Knowledge writes still store under `dailynote/Codex的知识/`.
+- Accepted knowledge-write responses keep `targetDiary=Codex knowledge` and
+  `reason=written to Codex knowledge.`.
+- Dirty `.new.js` sidecar content was not copied.
+- Codex memory contract test set passed: 12 tests, 0 failures.
+
+Not validated:
+
+- No live Codex memory write was performed outside test temp directories.
+- No remote write was performed for this checkpoint.

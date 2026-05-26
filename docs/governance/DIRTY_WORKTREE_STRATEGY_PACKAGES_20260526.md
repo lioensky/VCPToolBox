@@ -200,3 +200,31 @@ Remaining risk:
 
 - No live platform webhook or ChannelHub runtime call was made.
 - This package is documentation-only.
+
+## D4E Execution - CodexMemoryBridge i18n/API Contract Review
+
+Status: completed locally on 2026-05-26.
+
+Action:
+
+- Rejected direct intake of the dirty-worktree `.new.js` i18n variant.
+- Documented the current knowledge-write response contract in
+  `docs/CODEX_MEMORY_BRIDGE.md`.
+- Added regression assertions to `tests/codex-memory-bridge.test.js` for
+  `targetDiary=Codex knowledge`, `reason=written to Codex knowledge.`, and the
+  canonical storage path under `dailynote/Codex的知识/`.
+
+Decision:
+
+- Keep the durable storage diary localized as `Codex的知识`.
+- Keep observable `targetDiary` and `reason` return strings in their current
+  English form unless a future explicit API migration is approved.
+
+Validation:
+
+- Dirty worktree sidecar files were not copied.
+- Codex memory bridge/e2e/MCP/admin tests passed locally.
+
+Remaining risk:
+
+- No live Codex memory write was performed outside the test temp directory.

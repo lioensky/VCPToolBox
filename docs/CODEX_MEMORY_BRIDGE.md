@@ -88,12 +88,20 @@ Main fields:
 
 - write target maid: `[Codex的知识]Codex`
 - diary folder: `dailynote/Codex的知识/`
+- accepted result `targetDiary`: `Codex knowledge`
+- accepted result `reason`: `written to Codex knowledge.`
 
 `search_memory` for `target=knowledge` queries the same canonical diary name from:
 
 - `modules/codexMemoryConstants.js`
 
 This alignment prevents "accepted write but search miss" caused by mismatched diary names.
+
+The storage diary name and the returned display/API fields are intentionally not
+identical. The Chinese diary folder is the durable storage target; the English
+`targetDiary` and `reason` strings are observable API contract fields used by
+tests, audit readers, and tool callers. Do not localize those return fields
+without a dedicated contract migration.
 
 ---
 
@@ -143,3 +151,12 @@ existing `GET /admin_api/codex-memory/overview` endpoint. Do not restore the old
 - Relaxed `process` sensitivity policy (no longer binary reject for all non-`none` values).
 - Kept `knowledge` policy strict (`sensitivity=none` + `validated=true` + `reusable=true`).
 - Fixed `knowledge` write path to canonical `Codex的知识` diary for search consistency.
+
+## 10. 2026-05-26 Contract Review
+
+- Reviewed the dirty-worktree `.new.js` i18n variant without copying it.
+- Rejected direct replacement because it changes observable `targetDiary` and
+  `reason` fields.
+- Added regression coverage for the current knowledge-write response contract:
+  `targetDiary=Codex knowledge`, `reason=written to Codex knowledge.`, and
+  file path under `dailynote/Codex的知识/`.

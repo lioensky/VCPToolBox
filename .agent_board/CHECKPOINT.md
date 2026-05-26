@@ -4,6 +4,27 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed D4E CodexMemoryBridge i18n/API-contract review from current `main`.
+- Rejected direct intake of the dirty `.new.js` i18n variant.
+- Documented the stable knowledge-write return contract in `docs/CODEX_MEMORY_BRIDGE.md`.
+- Added regression assertions in `tests/codex-memory-bridge.test.js`.
+- Updated `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md` with the D4E execution record.
+- Did not copy content from `A:/VCP/VCPToolBox`.
+
+Not completed:
+
+- Codex memory tests passed; no live Codex memory write was performed outside the test temp directory.
+- No remote write was performed.
+
+Next:
+
+1. Commit the D4E checkpoint locally after final diff checks.
+2. Pause before any push.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed D4C interaction middleware documentation intake from current `main`.
 - Added `docs/INTERACTION_MIDDLEWARE.md`.
 - Linked the new document from `docs/DOCUMENTATION_INDEX.md`.

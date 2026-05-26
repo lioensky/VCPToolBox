@@ -150,3 +150,11 @@ D4C interaction middleware documentation intake:
 - Recorded D4C execution in `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
 - Ran `node --test tests/channelHub-hardening.test.js`; all 20 tests passed.
 - No content was copied from the dirty worktree.
+
+D4E CodexMemoryBridge i18n/API-contract review:
+
+- Rejected direct intake of the dirty `.new.js` i18n variant.
+- Documented that knowledge writes store under `dailynote/Codex的知识/` while returning `targetDiary=Codex knowledge`.
+- Added regression assertions for the current `targetDiary` and `reason` fields.
+- Ran Codex memory bridge/e2e/MCP/admin tests; all 12 tests passed.
+- No content was copied from the dirty worktree.
