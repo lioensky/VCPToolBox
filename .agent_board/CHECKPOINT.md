@@ -12,6 +12,7 @@ Completed:
 - Found unresolved conflict markers in `plugins/custom/reporting/sync_to_external_sheet_or_notion/src/index.js` and `tests/photo-studio/external-sync.test.js`.
 - Detected secret-like patterns in config examples; values were not copied into docs.
 - Drafted `docs/governance/DIRTY_WORKTREE_PRESERVATION_MANIFEST_20260526.md` with path-level buckets: `quarantine-sensitive-runtime`, `candidate-review`, `manifest-toggle-review`, `preserve-path-only-review-later`, and `reject-as-is`.
+- Completed candidate review C1 for old root `AdminPanel/` static edits and rejected migration into `main`; current `main` already has `AdminPanel-Vue` Codex Memory Monitor implementation plus backend route/test coverage.
 
 Not completed:
 
@@ -21,7 +22,7 @@ Not completed:
 Next:
 
 1. Keep `A:/VCP/VCPToolBox` untouched until a separate backup/retention action is approved.
-2. If continuing, choose one package only: preservation/archive plan, manifest toggle review, or one candidate source-diff group.
+2. If continuing, choose one package only: `Agent/*`, `Plugin/CodexMemoryBridge/*.js`, `Plugin/DingTalkTable/**`, preservation/archive plan, or manifest toggle review.
 3. Do not absorb conflict-marked files or config examples as-is.
 
 Time: 2026-05-26 Asia/Shanghai.

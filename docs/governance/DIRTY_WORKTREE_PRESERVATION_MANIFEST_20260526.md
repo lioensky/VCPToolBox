@@ -124,6 +124,29 @@ Guardrails:
 - `docs/dingtalk-cli/reports/**` may be generated output; review for size, stability, and reproducibility before keeping.
 - `modules/toolExecution.js` and `routes/toolExecutionRoutes.js` are security-sensitive API surface; require design review before implementation.
 
+### 5.1 AdminPanel Static Edits Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Read-only checks:
+
+- Dirty worktree files reviewed: `AdminPanel/index.html`, `AdminPanel/script.js`, `AdminPanel/style.css`.
+- Dirty diff size against its own branch HEAD: `85` insertions and `10` deletions across 3 files.
+- No unresolved conflict marker was found in those three files.
+- No secret-like key pattern was found in those three files; the only password match was a CSS selector for password inputs.
+- Current `main` does not use the old root `AdminPanel/` static panel as the primary admin implementation; it has `AdminPanel-Vue/**` plus `routes/admin/**`.
+
+Observed intent:
+
+- The dirty static panel adds a `Codex Memory Bridge` navigation entry, section, initializer call, and CSS classes.
+- Current `main` already has the corresponding newer Vue implementation and backend surface: `AdminPanel-Vue/src/views/CodexMemoryMonitor.vue`, `AdminPanel-Vue/src/api/codexMemory.ts`, `AdminPanel-Vue/src/app/routes/manifest.ts`, `AdminPanel-Vue/src/app/routes/components.ts`, `routes/admin/codexMemory.js`, and `tests/codex-memory-admin.test.js`.
+
+Decision:
+
+- Reject the old `AdminPanel/` static edits for migration into `main`.
+- Reason: the feature intent is already represented in the current Vue admin panel architecture; absorbing the old static-path patch would reintroduce legacy UI surface and duplicate the implementation.
+- Preserve only as path-level historical evidence unless a future task explicitly asks to restore legacy static AdminPanel behavior.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.

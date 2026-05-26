@@ -35,6 +35,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - P1B cleanup completed: `integration/latest-updates-selective-absorb` worktree and local branch removed.
 - 2026-05-26 dirty worktree read-only refresh completed for `A:/VCP/VCPToolBox`: verified `260` dirty entries, `41` tracked entries, `219` untracked entries, unresolved conflict markers in external sync files, and secret-like patterns in config examples.
 - 2026-05-26 dirty worktree preservation manifest drafted in `docs/governance/DIRTY_WORKTREE_PRESERVATION_MANIFEST_20260526.md`.
+- Dirty candidate review C1 completed: old root `AdminPanel/` static Codex Memory edits rejected because current `main` already carries the Vue admin implementation and backend/test coverage.
 
 ## In Progress
 
@@ -46,6 +47,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, cleanup, or source-intake package for `A:/VCP/VCPToolBox`.
+5. Continue candidate review one package at a time, preferably `Agent/*`, `Plugin/CodexMemoryBridge/*.js`, or `Plugin/DingTalkTable/**`.
 
 ## Blocked / Needs Explicit Approval
 
