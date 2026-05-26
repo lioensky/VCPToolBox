@@ -4,6 +4,35 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed N2 dirty worktree read-only refresh.
+- Verified control `main` was clean before the refresh and local `main` was
+  ahead of `origin/main` by `2 / 0`.
+- Verified `A:/VCP/VCPToolBox` remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Verified dirty worktree ahead/behind against `origin/feature/latest-updates`
+  remains `10 / 15`.
+- Verified dirty status remains `260` entries: `41` tracked and `219`
+  untracked.
+- Verified read-only risk signals: `4` files with conflict markers and `73`
+  files matching secret/config-like patterns by filename-only scan.
+- Updated the post-D4 N2 decision facts with the refreshed sanitized counts.
+
+Not completed:
+
+- No dirty worktree file was edited, deleted, moved, stashed, reset, cleaned,
+  copied, or archived.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+
+Next:
+
+1. Commit this N2 read-only refresh record locally.
+2. Pause before any push or dirty-worktree retention/archive/cleanup action.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed post-sync local plan-state refresh.
 - Rechecked current `main`, worktree status, ahead/behind, log, and the N1-N5
   post-D4 decision package.

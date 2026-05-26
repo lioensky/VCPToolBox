@@ -10,14 +10,20 @@ tagging, releasing, deploying, or touching production/runtime state.
 - Control worktree: `A:/VCP/VCPToolBox-prod-stable`
 - Control branch: `main`
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`
-- Local `main` currently has local checkpoint record
-  `6db847b` ahead of `origin/main`.
-- Current ahead/behind: `HEAD...origin/main = 1 / 0`.
+- At the latest N2 read-only refresh start, local `main` had checkpoint record
+  `dc8beb4` ahead of `origin/main`.
+- Ahead/behind at latest N2 read-only refresh start:
+  `HEAD...origin/main = 2 / 0`.
+- Recheck `HEAD` before any approved push because each local evidence commit
+  advances the local-only head.
 - Control worktree was clean at the read-only refresh.
 - Dirty worktree `A:/VCP/VCPToolBox` remains on `feature/latest-updates`.
 - Dirty worktree upstream comparison: `10 / 15` against
   `origin/feature/latest-updates`.
 - Dirty worktree status count: `260` entries.
+- Latest N2 read-only refresh: `41` tracked dirty entries, `219` untracked
+  entries, `4` files with conflict markers, and `73` files matching
+  secret/config-like patterns by filename-only scan.
 - No new automatically safe branch or worktree cleanup candidate was found.
 
 ## Decision N1 - Push Local Checkpoint Records
@@ -28,7 +34,7 @@ Facts:
 
 - Local `main` contains local governance checkpoint commits beyond
   `origin/main`.
-- Current local-only checkpoint head: `6db847b`.
+- Local-only checkpoint head at latest N2 refresh start: `dc8beb4`.
 - Pushing is a remote write and remains an A5 boundary.
 
 Minimum preflight before push:
@@ -58,6 +64,9 @@ Facts:
 - Reviewed dirty source candidates C1-C6 have no direct absorption path.
 - D4A-D4F value packages have been completed or turned into proposal records
   from current `main`, not by copying dirty files.
+- Latest read-only refresh confirms the dirty tree still contains conflict
+  markers and secret/config-like risk signals, so retention remains the safest
+  default.
 
 Allowed without new approval:
 

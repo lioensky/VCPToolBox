@@ -55,9 +55,13 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Post-D4 next-decision package push/sync closure completed locally: explicit
   `git push origin main` returned `Everything up-to-date`, and `main` /
   `origin/main` were reverified at `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- Post-sync local plan-state refresh completed locally: the N1-N5 decision
-  document now reflects `origin/main=e8b0c1d`, local `main=6db847b`, and
-  ahead/behind `1 / 0`.
+- Post-sync local plan-state refresh completed locally: at that checkpoint, the
+  N1-N5 decision document reflected `origin/main=e8b0c1d`, local
+  `main=6db847b`, and ahead/behind `1 / 0`.
+- N2 dirty worktree read-only refresh completed locally: `A:/VCP/VCPToolBox`
+  still has `260` dirty entries (`41` tracked, `219` untracked), remains
+  `10 / 15` against `origin/feature/latest-updates`, and still carries
+  conflict-marker plus secret/config-like risk signals.
 
 ## In Progress
 

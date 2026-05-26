@@ -1,5 +1,58 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - N2 Dirty Worktree Read-Only Refresh
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`
+- Control worktree: `git status --short --untracked-files=all`
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`
+- Control worktree: `git log --oneline --decorate -n 6`
+- Dirty worktree: `git branch --show-current`
+- Dirty worktree: `git rev-parse HEAD`
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`
+- Dirty worktree: counted `git status --short --untracked-files=all`
+- Dirty worktree: filename-only conflict-marker scan.
+- Dirty worktree: filename-only secret/config-like pattern scan.
+- Dirty worktree: top-level dirty path grouping.
+- Control worktree: `git diff --stat`
+- Control worktree: `git diff --check`
+- Control worktree: sensitive-pattern scan over `.agent_board` and the updated
+  N1-N5 governance document.
+- Control worktree: `git status --short --untracked-files=all`
+
+Verified:
+
+- Control branch is `main`; control worktree was clean before refresh.
+- Control `main` was ahead of `origin/main` by `2 / 0` before this record.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty worktree remains ahead/behind `origin/feature/latest-updates` by
+  `10 / 15`.
+- Dirty status remains `260` entries: `41` tracked and `219` untracked.
+- Tracked dirty shape: `28` modified-like entries and `13` deleted-like
+  entries.
+- Filename-only scans found `4` files with conflict markers and `73` files
+  matching secret/config-like patterns.
+- Largest dirty top-level groups remain `Plugin`, `docs`, vector-store
+  folders, `state`, `.claude`, and `.agent_board`.
+- Local record diff touches only `.agent_board` and
+  `docs/governance/POST_D4_GOVERNANCE_NEXT_DECISIONS_20260526.md`.
+- `git diff --check` reported no whitespace errors.
+- Control-worktree sensitive-pattern scan returned no matches.
+
+Not validated:
+
+- No dirty worktree file contents were inspected beyond filename/status/risk
+  scans.
+- No dirty worktree file was edited, deleted, moved, stashed, reset, cleaned,
+  copied, or archived.
+- No service functional test was run because this was a read-only governance
+  refresh.
+- No push, tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  or production write was performed.
+- This local N2 refresh is not pushed.
+
 ## 2026-05-26 Asia/Shanghai - Post-Sync Local Plan-State Refresh
 
 Checks performed:

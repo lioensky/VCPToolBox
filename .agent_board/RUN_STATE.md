@@ -8,8 +8,10 @@ Worktree status at last check: clean.
 Current verified heads and sync state:
 
 - Latest verified `origin/main`: `e8b0c1de621bb2353e073eff8f3d8a14422b1bb0`.
-- Local `main`: `6db847b` at the latest post-sync checkpoint record.
-- Current ahead/behind relative to `origin/main`: `1 / 0`.
+- At the latest N2 read-only refresh start, local `main` was `dc8beb4`.
+- Ahead/behind at latest N2 read-only refresh start: `2 / 0`.
+- Recheck local `HEAD` before any approved push because each local evidence
+  commit advances the local-only head.
 - Push remains an A5 remote-write boundary requiring explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
@@ -187,6 +189,22 @@ Post-sync local plan-state refresh:
   local-only checkpoint head `6db847b`.
 - No push, tag, release, deploy, branch deletion, dirty worktree cleanup, live
   DingTalk/MCP/DWS command, or production write was performed.
+
+N2 dirty worktree read-only refresh:
+
+- Rechecked `A:/VCP/VCPToolBox` without editing, deleting, moving, stashing,
+  resetting, cleaning, copying, or archiving any file.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty worktree remains ahead/behind `origin/feature/latest-updates` by
+  `10 / 15`.
+- Dirty status remains `260` entries: `41` tracked and `219` untracked.
+- Tracked dirty shape remains `28` modified-like entries and `13`
+  deleted-like entries.
+- Filename-only risk scan found `4` files with conflict markers and `73` files
+  matching secret/config-like patterns.
+- No dirty worktree file was touched, and no remote write or production action
+  was performed.
 
 D4F Noir Architect new-agent proposal:
 
