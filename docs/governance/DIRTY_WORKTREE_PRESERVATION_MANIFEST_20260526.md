@@ -233,6 +233,45 @@ Future package requirements:
 - Verify manifest commands and README examples match the implemented action set.
 - Require explicit approval before any live DingTalk/MCP call, config change, or deployment.
 
+### 5.5 Docs / Tool Route / VS Code Panel Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Scope:
+
+- `Plugin/_PluginDocTemplate/**`
+- `Plugin/vcp-onebot-adapter/docs/**`
+- `modules/toolExecution.js`
+- `routes/toolExecutionRoutes.js`
+- `vcp-panel-extension/**`
+
+Read-only checks:
+
+- All scoped dirty entries are untracked in `A:/VCP/VCPToolBox`.
+- No unresolved conflict marker was found in this C5 scope.
+- No real secret-like value was found. Matches were documentation warnings about `.env`, tokens, or secrets.
+- Current `main` already contains tracked `modules/toolExecution.js` and `routes/toolExecutionRoutes.js`.
+- Current `main` does not contain `Plugin/_PluginDocTemplate/**`, `Plugin/vcp-onebot-adapter/docs/**`, or `vcp-panel-extension/**`.
+
+Decision by area:
+
+| Area | Decision | Reason |
+| --- | --- | --- |
+| `Plugin/_PluginDocTemplate/**` | Candidate-only, do not absorb as-is | Generic docs template may be useful, but placing a template under `Plugin/` can be confusing; prefer a future docs/templates package if desired. |
+| `Plugin/vcp-onebot-adapter/docs/**` | Candidate-only, do not absorb as-is | Docs are small and useful, but current code uses `/internal/channelHub/events`; dirty docs mention `/internal/channel-hub/events` in operational examples, so route names must be corrected against current code first. |
+| `modules/toolExecution.js` | Already present in current `main` | Dirty and main versions are content-equivalent ignoring line endings; no migration needed. |
+| `routes/toolExecutionRoutes.js` | Reject | Dirty route exposes `POST /v1/human/tool-with-context` and accepts caller-provided `executionContext`; this is a security/API design change. |
+| `vcp-panel-extension/**` | Candidate-only standalone product, do not absorb as-is | VS Code/VCPcode extension prototype with inline webview, default `http://localhost:5050`, and calls to `/api/agents/*` and `/api/rag/*`; current main primarily exposes `/admin_api/*` admin APIs. |
+
+Future package guidance:
+
+- Plugin docs template: if wanted, introduce it under a deliberate docs/template location and exclude it from plugin runtime discovery.
+- OneBot docs: repair against current `Plugin/vcp-onebot-adapter` code, especially `/internal/channelHub/events`, env keys, and startup/test commands.
+- Tool execution JSON endpoint: only design as a separate governance/security patch with authentication, fixed server-side `requestSource`, execution-context allowlist, and approval tests.
+- VS Code panel: treat as a separate extension product proposal with API contract validation, packaging/build assets, CSP review, and no assumption that `/api/*` endpoints exist.
+
+No C5 source file should be copied into `main` directly from the dirty worktree.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.
