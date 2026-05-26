@@ -1,5 +1,34 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1B-R0 Retain Decision
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Rechecked the four G1B paths for git status, existence, byte count, and
+  SHA256.
+- Recorded the user-selected retain decision without copying raw file content.
+
+Verified:
+
+- Control `main` was clean at `b712562` before this record and ahead of
+  `origin/main` by `2 / 0`.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- G1B count is `4`; existing count `4`; untracked count `4`.
+- The chosen strategy is `G1B-R0 retain in dirty worktree`.
+
+Not validated:
+
+- No G1B quarantine archive was created.
+- No G1B delete was executed.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - G1B Sanitize Quarantine Preflight
 
 Checks performed:

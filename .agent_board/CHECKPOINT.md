@@ -4,6 +4,36 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Recorded user-selected G1B-R0 retain decision.
+- Reverified control `main` was clean at local `b712562`, ahead of
+  `origin/main` by `2 / 0` before drafting this retain decision; no push was
+  performed.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Reverified G1B scope has `4` existing untracked generated report files.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_RETAIN_DECISION_20260526.md`.
+- Updated the G1B preflight with the `G1B-R0 retain` decision.
+
+Not completed:
+
+- No G1B file was copied, archived, deleted, moved, reset, cleaned, restored,
+  sanitized, or checked out.
+- No matching sensitive/config-like values were printed or recorded.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Continue with the next non-G1B dirty-worktree package if desired.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed G1B sanitize/quarantine preflight as a read-only check.
 - Reverified control `main` was clean at local `d42725b`, ahead of
   `origin/main` by `1 / 0` before drafting this preflight; no push was

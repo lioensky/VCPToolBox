@@ -130,6 +130,9 @@ Updated: 2026-05-26 Asia/Shanghai.
 - G1B sanitize/quarantine preflight drafted in
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_SANITIZE_QUARANTINE_PREFLIGHT_20260526.md`;
   no G1B file was copied, archived, deleted, or printed.
+- G1B-R0 retain decision recorded in
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1B_RETAIN_DECISION_20260526.md`;
+  the four G1B files remain in the dirty worktree.
 
 ## In Progress
 
@@ -178,9 +181,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 21. Remaining generated-artifact cleanup is G1B only and requires a separate
     sanitize/quarantine review because those report files matched sensitive
     patterns.
-22. G1B has four untracked generated report files; next action should be one
-    explicit package: retain, quarantine preflight, delete without raw archive,
-    or delete after quarantine.
+22. G1B-R0 retain is selected; the four untracked G1B generated reports remain
+    in `A:/VCP/VCPToolBox` until a future explicit reopen instruction.
 
 ## Blocked / Needs Explicit Approval
 

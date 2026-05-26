@@ -249,6 +249,16 @@ G1B sanitize/quarantine preflight:
 - Next G1B action requires explicit choice among retain, quarantine preflight,
   delete without raw archive, or delete after quarantine.
 
+G1B-R0 retain decision:
+
+- User selected `保留` for G1B.
+- The four G1B untracked generated reports remain in
+  `A:/VCP/VCPToolBox`.
+- No G1B file was copied, archived, deleted, sanitized, restored, reset,
+  cleaned, or checked out.
+- G1B should be considered closed as retain-by-user-choice unless reopened by a
+  future explicit quarantine/delete instruction.
+
 N5 clean worktree feature-line audit:
 
 - `lane10-codex-memory-intake-20260425` worktree remains clean at

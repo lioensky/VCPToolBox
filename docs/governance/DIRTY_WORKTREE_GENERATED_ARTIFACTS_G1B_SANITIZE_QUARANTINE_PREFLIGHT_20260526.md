@@ -99,6 +99,18 @@ Important boundaries:
 - Do not print matching lines or matching values in terminal summaries,
   governance docs, memory, issues, PRs, or commit messages.
 
+## User Decision
+
+The user selected:
+
+```text
+保留
+```
+
+This closes the current G1B decision as `G1B-R0 retain in dirty worktree`.
+No G1B file was copied, archived, deleted, sanitized, restored, reset, cleaned,
+or checked out.
+
 ## Recommended Strategy
 
 Recommended next package: `G1B-Q1` quarantined raw archive preflight.
