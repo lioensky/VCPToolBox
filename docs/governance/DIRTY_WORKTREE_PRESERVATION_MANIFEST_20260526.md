@@ -198,6 +198,41 @@ Decision:
 - Do not replace the main entry point with `.new.js` automatically, because it changes returned messages and display strings and needs targeted regression tests before intake.
 - No immediate source absorption is needed for `Plugin/CodexMemoryBridge/*.js`.
 
+### 5.4 DingTalkTable Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Read-only checks:
+
+- Dirty worktree entries reviewed: `Plugin/DingTalkTable/DingTalkTable.js`, `README.md`, `config.env.example`, `plugin-manifest.json`, `plan.md`, and `lpan.txt`.
+- All `Plugin/DingTalkTable/**` entries in the dirty worktree are untracked.
+- Current `main` already contains tracked `Plugin/DingTalkTable/DingTalkTable.js`, `README.md`, `config.env.example`, and `plugin-manifest.json`.
+- No unresolved conflict marker was found in the dirty `Plugin/DingTalkTable/**` files.
+- No real secret-like value was found in the dirty files. The dirty `config.env.example` uses empty/default placeholders and removes the older fixed `DINGTALK_MCP_KEY` example from current main.
+
+Observed difference:
+
+- Current `main` DingTalkTable is version `1.0.0`, a direct MCP/HTTP AI-table writer with actions such as `write_daily_report`, `write_weekly_report`, `list_tables`, and `call_mcp_tool`.
+- Dirty DingTalkTable is version `1.1.0`, marked deprecated, and forwards legacy AI-table actions to `DingTalkCLI` via `DingTalkCLIRuntime`.
+- Dirty actions include `add_record`, `batch_add_records`, `update_record`, `delete_record`, `get_record`, `invoke_tool`, `list_tools`, and `health_check`.
+- Dirty implementation defaults write-style actions to `dry_run=true` unless explicitly overridden, and adds deprecated/replacement metadata in responses.
+- Dirty `plan.md` / `lpan.txt` are planning notes for MCPO/DingTalk setup and include external service setup instructions, not implementation-ready source.
+
+Decision:
+
+- Do not absorb `Plugin/DingTalkTable/**` as-is from the dirty worktree.
+- Keep the compatibility-layer direction as valuable but deferred: route legacy DingTalkTable calls through `DingTalkCLI` policy gates instead of direct MCP writes.
+- Reject dirty `plan.md` and `lpan.txt` for migration into `main`; they are local planning notes with external setup steps.
+- Future intake should be a dedicated implementation package on current `main`, not an untracked directory copy.
+
+Future package requirements:
+
+- Implement the DingTalkTable-to-DingTalkCLI compatibility layer on top of current `main`.
+- Preserve fail-closed defaults: `dry_run=true`, `DWS_GRAY_STAGE=query_only` unless explicitly approved.
+- Add no-real-write tests with mocked `DingTalkCLIRuntime`; cover `add_record`, `batch_add_records`, `update_record`, `delete_record`, `get_record`, `invoke_tool`, and validation errors.
+- Verify manifest commands and README examples match the implemented action set.
+- Require explicit approval before any live DingTalk/MCP call, config change, or deployment.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.
