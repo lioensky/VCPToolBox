@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A3-C1 Cleanup Execution
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count before and
+  after deletion.
+- Pre-delete gate over all `39` C1 paths: workspace boundary, untracked status,
+  file existence, A2 manifest membership, SHA256 match, blocked overlap, and C2
+  overlap.
+- Deleted the `39` C1 files using exact literal file paths.
+- Post-delete check for C1 paths still existing on disk.
+- Post-delete check for C1 paths still present in dirty status.
+- Rechecked A2 `ARCHIVE_MANIFEST.json`.
+
+Verified:
+
+- Pre-delete gate failure count was `0`.
+- Deleted count was `39`.
+- Dirty status count dropped from `260` to `221`.
+- C1 paths still existing on disk after deletion: `0`.
+- C1 paths still present in dirty status after deletion: `0`.
+- Dirty worktree branch remained `feature/latest-updates`.
+- Dirty worktree head remained
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison remained `10 / 15`.
+- A2 manifest copied-file count remained `47`.
+- A2 manifest hash mismatch count remained `0`.
+
+Not validated:
+
+- No service functional test was run because this was cleanup/governance work.
+- No tracked restore was executed.
+- No generated/runtime/manifest cleanup was executed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A3-C1 Cleanup Final Confirmation
 
 Checks performed:

@@ -354,6 +354,19 @@ A3-C1 cleanup final confirmation:
 - A3-C1 remains not executed; actual deletion still requires explicit cleanup
   approval.
 
+A3-C1 cleanup execution:
+
+- User explicitly approved A3-C1 cleanup.
+- Deleted exactly `39` archived untracked files from `A:/VCP/VCPToolBox`.
+- Dirty status count dropped from `260` to `221`.
+- Post-delete verification found `0` C1 paths still on disk and `0` C1 paths
+  still in dirty status.
+- Dirty worktree remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- No tracked restore, `git clean`, `git reset`, recursive deletion, branch
+  change, or remote write was performed.
+- Added `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_EXECUTION_20260526.md`.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

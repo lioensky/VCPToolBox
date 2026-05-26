@@ -4,6 +4,39 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A3-C1 cleanup execution after explicit approval.
+- Pre-delete gate verified `39` C1 paths: inside workspace, untracked, existing,
+  in A2 manifest, SHA256 matched, blocked overlap `0`, C2 overlap `0`, failure
+  count `0`.
+- Deleted exactly `39` archived untracked files from `A:/VCP/VCPToolBox` using
+  literal file paths.
+- Verified dirty status count dropped from `260` to `221`.
+- Verified deleted C1 paths still existing on disk: `0`.
+- Verified deleted C1 paths still present in dirty status: `0`.
+- Verified dirty worktree remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Verified A2 archive manifest remains available with `47` copied files and
+  hash mismatch count `0`.
+- Added `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_EXECUTION_20260526.md`.
+
+Not completed:
+
+- No tracked modified file was restored.
+- No A2 blocked/protected/generated/manifest-toggle bucket was touched.
+- No `git clean`, `git reset`, recursive deletion, wildcard deletion, branch
+  change, stash, worktree removal, push, tag, release, deploy, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A3-C1 execution record locally.
+2. Push records only after explicit approval.
+3. Consider A3-C2 only as a separate tracked-restore decision.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A3-C1 cleanup final confirmation as a read-only check.
 - Reverified control `main` is synchronized with `origin/main` at
   `503bd835ba9b6523fb3555c84c4ec0b186c6ef81`.

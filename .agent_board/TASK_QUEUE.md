@@ -99,6 +99,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_FINAL_CONFIRMATION_20260526.md`;
   all `39` C1 candidates are still untracked, present, archive-hash matched,
   and non-overlapping with blocked/C2 lists.
+- A3-C1 cleanup executed after explicit approval; `39` archived untracked files
+  were deleted from `A:/VCP/VCPToolBox`, reducing dirty status count from `260`
+  to `221`.
 
 ## In Progress
 
@@ -127,8 +130,10 @@ Updated: 2026-05-26 Asia/Shanghai.
     candidates.
 12. A3-C1 delete and A3-C2 tracked restore are separate future packages and
     require explicit approval before execution.
-13. A3-C1 is executable after explicit cleanup approval; until then, no dirty
-    worktree file should be deleted.
+13. A3-C1 is complete; any rollback must restore only the deleted C1 paths from
+    the A2 archive artifact.
+14. A3-C2 remains a separate tracked-restore decision and must not be bundled
+    with generated/runtime/manifest cleanup.
 
 ## Blocked / Needs Explicit Approval
 
