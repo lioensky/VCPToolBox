@@ -17,6 +17,7 @@ Completed:
 - Completed candidate review C3 for `Plugin/CodexMemoryBridge/*.js`: no immediate source absorption; `.fixed.js` is format-only, `.new.js` requires dedicated i18n/API-contract review.
 - Completed candidate review C4 for `Plugin/DingTalkTable/**`: deferred the DingTalkTable-to-DingTalkCLI compatibility-layer direction, rejected dirty planning notes, and kept no direct source absorption.
 - Completed candidate review C5 for plugin documentation templates, OneBot docs, tool execution draft route, and `vcp-panel-extension/**`; none should be copied directly into `main`.
+- Completed candidate review C6 for generated DingTalk reports, interaction-middleware docs, standalone helper scripts/docs, and manifest toggles; no direct absorption candidate remains in the reviewed dirty buckets.
 
 Not completed:
 
@@ -26,7 +27,7 @@ Not completed:
 Next:
 
 1. Keep `A:/VCP/VCPToolBox` untouched until a separate backup/retention action is approved.
-2. If continuing, choose one package only: generated DingTalk docs/reports, interaction-middleware docs, standalone helper scripts/docs, preservation/archive plan, or manifest toggle review.
+2. If continuing, choose preservation/archive/cleanup planning, or rewrite a future package against current `main`.
 3. Do not absorb conflict-marked files or config examples as-is.
 
 Time: 2026-05-26 Asia/Shanghai.

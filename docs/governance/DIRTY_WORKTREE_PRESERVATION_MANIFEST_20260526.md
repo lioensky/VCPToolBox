@@ -272,6 +272,55 @@ Future package guidance:
 
 No C5 source file should be copied into `main` directly from the dirty worktree.
 
+### 5.6 Remaining Docs / Scripts / Manifest Toggles Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Scope:
+
+- Generated DingTalk docs/reports: `docs/dingtalk-cli/reports/**`
+- Interaction middleware docs: `docs/interaction-middleware/**`
+- Standalone helper scripts/docs: `fix_session_store.js`, `scripts/rebuild_kb_once.js`, `VCP_ANALYSIS.md`, `VCP_ARCHITECTURE_MASTER.md`, `TVStxt/ToolList.txt`
+- Plugin manifest toggles and manifest deltas
+
+Read-only checks:
+
+- `docs/dingtalk-cli/reports/**`: `28` files, about `1.55 MB`; mostly generated JSON/Markdown report output.
+- `docs/interaction-middleware/**`: `15` files, about `153 KB`; design docs and JSON/JSONC templates.
+- Standalone helper/docs candidates: 5 files, including a large `TVStxt/ToolList.txt` (`3257` lines).
+- No unresolved conflict marker was found in this C6 scope.
+- Sensitive-risk scan found endpoint-shaped DingTalk MCP gateway strings and captured runtime output inside generated DingTalk reports. Values were not copied into this document.
+
+Decision by area:
+
+| Area | Decision | Reason |
+| --- | --- | --- |
+| `docs/dingtalk-cli/reports/**` | Quarantine / reject direct migration | Generated reports include endpoint-shaped service URLs and runtime stdout/stderr; they are reproducibility artifacts, not canonical docs. |
+| `docs/interaction-middleware/**` | Candidate-only docs intake | Broad ChannelHub/interaction middleware design material; must be rewritten against current `main` with implemented-vs-future labels. |
+| `fix_session_store.js` | Reject direct migration | One-off source mutation helper that edits `modules/channelHub/SessionBindingStore.js` and creates a backup; not a reusable project script. |
+| `scripts/rebuild_kb_once.js` | Reject direct migration | One-off knowledge-base rebuild helper that can mutate runtime/vector state; needs explicit maintenance-script design before adoption. |
+| `VCP_ANALYSIS.md` / `VCP_ARCHITECTURE_MASTER.md` | Candidate-only docs intake | Useful architecture notes but overlap current full docs; must be merged selectively and not overclaim current behavior. |
+| `TVStxt/ToolList.txt` | Reject direct migration | Large generated/operational tool-list text; current config already maps `VarToolList=supertool.txt`. |
+
+Manifest toggle findings:
+
+- Dirty worktree disables multiple plugins that current `main` keeps as `plugin-manifest.json`: `GeminiImageGen`, `GoogleSearch`, `GrokVideo`, `JapaneseHelper`, `NanoBananaGen2`, `NanoBananaGenOR`, `NovelAIGen`, `PyCameraCapture`, `SnowBridge`, and `SunoGen`.
+- Dirty `DailyNoteManager/plugin-manifest.json` is a downgrade from current `main` version `2.0.0` hybridservice/list-organize-associate manifest to an older `1.0.0` synchronous diary-processing manifest.
+- Dirty `DeepWikiVCP/plugin-manifest.json` is a downgrade from current `main` version `2.1.0` DeepWiki MCP command set to an older single `deepwiki_fetch` scraper manifest.
+- `SynapsePusher/plugin-manifest.json` is effectively already enabled in current `main`; no intake needed from the dirty `.block` deletion.
+- `ToolBoxFoldMemo/plugin-manifest.json` exists only in the dirty worktree and is candidate-only, not an automatic enablement.
+
+Manifest decision:
+
+- Do not absorb any manifest toggle from the dirty worktree.
+- Treat plugin enable/disable state as runtime capability governance, not source cleanup.
+- Any future manifest change must be one plugin at a time with dependency, config, security, and validation review.
+
+Final C6 decision:
+
+- No remaining C6 candidate has a direct absorption path into `main`.
+- Useful future work should be rewritten as focused packages against current `main`, not copied from `A:/VCP/VCPToolBox`.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.
@@ -307,3 +356,4 @@ Reason: these may include stale experiments, generated artifacts, line-ending ch
 3. If implementation intake is desired, start with one `candidate-review` group at a time.
 4. Repair or reject `reject-as-is` files before any code review.
 5. Require explicit approval before any copy, archive, deletion, reset, clean, branch operation, or remote write.
+6. After C1-C6, there is no direct source absorption candidate left from the reviewed dirty worktree buckets.

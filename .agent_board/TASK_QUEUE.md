@@ -40,6 +40,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Dirty candidate review C3 completed: `Plugin/CodexMemoryBridge/*.js` has no immediate source absorption; `.fixed.js` is format-only, `.new.js` is candidate-only for i18n/API-contract review.
 - Dirty candidate review C4 completed: `Plugin/DingTalkTable/**` compatibility-layer direction is valuable but deferred; do not absorb the untracked directory as-is.
 - Dirty candidate review C5 completed: plugin doc template, OneBot docs, tool execution route, and `vcp-panel-extension/**` have no direct absorption path; only docs/product/security follow-up packages remain.
+- Dirty candidate review C6 completed: generated DingTalk reports, interaction-middleware docs, standalone helper scripts/docs, and manifest toggles have no direct absorption path.
 
 ## In Progress
 
@@ -51,7 +52,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, cleanup, or source-intake package for `A:/VCP/VCPToolBox`.
-5. Continue candidate review one package at a time, preferably generated DingTalk docs/reports, interaction-middleware docs, standalone helper scripts/docs, or manifest toggle review.
+5. Remaining dirty worktree actions are now preservation/archive/cleanup decisions or future rewritten packages, not direct source absorption.
 
 ## Blocked / Needs Explicit Approval
 
