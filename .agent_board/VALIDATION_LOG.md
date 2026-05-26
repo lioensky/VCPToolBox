@@ -1,5 +1,48 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - A3-C1 Cleanup Final Confirmation
+
+Checks performed:
+
+- Control worktree: `git branch --show-current`.
+- Control worktree: `git status --short --untracked-files=all`.
+- Control worktree: `git rev-list --left-right --count HEAD...origin/main`.
+- Dirty worktree: `git branch --show-current`.
+- Dirty worktree: `git rev-parse HEAD`.
+- Dirty worktree: `git rev-list --left-right --count HEAD...origin/feature/latest-updates`.
+- Dirty worktree: `git status --short --untracked-files=all` count.
+- Read A2 `ARCHIVE_MANIFEST.json`.
+- Rechecked all `39` C1 paths from A3 cleanup preflight.
+- Parsed dirty status with `git status --porcelain=v1 -z --untracked-files=all`
+  to preserve spaces, Unicode, and special characters.
+- Recomputed current SHA256 for all `39` C1 paths and compared them with A2
+  manifest SHA256 values.
+- Checked overlap with A2 blocked paths and A3-C2 tracked-revert paths.
+
+Verified:
+
+- Control branch is `main` and synchronized with `origin/main` at
+  `503bd835ba9b6523fb3555c84c4ec0b186c6ef81`.
+- Dirty worktree branch is `feature/latest-updates`.
+- Dirty worktree head is `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Dirty upstream comparison is `10 / 15`.
+- Dirty status count remains `260`.
+- C1 count is `39`; unique C1 count is `39`.
+- All `39` C1 paths still have untracked status.
+- All `39` C1 paths still exist on disk.
+- All `39` C1 paths are present in the A2 manifest.
+- All `39` C1 paths match archived SHA256 values.
+- Blocked overlap count is `0`.
+- C2 overlap count is `0`.
+- Failure count is `0`.
+
+Not validated:
+
+- No cleanup/delete/restore was executed.
+- No service functional test was run because this is governance documentation.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
 ## 2026-05-26 Asia/Shanghai - A3 Dirty Worktree Cleanup Preflight
 
 Checks performed:

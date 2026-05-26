@@ -344,6 +344,16 @@ A3 dirty worktree cleanup preflight:
 - A3 executed no cleanup, delete, restore, reset, clean, stash, branch change,
   or remote write.
 
+A3-C1 cleanup final confirmation:
+
+- Added
+  `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_FINAL_CONFIRMATION_20260526.md`.
+- Confirmed all `39` C1 candidates still exist, remain untracked, are present
+  in the A2 manifest, and match archived SHA256 values.
+- Confirmed C1 blocked overlap is `0` and C2 overlap is `0`.
+- A3-C1 remains not executed; actual deletion still requires explicit cleanup
+  approval.
+
 D4F Noir Architect new-agent proposal:
 
 - Reviewed current `main` Agent discovery and admin Agent file behavior.

@@ -4,6 +4,36 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed A3-C1 cleanup final confirmation as a read-only check.
+- Reverified control `main` is synchronized with `origin/main` at
+  `503bd835ba9b6523fb3555c84c4ec0b186c6ef81`.
+- Reverified dirty worktree `A:/VCP/VCPToolBox` remains on
+  `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with `260` dirty entries.
+- Confirmed C1 count `39`, unique count `39`, untracked status count `39`,
+  existing path count `39`, manifest membership count `39`, hash match count
+  `39`, blocked overlap `0`, C2 overlap `0`, and failure count `0`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_FINAL_CONFIRMATION_20260526.md`.
+
+Not completed:
+
+- No file in `A:/VCP/VCPToolBox` was edited, deleted, moved, reset, cleaned,
+  stashed, checked out, or restored.
+- No A3-C1 cleanup execution was performed.
+- No push, tag, release, deploy, branch deletion, remote ref update, live
+  DingTalk/MCP/DWS command, or production write was performed.
+
+Next:
+
+1. Commit this A3-C1 final confirmation locally.
+2. Execute A3-C1 deletion only after explicit cleanup approval.
+3. Push records only after explicit approval.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed A3 dirty worktree cleanup preflight.
 - Reverified A2 archive manifest: `47` copied files, `0` hash mismatches, and
   manifest SHA256

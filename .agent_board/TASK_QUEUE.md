@@ -95,6 +95,10 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_CLEANUP_PREFLIGHT_20260526.md`; C1 has `39`
   archived-untracked delete candidates, and C2 has `8` archived-tracked
   revert candidates.
+- A3-C1 cleanup final confirmation drafted in
+  `docs/governance/DIRTY_WORKTREE_CLEANUP_C1_FINAL_CONFIRMATION_20260526.md`;
+  all `39` C1 candidates are still untracked, present, archive-hash matched,
+  and non-overlapping with blocked/C2 lists.
 
 ## In Progress
 
@@ -123,6 +127,8 @@ Updated: 2026-05-26 Asia/Shanghai.
     candidates.
 12. A3-C1 delete and A3-C2 tracked restore are separate future packages and
     require explicit approval before execution.
+13. A3-C1 is executable after explicit cleanup approval; until then, no dirty
+    worktree file should be deleted.
 
 ## Blocked / Needs Explicit Approval
 
