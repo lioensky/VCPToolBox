@@ -249,9 +249,43 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
         const config = ragPlugin.ragParams?.RAGDiaryPlugin || {};
         const mainWeights = config.mainSearchWeights || [0.7, 0.3];
 
+        // DynamicFold 专用向量获取：精确缓存 → 高阈值 fuzzy 缓存 → Embedding API。
+        // 这里常在 RAGDiaryPlugin 主链路之后运行，AI 文本可能只有极小差异；
+        // 先 fuzzy 复用可避免动态折叠再次向量化同一段 AI 输出。
+        const getDynamicFoldEmbedding = async (text, label = 'unknown') => {
+            if (!text || typeof text !== 'string' || !text.trim()) return null;
+
+            if (typeof ragPlugin._getEmbeddingFromCacheOnly === 'function') {
+                const exact = ragPlugin._getEmbeddingFromCacheOnly(text);
+                if (exact) return exact;
+            }
+
+            if (typeof ragPlugin._findFuzzyEmbeddingFromCache === 'function') {
+                const fuzzy = ragPlugin._findFuzzyEmbeddingFromCache(text, {
+                    threshold: 0.985,
+                    minLength: 80,
+                    maxScan: 200,
+                    maxLengthDiffRatio: 0.02,
+                    maxLengthDiffAbs: 80
+                });
+
+                if (fuzzy && fuzzy.vector) {
+                    if (context.DEBUG_MODE) {
+                        console.log(
+                            `[DynamicFold] Fuzzy embedding cache hit (${label}): ` +
+                            `sim=${fuzzy.similarity.toFixed(4)}, len=${text.length}/${fuzzy.length}`
+                        );
+                    }
+                    return fuzzy.vector;
+                }
+            }
+
+            return await ragPlugin.getSingleEmbeddingCached(text);
+        };
+
         const [uVec, aVec] = await Promise.all([
-            userContent ? ragPlugin.getSingleEmbeddingCached(userContent) : Promise.resolve(null),
-            aiContent ? ragPlugin.getSingleEmbeddingCached(aiContent) : Promise.resolve(null)
+            userContent ? getDynamicFoldEmbedding(userContent, 'user_context') : Promise.resolve(null),
+            aiContent ? getDynamicFoldEmbedding(aiContent, 'assistant_context') : Promise.resolve(null)
         ]);
 
         const userVector = ragPlugin._getWeightedAverageVector([uVec, aVec], mainWeights);

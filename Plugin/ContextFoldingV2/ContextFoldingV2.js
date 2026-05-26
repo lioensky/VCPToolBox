@@ -225,20 +225,15 @@ class ContextFoldingV2 {
 
                 const hash = store.hashContent(sanitized);
 
-                // 获取块向量（store → bridge缓存 → embedding API）
+                // 获取块向量（store → 精确缓存 → fuzzy缓存 → embedding API）
+                // 与上下文参考向量使用同一条折叠专用向量化路径，避免候选 assistant 块因微小文本差异重复向量化。
                 let blockVector = null;
                 const entry = store.getEntry(hash);
 
                 if (entry && entry.vector) {
                     blockVector = entry.vector;
                 } else {
-                    // 尝试从 bridge 缓存获取
-                    blockVector = bridge.getEmbeddingFromCache(sanitized);
-                    if (!blockVector) {
-                        // 调用 embedding API
-                        blockVector = await bridge.embedText(sanitized);
-                    }
-                    // 写入 store（无论是否有向量）
+                    blockVector = await this._embedTextForFolding(sanitized, bridge, 'assistant_candidate');
                     if (blockVector) {
                         store.upsertVector(hash, {
                             textPreview: sanitized.substring(0, 80),
