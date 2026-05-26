@@ -285,6 +285,40 @@ Rollback:
 git push origin <hash>:refs/heads/<branch-name>
 ```
 
+## Residual Merged Remote Cleanup - 2026-05-26
+
+Status: completed.
+
+Branch:
+
+- `origin/feature/ai-image-agent-clean-pr`
+
+Facts before deletion:
+
+- Head was `fca8f44a70009498b3e8b1873a3dec57b90b27c7`.
+- It was merged into `origin/main`.
+- The local `feature/ai-image-agent-clean-pr` branch no longer existed.
+- No local branch tracked it.
+
+Executed action:
+
+```powershell
+git push origin --delete feature/ai-image-agent-clean-pr
+```
+
+Verification:
+
+- `git fetch origin --prune`
+- `refs/remotes/origin/feature/ai-image-agent-clean-pr` was absent.
+- `main...origin/main = 0 / 0`
+- `prod/stable...origin/prod/stable = 0 / 0`
+
+Rollback:
+
+```powershell
+git push origin fca8f44a70009498b3e8b1873a3dec57b90b27c7:refs/heads/feature/ai-image-agent-clean-pr
+```
+
 ## Recommended Next Policy Order
 
 1. Push this policy document and `.agent_board` updates to `origin/main` after review.

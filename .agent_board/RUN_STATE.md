@@ -106,3 +106,9 @@ Current governance closure:
 - Remaining branches/worktrees are classified in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
 - No unclassified cleanup candidate remains.
 - Remaining possible actions are explicit decisions only: P1B optional worktree cleanup, EP2 optional topology branch deletion, EP3 optional remote archive/delete policy, or separate dirty worktree backup/retention work.
+
+Residual merged remote cleanup:
+
+- Deleted `origin/feature/ai-image-agent-clean-pr` after explicit user approval.
+- Verified it was merged into `origin/main`, had no local tracking branch, and is absent after `git fetch origin --prune`.
+- Verified `main` and `prod/stable` remain synchronized with their origin refs.

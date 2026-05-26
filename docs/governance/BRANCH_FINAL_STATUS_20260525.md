@@ -22,6 +22,7 @@ policy packaging.
 
 - `origin/codex/absorb-upstream-main-20260526` was absorbed into `main` as merge commit `b5fd3a3`.
 - 31 explicitly listed merged remote branches were deleted and verified absent.
+- Residual merged remote branch `origin/feature/ai-image-agent-clean-pr` was later deleted after confirming it was merged and no local branch still tracked it.
 - Duplicate local AI image feature labels were deleted; `rescue/ai-image-pipeline-mixed-20260427_195303` was retained.
 - Branch retention policy packages are documented in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
 - P1 worktree audit and P4 local unmerged branch audit were completed locally.
@@ -83,6 +84,7 @@ Branch/worktree governance is closed to a documented retention state:
 
 - Every remaining branch/worktree has a documented retain, archive, or explicit-approval path.
 - No remaining branch is an unclassified cleanup candidate.
+- The only remaining remote branch merged into `origin/main` outside protected refs is `origin/codex/photo-studio-baserow-provider-batch`, retained because a local worktree branch still tracks it.
 - `prod/stable` remains protected.
 - `A:/VCP/VCPToolBox` remains protected as dirty user-owned state.
 - P1B is the only low-risk optional cleanup candidate, but still requires explicit approval because it removes a registered worktree.

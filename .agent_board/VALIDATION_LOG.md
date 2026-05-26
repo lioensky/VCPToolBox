@@ -76,6 +76,16 @@ EP1 execution:
 - Audited P4 branches with `git log --oneline main..<branch>`, `git diff --stat main...<branch>`, and `git cherry -v main <branch>`.
 - Confirmed P4 branches are not safe merge-cleanup candidates; no deletion or merge was performed.
 
+Residual merged remote cleanup:
+
+- Verified `origin/feature/ai-image-agent-clean-pr` existed at `fca8f44a70009498b3e8b1873a3dec57b90b27c7`.
+- Verified no local `feature/ai-image-agent-clean-pr` branch existed.
+- Verified it was an ancestor of `origin/main`.
+- Ran `git push origin --delete feature/ai-image-agent-clean-pr`.
+- Ran `git fetch origin --prune`.
+- Verified `remote_still_present=no`.
+- Verified `main...origin/main = 0 / 0` and `prod/stable...origin/prod/stable = 0 / 0`.
+
 ## 2026-05-25 17:30 Asia/Shanghai
 
 Read-only checks performed:

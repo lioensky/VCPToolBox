@@ -31,6 +31,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - EP3 prepared for old remote line archive policy; no remote action taken.
 - P1 worktree audit completed; only `integration/latest-updates-selective-absorb` is an optional cleanup candidate after explicit worktree removal approval.
 - P4 local unmerged branch audit completed; retain all P4 branches as historical feature/governance labels by default.
+- Residual merged remote branch `origin/feature/ai-image-agent-clean-pr` deleted and verified absent.
 
 ## In Progress
 
