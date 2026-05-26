@@ -1,5 +1,48 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Delete Execution
+
+Checks performed:
+
+- Verified control `main` and `origin/main` were synchronized at
+  `f72e543c089db599a3bbe65702e79a3851bd6b78` after pushing the approved
+  preflight record.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count before delete.
+- Rechecked the G1A archive manifest at
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/ARCHIVE_MANIFEST.json`.
+- Re-ran the pre-delete gate over the manifest list: inside workspace,
+  untracked status, existence, current SHA256 match, and sensitive-pattern
+  status.
+- Deleted the approved `37` G1A paths using literal-path deletion only.
+- Rechecked dirty status count after delete.
+- Rechecked every G1A manifest path for disk existence and git-status presence
+  after delete.
+- Rechecked the G1A archive manifest after delete.
+
+Verified:
+
+- `HEAD` and `origin/main` matched at `f72e543c089db599a3bbe65702e79a3851bd6b78`
+  before the delete.
+- Pre-delete gate passed with `37` unique untracked existing paths, `37` hash
+  matches, sensitive match files `0`, and failure count `0`.
+- Deleted count was `37`.
+- Dirty status count changed from `213` to `176`.
+- Existing G1A paths after delete: `0`.
+- G1A paths still in git status after delete: `0`.
+- Dirty worktree stayed on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Archive manifest remained available with copied file count `37`, hash
+  mismatch count `0`, and SHA256
+  `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
+
+Not validated:
+
+- No G1B sensitive-pattern report cleanup was performed.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, or production write was performed.
+- This local execution record has not been pushed unless separately approved.
+
 ## 2026-05-26 Asia/Shanghai - G1A Generated Artifacts Delete Preflight
 
 Checks performed:

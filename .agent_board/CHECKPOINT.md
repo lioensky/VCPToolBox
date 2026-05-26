@@ -4,6 +4,46 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed G1A generated artifacts delete execution after explicit approval.
+- Pushed `f72e543` to `origin/main`; verified `HEAD` and `origin/main` both
+  at `f72e543c089db599a3bbe65702e79a3851bd6b78` with ahead/behind `0 / 0`
+  before executing the delete.
+- Rechecked G1A gate immediately before delete: `37` unique paths, inside
+  workspace `37`, untracked `37`, existing `37`, hash matched `37`, sensitive
+  match files `0`, failure count `0`.
+- Deleted exactly `37` approved G1A untracked generated-artifact paths from
+  `A:/VCP/VCPToolBox` using literal-path removal only.
+- Verified dirty status count dropped from `213` to `176`.
+- Verified G1A paths existing after delete `0` and still in git status `0`.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified G1A archive manifest exists with `37` copied files, hash mismatch
+  count `0`, and SHA256
+  `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_DELETE_EXECUTION_20260526.md`.
+
+Not completed:
+
+- No G1B sensitive-pattern report file was deleted.
+- No runtime/protected path, config/env-like file, manifest toggle, A2 blocked
+  path, manual retain-review path, or tracked file was touched.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command, or
+  production write was performed.
+- The G1A delete execution record has not been pushed after this local commit
+  unless separately approved.
+
+Next:
+
+1. Push this G1A delete execution record only after explicit approval.
+2. If continuing generated-artifact cleanup, prepare G1B sanitize/quarantine
+   review rather than deleting G1B directly.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed G1A generated artifacts delete preflight.
 - Pushed G1A archive execution record `3dd22fe` to `origin/main`; verified
   `HEAD`, `origin/main`, and `origin/HEAD` at

@@ -124,6 +124,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   copied files plus `ARCHIVE_MANIFEST.json`.
 - G1A generated artifacts delete preflight drafted in
   `docs/governance/DIRTY_WORKTREE_GENERATED_ARTIFACTS_G1A_DELETE_PREFLIGHT_20260526.md`.
+- G1A generated artifacts delete executed after explicit approval; `37`
+  archived untracked generated-artifact paths were deleted from
+  `A:/VCP/VCPToolBox`, reducing dirty status count from `213` to `176`.
 
 ## In Progress
 
@@ -167,10 +170,11 @@ Updated: 2026-05-26 Asia/Shanghai.
     G1B requires a separate sanitize/quarantine review.
 19. G1A archive execution requires explicit destination/include/exclude/dry-run
     approval; G1A delete remains a later package after archive verification.
-20. G1A archive is complete; any G1A delete requires fresh pre-delete gate and
-    separate explicit approval.
-21. G1A delete is eligible after explicit approval; no source file has been
-    deleted in the delete preflight.
+20. G1A archive and delete are complete; any rollback must restore only the
+    deleted `37` G1A paths from the G1A archive artifact.
+21. Remaining generated-artifact cleanup is G1B only and requires a separate
+    sanitize/quarantine review because those report files matched sensitive
+    patterns.
 
 ## Blocked / Needs Explicit Approval
 
@@ -178,4 +182,4 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Force-removing dirty files or runtime directories.
 - Any additional remote write.
 - Any action touching real secrets or runtime state without a separate approval.
-- Any cleanup/delete inside `A:/VCP/VCPToolBox`.
+- Any further cleanup/delete inside `A:/VCP/VCPToolBox`.

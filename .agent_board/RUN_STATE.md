@@ -3,17 +3,18 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean.
+Worktree status at last check: clean after G1A delete execution record commit.
 
 Current verified heads and sync state:
 
-- Latest verified `origin/main`: `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
-- Latest verified local `main`: `13c54dc4b0a23a557e1836e08c1d8bde2dfbf2ca`.
+- Latest verified `origin/main`: `f72e543c089db599a3bbe65702e79a3851bd6b78`.
+- Latest verified local `main` before this local execution record:
+  `f72e543c089db599a3bbe65702e79a3851bd6b78`.
 - Latest verified ahead/behind relative to `origin/main`: `0 / 0`.
-- The `13c54dc` N1 push-closure record has itself been pushed and verified on
+- The `f72e543` G1A delete preflight record has been pushed and verified on
   `origin/main`.
-- After this final sync-state record is committed, local `main` may be ahead
-  again until an explicit push approval is given.
+- The G1A delete execution record is committed locally; local `main` is ahead
+  until an explicit push approval is given.
 - Push remains an A5 remote-write boundary requiring explicit approval.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
@@ -207,6 +208,28 @@ N2 dirty worktree read-only refresh:
   matching secret/config-like patterns.
 - No dirty worktree file was touched, and no remote write or production action
   was performed.
+
+G1A generated artifacts delete execution:
+
+- User explicitly approved pushing `f72e543` and then executing G1A generated
+  artifacts delete.
+- Pushed `f72e543c089db599a3bbe65702e79a3851bd6b78` to `origin/main` and
+  verified `HEAD...origin/main = 0 / 0` before deletion.
+- Dirty worktree `A:/VCP/VCPToolBox` remained on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Pre-delete G1A gate passed for `37` unique untracked existing files with
+  archive hash matches `37`, sensitive match files `0`, and failure count `0`.
+- Deleted exactly those `37` approved untracked generated-artifact paths using
+  literal-path deletion only.
+- Dirty status count reduced from `213` to `176`.
+- Post-delete check found existing G1A paths `0` and still-in-status G1A paths
+  `0`.
+- Archive rollback artifact remains available at
+  `A:/VCP/_archives/VCPToolBox/generated-artifacts-g1a-20260526/` with copied
+  file count `37`, hash mismatch count `0`, and manifest SHA256
+  `3F9460394991FD91BFF4BBF8E617E249D524753535C4B1B394A01C39BA6EB3DB`.
+- No G1B, runtime/protected path, config/env-like file, manifest toggle, A2
+  blocked path, manual retain-review path, or tracked file was touched.
 
 N5 clean worktree feature-line audit:
 
