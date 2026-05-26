@@ -147,6 +147,31 @@ Decision:
 - Reason: the feature intent is already represented in the current Vue admin panel architecture; absorbing the old static-path patch would reintroduce legacy UI surface and duplicate the implementation.
 - Preserve only as path-level historical evidence unless a future task explicitly asks to restore legacy static AdminPanel behavior.
 
+### 5.2 Agent Prompt Review
+
+Review time: 2026-05-26 Asia/Shanghai.
+
+Read-only checks:
+
+- Dirty worktree entries reviewed: `Agent/Nova.txt` and `Agent/Noir Architect.txt`.
+- `Agent/Nova.txt` is tracked modified in the dirty worktree.
+- `Agent/Noir Architect.txt` is untracked in the dirty worktree.
+- No unresolved conflict marker was found in either file.
+- No secret-like key was found; the only token/password match was a safety instruction about redaction.
+
+Observed state:
+
+- Dirty `Agent/Nova.txt` differs from its dirty branch baseline mainly by adding `{{supertool}}`; the large line-count diff is mostly text/line-shape churn.
+- Current `main` already has a newer `Agent/Nova.txt` with a different structure, and `config.env.example` maps `VarToolList=supertool.txt`.
+- Current `main` does not contain `Agent/Noir Architect.txt`.
+- The dirty branch Agent directory also differs from `main` by broader branch-baseline files such as `Agent/Codex.txt`, `Agent/clawclaw.txt`, and missing `Agent/MemoMaster.txt` / `Agent/Weiming.txt`; those are not dirty worktree entries and are outside this C2 intake decision.
+
+Decision:
+
+- Reject dirty `Agent/Nova.txt` as-is for migration into `main`; it would downgrade or fork the current main Nova prompt, and the `supertool` intent is already covered through `VarToolList=supertool.txt`.
+- Keep `Agent/Noir Architect.txt` as a candidate-only prompt draft; do not add it automatically because adding an agent persona is a user-facing capability change.
+- If future intake is desired, review `Noir Architect` as a single new-agent package with naming, trigger, prompt safety, and UI/listing behavior checked explicitly.
+
 ## 6. Preserve Path Only / Review Later
 
 Policy: keep path-level evidence, but do not migrate during branch governance.

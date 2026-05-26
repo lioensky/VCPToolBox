@@ -13,6 +13,7 @@ Completed:
 - Detected secret-like patterns in config examples; values were not copied into docs.
 - Drafted `docs/governance/DIRTY_WORKTREE_PRESERVATION_MANIFEST_20260526.md` with path-level buckets: `quarantine-sensitive-runtime`, `candidate-review`, `manifest-toggle-review`, `preserve-path-only-review-later`, and `reject-as-is`.
 - Completed candidate review C1 for old root `AdminPanel/` static edits and rejected migration into `main`; current `main` already has `AdminPanel-Vue` Codex Memory Monitor implementation plus backend route/test coverage.
+- Completed candidate review C2 for `Agent/*`: rejected dirty `Agent/Nova.txt` as-is and retained `Agent/Noir Architect.txt` as a candidate-only new-agent draft.
 
 Not completed:
 
@@ -22,7 +23,7 @@ Not completed:
 Next:
 
 1. Keep `A:/VCP/VCPToolBox` untouched until a separate backup/retention action is approved.
-2. If continuing, choose one package only: `Agent/*`, `Plugin/CodexMemoryBridge/*.js`, `Plugin/DingTalkTable/**`, preservation/archive plan, or manifest toggle review.
+2. If continuing, choose one package only: `Plugin/CodexMemoryBridge/*.js`, `Plugin/DingTalkTable/**`, preservation/archive plan, or manifest toggle review.
 3. Do not absorb conflict-marked files or config examples as-is.
 
 Time: 2026-05-26 Asia/Shanghai.
