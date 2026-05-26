@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
  * GPTImageGen - GPT Image 2 图像生成插件
- *
+ * 
  * 通过 OpenAI 兼容 API 调用 gpt-image-2 模型进行图像生成。
  * 零外部依赖，仅使用 Node.js 原生模块。
- *
+ * 
  * 通信协议：stdio JSON（VCP 插件标准协议）
  * 流程：stdin 接收 JSON 参数 → 解析命令 → 调用 API → 保存图像到本地 → stdout 输出 JSON 结果
- *
+ * 
  * @author 小飒 (Xiaosa) & infinite-vector
  * @version 1.1.0
  */
@@ -44,8 +44,6 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || process.cwd();
 const SERVER_PORT = process.env.SERVER_PORT || '5000';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || 'http://localhost';
-const PROJECT_IMAGE_ROOT = path.resolve(PROJECT_BASE_PATH, 'image');
-const GPTIMAGEGEN_OUTPUT_DIR = path.join(PROJECT_IMAGE_ROOT, 'gptimagegen');
 
 // ============================================================
 // 工具函数
@@ -71,35 +69,6 @@ function outputAndExit(result) {
  */
 function debugLog(...args) {
     if (DEBUG) console.error('[GPTImageGen DEBUG]', ...args);
-}
-
-function isPathInside(childPath, parentPath) {
-    const relative = path.relative(parentPath, childPath);
-    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-function isBlockedLocalHostname(hostname) {
-    const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
-    if (!host) return true;
-    if (host === 'localhost' || host === '::1' || host.endsWith('.localhost') || host.endsWith('.local')) {
-        return true;
-    }
-    if (/^127\./.test(host) || /^169\.254\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) {
-        return true;
-    }
-    const private172 = host.match(/^172\.(\d+)\./);
-    return private172 ? Number(private172[1]) >= 16 && Number(private172[1]) <= 31 : false;
-}
-
-function resolveImageDownloadUrl(rawUrl, baseUrl = '') {
-    const parsedUrl = baseUrl ? new URL(rawUrl, baseUrl) : new URL(rawUrl);
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        throw new Error('图片 URL 仅支持 http 或 https 协议');
-    }
-    if (isBlockedLocalHostname(parsedUrl.hostname)) {
-        throw new Error('图片 URL 不允许指向本机、链路本地或私有网段地址');
-    }
-    return parsedUrl;
 }
 
 /**
@@ -171,7 +140,7 @@ function inferImageExtension(contentType, urlOrPath) {
 /**
  * 通用 HTTP/HTTPS 请求函数（零依赖）
  * 根据 URL 协议自动选择 http 或 https 模块
- *
+ * 
  * @param {string} url - 完整请求 URL
  * @param {object} options - 请求选项（method, headers 等）
  * @param {string|Buffer|null} body - 请求体
@@ -330,7 +299,7 @@ function httpRequest(url, options = {}, body = null) {
 /**
  * 带指数退避重试的 HTTP 请求包装器
  * 对 429 (Rate Limit) 和 503 (Service Unavailable) 自动重试
- *
+ * 
  * @param {string} url - 完整请求 URL
  * @param {object} options - 请求选项
  * @param {string|Buffer|null} body - 请求体
@@ -357,19 +326,13 @@ async function httpRequestWithRetry(url, options = {}, body = null) {
 /**
  * 下载远程图片
  * 返回 Buffer 和 Content-Type（学 DoubaoGen 的 httpsDownload 模式）
- *
+ * 
  * @param {string} url - 图片 URL
  * @returns {Promise<{data: Buffer, contentType: string}>}
  */
-function downloadImage(url, maxBytes = 0, redirectCount = 0) {
+function downloadImage(url) {
     return new Promise((resolve, reject) => {
-        let parsedUrl;
-        try {
-            parsedUrl = resolveImageDownloadUrl(url);
-        } catch (err) {
-            reject(err);
-            return;
-        }
+        const parsedUrl = new URL(url);
         const transport = parsedUrl.protocol === 'https:' ? https : http;
 
         const reqOptions = {
@@ -383,20 +346,7 @@ function downloadImage(url, maxBytes = 0, redirectCount = 0) {
         const req = transport.request(reqOptions, (res) => {
             // 处理重定向
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                if (redirectCount >= 5) {
-                    reject(new Error('图片下载重定向次数过多'));
-                    return;
-                }
-
-                let redirectUrl;
-                try {
-                    redirectUrl = resolveImageDownloadUrl(res.headers.location, parsedUrl.href);
-                } catch (err) {
-                    reject(err);
-                    return;
-                }
-
-                downloadImage(redirectUrl.href, maxBytes, redirectCount + 1).then(resolve).catch(reject);
+                downloadImage(res.headers.location).then(resolve).catch(reject);
                 return;
             }
 
@@ -406,16 +356,7 @@ function downloadImage(url, maxBytes = 0, redirectCount = 0) {
             }
 
             const chunks = [];
-            let totalBytes = 0;
-            res.on('data', (chunk) => {
-                totalBytes += chunk.length;
-                if (maxBytes > 0 && totalBytes > maxBytes) {
-                    req.destroy();
-                    reject(new Error(`下载的图片超过 ${maxBytes / 1024 / 1024}MB 限制。请使用更小的图片或压缩后重试。`));
-                    return;
-                }
-                chunks.push(chunk);
-            });
+            res.on('data', (chunk) => chunks.push(chunk));
             res.on('end', () => resolve({
                 data: Buffer.concat(chunks),
                 contentType: res.headers['content-type'] || ''
@@ -434,6 +375,51 @@ function downloadImage(url, maxBytes = 0, redirectCount = 0) {
 // ============================================================
 // 图片输入处理
 // ============================================================
+
+function parseImageArrayInput(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string') return value ? [value] : [];
+
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const sanitized = trimmed.replace(/\\/g, '\\\\');
+            const parsed = JSON.parse(sanitized);
+            if (Array.isArray(parsed)) return parsed.filter(Boolean);
+        } catch {
+            // Keep as a single image string if JSON parsing fails.
+        }
+    }
+
+    return [trimmed];
+}
+
+function collectImageInputs(args) {
+    const images = [];
+    const pushImage = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) images.push(item.trim());
+        }
+    };
+
+    pushImage(args.image || args.Image || args.image_url || args.source_image || args.image_base64);
+
+    const indexedKeys = Object.keys(args)
+        .map((key) => {
+            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
+            return match ? { key, index: parseInt(match[1], 10) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+    for (const { key } of indexedKeys) {
+        pushImage(args[key]);
+    }
+
+    return images;
+}
 
 /**
  * 处理图片输入，支持多种格式：
@@ -470,9 +456,8 @@ async function processImageInput(imageInput) {
 
     // HTTP/HTTPS URL
     if (input.startsWith('http://') || input.startsWith('https://')) {
-        resolveImageDownloadUrl(input);
         debugLog('Image input: URL, downloading...', input.substring(0, 100));
-        const { data: buffer, contentType } = await downloadImage(input, MAX_IMAGE_SIZE);
+        const { data: buffer, contentType } = await downloadImage(input);
         // 校验下载后的文件大小
         if (buffer.length > MAX_IMAGE_SIZE) {
             throw new Error(`下载的图片大小 ${(buffer.length / 1024 / 1024).toFixed(1)}MB，超过 ${MAX_IMAGE_SIZE / 1024 / 1024}MB 限制。请使用更小的图片或压缩后重试。`);
@@ -498,14 +483,8 @@ async function processImageInput(imageInput) {
 
     // 安全检查
     const resolved = path.resolve(filePath);
-    if (!isPathInside(resolved, PROJECT_IMAGE_ROOT)) {
-        throw new Error('本地图片路径仅允许位于项目 image/ 目录下');
-    }
     if (!fs.existsSync(resolved)) {
         throw new Error(`图片文件不存在: ${filePath}`);
-    }
-    if (!fs.statSync(resolved).isFile()) {
-        throw new Error(`图片路径不是文件: ${filePath}`);
     }
 
     debugLog('Image input: local file', resolved);
@@ -835,14 +814,14 @@ async function callEditAPI(params) {
 
 /**
  * 将图像数据保存到本地文件系统
- *
+ * 
  * @param {Buffer} imageBuffer - 图像二进制数据
  * @param {number} index - 图片序号（用于多图场景的日志标识）
  * @param {string} [contentType] - HTTP Content-Type（用于推断扩展名）
  * @returns {object} { localPath, accessibleUrl, serverPath, fileName }
  */
 function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
-    const imageDir = GPTIMAGEGEN_OUTPUT_DIR;
+    const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'gptimagegen');
     const ext = inferImageExtension(contentType);
     const fileName = `${crypto.randomUUID()}.${ext}`;
     const localPath = path.join(imageDir, fileName);
@@ -880,7 +859,7 @@ function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
 
 /**
  * 根据 API 结果构建标准化的 VCP 插件响应
- *
+ * 
  * @param {object} apiResult - API 返回的响应体
  * @param {object} params - 原始请求参数
  * @returns {Promise<object>} VCP 标准响应对象
@@ -1037,7 +1016,7 @@ async function main() {
         // 获取命令类型（默认 generate）
         const command = (args.command || args.Command || args.cmd || 'generate').toLowerCase();
         // 对 invocationCommands 的 commandIdentifier 做兼容
-        const isEditMode = command === 'edit' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
+        const isEditMode = command === 'edit' || command === 'compose' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
 
         // 获取 prompt 参数（兼容多种字段名）
         const prompt = args.prompt || args.Prompt || args.text || '';
@@ -1049,7 +1028,7 @@ async function main() {
         }
 
         // 解析并验证通用参数
-        let size = args.size || args.Size || DEFAULT_SIZE;
+        let size = args.size || args.Size || args.resolution || args.Resolution || args.image_size || args.imageSize || DEFAULT_SIZE;
         // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
         if (/^\d+$/.test(size)) {
             size = `${size}x${size}`;
@@ -1079,37 +1058,14 @@ async function main() {
 
         if (isEditMode) {
             // ======== 图生图（Edit）模式 ========
-            let imageInput = args.image || args.Image || args.image_url || args.source_image || '';
-            if (!imageInput) {
+            const imageInputs = collectImageInputs(args);
+            if (imageInputs.length === 0) {
                 return outputAndExit({
                     status: 'error',
                     error: 'GPTImageGen [edit]: 缺少 image 参数。请提供要编辑的原始图片（支持 URL、base64 data URI 或本地文件路径）。'
                 });
             }
 
-            // ── 兼容 VCP 工具调用传入 JSON 数组字符串的情况 ──
-            // VCP 的「始」「末」参数解析器可能将 ["a","b"] 作为纯字符串传入，
-            // 而非 JS 原生数组。此处自动检测并解析。
-            // Windows 路径中的 \ 需要转义为 \\ 才能被 JSON.parse 正确解析。
-            if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
-                try {
-                    let parsed;
-                    try {
-                        parsed = JSON.parse(imageInput);
-                    } catch {
-                        parsed = JSON.parse(imageInput.replace(/\\/g, '\\\\'));
-                    }
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        imageInput = parsed;
-                        debugLog('Auto-parsed image JSON string to array, count:', parsed.length);
-                    }
-                } catch (e) {
-                    debugLog('Image field starts with [ but failed to parse:', e.message);
-                }
-            }
-
-            // 处理图片输入（可以是单张或数组）
-            const imageInputs = Array.isArray(imageInput) ? imageInput : [imageInput];
             const imageDataURIs = [];
             for (const img of imageInputs) {
                 const dataURI = await processImageInput(img);
