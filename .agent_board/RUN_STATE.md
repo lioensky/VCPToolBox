@@ -5,9 +5,9 @@ Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
 Worktree status at last check: clean.
 
-Current verified heads before this local audit-document update:
+Current verified heads:
 
-- `main` / `origin/main`: `d2aeee5d60ff372df544c224bf560d6c33277bd1`.
+- `main` / `origin/main`: `32cdf264216c1f931697b37c4104e2c34b198207`.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -127,3 +127,10 @@ Dirty worktree read-only refresh:
 - It contains unresolved conflict markers in external sync files and secret-like patterns in config examples.
 - No file in that dirty worktree was edited, deleted, moved, reset, cleaned, or checked out during the refresh.
 - Next safe local action is a preservation manifest; destructive cleanup, copying secrets/runtime data, branch changes, and remote writes remain hard-stop actions.
+
+Dirty worktree strategy package:
+
+- Drafted `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
+- Direct source absorption from `A:/VCP/VCPToolBox` is closed by default after C1-C6.
+- Remaining actions are explicit packages only: path-only preservation, archive planning, cleanup planning, or future rewrites D4A-D4F based on current `main`.
+- No dirty worktree file was touched while drafting the strategy package.

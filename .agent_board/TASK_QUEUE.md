@@ -41,6 +41,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Dirty candidate review C4 completed: `Plugin/DingTalkTable/**` compatibility-layer direction is valuable but deferred; do not absorb the untracked directory as-is.
 - Dirty candidate review C5 completed: plugin doc template, OneBot docs, tool execution route, and `vcp-panel-extension/**` have no direct absorption path; only docs/product/security follow-up packages remain.
 - Dirty candidate review C6 completed: generated DingTalk reports, interaction-middleware docs, standalone helper scripts/docs, and manifest toggles have no direct absorption path.
+- 2026-05-26 dirty worktree strategy package drafted in `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`; direct source absorption is closed, and remaining actions are preservation/archive/cleanup decisions or future rewrite packages.
 
 ## In Progress
 
@@ -51,8 +52,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 1. Optional EP2 deletion only if a stricter local branch list is desired.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-4. Decide whether to execute any preservation, archive, cleanup, or source-intake package for `A:/VCP/VCPToolBox`.
-5. Remaining dirty worktree actions are now preservation/archive/cleanup decisions or future rewritten packages, not direct source absorption.
+4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
+5. If implementation value is desired, select one future rewrite package from D4A-D4F and build it from current `main`.
 
 ## Blocked / Needs Explicit Approval
 

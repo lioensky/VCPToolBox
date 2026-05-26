@@ -4,6 +4,29 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Advanced the dirty worktree governance checkpoint from candidate review to strategy packaging.
+- Added `docs/governance/DIRTY_WORKTREE_STRATEGY_PACKAGES_20260526.md`.
+- Converted reviewed dirty worktree state into packages D0-D4: stop direct absorption, path-only preservation, archive planning, cleanup planning, and future rewrite packages.
+- Reconfirmed the control worktree is `main` at `32cdf26` and synchronized with `origin/main`.
+- Reconfirmed `A:/VCP/VCPToolBox` remains on `feature/latest-updates` at `a82c8f2`, ahead/behind `10/15`, with `260` expanded dirty entries.
+- Did not touch the dirty worktree.
+
+Not completed:
+
+- No dirty files were copied, archived, reset, cleaned, moved, or deleted.
+- No branch, worktree, or remote ref was changed.
+- No future rewrite package was started.
+
+Next:
+
+1. Keep `A:/VCP/VCPToolBox` untouched unless a separate retention/archive/cleanup action is approved.
+2. If continuing locally, pick one future rewrite package from D4A-D4F and implement it from current `main`.
+3. If cleanup is requested, first produce an exact destructive-operation preflight.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Refreshed the read-only audit for dirty worktree `A:/VCP/VCPToolBox`.
 - Verified it remains on `feature/latest-updates` at `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
 - Verified upstream comparison is ahead/behind `10/15`.
