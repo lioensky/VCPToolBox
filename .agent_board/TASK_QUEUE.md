@@ -4,7 +4,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 
 ## Done
 
-- `origin/main` has been pushed and verified at `39d860fa07bf55c07acb3eaed70dc9178e81716b`.
+- `origin/main` has been pushed and verified at `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
 - `prod/stable` protection rule is documented: stable production line, permanently retained, never a cleanup candidate.
 - Package G2 completed: governance evidence from `562e907` was cherry-picked to `main` as `39d860f` and pushed to `origin/main`.
 - Package R1 completed: `A:/VCP/VCPToolBox-staging-custom-integration` was removed by non-force `git worktree remove`.
@@ -49,6 +49,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 - D4D completed locally: documented `vcp-panel-extension/**` as a standalone editor-extension product proposal and did not add extension source.
 - D4A completed locally: rewired `Plugin/DingTalkTable` through `DingTalkCLI` dry-run/gray-stage gates with mocked no-real-write tests.
 - Post-D4A validation hardening completed locally: root `npm test` now includes the DingTalkTable compatibility test and passes.
+- Post-D4A push closure completed: `0d6c210` pushed to `origin/main` and verified synchronized.
 
 ## In Progress
 
@@ -60,7 +61,7 @@ Updated: 2026-05-26 Asia/Shanghai.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 4. Decide whether to execute any preservation, archive, or cleanup package for `A:/VCP/VCPToolBox`.
-5. D4A-D4F packages have local closure; remaining actions are push approval, archive/cleanup decisions, or a separately scoped new task.
+5. D4A-D4F packages have remote closure on `origin/main`; remaining actions are archive/cleanup decisions or a separately scoped new task.
 
 ## Blocked / Needs Explicit Approval
 

@@ -7,7 +7,7 @@ Worktree status at last check: clean.
 
 Current verified heads:
 
-- `main` / `origin/main`: `32cdf264216c1f931697b37c4104e2c34b198207`.
+- `main` / `origin/main`: `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -189,3 +189,12 @@ Post-D4A validation hardening:
 - Root `npm test` passed with 80 tests.
 - `npm run test:dingtalk-cli` passed with 18 tests.
 - Test execution left no runtime dirty files in the control worktree.
+
+Post-D4A push closure:
+
+- User explicitly approved pushing `0d6c210` to `origin/main`.
+- Pushed local `main` to `origin/main`; remote advanced from `1ee95f2` to
+  `0d6c210`.
+- Fetched `origin/main` after push and verified `HEAD`, `origin/main`, and
+  `origin/HEAD` all point to `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- Verified `HEAD...origin/main = 0 / 0` and the control worktree stayed clean.

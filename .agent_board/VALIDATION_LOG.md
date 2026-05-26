@@ -381,3 +381,32 @@ Not validated:
 
 - No live DingTalk, MCP, or DWS command was executed.
 - No remote write was performed for this checkpoint.
+
+## 2026-05-26 Asia/Shanghai - Post-D4A Push Closure
+
+Checks performed:
+
+- Pre-push: `git branch --show-current`.
+- Pre-push: `git status --short`.
+- Pre-push: `git rev-parse --short HEAD`.
+- Pre-push: `git log --oneline --decorate -n 6`.
+- Pre-push: `git rev-list --left-right --count HEAD...origin/main`.
+- Remote write after explicit approval: `git push origin main`.
+- Post-push: `git fetch origin main --prune`.
+- Post-push: `git rev-parse HEAD`.
+- Post-push: `git rev-parse origin/main`.
+- Post-push: `git rev-list --left-right --count HEAD...origin/main`.
+- Post-push: `git log --oneline --decorate -n 5`.
+
+Verified:
+
+- Push advanced `origin/main` from `1ee95f2` to `0d6c210`.
+- `HEAD` and `origin/main` both point to
+  `0d6c210226c30b46dc216b94a5079a0ffd7986b4`.
+- `HEAD...origin/main = 0 / 0`.
+- Control worktree remained clean.
+
+Not validated:
+
+- No tag, release, deploy, branch deletion, dirty worktree cleanup, live
+  DingTalk/MCP/DWS command, or production write was performed.
