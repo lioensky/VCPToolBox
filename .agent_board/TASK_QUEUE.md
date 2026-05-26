@@ -34,17 +34,18 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Residual merged remote branch `origin/feature/ai-image-agent-clean-pr` deleted and verified absent.
 - P1B cleanup completed: `integration/latest-updates-selective-absorb` worktree and local branch removed.
 - 2026-05-26 dirty worktree read-only refresh completed for `A:/VCP/VCPToolBox`: verified `260` dirty entries, `41` tracked entries, `219` untracked entries, unresolved conflict markers in external sync files, and secret-like patterns in config examples.
+- 2026-05-26 dirty worktree preservation manifest drafted in `docs/governance/DIRTY_WORKTREE_PRESERVATION_MANIFEST_20260526.md`.
 
 ## In Progress
 
-- Dirty worktree preservation strategy package, if continued.
+- None.
 
 ## Remaining Explicit Decisions
 
 1. Optional EP2 deletion only if a stricter local branch list is desired.
 2. Optional EP3 remote archive rename/delete only with explicit remote approval.
 3. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
-4. Decide whether to produce a preservation manifest for `A:/VCP/VCPToolBox` without copying file contents.
+4. Decide whether to execute any preservation, archive, cleanup, or source-intake package for `A:/VCP/VCPToolBox`.
 
 ## Blocked / Needs Explicit Approval
 
