@@ -5,9 +5,9 @@ Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
 Worktree status at last check: clean.
 
-Current verified heads:
+Current verified heads before this local audit-document update:
 
-- `main` / `origin/main`: `b5fd3a3385fd6439a2d0462c6442d253201b7c24`.
+- `main` / `origin/main`: `d2aeee5d60ff372df544c224bf560d6c33277bd1`.
 - `prod/stable` / `origin/prod/stable`: `a1870b398fc82eb34c5764a9c60de9e127548494`.
 - `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 
@@ -118,3 +118,12 @@ P1B cleanup execution:
 - Removed `A:/VCP/VCPToolBox/.agent_board/worktrees/latest-updates-selective-absorb`.
 - Deleted local branch `integration/latest-updates-selective-absorb` after explicit approval to use `git branch -D` for the patch-equivalent non-ancestor branch.
 - Verified the worktree path and local branch are absent.
+
+Dirty worktree read-only refresh:
+
+- `A:/VCP/VCPToolBox` remains on `feature/latest-updates` at `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- It is ahead/behind `origin/feature/latest-updates` by `10/15`.
+- Dirty entries increased to `260`: `41` tracked and `219` untracked.
+- It contains unresolved conflict markers in external sync files and secret-like patterns in config examples.
+- No file in that dirty worktree was edited, deleted, moved, reset, cleaned, or checked out during the refresh.
+- Next safe local action is a preservation manifest; destructive cleanup, copying secrets/runtime data, branch changes, and remote writes remain hard-stop actions.

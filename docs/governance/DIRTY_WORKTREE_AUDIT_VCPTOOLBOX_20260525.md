@@ -160,3 +160,60 @@ Package V5: worktree closure
 Do not delete `A:/VCP/VCPToolBox` now.
 
 Next safe action: run Package V2 source-diff review while explicitly excluding sensitive/runtime paths.
+
+## 8. 2026-05-26 Read-Only Refresh
+
+Refresh time: 2026-05-26 Asia/Shanghai.
+
+Scope stayed read-only for `A:/VCP/VCPToolBox`; no files were edited, deleted, moved, reset, cleaned, or checked out in that worktree.
+
+Verified state:
+
+- Worktree path: `A:/VCP/VCPToolBox`
+- Branch: `feature/latest-updates`
+- HEAD: `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`
+- Upstream: `origin/feature/latest-updates`
+- Upstream comparison: ahead/behind `10/15`
+- Dirty entries from `git status --short -uall`: `260`
+- Tracked entries: `41`
+- Untracked entries: `219`
+- Modified-like entries: `28`
+- Deleted-like entries: `13`
+
+Largest affected top-level areas:
+
+| Area | Entries | 2026-05-26 handling |
+| --- | ---: | --- |
+| `Plugin/` | 118 | mixed; includes source, manifests, examples, caches, logs, and plugin state |
+| `docs/` | 32 | review as documentation artifacts, not as implementation proof |
+| `VectorStore_bge1024_backup_20260422-123654/` | 21 | preserve/quarantine only |
+| `VectorStore_bge1024/` | 21 | preserve/quarantine only |
+| `state/` | 17 | runtime state; preserve/quarantine only |
+| `.claude/` | 10 | local agent/user-owned state |
+| `.agent_board/` | 6 | historical local work rail |
+| `VCPChat/` | 5 | user/runtime data |
+| `vcp-panel-extension/` | 4 | separate untracked local module candidate |
+| `AdminPanel/` | 3 | tracked UI changes already need source-diff review before any intake |
+| `tests/` | 3 | mixed tracked/untracked test edits |
+
+Additional read-only checks:
+
+- Conflict marker scan found unresolved merge markers in `plugins/custom/reporting/sync_to_external_sheet_or_notion/src/index.js` and `tests/photo-studio/external-sync.test.js`.
+- `git diff --check` over non-runtime/non-database paths failed on trailing whitespace plus those conflict markers.
+- Secret-like key patterns were detected in config example files, including `Plugin/FlashDeepSearch/config.env.example`; values must not be copied into docs or migrated as-is.
+- Line-ending warnings were observed on several tracked files; do not treat those dirty diffs as clean implementation changes without a separate review.
+
+2026-05-26 intake decision:
+
+- Do not absorb the dirty worktree wholesale.
+- Do not absorb external reporting/photo-studio sync files as-is because they contain conflict markers.
+- Do not absorb config examples as-is until all key-like values are sanitized to placeholders.
+- Do not normalize plugin manifest toggles automatically.
+- Treat vector stores, sqlite files, auth binaries, chat data, `.claude/`, logs, caches, and `state/` as preserve/quarantine material, not source migration material.
+- Treat `vcp-panel-extension/`, `Plugin/DingTalkTable/`, `Plugin/CodexMemoryBridge/*.js`, and related docs as separate candidate packages only if a later scoped review is requested.
+
+Current recommendation after refresh:
+
+1. Keep `A:/VCP/VCPToolBox` untouched.
+2. If continuing locally, produce a preservation manifest that classifies files into `preserve`, `candidate-review`, `reject-as-is`, and `quarantine-sensitive`.
+3. Any copy, archive, deletion, reset, branch movement, or remote write still requires explicit approval.

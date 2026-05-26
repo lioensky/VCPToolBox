@@ -4,6 +4,29 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Refreshed the read-only audit for dirty worktree `A:/VCP/VCPToolBox`.
+- Verified it remains on `feature/latest-updates` at `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`.
+- Verified upstream comparison is ahead/behind `10/15`.
+- Verified `260` dirty entries: `41` tracked, `219` untracked, `28` modified-like, `13` deleted-like.
+- Scanned only path names and targeted marker/key patterns; did not modify the dirty worktree.
+- Found unresolved conflict markers in `plugins/custom/reporting/sync_to_external_sheet_or_notion/src/index.js` and `tests/photo-studio/external-sync.test.js`.
+- Detected secret-like patterns in config examples; values were not copied into docs.
+
+Not completed:
+
+- No dirty worktree files were copied, edited, archived, reset, cleaned, or deleted.
+- No branch, worktree, or remote ref was changed.
+
+Next:
+
+1. If continuing, create a preservation manifest with `preserve`, `candidate-review`, `reject-as-is`, and `quarantine-sensitive` buckets.
+2. Keep `A:/VCP/VCPToolBox` untouched until a separate backup/retention action is approved.
+3. Do not absorb conflict-marked files or config examples as-is.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Pushed `origin/main` to `b5fd3a3385fd6439a2d0462c6442d253201b7c24`.
 - Verified `origin/codex/absorb-upstream-main-20260526` is an ancestor of `origin/main`.
 - Ran read-only branch classification against `origin/main`.
