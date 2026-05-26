@@ -3,7 +3,7 @@
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.
-Worktree status at last check: clean after manifest toggles preflight commit.
+Worktree status at last check: clean after R1 manual retain-review preflight commit.
 
 Current verified heads and sync state:
 
@@ -272,6 +272,21 @@ Manifest toggles M1 preflight:
 - No manifest file was copied, archived, deleted, restored, reset, cleaned,
   checked out, or imported into `main`.
 - The M1 preflight is committed locally; local `main` is ahead of
+  `origin/main` until explicit push approval is given.
+
+Manual retain-review R1 preflight:
+
+- Drafted a read-only R1 manual retain-review preflight.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`,
+  dirty status count `176`.
+- R1 count is `7`: tracked modified `4`, untracked `3`, existing `7`.
+- R1 risk signals: sensitive-pattern files `3`, sensitive-pattern matches `6`,
+  conflict-marker files `4`, conflict-marker lines `11`.
+- R1 remains retain-by-default pending explicit path/package decisions.
+- No R1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
+- The R1 preflight is committed locally; local `main` is ahead of
   `origin/main` until explicit push approval is given.
 
 N5 clean worktree feature-line audit:

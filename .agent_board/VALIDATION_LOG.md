@@ -1,5 +1,44 @@
 # Validation Log
 
+## 2026-05-26 Asia/Shanghai - Manual Retain Review R1 Preflight
+
+Checks performed:
+
+- Rechecked control worktree branch, status, log, and ahead/behind state.
+- Rechecked dirty worktree branch, HEAD, upstream comparison, and dirty status
+  count.
+- Read the remaining-dirty reassessment R1 manual retain-review bucket.
+- Rechecked all `7` R1 paths for git status, existence, tracked/head state,
+  byte count, SHA256, text/binary shape, line count, sensitive-pattern counts,
+  and conflict-marker counts.
+- Ran `git diff --numstat`, `git diff --stat`, and `git diff --check` over the
+  tracked R1 paths.
+
+Verified:
+
+- Control `main` was local-only ahead of `origin/main` by `1 / 0` at
+  `08c33ee` before this record.
+- Dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60`, upstream comparison `10 / 15`.
+- Dirty status count is `176`.
+- R1 count is `7`; tracked modified count `4`; untracked count `3`; existing
+  count `7`.
+- Sensitive-pattern files `3`; sensitive-pattern matches `6`; no matching
+  values were recorded.
+- Conflict-marker files `4`; conflict-marker lines `11`.
+- `git diff --check` reported trailing whitespace in `TVStxt/supertool.txt`
+  and conflict markers in the external sync source/test paths.
+
+Not validated:
+
+- No R1 source/test/runtime behavior was executed because unresolved conflict
+  markers make direct validation inappropriate.
+- No R1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
+- No live DingTalk, MCP, or DWS command was executed.
+- No tag, release, deploy, branch deletion, production write, or push was
+  performed.
+
 ## 2026-05-26 Asia/Shanghai - Manifest Toggles M1 Preflight
 
 Checks performed:

@@ -137,6 +137,9 @@ Updated: 2026-05-26 Asia/Shanghai.
   `docs/governance/DIRTY_WORKTREE_MANIFEST_TOGGLES_PREFLIGHT_20260526.md`;
   `28` behavior-affecting entries remain retain-by-default pending explicit
   plugin-level decisions.
+- Manual retain-review R1 preflight drafted in
+  `docs/governance/DIRTY_WORKTREE_MANUAL_RETAIN_REVIEW_R1_PREFLIGHT_20260526.md`;
+  `7` entries remain retain-by-default pending explicit path/package decisions.
 
 ## In Progress
 
@@ -189,6 +192,9 @@ Updated: 2026-05-26 Asia/Shanghai.
     in `A:/VCP/VCPToolBox` until a future explicit reopen instruction.
 23. Manifest toggles M1 are behavior-affecting plugin enablement changes; do
     not bulk restore/delete/import them without explicit per-package approval.
+24. Manual retain-review R1 contains auth/binary-named state, conflict-marked
+    source/test files, sensitive-pattern text files, large tool lists, and a
+    standalone extension asset; do not bulk absorb or clean.
 
 ## Blocked / Needs Explicit Approval
 

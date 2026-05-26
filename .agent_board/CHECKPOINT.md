@@ -4,6 +4,37 @@ Time: 2026-05-26 Asia/Shanghai.
 
 Completed:
 
+- Completed manual retain-review R1 read-only preflight.
+- Reverified control `main` is local-only ahead of `origin/main` by `1 / 0`
+  at `08c33ee`; no push was performed.
+- Reverified dirty worktree remains on `feature/latest-updates` at
+  `a82c8f20631b8a6dff32e237e73b313c2ea5cb60` with upstream comparison
+  `10 / 15`.
+- Reverified dirty status count is `176`.
+- Confirmed R1 count `7`: tracked modified `4`, untracked `3`, existing `7`,
+  sensitive-pattern files `3`, sensitive-pattern matches `6`,
+  conflict-marker files `4`, conflict-marker lines `11`.
+- Added
+  `docs/governance/DIRTY_WORKTREE_MANUAL_RETAIN_REVIEW_R1_PREFLIGHT_20260526.md`.
+
+Not completed:
+
+- No R1 file was copied, archived, deleted, restored, reset, cleaned, checked
+  out, or imported into `main`.
+- No matching sensitive/config-like values were printed or recorded.
+- No tag, release, deploy, branch deletion, live DingTalk/MCP/DWS command,
+  production write, or push was performed.
+
+Next:
+
+1. Push local governance records only after explicit approval.
+2. Continue with protected/runtime retention policy or choose an explicit R1
+   retain/quarantine/review package.
+
+Time: 2026-05-26 Asia/Shanghai.
+
+Completed:
+
 - Completed manifest toggles M1 read-only preflight.
 - Reverified control `main` is synchronized with `origin/main` at
   `3d3046149a885d88d4db960ad300f702c33de04d`.
