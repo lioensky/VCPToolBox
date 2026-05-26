@@ -1,0 +1,39 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "CodexMemoryBridge",
+  "version": "1.0.0",
+  "displayName": "Codex 记忆桥接器",
+  "description": "Codex 专用的记忆写入桥接器。根据固定规则将候选记忆写入过程层或知识层，并记录审计日志。",
+  "author": "System",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node codex-memory-bridge.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "record",
+        "description": "将 Codex 的候选记忆提交给桥接器。桥接器会按固定规则决定写入 `Codex`、`Codex的知识` 或拒绝写入。",
+        "parameters": [
+          { "name": "target", "description": "`process` 或 `knowledge`。", "required": true, "type": "string" },
+          { "name": "title", "description": "记忆标题。", "required": true, "type": "string" },
+          { "name": "content", "description": "记忆正文。", "required": true, "type": "string" },
+          { "name": "evidence", "description": "证据摘要或来源。", "required": true, "type": "string" },
+          { "name": "validated", "description": "是否已验证。", "required": true, "type": "string" },
+          { "name": "reusable", "description": "是否可复用。", "required": true, "type": "string" },
+          { "name": "tags", "description": "可选标签。", "required": false, "type": "string" },
+          { "name": "sensitivity", "description": "`none`、`secret`、`personal` 或 `unsafe`。", "required": true, "type": "string" }
+        ]
+      }
+    ]
+  },
+  "configSchema": {
+    "DebugMode": "boolean"
+  },
+  "lifecycle": {}
+}
