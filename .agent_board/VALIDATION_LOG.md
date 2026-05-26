@@ -58,6 +58,7 @@ Local cleanup execution:
 - Classified remaining remote branches with `git branch -r --no-merged origin/main`, `git branch -r --merged origin/main`, `git rev-list --left-right --count origin/main...<branch>`, and `git cherry origin/main <branch>`.
 - Verified remaining unmerged remote old lines still have positive cherry deltas and are not safe merge-cleanup candidates.
 - Drafted branch retention policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
+- Prepared EP1/EP2 execution packages with exact branch names, hashes, post-checks, and rollback commands.
 
 ## 2026-05-25 17:30 Asia/Shanghai
 

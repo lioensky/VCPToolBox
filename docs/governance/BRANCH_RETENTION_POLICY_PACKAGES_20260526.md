@@ -244,3 +244,70 @@ git push origin <hash>:refs/heads/<branch-name>
 3. Decide P2 as a small local-only cleanup package.
 4. Decide P3 as a separate local topology cleanup package.
 5. Treat P4 and P5 as retention/archive decisions, not cleanup chores.
+
+## Prepared Execution Package EP1 - Local Duplicate Label Cleanup
+
+Recommended action: delete duplicate feature labels and keep the rescue label.
+
+Delete:
+
+- `feature/ai-image-pipeline-dgp-refactor`
+- `feature/ai-image-pipeline-dgp-v2`
+
+Keep:
+
+- `rescue/ai-image-pipeline-mixed-20260427_195303`
+
+Reason:
+
+- All three local branches point to the same commit: `546b684e4f4f69003006aadd5ab968c4bffebae8`.
+- None of the three is occupied by a worktree.
+- Keeping the `rescue/` label preserves the historical recovery handle while removing duplicate feature names.
+- This still requires explicit approval because the commit is not an ancestor of `main`; ordinary `git branch -d` is expected to refuse.
+
+Expected command shape after explicit approval:
+
+```powershell
+git branch -D feature/ai-image-pipeline-dgp-refactor feature/ai-image-pipeline-dgp-v2
+```
+
+Post-check:
+
+```powershell
+git branch --contains 546b684
+git branch --list feature/ai-image-pipeline-dgp-refactor feature/ai-image-pipeline-dgp-v2 rescue/ai-image-pipeline-mixed-20260427_195303
+```
+
+Rollback:
+
+```powershell
+git branch feature/ai-image-pipeline-dgp-refactor 546b684e4f4f69003006aadd5ab968c4bffebae8
+git branch feature/ai-image-pipeline-dgp-v2 546b684e4f4f69003006aadd5ab968c4bffebae8
+```
+
+## Prepared Execution Package EP2 - Local Topology Evidence Branch
+
+Recommended action: retain unless the user wants a stricter local branch list.
+
+Branch:
+
+- `governance/origin-main-topology-bridge-preview`
+
+Reason:
+
+- It has no positive cherry delta relative to `main`.
+- It is not occupied by a worktree.
+- It is topology/history evidence, not active feature work.
+- Deletion requires explicit non-merged local branch deletion approval because it is not an ancestor of `main`.
+
+Expected command shape only if deletion is explicitly approved:
+
+```powershell
+git branch -D governance/origin-main-topology-bridge-preview
+```
+
+Rollback:
+
+```powershell
+git branch governance/origin-main-topology-bridge-preview c5ce5d933560081650e55b160433b37283c1f506
+```

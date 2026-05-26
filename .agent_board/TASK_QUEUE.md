@@ -34,8 +34,8 @@ Updated: 2026-05-26 Asia/Shanghai.
 ## Next Safe Local Tasks
 
 1. Review policy packages P0-P5 in `docs/governance/BRANCH_RETENTION_POLICY_PACKAGES_20260526.md`.
-2. Decide P2 duplicate local AI image branch policy.
-3. Decide P3 topology-only local branch policy.
+2. Decide EP1 duplicate local AI image branch cleanup: recommended delete two duplicate feature labels, keep the rescue label.
+3. Decide EP2 topology-only local branch policy: recommended retain unless a stricter local branch list is desired.
 4. Decide P5 old unmerged remote line retention/archive policy.
 5. Do not touch `A:/VCP/VCPToolBox` without a separate backup/retention decision.
 6. Request explicit approval before deleting any local or remote branch.
