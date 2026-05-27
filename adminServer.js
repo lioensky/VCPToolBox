@@ -253,6 +253,7 @@ const localModules = [
     'emojis',          // 表情包列表与 image 目录画廊
     'dailyNotes',      // 日记知识库文件管理
     'agentAssistant',  // Agent 助手配置（纯文件 I/O）
+    'semanticRouter',  // 语义模型路由器配置（本地 JSON 读写 + 上游模型拉取）
 ];
 
 // 日志路径获取函数（本地计算，不依赖主进程 logger 实例）
@@ -293,7 +294,9 @@ const localOptions = {
     triggerRestart: (code = 1) => {
         console.log(`[AdminServer] Restarting admin process (exit code: ${code})...`);
         setTimeout(() => process.exit(code), 500);
-    }
+    },
+    apiUrl: process.env.API_URL,
+    apiKey: process.env.API_Key,
 };
 
 for (const moduleName of localModules) {

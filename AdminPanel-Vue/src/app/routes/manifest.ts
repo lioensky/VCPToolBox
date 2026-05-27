@@ -33,6 +33,7 @@ export type AppRouteId =
   | "schedule-manager"
   | "dream-manager"
   | "server-log-viewer"
+  | "semantic-model-router-editor"
   | "final-context-viewer"
   | "placeholder-viewer"
   | "plugins"
@@ -103,6 +104,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/server-log-viewer",
     title: "服务器日志",
     icon: "terminal",
+    requiresAuth: true,
+    navGroup: "core",
+    showInSidebar: true,
+  },
+  {
+    id: "semantic-model-router-editor",
+    routeName: "SemanticModelRouterEditor",
+    path: "/semantic-model-router-editor",
+    title: "语义模型路由器",
+    icon: "route",
     requiresAuth: true,
     navGroup: "core",
     showInSidebar: true,

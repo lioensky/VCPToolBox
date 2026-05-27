@@ -79,6 +79,9 @@ export type * from './toolList'
 export { dynamicToolsApi } from './dynamicTools'
 export type * from './dynamicTools'
 
+export { semanticRouterApi } from './semanticRouter'
+export type * from './semanticRouter'
+
 export { vcptavernApi } from './vcptavern'
 export type * from './vcptavern'
 

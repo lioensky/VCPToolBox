@@ -1,0 +1,67 @@
+{
+  "enabled": true,
+  "autoModelName": "VCPModelAuto",
+  "defaultPreset": "default",
+  "matchThreshold": 0.18,
+  "contextWeights": [0.7, 0.3],
+  "presets": {
+    "default": {
+      "displayName": "VCPModelAuto",
+      "defaultModel": "gemini-3.5-flash-thinking",
+      "fallbackModels": [
+        "gpt-5.5"
+      ],
+      "matchThreshold": 0.18,
+      "contextWeights": [0.7, 0.3],
+      "routes": [
+        {
+          "name": "daily_chat",
+          "model": "gemini-3.5-flash-thinking",
+          "description": "日常聊天、闲聊、寒暄、生活琐事、轻松对话、随意问答、情感陪伴、聊聊心情、问候、打招呼",
+          "failoverPool": true
+        },
+        {
+          "name": "research_and_coding",
+          "model": "gpt-5.5",
+          "description": "信息调研、资料检索、技术调研、文献整理、代码编写、脚本开发、调试程序、修改代码、命令行工具、自动化脚本、API集成、Web开发、数据处理脚本",
+          "failoverPool": true
+        },
+        {
+          "name": "deep_reasoning",
+          "model": "claude-opus-4-7-thinking",
+          "description": "复杂综合任务、多步骤推理、深度逻辑分析、形式逻辑、哲学思辨、伦理学讨论、社会科学研究、政治经济分析、抽象概念辨析、理论框架构建、长文献综合、跨学科推理",
+          "failoverPool": false
+        }
+      ]
+    },
+    "VCPModelLiterature": {
+      "displayName": "VCPModelLiterature",
+      "defaultModel": "gemini-3.5-flash-thinking",
+      "fallbackModels": [
+        "DeepSeek-V4-Pro"
+      ],
+      "matchThreshold": 0.18,
+      "contextWeights": [0.7, 0.3],
+      "routes": [
+        {
+          "name": "literary_discussion",
+          "model": "gemini-3.5-flash-thinking",
+          "description": "文学讨论、构思创意、设定人物、设计剧情大纲、世界观讨论、风格选择、灵感碰撞、修改建议、写作思路梳理、聊作品",
+          "failoverPool": true
+        },
+        {
+          "name": "literary_writing",
+          "model": "DeepSeek-V4-Pro",
+          "description": "正文撰写、执笔创作、续写小说、写章节、写场景、写对白、写描写段落、长篇文学输出、抒情段落、叙事段落、扩写、润色重写",
+          "failoverPool": true
+        },
+        {
+          "name": "literary_analysis",
+          "model": "claude-opus-4-7-thinking",
+          "description": "复杂小说分析、叙事结构剖析、人物心理深度解读、文学批评、主题学研究、互文性分析、风格学研究、长篇文本结构性评论、跨文化文学比较",
+          "failoverPool": false
+        }
+      ]
+    }
+  }
+}
