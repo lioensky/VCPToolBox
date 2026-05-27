@@ -97,6 +97,8 @@ test('GPTImageGen keeps unified edit image aliases behind URL safety checks', ()
 
   assert.match(source, /function collectImageInputs\(args\)/);
   assert.match(source, /function parseImageArrayInput\(value\)/);
+  assert.match(source, /function normalizeBase64AliasInput\(value\)/);
+  assert.match(source, /function inferMimeFromBase64Image\(base64Value\)/);
   assert.equal(source.includes('key.match(/^image(?:_url)?_(\\d+)$/i)'), true);
   assert.equal(source.includes('key.match(/^image_base64_(\\d+)$/i)'), true);
   assert.match(source, /command === 'compose'/);
@@ -177,6 +179,33 @@ test('GPTImageGen rejects private indexed image aliases before network calls', (
   const parsed = JSON.parse(child.stdout);
   assert.equal(parsed.status, 'error');
   assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.equal(child.stderr, '');
+});
+
+test('GPTImageGen wraps raw image_base64 aliases before edit input processing', () => {
+  const child = spawnSync(process.execPath, [pluginScript], {
+    cwd: repoRoot,
+    input: JSON.stringify({
+      command: 'compose',
+      prompt: 'offline safety check',
+      image_base64: 'iVBORw0KGgo=',
+      image_url_2: 'http://127.0.0.1/latest/meta-data',
+      resolution: '1024x1024'
+    }),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: 'test-only-key',
+      PROJECT_BASE_PATH: repoRoot,
+      DebugMode: 'false'
+    }
+  });
+
+  assert.notEqual(child.status, 0);
+  const parsed = JSON.parse(child.stdout);
+  assert.equal(parsed.status, 'error');
+  assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.doesNotMatch(parsed.error, /本地图片路径必须位于项目 image 目录内/);
   assert.equal(child.stderr, '');
 });
 

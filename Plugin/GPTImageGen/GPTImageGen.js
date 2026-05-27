@@ -99,13 +99,35 @@ function parseImageArrayInput(value) {
     return [trimmed];
 }
 
+function inferMimeFromBase64Image(base64Value) {
+    const header = Buffer.from(base64Value.slice(0, 64), 'base64');
+    if (header.length >= 8 && header[0] === 0x89 && header.slice(1, 4).toString('ascii') === 'PNG') return 'image/png';
+    if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return 'image/jpeg';
+    if (header.length >= 6 && (header.slice(0, 6).toString('ascii') === 'GIF87a' || header.slice(0, 6).toString('ascii') === 'GIF89a')) return 'image/gif';
+    if (header.length >= 12 && header.slice(0, 4).toString('ascii') === 'RIFF' && header.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+    return 'image/png';
+}
+
+function normalizeBase64AliasInput(value) {
+    const trimmed = value.trim();
+    if (/^data:image\/[^;]+;base64,/i.test(trimmed)) return trimmed;
+    if (/^(https?:\/\/|file:\/\/\/)/i.test(trimmed)) return trimmed;
+
+    const compact = trimmed.replace(/\s+/g, '');
+    if (!compact || compact.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+        return trimmed;
+    }
+
+    return `data:${inferMimeFromBase64Image(compact)};base64,${compact}`;
+}
+
 function collectImageInputs(args) {
     const images = [];
     const seen = new Set();
-    const pushImage = (value) => {
+    const pushImage = (value, options = {}) => {
         for (const item of parseImageArrayInput(value)) {
             if (typeof item === 'string' && item.trim()) {
-                const image = item.trim();
+                const image = options.base64Alias ? normalizeBase64AliasInput(item) : item.trim();
                 if (!seen.has(image)) {
                     seen.add(image);
                     images.push(image);
@@ -114,18 +136,23 @@ function collectImageInputs(args) {
         }
     };
 
-    pushImage(args.image || args.Image || args.image_url || args.source_image || args.image_base64);
+    const primaryImage = args.image || args.Image || args.image_url || args.source_image;
+    if (primaryImage) {
+        pushImage(primaryImage);
+    } else {
+        pushImage(args.image_base64, { base64Alias: true });
+    }
 
     const indexedKeys = Object.keys(args)
         .map((key) => {
             const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
-            return match ? { key, index: parseInt(match[1], 10) } : null;
+            return match ? { key, index: parseInt(match[1], 10), base64Alias: /^image_base64_/i.test(key) } : null;
         })
         .filter(Boolean)
         .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
 
-    for (const { key } of indexedKeys) {
-        pushImage(args[key]);
+    for (const { key, base64Alias } of indexedKeys) {
+        pushImage(args[key], { base64Alias });
     }
 
     return images;
