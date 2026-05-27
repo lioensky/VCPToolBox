@@ -81,6 +81,21 @@ function getRandomChannel() {
     return { url: channel.url, key: channel.key, model };
 }
 
+const PROJECT_ROOT = PROJECT_BASE_PATH || process.cwd();
+const PROJECT_IMAGE_ROOT = path.resolve(PROJECT_ROOT, 'image');
+const MAX_INPUT_IMAGE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_INPUT_IMAGE_MIME_TYPES = new Set([
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/gif'
+]);
+
+function isPathInside(childPath, parentPath) {
+    const relative = path.relative(parentPath, childPath);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 // --- 2. 核心功能函数 ---
 
 /**
@@ -103,11 +118,27 @@ async function getImageDataFromUrl(url) {
     if (url.startsWith('file://')) {
         const { fileURLToPath } = await import('url');
         const { default: mime } = await import('mime-types');
-        const filePath = fileURLToPath(url);
+        const filePath = path.resolve(fileURLToPath(url));
 
         try {
-            const buffer = await fs.readFile(filePath);
+            if (!isPathInside(filePath, PROJECT_IMAGE_ROOT)) {
+                throw new Error('本地图片路径仅允许位于项目 image/ 目录下');
+            }
+
+            const stat = await fs.stat(filePath);
+            if (!stat.isFile()) {
+                throw new Error(`本地图片路径不是文件: ${filePath}`);
+            }
+            if (stat.size > MAX_INPUT_IMAGE_SIZE) {
+                throw new Error(`本地图片大小 ${(stat.size / 1024 / 1024).toFixed(1)}MB，超过 ${MAX_INPUT_IMAGE_SIZE / 1024 / 1024}MB 限制。`);
+            }
+
             const mimeType = mime.lookup(filePath) || 'application/octet-stream';
+            if (!ALLOWED_INPUT_IMAGE_MIME_TYPES.has(mimeType)) {
+                throw new Error('本地图片必须是 PNG、JPEG、WEBP 或 GIF。');
+            }
+
+            const buffer = await fs.readFile(filePath);
             console.error(`[NanoBananaGen2] 成功直接读取本地文件: ${filePath}`);
             return { buffer, mimeType };
         } catch (e) {

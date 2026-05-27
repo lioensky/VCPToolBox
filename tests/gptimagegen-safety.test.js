@@ -73,18 +73,22 @@ test('GPTImageGen keeps local image reads bounded to project image directory', (
 test('GPTImageGen blocks obvious local/private URL image inputs', () => {
   const source = fs.readFileSync(pluginScript, 'utf8');
 
-  assert.match(source, /isBlockedLocalHostname/);
+  assert.match(source, /isBlockedIpAddress/);
   assert.match(source, /resolveImageDownloadUrl/);
   assert.match(source, /localhost/);
-  assert.equal(source.includes('192\\.168'), true);
+  assert.match(source, /a === 192 && b === 168/);
   assert.match(source, /downloadImage\(input, MAX_IMAGE_SIZE\)/);
 });
 
-test('GPTImageGen validates redirect targets and preserves download limits', () => {
+test('GPTImageGen validates DNS and redirect targets and preserves download limits', () => {
   const source = fs.readFileSync(pluginScript, 'utf8');
 
-  assert.match(source, /resolveImageDownloadUrl\(res\.headers\.location, parsedUrl\.href\)/);
-  assert.match(source, /downloadImage\(redirectUrl\.href, maxBytes, redirectCount \+ 1\)/);
+  assert.match(source, /dns\.lookup\(hostname, \{ all: true, verbatim: true \}\)/);
+  assert.match(source, /net\.isIP\(hostname\)/);
+  assert.match(source, /0xfc00/);
+  assert.match(source, /0xfe80/);
+  assert.match(source, /0xffff/);
+  assert.match(source, /downloadImage\(res\.headers\.location, maxBytes, redirectCount \+ 1, parsedUrl\.href\)/);
   assert.match(source, /图片下载重定向次数过多/);
 });
 

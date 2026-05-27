@@ -521,6 +521,21 @@ function captureRawBody(req, _res, buf, encoding) {
 
     req.rawBody = buf.toString(encoding || 'utf8');
 }
+function normalizeSocketAddress(address) {
+    if (!address || typeof address !== 'string') {
+        return '';
+    }
+
+    const trimmed = address.trim();
+    return trimmed.startsWith('::ffff:')
+        ? trimmed.slice(7)
+        : trimmed;
+}
+
+function isLoopbackSocket(req) {
+    const remoteAddress = normalizeSocketAddress(req?.socket?.remoteAddress || req?.connection?.remoteAddress);
+    return remoteAddress === '127.0.0.1' || remoteAddress === '::1';
+}
 
 // 在路由决策之前解析请求体，以便 req.body 可用
 app.use(express.json({ limit: '300mb', verify: captureRawBody }));
@@ -840,13 +855,11 @@ app.use((req, res, next) => {
         return next();
     }
 
-    let clientIp = req.ip;
-    if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
-        clientIp = clientIp.substr(7);
-    }
-
-    const isLoopbackIp = clientIp === '127.0.0.1' || clientIp === '::1';
-    if (req.path.startsWith('/mcp/codex-memory') && isLoopbackIp) {
+    const allowCodexMemoryLoopback =
+        req.path.startsWith('/mcp/codex-memory') &&
+        process.env.ENABLE_CODEX_MEMORY_MCP_LOOPBACK === 'true' &&
+        isLoopbackSocket(req);
+    if (allowCodexMemoryLoopback) {
         return next();
     }
 

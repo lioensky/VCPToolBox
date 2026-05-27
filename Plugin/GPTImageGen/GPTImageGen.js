@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 /**
  * GPTImageGen - GPT Image 2 图像生成插件
- * 
+ *
  * 通过 OpenAI 兼容 API 调用 gpt-image-2 模型进行图像生成。
  * 零外部依赖，仅使用 Node.js 原生模块。
- * 
+ *
  * 通信协议：stdio JSON（VCP 插件标准协议）
  * 流程：stdin 接收 JSON 参数 → 解析命令 → 调用 API → 保存图像到本地 → stdout 输出 JSON 结果
- * 
+ *
  * @author 小飒 (Xiaosa) & infinite-vector
  * @version 1.1.0
  */
 
 import http from 'http';
 import https from 'https';
+import dns from 'dns/promises';
+import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -78,28 +80,144 @@ function isPathInside(childPath, parentPath) {
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function isBlockedLocalHostname(hostname) {
-    const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
-    if (!host) return true;
-    if (host === 'localhost' || host === '::1' || host.endsWith('.localhost') || host.endsWith('.local')) {
-        return true;
-    }
-    if (/^127\./.test(host) || /^169\.254\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) {
-        return true;
-    }
-    const private172 = host.match(/^172\.(\d+)\./);
-    return private172 ? Number(private172[1]) >= 16 && Number(private172[1]) <= 31 : false;
+function normalizeHostname(hostname) {
+    return String(hostname || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^\[|\]$/g, '')
+        .replace(/%.+$/, '');
 }
 
-function resolveImageDownloadUrl(rawUrl, baseUrl = '') {
+function parseIPv4Address(address) {
+    const parts = String(address || '').split('.');
+    if (parts.length !== 4) return null;
+
+    const octets = parts.map((part) => {
+        if (!/^\d+$/.test(part)) return NaN;
+        const value = Number(part);
+        return value >= 0 && value <= 255 ? value : NaN;
+    });
+
+    return octets.every(Number.isInteger) ? octets : null;
+}
+
+function expandIPv6Address(address) {
+    let value = normalizeHostname(address);
+
+    if (value.includes('.')) {
+        const lastColon = value.lastIndexOf(':');
+        const ipv4 = parseIPv4Address(value.slice(lastColon + 1));
+        if (!ipv4) return null;
+        const high = ((ipv4[0] << 8) | ipv4[1]).toString(16);
+        const low = ((ipv4[2] << 8) | ipv4[3]).toString(16);
+        value = `${value.slice(0, lastColon)}:${high}:${low}`;
+    }
+
+    const doubleColonParts = value.split('::');
+    if (doubleColonParts.length > 2) return null;
+
+    const head = doubleColonParts[0] ? doubleColonParts[0].split(':') : [];
+    const tail = doubleColonParts.length === 2 && doubleColonParts[1] ? doubleColonParts[1].split(':') : [];
+    const fillCount = doubleColonParts.length === 2 ? 8 - head.length - tail.length : 0;
+    const parts = doubleColonParts.length === 2
+        ? [...head, ...Array(fillCount).fill('0'), ...tail]
+        : value.split(':');
+
+    if (parts.length !== 8 || fillCount < 0) return null;
+
+    const hextets = parts.map((part) => {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return NaN;
+        return parseInt(part, 16);
+    });
+
+    return hextets.every(Number.isInteger) ? hextets : null;
+}
+
+function isBlockedIPv4Address(address) {
+    const octets = parseIPv4Address(address);
+    if (!octets) return true;
+
+    const [a, b] = octets;
+    return (
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168)
+    );
+}
+
+function isBlockedIPv6Address(address) {
+    const hextets = expandIPv6Address(address);
+    if (!hextets) return true;
+
+    const isUnspecified = hextets.every((part) => part === 0);
+    const isLoopback = hextets.slice(0, 7).every((part) => part === 0) && hextets[7] === 1;
+    const isUniqueLocal = (hextets[0] & 0xfe00) === 0xfc00;
+    const isLinkLocal = (hextets[0] & 0xffc0) === 0xfe80;
+    const isIPv4Mapped = hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff;
+
+    if (isUnspecified || isLoopback || isUniqueLocal || isLinkLocal) {
+        return true;
+    }
+
+    if (isIPv4Mapped) {
+        const mappedIPv4 = [
+            hextets[6] >> 8,
+            hextets[6] & 0xff,
+            hextets[7] >> 8,
+            hextets[7] & 0xff
+        ].join('.');
+        return isBlockedIPv4Address(mappedIPv4);
+    }
+
+    return false;
+}
+
+function isBlockedIpAddress(address) {
+    const normalized = normalizeHostname(address);
+    const ipVersion = net.isIP(normalized);
+    if (ipVersion === 4) return isBlockedIPv4Address(normalized);
+    if (ipVersion === 6) return isBlockedIPv6Address(normalized);
+    return true;
+}
+
+function isLocalHostname(hostname) {
+    const host = normalizeHostname(hostname);
+    return !host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local');
+}
+
+async function resolveImageDownloadUrl(rawUrl, baseUrl = '') {
     const parsedUrl = baseUrl ? new URL(rawUrl, baseUrl) : new URL(rawUrl);
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
         throw new Error('图片 URL 仅支持 http 或 https 协议');
     }
-    if (isBlockedLocalHostname(parsedUrl.hostname)) {
+
+    const hostname = normalizeHostname(parsedUrl.hostname);
+    if (isLocalHostname(hostname)) {
         throw new Error('图片 URL 不允许指向本机、链路本地或私有网段地址');
     }
-    return parsedUrl;
+
+    if (net.isIP(hostname)) {
+        if (isBlockedIpAddress(hostname)) {
+            throw new Error('图片 URL 不允许指向本机、链路本地或私有网段地址');
+        }
+        return { parsedUrl, lookupAddress: null };
+    }
+
+    const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    if (!addresses.length) {
+        throw new Error(`图片 URL 主机无法解析: ${hostname}`);
+    }
+
+    const blockedAddress = addresses.find((entry) => isBlockedIpAddress(entry.address));
+    if (blockedAddress) {
+        throw new Error('图片 URL 不允许指向本机、链路本地或私有网段地址');
+    }
+
+    return { parsedUrl, lookupAddress: addresses[0] };
 }
 
 /**
@@ -171,7 +289,7 @@ function inferImageExtension(contentType, urlOrPath) {
 /**
  * 通用 HTTP/HTTPS 请求函数（零依赖）
  * 根据 URL 协议自动选择 http 或 https 模块
- * 
+ *
  * @param {string} url - 完整请求 URL
  * @param {object} options - 请求选项（method, headers 等）
  * @param {string|Buffer|null} body - 请求体
@@ -330,7 +448,7 @@ function httpRequest(url, options = {}, body = null) {
 /**
  * 带指数退避重试的 HTTP 请求包装器
  * 对 429 (Rate Limit) 和 503 (Service Unavailable) 自动重试
- * 
+ *
  * @param {string} url - 完整请求 URL
  * @param {object} options - 请求选项
  * @param {string|Buffer|null} body - 请求体
@@ -357,46 +475,39 @@ async function httpRequestWithRetry(url, options = {}, body = null) {
 /**
  * 下载远程图片
  * 返回 Buffer 和 Content-Type（学 DoubaoGen 的 httpsDownload 模式）
- * 
+ *
  * @param {string} url - 图片 URL
  * @returns {Promise<{data: Buffer, contentType: string}>}
  */
-function downloadImage(url, maxBytes = 0, redirectCount = 0) {
+async function downloadImage(url, maxBytes = 0, redirectCount = 0, baseUrl = '') {
+    const { parsedUrl, lookupAddress } = await resolveImageDownloadUrl(url, baseUrl);
+
     return new Promise((resolve, reject) => {
-        let parsedUrl;
-        try {
-            parsedUrl = resolveImageDownloadUrl(url);
-        } catch (err) {
-            reject(err);
-            return;
-        }
         const transport = parsedUrl.protocol === 'https:' ? https : http;
 
         const reqOptions = {
-            hostname: parsedUrl.hostname,
+            hostname: normalizeHostname(parsedUrl.hostname),
             port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
             path: parsedUrl.pathname + parsedUrl.search,
             method: 'GET',
-            timeout: 60000
+            timeout: 60000,
+            ...(lookupAddress ? {
+                lookup: (_hostname, _options, callback) => {
+                    callback(null, lookupAddress.address, lookupAddress.family);
+                }
+            } : {})
         };
 
         const req = transport.request(reqOptions, (res) => {
             // 处理重定向
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                res.resume();
                 if (redirectCount >= 5) {
                     reject(new Error('图片下载重定向次数过多'));
                     return;
                 }
 
-                let redirectUrl;
-                try {
-                    redirectUrl = resolveImageDownloadUrl(res.headers.location, parsedUrl.href);
-                } catch (err) {
-                    reject(err);
-                    return;
-                }
-
-                downloadImage(redirectUrl.href, maxBytes, redirectCount + 1).then(resolve).catch(reject);
+                downloadImage(res.headers.location, maxBytes, redirectCount + 1, parsedUrl.href).then(resolve).catch(reject);
                 return;
             }
 
@@ -435,51 +546,6 @@ function downloadImage(url, maxBytes = 0, redirectCount = 0) {
 // 图片输入处理
 // ============================================================
 
-function parseImageArrayInput(value) {
-    if (Array.isArray(value)) return value.filter(Boolean);
-    if (typeof value !== 'string') return value ? [value] : [];
-
-    const trimmed = value.trim();
-    if (!trimmed) return [];
-
-    if (trimmed.startsWith('[')) {
-        try {
-            const sanitized = trimmed.replace(/\\/g, '\\\\');
-            const parsed = JSON.parse(sanitized);
-            if (Array.isArray(parsed)) return parsed.filter(Boolean);
-        } catch {
-            // Keep as a single image string if JSON parsing fails.
-        }
-    }
-
-    return [trimmed];
-}
-
-function collectImageInputs(args) {
-    const images = [];
-    const pushImage = (value) => {
-        for (const item of parseImageArrayInput(value)) {
-            if (typeof item === 'string' && item.trim()) images.push(item.trim());
-        }
-    };
-
-    pushImage(args.image || args.Image || args.image_url || args.source_image || args.image_base64);
-
-    const indexedKeys = Object.keys(args)
-        .map((key) => {
-            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
-            return match ? { key, index: parseInt(match[1], 10) } : null;
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
-
-    for (const { key } of indexedKeys) {
-        pushImage(args[key]);
-    }
-
-    return images;
-}
-
 /**
  * 处理图片输入，支持多种格式：
  * - data:image/... base64 data URI
@@ -515,7 +581,7 @@ async function processImageInput(imageInput) {
 
     // HTTP/HTTPS URL
     if (input.startsWith('http://') || input.startsWith('https://')) {
-        resolveImageDownloadUrl(input);
+        await resolveImageDownloadUrl(input);
         debugLog('Image input: URL, downloading...', input.substring(0, 100));
         const { data: buffer, contentType } = await downloadImage(input, MAX_IMAGE_SIZE);
         // 校验下载后的文件大小
@@ -548,6 +614,9 @@ async function processImageInput(imageInput) {
     }
     if (!fs.existsSync(resolved)) {
         throw new Error(`图片文件不存在: ${filePath}`);
+    }
+    if (!fs.statSync(resolved).isFile()) {
+        throw new Error(`图片路径不是文件: ${filePath}`);
     }
 
     debugLog('Image input: local file', resolved);
@@ -877,26 +946,27 @@ async function callEditAPI(params) {
 
 /**
  * 将图像数据保存到本地文件系统
- * 
+ *
  * @param {Buffer} imageBuffer - 图像二进制数据
  * @param {number} index - 图片序号（用于多图场景的日志标识）
  * @param {string} [contentType] - HTTP Content-Type（用于推断扩展名）
  * @returns {object} { localPath, accessibleUrl, serverPath, fileName }
  */
 function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
+    const imageDir = GPTIMAGEGEN_OUTPUT_DIR;
     const ext = inferImageExtension(contentType);
     const fileName = `${crypto.randomUUID()}.${ext}`;
-    const localPath = path.join(GPTIMAGEGEN_OUTPUT_DIR, fileName);
+    const localPath = path.join(imageDir, fileName);
 
     // 路径安全检查 — 防止路径逃逸
-    const resolvedDir = path.resolve(GPTIMAGEGEN_OUTPUT_DIR);
+    const resolvedDir = path.resolve(imageDir);
     const resolvedPath = path.resolve(localPath);
     if (!resolvedPath.startsWith(resolvedDir)) {
         throw new Error('路径安全检查失败：检测到路径逃逸尝试');
     }
 
     // 确保目录存在
-    fs.mkdirSync(GPTIMAGEGEN_OUTPUT_DIR, { recursive: true });
+    fs.mkdirSync(imageDir, { recursive: true });
 
     // 写入文件
     fs.writeFileSync(localPath, imageBuffer);
@@ -921,7 +991,7 @@ function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
 
 /**
  * 根据 API 结果构建标准化的 VCP 插件响应
- * 
+ *
  * @param {object} apiResult - API 返回的响应体
  * @param {object} params - 原始请求参数
  * @returns {Promise<object>} VCP 标准响应对象
@@ -951,7 +1021,7 @@ async function buildResponse(apiResult, params) {
         } else if (item.url) {
             // URL 模式：下载图片（现在返回 contentType）
             debugLog(`Downloading image ${i} from URL: ${item.url}`);
-            const downloaded = await downloadImage(item.url, MAX_IMAGE_SIZE);
+            const downloaded = await downloadImage(item.url);
             imageBuffer = downloaded.data;
             contentType = downloaded.contentType;
         } else {
@@ -1078,7 +1148,7 @@ async function main() {
         // 获取命令类型（默认 generate）
         const command = (args.command || args.Command || args.cmd || 'generate').toLowerCase();
         // 对 invocationCommands 的 commandIdentifier 做兼容
-        const isEditMode = command === 'edit' || command === 'compose' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
+        const isEditMode = command === 'edit' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
 
         // 获取 prompt 参数（兼容多种字段名）
         const prompt = args.prompt || args.Prompt || args.text || '';
@@ -1090,7 +1160,7 @@ async function main() {
         }
 
         // 解析并验证通用参数
-        let size = args.size || args.Size || args.resolution || args.Resolution || args.image_size || args.imageSize || DEFAULT_SIZE;
+        let size = args.size || args.Size || DEFAULT_SIZE;
         // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
         if (/^\d+$/.test(size)) {
             size = `${size}x${size}`;
@@ -1120,14 +1190,37 @@ async function main() {
 
         if (isEditMode) {
             // ======== 图生图（Edit）模式 ========
-            const imageInputs = collectImageInputs(args);
-            if (imageInputs.length === 0) {
+            let imageInput = args.image || args.Image || args.image_url || args.source_image || '';
+            if (!imageInput) {
                 return outputAndExit({
                     status: 'error',
                     error: 'GPTImageGen [edit]: 缺少 image 参数。请提供要编辑的原始图片（支持 URL、base64 data URI 或本地文件路径）。'
                 });
             }
 
+            // ── 兼容 VCP 工具调用传入 JSON 数组字符串的情况 ──
+            // VCP 的「始」「末」参数解析器可能将 ["a","b"] 作为纯字符串传入，
+            // 而非 JS 原生数组。此处自动检测并解析。
+            // Windows 路径中的 \ 需要转义为 \\ 才能被 JSON.parse 正确解析。
+            if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
+                try {
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(imageInput);
+                    } catch {
+                        parsed = JSON.parse(imageInput.replace(/\\/g, '\\\\'));
+                    }
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        imageInput = parsed;
+                        debugLog('Auto-parsed image JSON string to array, count:', parsed.length);
+                    }
+                } catch (e) {
+                    debugLog('Image field starts with [ but failed to parse:', e.message);
+                }
+            }
+
+            // 处理图片输入（可以是单张或数组）
+            const imageInputs = Array.isArray(imageInput) ? imageInput : [imageInput];
             const imageDataURIs = [];
             for (const img of imageInputs) {
                 const dataURI = await processImageInput(img);
