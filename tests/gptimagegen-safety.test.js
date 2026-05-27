@@ -92,6 +92,18 @@ test('GPTImageGen validates DNS and redirect targets and preserves download limi
   assert.match(source, /图片下载重定向次数过多/);
 });
 
+test('GPTImageGen keeps unified edit image aliases behind URL safety checks', () => {
+  const source = fs.readFileSync(pluginScript, 'utf8');
+
+  assert.match(source, /function collectImageInputs\(args\)/);
+  assert.match(source, /function parseImageArrayInput\(value\)/);
+  assert.equal(source.includes('key.match(/^image(?:_url)?_(\\d+)$/i)'), true);
+  assert.equal(source.includes('key.match(/^image_base64_(\\d+)$/i)'), true);
+  assert.match(source, /command === 'compose'/);
+  assert.match(source, /args\.resolution/);
+  assert.match(source, /args\.image_size/);
+});
+
 test('GPTImageGen rejects private URL edit inputs before network calls', () => {
   const child = spawnSync(process.execPath, [pluginScript], {
     cwd: repoRoot,
@@ -125,6 +137,32 @@ test('GPTImageGen parses JSON array string edit inputs before URL safety checks'
       prompt: 'offline safety check',
       image: JSON.stringify(['http://127.0.0.1/latest/meta-data']),
       size: '1024x1024'
+    }),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: 'test-only-key',
+      PROJECT_BASE_PATH: repoRoot,
+      DebugMode: 'false'
+    }
+  });
+
+  assert.notEqual(child.status, 0);
+  const parsed = JSON.parse(child.stdout);
+  assert.equal(parsed.status, 'error');
+  assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.equal(child.stderr, '');
+});
+
+test('GPTImageGen rejects private indexed image aliases before network calls', () => {
+  const child = spawnSync(process.execPath, [pluginScript], {
+    cwd: repoRoot,
+    input: JSON.stringify({
+      command: 'compose',
+      prompt: 'offline safety check',
+      image_url_1: 'data:image/png;base64,iVBORw0KGgo=',
+      image_url_2: 'http://127.0.0.1/latest/meta-data',
+      resolution: '1024x1024'
     }),
     encoding: 'utf8',
     env: {
