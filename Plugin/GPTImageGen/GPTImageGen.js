@@ -75,6 +75,89 @@ function debugLog(...args) {
     if (DEBUG) console.error('[GPTImageGen DEBUG]', ...args);
 }
 
+function parseImageArrayInput(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string') return value ? [value] : [];
+
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            let parsed;
+            try {
+                parsed = JSON.parse(trimmed);
+            } catch {
+                parsed = JSON.parse(trimmed.replace(/\\/g, '\\\\'));
+            }
+            if (Array.isArray(parsed)) return parsed.filter(Boolean);
+        } catch {
+            // Keep as a single image string if JSON parsing fails.
+        }
+    }
+
+    return [trimmed];
+}
+
+function inferMimeFromBase64Image(base64Value) {
+    const header = Buffer.from(base64Value.slice(0, 64), 'base64');
+    if (header.length >= 8 && header[0] === 0x89 && header.slice(1, 4).toString('ascii') === 'PNG') return 'image/png';
+    if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return 'image/jpeg';
+    if (header.length >= 6 && (header.slice(0, 6).toString('ascii') === 'GIF87a' || header.slice(0, 6).toString('ascii') === 'GIF89a')) return 'image/gif';
+    if (header.length >= 12 && header.slice(0, 4).toString('ascii') === 'RIFF' && header.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+    return 'image/png';
+}
+
+function normalizeBase64AliasInput(value) {
+    const trimmed = value.trim();
+    if (/^data:image\/[^;]+;base64,/i.test(trimmed)) return trimmed;
+    if (/^(https?:\/\/|file:\/\/\/)/i.test(trimmed)) return trimmed;
+
+    const compact = trimmed.replace(/\s+/g, '');
+    if (!compact || compact.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+        return trimmed;
+    }
+
+    return `data:${inferMimeFromBase64Image(compact)};base64,${compact}`;
+}
+
+function collectImageInputs(args) {
+    const images = [];
+    const seen = new Set();
+    const pushImage = (value, options = {}) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                const image = options.base64Alias ? normalizeBase64AliasInput(item) : item.trim();
+                if (!seen.has(image)) {
+                    seen.add(image);
+                    images.push(image);
+                }
+            }
+        }
+    };
+
+    const primaryImage = args.image || args.Image || args.image_url || args.source_image;
+    if (primaryImage) {
+        pushImage(primaryImage);
+    } else {
+        pushImage(args.image_base64, { base64Alias: true });
+    }
+
+    const indexedKeys = Object.keys(args)
+        .map((key) => {
+            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
+            return match ? { key, index: parseInt(match[1], 10), base64Alias: /^image_base64_/i.test(key) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+    for (const { key, base64Alias } of indexedKeys) {
+        pushImage(args[key], { base64Alias });
+    }
+
+    return images;
+}
+
 function isPathInside(childPath, parentPath) {
     const relative = path.relative(parentPath, childPath);
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
@@ -1148,7 +1231,7 @@ async function main() {
         // 获取命令类型（默认 generate）
         const command = (args.command || args.Command || args.cmd || 'generate').toLowerCase();
         // 对 invocationCommands 的 commandIdentifier 做兼容
-        const isEditMode = command === 'edit' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
+        const isEditMode = command === 'edit' || command === 'compose' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
 
         // 获取 prompt 参数（兼容多种字段名）
         const prompt = args.prompt || args.Prompt || args.text || '';
@@ -1160,7 +1243,7 @@ async function main() {
         }
 
         // 解析并验证通用参数
-        let size = args.size || args.Size || DEFAULT_SIZE;
+        let size = args.size || args.Size || args.resolution || args.Resolution || args.image_size || args.imageSize || DEFAULT_SIZE;
         // 兼容纯数字输入（如 "1024"），自动转为正方形尺寸
         if (/^\d+$/.test(size)) {
             size = `${size}x${size}`;
@@ -1190,37 +1273,14 @@ async function main() {
 
         if (isEditMode) {
             // ======== 图生图（Edit）模式 ========
-            let imageInput = args.image || args.Image || args.image_url || args.source_image || '';
-            if (!imageInput) {
+            const imageInputs = collectImageInputs(args);
+            if (imageInputs.length === 0) {
                 return outputAndExit({
                     status: 'error',
                     error: 'GPTImageGen [edit]: 缺少 image 参数。请提供要编辑的原始图片（支持 URL、base64 data URI 或本地文件路径）。'
                 });
             }
 
-            // ── 兼容 VCP 工具调用传入 JSON 数组字符串的情况 ──
-            // VCP 的「始」「末」参数解析器可能将 ["a","b"] 作为纯字符串传入，
-            // 而非 JS 原生数组。此处自动检测并解析。
-            // Windows 路径中的 \ 需要转义为 \\ 才能被 JSON.parse 正确解析。
-            if (typeof imageInput === 'string' && imageInput.trimStart().startsWith('[')) {
-                try {
-                    let parsed;
-                    try {
-                        parsed = JSON.parse(imageInput);
-                    } catch {
-                        parsed = JSON.parse(imageInput.replace(/\\/g, '\\\\'));
-                    }
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        imageInput = parsed;
-                        debugLog('Auto-parsed image JSON string to array, count:', parsed.length);
-                    }
-                } catch (e) {
-                    debugLog('Image field starts with [ but failed to parse:', e.message);
-                }
-            }
-
-            // 处理图片输入（可以是单张或数组）
-            const imageInputs = Array.isArray(imageInput) ? imageInput : [imageInput];
             const imageDataURIs = [];
             for (const img of imageInputs) {
                 const dataURI = await processImageInput(img);
