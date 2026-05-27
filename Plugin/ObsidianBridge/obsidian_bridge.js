@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ============================================
 // ObsidianBridge - VCP <-> Obsidian CLI 桥接器
@@ -36,43 +36,83 @@ function loadCliPath() {
 
 const OBSIDIAN_CLI = loadCliPath();
 
+// --- 安全模式检测 ---
+// .bat/.cmd 文件在 Windows 上不能用 execFileSync（CVE-2024-27980）
+// 对这些文件自动降级到 execSync（Shell 模式），保持向后兼容
+const CLI_EXT = path.extname(OBSIDIAN_CLI).toLowerCase();
+const NEEDS_SHELL = ['.bat', '.cmd'].includes(CLI_EXT);
+if (NEEDS_SHELL) {
+    console.warn('[ObsidianBridge] WARNING: CLI path ends with ' + CLI_EXT
+        + '. Falling back to execSync (shell mode). '
+        + 'For better security, use .exe or .com binary.');
+}
+
 // --- 工具函数 ---
 
 function escapeValue(val, options = {}) {
     if (val === undefined || val === null) return '';
     let str = String(val);
-    if (!options.preserveBackslash) {
-        str = str.replace(/\\/g, '\\\\');
+
+    if (NEEDS_SHELL) {
+        // 降级模式：保留原有全部转义（Shell 需要）
+        if (!options.preserveBackslash) {
+            str = str.replace(/\\/g, '\\\\');
+        }
+        return str.replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
     }
-    return str.replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+
+    // 安全模式：不经 Shell，只转义 CLI 可能需要的控制字符
+    return str.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 
 function buildCommand(subcommand, params = {}, flags = [], vault = null) {
-    const parts = [OBSIDIAN_CLI];
-    if (vault) {
-        parts.push(`vault="${escapeValue(vault)}"`);
+    if (NEEDS_SHELL) {
+        // 降级模式：返回命令字符串（原有逻辑，供 execSync 使用）
+        const parts = [OBSIDIAN_CLI];
+        if (vault) {
+            parts.push(`vault="${escapeValue(vault)}"`);
+        }
+        parts.push(subcommand);
+        for (const [key, value] of Object.entries(params)) {
+            if (value !== undefined && value !== null && value !== '') {
+                const preserveBackslash = key === 'content';
+                parts.push(`${key}="${escapeValue(value, { preserveBackslash })}"`);
+            }
+        }
+        for (const flag of flags) {
+            parts.push(flag);
+        }
+        return parts.join(' ');
     }
-    parts.push(subcommand);
+
+    // 安全模式：返回参数数组（供 execFileSync 使用，绕过 Shell）
+    const args = [];
+    if (vault) {
+        args.push(`vault=${escapeValue(vault)}`);
+    }
+    args.push(subcommand);
     for (const [key, value] of Object.entries(params)) {
         if (value !== undefined && value !== null && value !== '') {
-            const preserveBackslash = key === 'content';
-            parts.push(`${key}="${escapeValue(value, { preserveBackslash })}"`);
+            args.push(`${key}=${escapeValue(value)}`);
         }
     }
     for (const flag of flags) {
-        parts.push(flag);
+        args.push(flag);
     }
-    return parts.join(' ');
+    return args;
 }
 
-function execCLI(cmdStr, timeoutMs = 25000) {
+function execCLI(cmdOrArgs, timeoutMs = 25000) {
+    const execOpts = {
+        encoding: 'utf-8',
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024
+    };
     try {
-        const stdout = execSync(cmdStr, {
-            encoding: 'utf-8',
-            timeout: timeoutMs,
-            windowsHide: true,
-            maxBuffer: 10 * 1024 * 1024
-        });
+        const stdout = NEEDS_SHELL
+            ? execSync(cmdOrArgs, execOpts)                    // 降级：字符串 → Shell
+            : execFileSync(OBSIDIAN_CLI, cmdOrArgs, execOpts); // 安全：数组 → 直传进程
         return { success: true, output: stdout.trim() };
     } catch (err) {
         const stderr = err.stderr ? err.stderr.toString().trim() : '';
