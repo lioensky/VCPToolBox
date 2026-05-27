@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import dns from 'dns/promises';
 import fs from 'fs/promises';
+import http from 'http';
+import https from 'https';
 import net from 'net';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -165,7 +167,7 @@ function isBlockedLocalHostname(hostname) {
 
 async function assertImageInputHostnameIsSafe(parsedUrl) {
     if (isAllowedVcpImageServerUrl(parsedUrl)) {
-        return;
+        return null;
     }
 
     const hostname = normalizeHostnameForIpCheck(parsedUrl.hostname);
@@ -177,7 +179,7 @@ async function assertImageInputHostnameIsSafe(parsedUrl) {
         throw new Error("Plugin Error: 不允许指向本机、链路本地或私有网段地址的图片输入。");
     }
 
-    if (net.isIP(hostname)) return;
+    if (net.isIP(hostname)) return null;
 
     let records;
     try {
@@ -194,6 +196,8 @@ async function assertImageInputHostnameIsSafe(parsedUrl) {
     if (blockedRecord) {
         throw new Error("Plugin Error: 不允许解析到本机、链路本地或私有网段地址的图片输入。");
     }
+
+    return records[0];
 }
 
 function shouldBypassProxy(url) {
@@ -205,11 +209,36 @@ function shouldBypassProxy(url) {
     }
 }
 
-async function fetchWithProxy(url, options = {}) {
-    if (proxyAgent && !shouldBypassProxy(url)) {
-        return fetch(url, { ...options, agent: proxyAgent });
+function createPinnedLookup(lookupAddress) {
+    if (!lookupAddress?.address || !lookupAddress?.family) {
+        return undefined;
     }
-    return fetch(url, options);
+
+    return (_hostname, _options, callback) => {
+        callback(null, lookupAddress.address, lookupAddress.family);
+    };
+}
+
+function getFetchAgent(parsedUrl, lookupAddress = null) {
+    const pinnedLookup = createPinnedLookup(lookupAddress);
+    if (pinnedLookup) {
+        const agentOptions = { lookup: pinnedLookup };
+        return parsedUrl.protocol === 'https:'
+            ? new https.Agent(agentOptions)
+            : new http.Agent(agentOptions);
+    }
+
+    if (proxyAgent && !shouldBypassProxy(parsedUrl.href)) {
+        return proxyAgent;
+    }
+
+    return undefined;
+}
+
+async function fetchWithProxy(url, options = {}, lookupAddress = null) {
+    const parsedUrl = new URL(url);
+    const agent = getFetchAgent(parsedUrl, lookupAddress);
+    return fetch(url, agent ? { ...options, agent } : options);
 }
 
 // --- Helper Functions ---
@@ -348,11 +377,11 @@ async function fetchRemoteImageInput(rawUrl, redirectCount = 0) {
     }
 
     const parsedUrl = resolveImageInputUrl(rawUrl);
-    await assertImageInputHostnameIsSafe(parsedUrl);
+    const lookupAddress = await assertImageInputHostnameIsSafe(parsedUrl);
     const response = await fetchWithProxy(parsedUrl.href, {
         redirect: 'manual',
         signal: AbortSignal.timeout(60000),
-    });
+    }, lookupAddress);
 
     if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
         const redirectUrl = resolveImageInputUrl(response.headers.get('location'), parsedUrl.href);

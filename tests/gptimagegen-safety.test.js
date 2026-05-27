@@ -170,6 +170,8 @@ test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () =>
   const source = fs.readFileSync(zImagePluginScript, 'utf8');
 
   assert.match(source, /import dns from 'dns\/promises';/);
+  assert.match(source, /import http from 'http';/);
+  assert.match(source, /import https from 'https';/);
   assert.match(source, /import net from 'net';/);
   assert.match(source, /ZIMAGE_INPUT_IMAGE_ROOT/);
   assert.match(source, /isPathInside\(resolved, ZIMAGE_INPUT_IMAGE_ROOT\)/);
@@ -177,6 +179,12 @@ test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () =>
   assert.match(source, /isAllowedVcpImageServerUrl/);
   assert.match(source, /assertImageInputHostnameIsSafe/);
   assert.match(source, /dns\.lookup\(hostname, \{ all: true, verbatim: true \}\)/);
+  assert.match(source, /return records\[0\];/);
+  assert.match(source, /function createPinnedLookup\(lookupAddress\)/);
+  assert.match(source, /callback\(null, lookupAddress\.address, lookupAddress\.family\)/);
+  assert.match(source, /new http\.Agent\(agentOptions\)/);
+  assert.match(source, /new https\.Agent\(agentOptions\)/);
+  assert.match(source, /fetchWithProxy\(parsedUrl\.href, \{[\s\S]*\}, lookupAddress\)/);
   assert.match(source, /readResponseBodyWithLimit/);
   assert.match(source, /expandIpv6Address/);
   assert.match(source, /extractIPv4FromIPv6/);
