@@ -135,9 +135,12 @@ test('GPTImageGen exits before any API call when API key is absent', () => {
 test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () => {
   const source = fs.readFileSync(zImagePluginScript, 'utf8');
 
+  assert.match(source, /import net from 'net';/);
   assert.match(source, /ZIMAGE_INPUT_IMAGE_ROOT/);
   assert.match(source, /isPathInside\(resolved, ZIMAGE_INPUT_IMAGE_ROOT\)/);
   assert.match(source, /isBlockedLocalHostname/);
+  assert.match(source, /expandIpv6Address/);
+  assert.match(source, /extractIPv4FromIPv6/);
   assert.match(source, /resolveImageInputUrl\(response\.headers\.get\('location'\), parsedUrl\.href\)/);
   assert.match(source, /normalizeImageMimeType/);
   assert.match(source, /MAX_INPUT_IMAGE_SIZE/);
@@ -160,6 +163,33 @@ test('ZImageTurboGen rejects private URL edit inputs before network calls', () =
   assert.equal(parsed.status, 'error');
   assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
   assert.equal(child.stderr, '');
+});
+
+test('ZImageTurboGen rejects IPv6 private and IPv4-mapped edit URLs before network calls', () => {
+  const blockedUrls = [
+    'http://[fd00::1]/latest/meta-data',
+    'http://[fe80::1]/latest/meta-data',
+    'http://[::ffff:127.0.0.1]/latest/meta-data'
+  ];
+
+  for (const image of blockedUrls) {
+    const child = spawnSync(process.execPath, [zImagePluginScript], {
+      cwd: repoRoot,
+      input: JSON.stringify({
+        command: 'EditImage',
+        prompt: 'offline safety check',
+        image
+      }),
+      encoding: 'utf8',
+      env: zImageTestEnv()
+    });
+
+    assert.notEqual(child.status, 0, image);
+    const parsed = JSON.parse(child.stdout);
+    assert.equal(parsed.status, 'error', image);
+    assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/, image);
+    assert.equal(child.stderr, '', image);
+  }
 });
 
 test('ZImageTurboGen rejects file URL edit inputs outside project image directory', () => {

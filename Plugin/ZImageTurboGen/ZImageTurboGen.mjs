@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'fs/promises';
+import net from 'net';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import fetch, { FormData } from 'node-fetch';
@@ -43,17 +44,122 @@ function isPathInside(childPath, parentPath) {
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function isBlockedIPv4Address(ip) {
+    const parts = ip.split('.').map(part => Number(part));
+    if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return false;
+    }
+
+    const [a, b] = parts;
+    return a === 0
+        || a === 10
+        || a === 127
+        || (a === 169 && b === 254)
+        || (a === 172 && b >= 16 && b <= 31)
+        || (a === 192 && b === 168);
+}
+
+function normalizeHostnameForIpCheck(hostname) {
+    return String(hostname || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^\[|\]$/g, '')
+        .replace(/%25.+$/g, '')
+        .replace(/%.+$/g, '');
+}
+
+function expandIpv6Address(ip) {
+    let address = normalizeHostnameForIpCheck(ip);
+    if (!address || !address.includes(':')) return null;
+
+    const dottedIpv4Match = address.match(/(.+:)(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (dottedIpv4Match) {
+        const parts = dottedIpv4Match[2].split('.').map(part => Number(part));
+        if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+            return null;
+        }
+        const high = ((parts[0] << 8) | parts[1]).toString(16);
+        const low = ((parts[2] << 8) | parts[3]).toString(16);
+        address = `${dottedIpv4Match[1]}${high}:${low}`;
+    }
+
+    const sections = address.split('::');
+    if (sections.length > 2) return null;
+
+    const left = sections[0] ? sections[0].split(':').filter(Boolean) : [];
+    const right = sections.length === 2 && sections[1] ? sections[1].split(':').filter(Boolean) : [];
+    const missing = 8 - left.length - right.length;
+    if (missing < 0 || (sections.length === 1 && missing !== 0)) return null;
+
+    const hextets = [
+        ...left,
+        ...Array(sections.length === 2 ? missing : 0).fill('0'),
+        ...right
+    ];
+    if (hextets.length !== 8) return null;
+
+    const parsed = hextets.map(part => {
+        if (!/^[0-9a-f]{1,4}$/i.test(part)) return NaN;
+        return parseInt(part, 16);
+    });
+
+    return parsed.every(part => Number.isInteger(part) && part >= 0 && part <= 0xffff) ? parsed : null;
+}
+
+function extractIPv4FromIPv6(ip) {
+    const hextets = expandIpv6Address(ip);
+    if (!hextets) return null;
+
+    const prefixIsZero = hextets.slice(0, 5).every(part => part === 0);
+    const isMapped = prefixIsZero && hextets[5] === 0xffff;
+    if (!isMapped) return null;
+
+    const high = hextets[6];
+    const low = hextets[7];
+    return [
+        (high >> 8) & 0xff,
+        high & 0xff,
+        (low >> 8) & 0xff,
+        low & 0xff
+    ].join('.');
+}
+
+function isBlockedIPv6Address(ip) {
+    const hextets = expandIpv6Address(ip);
+    if (!hextets) return false;
+
+    const mappedIPv4 = extractIPv4FromIPv6(ip);
+    if (mappedIPv4) {
+        return isBlockedIPv4Address(mappedIPv4);
+    }
+
+    const first = hextets[0];
+    const isUnspecified = hextets.every(part => part === 0);
+    return isUnspecified
+        || (hextets.slice(0, 7).every(part => part === 0) && hextets[7] === 1)
+        || (first & 0xfe00) === 0xfc00
+        || (first & 0xffc0) === 0xfe80;
+}
+
 function isBlockedLocalHostname(hostname) {
-    const normalized = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
-    return normalized === 'localhost'
-        || normalized === '::1'
+    const normalized = normalizeHostnameForIpCheck(hostname);
+    if (!normalized) return false;
+
+    if (normalized === 'localhost'
         || normalized.endsWith('.localhost')
-        || normalized.endsWith('.local')
-        || normalized.startsWith('127.')
-        || normalized.startsWith('10.')
-        || normalized.startsWith('192.168.')
-        || normalized.startsWith('169.254.')
-        || /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized);
+        || normalized.endsWith('.local')) {
+        return true;
+    }
+
+    const ipVersion = net.isIP(normalized);
+    if (ipVersion === 4) {
+        return isBlockedIPv4Address(normalized);
+    }
+    if (ipVersion === 6) {
+        return isBlockedIPv6Address(normalized);
+    }
+
+    return false;
 }
 
 function shouldBypassProxy(url) {
