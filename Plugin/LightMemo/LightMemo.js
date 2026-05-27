@@ -796,8 +796,8 @@ class LightMemoPlugin {
                     }
                 }
 
-                // 3. 署名过滤 (如果不是搜索全部且没有指定文件夹)
-                if (!searchAll && targetFolders.length === 0 && maid) {
+                // 3. 署名过滤：folder scope limits notebooks; maid still limits signed chunks.
+                if (!searchAll && maid) {
                     if (!this._checkSignature(text, maid)) continue;
                 }
 

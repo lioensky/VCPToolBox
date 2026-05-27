@@ -141,3 +141,61 @@ test('RAGDiaryPlugin cache key should include shotgun tuning snapshot', () => {
     assert.equal(defaultShotgunKey, baselineKey);
     assert.notEqual(tunedShotgunKey, baselineKey);
 });
+
+test('RAGDiaryPlugin fuzzy embedding lookup reuses near-identical cached text without API', () => {
+    const originalIndex = ragDiaryPlugin.embeddingTextIndex;
+    const originalMaxSize = ragDiaryPlugin.embeddingTextIndexMaxSize;
+    const originalEmbeddingCache = ragDiaryPlugin.cacheManager.caches.get('embedding');
+
+    try {
+        ragDiaryPlugin.embeddingTextIndex = new Map();
+        ragDiaryPlugin.embeddingTextIndexMaxSize = 10;
+        ragDiaryPlugin.cacheManager.createCache('embedding', { maxSize: 10, ttl: 60000 });
+
+        const baseText = [
+            '稳定线治理需要把本地 intake 结果先固化，再逐项处理 review feedback。',
+            '这里的 fuzzy cache 只允许复用高相似度文本的现有向量，不能触发新的 Embedding API。',
+            '命中结果必须来自缓存，并且通过 ContextBridge 暴露给折叠模块读取。'
+        ].join('');
+        const nearText = `${baseText}。`;
+        const vector = [0.1, 0.2, 0.3];
+        const cacheKey = ragDiaryPlugin.cacheManager.generateKey({ text: baseText.trim() });
+
+        ragDiaryPlugin.cacheManager.set('embedding', cacheKey, vector);
+        ragDiaryPlugin._rememberEmbeddingText(cacheKey, baseText.trim());
+
+        const hit = ragDiaryPlugin._findFuzzyEmbeddingFromCache(nearText, {
+            threshold: 0.9,
+            minLength: 20,
+            maxScan: 10,
+            maxLengthDiffRatio: 0.1,
+            maxLengthDiffAbs: 10
+        });
+
+        assert.ok(hit);
+        assert.equal(hit.cacheKey, cacheKey);
+        assert.equal(hit.vector, vector);
+        assert.ok(hit.similarity >= 0.9);
+
+        const bridge = ragDiaryPlugin.getContextBridge();
+        const bridgeHit = bridge.getFuzzyEmbeddingFromCache(nearText, {
+            threshold: 0.9,
+            minLength: 20,
+            maxScan: 10,
+            maxLengthDiffRatio: 0.1,
+            maxLengthDiffAbs: 10
+        });
+
+        assert.ok(bridgeHit);
+        assert.equal(bridgeHit.cacheKey, cacheKey);
+        assert.equal(bridgeHit.vector, vector);
+    } finally {
+        ragDiaryPlugin.embeddingTextIndex = originalIndex;
+        ragDiaryPlugin.embeddingTextIndexMaxSize = originalMaxSize;
+        if (originalEmbeddingCache) {
+            ragDiaryPlugin.cacheManager.caches.set('embedding', originalEmbeddingCache);
+        } else {
+            ragDiaryPlugin.cacheManager.caches.delete('embedding');
+        }
+    }
+});

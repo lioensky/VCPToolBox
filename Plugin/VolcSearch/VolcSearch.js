@@ -240,6 +240,9 @@ async function main() {
                         const title = item.Title || '无标题';
                         const url = item.Url || '';
                         const content = item.Content || '';
+                        const summary = item.Summary || '';
+                        const snippet = item.Snippet || '';
+                        const displayText = content || summary || snippet;
                         const publishTime = item.PublishTime || '';
                         const siteName = item.SiteName || '';
                         const authInfo = item.AuthInfoDes || '';
@@ -260,9 +263,9 @@ async function main() {
                             md += '\n';
                         }
 
-                        // Show full content
-                        if (content) {
-                            md += `   > ${content.replace(/\n/g, '\n   > ')}\n\n`;
+                        // Prefer full content, but keep API-provided summary/snippet when Content is absent.
+                        if (displayText) {
+                            md += `   > ${displayText.replace(/\n/g, '\n   > ')}\n\n`;
                         }
 
 
@@ -275,7 +278,7 @@ async function main() {
                 const cleanData = JSON.parse(JSON.stringify(apiResult));
                 if (cleanData.WebResults) {
                     cleanData.WebResults = cleanData.WebResults.map(item => {
-                        const { LogoUrl, Summary, ...rest } = item;
+                        const { LogoUrl, ...rest } = item;
                         return rest;
                     });
                 }

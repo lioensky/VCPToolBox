@@ -1,12 +1,29 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 const repoRoot = path.resolve(__dirname, '..');
 const pluginDir = path.join(repoRoot, 'Plugin', 'GPTImageGen');
 const pluginScript = path.join(pluginDir, 'GPTImageGen.js');
+const zImagePluginDir = path.join(repoRoot, 'Plugin', 'ZImageTurboGen');
+const zImagePluginScript = path.join(zImagePluginDir, 'ZImageTurboGen.mjs');
+
+function zImageTestEnv() {
+  return {
+    ...process.env,
+    ZIMAGE_API_KEY: 'test-only-key',
+    PROJECT_BASE_PATH: repoRoot,
+    SERVER_PORT: '5890',
+    IMAGESERVER_IMAGE_KEY: 'test-image-key',
+    VarHttpUrl: 'http://127.0.0.1',
+    VarHttpsUrl: 'https://example.invalid',
+    DebugMode: 'false'
+  };
+}
 
 test('GPTImageGen is present but disabled by default on prod stable', () => {
   assert.equal(fs.existsSync(path.join(pluginDir, 'plugin-manifest.json.block')), true);
@@ -113,4 +130,86 @@ test('GPTImageGen exits before any API call when API key is absent', () => {
   assert.equal(parsed.status, 'error');
   assert.match(parsed.error, /OPENAI_API_KEY/);
   assert.equal(child.stderr, '');
+});
+
+test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () => {
+  const source = fs.readFileSync(zImagePluginScript, 'utf8');
+
+  assert.match(source, /ZIMAGE_INPUT_IMAGE_ROOT/);
+  assert.match(source, /isPathInside\(resolved, ZIMAGE_INPUT_IMAGE_ROOT\)/);
+  assert.match(source, /isBlockedLocalHostname/);
+  assert.match(source, /resolveImageInputUrl\(response\.headers\.get\('location'\), parsedUrl\.href\)/);
+  assert.match(source, /normalizeImageMimeType/);
+  assert.match(source, /MAX_INPUT_IMAGE_SIZE/);
+});
+
+test('ZImageTurboGen rejects private URL edit inputs before network calls', () => {
+  const child = spawnSync(process.execPath, [zImagePluginScript], {
+    cwd: repoRoot,
+    input: JSON.stringify({
+      command: 'EditImage',
+      prompt: 'offline safety check',
+      image: 'http://127.0.0.1/latest/meta-data'
+    }),
+    encoding: 'utf8',
+    env: zImageTestEnv()
+  });
+
+  assert.notEqual(child.status, 0);
+  const parsed = JSON.parse(child.stdout);
+  assert.equal(parsed.status, 'error');
+  assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.equal(child.stderr, '');
+});
+
+test('ZImageTurboGen rejects file URL edit inputs outside project image directory', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zimage-safety-'));
+  const outsideImage = path.join(tempDir, 'outside.png');
+  fs.writeFileSync(outsideImage, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  try {
+    const child = spawnSync(process.execPath, [zImagePluginScript], {
+      cwd: repoRoot,
+      input: JSON.stringify({
+        command: 'EditImage',
+        prompt: 'offline safety check',
+        image: pathToFileURL(outsideImage).href
+      }),
+      encoding: 'utf8',
+      env: zImageTestEnv()
+    });
+
+    assert.notEqual(child.status, 0);
+    const parsed = JSON.parse(child.stdout);
+    assert.equal(parsed.status, 'error');
+    assert.match(parsed.error, /本地图片路径仅允许位于项目 image\/ 目录下/);
+    assert.equal(child.stderr, '');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('PluginSourceViewer manifest example uses the registered tool name', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Plugin', 'PluginSourceViewer', 'plugin-manifest.json'), 'utf8'));
+  const description = manifest?.capabilities?.invocationCommands?.[0]?.description || '';
+
+  assert.equal(manifest.name, 'ServerPluginSourceViewer');
+  assert.match(description, /tool_name:「始」ServerPluginSourceViewer「末」/);
+  assert.doesNotMatch(description, /tool_name:「始」PluginSourceViewer「末」/);
+});
+
+test('VolcSearch keeps summary or snippet text when full content is absent', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'VolcSearch', 'VolcSearch.js'), 'utf8');
+
+  assert.match(source, /const summary = item\.Summary \|\| '';/);
+  assert.match(source, /const snippet = item\.Snippet \|\| '';/);
+  assert.match(source, /const displayText = content \|\| summary \|\| snippet;/);
+  assert.match(source, /const \{ LogoUrl, \.\.\.rest \} = item;/);
+});
+
+test('LightMemo scoped maid searches still filter by signature', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'LightMemo', 'LightMemo.js'), 'utf8');
+
+  assert.match(source, /if \(!searchAll && maid\) \{/);
+  assert.doesNotMatch(source, /targetFolders\.length === 0 && maid/);
 });

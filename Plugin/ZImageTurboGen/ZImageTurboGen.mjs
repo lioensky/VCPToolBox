@@ -4,6 +4,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import fetch, { FormData } from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { fileURLToPath } from 'url';
 
 // --- Configuration ---
 const API_KEY = process.env.ZIMAGE_API_KEY || "apikey(填自己的密钥)";
@@ -18,19 +19,47 @@ const HTTP_PROXY = process.env.HTTP_PROXY || process.env.http_proxy || process.e
 const API_ENDPOINT = 'https://ai.gitee.com/v1/images/generations';
 const EDIT_API_ENDPOINT = 'https://ai.gitee.com/v1/async/images/edits';
 const TASK_API_ENDPOINT = 'https://ai.gitee.com/v1/task';
+const MAX_INPUT_IMAGE_SIZE = 10 * 1024 * 1024;
+const ZIMAGE_INPUT_IMAGE_ROOT = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'image');
+const IMAGE_EXT_MIME = new Map([
+    ['.png', 'image/png'],
+    ['.jpg', 'image/jpeg'],
+    ['.jpeg', 'image/jpeg'],
+    ['.webp', 'image/webp'],
+    ['.gif', 'image/gif']
+]);
+const IMAGE_MIME_EXT = new Map([
+    ['image/png', 'png'],
+    ['image/jpeg', 'jpg'],
+    ['image/webp', 'webp'],
+    ['image/gif', 'gif']
+]);
 
 // --- Proxy Setup ---
 const proxyAgent = HTTP_PROXY ? new HttpsProxyAgent(HTTP_PROXY) : null;
 
+function isPathInside(childPath, parentPath) {
+    const relative = path.relative(parentPath, childPath);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isBlockedLocalHostname(hostname) {
+    const normalized = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+    return normalized === 'localhost'
+        || normalized === '::1'
+        || normalized.endsWith('.localhost')
+        || normalized.endsWith('.local')
+        || normalized.startsWith('127.')
+        || normalized.startsWith('10.')
+        || normalized.startsWith('192.168.')
+        || normalized.startsWith('169.254.')
+        || /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized);
+}
+
 function shouldBypassProxy(url) {
     try {
         const { hostname } = new URL(url);
-        return hostname === 'localhost'
-            || hostname === '127.0.0.1'
-            || hostname === '::1'
-            || hostname.startsWith('10.')
-            || hostname.startsWith('192.168.')
-            || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+        return isBlockedLocalHostname(hostname);
     } catch {
         return false;
     }
@@ -44,6 +73,81 @@ async function fetchWithProxy(url, options = {}) {
 }
 
 // --- Helper Functions ---
+
+function resolveImageInputUrl(rawUrl, baseUrl = undefined) {
+    const parsedUrl = new URL(rawUrl, baseUrl);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        throw new Error("Plugin Error: Only HTTP(S) image input URLs are supported.");
+    }
+    if (isBlockedLocalHostname(parsedUrl.hostname)) {
+        throw new Error("Plugin Error: 不允许指向本机、链路本地或私有网段地址的图片输入。");
+    }
+    return parsedUrl;
+}
+
+function normalizeImageMimeType(mimeType, source = 'image input') {
+    const normalized = String(mimeType || '').split(';')[0].trim().toLowerCase();
+    if (!IMAGE_MIME_EXT.has(normalized)) {
+        throw new Error(`Plugin Error: ${source} must be a PNG, JPEG, WEBP, or GIF image.`);
+    }
+    return normalized;
+}
+
+function bufferToImageDataUri(buffer, mimeType, source = 'image input') {
+    if (!Buffer.isBuffer(buffer)) {
+        throw new Error(`Plugin Error: Invalid ${source} buffer.`);
+    }
+    if (buffer.length > MAX_INPUT_IMAGE_SIZE) {
+        throw new Error(`Plugin Error: ${source} exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+    }
+    const normalizedMime = normalizeImageMimeType(mimeType, source);
+    return `data:${normalizedMime};base64,${buffer.toString('base64')}`;
+}
+
+function normalizeDataUriInput(input) {
+    const match = input.match(/^data:(image\/[^;]+);base64,([\s\S]+)$/);
+    if (!match) {
+        throw new Error("Plugin Error: Invalid image data URI.");
+    }
+    const mimeType = normalizeImageMimeType(match[1], 'image data URI');
+    const base64 = match[2].replace(/\s/g, '');
+    const estimatedBytes = Math.floor((base64.length * 3) / 4);
+    if (estimatedBytes > MAX_INPUT_IMAGE_SIZE) {
+        throw new Error(`Plugin Error: image data URI exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+    }
+    return `data:${mimeType};base64,${base64}`;
+}
+
+async function fetchRemoteImageInput(rawUrl, redirectCount = 0) {
+    if (redirectCount > 5) {
+        throw new Error("Plugin Error: 图片下载重定向次数过多。");
+    }
+
+    const parsedUrl = resolveImageInputUrl(rawUrl);
+    const response = await fetchWithProxy(parsedUrl.href, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(60000),
+    });
+
+    if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        const redirectUrl = resolveImageInputUrl(response.headers.get('location'), parsedUrl.href);
+        return fetchRemoteImageInput(redirectUrl.href, redirectCount + 1);
+    }
+
+    if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`Plugin Error: Failed to download input image from URL: ${parsedUrl.href}. HTTP ${response.status}. ${errorBody}`);
+    }
+
+    const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+    if (contentLength > MAX_INPUT_IMAGE_SIZE) {
+        throw new Error(`Plugin Error: remote image input exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+    }
+
+    const mimeType = normalizeImageMimeType(response.headers.get('content-type') || '', 'remote image input');
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return bufferToImageDataUri(buffer, mimeType, 'remote image input');
+}
 
 function parseImageArrayInput(value) {
     if (Array.isArray(value)) return value.filter(Boolean);
@@ -327,10 +431,12 @@ function dataUriToBlob(dataUri, index) {
         throw new Error("Plugin Error: Invalid image data URI.");
     }
 
-    const mimeType = match[1];
+    const mimeType = normalizeImageMimeType(match[1], 'image data URI');
     const buffer = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
-    const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
-    const extension = extMap[mimeType] || 'png';
+    if (buffer.length > MAX_INPUT_IMAGE_SIZE) {
+        throw new Error(`Plugin Error: image data URI exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+    }
+    const extension = IMAGE_MIME_EXT.get(mimeType) || 'png';
     return {
         blob: new Blob([buffer], { type: mimeType }),
         filename: `input_${index + 1}.${extension}`
@@ -344,33 +450,34 @@ async function imageInputToDataUri(imageInput) {
 
     const input = imageInput.trim();
     if (input.startsWith('data:image/')) {
-        return input;
+        return normalizeDataUriInput(input);
     }
 
     if (input.startsWith('http://') || input.startsWith('https://')) {
-        const response = await fetchWithProxy(input, {
-            signal: AbortSignal.timeout(60000),
-        });
-        if (!response.ok) {
-            const errorBody = await response.text().catch(() => '');
-            throw new Error(`Plugin Error: Failed to download input image from URL: ${input}. HTTP ${response.status}. ${errorBody}`);
-        }
-        const arrayBuf = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuf);
-        const mimeType = response.headers.get('content-type') || 'image/png';
-        return `data:${mimeType};base64,${buffer.toString('base64')}`;
+        return fetchRemoteImageInput(input);
     }
 
     if (input.startsWith('file://')) {
         try {
-            const { fileURLToPath } = await import('url');
             const filePath = fileURLToPath(input);
-            const buffer = await fs.readFile(filePath);
-            const ext = path.extname(filePath).toLowerCase();
-            const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
-                ext === '.webp' ? 'image/webp' :
-                    ext === '.gif' ? 'image/gif' : 'image/png';
-            return `data:${mimeType};base64,${buffer.toString('base64')}`;
+            const resolved = path.resolve(filePath);
+            if (!isPathInside(resolved, ZIMAGE_INPUT_IMAGE_ROOT)) {
+                throw new Error("Plugin Error: 本地图片路径仅允许位于项目 image/ 目录下。");
+            }
+            const stat = await fs.stat(resolved);
+            if (!stat.isFile()) {
+                throw new Error("Plugin Error: Local image input must be a file.");
+            }
+            if (stat.size > MAX_INPUT_IMAGE_SIZE) {
+                throw new Error(`Plugin Error: local image input exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+            }
+            const ext = path.extname(resolved).toLowerCase();
+            const mimeType = IMAGE_EXT_MIME.get(ext);
+            if (!mimeType) {
+                throw new Error("Plugin Error: Local image input must be a PNG, JPEG, WEBP, or GIF file.");
+            }
+            const buffer = await fs.readFile(resolved);
+            return bufferToImageDataUri(buffer, mimeType, 'local image input');
         } catch (e) {
             if (e.code === 'ENOENT' || e.code === 'ERR_INVALID_FILE_URL_PATH') {
                 const structuredError = new Error(`File not found locally, requesting remote fetch for: ${input}`);
@@ -384,7 +491,12 @@ async function imageInputToDataUri(imageInput) {
 
     // Bare base64 compatibility.
     if (/^[A-Za-z0-9+/=\s]+$/.test(input) && input.length > 100) {
-        return `data:image/png;base64,${input.replace(/\s/g, '')}`;
+        const base64 = input.replace(/\s/g, '');
+        const estimatedBytes = Math.floor((base64.length * 3) / 4);
+        if (estimatedBytes > MAX_INPUT_IMAGE_SIZE) {
+            throw new Error(`Plugin Error: raw base64 image input exceeds ${MAX_INPUT_IMAGE_SIZE} bytes.`);
+        }
+        return `data:image/png;base64,${base64}`;
     }
 
     throw new Error("Plugin Error: Unsupported image input. Please use image data URI, HTTP(S) URL, file:// URL, or raw base64.");
