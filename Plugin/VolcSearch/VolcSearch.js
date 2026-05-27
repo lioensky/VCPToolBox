@@ -7,6 +7,15 @@ const API_PATH = '/search_api/web_search';
 const STAGGER_INTERVAL_MS = 250; // 并发搜索时每个子查询的启动间隔(ms)，用于控制 QPS
 const MAX_CONCURRENCY = 5; // 最大并发请求数（VolcEngine 默认 QPS 5，留有余量避免限流）
 
+function parseBoolean(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    return defaultValue;
+}
+
 /**
  * 简单信号量（Semaphore），用于控制最大并发数
  * acquire() 获取一个许可，release() 释放一个许可
@@ -55,6 +64,7 @@ async function main() {
             const query = data.query;
             let count = data.count || 10;
             const contentFormat = data.content_format || 'text';
+            const snippetsOnly = parseBoolean(data.snippets_only ?? data.snippetsOnly, true);
 
             const timeRange = data.time_range;
             const sites = data.sites;
@@ -122,6 +132,10 @@ async function main() {
                     filter.BlockHosts = blockHosts;
                     hasFilter = true;
 
+                }
+                if (!snippetsOnly) {
+                    filter.NeedContent = true;
+                    hasFilter = true;
                 }
                 if (authInfoLevel !== undefined && authInfoLevel !== null) {
                     const level = parseInt(authInfoLevel, 10);

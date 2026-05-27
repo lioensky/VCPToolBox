@@ -164,6 +164,10 @@ function isBlockedLocalHostname(hostname) {
 }
 
 async function assertImageInputHostnameIsSafe(parsedUrl) {
+    if (isAllowedVcpImageServerUrl(parsedUrl)) {
+        return;
+    }
+
     const hostname = normalizeHostnameForIpCheck(parsedUrl.hostname);
     if (!hostname) {
         throw new Error("Plugin Error: Image input URL must include a hostname.");
@@ -215,10 +219,61 @@ function resolveImageInputUrl(rawUrl, baseUrl = undefined) {
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
         throw new Error("Plugin Error: Only HTTP(S) image input URLs are supported.");
     }
+    if (isAllowedVcpImageServerUrl(parsedUrl)) {
+        return parsedUrl;
+    }
     if (isBlockedLocalHostname(parsedUrl.hostname)) {
         throw new Error("Plugin Error: 不允许指向本机、链路本地或私有网段地址的图片输入。");
     }
     return parsedUrl;
+}
+
+function safeDecodePathname(pathname) {
+    try {
+        return decodeURIComponent(pathname);
+    } catch {
+        return pathname;
+    }
+}
+
+function getAllowedVcpImageServerOrigins() {
+    const origins = new Set();
+
+    if (VAR_HTTP_URL && SERVER_PORT) {
+        try {
+            const localUrl = new URL(VAR_HTTP_URL);
+            if (localUrl.protocol === 'http:' || localUrl.protocol === 'https:') {
+                localUrl.port = SERVER_PORT;
+                origins.add(localUrl.origin);
+            }
+        } catch {
+            // Ignore malformed optional URL configuration.
+        }
+    }
+
+    if (VAR_HTTPS_URL) {
+        try {
+            const publicUrl = new URL(VAR_HTTPS_URL);
+            if (publicUrl.protocol === 'http:' || publicUrl.protocol === 'https:') {
+                origins.add(publicUrl.origin);
+            }
+        } catch {
+            // Ignore malformed optional URL configuration.
+        }
+    }
+
+    return origins;
+}
+
+function isAllowedVcpImageServerUrl(parsedUrl) {
+    if (!parsedUrl || !IMAGESERVER_IMAGE_KEY) return false;
+
+    const decodedPath = safeDecodePathname(parsedUrl.pathname);
+    if (!decodedPath.startsWith(`/pw=${IMAGESERVER_IMAGE_KEY}/images/`)) {
+        return false;
+    }
+
+    return getAllowedVcpImageServerOrigins().has(parsedUrl.origin);
 }
 
 function normalizeImageMimeType(mimeType, source = 'image input') {

@@ -1,9 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -29,6 +30,29 @@ function zImageTestEnv(overrides = {}) {
     https_proxy: '',
     ...overrides
   };
+}
+
+function runZImagePlugin(input, envOverrides = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [zImagePluginScript], {
+      cwd: repoRoot,
+      env: zImageTestEnv(envOverrides),
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', status => resolve({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+function closeServer(server) {
+  return new Promise(resolve => server.close(resolve));
 }
 
 test('GPTImageGen is present but disabled by default on prod stable', () => {
@@ -146,6 +170,7 @@ test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () =>
   assert.match(source, /ZIMAGE_INPUT_IMAGE_ROOT/);
   assert.match(source, /isPathInside\(resolved, ZIMAGE_INPUT_IMAGE_ROOT\)/);
   assert.match(source, /isBlockedLocalHostname/);
+  assert.match(source, /isAllowedVcpImageServerUrl/);
   assert.match(source, /assertImageInputHostnameIsSafe/);
   assert.match(source, /dns\.lookup\(hostname, \{ all: true, verbatim: true \}\)/);
   assert.match(source, /readResponseBodyWithLimit/);
@@ -169,6 +194,43 @@ test('ZImageTurboGen streams remote edit image downloads with a hard byte limit'
   assert.match(source, /body\.destroy\(\)/);
   assert.match(fetchInputSection, /readResponseBodyWithLimit\(response, MAX_INPUT_IMAGE_SIZE, 'remote image input'\)/);
   assert.doesNotMatch(fetchInputSection, /arrayBuffer\(/);
+});
+
+test('ZImageTurboGen allows configured VCP image-server URLs before private-host blocking', async () => {
+  let requestedUrl = '';
+  const server = http.createServer((req, res) => {
+    requestedUrl = req.url || '';
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('not an image');
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  try {
+    const port = server.address().port;
+    const child = await runZImagePlugin({
+      command: 'EditImage',
+      prompt: 'offline safety check',
+      image: `http://127.0.0.1:${port}/pw=test-image-key/images/not-image.txt`
+    }, {
+      SERVER_PORT: String(port),
+      VarHttpUrl: 'http://127.0.0.1'
+    });
+
+    assert.notEqual(child.status, 0);
+    assert.equal(requestedUrl, '/pw=test-image-key/images/not-image.txt');
+    const parsed = JSON.parse(child.stdout);
+    assert.equal(parsed.status, 'error');
+    assert.match(parsed.error, /remote image input must be a PNG, JPEG, WEBP, or GIF image/);
+    assert.doesNotMatch(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+    assert.doesNotMatch(parsed.error, /不允许解析到本机、链路本地或私有网段地址/);
+    assert.equal(child.stderr, '');
+  } finally {
+    await closeServer(server);
+  }
 });
 
 test('ZImageTurboGen rejects private URL edit inputs before network calls', () => {
@@ -277,11 +339,15 @@ test('PluginSourceViewer manifest example uses the registered tool name', () => 
 
 test('VolcSearch keeps summary or snippet text when full content is absent', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'VolcSearch', 'VolcSearch.js'), 'utf8');
+  const manifest = fs.readFileSync(path.join(repoRoot, 'Plugin', 'VolcSearch', 'plugin-manifest.json'), 'utf8');
 
+  assert.match(source, /const snippetsOnly = parseBoolean\(data\.snippets_only \?\? data\.snippetsOnly, true\);/);
+  assert.match(source, /filter\.NeedContent = true;/);
   assert.match(source, /const summary = item\.Summary \|\| '';/);
   assert.match(source, /const snippet = item\.Snippet \|\| '';/);
   assert.match(source, /const displayText = content \|\| summary \|\| snippet;/);
   assert.match(source, /const \{ LogoUrl, \.\.\.rest \} = item;/);
+  assert.match(manifest, /snippets_only/);
 });
 
 test('LightMemo scoped maid searches still filter by signature', () => {
