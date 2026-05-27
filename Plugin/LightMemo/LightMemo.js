@@ -163,6 +163,10 @@ class LightMemoPlugin {
             }
         }
 
+        const parsedMaidScope = this._parseMaidScopedFolder(maid);
+        const scopedMaid = parsedMaidScope.maid;
+        const combinedFolder = this._mergeFolderScopes(folder, parsedMaidScope.folder);
+
         let isMusicSearch = false;
         let actualQuery = query || "";
 
@@ -203,15 +207,15 @@ class LightMemoPlugin {
         }
 
         if (!actualQuery && timeRange) {
-            actualQuery = maid || folder || "记录"; // 如果只有时间约束，给予默认查询词避免向量化报错
+            actualQuery = scopedMaid || combinedFolder || "记录"; // 如果只有时间约束，给予默认查询词避免向量化报错
         }
 
-        if (!isMusicSearch && (!query || (!maid && !folder))) {
+        if (!isMusicSearch && (!query || (!scopedMaid && !combinedFolder))) {
             throw new Error("参数 'query' 是必需的，且必须提供 'maid' 或 'folder'。");
         }
 
-        const effectiveFolder = isMusicSearch ? 'MusicDiary' : folder;
-        const effectiveMaid = isMusicSearch ? null : maid;
+        const effectiveFolder = isMusicSearch ? 'MusicDiary' : combinedFolder;
+        const effectiveMaid = isMusicSearch ? null : scopedMaid;
         const effectiveSearchAll = isMusicSearch ? false : search_all_knowledge_bases;
 
         // 从所有日记本中收集候选chunks
@@ -649,6 +653,55 @@ class LightMemoPlugin {
     }
 
     /**
+     * 解析 maid 中的作用域语法：[文件夹]署名
+     * 示例：[小吉的地缘政治]小吉 => folder: 小吉的地缘政治, maid: 小吉
+     * 文件夹部分支持用中文逗号、英文逗号或 | 分隔多个文件夹。
+     */
+    _parseMaidScopedFolder(maid) {
+        if (typeof maid !== 'string') {
+            return { maid, folder: null };
+        }
+
+        const trimmedMaid = maid.trim();
+        const scopedMatch = trimmedMaid.match(/^\[([^\]]+)\](.*)$/);
+        if (!scopedMatch) {
+            return { maid: trimmedMaid, folder: null };
+        }
+
+        const scopedFolder = scopedMatch[1].trim();
+        const scopedMaid = scopedMatch[2].trim();
+
+        return {
+            maid: scopedMaid || null,
+            folder: scopedFolder || null
+        };
+    }
+
+    /**
+     * 合并显式 folder 参数与 maid 作用域文件夹，兼容中文逗号、英文逗号和 | 分隔的多文件夹写法
+     */
+    _mergeFolderScopes(folder, scopedFolder) {
+        const folders = [];
+
+        const appendFolders = (value) => {
+            if (typeof value !== 'string') return;
+            value.split(/[,，|]/)
+                .map(f => f.trim())
+                .filter(Boolean)
+                .forEach(f => {
+                    if (!folders.includes(f)) {
+                        folders.push(f);
+                    }
+                });
+        };
+
+        appendFolders(folder);
+        appendFolders(scopedFolder);
+
+        return folders.length > 0 ? folders.join(',') : null;
+    }
+
+    /**
      * 改用jieba分词（保留词组）
      */
     _tokenize(text) {
@@ -684,7 +737,7 @@ class LightMemoPlugin {
         }
 
         const candidates = [];
-        const targetFolders = folder ? folder.split(/[,，]/).map(f => f.trim()).filter(Boolean) : [];
+        const targetFolders = folder ? folder.split(/[,，|]/).map(f => f.trim()).filter(Boolean) : [];
 
         try {
             // 🚀 优化：使用 SQL 过滤减少 JS 端的处理压力
@@ -743,8 +796,8 @@ class LightMemoPlugin {
                     }
                 }
 
-                // 3. 署名过滤 (如果不是搜索全部且没有指定文件夹)
-                if (!searchAll && targetFolders.length === 0 && maid) {
+                // 3. 署名过滤：folder scope limits notebooks; maid still limits signed chunks.
+                if (!searchAll && maid) {
                     if (!this._checkSignature(text, maid)) continue;
                 }
 

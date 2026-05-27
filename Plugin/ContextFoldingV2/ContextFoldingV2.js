@@ -34,7 +34,14 @@ class ContextFoldingV2 {
             thresholdRange: [0.40, 0.60],
             lWeight: 0.05,
             sWeight: 0.05,
-            contextWeights: [0.7, 0.3] // user : assistant 加权比例，与 RAGDiaryPlugin.mainSearchWeights 对齐
+            contextWeights: [0.7, 0.3], // user : assistant 加权比例，与 RAGDiaryPlugin.mainSearchWeights 对齐
+            fuzzyEmbedding: {
+                threshold: 0.985,
+                minLength: 80,
+                maxScan: 200,
+                maxLengthDiffRatio: 0.02,
+                maxLengthDiffAbs: 80
+            }
         };
         this._ragParamsWatcher = null;
 
@@ -115,7 +122,11 @@ class ContextFoldingV2 {
             const allParams = JSON.parse(data);
             if (allParams.ContextFoldingV2) {
                 this.hotParams = { ...this.hotParams, ...allParams.ContextFoldingV2 };
-                console.log(`[ContextFoldingV2] 热参数已加载: 基准=${this.hotParams.thresholdBase}, 范围=[${this.hotParams.thresholdRange}], L系数=${this.hotParams.lWeight}, S系数=${this.hotParams.sWeight}`);
+                console.log(
+                    `[ContextFoldingV2] 热参数已加载: 基准=${this.hotParams.thresholdBase}, ` +
+                    `范围=[${this.hotParams.thresholdRange}], L系数=${this.hotParams.lWeight}, ` +
+                    `S系数=${this.hotParams.sWeight}, Fuzzy=${JSON.stringify(this._getFuzzyEmbeddingOptions())}`
+                );
             }
         } catch (e) {
             console.warn(`[ContextFoldingV2] 读取 rag_params.json 失败，使用默认值: ${e.message}`);
@@ -225,20 +236,15 @@ class ContextFoldingV2 {
 
                 const hash = store.hashContent(sanitized);
 
-                // 获取块向量（store → bridge缓存 → embedding API）
+                // 获取块向量（store → 精确缓存 → fuzzy缓存 → embedding API）
+                // 与上下文参考向量使用同一条折叠专用向量化路径，避免候选 assistant 块因微小文本差异重复向量化。
                 let blockVector = null;
                 const entry = store.getEntry(hash);
 
                 if (entry && entry.vector) {
                     blockVector = entry.vector;
                 } else {
-                    // 尝试从 bridge 缓存获取
-                    blockVector = bridge.getEmbeddingFromCache(sanitized);
-                    if (!blockVector) {
-                        // 调用 embedding API
-                        blockVector = await bridge.embedText(sanitized);
-                    }
-                    // 写入 store（无论是否有向量）
+                    blockVector = await this._embedTextForFolding(sanitized, bridge, 'assistant_candidate');
                     if (blockVector) {
                         store.upsertVector(hash, {
                             textPreview: sanitized.substring(0, 80),
@@ -363,15 +369,9 @@ class ContextFoldingV2 {
         }
 
         // 仅在折叠链路中启用高阈值 fuzzy 复用，不影响 RAG 主检索精度。
-        // 阈值保守：长文本、长度接近、Dice 相似度 >= 0.985 才复用。
+        // 参数由 rag_params.json 的 ContextFoldingV2.fuzzyEmbedding 热管理。
         if (typeof bridge.getFuzzyEmbeddingFromCache === 'function') {
-            const fuzzy = bridge.getFuzzyEmbeddingFromCache(text, {
-                threshold: 0.985,
-                minLength: 80,
-                maxScan: 200,
-                maxLengthDiffRatio: 0.02,
-                maxLengthDiffAbs: 80
-            });
+            const fuzzy = bridge.getFuzzyEmbeddingFromCache(text, this._getFuzzyEmbeddingOptions());
 
             if (fuzzy && fuzzy.vector) {
                 console.log(
@@ -384,6 +384,24 @@ class ContextFoldingV2 {
 
         if (typeof bridge.embedText !== 'function') return null;
         return await bridge.embedText(text);
+    }
+
+    _getFuzzyEmbeddingOptions() {
+        const defaults = {
+            threshold: 0.985,
+            minLength: 80,
+            maxScan: 200,
+            maxLengthDiffRatio: 0.02,
+            maxLengthDiffAbs: 80
+        };
+        const configured = this.hotParams?.fuzzyEmbedding || {};
+        return {
+            threshold: Number.isFinite(Number(configured.threshold)) ? Number(configured.threshold) : defaults.threshold,
+            minLength: Number.isFinite(Number(configured.minLength)) ? Number(configured.minLength) : defaults.minLength,
+            maxScan: Number.isFinite(Number(configured.maxScan)) ? Number(configured.maxScan) : defaults.maxScan,
+            maxLengthDiffRatio: Number.isFinite(Number(configured.maxLengthDiffRatio)) ? Number(configured.maxLengthDiffRatio) : defaults.maxLengthDiffRatio,
+            maxLengthDiffAbs: Number.isFinite(Number(configured.maxLengthDiffAbs)) ? Number(configured.maxLengthDiffAbs) : defaults.maxLengthDiffAbs
+        };
     }
 
     /**

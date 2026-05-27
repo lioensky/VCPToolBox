@@ -186,6 +186,48 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "建议区间: 0.02 ~ 0.15",
       tone: "sensitive",
     },
+    fuzzyEmbedding: {
+      label: "Embedding Fuzzy 复用",
+      summary: "折叠链路与动态工具折叠用于复用近似相同上下文向量的高阈值模糊缓存策略，避免 AI 输出因微小文本差异重复向量化。",
+      logic: "阈值越高越保守，只有几乎一致的长文本才复用；maxScan 越大越容易命中但会增加扫描成本。建议保持 0.985 附近。",
+      range: "共 5 个子参数：threshold、minLength、maxScan、maxLengthDiffRatio、maxLengthDiffAbs。",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.threshold": {
+      label: "Fuzzy 命中阈值",
+      summary: "Dice bigram 文本相似度达到该阈值才复用已有 embedding。",
+      logic: "调低会提升复用率但增加误复用风险；调高更安全但可能仍重复向量化。0.985 是保守默认值。",
+      range: "建议 0.970 ~ 0.995",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.minLength": {
+      label: "最小文本长度",
+      summary: "低于该长度的文本不参与 fuzzy 复用，避免短文本相似度虚高。",
+      logic: "短文本更容易偶然相似，因此应保留长度门槛；长对话建议 80 起步。",
+      range: "建议 40 ~ 200 字符",
+      tone: "stable",
+    },
+    "fuzzyEmbedding.maxScan": {
+      label: "最大扫描缓存数",
+      summary: "每次 fuzzy 查询最多扫描最近多少条 embedding 文本索引。",
+      logic: "调高会提升旧缓存命中概率，但每次动态折叠扫描成本也会增加。",
+      range: "建议 100 ~ 500",
+      tone: "stable",
+    },
+    "fuzzyEmbedding.maxLengthDiffRatio": {
+      label: "最大长度差比例",
+      summary: "候选缓存文本与当前文本允许的最大相对长度差。",
+      logic: "用于过滤长度明显不同的文本。调大更宽松，调小更严格。",
+      range: "建议 0.01 ~ 0.05",
+      tone: "sensitive",
+    },
+    "fuzzyEmbedding.maxLengthDiffAbs": {
+      label: "最大绝对长度差",
+      summary: "候选缓存文本与当前文本允许的最大绝对字符数差。",
+      logic: "与比例门槛取较大值，避免长文本少量系统尾巴差异导致无法复用。",
+      range: "建议 40 ~ 200 字符",
+      tone: "stable",
+    },
   },
   RAGDiaryPlugin: {
     noise_penalty: {
@@ -245,6 +287,20 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       range: "常用组合 [0.7, 0.3] 或 [0.8, 0.2]",
       tone: "sensitive",
       tupleLabels: ["用户输入", "AI 意图"],
+    },
+    shotgunDecayFactor: {
+      label: "霰弹历史衰减因子",
+      summary: "控制 Tagmemo V4 Shotgun Query 中历史语义分段召回结果的分数保留比例。",
+      logic: "值越高，历史主题段对最终候选的影响越强；值越低，检索越偏向当前输入。0.85 表示历史分段按距离进行温和指数衰减。",
+      range: "建议 0.60 ~ 0.95，默认 0.85",
+      tone: "sensitive",
+    },
+    shotgunHistorySegmentLimit: {
+      label: "霰弹历史分段数",
+      summary: "控制 Shotgun Query 最多取最近多少个历史语义分段参与并行检索。",
+      logic: "调高会扩大上下文覆盖，但并行搜索次数和历史噪音也会上升；调低更聚焦当前问题。0 表示只使用当前查询向量。",
+      range: "建议 0 ~ 5，默认 3",
+      tone: "sensitive",
     },
     refreshWeights: {
       label: "流内刷新权重",
@@ -602,6 +658,22 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   }
   if (key === 'reverseinversionguard') {
     return { min: 0.5, max: 1, step: 0.01 };
+  }
+
+  if (key === "minlength" || key === "maxscan" || key === "maxlengthdiffabs") {
+    return { min: 1, max: key === "maxscan" ? 1000 : 500, step: 1 };
+  }
+
+  if (key === "maxlengthdiffratio") {
+    return { min: 0, max: 0.2, step: 0.001 };
+  }
+
+  if (key === "shotgundecayfactor") {
+    return { min: 0, max: 1, step: 0.01 };
+  }
+
+  if (key === "shotgunhistorysegmentlimit") {
+    return { min: 0, max: 10, step: 1 };
   }
 
   if (key.includes("days")) {

@@ -27,6 +27,97 @@ const DMX_API_CONFIG = {
 };
 
 // Helper to validate input arguments
+function parseImageArrayInput(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value !== 'string') return value ? [value] : [];
+
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.filter(Boolean);
+        } catch {
+            // Keep as a single image string if JSON parsing fails.
+        }
+    }
+
+    return [trimmed];
+}
+
+function collectImageInputs(args) {
+    const images = [];
+    const pushImage = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                images.push({ image: item.trim(), image_base64: null });
+            }
+        }
+    };
+    const pushBase64 = (value) => {
+        for (const item of parseImageArrayInput(value)) {
+            if (typeof item === 'string' && item.trim()) {
+                images.push({ image: null, image_base64: item.trim() });
+            }
+        }
+    };
+
+    pushImage(args.image || args.Image || args.image_url || args.source_image);
+    pushBase64(args.image_base64);
+
+    const indexedKeys = Object.keys(args)
+        .map((key) => {
+            const match = key.match(/^image(?:_url)?_(\d+)$/i) || key.match(/^image_base64_(\d+)$/i);
+            return match ? { key, index: parseInt(match[1], 10) } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.index - b.index || a.key.localeCompare(b.key));
+
+    for (const { key } of indexedKeys) {
+        if (/^image_base64_/i.test(key)) {
+            pushBase64(args[key]);
+        } else {
+            pushImage(args[key]);
+        }
+    }
+
+    return images;
+}
+
+function normalizeDoubaoArgs(rawArgs) {
+    const args = { ...(rawArgs || {}) };
+    args.prompt = args.prompt || args.Prompt || args.text || '';
+    args.resolution = args.resolution || args.Resolution || args.size || args.Size || args.image_size || args.imageSize || '2K';
+
+    const collectedImages = collectImageInputs(args);
+    const rawCommand = String(args.command || args.Command || args.cmd || '').toLowerCase();
+    const wantsCompose = rawCommand.includes('compose') || rawCommand.includes('合成');
+    const wantsEdit = rawCommand.includes('edit') || rawCommand.includes('image2image') || rawCommand.includes('i2i') || rawCommand.includes('修图') || rawCommand.includes('改图');
+    const wantsGenerate = rawCommand.includes('generate') || rawCommand.includes('txt2img') || rawCommand.includes('t2i') || rawCommand.includes('生成');
+
+    if (wantsCompose || (wantsEdit && collectedImages.length > 1) || (!wantsGenerate && collectedImages.length > 1)) {
+        args.command = 'DoubaoComposeImage';
+    } else if (wantsEdit || (wantsCompose && collectedImages.length === 1) || (!wantsGenerate && collectedImages.length === 1)) {
+        args.command = 'DoubaoEditImage';
+    } else {
+        args.command = 'DoubaoGenerateImage';
+    }
+
+    if (collectedImages.length > 0) {
+        args.image = collectedImages[0].image || args.image;
+        args.image_base64 = collectedImages[0].image_base64 || args.image_base64;
+
+        collectedImages.forEach((item, index) => {
+            const n = index + 1;
+            if (item.image) args[`image_${n}`] = item.image;
+            if (item.image_base64) args[`image_base64_${n}`] = item.image_base64;
+        });
+    }
+
+    return args;
+}
+
 function isValidDoubaoGenArgs(args) {
     if (!args || typeof args !== 'object' || !args.command) return false;
 
@@ -58,7 +149,7 @@ function isValidDoubaoGenArgs(args) {
         if (!isResolutionValid(args.resolution, args.command)) return false;
 
     } else if (args.command === 'DoubaoEditImage') {
-        if (typeof args.image !== 'string' || !args.image.trim()) return false;
+        if (!((typeof args.image === 'string' && args.image.trim()) || (typeof args.image_base64 === 'string' && args.image_base64.trim()))) return false;
         if (!isResolutionValid(args.resolution, args.command)) return false;
         if (args.guidance_scale !== undefined) {
             const scale = parseFloat(args.guidance_scale);
@@ -175,6 +266,7 @@ async function generateImageAndSave(args) {
         throw new Error("DoubaoGen Plugin Error: VarHttpUrl environment variable is required for constructing image URL.");
     }
 
+    args = normalizeDoubaoArgs(args);
     const command = args.command;
     if (!command) {
         throw new Error(`DoubaoGen Plugin Error: 'command' not specified in arguments.`);
@@ -195,7 +287,7 @@ async function generateImageAndSave(args) {
             throw new Error("DoubaoGen Plugin Error: 'image' parameter is required and must be processed for the DoubaoEditImage command.");
         }
     } else if (command === 'DoubaoComposeImage') {
-        const imageKeys = Object.keys(args).filter(k => k.startsWith('image_'));
+        const imageKeys = Object.keys(args).filter(k => /^image(?:_base64)?_\d+$/i.test(k));
         
         const indices = imageKeys.map(k => {
             const num = k.split('_').pop();
@@ -372,7 +464,7 @@ async function generateImageAndSave(args) {
         content: [
             {
                 type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${args.resolution}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
             },
             {
                 type: 'image_url',
@@ -385,7 +477,7 @@ async function generateImageAndSave(args) {
             serverPath: `image/doubaogen/${generatedFileName}`,
             fileName: generatedFileName,
             prompt: args.prompt,
-            resolution: args.resolution,
+            resolution: size,
             seed: finalSeed,
             imageUrl: accessibleImageUrl
         }

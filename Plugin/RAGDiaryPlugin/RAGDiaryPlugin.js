@@ -60,6 +60,9 @@ class RAGDiaryPlugin {
         // 🌟 统一缓存管理器
         this.cacheManager = new CacheManager();
         this.queryCacheEnabled = true;
+        this.embeddingTextIndex = new Map();
+        this.embeddingTextIndexMaxSize = 500;
+        this.pendingEmbeddingRequests = new Map();
 
         // 🌟 V2折叠：FoldingStore 迷你数据库
         this.foldingStore = null;
@@ -75,6 +78,7 @@ class RAGDiaryPlugin {
         // 🌟 初始化缓存系统
         this.queryCacheEnabled = (process.env.RAG_QUERY_CACHE_ENABLED || 'true').toLowerCase() === 'true';
         this.contextVectorAllowApi = (process.env.CONTEXT_VECTOR_ALLOW_API_HISTORY || 'false').toLowerCase() === 'true';
+        this.embeddingTextIndexMaxSize = parseInt(process.env.EMBEDDING_TEXT_INDEX_MAX_SIZE) || this.embeddingTextIndexMaxSize || 500;
 
         if (this.queryCacheEnabled) {
             this.cacheManager.createCache('query', {
@@ -2364,6 +2368,15 @@ class RAGDiaryPlugin {
 
         // 1️⃣ 获取自适应调优参数（用于缓存键和召回参数计算）
         const adaptiveTuning = await this._getCodexAdaptiveTuning(dbName);
+        const ragPluginConfig = this.ragParams?.RAGDiaryPlugin || {};
+        const rawShotgunHistorySegmentLimit = parseInt(ragPluginConfig.shotgunHistorySegmentLimit, 10);
+        const shotgunHistorySegmentLimit = Number.isFinite(rawShotgunHistorySegmentLimit)
+            ? Math.max(0, rawShotgunHistorySegmentLimit)
+            : 3;
+        const rawShotgunDecayFactor = Number(ragPluginConfig.shotgunDecayFactor);
+        const shotgunDecayFactor = Number.isFinite(rawShotgunDecayFactor)
+            ? Math.max(0, Math.min(1, rawShotgunDecayFactor))
+            : 0.85;
 
         // 2️⃣ 生成缓存键（包含自适应调优快照，避免缓存命中时忽略新调优）
         const cacheKey = this._generateCacheKey({
@@ -2374,6 +2387,8 @@ class RAGDiaryPlugin {
             dynamicK,
             ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
             isFreshTimeConversationStart,
+            shotgunDecayFactor,
+            shotgunHistorySegmentLimit,
             adaptiveKDelta: adaptiveTuning?.kDelta || 0,
             adaptiveTagWeightDelta: adaptiveTuning?.tagWeightDelta || 0,
             adaptiveTruncationDelta: adaptiveTuning?.truncationDelta || 0,
@@ -2594,16 +2609,17 @@ class RAGDiaryPlugin {
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
             if (historySegments && historySegments.length > 0) {
-                const recentSegments = historySegments.slice(-3);
-                const decayFactor = 0.85;
+                const recentSegments = shotgunHistorySegmentLimit > 0
+                    ? historySegments.slice(-shotgunHistorySegmentLimit)
+                    : [];
                 recentSegments.forEach((seg, idx) => {
                     const distance = recentSegments.length - idx;
-                    const weightMultiplier = Math.pow(decayFactor, distance);
+                    const weightMultiplier = Math.pow(shotgunDecayFactor, distance);
                     searchVectors.push({ vector: seg.vector, type: `history_${idx}`, weight: weightMultiplier });
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches (historyLimit=${shotgunHistorySegmentLimit}, decay=${shotgunDecayFactor}).`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
@@ -3864,6 +3880,8 @@ class RAGDiaryPlugin {
             isAutoMode = false,
             ghostTags = [],
             isFreshTimeConversationStart = false,
+            shotgunDecayFactor = 0.85,
+            shotgunHistorySegmentLimit = 3,
             adaptiveKDelta = 0,
             adaptiveTagWeightDelta = 0,
             adaptiveTruncationDelta = 0,
@@ -3889,6 +3907,8 @@ class RAGDiaryPlugin {
             date: currentDate,
             ghosts: ghostTagString,
             fresh_time_start: isFreshTimeConversationStart,
+            shotgun_decay: shotgunDecayFactor,
+            shotgun_history_limit: shotgunHistorySegmentLimit,
             adaptive_k_delta: adaptiveKDelta,
             adaptive_tag_weight_delta: adaptiveTagWeightDelta,
             adaptive_truncation_delta: adaptiveTruncationDelta,
@@ -4167,6 +4187,7 @@ class RAGDiaryPlugin {
             const vector = this.cacheManager.get('embedding', cacheKey);
             if (vector) {
                 results[index] = vector;
+                this._rememberEmbeddingText(cacheKey, text.trim());
             } else {
                 missingIndices.push(index);
                 missingTexts.push(text);
@@ -4183,6 +4204,7 @@ class RAGDiaryPlugin {
                     const text = missingTexts[i];
                     const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
                     this.cacheManager.set('embedding', cacheKey, vec);
+                    this._rememberEmbeddingText(cacheKey, text.trim());
                 }
             });
         }
@@ -4195,14 +4217,30 @@ class RAGDiaryPlugin {
 
         const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
         const cached = this.cacheManager.get('embedding', cacheKey);
-        if (cached) return cached;
-
-        const vector = await this.getSingleEmbedding(text);
-        if (vector) {
-            this.cacheManager.set('embedding', cacheKey, vector);
+        if (cached) {
+            this._rememberEmbeddingText(cacheKey, text.trim());
+            return cached;
         }
 
-        return vector;
+        if (this.pendingEmbeddingRequests.has(cacheKey)) {
+            return this.pendingEmbeddingRequests.get(cacheKey);
+        }
+
+        const pendingRequest = (async () => {
+            try {
+                const vector = await this.getSingleEmbedding(text);
+                if (vector) {
+                    this.cacheManager.set('embedding', cacheKey, vector);
+                    this._rememberEmbeddingText(cacheKey, text.trim());
+                }
+                return vector;
+            } finally {
+                this.pendingEmbeddingRequests.delete(cacheKey);
+            }
+        })();
+
+        this.pendingEmbeddingRequests.set(cacheKey, pendingRequest);
+        return pendingRequest;
     }
 
     /**
@@ -4212,7 +4250,94 @@ class RAGDiaryPlugin {
     _getEmbeddingFromCacheOnly(text) {
         if (!text) return null;
         const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
-        return this.cacheManager.get('embedding', cacheKey);
+        const cached = this.cacheManager.get('embedding', cacheKey);
+        if (cached) {
+            this._rememberEmbeddingText(cacheKey, text.trim());
+        }
+        return cached;
+    }
+
+    _rememberEmbeddingText(cacheKey, text) {
+        if (!cacheKey || !text || !text.trim()) return;
+        const normalizedText = text.trim();
+        if (this.embeddingTextIndex.has(cacheKey)) {
+            this.embeddingTextIndex.delete(cacheKey);
+        }
+        this.embeddingTextIndex.set(cacheKey, normalizedText);
+
+        const maxSize = Math.max(1, parseInt(this.embeddingTextIndexMaxSize, 10) || 500);
+        while (this.embeddingTextIndex.size > maxSize) {
+            const oldestKey = this.embeddingTextIndex.keys().next().value;
+            this.embeddingTextIndex.delete(oldestKey);
+        }
+    }
+
+    _textDiceSimilarity(textA, textB) {
+        if (textA === textB) return 1;
+        if (!textA || !textB || textA.length < 2 || textB.length < 2) return 0;
+
+        const grams = new Map();
+        for (let i = 0; i < textA.length - 1; i++) {
+            const gram = textA.slice(i, i + 2);
+            grams.set(gram, (grams.get(gram) || 0) + 1);
+        }
+
+        let intersection = 0;
+        for (let i = 0; i < textB.length - 1; i++) {
+            const gram = textB.slice(i, i + 2);
+            const count = grams.get(gram) || 0;
+            if (count > 0) {
+                intersection++;
+                grams.set(gram, count - 1);
+            }
+        }
+
+        return (2 * intersection) / ((textA.length - 1) + (textB.length - 1));
+    }
+
+    _findFuzzyEmbeddingFromCache(text, options = {}) {
+        const normalizedText = typeof text === 'string' ? text.trim() : '';
+        const threshold = Number.isFinite(options.threshold) ? options.threshold : 0.985;
+        const minLength = Number.isFinite(options.minLength) ? options.minLength : 80;
+        const maxScan = Math.max(1, parseInt(options.maxScan, 10) || 200);
+        const maxLengthDiffRatio = Number.isFinite(options.maxLengthDiffRatio) ? options.maxLengthDiffRatio : 0.02;
+        const maxLengthDiffAbs = Number.isFinite(options.maxLengthDiffAbs) ? options.maxLengthDiffAbs : 80;
+
+        if (!normalizedText || normalizedText.length < minLength || this.embeddingTextIndex.size === 0) {
+            return null;
+        }
+
+        let bestHit = null;
+        const entries = Array.from(this.embeddingTextIndex.entries()).slice(-maxScan).reverse();
+        for (const [cacheKey, cachedText] of entries) {
+            if (!cachedText || cachedText.length < minLength) continue;
+
+            const lengthDiff = Math.abs(cachedText.length - normalizedText.length);
+            const allowedDiff = Math.max(maxLengthDiffAbs, normalizedText.length * maxLengthDiffRatio);
+            if (lengthDiff > allowedDiff) continue;
+
+            const similarity = this._textDiceSimilarity(normalizedText, cachedText);
+            if (similarity < threshold) continue;
+
+            const vector = this.cacheManager.get('embedding', cacheKey);
+            if (!vector) {
+                this.embeddingTextIndex.delete(cacheKey);
+                continue;
+            }
+
+            if (!bestHit || similarity > bestHit.similarity) {
+                bestHit = {
+                    cacheKey,
+                    vector,
+                    textPreview: cachedText.slice(0, 120),
+                    similarity,
+                    length: cachedText.length
+                };
+                if (similarity === 1) break;
+            }
+        }
+
+        return bestHit;
     }
 
     /**
@@ -4459,6 +4584,17 @@ class RAGDiaryPlugin {
             getEmbeddingFromCache(text) {
                 if (!text || typeof text !== 'string') return null;
                 return self._getEmbeddingFromCacheOnly(text);
+            },
+
+            /**
+             * 只从缓存中寻找近似文本向量（不触发 API）
+             * @param {string} text - 要查询的文本
+             * @param {object} options - fuzzy threshold/scan options
+             * @returns {{cacheKey:string, vector:Array<number>, textPreview:string, similarity:number, length:number}|null}
+             */
+            getFuzzyEmbeddingFromCache(text, options = {}) {
+                if (!text || typeof text !== 'string') return null;
+                return self._findFuzzyEmbeddingFromCache(text, options);
             },
 
             // ═══════════════════════════════════════════════════

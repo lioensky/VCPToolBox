@@ -672,7 +672,7 @@ async function main(request) {
     const showURL = ShowURL === true || ShowURL === 'true';
 
     if (!SearchTopic || !Keywords) {
-        return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic 或 Keywords。" });
+        return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic 和 Keywords。" });
     }
 
     const keywordList = Keywords.split(/[,\n，]/).map(k => k.trim()).filter(k => k.length > 0);
