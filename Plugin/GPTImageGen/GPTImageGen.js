@@ -44,6 +44,8 @@ const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH || process.cwd();
 const SERVER_PORT = process.env.SERVER_PORT || '5000';
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY || '';
 const VAR_HTTP_URL = process.env.VarHttpUrl || 'http://localhost';
+const PROJECT_IMAGE_ROOT = path.resolve(PROJECT_BASE_PATH, 'image');
+const GPTIMAGEGEN_OUTPUT_DIR = path.join(PROJECT_IMAGE_ROOT, 'gptimagegen');
 
 // ============================================================
 // 工具函数
@@ -69,6 +71,35 @@ function outputAndExit(result) {
  */
 function debugLog(...args) {
     if (DEBUG) console.error('[GPTImageGen DEBUG]', ...args);
+}
+
+function isPathInside(childPath, parentPath) {
+    const relative = path.relative(parentPath, childPath);
+    return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isBlockedLocalHostname(hostname) {
+    const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!host) return true;
+    if (host === 'localhost' || host === '::1' || host.endsWith('.localhost') || host.endsWith('.local')) {
+        return true;
+    }
+    if (/^127\./.test(host) || /^169\.254\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) {
+        return true;
+    }
+    const private172 = host.match(/^172\.(\d+)\./);
+    return private172 ? Number(private172[1]) >= 16 && Number(private172[1]) <= 31 : false;
+}
+
+function resolveImageDownloadUrl(rawUrl, baseUrl = '') {
+    const parsedUrl = baseUrl ? new URL(rawUrl, baseUrl) : new URL(rawUrl);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error('图片 URL 仅支持 http 或 https 协议');
+    }
+    if (isBlockedLocalHostname(parsedUrl.hostname)) {
+        throw new Error('图片 URL 不允许指向本机、链路本地或私有网段地址');
+    }
+    return parsedUrl;
 }
 
 /**
@@ -330,9 +361,15 @@ async function httpRequestWithRetry(url, options = {}, body = null) {
  * @param {string} url - 图片 URL
  * @returns {Promise<{data: Buffer, contentType: string}>}
  */
-function downloadImage(url) {
+function downloadImage(url, maxBytes = 0, redirectCount = 0) {
     return new Promise((resolve, reject) => {
-        const parsedUrl = new URL(url);
+        let parsedUrl;
+        try {
+            parsedUrl = resolveImageDownloadUrl(url);
+        } catch (err) {
+            reject(err);
+            return;
+        }
         const transport = parsedUrl.protocol === 'https:' ? https : http;
 
         const reqOptions = {
@@ -346,7 +383,20 @@ function downloadImage(url) {
         const req = transport.request(reqOptions, (res) => {
             // 处理重定向
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                downloadImage(res.headers.location).then(resolve).catch(reject);
+                if (redirectCount >= 5) {
+                    reject(new Error('图片下载重定向次数过多'));
+                    return;
+                }
+
+                let redirectUrl;
+                try {
+                    redirectUrl = resolveImageDownloadUrl(res.headers.location, parsedUrl.href);
+                } catch (err) {
+                    reject(err);
+                    return;
+                }
+
+                downloadImage(redirectUrl.href, maxBytes, redirectCount + 1).then(resolve).catch(reject);
                 return;
             }
 
@@ -356,7 +406,16 @@ function downloadImage(url) {
             }
 
             const chunks = [];
-            res.on('data', (chunk) => chunks.push(chunk));
+            let totalBytes = 0;
+            res.on('data', (chunk) => {
+                totalBytes += chunk.length;
+                if (maxBytes > 0 && totalBytes > maxBytes) {
+                    req.destroy();
+                    reject(new Error(`下载的图片超过 ${maxBytes / 1024 / 1024}MB 限制。请使用更小的图片或压缩后重试。`));
+                    return;
+                }
+                chunks.push(chunk);
+            });
             res.on('end', () => resolve({
                 data: Buffer.concat(chunks),
                 contentType: res.headers['content-type'] || ''
@@ -456,8 +515,9 @@ async function processImageInput(imageInput) {
 
     // HTTP/HTTPS URL
     if (input.startsWith('http://') || input.startsWith('https://')) {
+        resolveImageDownloadUrl(input);
         debugLog('Image input: URL, downloading...', input.substring(0, 100));
-        const { data: buffer, contentType } = await downloadImage(input);
+        const { data: buffer, contentType } = await downloadImage(input, MAX_IMAGE_SIZE);
         // 校验下载后的文件大小
         if (buffer.length > MAX_IMAGE_SIZE) {
             throw new Error(`下载的图片大小 ${(buffer.length / 1024 / 1024).toFixed(1)}MB，超过 ${MAX_IMAGE_SIZE / 1024 / 1024}MB 限制。请使用更小的图片或压缩后重试。`);
@@ -483,6 +543,9 @@ async function processImageInput(imageInput) {
 
     // 安全检查
     const resolved = path.resolve(filePath);
+    if (!isPathInside(resolved, PROJECT_IMAGE_ROOT)) {
+        throw new Error('本地图片路径仅允许位于项目 image/ 目录下');
+    }
     if (!fs.existsSync(resolved)) {
         throw new Error(`图片文件不存在: ${filePath}`);
     }
@@ -821,20 +884,19 @@ async function callEditAPI(params) {
  * @returns {object} { localPath, accessibleUrl, serverPath, fileName }
  */
 function saveImageToLocal(imageBuffer, index = 0, contentType = '') {
-    const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'gptimagegen');
     const ext = inferImageExtension(contentType);
     const fileName = `${crypto.randomUUID()}.${ext}`;
-    const localPath = path.join(imageDir, fileName);
+    const localPath = path.join(GPTIMAGEGEN_OUTPUT_DIR, fileName);
 
     // 路径安全检查 — 防止路径逃逸
-    const resolvedDir = path.resolve(imageDir);
+    const resolvedDir = path.resolve(GPTIMAGEGEN_OUTPUT_DIR);
     const resolvedPath = path.resolve(localPath);
     if (!resolvedPath.startsWith(resolvedDir)) {
         throw new Error('路径安全检查失败：检测到路径逃逸尝试');
     }
 
     // 确保目录存在
-    fs.mkdirSync(imageDir, { recursive: true });
+    fs.mkdirSync(GPTIMAGEGEN_OUTPUT_DIR, { recursive: true });
 
     // 写入文件
     fs.writeFileSync(localPath, imageBuffer);
@@ -889,7 +951,7 @@ async function buildResponse(apiResult, params) {
         } else if (item.url) {
             // URL 模式：下载图片（现在返回 contentType）
             debugLog(`Downloading image ${i} from URL: ${item.url}`);
-            const downloaded = await downloadImage(item.url);
+            const downloaded = await downloadImage(item.url, MAX_IMAGE_SIZE);
             imageBuffer = downloaded.data;
             contentType = downloaded.contentType;
         } else {
