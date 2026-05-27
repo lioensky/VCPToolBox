@@ -64,8 +64,8 @@ obsidian version
 │  VCP Server  │ ────── tool call ──────→  │  obsidian_bridge.js    │
 │  (Plugin.js) │ ←──── JSON result ──────  │  (Node.js, 零依赖)     │
 └─────────────┘                           └──────────┬─────────────┘
-                                                     │ execSync()
-                                                     │ (shell command)
+                                                     │ execFileSync()
+                                                     │ (参数数组, 绕过Shell)
                                                      ▼
                                           ┌──────────────────────┐
                                           │  Obsidian CLI         │
@@ -206,7 +206,7 @@ OBSIDIAN_CLI_PATH=/Applications/Obsidian.app/Contents/MacOS/Obsidian
 
 ```
 Plugin/ObsidianBridge/
-├── obsidian_bridge.js      # 插件主体 (~17KB, 零依赖)
+├── obsidian_bridge.js      # 插件主体 (~19KB, 零依赖)
 ├── config.env.example      # CLI 路径配置模板
 ├── plugin-manifest.json    # VCP 插件清单 (22 命令)
 └── README.md               # 本文件
@@ -260,14 +260,43 @@ v1.1.2 共 23 项测试全部通过（2026-05-02）：
 **模板（1项）**：
 - `templates` 列出已配置模板 ✅
 
+v1.3.0 安全迁移回归测试（2026-05-26）：
+
+**基线验证（5项）**：
+- `daily_path` execFileSync 启动 .com ✅
+- `search query="VCP 部署"` 含空格参数 ✅
+- `files folder="数学maths"` 目录参数 ✅
+- `read file="中心思想"` 中文笔记名 ✅
+- `tags` 无参数 + flags ✅
+
+**写入完整性（5项）**：
+- `create` 多行 content + Shell 元字符（$HOME `echo` && ||）✅
+- `search_context` 上下文搜索 ✅
+- `append` 追加 + Shell 元字符 ✅
+- `prepend` 前插 + frontmatter 安全 ✅
+- `property_set` / `property_read` 属性读写（IPC 延迟确认）✅
+
+**链接+结构（5项）**：
+- `links` / `backlinks` / `folders` / `templates` ✅
+- `tasks scope=monthly` 无效 scope 防御性拦截 ✅
+
+**边界测试（6项）**：
+- content 含多个等号（x=y+z=w, E=mc²）：CLI 在第一个 = 处切割 ✅
+- Unicode 极端（Emoji/CJK扩展/零宽空格/日韩文）✅
+- 空 content 创建 ✅
+- 搜索含等号内容（E=mc²）✅
+- 长内容追加（~500字符）✅
+- Shell 注入防御验证：$HOME/$PATH/`echo test`/&& || 全部原样写入 ✅
+
 ## 已知限制
 
 1. **依赖运行中的 Obsidian**：CLI 通过 IPC 与 Obsidian 通信，桌面端必须保持打开
-2. **命令拼接方式**：当前使用 `execSync` 字符串拼接。对于包含特殊 shell 字符的 content，理论上存在边缘风险。未来计划迁移至 `execFileSync` 参数数组
+2. **命令执行方式**：已从 `execSync` 字符串拼接迁移至 `execFileSync` 参数数组（v1.3.0）。当 CLI 路径为 `.exe`/`.com` 或无后缀时，参数通过数组直传子进程，完全绕过 Shell，消除了 Shell 注入风险。当 CLI 路径为 `.bat`/`.cmd` 时，自动降级到 `execSync`（保持向后兼容），并在 stderr 打印警告引导迁移
 3. **单 vault**：默认操作当前打开的 vault。多 vault 环境需通过 `vault` 参数指定
 
 ## 版本历史
 
+- **v1.3.0** (2026-05-26): 安全加固——将 `execSync` 字符串拼接迁移至 `execFileSync` 参数数组，消除 Shell 注入面。新增 `.bat`/`.cmd` 自动检测与降级机制（CVE-2024-27980 防护）。21 项回归测试全部通过
 - **v1.2.0** (2026-05-08): 新增 `config.env` 配置文件支持，CLI 路径不再硬编码；未配置时自动 fallback 到系统 PATH 中的 `obsidian` 命令
 - **v1.1.2** (2026-05-02): 修复 `tasks` 忽略 `file`/`path` 参数的问题；新增 `scope` 值白名单校验；版本号同步
 - **v1.1.1** (2026-05-02): 修复多行 `content` 写入时字面量 `\n` 被过度转义导致换行失效的问题
@@ -277,7 +306,7 @@ v1.1.2 共 23 项测试全部通过（2026-05-02）：
 ## 贡献者
 
 - **Nova & 水野小夜** — 原始架构设计与 v1.0.0 实现。将 Obsidian 官方 CLI 封装为 VCP 插件的创意和基本的完整功能来自他们，可谓是奠基作者。
-- **infinite-vector** — v1.1.x~v1.2.x 系列扩展：命令扩展、转义修复、任务修复、scope 校验、配置化 CLI 路径、单元测试、README
+- **infinite-vector** — v1.1.x~v1.3.x 系列扩展：命令扩展、转义修复、任务修复、scope 校验、配置化 CLI 路径、execFileSync 安全迁移、单元测试、README
 
 ## License
 
