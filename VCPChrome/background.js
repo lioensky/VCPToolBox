@@ -209,11 +209,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         // 广播状态更新
         broadcastStatusUpdate();
+        broadcastMonitoringStatusToTabs();
         
         // 如果开启监控，立即请求当前活动标签页的信息
         if (isMonitoringEnabled && currentActiveTabId) {
             chrome.tabs.sendMessage(currentActiveTabId, {
-                type: 'REQUEST_PAGE_INFO_UPDATE'
+                type: 'REQUEST_PAGE_INFO_UPDATE',
+                isMonitoringEnabled: true
             }).catch(e => {
                 if (!e.message.includes("Could not establish connection")) {
                     console.log("Error requesting page info:", e.message);
@@ -648,6 +650,21 @@ chrome.debugger.onDetach.addListener((source) => {
     }
 });
 
+function broadcastMonitoringStatusToTabs() {
+    chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (tabs) => {
+        tabs.forEach(tab => {
+            chrome.tabs.sendMessage(tab.id, {
+                type: 'MONITORING_STATUS_CHANGED',
+                isMonitoringEnabled
+            }).catch(e => {
+                if (!e.message.includes("Could not establish connection")) {
+                    console.log("[VCP Background] ⚠️ 同步监控状态到标签页失败:", e.message);
+                }
+            });
+        });
+    });
+}
+
 function broadcastStatusUpdate() {
     chrome.runtime.sendMessage({
         type: 'STATUS_UPDATE',
@@ -683,7 +700,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
     if (isMonitoringEnabled) {
         // 使用重试机制发送更新请求，因为content script可能还未完全准备好
         const sendUpdateRequest = (retryCount = 0) => {
-            chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }, (response) => {
+            chrome.tabs.sendMessage(activeInfo.tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true }, (response) => {
                 if (chrome.runtime.lastError) {
                     if (retryCount < 2) { // 最多重试2次
                         console.log(`[VCP Background] ⚠️ 发送更新请求失败，${200 * (retryCount + 1)}ms后重试 (${retryCount + 1}/2)`);
@@ -723,7 +740,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
             // 页面加载完成后，稍微延迟一下再请求，让页面内容更稳定
             setTimeout(() => {
                 const sendUpdateRequest = (retryCount = 0) => {
-                    chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE' }, (response) => {
+                    chrome.tabs.sendMessage(tabId, { type: 'REQUEST_PAGE_INFO_UPDATE', isMonitoringEnabled: true }, (response) => {
                         if (chrome.runtime.lastError) {
                             if (retryCount < 3) { // 页面加载后可以多重试几次
                                 console.log(`[VCP Background] ⚠️ 页面加载完成后请求失败，${300 * (retryCount + 1)}ms后重试 (${retryCount + 1}/3)`);
@@ -755,6 +772,7 @@ chrome.storage.local.get(['isMonitoringEnabled'], (result) => {
     if (result.isMonitoringEnabled !== undefined) {
         isMonitoringEnabled = result.isMonitoringEnabled;
         console.log('[VCP Background] 📡 恢复监控状态:', isMonitoringEnabled ? '开启' : '关闭');
+        broadcastMonitoringStatusToTabs();
     }
 });
 
