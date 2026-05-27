@@ -116,3 +116,28 @@ test('RAGDiaryPlugin cache key should include Codex adaptive tuning snapshot', (
     assert.equal(zeroSnapshotKey, baselineKey);
     assert.notEqual(boostedSnapshotKey, baselineKey);
 });
+
+test('RAGDiaryPlugin cache key should include shotgun tuning snapshot', () => {
+    const baseParams = {
+        userContent: '继续追踪最近几段上下文',
+        aiContent: '需要保留当前主题',
+        dbName: PROCESS_DIARY_NAME,
+        modifiers: '::TagMemo',
+        dynamicK: 4
+    };
+
+    const baselineKey = ragDiaryPlugin._generateCacheKey(baseParams);
+    const defaultShotgunKey = ragDiaryPlugin._generateCacheKey({
+        ...baseParams,
+        shotgunDecayFactor: 0.85,
+        shotgunHistorySegmentLimit: 3
+    });
+    const tunedShotgunKey = ragDiaryPlugin._generateCacheKey({
+        ...baseParams,
+        shotgunDecayFactor: 0.65,
+        shotgunHistorySegmentLimit: 0
+    });
+
+    assert.equal(defaultShotgunKey, baselineKey);
+    assert.notEqual(tunedShotgunKey, baselineKey);
+});

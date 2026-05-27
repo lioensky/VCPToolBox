@@ -2364,6 +2364,15 @@ class RAGDiaryPlugin {
 
         // 1️⃣ 获取自适应调优参数（用于缓存键和召回参数计算）
         const adaptiveTuning = await this._getCodexAdaptiveTuning(dbName);
+        const ragPluginConfig = this.ragParams?.RAGDiaryPlugin || {};
+        const rawShotgunHistorySegmentLimit = parseInt(ragPluginConfig.shotgunHistorySegmentLimit, 10);
+        const shotgunHistorySegmentLimit = Number.isFinite(rawShotgunHistorySegmentLimit)
+            ? Math.max(0, rawShotgunHistorySegmentLimit)
+            : 3;
+        const rawShotgunDecayFactor = Number(ragPluginConfig.shotgunDecayFactor);
+        const shotgunDecayFactor = Number.isFinite(rawShotgunDecayFactor)
+            ? Math.max(0, Math.min(1, rawShotgunDecayFactor))
+            : 0.85;
 
         // 2️⃣ 生成缓存键（包含自适应调优快照，避免缓存命中时忽略新调优）
         const cacheKey = this._generateCacheKey({
@@ -2374,6 +2383,8 @@ class RAGDiaryPlugin {
             dynamicK,
             ghostTags, // 🌟 修复 2.4：将外部的 ghostTags 传入生成器
             isFreshTimeConversationStart,
+            shotgunDecayFactor,
+            shotgunHistorySegmentLimit,
             adaptiveKDelta: adaptiveTuning?.kDelta || 0,
             adaptiveTagWeightDelta: adaptiveTuning?.tagWeightDelta || 0,
             adaptiveTruncationDelta: adaptiveTuning?.truncationDelta || 0,
@@ -2594,16 +2605,17 @@ class RAGDiaryPlugin {
             let searchVectors = [{ vector: finalQueryVector, type: 'current', weight: 1.0 }];
 
             if (historySegments && historySegments.length > 0) {
-                const recentSegments = historySegments.slice(-3);
-                const decayFactor = 0.85;
+                const recentSegments = shotgunHistorySegmentLimit > 0
+                    ? historySegments.slice(-shotgunHistorySegmentLimit)
+                    : [];
                 recentSegments.forEach((seg, idx) => {
                     const distance = recentSegments.length - idx;
-                    const weightMultiplier = Math.pow(decayFactor, distance);
+                    const weightMultiplier = Math.pow(shotgunDecayFactor, distance);
                     searchVectors.push({ vector: seg.vector, type: `history_${idx}`, weight: weightMultiplier });
                 });
             }
 
-            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches...`);
+            console.log(`[RAGDiaryPlugin] Shotgun Query: Executing ${searchVectors.length} parallel searches (historyLimit=${shotgunHistorySegmentLimit}, decay=${shotgunDecayFactor}).`);
 
             const searchPromises = searchVectors.map(async (qv) => {
                 try {
@@ -3864,6 +3876,8 @@ class RAGDiaryPlugin {
             isAutoMode = false,
             ghostTags = [],
             isFreshTimeConversationStart = false,
+            shotgunDecayFactor = 0.85,
+            shotgunHistorySegmentLimit = 3,
             adaptiveKDelta = 0,
             adaptiveTagWeightDelta = 0,
             adaptiveTruncationDelta = 0,
@@ -3889,6 +3903,8 @@ class RAGDiaryPlugin {
             date: currentDate,
             ghosts: ghostTagString,
             fresh_time_start: isFreshTimeConversationStart,
+            shotgun_decay: shotgunDecayFactor,
+            shotgun_history_limit: shotgunHistorySegmentLimit,
             adaptive_k_delta: adaptiveKDelta,
             adaptive_tag_weight_delta: adaptiveTagWeightDelta,
             adaptive_truncation_delta: adaptiveTruncationDelta,
