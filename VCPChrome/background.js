@@ -240,12 +240,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
         
-        // 检查2：监控是否开启（但新标签页的首次更新仍然会被发送）
-        if (!isMonitoringEnabled) {
-            console.log('[VCP Background] ⚠️ 页面监控未开启，但仍处理活动标签页的更新');
+        // 检查2：监控未开启时忽略自动页面更新，避免关闭监控后仍持续刷新日志。
+        // 手动刷新和命令执行后的显式更新可通过 force=true 绕过该限制。
+        const isForcedUpdate = request.data?.force === true;
+        if (!isMonitoringEnabled && !isForcedUpdate) {
+            console.log('[VCP Background] ⚠️ 页面监控未开启，忽略自动页面更新');
+            return true;
         }
         
-        console.log(`[VCP Background] ✅ 接受活动标签页 [ID:${senderTabId}] 的更新`);
+        console.log(`[VCP Background] ✅ 接受活动标签页 [ID:${senderTabId}] 的${isForcedUpdate ? '强制' : '自动'}更新`);
         
         // 发送到VCP服务器（如果已连接）
         if (ws && ws.readyState === WebSocket.OPEN) {
