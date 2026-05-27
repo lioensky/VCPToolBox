@@ -254,6 +254,39 @@ function normalizeDataUriInput(input) {
     return `data:${mimeType};base64,${base64}`;
 }
 
+async function readResponseBodyWithLimit(response, maxBytes, source = 'response body') {
+    const body = response.body;
+    if (!body) {
+        throw new Error(`Plugin Error: ${source} is missing a response body.`);
+    }
+
+    const chunks = [];
+    let totalBytes = 0;
+
+    try {
+        for await (const chunk of body) {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            totalBytes += buffer.length;
+            if (totalBytes > maxBytes) {
+                if (typeof body.destroy === 'function') {
+                    body.destroy();
+                } else if (typeof body.cancel === 'function') {
+                    await body.cancel().catch(() => {});
+                }
+                throw new Error(`Plugin Error: ${source} exceeds ${maxBytes} bytes.`);
+            }
+            chunks.push(buffer);
+        }
+    } catch (error) {
+        if (typeof body.destroy === 'function' && !body.destroyed) {
+            body.destroy();
+        }
+        throw error;
+    }
+
+    return Buffer.concat(chunks, totalBytes);
+}
+
 async function fetchRemoteImageInput(rawUrl, redirectCount = 0) {
     if (redirectCount > 5) {
         throw new Error("Plugin Error: 图片下载重定向次数过多。");
@@ -282,7 +315,7 @@ async function fetchRemoteImageInput(rawUrl, redirectCount = 0) {
     }
 
     const mimeType = normalizeImageMimeType(response.headers.get('content-type') || '', 'remote image input');
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await readResponseBodyWithLimit(response, MAX_INPUT_IMAGE_SIZE, 'remote image input');
     return bufferToImageDataUri(buffer, mimeType, 'remote image input');
 }
 

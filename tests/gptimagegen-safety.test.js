@@ -148,11 +148,27 @@ test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () =>
   assert.match(source, /isBlockedLocalHostname/);
   assert.match(source, /assertImageInputHostnameIsSafe/);
   assert.match(source, /dns\.lookup\(hostname, \{ all: true, verbatim: true \}\)/);
+  assert.match(source, /readResponseBodyWithLimit/);
   assert.match(source, /expandIpv6Address/);
   assert.match(source, /extractIPv4FromIPv6/);
   assert.match(source, /resolveImageInputUrl\(response\.headers\.get\('location'\), parsedUrl\.href\)/);
   assert.match(source, /normalizeImageMimeType/);
   assert.match(source, /MAX_INPUT_IMAGE_SIZE/);
+});
+
+test('ZImageTurboGen streams remote edit image downloads with a hard byte limit', () => {
+  const source = fs.readFileSync(zImagePluginScript, 'utf8');
+  const fetchInputSection = source.slice(
+    source.indexOf('async function fetchRemoteImageInput'),
+    source.indexOf('function parseImageArrayInput')
+  );
+
+  assert.match(source, /async function readResponseBodyWithLimit\(response, maxBytes/);
+  assert.match(source, /for await \(const chunk of body\)/);
+  assert.match(source, /totalBytes > maxBytes/);
+  assert.match(source, /body\.destroy\(\)/);
+  assert.match(fetchInputSection, /readResponseBodyWithLimit\(response, MAX_INPUT_IMAGE_SIZE, 'remote image input'\)/);
+  assert.doesNotMatch(fetchInputSection, /arrayBuffer\(/);
 });
 
 test('ZImageTurboGen rejects private URL edit inputs before network calls', () => {
