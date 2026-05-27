@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import dns from 'dns/promises';
 import fs from 'fs/promises';
 import net from 'net';
 import path from 'path';
@@ -162,6 +163,35 @@ function isBlockedLocalHostname(hostname) {
     return false;
 }
 
+async function assertImageInputHostnameIsSafe(parsedUrl) {
+    const hostname = normalizeHostnameForIpCheck(parsedUrl.hostname);
+    if (!hostname) {
+        throw new Error("Plugin Error: Image input URL must include a hostname.");
+    }
+
+    if (isBlockedLocalHostname(hostname)) {
+        throw new Error("Plugin Error: 不允许指向本机、链路本地或私有网段地址的图片输入。");
+    }
+
+    if (net.isIP(hostname)) return;
+
+    let records;
+    try {
+        records = await dns.lookup(hostname, { all: true, verbatim: true });
+    } catch (error) {
+        throw new Error(`Plugin Error: Failed to resolve input image hostname: ${hostname}. ${error.message}`);
+    }
+
+    if (!Array.isArray(records) || records.length === 0) {
+        throw new Error(`Plugin Error: Failed to resolve input image hostname: ${hostname}.`);
+    }
+
+    const blockedRecord = records.find(record => record && isBlockedLocalHostname(record.address));
+    if (blockedRecord) {
+        throw new Error("Plugin Error: 不允许解析到本机、链路本地或私有网段地址的图片输入。");
+    }
+}
+
 function shouldBypassProxy(url) {
     try {
         const { hostname } = new URL(url);
@@ -230,6 +260,7 @@ async function fetchRemoteImageInput(rawUrl, redirectCount = 0) {
     }
 
     const parsedUrl = resolveImageInputUrl(rawUrl);
+    await assertImageInputHostnameIsSafe(parsedUrl);
     const response = await fetchWithProxy(parsedUrl.href, {
         redirect: 'manual',
         signal: AbortSignal.timeout(60000),

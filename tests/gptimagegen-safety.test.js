@@ -11,8 +11,9 @@ const pluginDir = path.join(repoRoot, 'Plugin', 'GPTImageGen');
 const pluginScript = path.join(pluginDir, 'GPTImageGen.js');
 const zImagePluginDir = path.join(repoRoot, 'Plugin', 'ZImageTurboGen');
 const zImagePluginScript = path.join(zImagePluginDir, 'ZImageTurboGen.mjs');
+const zImageDnsFixture = path.join(repoRoot, 'tests', 'fixtures', 'zimage-dns-private-fixture.mjs');
 
-function zImageTestEnv() {
+function zImageTestEnv(overrides = {}) {
   return {
     ...process.env,
     ZIMAGE_API_KEY: 'test-only-key',
@@ -21,7 +22,12 @@ function zImageTestEnv() {
     IMAGESERVER_IMAGE_KEY: 'test-image-key',
     VarHttpUrl: 'http://127.0.0.1',
     VarHttpsUrl: 'https://example.invalid',
-    DebugMode: 'false'
+    DebugMode: 'false',
+    HTTP_PROXY: '',
+    http_proxy: '',
+    HTTPS_PROXY: '',
+    https_proxy: '',
+    ...overrides
   };
 }
 
@@ -135,10 +141,13 @@ test('GPTImageGen exits before any API call when API key is absent', () => {
 test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () => {
   const source = fs.readFileSync(zImagePluginScript, 'utf8');
 
+  assert.match(source, /import dns from 'dns\/promises';/);
   assert.match(source, /import net from 'net';/);
   assert.match(source, /ZIMAGE_INPUT_IMAGE_ROOT/);
   assert.match(source, /isPathInside\(resolved, ZIMAGE_INPUT_IMAGE_ROOT\)/);
   assert.match(source, /isBlockedLocalHostname/);
+  assert.match(source, /assertImageInputHostnameIsSafe/);
+  assert.match(source, /dns\.lookup\(hostname, \{ all: true, verbatim: true \}\)/);
   assert.match(source, /expandIpv6Address/);
   assert.match(source, /extractIPv4FromIPv6/);
   assert.match(source, /resolveImageInputUrl\(response\.headers\.get\('location'\), parsedUrl\.href\)/);
@@ -162,6 +171,28 @@ test('ZImageTurboGen rejects private URL edit inputs before network calls', () =
   const parsed = JSON.parse(child.stdout);
   assert.equal(parsed.status, 'error');
   assert.match(parsed.error, /不允许指向本机、链路本地或私有网段地址/);
+  assert.equal(child.stderr, '');
+});
+
+test('ZImageTurboGen rejects hostnames that resolve to private image inputs before network calls', () => {
+  const child = spawnSync(process.execPath, [zImagePluginScript], {
+    cwd: repoRoot,
+    input: JSON.stringify({
+      command: 'EditImage',
+      prompt: 'offline safety check',
+      image: 'http://image-private.test:9/latest/meta-data'
+    }),
+    encoding: 'utf8',
+    env: zImageTestEnv({
+      NODE_OPTIONS: `--import=${pathToFileURL(zImageDnsFixture).href}`,
+      ZIMAGE_TEST_DNS_PRIVATE_HOST: 'image-private.test'
+    })
+  });
+
+  assert.notEqual(child.status, 0);
+  const parsed = JSON.parse(child.stdout);
+  assert.equal(parsed.status, 'error');
+  assert.match(parsed.error, /不允许解析到本机、链路本地或私有网段地址/);
   assert.equal(child.stderr, '');
 });
 
