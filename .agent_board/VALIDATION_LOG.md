@@ -1,5 +1,47 @@
 # Validation Log
 
+## 2026-05-28 Asia/Shanghai - Semantic Router Split Intake Packages 1-4
+
+Checks performed:
+
+- `git branch --show-current`
+- `git status --short`
+- `node --check modules/semanticModelRouter.js`
+- `node --check modules/chatCompletionHandler.js`
+- `node --check modules/handlers/nonStreamHandler.js`
+- `node --check modules/handlers/streamHandler.js`
+- `node --check routes/admin/semanticRouter.js`
+- `node --check routes/adminPanelRoutes.js`
+- `node --check adminServer.js`
+- `node --check server.js`
+- `npm run build:admin`
+- JSON parse check for `SemanticModelRouter.json`
+- JSON parse check for `SemanticModelRouter.json.example`
+- `node scripts/check-prod-baseline.js`
+- `git diff --name-status`
+- `git diff --stat`
+
+Verified:
+
+- Current intake branch is `codex/semantic-router-backend-20260528`.
+- Package 1 backend runtime files parse successfully.
+- Package 2 admin API files parse successfully.
+- Package 3 AdminPanel-Vue source intake builds successfully.
+- Package 4 semantic-router config examples parse successfully.
+- `server.js` still parses after both runtime and admin-wiring changes.
+- `scripts/check-prod-baseline.js` passed:
+  `3417 tracked files checked, 14 safety checks passed`.
+- `AdminPanel-Vue/dist/**` build output was verified and then removed from the
+  diff, leaving only source/config/doc/package changes on the branch.
+
+Not validated:
+
+- No runtime chat request was executed through Semantic Model Router.
+- No admin server or main server process was started for HTTP smoke validation.
+- No admin server was started.
+- No AdminPanel-Vue build or UI verification was run.
+- No remote write was performed.
+
 ## 2026-05-26 Asia/Shanghai - Final Dirty Classification Closure
 
 Checks performed:

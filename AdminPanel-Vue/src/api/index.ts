@@ -97,6 +97,9 @@ export type * from './forum-assistant'
 export { aiImageAgentsApi } from './aiImageAgents'
 export type * from './aiImageAgents'
 
+export { semanticRouterApi } from './semanticRouter'
+export type * from './semanticRouter'
+
 // 插件商店 API
 export { pluginStoreApi } from './pluginStore'
 export type * from './pluginStore'

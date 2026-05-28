@@ -1,5 +1,52 @@
 # Checkpoint
 
+Time: 2026-05-28 Asia/Shanghai.
+
+Completed:
+
+- Continued split-package absorb of upstream commit `9338e01e` on local branch
+  `codex/semantic-router-backend-20260528`.
+- Package 1 backend runtime intake remains applied locally:
+  `modules/semanticModelRouter.js`,
+  `modules/chatCompletionHandler.js`,
+  `modules/handlers/nonStreamHandler.js`,
+  `modules/handlers/streamHandler.js`,
+  `server.js`.
+- Package 2 admin API wiring is now applied locally:
+  `routes/admin/semanticRouter.js`,
+  `routes/adminPanelRoutes.js`,
+  `adminServer.js`,
+  and the `server.js` admin-route argument wiring.
+- Package 3 AdminPanel-Vue source intake is now applied locally:
+  `AdminPanel-Vue/src/api/semanticRouter.ts`,
+  `AdminPanel-Vue/src/views/SemanticModelRouterEditor.vue`,
+  route manifest/components wiring,
+  and the API barrel export.
+- Package 4 config/docs intake is now applied locally:
+  `SemanticModelRouter.json`,
+  `SemanticModelRouter.json.example`,
+  `config.env.example`,
+  `docs/SEMANTIC_MODEL_ROUTER.md`.
+- Passed syntax checks for all current Package 1 and Package 2 files.
+- Passed `npm run build:admin`.
+- Parsed both semantic-router JSON files successfully.
+- Passed `node scripts/check-prod-baseline.js`.
+- Removed `AdminPanel-Vue/dist/**` build noise from the working diff after build
+  verification.
+
+Not completed:
+
+- No runtime smoke test for Semantic Model Router was run.
+- No commit, merge to local `main`, push, or stable sync was performed.
+
+Next:
+
+1. Decide whether to run a narrow runtime smoke for `/v1/models` and
+   `/admin_api/semantic-router/*`.
+2. If the local absorb shape is accepted, fast-forward or merge this branch
+   into local `main`.
+3. Keep all remote writes deferred until explicit approval.
+
 Time: 2026-05-26 Asia/Shanghai.
 
 Completed:

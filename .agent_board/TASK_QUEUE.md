@@ -1,5 +1,19 @@
 # VCPToolBox Governance Task Queue
 
+Updated: 2026-05-28 Asia/Shanghai.
+
+## Current Intake
+
+- Scope: split-package absorb of upstream commit `9338e01e` (`Semantic Model Router`).
+- Working branch: `codex/semantic-router-backend-20260528`.
+- Package 1 backend runtime: completed locally and validated.
+- Package 2 admin API wiring: completed locally and validated.
+- Package 3 AdminPanel-Vue source-only intake: completed locally and build-validated.
+- Package 4 config/docs intake: completed locally and JSON-validated.
+- `AdminPanel-Vue/dist/**` build noise has been stripped back out of the diff.
+- Remaining work is now only: optional runtime smoke, local merge to `main`,
+  and any later remote sync decision.
+
 Updated: 2026-05-26 Asia/Shanghai.
 
 ## Done

@@ -1,5 +1,54 @@
 # VCPToolBox Governance Run State
 
+Status: active upstream split-package intake.
+Workspace: `A:/VCP/VCPToolBox`.
+Current branch: `codex/semantic-router-backend-20260528`.
+Worktree status at last check: dirty by active local package work, but `dist/**`
+build artifacts have already been removed from the diff.
+
+Current verified intake state:
+
+- Base `main` / `origin/main` / `origin/prod/stable` were aligned at
+  `6ec5dc078f7e2869eff1574683bf5ae7e89d0434` before this intake branch.
+- This intake branch is local-only; no push, merge, or stable sync has been
+  performed for `9338e01e`.
+- Package 1 currently touches:
+  `modules/semanticModelRouter.js`,
+  `modules/chatCompletionHandler.js`,
+  `modules/handlers/nonStreamHandler.js`,
+  `modules/handlers/streamHandler.js`,
+  `server.js`.
+- Package 2 currently touches:
+  `routes/admin/semanticRouter.js`,
+  `routes/adminPanelRoutes.js`,
+  `adminServer.js`,
+  and one additional `server.js` admin wiring update.
+- Package 3 currently touches:
+  `AdminPanel-Vue/src/api/semanticRouter.ts`,
+  `AdminPanel-Vue/src/views/SemanticModelRouterEditor.vue`,
+  `AdminPanel-Vue/src/api/index.ts`,
+  `AdminPanel-Vue/src/app/routes/components.ts`,
+  `AdminPanel-Vue/src/app/routes/manifest.ts`.
+- Package 4 currently touches:
+  `SemanticModelRouter.json`,
+  `SemanticModelRouter.json.example`,
+  `config.env.example`,
+  `docs/SEMANTIC_MODEL_ROUTER.md`.
+- Current validated local checks:
+  `node --check modules/semanticModelRouter.js`
+  `node --check modules/chatCompletionHandler.js`
+  `node --check modules/handlers/nonStreamHandler.js`
+  `node --check modules/handlers/streamHandler.js`
+  `node --check routes/admin/semanticRouter.js`
+  `node --check routes/adminPanelRoutes.js`
+  `node --check adminServer.js`
+  `node --check server.js`
+  `npm run build:admin`
+  `node -e JSON.parse(...)` for both semantic-router JSON files
+  `node scripts/check-prod-baseline.js`
+- Deferred items remain:
+  runtime smoke validation, merge to local `main`, and any remote write.
+
 Status: active branch governance follow-up.
 Workspace: `A:/VCP/VCPToolBox-prod-stable`.
 Current branch: `main`.

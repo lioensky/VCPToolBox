@@ -38,7 +38,8 @@ class StreamHandler {
       executionContext,
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
-      vcpToolUseForbidden
+      vcpToolUseForbidden,
+      semanticModelFallbackCandidates
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
@@ -336,7 +337,7 @@ class StreamHandler {
             body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
             signal: abortController.signal,
           },
-          { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
+          { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
         );
 
         if (nextAiAPIResponse.ok) {
@@ -460,7 +461,7 @@ class StreamHandler {
           body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
           signal: abortController.signal,
         },
-        { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
+        { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE, modelFallbackCandidates: semanticModelFallbackCandidates }
       );
 
       if (!nextAiAPIResponse.ok) break;

@@ -15,7 +15,11 @@ module.exports = function (
   agentDirPath,
   cachedEmojiLists,
   tvsDirPath,
-  triggerRestart
+  triggerRestart,
+  semanticModelRouter,
+  modelRedirectHandler,
+  apiUrl,
+  apiKey
 ) {
   if (!agentDirPath || typeof agentDirPath !== "string") {
     throw new Error(
@@ -44,6 +48,10 @@ module.exports = function (
     cachedEmojiLists,
     tvsDirPath,
     triggerRestart,
+    semanticModelRouter,
+    modelRedirectHandler,
+    apiUrl,
+    apiKey,
   };
 
   /**
@@ -86,7 +94,8 @@ module.exports = function (
   mount("/", "agentAssistant"); // Handles /agent-assistant/*
   mount("/", "taskAssistant"); // Handles /task-assistant/*
   mount("/", "toolListEditor"); // Handles /tool-list/*
-    mount("/", "dynamicTools"); // Handles /dynamic-tools/*
+  mount("/", "dynamicTools"); // Handles /dynamic-tools/*
+  mount("/", "semanticRouter"); // Handles /semantic-router/*
   mount("/", "dream"); // Handles /dream-logs/*, /dream-operation/*
   mount("/", "dailyNotes"); // Wrapper for existing dailyNotesRoutes (Handles /dailynotes/*)
   mount("/", "newapiMonitor"); // Handles /newapi-monitor/*

@@ -300,15 +300,50 @@ async function getRealAuthCode(debugMode = false) {
   }
 }
 
+function applyModelFallbackForAttempt(options, candidates, attemptIndex, debugMode = false) {
+  if (!Array.isArray(candidates) || candidates.length === 0 || !options || typeof options.body !== 'string') {
+    return options;
+  }
+
+  const selectedModel = candidates[Math.min(attemptIndex, candidates.length - 1)];
+  if (!selectedModel) return options;
+
+  try {
+    const parsedBody = JSON.parse(options.body);
+    if (!parsedBody || typeof parsedBody !== 'object') return options;
+
+    const previousModel = parsedBody.model;
+    parsedBody.model = selectedModel;
+
+    if (debugMode && previousModel !== selectedModel) {
+      console.log(`[SemanticModelRouter] 容灾切换上游模型: ${previousModel} -> ${selectedModel} (attempt=${attemptIndex + 1})`);
+    }
+
+    return {
+      ...options,
+      body: JSON.stringify(parsedBody)
+    };
+  } catch (error) {
+    if (debugMode) {
+      console.warn(`[SemanticModelRouter] 无法为本次重试替换模型，继续使用原始请求体: ${error.message}`);
+    }
+    return options;
+  }
+}
+
 // A helper function to handle fetch with retries for specific status codes
 // connectionTimeout: 连接超时安全网，防止上游 API 静默挂起导致永久等待（仅覆盖到收到响应头为止）
 async function fetchWithRetry(
   url,
   options,
-  { retries = 3, delay = 1000, debugMode = false, onRetry = null, connectionTimeout = 120000 } = {},
+  { retries = 3, delay = 1000, debugMode = false, onRetry = null, connectionTimeout = 120000, modelFallbackCandidates = null } = {},
 ) {
   const { default: fetch } = await import('node-fetch');
-  for (let i = 0; i < retries; i++) {
+  const maxAttempts = Math.max(
+    Number.isFinite(Number(retries)) && Number(retries) > 0 ? Math.floor(Number(retries)) : 1,
+    Array.isArray(modelFallbackCandidates) ? modelFallbackCandidates.length : 0
+  );
+  for (let i = 0; i < maxAttempts; i++) {
     // 为每次尝试创建独立的中止控制器，用于超时保护
     const attemptController = new AbortController();
     let didTimeout = false;
@@ -336,8 +371,9 @@ async function fetchWithRetry(
     };
 
     try {
+      const attemptOptions = applyModelFallbackForAttempt(options, modelFallbackCandidates, i, debugMode);
       const response = await fetch(url, {
-        ...options,
+        ...attemptOptions,
         agent: getFetchAgent, // 注入防御性长连接池
         signal: attemptController.signal,
       });
@@ -385,7 +421,7 @@ async function fetchWithRetry(
         if (didTimeout) {
           // 超时中止 → 视为可重试的网络错误
           const msg = `Connection timed out after ${connectionTimeout / 1000}s`;
-          if (i === retries - 1) {
+          if (i === maxAttempts - 1) {
             console.error(`[Fetch Retry] ${msg}. All retries exhausted.`);
             throw new Error(msg);
           }
@@ -401,7 +437,7 @@ async function fetchWithRetry(
         throw error;
       }
 
-      if (i === retries - 1) {
+      if (i === maxAttempts - 1) {
         console.error(`[Fetch Retry] All retries failed. Last error: ${error.message}`);
         throw error;
       }
@@ -559,10 +595,32 @@ class ChatCompletionHandler {
       roleDividerRemoveDisabledTags, // 新增
       chinaModel1, // 新增
       chinaModel1Cot, // 新增
+      semanticModelRouter,
       executionContext: configuredExecutionContext,
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
+    const applyChinaModelThinkingControl = (body) => {
+      if (!body || !body.model || !chinaModel1 || !Array.isArray(chinaModel1) || chinaModel1.length === 0) {
+        return body;
+      }
+
+      const modelNameLower = String(body.model).toLowerCase();
+      const isChinaModel = chinaModel1.some(m => modelNameLower.includes(String(m).toLowerCase()));
+      if (!isChinaModel) return body;
+
+      if (chinaModel1Cot) {
+        body.thinking = { type: "enabled" };
+      } else {
+        delete body.thinking;
+      }
+
+      if (DEBUG_MODE) {
+        console.log(`[ChinaModel] 模型 '${body.model}' 匹配成功。思维链状态: ${chinaModel1Cot ? '开启 (enabled)' : '关闭 (已移除字段)'}`);
+      }
+
+      return body;
+    };
 
     let clientIp = normalizeClientIp(req.ip);
 
@@ -673,27 +731,20 @@ class ChatCompletionHandler {
     try {
       if (originalBody.model) {
         const originalModel = originalBody.model;
-        const redirectedModel = modelRedirectHandler.redirectModelForBackend(originalModel);
-        if (redirectedModel !== originalModel) {
-          originalBody = { ...originalBody, model: redirectedModel };
-          console.log(`[ModelRedirect] 客户端请求模型 '${originalModel}' 已重定向为后端模型 '${redirectedModel}'`);
-        }
+        const isSemanticRoutingModel = semanticModelRouter && typeof semanticModelRouter.isRoutingModel === 'function'
+          ? semanticModelRouter.isRoutingModel(originalModel)
+          : false;
 
-        // --- 国产A类模型推理功能控制 (ChinaModel Thinking Control) ---
-        if (chinaModel1 && Array.isArray(chinaModel1) && chinaModel1.length > 0) {
-          const modelNameLower = originalBody.model.toLowerCase();
-          const isChinaModel = chinaModel1.some(m => modelNameLower.includes(m.toLowerCase()));
-          if (isChinaModel) {
-            if (chinaModel1Cot) {
-              originalBody.thinking = { type: "enabled" };
-            } else {
-              delete originalBody.thinking;
-            }
-
-            if (DEBUG_MODE) {
-              console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。思维链状态: ${chinaModel1Cot ? '开启 (enabled)' : '关闭 (已移除字段)'}`);
-            }
+        if (!isSemanticRoutingModel) {
+          const redirectedModel = modelRedirectHandler.redirectModelForBackend(originalModel);
+          if (redirectedModel !== originalModel) {
+            originalBody = { ...originalBody, model: redirectedModel };
+            console.log(`[ModelRedirect] 客户端请求模型 '${originalModel}' 已重定向为后端模型 '${redirectedModel}'`);
           }
+
+          applyChinaModelThinkingControl(originalBody);
+        } else if (DEBUG_MODE) {
+          console.log(`[SemanticModelRouter] 检测到语义路由模型 '${originalModel}'，延后到消息预处理完成后选择真实后端模型。`);
         }
       }
 
@@ -768,6 +819,40 @@ class ChatCompletionHandler {
           tavernProcessedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', originalBody.messages);
         } catch (pluginError) {
           console.error(`[Server] Error in priority preprocessor VCPTavern:`, pluginError);
+        }
+      }
+
+      let semanticRoutePlan = null;
+      let semanticModelFallbackCandidates = null;
+      if (semanticModelRouter && typeof semanticModelRouter.isRoutingModel === 'function' && semanticModelRouter.isRoutingModel(originalBody.model)) {
+        semanticRoutePlan = await semanticModelRouter.resolveRoute({
+          requestedModel: originalBody.model,
+          messages: tavernProcessedMessages,
+          pluginManager
+        });
+
+        if (semanticRoutePlan && semanticRoutePlan.active) {
+          const rawCandidates = Array.isArray(semanticRoutePlan.candidates) && semanticRoutePlan.candidates.length > 0
+            ? semanticRoutePlan.candidates
+            : [semanticRoutePlan.selectedModel];
+
+          semanticModelFallbackCandidates = rawCandidates
+            .map(model => modelRedirectHandler.redirectModelForBackend(model))
+            .filter(Boolean)
+            .filter((model, index, arr) => arr.indexOf(model) === index);
+
+          const selectedBackendModel = semanticModelFallbackCandidates[0] || modelRedirectHandler.redirectModelForBackend(semanticRoutePlan.selectedModel);
+          const previousModel = originalBody.model;
+          originalBody = { ...originalBody, model: selectedBackendModel };
+
+          if (DEBUG_MODE || previousModel !== selectedBackendModel) {
+            console.log(
+              `[SemanticModelRouter] 请求模型 '${previousModel}' 已路由到 '${selectedBackendModel}' ` +
+              `(preset=${semanticRoutePlan.presetName}, reason=${semanticRoutePlan.reason}, candidates=${semanticModelFallbackCandidates.join(' -> ')})`
+            );
+          }
+
+          applyChinaModelThinkingControl(originalBody);
         }
       }
 
@@ -900,6 +985,7 @@ class ChatCompletionHandler {
 
       originalBody.messages = processedMessages;
       const executionContext = buildExecutionContext(processingContext, configuredExecutionContext);
+
       const willStreamResponse = isOriginalRequestStreaming;
       const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
 
@@ -930,6 +1016,7 @@ class ChatCompletionHandler {
           retries: apiRetries,
           delay: apiRetryDelay,
           debugMode: DEBUG_MODE,
+          modelFallbackCandidates: semanticModelFallbackCandidates,
           onRetry: async (attempt, errorInfo) => {
             if (!res.headersSent && isOriginalRequestStreaming) {
               if (DEBUG_MODE)
@@ -1040,7 +1127,8 @@ class ChatCompletionHandler {
         fetchWithRetry,
         isToolResultError,
         formatToolResult,
-        vcpToolUseForbidden
+        vcpToolUseForbidden,
+        semanticModelFallbackCandidates
       };
 
       if (isUpstreamStreaming) {
