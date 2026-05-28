@@ -1,0 +1,83 @@
+今日学习了VCPToolBox新增的PubMedSearch插件，这是一个功能完整的PubMed文献检索工具，封装了NCBI E-utilities和PMC接口，支持文献搜索、详情获取、引用分析、全文阅读和引用格式导出。
+
+核心概念：PubMedSearch是VCP的PubMed文献检索插件，提供对全球最大的生物医学文献数据库的全面访问能力。支持关键词搜索、高级字段检索、作者检索、期刊检索、MeSH术语检索、趋势文献发现、文章详情获取、PMC全文获取、引用关系分析、标识符转换和引用格式导出等15个专业命令。
+
+插件基本信息：插件名称PubMedSearch，类型synchronous同步插件，超时时间60秒，入口文件PubMedSearch.mjs（Node.js）。系统提示词占位符为{{VCPPubMedSearch}}。
+
+简明释义：PubMed收录了数千万篇生物医学领域的学术论文摘要和引用信息。这个插件让AI能够像专业研究者一样检索文献，不仅能搜索论文，还能查看引用关系、获取PMC开放获取全文、导出标准引用格式，是学术研究和文献综述的强力助手。
+
+配置项说明：NCBI_API_KEY是NCBI E-utilities API Key（可选但强烈建议配置以提升请求速率）；NCBI_EMAIL是用于标识调用方的电子邮箱（可选但建议配置）。
+
+核心命令概览：
+
+文献搜索类：search_articles基础关键词搜索、advanced_search高级字段组合搜索（标题/摘要/作者/期刊/MeSH多字段布尔组合）、search_by_author按作者+单位搜索、search_by_journal在指定期刊内搜索、search_by_mesh_terms按MeSH术语搜索、get_trending_articles获取指定领域的近期趋势文献。
+
+文章详情类：get_article_details获取完整元数据（标题/作者/摘要/DOI/MeSH等）、get_abstract获取精简摘要、get_full_text通过PMC ID获取开放获取全文（结构化章节/图表/参考文献）、batch_article_lookup批量获取文章详情（最多200篇）。
+
+引用分析类：get_cited_by查找某文章被哪些文献引用、get_references获取某文章的参考文献列表、get_similar_articles获取相似文献推荐。
+
+工具类：export_citation导出引用格式（APA/MLA/Chicago/BibTeX/RIS）、validate_pmid校验PMID格式和存在性、convert_identifiers在PMID/DOI/PMCID之间互转。
+
+使用方法：基础搜索示例：
+
+关键词搜索（基础）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PubMedSearch「末」,
+command:「始」search_articles「末」,
+query:「始」cancer immunotherapy「末」,
+max_results:「始」20「末」,
+sort:「始」pub_date「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+高级组合搜索（标题+摘要+MeSH术语）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PubMedSearch「末」,
+command:「始」advanced_search「末」,
+title:「始」single-cell RNA-seq「末」,
+abstract:「始」tumor microenvironment「末」,
+mesh_terms:「始」["Neoplasms", "Single-Cell Analysis"]「末」,
+boolean_operator:「始」AND「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+获取最近7天的AI领域趋势文献：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PubMedSearch「末」,
+command:「始」get_trending_articles「末」,
+field:「始」large language model「末」,
+days:「始」7「末」,
+max_results:「始」50「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+获取PMC开放获取全文：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PubMedSearch「末」,
+command:「始」get_full_text「末」,
+pmcid:「始」PMC1234567「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+导出BibTeX引用格式：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」PubMedSearch「末」,
+command:「始」export_citation「末」,
+pmid:「始」12345678「末」,
+format:「始」bibtex「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 搜索结果过多且不精准——使用advanced_search替代search_articles，通过字段级限定（标题、摘要、MeSH术语）缩小范围。
+2. 全文获取失败——get_full_text只适用于已在PMC收录的开放获取文章，付费文章无法获取全文。
+3. API速率限制——无API Key时NCBI限制每秒3次请求，配置NCBI_API_KEY后可提升到每秒10次。
+4. PMID/DOI/PMCID互转失败——并非所有文章都同时拥有三种标识符，部分老文章可能没有DOI或PMCID。
+5. MeSH术语拼写错误——MeSH术语必须使用NCBI标准术语表中的精确名称，建议先在MeSH Browser中查证。
+
+可能的解决办法：
+1. 推荐工作流程：search_articles获取PMID列表 → get_article_details查看摘要 → get_full_text阅读全文 → get_cited_by分析引用网络。
+2. sort参数支持四种排序：relevance（相关度）、pub_date（发表日期）、author（作者）、journal（期刊）。
+3. date_from和date_to参数限定时间范围，格式YYYY/MM/DD，可有效缩小搜索范围。
+4. 批量操作建议：先search获取PMID列表，再用batch_article_lookup一次性批量获取详情（最多200篇）。
+
+关联节点：KEGGSearch通路数据库（配合使用进行通路-文献联动）、NCBIDatasets基因组数据（配合使用进行基因-文献联动）、PaperReader论文阅读器（获取全文后深度阅读）、VCP指令协议语法（调用格式）。
+
+信源/出处：Plugin/PubMedSearch/plugin-manifest.json（111行），Plugin/PubMedSearch/PubMedSearch.mjs。
+
+Tag: PubMedSearch，PubMed，文献检索，NCBI，E-utilities，PMC全文，MeSH术语，引用分析，学术论文，文献综述，BibTeX，引用格式

@@ -1,0 +1,47 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——NCBIDatasets（原子切片）
+
+一、插件身份
+- name: NCBIDatasets
+- displayName: NCBI Datasets 查询插件
+- pluginType: synchronous
+- command: search_genomes, get_gene_info, get_genome_info, get_organism_info, get_assembly_info, get_assembly_reports, get_database_stats, search_by_bioproject, search_by_biosample, search_assemblies, search_genes, search_taxonomy, get_taxonomic_lineage, get_genome_summary, get_taxonomy_info, search_virus_genomes, get_virus_info, search_proteins, get_protein_info, get_genome_annotation, search_genome_features, get_assembly_quality
+
+二、核心能力
+- 提供对 NCBI Datasets v2 API 的封装能力，用于检索基因组、基因与物种信息等。
+- 提供可调用命令：search_genomes、get_gene_info、get_genome_info、get_organism_info、get_assembly_info、get_assembly_reports、get_database_stats、search_by_bioproject、search_by_biosample、search_assemblies、search_genes、search_taxonomy、get_taxonomic_lineage、get_genome_summary、get_taxonomy_info、search_virus_genomes、get_virus_info、search_proteins、get_protein_info、get_genome_annotation、search_genome_features、get_assembly_quality。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+搜索基因组:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」search_genomes「末」,
+query:「始」human「末」
+<<<[END_TOOL_REQUEST]>>>
+
+获取基因信息:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」get_gene_info「末」,
+gene_id:「始」672「末」
+<<<[END_TOOL_REQUEST]>>>
+
+获取基因组信息:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」get_genome_info「末」,
+genome_id:「始」GCF_000001405.40「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: NCBIDatasets, synchronous, 同步调用, 检索, 信息获取, search_genomes, get_gene_info, get_genome_info, get_organism_info, get_assembly_info, multi-command

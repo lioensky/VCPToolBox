@@ -1,0 +1,15 @@
+[2026-05-27] - Codex
+Title: Process note with personal sensitivity
+Memory-ID: codex-process-eab2b8ebe75b42dc84f650e60a0b71ac
+Record-Type: process
+Validated: yes
+Reusable: no
+
+Content:
+Type: checkpoint
+This process checkpoint is marked personal but not secret.
+
+Evidence:
+Allowed process-sensitivity regression test.
+
+Tag: process, sensitivity

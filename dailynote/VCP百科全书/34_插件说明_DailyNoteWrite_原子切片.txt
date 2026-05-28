@@ -1,0 +1,36 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——DailyNoteWrite（原子切片）
+
+一、插件身份
+- name: `DailyNoteWrite`
+- displayName: `日记写入器 (同步)`
+- pluginType: `synchronous`
+- protocol: `stdio`
+
+二、核心能力
+- 写入日记文件并做Tag标准化，保障RAG召回一致性。
+- 自动修复Tag标点/空格格式，统一为 `Tag: a, b, c` 规范。
+- 缺失Tag时可调用Tag生成模型自动补全。
+
+三、关键机制
+- Tag格式自动检测与修复（中英文标点归一）。
+- AI打Tag失败时具备退避重试与降级保存策略。
+- 目标是“先保证可写入，再提升Tag质量”。
+
+四、配置重点
+- `DAILY_NOTE_EXTENSION`
+- `TagModel` / `TagModelMaxOutPutTokens` / `TagModelMaxTokens`
+- `TagModelPrompt`（如 `TagMaster.txt`）
+
+五、RAG实践建议
+- 日记末行强制保留Tag，避免后处理漏标。
+- Tag尽量覆盖“主体词元 + 动作词元 + 问题词元”。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DailyNoteWrite「末」,
+title:「始」VCP开发复盘_标签规范「末」,
+content:「始」今天统一了插件切片Tag格式，提升了召回稳定性。Tag: 标签规范, 切片治理, RAG优化「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: DailyNoteWrite, 日记写入, Tag标准化, Tag自动修复, Tag生成, TagMaster, RAG召回, 词元规范, 同步插件

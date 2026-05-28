@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件实现——VCPEverything（源码事实切片）
+
+一、源码锚点
+- manifest: Plugin/VCPEverything/plugin-manifest.json
+- entry: Plugin/VCPEverything/local-search-controller.js
+- 关键函数: searchWithEverythingHTTP(), processRequest()
+- 通信入口: process.stdin.on('end') -> JSON.parse -> processRequest
+
+二、行为事实（代码级）
+- 插件通过 HTTP 访问 Everything 服务，不走本地 SDK；端口来自 EVERYTHING_PORT（默认 8025）。
+- 请求路径固定拼接 `/?s=...&json=1&path_column=1&n=...`，结果来自 `parsedData.results`。
+- 输出会将 `item.path + item.name` 拼成完整路径数组，并返回 totalResults。
+- 若 query 缺失，直接返回 `Missing required parameter: query`。
+- 连接被拒绝时会给出明确提示：需在 Everything 里开启 HTTP Server。
+
+三、边界与错误模式
+- HTTP 非 200 直接报错，不做降级重试。
+- JSON 解析失败会返回 `Failed to parse JSON response from Everything`。
+- stdin 输入为空时返回 `No input received.`，无业务执行。
+
+四、调用示例（源码对齐）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」LocalSearchController「末」,
+command:「始」search「末」,
+query:「始」path:D:\github\VCP *.md「末」,
+maxResults:「始」80「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: VCPEverything, ServerSearchController, LocalSearchController, local-search-controller.js, EverythingHTTP, EVERYTHING_PORT, query必填, path_column, totalResults, 本地检索
+

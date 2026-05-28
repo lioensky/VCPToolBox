@@ -1,0 +1,44 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——NovelAIGen（原子切片）
+
+一、插件身份
+- name: NovelAIGen
+- displayName: NovelAI 图片生成器
+- pluginType: synchronous
+- command: NovelAIGenerateImage
+
+二、核心能力
+- 通过 NovelAI API 使用 NovelAI Diffusion 模型生成高质量的动漫风格图片。支持多种模型和参数调节。
+- 提供可调用命令：NovelAIGenerateImage。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+生成动漫风格图片:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」NovelAIGen「末」,
+command:「始」NovelAIGenerateImage「末」,
+prompt:「始」beautiful anime girl with long hair, detailed eyes, soft lighting「末」,
+model:「始」nai-diffusion-3「末」
+<<<[END_TOOL_REQUEST]>>>
+
+使用高级参数:
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」NovelAIGen「末」,
+command:「始」NovelAIGenerateImage「末」,
+prompt:「始」fantasy landscape with mountains and rivers「末」,
+model:「始」nai-diffusion-3「末」,
+quality:「始」high「末」,
+steps:「始」28「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: NovelAIGen, synchronous, 同步调用, 多媒体, NovelAIGenerateImage

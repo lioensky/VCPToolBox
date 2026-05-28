@@ -1,0 +1,84 @@
+今日整理了VCPToolBox的小白入门教程，从零开始手把手引导新用户完成VCP系统的基础配置，包括去掉example后缀、配置config.env、以及在VCPChat中映射Agent。
+
+核心概念：VCPToolBox的配置采用"example模板"机制，所有配置文件都有一个带.example后缀的模板文件，用户需要复制并去掉.example后缀，然后填入自己的参数，系统才会读取。
+
+简明释义：就像填表格一样，.example文件是空白表格模板，你需要复制一份、填上自己的信息、然后系统才认这份"正式表格"。
+
+第一步：克隆项目并安装依赖
+
+克隆VCPToolBox仓库到本地：git clone https://github.com/lioensky/VCPToolBox.git，然后cd VCPToolBox。
+安装Node.js依赖：npm install。
+安装Python依赖：pip install -r requirements.txt。
+
+第二步：配置主配置文件（去掉example）
+
+在VCPToolBox根目录找到config.env.example文件，复制一份并重命名为config.env（去掉.example后缀）。
+用文本编辑器打开config.env，填入以下关键参数：
+
+API_KEY：你的AI模型API密钥，例如sk-xxxxxxxxxxxxxxxx。
+API_URL：你的AI模型API地址，例如https://api.openai.com/v1（或其他兼容OpenAI格式的服务商地址）。
+MODEL：你要使用的模型名称，例如gpt-4o或claude-3-5-sonnet-20241022。
+ADMIN_PASSWORD：管理面板的登录密码，自己设置一个。
+PORT：服务器端口，默认6005，一般不需要修改。
+
+第三步：配置插件（按需）
+
+VCPToolBox的插件也采用同样的example机制。如果你想使用某个插件（例如VSearch联网搜索），进入对应插件目录（Plugin/VSearch/），找到config.env.example，复制并重命名为config.env，然后填入该插件所需的API密钥。
+
+不需要的插件不用配置，系统会自动跳过没有config.env的插件（或者说使用默认值）。
+
+第四步：启动VCPToolBox后端
+
+在VCPToolBox根目录运行：node server.js。
+看到终端输出"服务器已启动"或类似信息，说明后端运行正常。
+也可以使用PM2进行生产环境管理：pm2 start server.js。
+
+第五步：验证后端是否正常运行
+
+打开浏览器访问：http://localhost:6005/AdminPanel（如果是远程服务器则替换localhost为服务器IP）。
+输入你在config.env中设置的ADMIN_PASSWORD登录。
+如果能看到管理面板界面，说明后端配置成功。
+
+第六步：安装VCPChat前端
+
+克隆VCPChat仓库：git clone https://github.com/lioensky/VCPChat.git，然后cd VCPChat。
+安装依赖：npm install，以及pip install -r requirements.txt。
+下载壁纸包和音频解码包（从GitHub Releases页面）。
+启动VCPChat：npm start。
+
+第七步：在VCPChat中配置连接VCP后端
+
+VCPChat启动后，点击右上角的设置图标，进入全局设置。
+第一件事：填写用户名（任意名称，必填，否则很多功能会报错）。
+服务器地址填写：http://你的服务器IP:6005/v1/chat/completions（本机则用localhost）。
+通知地址填写：ws://你的服务器IP:6005。
+保存设置。
+
+第八步：在VCPChat中创建Agent并映射到VCP后端
+
+在VCPChat左侧Agent列表点击"+"新建Agent。
+填写Agent名称（例如：Nova）。
+系统提示词（System Prompt）：填入你想要的AI角色设定，或者直接使用VCPToolBox的Agent/目录下现有的Agent文件内容（如Agent/Nova.txt）。
+模型：填写你在VCPToolBox的config.env中配置的模型名称，或者填写你想单独给这个Agent使用的模型。
+保存后，点击该Agent即可开始对话。
+
+第九步：验证VCP工具调用是否正常
+
+在对话中让AI尝试调用一个工具，例如说"帮我搜索一下今天的天气"（需要WeatherInfoNow插件已配置）。
+如果AI能够正确调用工具并返回结果，说明VCP工具链路完全打通。
+如果工具调用失败，检查VCPToolBox终端的日志输出，查看具体错误信息。
+
+常见新手问题汇总：
+问题1：config.env填好了但系统不生效——确认文件名是config.env而不是config.env.example，且文件在正确的目录下。
+问题2：AdminPanel登录失败——确认ADMIN_PASSWORD填写正确，注意区分大小写，且没有多余的空格。
+问题3：VCPChat连接后端失败——确认VCPToolBox后端正在运行，服务器地址格式正确（末尾必须是/v1/chat/completions）。
+问题4：AI回复正常但工具调用不工作——检查对应插件的config.env是否已配置，以及插件目录下是否有plugin-manifest.json（而不是plugin-manifest.json.block）。
+问题5：VCPChat界面元素显示异常——下载并安装壁纸包。
+
+关联节点：VCP系统总览（整体架构理解）、AdminPanel管理配置面板（后端管理）、VCPChat总览与安装部署（前端详细安装）、同步插件开发规范（进阶：自己开发插件）。
+
+反思与洞察：VCP的example机制是一个很好的配置管理实践，避免了用户误提交含有真实密钥的配置文件到Git仓库。对于新用户来说，最容易卡住的地方是：忘记去掉.example后缀、服务器地址格式错误、忘记设置用户名。这三个点需要在引导文档中重点标注。
+
+信源/出处：VCPToolBox README.md、README For VCPChat.md、AdminPanel使用指南、实际部署经验总结。
+
+Tag: 小白教程，快速上手，config.env，example配置，Agent映射，VCPChat连接，插件配置，新手指南，部署教程，常见问题

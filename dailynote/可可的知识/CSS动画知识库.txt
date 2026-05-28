@@ -1,0 +1,112 @@
+可用动画样式例如————
+/*
+ * =======================================================
+ * 小吉的魔法时间：流式文字动态“流光”效果 (Text Shimmer Effect)
+ * =======================================================
+ */
+
+/* 1. 定义一个名为 "textShimmer" 的动画过程 */
+@keyframes textShimmer {
+  from {
+    /* 动画开始时，背景渐变的位置在最右侧 */
+    background-position: 200% center;
+  }
+  to {
+    /* 动画结束时，背景渐变的位置移动到最左侧，形成流动效果 */
+    background-position: -200% center;
+  }
+}
+
+/* 2. 将此效果应用到正在流式输出的消息内容上 */
+/* 这个选择器精确地指向了正在流式输出(有.streaming类)的消息项(message-item)中的内容区域(md-content) */
+.message-item.streaming .md-content {
+  /* 创建一个从透明到高亮再到透明的线性渐变作为背景 */
+  background-image: linear-gradient(
+    to right,
+    var(--shimmer-color-transparent) 20%,
+    var(--shimmer-color-highlight) 50%,
+    var(--shimmer-color-transparent) 80%
+  );
+  
+  /* 关键魔法#1：将背景的范围裁切成文字的形状 */
+  background-clip: text;
+  -webkit-background-clip: text; /* 兼容Webkit内核浏览器 */
+
+  /* 关键魔法#2：将文字本身的颜色设为透明，这样才能“透”出后面的背景渐变 */
+  color: transparent;
+  
+  /* 将背景尺寸扩大，以便渐变效果有足够的空间进行移动 */
+  background-size: 200% auto;
+  
+  /* 应用我们之前定义的动画 */
+  animation: textShimmer 2.5s linear infinite; /* 设置动画速度 */
+}
+
+/* * =================================================================
+ * Enhanced Frosted Glass Effect
+ * 增强磨砂玻璃效果 - 小灵特制
+ * =================================================================
+ */
+
+/* 为聊天气泡添加更强的磨砂玻璃效果 */
+.message-bubble {
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 悬停时的微妙发光效果 */
+.message-bubble:hover {
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+}
+
+/* 为工具调用气泡添加特殊效果 */
+.tool-bubble {
+    backdrop-filter: blur(10px) saturate(110%);
+    -webkit-backdrop-filter: blur(10px) saturate(110%);
+    border: 1px solid var(--tool-bubble-border);
+    background: var(--tool-bubble-bg);
+}
+
+/* 深色主题下的特殊光效 */
+:root .message-bubble {
+    box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* 浅色主题下的柔和阴影 */
+body.light-theme .message-bubble {
+    box-shadow: 
+        0 4px 20px rgba(45, 41, 34, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+
+
+/* ============================================
+   Nova提出的 VCP 流式动画系统
+   ============================================*/
+
+/* --- Stream Fade-in Animation --- */
+@keyframes vcp-stream-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Class to apply the animation to newly added stream elements */
+.vcp-stream-element-fade-in {
+  animation: vcp-stream-fade-in 0.5s ease-out forwards;
+}
+

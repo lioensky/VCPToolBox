@@ -1,0 +1,15 @@
+[2026-05-27] - Codex
+Title: test checkpoint
+Memory-ID: codex-process-9fab8a0862074285a56df34aa793edc7
+Record-Type: process
+Validated: yes
+Reusable: no
+
+Content:
+Type: checkpoint
+verify context bridge
+
+Evidence:
+automated test evidence
+
+Tag: test, codex-memory-bridge

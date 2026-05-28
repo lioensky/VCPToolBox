@@ -1,0 +1,158 @@
+[2026-03-03] - Agent-C
+[VCP百科全书] PTYShellExecutor / PTY Shell 执行器 - Linux本地命令执行
+
+一、插件基本信息
+1. 插件名称：PTYShellExecutor / PTY Shell 执行器
+2. 插件类型：混合服务(hybridservice)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：在Linux桌面环境下使用PTY会话执行本地Shell命令
+
+二、功能定位
+PTYShellExecutor是一个强大的Linux本地Shell命令执行插件，使用node-pty创建持久化的PTY(伪终端)会话。支持bash/fish/zsh等多种Shell，保持环境变量和会话状态。核心特性包括：
+- 同步执行模式：在PTY会话中执行命令，保持环境变量和会话状态
+- 异步任务模式：后台执行长时间任务(如codex编译)，立即返回taskId供后续查询
+- 任务管理：支持查询、取消、列出所有异步任务
+- 自动过滤ANSI转义序列和Shell Integration标记，返回干净的文本输出
+
+该插件专为Linux桌面环境设计，适用于需要持久化Shell会话、环境状态保持的场景。
+
+三、配置参数
+配置文件路径：Plugin/PTYShellExecutor/config.env
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| SHELL_RETURN_MODE | string | delta | 返回模式: delta(仅返回增量输出)或full(返回完整终端内容) |
+| SHELL_PRIORITY | string | bash,fish,zsh | 默认Shell优先级，逗号分隔，按顺序检测可用Shell |
+| FORBIDDEN_COMMANDS | string | rm -rf /,mkfs,dd if= | 禁止执行的命令关键字，逗号分隔 |
+| AUTH_REQUIRED_COMMANDS | string | sudo,su,chmod 777 | 需要确认的命令关键字，逗号分隔 |
+| COMMAND_TIMEOUT | integer | 60000 | 命令执行超时时间(毫秒)，默认60秒 |
+
+配置示例:
+SHELL_RETURN_MODE=delta
+SHELL_PRIORITY=fish,zsh,bash
+FORBIDDEN_COMMANDS=rm -rf /,mkfs,dd if=/dev/zero
+AUTH_REQUIRED_COMMANDS=sudo,su,chmod 777
+COMMAND_TIMEOUT=120000
+
+四、调用命令列表
+
+【单命令模式】
+
+命令名称：PTYShellExecutor
+功能描述：在Linux桌面环境下执行本地Shell命令，支持同步执行和异步任务模式
+
+参数列表:
+| 参数名 | 类型 | 必需 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| action | string | 否 | execute | 操作类型: execute(同步执行)/async(异步执行)/query(查询任务)/cancel(取消任务)/list(列出任务) |
+| command | string | 条件 | - | 要执行的Shell命令(execute/async模式必需) |
+| taskId | string | 条件 | - | 异步任务ID(query/cancel模式必需) |
+| shell | string | 否 | - | 指定Shell类型: fish/zsh/bash |
+| newSession | boolean | 否 | false | 是否创建新的PTY会话 |
+| cwd | string | 否 | - | 工作目录(async模式可用) |
+
+返回值说明:
+- execute模式: 返回命令执行结果，包含stdout/stderr/exitCode
+- async模式: 返回{taskId: "xxx", status: "running"}
+- query模式: 返回任务的当前状态和输出
+- cancel模式: 返回取消结果
+- list模式: 返回所有任务列表
+
+五、使用示例
+
+示例1：同步执行简单命令(ls)
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+command:「始」ls -la「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：同步执行带管道的复杂命令
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+command:「始」ps aux | grep node | wc -l「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：异步执行长时间任务(codex生成代码)
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+action:「始」async「末」,
+command:「始」codex generate --prompt 'create a hello world app'「末」
+<<<[END_TOOL_REQUEST]>>>
+返回示例:
+{
+  "status": "success",
+  "taskId": "task_abc123_xyz789",
+  "message": "任务已启动"
+}
+
+示例4：查询异步任务状态
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+action:「始」query「末」,
+taskId:「始」task_abc123_xyz789「末」
+<<<[END_TOOL_REQUEST]>>>
+返回示例:
+{
+  "status": "success",
+  "taskId": "task_abc123_xyz789",
+  "state": "running",
+  "output": "正在生成代码...",
+  "exitCode": null
+}
+
+示例5：列出所有异步任务
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+action:「始」list「末」
+<<<[END_TOOL_REQUEST]>>>
+返回示例:
+{
+  "status": "success",
+  "tasks": [
+    {"taskId": "task_abc123", "state": "running", "command": "codex..."},
+    {"taskId": "task_def456", "state": "completed", "exitCode": 0}
+  ]
+}
+
+示例6：取消正在运行的任务
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+action:「始」cancel「末」,
+taskId:「始」task_abc123_xyz789「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例7：指定Shell类型和工作目录
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+action:「始」async「末」,
+command:「始」npm run build「末」,
+shell:「始」zsh「末」,
+cwd:「始」/home/user/projects/myapp「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例8：创建新会话执行隔离命令
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PTYShellExecutor「末」,
+command:「始」source venv/bin/activate && pip list「末」,
+newSession:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+1. 仅支持Linux桌面环境，Windows/macOS不适用
+2. 必须安装node-pty依赖：npm install node-pty
+3. 系统必须安装bash/fish/zsh中的至少一种Shell
+4. 危险命令(rm -rf /等)会被拦截，可在FORBIDDEN_COMMANDS中配置
+5. 特权命令(sudo/su等)需要确认，可在AUTH_REQUIRED_COMMANDS中配置
+6. PTY会话会保持环境变量，但进程退出后状态不保留
+7. 异步任务的输出会持续累积，需定期查询获取最新输出
+8. 超时会强制终止命令执行，长任务建议使用async模式
+9. 通信协议为direct(直接调用)，非stdio
+10. 最大超时时间为600000毫秒(10分钟)
+
+七、关联插件
+- PowerShellExecutor：Windows环境下的类似功能插件
+- OldPowerShellExecutor：旧版PowerShell执行器
+- FileOperator：可配合使用进行文件操作后的命令验证
+
+Tag: Shell执行, Linux命令, PTY会话, 异步任务, 本地执行, 混合服务插件, 环境保持

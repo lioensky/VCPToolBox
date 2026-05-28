@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——DeepWikiVCP（原子切片）
+
+一、插件身份
+- name: DeepWikiVCP
+- displayName: DeepWiki 抓取器
+- pluginType: synchronous
+- command: deepwiki_fetch
+
+二、核心能力
+- 一个同步插件，用于抓取 deepwiki.com 的内容并将其转换为 Markdown 格式。
+- 提供可调用命令：deepwiki_fetch。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」DeepWikiVCP「末」,
+url:「始」vuejs/vue「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: DeepWikiVCP, synchronous, 同步调用, deepwiki_fetch

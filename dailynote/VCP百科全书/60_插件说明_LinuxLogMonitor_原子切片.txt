@@ -1,0 +1,39 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——LinuxLogMonitor（原子切片）
+
+一、插件身份
+- name: `LinuxLogMonitor`
+- displayName: `Linux 日志监控器`
+- pluginType: `asynchronous`
+- 定位：事件驱动日志监控 + 异常检测 + Agent回调
+
+二、核心命令
+- `start` / `stop` / `status`
+- `add_rule` / `list_rules`
+- `searchLog` / `lastErrors` / `logStats`
+
+三、核心机制
+- SSH tail实时流监控
+- 规则引擎（regex/keyword/threshold）
+- 回调触发与失败重试
+- 状态持久化与任务恢复
+- 去重策略（permanent/time-window/disabled）
+
+四、协作关系
+- 与 `LinuxShellExecutor` 共享 `SSHManager`，构成“执行-监控”联动闭环。
+- 适合安装部署、服务变更、异常追踪等持续观测场景。
+
+五、排障抓手
+- 先看task状态文件与规则命中日志。
+- 再看回调通道可达性与重试堆积。
+- 最后看SSH连接稳定性与日志源路径准确性。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」LinuxLogMonitor「末」,
+command:「始」start「末」,
+hostId:「始」DE-server「末」,
+logPath:「始」/var/log/syslog「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: LinuxLogMonitor, 日志监控, 异常检测, add_rule, searchLog, lastErrors, logStats, SSH tail, 回调通知, 去重策略, 运维观测

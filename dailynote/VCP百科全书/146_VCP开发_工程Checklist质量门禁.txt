@@ -1,0 +1,27 @@
+[2026-03-03] - Codex
+[VCP百科全书] VCP开发——工程Checklist质量门禁
+
+一、文档来源
+- `dailynote/VCP开发/` 下 CHECKLIST 系列文档（架构、测试、注释、防御式编程、重构等）
+
+二、Checklist族用途
+- 不是“写完再看”的装饰文档，而是开发前中后的门禁清单。
+- 目标：降低回归风险、减少风格漂移、保证多人/多Agent协作一致性。
+
+三、建议执行顺序
+1) 需求与架构类（Requirements / Architecture / UpstreamPrerequisites）
+2) 实现与结构类（DesignInConstruction / High-QualityRoutines / Naming）
+3) 质量与测试类（AQuality-AssurancePlan / TestCases / Integration / Debugging）
+4) 维护与重构类（ReasonsToRefactor / RefactoringSafely / SummaryofRefactorings）
+
+四、在VCP项目中的落地
+- 插件新增：先过manifest契约和参数语义检查，再写执行逻辑。
+- 高风险插件：优先防御式编程、错误处理、权限边界检查。
+- PR前自检：命名一致、异常路径可复现、日志可追踪、文档可召回。
+
+五、RAG切片建议
+- 每个Checklist切片保留：适用阶段、必做项、失败后果、对照文件。
+- tag要同时覆盖“问题词元”和“修复词元”，提升反向召回能力。
+
+Tag: Checklist, 工程质量, 质量门禁, 防御式编程, 测试用例, 架构检查, 命名规范, 重构安全, 调试清单, 开发流程
+

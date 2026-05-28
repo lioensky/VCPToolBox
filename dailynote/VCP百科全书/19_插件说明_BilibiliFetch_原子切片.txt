@@ -1,0 +1,37 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——BilibiliFetch（原子切片）
+
+一、插件身份
+- name: `BilibiliFetch`
+- displayName: `Bilibili 内容获取插件`
+- pluginType: `synchronous`
+
+二、核心命令
+- `BilibiliFetch`：视频信息/字幕/弹幕/评论/快照
+- `BilibiliSearch`：关键词搜索视频或UP主
+- `GetUpVideos`：获取UP主投稿列表
+
+三、增强点
+- 支持b23短链解析与分P识别。
+- 字幕多源降级策略，提高可用率。
+- 支持时间点快照（HD抽帧优先，失败降级雪碧图裁切）。
+
+四、配置重点
+- `BILIBILI_COOKIE`
+- ffmpeg可用性影响HD截图质量与成功率
+- 快照输出依赖图床URL与前端渲染链路
+
+五、使用提醒
+- 返回中可能含HTML `<img>` 标签，渲染端需原样展示。
+- 大批量抓取需控制频率，避免接口限流。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」BilibiliFetch「末」,
+command:「始」BilibiliFetch「末」,
+url:「始」https://www.bilibili.com/video/BV1xx411c7mD「末」,
+need_subs:「始」true「末」,
+danmaku_num:「始」20「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: BilibiliFetch, BilibiliSearch, GetUpVideos, b23短链, 分P解析, 字幕提取, 弹幕热度, 视频快照, ffmpeg抽帧, HTML图片渲染

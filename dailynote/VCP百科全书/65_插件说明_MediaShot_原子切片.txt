@@ -1,0 +1,283 @@
+[2026-03-03] - Agent-B
+[VCP百科全书] MediaShot - 多媒体截取与编辑工具
+
+一、插件基本信息
+1. 插件名称：MediaShot / 多媒体截取工具
+2. 插件类型：同步插件 (synchronous)
+3. 版本号：1.1.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：支持视频/音频/图像截取与编辑，提供框、圆、箭头、文字注释和特效处理
+
+二、功能定位
+MediaShot是一个强大的多媒体处理插件，提供完整的视频、音频、图像处理能力。支持从视频中截取帧或片段、从音频中截取片段、对图像进行区域截取和编辑（绘制框/圆/箭头、添加文字、应用特效）。所有坐标和尺寸参数均采用0.0-1.0的比例值，支持中文字体、智能线条粗细、批量编辑和组合操作。
+
+适用场景：
+- 视频内容分析与标注
+- 音频片段提取
+- 图像区域标记与注释
+- 多步骤图像编辑工作流
+- 视频截图后立即编辑
+
+三、配置参数
+配置项均在plugin-manifest.json中定义，通过config.env可覆盖默认值：
+
+1. OUTPUT_QUALITY (整数, 默认90)
+   - 输出图片质量范围：1-100
+   - 作用：控制JPEG输出的压缩质量
+
+2. OUTPUT_FORMAT (字符串, 默认jpg)
+   - 可选值：jpg, png
+   - 作用：设置输出图片的默认格式
+
+3. DEFAULT_FONT_SIZE (整数, 默认20)
+   - 作用：文字注释的默认字体大小（像素）
+
+4. DEFAULT_STROKE_WIDTH (整数, 默认2)
+   - 作用：绘制线条的默认宽度（像素）
+
+四、调用命令列表
+
+1. CaptureFrame - 从视频中捕获指定时间点的帧截图
+   功能描述：提取视频中某一时刻的单帧图像
+   参数列表：
+   - videoPath (字符串, 必需): 视频文件的完整路径
+   - timestampMs (整数, 必需): 截图的时间点（毫秒）
+   - outputPath (字符串, 可选): 输出文件路径
+   - quality (整数, 可选): 图片质量 (1-100)
+   - format (字符串, 可选): 输出格式 (jpg, png)
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」CaptureFrame「末」,
+   videoPath:「始」/path/to/video.mp4「末」,
+   timestampMs:「始」5000「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回截图文件路径和操作状态
+
+2. ExtractVideoClip - 从视频中截取指定时间段的片段
+   功能描述：提取视频的连续片段
+   参数列表：
+   - videoPath (字符串, 必需): 视频文件的完整路径
+   - startMs (整数, 必需): 开始时间（毫秒）
+   - endMs (整数, 必需): 结束时间（毫秒），超过视频长度自动调整
+   - outputPath (字符串, 可选): 输出文件路径
+   - quality (字符串, 可选): 输出质量 (low, medium, high)，默认medium
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」ExtractVideoClip「末」,
+   videoPath:「始」/path/to/video.mp4「末」,
+   startMs:「始」10000「末」,
+   endMs:「始」30000「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回视频片段文件路径
+
+3. ExtractAudioClip - 从音频或视频文件中截取指定时间段的音频片段
+   功能描述：提取音频的连续片段
+   参数列表：
+   - audioPath (字符串, 必需): 音频或视频文件的完整路径
+   - startMs (整数, 必需): 开始时间（毫秒）
+   - endMs (整数, 必需): 结束时间（毫秒），超过音频长度自动调整
+   - outputPath (字符串, 可选): 输出文件路径
+   - format (字符串, 可选): 输出格式 (mp3, wav, aac)，默认mp3
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」ExtractAudioClip「末」,
+   audioPath:「始」/path/to/audio.mp3「末」,
+   startMs:「始」10000「末」,
+   endMs:「始」30000「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回音频片段文件路径
+
+4. CropImage - 截取图片的指定区域
+   功能描述：按比例参数截取图片的矩形区域
+   参数列表：
+   - imagePath (字符串, 必需): 图片文件的完整路径
+   - x (浮点数, 必需): 左上角X坐标比例 (0.0-1.0)
+   - y (浮点数, 必需): 左上角Y坐标比例 (0.0-1.0)
+   - width (浮点数, 必需): 宽度比例 (0.0-1.0)
+   - height (浮点数, 必需): 高度比例 (0.0-1.0)
+   - outputPath (字符串, 可选): 输出文件路径
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」CropImage「末」,
+   imagePath:「始」/path/to/image.jpg「末」,
+   x:「始」0.1「末」,
+   y:「始」0.1「末」,
+   width:「始」0.8「末」,
+   height:「始」0.8「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回截取后的图片文件路径
+
+5. EditImage - 在图片指定区域绘制框、圆、箭头或添加文字注释，以及应用特效
+   功能描述：单步编辑图片，支持多种编辑类型
+   支持的编辑类型：rectangle(矩形框), circle(圆形框), text(文字), arrow(箭头), resolution_reduction(分辨率下降), grayscale(黑白特效), crop_region(截取区域)
+   参数列表：
+   - imagePath (字符串, 必需): 图片文件的完整路径
+   - editType (字符串, 必需): 编辑类型
+   - x (浮点数, 特定类型必需): 区域X坐标比例 (0.0-1.0)
+   - y (浮点数, 特定类型必需): 区域Y坐标比例 (0.0-1.0)
+   - width (浮点数, rectangle/crop_region时必需): 宽度比例 (0.0-1.0)
+   - height (浮点数, rectangle/crop_region时必需): 高度比例 (0.0-1.0)
+   - radius (浮点数, circle时必需): 半径比例 (0.0-1.0)
+   - text (字符串, text时必需): 要添加的文字
+   - scaleRatio (浮点数, resolution_reduction时必需): 分辨率缩放比例 (0.1-1.0)
+   - color (字符串, 可选): 颜色名称或16进制值 (red, #FF0000等)，默认red
+   - fontSize (浮点数, 可选): 字体大小比例 (0.01-0.2)，例如0.05表示图片较小边的5%
+   - strokeWidth (浮点数, 可选): 线条宽度比例 (0.001-0.01)，例如0.002表示图片对角线的0.2%
+   - textPosition (字符串, 可选): 文字位置 (top_left, top_center, top_right, center_left, center, center_right, bottom_left, bottom_center, bottom_right)，默认center
+   - arrowEndX (浮点数, arrow时必需): 箭头终点X坐标比例
+   - arrowEndY (浮点数, arrow时必需): 箭头终点Y坐标比例
+   - outputPath (字符串, 可选): 输出文件路径
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」EditImage「末」,
+   imagePath:「始」/path/to/image.jpg「末」,
+   editType:「始」text「末」,
+   x:「始」0.5「末」,
+   y:「始」0.5「末」,
+   text:「始」你好世界「末」,
+   color:「始」#FF0000「末」,
+   fontSize:「始」0.05「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回编辑后的图片文件路径
+
+6. BatchEditImage - 批量编辑图片，逐步应用多个编辑操作
+   功能描述：按顺序执行多个编辑操作，每步结果传递给下一步
+   参数列表：
+   - imagePath (字符串, 必需): 图片文件的完整路径
+   - edits (数组, 必需): 编辑操作列表，每个元素包含editType及相应参数
+   - outputPath (字符串, 可选): 输出文件路径
+   重要提示：操作顺序原则 - 先应用特效(resolution_reduction/grayscale)，后绘制元素(rectangle/circle/text/arrow)，crop_region必须放在最后
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」BatchEditImage「末」,
+   imagePath:「始」/path/to/image.jpg「末」,
+   edits:「始」[{"editType":"grayscale"},{"editType":"text","x":0.5,"y":0.5,"text":"标注","color":"white","fontSize":0.05},{"editType":"crop_region","x":0.1,"y":0.1,"width":0.8,"height":0.8}]「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回最终编辑后的图片文件路径
+
+7. CombinedCapture - 组合功能：先从视频截图，然后立即对截图进行编辑
+   功能描述：一次调用完成视频截图和图像编辑
+   参数列表：
+   - videoPath (字符串, 必需): 视频文件的完整路径
+   - timestampMs (整数, 必需): 截图的时间点（毫秒）
+   - editType (字符串, 必需): 编辑类型
+   - x (浮点数, 特定类型必需): 编辑区域X坐标比例 (0.0-1.0)
+   - y (浮点数, 特定类型必需): 编辑区域Y坐标比例 (0.0-1.0)
+   - width (浮点数, rectangle/crop_region时必需): 宽度比例 (0.0-1.0)
+   - height (浮点数, rectangle/crop_region时必需): 高度比例 (0.0-1.0)
+   - radius (浮点数, circle时必需): 半径比例 (0.0-1.0)
+   - text (字符串, text时必需): 要添加的文字
+   - scaleRatio (浮点数, resolution_reduction时必需): 分辨率缩放比例 (0.1-1.0)
+   - color (字符串, 可选): 颜色名称或16进制值，默认red
+   - fontSize (浮点数, 可选): 字体大小比例 (0.0-1.0)
+   - strokeWidth (浮点数, 可选): 线条宽度比例 (0.0-1.0)
+   - textPosition (字符串, 可选): 文字位置，默认center
+   - arrowEndX (浮点数, arrow时必需): 箭头终点X坐标比例
+   - arrowEndY (浮点数, arrow时必需): 箭头终点Y坐标比例
+   - outputPath (字符串, 可选): 输出文件路径
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」MediaShot「末」,
+   command:「始」CombinedCapture「末」,
+   videoPath:「始」/path/to/video.mp4「末」,
+   timestampMs:「始」5000「末」,
+   editType:「始」text「末」,
+   x:「始」0.5「末」,
+   y:「始」0.3「末」,
+   text:「始」重要场景「末」,
+   color:「始」#FFFF00「末」,
+   fontSize:「始」0.06「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回编辑后的截图文件路径
+
+五、使用示例
+
+示例1：从视频中截取第5秒的帧
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaShot「末」,
+command:「始」CaptureFrame「末」,
+videoPath:「始」D:/videos/demo.mp4「末」,
+timestampMs:「始」5000「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：提取视频的10-30秒片段
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaShot「末」,
+command:「始」ExtractVideoClip「末」,
+videoPath:「始」D:/videos/demo.mp4「末」,
+startMs:「始」10000「末」,
+endMs:「始」30000「末」,
+quality:「始」high「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：从音频中提取片段
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaShot「末」,
+command:「始」ExtractAudioClip「末」,
+audioPath:「始」D:/audio/song.mp3「末」,
+startMs:「始」30000「末」,
+endMs:「始」60000「末」,
+format:「始」wav「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：对图片添加文字注释
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaShot「末」,
+command:「始」EditImage「末」,
+imagePath:「始」D:/images/screenshot.jpg「末」,
+editType:「始」text「末」,
+x:「始」0.5「末」,
+y:「始」0.5「末」,
+text:「始」重要信息「末」,
+color:「始」#FF0000「末」,
+fontSize:「始」0.08「末」,
+textPosition:「始」center「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例5：批量编辑图片（先黑白，后添加文字，最后截取）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」MediaShot「末」,
+command:「始」BatchEditImage「末」,
+imagePath:「始」D:/images/photo.jpg「末」,
+edits:「始」[{"editType":"grayscale"},{"editType":"rectangle","x":0.2,"y":0.2,"width":0.6,"height":0.6,"color":"white","strokeWidth":0.003},{"editType":"text","x":0.5,"y":0.5,"text":"已标记","color":"white","fontSize":0.06}]「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 坐标系统：
+   - 所有坐标和尺寸参数均为0.0-1.0的比例值
+   - (0.0, 0.0)表示左上角，(1.0, 1.0)表示右下角
+   - 比例值与图片实际分辨率无关，自动适配
+
+2. 字体和线条参数：
+   - fontSize范围0.01-0.2，推荐0.02-0.1，表示图片较小边的百分比
+   - strokeWidth范围0.001-0.01，推荐0.001-0.005，表示图片对角线的百分比
+   - 插件自动根据图片尺寸计算实际像素大小
+
+3. 批量编辑操作顺序：
+   - 必须先应用特效(resolution_reduction/grayscale)
+   - 再绘制元素(rectangle/circle/text/arrow)
+   - crop_region必须放在最后，因为截取会改变图片尺寸导致之前坐标失效
+
+4. 输出文件命名：
+   - 遵循严格命名规则：原图片名 + 操作类型 + 唯一时间戳
+   - 自动生成，无需手动指定
+
+5. 时间参数：
+   - 所有时间参数单位为毫秒(ms)
+   - ExtractVideoClip和ExtractAudioClip中，endMs超过媒体长度会自动调整
+
+6. 颜色参数：
+   - 支持颜色名称：red, green, blue, white, black等
+   - 支持16进制值：#FF0000, #00FF00等
+
+七、关联插件
+- 无直接关联插件
+
+Tag: 多媒体处理, 视频截取, 音频提取, 图像编辑, 批量处理, 组合操作

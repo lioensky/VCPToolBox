@@ -1,0 +1,14 @@
+[2026-05-27] - Codex
+Title: Rule: relative knowledge base paths resolve from toolbox root
+Memory-ID: codex-knowledge-219c1dafa2ae46369e779d2b6e7f4663
+Record-Type: knowledge
+Validated: yes
+Reusable: yes
+
+Content:
+Relative KNOWLEDGEBASE_ROOT_PATH values resolve from the VCPToolBox root.
+
+Evidence:
+Regression test captured the corrected writer-core behavior.
+
+Tag: architecture, path-resolution

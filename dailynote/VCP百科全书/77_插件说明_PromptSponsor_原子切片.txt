@@ -1,0 +1,394 @@
+[2026-03-03] - Agent-C
+[VCP百科全书] PromptSponsor / 提示词赞助器 - 系统提示词管理
+
+一、插件基本信息
+1. 插件名称：PromptSponsor / 提示词赞助器
+2. 插件类型：同步(synchronous)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：允许AI完全控制和管理Agent的系统提示词
+
+二、功能定位
+PromptSponsor是一个强大的系统提示词管理插件，支持三种工作模式：
+- 原始富文本模式(original)：传统的完整提示词文本编辑
+- 模块化积木块模式(modular)：将提示词拆分为可独立管理的积木块，支持增删改查、小仓管理
+- 临时与预制模式(preset)：使用预设文件或临时内容快速切换提示词
+
+该插件解决了AI无法自主修改自身系统提示词的痛点，使Agent能够动态调整行为特征、能力边界和交互风格。
+
+三、配置参数
+配置文件路径：Plugin/PromptSponsor/.env（由.env.example复制）
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| AGENT_DIR | string | "" | Agent配置文件目录的绝对路径，支持两种结构：1) AppData/Agents/_Agent_xxx/config.json 2) AppData/Agents/_Agent_xxx.json |
+| DEBUG_MODE | boolean | true | 是否开启调试日志，输出到stderr不影响正常JSON响应 |
+
+配置示例(Windows):
+AGENT_DIR=C:\Users\YourName\Projects\VCPChat\AppData\Agents
+DEBUG_MODE=true
+
+四、调用命令列表
+
+【模式管理命令】
+
+1. GetPromptMode - 获取当前提示词模式
+   参数:
+   - agentId (string, 必需): Agent的ID，如 _Agent_1761774023391_1761774023392
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」GetPromptMode「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+2. SetPromptMode - 切换提示词模式
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - mode (string, 必需): 目标模式，可选值: original/modular/preset
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」SetPromptMode「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   mode:「始」modular「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+3. GetActivePrompt - 获取当前激活的完整提示词内容
+   参数:
+   - agentId (string, 必需): Agent的ID
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」GetActivePrompt「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+【原始模式命令】
+
+4. SetOriginalPrompt - 设置原始富文本模式的提示词
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - content (string, 必需): 提示词文本内容
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」SetOriginalPrompt「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   content:「始」你是一个友好的AI助手...「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+【模块化模式命令】
+
+5. GetModularBlocks - 获取所有积木块的详细信息
+   参数:
+   - agentId (string, 必需): Agent的ID
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」GetModularBlocks「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+6. AddBlock - 添加新积木块
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - type (string, 必需): 积木块类型，text(文本块)或newline(换行块)
+   - content (string, 可选): 文本块的内容
+   - name (string, 可选): 积木块名称
+   - position (integer, 可选): 插入位置索引，不提供则追加到末尾
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」AddBlock「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   type:「始」text「末」,
+   content:「始」你擅长编程「末」,
+   name:「始」编程能力「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+7. UpdateBlock - 更新积木块内容或属性
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - blockId (string, 必需): 积木块唯一ID，如 block_1234567890_abc123
+   - content (string, 可选): 新内容
+   - name (string, 可选): 新名称
+   - disabled (boolean, 可选): 是否禁用
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」UpdateBlock「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   blockId:「始」block_1234567890_abc123「末」,
+   content:「始」更新后的内容「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+8. DeleteBlock - 删除指定积木块
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - blockId (string, 必需): 要删除的积木块ID
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」DeleteBlock「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   blockId:「始」block_1234567890_abc123「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+9. MoveBlock - 移动积木块到新位置
+   参数:
+   - agentId (string, 必需): Agent的ID
+   - blockId (string, 必需): 要移动的积木块ID
+   - newPosition (integer, 必需): 新位置索引(从0开始)
+   调用格式:
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PromptSponsor「末」,
+   command:「始」MoveBlock「末」,
+   agentId:「始」_Agent_1761774023391_1761774023392「末」,
+   blockId:「始」block_1234567890_abc123「末」,
+   newPosition:「始」2「末」
+   <<<[END_TOOL_REQUEST]>>>
+
+10. AddVariant - 为积木块添加内容条目(variant)
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - blockId (string, 必需): 积木块ID
+    - content (string, 必需): 新内容条目的文本
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」AddVariant「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    blockId:「始」block_1234567890_abc123「末」,
+    content:「始」另一个版本的内容「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+11. UpdateVariant - 更新积木块的某个内容条目
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - blockId (string, 必需): 积木块ID
+    - variantIndex (integer, 必需): 内容条目索引(从0开始)
+    - content (string, 必需): 新内容
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」UpdateVariant「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    blockId:「始」block_1234567890_abc123「末」,
+    variantIndex:「始」1「末」,
+    content:「始」修改后的内容「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+12. DeleteVariant - 删除积木块的某个内容条目(至少保留一个)
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - blockId (string, 必需): 积木块ID
+    - variantIndex (integer, 必需): 要删除的内容条目索引
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」DeleteVariant「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    blockId:「始」block_1234567890_abc123「末」,
+    variantIndex:「始」2「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+13. SelectVariant - 设置积木块当前显示的内容条目
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - blockId (string, 必需): 积木块ID
+    - variantIndex (integer, 必需): 要选中的内容条目索引
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」SelectVariant「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    blockId:「始」block_1234567890_abc123「末」,
+    variantIndex:「始」1「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+【小仓库管理命令】
+
+14. HideBlock - 将积木块隐藏到小仓库
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - blockId (string, 必需): 要隐藏的积木块ID
+    - warehouse (string, 可选): 目标仓库名称，默认为'default'
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」HideBlock「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    blockId:「始」block_1234567890_abc123「末」,
+    warehouse:「始」常用模板「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+15. RestoreBlock - 从小仓库恢复积木块到编辑区
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - warehouse (string, 必需): 仓库名称
+    - blockIndex (integer, 必需): 仓库中的积木块索引
+    - position (integer, 可选): 恢复到编辑区的位置，不提供则追加到末尾
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」RestoreBlock「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    warehouse:「始」default「末」,
+    blockIndex:「始」0「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+16. GetWarehouses - 获取所有仓库及其内容
+    参数:
+    - agentId (string, 必需): Agent的ID
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」GetWarehouses「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+17. CreateWarehouse - 创建新仓库
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - warehouseName (string, 必需): 新仓库名称(不能为'default')
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」CreateWarehouse「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    warehouseName:「始」实验性内容「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+18. RenameWarehouse - 重命名仓库(不能重命名'default')
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - oldName (string, 必需): 原仓库名称
+    - newName (string, 必需): 新仓库名称
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」RenameWarehouse「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    oldName:「始」实验性内容「末」,
+    newName:「始」已验证模板「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+19. DeleteWarehouse - 删除仓库及其所有内容(不能删除'default')
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - warehouseName (string, 必需): 要删除的仓库名称
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」DeleteWarehouse「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    warehouseName:「始」临时仓库「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+【预设模式命令】
+
+20. ListPresets - 列出预设模式的所有可用预设文件
+    参数:
+    - agentId (string, 必需): Agent的ID
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」ListPresets「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+21. SetPreset - 选择并应用一个预设
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - presetPath (string, 必需): 预设文件的完整路径
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」SetPreset「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    presetPath:「始」/path/to/preset.md「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+22. SetPresetContent - 直接设置预设模式的提示词内容(不使用预设文件)
+    参数:
+    - agentId (string, 必需): Agent的ID
+    - content (string, 必需): 提示词内容
+    调用格式:
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」PromptSponsor「末」,
+    command:「始」SetPresetContent「末」,
+    agentId:「始」_Agent_1761774023391_1761774023392「末」,
+    content:「始」自定义提示词内容...「末」
+    <<<[END_TOOL_REQUEST]>>>
+
+五、使用示例
+
+示例1：切换到模块化模式并添加积木块
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」SetPromptMode「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」,
+mode:「始」modular「末」
+<<<[END_TOOL_REQUEST]>>>
+
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」AddBlock「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」,
+type:「始」text「末」,
+content:「始」你是一位专业的编程助手，擅长JavaScript和Python「末」,
+name:「始」角色定义「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：获取当前提示词并查看积木块列表
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」GetPromptMode「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」
+<<<[END_TOOL_REQUEST]>>>
+
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」GetModularBlocks「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：将不常用的积木块隐藏到小仓库
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」HideBlock「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」,
+blockId:「始」block_1234567890_abc123「末」,
+warehouse:「始」备用模块「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：切换回原始富文本模式
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」SetPromptMode「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」,
+mode:「始」original「末」
+<<<[END_TOOL_REQUEST]>>>
+
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PromptSponsor「末」,
+command:「始」SetOriginalPrompt「末」,
+agentId:「始」_Agent_1761774023391_1761774023392「末」,
+content:「始」你是一个友好且乐于助人的AI助手。你的回答应该简洁明了。"末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+1. AGENT_DIR必须正确配置，否则插件无法找到Agent配置文件
+2. Agent ID格式为 _Agent_xxxxxxxx_xxxxxxxx，需要通过其他方式获取
+3. 积木块的blockId是系统自动生成的唯一标识符，需要先GetModularBlocks获取
+4. 'default'仓库是系统默认仓库，不可删除或重命名
+5. 每个积木块至少保留一个variant，删除最后一个variant会失败
+6. 切换模式不会丢失数据，各模式的数据独立存储
+7. 超时时间为30000毫秒(30秒)
+
+七、关联插件
+- VCPChat前端系统：该插件专为VCPChat设计，操作其Agent配置
+- TopicSponsor：同为Agent管理类插件，可配合使用实现话题和提示词的联动管理
+
+Tag: 提示词管理, 系统提示词, Agent配置, 模块化积木块, 小仓库管理, 预设模式, 同步插件

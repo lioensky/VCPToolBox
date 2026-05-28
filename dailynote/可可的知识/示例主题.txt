@@ -1,0 +1,150 @@
+Vchat主题文件示例:
+
+[H:\MCP\VCPChat\styles\themes\themes黑白简约.css]
+
+/*
+ * styles/themes/themes黑白简约.css
+ * Curated by Coco for Professor Ryan
+ * Black and White Theme
+ * A classic, clean, and focused theme.
+ */
+
+/* * =================================================================
+ * Dark Theme (Default): Classic Black & White (经典黑白)
+ * Inspired by traditional monochrome aesthetics.
+ * A sharp, clear, and professional theme.
+ * =================================================================
+ */
+:root {
+    /* --- Wallpaper Interface --- */
+    /*
+     * For the frosted glass effect on chat bubbles to be prominent,
+     */
+    --chat-wallpaper-dark: url('../assets/wallpaper/dark.jpg');
+
+    /* --- Base Colors --- */
+    --primary-bg: #1c1c1e;      /* 主背景 - 深墨灰 - 近黑 */
+    --secondary-bg: #28282c;    /* 侧边栏/面板背景 - 略浅的墨灰 */
+    --tertiary-bg: #121212;     /* 聊天区背景 - 纯黑に近い */
+    --accent-bg: #3a3a3e;       /* 悬停/选中背景 - 中墨灰 */
+    --border-color: #3a3a3e;    /* 边框颜色 */
+    --input-bg: #222225;        /* 输入框背景 */
+
+--panel-bg-dark: rgba(40, 40, 44, 0.75); /* 基于--secondary-bg，增加75%不透明度 */
+
+    /* --- Text Colors --- */
+    --primary-text: #e0e0e0;    /* 主要文字 - 浅灰 */
+    --secondary-text: #a4a4a4;  /* 次要/标题文字 - 中灰 */
+    --highlight-text: #6fa8dc;  /* 高亮文字 - 柔和蓝 (点缀色) */
+    --text-on-accent: #ffffff;  /* 在强调色背景上的文字 */
+    --placeholder-text: #6a6a6e; /* 输入框占位文字 */
+    --quoted-text: #FFB74D;     /* 引用文本颜色 - 柔和橙色 */
+    --user-text: #e0e0e0;       /* 用户气泡文字 - 浅灰 (与 primary-text 相同) */
+    --agent-text: #e0e0e0;      /* Agent气泡文字 - 浅灰 */
+
+    /* --- Bubble Colors (Frosted Glass Ready) --- */
+    /* --- 构建气泡色时，注意和对应的--user-text，--agent-text文本色构建足够的反差来提升可读性 ---*/
+    --user-bubble-bg: rgba(56, 120, 173, 0.15); /* 用户气泡 - 柔和蓝 (点缀色) - 半透明 */
+    --assistant-bubble-bg: rgba(47, 47, 51, 0.1); /* AI气泡 - 深墨灰 - 半透明 */
+
+    /* --- UI Element Colors --- */
+    --button-bg: #48484c;           /* 按钮背景 - 中墨灰 */
+    --button-hover-bg: #58585e;      /* 按钮悬停 - 略亮的墨灰 */
+    --danger-color: #e57373;        /* 危险操作 - 柔和红 */
+    --danger-hover-bg: #ef5350;
+    --success-color: #66bb6a;       /* 成功操作 - 柔和绿 */
+    --notification-bg: #2f2f33;
+    --notification-header-bg: #303034;
+    --notification-border: #48484c;
+    --tool-bubble-bg: rgba(58, 58, 62, 0.15); /* VCP工具调用气泡背景 - 半透明中墨灰 */
+    --tool-bubble-border: #6fa8dc; /* VCP工具调用气泡边框 - 柔和蓝 */
+
+    /* --- Scrollbar --- */
+    --scrollbar-track: rgba(40, 40, 40, 0.5);
+    --scrollbar-thumb: rgba(100, 100, 100, 0.7);
+    --scrollbar-thumb-hover: rgba(120, 120, 120, 0.6);
+
+    /* --- Shimmer Effect for Loading --- */
+    /* --- 流式输出动画部分，分别定义了光影闪烁时最低透明度的transparent色和高光动画色highlignt色 --- */
+    --shimmer-color-transparent: rgba(224, 224, 224, 0.408);
+    --shimmer-color-highlight: rgba(224, 224, 224, 0.867);
+
+    /* --- Text Shadow for Frosted Panels --- */
+    --panel-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+    /* --- Unified Panel Background --- */
+    --panel-bg: var(--panel-bg-dark);
+}
+
+body {
+    background-image: var(--chat-wallpaper-dark);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+
+/* * =================================================================
+ * Light Theme: Classic White & Black (经典白黑)
+ * Inspired by traditional monochrome aesthetics.
+ * A sharp, clear, and professional theme.
+ * =================================================================
+ */
+body.light-theme {
+    /* Wallpaper and background properties */
+    background-image: var(--chat-wallpaper-light);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+    /* --- Wallpaper Interface --- */
+    --chat-wallpaper-light: url('../assets/wallpaper/light.jpeg');
+
+    /* --- Base Colors --- */
+    --primary-bg: #f4f6f8;      /* 主背景 - 非常浅的灰蓝色 */
+    --secondary-bg: #ffffff;    /* 侧边栏 - 白色 */
+    --tertiary-bg: #e9edf0;     /* 聊天区 - 浅灰 */
+    --accent-bg: #e0e6eb;       /* 悬停/选中背景 */
+    --border-color: #e0e6eb;    /* 边框 - 调整为更浅的颜色 */
+    --input-bg: #ffffff;        /* 输入框 */
+
+--panel-bg-light: rgba(255, 255, 255, 0.8); /* 基于--secondary-bg，增加80%不透明度 */
+
+    /* --- Text Colors --- */
+    --primary-text: #2c3e50;    /* 主要文字 - 深灰蓝 */
+    --secondary-text: #5a6f80;  /* 次要/标题文字 - 中灰蓝 */
+    --highlight-text: #3498db;  /* 高亮文字 - 清爽蓝 */
+    --text-on-accent: #ffffff;  /* 强调背景文字 */
+    --placeholder-text: #a0aab3; /* 占位文字 */
+    --quoted-text: #007bff;     /* 引用文字 - 蓝色 */
+    --user-text: #2c3e50;       /* 用户气泡文字 - 深灰蓝 (与 primary-text 相同) */
+    --agent-text: #2c3e50;      /* Agent气泡文字 - 深灰蓝 */
+
+    /* --- Bubble Colors --- */
+    --user-bubble-bg: rgba(52, 152, 219, 0.08);     /* 用户气泡 - 清爽蓝 - 半透明 */
+    --assistant-bubble-bg: rgba(232, 244, 248, 0.05); /* AI气泡 - 非常浅的蓝 - 半透明 */
+
+    /* --- UI Element Colors --- */
+    --button-bg: #3498db;           /* 按钮 - 清爽蓝 */
+    --button-hover-bg: #2980b9;     /* 按钮悬停 - 深一点的蓝 */
+    --danger-color: #e74c3c;        /* 危险色 - 红色 */
+    --danger-hover-bg: #c0392b;
+    --success-color: #4caf50;       /* 成功色 - 绿色 */
+    --notification-bg: #e8f4f8;
+    --notification-header-bg: #f0f0f0;
+    --notification-border: #3498db;
+    --tool-bubble-bg: rgba(224, 230, 235, 0.08); /* VCP工具调用气泡背景 - 半透明浅灰 */
+    --tool-bubble-border: #3498db; /* VCP工具调用气泡边框 - 清爽蓝 */
+
+    /* --- Scrollbar --- */
+    --scrollbar-track: rgba(200, 200, 200, 0.7);
+    --scrollbar-thumb: rgba(150, 150, 150, 0.8);
+    --scrollbar-thumb-hover: rgba(120, 120, 120, 0.6);
+
+    /* --- Shimmer Effect --- */
+    
+    --shimmer-color-transparent: rgba(44, 62, 80, 0.04);
+    --shimmer-color-highlight: rgba(44, 62, 80, 0.08);
+
+    /* --- Unified Panel Background --- */
+    --panel-bg: var(--panel-bg-light);
+}
+

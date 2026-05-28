@@ -1,0 +1,783 @@
+# VCP 同步插件开发手册
+
+欢迎来到 VCP 同步插件开发的世界！本手册将指导你完成从构思到实现一个功能完备的同步插件的全过程。
+
+## 1. 什么是VCP同步插件
+
+VCP (Virtual Cherry-Var Protocol) 同步插件是一种外部可执行程序或脚本，它被主服务（[`server.js`](server.js)）按需调用以执行特定任务。它被称为“同步”是因为主服务会启动插件进程，向其发送数据，然后等待其执行完成并返回结果，整个过程是阻塞式的。
+
+**核心交互机制:**
+
+1.  **启动 (Spawn)**: 当AI需要调用某个工具时，[`Plugin.js`](Plugin.js) 中的插件管理器会根据 [`plugin-manifest.json`](Plugin/FileOperator/plugin-manifest.json) 的配置，启动一个对应的子进程。
+2.  **输入 (stdin)**: 主服务将AI请求的参数（一个JSON字符串）通过标准输入（`stdin`）传递给插件进程。
+3.  **执行 (Execute)**: 插件进程读取 `stdin` 的数据，执行其核心逻辑。这可能包括计算、调用外部API、文件操作等。
+4.  **输出 (stdout)**: 插件执行完毕后，必须将其结果（一个特定格式的JSON字符串）打印到标准输出（`stdout`）。
+5.  **终止 (Exit)**: 主服务读取到 `stdout` 的结果后，插件进程便完成了它的使命，可以正常退出。
+
+**技术选型:**
+你可以使用任何能够处理标准输入输出的编程语言或脚本来编写插件，例如：
+*   **Python**: 如 [`SciCalculator`](Plugin/SciCalculator) 插件。
+*   **Node.js**: 如 [`DMXDoubaoGen`](Plugin/DMXDoubaoGen) 和 [`FileOperator`](Plugin/FileOperator) 插件。
+*   **Go, Rust, C++, C#** 等编译型语言。
+
+---
+
+## 2. 如何构建 `plugin-manifest.json` 和 `config.env`
+
+这两个文件是插件的“身份证”和“配置单”，它们定义了插件的行为、能力和所需配置。
+
+### 2.1 `plugin-manifest.json` 详解
+
+这是插件的核心描述文件，主服务通过它来了解并加载你的插件。让我们从一个最简单的“回声”插件（EchoPlugin）的 `plugin-manifest.json` 示例开始。
+
+**结构示例: `EchoPlugin/plugin-manifest.json`**
+
+```json
+{
+  "manifestVersion": "1.0.0",
+  "name": "EchoPlugin",
+  "version": "1.0.0",
+  "displayName": "回声插件",
+  "description": "一个简单的插件，它会原样返回你发送给它的任何文本。",
+  "author": "Your Name",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "python",
+    "command": "python echo.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 5000
+  },
+  "configSchema": {
+    "ECHO_PREFIX": {
+      "type": "string",
+      "description": "在返回的文本前添加的前缀。",
+      "default": "Echo: "
+    }
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "EchoText",
+        "description": "调用此工具将一段文本原样返回。\n参数:\n- text (字符串, 必需): 需要返回的文本内容。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」EchoPlugin「末」,\ntext:「始」你好，世界！「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」EchoPlugin「末」,\ntext:「始」这是一个测试。「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
+```
+
+**关键字段解析:**
+
+*   `"name"`: **(必需)** 插件的唯一英文标识符。AI在发起工具调用时，`tool_name`字段的值就来源于此。例如：`"EchoPlugin"`, `"SciCalculator"`。
+*   `"name"`用途: 在主服务器中，当检测到Agent的系统提示词中包含`{{VCPToolname}}`占位符（例如name是SciCalculator，则占位符为{{VCPSciCalculator}}）时，会将invocationCommands中的description字段推送给Agent作为系统提示词的一部分。通过此类方法实现只需要编辑Agent系统提示词中的占位符list就能实现对Agent的插件功能热插拔。
+*   `"displayName"`: **(必需)** 插件的显示名称，用于在UI中展示。
+*   `"pluginType"`: **(必需)** 对于同步插件，此值必须是 `"synchronous"`。
+*   `"entryPoint"`: **(必需)** 定义了插件的入口。
+    *   `"type"`: 脚本类型，如 `"python"` 或 `"nodejs"`。
+    *   `"command"`: 启动插件的完整命令。例如：`"python echo.py"`, [`"node DoubaoGen.js"`](Plugin/DMXDoubaoGen/plugin-manifest.json:11)。
+*   `"communication"`: **(必需)**
+    *   `"protocol"`: 对于同步插件，此值必须是 `"stdio"`。
+    *   `"timeout"`: （可选）插件执行的超时时间（毫秒）。
+*   `"configSchema"`: （可选）定义插件需要的配置项及其类型，这些配置项由 `config.env` 提供。在上面的例子中，我们定义了一个 `ECHO_PREFIX`，允许用户在 `config.env` 中自定义回声的前缀。
+*   `"capabilities.invocationCommands"`: **(必需)** 这是最重要的部分，它定义了AI可以如何调用你的插件。它是一个数组，可以包含一个或多个命令对象。
+
+    **`description` 字段的重要性:**
+    此字段的内容至关重要，因为它会组合成一个占位符（如 `{{VCPEchoPlugin}}`），并被插入到AI的系统提示词（System Prompt）中。AI完全依赖此处的描述来理解你的工具能做什么、如何调用、参数是什么。因此，一个清晰、准确、详尽的 `description` 是插件能否被AI成功调用的关键。[`Plugin.js`](Plugin.js) 中的 [`buildVCPDescription()`](Plugin.js:402) 函数负责处理这个逻辑。
+
+    **情况一：单个指令的插件**
+    如果你的插件只提供一个核心功能，`invocationCommands` 数组中就只有一个对象。
+    *   **示例**: [`SciCalculator/plugin-manifest.json`](Plugin/SciCalculator/plugin-manifest.json:19)
+        它详细描述了计算器的所有功能、函数和调用格式，AI会根据这份“说明书”来构建数学表达式。
+
+    **情况二：多个指令的插件**
+    如果你的插件提供多种不同的操作，`invocationCommands` 数组中可以有多个对象，每个对象代表一个指令。
+    *   **示例**: [`FileOperator/plugin-manifest.json`](Plugin/FileOperator/plugin-manifest.json:43)
+        它为 `ReadFile`, `WriteFile`, `ListDirectory` 等每个功能都定义了一个独立的命令对象。每个对象都有自己的 `command` 字段和 `description`。当AI调用时，它会指定要执行的 `command`，你的插件脚本需要根据这个 `command` 值来执行相应的操作。
+
+### 2.2 `config.env` 配置文件
+
+这是一个简单的文本文件，用于存放敏感信息（如API密钥）或可配置的参数，避免硬编码在代码中。
+
+*   **位置**: 放在插件的根目录下，例如 [`Plugin/DMXDoubaoGen/config.env`](Plugin/DMXDoubaoGen/config.env)。
+*   **格式**: 纯文本，每行一个键值对，格式为 `KEY=VALUE`。
+*   **加载**: [`Plugin.js`](Plugin.js) 在启动插件进程时，会自动读取这个文件，并将其中的键值对设置为该进程的环境变量。你的插件代码可以通过 `process.env.KEY` (Node.js) 或 `os.environ['KEY']` (Python) 来获取这些值。
+*   **示例**:
+    ```env
+    # DMXDoubaoGen/config.env
+    VOLCENGINE_API_KEY=sk-yourkey
+    ```
+    在 [`DoubaoGen.js`](Plugin/DMXDoubaoGen/DoubaoGen.js:10) 中，通过 `process.env.VOLCENGINE_API_KEY` 来获取它。
+
+---
+
+## 3. 如何构建插件本体
+
+插件本体是执行核心逻辑的脚本文件。无论使用何种语言，其核心模式都是一致的。
+
+**核心模式：**
+
+1.  **读取标准输入（stdin）**: 获取来自主服务的JSON字符串参数。
+2.  **解析JSON**: 将输入字符串解析为程序可用的对象。
+3.  **执行逻辑**: 根据参数执行核心功能。
+4.  **构建响应JSON**: 创建一个包含 `status` 和 `result`/`error` 字段的对象。
+5.  **打印到标准输出（stdout）**: 将响应对象序列化为JSON字符串并打印。
+
+### 3.1 返回纯文本信息
+
+这是最简单的插件类型，其结果是纯文本字符串。
+
+*   **适用场景**: 计算器、查询、简单的文本处理等。
+*   **示例**: [`SciCalculator/calculator.py`](Plugin/SciCalculator/calculator.py)
+    该插件的 `main` 函数展示了完整的流程：
+    ```python
+    # calculator.py 简化逻辑
+    import sys
+    import json
+
+    def main():
+        # 1. 读取 stdin
+        expression_input = sys.stdin.readline().strip()
+        
+        # 2 & 3. 执行逻辑
+        result_str = evaluate(expression_input) # evaluate是核心计算函数
+        
+        # 4. 构建响应
+        output = {"status": "success", "result": result_str}
+        
+        # 5. 打印到 stdout
+        print(json.dumps(output), file=sys.stdout)
+        sys.exit(0)
+
+    if __name__ == "__main__":
+        main()
+    ```
+    它的 `result` 字段就是一个字符串，例如 `"###计算结果：2.718###，请将结果转告用户###`。
+
+### 3.2 返回“多模态结构化”信息
+
+当插件需要返回图片、音频或其他复杂结构的数据时，需要使用多模态结构。
+
+*   **适用场景**: 图像生成、文件读取（返回图片内容）、音频处理等。
+*   **核心结构**: `result` 字段是一个对象，其 `content` 属性是一个数组，数组中的每个元素都是一个带 `type` 的对象。
+*   **示例**: [`DMXDoubaoGen/DoubaoGen.js`](Plugin/DMXDoubaoGen/DoubaoGen.js)
+    该插件生成图片后，返回一个包含文本描述和图片数据的结构：
+    ```javascript
+    // DoubaoGen.js 简化逻辑
+    const result = {
+        content: [
+            {
+                type: 'text',
+                text: `图片已成功生成！\n- 提示词: ${args.prompt}...`
+            },
+            {
+                type: 'image_url',
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}` // 使用Data URI嵌入图片
+                }
+            }
+        ],
+        // ...其他细节
+    };
+
+    // 最终打印到 stdout
+    console.log(JSON.stringify({ status: "success", result: result }));
+    ```
+    前端或其他服务可以解析这个结构，将文本和图片分别渲染出来。
+
+### 3.3 处理多个指令
+
+对于像 [`FileOperator`](Plugin/FileOperator) 这样的多功能插件，你需要在代码中实现一个分发逻辑。
+
+*   **实现方式**:
+    1.  从 `stdin` 解析出的JSON对象中，读取 `command` 字段的值。
+    2.  使用 `switch` 语句或 `if-else` 结构，根据 `command` 的值调用不同的处理函数。
+*   **示例**: [`FileOperator/FileOperator.js`](Plugin/FileOperator/FileOperator.js:786)
+    ```javascript
+    // FileOperator.js 简化逻辑
+    async function processRequest(request) {
+      const { command, ...parameters } = request; // 分离出 command 和其他参数
+      const action = command;
+
+      switch (action) {
+        case 'ReadFile':
+          return await readFile(parameters.filePath, parameters.encoding);
+        case 'WriteFile':
+          return await writeFile(parameters.filePath, parameters.content, parameters.encoding);
+        case 'ListDirectory':
+          return await listDirectory(parameters.directoryPath, parameters.showHidden);
+        // ... 其他 case
+        default:
+          return { success: false, error: `Unknown action: ${action}` };
+      }
+    }
+    ```
+
+---
+
+## 4. 技术细节
+
+### 4.1 VCP的AI调用语法
+
+AI通过一种特殊的文本格式来发起工具调用请求。
+
+```
+<<<[TOOL_REQUEST]>>>
+maid:「始」Agent的署名「末」, // 重要字段，以进行任务追踪了解工具由谁发起
+tool_name:「始」工具名「末」, // 必要字段，以了解你要调用什么工具
+arg:「始」工具参数「末」, // 具体视不同工具需求而定
+timely_contact:「始」(可选) 设置一个未来时间点定时调用工具，格式为 YYYY-MM-DD-HH:mm (例如 2025-07-05-14:00)。如果提供此字段，工具调用将被安排在指定时间调用。「末」
+<<<[END_TOOL_REQUEST]>>>
+```
+
+**重点**: 作为插件开发者，你 **不需要** 解析这个块。[`server.js`](server.js) 会为你完成解析，并只将干净的参数（例如 `tool_name` 对应的 `arg`）作为JSON对象通过 `stdin` 发送给你的插件。
+
+### 4.2 构建串行调用的语法
+
+为了提高效率，AI可以一次性请求执行多个连续的操作。这被称为“批量”或“串行”调用。插件开发者可以通过在插件中实现特定的逻辑来支持这种调用方式。
+
+**对AI的调用格式约定:**
+
+当AI需要发起批量调用时，它需要构造一个特殊的JSON对象，其中每个指令和其参数都通过数字后缀来区分。
+
+*   **格式**: 将每个指令命名为 `commandX`，其对应的参数也加上相同的数字后缀 `X`，例如 `filePathX`, `contentX`。`X` 从1开始递增。
+
+*   **示例**: 假设AI需要先列出 `/home/user/docs` 目录的内容，然后读取该目录下的 `report.txt` 文件。AI应该构造如下的完整 `TOOL_REQUEST` 块：
+
+    ```
+    <<<[TOOL_REQUEST]>>>
+    tool_name:「始」FileOperator「末」,
+    command1:「始」ListDirectory「末」,
+    directoryPath1:「始」/home/user/docs「末」,
+    command2:「始」ReadFile「末」,
+    filePath2:「始」/home/user/docs/report.txt「末」
+    <<<[END_TOOL_REQUEST]>>>
+    ```
+
+    主服务 (`server.js`) 会解析这个请求，并将以下JSON对象发送到 `FileOperator` 插件的 `stdin`：
+    ```json
+    {
+      "command1": "ListDirectory",
+      "directoryPath1": "/home/user/docs",
+      "command2": "ReadFile",
+      "filePath2": "/home/user/docs/report.txt"
+    }
+    ```
+
+**对插件开发者的提示:**
+
+*   你的插件脚本需要能够解析这种带数字后缀的JSON格式。
+*   [`FileOperator.js`](Plugin/FileOperator/FileOperator.js:855) 是一个很好的参考实现。它通过检查请求中是否存在 `command1`, `command2` 等键来识别批量请求，然后循环处理每个指令，并最终返回一个包含所有操作结果的汇总报告。
+*   在你的 `plugin-manifest.json` 的 `description` 中，应明确告知AI你的插件支持这种批量调用方式，并提供一个简单的示例。
+
+### 4.3 构建鲁棒的参数识别
+
+为了让AI更容易、更灵活地使用你的插件，建议在插件内部处理参数的同义词和大小写问题。
+
+*   **场景**: AI可能用 `size` 或 `resolution` 来表示图片分辨率，也可能用 `Prompt` 或 `prompt`。
+*   **实现**: 在你的代码中，检查多个可能的参数名。
+
+    **Node.js 示例:**
+    ```javascript
+    function handleImageRequest(args) {
+        // 处理同义词
+        const resolution = args.resolution || args.size;
+        // 处理大小写
+        const prompt = args.prompt || args.Prompt;
+
+        if (!resolution || !prompt) {
+            throw new Error("必须提供 prompt 和 resolution/size 参数。");
+        }
+        // ...后续逻辑
+    }
+    ```
+
+    **Python 示例:**
+    ```python
+    def handle_image_request(args):
+        # .get(key, default) 是一个安全的方式
+        # .lower() 用于处理大小写
+        args_lower = {k.lower(): v for k, v in args.items()}
+        
+        resolution = args_lower.get('resolution') or args_lower.get('size')
+        prompt = args_lower.get('prompt')
+
+        if not resolution or not prompt:
+            raise ValueError("必须提供 prompt 和 resolution/size 参数。")
+        # ...后续逻辑
+    ```
+通过在插件内部增加这种兼容性处理，可以大大提高AI调用插件的成功率和用户体验。
+
+### 4.4 超栈追踪：处理分布式文件 URL
+
+在 VCP 的分布式服务器网络中，一个常见的挑战是：一个服务器上的插件（例如，主服务器上的 `GeminiImageGen`）可能需要访问另一个分布式节点（例如，某个客户端PC）上的本地文件。直接访问 `file:///C:/Users/User/Desktop/image.png` 这样的路径是行不通的。
+
+“超栈追踪” (Hyper-Stack-Trace) 是 VCP 设计的一套机制，用于优雅地解决这个问题。它允许插件像处理本地文件一样处理来自远程节点的 `file://` URL，而将复杂的网络获取过程交由主服务和 `FileFetcherServer` 自动完成。
+
+**核心思想**: 当插件尝试读取一个本地不存在的 `file://` 路径时，它不会立即失败，而是向主服务抛出一个“需要帮助”的特定错误。主服务捕获此错误后，会追溯请求的来源 IP，通过 WebSocket 网络向源头服务器请求该文件，获取文件数据后再返回给插件继续执行。
+
+**交互流程**:
+
+1.  **插件尝试读取**: `GeminiImageGen` 插件收到一个参数 `image_url: "file:///..."`。它尝试通过 `fs.readFile` 读取该路径。
+2.  **文件未找到 (ENOENT)**: 文件在当前服务器上不存在，`fs.readFile` 抛出 `ENOENT` 错误。
+3.  **抛出特定错误**: 插件 `catch` 到这个错误，并向 `stdout` 打印一个特殊结构的 JSON 错误：
+    ```json
+    {
+      "status": "error",
+      "code": "FILE_NOT_FOUND_LOCALLY",
+      "error": "本地文件未找到，需要远程获取。",
+      "fileUrl": "file:///..."
+    }
+    ```
+4.  **主服务拦截**: 主服务 (`server.js`) 接收到这个结果，识别出 `code: "FILE_NOT_FOUND_LOCALLY"`。它不会将这个错误直接返回给 AI，而是将请求转交给 `FileFetcherServer`。
+5.  **文件抓取**: [`FileFetcherServer.js`](FileFetcherServer.js) 启动。
+    *   它根据发起请求的 IP 地址，在 WebSocket 连接池中找到对应的源头服务器。
+    *   它向源头服务器发送一个内部工具调用 `internal_request_file`，请求路径为 `filePath`。
+6.  **源服务器响应**: 源头服务器上的 `FileOperator` 插件（或其内部等效实现）接收到请求，读取本地文件，并将其内容以 **Base64** 编码后返回。
+    ```json
+    {
+      "status": "success",
+      "fileData": "iVBORw0KGgoAAAANSUhEUg...", // Base64 编码的文件内容
+      "mimeType": "image/png"
+    }
+    ```
+7.  **数据返回与重试**: `FileFetcherServer` 接收到 Base64 数据，解码成 `Buffer`，并将其注入回 `GeminiImageGen` 插件的上下文中。主服务随后会使用获取到的文件数据 **重新调用** `GeminiImageGen` 插件。这一次，插件可以直接使用传入的 `image_base64` 数据，而无需再读取文件。
+
+**对插件开发者的要求**:
+
+当你的插件需要处理可能来自远程节点的 `file://` URL 时，你 **必须** 遵循以下规范：
+
+*   **捕获文件未找到错误**: 在文件读取操作外层包裹 `try...catch`。
+*   **返回特定错误结构**: 当捕获到 `ENOENT` 错误时，必须 `console.log` 一个包含 `status: "error"`, `code: "FILE_NOT_FOUND_LOCALLY"`, 和 `fileUrl` 字段的 JSON 字符串到 `stdout`。
+
+**实现范例 (`GeminiImageGen.mjs`)**:
+
+[`Plugin/GeminiImageGen/GeminiImageGen.mjs`](Plugin/GeminiImageGen/GeminiImageGen.mjs:64) 中的 `getImageDataFromUrl` 函数是该模式的最佳实践：
+
+```javascript
+// Plugin/GeminiImageGen/GeminiImageGen.mjs
+async function getImageDataFromUrl(url) {
+    // ... (处理 http 和 data URI)
+
+    if (url.startsWith('file://')) {
+        const { fileURLToPath } = await import('url');
+        const { default: mime } = await import('mime-types');
+        const filePath = fileURLToPath(url);
+
+        try {
+            // 1. 尝试直接读取
+            const buffer = await fs.readFile(filePath);
+            return { buffer, mimeType: mime.lookup(filePath) };
+        } catch (e) {
+            if (e.code === 'ENOENT') {
+                // 2. 本地未找到，抛出结构化错误
+                const structuredError = new Error("本地文件未找到，需要远程获取。");
+                structuredError.code = 'FILE_NOT_FOUND_LOCALLY';
+                structuredError.fileUrl = url;
+                throw structuredError; // 抛出给主 try...catch 块处理
+            } else {
+                // 其他错误（如权限问题）正常抛出
+                throw new Error(`读取本地文件时发生意外错误: ${e.message}`);
+            }
+        }
+    }
+    // ...
+}
+
+// 在主函数中
+async function main() {
+    try {
+        // ...
+    } catch (e) {
+        // 3. 捕获结构化错误并打印到 stdout
+        if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+            console.log(JSON.stringify({
+                status: "error",
+                code: e.code,
+                error: e.message,
+                fileUrl: e.fileUrl
+            }));
+        } else {
+            // ... 处理其他错误
+        }
+        process.exit(1);
+    }
+}
+```
+
+*   **作为被请求方**: 如果你的插件（例如一个增强版的 `FileOperator`）需要响应 `internal_request_file` 这种内部请求，你 **必须** 将文件内容以 **Base64** 字符串的形式放在 `fileData` 字段中返回。这是为了确保二进制数据能被安全地通过 JSON 和 WebSocket 传输。
+
+通过遵循这一规范，你的插件将能无缝融入 VCP 的分布式文件处理生态，极大地增强其功能和适用范围。
+
+#### 4.4.1 重要实践：正确处理重试时的 `image_base64` 参数
+
+在“超栈追踪”的第7步，当主服务用获取到的文件数据重新调用你的插件时，它会填充 `image_base64` 参数。开发者必须清楚：
+
+> **此时的 `image_base64` 参数是一个完整的 Data URI 字符串，而不是纯净的 Base64 编码！**
+
+格式如下： `data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...`
+
+**错误的做法 (导致文件损坏):**
+直接将这个完整的 Data URI 传递给 Base64 解码函数。
+```javascript
+// 错误示例！这会导致解码失败，生成损坏的文件
+const imageBuffer = Buffer.from(args.image_base64, 'base64');
+```
+`Buffer.from` 会尝试将 `data:image/png;base64,` 这部分前缀也当作 Base64 字符来解码，这必然会失败并产生无效的二进制数据。
+
+**正确的做法 (健壮的插件实现):**
+你的插件必须能够解析 Data URI，从中提取出纯净的 Base64 部分，然后再进行解码。
+
+```javascript
+// 正确示例: 从 Data URI 中提取纯净的 Base64
+let pureBase64 = args.image_base64;
+
+// 使用正则表达式检查并提取
+const dataUriMatch = args.image_base64.match(/^data:image\/\w+;base64,(.*)$/);
+if (dataUriMatch) {
+    pureBase64 = dataUriMatch[1];
+}
+
+// 现在可以安全地解码了
+const imageBuffer = Buffer.from(pureBase64, 'base64');
+// ... 后续可以将 imageBuffer 写入文件或直接上传
+```
+通过在插件内部增加这一层处理，可以确保你的插件能够正确、健壮地处理来自任何节点的图片数据，避免难以追踪的“文件损坏”问题。
+
+#### 4.4.2 进阶实践：处理多个分布式文件 URL
+
+当插件需要一次性处理多个文件输入时（例如，图像合成工具需要 `image_url_1` 和 `image_url_2`），“超栈追踪”机制需要被更精确地实现。如果插件只是简单地报告“文件未找到”，主服务将无法知道应该去获取哪一个 URL 对应的文件。
+
+**核心规范**:
+
+当你的插件在处理多个 `file://` URL 的过程中，如果某个文件在本地未找到，那么在抛出 `FILE_NOT_FOUND_LOCALLY` 这个特定错误时，**必须额外附加一个 `failedParameter` 字段**。
+
+这个字段的值必须是导致失败的那个参数的**确切名称**。
+
+**交互流程**:
+
+1.  **AI 调用**: AI 请求一个图像合成插件，提供了 `image_url_1: "file://..."` 和 `image_url_2: "file://..."`。
+2.  **插件处理**: 插件按顺序处理输入。它尝试读取 `image_url_1`，但文件在本地不存在。
+3.  **抛出精确错误**: 插件捕获到 `ENOENT` 错误。此时，它 **必须** 构造并打印如下结构的 JSON 到 `stdout`：
+    ```json
+    {
+      "status": "error",
+      "code": "FILE_NOT_FOUND_LOCALLY",
+      "error": "多图片处理中第 1 张图片本地未找到，需要远程获取。",
+      "fileUrl": "file://...",
+      "failedParameter": "image_url_1"
+    }
+    ```
+    注意 `failedParameter` 字段，它精确地指明了问题来源。
+4.  **主服务精准重试**: 主服务 (`Plugin.js`) 接收到这个错误后，会读取 `failedParameter` 的值 (`"image_url_1"`)。
+    *   它会调用 `FileFetcherServer` 去获取 `image_url_1` 的内容。
+    *   获取成功后，它会构建一个新的参数对象，其中**移除了 `image_url_1`**，并**添加了 `image_base64_1`**（值为获取到的 Data URI）。
+    *   **重要的是**，`image_url_2` 和其他参数保持不变。
+    *   主服务使用这个**部分更新**后的参数对象，重新调用该插件。
+5.  **循环处理**: 插件再次被调用。这一次，它可以成功处理 `image_base64_1`。当它接着处理 `image_url_2` 时，如果 `image_url_2` 也不存在，整个流程会为 `image_url_2` 再重复一遍（抛出带 `failedParameter: "image_url_2"` 的错误，然后主服务获取并替换为 `image_base64_2`）。
+6.  **最终成功**: 经过数次这样的“获取-重试”循环，所有 `file://` URL 都会被替换为 `image_base64_N` 数据，最终插件得以成功执行。
+
+**实现范例 (`NanoBananaGenOR.mjs`)**:
+
+[`Plugin/NanoBananaGenOR/NanoBananaGenOR.mjs`](Plugin/NanoBananaGenOR/NanoBananaGenOR.mjs) 是处理多个 `file://` URL 的最佳实践。
+
+*   在其 `composeImage` 函数中，它循环处理每个 `image_url_N`。
+    ```javascript
+    // Plugin/NanoBananaGenOR/NanoBananaGenOR.mjs -> composeImage()
+    try {
+        const { buffer, mimeType } = await getImageDataFromUrl(imageUrl);
+        // ...
+    } catch (e) {
+        if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+            const enhancedError = new Error(`多图片合成中第 ${i} 张图片 (参数: ${urlKey}) 本地未找到...`);
+            enhancedError.code = 'FILE_NOT_FOUND_LOCALLY';
+            enhancedError.fileUrl = e.fileUrl;
+            enhancedError.failedParameter = urlKey; // 关键：报告正确的失败参数
+            throw enhancedError;
+        }
+        // ...
+    }
+    ```
+*   在其主函数 `main()` 的 `catch` 块中，它确保将这个 `failedParameter` 字段写入最终的 JSON 输出。
+    ```javascript
+    // Plugin/NanoBananaGenOR/NanoBananaGenOR.mjs -> main()
+    } catch (e) {
+        if (e.code === 'FILE_NOT_FOUND_LOCALLY') {
+            const errorPayload = {
+                status: "error",
+                code: e.code,
+                error: e.message,
+                fileUrl: e.fileUrl
+            };
+            // 关键修复：将 failedParameter 传递给主控
+            if (e.failedParameter) {
+                errorPayload.failedParameter = e.failedParameter;
+            }
+            console.log(JSON.stringify(errorPayload));
+        }
+        // ...
+    }
+    ```
+
+通过遵循这一规范，你的多文件输入插件才能正确地与 VCP 的分布式文件系统协作，实现强大而可靠的功能。
+
+### 4.5 VCP Auth 验证码机制：管理员权限指令
+
+VCP Auth 验证码机制允许插件开发者为特定的指令添加一层安全验证，确保只有拥有正确验证码的用户才能执行敏感操作。这对于需要管理员权限或高风险操作的插件（如系统命令执行、文件删除等）至关重要。
+
+#### 4.5.1 启用管理员权限 (Manifest 配置)
+
+要在插件级别启用 VCP Auth 验证码机制，你需要在 `plugin-manifest.json` 的根级别添加 `requiresAdmin` 字段并设置为 `true`。
+
+```json
+{
+  "manifestVersion": "1.0.0",
+  "name": "AdminPlugin",
+  // ... 其他字段
+  "pluginType": "synchronous",
+  "requiresAdmin": true, // 关键：启用管理员权限验证
+  // ...
+}
+```
+
+当 `requiresAdmin` 为 `true` 时，主服务 (`Plugin.js`) 会自动执行以下操作：
+1.  从安全存储中获取并解密当前的 VCP Auth 验证码。
+2.  将解密后的验证码注入到插件进程的环境变量 `DECRYPTED_AUTH_CODE` 中。
+
+#### 4.5.2 AI 调用规范 (InvocationCommands)
+
+如果你的插件启用了管理员权限，你必须在 `invocationCommands` 的 `description` 中明确告知 AI 必须提供一个名为 `requireAdmin` 的参数，其值为用户提供的验证码。
+
+**示例 (参考 `PowerShellExecutor`):**
+
+```json
+"invocationCommands": [
+  {
+    "commandIdentifier": "AdminCommand",
+    "description": "执行需要管理员权限的命令。\n参数:\n- command (字符串, 必需): 要执行的命令。\n- requireAdmin (字符串, 必需): 6位数的验证码，用于执行需要管理员权限的任务。\n调用格式:\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AdminPlugin「末」,\ncommand:「始」system-shutdown-command「末」,\nrequireAdmin:「始」123456「末」\n<<<[END_TOOL_REQUEST]>>>"
+  }
+]
+```
+
+#### 4.5.3 插件内部验证逻辑 (核心实现)
+
+插件脚本必须从输入参数中读取用户提供的验证码（例如 `args.requireAdmin`），并将其与环境变量 `DECRYPTED_AUTH_CODE` 进行比对。
+
+**Node.js 验证范例 (参考 `PowerShellExecutor.js`):**
+
+```javascript
+// 假设 args 是从 stdin 解析出的 JSON 对象
+const requireAdmin = args.requireAdmin;
+
+if (requireAdmin) {
+    const realCode = process.env.DECRYPTED_AUTH_CODE;
+
+    if (!realCode) {
+        // 如果主服务未能注入验证码，通常是配置问题
+        throw new Error('无法获取管理员验证码。请确保主服务器配置正确。');
+    }
+
+    if (String(requireAdmin) !== realCode) {
+        // 验证失败，抛出错误
+        throw new Error('管理员验证码错误。');
+    }
+    // 验证成功，继续执行管理员命令
+}
+```
+
+**Python 验证范例:**
+
+```python
+import os
+import json
+
+def validate_admin_auth(args):
+    require_admin = args.get('requireAdmin')
+    
+    if require_admin:
+        real_code = os.environ.get('DECRYPTED_AUTH_CODE')
+        
+        if not real_code:
+            raise ValueError('无法获取管理员验证码。请确保主服务器配置正确。')
+        
+        if str(require_admin) != real_code:
+            raise ValueError('管理员验证码错误。')
+        
+        print("管理员权限验证成功。")
+        return True
+    return False
+```
+
+通过在插件内部实现这一验证步骤，即使 AI 尝试调用管理员指令，如果没有提供正确的验证码，插件也会立即失败并返回错误信息，从而保障系统的安全。
+
+---
+
+## 5. VCP 异步插件开发
+
+当一个任务需要很长时间才能完成时（例如视频生成、长时间的数据分析），同步插件模型不再适用，因为它会阻塞主服务，直到任务完成。为了解决这个问题，VCP引入了异步插件模型。
+
+### 5.1 什么是异步插件
+
+异步插件将一个长耗时任务分解为两个阶段：
+
+1.  **任务提交（同步阶段）**: 插件被调用后，它会立即启动后台任务，并马上向主服务返回一个“任务已提交”的回执。这个回执中包含一个唯一的任务ID和一个特殊的占位符。主服务收到后，会立刻将这个占位符返回给AI，AI再呈现给用户。这个过程非常快，不会阻塞。
+2.  **结果回调（异步阶段）**: 插件的后台任务（例如，一个独立的线程）会持续工作或轮询状态。当任务最终完成（成功或失败）时，它会通过一个HTTP请求，将最终结果“回调”给主服务器上的一个特定API端点。
+
+主服务器收到回调后，会将结果保存下来，并通过WebSocket通知前端。更重要的是，当AI在后续的对话中再次看到之前收到的那个占位符时，主服务器会自动将其替换为已保存的最终结果。
+
+**以 [`VideoGenerator`](Plugin/VideoGenerator) 为例的生命周期：**
+
+1.  **AI 调用**: AI 发起一个视频生成请求。
+2.  **插件执行**: [`Plugin.js`](Plugin.js) 启动 `video_handler.py` 进程。
+3.  **立即返回**: `video_handler.py` 向外部API提交了生成任务，然后立刻向 `stdout` 打印一个JSON，其中包含任务ID和一个占位符，例如 `{{VCP_ASYNC_RESULT::Wan2.1VideoGen::some-request-id}}`。
+4.  **后台轮询**: `video_handler.py` 进程**没有退出**，而是启动一个后台线程，该线程开始轮询视频生成的状态。
+5.  **结果回调**: 几分钟后，后台线程发现视频已生成。它立刻向主服务器的 `/plugin-callback/Wan2.1VideoGen/some-request-id` 地址发送一个 `POST` 请求，请求体中包含了视频的URL和状态。
+6.  **服务器处理**: [`server.js`](server.js) 上的回调路由接收到这个请求，将结果保存到 `VCPAsyncResults` 目录下的一个JSON文件中，并发送WebSocket通知。
+7.  **占位符替换**: 在未来的对话中，系统提示词里的 `{{VCP_ASYNC_RESULT::...}}` 会被自动替换成已保存的视频URL和相关信息。
+
+### 5.2 如何构建 `plugin-manifest.json`
+
+异步插件的清单文件在同步插件的基础上增加了几个关键配置。
+
+**`VideoGenerator/plugin-manifest.json` 示例解析:**
+
+```json
+{
+  "name": "Wan2.1VideoGen",
+  "displayName": "视频生成器 (Wan2.1)",
+  "pluginType": "asynchronous", // 关键点1: 类型必须是 "asynchronous"
+  "entryPoint": {
+    "command": "python video_handler.py"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 1800000 // 建议设置一个较长的超时时间
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "command": "submit",
+        "description": "提交一个新的视频生成任务...这是一个动态上下文占位符...请在你的回复中包含以下占位符原文：{{{{VCP_ASYNC_RESULT::Wan2.1VideoGen::{req_id_submit}}}}}" // 关键点2: 必须指导AI返回占位符
+      },
+      {
+        "command": "query",
+        "description": "查询指定 request_id 的视频生成任务状态..." // 提供一个手动查询状态的命令作为备用
+      }
+    ]
+  },
+  "webSocketPush": { // 关键点3: （可选）配置WebSocket推送
+    "enabled": true,
+    "messageType": "video_generation_status",
+    "usePluginResultAsMessage": true,
+    "targetClientType": "VCPLog"
+  }
+}
+```
+
+**关键字段解析:**
+
+*   `"pluginType"`: **(必需)** 必须设置为 `"asynchronous"`。这是 [`Plugin.js`](Plugin.js) 区分两种插件模式的唯一标识。
+*   `"description"` (在 `submit` 命令中): **(极其重要)** 你必须在描述中明确告知AI：
+    1.  这是一个耗时操作。
+    2.  调用成功后，它会收到一个**动态上下文占位符**。
+    3.  AI**必须**将这个占位符**原文**返回给用户，格式为 `{{VCP_ASYNC_RESULT::YourPluginName::{任务ID}}}`。
+*   `"webSocketPush"`: (可选) 如果配置了此项，当插件通过回调API返回最终结果时，[`server.js`](server.js) 会自动向指定类型的客户端发送一个WebSocket消息，用于实时通知。
+
+### 5.3 如何构建插件本体
+
+异步插件的脚本核心是实现“两阶段执行”模式。
+
+**核心模式：**
+
+1.  **阶段一 (同步)**:
+    *   从 `stdin` 读取输入参数。
+    *   启动后台任务（例如，在Python中创建一个 `threading.Thread`）。
+    *   **立即**向 `stdout` 打印一个JSON对象，其 `result` 字段包含要返回给AI的占位符字符串。
+    *   **不要退出进程！**
+2.  **阶段二 (异步)**:
+    *   后台任务开始执行（例如，轮询API状态）。
+    *   任务完成后，获取最终结果。
+    *   从环境变量中读取 `CALLBACK_BASE_URL` 和 `PLUGIN_NAME_FOR_CALLBACK`。
+    *   向 `f"{CALLBACK_BASE_URL}/{PLUGIN_NAME_FOR_CALLBACK}/{任务ID}"` 发起一个 `POST` HTTP请求，请求体为包含最终结果的JSON。
+    *   回调发送成功后，后台任务结束，整个插件进程可以安全退出。
+
+**示例: `video_handler.py` 关键逻辑**
+
+1.  **主函数 `main()` (同步部分)**
+    ```python
+    # video_handler.py -> main()
+    def main():
+        # ... 读取和解析 stdin ...
+        if command == "submit":
+            # ... 参数校验 ...
+            
+            # 调用API提交函数，这个函数会启动后台线程
+            req_id_submit = submit_video_request_api(
+                api_key, t2v_model, prompt, ...,
+                callback_base_url=os.getenv("CALLBACK_BASE_URL"), 
+                plugin_name_for_callback=os.getenv("PLUGIN_NAME_FOR_CALLBACK")
+            )
+            
+            # 构造包含占位符的结果字符串
+            result_string_for_ai = (
+                f"文生视频任务 (ID: {req_id_submit}) 已成功提交。\n"
+                f"这是一个动态上下文占位符，当任务完成时，它会被自动替换为实际结果。\n"
+                f"请在你的回复中包含以下占位符原文：{{{{VCP_ASYNC_RESULT::Wan2.1VideoGen::{req_id_submit}}}}}"
+            )
+            
+            # 立即打印初始响应到 stdout
+            print_json_output(status="success", result=result_string_for_ai)
+            # 此后，主线程结束，但后台线程仍在运行
+    ```
+
+2.  **提交函数 `submit_video_request_api()` (启动后台)**
+    ```python
+    # video_handler.py -> submit_video_request_api()
+    def submit_video_request_api(...):
+        # ... 调用外部API，获取 request_id ...
+        
+        if callback_base_url and plugin_name_for_callback:
+            # 创建一个后台线程来执行轮询和回调
+            polling_thread = threading.Thread(target=poll_and_callback, args=(
+                api_key, request_id, callback_base_url, plugin_name_for_callback, ...
+            ))
+            # 必须是非守护线程（默认即是），这样主进程会等待它执行完毕
+            polling_thread.start()
+            log_event("info", f"[{request_id}] Background polling thread started.")
+        
+        return request_id
+    ```
+
+3.  **回调函数 `poll_and_callback()` (异步部分)**
+    ```python
+    # video_handler.py -> poll_and_callback()
+    def poll_and_callback(api_key, request_id, callback_base_url, plugin_name, ...):
+        # ... 循环轮询任务状态 ...
+        
+        # 当获取到最终状态 ("Succeed" or "Failed")
+        if current_status in ["Succeed", "Failed"]:
+            log_event("info", f"[{request_id}] Final status '{current_status}' received. Attempting callback.")
+            
+            # 构造回调URL
+            callback_url = f"{callback_base_url}/{plugin_name}/{request_id}"
+            
+            # 准备回调数据
+            callback_payload = {
+                "requestId": request_id,
+                "status": current_status,
+                # ... 其他结果数据，如 videoUrl, reason, message ...
+            }
+
+            try:
+                # 发送POST请求到主服务器
+                callback_response = requests.post(callback_url, json=callback_payload, timeout=30)
+                callback_response.raise_for_status()
+                log_event("success", f"[{request_id}] Callback to {callback_url} successful.")
+            except requests.exceptions.RequestException as cb_e:
+                log_event("error", f"[{request_id}] Callback to {callback_url} failed.")
+            
+            return # 任务完成，线程退出
+    ```
+
+通过遵循这个模式，你可以创建强大的异步插件来处理任何耗时的任务，同时保持主服务的响应性和流畅的用户体验。

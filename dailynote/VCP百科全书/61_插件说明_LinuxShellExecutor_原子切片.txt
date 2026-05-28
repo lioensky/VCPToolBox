@@ -1,0 +1,41 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——LinuxShellExecutor（原子切片）
+
+一、插件身份
+- name: `LinuxShellExecutor`
+- displayName: `Linux Shell 安全执行器`
+- pluginType: `synchronous`
+- 定位：高风险系统操作执行器，强调多层安全防护
+
+二、关键能力
+- 主机资产发现与选择（hostId导向）
+- 分级安全策略（读/写/危险命令边界）
+- 长任务托管（返回taskId，配合日志监控）
+- 与共享 `SSHManager` 协作，支撑跨插件连接管理
+
+三、核心参数说明
+- `hostId`（必需，字符串）：目标主机标识符（如 DE-server、prod-node-01）
+- `shellCommand`（必需，字符串）：要执行的Shell命令（如 `uname -a`、`ps aux`）
+- `timeout`（可选，整数）：命令超时时间（毫秒，默认30000）
+- `taskId`（可选，字符串）：长任务标识，用于异步追踪和日志关联
+
+四、版本演进重点（README）
+- 强化异步闭环，避免长任务同步阻塞。
+- 优化SSH连接策略（即用即连、完工即断/临时复用）。
+- 主机级串行化认证，降低PAM锁定风险。
+- 输出长度与资源控制，降低OOM风险。
+
+五、调用注意
+- 管理类命令必须明确授权与安全等级。
+- 批量安装/日志追踪任务建议联动 `LinuxLogMonitor`。
+- 失败排查优先看：权限、认证、命令级别、交互阻塞提示。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」LinuxShellExecutor「末」,
+command:「始」LinuxShellExecutor「末」,
+hostId:「始」DE-server「末」,
+shellCommand:「始」uname -a && uptime「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: LinuxShellExecutor, Shell安全执行, SSHManager, 主机资产, 长任务托管, taskId, PAM防护, 安全分级, 命令审计, Linux运维

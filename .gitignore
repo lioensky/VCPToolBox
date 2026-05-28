@@ -162,9 +162,6 @@ tag-processor-config.env
 *.sqlite-wal
 *.db
 DebugLog/
-dailynote/*
-!dailynote/VCP桌面知识/
-!dailynote/VCP桌面知识/**
 ip_blacklist.json
 /VectorStore
 

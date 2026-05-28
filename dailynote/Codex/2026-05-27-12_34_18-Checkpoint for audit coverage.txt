@@ -1,0 +1,15 @@
+[2026-05-27] - Codex
+Title: Checkpoint for audit coverage
+Memory-ID: codex-process-49f20cf7db244b97b54e40f43cdcadf3
+Record-Type: process
+Validated: yes
+Reusable: no
+
+Content:
+Type: checkpoint
+This creates an accepted entry for audit coverage.
+
+Evidence:
+Accepted-path audit setup.
+
+Tag: audit, setup

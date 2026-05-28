@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件实现——ScheduleManager（源码事实切片）
+
+一、源码锚点
+- manifest: Plugin/ScheduleManager/plugin-manifest.json
+- entry: Plugin/ScheduleManager/ScheduleManager.js
+- 数据文件: Plugin/ScheduleManager/schedules.json
+- 主分发: handleRequest() -> switch(command)
+
+二、行为事实（代码级）
+- 仅支持三条命令：AddSchedule / DeleteSchedule / ListSchedules。
+- AddSchedule 时间字段做正则校验，需匹配 `YYYY-M-D` 开头格式，否则拒绝。
+- 新日程 ID 使用 `Date.now().toString()` 生成，不是 UUID。
+- 写入后会按 `new Date(time)` 升序自动排序。
+- DeleteSchedule 按 ID 精确匹配，未命中返回错误。
+
+三、边界与错误模式
+- schedules.json 不存在时按空数组处理（ENOENT -> []）。
+- 未知命令返回 `未知命令: ...`。
+- stdin 空输入返回 `无输入数据`，JSON 解析失败返回 `解析输入失败`。
+
+四、调用示例（源码对齐）
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」ScheduleManager「末」,
+command:「始」AddSchedule「末」,
+time:「始」2026-03-04 09:30「末」,
+content:「始」检查RAG切片Tag内聚性「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: ScheduleManager, ScheduleManager.js, AddSchedule, DeleteSchedule, ListSchedules, schedules.json, Date.nowID, 时间正则校验, 自动排序, 日程管理
+
