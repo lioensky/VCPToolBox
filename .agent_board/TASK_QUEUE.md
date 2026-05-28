@@ -235,3 +235,13 @@ Updated: 2026-05-26 Asia/Shanghai.
 - Any additional remote write.
 - Any action touching real secrets or runtime state without a separate approval.
 - Any further cleanup/delete inside `A:/VCP/VCPToolBox`.
+
+## 2026-05-28 Continuation Audit
+
+- Checked remaining `upstream/main` positive cherry candidates after the
+  semantic-router absorb.
+- Result: no additional small safe source absorb package remains at this time.
+- Effective code/content of `18728628`, `13ddefe9`, `973e2bdd`, `09fdab2a`,
+  `b30dbf7e`, `07c9994e`, `3a95a1e3`, `0c45a35a`, and `696e3a9f` is already
+  covered by current `main`, or the remaining unmatched portion is limited to
+  intentionally excluded build/binary/runtime-risk material.

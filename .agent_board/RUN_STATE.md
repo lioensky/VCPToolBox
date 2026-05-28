@@ -688,3 +688,19 @@ Post-D4 next-decision package:
   archive/retention, and N5 clean worktree feature-line retention.
 - Updated historical baseline wording in the dirty-worktree and branch-retention
   policy docs to prevent old head hashes from being read as current state.
+
+2026-05-28 upstream continuation audit:
+
+- Verified local `main`, `origin/main`, and `origin/prod/stable` are aligned at
+  `e034131d1fb11822942b08f6ec648ffd911161ca`.
+- Reviewed remaining `git cherry -v main upstream/main` positives after the
+  semantic-router absorb.
+- Confirmed current source is already a superset or manual reimplementation of:
+  `18728628`, `13ddefe9`, `973e2bdd`, `09fdab2a`, `b30dbf7e`, `07c9994e`,
+  `3a95a1e3`, `0c45a35a`, and `696e3a9f`.
+- `9338e01e` remains hash-different in `git cherry`, but its functional intake
+  was already completed locally and remotely as split-package commit `e034131d`.
+- Current continuation conclusion: no additional small safe source package
+  remains to absorb from the present `upstream/main` delta without moving into
+  already-covered supersets, stale build artifacts, or intentionally deferred
+  binary/runtime risk.
