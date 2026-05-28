@@ -1814,6 +1814,44 @@ Not validated:
 - No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
   live DingTalk/MCP/DWS command, or production write was performed.
 
+## 2026-05-28 Asia/Shanghai - Vector Resilience Intake
+
+Checks performed:
+
+- `git fetch upstream`
+- `git cherry -v main upstream/main`
+- `git show --stat --summary --name-status 2ae8a9d0`
+- `node --check EmbeddingUtils.js`
+- `node --check KnowledgeBaseManager.js`
+- `node --check TagMemoEngine.js`
+- `node --check tests/embedding-model-fallback.test.js`
+- `node --test tests/embedding-model-fallback.test.js`
+- `node rust-vexus-lite/test.js`
+- `node -e` smoke for `hasEmbeddingBackend`, `getEmbeddingFallbackStats`, and
+  `TagMemoEngine` `modelSig`
+- `git diff --check`
+
+Verified:
+
+- Local test server proves `EmbeddingUtils` switches from a failing primary
+  embedding model to `EmbeddingModelBackup1` without external network access.
+- Existing fallback backend exports remain available.
+- TagMemo model signature now honors `EmbeddingModelSig` before provider alias.
+- Rust/Vexus smoke still passes after this package.
+
+Known unrelated validation failure:
+
+- `node --test tests/toolExecutorExecutionContext.test.js` fails on the existing
+  `requestSource` expectation (`unknown` expected, `post` actual). That test
+  stubs `EmbeddingUtils` and does not cover this package's changed code.
+
+Not validated:
+
+- No live embedding provider was called.
+- No full repository test run was completed.
+- No remote write, branch deletion, deploy, production service start, or runtime
+  data migration was performed.
+
 ## 2026-05-26 Asia/Shanghai - Post-D4 Next-Decision Package
 
 Checks performed:

@@ -704,3 +704,18 @@ Post-D4 next-decision package:
   remains to absorb from the present `upstream/main` delta without moving into
   already-covered supersets, stale build artifacts, or intentionally deferred
   binary/runtime risk.
+
+2026-05-28 vector resilience intake:
+
+- Fetched upstream; `upstream/main` advanced to
+  `2ae8a9d0dfcb2425b52ed9c044b79c730fbc8238` (`新增向量容灾系统`).
+- Created local branch `codex/vector-resilience-absorb-20260528` from current
+  `main`.
+- Integrated the package by preserving current backend fallback governance while
+  adding upstream-style embedding model candidate fallback and `EmbeddingModelSig`
+  cache-signature support.
+- Current package files: `EmbeddingUtils.js`, `KnowledgeBaseManager.js`,
+  `TagMemoEngine.js`, `config.env.example`,
+  `tests/embedding-model-fallback.test.js`, plus this `.agent_board` checkpoint.
+- No remote write, branch deletion, production service start, real embedding
+  request, or runtime data migration was performed.

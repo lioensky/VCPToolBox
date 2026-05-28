@@ -41,7 +41,7 @@ class TagMemoEngine {
      * 防止 VECTORDB_DIMENSION 切换后读到维度错位的 BLOB）
      */
     _computeModelSig() {
-        const modelName = this.config?.model || 'unknown-model';
+        const modelName = this.config?.modelSig || this.config?.model || 'unknown-model';
         const dim = this.config?.dimension || 0;
         return crypto.createHash('sha256')
             .update(`${modelName}:${dim}`)

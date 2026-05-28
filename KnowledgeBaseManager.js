@@ -31,6 +31,9 @@ class KnowledgeBaseManager {
             apiKey: process.env.API_Key,
             apiUrl: process.env.API_URL,
             model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
+            modelBackups: process.env.EmbeddingModelBackups || process.env.EmbeddingModelBackup || '',
+            // Vector semantic-space signature for cache invalidation. It is separate from provider aliases.
+            modelSig: process.env.EmbeddingModelSig || process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
             dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
 
@@ -889,7 +892,7 @@ class KnowledgeBaseManager {
     async _fetchAndCacheDiaryNameVector(name) {
         try {
             const [vec] = await getEmbeddingsBatch([name], {
-                apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model
+                apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model, modelBackups: this.config.modelBackups
             });
             if (vec) {
                 this.diaryNameVectorCache.set(name, vec);
@@ -992,7 +995,7 @@ class KnowledgeBaseManager {
         if (typeof input === 'string') {
             try {
                 const [vec] = await getEmbeddingsBatch([input], {
-                    apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model
+                    apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model, modelBackups: this.config.modelBackups
                 });
                 queryVec = vec;
             } catch (e) { return []; }
@@ -1022,7 +1025,7 @@ class KnowledgeBaseManager {
         if (this.watcher) return;
 
         const handleFile = (filePath) => {
-            const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
+            const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model, modelBackups: this.config.modelBackups };
             const deferEmbeddingProcessing = !hasEmbeddingBackend(embeddingConfig);
 
             this.pendingFiles.add(filePath);
@@ -1210,7 +1213,7 @@ class KnowledgeBaseManager {
 
     _scheduleBatch() {
         if (this.batchTimer) clearTimeout(this.batchTimer);
-        const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
+        const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model, modelBackups: this.config.modelBackups };
         const delay = hasEmbeddingBackend(embeddingConfig)
             ? this.config.batchWindow
             : Math.max(this.config.batchWindow * 6, 60000);
@@ -1230,7 +1233,7 @@ class KnowledgeBaseManager {
 
         try {
             // 1. 解析文件并按日记本分组
-            const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model };
+            const embeddingConfig = { apiKey: this.config.apiKey, apiUrl: this.config.apiUrl, model: this.config.model, modelBackups: this.config.modelBackups };
             if (!hasEmbeddingBackend(embeddingConfig)) {
                 deferredForMissingEmbedding = true;
                 console.warn('[KnowledgeBase] Embedding backend is not configured yet; deferring batch processing without dropping pending files.');

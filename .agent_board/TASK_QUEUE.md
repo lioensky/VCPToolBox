@@ -245,3 +245,14 @@ Updated: 2026-05-26 Asia/Shanghai.
   `b30dbf7e`, `07c9994e`, `3a95a1e3`, `0c45a35a`, and `696e3a9f` is already
   covered by current `main`, or the remaining unmatched portion is limited to
   intentionally excluded build/binary/runtime-risk material.
+
+## 2026-05-28 Vector Resilience Intake
+
+- New upstream candidate after fetch: `2ae8a9d0 新增向量容灾系统`.
+- Opened local package branch `codex/vector-resilience-absorb-20260528`.
+- Package scope is intentionally narrow:
+  - same embedding backend model-candidate fallback in `EmbeddingUtils.js`;
+  - `EmbeddingModelSig` support for TagMemo-derived cache invalidation;
+  - `config.env.example` documentation for embedding model backups;
+  - local regression test for primary model failure followed by backup model success.
+- Do not wholesale merge `upstream/main`; only this vector resilience package is in scope.
