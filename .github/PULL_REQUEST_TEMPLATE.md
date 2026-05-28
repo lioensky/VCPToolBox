@@ -6,7 +6,8 @@
 
 - [ ] Source / docs / tests only
 - [ ] No real `config.env`, `.env*`, token, key, or credential changes
-- [ ] No runtime data, generated images, logs, cache, vector store, or plugin state added
+- [ ] No logs, sqlite/db, vector store, plugin state, auth code, or other hard-deny runtime artifacts added
+- [ ] If touching `dailynote/`, `image/`, `AdminPanel-Vue/dist/`, `.agent_board/`, or `docs/governance/`, the reason is explained in Notes
 - [ ] No production Flag enabled by default
 
 ## Validation
@@ -27,4 +28,4 @@
 
 ## Notes
 
-<!-- Add risks, deferrals, or reviewer context. -->
+<!-- Add risks, deferrals, reviewer context, and any explanation for stable-sensitive tracked areas. -->

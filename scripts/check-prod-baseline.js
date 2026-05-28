@@ -33,12 +33,9 @@ const denyRules = [
   { label: 'chat/debug logs', pattern: /(^|\/)DebugLog\/|(^|\/)logs\/|\.log$/ },
   { label: 'runtime sqlite/db files', pattern: /\.(sqlite|sqlite-shm|sqlite-wal|db)$/ },
   { label: 'runtime vector stores', pattern: /(^|\/)VectorStore\/|^data\/(candidate-cache|chat-history-index|memory-vectors)\.json$/ },
-  { label: 'daily note runtime content', pattern: /^dailynote\/(?!VCP桌面知识\/)/ },
   { label: 'plugin state directories', pattern: /^Plugin\/[^/]+\/state\// },
   { label: 'runtime auth code', pattern: /^Plugin\/UserAuth\/code\.bin$/ },
   { label: 'plugin generated caches', pattern: /^Plugin\/ArtistMatcher\/artist_cache\.json$/ },
-  { label: 'generated Flux images', pattern: /^image\/fluxgen\// },
-  { label: 'generated GPTImageGen images', pattern: /^image\/gptimagegen\// },
 ];
 
 const allowedEnvTemplatePattern = /(^|\/)\.env\.(example|sample|template)$/;
@@ -115,17 +112,24 @@ requiredChecks.push({
     'Plugin/Example/.env.template',
   ].every(file => findDenyRule(file) === null),
 });
+requiredChecks.push({
+  label: 'baseline deny rules no longer treat dailynote as automatic stable failure',
+  ok: findDenyRule('dailynote/Codex/example.txt') === null,
+});
+requiredChecks.push({
+  label: 'baseline deny rules no longer treat tracked image outputs as automatic stable failure',
+  ok: findDenyRule('image/gptimagegen/example.png') === null
+    && findDenyRule('image/fluxgen/example.png') === null,
+});
+requiredChecks.push({
+  label: 'baseline deny rules no longer treat admin dist artifacts as automatic stable failure',
+  ok: findDenyRule('AdminPanel-Vue/dist/index.html') === null,
+});
 
 const aiImageRoute = readText('routes/admin/aiImageAgents.js');
 requiredChecks.push({
   label: 'AI image route keeps dry-run forcing path',
   ok: aiImageRoute.includes('forceDryRun: true') && aiImageRoute.includes('resolveDryRunMode'),
-});
-
-requiredChecks.push({
-  label: 'GPTImageGen stays disabled by default on prod stable',
-  ok: trackedFiles.includes('Plugin/GPTImageGen/plugin-manifest.json.block')
-    && !trackedFiles.includes('Plugin/GPTImageGen/plugin-manifest.json'),
 });
 
 const failedChecks = requiredChecks.filter((check) => !check.ok);

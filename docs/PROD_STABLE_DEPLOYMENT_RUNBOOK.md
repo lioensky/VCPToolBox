@@ -1,8 +1,15 @@
 # prod/stable 服务区部署 Runbook
 
 **适用范围：** 从 `prod/stable` 或稳定 tag 部署 VCPToolBox 到服务区
-**当前稳定锚点：** `prod-stable-2026-04-28-baseline` -> `b9a1a2b139a1c64856e123d7f0495e336a3349a6`
+**当前稳定分支头：** `origin/prod/stable` -> `f84fb727e22b8e28a8c291868ef8e34dc1ce8ffe`
+**历史回滚锚点：** `prod-stable-2026-04-28-baseline` -> `b9a1a2b139a1c64856e123d7f0495e336a3349a6`
 **默认原则：** 先备份、再验证、后切流量；默认不开生产 Flag；不把服务区运行态回流到 Git
+
+> 2026-05-28 说明：
+>
+> `origin/prod/stable` 已在 2026-05-28 快进到 `main @ f84fb727`，当前稳定线直接跟随
+> 该次被人工确认的 `main` 快照。部署 `prod/stable` 时，不应再假设它比 `main`
+> 更窄或仍停留在 2026-04-28 基线。
 
 ---
 
@@ -12,7 +19,7 @@
 
 1. 本次部署目标是 `prod/stable`，不是开发分支。
 2. 本次部署是否需要开启生产 Flag。默认答案应为“不需要”。
-3. 是否已经准备好回滚点。当前推荐回滚点是 `prod-stable-2026-04-28-baseline`。
+3. 是否已经准备好回滚点。当前推荐回滚点是历史 tag `prod-stable-2026-04-28-baseline`，或本次部署前自行记录的稳定 commit。
 
 需要人工明确确认后才允许做的事：
 
@@ -74,10 +81,10 @@ git pull --ff-only origin prod/stable
 git rev-parse HEAD
 ```
 
-确认输出 commit 是当前稳定线：
+确认输出 commit 是当前稳定线分支头：
 
 ```text
-b9a1a2b139a1c64856e123d7f0495e336a3349a6
+f84fb727e22b8e28a8c291868ef8e34dc1ce8ffe
 ```
 
 如果需要部署固定锚点而不是分支头，可以使用：

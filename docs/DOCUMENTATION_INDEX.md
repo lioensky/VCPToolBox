@@ -48,7 +48,7 @@
 | [FILE_INVENTORY.md](./FILE_INVENTORY.md) | 所有重要文件的职责、入口、依赖关系 | ⭐ |
 | [FEATURE_MATRIX.md](./FEATURE_MATRIX.md) | 每项功能的入口、触发条件、处理流程、配置项 | ⭐ |
 | [OPERATIONS.md](./OPERATIONS.md) | 启动方式、依赖要求、Docker配置、故障排查 | ⭐ |
-| [PROD_STABLE_BASELINE.md](./PROD_STABLE_BASELINE.md) | prod/stable 稳定线基线、禁入文件、默认安全态、验证矩阵、治理门 | ⭐⭐⭐ |
+| [PROD_STABLE_BASELINE.md](./PROD_STABLE_BASELINE.md) | prod/stable 新稳定线基线、直接跟随 main 的口径、默认安全态、验证矩阵、治理门 | ⭐⭐⭐ |
 | [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md) | prod/stable 服务区部署预检、启动、smoke check 与回滚流程 | ⭐⭐⭐ |
 
 ---

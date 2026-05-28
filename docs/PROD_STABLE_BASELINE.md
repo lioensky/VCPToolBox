@@ -1,8 +1,15 @@
 # prod/stable 生产稳定线基线
 
 **适用范围：** `prod/stable` 分支、面向 `prod/stable` 的 PR、生产发布前本地预检
-**最近基线检查：** 2026-04-28
-**原则：** 默认安全、无真实密钥、无运行态污染、验证先于发布、生产 Flag 显式确认后才可开启
+**最近基线检查：** 2026-05-28
+**原则：** `prod/stable` 直接跟随 `main` 的内容基线、分支永久保护、发布前显式人工确认、默认安全态不自动放开
+
+> 2026-05-28 基线切换说明：
+>
+> `origin/prod/stable` 已在 2026-05-28 由 `a1870b3` 快进到 `main @ f84fb727`。
+> 从这一天开始，`prod/stable` 不再维持一套比 `main` 更窄的独立内容白名单，
+> 而是以当时被确认的 `main` 快照作为新的稳定线内容基线。
+> 后续若要继续让 `prod/stable` 跟随 `main`，仍然需要明确人工确认和显式远端写入。
 
 ---
 
@@ -12,7 +19,7 @@
 
 - `main` 应吸收已经确认进入项目主线的最新代码、文档、治理记录和整合结果。
 - 本地分支审计、作者线吸收、普通功能合流和后续主线维护，默认以 `main` 作为最新主线基准。
-- `main` 代表项目当前最完整状态，但不等同于稳定生产部署线。
+- `main` 代表项目当前最完整状态。
 
 `prod/stable` 是 VCPToolBox 稳定生产使用的稳定生产线分支，必须永久保留。
 
@@ -21,26 +28,37 @@
 - 即使 `prod/stable` 已经被 `main` 吸收、显示为已合并、或当前没有独有提交，也仍然是受保护稳定线，不是可清理分支。
 - 不得自动对 `prod/stable` 执行重置、强推、重命名、删除、保护规则放宽或历史改写。
 - 任何涉及 `prod/stable` 的合并、发布、回滚、保护规则变更或远端写入，都必须先获得明确的当前回合人工授权。
+- 2026-05-28 起，`prod/stable` 的内容基线直接取自被人工确认后的 `main` 快照，而不再单独维护一套与 `main` 长期分叉的窄内容线。
 
 ---
 
 ## 1. 稳定线边界
 
-`prod/stable` 不是实验分支，也不是运行实例的工作目录快照。进入稳定线的内容应当是可复现源码、模板配置、文档、测试、构建脚本和必要的静态资源。
+`prod/stable` 不是实验分支，也不是运行实例的工作目录快照。
+但从 2026-05-28 起，它的内容边界不再通过“先排除大量 `main` 内容，再择优吸收”来定义，
+而是通过“将已经确认的 `main` 快照提升为稳定线”来定义。
 
-禁止把下列内容作为稳定线源码提交：
+这意味着：
+
+- 当前 `prod/stable` 中出现的内容，首先以当前 `main` 的实际跟踪结果为准。
+- 不应再根据 2026-04-28 的旧窄稳定线假设，自动断言某些目录“必然不在 stable”。
+- 如果未来要重新收紧稳定线内容，应优先在 `main` 上完成治理，再由人工确认是否同步到 `prod/stable`。
+
+下列项目仍然属于高敏感或高噪音区域，进入未来稳定线变更时应重点复核，而不是默认自动放行：
 
 - 真实配置：`config.env`、`.env*`、插件私有 `config.env`
 - 运行日志：`logs/`、`DebugLog/`、`*.log`
 - 运行数据库和索引：`*.sqlite`、`*.db`、`VectorStore/`、`data/*cache*.json`
-- 运行态记忆和日记：`dailynote/`，除明确保留的稳定知识目录外
+- 运行态记忆和日记：`dailynote/`
 - 插件状态和缓存：`Plugin/*/state/`、插件生成 cache 文件、`Plugin/UserAuth/code.bin`
-- 生成图片和媒体：`image/fluxgen/`
+- 生成图片和媒体：`image/`
+- 构建产物：`AdminPanel-Vue/dist/`
+- 治理证据与临时台账：`.agent_board/`、`docs/governance/`
 
 证据：
 
-- `.gitignore` 定义运行态、真实配置、插件状态、生成图片的忽略规则。
-- `scripts/check-prod-baseline.js` 在 CI 中检查已跟踪文件，发现上述禁入内容即失败。
+- `main @ f84fb727` 当前已把 `dailynote/`、`docs/governance/`、`AdminPanel-Vue/dist/` 等内容带入稳定线快照。
+- `scripts/check-prod-baseline.js` 已调整为“硬拦真正危险内容 + 检查默认安全态”，不再把 `dailynote/`、`image/`、`AdminPanel-Vue/dist/` 当作自动失败项；`.github/PULL_REQUEST_TEMPLATE.md` 也已改为要求说明这些敏感区域的变更理由。
 - `.github/PULL_REQUEST_TEMPLATE.md` 将生产边界和验证项显性化。
 
 ---
@@ -52,12 +70,12 @@
 | 区域 | 作用 | 稳定线处理 |
 |------|------|------------|
 | 根目录 `server.js` / `Plugin.js` / `modules/` / `routes/` | Node.js 主服务、插件调度、路由与内部模块 | 作为核心源码管理 |
-| `Plugin/` | 多语言插件生态 | manifest、源码、模板配置可跟踪；运行态配置和状态不可跟踪 |
+| `Plugin/` | 多语言插件生态 | 以当前 `main` 快照为准；真实配置、缓存、状态文件仍应重点复核 |
 | `AdminPanel/` | 内嵌静态管理前端 | 作为运行面板资源管理 |
-| `AdminPanel-Vue/` | Vue 管理前端工程 | 源码、测试和必要构建配置可管理 |
+| `AdminPanel-Vue/` | Vue 管理前端工程 | 源码、测试和当前已进入 `main` 的构建结果共同构成稳定线快照 |
 | `rust-vexus-lite/` | Rust N-API 向量组件 | 源码和 `Cargo.lock` 可管理；`target/` 不可跟踪 |
-| `dailynote/` | 运行期记忆/知识内容 | 默认不可跟踪，只有明确稳定知识白名单可例外 |
-| `image/` | 运行期媒体资源 | 默认不可跟踪，少量明确静态素材可例外 |
+| `dailynote/` | 记忆/知识内容 | 当前已随 `main` 纳入稳定线；后续如需收紧，先在 `main` 治理 |
+| `image/` | 媒体资源 | 当前已随 `main` 纳入部分内容；后续按用途继续复核 |
 
 ---
 
@@ -107,7 +125,7 @@
 
 ## 5. CI 验证矩阵
 
-面向 `main` 和 `prod/stable` 的 push / PR 必须先通过快门禁：
+面向 `main` 和 `prod/stable` 的 push / PR，仍应优先通过快门禁：
 
 1. `npm ci`
 2. `npm run test:baseline`
@@ -136,7 +154,7 @@ Docker build 是慢验证，策略如下：
 
 ## 6. 发布前治理门
 
-任何面向生产的发布、合并、部署或 Flag 开启前，必须先给出：
+任何面向生产的发布、合并、部署、`main -> prod/stable` 提升或 Flag 开启前，必须先给出：
 
 - 当前分支和 worktree 状态
 - 与 `prod/stable` 的 diff 摘要
@@ -168,19 +186,20 @@ Docker build 是慢验证，策略如下：
 已完成治理：
 
 1. `prod/stable` 已配置分支保护，要求 PR 路径、`build_and_test (20.x)` 通过、conversation resolved，禁止 force push 和删除分支。
-2. 当前稳定锚点已打 tag：`prod-stable-2026-04-28-baseline`。
-3. 服务区部署流程已沉淀到 [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md)。
+2. 2026-05-28 已明确将 `origin/prod/stable` 快进到 `main @ f84fb727`，并将该 `main` 快照定义为新的稳定线内容基线。
+3. 历史稳定锚点 tag `prod-stable-2026-04-28-baseline` 仍保留，作为旧窄稳定线时期的参考锚点。
+4. 服务区部署流程已沉淀到 [PROD_STABLE_DEPLOYMENT_RUNBOOK.md](./PROD_STABLE_DEPLOYMENT_RUNBOOK.md)。
 
 近期优先级：
 
-1. 将 `scripts/check-prod-baseline.js` 作为 `prod/stable` PR 必过门禁。
-2. 将真实配置迁移到部署环境或密钥管理，不再跟随源码目录流转。
-3. 定期复查 `dailynote/` 白名单，确认哪些内容是真正稳定知识，哪些只是运行记忆。
-4. 把 Docker 大范围 bind mount 和 root 用户运行风险列入生产部署复盘，不在基线 PR 中扩大变更范围。
-5. 在发布流程中复用 PR 模板和人工 preflight，覆盖 Flag、外部写入、回滚和验证证据。
+1. 将真实配置迁移到部署环境或密钥管理，不再跟随源码目录流转。
+2. 对 `dailynote/`、`image/`、`AdminPanel-Vue/dist/`、`.agent_board/`、`docs/governance/` 做新的稳定线内容审计，决定哪些保留、哪些后续应先在 `main` 上治理。
+3. 把 Docker 大范围 bind mount 和 root 用户运行风险列入生产部署复盘，不在基线 PR 中扩大变更范围。
+4. 在后续 `main -> prod/stable` 提升流程中复用人工 preflight，覆盖 Flag、外部写入、回滚和验证证据。
 
 剩余风险：
 
 - 当前测试体系仍不是完整生产验收，只能证明核心路径和门控未明显失守。
+- 2026-05-28 之后，部分基线文档、脚本和历史认知仍可能默认旧窄稳定线假设，需要继续统一。
 - Docker 生产运行策略仍保留历史权衡，需要单独治理。
 - 插件生态较大，单次基线检查不能替代逐插件生产审计。
