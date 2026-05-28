@@ -41,7 +41,9 @@ class TagMemoEngine {
      * 防止 VECTORDB_DIMENSION 切换后读到维度错位的 BLOB）
      */
     _computeModelSig() {
-        const modelName = this.config?.model || 'unknown-model';
+        // EmbeddingModelSig 表示“向量语义空间签名”，与实际请求渠道解耦。
+        // 未配置时回退到主 embedding 模型名，保持旧版本行为。
+        const modelName = this.config?.modelSig || this.config?.model || 'unknown-model';
         const dim = this.config?.dimension || 0;
         return crypto.createHash('sha256')
             .update(`${modelName}:${dim}`)

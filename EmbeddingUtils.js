@@ -8,18 +8,56 @@ const safeMaxTokens = Math.floor(embeddingMaxToken * 0.85);
 const MAX_BATCH_ITEMS = 100; // Gemini/OpenAI 限制
 const DEFAULT_CONCURRENCY = parseInt(process.env.TAG_VECTORIZE_CONCURRENCY) || 5; // 🌟 读取并发配置
 
+function _splitModelList(value) {
+    return String(value || '')
+        .split(/[,，]/)
+        .map(model => model.trim())
+        .filter(Boolean);
+}
+
+function _getEmbeddingModelCandidates(config = {}) {
+    const candidates = [];
+
+    const addModel = (model) => {
+        const normalized = String(model || '').trim();
+        if (normalized && !candidates.includes(normalized)) {
+            candidates.push(normalized);
+        }
+    };
+
+    addModel(config.model || process.env.WhitelistEmbeddingModel);
+
+    if (Array.isArray(config.modelBackups)) {
+        config.modelBackups.forEach(addModel);
+    } else if (config.modelBackups) {
+        _splitModelList(config.modelBackups).forEach(addModel);
+    }
+
+    _splitModelList(process.env.EmbeddingModelBackups).forEach(addModel);
+
+    for (let i = 1; i <= 9; i++) {
+        addModel(process.env[`EmbeddingModelBackup${i}`]);
+    }
+
+    // 兼容用户误把多个备援写进单个变量的情况。
+    _splitModelList(process.env.EmbeddingModelBackup).forEach(addModel);
+
+    return candidates.length > 0 ? candidates : ['google/gemini-embedding-001'];
+}
+
 /**
  * 内部函数：发送单个批次
  */
 async function _sendBatch(batchTexts, config, batchNumber) {
     const { default: fetch } = await import('node-fetch');
-    const retryAttempts = 3;
+    const modelCandidates = _getEmbeddingModelCandidates(config);
     const baseDelay = 1000;
 
-    for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+    for (let attempt = 1; attempt <= modelCandidates.length; attempt++) {
+        const model = modelCandidates[attempt - 1];
         try {
             const requestUrl = `${config.apiUrl}/v1/embeddings`;
-            const requestBody = { model: config.model, input: batchTexts };
+            const requestBody = { model, input: batchTexts };
             const requestHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
 
             const response = await fetch(requestUrl, {
@@ -32,9 +70,8 @@ async function _sendBatch(batchTexts, config, batchNumber) {
 
             if (!response.ok) {
                 if (response.status === 429) {
-                    // 429 限流时，增加等待时间
-                    const waitTime = 5000 * attempt;
-                    console.warn(`[Embedding] Batch ${batchNumber} rate limited (429). Retrying in ${waitTime / 1000}s...`);
+                    const waitTime = Math.min(5000 * attempt, 15000);
+                    console.warn(`[Embedding] Batch ${batchNumber} model "${model}" rate limited (429). Switching fallback in ${waitTime / 1000}s...`);
                     await new Promise(r => setTimeout(r, waitTime));
                     continue;
                 }
@@ -62,7 +99,7 @@ async function _sendBatch(batchTexts, config, batchNumber) {
                 console.error(`[Embedding] API Error for Batch ${batchNumber}:`);
                 console.error(`  Error Code: ${errorCode}`);
                 console.error(`  Error Message: ${errorMsg}`);
-                console.error(`  Hint: Check if embedding model "${config.model}" is available on your API server`);
+                console.error(`  Hint: Check if embedding model "${model}" is available on your API server`);
                 throw new Error(`API Error ${errorCode}: ${errorMsg}`);
             }
 
@@ -85,14 +122,14 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             }
 
             // 简单的 Log，证明并发正在跑
-            // console.log(`[Embedding] ✅ Batch ${batchNumber} completed (${batchTexts.length} items).`);
+            // console.log(`[Embedding] ✅ Batch ${batchNumber} completed (${batchTexts.length} items) via ${model}.`);
 
             return data.data.sort((a, b) => a.index - b.index).map(item => item.embedding);
 
         } catch (e) {
-            console.warn(`[Embedding] Batch ${batchNumber}, Attempt ${attempt} failed: ${e.message}`);
-            if (attempt === retryAttempts) throw e;
-            await new Promise(r => setTimeout(r, baseDelay * Math.pow(2, attempt)));
+            console.warn(`[Embedding] Batch ${batchNumber}, Model "${model}" failed (${attempt}/${modelCandidates.length}): ${e.message}`);
+            if (attempt === modelCandidates.length) throw e;
+            await new Promise(r => setTimeout(r, baseDelay * attempt));
         }
     }
 }
