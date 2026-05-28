@@ -155,13 +155,20 @@ class LightMemoPlugin {
         let useGeodesicRerank = false;
         let tag_boost = rawTagBoost;
         if (typeof rawTagBoost === 'string') {
-            if (rawTagBoost.endsWith('+')) {
+            const trimmedTagBoost = rawTagBoost.trim();
+            if (trimmedTagBoost.endsWith('+')) {
                 useGeodesicRerank = true;
-                tag_boost = parseFloat(rawTagBoost.slice(0, -1)) || 0;
+                tag_boost = this._parseNumber(trimmedTagBoost.slice(0, -1), 0);
             } else {
-                tag_boost = parseFloat(rawTagBoost) || 0;
+                tag_boost = this._parseNumber(trimmedTagBoost, 0);
             }
+        } else {
+            tag_boost = this._parseNumber(rawTagBoost, 0);
         }
+
+        const normalizedK = Math.max(1, Math.floor(this._parseNumber(k, 5)));
+        const normalizedCoreTags = this._parseStringArray(core_tags);
+        const normalizedCoreBoostFactor = this._parseNumber(core_boost_factor, 1.33);
 
         const parsedMaidScope = this._parseMaidScopedFolder(maid);
         const scopedMaid = parsedMaidScope.maid;
@@ -214,9 +221,11 @@ class LightMemoPlugin {
             throw new Error("参数 'query' 是必需的，且必须提供 'maid' 或 'folder'。");
         }
 
+        const normalizedSearchAll = this._parseBoolean(search_all_knowledge_bases, false);
+
         const effectiveFolder = isMusicSearch ? 'MusicDiary' : combinedFolder;
         const effectiveMaid = isMusicSearch ? null : scopedMaid;
-        const effectiveSearchAll = isMusicSearch ? false : search_all_knowledge_bases;
+        const effectiveSearchAll = isMusicSearch ? false : normalizedSearchAll;
 
         // 从所有日记本中收集候选chunks
         const candidates = await this._gatherCandidateChunks({
@@ -269,15 +278,15 @@ class LightMemoPlugin {
             topByKeyword = scoredCandidates
                 .filter(c => c.bm25Score > 0)
                 .sort((a, b) => b.bm25Score - a.bm25Score)
-                .slice(0, k * 5); // 增加候选数量
+                .slice(0, normalizedK * 5); // 增加候选数量
 
             // 如果关键词匹配太少，补充一些向量相似度高的（这里先取前 N 个作为兜底候选）
-            if (topByKeyword.length < k) {
+            if (topByKeyword.length < normalizedK) {
                 console.log(`[LightMemo] BM25 results insufficient (${topByKeyword.length}), adding fallback candidates.`);
                 const existingIds = new Set(topByKeyword.map(c => c.label));
                 const fallbacks = scoredCandidates
                     .filter(c => !existingIds.has(c.label))
-                    .slice(0, k * 2);
+                    .slice(0, normalizedK * 2);
                 topByKeyword = [...topByKeyword, ...fallbacks];
             }
         }
@@ -293,7 +302,7 @@ class LightMemoPlugin {
         let tagBoostInfo = null;
         // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
         if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
-            const hasCore = Array.isArray(core_tags) && core_tags.length > 0;
+            const hasCore = normalizedCoreTags.length > 0;
             const waveLabel = useGeodesicRerank ? 'TagMemo+ (Wave v8)' : 'TagMemo V6';
             console.log(`[LightMemo] Applying ${waveLabel} boost (Factor: ${tag_boost}${hasCore ? `, CoreTags: ${core_tags.length}` : ''})`);
 
@@ -301,8 +310,8 @@ class LightMemoPlugin {
             const boostResult = this.vectorDBManager.applyTagBoost(
                 new Float32Array(queryVector),
                 tag_boost,
-                core_tags,
-                core_boost_factor
+                normalizedCoreTags,
+                normalizedCoreBoostFactor
             );
 
             if (boostResult && boostResult.vector) {
@@ -384,7 +393,7 @@ class LightMemoPlugin {
         }
 
         // 取top K
-        let finalResults = rankedCandidates.slice(0, k);
+        let finalResults = rankedCandidates.slice(0, normalizedK);
 
         // --- 第三阶段：Rerank（可选） ---
         // 🌟 Rerank+ (RRF): rerank 参数支持多种形式
@@ -429,7 +438,7 @@ class LightMemoPlugin {
         if (useRerank && finalResults.length > 0) {
             // 🌟 Rerank+: 注入检索排位 (retrieval_rank) 用于 RRF 融合
             finalResults.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
-            finalResults = await this._rerankDocuments(actualQuery, finalResults, k, rrfOptions);
+            finalResults = await this._rerankDocuments(actualQuery, finalResults, normalizedK, rrfOptions);
         }
 
         return this.formatResults(finalResults, query);
@@ -650,6 +659,70 @@ class LightMemoPlugin {
 
             return finalDocs;
         }
+    }
+
+    /**
+     * 将工具协议传入的布尔值参数规范化。
+     * VCP 工具参数常以字符串形式传入，字符串 "false" 在 JS 中是真值，
+     * 如果不转换会导致 search_all_knowledge_bases 被误判为开启。
+     */
+    _parseBoolean(value, defaultValue = false) {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        if (typeof value !== 'string') return defaultValue;
+
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off', ''].includes(normalized)) return false;
+
+        return defaultValue;
+    }
+
+    /**
+     * 将工具协议传入的数字参数规范化。
+     */
+    _parseNumber(value, defaultValue = 0) {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'boolean') return value ? 1 : 0;
+        if (typeof value !== 'string') return defaultValue;
+
+        const parsed = parseFloat(value.trim());
+        return Number.isFinite(parsed) ? parsed : defaultValue;
+    }
+
+    /**
+     * 将工具协议传入的数组参数规范化。
+     * 兼容真实数组、JSON数组字符串，以及逗号/中文逗号/顿号/竖线分隔字符串。
+     */
+    _parseStringArray(value) {
+        if (Array.isArray(value)) {
+            return value
+                .map(v => typeof v === 'string' ? v.trim() : String(v ?? '').trim())
+                .filter(Boolean);
+        }
+
+        if (typeof value !== 'string') return [];
+
+        const trimmed = value.trim();
+        if (!trimmed) return [];
+
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) {
+                    return parsed
+                        .map(v => typeof v === 'string' ? v.trim() : String(v ?? '').trim())
+                        .filter(Boolean);
+                }
+            } catch (e) {
+                // 非 JSON 数组时继续按分隔符解析
+            }
+        }
+
+        return trimmed
+            .split(/[,，、|｜]/)
+            .map(v => v.trim())
+            .filter(Boolean);
     }
 
     /**
