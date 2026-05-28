@@ -1,61 +1,62 @@
-// Vexus-Lite测试文件
-const { VexusIndex } = require('./index.js');
+const assert = require('node:assert/strict');
+const { VexusIndex, VexusWatcher } = require('./index.js');
 
-console.log('🧪 Testing Vexus-Lite...\n');
-
-try {
-    // 测试1: 创建索引
-    console.log('Test 1: Creating new index...');
-    const vexus = new VexusIndex(128, 1000);  // 128维，容量1000
-    console.log('✅ Index created successfully\n');
-
-    // 测试2: 添加向量
-    console.log('Test 2: Adding vectors...');
-    const tags = ['tag1', 'tag2', 'tag3'];
-    const vectors = new Float32Array([
-        // tag1: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random()),
-        // tag2: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random()),
-        // tag3: 128维随机向量
-        ...Array(128).fill(0).map(() => Math.random())
-    ]);
-    
-    const vectorBuffer = Buffer.from(vectors.buffer);
-    vexus.upsert(tags, vectorBuffer);
-    console.log('✅ Vectors added successfully\n');
-
-    // 测试3: 搜索
-    console.log('Test 3: Searching...');
-    const query = new Float32Array(128).fill(0).map(() => Math.random());
-    const queryBuffer = Buffer.from(query.buffer);
-    const results = vexus.search(queryBuffer, 2);
-    console.log('✅ Search results:', results);
-    console.log('');
-
-    // 测试4: 统计
-    console.log('Test 4: Getting stats...');
-    const stats = vexus.stats();
-    console.log('✅ Stats:', stats);
-    console.log('');
-
-    // 测试5: 保存
-    console.log('Test 5: Saving index...');
-    vexus.save('./test_index.usearch', './test_map.bin');
-    console.log('✅ Index saved successfully\n');
-
-    // 测试6: 加载
-    console.log('Test 6: Loading index...');
-    const vexus2 = VexusIndex.load('./test_index.usearch', './test_map.bin');
-    const stats2 = vexus2.stats();
-    console.log('✅ Index loaded successfully');
-    console.log('   Loaded stats:', stats2);
-    console.log('');
-
-    console.log('🎉 All tests passed!');
-
-} catch (error) {
-    console.error('❌ Test failed:', error.message);
-    console.error(error.stack);
-    process.exit(1);
+function assertNear(actual, expected, label) {
+  assert.ok(
+    Math.abs(actual - expected) < 1e-6,
+    `${label}: expected ${expected}, got ${actual}`
+  );
 }
+
+console.log('Testing Vexus-Lite current API...');
+
+const index = new VexusIndex(3, 10);
+
+index.add(1, new Float32Array([1, 0, 0]));
+index.addBatch(
+  [2, 3],
+  new Float32Array([
+    0, 1, 0,
+    0, 0, 1,
+  ])
+);
+
+let stats = index.stats();
+assert.equal(stats.totalVectors, 3);
+assert.equal(stats.dimensions, 3);
+assert.ok(stats.capacity >= 10);
+
+let results = index.search(new Float32Array([1, 0, 0]), 3);
+assert.equal(results.length, 3);
+assert.equal(results[0].id, 1);
+assertNear(results[0].score, 1, 'top search score');
+
+index.remove(2);
+stats = index.stats();
+assert.equal(stats.totalVectors, 2);
+
+results = index.search(new Float32Array([0, 1, 0]), 2);
+assert.equal(results.length, 2);
+assert.notEqual(results[0].id, 2);
+
+for (const name of [
+  'recoverFromSqlite',
+  'computeSvd',
+  'computeOrthogonalProjection',
+  'computeHandshakes',
+  'project',
+  'computeIntrinsicResiduals',
+  'computePairwiseSimilarities',
+]) {
+  assert.equal(typeof index[name], 'function', `missing VexusIndex.${name}`);
+}
+
+const watcher = new VexusWatcher();
+assert.equal(typeof watcher.startWatch, 'function');
+assert.equal(typeof watcher.stopWatch, 'function');
+
+console.log(JSON.stringify({
+  exports: ['VexusIndex', 'VexusWatcher'],
+  stats,
+  topResult: results[0],
+}));
