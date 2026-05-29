@@ -1540,14 +1540,6 @@ async function initialize() {
     pluginManager.setWebSocketServer(webSocketServer);
 
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
-    // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
-    app.use('/admin_api', adminPanelRoutes);
-    // 挂载 VCP 论坛 API 路由
-    app.use('/admin_api/forum', forumApiRoutes);
-    // 挂载 ChannelHub 路由
-app.use("/api/image-rating", imageRatingApiRoutes);
-    app.use('/admin_api/channelHub', channelHubAdminRoutes.router);
-    app.use('/internal/channelHub', channelHubInternalRoutes.router);
     // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
     if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
       const { createAiImageAgentsRouter } = require('./routes/admin/aiImageAgents');
@@ -1579,6 +1571,14 @@ app.use("/api/image-rating", imageRatingApiRoutes);
 
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
+    // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
+    app.use('/admin_api', adminPanelRoutes);
+    // 挂载 VCP 论坛 API 路由
+    app.use('/admin_api/forum', forumApiRoutes);
+    // 挂载 ChannelHub 路由
+app.use("/api/image-rating", imageRatingApiRoutes);
+    app.use('/admin_api/channelHub', channelHubAdminRoutes.router);
+    app.use('/internal/channelHub', channelHubInternalRoutes.router);
     console.log('服务类插件初始化完成，管理面板 API 路由、VCP 论坛 API 路由和 ChannelHub 路由已挂载。');
 
     // --- 新增：通用依赖注入 ---

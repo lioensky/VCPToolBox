@@ -453,6 +453,48 @@ test('aiImageAgents execute route forwards exact retry 007 Doubao project base p
     });
 });
 
+test('aiImageAgents execute route forwards exact runtime-to-review v1 Doubao project base path override', async () => {
+    const calls = [];
+    const exactOutputRoot = 'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\runtime_to_review_v1_guarded_live_probe';
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.16',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-runtime-v1',
+                taskId: 'AUTH-DRAFT-NATIVE-DOUBAO-RUNTIME-TO-REVIEW-V1-20260529-001',
+                dryRun: false,
+                confirm: true,
+                context: {
+                    doubaoProjectBasePathOverride: exactOutputRoot
+                },
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'test' }]
+                }
+            }
+        }, {
+            pluginManager
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.doubaoProjectBasePathOverride, exactOutputRoot);
+    });
+});
+
 test('aiImageAgents execute route rejects unapproved Doubao project base path override', async () => {
     const calls = [];
 

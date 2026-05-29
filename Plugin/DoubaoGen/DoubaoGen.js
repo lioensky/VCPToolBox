@@ -189,7 +189,7 @@ function httpsRequest(options, postData) {
             });
         });
         req.on('error', e => reject(new Error(`网络请求失败: ${e.message}`)));
-        req.setTimeout(240000, () => { req.destroy(); reject(new Error('请求超时(4分钟)')); });
+        req.setTimeout(720000, () => { req.destroy(); reject(new Error('请求超时(12分钟)')); });
         if (postData) req.write(postData);
         req.end();
     });

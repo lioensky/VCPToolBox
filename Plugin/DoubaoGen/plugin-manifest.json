@@ -12,7 +12,7 @@
   },
   "communication": {
     "protocol": "stdio",
-    "timeout": 300000
+    "timeout": 780000
   },
   "configSchema": {
     "VOLCENGINE_API_KEY": {
