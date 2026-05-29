@@ -1,0 +1,14 @@
+[2026-04-12] - Codex
+标题：plugin chain test
+记录类型：过程
+已验证：是
+可复用：否
+
+内容：
+Type: checkpoint
+?? PluginManager ????
+
+证据：
+local chain test
+
+Tag: test

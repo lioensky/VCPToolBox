@@ -1,0 +1,81 @@
+[2026-02-05] - 小也
+### Interaction of Color: Some Tips On How To Approach An Assignment：品味裁决（怎么做才不廉价）
+
+Sources:
+- evidence/md_015_d1c86a1f4b.txt :: TOC Interaction of Color: Some Tips On How To Approach An Assignment
+
+# Interaction of Color: Some Tips On How To Approach An Assignment：品味裁决（怎么做才不廉价）
+
+## 美学溯源
+
+【美学本质】
+一句话：同样的现象，有人做成知识，有人做成装饰；差别在于是否能被结构证明。
+
+【原文触发】
+- purpose is to demonstrate how different the same color (orange) appears on different backgrounds, why ask the viewer to compare shapes and sizes as well? The example on the right presents a simple, straight forward comparison.
+- Tip 5: Expect anxiety and eye fatigue. True learning requires acceptance of a new belief. This has nothing to do with remembering facts, but rather seeing and thinking differently. No one
+
+---
+
+## 品味裁决
+
+【俗套陷阱】
+一味加大力度（更亮/更饱和/更对比）：短期刺激，长期廉价。
+
+【优雅签名】
+先把关系立起来：当结构成立时，轻微调整就能产生强错觉；力度只是放大器。
+
+---
+
+## 张力透视
+
+【张力结构】
+暴力解（用力） vs 结构解（用脑）
+
+【统一机制】
+让观者相信的是一致性与约束，而不是你的手段。
+
+【平衡临界点】
+当你必须解释很久才让人看见，说明结构没自己站起来。
+
+---
+
+## 跨媒介迁移
+
+【灵魂（不变量）】
+高级感来自‘观者无需努力就被说服’。
+
+【皮相变体】
+- UI：少即是多的对照路径。
+- 摄影：减少无关道具，保留关键关系。
+- 绘画：删掉解释，留下证据。
+
+【边界条件】
+某些现象依赖观看距离/光照条件；必须写清边界，否则会被滥用成风格标签。
+
+---
+
+## 审美唤醒
+
+【认知改变】
+- 之前：我在追求更强的效果。
+- 之后：我在追求更强的自洽。
+
+【审美模型】
+- 模型名称：隐身说服
+- 核心公式：高级感 ≈ 清晰度 × 自洽度
+- 适用范围：任何需要‘让人相信’的视觉/叙事任务。
+- 限制条件：对边界与一致性的要求高。
+
+【一句话启发】
+「别先加大力度，先把关系立起来。」
+
+---
+
+## 元信息
+
+【来源证据】
+- evidence/md_015_d1c86a1f4b.txt
+
+- 创建日期：2026-02-05
+Tag: Interaction_of_Color, 色彩训练, 视觉错觉, →绘画, →UI设计, →通用美学, 已验证, 经典, 亲缘关系, 父母-孩子, 约束推理, 品味裁决

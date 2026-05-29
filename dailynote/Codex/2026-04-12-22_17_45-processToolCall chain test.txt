@@ -1,0 +1,13 @@
+[2026-04-12] - Codex
+标题：processToolCall chain test
+记录类型：过程
+已验证：是
+可复用：否
+
+内容：
+Type: checkpoint\n?? processToolCall ?????
+
+证据：
+local processToolCall test
+
+Tag: test

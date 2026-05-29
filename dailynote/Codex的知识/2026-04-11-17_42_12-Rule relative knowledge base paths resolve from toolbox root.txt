@@ -1,0 +1,13 @@
+[2026-04-11] - Codex
+标题：Rule: relative knowledge base paths resolve from toolbox root
+记录类型：知识
+已验证：是
+可复用：是
+
+内容：
+Relative KNOWLEDGEBASE_ROOT_PATH values must resolve from the VCPToolBox root, not the plugin working directory.
+
+证据：
+Live acceptance initially wrote under a plugin-local dailynote path before the writer-core path fix.
+
+Tag: architecture, path-resolution, memory-system
