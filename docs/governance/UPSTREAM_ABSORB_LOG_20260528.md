@@ -53,6 +53,7 @@
 | 2026-05-28 18:59:45 +08:00 | `13ddefe9` 后续测试修正 | 2026-05-25 22:53:04 +08:00 | Rust/Vexus native refresh 运行态测试 | `cc63628b test: update rust vexus lite smoke test` | 2026-05-28 18:59:45 +08:00 | 已吸收但未推送 | `node rust-vexus-lite/test.js`；NAPI build 到 `rust-vexus-lite/target/napi-build-check`；fresh build binary smoke；`cargo test --manifest-path rust-vexus-lite/Cargo.toml --locked` | 只修正 `rust-vexus-lite/test.js`，让测试匹配当前 `add/addBatch/search/remove/stats` API；没有改生产 `.node`。 |
 | 2026-05-28 19:17:37 +08:00 | `2ae8a9d0` | 2026-05-28 18:42:46 +08:00 | 新增向量容灾系统 | `0d0adc0a feat: add embedding model resilience` | 2026-05-28 19:17:37 +08:00 | 已吸收但未推送 | `node --test tests/embedding-model-fallback.test.js`；`node --check EmbeddingUtils.js KnowledgeBaseManager.js TagMemoEngine.js tests/embedding-model-fallback.test.js`；`node rust-vexus-lite/test.js`；`git diff --check` | 保留本地已有 backend fallback 机制，新增同一 embedding backend 内的模型候选切换，并接入 `EmbeddingModelSig`。没有调用真实 embedding 服务。 |
 | 2026-05-28 18:30:23 +08:00 | upstream continuation audit | 不适用 | 记录剩余 upstream 正差异审查结论 | `56232b6d docs: checkpoint upstream continuation audit` | 2026-05-28 18:30:23 +08:00 | 已记录但未推送 | `git cherry -v main upstream/main`、文件范围审查 | 这是审计记录提交，不是功能吸收提交。 |
+| 2026-05-29 11:21:53 +08:00 | `fad82a91` | 2026-05-28 20:23:42 +08:00 | 优化布尔值兼容 | `f857d86c 优化布尔值兼容` | 2026-05-29 11:21:53 +08:00 | 已吸收但未推送 | `node --check Plugin/LightMemo/LightMemo.js`；LightMemo helper inline assertions；`node tests/gptimagegen-safety.test.js` | 原样 cherry-pick 上游单文件补丁。规范化 `search_all_knowledge_bases`、`k`、`tag_boost`、`core_tags`、`core_boost_factor`，避免字符串 `"false"` 被 JS 当作真值。 |
 
 ## 3. 已审但本轮没有吸收的 upstream commit
 
@@ -94,14 +95,14 @@
 
 ## 5. 当前明确剩余项
 
-截至 2026-05-28，本表没有标记“必须继续吸收”的 upstream commit。
+截至 2026-05-29，本表没有标记“必须继续吸收”的 upstream commit。
 
 当前剩余项只有两类：
 
 | 类别 | 内容 | 处理 |
 |------|------|------|
 | 已审未吸收 | 第 3 节列出的 upstream commit | 不自动吸收；需要用户明确指定后单独开包。 |
-| 本地未推送 | `56232b6d`、`cc63628b`、`0d0adc0a` | 如果要让 `origin/main` 获得这轮结果，需要用户明确批准 push。 |
+| 本地未推送 | `f857d86c` 以及本次台账更新提交 | 如果要让 `origin/main` 获得这轮结果，需要用户明确批准 push。 |
 
 ## 6. 下次审查固定流程
 
