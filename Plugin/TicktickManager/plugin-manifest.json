@@ -1,0 +1,99 @@
+{
+  "name": "TicktickManager",
+  "displayName": "滴答清单管理器",
+  "version": "1.0.0",
+  "description": "混合插件：提供滴答清单/TickTick/Dida365 任务同步调用和白名单项目静态任务快照注入。",
+  "pluginType": "hybridservice",
+  "entryPoint": {
+    "script": "TicktickManager.js",
+    "staticCommand": "node TicktickManager.js --static-refresh"
+  },
+  "communication": {
+    "protocol": "direct",
+    "timeout": 60000
+  },
+  "refreshIntervalCron": "*/15 * * * * *",
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPTicktickTasks}}",
+        "description": "提供滴答清单白名单项目的任务快照，按项目、任务、子任务结构呈现，并标注权限、重要性、紧急性和四象限。",
+        "isDynamic": true
+      }
+    ],
+    "invocationCommands": [
+      {
+        "command": "create_task",
+        "description": "创建单个滴答清单任务。写操作成功后会立即刷新 {{VCPTicktickTasks}} 静态快照。\n- `command`: 固定为 `create_task`。\n- `title`: 必填，任务标题。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称；仅 `TICKTICK_CREATE_ONLY_PROJECTS` 与 `TICKTICK_FULL_ACCESS_PROJECTS` 中的项目可写入。\n- `content`: 可选，任务内容。\n- `desc`: 可选，任务描述。\n- `start_date`: 可选，对应 OpenAPI `startDate`，建议格式 `yyyy-MM-ddTHH:mm:ssZ`，例如 `2026-05-26T09:00:00+0800`。\n- `due_date`: 可选，对应 OpenAPI `dueDate`，格式同上。\n- `is_all_day`: 可选，布尔值。\n- `time_zone`: 可选，例如 `Asia/Shanghai`。\n- `priority`: 可选，只能为 `0` None、`1` Low、`3` Medium、`5` High。\n- `reminders`: 可选，JSON 数组字符串或数组。\n- `repeat_flag`: 可选，对应 OpenAPI `repeatFlag`。\n- `items`: 可选，checklist items 的 JSON 数组或数组。\n权限：create_only 项目和 full_access 项目允许；非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」create_task「末」,\ntitle: 「始」准备周会材料「末」,\nproject_id: 「始」工作「末」,\ndue_date: 「始」2026-05-27T09:00:00+0800「末」,\npriority: 「始」5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "batch_create_tasks",
+        "description": "批量创建滴答清单任务。会先校验整批参数和权限，任一任务指向非白名单项目则整批拒绝；开始创建后会返回成功/失败明细。至少一个任务创建成功后会立即刷新静态快照。\n- `command`: 固定为 `batch_create_tasks`。\n- `tasks_json`: 可选，推荐，JSON 数组字符串。\n- `tasks`: 可选，数组或 JSON 数组字符串。\n每个任务对象字段同 `create_task`，其中 `title` 和 `project_id` 必填。\n权限：每个任务只能写入 create_only 或 full_access 项目；非白名单项目拒绝。\npriority 枚举：0 None、1 Low、3 Medium、5 High。日期建议格式 `yyyy-MM-ddTHH:mm:ssZ`。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」batch_create_tasks「末」,\ntasks_json: 「始」[{\"title\":\"整理需求\",\"project_id\":\"工作\",\"priority\":3},{\"title\":\"买牛奶\",\"project_id\":\"收集箱\"}]「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "create_subtask",
+        "description": "在指定父任务下创建子任务（通过 OpenAPI `parentId` 创建 child task）。写操作成功后会立即刷新静态快照。\n- `command`: 固定为 `create_subtask`。\n- `subtask_title`: 必填，子任务标题；也可传 `title`。\n- `parent_task_id`: 必填，父任务 ID。\n- `project_id`: 必填，父任务所在白名单项目 ID 或唯一项目名称。\n- `content`: 可选，子任务内容。\n- `priority`: 可选，只能为 0、1、3、5。\n权限：create_only 项目和 full_access 项目允许；非白名单项目拒绝。插件会读取父任务确认其属于指定项目。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」create_subtask「末」,\nproject_id: 「始」工作「末」,\nparent_task_id: 「始」task_id_here「末」,\nsubtask_title: 「始」确认参会人「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "update_task",
+        "description": "更新指定任务。写操作成功后会立即刷新静态快照。\n- `command`: 固定为 `update_task`。\n- `task_id`: 必填，任务 ID。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称。\n- 可选更新字段：`title`、`content`、`desc`、`start_date`、`due_date`、`is_all_day`、`time_zone`、`priority`、`reminders`、`repeat_flag`、`items`。\n- `priority`: 只能为 0 None、1 Low、3 Medium、5 High。\n- 日期建议格式：`yyyy-MM-ddTHH:mm:ssZ`，例如 `2026-05-26T09:00:00+0800`。\n权限：仅 full_access 项目允许；create_only 项目和非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」update_task「末」,\nproject_id: 「始」工作「末」,\ntask_id: 「始」task_id_here「末」,\npriority: 「始」5「末」,\ndue_date: 「始」2026-05-28T18:00:00+0800「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "complete_task",
+        "description": "完成指定任务。写操作成功后会立即刷新静态快照。\n- `command`: 固定为 `complete_task`。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称。\n- `task_id`: 必填，任务 ID。\n权限：仅 full_access 项目允许；create_only 项目和非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」complete_task「末」,\nproject_id: 「始」工作「末」,\ntask_id: 「始」task_id_here「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "delete_task",
+        "description": "删除指定任务。写操作成功后会立即刷新静态快照，并且静态快照/搜索会过滤软删除数据。\n- `command`: 固定为 `delete_task`。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称。\n- `task_id`: 必填，任务 ID。\n权限：仅 full_access 项目允许；create_only 项目和非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」delete_task「末」,\nproject_id: 「始」工作「末」,\ntask_id: 「始」task_id_here「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "search_tasks",
+        "description": "在白名单项目内搜索任务，不搜索非白名单项目。\n- `command`: 固定为 `search_tasks`。\n- `search_term`: 必填，搜索关键词；也可传 `query`。\n- `max_results`: 可选，默认 50，范围 1-200。\n- `include_completed`: 可选，默认 false。\n- `force_refresh`: 可选，默认 false；为 true 时先刷新静态快照再搜索。\n搜索字段：任务标题、content、desc、checklist item 标题。读取范围：create_only 与 full_access 项目的并集。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」search_tasks「末」,\nsearch_term: 「始」周会「末」,\nmax_results: 「始」20「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_project",
+        "description": "获取单个白名单项目详情。\n- `command`: 固定为 `get_project`。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称。\n- `include_tasks`: 可选，默认 false；为 true 时通过 `/project/{projectId}/data` 返回项目任务摘要。\n权限：create_only 与 full_access 项目允许读取；非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」get_project「末」,\nproject_id: 「始」工作「末」,\ninclude_tasks: 「始」true「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "command": "get_task",
+        "description": "获取单个白名单项目中的任务详情，包括四象限、checklist items、child tasks、content 和 desc。\n- `command`: 固定为 `get_task`。\n- `project_id`: 必填，白名单项目 ID 或唯一项目名称。\n- `task_id`: 必填，任务 ID。\n权限：create_only 与 full_access 项目允许读取；非白名单项目拒绝。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name: 「始」TicktickManager「末」,\ncommand: 「始」get_task「末」,\nproject_id: 「始」工作「末」,\ntask_id: 「始」task_id_here「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  },
+  "configSchema": {
+    "DebugMode": "boolean",
+    "StaticRefreshIntervalSeconds": "number",
+    "TICKTICK_BASE_URL": "string",
+    "TICKTICK_ACCESS_TOKEN": "string",
+    "TICKTICK_INBOX_PROJECT_ID": "string",
+    "TICKTICK_CREATE_ONLY_PROJECTS": "string",
+    "TICKTICK_FULL_ACCESS_PROJECTS": "string"
+  },
+  "configSchemaDescriptions": {
+    "DebugMode": "是否启用调试模式，打印详细日志",
+    "StaticRefreshIntervalSeconds": "静态任务快照轮询间隔，单位为秒，默认 60；TicktickManager 会将该值转换为 VCP refreshIntervalCron 供静态刷新代理使用。",
+    "TICKTICK_BASE_URL": "滴答清单 OpenAPI 地址。国际版：https://api.ticktick.com/open/v1；国内版：https://api.dida365.com/open/v1。",
+    "TICKTICK_ACCESS_TOKEN": "滴答清单 access token。缺失、错误或过期时，静态注入会提示用户使用独立脚本或官方方式重新获取并填入 config.env 后重启 VCPToolBox；插件不会自动获取或刷新 token。",
+    "TICKTICK_INBOX_PROJECT_ID": "收集箱真实项目 ID，仅在项目清单填写“收集箱”或“inbox”时使用；必须手动填写真实 inbox+数字串，留空则跳过收集箱。",
+    "TICKTICK_CREATE_ONLY_PROJECTS": "仅允许创建任务和子任务的项目清单；每个项目项必须用英文双引号包裹，并用英文逗号分隔。",
+    "TICKTICK_FULL_ACCESS_PROJECTS": "允许创建、更新、完成、删除、读取、搜索的项目清单；每个项目项必须用英文双引号包裹，并用英文逗号分隔。"
+  },
+  "defaults": {
+    "DebugMode": false,
+    "StaticRefreshIntervalSeconds": 60,
+    "TICKTICK_BASE_URL": "https://api.ticktick.com/open/v1",
+    "TICKTICK_ACCESS_TOKEN": "",
+    "TICKTICK_INBOX_PROJECT_ID": "",
+    "TICKTICK_CREATE_ONLY_PROJECTS": "",
+    "TICKTICK_FULL_ACCESS_PROJECTS": ""
+  }
+}
