@@ -6,6 +6,14 @@
 const fs = require("fs");
 const path = require("path");
 
+const IS_STATIC_REFRESH_CLI = process.argv
+  .slice(2)
+  .includes("--static-refresh");
+
+function createFallbackPluginManager() {
+  return { staticPlaceholderValues: new Map() };
+}
+
 function loadPluginManager() {
   const candidates = [
     path.resolve(__dirname, "Plugin.js"),
@@ -28,10 +36,12 @@ function loadPluginManager() {
     }
   }
 
-  return { staticPlaceholderValues: new Map() };
+  return createFallbackPluginManager();
 }
 
-let pluginManager = loadPluginManager();
+let pluginManager = IS_STATIC_REFRESH_CLI
+  ? createFallbackPluginManager()
+  : loadPluginManager();
 
 const PLUGIN_NAME = "TicktickManager";
 const STATIC_CRON_PROXY_NAME = `${PLUGIN_NAME}StaticCron`;
@@ -57,7 +67,7 @@ const WRITE_COMMANDS = new Set([
 
 let pluginConfig = {};
 let debugMode = false;
-let runningAsStaticCli = false;
+let runningAsStaticCli = IS_STATIC_REFRESH_CLI;
 let ticktickClient = null;
 let refreshLock = null;
 let pendingRefreshAfterCurrent = false;
@@ -2740,12 +2750,31 @@ function buildAccessTokenPromptMarkdown(error) {
   ].join("\n");
 }
 
+function getStaticRefreshAuthError(runtimeConfig) {
+  if (runtimeConfig && runtimeConfig.accessToken) {
+    return null;
+  }
+  return createAccessTokenError(
+    "缺少 TICKTICK_ACCESS_TOKEN，TicktickManager 静态刷新已跳过。"
+  );
+}
+
 async function runStaticRefreshCli() {
   runningAsStaticCli = true;
   try {
     const runtimeConfig = loadRuntimeConfig();
     pluginConfig = { ...pluginConfig, ...runtimeConfig };
     debugMode = toBoolean(runtimeConfig.debugMode, false);
+
+    const authError = getStaticRefreshAuthError(runtimeConfig);
+    if (authError) {
+      const markdown = buildErrorMarkdown(authError);
+      writeStaticDocumentSafely(markdown);
+      process.stdout.write(markdown.trimEnd());
+      process.exitCode = 0;
+      return;
+    }
+
     ensureClient(runtimeConfig);
     await refreshStaticSnapshot({ reason: "vcp_cron" });
     const markdown = fs.readFileSync(STATIC_DOC_PATH, "utf8");
@@ -2755,10 +2784,12 @@ async function runStaticRefreshCli() {
     const markdown = buildErrorMarkdown(error);
     writeStaticDocumentSafely(markdown);
     process.stdout.write(markdown.trimEnd());
-    console.error(
-      `[${PLUGIN_NAME}] VCP cron 静态刷新失败:`,
-      error && error.stack ? error.stack : error
-    );
+    if (!isAccessTokenError(error)) {
+      console.error(
+        `[${PLUGIN_NAME}] VCP cron 静态刷新失败:`,
+        error && error.stack ? error.stack : error
+      );
+    }
     process.exitCode = 0;
   }
 }
@@ -2787,10 +2818,12 @@ if (require.main === module) {
       const markdown = buildErrorMarkdown(error);
       writeStaticDocumentSafely(markdown);
       process.stdout.write(markdown.trimEnd());
-      console.error(
-        `[${PLUGIN_NAME}] VCP cron 静态刷新入口异常:`,
-        error && error.stack ? error.stack : error
-      );
+      if (!isAccessTokenError(error)) {
+        console.error(
+          `[${PLUGIN_NAME}] VCP cron 静态刷新入口异常:`,
+          error && error.stack ? error.stack : error
+        );
+      }
       process.exitCode = 0;
     });
   }
