@@ -54,6 +54,7 @@ class RAGDiaryPlugin {
         this.lastConfigHash = null;
         this.ragParams = {};
         this.ragParamsWatcher = null;
+        this.ragTagsWatcher = null;
 
         // 🌟 统一缓存管理器
         this.cacheManager = new CacheManager();
@@ -251,6 +252,54 @@ class RAGDiaryPlugin {
         });
     }
 
+    /**
+     * ✅ 新增：启动 rag_tags.json 热更新监听器
+     * 文件变更时自动重新加载配置并重建向量缓存
+     */
+    _startRagTagsWatcher() {
+        const configPath = path.join(__dirname, 'rag_tags.json');
+        if (this.ragTagsWatcher) return;
+
+        this.ragTagsWatcher = chokidar.watch(configPath, { ignoreInitial: true });
+        this.ragTagsWatcher.on('change', async () => {
+            console.log('[RAGDiaryPlugin] 🔄 检测到 rag_tags.json 变更，正在热重载配置与向量缓存...');
+            try {
+                const cachePath = path.join(__dirname, 'vector_cache.json');
+                const currentConfigHash = await this._getFileHash(configPath);
+
+                if (!currentConfigHash) {
+                    console.warn('[RAGDiaryPlugin] 热重载: rag_tags.json 文件不存在或为空，跳过。');
+                    return;
+                }
+
+                // 哈希未变则跳过（防止编辑器保存但内容未变的情况）
+                if (this.lastConfigHash === currentConfigHash) {
+                    console.log('[RAGDiaryPlugin] 热重载: 文件哈希未变，跳过重建。');
+                    return;
+                }
+
+                this.lastConfigHash = currentConfigHash;
+
+                // 重新读取配置
+                const configData = await fs.readFile(configPath, 'utf-8');
+                this.ragConfig = JSON.parse(configData);
+
+                // 重建向量缓存
+                await this._buildAndSaveCache(currentConfigHash, cachePath);
+
+                // 清空查询缓存（配置变了，旧缓存结果可能不准确）
+                if (this.queryCacheEnabled) {
+                    this.cacheManager.clear('query');
+                    console.log('[RAGDiaryPlugin] 热重载: 查询缓存已清空。');
+                }
+
+                console.log('[RAGDiaryPlugin] ✅ rag_tags.json 热重载完成。');
+            } catch (error) {
+                console.error('[RAGDiaryPlugin] ❌ rag_tags.json 热重载失败:', error.message);
+            }
+        });
+    }
+
     async _buildAndSaveCache(configHash, cachePath) {
         console.log('[RAGDiaryPlugin] 正在为所有日记本请求 Embedding API (Batch Mode)...');
         this.enhancedVectorCache = {}; // 清空旧的内存缓存
@@ -342,6 +391,7 @@ class RAGDiaryPlugin {
         await this.loadConfig();
         await this.loadRagParams();
         this._startRagParamsWatcher();
+        this._startRagTagsWatcher();
 
         // 启动缓存清理任务
         if (this.queryCacheEnabled) {
@@ -4735,6 +4785,10 @@ class RAGDiaryPlugin {
         if (this.ragParamsWatcher) {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;
+        }
+        if (this.ragTagsWatcher) {
+            this.ragTagsWatcher.close();
+            this.ragTagsWatcher = null;
         }
         this.cacheManager.shutdown();
 
