@@ -167,7 +167,7 @@ async function callApi(payload) {
  * @param {object} originalArgs - 原始的工具调用参数
  * @returns {Promise<object>} - 格式化后的成功结果对象
  */
-async function processApiResponseAndSaveImage(message, originalArgs) {
+async function processApiResponseAndSaveImage(message, originalArgs, showBase64) {
     let textContent = message.content || '';
     let imageUrl = null;
 
@@ -253,25 +253,32 @@ async function processApiResponseAndSaveImage(message, originalArgs) {
 
     const base64Image = imageBuffer.toString('base64');
 
-    return {
-        content: [
-            {
-                type: 'text',
-                text: finalResponseText
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${mimeType};base64,${base64Image}`
-                }
+    const content = [
+        {
+            type: 'text',
+            text: finalResponseText
+        }
+    ];
+
+    // 只有当 showbase64 为 true 时才添加 base64 图片数据
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${mimeType};base64,${base64Image}`
             }
-        ],
+        });
+    }
+
+    return {
+        content: content,
         details: {
             serverPath: `image/nanobananagen/${generatedFileName}`,
             fileName: generatedFileName,
             ...originalArgs,
             imageUrl: accessibleImageUrl,
-            modelResponseText: cleanTextContent || null
+            modelResponseText: cleanTextContent || null,
+            showBase64: showBase64
         }
     };
 }
@@ -390,7 +397,7 @@ function buildCommonPayloadFields(args) {
     return fields;
 }
 
-async function generateImage(args) {
+async function generateImage(args, showBase64) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
@@ -412,17 +419,17 @@ async function generateImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, showBase64);
 }
 
-async function editImage(args) {
+async function editImage(args, showBase64) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
 
     const imageInputs = collectImageInputs(args);
     if (imageInputs.length > 1) {
-        return await composeImage(args);
+        return await composeImage(args, showBase64);
     }
 
     let imageUrlInput = args.image_base64 || args.image_url || args.image || args.Image || args.source_image || imageInputs[0];
@@ -460,10 +467,10 @@ async function editImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, showBase64);
 }
 
-async function composeImage(args) {
+async function composeImage(args, showBase64) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
@@ -520,7 +527,7 @@ async function composeImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, showBase64);
 }
 
 // --- 4. 主入口函数 ---
@@ -537,16 +544,19 @@ async function main() {
         }
         const parsedArgs = normalizeNanoBananaArgs(JSON.parse(inputData));
 
+        // 解析 showbase64 参数，默认为 false
+        const showBase64 = parsedArgs.showbase64 === 'true' || parsedArgs.showbase64 === true;
+
         let resultObject;
         switch (parsedArgs.command) {
             case 'generate':
-                resultObject = await generateImage(parsedArgs);
+                resultObject = await generateImage(parsedArgs, showBase64);
                 break;
             case 'edit':
-                resultObject = await editImage(parsedArgs);
+                resultObject = await editImage(parsedArgs, showBase64);
                 break;
             case 'compose':
-                resultObject = await composeImage(parsedArgs);
+                resultObject = await composeImage(parsedArgs, showBase64);
                 break;
             default:
                 throw new Error(`未知的命令: '${parsedArgs.command}'。请使用 'generate'、'edit' 或 'compose'。`);

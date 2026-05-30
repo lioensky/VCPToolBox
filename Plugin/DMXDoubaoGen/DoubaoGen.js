@@ -249,6 +249,9 @@ async function getImageData(imageUrl, imageBase64) {
 
 
 async function generateImageAndSave(args) {
+    // 解析 showbase64 参数，默认为 false
+    const showBase64 = args.showbase64 === 'true' || args.showbase64 === true;
+
     // Check for essential environment variables
     if (!VOLCENGINE_API_KEY) {
         throw new Error("DoubaoGen Plugin Error: API_KEY (e.g., VOLCENGINE_API_KEY in config.env) environment variable is required.");
@@ -460,26 +463,33 @@ async function generateImageAndSave(args) {
     const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
 
 
-    const result = {
-        content: [
-            {
-                type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${imageMimeType};base64,${base64Image}`
-                }
+    const content = [
+        {
+            type: 'text',
+            text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
+        }
+    ];
+
+    // 只有当 showbase64 为 true 时才添加 base64 图片数据
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${imageMimeType};base64,${base64Image}`
             }
-        ],
+        });
+    }
+
+    const result = {
+        content: content,
         details: { // Keep details for logging or other purposes if needed
             serverPath: `image/doubaogen/${generatedFileName}`,
             fileName: generatedFileName,
             prompt: args.prompt,
             resolution: size,
             seed: finalSeed,
-            imageUrl: accessibleImageUrl
+            imageUrl: accessibleImageUrl,
+            showBase64: showBase64
         }
     };
 

@@ -144,6 +144,7 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{NEGATIVE_PROMPT}}': negativePrompt,
         '{{USER_PROMPT}}': userPrompt || '',
         '{{PROMPT_INPUT}}': userPrompt || '', // 独立提示词输入
+        '{{LORA_PROMPT}}': args.lora_prompt || '',
         
         // 组件字符串
         '{{LORAS}}': lorasString,
@@ -328,6 +329,9 @@ async function saveImagesToLocal(images, config) {
 
 // 主要生成函数
 async function generateImageAndSave(args) {
+    // 解析 showbase64 参数，默认为 false
+    const showBase64 = args.showbase64 === 'true' || args.showbase64 === true;
+
     // 加载配置
     const config = await loadConfiguration();
     
@@ -410,28 +414,59 @@ async function generateImageAndSave(args) {
         throw new Error(`All workflow attempts failed. Primary: ${primaryWorkflowName}. Last error: ${lastError && lastError.message ? lastError.message : String(lastError)}`);
     }
     
-    // 7. 构建返回结果 - 分离“日志文本”和“Agent HTML”
+    // 7. 构建返回结果 - 结构化格式
     const altText = args.prompt.substring(0, 80) + (args.prompt.length > 80 ? "..." : "");
     
-    // A) 日志文本（供 VCPTookBox 记录与调试）
-    let logs = `ComfyUI 图片生成成功！共生成 ${savedImages.length} 张图片\n\n`;
-    logs += `详细信息：\n`;
+    let textContent = `ComfyUI 图片生成成功！共生成 ${savedImages.length} 张图片\n\n`;
+    textContent += `详细信息：\n`;
     savedImages.forEach((image, index) => {
-        logs += `图片 ${index + 1}:\n`;
-        logs += `- 图片URL: ${image.url}\n`;
-        logs += `- 服务器路径: image/comfyuigen/${image.filename}\n`;
-        logs += `- 文件名: ${image.filename}\n\n`;
+        textContent += `图片 ${index + 1}:\n`;
+        textContent += `- 图片URL: ${image.url}\n`;
+        textContent += `- 服务器路径: image/comfyuigen/${image.filename}\n`;
+        textContent += `- 文件名: ${image.filename}\n\n`;
     });
-    
-    // B) Agent 展示的 HTML 片段（直接用于渲染）
-    let agentHtml = `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n`;
+    textContent += `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n`;
     savedImages.forEach((image, index) => {
-        agentHtml += `<img src="${image.url}" alt="${altText} ${index + 1}" width="300">\n`;
+        textContent += `<img src="${image.url}" alt="${altText} ${index + 1}" width="300">\n`;
     });
 
-    // 返回一个统一字符串（向后兼容），供 main() 分离；同时为未来改造保留结构化返回的可能
-    const combined = `${logs}${agentHtml}`;
-    return combined;
+    const content = [
+        {
+            type: 'text',
+            text: textContent
+        }
+    ];
+
+    // 只有当 showbase64 为 true 时才添加 base64 图片数据
+    if (showBase64) {
+        for (const image of savedImages) {
+            const imageData = await fs.readFile(image.localPath);
+            const base64Image = imageData.toString('base64');
+            const ext = path.extname(image.filename).replace('.', '') || 'png';
+            const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+            content.push({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${mimeType};base64,${base64Image}`
+                }
+            });
+        }
+    }
+
+    return {
+        content: content,
+        details: {
+            workflow: usedWorkflow,
+            prompt: args.prompt,
+            imageCount: savedImages.length,
+            images: savedImages.map(img => ({
+                serverPath: `image/comfyuigen/${img.filename}`,
+                fileName: img.filename,
+                imageUrl: img.url
+            })),
+            showBase64: showBase64
+        }
+    };
 }
 
 // 主函数
