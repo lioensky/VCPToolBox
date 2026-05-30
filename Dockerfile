@@ -27,8 +27,11 @@ RUN apk add --no-cache \
   libffi-dev \
   openssl-dev \
   ffmpeg \
-  rust \
-  cargo
+  curl
+
+# 通过 rustup 安装 Rust 工具链（Alpine 3.20+ 已移除 rust/cargo 包）
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # 在 npm install 之前设置环境变量，跳过 puppeteer 的 chromium 下载
 ARG PUPPETEER_SKIP_DOWNLOAD=true
