@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
 const http = require('http'); // 用于向主服务器发送回调
@@ -45,6 +45,17 @@ function sendCallback(requestId, status, result) {
     req.end();
 }
 
+/**
+ * 在 Windows 上强制终止进程树
+ * @param {number} pid - 要终止的进程 PID
+ */
+function forceKillProcessTree(pid) {
+    try {
+        execSync(`taskkill /F /T /PID ${pid}`, { windowsHide: true, stdio: 'ignore' });
+    } catch (e) {
+        // 进程可能已经退出，忽略错误
+    }
+}
 
 async function executePowerShellCommand(command, executionType = 'blocking', timeout = 60000) {
     return new Promise((resolve, reject) => {
@@ -54,34 +65,21 @@ async function executePowerShellCommand(command, executionType = 'blocking', tim
         // 预置编码命令以确保UTF-8输出
         const fullCommand = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
 
-        let child;
+        // 统一使用非分离模式 spawn powershell.exe，保持进程树完整
+        const child = spawn('powershell.exe', ['-Command', fullCommand], {
+            windowsHide: executionType !== 'background', // background 模式显示窗口
+            timeout: 0, // 我们自己管理超时
+        });
+
         if (executionType === 'background') {
-            // 对于异步执行，打开一个可见的PowerShell窗口
-            // 使用'start'命令打开一个可见的PowerShell窗口的正确方法
-            // 在 Windows 中，cmd /c start 处理带引号的命令非常棘手。
-            // start 命令的第一个带引号的参数会被视为窗口标题。
-            // 我们需要确保 powershell.exe 的路径和命令被正确包裹。
-            const args = ['/c', 'start', '""', 'powershell.exe', '-Command', fullCommand];
-
-            // 我们调用cmd.exe来使用它的'start'命令
-            child = spawn('cmd.exe', args, {
-                detached: true, // 分离子进程
-                // 不再需要'stdio: inherit'，因为'start'会处理新窗口。
-                // 默认的stdio ('pipe') 即可，或者我们可以明确地忽略它。
-                stdio: 'ignore'
-            });
-
-            child.unref(); // 允许父进程独立退出
+            // background 模式：不再 detach，保持进程树完整以便超时后清理
+            // 返回子进程引用供调用方管理
+            resolve(child);
         } else {
-            // 对于同步执行，隐藏控制台窗口
-            child = spawn('powershell.exe', ['-Command', fullCommand], {
-                windowsHide: true,
-                timeout: timeout,
-                encoding: 'utf8'
-            });
-
+            // blocking 模式
             const timeoutId = setTimeout(() => {
-                child.kill(); // 如果超时，则终止进程
+                // Windows 上 child.kill() 可能无效，使用 taskkill 强杀进程树
+                forceKillProcessTree(child.pid);
                 reject(new Error(`命令在 ${timeout / 1000} 秒后超时。`));
             }, timeout);
 
@@ -212,17 +210,28 @@ async function main() {
                 const tempFilePath = path.join(__dirname, `${requestId}.log`);
                 const finalCommand = `${command} *>&1 | Tee-Object -FilePath "${tempFilePath}"`;
 
-                // 启动一个可见的PowerShell窗口，但我们的脚本不等待它
-                executePowerShellCommand(finalCommand, 'background');
+                // 启动 PowerShell 进程（不再 detach，保持进程树完整）
+                const childProcess = await executePowerShellCommand(finalCommand, 'background');
 
-                // 关键：等待轮询完成
+                // 关键：等待轮询完成，同时持有子进程引用以便超时清理
                 const output = await new Promise((resolve, reject) => {
                     let lastSize = -1;
                     let idleCycles = 0;
                     let totalWaitTime = 0;
                     const maxIdleCycles = 3; // 6秒无增长则认为结束
                     const pollingInterval = 2000; // 2秒
-                    const maxTotalWaitTime = 45000; // 最大等待45秒（增加稳定性）
+                    const maxTotalWaitTime = 45000; // 最大等待45秒
+                    let processExited = false;
+
+                    // 监听进程退出事件，提前结束轮询
+                    childProcess.on('exit', () => {
+                        processExited = true;
+                    });
+
+                    childProcess.on('error', (err) => {
+                        processExited = true;
+                        console.error(`后台进程启动错误: ${err.message}`);
+                    });
 
                     const intervalId = setInterval(async () => {
                         totalWaitTime += pollingInterval;
@@ -236,19 +245,32 @@ async function main() {
                                 } else if (stats.size > 0) {
                                     idleCycles++;
                                 }
-                                // 如果文件存在且 size > 0，开始进入空闲判定
                             }
 
-                            // 判定结束的条件：1. 超过空闲周期 2. 超过最大总等待时间 3. 文件被意外删除
-                            if (idleCycles >= maxIdleCycles || totalWaitTime >= maxTotalWaitTime) {
+                            // 判定结束的条件：
+                            // 1. 进程已退出（最可靠的信号）
+                            // 2. 超过空闲周期
+                            // 3. 超过最大总等待时间
+                            const shouldFinish = processExited || idleCycles >= maxIdleCycles || totalWaitTime >= maxTotalWaitTime;
+
+                            if (shouldFinish) {
                                 clearInterval(intervalId);
-                                
+
+                                // 如果进程还没退出且是超时导致的结束，强杀进程树
+                                if (!processExited && totalWaitTime >= maxTotalWaitTime) {
+                                    console.error(`后台任务超时 (${maxTotalWaitTime / 1000}s)，强制终止进程树 PID: ${childProcess.pid}`);
+                                    forceKillProcessTree(childProcess.pid);
+                                } else if (!processExited && idleCycles >= maxIdleCycles) {
+                                    // 输出稳定，进程可能还在但不再产出，也强杀
+                                    forceKillProcessTree(childProcess.pid);
+                                }
+
                                 // 赋予最后一两秒的写入宽限期
                                 await new Promise(r => setTimeout(r, 1000));
 
                                 const fileBuffer = await fs.readFile(tempFilePath).catch(() => null);
-                                let fileContent = (totalWaitTime >= maxTotalWaitTime && lastSize === -1) 
-                                    ? '后台任务启动超时或无输出产生。' 
+                                let fileContent = (totalWaitTime >= maxTotalWaitTime && lastSize === -1)
+                                    ? '后台任务启动超时或无输出产生。'
                                     : '未能读取到后台任务输出。';
 
                                 if (fileBuffer && fileBuffer.length > 0) {
@@ -262,6 +284,10 @@ async function main() {
                             }
                         } catch (error) {
                             clearInterval(intervalId);
+                            // 超时清理：确保进程被杀死
+                            if (!processExited && childProcess.pid) {
+                                forceKillProcessTree(childProcess.pid);
+                            }
                             await fs.unlink(tempFilePath).catch(() => { });
                             reject(new Error(`轮询后台任务输出时出错: ${error.message}`));
                         }
