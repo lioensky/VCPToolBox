@@ -177,6 +177,37 @@ class PluginManager extends EventEmitter {
         return true;
     }
 
+    /**
+     * 跨平台进程树终止方法。
+     * Windows 上 shell:true 会创建 cmd.exe 包装进程，直接 kill 只杀 cmd 不杀子进程，
+     * 导致孤儿进程。此方法使用 taskkill /T /F 递归杀死整个进程树。
+     * Linux/macOS 上使用负 PID 发送信号给进程组，或回退到普通 SIGKILL。
+     */
+    _killProcessTree(pid, pluginName) {
+        if (!pid) return;
+        try {
+            if (process.platform === 'win32') {
+                // Windows: taskkill /T (tree kill) /F (force) /PID
+                spawn('taskkill', ['/T', '/F', '/PID', pid.toString()], {
+                    windowsHide: true,
+                    stdio: 'ignore'
+                });
+                if (this.debugMode) console.log(`[PluginManager] Sent taskkill /T /F /PID ${pid} for plugin "${pluginName}"`);
+            } else {
+                // Unix: 尝试杀死进程组（负 PID）
+                try {
+                    process.kill(-pid, 'SIGKILL');
+                } catch (e) {
+                    // 如果进程组不存在，回退到杀单个进程
+                    try { process.kill(pid, 'SIGKILL'); } catch (e2) { /* 进程可能已退出 */ }
+                }
+                if (this.debugMode) console.log(`[PluginManager] Sent SIGKILL to process group -${pid} for plugin "${pluginName}"`);
+            }
+        } catch (err) {
+            console.warn(`[PluginManager] Failed to kill process tree for plugin "${pluginName}" (PID: ${pid}): ${err.message}`);
+        }
+    }
+
     async _executeStaticPluginCommand(plugin) {
         if (!plugin || plugin.pluginType !== 'static' || !plugin.entryPoint || !plugin.entryPoint.command) {
             console.error(`[PluginManager] Invalid static plugin or command for execution: ${plugin ? plugin.name : 'Unknown'}`);
@@ -206,7 +237,7 @@ class PluginManager extends EventEmitter {
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
                     console.log(`[PluginManager] Static plugin "${plugin.name}" has completed its work cycle (${timeoutDuration}ms), terminating background process.`);
-                    pluginProcess.kill('SIGKILL');
+                    this._killProcessTree(pluginProcess.pid, plugin.name);
                     // 超时不作为错误 - static 插件完成工作周期后返回已收集的输出
                     resolve(output.trim());
                 }
@@ -225,8 +256,12 @@ class PluginManager extends EventEmitter {
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId);
-                if (signal === 'SIGKILL') {
-                    // 被 SIGKILL 终止（超时），已经在 timeout 回调中 resolve 了，这里直接返回
+                if (signal === 'SIGKILL' || signal === 'SIGTERM') {
+                    // 被强制终止（超时），已经在 timeout 回调中 resolve 了，这里直接返回
+                    return;
+                }
+                if (code === 1 && !output.trim() && !errorOutput.trim()) {
+                    // Windows taskkill 导致的退出码 1，且无有效输出，视为超时终止
                     return;
                 }
                 if (code !== 0) {
@@ -1129,12 +1164,12 @@ class PluginManager extends EventEmitter {
                 if (!processExited && !initialResponseSent && isAsyncPlugin) {
                     // For async, if initial response not sent by timeout, it's an error for that phase
                     console.error(`[PluginManager executePlugin Internal] Async plugin "${pluginName}" initial response timed out after ${timeoutDuration}ms.`);
-                    pluginProcess.kill('SIGKILL'); // Kill if no initial response
+                    this._killProcessTree(pluginProcess.pid, pluginName);
                     reject(new Error(`Plugin "${pluginName}" initial response timed out.`));
                 } else if (!processExited && !isAsyncPlugin) {
                     // For sync plugins, or if async initial response was sent but process hangs
                     console.error(`[PluginManager executePlugin Internal] Plugin "${pluginName}" execution timed out after ${timeoutDuration}ms.`);
-                    pluginProcess.kill('SIGKILL');
+                    this._killProcessTree(pluginProcess.pid, pluginName);
                     reject(new Error(`Plugin "${pluginName}" execution timed out.`));
                 } else if (!processExited && isAsyncPlugin && initialResponseSent) {
                     // Async plugin's initial response was sent, but the process is still running (e.g. for background tasks)
@@ -1214,7 +1249,7 @@ class PluginManager extends EventEmitter {
 
                 // If we are here, it's either a sync plugin, or an async plugin whose initial response was NOT sent before exit.
 
-                if (signal === 'SIGKILL') { // Typically means timeout killed it
+                if (signal === 'SIGKILL' || signal === 'SIGTERM') { // Typically means timeout killed it
                     if (!initialResponseSent) reject(new Error(`Plugin "${pluginName}" execution timed out or was killed.`));
                     return;
                 }
