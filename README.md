@@ -973,28 +973,52 @@ pm2 start adminServer.js --name vcp-admin
 
 服务器将监听在 `config.env` 中配置的端口，管理面板自动监听该端口 + 1。
 
-#### 使用 Docker Compose 运行（推荐）
+#### 使用 Docker 官方镜像部署（推荐）
 
-**前提条件**：安装 Docker 和 Docker Compose
+VCP 官方 Docker 镜像已发布至 Docker Hub，支持 `linux/amd64` 和 `linux/arm64` 双架构。
 
-**配置**：确保 `config.env` 文件已正确配置
-
-**构建并启动服务**：
+**拉取镜像**：
 
 ```bash
+docker pull lioensky/vcptoolbox:latest
+```
+
+**使用 Docker Compose 一键部署**：
+
+1. 克隆项目获取配置文件：
+   ```bash
+   git clone https://github.com/lioensky/VCPToolBox.git
+   cd VCPToolBox
+   cp config.env.example config.env
+   # 编辑 config.env，填入必要的 API 密钥
+   ```
+
+2. 启动服务：
+   ```bash
+   docker-compose up -d
+   ```
+
+3. 查看日志：
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. 停止服务：
+   ```bash
+   docker-compose down
+   ```
+
+> **说明**：`docker-compose.yml` 默认使用官方镜像 `lioensky/vcptoolbox:latest`，无需本地构建。如需本地构建，可在 `docker-compose.yml` 中取消 `build: .` 的注释并注释掉 `image` 行。
+
+**Docker Hub 地址**：[hub.docker.com/r/lioensky/vcptoolbox](https://hub.docker.com/r/lioensky/vcptoolbox)
+
+#### 使用源码本地构建 Docker 镜像（可选）
+
+如果你需要自定义构建或无法访问 Docker Hub：
+
+```bash
+# 在 docker-compose.yml 中将 image 行注释，取消 build 行注释后：
 docker-compose up --build -d
-```
-
-**查看日志**：
-
-```bash
-docker-compose logs -f
-```
-
-**停止服务**：
-
-```bash
-docker-compose down
 ```
 
 ### 7.2 部署 VCP 分布式节点
