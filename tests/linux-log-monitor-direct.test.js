@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const modulePath = path.join(__dirname, '..', 'Plugin', 'LinuxLogMonitor', 'LinuxLogMonitor.js');
 const monitorManagerPath = path.join(__dirname, '..', 'Plugin', 'LinuxLogMonitor', 'core', 'MonitorManager.js');
 const logMonitorModulePath = path.join(__dirname, '..', 'modules', 'LogMonitor', 'index.js');
+const logMonitorProxyPath = path.join(__dirname, '..', 'modules', 'LogMonitor', 'proxy.js');
+const sshManagerModulePath = path.join(__dirname, '..', 'modules', 'SSHManager', 'index.js');
+const sshManagerProxyPath = path.join(__dirname, '..', 'modules', 'SSHManager', 'proxy.js');
 
 function loadFreshModule() {
     delete require.cache[require.resolve(modulePath)];
@@ -218,8 +221,10 @@ test('MonitorManager readonly init does not create state directory', async () =>
     }
 });
 
-test('direct initialize bridges service globals into env before manager init', async () => {
+test('direct initialize scopes service globals without mutating process env', async () => {
     const linuxLogMonitor = loadFreshModule();
+    const logMonitorModule = require(logMonitorModulePath);
+    const sshManagerModule = require(sshManagerModulePath);
     const calls = [];
     const previousLogSock = process.env.LOG_MONITOR_SOCK;
     const previousLogToken = process.env.LOG_MONITOR_TOKEN;
@@ -229,6 +234,10 @@ test('direct initialize bridges service globals into env before manager init', a
     const previousGlobalLogToken = global.__vcp_log_monitor_token;
     const previousGlobalSshSock = global.__vcp_ssh_manager_sock;
     const previousGlobalSshToken = global.__vcp_ssh_manager_token;
+    const resolvedLogProxyPath = require.resolve(logMonitorProxyPath);
+    const resolvedSshProxyPath = require.resolve(sshManagerProxyPath);
+    const previousLogProxyCache = require.cache[resolvedLogProxyPath];
+    const previousSshProxyCache = require.cache[resolvedSshProxyPath];
     delete process.env.LOG_MONITOR_SOCK;
     delete process.env.LOG_MONITOR_TOKEN;
     delete process.env.SSH_MANAGER_SOCK;
@@ -238,14 +247,50 @@ test('direct initialize bridges service globals into env before manager init', a
     global.__vcp_ssh_manager_sock = 'fake-ssh-manager.sock';
     global.__vcp_ssh_manager_token = 'fake-ssh-token-r10d';
 
+    require.cache[resolvedLogProxyPath] = {
+        id: resolvedLogProxyPath,
+        filename: resolvedLogProxyPath,
+        loaded: true,
+        exports: {
+            LogMonitorProxy: class FakeLogMonitorProxy {
+                constructor(sockPath, authToken) {
+                    this.sockPath = sockPath;
+                    this.authToken = authToken;
+                }
+                destroy() {}
+            }
+        }
+    };
+    require.cache[resolvedSshProxyPath] = {
+        id: resolvedSshProxyPath,
+        filename: resolvedSshProxyPath,
+        loaded: true,
+        exports: {
+            SSHManagerProxy: class FakeSSHManagerProxy {
+                constructor(sockPath, authToken) {
+                    this.sockPath = sockPath;
+                    this.authToken = authToken;
+                }
+            }
+        }
+    };
+    logMonitorModule.resetLogMonitorProxy();
+
     linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => ({
         async init(options) {
+            const logProxy = logMonitorModule.getLogMonitorProxy();
+            const sshProxy = sshManagerModule.getSSHManager();
             calls.push({
                 init: options.mode,
-                logSock: process.env.LOG_MONITOR_SOCK,
-                logToken: process.env.LOG_MONITOR_TOKEN,
-                sshSock: process.env.SSH_MANAGER_SOCK,
-                sshToken: process.env.SSH_MANAGER_TOKEN
+                hasLogMonitorServiceEnv: logMonitorModule.hasLogMonitorServiceEnv(),
+                envLogSock: process.env.LOG_MONITOR_SOCK,
+                envLogToken: process.env.LOG_MONITOR_TOKEN,
+                envSshSock: process.env.SSH_MANAGER_SOCK,
+                envSshToken: process.env.SSH_MANAGER_TOKEN,
+                logSock: logProxy?.sockPath,
+                logToken: logProxy?.authToken,
+                sshSock: sshProxy?.sockPath,
+                sshToken: sshProxy?.authToken
             });
         },
         async stopAll() {}
@@ -257,14 +302,29 @@ test('direct initialize bridges service globals into env before manager init', a
         assert.deepEqual(calls, [
             {
                 init: 'readonly',
+                hasLogMonitorServiceEnv: true,
+                envLogSock: undefined,
+                envLogToken: undefined,
+                envSshSock: undefined,
+                envSshToken: undefined,
                 logSock: 'fake-log-monitor.sock',
                 logToken: 'fake-token-r10d',
                 sshSock: 'fake-ssh-manager.sock',
                 sshToken: 'fake-ssh-token-r10d'
             }
         ]);
+        assert.equal(process.env.LOG_MONITOR_SOCK, undefined);
+        assert.equal(process.env.LOG_MONITOR_TOKEN, undefined);
+        assert.equal(process.env.SSH_MANAGER_SOCK, undefined);
+        assert.equal(process.env.SSH_MANAGER_TOKEN, undefined);
+        assert.equal(logMonitorModule.hasLogMonitorServiceEnv(), false);
     } finally {
         linuxLogMonitor._private.resetForTests();
+        logMonitorModule.resetLogMonitorProxy();
+        if (previousLogProxyCache) require.cache[resolvedLogProxyPath] = previousLogProxyCache;
+        else delete require.cache[resolvedLogProxyPath];
+        if (previousSshProxyCache) require.cache[resolvedSshProxyPath] = previousSshProxyCache;
+        else delete require.cache[resolvedSshProxyPath];
         if (previousLogSock === undefined) delete process.env.LOG_MONITOR_SOCK;
         else process.env.LOG_MONITOR_SOCK = previousLogSock;
         if (previousLogToken === undefined) delete process.env.LOG_MONITOR_TOKEN;
@@ -284,11 +344,12 @@ test('direct initialize bridges service globals into env before manager init', a
     }
 });
 
-test('direct env sync resets stale LogMonitor proxy and clears absent globals', () => {
+test('direct service scope resets stale LogMonitor proxy without process env tokens', async () => {
     const linuxLogMonitor = loadFreshModule();
     const logMonitorModule = require(logMonitorModulePath);
-    const originalResetLogMonitorProxy = logMonitorModule.resetLogMonitorProxy;
-    let resetCalls = 0;
+    const resolvedLogProxyPath = require.resolve(logMonitorProxyPath);
+    const previousLogProxyCache = require.cache[resolvedLogProxyPath];
+    const destroyed = [];
     const previousLogSock = process.env.LOG_MONITOR_SOCK;
     const previousLogToken = process.env.LOG_MONITOR_TOKEN;
     const previousSshSock = process.env.SSH_MANAGER_SOCK;
@@ -298,45 +359,71 @@ test('direct env sync resets stale LogMonitor proxy and clears absent globals', 
     const previousGlobalSshSock = global.__vcp_ssh_manager_sock;
     const previousGlobalSshToken = global.__vcp_ssh_manager_token;
 
-    process.env.LOG_MONITOR_SOCK = 'stale-log-monitor.sock';
-    process.env.LOG_MONITOR_TOKEN = 'stale-log-token';
-    process.env.SSH_MANAGER_SOCK = 'stale-ssh-manager.sock';
-    process.env.SSH_MANAGER_TOKEN = 'stale-ssh-token';
-    global.__vcp_log_monitor_sock = 'fresh-log-monitor.sock';
-    global.__vcp_log_monitor_token = 'fresh-log-token';
-    global.__vcp_ssh_manager_sock = 'fresh-ssh-manager.sock';
-    global.__vcp_ssh_manager_token = 'fresh-ssh-token';
-    logMonitorModule.resetLogMonitorProxy = () => {
-        resetCalls++;
+    require.cache[resolvedLogProxyPath] = {
+        id: resolvedLogProxyPath,
+        filename: resolvedLogProxyPath,
+        loaded: true,
+        exports: {
+            LogMonitorProxy: class FakeLogMonitorProxy {
+                constructor(sockPath, authToken) {
+                    this.sockPath = sockPath;
+                    this.authToken = authToken;
+                }
+                destroy() {
+                    destroyed.push(`${this.sockPath}:${this.authToken}`);
+                }
+            }
+        }
     };
+    delete process.env.LOG_MONITOR_SOCK;
+    delete process.env.LOG_MONITOR_TOKEN;
+    delete process.env.SSH_MANAGER_SOCK;
+    delete process.env.SSH_MANAGER_TOKEN;
+    logMonitorModule.resetLogMonitorProxy();
 
     try {
-        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
+        global.__vcp_log_monitor_sock = 'first-log-monitor.sock';
+        global.__vcp_log_monitor_token = 'first-log-token';
+        const firstProxy = await linuxLogMonitor._private.withDirectServiceEnv(() =>
+            logMonitorModule.getLogMonitorProxy()
+        );
 
-        assert.equal(resetCalls, 1);
-        assert.equal(process.env.LOG_MONITOR_SOCK, 'fresh-log-monitor.sock');
-        assert.equal(process.env.LOG_MONITOR_TOKEN, 'fresh-log-token');
-        assert.equal(process.env.SSH_MANAGER_SOCK, 'fresh-ssh-manager.sock');
-        assert.equal(process.env.SSH_MANAGER_TOKEN, 'fresh-ssh-token');
+        assert.equal(firstProxy.sockPath, 'first-log-monitor.sock');
+        assert.equal(firstProxy.authToken, 'first-log-token');
+        assert.deepEqual(destroyed, []);
 
-        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
-        assert.equal(resetCalls, 1);
+        global.__vcp_log_monitor_sock = 'second-log-monitor.sock';
+        global.__vcp_log_monitor_token = 'second-log-token';
+        const secondProxy = await linuxLogMonitor._private.withDirectServiceEnv(() =>
+            logMonitorModule.getLogMonitorProxy()
+        );
+
+        assert.equal(secondProxy.sockPath, 'second-log-monitor.sock');
+        assert.equal(secondProxy.authToken, 'second-log-token');
+        assert.deepEqual(destroyed, ['first-log-monitor.sock:first-log-token']);
 
         delete global.__vcp_log_monitor_sock;
         delete global.__vcp_log_monitor_token;
         delete global.__vcp_ssh_manager_sock;
         delete global.__vcp_ssh_manager_token;
+        const absentProxy = await linuxLogMonitor._private.withDirectServiceEnv(() =>
+            logMonitorModule.getLogMonitorProxy()
+        );
 
-        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
-
-        assert.equal(resetCalls, 2);
+        assert.equal(absentProxy, null);
+        assert.deepEqual(destroyed, [
+            'first-log-monitor.sock:first-log-token',
+            'second-log-monitor.sock:second-log-token'
+        ]);
         assert.equal(process.env.LOG_MONITOR_SOCK, undefined);
         assert.equal(process.env.LOG_MONITOR_TOKEN, undefined);
         assert.equal(process.env.SSH_MANAGER_SOCK, undefined);
         assert.equal(process.env.SSH_MANAGER_TOKEN, undefined);
     } finally {
         linuxLogMonitor._private.resetForTests();
-        logMonitorModule.resetLogMonitorProxy = originalResetLogMonitorProxy;
+        logMonitorModule.resetLogMonitorProxy();
+        if (previousLogProxyCache) require.cache[resolvedLogProxyPath] = previousLogProxyCache;
+        else delete require.cache[resolvedLogProxyPath];
         if (previousLogSock === undefined) delete process.env.LOG_MONITOR_SOCK;
         else process.env.LOG_MONITOR_SOCK = previousLogSock;
         if (previousLogToken === undefined) delete process.env.LOG_MONITOR_TOKEN;

@@ -1267,7 +1267,8 @@ class MonitorManager {
     }
 
     _isServerModeConfigured() {
-        return Boolean(process.env.LOG_MONITOR_SOCK);
+        const { hasLogMonitorServiceEnv } = require('../../../modules/LogMonitor');
+        return hasLogMonitorServiceEnv();
     }
 
     _normalizeContext(context) {

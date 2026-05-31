@@ -82,7 +82,6 @@ function resolveDebugMode(config = {}) {
 }
 
 function createMonitorManager() {
-    syncLogMonitorEnvFromGlobals();
     return new MonitorManager({
         callbackBaseUrl: pluginConfig.CALLBACK_BASE_URL || CALLBACK_BASE_URL,
         pluginName: PLUGIN_NAME,
@@ -90,46 +89,36 @@ function createMonitorManager() {
     });
 }
 
-function syncEnvFromGlobal(envName, globalName) {
-    const nextValue = typeof global[globalName] === 'string' && global[globalName]
-        ? global[globalName]
-        : undefined;
-    const previousValue = process.env[envName];
-    if (nextValue === undefined) {
-        delete process.env[envName];
-    } else {
-        process.env[envName] = nextValue;
+function getDirectServiceEnvFromGlobals() {
+    const serviceEnv = {};
+    if (typeof global.__vcp_log_monitor_sock === 'string' && global.__vcp_log_monitor_sock) {
+        serviceEnv.LOG_MONITOR_SOCK = global.__vcp_log_monitor_sock;
     }
-    return previousValue !== nextValue;
+    if (typeof global.__vcp_log_monitor_token === 'string' && global.__vcp_log_monitor_token) {
+        serviceEnv.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
+    }
+    if (typeof global.__vcp_ssh_manager_sock === 'string' && global.__vcp_ssh_manager_sock) {
+        serviceEnv.SSH_MANAGER_SOCK = global.__vcp_ssh_manager_sock;
+    }
+    if (typeof global.__vcp_ssh_manager_token === 'string' && global.__vcp_ssh_manager_token) {
+        serviceEnv.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+    }
+    return serviceEnv;
 }
 
-function resetSharedLogMonitorProxy() {
-    try {
-        const { resetLogMonitorProxy } = require('../../modules/LogMonitor');
-        if (typeof resetLogMonitorProxy === 'function') {
-            resetLogMonitorProxy();
-        }
-    } catch (error) {
-        debugLog('重置 LogMonitor 代理失败:', error.message);
-    }
-}
-
-function syncLogMonitorEnvFromGlobals() {
-    const logSockChanged = syncEnvFromGlobal('LOG_MONITOR_SOCK', '__vcp_log_monitor_sock');
-    const logTokenChanged = syncEnvFromGlobal('LOG_MONITOR_TOKEN', '__vcp_log_monitor_token');
-    syncEnvFromGlobal('SSH_MANAGER_SOCK', '__vcp_ssh_manager_sock');
-    syncEnvFromGlobal('SSH_MANAGER_TOKEN', '__vcp_ssh_manager_token');
-
-    if (logSockChanged || logTokenChanged) {
-        resetSharedLogMonitorProxy();
-    }
+function withDirectServiceEnv(fn) {
+    const serviceEnv = getDirectServiceEnvFromGlobals();
+    const { runWithLogMonitorServiceEnv } = require('../../modules/LogMonitor');
+    const { runWithSSHManagerServiceEnv } = require('../../modules/SSHManager');
+    return runWithLogMonitorServiceEnv(serviceEnv, () =>
+        runWithSSHManagerServiceEnv(serviceEnv, fn)
+    );
 }
 
 async function initializeDirectManager(mode) {
-    syncLogMonitorEnvFromGlobals();
     directManager = monitorManagerFactory();
     directManagerMode = mode;
-    directManagerInitPromise = Promise.resolve(directManager.init({ mode }))
+    directManagerInitPromise = withDirectServiceEnv(() => Promise.resolve(directManager.init({ mode })))
         .then(() => {
             directManagerInitPromise = null;
             return directManager;
@@ -233,14 +222,15 @@ async function initialize(config = {}) {
 }
 
 async function processToolCall(args = {}) {
-    syncLogMonitorEnvFromGlobals();
-    const command = args.command || args.action;
-    const manager = await ensureDirectManager(command === 'start' ? 'full' : 'readonly');
-    const response = await dispatchCommand(manager, args, {
-        direct: true,
-        serviceMode: directManagerMode
+    return withDirectServiceEnv(async () => {
+        const command = args.command || args.action;
+        const manager = await ensureDirectManager(command === 'start' ? 'full' : 'readonly');
+        const response = await dispatchCommand(manager, args, {
+            direct: true,
+            serviceMode: directManagerMode
+        });
+        return unwrapVCPResponse(response);
     });
-    return unwrapVCPResponse(response);
 }
 
 async function shutdown() {
@@ -593,8 +583,9 @@ module.exports = {
         dispatchCommand,
         ensureDirectManager,
         getInitMode,
+        getDirectServiceEnvFromGlobals,
         resetForTests,
-        syncLogMonitorEnvFromGlobals,
+        withDirectServiceEnv,
         setMonitorManagerFactoryForTests
     }
 };
