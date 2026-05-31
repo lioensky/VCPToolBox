@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const util = require('util');
+const { AsyncLocalStorage } = require('async_hooks');
 
 const DEFAULT_HOSTS_TEMPLATE_MD5_SET = new Set([
     '0de7893698c555898c0dfa13e3891877',
@@ -29,6 +30,19 @@ let lastConfigError = null;
 let lastClassPath = null;
 let lastClassError = null;
 let loggerModule = null;
+const serviceEnvStorage = new AsyncLocalStorage();
+
+function getServiceEnvValue(key) {
+    const serviceEnv = serviceEnvStorage.getStore();
+    if (serviceEnv && typeof serviceEnv[key] === 'string' && serviceEnv[key]) {
+        return serviceEnv[key];
+    }
+    return process.env[key];
+}
+
+function runWithSSHManagerServiceEnv(serviceEnv, fn) {
+    return serviceEnvStorage.run({ ...(serviceEnv || {}) }, fn);
+}
 
 function isServerLoggerActive() {
     try {
@@ -235,13 +249,13 @@ function getLocalSSHManager(providedConfig = null, options = {}) {
  */
 function getSSHManager(providedConfig = null, options = {}) {
     // 检查是否在 stdio 插件子进程内（通过环境变量判断）
-    const proxySock = process.env.SSH_MANAGER_SOCK;
+    const proxySock = getServiceEnvValue('SSH_MANAGER_SOCK');
     if (proxySock) {
         try {
             const { SSHManagerProxy } = require('./proxy');
             const proxyAuthToken = typeof options.proxyAuthToken === 'string'
                 ? options.proxyAuthToken
-                : process.env.SSH_MANAGER_TOKEN || '';
+                : getServiceEnvValue('SSH_MANAGER_TOKEN') || '';
             const proxy = new SSHManagerProxy(proxySock, proxyAuthToken);
             logInfo('[SSHManager Module] 使用 UDS 代理模式连接到常驻服务:', proxySock);
             return proxy;
@@ -327,6 +341,7 @@ function getStatus() {
 module.exports = {
     getSSHManager,
     resetSSHManager,
+    runWithSSHManagerServiceEnv,
     getHostsConfig,
     reloadConfig,
     isAvailable,
