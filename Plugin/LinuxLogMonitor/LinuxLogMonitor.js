@@ -81,6 +81,7 @@ function resolveDebugMode(config = {}) {
 }
 
 function createMonitorManager() {
+    syncLogMonitorEnvFromGlobals();
     return new MonitorManager({
         callbackBaseUrl: pluginConfig.CALLBACK_BASE_URL || CALLBACK_BASE_URL,
         pluginName: PLUGIN_NAME,
@@ -88,7 +89,17 @@ function createMonitorManager() {
     });
 }
 
+function syncLogMonitorEnvFromGlobals() {
+    if (global.__vcp_log_monitor_sock) {
+        process.env.LOG_MONITOR_SOCK = global.__vcp_log_monitor_sock;
+    }
+    if (global.__vcp_log_monitor_token) {
+        process.env.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
+    }
+}
+
 async function initializeDirectManager(mode) {
+    syncLogMonitorEnvFromGlobals();
     directManager = monitorManagerFactory();
     directManagerMode = mode;
     directManagerInitPromise = Promise.resolve(directManager.init({ mode }))
@@ -179,6 +190,7 @@ async function initialize(config = {}) {
 }
 
 async function processToolCall(args = {}) {
+    syncLogMonitorEnvFromGlobals();
     const command = args.command || args.action;
     const manager = await ensureDirectManager(command === 'start' ? 'full' : 'readonly');
     const response = await dispatchCommand(manager, args, {
@@ -541,6 +553,7 @@ module.exports = {
         ensureDirectManager,
         getInitMode,
         resetForTests,
+        syncLogMonitorEnvFromGlobals,
         setMonitorManagerFactoryForTests
     }
 };

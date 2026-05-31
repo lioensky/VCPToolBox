@@ -210,3 +210,49 @@ test('MonitorManager readonly init does not create state directory', async () =>
         fs.promises.mkdir = originalMkdir;
     }
 });
+
+test('direct initialize bridges LogMonitor server globals into env before manager init', async () => {
+    const linuxLogMonitor = loadFreshModule();
+    const calls = [];
+    const previousSock = process.env.LOG_MONITOR_SOCK;
+    const previousToken = process.env.LOG_MONITOR_TOKEN;
+    const previousGlobalSock = global.__vcp_log_monitor_sock;
+    const previousGlobalToken = global.__vcp_log_monitor_token;
+    delete process.env.LOG_MONITOR_SOCK;
+    delete process.env.LOG_MONITOR_TOKEN;
+    global.__vcp_log_monitor_sock = 'fake-log-monitor.sock';
+    global.__vcp_log_monitor_token = 'fake-token-r10d';
+
+    linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => ({
+        async init(options) {
+            calls.push({
+                init: options.mode,
+                sock: process.env.LOG_MONITOR_SOCK,
+                token: process.env.LOG_MONITOR_TOKEN
+            });
+        },
+        async stopAll() {}
+    }));
+
+    try {
+        await linuxLogMonitor.initialize();
+
+        assert.deepEqual(calls, [
+            {
+                init: 'readonly',
+                sock: 'fake-log-monitor.sock',
+                token: 'fake-token-r10d'
+            }
+        ]);
+    } finally {
+        linuxLogMonitor._private.resetForTests();
+        if (previousSock === undefined) delete process.env.LOG_MONITOR_SOCK;
+        else process.env.LOG_MONITOR_SOCK = previousSock;
+        if (previousToken === undefined) delete process.env.LOG_MONITOR_TOKEN;
+        else process.env.LOG_MONITOR_TOKEN = previousToken;
+        if (previousGlobalSock === undefined) delete global.__vcp_log_monitor_sock;
+        else global.__vcp_log_monitor_sock = previousGlobalSock;
+        if (previousGlobalToken === undefined) delete global.__vcp_log_monitor_token;
+        else global.__vcp_log_monitor_token = previousGlobalToken;
+    }
+});
