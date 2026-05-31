@@ -5,6 +5,7 @@ const fs = require('node:fs');
 
 const modulePath = path.join(__dirname, '..', 'Plugin', 'LinuxLogMonitor', 'LinuxLogMonitor.js');
 const monitorManagerPath = path.join(__dirname, '..', 'Plugin', 'LinuxLogMonitor', 'core', 'MonitorManager.js');
+const logMonitorModulePath = path.join(__dirname, '..', 'modules', 'LogMonitor', 'index.js');
 
 function loadFreshModule() {
     delete require.cache[require.resolve(modulePath)];
@@ -264,6 +265,78 @@ test('direct initialize bridges service globals into env before manager init', a
         ]);
     } finally {
         linuxLogMonitor._private.resetForTests();
+        if (previousLogSock === undefined) delete process.env.LOG_MONITOR_SOCK;
+        else process.env.LOG_MONITOR_SOCK = previousLogSock;
+        if (previousLogToken === undefined) delete process.env.LOG_MONITOR_TOKEN;
+        else process.env.LOG_MONITOR_TOKEN = previousLogToken;
+        if (previousSshSock === undefined) delete process.env.SSH_MANAGER_SOCK;
+        else process.env.SSH_MANAGER_SOCK = previousSshSock;
+        if (previousSshToken === undefined) delete process.env.SSH_MANAGER_TOKEN;
+        else process.env.SSH_MANAGER_TOKEN = previousSshToken;
+        if (previousGlobalLogSock === undefined) delete global.__vcp_log_monitor_sock;
+        else global.__vcp_log_monitor_sock = previousGlobalLogSock;
+        if (previousGlobalLogToken === undefined) delete global.__vcp_log_monitor_token;
+        else global.__vcp_log_monitor_token = previousGlobalLogToken;
+        if (previousGlobalSshSock === undefined) delete global.__vcp_ssh_manager_sock;
+        else global.__vcp_ssh_manager_sock = previousGlobalSshSock;
+        if (previousGlobalSshToken === undefined) delete global.__vcp_ssh_manager_token;
+        else global.__vcp_ssh_manager_token = previousGlobalSshToken;
+    }
+});
+
+test('direct env sync resets stale LogMonitor proxy and clears absent globals', () => {
+    const linuxLogMonitor = loadFreshModule();
+    const logMonitorModule = require(logMonitorModulePath);
+    const originalResetLogMonitorProxy = logMonitorModule.resetLogMonitorProxy;
+    let resetCalls = 0;
+    const previousLogSock = process.env.LOG_MONITOR_SOCK;
+    const previousLogToken = process.env.LOG_MONITOR_TOKEN;
+    const previousSshSock = process.env.SSH_MANAGER_SOCK;
+    const previousSshToken = process.env.SSH_MANAGER_TOKEN;
+    const previousGlobalLogSock = global.__vcp_log_monitor_sock;
+    const previousGlobalLogToken = global.__vcp_log_monitor_token;
+    const previousGlobalSshSock = global.__vcp_ssh_manager_sock;
+    const previousGlobalSshToken = global.__vcp_ssh_manager_token;
+
+    process.env.LOG_MONITOR_SOCK = 'stale-log-monitor.sock';
+    process.env.LOG_MONITOR_TOKEN = 'stale-log-token';
+    process.env.SSH_MANAGER_SOCK = 'stale-ssh-manager.sock';
+    process.env.SSH_MANAGER_TOKEN = 'stale-ssh-token';
+    global.__vcp_log_monitor_sock = 'fresh-log-monitor.sock';
+    global.__vcp_log_monitor_token = 'fresh-log-token';
+    global.__vcp_ssh_manager_sock = 'fresh-ssh-manager.sock';
+    global.__vcp_ssh_manager_token = 'fresh-ssh-token';
+    logMonitorModule.resetLogMonitorProxy = () => {
+        resetCalls++;
+    };
+
+    try {
+        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
+
+        assert.equal(resetCalls, 1);
+        assert.equal(process.env.LOG_MONITOR_SOCK, 'fresh-log-monitor.sock');
+        assert.equal(process.env.LOG_MONITOR_TOKEN, 'fresh-log-token');
+        assert.equal(process.env.SSH_MANAGER_SOCK, 'fresh-ssh-manager.sock');
+        assert.equal(process.env.SSH_MANAGER_TOKEN, 'fresh-ssh-token');
+
+        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
+        assert.equal(resetCalls, 1);
+
+        delete global.__vcp_log_monitor_sock;
+        delete global.__vcp_log_monitor_token;
+        delete global.__vcp_ssh_manager_sock;
+        delete global.__vcp_ssh_manager_token;
+
+        linuxLogMonitor._private.syncLogMonitorEnvFromGlobals();
+
+        assert.equal(resetCalls, 2);
+        assert.equal(process.env.LOG_MONITOR_SOCK, undefined);
+        assert.equal(process.env.LOG_MONITOR_TOKEN, undefined);
+        assert.equal(process.env.SSH_MANAGER_SOCK, undefined);
+        assert.equal(process.env.SSH_MANAGER_TOKEN, undefined);
+    } finally {
+        linuxLogMonitor._private.resetForTests();
+        logMonitorModule.resetLogMonitorProxy = originalResetLogMonitorProxy;
         if (previousLogSock === undefined) delete process.env.LOG_MONITOR_SOCK;
         else process.env.LOG_MONITOR_SOCK = previousLogSock;
         if (previousLogToken === undefined) delete process.env.LOG_MONITOR_TOKEN;

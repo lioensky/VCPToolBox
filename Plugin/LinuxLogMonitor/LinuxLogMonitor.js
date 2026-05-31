@@ -90,18 +90,38 @@ function createMonitorManager() {
     });
 }
 
+function syncEnvFromGlobal(envName, globalName) {
+    const nextValue = typeof global[globalName] === 'string' && global[globalName]
+        ? global[globalName]
+        : undefined;
+    const previousValue = process.env[envName];
+    if (nextValue === undefined) {
+        delete process.env[envName];
+    } else {
+        process.env[envName] = nextValue;
+    }
+    return previousValue !== nextValue;
+}
+
+function resetSharedLogMonitorProxy() {
+    try {
+        const { resetLogMonitorProxy } = require('../../modules/LogMonitor');
+        if (typeof resetLogMonitorProxy === 'function') {
+            resetLogMonitorProxy();
+        }
+    } catch (error) {
+        debugLog('重置 LogMonitor 代理失败:', error.message);
+    }
+}
+
 function syncLogMonitorEnvFromGlobals() {
-    if (global.__vcp_log_monitor_sock) {
-        process.env.LOG_MONITOR_SOCK = global.__vcp_log_monitor_sock;
-    }
-    if (global.__vcp_log_monitor_token) {
-        process.env.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
-    }
-    if (global.__vcp_ssh_manager_sock) {
-        process.env.SSH_MANAGER_SOCK = global.__vcp_ssh_manager_sock;
-    }
-    if (global.__vcp_ssh_manager_token) {
-        process.env.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+    const logSockChanged = syncEnvFromGlobal('LOG_MONITOR_SOCK', '__vcp_log_monitor_sock');
+    const logTokenChanged = syncEnvFromGlobal('LOG_MONITOR_TOKEN', '__vcp_log_monitor_token');
+    syncEnvFromGlobal('SSH_MANAGER_SOCK', '__vcp_ssh_manager_sock');
+    syncEnvFromGlobal('SSH_MANAGER_TOKEN', '__vcp_ssh_manager_token');
+
+    if (logSockChanged || logTokenChanged) {
+        resetSharedLogMonitorProxy();
     }
 }
 
