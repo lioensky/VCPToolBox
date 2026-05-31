@@ -51,6 +51,16 @@ function createFakeManager(calls, label) {
     };
 }
 
+function createDeferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((promiseResolve, promiseReject) => {
+        resolve = promiseResolve;
+        reject = promiseReject;
+    });
+    return { promise, resolve, reject };
+}
+
 test('manifest declares hybrid direct while keeping CLI command', () => {
     const manifest = require('../Plugin/LinuxLogMonitor/plugin-manifest.json');
 
@@ -250,5 +260,69 @@ test('direct initialize bridges LogMonitor server globals into env before manage
         else global.__vcp_log_monitor_sock = previousGlobalSock;
         if (previousGlobalToken === undefined) delete global.__vcp_log_monitor_token;
         else global.__vcp_log_monitor_token = previousGlobalToken;
+    }
+});
+
+test('concurrent start calls share one readonly-to-full transition', async () => {
+    const linuxLogMonitor = loadFreshModule();
+    const calls = [];
+    let managerId = 0;
+    const fullInit = createDeferred();
+    linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => {
+        const label = `manager-${++managerId}`;
+        return {
+            async init(options) {
+                calls.push({ manager: label, init: options.mode });
+                if (options.mode === 'full') {
+                    await fullInit.promise;
+                }
+            },
+            async stopAll() {
+                calls.push({ manager: label, stopAll: true });
+            },
+            async startMonitor(config) {
+                calls.push({ manager: label, startMonitor: config.logPath });
+                return `task-${config.logPath}`;
+            }
+        };
+    });
+
+    try {
+        await linuxLogMonitor.initialize();
+        const firstStart = linuxLogMonitor.processToolCall({
+            command: 'start',
+            hostId: 'local',
+            logPath: '/var/log/one.log'
+        });
+        const secondStart = linuxLogMonitor.processToolCall({
+            command: 'start',
+            hostId: 'local',
+            logPath: '/var/log/two.log'
+        });
+
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(managerId, 2);
+        assert.deepEqual(calls.filter(call => call.init), [
+            { manager: 'manager-1', init: 'readonly' },
+            { manager: 'manager-2', init: 'full' }
+        ]);
+
+        fullInit.resolve();
+        const results = await Promise.all([firstStart, secondStart]);
+
+        assert.deepEqual(results.map(result => result.taskId), [
+            'task-/var/log/one.log',
+            'task-/var/log/two.log'
+        ]);
+        assert.deepEqual(calls.filter(call => call.stopAll), [
+            { manager: 'manager-1', stopAll: true }
+        ]);
+        assert.deepEqual(calls.filter(call => call.startMonitor), [
+            { manager: 'manager-2', startMonitor: '/var/log/one.log' },
+            { manager: 'manager-2', startMonitor: '/var/log/two.log' }
+        ]);
+    } finally {
+        fullInit.resolve();
+        linuxLogMonitor._private.resetForTests();
     }
 });

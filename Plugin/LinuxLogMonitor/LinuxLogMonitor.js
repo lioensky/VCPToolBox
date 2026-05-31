@@ -30,6 +30,7 @@ const PLUGIN_NAME = 'LinuxLogMonitor';
 
 let directManager = null;
 let directManagerInitPromise = null;
+let directManagerTransitionPromise = null;
 let directManagerMode = null;
 let pluginConfig = {};
 let monitorManagerFactory = createMonitorManager;
@@ -126,10 +127,22 @@ async function ensureDirectManager(mode = 'readonly') {
     }
 
     if (mode === 'full' && directManagerMode !== 'full') {
-        await directManager.stopAll();
-        directManager = null;
-        directManagerMode = null;
-        return initializeDirectManager('full');
+        if (!directManagerTransitionPromise) {
+            directManagerTransitionPromise = (async () => {
+                if (directManagerMode === 'full') {
+                    return directManager;
+                }
+                if (directManager) {
+                    await directManager.stopAll();
+                }
+                directManager = null;
+                directManagerMode = null;
+                return initializeDirectManager('full');
+            })().finally(() => {
+                directManagerTransitionPromise = null;
+            });
+        }
+        return directManagerTransitionPromise;
     }
 
     return directManager;
@@ -206,6 +219,7 @@ async function shutdown() {
     await directManager.stopAll();
     directManager = null;
     directManagerInitPromise = null;
+    directManagerTransitionPromise = null;
     directManagerMode = null;
 }
 
@@ -531,6 +545,7 @@ async function handleLogStats(manager, args) {
 function resetForTests() {
     directManager = null;
     directManagerInitPromise = null;
+    directManagerTransitionPromise = null;
     directManagerMode = null;
     pluginConfig = {};
     monitorManagerFactory = createMonitorManager;
