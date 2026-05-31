@@ -14,10 +14,15 @@ let runtimeConfig = {};
 // ============================================================
 
 function initialize(config) {
+    // 默认上游自动指向本地 VCP 主服务器，无需用户手动配置
+    const mainServerPort = config.PORT || process.env.PORT || 6005;
+    const mainServerKey = config.Key || process.env.Key || '';
+    const defaultUpstream = `http://127.0.0.1:${mainServerPort}`;
+
     runtimeConfig = {
         port: config.BRIDGE_PORT || 3100,
-        upstreamUrl: (config.BRIDGE_UPSTREAM_URL || 'https://api.openai.com').replace(/\/+$/, ''),
-        upstreamKey: config.BRIDGE_UPSTREAM_KEY || '',
+        upstreamUrl: (config.BRIDGE_UPSTREAM_URL || defaultUpstream).replace(/\/+$/, ''),
+        upstreamKey: config.BRIDGE_UPSTREAM_KEY || mainServerKey,
         upstreamType: normalizeApiType(config.BRIDGE_UPSTREAM_TYPE),
         defaultModel: config.BRIDGE_MODEL || 'gpt-4.1-mini',
         systemPrompt: resolveSystemPrompt(config.BRIDGE_SYSTEM_PROMPT || ''),
@@ -28,7 +33,7 @@ function initialize(config) {
     };
 
     startServer();
-    console.log(`[VCPBridgeServer] Initialized. Hijack mode: ${runtimeConfig.hijackMode}, Port: ${runtimeConfig.port}`);
+    console.log(`[VCPBridgeServer] Initialized. Hijack mode: ${runtimeConfig.hijackMode}, Port: ${runtimeConfig.port}, Upstream: ${runtimeConfig.upstreamUrl}`);
 }
 
 function shutdown() {
