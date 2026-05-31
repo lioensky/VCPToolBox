@@ -1056,7 +1056,21 @@ class PluginManager extends EventEmitter {
                 if (typeof serviceModule.processToolCall !== 'function') {
                     throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" does not have a processToolCall function.`);
                 }
-                resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs, normalizedExecutionContext);
+                let directExecutionContext = normalizedExecutionContext;
+                if (plugin.requiresAdmin) {
+                    const decryptedCode = await this._getDecryptedAuthCode();
+                    if (decryptedCode) {
+                        directExecutionContext = {
+                            ...(normalizedExecutionContext || {}),
+                            decryptedAuthCode: decryptedCode
+                        };
+                        if (this.debugMode) console.log(`[PluginManager] Provided decrypted auth context for admin-required hybrid plugin: ${toolName}`);
+                    } else {
+                        console.error(`[PluginManager] Failed to obtain auth code for admin-required hybrid plugin: ${toolName}. Execution denied.`);
+                        throw new Error(JSON.stringify({ plugin_error: `Plugin "${toolName}" requires admin authentication, but auth code could not be obtained. Execution denied.` }));
+                    }
+                }
+                resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs, directExecutionContext);
             } else {
                 // --- 本地插件调用逻辑 (现有逻辑) ---
                 if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
@@ -1176,7 +1190,8 @@ class PluginManager extends EventEmitter {
                 additionalEnv.DECRYPTED_AUTH_CODE = decryptedCode;
                 if (this.debugMode) console.log(`[PluginManager] Injected DECRYPTED_AUTH_CODE for admin-required plugin: ${pluginName}`);
             } else {
-                if (this.debugMode) console.warn(`[PluginManager] Could not get decrypted auth code for admin-required plugin: ${pluginName}. Execution will proceed without it.`);
+                console.error(`[PluginManager] Failed to obtain auth code for admin-required plugin: ${pluginName}. Execution denied.`);
+                throw new Error(JSON.stringify({ plugin_error: `Plugin "${pluginName}" requires admin authentication, but auth code could not be obtained. Execution denied.` }));
             }
         }
         // 将 requestIp 添加到环境变量
