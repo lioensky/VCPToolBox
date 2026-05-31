@@ -1,10 +1,25 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "path";
 import { visualizer } from "rollup-plugin-visualizer";
 
+function getAdminApiProxyTarget(mode: string): string {
+  const env = loadEnv(mode, __dirname, "VITE_");
+  const explicitTarget =
+    env.VITE_ADMIN_API_PROXY_TARGET ||
+    process.env.VITE_ADMIN_API_PROXY_TARGET;
+  if (explicitTarget?.trim()) {
+    return explicitTarget.trim();
+  }
+
+  const mainPort = Number.parseInt(process.env.PORT || "3000", 10);
+  const adminPort = Number.isFinite(mainPort) ? mainPort + 1 : 3001;
+  return `http://127.0.0.1:${adminPort}`;
+}
+
 export default defineConfig(({ mode }) => {
   const shouldAnalyze = mode === "analyze" || process.env.ANALYZE === "true";
+  const adminApiProxyTarget = getAdminApiProxyTarget(mode);
 
   return {
     plugins: [
@@ -31,7 +46,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/admin_api": {
-          target: "http://127.0.0.1:6006",
+          target: adminApiProxyTarget,
           changeOrigin: true,
         },
       },
