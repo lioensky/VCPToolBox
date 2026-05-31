@@ -6,6 +6,26 @@ on:
     tags: [ 'v*' ]  # 打 tag 时触发发布
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: '是否推送 Docker 镜像到 Docker Hub'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      platforms:
+        description: 'Docker 构建平台。日常验证建议 linux/amd64，正式发布用 linux/amd64,linux/arm64'
+        required: true
+        default: 'linux/amd64'
+        type: string
+
+# 高频提交场景下，只保留同一分支/PR 的最新一次 CI，避免排队浪费几小时。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ============================================================
@@ -32,6 +52,15 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: validate
+    # Docker 多架构构建非常耗时：
+    # - tag(v*)：正式发布，构建并推送多架构镜像
+    # - workflow_dispatch：手动按需构建/推送
+    # - PR 且触及容器/原生依赖关键文件：只做 amd64 构建验证，不推送
+    # main 分支普通 push 不再自动构建 Docker，避免一天几十次全量编译。
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request'
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -42,9 +71,9 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    # 仅在 tag 推送时登录 Docker Hub
+    # 仅在需要推送镜像时登录 Docker Hub
     - name: Login to Docker Hub
-      if: startsWith(github.ref, 'refs/tags/v')
+      if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_image == 'true')
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -65,14 +94,32 @@ jobs:
           # main 分支推送时打 latest
           type=raw,value=latest,enable={{is_default_branch}}
 
-    # 构建并推送（tag 时推送，其他情况仅构建验证）
+    - name: Resolve Docker build settings
+      id: docker_settings
+      shell: bash
+      run: |
+        if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+        elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+          echo "platforms=${{ github.event.inputs.platforms }}" >> "$GITHUB_OUTPUT"
+          echo "push=${{ github.event.inputs.publish_image }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+          echo "push=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # 构建并推送：
+    # - tag：正式多架构发布
+    # - 手动 workflow_dispatch：按输入决定平台与是否推送
+    # - PR：仅 amd64 构建验证，不推送
     - name: Build and push Docker image
       uses: docker/build-push-action@v6
       with:
         context: .
         file: ./Dockerfile
-        platforms: linux/amd64,linux/arm64
-        push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        platforms: ${{ steps.docker_settings.outputs.platforms }}
+        push: ${{ steps.docker_settings.outputs.push == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha

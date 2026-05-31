@@ -45,25 +45,33 @@ RUN sed -i '/^win10toast/s/^/#/' requirements.txt
 RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel
 RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -r requirements.txt
 
-# 复制所有源代码
-COPY . .
-
 # =================================================================
 # 编译 Rust N-API 向量引擎 (vexus-lite)
-# 关键：必须在容器内重新编译，确保 .node 产物与当前源码 (src/lib.rs) 同步。
-# 仓库内 commit 的预编译 .node 仅作为 node 直跑用户的兜底，
-# 源码升级后若不在此重编，镜像会继续加载过时产物，导致行为与源码不一致
-# （例如新增的 compute_pairwise_similarities 等导出缺失）。
-# napi build --release 会按当前平台 (alpine = musl) 生成
-# vexus-lite.linux-x64-musl.node / vexus-lite.linux-arm64-musl.node，
-# 与 index.js 的 isMusl() 加载分支匹配。
+# 关键：把 Rust 子项目单独 COPY 并提前编译，让 Docker layer cache 能复用编译产物。
+# 这样 README、插件、图片、普通 JS 文件变更时，不会触发 Rust 全量重编；
+# 只有 rust-vexus-lite/package.json、Cargo.toml、build.rs、src/** 变化才会失效。
+# 仓库内 commit 的预编译 .node 仅作为 node 直跑用户的兜底，镜像必须以源码现编产物为准。
 # =================================================================
+COPY rust-vexus-lite/package.json ./rust-vexus-lite/package.json
+COPY rust-vexus-lite/Cargo.toml ./rust-vexus-lite/Cargo.toml
+COPY rust-vexus-lite/build.rs ./rust-vexus-lite/build.rs
+COPY rust-vexus-lite/src ./rust-vexus-lite/src
+
 RUN echo ">>> Building rust-vexus-lite native addon..." && \
     cd rust-vexus-lite && \
     npm install && \
     npm run build && \
+    mkdir -p /tmp/rust-vexus-lite-built && \
+    cp ./*.node /tmp/rust-vexus-lite-built/ && \
     cd .. && \
     echo ">>> rust-vexus-lite build complete."
+
+# 复制所有源代码
+COPY . .
+
+# COPY . . 会把仓库中可能滞后的预编译 .node 合并进 rust-vexus-lite。
+# 将上一步容器内现编产物覆盖回去，确保镜像运行时加载的是当前源码对应的 native addon。
+RUN cp /tmp/rust-vexus-lite-built/*.node ./rust-vexus-lite/
 
 # 构建 AdminPanel-Vue 前端
 RUN if [ -f AdminPanel-Vue/package.json ]; then \
