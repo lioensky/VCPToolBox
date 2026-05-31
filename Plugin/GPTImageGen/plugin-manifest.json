@@ -60,6 +60,11 @@
       "description": "重试基础延迟（毫秒），实际延迟按指数退避递增",
       "default": "2000"
     },
+    "USE_CHAT_COMPLETIONS_MODE": {
+      "type": "boolean",
+      "description": "Chat Completions 模式。某些兼容渠道不支持 /v1/images/generations，需通过 chat/completions + image_generation tool 生成图片。设为 true 直接使用该模式（即使不设置，插件也会在检测到相关错误时自动回退）",
+      "default": false
+    },
     "DebugMode": {
       "type": "boolean",
       "description": "调试模式，开启后在 stderr 输出详细日志",

@@ -32,6 +32,10 @@ const DEFAULT_RESPONSE_FORMAT = process.env.DEFAULT_RESPONSE_FORMAT || 'url';
 const DEFAULT_BACKGROUND = process.env.DEFAULT_BACKGROUND || 'auto';
 const DEBUG = process.env.DebugMode === 'true';
 
+// Chat Completions 模式：某些兼容渠道不支持 /v1/images/generations，
+// 而是通过 /v1/chat/completions + 内置 image_generation tool 来生成图片
+const USE_CHAT_COMPLETIONS_MODE = process.env.USE_CHAT_COMPLETIONS_MODE === 'true';
+
 // 重试配置
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '2', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RETRY_BASE_DELAY_MS || '2000', 10);
@@ -623,16 +627,253 @@ function buildImageGenerationUrls() {
 }
 
 /**
+ * 判断错误是否属于"渠道不支持 images 端点，需要走 Chat Completions 模式"的情况
+ * @param {Error|string} error - 错误对象或错误消息
+ * @returns {boolean}
+ */
+function shouldFallbackToChatCompletions(error) {
+    const msg = error && error.message ? error.message : String(error);
+    // 典型特征：渠道把图像生成实现为 chat completions 的内置 tool
+    return /tool.?choice.*not found|image_generation.*not found|tools.*parameter/i.test(msg);
+}
+
+/**
+ * 通过 Chat Completions API + 内置 image_generation tool 生成图片
+ *
+ * 某些 OpenAI 兼容渠道不提供 /v1/images/generations 端点，
+ * 而是要求通过 /v1/chat/completions 配合 tool_choice 来触发图像生成。
+ *
+ * @param {object} params - 生成参数
+ * @returns {Promise<object>} 标准化的图像 API 响应体（与 images/generations 格式一致）
+ */
+async function callImageAPIViaChatCompletions(params) {
+    const normalizedBase = OPENAI_BASE_URL.replace(/\/+$/, '');
+    const apiUrl = `${normalizedBase}/v1/chat/completions`;
+
+    debugLog('Chat Completions mode: using', apiUrl);
+
+    // 构建 Chat Completions 请求体，使用内置 image_generation tool
+    const requestBody = {
+        model: GPT_IMAGE_MODEL,
+        messages: [
+            {
+                role: 'user',
+                content: params.prompt
+            }
+        ],
+        tools: [
+            {
+                type: 'function',
+                function: {
+                    name: 'image_generation',
+                    description: 'Generate an image based on the prompt',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            prompt: {
+                                type: 'string',
+                                description: 'The image generation prompt'
+                            },
+                            size: {
+                                type: 'string',
+                                description: 'Image size in WIDTHxHEIGHT format'
+                            },
+                            quality: {
+                                type: 'string',
+                                description: 'Image quality: low, medium, high, auto'
+                            },
+                            background: {
+                                type: 'string',
+                                description: 'Background: transparent, opaque, auto'
+                            },
+                            n: {
+                                type: 'number',
+                                description: 'Number of images to generate'
+                            }
+                        },
+                        required: ['prompt']
+                    }
+                }
+            }
+        ],
+        tool_choice: {
+            type: 'function',
+            function: { name: 'image_generation' }
+        }
+    };
+
+    const bodyStr = JSON.stringify(requestBody);
+    debugLog('Chat Completions Request Body:', bodyStr.substring(0, 800));
+
+    const response = await httpRequestWithRetry(apiUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Accept': 'application/json',
+            'Content-Length': Buffer.byteLength(bodyStr)
+        },
+        timeout: 300000
+    }, bodyStr);
+
+    debugLog('Chat Completions Response Status:', response.statusCode);
+    debugLog('Chat Completions Response Body (first 800 chars):', response.body.substring(0, 800));
+
+    if (response.statusCode !== 200) {
+        // 复用标准错误解析
+        parseApiResponse(response);
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch (e) {
+        throw new Error(`Chat Completions API 返回了无效的 JSON 响应: ${response.body.substring(0, 200)}`);
+    }
+
+    // 从 Chat Completions 响应中提取图像数据
+    // 响应格式可能有多种变体，需要逐一尝试
+    return extractImageFromChatResponse(parsed);
+}
+
+/**
+ * 从 Chat Completions 响应中提取图像数据，转换为标准 images API 格式
+ *
+ * 兼容多种渠道的响应格式：
+ * 1. choices[0].message.tool_calls[0].function.arguments 中包含图片数据
+ * 2. choices[0].message.content 中直接包含 base64 或 URL
+ * 3. 响应顶层直接包含 data 数组（某些渠道的透传模式）
+ *
+ * @param {object} parsed - 解析后的 Chat Completions 响应
+ * @returns {object} 标准化的 { data: [{b64_json?, url?}] } 格式
+ */
+function extractImageFromChatResponse(parsed) {
+    // 情况 0：响应本身已经是标准 images API 格式（某些渠道直接透传）
+    if (Array.isArray(parsed.data) && parsed.data.length > 0) {
+        debugLog('Chat Completions: response already in standard images format');
+        return normalizeImageApiResponseBody(parsed);
+    }
+
+    // 情况 1：从 tool_calls 中提取
+    const choices = parsed.choices;
+    if (Array.isArray(choices) && choices.length > 0) {
+        const message = choices[0].message;
+
+        if (message) {
+            // 1a: tool_calls 中的 function arguments
+            if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+                for (const toolCall of message.tool_calls) {
+                    if (toolCall.function && toolCall.function.name === 'image_generation') {
+                        let toolArgs;
+                        try {
+                            toolArgs = JSON.parse(toolCall.function.arguments);
+                        } catch {
+                            toolArgs = {};
+                        }
+
+                        // 某些渠道在 arguments 中返回图片数据
+                        if (toolArgs.url || toolArgs.b64_json || toolArgs.image_url || toolArgs.base64) {
+                            debugLog('Chat Completions: extracted image from tool_calls arguments');
+                            return { data: [normalizeImageItem(toolArgs)] };
+                        }
+
+                        // 某些渠道在 arguments.result 中返回
+                        if (toolArgs.result) {
+                            if (typeof toolArgs.result === 'string') {
+                                return { data: [normalizeImageItem(toolArgs.result)] };
+                            }
+                            if (typeof toolArgs.result === 'object') {
+                                return normalizeImageApiResponseBody(toolArgs.result);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1b: message.content 中包含图片数据
+            if (message.content) {
+                // content 可能是字符串或数组
+                if (typeof message.content === 'string') {
+                    const content = message.content.trim();
+
+                    // 尝试解析为 JSON
+                    try {
+                        const contentParsed = JSON.parse(content);
+                        if (contentParsed.data || contentParsed.url || contentParsed.b64_json) {
+                            debugLog('Chat Completions: extracted image from message.content (JSON string)');
+                            return normalizeImageApiResponseBody(contentParsed);
+                        }
+                    } catch {
+                        // 不是 JSON，检查是否是 URL 或 base64
+                    }
+
+                    // 检查是否直接是 URL
+                    if (/^https?:\/\/.+\.(png|jpg|jpeg|webp|gif)/i.test(content)) {
+                        debugLog('Chat Completions: extracted image URL from message.content');
+                        return { data: [{ url: content }] };
+                    }
+
+                    // 检查是否是 base64 数据
+                    if (/^data:image\/[^;]+;base64,/i.test(content)) {
+                        debugLog('Chat Completions: extracted data URI from message.content');
+                        return { data: [normalizeImageItem(content)] };
+                    }
+
+                    // 尝试从文本中提取 URL
+                    const urlMatch = content.match(/https?:\/\/[^\s"'<>]+\.(png|jpg|jpeg|webp|gif)(\?[^\s"'<>]*)?/i);
+                    if (urlMatch) {
+                        debugLog('Chat Completions: extracted image URL from message.content text');
+                        return { data: [{ url: urlMatch[0] }] };
+                    }
+                }
+
+                // content 是数组格式（multimodal response）
+                if (Array.isArray(message.content)) {
+                    const imageItems = [];
+                    for (const part of message.content) {
+                        if (part.type === 'image_url' && part.image_url?.url) {
+                            imageItems.push(normalizeImageItem(part.image_url.url));
+                        } else if (part.type === 'image' && (part.url || part.b64_json || part.data)) {
+                            imageItems.push(normalizeImageItem(part));
+                        }
+                    }
+                    if (imageItems.length > 0) {
+                        debugLog('Chat Completions: extracted', imageItems.length, 'image(s) from multimodal content');
+                        return { data: imageItems };
+                    }
+                }
+            }
+        }
+    }
+
+    // 情况 2：某些渠道在顶层返回非标准字段
+    if (parsed.image || parsed.image_url || parsed.b64_json || parsed.url) {
+        debugLog('Chat Completions: extracted image from top-level fields');
+        return { data: [normalizeImageItem(parsed)] };
+    }
+
+    // 无法提取图像数据
+    throw new Error(`Chat Completions 模式：无法从响应中提取图像数据。响应结构: ${JSON.stringify(parsed).substring(0, 500)}`);
+}
+
+/**
  * 调用 OpenAI 兼容的 images/generations API（文生图）
  *
- * 兼容两类渠道：
+ * 兼容三类渠道：
  * 1. 标准端点：/v1/images/generations
  * 2. 某些反代端点：/v1/images
+ * 3. Chat Completions 模式：/v1/chat/completions + image_generation tool
  *
  * @param {object} params - 生成参数
  * @returns {Promise<object>} API 响应体
  */
 async function callImageAPI(params) {
+    // 如果配置了直接使用 Chat Completions 模式，跳过标准端点尝试
+    if (USE_CHAT_COMPLETIONS_MODE) {
+        debugLog('USE_CHAT_COMPLETIONS_MODE=true, directly using Chat Completions path');
+        return await callImageAPIViaChatCompletions(params);
+    }
+
     const apiUrls = buildImageGenerationUrls();
 
     const requestBody = {
@@ -678,7 +919,13 @@ async function callImageAPI(params) {
             lastError = error;
             const msg = error && error.message ? error.message : String(error);
 
-            // 仅对明显的“端点不匹配”错误尝试下一个候选端点
+            // 检测是否需要回退到 Chat Completions 模式
+            if (shouldFallbackToChatCompletions(error)) {
+                debugLog(`Standard images endpoint failed with tool_choice error, falling back to Chat Completions mode. Error: ${msg}`);
+                return await callImageAPIViaChatCompletions(params);
+            }
+
+            // 仅对明显的"端点不匹配"错误尝试下一个候选端点
             if ((/HTTP 404|HTTP 405|404 Not Found|405 Method Not Allowed/i.test(msg)) && i < apiUrls.length - 1) {
                 debugLog(`Endpoint ${apiUrl} failed with endpoint-like error, trying next candidate. Error: ${msg}`);
                 continue;
