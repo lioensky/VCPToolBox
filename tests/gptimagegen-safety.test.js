@@ -55,11 +55,19 @@ function closeServer(server) {
   return new Promise(resolve => server.close(resolve));
 }
 
+function isTracked(relativePath) {
+  const result = spawnSync('git', ['ls-files', '--error-unmatch', relativePath], {
+    cwd: repoRoot,
+    encoding: 'utf8'
+  });
+  return result.status === 0;
+}
+
 test('GPTImageGen is present but disabled by default on prod stable', () => {
   assert.equal(fs.existsSync(path.join(pluginDir, 'plugin-manifest.json.block')), true);
-  assert.equal(fs.existsSync(path.join(pluginDir, 'plugin-manifest.json')), false);
+  assert.equal(isTracked('Plugin/GPTImageGen/plugin-manifest.json'), false);
   assert.equal(fs.existsSync(path.join(pluginDir, 'config.env.example')), true);
-  assert.equal(fs.existsSync(path.join(pluginDir, 'config.env')), false);
+  assert.equal(isTracked('Plugin/GPTImageGen/config.env'), false);
 });
 
 test('GPTImageGen keeps local image reads bounded to project image directory', () => {
@@ -231,6 +239,34 @@ test('GPTImageGen exits before any API call when API key is absent', () => {
   assert.equal(parsed.status, 'error');
   assert.match(parsed.error, /OPENAI_API_KEY/);
   assert.equal(child.stderr, '');
+});
+
+test('GPTImageGen chat completions mode is implemented without enabling the plugin', () => {
+  const source = fs.readFileSync(pluginScript, 'utf8');
+  const configExample = fs.readFileSync(path.join(pluginDir, 'config.env.example'), 'utf8');
+  const blockedManifest = fs.readFileSync(path.join(pluginDir, 'plugin-manifest.json.block'), 'utf8');
+
+  assert.match(source, /USE_CHAT_COMPLETIONS_MODE/);
+  assert.match(source, /function shouldFallbackToChatCompletions\(error\)/);
+  assert.match(source, /callImageAPIViaChatCompletions/);
+  assert.match(source, /\/v1\/chat\/completions/);
+  assert.match(source, /image_generation/);
+  assert.match(source, /tool_choice/);
+  assert.match(source, /return callImageAPIViaChatCompletions\(params\);/);
+  assert.match(configExample, /USE_CHAT_COMPLETIONS_MODE=false/);
+  assert.match(blockedManifest, /USE_CHAT_COMPLETIONS_MODE/);
+  assert.equal(isTracked('Plugin/GPTImageGen/plugin-manifest.json'), false);
+});
+
+test('DailyNote adds structured success metadata while preserving legacy fields', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'DailyNote', 'dailynote.js'), 'utf8');
+
+  assert.match(source, /message: `Diary saved to \$\{filePath\}`/);
+  assert.match(source, /targetFile: filePath/);
+  assert.match(source, /folder: sanitizedFolderName/);
+  assert.match(source, /const legacyResult = `Successfully edited diary file: \$\{modifiedFilePath\}`;/);
+  assert.match(source, /result: legacyResult/);
+  assert.match(source, /targetFile: modifiedFilePath/);
 });
 
 test('ZImageTurboGen keeps edit image inputs bounded before Gitee upload', () => {

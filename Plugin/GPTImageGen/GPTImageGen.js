@@ -33,6 +33,7 @@ const DEFAULT_QUALITY = process.env.DEFAULT_QUALITY || 'auto';
 const DEFAULT_RESPONSE_FORMAT = process.env.DEFAULT_RESPONSE_FORMAT || 'url';
 const DEFAULT_BACKGROUND = process.env.DEFAULT_BACKGROUND || 'auto';
 const DEBUG = process.env.DebugMode === 'true';
+const USE_CHAT_COMPLETIONS_MODE = process.env.USE_CHAT_COMPLETIONS_MODE === 'true';
 
 // 重试配置
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '2', 10);
@@ -733,7 +734,7 @@ function normalizeImageItem(item) {
     if (typeof item !== 'object') return {};
 
     return {
-        b64_json: item.b64_json || item.base64 || item.image_base64,
+        b64_json: item.b64_json || item.base64 || item.image_base64 || (typeof item.data === 'string' ? item.data : undefined),
         data_uri: item.data_uri || item.dataUrl || item.image_data || item.image,
         url: item.url || item.image_url
     };
@@ -837,17 +838,182 @@ function buildImageGenerationUrls() {
     return [...new Set(urls)];
 }
 
+function shouldFallbackToChatCompletions(error) {
+    const msg = error && error.message ? error.message : String(error);
+    return /tool[_\s.-]?choice.*not found|image_generation.*not found|tools?.*parameter/i.test(msg);
+}
+
+function extractImageFromChatResponse(parsed) {
+    if (Array.isArray(parsed?.data) && parsed.data.length > 0) {
+        return normalizeImageApiResponseBody(parsed);
+    }
+
+    const choices = parsed?.choices;
+    if (Array.isArray(choices) && choices.length > 0) {
+        const message = choices[0]?.message;
+
+        if (Array.isArray(message?.tool_calls)) {
+            for (const toolCall of message.tool_calls) {
+                if (toolCall?.function?.name !== 'image_generation') continue;
+
+                let toolArgs = {};
+                try {
+                    toolArgs = JSON.parse(toolCall.function.arguments || '{}');
+                } catch {
+                    toolArgs = {};
+                }
+
+                if (toolArgs.url || toolArgs.b64_json || toolArgs.image_url || toolArgs.base64 || toolArgs.data_uri) {
+                    return { data: [normalizeImageItem(toolArgs)] };
+                }
+                if (typeof toolArgs.result === 'string') {
+                    return { data: [normalizeImageItem(toolArgs.result)] };
+                }
+                if (toolArgs.result && typeof toolArgs.result === 'object') {
+                    return normalizeImageApiResponseBody(toolArgs.result);
+                }
+            }
+        }
+
+        if (typeof message?.content === 'string') {
+            const content = message.content.trim();
+            try {
+                const contentParsed = JSON.parse(content);
+                if (contentParsed.data || contentParsed.url || contentParsed.b64_json || contentParsed.data_uri) {
+                    return normalizeImageApiResponseBody(contentParsed);
+                }
+            } catch {
+                // Keep checking non-JSON response variants below.
+            }
+
+            if (/^https?:\/\/\S+/i.test(content) || /^data:image\/[^;]+;base64,/i.test(content)) {
+                return { data: [normalizeImageItem(content)] };
+            }
+
+            const dataUriMatch = content.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+/i);
+            if (dataUriMatch) {
+                return { data: [normalizeImageItem(dataUriMatch[0].replace(/\s+/g, ''))] };
+            }
+
+            const urlMatch = content.match(/https?:\/\/[^\s"'<>]+/i);
+            if (urlMatch) {
+                return { data: [{ url: urlMatch[0] }] };
+            }
+        }
+
+        if (Array.isArray(message?.content)) {
+            const imageItems = [];
+            for (const part of message.content) {
+                if (part?.type === 'image_url' && part.image_url?.url) {
+                    imageItems.push(normalizeImageItem(part.image_url.url));
+                } else if (part?.type === 'image' && (part.url || part.b64_json || part.data_uri || part.data)) {
+                    imageItems.push(normalizeImageItem(part));
+                }
+            }
+            if (imageItems.length > 0) {
+                return { data: imageItems };
+            }
+        }
+    }
+
+    if (parsed?.image || parsed?.image_url || parsed?.b64_json || parsed?.url || parsed?.data_uri) {
+        return { data: [normalizeImageItem(parsed)] };
+    }
+
+    throw new Error(`Chat Completions 模式：无法从响应中提取图像数据。响应结构: ${JSON.stringify(parsed).substring(0, 500)}`);
+}
+
+async function callImageAPIViaChatCompletions(params) {
+    const normalizedBase = OPENAI_BASE_URL.replace(/\/+$/, '');
+    const apiUrl = `${normalizedBase}/v1/chat/completions`;
+    const promptWithParams = [
+        params.prompt,
+        `size=${params.size}`,
+        `quality=${params.quality}`,
+        `background=${params.background}`,
+        `n=${params.n}`
+    ].join('\n');
+
+    const requestBody = {
+        model: GPT_IMAGE_MODEL,
+        messages: [
+            {
+                role: 'user',
+                content: promptWithParams
+            }
+        ],
+        tools: [
+            {
+                type: 'function',
+                function: {
+                    name: 'image_generation',
+                    description: 'Generate image data or an image URL from a prompt.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            prompt: { type: 'string' },
+                            size: { type: 'string' },
+                            quality: { type: 'string' },
+                            background: { type: 'string' },
+                            n: { type: 'number' }
+                        },
+                        required: ['prompt']
+                    }
+                }
+            }
+        ],
+        tool_choice: {
+            type: 'function',
+            function: { name: 'image_generation' }
+        }
+    };
+
+    const bodyStr = JSON.stringify(requestBody);
+    debugLog('Chat Completions Request URL:', apiUrl);
+    debugLog('Chat Completions Request Body:', bodyStr.substring(0, 800));
+
+    const response = await httpRequestWithRetry(apiUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Accept': 'application/json',
+            'Content-Length': Buffer.byteLength(bodyStr)
+        },
+        timeout: 300000
+    }, bodyStr);
+
+    if (response.statusCode !== 200) {
+        parseApiResponse(response);
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(response.body);
+    } catch {
+        throw new Error(`Chat Completions API 返回了无效的 JSON 响应: ${response.body.substring(0, 200)}`);
+    }
+
+    return extractImageFromChatResponse(parsed);
+}
+
 /**
  * 调用 OpenAI 兼容的 images/generations API（文生图）
  *
- * 兼容两类渠道：
+ * 兼容三类渠道：
  * 1. 标准端点：/v1/images/generations
  * 2. 某些反代端点：/v1/images
+ * 3. Chat Completions 兼容端点：/v1/chat/completions + image_generation tool
  *
  * @param {object} params - 生成参数
  * @returns {Promise<object>} API 响应体
  */
 async function callImageAPI(params) {
+    if (USE_CHAT_COMPLETIONS_MODE) {
+        debugLog('USE_CHAT_COMPLETIONS_MODE=true, using Chat Completions image path.');
+        return callImageAPIViaChatCompletions(params);
+    }
+
     const apiUrls = buildImageGenerationUrls();
 
     const requestBody = {
@@ -892,6 +1058,11 @@ async function callImageAPI(params) {
         } catch (error) {
             lastError = error;
             const msg = error && error.message ? error.message : String(error);
+
+            if (shouldFallbackToChatCompletions(error)) {
+                debugLog(`Images endpoint returned a chat-tool compatibility error, falling back to Chat Completions. Error: ${msg}`);
+                return callImageAPIViaChatCompletions(params);
+            }
 
             // 仅对明显的“端点不匹配”错误尝试下一个候选端点
             if ((/HTTP 404|HTTP 405|404 Not Found|405 Method Not Allowed/i.test(msg)) && i < apiUrls.length - 1) {
