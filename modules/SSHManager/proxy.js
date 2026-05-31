@@ -1,4 +1,27 @@
 const net = require('net');
+const util = require('util');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 function formatRpcError(error) {
     if (!error) return 'Unknown RPC error';
@@ -260,7 +283,7 @@ class SSHManagerProxy {
 
     _log(msg) {
         const entry = `[${new Date().toISOString()}] [SSHManagerProxy] ${msg}`;
-        console.error(entry);
+        logInfo(entry);
         this.debugLogs.push(entry);
     }
 

@@ -4,6 +4,7 @@
 
 ## 功能特性
 
+- 🧩 **混合插件模式** - `hybridservice + direct` 常驻加载，工具调用不再为每次 `start` 额外拉起长期 Node 子进程
 - 🔄 **实时日志流监控** - 基于 SSH shell 模式的 `tail -f` 实现
 - 🔍 **多规则异常检测** - 支持 regex/keyword/threshold 三种规则类型
 - 📡 **Agent 回调通知** - 检测到异常时自动回调 VCP
@@ -301,7 +302,7 @@ POST /plugin-callback/LinuxLogMonitor/{taskId}
 ## 状态持久化
 
 - 活跃任务状态保存在 `state/active-monitors.json`
-- 插件重启时自动恢复之前的监控任务
+- VCP 加载插件时只做 readonly 初始化；首次 `start` 进入 full 监控模式后恢复 legacy 状态，避免服务启动阶段主动连接远程主机
 - 使用原子写入（临时文件 + rename）防止数据损坏
 - 扩展字段：state, lastMessage, reconnectAttempts, lastDataTime, dedupeConfig
 
@@ -338,7 +339,7 @@ POST /plugin-callback/LinuxLogMonitor/{taskId}
 - 重连时使用 `tail -n 50` 获取历史日志
 
 ### 启动时自动重试失败回调
-- 插件启动时自动检查 `failed_callbacks.jsonl`
+- 进入 full 监控模式时自动检查 `failed_callbacks.jsonl`
 - 自动重试之前失败的回调请求
 
 ## 依赖
@@ -350,8 +351,8 @@ POST /plugin-callback/LinuxLogMonitor/{taskId}
 
 | 特性 | LinuxShellExecutor | LinuxLogMonitor |
 |------|-------------------|-----------------|
-| 插件类型 | 同步 | 异步 |
-| 执行模式 | 一次性命令 | 持续流式监控 |
+| 插件类型 | hybridservice + direct | hybridservice + direct |
+| 执行模式 | 常驻模块内执行命令 | 常驻模块内管理持续流式监控 |
 | SSH 模式 | exec | shell |
 | 安全防护 | 六层安全架构 | 规则白名单 |
 | 共享资源 | SSHManager | SSHManager |
