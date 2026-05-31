@@ -56,7 +56,8 @@ function createFakeExecutor(calls) {
         async listHosts() {
             return [];
         },
-        async testConnection() {
+        async testConnection(hostId) {
+            calls.push({ testConnection: hostId });
             return { success: true };
         },
         async getConnectionStatus() {
@@ -128,4 +129,27 @@ test('runToolCall forwards direct execution options to fake executor', async () 
     assert.equal(calls[0].options.disconnectOnCommandTimeout, true);
     assert.equal(calls[0].options.bypassWhitelist, true);
     assert.equal(calls[0].options.signal, controller.signal);
+});
+
+test('runToolCall leaves global SSH state intact after direct testConnection', async () => {
+    const linuxShellExecutor = loadFreshModule();
+    const calls = [];
+
+    const result = await linuxShellExecutor.runToolCall(
+        {
+            action: 'testConnection',
+            hostId: 'ssh-host-a'
+        },
+        {
+            executor: createFakeExecutor(calls),
+            context: {
+                decryptedAuthCode: '123456'
+            }
+        }
+    );
+
+    assert.equal(result.success, true);
+    assert.deepEqual(calls, [
+        { testConnection: 'ssh-host-a' }
+    ]);
 });

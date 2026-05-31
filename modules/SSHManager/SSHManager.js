@@ -1652,10 +1652,11 @@ class SSHManager {
      */
     async _testConnectionInternal(hostId) {
         let testResult;
+        let connection = null;
         try {
             const startTime = Date.now();
             // 仅执行 connect，握手成功即代表通路
-            await this.connect(hostId);
+            connection = await this.connect(hostId);
             const latency = Date.now() - startTime;
 
             testResult = {
@@ -1672,6 +1673,8 @@ class SSHManager {
                 error: error.message,
                 message: `连接失败: ${error.message}`
             };
+        } finally {
+            this._closeStandaloneTestConnection(connection);
         }
 
         // 写入缓存后再返回：避免 Windows 下进程提前退出导致缓存未落盘
@@ -1682,6 +1685,29 @@ class SSHManager {
         }
 
         return testResult;
+    }
+
+    /**
+     * testConnection 在默认非池化模式下会创建独立 SSH 连接，必须关闭返回的实际 client。
+     */
+    _closeStandaloneTestConnection(connection) {
+        if (!connection || connection.type !== 'ssh' || connection.isPooled) {
+            return;
+        }
+
+        try {
+            if (connection.client && typeof connection.client.end === 'function') {
+                connection.client.end();
+            }
+        } catch (error) {
+            this._log(`关闭测试连接失败: ${connection.hostId} - ${error.message}`);
+        } finally {
+            connection.isConnected = false;
+            if (connection.hostId) {
+                this.connectionStatus.set(connection.hostId, 'disconnected');
+            }
+            this._log(`已关闭非池化测试连接: ${connection.hostId}`);
+        }
     }
 
     async refreshAllStatuses() {
