@@ -300,6 +300,245 @@ function buildUpstreamRequest({ messages, model, body = {}, requestHeaders = {},
     return { endpoint, headers, upstreamBody, downstreamFormat };
 }
 
+function extractTextFromUpstreamPayload(payload, upstreamType) {
+    if (!payload || typeof payload !== 'object') return '';
+    if (upstreamType === 'anthropic') {
+        const content = Array.isArray(payload.content) ? payload.content : [];
+        return content.map(item => item?.text || '').filter(Boolean).join('\n');
+    }
+    if (upstreamType === 'gemini') {
+        const parts = payload.candidates?.[0]?.content?.parts;
+        return normalizeTextContent(parts);
+    }
+    return payload.choices?.map(choice => choice?.message?.content || '').filter(Boolean).join('\n') || '';
+}
+
+function extractUsageFromUpstreamPayload(payload, upstreamType) {
+    if (!payload || typeof payload !== 'object') return {};
+    if (upstreamType === 'anthropic') {
+        return {
+            input_tokens: payload.usage?.input_tokens || 0,
+            output_tokens: payload.usage?.output_tokens || 0,
+            total_tokens: (payload.usage?.input_tokens || 0) + (payload.usage?.output_tokens || 0)
+        };
+    }
+    if (upstreamType === 'gemini') {
+        return {
+            input_tokens: payload.usageMetadata?.promptTokenCount || 0,
+            output_tokens: payload.usageMetadata?.candidatesTokenCount || 0,
+            total_tokens: payload.usageMetadata?.totalTokenCount || 0
+        };
+    }
+    return {
+        input_tokens: payload.usage?.prompt_tokens || 0,
+        output_tokens: payload.usage?.completion_tokens || 0,
+        total_tokens: payload.usage?.total_tokens || 0
+    };
+}
+
+function buildResponsesPayloadFromUpstream(payload, upstreamType) {
+    const text = extractTextFromUpstreamPayload(payload, upstreamType);
+    const usage = extractUsageFromUpstreamPayload(payload, upstreamType);
+    const created = payload?.created || Math.floor(Date.now() / 1000);
+    const responseId = payload?.id && String(payload.id).startsWith('resp_')
+        ? payload.id
+        : `resp_${payload?.id || created}`;
+    const itemId = `msg_${responseId.replace(/^resp_/, '')}`;
+    return {
+        id: responseId,
+        object: 'response',
+        created_at: created,
+        status: 'completed',
+        error: null,
+        incomplete_details: null,
+        model: payload?.model || runtimeConfig?.defaultModel || DEFAULT_MODEL,
+        output: [
+            {
+                id: itemId,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'output_text',
+                        text,
+                        annotations: []
+                    }
+                ]
+            }
+        ],
+        output_text: text,
+        usage
+    };
+}
+
+function buildAnthropicPayloadFromUpstream(payload, upstreamType) {
+    const text = extractTextFromUpstreamPayload(payload, upstreamType);
+    const usage = extractUsageFromUpstreamPayload(payload, upstreamType);
+    return {
+        id: payload?.id || `msg_${Date.now()}`,
+        type: 'message',
+        role: 'assistant',
+        model: payload?.model || runtimeConfig?.defaultModel || DEFAULT_MODEL,
+        content: [{ type: 'text', text }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {
+            input_tokens: usage.input_tokens || 0,
+            output_tokens: usage.output_tokens || 0
+        }
+    };
+}
+
+function buildGeminiPayloadFromUpstream(payload, upstreamType) {
+    const text = extractTextFromUpstreamPayload(payload, upstreamType);
+    const usage = extractUsageFromUpstreamPayload(payload, upstreamType);
+    return {
+        candidates: [
+            {
+                content: {
+                    role: 'model',
+                    parts: [{ text }]
+                },
+                finishReason: 'STOP',
+                index: 0
+            }
+        ],
+        usageMetadata: {
+            promptTokenCount: usage.input_tokens || 0,
+            candidatesTokenCount: usage.output_tokens || 0,
+            totalTokenCount: usage.total_tokens || 0
+        }
+    };
+}
+
+function transformUpstreamJsonPayload(payload, upstreamType, downstreamFormat) {
+    if (downstreamFormat === upstreamType || downstreamFormat === 'chat') {
+        return payload;
+    }
+    if (downstreamFormat === 'responses') {
+        return buildResponsesPayloadFromUpstream(payload, upstreamType);
+    }
+    if (downstreamFormat === 'anthropic') {
+        return buildAnthropicPayloadFromUpstream(payload, upstreamType);
+    }
+    if (downstreamFormat === 'gemini') {
+        return buildGeminiPayloadFromUpstream(payload, upstreamType);
+    }
+    return payload;
+}
+
+function createResponsesStreamEvent(type, data) {
+    return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+}
+
+function transformChatSseToResponsesSse(sseText) {
+    const created = Math.floor(Date.now() / 1000);
+    const responseId = `resp_${created}`;
+    const itemId = `msg_${created}`;
+    const deltas = [];
+    let model = runtimeConfig?.defaultModel || DEFAULT_MODEL;
+    const events = [
+        createResponsesStreamEvent('response.created', {
+            response: {
+                id: responseId,
+                object: 'response',
+                created_at: created,
+                status: 'in_progress',
+                model,
+                output: []
+            }
+        }),
+        createResponsesStreamEvent('response.output_item.added', {
+            output_index: 0,
+            item: {
+                id: itemId,
+                type: 'message',
+                status: 'in_progress',
+                role: 'assistant',
+                content: []
+            }
+        }),
+        createResponsesStreamEvent('response.content_part.added', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: 'output_text', text: '', annotations: [] }
+        })
+    ];
+
+    for (const rawLine of String(sseText || '').split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+            const chunk = JSON.parse(data);
+            if (chunk.model) model = chunk.model;
+            const delta = chunk.choices?.map(choice => choice?.delta?.content || '').join('') || '';
+            if (!delta) continue;
+            deltas.push(delta);
+            events.push(createResponsesStreamEvent('response.output_text.delta', {
+                item_id: itemId,
+                output_index: 0,
+                content_index: 0,
+                delta
+            }));
+        } catch (_error) {}
+    }
+
+    const text = deltas.join('');
+    events.push(
+        createResponsesStreamEvent('response.output_text.done', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            text
+        }),
+        createResponsesStreamEvent('response.content_part.done', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: 'output_text', text, annotations: [] }
+        }),
+        createResponsesStreamEvent('response.output_item.done', {
+            output_index: 0,
+            item: {
+                id: itemId,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text, annotations: [] }]
+            }
+        }),
+        createResponsesStreamEvent('response.completed', {
+            response: {
+                id: responseId,
+                object: 'response',
+                created_at: created,
+                status: 'completed',
+                model,
+                output: [
+                    {
+                        id: itemId,
+                        type: 'message',
+                        status: 'completed',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text, annotations: [] }]
+                    }
+                ],
+                output_text: text
+            }
+        }),
+        'data: [DONE]\n\n'
+    );
+    return events.join('');
+}
+
+function shouldTransformResponse(upstreamType, downstreamFormat) {
+    return downstreamFormat !== upstreamType && downstreamFormat !== 'chat';
+}
+
 async function proxyRequest(req, res, payload) {
     const config = runtimeConfig;
     const { endpoint, headers, upstreamBody, downstreamFormat } = buildUpstreamRequest({
@@ -328,6 +567,8 @@ async function proxyRequest(req, res, payload) {
         clearTimeout(timeout);
     }
 
+    const contentType = upstreamResponse.headers.get('content-type') || '';
+    const shouldTransform = upstreamResponse.ok && shouldTransformResponse(endpoint.type, downstreamFormat);
     res.status(upstreamResponse.status);
     upstreamResponse.headers.forEach((value, key) => {
         const lower = key.toLowerCase();
@@ -335,6 +576,22 @@ async function proxyRequest(req, res, payload) {
             res.setHeader(key, value);
         }
     });
+
+    if (shouldTransform) {
+        const text = await upstreamResponse.text();
+        if (contentType.includes('text/event-stream') && endpoint.type === 'chat' && downstreamFormat === 'responses') {
+            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+            return res.send(transformChatSseToResponsesSse(text));
+        }
+        try {
+            const payloadJson = JSON.parse(text);
+            const transformed = transformUpstreamJsonPayload(payloadJson, endpoint.type, downstreamFormat);
+            res.setHeader('content-type', 'application/json; charset=utf-8');
+            return res.send(JSON.stringify(transformed));
+        } catch (_error) {
+            return res.send(text);
+        }
+    }
 
     if (!upstreamResponse.body) {
         return res.send(await upstreamResponse.text());
@@ -444,10 +701,13 @@ module.exports = {
         buildUpstreamChatBody,
         buildUpstreamGeminiBody,
         buildUpstreamRequest,
+        buildResponsesPayloadFromUpstream,
         createRuntimeConfig,
         extractFromAnthropicBody,
         extractFromGeminiBody,
         extractFromResponsesInput,
+        transformChatSseToResponsesSse,
+        transformUpstreamJsonPayload,
         normalizeApiType,
         normalizeTextContent,
         parseModelMap,

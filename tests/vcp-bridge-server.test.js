@@ -12,7 +12,9 @@ const {
     extractFromGeminiBody,
     extractFromResponsesInput,
     parseModelMap,
-    resolveUpstreamEndpoint
+    resolveUpstreamEndpoint,
+    transformChatSseToResponsesSse,
+    transformUpstreamJsonPayload
 } = plugin._private;
 
 function getFreePort() {
@@ -185,6 +187,173 @@ test('buildUpstreamRequest selects auth header by upstream protocol', () => {
 
     assert.equal(geminiRequest.headers['x-goog-api-key'], 'configured-gemini-key');
     assert.equal(geminiRequest.headers.Authorization, undefined);
+});
+
+test('transforms chat completion JSON into responses schema', () => {
+    const transformed = transformUpstreamJsonPayload({
+        id: 'chatcmpl-test',
+        object: 'chat.completion',
+        created: 1710000000,
+        model: 'gpt-test',
+        choices: [
+            {
+                message: {
+                    role: 'assistant',
+                    content: 'hello from chat'
+                }
+            }
+        ],
+        usage: {
+            prompt_tokens: 2,
+            completion_tokens: 3,
+            total_tokens: 5
+        }
+    }, 'chat', 'responses');
+
+    assert.equal(transformed.object, 'response');
+    assert.equal(transformed.status, 'completed');
+    assert.equal(transformed.output_text, 'hello from chat');
+    assert.equal(transformed.output[0].content[0].type, 'output_text');
+    assert.equal(transformed.output[0].content[0].text, 'hello from chat');
+    assert.deepEqual(transformed.usage, {
+        input_tokens: 2,
+        output_tokens: 3,
+        total_tokens: 5
+    });
+});
+
+test('transforms chat completion SSE into responses stream events', () => {
+    const transformed = transformChatSseToResponsesSse([
+        'data: {"model":"gpt-test","choices":[{"delta":{"content":"hel"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":"lo"}}]}',
+        '',
+        'data: [DONE]',
+        ''
+    ].join('\n'));
+
+    assert.match(transformed, /event: response\.created/);
+    assert.match(transformed, /event: response\.output_text\.delta/);
+    assert.match(transformed, /"delta":"hel"/);
+    assert.match(transformed, /"delta":"lo"/);
+    assert.match(transformed, /event: response\.completed/);
+    assert.match(transformed, /"output_text":"hello"/);
+    assert.match(transformed, /data: \[DONE\]/);
+});
+
+test('responses endpoint returns responses schema when upstream is chat', async () => {
+    const port = await getFreePort();
+    const fakeFetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.equal(body.messages[0].content, 'hello');
+        return new Response(JSON.stringify({
+            id: 'chatcmpl-route-test',
+            object: 'chat.completion',
+            created: 1710000001,
+            model: 'gpt-route',
+            choices: [
+                {
+                    message: {
+                        role: 'assistant',
+                        content: 'route answer'
+                    }
+                }
+            ],
+            usage: {
+                prompt_tokens: 4,
+                completion_tokens: 5,
+                total_tokens: 9
+            }
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat'
+        }, { fetchImpl: fakeFetch });
+
+        const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'gpt-route',
+                input: 'hello'
+            })
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.object, 'response');
+        assert.equal(payload.output_text, 'route answer');
+        assert.equal(payload.output[0].content[0].text, 'route answer');
+        assert.deepEqual(payload.usage, {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+        });
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('responses endpoint returns responses SSE when upstream streams chat chunks', async () => {
+    const port = await getFreePort();
+    const fakeFetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.equal(body.stream, true);
+        assert.equal(body.messages[0].content, 'hello stream');
+        return new Response([
+            'data: {"model":"gpt-route","choices":[{"delta":{"content":"stream "}}]}',
+            '',
+            'data: {"choices":[{"delta":{"content":"answer"}}]}',
+            '',
+            'data: [DONE]',
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat'
+        }, { fetchImpl: fakeFetch });
+
+        const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: {
+                accept: 'text/event-stream',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'gpt-route',
+                input: 'hello stream',
+                stream: true
+            })
+        });
+        const payload = await response.text();
+
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get('content-type'), /text\/event-stream/);
+        assert.match(payload, /event: response\.output_text\.delta/);
+        assert.match(payload, /"delta":"stream "/);
+        assert.match(payload, /"delta":"answer"/);
+        assert.match(payload, /event: response\.completed/);
+        assert.match(payload, /"output_text":"stream answer"/);
+        assert.match(payload, /data: \[DONE\]/);
+    } finally {
+        await plugin.shutdown();
+    }
 });
 
 test('runtime config rejects unsafe bind host and arbitrary upstream protocols', () => {
