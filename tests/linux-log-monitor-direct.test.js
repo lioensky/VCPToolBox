@@ -419,3 +419,64 @@ test('concurrent start calls share one readonly-to-full transition', async () =>
         linuxLogMonitor._private.resetForTests();
     }
 });
+
+test('readonly calls wait for an in-flight full-mode transition', async () => {
+    const linuxLogMonitor = loadFreshModule();
+    const calls = [];
+    let managerId = 0;
+    const fullInit = createDeferred();
+    linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => {
+        const label = `manager-${++managerId}`;
+        return {
+            async init(options) {
+                calls.push({ manager: label, init: options.mode });
+                if (options.mode === 'full') {
+                    await fullInit.promise;
+                }
+            },
+            async stopAll() {
+                calls.push({ manager: label, stopAll: true });
+            },
+            async startMonitor(config) {
+                calls.push({ manager: label, startMonitor: config.logPath });
+                return `task-${config.logPath}`;
+            },
+            async getStatusFromFile() {
+                calls.push({ manager: label, getStatusFromFile: true });
+                return { manager: label, source: 'proxy-or-file' };
+            }
+        };
+    });
+
+    try {
+        await linuxLogMonitor.initialize();
+        const startPromise = linuxLogMonitor.processToolCall({
+            command: 'start',
+            hostId: 'local',
+            logPath: '/var/log/transition.log'
+        });
+
+        await new Promise(resolve => setImmediate(resolve));
+        const statusPromise = linuxLogMonitor.processToolCall({ command: 'status' });
+        await new Promise(resolve => setImmediate(resolve));
+
+        assert.equal(managerId, 2);
+        assert.deepEqual(calls.filter(call => call.init), [
+            { manager: 'manager-1', init: 'readonly' },
+            { manager: 'manager-2', init: 'full' }
+        ]);
+        assert.deepEqual(calls.filter(call => call.getStatusFromFile), []);
+
+        fullInit.resolve();
+        const [startResult, statusResult] = await Promise.all([startPromise, statusPromise]);
+
+        assert.equal(startResult.taskId, 'task-/var/log/transition.log');
+        assert.deepEqual(statusResult, { manager: 'manager-2', source: 'proxy-or-file' });
+        assert.deepEqual(calls.filter(call => call.getStatusFromFile), [
+            { manager: 'manager-2', getStatusFromFile: true }
+        ]);
+    } finally {
+        fullInit.resolve();
+        linuxLogMonitor._private.resetForTests();
+    }
+});

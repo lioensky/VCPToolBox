@@ -148,6 +148,10 @@ async function ensureDirectManager(mode = 'readonly') {
         await directManagerInitPromise;
     }
 
+    if (directManagerTransitionPromise) {
+        return directManagerTransitionPromise;
+    }
+
     if (!directManager) {
         return initializeDirectManager(mode);
     }
