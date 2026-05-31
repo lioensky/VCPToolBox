@@ -1,9 +1,12 @@
 services:
   app:
     build: .
+    # 如需使用预构建镜像，可改为 image 并确认镜像来源。
+    # image: lioensky/vcptoolbox:latest
     container_name: vcptoolbox
     ports:
       - "6005:6005"
+      - "6006:6006"
     environment:
       # 使用宿主机环境变量 DEFAULT_TIMEZONE，如果未设置则回退到 Asia/Shanghai
       TZ: ${DEFAULT_TIMEZONE:-Asia/Shanghai}
