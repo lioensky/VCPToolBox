@@ -420,10 +420,23 @@ class CodexImagegenRelayQueue {
       );
     }
 
-    await fs.rename(srcPath, dstPath);
-    const record = JSON.parse(await fs.readFile(dstPath, 'utf-8'));
+    const record = JSON.parse(await fs.readFile(srcPath, 'utf-8'));
     const nextRecord = mutateRecord(record);
-    await fs.writeFile(dstPath, `${JSON.stringify(nextRecord, null, 2)}\n`, 'utf-8');
+
+    let moved = false;
+    try {
+      await fs.rename(srcPath, dstPath);
+      moved = true;
+      await fs.writeFile(dstPath, `${JSON.stringify(nextRecord, null, 2)}\n`, 'utf-8');
+    } catch (error) {
+      if (moved) {
+        const shouldRollback = await pathExists(dstPath) && !(await pathExists(srcPath));
+        if (shouldRollback) {
+          await fs.rename(dstPath, srcPath).catch(() => {});
+        }
+      }
+      throw error;
+    }
     return this.readStatusFile(toStatus, requestId);
   }
 

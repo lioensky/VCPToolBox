@@ -238,6 +238,31 @@ test('codex imagegen relay cancels pending requests without touching claimed rec
   );
 });
 
+test('codex imagegen relay keeps pending request in place when cancel mutation is invalid', async (t) => {
+  const { queue, queueRoot } = await createTempQueue(t);
+  await queue.createRequest({
+    request_id: 'img_cancel_invalid_001',
+    prompt: 'cancel validation stays pending',
+  });
+
+  await assert.rejects(
+    () => queue.cancelRequest('img_cancel_invalid_001', {
+      reason: { invalid: true },
+    }),
+    (error) => error instanceof CodexImagegenRelayError
+      && error.code === 'invalid_text_field'
+  );
+
+  const pendingPath = path.join(queueRoot, 'pending', 'img_cancel_invalid_001.json');
+  const cancelledPath = path.join(queueRoot, 'cancelled', 'img_cancel_invalid_001.json');
+  const pendingRecord = JSON.parse(await fs.readFile(pendingPath, 'utf8'));
+  assert.equal(pendingRecord.status, 'pending');
+  await assert.rejects(
+    () => fs.access(cancelledPath),
+    (error) => error.code === 'ENOENT'
+  );
+});
+
 test('codex imagegen relay retries failed requests into a new pending request', async (t) => {
   const { queue, queueRoot } = await createTempQueue(t);
   await writeStatusFile(queueRoot, 'failed', 'img_failed_001', {
@@ -497,6 +522,39 @@ test('codex imagegen relay fails only expired claimed requests', async (t) => {
     () => queue.failStaleClaim('img_claimed_002'),
     (error) => error.code === 'claim_not_stale'
       && error.statusCode === 409
+  );
+});
+
+test('codex imagegen relay keeps claimed request in place when stale-fail mutation is invalid', async (t) => {
+  const { queue, queueRoot } = await createTempQueue(t, () => new Date('2026-05-31T10:00:00.000Z'));
+  await writeStatusFile(queueRoot, 'claimed', 'img_claimed_invalid_001', {
+    protocol: PROTOCOL,
+    request_id: 'img_claimed_invalid_001',
+    created_at: '2026-05-31T09:00:00.000Z',
+    status: 'claimed',
+    mode: 'generate',
+    prompt: 'claimed image',
+    attempt: 1,
+    idempotency_key: 'idem_claimed_invalid_001',
+    claimed_at: '2026-05-31T09:30:00.000Z',
+    claim_expires_at: '2026-05-31T09:45:00.000Z',
+  });
+
+  await assert.rejects(
+    () => queue.failStaleClaim('img_claimed_invalid_001', {
+      message: { invalid: true },
+    }),
+    (error) => error instanceof CodexImagegenRelayError
+      && error.code === 'invalid_text_field'
+  );
+
+  const claimedPath = path.join(queueRoot, 'claimed', 'img_claimed_invalid_001.json');
+  const failedPath = path.join(queueRoot, 'failed', 'img_claimed_invalid_001.json');
+  const claimedRecord = JSON.parse(await fs.readFile(claimedPath, 'utf8'));
+  assert.equal(claimedRecord.status, 'claimed');
+  await assert.rejects(
+    () => fs.access(failedPath),
+    (error) => error.code === 'ENOENT'
   );
 });
 
