@@ -2483,12 +2483,16 @@ async function runToolCall(args = {}, options = {}) {
         }
 
         if (args.action === 'testConnection') {
-            const resultData = { ...await executor.testConnection(args.hostId || 'local') };
-            const debugLogs = getDebugLogs();
-            if (isDebugMode() && debugLogs.length > 0) {
-                resultData.debugLogs = debugLogs;
+            try {
+                const resultData = { ...await executor.testConnection(args.hostId || 'local') };
+                const debugLogs = getDebugLogs();
+                if (isDebugMode() && debugLogs.length > 0) {
+                    resultData.debugLogs = debugLogs;
+                }
+                return resultData;
+            } finally {
+                await executor.disconnectAll();
             }
-            return resultData;
         }
 
         if (args.action === 'getStatus') {
