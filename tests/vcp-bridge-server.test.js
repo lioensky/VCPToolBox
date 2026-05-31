@@ -29,6 +29,35 @@ function getFreePort() {
     });
 }
 
+function createDelayedSseResponse(chunks, delayMs = 120) {
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+        async start(controller) {
+            for (let index = 0; index < chunks.length; index += 1) {
+                if (index > 0) {
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+                controller.enqueue(encoder.encode(chunks[index]));
+            }
+            controller.close();
+        }
+    }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+    });
+}
+
+async function readRemainingText(reader, decoder) {
+    let text = '';
+    while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        text += decoder.decode(next.value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+}
+
 test('manifest declares disabled-by-default direct service', () => {
     const manifest = require('../Plugin/VCPBridgeServer/plugin-manifest.json');
 
@@ -367,17 +396,18 @@ test('chat endpoint returns chat SSE when anthropic upstream streams', async () 
         const body = JSON.parse(options.body);
         assert.equal(body.stream, true);
         assert.equal(body.messages[0].content, 'chat stream');
-        return new Response([
-            'event: content_block_delta',
-            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chat "}}',
-            '',
-            'event: content_block_delta',
-            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream"}}',
-            ''
-        ].join('\n'), {
-            status: 200,
-            headers: { 'content-type': 'text/event-stream' }
-        });
+        return createDelayedSseResponse([
+            [
+                'event: content_block_delta',
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chat "}}',
+                ''
+            ].join('\n'),
+            [
+                'event: content_block_delta',
+                'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream"}}',
+                ''
+            ].join('\n')
+        ]);
     };
 
     try {
@@ -397,10 +427,17 @@ test('chat endpoint returns chat SSE when anthropic upstream streams', async () 
                 messages: [{ role: 'user', content: 'chat stream' }]
             })
         });
-        const payload = await response.text();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        const first = await reader.read();
+        const firstPayload = decoder.decode(first.value, { stream: true });
+        const payload = firstPayload + await readRemainingText(reader, decoder);
 
         assert.equal(response.status, 200);
         assert.match(response.headers.get('content-type'), /text\/event-stream/);
+        assert.equal(first.done, false);
+        assert.match(firstPayload, /"content":"chat "/);
+        assert.doesNotMatch(firstPayload, /"content":"stream"/);
         assert.match(payload, /"object":"chat\.completion\.chunk"/);
         assert.match(payload, /"content":"chat "/);
         assert.match(payload, /"content":"stream"/);
@@ -477,17 +514,18 @@ test('responses endpoint returns responses SSE when upstream streams chat chunks
         const body = JSON.parse(options.body);
         assert.equal(body.stream, true);
         assert.equal(body.messages[0].content, 'hello stream');
-        return new Response([
-            'data: {"model":"gpt-route","choices":[{"delta":{"content":"stream "}}]}',
-            '',
-            'data: {"choices":[{"delta":{"content":"answer"}}]}',
-            '',
-            'data: [DONE]',
-            ''
-        ].join('\n'), {
-            status: 200,
-            headers: { 'content-type': 'text/event-stream' }
-        });
+        return createDelayedSseResponse([
+            [
+                'data: {"model":"gpt-route","choices":[{"delta":{"content":"stream "}}]}',
+                ''
+            ].join('\n'),
+            [
+                'data: {"choices":[{"delta":{"content":"answer"}}]}',
+                '',
+                'data: [DONE]',
+                ''
+            ].join('\n')
+        ]);
     };
 
     try {
@@ -510,10 +548,16 @@ test('responses endpoint returns responses SSE when upstream streams chat chunks
                 stream: true
             })
         });
-        const payload = await response.text();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        const first = await reader.read();
+        const firstPayload = decoder.decode(first.value, { stream: true });
+        const payload = firstPayload + await readRemainingText(reader, decoder);
 
         assert.equal(response.status, 200);
         assert.match(response.headers.get('content-type'), /text\/event-stream/);
+        assert.equal(first.done, false);
+        assert.doesNotMatch(firstPayload, /"delta":"answer"/);
         assert.match(payload, /event: response\.output_text\.delta/);
         assert.match(payload, /"delta":"stream "/);
         assert.match(payload, /"delta":"answer"/);

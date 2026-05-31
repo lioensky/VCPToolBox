@@ -1,8 +1,10 @@
 // VCPBridgeServer - local loopback prompt-injection API proxy.
 
 const express = require('express');
+const { once } = require('events');
 const fs = require('fs');
 const path = require('path');
+const { TextDecoder } = require('util');
 
 const DEFAULT_PORT = 3100;
 const DEFAULT_BIND_HOST = '127.0.0.1';
@@ -624,6 +626,161 @@ function transformChatSseToResponsesSse(sseText) {
     return events.join('');
 }
 
+async function writeSseChunk(res, text) {
+    if (!text) return;
+    if (!res.write(text)) {
+        await once(res, 'drain');
+    }
+}
+
+async function readSseLines(readable, onLine) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for await (const chunk of readable) {
+        buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+            await onLine(line);
+        }
+    }
+
+    buffer += decoder.decode();
+    if (buffer) {
+        await onLine(buffer);
+    }
+}
+
+async function streamUpstreamSseToChatSse(readable, upstreamType, res) {
+    const created = Math.floor(Date.now() / 1000);
+    const responseId = `chatcmpl-${created}`;
+    let model = runtimeConfig?.defaultModel || DEFAULT_MODEL;
+
+    await readSseLines(readable, async rawLine => {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) return;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') return;
+        try {
+            const chunk = JSON.parse(data);
+            if (chunk.model) model = chunk.model;
+            if (chunk.message?.model) model = chunk.message.model;
+            const delta = extractStreamingTextDelta(chunk, upstreamType);
+            if (!delta) return;
+            await writeSseChunk(res, `data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, delta))}\n\n`);
+        } catch (_error) {}
+    });
+
+    await writeSseChunk(res, `data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, '', 'stop'))}\n\n`);
+    await writeSseChunk(res, 'data: [DONE]\n\n');
+    res.end();
+}
+
+async function streamChatSseToResponsesSse(readable, res) {
+    const created = Math.floor(Date.now() / 1000);
+    const responseId = `resp_${created}`;
+    const itemId = `msg_${created}`;
+    const deltas = [];
+    let model = runtimeConfig?.defaultModel || DEFAULT_MODEL;
+
+    await writeSseChunk(res, [
+        createResponsesStreamEvent('response.created', {
+            response: {
+                id: responseId,
+                object: 'response',
+                created_at: created,
+                status: 'in_progress',
+                model,
+                output: []
+            }
+        }),
+        createResponsesStreamEvent('response.output_item.added', {
+            output_index: 0,
+            item: {
+                id: itemId,
+                type: 'message',
+                status: 'in_progress',
+                role: 'assistant',
+                content: []
+            }
+        }),
+        createResponsesStreamEvent('response.content_part.added', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: 'output_text', text: '', annotations: [] }
+        })
+    ].join(''));
+
+    await readSseLines(readable, async rawLine => {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) return;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') return;
+        try {
+            const chunk = JSON.parse(data);
+            if (chunk.model) model = chunk.model;
+            const delta = chunk.choices?.map(choice => choice?.delta?.content || '').join('') || '';
+            if (!delta) return;
+            deltas.push(delta);
+            await writeSseChunk(res, createResponsesStreamEvent('response.output_text.delta', {
+                item_id: itemId,
+                output_index: 0,
+                content_index: 0,
+                delta
+            }));
+        } catch (_error) {}
+    });
+
+    const text = deltas.join('');
+    await writeSseChunk(res, [
+        createResponsesStreamEvent('response.output_text.done', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            text
+        }),
+        createResponsesStreamEvent('response.content_part.done', {
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: 'output_text', text, annotations: [] }
+        }),
+        createResponsesStreamEvent('response.output_item.done', {
+            output_index: 0,
+            item: {
+                id: itemId,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text, annotations: [] }]
+            }
+        }),
+        createResponsesStreamEvent('response.completed', {
+            response: {
+                id: responseId,
+                object: 'response',
+                created_at: created,
+                status: 'completed',
+                model,
+                output: [
+                    {
+                        id: itemId,
+                        type: 'message',
+                        status: 'completed',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text, annotations: [] }]
+                    }
+                ],
+                output_text: text
+            }
+        }),
+        'data: [DONE]\n\n'
+    ].join(''));
+    res.end();
+}
+
 function shouldTransformResponse(upstreamType, downstreamFormat) {
     return downstreamFormat !== upstreamType;
 }
@@ -667,6 +824,16 @@ async function proxyRequest(req, res, payload) {
     });
 
     if (shouldTransform) {
+        if (contentType.includes('text/event-stream') && upstreamResponse.body && endpoint.type === 'chat' && downstreamFormat === 'responses') {
+            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+            if (typeof res.flushHeaders === 'function') res.flushHeaders();
+            return streamChatSseToResponsesSse(upstreamResponse.body, res);
+        }
+        if (contentType.includes('text/event-stream') && upstreamResponse.body && downstreamFormat === 'chat') {
+            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+            if (typeof res.flushHeaders === 'function') res.flushHeaders();
+            return streamUpstreamSseToChatSse(upstreamResponse.body, endpoint.type, res);
+        }
         const text = await upstreamResponse.text();
         if (contentType.includes('text/event-stream') && endpoint.type === 'chat' && downstreamFormat === 'responses') {
             res.setHeader('content-type', 'text/event-stream; charset=utf-8');
