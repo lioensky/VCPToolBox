@@ -258,6 +258,25 @@ test('GPTImageGen chat completions mode is implemented without enabling the plug
   assert.equal(isTracked('Plugin/GPTImageGen/plugin-manifest.json'), false);
 });
 
+test('image generation plugins only return base64 previews when explicitly requested', () => {
+  const gptSource = fs.readFileSync(pluginScript, 'utf8');
+  const dmxSource = fs.readFileSync(path.join(repoRoot, 'Plugin', 'DMXDoubaoGen', 'DoubaoGen.js'), 'utf8');
+  const nanoSource = fs.readFileSync(path.join(repoRoot, 'Plugin', 'NanoBananaGen2', 'NanoBananaGen.mjs'), 'utf8');
+  const zImageSource = fs.readFileSync(zImagePluginScript, 'utf8');
+
+  for (const source of [gptSource, dmxSource, nanoSource, zImageSource]) {
+    assert.match(source, /showbase64/);
+    assert.match(source, /showBase64/);
+    assert.match(source, /if \(showBase64\)|if \(params\.showBase64\)/);
+  }
+
+  assert.match(gptSource, /const savedBuffers = \[\];/);
+  assert.doesNotMatch(gptSource, /如果是 b64_json 模式，添加 image_url 类型的内容供多模态 AI 直接查看/);
+  assert.doesNotMatch(dmxSource, /const base64Image = imageBuffer\.toString\('base64'\);/);
+  assert.doesNotMatch(nanoSource, /const base64Image = imageBuffer\.toString\('base64'\);/);
+  assert.doesNotMatch(zImageSource, /const base64Image = imageBuffer\.toString\('base64'\);/);
+});
+
 test('DailyNote adds structured success metadata while preserving legacy fields', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'DailyNote', 'dailynote.js'), 'utf8');
 

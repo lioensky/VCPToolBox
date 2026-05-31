@@ -489,6 +489,7 @@ function isValidArgs(args) {
 
 async function processApiRequest(rawArgs) {
     const args = normalizeArgs(rawArgs);
+    const showBase64 = args.showbase64 === true || args.showbase64 === 'true' || args.showBase64 === true || args.showBase64 === 'true';
 
     if (!PROJECT_BASE_PATH || !SERVER_PORT || !IMAGESERVER_IMAGE_KEY || !VAR_HTTP_URL) {
         throw new Error("Plugin Error: Missing one or more required environment variables (PROJECT_BASE_PATH, SERVER_PORT, etc).");
@@ -498,7 +499,7 @@ async function processApiRequest(rawArgs) {
     }
 
     if (args.command === 'EditImage') {
-        return await processEditRequest(args);
+        return await processEditRequest(args, showBase64);
     }
 
     const payload = {
@@ -658,21 +659,24 @@ async function processApiRequest(rawArgs) {
         ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`
         : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
-    const base64Image = imageBuffer.toString('base64');
+    const content = [
+        {
+            type: 'text',
+            text: `图片已成功生成！\n- 提示词: ${args.prompt}${payload.negative_prompt ? `\n- 负面提示词: ${payload.negative_prompt}` : ''}\n- 分辨率: ${payload.size}\n- 推理步数: ${payload.num_inference_steps}\n- 随机种子(Seed): ${payload.seed}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
+        }
+    ];
+
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${imageMimeType};base64,${imageBuffer.toString('base64')}`
+            }
+        });
+    }
 
     return {
-        content: [
-            {
-                type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}${payload.negative_prompt ? `\n- 负面提示词: ${payload.negative_prompt}` : ''}\n- 分辨率: ${payload.size}\n- 推理步数: ${payload.num_inference_steps}\n- 随机种子(Seed): ${payload.seed}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${imageMimeType};base64,${base64Image}`
-                }
-            }
-        ],
+        content,
         details: {
             url: accessibleImageUrl
         }
@@ -789,7 +793,7 @@ async function pollEditTask(taskId) {
     throw new Error(`Task polling timed out after ${maxAttempts} attempts.`);
 }
 
-async function processEditRequest(args) {
+async function processEditRequest(args, showBase64 = false) {
     const dataUris = [];
     for (const imageInput of args.images) {
         dataUris.push(await imageInputToDataUri(imageInput));
@@ -886,21 +890,24 @@ async function processEditRequest(args) {
         ? `${VAR_HTTPS_URL}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`
         : `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
-    const base64Image = imageBuffer.toString('base64');
+    const content = [
+        {
+            type: 'text',
+            text: `图片已成功编辑！\n- 提示词: ${args.prompt}\n- 参考图数量: ${dataUris.length}\n- 模型: ${editModel}\n- 尺寸: ${editSize}\n- 任务ID: ${taskId}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
+        }
+    ];
+
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${imageMimeType};base64,${imageBuffer.toString('base64')}`
+            }
+        });
+    }
 
     return {
-        content: [
-            {
-                type: 'text',
-                text: `图片已成功编辑！\n- 提示词: ${args.prompt}\n- 参考图数量: ${dataUris.length}\n- 模型: ${editModel}\n- 尺寸: ${editSize}\n- 任务ID: ${taskId}\n- 可访问URL: ${accessibleImageUrl}\n\n【重要】请将上面生成的图片Url转发给用户查看，不要只描述图片内容。`
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${imageMimeType};base64,${base64Image}`
-                }
-            }
-        ],
+        content,
         details: {
             url: accessibleImageUrl,
             taskId,
