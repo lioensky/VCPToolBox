@@ -5,13 +5,14 @@
     "version": "1.3.0",
     "description": "事件驱动的 Linux 日志监控系统。v1.3.0 新增：可配置去重策略、主动查询命令(searchLog/lastErrors/logStats)、异常上下文增强(before/after)。与 LinuxShellExecutor 共享 SSHManager 模块。",
     "author": "VCP Team",
-    "pluginType": "asynchronous",
+    "pluginType": "hybridservice",
     "entryPoint": {
         "type": "nodejs",
+        "script": "LinuxLogMonitor.js",
         "command": "node LinuxLogMonitor.js"
     },
     "communication": {
-        "protocol": "stdio",
+        "protocol": "direct",
         "timeout": 3600000,
         "encoding": "utf-8"
     },
@@ -67,5 +68,5 @@
     "dependencies": {
         "shared": ["SSHManager"]
     },
-    "tags": ["monitoring", "logging", "ssh", "async", "event-driven", "robustness", "log-analysis", "search"]
+    "tags": ["monitoring", "logging", "ssh", "hybridservice", "direct", "event-driven", "robustness", "log-analysis", "search"]
 }

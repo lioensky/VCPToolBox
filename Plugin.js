@@ -656,7 +656,7 @@ class PluginManager extends EventEmitter {
         for (const module of localModulesToShutdown) {
             if (typeof module.shutdown === 'function') {
                 try {
-                    await module.shutdown();
+                    await module.shutdown({ reason: 'reload' });
                 } catch (e) {
                     console.error(`[PluginManager] Error during hot-reload shutdown of a plugin:`, e.message);
                 }
