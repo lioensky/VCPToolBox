@@ -110,25 +110,6 @@ class CodexImagegenRelayQueue {
     const prompt = normalizePrompt(input.prompt, this.promptMaxLength);
     const options = normalizeOptions(input.options || {});
     const returnSpec = normalizeReturnSpec(input.return || {});
-    const existing = await this.findByIdempotencyKey(idempotencyKey);
-    if (existing) {
-      throw new CodexImagegenRelayError(
-        'idempotency_conflict',
-        `Active request already exists for idempotency_key ${idempotencyKey}.`,
-        409,
-        { request_id: existing.request_id, status: existing.status }
-      );
-    }
-
-    const targetPath = this.getStatusFilePath('pending', requestId);
-    if (await pathExists(targetPath)) {
-      throw new CodexImagegenRelayError(
-        'request_id_conflict',
-        `Request ${requestId} already exists.`,
-        409
-      );
-    }
-
     const request = stripUndefined({
       protocol: PROTOCOL,
       request_id: requestId,
@@ -145,8 +126,31 @@ class CodexImagegenRelayQueue {
       user_note: normalizeOptionalText(input.user_note, 2000),
     });
 
-    await this.atomicWriteJson(targetPath, request);
-    return this.readStatusFile('pending', requestId);
+    return this.withIdempotencyLock(idempotencyKey, async () => {
+      const existingLocation = await this.findRequestLocation(requestId);
+      if (existingLocation) {
+        throw new CodexImagegenRelayError(
+          'request_id_conflict',
+          `Request ${requestId} already exists in ${existingLocation.status}.`,
+          409,
+          { request_id: requestId, status: existingLocation.status }
+        );
+      }
+
+      const existing = await this.findByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        throw new CodexImagegenRelayError(
+          'idempotency_conflict',
+          `Active request already exists for idempotency_key ${idempotencyKey}.`,
+          409,
+          { request_id: existing.request_id, status: existing.status }
+        );
+      }
+
+      const targetPath = this.getStatusFilePath('pending', requestId);
+      await this.atomicWriteJson(targetPath, request);
+      return this.readStatusFile('pending', requestId);
+    });
   }
 
   async listRequests(options = {}) {
@@ -210,7 +214,28 @@ class CodexImagegenRelayQueue {
   async retryRequest(requestId) {
     await this.initialize();
     const failed = await this.readStatusFile('failed', requestId);
-    const nextAttempt = normalizeAttempt(failed.attempt, 0) + 1;
+    const idempotencyKey = normalizeRequestId(
+      failed.idempotency_key || requestId,
+      'idempotency_key'
+    );
+    const retryChain = await this.findRequestsByIdempotencyKey(idempotencyKey);
+    const supersedingRetry = retryChain.find(
+      (request) => request.parent_request_id === failed.request_id
+    );
+    if (supersedingRetry) {
+      throw new CodexImagegenRelayError(
+        'retry_superseded',
+        `Request ${requestId} already has retry ${supersedingRetry.request_id}.`,
+        409,
+        { request_id: supersedingRetry.request_id, status: supersedingRetry.status }
+      );
+    }
+
+    const maxAttempt = retryChain.reduce(
+      (highest, request) => Math.max(highest, normalizeAttempt(request.attempt, 0)),
+      normalizeAttempt(failed.attempt, 0)
+    );
+    const nextAttempt = maxAttempt + 1;
     if (nextAttempt > MAX_ATTEMPT) {
       throw new CodexImagegenRelayError(
         'max_attempts_exceeded',
@@ -219,10 +244,6 @@ class CodexImagegenRelayQueue {
       );
     }
 
-    const idempotencyKey = normalizeRequestId(
-      failed.idempotency_key || requestId,
-      'idempotency_key'
-    );
     const existing = await this.findByIdempotencyKey(idempotencyKey);
     if (existing) {
       throw new CodexImagegenRelayError(
@@ -345,7 +366,16 @@ class CodexImagegenRelayQueue {
   }
 
   async findByIdempotencyKey(idempotencyKey) {
-    for (const status of IDEMPOTENCY_ACTIVE_STATUSES) {
+    const matches = await this.findRequestsByIdempotencyKey(
+      idempotencyKey,
+      IDEMPOTENCY_ACTIVE_STATUSES
+    );
+    return matches[0] || null;
+  }
+
+  async findRequestsByIdempotencyKey(idempotencyKey, statuses = REQUEST_STATUSES) {
+    const matches = [];
+    for (const status of statuses) {
       const entries = await fs.readdir(this.getDirPath(status), { withFileTypes: true }).catch((error) => {
         if (error.code === 'ENOENT') return [];
         throw error;
@@ -356,14 +386,14 @@ class CodexImagegenRelayQueue {
         try {
           const request = await this.readStatusFile(status, entry.name.slice(0, -5));
           if (request.idempotency_key === idempotencyKey) {
-            return request;
+            matches.push(request);
           }
         } catch {
           // A damaged active file should not crash listing; it is surfaced by listRequests.
         }
       }
     }
-    return null;
+    return matches.sort(compareRequests);
   }
 
   async moveRequest(requestId, fromStatus, toStatus, mutateRecord) {
@@ -435,6 +465,33 @@ class CodexImagegenRelayQueue {
       }
       if (tmpCreated) {
         await fs.unlink(tmpPath).catch(() => {});
+      }
+      await fs.unlink(lockPath).catch(() => {});
+    }
+  }
+
+  async withIdempotencyLock(idempotencyKey, action) {
+    const lockPath = path.join(this.getDirPath('tmp'), `idempotency.${idempotencyKey}.lock`);
+    let lockHandle = null;
+
+    try {
+      lockHandle = await fs.open(lockPath, 'wx');
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw new CodexImagegenRelayError(
+          'idempotency_conflict',
+          `Request with idempotency_key ${idempotencyKey} is already being created.`,
+          409
+        );
+      }
+      throw error;
+    }
+
+    try {
+      return await action();
+    } finally {
+      if (lockHandle) {
+        await lockHandle.close().catch(() => {});
       }
       await fs.unlink(lockPath).catch(() => {});
     }
