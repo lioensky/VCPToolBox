@@ -28,13 +28,9 @@ function createFakeManager(calls, label) {
             calls.push({ manager: label, sendStopSignal: { taskId, options } });
             return { success: true, method: 'direct' };
         },
-        getStatus() {
-            calls.push({ manager: label, getStatus: true });
-            return { activeTasks: [{ taskId: 'task-123' }], source: 'memory' };
-        },
         async getStatusFromFile() {
             calls.push({ manager: label, getStatusFromFile: true });
-            return { activeTasks: [], source: 'file' };
+            return { activeTasks: [], source: 'proxy-or-file' };
         },
         listRules() {
             calls.push({ manager: label, listRules: true });
@@ -74,7 +70,7 @@ test('initialize uses readonly mode and status does not start monitors', async (
         await linuxLogMonitor.initialize({ DebugMode: false });
         const status = await linuxLogMonitor.processToolCall({ command: 'status' });
 
-        assert.deepEqual(status, { activeTasks: [], source: 'file' });
+        assert.deepEqual(status, { activeTasks: [], source: 'proxy-or-file' });
         assert.deepEqual(calls, [
             { manager: 'manager-1', init: 'readonly' },
             { manager: 'manager-1', getStatusFromFile: true }
@@ -125,7 +121,7 @@ test('readonly query commands reuse readonly manager without starting monitors',
     }
 });
 
-test('start transitions from readonly to full mode', async () => {
+test('start transitions to full mode while status stays proxy-backed', async () => {
     const linuxLogMonitor = loadFreshModule();
     const calls = [];
     let managerId = 0;
@@ -143,7 +139,7 @@ test('start transitions from readonly to full mode', async () => {
 
         assert.equal(result.taskId, 'task-123');
         assert.equal(result.config.hostId, 'local');
-        assert.deepEqual(status, { activeTasks: [{ taskId: 'task-123' }], source: 'memory' });
+        assert.deepEqual(status, { activeTasks: [], source: 'proxy-or-file' });
         assert.deepEqual(calls, [
             { manager: 'manager-1', init: 'readonly' },
             { manager: 'manager-1', stopAll: true },
@@ -158,7 +154,7 @@ test('start transitions from readonly to full mode', async () => {
                     afterContextLines: 2
                 }
             },
-            { manager: 'manager-2', getStatus: true }
+            { manager: 'manager-2', getStatusFromFile: true }
         ]);
     } finally {
         linuxLogMonitor._private.resetForTests();

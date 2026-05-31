@@ -372,14 +372,10 @@ async function handleStop(manager, args) {
  * 处理 status 命令 - 查询状态
  * 使用 'readonly' 模式，从状态文件读取，不启动任务
  */
-async function handleStatus(manager, args, options = {}) {
+async function handleStatus(manager, args) {
     try {
-        if (options.direct && options.serviceMode === 'full') {
-            return formatVCPResponse('success', manager.getStatus(), null);
-        }
-
         // 使用 getStatusFromFile 从文件读取状态
-        // 而不是 getStatus()，因为当前进程没有运行中的任务
+        // 而不是 getStatus()，以保持 UDS/proxy-backed 查询路径。
         const status = await manager.getStatusFromFile();
         return formatVCPResponse('success', status, null);
     } catch (error) {
