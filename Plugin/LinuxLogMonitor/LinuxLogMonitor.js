@@ -15,7 +15,6 @@
  */
 
 const path = require('path');
-const fs = require('fs').promises;
 
 // 加载配置
 require('dotenv').config({ path: path.join(__dirname, 'config.env') });
@@ -29,8 +28,12 @@ const DEBUG_MODE = (process.env.DebugMode || 'false').toLowerCase() === 'true';
 const CALLBACK_BASE_URL = process.env.CALLBACK_BASE_URL || `http://localhost:${process.env.SERVER_PORT || 5000}`;
 const PLUGIN_NAME = 'LinuxLogMonitor';
 
-// 存储当前请求的 requestId
-let currentRequestId = null;
+let directManager = null;
+let directManagerInitPromise = null;
+let directManagerTransitionPromise = null;
+let directManagerMode = null;
+let pluginConfig = {};
+let monitorManagerFactory = createMonitorManager;
 
 /**
  * 格式化 VCP 标准响应
@@ -66,6 +69,183 @@ function debugLog(msg, ...args) {
  */
 function infoLog(msg, ...args) {
     console.error(`[${PLUGIN_NAME}] ${msg}`, ...args);
+}
+
+function resolveDebugMode(config = {}) {
+    if (typeof config.DebugMode === 'boolean') {
+        return config.DebugMode;
+    }
+    if (typeof config.DebugMode === 'string') {
+        return config.DebugMode.toLowerCase() === 'true';
+    }
+    return DEBUG_MODE;
+}
+
+function createMonitorManager() {
+    return new MonitorManager({
+        callbackBaseUrl: pluginConfig.CALLBACK_BASE_URL || CALLBACK_BASE_URL,
+        pluginName: PLUGIN_NAME,
+        debug: resolveDebugMode(pluginConfig)
+    });
+}
+
+function getDirectServiceEnvFromGlobals() {
+    const serviceEnv = {};
+    if (typeof global.__vcp_log_monitor_sock === 'string' && global.__vcp_log_monitor_sock) {
+        serviceEnv.LOG_MONITOR_SOCK = global.__vcp_log_monitor_sock;
+    }
+    if (typeof global.__vcp_log_monitor_token === 'string' && global.__vcp_log_monitor_token) {
+        serviceEnv.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
+    }
+    if (typeof global.__vcp_ssh_manager_sock === 'string' && global.__vcp_ssh_manager_sock) {
+        serviceEnv.SSH_MANAGER_SOCK = global.__vcp_ssh_manager_sock;
+    }
+    if (typeof global.__vcp_ssh_manager_token === 'string' && global.__vcp_ssh_manager_token) {
+        serviceEnv.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+    }
+    return serviceEnv;
+}
+
+function withDirectServiceEnv(fn) {
+    const serviceEnv = getDirectServiceEnvFromGlobals();
+    const { runWithLogMonitorServiceEnv } = require('../../modules/LogMonitor');
+    const { runWithSSHManagerServiceEnv } = require('../../modules/SSHManager');
+    return runWithLogMonitorServiceEnv(serviceEnv, () =>
+        runWithSSHManagerServiceEnv(serviceEnv, fn)
+    );
+}
+
+async function initializeDirectManager(mode) {
+    directManager = monitorManagerFactory();
+    directManagerMode = mode;
+    directManagerInitPromise = withDirectServiceEnv(() => Promise.resolve(directManager.init({ mode })))
+        .then(() => {
+            directManagerInitPromise = null;
+            return directManager;
+        })
+        .catch(error => {
+            directManager = null;
+            directManagerMode = null;
+            directManagerInitPromise = null;
+            throw error;
+        });
+    return directManagerInitPromise;
+}
+
+async function ensureDirectManager(mode = 'readonly') {
+    if (directManagerInitPromise) {
+        await directManagerInitPromise;
+    }
+
+    if (directManagerTransitionPromise) {
+        return directManagerTransitionPromise;
+    }
+
+    if (!directManager) {
+        return initializeDirectManager(mode);
+    }
+
+    if (mode === 'full' && directManagerMode !== 'full') {
+        if (!directManagerTransitionPromise) {
+            directManagerTransitionPromise = (async () => {
+                if (directManagerMode === 'full') {
+                    return directManager;
+                }
+                if (directManager) {
+                    await directManager.stopAll();
+                }
+                directManager = null;
+                directManagerMode = null;
+                return initializeDirectManager('full');
+            })().finally(() => {
+                directManagerTransitionPromise = null;
+            });
+        }
+        return directManagerTransitionPromise;
+    }
+
+    return directManager;
+}
+
+async function createCliManager(command) {
+    const manager = createMonitorManager();
+    const initMode = getInitMode(command);
+    debugLog(`初始化模式: ${initMode}`);
+    await manager.init({ mode: initMode });
+    return manager;
+}
+
+function unwrapVCPResponse(response) {
+    if (!response || response.status !== 'success') {
+        throw new Error(response?.error || 'LinuxLogMonitor 执行失败');
+    }
+    return response.result;
+}
+
+async function dispatchCommand(manager, args, options = {}) {
+    const command = args.command || args.action;
+    debugLog(`执行命令: ${command}`, args);
+
+    switch (command) {
+        case 'start':
+            return handleStart(manager, args);
+
+        case 'stop':
+            return handleStop(manager, args);
+
+        case 'status':
+            return handleStatus(manager, args, options);
+
+        case 'list_rules':
+            return handleListRules(manager, args);
+
+        case 'add_rule':
+            return handleAddRule(manager, args);
+
+        case 'searchLog':
+            return handleSearchLog(manager, args);
+
+        case 'lastErrors':
+            return handleLastErrors(manager, args);
+
+        case 'logStats':
+            return handleLogStats(manager, args);
+
+        default:
+            return formatVCPResponse('error', null, `未知命令: ${command}。可用命令: start, stop, status, list_rules, add_rule, searchLog, lastErrors, logStats`);
+    }
+}
+
+async function initialize(config = {}) {
+    pluginConfig = config || {};
+    await ensureDirectManager('readonly');
+}
+
+async function processToolCall(args = {}) {
+    return withDirectServiceEnv(async () => {
+        const command = args.command || args.action;
+        const manager = await ensureDirectManager(command === 'start' ? 'full' : 'readonly');
+        const response = await dispatchCommand(manager, args, {
+            direct: true,
+            serviceMode: directManagerMode
+        });
+        return unwrapVCPResponse(response);
+    });
+}
+
+async function shutdown(options = {}) {
+    const reason = typeof options === 'string' ? options : options.reason;
+    if (reason === 'reload') {
+        return;
+    }
+
+    if (!directManager) return;
+
+    await directManager.stopAll();
+    directManager = null;
+    directManagerInitPromise = null;
+    directManagerTransitionPromise = null;
+    directManagerMode = null;
 }
 
 /**
@@ -117,63 +297,9 @@ async function main() {
         
         try {
             const args = JSON.parse(input);
-            // 提取并保存 requestId
-            currentRequestId = args.requestId || null;
             const command = args.command || args.action;
-            
-            debugLog(`执行命令: ${command}`, args);
-            
-            // 根据命令确定 init 模式
-            const initMode = getInitMode(command);
-            debugLog(`初始化模式: ${initMode}`);
-            
-            // 初始化监控管理器
-            const manager = new MonitorManager({
-                callbackBaseUrl: CALLBACK_BASE_URL,
-                pluginName: PLUGIN_NAME,
-                debug: DEBUG_MODE
-            });
-            
-            await manager.init({ mode: initMode });
-            
-            let result;
-            
-            switch (command) {
-                case 'start':
-                    result = await handleStart(manager, args);
-                    break;
-                    
-                case 'stop':
-                    result = await handleStop(manager, args);
-                    break;
-                    
-                case 'status':
-                    result = await handleStatus(manager, args);
-                    break;
-                    
-                case 'list_rules':
-                    result = await handleListRules(manager, args);
-                    break;
-                    
-                case 'add_rule':
-                    result = await handleAddRule(manager, args);
-                    break;
-                    
-                case 'searchLog':
-                    result = await handleSearchLog(manager, args);
-                    break;
-                    
-                case 'lastErrors':
-                    result = await handleLastErrors(manager, args);
-                    break;
-                    
-                case 'logStats':
-                    result = await handleLogStats(manager, args);
-                    break;
-                    
-                default:
-                    result = formatVCPResponse('error', null, `未知命令: ${command}。可用命令: start, stop, status, list_rules, add_rule, searchLog, lastErrors, logStats`);
-            }
+            const manager = await createCliManager(command);
+            const result = await dispatchCommand(manager, args, { direct: false });
             
             console.log(JSON.stringify(result));
             
@@ -288,7 +414,7 @@ async function handleStop(manager, args) {
 async function handleStatus(manager, args) {
     try {
         // 使用 getStatusFromFile 从文件读取状态
-        // 而不是 getStatus()，因为当前进程没有运行中的任务
+        // 而不是 getStatus()，以保持 UDS/proxy-backed 查询路径。
         const status = await manager.getStatusFromFile();
         return formatVCPResponse('success', status, null);
     } catch (error) {
@@ -441,5 +567,34 @@ async function handleLogStats(manager, args) {
     }
 }
 
-// 启动
-main();
+function resetForTests() {
+    directManager = null;
+    directManagerInitPromise = null;
+    directManagerTransitionPromise = null;
+    directManagerMode = null;
+    pluginConfig = {};
+    monitorManagerFactory = createMonitorManager;
+}
+
+function setMonitorManagerFactoryForTests(factory) {
+    monitorManagerFactory = factory || createMonitorManager;
+}
+
+module.exports = {
+    initialize,
+    processToolCall,
+    shutdown,
+    _private: {
+        dispatchCommand,
+        ensureDirectManager,
+        getInitMode,
+        getDirectServiceEnvFromGlobals,
+        resetForTests,
+        withDirectServiceEnv,
+        setMonitorManagerFactoryForTests
+    }
+};
+
+if (require.main === module) {
+    main();
+}
