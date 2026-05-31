@@ -137,7 +137,9 @@ test('processToolCall passes decrypted auth context to admin-required hybrid dir
                 async processToolCall(_args, context) {
                     return {
                         decryptedAuthCode: context.decryptedAuthCode,
-                        requestSource: context.requestSource
+                        requestSource: context.requestSource,
+                        hasSignal: !!context.signal,
+                        signalAborted: context.signal?.aborted === true
                     };
                 }
             }
@@ -150,7 +152,70 @@ test('processToolCall passes decrypted auth context to admin-required hybrid dir
 
             assert.equal(result.decryptedAuthCode, 'fake-admin-code');
             assert.equal(result.requestSource, 'node-test');
+            assert.equal(result.hasSignal, true);
+            assert.equal(result.signalAborted, false);
             assert.ok(result.timestamp);
+        } finally {
+            if (originalPlugin) {
+                pluginManager.plugins.set(pluginName, originalPlugin);
+            } else {
+                pluginManager.plugins.delete(pluginName);
+            }
+            if (originalServiceModule) {
+                pluginManager.serviceModules.set(pluginName, originalServiceModule);
+            } else {
+                pluginManager.serviceModules.delete(pluginName);
+            }
+        }
+    });
+});
+
+test('processToolCall times out and aborts hanging hybrid direct plugin calls', async () => {
+    await withPluginManagerState(async () => {
+        const pluginName = 'HybridDirectTimeoutFixture';
+        const originalPlugin = pluginManager.plugins.get(pluginName);
+        const originalServiceModule = pluginManager.serviceModules.get(pluginName);
+        let invoked = false;
+        let signalSeen = false;
+        let signalAborted = false;
+
+        pluginManager.plugins.set(pluginName, {
+            name: pluginName,
+            pluginType: 'hybridservice',
+            communication: { protocol: 'direct', timeout: 25 },
+            requiresAdmin: false,
+            configSchema: {}
+        });
+        pluginManager.serviceModules.set(pluginName, {
+            module: {
+                async processToolCall(_args, context) {
+                    invoked = true;
+                    signalSeen = !!context.signal;
+                    if (context.signal) {
+                        context.signal.addEventListener('abort', () => {
+                            signalAborted = true;
+                        }, { once: true });
+                    }
+                    return new Promise(() => {});
+                }
+            }
+        });
+
+        try {
+            await assert.rejects(
+                () => pluginManager.processToolCall(pluginName, {}, null, {
+                    requestSource: 'node-test'
+                }),
+                (error) => {
+                    const payload = parsePluginError(error);
+                    assert.match(payload.plugin_execution_error, /direct tool call timed out/i);
+                    assert.ok(payload.timestamp);
+                    return true;
+                }
+            );
+            assert.equal(invoked, true);
+            assert.equal(signalSeen, true);
+            assert.equal(signalAborted, true);
         } finally {
             if (originalPlugin) {
                 pluginManager.plugins.set(pluginName, originalPlugin);
