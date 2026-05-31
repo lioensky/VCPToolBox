@@ -104,6 +104,54 @@ test('codex imagegen relay rejects unsupported request fields and active idempot
   );
 });
 
+test('codex imagegen relay rejects concurrent creates for the same request id without overwriting', async (t) => {
+  const { queue, queueRoot } = await createTempQueue(t);
+
+  let seen = 0;
+  let releaseBarrier;
+  const barrier = new Promise((resolve) => {
+    releaseBarrier = resolve;
+  });
+  queue.findByIdempotencyKey = async () => {
+    seen += 1;
+    if (seen === 2) {
+      releaseBarrier();
+    }
+    await barrier;
+    return null;
+  };
+
+  const results = await Promise.allSettled([
+    queue.createRequest({
+      request_id: 'img_race_001',
+      idempotency_key: 'idem_race_a',
+      prompt: 'first payload wins or second payload wins, but never both',
+    }),
+    queue.createRequest({
+      request_id: 'img_race_001',
+      idempotency_key: 'idem_race_b',
+      prompt: 'competing payload must not overwrite',
+    }),
+  ]);
+
+  const fulfilled = results.filter((result) => result.status === 'fulfilled');
+  const rejected = results.filter((result) => result.status === 'rejected');
+
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0].reason instanceof CodexImagegenRelayError);
+  assert.equal(rejected[0].reason.code, 'request_id_conflict');
+  assert.equal(rejected[0].reason.statusCode, 409);
+
+  const persisted = JSON.parse(
+    await fs.readFile(path.join(queueRoot, 'pending', 'img_race_001.json'), 'utf8')
+  );
+  assert.equal(persisted.prompt, fulfilled[0].value.prompt);
+
+  const pendingEntries = await fs.readdir(path.join(queueRoot, 'pending'));
+  assert.deepEqual(pendingEntries, ['img_race_001.json']);
+});
+
 test('codex imagegen relay cancels pending requests without touching claimed records', async (t) => {
   const { queue } = await createTempQueue(t);
   await queue.createRequest({

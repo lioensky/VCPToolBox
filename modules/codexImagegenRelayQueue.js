@@ -396,11 +396,48 @@ class CodexImagegenRelayQueue {
   async atomicWriteJson(targetPath, payload) {
     const tmpName = `${path.basename(targetPath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     const tmpPath = path.join(this.getDirPath('tmp'), tmpName);
-    await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, {
-      encoding: 'utf-8',
-      flag: 'wx',
-    });
-    await fs.rename(tmpPath, targetPath);
+    const lockPath = `${targetPath}.lock`;
+    let lockHandle = null;
+    let tmpCreated = false;
+
+    try {
+      lockHandle = await fs.open(lockPath, 'wx');
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw new CodexImagegenRelayError(
+          'request_id_conflict',
+          `Request file ${path.basename(targetPath)} is already being created.`,
+          409
+        );
+      }
+      throw error;
+    }
+
+    try {
+      if (await pathExists(targetPath)) {
+        throw new CodexImagegenRelayError(
+          'request_id_conflict',
+          `Request ${path.basename(targetPath, '.json')} already exists.`,
+          409
+        );
+      }
+
+      await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, {
+        encoding: 'utf-8',
+        flag: 'wx',
+      });
+      tmpCreated = true;
+      await fs.rename(tmpPath, targetPath);
+      tmpCreated = false;
+    } finally {
+      if (lockHandle) {
+        await lockHandle.close().catch(() => {});
+      }
+      if (tmpCreated) {
+        await fs.unlink(tmpPath).catch(() => {});
+      }
+      await fs.unlink(lockPath).catch(() => {});
+    }
   }
 
   async validateAssetFile(rawPath) {
