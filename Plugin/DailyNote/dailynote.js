@@ -364,7 +364,14 @@ async function handleCreateCommand(args) {
         const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
         await fs.writeFile(filePath, fileContent);
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
-        return { status: "success", message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})` };
+        return {
+            status: "success",
+            result: {
+                message: `${actualMaidName} 的日记已保存到 ${sanitizedFolderName} 文件夹 (${finalFileName})`,
+                folder: sanitizedFolderName,
+                fileName: finalFileName
+            }
+        };
     } catch (error) {
         console.error("[DailyNote] Error during 'create' command:", error.message);
         return { status: "error", error: error.message || "An unknown error occurred during diary creation." };
@@ -938,9 +945,13 @@ async function handleUpdateCommand(args) {
             const folderName = path.basename(path.dirname(modifiedFilePath));
             return {
                 status: 'success',
-                result: `Successfully edited diary file: ${modifiedFilePath}`,
-                message: `${maid || 'AI'} 已成功更新 ${folderName} 文件夹中的日记文件 (${finalFileName})`,
-                targetFile: modifiedFilePath
+                result: {
+                    result: `Successfully edited diary file: ${modifiedFilePath}`,
+                    message: `${maid || 'AI'} 已成功更新 ${folderName} 文件夹中的日记文件 (${finalFileName})`,
+                    targetFile: modifiedFilePath,
+                    folder: folderName,
+                    fileName: finalFileName
+                }
             };
         } else {
             const scopeDescription = folder
