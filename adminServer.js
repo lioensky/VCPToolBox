@@ -2,6 +2,7 @@
 // 独立后台管理面板进程，监听 PORT+1
 // 目的：将 AdminPanel 与聊天主链解耦，避免主进程 SSE stall 时后台面板一起卡顿
 const express = require('express');
+require('./modules/dotenvPatch.js');
 const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
 
