@@ -66,7 +66,8 @@ async function resolveAllVariables(text, model, role, context, processingStack =
     // CJK Radicals Supplement - Ideographic Description Characters 0x2E80 - 0x2FFF
     // Hiragana - CJK Unified Ideographs 0x3040 - 0x9FFF
     // 跳过标点符号 CJK Symbols and Punctuation 0x3000 - 0x303F
-    const placeholderRegex = /\{\{([a-zA-Z0-9_:\u2e80-\u2fff\u3040-\u9fff]+)\}\}/g;
+    // 扩展支持 @ 和 #%&^+-_ 符号
+    const placeholderRegex = /\{\{([a-zA-Z0-9_:@#%&^+_\-\u2e80-\u2fff\u3040-\u9fff]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
 
     // 提取所有潜在的别名（去除 "agent:" / "toolbox:" 前缀）
