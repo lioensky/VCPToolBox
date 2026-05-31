@@ -217,24 +217,34 @@ test('MonitorManager readonly init does not create state directory', async () =>
     }
 });
 
-test('direct initialize bridges LogMonitor server globals into env before manager init', async () => {
+test('direct initialize bridges service globals into env before manager init', async () => {
     const linuxLogMonitor = loadFreshModule();
     const calls = [];
-    const previousSock = process.env.LOG_MONITOR_SOCK;
-    const previousToken = process.env.LOG_MONITOR_TOKEN;
-    const previousGlobalSock = global.__vcp_log_monitor_sock;
-    const previousGlobalToken = global.__vcp_log_monitor_token;
+    const previousLogSock = process.env.LOG_MONITOR_SOCK;
+    const previousLogToken = process.env.LOG_MONITOR_TOKEN;
+    const previousSshSock = process.env.SSH_MANAGER_SOCK;
+    const previousSshToken = process.env.SSH_MANAGER_TOKEN;
+    const previousGlobalLogSock = global.__vcp_log_monitor_sock;
+    const previousGlobalLogToken = global.__vcp_log_monitor_token;
+    const previousGlobalSshSock = global.__vcp_ssh_manager_sock;
+    const previousGlobalSshToken = global.__vcp_ssh_manager_token;
     delete process.env.LOG_MONITOR_SOCK;
     delete process.env.LOG_MONITOR_TOKEN;
+    delete process.env.SSH_MANAGER_SOCK;
+    delete process.env.SSH_MANAGER_TOKEN;
     global.__vcp_log_monitor_sock = 'fake-log-monitor.sock';
     global.__vcp_log_monitor_token = 'fake-token-r10d';
+    global.__vcp_ssh_manager_sock = 'fake-ssh-manager.sock';
+    global.__vcp_ssh_manager_token = 'fake-ssh-token-r10d';
 
     linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => ({
         async init(options) {
             calls.push({
                 init: options.mode,
-                sock: process.env.LOG_MONITOR_SOCK,
-                token: process.env.LOG_MONITOR_TOKEN
+                logSock: process.env.LOG_MONITOR_SOCK,
+                logToken: process.env.LOG_MONITOR_TOKEN,
+                sshSock: process.env.SSH_MANAGER_SOCK,
+                sshToken: process.env.SSH_MANAGER_TOKEN
             });
         },
         async stopAll() {}
@@ -246,20 +256,30 @@ test('direct initialize bridges LogMonitor server globals into env before manage
         assert.deepEqual(calls, [
             {
                 init: 'readonly',
-                sock: 'fake-log-monitor.sock',
-                token: 'fake-token-r10d'
+                logSock: 'fake-log-monitor.sock',
+                logToken: 'fake-token-r10d',
+                sshSock: 'fake-ssh-manager.sock',
+                sshToken: 'fake-ssh-token-r10d'
             }
         ]);
     } finally {
         linuxLogMonitor._private.resetForTests();
-        if (previousSock === undefined) delete process.env.LOG_MONITOR_SOCK;
-        else process.env.LOG_MONITOR_SOCK = previousSock;
-        if (previousToken === undefined) delete process.env.LOG_MONITOR_TOKEN;
-        else process.env.LOG_MONITOR_TOKEN = previousToken;
-        if (previousGlobalSock === undefined) delete global.__vcp_log_monitor_sock;
-        else global.__vcp_log_monitor_sock = previousGlobalSock;
-        if (previousGlobalToken === undefined) delete global.__vcp_log_monitor_token;
-        else global.__vcp_log_monitor_token = previousGlobalToken;
+        if (previousLogSock === undefined) delete process.env.LOG_MONITOR_SOCK;
+        else process.env.LOG_MONITOR_SOCK = previousLogSock;
+        if (previousLogToken === undefined) delete process.env.LOG_MONITOR_TOKEN;
+        else process.env.LOG_MONITOR_TOKEN = previousLogToken;
+        if (previousSshSock === undefined) delete process.env.SSH_MANAGER_SOCK;
+        else process.env.SSH_MANAGER_SOCK = previousSshSock;
+        if (previousSshToken === undefined) delete process.env.SSH_MANAGER_TOKEN;
+        else process.env.SSH_MANAGER_TOKEN = previousSshToken;
+        if (previousGlobalLogSock === undefined) delete global.__vcp_log_monitor_sock;
+        else global.__vcp_log_monitor_sock = previousGlobalLogSock;
+        if (previousGlobalLogToken === undefined) delete global.__vcp_log_monitor_token;
+        else global.__vcp_log_monitor_token = previousGlobalLogToken;
+        if (previousGlobalSshSock === undefined) delete global.__vcp_ssh_manager_sock;
+        else global.__vcp_ssh_manager_sock = previousGlobalSshSock;
+        if (previousGlobalSshToken === undefined) delete global.__vcp_ssh_manager_token;
+        else global.__vcp_ssh_manager_token = previousGlobalSshToken;
     }
 });
 

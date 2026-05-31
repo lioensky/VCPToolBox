@@ -97,6 +97,12 @@ function syncLogMonitorEnvFromGlobals() {
     if (global.__vcp_log_monitor_token) {
         process.env.LOG_MONITOR_TOKEN = global.__vcp_log_monitor_token;
     }
+    if (global.__vcp_ssh_manager_sock) {
+        process.env.SSH_MANAGER_SOCK = global.__vcp_ssh_manager_sock;
+    }
+    if (global.__vcp_ssh_manager_token) {
+        process.env.SSH_MANAGER_TOKEN = global.__vcp_ssh_manager_token;
+    }
 }
 
 async function initializeDirectManager(mode) {
