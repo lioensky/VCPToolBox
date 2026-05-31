@@ -3,9 +3,15 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { getEmbeddingsBatch } = require('../EmbeddingUtils');
+const ragDiaryPlugin = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
 
 async function withEmbeddingEnv(vars, fn) {
   const keys = [
+    'API_URL',
+    'API_Key',
+    'EMBEDDING_API_URL',
+    'EMBEDDING_API_KEY',
+    'WhitelistEmbeddingModel',
     'EmbeddingModelBackups',
     'EmbeddingModelBackup',
     ...Array.from({ length: 9 }, (_, index) => `EmbeddingModelBackup${index + 1}`),
@@ -90,4 +96,117 @@ test('EmbeddingUtils switches to configured model backup on primary model failur
   });
 
   assert.deepEqual(seenModels, ['primary-model', 'backup-model']);
+});
+
+test('EmbeddingUtils uses WhitelistEmbeddingModel when config model is omitted', async (t) => {
+  const seenModels = [];
+  const server = http.createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/embeddings');
+
+    const body = await readJsonBody(req);
+    seenModels.push(body.model);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      data: body.input.map((_, index) => ({
+        index,
+        embedding: [0.4, 0.5, 0.6],
+      })),
+    }));
+  });
+
+  const port = await listen(server);
+  t.after(() => server.close());
+
+  await withEmbeddingEnv({ WhitelistEmbeddingModel: 'env-embedding-model' }, async () => {
+    const vectors = await getEmbeddingsBatch(['hello from env model'], {
+      apiUrl: `http://127.0.0.1:${port}`,
+    });
+
+    assert.deepEqual(vectors, [[0.4, 0.5, 0.6]]);
+  });
+
+  assert.deepEqual(seenModels, ['env-embedding-model']);
+});
+
+test('RAGDiaryPlugin embedding methods use shared EmbeddingUtils backend', async (t) => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/embeddings');
+
+    const body = await readJsonBody(req);
+    requests.push({ model: body.model, input: body.input });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      data: body.input.map((text, index) => ({
+        index,
+        embedding: [body.input.length, index + 1, String(text).length],
+      })),
+    }));
+  });
+
+  const port = await listen(server);
+  t.after(() => server.close());
+
+  await withEmbeddingEnv({
+    EMBEDDING_API_URL: `http://127.0.0.1:${port}`,
+    WhitelistEmbeddingModel: 'rag-shared-model',
+  }, async () => {
+    const single = await ragDiaryPlugin.getSingleEmbedding('hello');
+    assert.deepEqual(single, [1, 1, 5]);
+
+    const batch = await ragDiaryPlugin.getBatchEmbeddings(['alpha', '', 'beta']);
+    assert.deepEqual(batch, [[2, 1, 5], null, [2, 2, 4]]);
+  });
+
+  assert.deepEqual(requests, [
+    { model: 'rag-shared-model', input: ['hello'] },
+    { model: 'rag-shared-model', input: ['alpha', 'beta'] },
+  ]);
+});
+
+test('RAGDiaryPlugin rejects partial vectors for split single embeddings', async (t) => {
+  let requestCount = 0;
+  const server = http.createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/embeddings');
+
+    const body = await readJsonBody(req);
+    requestCount += 1;
+
+    if (body.input.some((text) => String(text).includes('sentence 0'))) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'one chunk failed' } }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      data: body.input.map((text, index) => ({
+        index,
+        embedding: [body.input.length, index + 1, String(text).length],
+      })),
+    }));
+  });
+
+  const port = await listen(server);
+  t.after(() => server.close());
+
+  await withEmbeddingEnv({
+    EMBEDDING_API_URL: `http://127.0.0.1:${port}`,
+    WhitelistEmbeddingModel: 'rag-shared-model',
+    EmbeddingModelBackup1: 'rag-shared-backup',
+  }, async () => {
+    const longText = Array.from(
+      { length: 80 },
+      (_, index) => `sentence ${index} ${'alpha '.repeat(100)}.`
+    ).join(' ');
+    const single = await ragDiaryPlugin.getSingleEmbedding(longText);
+    assert.equal(single, null);
+  });
+
+  assert.ok(requestCount >= 3);
 });
