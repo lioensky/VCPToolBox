@@ -13,7 +13,7 @@ function createManagerWithConnection(connection) {
     return manager;
 }
 
-test('testConnection closes the returned non-pooled SSH connection', async () => {
+test('testConnection closes the returned non-pooled SSH connection without releasing its slot early', async () => {
     let endCalls = 0;
     let releaseCalls = 0;
     const connection = {
@@ -37,7 +37,7 @@ test('testConnection closes the returned non-pooled SSH connection', async () =>
     assert.equal(result.success, true);
     assert.equal(result.output, 'SSH_HANDSHAKE_OK');
     assert.equal(endCalls, 1);
-    assert.equal(releaseCalls, 1);
+    assert.equal(releaseCalls, 0);
     assert.equal(connection.isConnected, false);
     assert.equal(manager.connectionStatus.get('remote-a'), 'disconnected');
 });

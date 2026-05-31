@@ -1702,9 +1702,6 @@ class SSHManager {
         } catch (error) {
             this._log(`关闭测试连接失败: ${connection.hostId} - ${error.message}`);
         } finally {
-            if (typeof connection.releaseSlot === 'function') {
-                connection.releaseSlot();
-            }
             connection.isConnected = false;
             if (connection.hostId) {
                 this.connectionStatus.set(connection.hostId, 'disconnected');
