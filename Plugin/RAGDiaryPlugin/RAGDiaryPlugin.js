@@ -16,6 +16,7 @@ const ContextVectorManager = require('./ContextVectorManager.js');
 const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷你数据库
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
 const { chunkText } = require('../../TextChunker.js');
+const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 const { getCodexAdaptiveProfile } = require('../../modules/codexMemoryAdaptive');
 const { getTargetForDiaryName } = require('../../modules/codexMemoryConstants');
 
@@ -3783,22 +3784,28 @@ class RAGDiaryPlugin {
         };
     }
 
+    _getEmbeddingRequestConfig() {
+        return {
+            apiKey: process.env.EMBEDDING_API_KEY || process.env.API_Key,
+            apiUrl: process.env.EMBEDDING_API_URL || process.env.API_URL,
+            model: process.env.WhitelistEmbeddingModel || 'google/gemini-embedding-001',
+            modelBackups: process.env.EmbeddingModelBackups || process.env.EmbeddingModelBackup || ''
+        };
+    }
+
     async getSingleEmbedding(text) {
         if (!text) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
             return null;
         }
 
-        const apiKey = process.env.EMBEDDING_API_KEY || process.env.API_Key;
-        const apiUrl = process.env.EMBEDDING_API_URL || process.env.API_URL;
-        const embeddingModel = process.env.WhitelistEmbeddingModel;
+        const embeddingConfig = this._getEmbeddingRequestConfig();
 
-        if (!apiUrl || !embeddingModel) {
-            console.error('[RAGDiaryPlugin] Embedding API URL or model is not configured in environment variables.');
+        if (!embeddingConfig.apiUrl) {
+            console.error('[RAGDiaryPlugin] Embedding API URL is not configured in environment variables.');
             return null;
         }
 
-        // 1. 使用 TextChunker 分割文本以避免超长
         const textChunks = chunkText(text);
         if (!textChunks || textChunks.length === 0) {
             console.log('[RAGDiaryPlugin] Text chunking resulted in no chunks.');
@@ -3809,58 +3816,21 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] Text is too long, split into ${textChunks.length} chunks for embedding.`);
         }
 
-        const maxRetries = 3;
-        const retryDelay = 1000; // 1 second
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const response = await axios.post(`${apiUrl}/v1/embeddings`, {
-                    model: embeddingModel,
-                    input: textChunks // 传入所有文本块
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                const embeddings = response.data?.data;
-                if (!embeddings || embeddings.length === 0) {
-                    console.error('[RAGDiaryPlugin] No embeddings found in the API response.');
-                    return null;
-                }
-
-                const vectors = embeddings.map(e => e.embedding).filter(Boolean);
-                if (vectors.length === 0) {
-                    console.error('[RAGDiaryPlugin] No valid embedding vectors in the API response data.');
-                    return null;
-                }
-
-                // 如果只有一个向量，直接返回；否则，计算平均向量
-                if (vectors.length === 1) {
-                    return vectors[0];
-                } else {
-                    console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one.`);
-                    return this._getAverageVector(vectors);
-                }
-            } catch (error) {
-                const status = error.response ? error.response.status : null;
-
-                if ((status === 500 || status === 503) && attempt < maxRetries) {
-                    console.warn(`[RAGDiaryPlugin] Embedding API call failed with status ${status}. Attempt ${attempt} of ${maxRetries}. Retrying in ${retryDelay}ms...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    continue;
-                }
-
-                if (error.response) {
-                    console.error(`[RAGDiaryPlugin] Embedding API Error: ${error.message} (Status: ${error.response.status})`);
-                } else {
-                    console.error('[RAGDiaryPlugin] An error occurred while setting up the embedding request:', error.message);
-                }
-                return null; // Return null after final attempt or for non-retriable errors
+        try {
+            const vectors = (await getEmbeddingsBatch(textChunks, embeddingConfig)).filter(Boolean);
+            if (vectors.length === 0) {
+                console.error('[RAGDiaryPlugin] No valid embedding vectors returned by EmbeddingUtils.');
+                return null;
             }
+
+            if (vectors.length === 1) return vectors[0];
+
+            console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one.`);
+            return this._getAverageVector(vectors);
+        } catch (error) {
+            console.error('[RAGDiaryPlugin] getSingleEmbedding failed via EmbeddingUtils:', error.message);
+            return null;
         }
-        return null; // Should not be reached, but as a fallback
     }
 
     //####################################################################################
@@ -4120,12 +4090,10 @@ class RAGDiaryPlugin {
     async getBatchEmbeddings(texts) {
         if (!texts || !Array.isArray(texts) || texts.length === 0) return [];
 
-        const apiKey = process.env.EMBEDDING_API_KEY || process.env.API_Key;
-        const apiUrl = process.env.EMBEDDING_API_URL || process.env.API_URL;
-        const embeddingModel = process.env.WhitelistEmbeddingModel;
+        const embeddingConfig = this._getEmbeddingRequestConfig();
 
-        if (!apiUrl || !embeddingModel) {
-            console.error('[RAGDiaryPlugin] Embedding API URL or model is not configured.');
+        if (!embeddingConfig.apiUrl) {
+            console.error('[RAGDiaryPlugin] Embedding API URL is not configured.');
             return new Array(texts.length).fill(null);
         }
 
@@ -4133,45 +4101,19 @@ class RAGDiaryPlugin {
         if (validTasks.length === 0) return new Array(texts.length).fill(null);
 
         const results = new Array(texts.length).fill(null);
-        const maxRetries = 3;
-        const retryDelay = 1000;
 
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const response = await axios.post(`${apiUrl}/v1/embeddings`, {
-                    model: embeddingModel,
-                    input: validTasks.map(t => t.text)
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 60000 // 批量请求可能需要更长时间
-                });
-
-                const embeddings = response.data?.data;
-                if (embeddings && Array.isArray(embeddings)) {
-                    embeddings.forEach((e, i) => {
-                        const originalIndex = validTasks[i].index;
-                        results[originalIndex] = e.embedding;
-                    });
-                    return results;
-                } else {
-                    console.error('[RAGDiaryPlugin] No embeddings found in batch response.');
-                    if (attempt === maxRetries) return results;
+        try {
+            const vectors = await getEmbeddingsBatch(validTasks.map(t => t.text), embeddingConfig);
+            vectors.forEach((vector, index) => {
+                if (vector) {
+                    results[validTasks[index].index] = vector;
                 }
-            } catch (error) {
-                const status = error.response ? error.response.status : null;
-                if ((status === 500 || status === 503 || status === 429) && attempt < maxRetries) {
-                    console.warn(`[RAGDiaryPlugin] Batch Embedding API failed (${status}). Attempt ${attempt}/${maxRetries}. Retrying...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    continue;
-                }
-                console.error('[RAGDiaryPlugin] Batch embedding API error:', error.message);
-                return results;
-            }
+            });
+            return results;
+        } catch (error) {
+            console.error('[RAGDiaryPlugin] getBatchEmbeddings failed via EmbeddingUtils:', error.message);
+            return results;
         }
-        return results;
     }
 
     async getBatchEmbeddingsCached(texts) {
