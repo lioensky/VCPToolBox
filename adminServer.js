@@ -255,6 +255,7 @@ const localModules = [
     'dailyNotes',      // 日记知识库文件管理
     'agentAssistant',  // Agent 助手配置（纯文件 I/O）
     'semanticRouter',  // 语义模型路由器配置（本地 JSON 读写 + 上游模型拉取）
+    'codexImagegenRelay', // Codex ImageGen Relay 队列（纯文件 I/O）
 ];
 
 function getCurrentServerLogPath() {

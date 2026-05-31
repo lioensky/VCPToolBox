@@ -46,7 +46,13 @@ npm install
 npm run dev
 ```
 
-服务将启动在 `http://localhost:5173`，代理配置指向后端 `http://localhost:3000`
+服务将启动在 `http://localhost:5173`。开发模式下 `/admin_api` 会代理到独立管理服务，默认按 `adminServer.js` 规则使用 `PORT + 1`：未设置 `PORT` 时为 `http://127.0.0.1:3001`。
+
+如需连接自定义后端地址，可设置：
+
+```bash
+VITE_ADMIN_API_PROXY_TARGET=http://127.0.0.1:6006 npm run dev
+```
 
 ### 生产构建
 
@@ -168,7 +174,12 @@ import type { User } from '@/types'
 
 ## 环境变量
 
-目前项目未使用 `VITE_*` 构建时环境变量。所有后端接口默认走同源前缀 `/admin_api`（见 `vite.config.ts` 的 proxy 与 `src/api/*.ts`），由 `adminServer.js` 挂载 `AdminPanel-Vue/dist` 于 `/AdminPanel` 路径提供服务。
+所有后端接口默认走同源前缀 `/admin_api`（见 `vite.config.ts` 的 proxy 与 `src/api/*.ts`），由 `adminServer.js` 挂载 `AdminPanel-Vue/dist` 于 `/AdminPanel` 路径提供服务。
+
+开发模式可用的环境变量：
+
+- `VITE_ADMIN_API_PROXY_TARGET`：覆盖 Vite dev server 的 `/admin_api` 代理目标，例如 `http://127.0.0.1:6006`。
+- `PORT`：未设置 `VITE_ADMIN_API_PROXY_TARGET` 时，Vite 会按 `PORT + 1` 推导管理服务端口；默认 `PORT=3000`，即代理到 `http://127.0.0.1:3001`。
 
 ## 浏览器支持
 

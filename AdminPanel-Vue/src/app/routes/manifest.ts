@@ -24,6 +24,7 @@ export type AppRouteId =
   | "agent-scores"
   | "channel-hub-manager"
   | "ai-image-agents"
+  | "codex-imagegen-relay"
   | "codex-memory-monitor"
   | "toolbox-manager"
   | "tvs-files-editor"
@@ -370,6 +371,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/ai-image-agents",
     title: "AI 图像 Agent 测试",
     icon: "image",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "codex-imagegen-relay",
+    routeName: "CodexImagegenRelay",
+    path: "/codex-imagegen-relay",
+    title: "Codex 生图中继",
+    icon: "image_search",
     requiresAuth: true,
     navGroup: "toolsPlugins",
     showInSidebar: true,
