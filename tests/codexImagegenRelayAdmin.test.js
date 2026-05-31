@@ -194,3 +194,13 @@ test('codex imagegen admin route rejects unsafe mark-saved paths', async (t) => 
   });
 });
 
+test('independent admin server registers codex imagegen relay as a local module', async () => {
+  const adminServerSource = await fs.readFile(
+    path.join(__dirname, '..', 'adminServer.js'),
+    'utf8'
+  );
+  const localModulesMatch = adminServerSource.match(/const localModules = \[([\s\S]*?)\];/);
+
+  assert.ok(localModulesMatch, 'adminServer.js must define localModules');
+  assert.match(localModulesMatch[1], /['"]codexImagegenRelay['"]/);
+});
