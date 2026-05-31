@@ -3817,9 +3817,9 @@ class RAGDiaryPlugin {
         }
 
         try {
-            const vectors = (await getEmbeddingsBatch(textChunks, embeddingConfig)).filter(Boolean);
-            if (vectors.length === 0) {
-                console.error('[RAGDiaryPlugin] No valid embedding vectors returned by EmbeddingUtils.');
+            const vectors = await getEmbeddingsBatch(textChunks, embeddingConfig);
+            if (vectors.length !== textChunks.length || vectors.some(vector => !vector)) {
+                console.error('[RAGDiaryPlugin] Incomplete embedding vectors returned by EmbeddingUtils; rejecting partial single embedding.');
                 return null;
             }
 

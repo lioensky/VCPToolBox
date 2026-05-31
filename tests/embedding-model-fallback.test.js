@@ -167,3 +167,46 @@ test('RAGDiaryPlugin embedding methods use shared EmbeddingUtils backend', async
     { model: 'rag-shared-model', input: ['alpha', 'beta'] },
   ]);
 });
+
+test('RAGDiaryPlugin rejects partial vectors for split single embeddings', async (t) => {
+  let requestCount = 0;
+  const server = http.createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/embeddings');
+
+    const body = await readJsonBody(req);
+    requestCount += 1;
+
+    if (body.input.some((text) => String(text).includes('sentence 0'))) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'one chunk failed' } }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      data: body.input.map((text, index) => ({
+        index,
+        embedding: [body.input.length, index + 1, String(text).length],
+      })),
+    }));
+  });
+
+  const port = await listen(server);
+  t.after(() => server.close());
+
+  await withEmbeddingEnv({
+    EMBEDDING_API_URL: `http://127.0.0.1:${port}`,
+    WhitelistEmbeddingModel: 'rag-shared-model',
+    EmbeddingModelBackup1: 'rag-shared-backup',
+  }, async () => {
+    const longText = Array.from(
+      { length: 80 },
+      (_, index) => `sentence ${index} ${'alpha '.repeat(100)}.`
+    ).join(' ');
+    const single = await ragDiaryPlugin.getSingleEmbedding(longText);
+    assert.equal(single, null);
+  });
+
+  assert.ok(requestCount >= 3);
+});
