@@ -87,7 +87,7 @@ function getEmbeddingModelCandidates(config = {}) {
         }
     };
 
-    addModel(config.model);
+    addModel(config.model || process.env.WhitelistEmbeddingModel);
 
     if (Array.isArray(config.modelBackups)) {
         config.modelBackups.forEach(addModel);

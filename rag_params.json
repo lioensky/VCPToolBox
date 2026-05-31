@@ -5,7 +5,7 @@
     "lWeight": 0.05,
     "sWeight": 0.05,
     "fuzzyEmbedding": {
-      "threshold": 0.985,
+      "threshold": 0.96,
       "minLength": 80,
       "maxScan": 200,
       "maxLengthDiffRatio": 0.02,
@@ -22,7 +22,7 @@
       "minScore": 0.5
     },
     "mainSearchWeights": [0.7, 0.3],
-    "shotgunDecayFactor": 0.85,
+    "shotgunDecayFactor": 0.75,
     "shotgunHistorySegmentLimit": 3,
     "refreshWeights": [0.5, 0.35, 0.15],
     "metaThinkingWeights": [0.8, 0.2]
@@ -44,17 +44,17 @@
     },
     "orderedCooccurrence": {
       "forwardGain": 1.0,
-      "reverseGain": 0.42,
+      "reverseGain": 0.35,
       "minReverseGain": 0.25,
-      "maxReverseGain": 0.70,
-      "distanceDecay": 0.0,
+      "maxReverseGain": 0.60,
+      "distanceDecay": 0.08,
       "reverseAnchorBoost": 1,
-      "reverseAnchorMax": 1.5,
+      "reverseAnchorMax": 1.35,
       "semanticGainEnabled": 1,
       "semanticGainPeak": 0.65,
       "semanticGainSigma": 0.25,
       "semanticGainLowSimFallback": 0.1,
-      "reverseInversionGuard": 0.95
+      "reverseInversionGuard": 0.9
     },
     "activationMultiplier": [0.5, 1.5],
     "dynamicBoostRange": [0.3, 2.0],
