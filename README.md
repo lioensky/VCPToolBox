@@ -1570,6 +1570,21 @@ VCP 的征程远未结束，我们对未来充满期待：
 - 开源模型（通过 vLLM、Ollama 等部署）
 - 任何支持 SSE 流式输出的 API 服务
 
+### Q: 如何让使用非 OpenAI 格式的客户端（如 Codex CLI、Claude Code、Gemini SDK）连接 VCP？
+
+**A:** VCP 内置了**协议桥接路由**（`routes/protocolBridge.js`），在主服务器端口上同时暴露以下兼容端点：
+
+| 协议 | 端点 | 说明 |
+|------|------|------|
+| OpenAI Responses API | `POST /v1/responses` | 支持 `input` 数组格式，兼容 Codex CLI 等工具 |
+| Anthropic Messages API | `POST /v1/messages` | 支持 `system` + `messages` 格式，兼容 Claude Code 等工具 |
+| Gemini GenerateContent | `POST /v1beta/models/:model:generateContent` | 支持 `contents` + `systemInstruction` 格式 |
+| Gemini StreamGenerateContent | `POST /v1beta/models/:model:streamGenerateContent` | Gemini 流式端点 |
+
+**工作原理**：这些端点会将各协议格式的请求自动转换为标准的 `messages` 数组，然后内部转发到 VCP 的 `/v1/chat/completions` 处理链路。这意味着所有 VCP 能力（插件系统、RAG 记忆、角色分割、语义模型路由等）对所有协议的客户端**完全透明可用**。
+
+**使用方式**：将客户端的 API Base URL 指向 VCP 服务器地址（如 `http://your-server:5890`），使用 `config.env` 中的 `Key` 作为 Bearer Token 即可。响应会自动转换回对应协议的格式（包括流式 SSE）。
+
 ### Q: 如何确保 VCP 系统的安全性？
 
 **A:** VCP 提供了多层安全机制：

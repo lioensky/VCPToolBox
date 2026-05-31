@@ -1195,6 +1195,11 @@ app.post('/v1/chatvcp/completions', async (req, res) => {
     }
 });
 
+// 协议桥接路由：支持 OpenAI Responses API、Anthropic Messages、Gemini GenerateContent
+// 将这些协议格式的请求转换为标准 messages 数组后内部转发到 /v1/chat/completions
+const protocolBridge = require('./routes/protocolBridge');
+app.use(protocolBridge);
+
 // 新增：人类直接调用工具的端点
 app.post('/v1/human/tool', async (req, res) => {
     try {
