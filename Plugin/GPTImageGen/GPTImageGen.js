@@ -1115,6 +1115,7 @@ async function buildResponse(apiResult, params) {
     const content = [];
     const imageUrls = [];
     const savedImages = [];
+    const savedBuffers = []; // 仅在 showBase64 时使用
 
     for (let i = 0; i < apiResult.data.length; i++) {
         const item = apiResult.data[i];
@@ -1149,6 +1150,11 @@ async function buildResponse(apiResult, params) {
         savedImages.push(savedInfo);
         imageUrls.push(savedInfo.accessibleUrl);
 
+        // 仅在需要 showBase64 时保留 buffer 引用
+        if (params.showBase64) {
+            savedBuffers.push({ buffer: imageBuffer, contentType });
+        }
+
         debugLog(`Image ${i}: saved as ${savedInfo.fileName}, accessible at ${savedInfo.accessibleUrl}`);
     }
 
@@ -1156,20 +1162,19 @@ async function buildResponse(apiResult, params) {
         throw new Error('API 未返回任何有效的图像数据');
     }
 
-    // 构建文本内容
+    // 构建文本内容（与 DoubaoGen 风格一致，简洁明了）
     const imageListText = savedImages.map((img, i) => {
         const idx = savedImages.length > 1 ? ` ${i + 1}` : '';
         return `- 图片${idx} URL: ${img.accessibleUrl}\n- 图片${idx} 服务器路径: ${img.serverPath}\n- 图片${idx} 文件名: ${img.fileName}`;
     }).join('\n');
 
-    const textContent = `图片已成功生成！\n\n` +
-        `生成信息：\n` +
+    const textContent = `图片已成功生成！\n` +
         `- 提示词: ${params.prompt}\n` +
         `- 尺寸: ${params.size}\n` +
         `- 质量: ${params.quality}\n` +
         `- 背景: ${params.background}\n` +
-        `- 数量: ${savedImages.length}\n\n` +
-        `图片详情：\n${imageListText}\n\n` +
+        `- 数量: ${savedImages.length}\n` +
+        `${imageListText}\n` +
         `请将生成好的图片转发给用户哦。`;
 
     content.push({
@@ -1179,20 +1184,21 @@ async function buildResponse(apiResult, params) {
 
     // 只有当 showbase64 为 true 时才添加 base64 图片数据
     if (params.showBase64) {
-        for (let i = 0; i < apiResult.data.length; i++) {
-            const item = apiResult.data[i];
-            if (item.b64_json) {
-                content.push({
-                    type: 'image_url',
-                    image_url: {
-                        url: `data:image/png;base64,${item.b64_json}`
-                    }
-                });
-            }
+        for (let i = 0; i < savedBuffers.length; i++) {
+            const { buffer, contentType: ct } = savedBuffers[i];
+            const ext = inferImageExtension(ct);
+            const mimeMap = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+            const imageMimeType = mimeMap[ext] || 'image/png';
+            content.push({
+                type: 'image_url',
+                image_url: {
+                    url: `data:${imageMimeType};base64,${buffer.toString('base64')}`
+                }
+            });
         }
     }
 
-    // 构建 details 对象
+    // 构建 details 对象（不包含任何 base64 数据，避免输出膨胀）
     const details = {
         serverPath: savedImages.map(img => img.serverPath),
         fileName: savedImages.map(img => img.fileName),
