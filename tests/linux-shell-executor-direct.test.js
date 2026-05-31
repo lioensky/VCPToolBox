@@ -131,7 +131,7 @@ test('runToolCall forwards direct execution options to fake executor', async () 
     assert.equal(calls[0].options.signal, controller.signal);
 });
 
-test('runToolCall closes SSH connections after direct testConnection', async () => {
+test('runToolCall leaves global SSH state intact after direct testConnection', async () => {
     const linuxShellExecutor = loadFreshModule();
     const calls = [];
 
@@ -150,7 +150,6 @@ test('runToolCall closes SSH connections after direct testConnection', async () 
 
     assert.equal(result.success, true);
     assert.deepEqual(calls, [
-        { testConnection: 'ssh-host-a' },
-        { disconnect: true }
+        { testConnection: 'ssh-host-a' }
     ]);
 });
