@@ -87,8 +87,8 @@ class MonitorManager {
         const mode = options.mode || 'full';
         this._log(`初始化监控管理器 (模式: ${mode})...`);
         
-        // 确保目录存在
-        await this._ensureDirectories();
+        // readonly 模式只准备规则目录，避免插件 direct 初始化写入真实 state 路径。
+        await this._ensureDirectories({ includeState: mode !== 'readonly' });
         
         // 加载规则（所有模式都需要）
         await this._loadRules();
@@ -960,11 +960,14 @@ class MonitorManager {
     /**
      * 确保目录存在
      */
-    async _ensureDirectories() {
+    async _ensureDirectories(options = {}) {
+        const { includeState = true } = options;
         const dirs = [
-            path.join(__dirname, '..', 'rules'),
-            path.join(__dirname, '..', 'state')
+            path.join(__dirname, '..', 'rules')
         ];
+        if (includeState) {
+            dirs.push(path.join(__dirname, '..', 'state'));
+        }
         
         for (const dir of dirs) {
             try {
