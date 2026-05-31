@@ -52,6 +52,7 @@ cp config.env.example config.env
 | `DEFAULT_BACKGROUND`      | ❌    | `auto`                   | 默认背景：`opaque` / `auto`（见下方注意事项）                |
 | `MAX_RETRIES`             | ❌    | `2`                      | API 请求失败（429/503）时的最大重试次数                      |
 | `RETRY_BASE_DELAY_MS`     | ❌    | `2000`                   | 重试基础延迟（毫秒），按指数退避递增                         |
+| `USE_CHAT_COMPLETIONS_MODE` | ❌  | `false`                  | 兼容渠道模式：设为 `true` 时直接走 `/v1/chat/completions` + `image_generation` tool；默认先尝试 images 端点，遇到兼容错误时回退 |
 | `DebugMode`               | ❌    | `false`                  | 调试模式，开启后在 stderr 输出详细日志                       |
 
 > ⚠️ **关于 `transparent` 背景**：gpt-image-2 官方 API 目前不支持透明背景（`transparent`），参数验证中保留该选项以兼容部分反代实现，但实际效果取决于您的 API 端点。如需透明背景，建议使用 GPT Image 1.5 或后期处理。
@@ -121,7 +122,7 @@ quality:「始」high「末」
 
 ## 🔧 技术细节
 
-- **文生图** 使用 `/v1/images/generations` 端点，JSON 格式请求
+- **文生图** 优先使用 `/v1/images/generations` 端点，JSON 格式请求；兼容渠道可通过 `USE_CHAT_COMPLETIONS_MODE=true` 直接使用 `/v1/chat/completions` + `image_generation` tool
 - **图生图** 使用 `/v1/images/edits` 端点，**multipart/form-data 格式请求**（OpenAI 要求，零依赖手动构建 multipart body）
 - 图片根据 API 返回的 Content-Type 自动推断格式（PNG/JPEG/WebP/GIF），保存到 `image/gptimagegen/` 目录
 - 通过 VCP 的 ImageServer 插件提供 HTTP 访问 URL
