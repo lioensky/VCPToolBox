@@ -307,6 +307,60 @@ test('codex imagegen relay rejects retrying superseded failed parents', async (t
   assert.equal(retry.idempotency_key, 'idem_retry_chain_001');
 });
 
+test('codex imagegen relay serializes concurrent retries for the same failed request', async (t) => {
+  const { queue, queueRoot } = await createTempQueue(t);
+  await writeStatusFile(queueRoot, 'failed', 'img_retry_race_001', {
+    protocol: PROTOCOL,
+    request_id: 'img_retry_race_001',
+    created_at: '2026-05-31T09:00:00.000Z',
+    status: 'failed',
+    mode: 'generate',
+    prompt: 'retry race',
+    attempt: 1,
+    idempotency_key: 'idem_retry_race_001',
+  });
+
+  const originalAtomicWriteJson = queue.atomicWriteJson.bind(queue);
+  let writeCount = 0;
+  let releaseWrites;
+  const writeBarrier = new Promise((resolve) => {
+    releaseWrites = resolve;
+  });
+  queue.atomicWriteJson = async (...args) => {
+    writeCount += 1;
+    if (writeCount === 1) {
+      setTimeout(releaseWrites, 25);
+    } else {
+      releaseWrites();
+    }
+    await writeBarrier;
+    return originalAtomicWriteJson(...args);
+  };
+
+  const results = await Promise.allSettled([
+    queue.retryRequest('img_retry_race_001'),
+    queue.retryRequest('img_retry_race_001'),
+  ]);
+
+  const fulfilled = results.filter((result) => result.status === 'fulfilled');
+  const rejected = results.filter((result) => result.status === 'rejected');
+
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0].reason instanceof CodexImagegenRelayError);
+  assert.equal(rejected[0].reason.code, 'idempotency_conflict');
+  assert.equal(rejected[0].reason.statusCode, 409);
+  assert.equal(writeCount, 1);
+
+  const pendingEntries = await fs.readdir(path.join(queueRoot, 'pending'));
+  assert.equal(pendingEntries.length, 1);
+  const retry = JSON.parse(
+    await fs.readFile(path.join(queueRoot, 'pending', pendingEntries[0]), 'utf8')
+  );
+  assert.equal(retry.parent_request_id, 'img_retry_race_001');
+  assert.equal(retry.idempotency_key, 'idem_retry_race_001');
+});
+
 test('codex imagegen relay counts retry attempts across the idempotency chain', async (t) => {
   const { queue, queueRoot } = await createTempQueue(t);
   await writeStatusFile(queueRoot, 'failed', 'img_retry_parent_002', {

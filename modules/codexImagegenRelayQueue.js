@@ -218,62 +218,66 @@ class CodexImagegenRelayQueue {
       failed.idempotency_key || requestId,
       'idempotency_key'
     );
-    const retryChain = await this.findRequestsByIdempotencyKey(idempotencyKey);
-    const supersedingRetry = retryChain.find(
-      (request) => request.parent_request_id === failed.request_id
-    );
-    if (supersedingRetry) {
-      throw new CodexImagegenRelayError(
-        'retry_superseded',
-        `Request ${requestId} already has retry ${supersedingRetry.request_id}.`,
-        409,
-        { request_id: supersedingRetry.request_id, status: supersedingRetry.status }
-      );
-    }
 
-    const maxAttempt = retryChain.reduce(
-      (highest, request) => Math.max(highest, normalizeAttempt(request.attempt, 0)),
-      normalizeAttempt(failed.attempt, 0)
-    );
-    const nextAttempt = maxAttempt + 1;
-    if (nextAttempt > MAX_ATTEMPT) {
-      throw new CodexImagegenRelayError(
-        'max_attempts_exceeded',
-        `Request ${requestId} already reached the max attempt count.`,
-        409
+    return this.withIdempotencyLock(idempotencyKey, async () => {
+      const currentFailed = await this.readStatusFile('failed', requestId);
+      const retryChain = await this.findRequestsByIdempotencyKey(idempotencyKey);
+      const supersedingRetry = retryChain.find(
+        (request) => request.parent_request_id === currentFailed.request_id
       );
-    }
+      if (supersedingRetry) {
+        throw new CodexImagegenRelayError(
+          'retry_superseded',
+          `Request ${requestId} already has retry ${supersedingRetry.request_id}.`,
+          409,
+          { request_id: supersedingRetry.request_id, status: supersedingRetry.status }
+        );
+      }
 
-    const existing = await this.findByIdempotencyKey(idempotencyKey);
-    if (existing) {
-      throw new CodexImagegenRelayError(
-        'idempotency_conflict',
-        `Active request already exists for idempotency_key ${idempotencyKey}.`,
-        409,
-        { request_id: existing.request_id, status: existing.status }
+      const maxAttempt = retryChain.reduce(
+        (highest, request) => Math.max(highest, normalizeAttempt(request.attempt, 0)),
+        normalizeAttempt(currentFailed.attempt, 0)
       );
-    }
+      const nextAttempt = maxAttempt + 1;
+      if (nextAttempt > MAX_ATTEMPT) {
+        throw new CodexImagegenRelayError(
+          'max_attempts_exceeded',
+          `Request ${requestId} already reached the max attempt count.`,
+          409
+        );
+      }
 
-    const retryId = createRequestId(this.now());
-    const retryRecord = stripUndefined({
-      protocol: PROTOCOL,
-      request_id: retryId,
-      parent_request_id: failed.request_id,
-      created_at: this.now().toISOString(),
-      status: 'pending',
-      source: 'vcptoolbox',
-      mode: 'generate',
-      prompt: normalizePrompt(failed.prompt, this.promptMaxLength),
-      options: normalizeOptions(failed.options || {}),
-      return: normalizeReturnSpec(failed.return || {}),
-      attempt: nextAttempt,
-      idempotency_key: idempotencyKey,
-      negative_prompt: normalizeOptionalText(failed.negative_prompt, 2000),
-      user_note: normalizeOptionalText(failed.user_note, 2000),
+      const existing = await this.findByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        throw new CodexImagegenRelayError(
+          'idempotency_conflict',
+          `Active request already exists for idempotency_key ${idempotencyKey}.`,
+          409,
+          { request_id: existing.request_id, status: existing.status }
+        );
+      }
+
+      const retryId = createRequestId(this.now());
+      const retryRecord = stripUndefined({
+        protocol: PROTOCOL,
+        request_id: retryId,
+        parent_request_id: currentFailed.request_id,
+        created_at: this.now().toISOString(),
+        status: 'pending',
+        source: 'vcptoolbox',
+        mode: 'generate',
+        prompt: normalizePrompt(currentFailed.prompt, this.promptMaxLength),
+        options: normalizeOptions(currentFailed.options || {}),
+        return: normalizeReturnSpec(currentFailed.return || {}),
+        attempt: nextAttempt,
+        idempotency_key: idempotencyKey,
+        negative_prompt: normalizeOptionalText(currentFailed.negative_prompt, 2000),
+        user_note: normalizeOptionalText(currentFailed.user_note, 2000),
+      });
+
+      await this.atomicWriteJson(this.getStatusFilePath('pending', retryId), retryRecord);
+      return this.readStatusFile('pending', retryId);
     });
-
-    await this.atomicWriteJson(this.getStatusFilePath('pending', retryId), retryRecord);
-    return this.readStatusFile('pending', retryId);
   }
 
   async markSaved(requestId, options = {}) {
