@@ -97,6 +97,9 @@ export type * from './forum-assistant'
 export { aiImageAgentsApi } from './aiImageAgents'
 export type * from './aiImageAgents'
 
+export { codexImagegenRelayApi } from './codexImagegenRelay'
+export type * from './codexImagegenRelay'
+
 export { semanticRouterApi } from './semanticRouter'
 export type * from './semanticRouter'
 

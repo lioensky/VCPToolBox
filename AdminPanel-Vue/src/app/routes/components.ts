@@ -14,6 +14,7 @@ export const APP_ROUTE_COMPONENTS = {
   "agent-scores": () => import("@/views/AgentScores.vue"),
   "channel-hub-manager": () => import("@/views/ChannelHubManager.vue"),
   "ai-image-agents": () => import("@/views/AiImageAgents.vue"),
+  "codex-imagegen-relay": () => import("@/views/CodexImagegenRelay.vue"),
   "codex-memory-monitor": () => import("@/views/CodexMemoryMonitor.vue"),
   "toolbox-manager": () => import("@/views/ToolboxManager.vue"),
   "tvs-files-editor": () => import("@/views/TvsFilesEditor.vue"),
