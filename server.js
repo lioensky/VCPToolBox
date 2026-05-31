@@ -1,5 +1,6 @@
 // server.js
 const express = require('express');
+require('./modules/dotenvPatch.js');
 const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
 const schedule = require('node-schedule');
