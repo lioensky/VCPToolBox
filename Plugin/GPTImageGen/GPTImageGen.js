@@ -1254,6 +1254,7 @@ async function buildResponse(apiResult, params) {
     const content = [];
     const imageUrls = [];
     const savedImages = [];
+    const savedBuffers = [];
 
     for (let i = 0; i < apiResult.data.length; i++) {
         const item = apiResult.data[i];
@@ -1288,6 +1289,10 @@ async function buildResponse(apiResult, params) {
         savedImages.push(savedInfo);
         imageUrls.push(savedInfo.accessibleUrl);
 
+        if (params.showBase64) {
+            savedBuffers.push({ buffer: imageBuffer, contentType });
+        }
+
         debugLog(`Image ${i}: saved as ${savedInfo.fileName}, accessible at ${savedInfo.accessibleUrl}`);
     }
 
@@ -1316,14 +1321,16 @@ async function buildResponse(apiResult, params) {
         text: textContent
     });
 
-    // 如果是 b64_json 模式，添加 image_url 类型的内容供多模态 AI 直接查看
-    for (let i = 0; i < apiResult.data.length; i++) {
-        const item = apiResult.data[i];
-        if (item.b64_json) {
+    // 只有显式开启 showbase64 时，才返回 base64 图片数据供多模态模型直接查看。
+    if (params.showBase64) {
+        for (const { buffer, contentType } of savedBuffers) {
+            const ext = inferImageExtension(contentType);
+            const mimeMap = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+            const imageMimeType = mimeMap[ext] || 'image/png';
             content.push({
                 type: 'image_url',
                 image_url: {
-                    url: `data:image/png;base64,${item.b64_json}`
+                    url: `data:${imageMimeType};base64,${buffer.toString('base64')}`
                 }
             });
         }
@@ -1400,6 +1407,8 @@ async function main() {
         }
 
         // 获取命令类型（默认 generate）
+        const showBase64 = args.showbase64 === true || args.showbase64 === 'true' || args.showBase64 === true || args.showBase64 === 'true';
+
         const command = (args.command || args.Command || args.cmd || 'generate').toLowerCase();
         // 对 invocationCommands 的 commandIdentifier 做兼容
         const isEditMode = command === 'edit' || command === 'compose' || command === 'image2image' || command === 'i2i' || command === 'gpteditimage';
@@ -1496,7 +1505,8 @@ async function main() {
             quality,
             n,
             background,
-            command: isEditMode ? 'GPTEditImage' : 'GPTGenerateImage'
+            command: isEditMode ? 'GPTEditImage' : 'GPTGenerateImage',
+            showBase64
         });
 
         outputAndExit(response);
