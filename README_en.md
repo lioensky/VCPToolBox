@@ -642,28 +642,43 @@ node server.js
 
 The server will listen on the port configured in `config.env`.
 
-#### Running with Docker Compose (Recommended)
+#### Deploy with Docker Compose Local Build (Default)
 
-**Prerequisites**: Docker and Docker Compose installed.
+This repository's `docker-compose.yml` builds the image from the local source by default and exposes both the main service port `6005` and the admin panel port `6006`.
 
-**Configuration**: Ensure the `config.env` file is correctly configured.
+1. Clone the project to get configuration files:
+   ```bash
+   git clone https://github.com/JENN2046/VCPToolBox.git
+   cd VCPToolBox
+   cp config.env.example config.env
+   # Edit config.env and fill in the necessary API keys
+   ```
 
-**Build and Start the Services**:
+2. Start the services:
+   ```bash
+   docker-compose up -d
+   ```
+
+3. View logs:
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. Stop the services:
+   ```bash
+   docker-compose down
+   ```
+
+> **Note**: To use an upstream prebuilt image instead, verify the image source and version first, then switch `docker-compose.yml` to an `image` configuration.
+
+Upstream Docker Hub: [hub.docker.com/r/lioensky/vcptoolbox](https://hub.docker.com/r/lioensky/vcptoolbox)
+
+#### Build Docker Image Locally (Optional)
+
+If you need a custom build or cannot access Docker Hub:
 
 ```bash
 docker-compose up --build -d
-```
-
-**View Logs**:
-
-```bash
-docker-compose logs -f
-```
-
-**Stop the Services**:
-
-```bash
-docker-compose down
 ```
 
 ### 7.2 Deploying a VCP Distributed Node
