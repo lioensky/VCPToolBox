@@ -24,8 +24,11 @@ RUN apk add --no-cache \
   libffi-dev \
   openssl-dev \
   ffmpeg \
-  rust \
-  cargo
+  curl
+
+# 通过 rustup 安装 Rust 工具链（Alpine 3.20+ 已移除 rust/cargo 包）
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # 在 npm install 之前设置环境变量，跳过 puppeteer 的 chromium 下载
 ARG PUPPETEER_SKIP_DOWNLOAD=true
@@ -33,21 +36,14 @@ ENV PUPPETEER_SKIP_DOWNLOAD=${PUPPETEER_SKIP_DOWNLOAD}
 
 # 复制 Node.js 依赖定义文件并安装依赖 (包含 pm2)
 COPY package*.json ./
-# 如果遇到 npm install 速度过慢的问题，可以尝试更换下面的镜像源。
-# 国内常用镜像:
-# --registry=https://registry.npm.taobao.org (淘宝旧版)
-# --registry=https://registry.npmmirror.com (淘宝新版)
-# --registry=https://mirrors.huaweicloud.com/repository/npm/ (华为云)
-# 国际通用 (如果服务器在海外):
-# (默认，无需指定)
-RUN npm cache clean --force && npm install --registry=https://registry.npmmirror.com
+RUN npm cache clean --force && npm install
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
 # 在 Linux 环境下构建时，注释掉仅适用于 Windows 的 win10toast 包
 RUN sed -i '/^win10toast/s/^/#/' requirements.txt
-RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
-RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -U pip setuptools wheel
+RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -r requirements.txt
 
 # 复制所有源代码
 COPY . .
@@ -55,7 +51,7 @@ COPY . .
 # 构建 AdminPanel-Vue 前端
 RUN if [ -f AdminPanel-Vue/package.json ]; then \
       echo ">>> Building AdminPanel-Vue frontend..."; \
-      cd AdminPanel-Vue && npm install --registry=https://registry.npmmirror.com && npm run build:no-type-check; \
+      cd AdminPanel-Vue && npm install && npm run build:no-type-check; \
       cd ..; \
       echo ">>> AdminPanel-Vue build complete."; \
     fi
@@ -66,7 +62,7 @@ RUN if [ -f AdminPanel-Vue/package.json ]; then \
 RUN find Plugin -name requirements.txt -exec sh -c ' \
     for req_file do \
         echo ">>> Installing Python dependencies from $req_file"; \
-        pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r "$req_file" || \
+        pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -r "$req_file" || \
             { echo "!!! Failed to install Python dependencies from $req_file"; exit 1; }; \
     done' sh {} +
 
@@ -77,7 +73,7 @@ RUN find Plugin -name package.json -exec sh -c ' \
     for pkg_file do \
         plugin_dir=$(dirname "$pkg_file"); \
         echo ">>> Installing Node.js dependencies in $plugin_dir"; \
-        (cd "$plugin_dir" && npm install --registry=https://registry.npmmirror.com --legacy-peer-deps) || \
+        (cd "$plugin_dir" && npm install --legacy-peer-deps) || \
             { echo "!!! Failed to install Node.js dependencies in $plugin_dir"; exit 1; }; \
     done' sh {} +
 
@@ -162,9 +158,9 @@ RUN mkdir -p /usr/src/app/VCPTimedContacts \
 # USER appuser
 
 
-# 暴露端口（主服务 6005 + 管理面板 6006）
+# 暴露端口（主服务 + 管理面板，默认 6005 + 6006）
 EXPOSE 6005 6006
 
 # 定义容器启动命令
-# 默认只启动主服务；如需同时启动管理面板，可使用 docker-compose 配置
-CMD [ "node_modules/.bin/pm2-runtime", "start", "server.js" ]
+# 使用 PM2 ecosystem 配置同时启动主服务和管理面板
+CMD [ "node_modules/.bin/pm2-runtime", "start", "ecosystem.config.js" ]

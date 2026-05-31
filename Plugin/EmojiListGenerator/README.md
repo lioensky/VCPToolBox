@@ -59,6 +59,7 @@ VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能
 - 成功：`[EmoticonFixer] Library loaded with N items.`
 - 失败：`[EmoticonFixer] Library unavailable, fixer running in degraded passthrough mode.`
 
+
 > **注意**：如果看到 `Library unavailable`，请检查：(1) VCPToolBox 后端是否正常运行；(2) `fileKey` 是否正确配置；(3) 前端 `emoticonHandlers.js` 是否为最新版本（应通过 API 获取数据，而非读取本地文件）。
 
 ## 表情包 URL 修复器工作原理
@@ -75,5 +76,6 @@ VCPChat 前端内置了 AI 表情包 URL 修复器（`emoticonUrlFixer`），能
 
 - 新增表情包目录后需**重启 VCPToolBox 后端**，本插件才会重新扫描生成列表，后端 API 会自动返回最新数据
 - 也可通过 `/admin_api/emojis/list/rebuild` 端点手动触发重新生成，无需重启
+
 - 修复器在库为空时自动降级为直通模式（passthrough），不做任何 URL 修改
 - 后端 ImageServer 提供了额外的图片格式回退机制（`.png`↔`.jpg`↔`.webp` 等），作为前端修复器的补充防御层
