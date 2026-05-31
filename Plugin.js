@@ -849,6 +849,56 @@ class PluginManager extends EventEmitter {
         return this.serviceModules.get(name)?.module;
     }
 
+    _executeDirectToolCallWithTimeout(plugin, toolName, serviceModule, pluginSpecificArgs, directContext) {
+        const timeoutDuration = plugin.communication?.timeout || 60000;
+        const abortController = typeof AbortController === 'function'
+            ? new AbortController()
+            : null;
+        const contextWithSignal = directContext && typeof directContext === 'object'
+            ? { ...directContext }
+            : {};
+        if (abortController) {
+            contextWithSignal.signal = abortController.signal;
+        }
+
+        const directCallPromise = Promise.resolve().then(() => (
+            serviceModule.processToolCall(pluginSpecificArgs, contextWithSignal)
+        ));
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const timeoutId = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                const timeoutError = new Error(`Plugin "${toolName}" direct tool call timed out after ${timeoutDuration}ms.`);
+                timeoutError.code = 'DIRECT_TOOL_TIMEOUT';
+                if (abortController) {
+                    try {
+                        abortController.abort(timeoutError);
+                    } catch (_) {
+                        abortController.abort();
+                    }
+                }
+                reject(timeoutError);
+            }, timeoutDuration);
+
+            directCallPromise.then(
+                result => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
+                    resolve(result);
+                },
+                error => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timeoutId);
+                    reject(error);
+                }
+            );
+        });
+    }
+
     // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
     getVCPLogFunctions() {
         const vcpLogModule = this.getServiceModule('VCPLog');
@@ -1070,7 +1120,13 @@ class PluginManager extends EventEmitter {
                         throw new Error(JSON.stringify({ plugin_error: `Plugin "${toolName}" requires admin authentication, but auth code could not be obtained. Execution denied.` }));
                     }
                 }
-                resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs, directExecutionContext);
+                resultFromPlugin = await this._executeDirectToolCallWithTimeout(
+                    plugin,
+                    toolName,
+                    serviceModule,
+                    pluginSpecificArgs,
+                    directExecutionContext
+                );
             } else {
                 // --- 本地插件调用逻辑 (现有逻辑) ---
                 if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
