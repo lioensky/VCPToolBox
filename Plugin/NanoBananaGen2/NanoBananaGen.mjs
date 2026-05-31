@@ -198,7 +198,7 @@ async function callApi(payload) {
  * @param {object} originalArgs - 原始的工具调用参数
  * @returns {Promise<object>} - 格式化后的成功结果对象
  */
-async function processApiResponseAndSaveImage(message, originalArgs) {
+async function processApiResponseAndSaveImage(message, originalArgs, showBase64 = false) {
     let textContent = message.content || '';
     let imageUrl = null;
 
@@ -282,21 +282,24 @@ async function processApiResponseAndSaveImage(message, originalArgs) {
     const modelResponseText = cleanTextContent || "图片已成功处理！";
     const finalResponseText = `${modelResponseText}\n\n**图片详情:**\n- 提示词: ${originalArgs.prompt}\n- 可访问URL: ${accessibleImageUrl}\n\n请利用可访问url将图片转发给用户`;
 
-    const base64Image = imageBuffer.toString('base64');
+    const content = [
+        {
+            type: 'text',
+            text: finalResponseText
+        }
+    ];
+
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${mimeType};base64,${imageBuffer.toString('base64')}`
+            }
+        });
+    }
 
     return {
-        content: [
-            {
-                type: 'text',
-                text: finalResponseText
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${mimeType};base64,${base64Image}`
-                }
-            }
-        ],
+        content,
         details: {
             serverPath: `image/nanobananagen/${generatedFileName}`,
             fileName: generatedFileName,
@@ -363,6 +366,7 @@ function collectImageInputs(args) {
 function normalizeNanoBananaArgs(rawArgs) {
     const args = { ...(rawArgs || {}) };
     args.prompt = args.prompt || args.Prompt || args.text || '';
+    args.showBase64 = args.showbase64 === true || args.showbase64 === 'true' || args.showBase64 === true || args.showBase64 === 'true';
 
     const rawSize = args.image_size || args.imageSize || args.size || args.Size || args.resolution || args.Resolution;
     if (typeof rawSize === 'string' && rawSize.trim()) {
@@ -443,7 +447,7 @@ async function generateImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, args.showBase64);
 }
 
 async function editImage(args) {
@@ -491,7 +495,7 @@ async function editImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, args.showBase64);
 }
 
 async function composeImage(args) {
@@ -551,7 +555,7 @@ async function composeImage(args) {
     };
 
     const message = await callApi(payload);
-    return await processApiResponseAndSaveImage(message, args);
+    return await processApiResponseAndSaveImage(message, args, args.showBase64);
 }
 
 // --- 4. 主入口函数 ---

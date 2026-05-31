@@ -451,8 +451,8 @@ async function generateImageAndSave(args) {
         `请务必使用以下HTML <img> 标签将图片直接展示给用户 (您可以调整width属性，建议200-500像素)：\n` +
         `${imageHtml}\n`;
 
-    const base64Image = imageBuffer.toString('base64');
     const imageMimeType = `image/${imageExtension}`;
+    const showBase64 = args.showbase64 === true || args.showbase64 === 'true' || args.showBase64 === true || args.showBase64 === 'true';
 
     // Attempt to get the seed from the API response, fallback to payload or N/A
     const responseSeed = response.data?.data?.[0]?.seed;
@@ -460,19 +460,24 @@ async function generateImageAndSave(args) {
     const finalSeed = responseSeed !== undefined ? responseSeed : (payloadSeed !== undefined ? payloadSeed : 'N/A');
 
 
-    const result = {
-        content: [
-            {
-                type: 'text',
-                text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
-            },
-            {
-                type: 'image_url',
-                image_url: {
-                    url: `data:${imageMimeType};base64,${base64Image}`
-                }
+    const content = [
+        {
+            type: 'text',
+            text: `图片已成功生成！\n- 提示词: ${args.prompt}\n- 分辨率: ${size}\n- Seed: ${finalSeed}\n- 可访问URL: ${accessibleImageUrl}\n请将生成好的图片转发给用户哦。`
+        }
+    ];
+
+    if (showBase64) {
+        content.push({
+            type: 'image_url',
+            image_url: {
+                url: `data:${imageMimeType};base64,${imageBuffer.toString('base64')}`
             }
-        ],
+        });
+    }
+
+    const result = {
+        content,
         details: { // Keep details for logging or other purposes if needed
             serverPath: `image/doubaogen/${generatedFileName}`,
             fileName: generatedFileName,
