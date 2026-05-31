@@ -1,0 +1,24 @@
+{
+  "name": "VCPBridgeServer",
+  "displayName": "VCP Bridge Server (System Prompt 劫持代理)",
+  "version": "2.0.0",
+  "description": "独立端口的透明代理服务器，用于拦截 CLI 工具（Codex、Claude Code、Cursor 等）的请求并注入/替换 System Prompt。支持 OpenAI Chat、Responses API、Anthropic Messages、Gemini 四种协议的全矩阵转换。",
+  "pluginType": "service",
+  "entryPoint": {
+    "script": "bridgeserver.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "hasApiRoutes": false,
+  "configSchema": {
+    "BRIDGE_PORT": { "type": "integer", "description": "Bridge Server 监听端口（独立于主服务器）" },
+    "BRIDGE_UPSTREAM_URL": { "type": "string", "description": "上游 API 地址（如 https://api.openai.com）" },
+    "BRIDGE_UPSTREAM_KEY": { "type": "string", "description": "上游 API Key（留空则透传下游请求的 key）" },
+    "BRIDGE_UPSTREAM_TYPE": { "type": "string", "description": "上游 API 类型：chat / anthropic / gemini（默认 chat）" },
+    "BRIDGE_MODEL": { "type": "string", "description": "默认模型名（下游未指定时使用）" },
+    "BRIDGE_SYSTEM_PROMPT": { "type": "string", "description": "注入的 System Prompt（支持 .txt 文件名从插件目录加载）" },
+    "BRIDGE_HIJACK_MODE": { "type": "string", "description": "劫持模式：replace（完全替换）/ prepend（前置追加）/ append（后置追加）/ off（不劫持）" },
+    "BRIDGE_MODEL_MAP": { "type": "string", "description": "模型名映射，格式：alias1:target1,alias2:target2" }
+  }
+}
