@@ -233,7 +233,12 @@ async function processToolCall(args = {}) {
     });
 }
 
-async function shutdown() {
+async function shutdown(options = {}) {
+    const reason = typeof options === 'string' ? options : options.reason;
+    if (reason === 'reload') {
+        return;
+    }
+
     if (!directManager) return;
 
     await directManager.stopAll();

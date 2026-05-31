@@ -193,6 +193,38 @@ test('shutdown stops the current direct manager', async () => {
     }
 });
 
+test('reload shutdown keeps active direct monitor manager running', async () => {
+    const linuxLogMonitor = loadFreshModule();
+    const calls = [];
+    let managerId = 0;
+    linuxLogMonitor._private.setMonitorManagerFactoryForTests(() => createFakeManager(calls, `manager-${++managerId}`));
+
+    try {
+        await linuxLogMonitor.initialize();
+        await linuxLogMonitor.processToolCall({
+            command: 'start',
+            hostId: 'local',
+            logPath: '/var/log/app.log'
+        });
+        await linuxLogMonitor.shutdown({ reason: 'reload' });
+        await linuxLogMonitor.processToolCall({ command: 'status' });
+
+        assert.equal(managerId, 2);
+        assert.deepEqual(calls.filter(call => call.init), [
+            { manager: 'manager-1', init: 'readonly' },
+            { manager: 'manager-2', init: 'full' }
+        ]);
+        assert.deepEqual(calls.filter(call => call.stopAll), [
+            { manager: 'manager-1', stopAll: true }
+        ]);
+        assert.deepEqual(calls.filter(call => call.getStatusFromFile), [
+            { manager: 'manager-2', getStatusFromFile: true }
+        ]);
+    } finally {
+        linuxLogMonitor._private.resetForTests();
+    }
+});
+
 test('MonitorManager readonly init does not create state directory', async () => {
     delete require.cache[require.resolve(monitorManagerPath)];
     const MonitorManager = require(monitorManagerPath);
