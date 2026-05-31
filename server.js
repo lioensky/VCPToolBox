@@ -1,5 +1,6 @@
 // server.js
 const express = require('express');
+require('./modules/dotenvPatch.js'); // 应用 dotenv.parse 补丁以支持特殊字符
 const dotenv = require('dotenv');
 dotenv.config({ path: 'config.env' });
 const schedule = require('node-schedule');
