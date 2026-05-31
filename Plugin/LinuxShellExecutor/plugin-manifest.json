@@ -5,14 +5,15 @@
     "displayName": "Linux Shell 安全执行器",
     "description": "六层安全防护的 Linux Shell 命令执行器。支持多发行版静默安装、异步任务托管、交互阻塞探测及跨插件联动监控。",
     "author": "VCP Team",
-    "pluginType": "synchronous",
+    "pluginType": "hybridservice",
     "requiresAdmin": true,
     "entryPoint": {
         "type": "nodejs",
+        "script": "LinuxShellExecutor.js",
         "command": "node LinuxShellExecutor.js"
     },
     "communication": {
-        "protocol": "stdio",
+        "protocol": "direct",
         "timeout": 60000
     },
     "dependencies": {
