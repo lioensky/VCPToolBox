@@ -48,6 +48,23 @@ RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/py
 # 复制所有源代码
 COPY . .
 
+# =================================================================
+# 编译 Rust N-API 向量引擎 (vexus-lite)
+# 关键：必须在容器内重新编译，确保 .node 产物与当前源码 (src/lib.rs) 同步。
+# 仓库内 commit 的预编译 .node 仅作为 node 直跑用户的兜底，
+# 源码升级后若不在此重编，镜像会继续加载过时产物，导致行为与源码不一致
+# （例如新增的 compute_pairwise_similarities 等导出缺失）。
+# napi build --release 会按当前平台 (alpine = musl) 生成
+# vexus-lite.linux-x64-musl.node / vexus-lite.linux-arm64-musl.node，
+# 与 index.js 的 isMusl() 加载分支匹配。
+# =================================================================
+RUN echo ">>> Building rust-vexus-lite native addon..." && \
+    cd rust-vexus-lite && \
+    npm install && \
+    npm run build && \
+    cd .. && \
+    echo ">>> rust-vexus-lite build complete."
+
 # 构建 AdminPanel-Vue 前端
 RUN if [ -f AdminPanel-Vue/package.json ]; then \
       echo ">>> Building AdminPanel-Vue frontend..."; \
@@ -118,6 +135,10 @@ COPY --from=build /usr/src/app/Agent ./Agent
 COPY --from=build /usr/src/app/routes ./routes
 COPY --from=build /usr/src/app/modules ./modules
 COPY --from=build /usr/src/app/requirements.txt ./
+# 复制容器内编译的 Rust N-API 向量引擎（含新生成的 musl .node 产物）
+# 必须显式 COPY：否则未使用 bind mount 的用户运行时 require('./rust-vexus-lite')
+# 会失败，触发 KnowledgeBaseManager.js 的 process.exit(1)。
+COPY --from=build /usr/src/app/rust-vexus-lite ./rust-vexus-lite
 # 复制 AdminPanel-Vue 构建产物（管理面板前端）
 COPY --from=build /usr/src/app/AdminPanel-Vue/dist ./AdminPanel-Vue/dist
 
