@@ -372,6 +372,36 @@ function buildResponsesPayloadFromUpstream(payload, upstreamType) {
     };
 }
 
+function buildChatPayloadFromUpstream(payload, upstreamType) {
+    const text = extractTextFromUpstreamPayload(payload, upstreamType);
+    const usage = extractUsageFromUpstreamPayload(payload, upstreamType);
+    const created = payload?.created || Math.floor(Date.now() / 1000);
+    const responseId = payload?.id && String(payload.id).startsWith('chatcmpl-')
+        ? payload.id
+        : `chatcmpl-${payload?.id || created}`;
+    return {
+        id: responseId,
+        object: 'chat.completion',
+        created,
+        model: payload?.model || runtimeConfig?.defaultModel || DEFAULT_MODEL,
+        choices: [
+            {
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: text
+                },
+                finish_reason: 'stop'
+            }
+        ],
+        usage: {
+            prompt_tokens: usage.input_tokens || 0,
+            completion_tokens: usage.output_tokens || 0,
+            total_tokens: usage.total_tokens || 0
+        }
+    };
+}
+
 function buildAnthropicPayloadFromUpstream(payload, upstreamType) {
     const text = extractTextFromUpstreamPayload(payload, upstreamType);
     const usage = extractUsageFromUpstreamPayload(payload, upstreamType);
@@ -413,8 +443,11 @@ function buildGeminiPayloadFromUpstream(payload, upstreamType) {
 }
 
 function transformUpstreamJsonPayload(payload, upstreamType, downstreamFormat) {
-    if (downstreamFormat === upstreamType || downstreamFormat === 'chat') {
+    if (downstreamFormat === upstreamType) {
         return payload;
+    }
+    if (downstreamFormat === 'chat') {
+        return buildChatPayloadFromUpstream(payload, upstreamType);
     }
     if (downstreamFormat === 'responses') {
         return buildResponsesPayloadFromUpstream(payload, upstreamType);
@@ -430,6 +463,62 @@ function transformUpstreamJsonPayload(payload, upstreamType, downstreamFormat) {
 
 function createResponsesStreamEvent(type, data) {
     return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+}
+
+function createChatStreamChunk(id, created, model, content, finishReason = null) {
+    return {
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model,
+        choices: [
+            {
+                index: 0,
+                delta: content ? { content } : {},
+                finish_reason: finishReason
+            }
+        ]
+    };
+}
+
+function extractStreamingTextDelta(payload, upstreamType) {
+    if (!payload || typeof payload !== 'object') return '';
+    if (upstreamType === 'anthropic') {
+        if (payload.type === 'content_block_delta') {
+            return payload.delta?.text || '';
+        }
+        return normalizeTextContent(payload.content);
+    }
+    if (upstreamType === 'gemini') {
+        return normalizeTextContent(payload.candidates?.[0]?.content?.parts);
+    }
+    return payload.choices?.map(choice => choice?.delta?.content || '').join('') || '';
+}
+
+function transformUpstreamSseToChatSse(sseText, upstreamType) {
+    const created = Math.floor(Date.now() / 1000);
+    const responseId = `chatcmpl-${created}`;
+    let model = runtimeConfig?.defaultModel || DEFAULT_MODEL;
+    const lines = [];
+
+    for (const rawLine of String(sseText || '').split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+            const chunk = JSON.parse(data);
+            if (chunk.model) model = chunk.model;
+            if (chunk.message?.model) model = chunk.message.model;
+            const delta = extractStreamingTextDelta(chunk, upstreamType);
+            if (!delta) continue;
+            lines.push(`data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, delta))}\n\n`);
+        } catch (_error) {}
+    }
+
+    lines.push(`data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, '', 'stop'))}\n\n`);
+    lines.push('data: [DONE]\n\n');
+    return lines.join('');
 }
 
 function transformChatSseToResponsesSse(sseText) {
@@ -536,7 +625,7 @@ function transformChatSseToResponsesSse(sseText) {
 }
 
 function shouldTransformResponse(upstreamType, downstreamFormat) {
-    return downstreamFormat !== upstreamType && downstreamFormat !== 'chat';
+    return downstreamFormat !== upstreamType;
 }
 
 async function proxyRequest(req, res, payload) {
@@ -582,6 +671,10 @@ async function proxyRequest(req, res, payload) {
         if (contentType.includes('text/event-stream') && endpoint.type === 'chat' && downstreamFormat === 'responses') {
             res.setHeader('content-type', 'text/event-stream; charset=utf-8');
             return res.send(transformChatSseToResponsesSse(text));
+        }
+        if (contentType.includes('text/event-stream') && downstreamFormat === 'chat') {
+            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+            return res.send(transformUpstreamSseToChatSse(text, endpoint.type));
         }
         try {
             const payloadJson = JSON.parse(text);
@@ -701,12 +794,14 @@ module.exports = {
         buildUpstreamChatBody,
         buildUpstreamGeminiBody,
         buildUpstreamRequest,
+        buildChatPayloadFromUpstream,
         buildResponsesPayloadFromUpstream,
         createRuntimeConfig,
         extractFromAnthropicBody,
         extractFromGeminiBody,
         extractFromResponsesInput,
         transformChatSseToResponsesSse,
+        transformUpstreamSseToChatSse,
         transformUpstreamJsonPayload,
         normalizeApiType,
         normalizeTextContent,

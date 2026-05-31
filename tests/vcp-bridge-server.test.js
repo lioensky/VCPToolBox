@@ -14,6 +14,7 @@ const {
     parseModelMap,
     resolveUpstreamEndpoint,
     transformChatSseToResponsesSse,
+    transformUpstreamSseToChatSse,
     transformUpstreamJsonPayload
 } = plugin._private;
 
@@ -222,6 +223,52 @@ test('transforms chat completion JSON into responses schema', () => {
     });
 });
 
+test('transforms anthropic and gemini JSON into chat completion schema', () => {
+    const anthropicChat = transformUpstreamJsonPayload({
+        id: 'msg-anthropic-test',
+        type: 'message',
+        model: 'claude-test',
+        content: [{ type: 'text', text: 'anthropic answer' }],
+        usage: {
+            input_tokens: 7,
+            output_tokens: 8
+        }
+    }, 'anthropic', 'chat');
+
+    assert.equal(anthropicChat.object, 'chat.completion');
+    assert.equal(anthropicChat.choices[0].message.role, 'assistant');
+    assert.equal(anthropicChat.choices[0].message.content, 'anthropic answer');
+    assert.deepEqual(anthropicChat.usage, {
+        prompt_tokens: 7,
+        completion_tokens: 8,
+        total_tokens: 15
+    });
+
+    const geminiChat = transformUpstreamJsonPayload({
+        model: 'gemini-test',
+        candidates: [
+            {
+                content: {
+                    parts: [{ text: 'gemini answer' }]
+                }
+            }
+        ],
+        usageMetadata: {
+            promptTokenCount: 3,
+            candidatesTokenCount: 4,
+            totalTokenCount: 7
+        }
+    }, 'gemini', 'chat');
+
+    assert.equal(geminiChat.object, 'chat.completion');
+    assert.equal(geminiChat.choices[0].message.content, 'gemini answer');
+    assert.deepEqual(geminiChat.usage, {
+        prompt_tokens: 3,
+        completion_tokens: 4,
+        total_tokens: 7
+    });
+});
+
 test('transforms chat completion SSE into responses stream events', () => {
     const transformed = transformChatSseToResponsesSse([
         'data: {"model":"gpt-test","choices":[{"delta":{"content":"hel"}}]}',
@@ -239,6 +286,128 @@ test('transforms chat completion SSE into responses stream events', () => {
     assert.match(transformed, /event: response\.completed/);
     assert.match(transformed, /"output_text":"hello"/);
     assert.match(transformed, /data: \[DONE\]/);
+});
+
+test('transforms anthropic SSE into chat completion chunks', () => {
+    const transformed = transformUpstreamSseToChatSse([
+        'event: message_start',
+        'data: {"type":"message_start","message":{"model":"claude-test"}}',
+        '',
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"anthropic "}}',
+        '',
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream"}}',
+        ''
+    ].join('\n'), 'anthropic');
+
+    assert.match(transformed, /"object":"chat\.completion\.chunk"/);
+    assert.match(transformed, /"model":"claude-test"/);
+    assert.match(transformed, /"content":"anthropic "/);
+    assert.match(transformed, /"content":"stream"/);
+    assert.match(transformed, /"finish_reason":"stop"/);
+    assert.match(transformed, /data: \[DONE\]/);
+});
+
+test('chat endpoint returns chat schema when upstream is anthropic', async () => {
+    const port = await getFreePort();
+    const fakeFetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.equal(body.messages[0].content, 'chat request');
+        return new Response(JSON.stringify({
+            id: 'msg-route-test',
+            type: 'message',
+            model: 'claude-route',
+            content: [{ type: 'text', text: 'chat answer' }],
+            usage: {
+                input_tokens: 11,
+                output_tokens: 12
+            }
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'anthropic'
+        }, { fetchImpl: fakeFetch });
+
+        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'claude-route',
+                messages: [{ role: 'user', content: 'chat request' }]
+            })
+        });
+        const payload = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(payload.object, 'chat.completion');
+        assert.equal(payload.choices[0].message.role, 'assistant');
+        assert.equal(payload.choices[0].message.content, 'chat answer');
+        assert.deepEqual(payload.usage, {
+            prompt_tokens: 11,
+            completion_tokens: 12,
+            total_tokens: 23
+        });
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('chat endpoint returns chat SSE when anthropic upstream streams', async () => {
+    const port = await getFreePort();
+    const fakeFetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        assert.equal(body.stream, true);
+        assert.equal(body.messages[0].content, 'chat stream');
+        return new Response([
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"chat "}}',
+            '',
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"stream"}}',
+            ''
+        ].join('\n'), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'anthropic'
+        }, { fetchImpl: fakeFetch });
+
+        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'claude-route',
+                stream: true,
+                messages: [{ role: 'user', content: 'chat stream' }]
+            })
+        });
+        const payload = await response.text();
+
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get('content-type'), /text\/event-stream/);
+        assert.match(payload, /"object":"chat\.completion\.chunk"/);
+        assert.match(payload, /"content":"chat "/);
+        assert.match(payload, /"content":"stream"/);
+        assert.match(payload, /data: \[DONE\]/);
+    } finally {
+        await plugin.shutdown();
+    }
 });
 
 test('responses endpoint returns responses schema when upstream is chat', async () => {
