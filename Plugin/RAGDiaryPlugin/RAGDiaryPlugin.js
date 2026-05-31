@@ -4257,6 +4257,20 @@ class RAGDiaryPlugin {
             return await this.pendingEmbeddingRequests.get(cacheKey);
         }
 
+        // 🌟 最小修复：精确缓存未命中时，在 API 前尝试高阈值 fuzzy 复用。
+        // 目的：兼容 superDetectors / 占位符处理导致的极小文本差异（如 “……” -> “…”），
+        // 避免 RAG 主链路与 DynamicFold 对同一段 AI 发言重复向量化。
+        const fuzzyMatch = this._findFuzzyEmbeddingFromCache(normalizedText);
+        if (fuzzyMatch && fuzzyMatch.vector) {
+            this.cacheManager.set('embedding', cacheKey, fuzzyMatch.vector);
+            this._rememberEmbeddingText(cacheKey, normalizedText);
+            console.log(
+                `[RAGDiaryPlugin] Fuzzy embedding cache hit: ` +
+                `sim=${fuzzyMatch.similarity.toFixed(4)}, len=${normalizedText.length}/${fuzzyMatch.length}`
+            );
+            return fuzzyMatch.vector;
+        }
+
         const requestPromise = (async () => {
             try {
                 const vector = await this.getSingleEmbedding(normalizedText);
