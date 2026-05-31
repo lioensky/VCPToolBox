@@ -19,30 +19,62 @@ const AnomalyDetector = require('../LinuxLogMonitor/core/AnomalyDetector');
 const CallbackTrigger = require('../LinuxLogMonitor/core/CallbackTrigger');
 const { getSSHManager } = require('../../modules/SSHManager');
 
+const HOSTS_CONFIG_PATH = path.join(
+    __dirname,
+    '..',
+    '..',
+    'Plugin',
+    'LinuxShellExecutor',
+    'hosts.json'
+);
+const DEFAULT_HOSTS_TEMPLATE_MD5 = 'b1d6472eba3a65b9354a096ce21d3f3e';
+
+function createLocalOnlyHostsConfig() {
+    return {
+        hosts: {
+            local: {
+                name: '本地执行',
+                type: 'local',
+                enabled: true,
+                securityLevel: 'standard'
+            }
+        },
+        defaultHost: 'local',
+        globalSettings: {}
+    };
+}
+
+function calculateFileMd5(filePath) {
+    return crypto
+        .createHash('md5')
+        .update(fs.readFileSync(filePath))
+        .digest('hex');
+}
+
 /**
  * 加载主机配置文件
  * @returns {Object} 主机配置对象
  */
 function loadHostsConfig() {
-    const configPath = path.join(
-        __dirname,
-        '..',
-        '..',
-        'Plugin',
-        'LinuxShellExecutor',
-        'hosts.json'
-    );
     try {
-        if (fs.existsSync(configPath)) {
-            delete require.cache[require.resolve(configPath)];
-            return require(configPath);
+        if (fs.existsSync(HOSTS_CONFIG_PATH)) {
+            const configMd5 = calculateFileMd5(HOSTS_CONFIG_PATH);
+            if (configMd5 === DEFAULT_HOSTS_TEMPLATE_MD5) {
+                console.warn(
+                    `[LinuxLogMonitorServer] hosts.json MD5=${configMd5}，仍为默认模板，仅启用本地日志监控。`
+                );
+                return createLocalOnlyHostsConfig();
+            }
+
+            delete require.cache[require.resolve(HOSTS_CONFIG_PATH)];
+            return require(HOSTS_CONFIG_PATH);
         }
     } catch (e) {
         console.error(
-            `[LinuxLogMonitorServer] 无法加载主机配置: ${configPath}: ${e.message}`
+            `[LinuxLogMonitorServer] 无法加载主机配置: ${HOSTS_CONFIG_PATH}: ${e.message}`
         );
     }
-    return { hosts: {}, globalSettings: {} };
+    return createLocalOnlyHostsConfig();
 }
 
 /**

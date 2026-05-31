@@ -46,6 +46,18 @@ function logInfo(...args) {
     process.stderr.write(`${util.format(...args)}\n`);
 }
 
+function logWarn(...args) {
+    if (isServerLoggerActive()) {
+        console.warn(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
+
+function isDebugModeEnabled() {
+    return String(process.env.DebugMode || '').toLowerCase() === 'true';
+}
+
 class SSHManager {
     constructor(hostsConfig) {
         this.hosts = hostsConfig.hosts || {};
@@ -107,6 +119,7 @@ class SSHManager {
         this.queueWaitTimeout = this.globalSettings.queueWaitTimeout || 120000;
         this.disconnectOnCommandTimeout = this.globalSettings.disconnectOnCommandTimeout !== false;
         this.executionQueues = new Map();
+        this.debugMode = this.globalSettings.debug === true || isDebugModeEnabled();
 
         // 如果启用连接池，启动定时器和预热
         if (this.usePool) {
@@ -119,14 +132,35 @@ class SSHManager {
     /**
      * 添加调试日志（主进程按 info 分层，stdio 插件子进程仍写 stderr 以保护 stdout 响应）
      */
-    _log(message) {
+    _writeLog(message, level = 'info') {
         const timestamp = new Date().toISOString();
-        const logEntry = `[${timestamp}] [SSHManager] ${message}`;
-        logInfo(logEntry);
+        const tag = level === 'debug' ? '[SSHManager][DEBUG]' : '[SSHManager]';
+        const logEntry = `[${timestamp}] ${tag} ${message}`;
+        if (level === 'warn') {
+            logWarn(logEntry);
+        } else {
+            logInfo(logEntry);
+        }
         if (!this.debugLogs) {
             this.debugLogs = [];
         }
-        this.debugLogs.push(logEntry);  // 收集到数组
+        if (level !== 'debug' || this.debugMode) {
+            this.debugLogs.push(logEntry);  // 收集到数组
+        }
+    }
+
+    _log(message) {
+        this._writeLog(message, 'info');
+    }
+
+    _warn(message) {
+        this._writeLog(message, 'warn');
+    }
+
+    _debug(message) {
+        if (this.debugMode) {
+            this._writeLog(message, 'debug');
+        }
     }
     
     /**
@@ -233,7 +267,7 @@ class SSHManager {
                 return data;
             }
         } catch (error) {
-            this._log(`加载状态缓存失败: ${error.message}`);
+            this._warn(`加载状态缓存失败: ${error.message}`);
         }
         return {};
     }
@@ -310,7 +344,7 @@ class SSHManager {
                     }
                 }
             } catch (error) {
-                this._log(`保存状态缓存失败: ${error.message}`);
+                this._warn(`保存状态缓存失败: ${error.message}`);
             }
         };
 
@@ -450,14 +484,14 @@ class SSHManager {
                         resolve();
                     };
                     const timeout = setTimeout(() => {
-                        this._log(`健康检查超时: ${hostId}`);
+                        this._warn(`健康检查超时: ${hostId}`);
                         this.disconnect(hostId);
                         settle();
                     }, 5000);
                     try {
                         connection.client.exec('echo keepalive', (err, stream) => {
                             if (err) {
-                                this._log(`健康检查失败: ${hostId} - ${err.message}`);
+                                this._warn(`健康检查失败: ${hostId} - ${err.message}`);
                                 this.disconnect(hostId);
                                 settle();
                                 return;
@@ -467,7 +501,7 @@ class SSHManager {
                                 settle();
                             });
                             stream.on('error', streamErr => {
-                                this._log(`健康检查流错误: ${hostId} - ${streamErr.message}`);
+                                this._warn(`健康检查流错误: ${hostId} - ${streamErr.message}`);
                                 this.disconnect(hostId);
                                 settle();
                             });
@@ -477,7 +511,7 @@ class SSHManager {
                             }
                         });
                     } catch (e) {
-                        this._log(`健康检查异常: ${hostId} - ${e.message}`);
+                        this._warn(`健康检查异常: ${hostId} - ${e.message}`);
                         this.disconnect(hostId);
                         settle();
                     }
@@ -501,7 +535,7 @@ class SSHManager {
                 await this.connect(hostId);
                 this._log(`连接预热成功: ${hostId}`);
             } catch (error) {
-                this._log(`连接预热失败: ${hostId} - ${error.message}`);
+                this._warn(`连接预热失败: ${hostId} - ${error.message}`);
             }
         }
     }
@@ -548,11 +582,11 @@ class SSHManager {
         // 规范化路径
         resolvedPath = path.normalize(resolvedPath);
         
-        this._log(`解析私钥路径: ${keyPath} -> ${resolvedPath}`);
+        this._debug(`解析私钥路径: ${keyPath} -> ${resolvedPath}`);
         
         try {
             const keyContent = await fs.readFile(resolvedPath, 'utf8');
-            this._log(`私钥文件读取成功，长度: ${keyContent.length} 字符`);
+            this._debug(`私钥文件读取成功，长度: ${keyContent.length} 字符`);
             return keyContent;
         } catch (error) {
             throw new Error(`无法读取私钥文件: ${resolvedPath} (原始路径: ${keyPath}) - ${error.message}`);
@@ -569,15 +603,47 @@ class SSHManager {
     /**
      * 等待连接槽位可用
      */
-    async waitForConnectionSlot() {
+    async waitForConnectionSlot(signal) {
+        this._throwIfAborted(signal, 'SSH 连接槽位等待已取消');
         if (this.canCreateConnection()) {
             return;
         }
         
         this._log(`连接数已达上限 (${this.activeConnections}/${this.maxConcurrentConnections})，等待槽位...`);
         
-        return new Promise((resolve) => {
-            this.connectionQueue.push(resolve);
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let entry = null;
+            const cleanup = () => {
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const abortHandler = () => {
+                if (settled) return;
+                settled = true;
+                const index = this.connectionQueue.indexOf(entry);
+                if (index >= 0) {
+                    this.connectionQueue.splice(index, 1);
+                }
+                cleanup();
+                reject(this._createAbortError(signal, 'SSH 连接槽位等待已取消'));
+            };
+
+            entry = finish;
+            this.connectionQueue.push(entry);
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
+            if (signal?.aborted) {
+                abortHandler();
+            }
         });
     }
     
@@ -604,7 +670,7 @@ class SSHManager {
 
         const evicted = this._evictOldestConnection({ excludeHostId: hostId });
         if (!evicted && this.connectionPool.size >= this.connectionPoolSize) {
-            this._log('连接池已满，但现有连接均在使用中，暂时保留所有连接');
+            this._warn('连接池已满，但现有连接均在使用中，暂时保留所有连接');
         }
     }
     
@@ -613,18 +679,21 @@ class SSHManager {
      */
     async connectWithRetry(hostId, options = {}) {
         let lastError;
+        const signal = options.signal;
         
         for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+            this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
             try {
-                this._log(`连接尝试 ${attempt}/${this.retryAttempts}: ${hostId}`);
+                this._debug(`连接尝试 ${attempt}/${this.retryAttempts}: ${hostId}`);
                 return await this._connectInternal(hostId, options);
             } catch (error) {
                 lastError = error;
-                this._log(`连接失败 (尝试 ${attempt}/${this.retryAttempts}): ${error.message}`);
+                this._warn(`连接失败 (尝试 ${attempt}/${this.retryAttempts}): ${error.message}`);
+                this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
                 
                 if (attempt < this.retryAttempts) {
-                    this._log(`${this.retryDelay}ms 后重试...`);
-                    await this._delay(this.retryDelay);
+                    this._debug(`${this.retryDelay}ms 后重试...`);
+                    await this._delay(this.retryDelay, signal);
                 }
             }
         }
@@ -635,8 +704,43 @@ class SSHManager {
     /**
      * 延迟函数
      */
-    _delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+    _delay(ms, signal) {
+        this._throwIfAborted(signal);
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                clearTimeout(timeoutId);
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const abortHandler = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(this._createAbortError(signal));
+            };
+            const timeoutId = setTimeout(finish, ms);
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
+        });
+    }
+
+    _createAbortError(signal, fallbackMessage = '操作已取消') {
+        return signal?.reason instanceof Error ? signal.reason : new Error(fallbackMessage);
+    }
+
+    _throwIfAborted(signal, fallbackMessage = '操作已取消') {
+        if (signal?.aborted) {
+            throw this._createAbortError(signal, fallbackMessage);
+        }
     }
     
     /**
@@ -646,6 +750,7 @@ class SSHManager {
      * @param {boolean} [options.bypassPool] - 是否强制跳过连接池（新建连接）
      */
     async connect(hostId, options = {}) {
+        this._throwIfAborted(options.signal, `SSH 连接已取消: ${hostId}`);
         const config = await this.getHostConfig(hostId);
         const bypassPool = options.bypassPool === true || !this.usePool;
         
@@ -669,10 +774,12 @@ class SSHManager {
         this._ensureConnectionSlotAvailable(hostId);
         
         // 1. 等待全局连接槽位
-        await this.waitForConnectionSlot();
+        await this.waitForConnectionSlot(options.signal);
+        this._throwIfAborted(options.signal, `SSH 连接已取消: ${hostId}`);
         
         // 2. 获取主机级锁 (主机串行化，防止 PAM 并发错误)
-        await this.acquireHostLock(hostId);
+        await this.acquireHostLock(hostId, options.signal);
+        this._throwIfAborted(options.signal, `SSH 连接已取消: ${hostId}`);
         
         try {
             // 使用带重试的连接
@@ -686,7 +793,8 @@ class SSHManager {
     /**
      * 获取针对特定主机的认证锁
      */
-    async acquireHostLock(hostId) {
+    async acquireHostLock(hostId, signal) {
+        this._throwIfAborted(signal, `SSH 主机锁等待已取消: ${hostId}`);
         if (!this.hostQueues.has(hostId)) {
             this.hostQueues.set(hostId, { locked: false, queue: [] });
         }
@@ -694,13 +802,43 @@ class SSHManager {
         const hostState = this.hostQueues.get(hostId);
         if (!hostState.locked) {
             hostState.locked = true;
-            this._log(`[Lock] 获得主机锁: ${hostId}`);
+            this._debug(`[Lock] 获得主机锁: ${hostId}`);
             return;
         }
 
-        this._log(`[Lock] 主机认证冲突，正在排队: ${hostId}`);
-        return new Promise(resolve => {
-            hostState.queue.push(resolve);
+        this._debug(`[Lock] 主机认证冲突，正在排队: ${hostId}`);
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let entry = null;
+            const cleanup = () => {
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const abortHandler = () => {
+                if (settled) return;
+                settled = true;
+                const index = hostState.queue.indexOf(entry);
+                if (index >= 0) {
+                    hostState.queue.splice(index, 1);
+                }
+                cleanup();
+                reject(this._createAbortError(signal, `SSH 主机锁等待已取消: ${hostId}`));
+            };
+            entry = finish;
+            hostState.queue.push(entry);
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
+            if (signal?.aborted) {
+                abortHandler();
+            }
         });
     }
 
@@ -713,11 +851,11 @@ class SSHManager {
 
         if (hostState.queue.length > 0) {
             const next = hostState.queue.shift();
-            this._log(`[Lock] 移交主机锁给下一个等待者: ${hostId}`);
+            this._debug(`[Lock] 移交主机锁给下一个等待者: ${hostId}`);
             next();
         } else {
             hostState.locked = false;
-            this._log(`[Lock] 释放主机锁 (队列空): ${hostId}`);
+            this._debug(`[Lock] 释放主机锁 (队列空): ${hostId}`);
         }
     }
     
@@ -725,6 +863,8 @@ class SSHManager {
      * 内部连接实现
      */
     async _connectInternal(hostId, options = {}) {
+        const signal = options.signal;
+        this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
         const config = await this.getHostConfig(hostId);
         const bypassPool = options.bypassPool === true || !this.usePool;
         
@@ -735,6 +875,7 @@ class SSHManager {
         let conn;
         let sshConfig;
         try {
+            this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
             conn = new Client();
         
             // 构建连接配置
@@ -752,6 +893,7 @@ class SSHManager {
             // 认证方式
             if (config.authMethod === 'key') {
                 sshConfig.privateKey = await this.resolveKeyPath(config.privateKeyPath);
+                this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
                 if (config.passphrase) {
                     sshConfig.passphrase = config.passphrase;
                 }
@@ -761,10 +903,11 @@ class SSHManager {
 
             // 如果有跳板机，先连接跳板机
             if (config.jumpHost) {
-                const jumpConn = await this.connect(config.jumpHost);
+                const jumpConn = await this.connect(config.jumpHost, { signal });
                 if (jumpConn.type !== 'local') {
                     // 通过跳板机建立隧道
                     const stream = await this.forwardConnection(jumpConn.client, config.host, config.port || 22);
+                    this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
                     sshConfig.sock = stream;
                     delete sshConfig.host;
                     delete sshConfig.port;
@@ -776,30 +919,71 @@ class SSHManager {
         }
         
         // 建立连接
-        this._log(`开始连接 ${hostId}...`);
-        this._log(`连接配置: host=${sshConfig.host}, port=${sshConfig.port}, user=${sshConfig.username}, timeout=${sshConfig.readyTimeout}ms`);
-        this._log(`认证方式: ${config.authMethod}, 私钥长度: ${sshConfig.privateKey ? sshConfig.privateKey.length : 'N/A'}`);
+        this._debug(`开始连接 ${hostId}...`);
+        this._debug(`连接配置: host=${sshConfig.host}, port=${sshConfig.port}, user=${sshConfig.username}, timeout=${sshConfig.readyTimeout}ms`);
+        this._debug(`认证方式: ${config.authMethod}, 私钥长度: ${sshConfig.privateKey ? sshConfig.privateKey.length : 'N/A'}`);
         
         return new Promise((resolve, reject) => {
+            this._throwIfAborted(signal, `SSH 连接已取消: ${hostId}`);
             let slotReleased = false;
             let connected = false;
+            let settled = false;
             const releaseSlotOnce = () => {
                 if (slotReleased) return;
                 slotReleased = true;
                 this.releaseConnectionSlot();
             };
+            const cleanup = () => {
+                clearTimeout(timeout);
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
+            const rejectOnce = (error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(error);
+            };
+            const resolveOnce = (result) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(result);
+            };
+            const closeConnection = () => {
+                try {
+                    if (typeof conn.destroy === 'function') {
+                        conn.destroy();
+                    } else {
+                        conn.end();
+                    }
+                } catch (_) {}
+            };
+            const abortHandler = () => {
+                this._warn(`SSH 连接已取消: ${hostId}`);
+                closeConnection();
+                releaseSlotOnce();
+                rejectOnce(this._createAbortError(signal, `SSH 连接已取消: ${hostId}`));
+            };
 
             const timeout = setTimeout(() => {
-                this._log(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId}`);
-                conn.end();
+                this._warn(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId}`);
+                closeConnection();
                 releaseSlotOnce();
-                reject(new Error(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId} - 请检查: 1) 网络连通性 2) 防火墙规则 3) SSH 服务状态 4) 私钥权限`));
+                rejectOnce(new Error(`连接超时 (${sshConfig.readyTimeout}ms): ${hostId} - 请检查: 1) 网络连通性 2) 防火墙规则 3) SSH 服务状态 4) 私钥权限`));
             }, sshConfig.readyTimeout);
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
             
             conn.on('ready', () => {
-                clearTimeout(timeout);
+                if (signal?.aborted) {
+                    abortHandler();
+                    return;
+                }
                 connected = true;
-                this._log(`SSH 握手成功: ${hostId}`);
+                this._debug(`SSH 握手成功: ${hostId}`);
                 
                 const connection = {
                     type: 'ssh',
@@ -821,7 +1005,7 @@ class SSHManager {
                         // 移除最旧的未使用连接
                         const evicted = this._evictOldestConnection();
                         if (!evicted) {
-                            this._log('连接池已满，但现有连接均在使用中，暂时保留所有连接');
+                            this._warn('连接池已满，但现有连接均在使用中，暂时保留所有连接');
                         }
                     }
                     
@@ -838,18 +1022,17 @@ class SSHManager {
                 const latency = Date.now() - connection.connectedAt.getTime();
                 this._updateConnectionStats(hostId, latency);
 
-                resolve(connection);
+                resolveOnce(connection);
             });
             
             conn.on('error', (err) => {
-                clearTimeout(timeout);
-                this._log(`SSH 错误 (${hostId}): ${err.message}`);
-                this._log(`错误详情: ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`);
+                this._warn(`SSH 错误 (${hostId}): ${err.message}`);
+                this._debug(`错误详情: ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`);
                 this.connectionStatus.set(hostId, 'error');
                 if (!connected) {
                     releaseSlotOnce();
                 }
-                reject(new Error(`SSH 连接错误 (${hostId}): ${err.message}`));
+                rejectOnce(new Error(`SSH 连接错误 (${hostId}): ${err.message}`));
             });
             
             conn.on('close', () => {
@@ -859,7 +1042,7 @@ class SSHManager {
                 }
                 this.connectionStatus.set(hostId, 'disconnected');
                 releaseSlotOnce();
-                this._log(`连接已关闭: ${hostId}，当前连接数: ${this.activeConnections}/${this.maxConcurrentConnections}`);
+                this._debug(`连接已关闭: ${hostId}，当前连接数: ${this.activeConnections}/${this.maxConcurrentConnections}`);
             });
             
             conn.on('end', () => {
@@ -872,21 +1055,21 @@ class SSHManager {
             
             // 添加更多事件监听用于调试
             conn.on('keyboard-interactive', (name, instructions, instructionsLang, prompts, finish) => {
-                this._log(`键盘交互认证请求: ${name}`);
+                this._debug(`键盘交互认证请求: ${name}`);
                 // 不支持键盘交互，直接失败
                 finish([]);
             });
             
             conn.on('change password', (message, done) => {
-                this._log(`密码更改请求: ${message}`);
+                this._warn(`密码更改请求: ${message}`);
                 done();
             });
             
             conn.on('tcp connection', (details, accept, reject) => {
-                this._log(`TCP 连接请求: ${JSON.stringify(details)}`);
+                this._debug(`TCP 连接请求: ${JSON.stringify(details)}`);
             });
             
-            this._log(`正在发起 SSH 连接...`);
+            this._debug(`正在发起 SSH 连接...`);
             conn.connect(sshConfig);
         });
     }
@@ -954,7 +1137,16 @@ class SSHManager {
                 clearTimeout(next.timer);
                 next.timer = null;
             }
+            if (next.signal && next.abortHandler) {
+                next.signal.removeEventListener('abort', next.abortHandler);
+                next.abortHandler = null;
+            }
             if (next.timedOut) {
+                continue;
+            }
+            if (next.signal?.aborted) {
+                next.timedOut = true;
+                next.reject(next.signal.reason instanceof Error ? next.signal.reason : new Error(`SSH 命令已取消 (${hostId})`));
                 continue;
             }
 
@@ -972,6 +1164,10 @@ class SSHManager {
     }
 
     _enqueueHostExecution(hostId, task, options = {}) {
+        const signal = options.signal;
+        if (signal?.aborted) {
+            return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('SSH 命令已取消'));
+        }
         if (!this.enableExecutionQueue || options.bypassExecutionQueue === true) {
             return Promise.resolve().then(task);
         }
@@ -1000,15 +1196,41 @@ class SSHManager {
                 reject,
                 enqueuedAt: Date.now(),
                 timer: null,
-                timedOut: false
+                timedOut: false,
+                abortHandler: null,
+                signal
             };
+
+            const cleanupEntry = () => {
+                if (entry.timer) {
+                    clearTimeout(entry.timer);
+                    entry.timer = null;
+                }
+                if (signal && entry.abortHandler) {
+                    signal.removeEventListener('abort', entry.abortHandler);
+                    entry.abortHandler = null;
+                }
+            };
+
+            entry.abortHandler = () => {
+                entry.timedOut = true;
+                const removed = this._removeQueuedExecution(state, entry);
+                if (removed) {
+                    cleanupEntry();
+                    reject(signal.reason instanceof Error ? signal.reason : new Error(`SSH 命令已取消 (${hostId})`));
+                }
+            };
+            if (signal) {
+                signal.addEventListener('abort', entry.abortHandler, { once: true });
+            }
 
             if (queueWaitTimeout > 0) {
                 entry.timer = setTimeout(() => {
                     entry.timedOut = true;
                     const removed = this._removeQueuedExecution(state, entry);
                     if (removed) {
-                        this._log(`[ExecQueue] 排队等待超时: ${hostId} (${queueWaitTimeout}ms)`);
+                        cleanupEntry();
+                        this._warn(`[ExecQueue] 排队等待超时: ${hostId} (${queueWaitTimeout}ms)`);
                         reject(new Error(`SSH 命令排队超时 (${hostId}, ${queueWaitTimeout}ms)`));
                     }
                 }, queueWaitTimeout);
@@ -1016,6 +1238,9 @@ class SSHManager {
 
             state.lastQueuedAt = entry.enqueuedAt;
             state.queue.push(entry);
+            if (signal?.aborted) {
+                entry.abortHandler();
+            }
             this._log(`[ExecQueue] 命令已排队: ${hostId} (队列长度: ${state.queue.length})`);
         });
     }
@@ -1030,6 +1255,12 @@ class SSHManager {
                 if (entry.timer) {
                     clearTimeout(entry.timer);
                     entry.timer = null;
+                }
+                if (entry.abortHandler) {
+                    if (entry.signal) {
+                        entry.signal.removeEventListener('abort', entry.abortHandler);
+                    }
+                    entry.abortHandler = null;
                 }
                 entry.timedOut = true;
                 entry.reject(error);
@@ -1056,7 +1287,8 @@ class SSHManager {
         return this._enqueueHostExecution(hostId, async () => {
             // 如果是批量执行或显式要求池化，则不 bypass
             const connection = await this.connect(hostId, {
-                bypassPool: options.usePool === undefined ? !this.usePool : !options.usePool
+                bypassPool: options.usePool === undefined ? !this.usePool : !options.usePool,
+                signal: options.signal
             });
 
             if (connection.type === 'local') {
@@ -1075,22 +1307,69 @@ class SSHManager {
         const { spawn } = require('child_process');
         const timeout = options.timeout || 30000;
         const maxOutputLength = options.maxOutputLength || 5 * 1024 * 1024; // 默认 5MB
+        const signal = options.signal;
         
         return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(this._createAbortError(signal, '本地命令已取消'));
+                return;
+            }
+
             let stdout = '';
             let stderr = '';
             let totalLength = 0;
+            let settled = false;
             
             const child = spawn('/bin/bash', ['-c', command], {
-                timeout,
                 stdio: ['pipe', 'pipe', 'pipe'],
-                env: createSanitizedUserCommandEnv()
+                env: createSanitizedUserCommandEnv(),
+                detached: process.platform !== 'win32'
             });
+
+            const cleanup = () => {
+                clearTimeout(timeoutId);
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
+            const killChildTree = () => {
+                if (process.platform !== 'win32' && child.pid) {
+                    try {
+                        process.kill(-child.pid, 'SIGKILL');
+                        return;
+                    } catch (_) {}
+                }
+                try {
+                    if (!child.killed) {
+                        child.kill('SIGKILL');
+                    }
+                } catch (_) {}
+            };
+            const rejectOnce = (error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(error);
+            };
+            const resolveOnce = (result) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(result);
+            };
+            const abortHandler = () => {
+                killChildTree();
+                rejectOnce(this._createAbortError(signal, '本地命令已取消'));
+            };
             
             const timeoutId = setTimeout(() => {
-                child.kill('SIGKILL');
-                reject(new Error(`命令执行超时 (${timeout}ms)`));
+                killChildTree();
+                rejectOnce(new Error(`命令执行超时 (${timeout}ms)`));
             }, timeout);
+
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
             
             child.stdout.on('data', data => {
                 if (totalLength < maxOutputLength) {
@@ -1105,8 +1384,7 @@ class SSHManager {
             child.stderr.on('data', data => { stderr += data.toString(); });
             
             child.on('close', code => {
-                clearTimeout(timeoutId);
-                resolve({
+                resolveOnce({
                     stdout,
                     stderr,
                     code,
@@ -1116,8 +1394,7 @@ class SSHManager {
             });
             
             child.on('error', err => {
-                clearTimeout(timeoutId);
-                reject(new Error(`本地执行失败: ${err.message}`));
+                rejectOnce(new Error(`本地执行失败: ${err.message}`));
             });
         });
     }
@@ -1128,11 +1405,17 @@ class SSHManager {
     async executeSSH(connection, command, options = {}) {
         const timeout = options.timeout || connection.config.timeout || 30000;
         const maxOutputLength = options.maxOutputLength || 5 * 1024 * 1024; // 默认 5MB
+        const signal = options.signal;
         const disconnectOnTimeout = options.disconnectOnCommandTimeout !== undefined
             ? options.disconnectOnCommandTimeout !== false
             : this.disconnectOnCommandTimeout;
         
         return new Promise((resolve, reject) => {
+            if (signal?.aborted) {
+                reject(this._createAbortError(signal, `SSH 命令已取消 (${connection.hostId})`));
+                return;
+            }
+
             let stdout = '';
             let stderr = '';
             let totalLength = 0;
@@ -1151,49 +1434,79 @@ class SSHManager {
                 operationStarted = false;
                 this._markConnectionIdle(connection);
             };
+            const closeStream = () => {
+                if (!streamRef) return;
+                try {
+                    if (typeof streamRef.signal === 'function') {
+                        streamRef.signal('SIGKILL');
+                    }
+                } catch (_) {}
+                try {
+                    if (typeof streamRef.close === 'function') {
+                        streamRef.close();
+                    } else if (typeof streamRef.destroy === 'function') {
+                        streamRef.destroy();
+                    }
+                } catch (_) {}
+            };
+            const cleanup = () => {
+                clearTimeout(timeoutId);
+                if (signal && abortHandler) {
+                    signal.removeEventListener('abort', abortHandler);
+                }
+            };
             const rejectOnce = (error) => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timeoutId);
+                cleanup();
                 reject(error);
+            };
+            const resolveOnce = (result) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(result);
             };
             const disconnectDirtyConnection = () => {
                 if (!disconnectOnTimeout || !connection || connection.type !== 'ssh') {
                     return;
                 }
-                this._log(`SSH 命令超时，断开脏连接: ${connection.hostId}`);
+                this._warn(`SSH 命令超时，断开脏连接: ${connection.hostId}`);
                 if (connection.isPooled) {
                     this.disconnect(connection.hostId).catch(err => {
-                        this._log(`断开超时连接失败: ${connection.hostId} - ${err.message}`);
+                        this._warn(`断开超时连接失败: ${connection.hostId} - ${err.message}`);
                     });
                 } else if (connection.client) {
                     try {
                         connection.client.end();
                         connection.isConnected = false;
                     } catch (err) {
-                        this._log(`关闭非池化超时连接失败: ${connection.hostId} - ${err.message}`);
+                        this._warn(`关闭非池化超时连接失败: ${connection.hostId} - ${err.message}`);
                     }
                 }
+            };
+            const abortHandler = () => {
+                timeoutTriggered = true;
+                closeStream();
+                releaseOperation();
+                disconnectDirtyConnection();
+                rejectOnce(this._createAbortError(signal, `SSH 命令已取消 (${connection.hostId})`));
             };
             
             const timeoutId = setTimeout(() => {
                 timeoutTriggered = true;
-                if (streamRef) {
-                    try {
-                        if (typeof streamRef.close === 'function') {
-                            streamRef.close();
-                        } else if (typeof streamRef.destroy === 'function') {
-                            streamRef.destroy();
-                        }
-                    } catch (_) {}
-                    releaseOperation();
-                }
+                closeStream();
+                releaseOperation();
                 const timeoutError = new Error(`SSH 命令执行超时 (${timeout}ms)`);
                 timeoutError.code = 'SSH_COMMAND_TIMEOUT';
                 timeoutError.hostId = connection.hostId;
                 disconnectDirtyConnection();
                 rejectOnce(timeoutError);
             }, timeout);
+
+            if (signal) {
+                signal.addEventListener('abort', abortHandler, { once: true });
+            }
             
             connection.client.exec(command, (err, stream) => {
                 if (err) {
@@ -1203,6 +1516,10 @@ class SSHManager {
 
                 streamRef = stream;
                 beginOperation();
+                if (signal?.aborted) {
+                    abortHandler();
+                    return;
+                }
 
                 stream.on('close', (code, signal) => {
                     releaseOperation();
@@ -1214,11 +1531,7 @@ class SSHManager {
                         connection.isConnected = false;
                     }
 
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timeoutId);
-
-                    resolve({
+                    resolveOnce({
                         stdout,
                         stderr,
                         code,
@@ -1286,7 +1599,7 @@ class SSHManager {
         return new Promise((resolve, reject) => {
             connection.client.shell((err, stream) => {
                 if (err) {
-                    this._log(`创建 shell 会话失败: ${err.message}`);
+                    this._warn(`创建 shell 会话失败: ${err.message}`);
                     return reject(new Error(`创建 shell 会话失败: ${err.message}`));
                 }
 
@@ -1382,14 +1695,14 @@ class SSHManager {
                     this._touchConnection(connection);
                     
                     // 调试日志：记录每次收到的数据
-                    this._log(`[StreamSession:${sessionId}] 收到数据: ${data.length} 字节, 总计: ${session.bytesReceived} 字节`);
-                    this._log(`[StreamSession:${sessionId}] 数据内容(前100字符): ${text.substring(0, 100).replace(/\n/g, '\\n').replace(/\r/g, '\\r')}`);
+                    this._debug(`[StreamSession:${sessionId}] 收到数据: ${data.length} 字节, 总计: ${session.bytesReceived} 字节`);
+                    this._debug(`[StreamSession:${sessionId}] 数据内容(前100字符): ${text.substring(0, 100).replace(/\n/g, '\\n').replace(/\r/g, '\\r')}`);
                     
                     // 原始数据回调
                     if (session.onData) {
                         session.onData(text);
                     } else {
-                        this._log(`[StreamSession:${sessionId}] 警告: onData 回调未设置!`);
+                        this._warn(`[StreamSession:${sessionId}] onData 回调未设置`);
                     }
                     
                     // 行处理
@@ -1398,7 +1711,7 @@ class SSHManager {
                         
                         // 防止缓冲区溢出
                         if (lineBuffer.length > maxLineBuffer) {
-                            this._log(`行缓冲区溢出，强制刷新: ${sessionId}`);
+                            this._warn(`行缓冲区溢出，强制刷新: ${sessionId}`);
                             session.onLine(lineBuffer);
                             session.linesProcessed++;
                             lineBuffer = '';
@@ -1617,7 +1930,7 @@ class SSHManager {
             try {
                 session.stop();
             } catch (e) {
-                this._log(`停止流式会话失败: ${sessionId} - ${e.message}`);
+                this._warn(`停止流式会话失败: ${sessionId} - ${e.message}`);
             }
         }
         this._log(`已停止所有流式会话`);
@@ -1678,7 +1991,7 @@ class SSHManager {
         try {
             await this._updateStatusCache(hostId, testResult);
         } catch (err) {
-            this._log(`缓存更新失败: ${err.message}`);
+            this._warn(`缓存更新失败: ${err.message}`);
         }
 
         return testResult;

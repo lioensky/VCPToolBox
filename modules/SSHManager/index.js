@@ -9,7 +9,10 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const util = require('util');
+
+const DEFAULT_HOSTS_TEMPLATE_MD5 = 'b1d6472eba3a65b9354a096ce21d3f3e';
 
 let SSHManagerClass = null;
 let instance = null;
@@ -54,42 +57,8 @@ function logWarn(...args) {
     writeProcessLog(...args);
 }
 
-/**
- * 加载主机配置
- * @returns {Object} 主机配置对象
- */
-function loadHostsConfig() {
-    if (hostsConfig) return hostsConfig;
-
-    lastConfigPath = null;
-    lastConfigError = null;
-    
-    // 配置文件搜索路径（优先级从高到低）
-    const configPaths = [
-        path.join(__dirname, 'hosts.json'),  // 共享模块目录
-        path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', 'hosts.json')  // LinuxShellExecutor 目录
-    ];
-    
-    for (const configPath of configPaths) {
-        try {
-            if (fs.existsSync(configPath)) {
-                // 清除 require 缓存以支持热重载
-                delete require.cache[require.resolve(configPath)];
-                hostsConfig = require(configPath);
-                lastConfigPath = configPath;
-                logInfo(`[SSHManager Module] 加载主机配置: ${configPath}`);
-                return hostsConfig;
-            }
-        } catch (e) {
-            lastClassError = e.message;
-            lastConfigError = e.message;
-            console.error(`[SSHManager Module] 无法加载配置 ${configPath}: ${e.message}`);
-        }
-    }
-    
-    // 默认配置（仅本地执行）
-    logWarn('[SSHManager Module] 未找到主机配置文件，使用默认配置');
-    hostsConfig = {
+function createLocalOnlyHostsConfig() {
+    return {
         hosts: {
             local: {
                 name: '本地执行',
@@ -108,6 +77,58 @@ function loadHostsConfig() {
             retryDelay: 1000
         }
     };
+}
+
+function calculateFileMd5(filePath) {
+    return crypto
+        .createHash('md5')
+        .update(fs.readFileSync(filePath))
+        .digest('hex');
+}
+
+/**
+ * 加载主机配置
+ * @returns {Object} 主机配置对象
+ */
+function loadHostsConfig() {
+    if (hostsConfig) return hostsConfig;
+
+    lastConfigPath = null;
+    lastConfigError = null;
+    
+    // 配置文件搜索路径：仅保留 LinuxShellExecutor 目录下的单一主配置
+    const configPaths = [
+        path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', 'hosts.json')
+    ];
+    
+    for (const configPath of configPaths) {
+        try {
+            if (fs.existsSync(configPath)) {
+                const configMd5 = calculateFileMd5(configPath);
+                if (configMd5 === DEFAULT_HOSTS_TEMPLATE_MD5) {
+                    hostsConfig = createLocalOnlyHostsConfig();
+                    lastConfigPath = configPath;
+                    lastConfigError = 'hosts.json 仍为仓库默认模板，SSH 远程功能未启动';
+                    logWarn(`[SSHManager Module] ${configPath} 仍为默认模板 (MD5=${configMd5})，仅启用本地执行`);
+                    return hostsConfig;
+                }
+                // 清除 require 缓存以支持热重载
+                delete require.cache[require.resolve(configPath)];
+                hostsConfig = require(configPath);
+                lastConfigPath = configPath;
+                logInfo(`[SSHManager Module] 加载主机配置: ${configPath}`);
+                return hostsConfig;
+            }
+        } catch (e) {
+            lastClassError = e.message;
+            lastConfigError = e.message;
+            console.error(`[SSHManager Module] 无法加载配置 ${configPath}: ${e.message}`);
+        }
+    }
+    
+    // 默认配置（仅本地执行）
+    logWarn('[SSHManager Module] 未找到主机配置文件，使用默认配置');
+    hostsConfig = createLocalOnlyHostsConfig();
     
     return hostsConfig;
 }
@@ -198,7 +219,7 @@ function getSSHManager(providedConfig = null, options = {}) {
             logInfo('[SSHManager Module] 使用 UDS 代理模式连接到常驻服务:', proxySock);
             return proxy;
         } catch (e) {
-            console.error('[SSHManager Module] 代理模式初始化失败，回退到本地模式:', e.message);
+            logWarn('[SSHManager Module] 代理模式初始化失败，回退到本地模式:', e.message);
         }
     }
 

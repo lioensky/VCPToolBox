@@ -11,9 +11,32 @@
 
 const path = require('path');
 const fs = require('fs').promises;
+const util = require('util');
 
 // 失败回调日志路径
 const FAILED_CALLBACKS_PATH = path.join(__dirname, '..', 'state', 'failed_callbacks.jsonl');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class CallbackTrigger {
     /**
@@ -244,7 +267,7 @@ class CallbackTrigger {
      */
     _log(msg, ...args) {
         if (this.debug) {
-            console.error(`[CallbackTrigger] ${msg}`, ...args);
+            logInfo(`[CallbackTrigger] ${msg}`, ...args);
         }
     }
 }

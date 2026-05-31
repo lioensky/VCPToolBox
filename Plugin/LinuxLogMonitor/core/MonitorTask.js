@@ -28,6 +28,29 @@
 
 const path = require('path');
 const crypto = require('crypto');
+const util = require('util');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 // ==================== 状态枚举 (MEU-1.2) ====================
 const TaskState = {
@@ -974,7 +997,7 @@ class MonitorTask {
      */
     _log(message) {
         if (this.debug) {
-            console.error(`[MonitorTask:${this.taskId}] ${message}`);
+            logInfo(`[MonitorTask:${this.taskId}] ${message}`);
         }
     }
 }

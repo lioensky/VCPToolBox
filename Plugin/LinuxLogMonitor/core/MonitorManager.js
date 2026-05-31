@@ -25,6 +25,7 @@
 const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const util = require('util');
 
 const { MonitorTask } = require('./MonitorTask');
 const AnomalyDetector = require('./AnomalyDetector');
@@ -39,6 +40,28 @@ const CUSTOM_RULES_PATH = path.join(__dirname, '..', 'rules', 'custom-rules.json
 const STATE_FILE_PATH = path.join(__dirname, '..', 'state', 'active-monitors.json');
 const PID_FILE_PATH = path.join(__dirname, '..', 'state', 'monitor.pid');
 const STOP_SIGNAL_PATH = path.join(__dirname, '..', 'state', 'stop-requests.json');
+
+let loggerModule = null;
+
+function isServerLoggerActive() {
+    try {
+        loggerModule = loggerModule || require('../../../modules/logger');
+        return Boolean(
+            loggerModule.originalConsoleError &&
+            console.error !== loggerModule.originalConsoleError
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function logInfo(...args) {
+    if (isServerLoggerActive()) {
+        console.info(...args);
+        return;
+    }
+    process.stderr.write(`${util.format(...args)}\n`);
+}
 
 class MonitorManager {
     /**
@@ -1264,7 +1287,7 @@ class MonitorManager {
     }
 
     _isServerModeConfigured() {
-        return Boolean(process.env.LOG_MONITOR_SOCK);
+        return Boolean(process.env.LOG_MONITOR_SOCK || global.__vcp_log_monitor_sock);
     }
 
     _normalizeContext(context) {
@@ -1470,7 +1493,9 @@ class MonitorManager {
      * 日志输出
      */
     _log(msg, ...args) {
-        console.error(`[MonitorManager] ${msg}`, ...args);  
+        if (this.debug) {
+            logInfo(`[MonitorManager] ${msg}`, ...args);
+        }
     }  
 }  
   

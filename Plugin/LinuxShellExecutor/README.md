@@ -4,6 +4,9 @@
 
 ## 📝 本次提交维护记录 (连接池持久化修订)
 
+- ✅ **Hybrid Direct 调用链** - 插件改为 `hybridservice` + `direct`，由 VCP 主进程常驻加载并复用执行器，避免每次工具调用都 spawn 新的 `node LinuxShellExecutor.js`。
+- ✅ **默认 hosts 模板熔断** - `hosts.json` MD5 仍等于仓库模板值时，仅保留本地执行，不启动 SSH 常驻服务、连接池或远程主机重试。
+- ✅ **主机配置收敛** - SSH 主机配置唯一来源为 `Plugin/LinuxShellExecutor/hosts.json`，不再保留共享模块内的 hosts 副本。
 - ✅ **同主机命令串行化** - 共享 `SSHManager` 对同一 `hostId` 的普通 SSH 命令启用 FIFO 执行队列，避免池化连接上多个 exec channel 并发修改同一资产状态。
 - ✅ **超时脏连接隔离** - 普通 SSH 命令超时后会断开对应池化连接，下一条命令重新建连，避免复用半关闭或远端状态不确定的连接。
 - ✅ **日志跟随分流** - `tail -f` 会直接转入 `LinuxLogMonitor` 监控；`journalctl -f` 和其他长待机任务走后台日志重定向与监控，不进入普通短命令队列。
@@ -145,6 +148,8 @@ apt install docker.io
 ## 配置说明
 
 ### 1. 主机配置 (hosts.json)
+
+主机配置唯一读取路径为 `Plugin/LinuxShellExecutor/hosts.json`。如果该文件仍是仓库默认模板（MD5: `b1d6472eba3a65b9354a096ce21d3f3e`），系统会认为用户尚未配置真实 SSH 资产，只启用 `local` 本地执行，并跳过 SSH 常驻服务、连接池预热和远程连接重试。
 
 ```json
 {
