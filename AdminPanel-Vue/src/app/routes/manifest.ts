@@ -25,6 +25,7 @@ export type AppRouteId =
   | "channel-hub-manager"
   | "ai-image-agents"
   | "codex-imagegen-relay"
+  | "oauth-auth-center"
   | "codex-memory-monitor"
   | "toolbox-manager"
   | "tvs-files-editor"
@@ -381,6 +382,16 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     path: "/codex-imagegen-relay",
     title: "Codex 生图中继",
     icon: "image_search",
+    requiresAuth: true,
+    navGroup: "toolsPlugins",
+    showInSidebar: true,
+  },
+  {
+    id: "oauth-auth-center",
+    routeName: "OAuthAuthCenter",
+    path: "/oauth-auth-center",
+    title: "OAuth 认证中心",
+    icon: "key",
     requiresAuth: true,
     navGroup: "toolsPlugins",
     showInSidebar: true,

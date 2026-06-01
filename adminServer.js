@@ -16,6 +16,10 @@ const MAIN_PORT = parseInt(process.env.PORT) || 3000;
 const ADMIN_PORT = MAIN_PORT + 1;
 const DEBUG_MODE = (process.env.DebugMode || 'False').toLowerCase() === 'true';
 
+function isTruthyFlag(value) {
+    return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
 const ADMIN_USERNAME = process.env.AdminUsername;
 const ADMIN_PASSWORD = process.env.AdminPassword;
 const VUE_ADMIN_PANEL_ROOT = path.join(__dirname, 'AdminPanel-Vue', 'dist');
@@ -258,6 +262,10 @@ const localModules = [
     'semanticRouter',  // 语义模型路由器配置（本地 JSON 读写 + 上游模型拉取）
     'codexImagegenRelay', // Codex ImageGen Relay 队列（纯文件 I/O）
 ];
+
+if (isTruthyFlag(process.env.VCP_OAUTH_AUTH_CENTER_ENABLED)) {
+    localModules.push('oauthAuth'); // OAuth 认证中心（外部 device-flow + 本地状态）
+}
 
 function getCurrentServerLogPath() {
     return path.join(__dirname, 'DebugLog', 'ServerLog.txt');

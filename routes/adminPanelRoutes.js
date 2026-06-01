@@ -2,6 +2,10 @@ const express = require("express");
 const fs = require("fs").promises;
 const path = require("path");
 
+function isTruthyFlag(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+}
+
 /**
  * Admin Panel API Routes
  * This file has been modularized. individual route handlers are located in ./admin/*.js
@@ -103,6 +107,9 @@ module.exports = function (
   mount("/", "emojis"); // Handles /emojis/*
   mount("/", "pluginStore"); // Handles /plugin-store/*
   mount("/", "codexImagegenRelay"); // Handles /codex-imagegen/*
+  if (isTruthyFlag(process.env.VCP_OAUTH_AUTH_CENTER_ENABLED)) {
+    mount("/", "oauthAuth"); // Handles /oauth-auth/*
+  }
 
   return adminApiRouter;
 };
