@@ -184,7 +184,8 @@ test('buildUpstreamRequest does not expose keys and preserves caller token fallb
         BRIDGE_UPSTREAM_URL: 'https://api.example.test',
         BRIDGE_UPSTREAM_TYPE: 'chat',
         BRIDGE_SYSTEM_PROMPT: 'stable rules',
-        BRIDGE_HIJACK_MODE: 'prepend'
+        BRIDGE_HIJACK_MODE: 'prepend',
+        Key: 'main-server-key'
     });
 
     const request = buildUpstreamRequest({
@@ -196,6 +197,7 @@ test('buildUpstreamRequest does not expose keys and preserves caller token fallb
 
     assert.equal(request.endpoint.url, 'https://api.example.test/v1/chat/completions');
     assert.equal(request.headers.Authorization, 'Bearer caller-token');
+    assert.notEqual(request.headers.Authorization, 'Bearer main-server-key');
     assert.deepEqual(request.upstreamBody.messages.map(item => item.content), ['stable rules', 'hello']);
     assert.equal(request.upstreamBody.stream, true);
 });

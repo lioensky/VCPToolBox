@@ -102,15 +102,17 @@ function createRuntimeConfig(config = {}, options = {}) {
         : config.BRIDGE_PORT;
     const mainServerPort = config.PORT || process.env.PORT || 6005;
     const defaultUpstreamUrl = `http://127.0.0.1:${mainServerPort}`;
-    const upstreamUrl = (config.BRIDGE_UPSTREAM_URL === undefined || config.BRIDGE_UPSTREAM_URL === null || config.BRIDGE_UPSTREAM_URL === '')
+    const useLocalDefaultUpstream = config.BRIDGE_UPSTREAM_URL === undefined || config.BRIDGE_UPSTREAM_URL === null || config.BRIDGE_UPSTREAM_URL === '';
+    const upstreamUrl = useLocalDefaultUpstream
         ? defaultUpstreamUrl
         : config.BRIDGE_UPSTREAM_URL;
+    const upstreamKey = config.BRIDGE_UPSTREAM_KEY || (useLocalDefaultUpstream ? (config.Key || process.env.Key || '') : '');
     return {
         enabled: toBoolean(config.BRIDGE_ENABLED, false),
         port: validatePort(portValue),
         bindHost: validateBindHost(config.BRIDGE_BIND_HOST || DEFAULT_BIND_HOST),
         upstreamUrl: normalizeUpstreamUrl(upstreamUrl),
-        upstreamKey: String(config.BRIDGE_UPSTREAM_KEY || config.Key || process.env.Key || ''),
+        upstreamKey: String(upstreamKey),
         upstreamType: normalizeApiType(config.BRIDGE_UPSTREAM_TYPE),
         defaultModel: String(config.BRIDGE_MODEL || DEFAULT_MODEL),
         systemPrompt: resolveSystemPrompt(config.BRIDGE_SYSTEM_PROMPT || '', pluginDir),
