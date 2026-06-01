@@ -8,7 +8,6 @@ const { TextDecoder } = require('util');
 
 const DEFAULT_PORT = 3100;
 const DEFAULT_BIND_HOST = '127.0.0.1';
-const DEFAULT_UPSTREAM_URL = 'https://api.openai.com';
 const DEFAULT_MODEL = 'gpt-4.1-mini';
 const DEFAULT_TIMEOUT_MS = 120000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -44,7 +43,7 @@ function validateBindHost(value) {
 }
 
 function normalizeUpstreamUrl(value) {
-    const raw = String(value || DEFAULT_UPSTREAM_URL).trim().replace(/\/+$/, '');
+    const raw = String(value || '').trim().replace(/\/+$/, '');
     const url = new URL(raw);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         throw new Error(`BRIDGE_UPSTREAM_URL must use http or https, got ${url.protocol}`);
@@ -101,12 +100,19 @@ function createRuntimeConfig(config = {}, options = {}) {
     const portValue = (config.BRIDGE_PORT === undefined || config.BRIDGE_PORT === null || config.BRIDGE_PORT === '')
         ? DEFAULT_PORT
         : config.BRIDGE_PORT;
+    const mainServerPort = config.PORT || process.env.PORT || 6005;
+    const defaultUpstreamUrl = `http://127.0.0.1:${mainServerPort}`;
+    const useLocalDefaultUpstream = config.BRIDGE_UPSTREAM_URL === undefined || config.BRIDGE_UPSTREAM_URL === null || config.BRIDGE_UPSTREAM_URL === '';
+    const upstreamUrl = useLocalDefaultUpstream
+        ? defaultUpstreamUrl
+        : config.BRIDGE_UPSTREAM_URL;
+    const upstreamKey = config.BRIDGE_UPSTREAM_KEY || (useLocalDefaultUpstream ? (config.Key || process.env.Key || '') : '');
     return {
         enabled: toBoolean(config.BRIDGE_ENABLED, false),
         port: validatePort(portValue),
         bindHost: validateBindHost(config.BRIDGE_BIND_HOST || DEFAULT_BIND_HOST),
-        upstreamUrl: normalizeUpstreamUrl(config.BRIDGE_UPSTREAM_URL || DEFAULT_UPSTREAM_URL),
-        upstreamKey: String(config.BRIDGE_UPSTREAM_KEY || ''),
+        upstreamUrl: normalizeUpstreamUrl(upstreamUrl),
+        upstreamKey: String(upstreamKey),
         upstreamType: normalizeApiType(config.BRIDGE_UPSTREAM_TYPE),
         defaultModel: String(config.BRIDGE_MODEL || DEFAULT_MODEL),
         systemPrompt: resolveSystemPrompt(config.BRIDGE_SYSTEM_PROMPT || '', pluginDir),

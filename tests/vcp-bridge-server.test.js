@@ -159,12 +159,33 @@ test('model map and endpoint builder resolve upstream URLs', () => {
     );
 });
 
+test('runtime config defaults upstream to local VCP server and inherited key', () => {
+    const config = createRuntimeConfig({
+        PORT: 6105,
+        Key: 'main-server-key',
+        BRIDGE_UPSTREAM_URL: '',
+        BRIDGE_UPSTREAM_TYPE: 'chat'
+    });
+
+    const request = buildUpstreamRequest({
+        messages: [{ role: 'user', content: 'hello' }],
+        model: 'gpt-local',
+        body: {},
+        requestHeaders: {}
+    }, config);
+
+    assert.equal(config.upstreamUrl, 'http://127.0.0.1:6105');
+    assert.equal(request.endpoint.url, 'http://127.0.0.1:6105/v1/chat/completions');
+    assert.equal(request.headers.Authorization, 'Bearer main-server-key');
+});
+
 test('buildUpstreamRequest does not expose keys and preserves caller token fallback', () => {
     const config = createRuntimeConfig({
         BRIDGE_UPSTREAM_URL: 'https://api.example.test',
         BRIDGE_UPSTREAM_TYPE: 'chat',
         BRIDGE_SYSTEM_PROMPT: 'stable rules',
-        BRIDGE_HIJACK_MODE: 'prepend'
+        BRIDGE_HIJACK_MODE: 'prepend',
+        Key: 'main-server-key'
     });
 
     const request = buildUpstreamRequest({
@@ -176,6 +197,7 @@ test('buildUpstreamRequest does not expose keys and preserves caller token fallb
 
     assert.equal(request.endpoint.url, 'https://api.example.test/v1/chat/completions');
     assert.equal(request.headers.Authorization, 'Bearer caller-token');
+    assert.notEqual(request.headers.Authorization, 'Bearer main-server-key');
     assert.deepEqual(request.upstreamBody.messages.map(item => item.content), ['stable rules', 'hello']);
     assert.equal(request.upstreamBody.stream, true);
 });
