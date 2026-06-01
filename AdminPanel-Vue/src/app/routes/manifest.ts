@@ -13,6 +13,7 @@ export type AppRouteId =
   | "base-config"
   | "dynamic-tools-manager"
   | "daily-notes-manager"
+  | "knowledge-base-manager"
   | "vcp-forum"
   | "image-cache-editor"
   | "emoji-gallery"
@@ -234,8 +235,18 @@ export const APP_ROUTE_MANIFEST: readonly AppRouteMeta[] = [
     id: "daily-notes-manager",
     routeName: "DailyNotesManager",
     path: "/daily-notes-manager",
-    title: "日记知识库管理",
+    title: "日记管理",
     icon: "description",
+    requiresAuth: true,
+    navGroup: "knowledge",
+    showInSidebar: true,
+  },
+  {
+    id: "knowledge-base-manager",
+    routeName: "KnowledgeBaseManager",
+    path: "/knowledge-base-manager",
+    title: "知识库管理",
+    icon: "library_books",
     requiresAuth: true,
     navGroup: "knowledge",
     showInSidebar: true,

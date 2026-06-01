@@ -76,6 +76,7 @@ class LightMemoPlugin {
     constructor() {
         this.name = 'LightMemo';
         this.vectorDBManager = null;
+        this.tdbKnowledgeManager = null; // 冷知识库（TriviumDB）检索管理器
         this.getSingleEmbedding = null;
         this.projectBasePath = '';
         this.dailyNoteRootPath = '';
@@ -105,6 +106,10 @@ class LightMemoPlugin {
 
         if (dependencies.vectorDBManager) {
             this.vectorDBManager = dependencies.vectorDBManager;
+        }
+        if (dependencies.tdbKnowledgeManager) {
+            this.tdbKnowledgeManager = dependencies.tdbKnowledgeManager;
+            console.log('[LightMemo] TDBKnowledgeManager injected. Cold knowledge base search enabled.');
         }
         if (dependencies.getSingleEmbedding) {
             this.getSingleEmbedding = dependencies.getSingleEmbedding;
@@ -146,8 +151,23 @@ class LightMemoPlugin {
             search_all_knowledge_bases = false,
             tag_boost: rawTagBoost = 0.5,
             core_tags = [],
-            core_boost_factor = 1.33
+            core_boost_factor = 1.33,
+            knowledge_base = null
         } = args;
+
+        // 🧊 冷知识库（TriviumDB）检索分流：
+        //   - query 中带 [知识库] 或 [知识库:库名1,库名2] 语法
+        //   - 或显式提供 knowledge_base 参数
+        // 命中后走 TDBKnowledge 的 BM25+向量+图扩散混合检索，不进入 dailynote/TagMemo 流程。
+        const coldRoute = this._detectColdKnowledgeRoute(query, knowledge_base);
+        if (coldRoute) {
+            return await this._handleColdKnowledgeSearch({
+                query: coldRoute.query,
+                libraries: coldRoute.libraries,
+                k,
+                rerank
+            });
+        }
 
         // 🌟 Wave v8: 解析 tag_boost 的 "+" 后缀
         // tag_boost:「始」0.6「末」  → 正常浪潮 (tagBoost=0.6, geodesic=false)
@@ -442,6 +462,166 @@ class LightMemoPlugin {
         }
 
         return this.formatResults(finalResults, query);
+    }
+
+    /**
+     * 🧊 检测冷知识库检索路由。
+     * 支持两种触发方式：
+     *   1. query 中包含 [知识库] 或 [知识库:库名1,库名2] / [知识库：库名] 语法
+     *   2. 显式传入 knowledge_base 参数（字符串/数组），库名用逗号分隔
+     * @returns {{ query: string, libraries: string[] }|null}
+     */
+    _detectColdKnowledgeRoute(query, knowledgeBaseArg) {
+        if (!this.tdbKnowledgeManager) return null;
+
+        let libraries = [];
+        let cleanedQuery = typeof query === 'string' ? query : '';
+
+        // 语法：[知识库] 或 [知识库:库名] 或 [知识库：库名1,库名2]
+        const kbRegex = /\[\s*知识库\s*(?:[:：]\s*([^\]]+))?\s*\]/;
+        const match = cleanedQuery.match(kbRegex);
+        if (match) {
+            if (match[1]) {
+                libraries.push(...this._parseStringArray(match[1]));
+            }
+            cleanedQuery = cleanedQuery.replace(match[0], '').trim();
+        }
+
+        // 显式 knowledge_base 参数
+        if (knowledgeBaseArg) {
+            libraries.push(...this._parseStringArray(knowledgeBaseArg));
+        }
+
+        // 既没有 [知识库] 语法，也没有显式参数 → 不分流
+        if (!match && (!knowledgeBaseArg || libraries.length === 0)) {
+            return null;
+        }
+
+        // 去重
+        libraries = [...new Set(libraries)];
+
+        return { query: cleanedQuery || query || '', libraries };
+    }
+
+    /**
+     * 🧊 处理冷知识库（TriviumDB）检索。
+     * 走 TDBKnowledge 的 search_hybrid（BM25 稀疏 + 向量稠密 + 图扩散），
+     * 可选叠加 LightMemo 自带的 Rerank 精排。
+     */
+    async _handleColdKnowledgeSearch({ query, libraries, k, rerank }) {
+        if (!this.tdbKnowledgeManager) {
+            return '冷知识库（TDBKnowledge）未启用或未注入，无法检索。';
+        }
+        if (!query || !query.trim()) {
+            throw new Error("冷知识库检索的 'query' 不能为空。");
+        }
+
+        const normalizedK = Math.max(1, Math.floor(this._parseNumber(k, 5)));
+        // Rerank 阶段会重排，因此初筛多取一些候选
+        const fetchK = rerank ? normalizedK * 3 : normalizedK;
+
+        console.log(`[LightMemo] 🧊 Cold knowledge search: query="${query}", libraries=[${libraries.join(', ') || 'ALL'}], k=${normalizedK}`);
+
+        let hits = [];
+        try {
+            hits = await this.tdbKnowledgeManager.search(query, {
+                libraries: libraries.length > 0 ? libraries : undefined,
+                topK: fetchK,
+                expandDepth: 1,
+                minScore: 0.1,
+                hybridAlpha: 0.65
+            });
+        } catch (error) {
+            console.error('[LightMemo] Cold knowledge search failed:', error.message);
+            return `冷知识库检索出错: ${error.message}`;
+        }
+
+        if (!hits || hits.length === 0) {
+            const scope = libraries.length > 0 ? libraries.join(', ') : '全部知识库';
+            return `关于"${query}"，在冷知识库（${scope}）中没有找到相关内容。`;
+        }
+
+        // 映射成 LightMemo Rerank/格式化所需的统一结构
+        let docs = hits.map(h => ({
+            dbName: h.library || '知识库',
+            label: h.id,
+            text: h.text || h.payload?.text_preview || '',
+            sourceFile: h.sourceFile || h.payload?.source_path || '',
+            vectorScore: typeof h.score === 'number' ? h.score : 0,
+            hybridScore: typeof h.score === 'number' ? h.score : 0
+        })).filter(d => d.text);
+
+        // 可选 Rerank 精排（复用现有 rerank 解析与执行逻辑）
+        let useRerank = false;
+        let rrfOptions = null;
+        if (rerank === true) {
+            useRerank = true;
+        } else if (typeof rerank === 'number' && rerank > 0 && rerank <= 1.0) {
+            useRerank = true;
+            rrfOptions = { alpha: rerank };
+        } else if (typeof rerank === 'string') {
+            const lower = rerank.toLowerCase().trim();
+            if (lower.startsWith('rrf')) {
+                useRerank = true;
+                const m = lower.match(/rrf(\d+\.?\d*)/);
+                rrfOptions = { alpha: m ? Math.min(1.0, Math.max(0.0, parseFloat(m[1]))) : 0.5 };
+            } else {
+                const numericAlpha = parseFloat(lower);
+                if (!isNaN(numericAlpha) && numericAlpha > 0 && numericAlpha <= 1.0) {
+                    useRerank = true;
+                    rrfOptions = { alpha: numericAlpha };
+                } else if (lower === 'true') {
+                    useRerank = true;
+                }
+            }
+        }
+
+        if (useRerank && docs.length > 0) {
+            docs.forEach((doc, idx) => { doc.retrieval_rank = idx + 1; });
+            docs = await this._rerankDocuments(query, docs, normalizedK, rrfOptions);
+        } else {
+            docs = docs.slice(0, normalizedK);
+        }
+
+        return this._formatColdKnowledgeResults(docs, query, libraries);
+    }
+
+    _formatColdKnowledgeResults(results, query, libraries) {
+        if (!results || results.length === 0) {
+            const scope = libraries.length > 0 ? libraries.join(', ') : '全部知识库';
+            return `关于"${query}"，在冷知识库（${scope}）中没有找到相关内容。`;
+        }
+
+        const searchedLibs = [...new Set(results.map(r => r.dbName))];
+        let content = `\n[--- TDB 冷知识库检索 ---]\n`;
+        content += `[查询内容: "${query}"]\n`;
+        content += `[知识库范围: ${searchedLibs.join(', ')}]\n\n`;
+        content += `[找到 ${results.length} 条相关知识片段:]\n`;
+
+        results.forEach((r) => {
+            let scoreValue = 0;
+            let scoreType = '';
+            if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
+                scoreValue = r.rerank_score;
+                scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
+                scoreValue = r.hybridScore;
+                scoreType = '混合';
+            } else if (typeof r.vectorScore === 'number' && !isNaN(r.vectorScore)) {
+                scoreValue = r.vectorScore;
+                scoreType = 'TDB';
+            }
+            const scoreDisplay = scoreValue > 0 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})` : 'N/A';
+
+            content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
+            if (r.sourceFile) {
+                content += `    [路径: ${r.sourceFile}]\n`;
+            }
+            content += `${(r.text || '').trim()}\n`;
+        });
+
+        content += `\n[--- 知识库检索结束 ---]\n`;
+        return content;
     }
 
     formatResults(results, query) {

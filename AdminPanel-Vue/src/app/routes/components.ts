@@ -3,6 +3,7 @@ export const APP_ROUTE_COMPONENTS = {
   dashboard: () => import("@/views/Dashboard.vue"),
   "base-config": () => import("@/views/BaseConfig.vue"),
   "daily-notes-manager": () => import("@/views/DailyNotesManager.vue"),
+  "knowledge-base-manager": () => import("@/views/DailyNotesManager.vue"),
   "vcp-forum": () => import("@/views/VcpForum.vue"),
   "image-cache-editor": () => import("@/views/ImageCacheEditor.vue"),
   "emoji-gallery": () => import("@/views/EmojiGallery.vue"),

@@ -4,12 +4,13 @@
       <input
         type="search"
         :value="searchQuery"
-        placeholder="搜索日记…"
+        :placeholder="`搜索${itemLabel}…`"
         autocomplete="off"
-        aria-label="搜索日记"
+        :aria-label="`搜索${itemLabel}`"
         @input="onSearchInput"
       />
       <button
+        v-if="showMoveActions"
         class="btn-secondary"
         :disabled="selectedNotes.length === 0"
         @click="$emit('moveSelectedNotes')"
@@ -17,11 +18,12 @@
         移动选中项到…
       </button>
       <select
+        v-if="showMoveActions"
         :value="moveTargetFolder"
         :disabled="selectedNotes.length === 0"
         @change="onMoveTargetChange"
       >
-        <option value="">选择目标知识库…</option>
+        <option value="">选择目标{{ folderLabel }}…</option>
         <option
           v-for="folder in folders"
           :key="folder"
@@ -54,12 +56,12 @@
     >
       <div v-if="loadingNotes" class="loading-state">
         <span class="loading-spinner loading-spinner--thick loading-spinner--primary loading-spinner--mb-4"></span>
-        <p>正在加载日记…</p>
+        <p>正在加载{{ itemLabel }}…</p>
       </div>
       <div v-else-if="filteredNotes.length === 0" class="empty-state">
         <span class="material-symbols-outlined empty-state-icon">article</span>
-        <p>{{ searchQuery ? '没有找到匹配的日记' : '暂无日记' }}</p>
-        <p class="empty-hint">{{ searchQuery ? '尝试调整搜索关键词' : '当添加日记后，它们将显示在这里' }}</p>
+        <p>{{ searchQuery ? `没有找到匹配的${itemLabel}` : `暂无${itemLabel}` }}</p>
+        <p class="empty-hint">{{ searchQuery ? '尝试调整搜索关键词' : `当添加${itemLabel}后，它们将显示在这里` }}</p>
       </div>
       <div
         v-else-if="isVirtualListMode"
@@ -120,6 +122,7 @@
                       编辑
                     </button>
                     <button
+                      v-if="showDiscoveryAction"
                       class="btn-secondary btn-sm"
                       @click="$emit('discoveryNote', note)"
                     >
@@ -171,6 +174,7 @@
               编辑
             </button>
             <button
+              v-if="showDiscoveryAction"
               class="btn-secondary btn-sm"
               @click="$emit('discoveryNote', note)"
             >
@@ -213,6 +217,10 @@ const props = defineProps<{
   loadingNotes: boolean;
   notesStatus: string;
   notesStatusType: "info" | "success" | "error";
+  itemLabel?: string;
+  folderLabel?: string;
+  showMoveActions?: boolean;
+  showDiscoveryAction?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -237,6 +245,10 @@ const debouncedSearch = useDebounceFn(
   { delay: 300 }
 );
 
+const itemLabel = computed(() => props.itemLabel || "日记");
+const folderLabel = computed(() => props.folderLabel || "知识库");
+const showMoveActions = computed(() => props.showMoveActions !== false);
+const showDiscoveryAction = computed(() => props.showDiscoveryAction !== false);
 const shouldVirtualize = computed(() => props.filteredNotes.length > 50);
 const isVirtualListMode = computed(
   () => shouldVirtualize.value && !props.loadingNotes && props.filteredNotes.length > 0

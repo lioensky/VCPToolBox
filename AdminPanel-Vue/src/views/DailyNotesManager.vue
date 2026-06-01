@@ -4,12 +4,14 @@
       <FolderList
         :folders="folders"
         :selected-folder="selectedFolder"
+        :folder-label="resourceConfig.folderLabel"
         @selectFolder="selectFolder"
         @update:collapsed="folderSidebarCollapsed = $event"
       />
 
       <div class="notes-main-area">
         <RagTagsConfig
+          v-if="resourceConfig.enableRagTags"
           :selected-folder="selectedFolder"
           :rag-tags-config="ragTagsConfig"
           :rag-tags-status="ragTagsStatus"
@@ -34,6 +36,10 @@
           :loading-notes="loadingNotes"
           :notes-status="notesStatus"
           :notes-status-type="notesStatusType"
+          :item-label="resourceConfig.itemLabel"
+          :folder-label="resourceConfig.folderLabel"
+          :show-move-actions="resourceMode === 'diary'"
+          :show-discovery-action="resourceConfig.enableDiscovery"
           @update:search-query="searchQuery = $event"
           @filterNotes="filterNotes"
           @moveSelectedNotes="moveSelectedNotes"
@@ -59,7 +65,7 @@
               class="note-content-editor"
               spellcheck="false"
               rows="20"
-              placeholder="编辑日记内容…"
+              :placeholder="`编辑${resourceConfig.itemLabel}内容…`"
             ></textarea>
           </template>
         </DiaryEditor>
@@ -67,6 +73,7 @@
     </div>
 
     <DiscoveryModal
+      v-if="resourceConfig.enableDiscovery"
       v-model="showDiscoveryModal"
       :source-note="discoverySourceNote"
       :selected-folder="selectedFolder"
@@ -77,8 +84,9 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { useDiaryStore, type DiaryNote } from '@/stores/diary'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { useDiaryStore, type DiaryNote, type DiaryResourceMode } from '@/stores/diary'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { askConfirm } from '@/platform/feedback/feedbackBus'
 import { showMessage } from '@/utils'
@@ -89,6 +97,7 @@ import FolderList from './DailyNotesManager/FolderList.vue'
 import NoteList from './DailyNotesManager/NoteList.vue'
 import RagTagsConfig from './DailyNotesManager/RagTagsConfig.vue'
 
+const route = useRoute()
 const diaryStore = useDiaryStore()
 const { initializeRenderer, renderMarkdownSync } = useMarkdownRenderer()
 const {
@@ -103,7 +112,9 @@ const {
   ragTagsStatus,
   ragTagsStatusType,
   notesStatus,
-  notesStatusType
+  notesStatusType,
+  resourceMode,
+  resourceConfig
 } = storeToRefs(diaryStore)
 
 interface EditingDiaryNote extends DiaryNote {
@@ -167,7 +178,7 @@ async function initMarkdownEditor(content = ''): Promise<void> {
       status: ['lines', 'words', 'cursor'],
       minHeight: '500px',
       maxHeight: '700px',
-      placeholder: '编辑日记内容，支持 Markdown',
+      placeholder: `编辑${resourceConfig.value.itemLabel}内容，支持 Markdown`,
       toolbar: [
         'bold',
         'italic',
@@ -252,7 +263,7 @@ async function saveRagTags(): Promise<void> {
 async function editNote(note: DiaryNote): Promise<void> {
   const sourceFolder = selectedFolder.value
   if (!sourceFolder) {
-    showMessage('请先选择一个知识库', 'error')
+    showMessage(`请先选择一个${resourceConfig.value.folderLabel}`, 'error')
     return
   }
 
@@ -269,9 +280,9 @@ async function editNote(note: DiaryNote): Promise<void> {
     await initMarkdownEditor(content)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
-    editorStatus.value = `加载日记内容失败：${errorMessage}`
+    editorStatus.value = `加载${resourceConfig.value.itemLabel}内容失败：${errorMessage}`
     editorStatusType.value = 'error'
-    showMessage(`加载日记内容失败：${errorMessage}`, 'error')
+    showMessage(`加载${resourceConfig.value.itemLabel}内容失败：${errorMessage}`, 'error')
   }
 }
 
@@ -319,9 +330,9 @@ async function saveNote(): Promise<void> {
       throw new Error('保存失败')
     }
 
-    editorStatus.value = '日记已保存'
+    editorStatus.value = `${resourceConfig.value.itemLabel}已保存`
     editorStatusType.value = 'success'
-    showMessage('日记已保存', 'success')
+    showMessage(`${resourceConfig.value.itemLabel}已保存`, 'success')
 
     editingNote.value = null
     isEditorInitializing.value = false
@@ -351,7 +362,7 @@ function cancelEdit(): void {
 
 async function deleteNote(note: DiaryNote): Promise<void> {
   if (!(await askConfirm({
-    message: `确定要删除日记 "${note.title || note.file}" 吗？`,
+    message: `确定要删除${resourceConfig.value.itemLabel} "${note.title || note.file}" 吗？`,
     danger: true,
     confirmText: '删除',
   }))) {
@@ -363,7 +374,7 @@ async function deleteNote(note: DiaryNote): Promise<void> {
 
 async function deleteSelectedNotes(): Promise<void> {
   if (!(await askConfirm({
-    message: `确定要删除选中的 ${selectedNotes.value.length} 篇日记吗？`,
+    message: `确定要删除选中的 ${selectedNotes.value.length} 个${resourceConfig.value.itemLabel}吗？`,
     danger: true,
     confirmText: '批量删除',
   }))) {
@@ -384,8 +395,20 @@ onUnmounted(() => {
   }
 })
 
+function resolveResourceMode(): DiaryResourceMode {
+  return route.name === 'KnowledgeBaseManager' ? 'knowledge' : 'diary'
+}
+
+watch(
+  () => route.name,
+  () => {
+    cancelEdit()
+    void diaryStore.init(resolveResourceMode())
+  }
+)
+
 onMounted(() => {
-  diaryStore.init()
+  void diaryStore.init(resolveResourceMode())
 })
 </script>
 

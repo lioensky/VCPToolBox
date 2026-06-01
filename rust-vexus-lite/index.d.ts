@@ -58,6 +58,8 @@ export interface WatcherConfig {
   ignoreFolders: Array<string>
   ignorePrefixes: Array<string>
   ignoreSuffixes: Array<string>
+  /** 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。 */
+  extensions?: Array<string>
 }
 /** 核心索引结构 (无状态，只存向量) */
 export declare class VexusIndex {

@@ -11,6 +11,7 @@ export interface DiaryListParams {
   search?: string;
   page?: number;
   pageSize?: number;
+  basePath?: string;
 }
 
 export interface DiaryListResponse {
@@ -150,6 +151,11 @@ function toRagTagsPayload(config: RagTagsConfig): { tags: string[]; threshold?: 
   return payload;
 }
 
+function normalizeBasePath(basePath?: string): string {
+  const value = (basePath || "/admin_api/dailynotes").trim();
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
 export const diaryApi = {
   async getDiaryList(
     params: DiaryListParams = {},
@@ -160,7 +166,7 @@ export const diaryApi = {
     if (params.search?.trim()) {
       response = await requestWithUi<DailyNotesResponse>(
         {
-          url: "/admin_api/dailynotes/search",
+          url: `${normalizeBasePath(params.basePath)}/search`,
           query: {
             term: params.search.trim(),
             folder: params.folder,
@@ -171,7 +177,7 @@ export const diaryApi = {
     } else if (params.folder) {
       response = await requestWithUi<DailyNotesResponse>(
         {
-          url: `/admin_api/dailynotes/folder/${encodeURIComponent(params.folder)}`,
+          url: `${normalizeBasePath(params.basePath)}/folder/${encodeURIComponent(params.folder)}`,
         },
         uiOptions
       );
@@ -191,12 +197,13 @@ export const diaryApi = {
 
   async getDiaryContent(
     file: string,
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
+    basePath?: string
   ): Promise<string> {
     const path = parseDiaryPath(file);
     const response = await requestWithUi<{ content?: string }>(
       {
-        url: `/admin_api/dailynotes/note/${encodeURIComponent(path.folder)}/${encodeURIComponent(path.file)}`,
+        url: `${normalizeBasePath(basePath)}/note/${encodeURIComponent(path.folder)}/${encodeURIComponent(path.file)}`,
       },
       uiOptions
     );
@@ -206,12 +213,13 @@ export const diaryApi = {
   async saveDiary(
     file: string,
     content: string,
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    basePath?: string
   ): Promise<DiarySaveResponse> {
     const path = parseDiaryPath(file);
     const response = await requestWithUi<{ message?: string }>(
       {
-        url: `/admin_api/dailynotes/note/${encodeURIComponent(path.folder)}/${encodeURIComponent(path.file)}`,
+        url: `${normalizeBasePath(basePath)}/note/${encodeURIComponent(path.folder)}/${encodeURIComponent(path.file)}`,
         method: "POST",
         body: { content },
       },
@@ -226,7 +234,8 @@ export const diaryApi = {
 
   async deleteDiary(
     files: string[],
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    basePath?: string
   ): Promise<DiaryDeleteResponse> {
     const notesToDelete = files.map((filePath) => {
       const path = parseDiaryPath(filePath);
@@ -238,7 +247,7 @@ export const diaryApi = {
 
     const response = await requestWithUi<DiaryDeleteResponse>(
       {
-        url: "/admin_api/dailynotes/delete-batch",
+        url: `${normalizeBasePath(basePath)}/delete-batch`,
         method: "POST",
         body: { notesToDelete },
       },
@@ -296,11 +305,12 @@ export const diaryApi = {
   },
 
   async getFolders(
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
+    basePath?: string
   ): Promise<Folder[]> {
     const response = await requestWithUi<{ folders?: string[] }>(
       {
-        url: "/admin_api/dailynotes/folders",
+        url: `${normalizeBasePath(basePath)}/folders`,
       },
       uiOptions
     );
@@ -313,11 +323,12 @@ export const diaryApi = {
   async moveDiaries(
     notes: DiaryMoveTarget[],
     targetFolder: string,
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    basePath?: string
   ): Promise<DiaryMoveResponse> {
     const response = await requestWithUi<DiaryMoveResponse>(
       {
-        url: "/admin_api/dailynotes/move",
+        url: `${normalizeBasePath(basePath)}/move`,
         method: "POST",
         body: {
           sourceNotes: notes,
@@ -336,11 +347,12 @@ export const diaryApi = {
 
   async associativeDiscovery(
     payload: AssociativeDiscoveryParams,
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    basePath?: string
   ): Promise<AssociativeDiscoveryResponse> {
     return requestWithUi(
       {
-        url: "/admin_api/dailynotes/associative-discovery",
+        url: `${normalizeBasePath(basePath)}/associative-discovery`,
         method: "POST",
         body: payload,
       },

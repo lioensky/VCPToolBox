@@ -2,7 +2,7 @@
   <aside
     class="notes-sidebar card"
     :class="{ 'is-collapsed': collapsed }"
-    :aria-label="collapsed ? '知识库操作台（已折叠）' : '知识库操作台'"
+    :aria-label="collapsed ? `${folderLabel}操作台（已折叠）` : `${folderLabel}操作台`"
   >
     <template v-if="collapsed">
       <div class="console-rail">
@@ -33,7 +33,7 @@
       <div class="folder-console__section">
         <span class="folder-console__label">操作台</span>
         <div class="notes-sidebar-header">
-          <h3>知识库列表</h3>
+          <h3>{{ folderLabel }}列表</h3>
           <div class="sidebar-header-meta">
             <span class="folder-count">{{ filteredFolders.length }}/{{ folders.length }} 个</span>
             <button
@@ -57,7 +57,7 @@
             v-model="folderQuery"
             type="search"
             class="folder-search-input"
-            placeholder="按知识库名称筛选..."
+            :placeholder="`按${folderLabel}名称筛选...`"
           >
           <button
             v-if="folderQuery"
@@ -86,10 +86,10 @@
           </button>
         </li>
         <li v-if="folders.length === 0" class="no-folders">
-          暂无知识库
+          暂无{{ folderLabel }}
         </li>
         <li v-else-if="filteredFolders.length === 0" class="no-folders">
-          未找到匹配“{{ folderQuery }}”的知识库
+          未找到匹配“{{ folderQuery }}”的{{ folderLabel }}
         </li>
       </ul>
     </template>
@@ -103,6 +103,7 @@ import { useConsoleCollapse } from '@/composables/useConsoleCollapse'
 const props = defineProps<{
   folders: string[];
   selectedFolder: string;
+  folderLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -110,6 +111,7 @@ const emit = defineEmits<{
   (e: "update:collapsed", collapsed: boolean): void;
 }>();
 
+const folderLabel = computed(() => props.folderLabel || '知识库')
 const folderQuery = ref('')
 
 const filteredFolders = computed(() => {

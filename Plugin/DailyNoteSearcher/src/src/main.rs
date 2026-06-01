@@ -110,6 +110,7 @@ struct InputArgs {
     #[serde(default = "default_preview_length", deserialize_with = "deserialize_usize_from_string_or_number")]
     preview_length: usize,
     // 允许 API 调用时直接传入覆盖配置
+    // root_path 可指向 dailynote/ 或 knowledge/ 等不同知识源根目录
     root_path: Option<String>,
     ignored_folders: Option<String>,
     allowed_extensions: Option<String>,
@@ -192,9 +193,10 @@ impl AppConfig {
             .collect();
 
         // 4. 允许的扩展名
+        // 默认同时覆盖日记与知识库常见的文本型资料格式。
         let ext_str = args.allowed_extensions.clone()
             .or_else(|| env::var("ALLOWED_EXTENSIONS").ok())
-            .unwrap_or_else(|| "md,txt".to_string());
+            .unwrap_or_else(|| "md,txt,json,html".to_string());
         let allowed_extensions = ext_str
             .split(',')
             .map(|s| s.trim().replace(".", ""))
@@ -252,6 +254,7 @@ fn main() {
 
     // 编译所有正则表达式。API 侧可通过 queries 传入多关键词，由 Rust 内部执行 AND 匹配，
     // 避免使用 (?=...) look-ahead，因为 Rust regex crate 不支持 look-around。
+    // 搜索器可通过 root_path 切换到 knowledge/ 等其他资料根目录。
     let mut regexes = Vec::new();
     if let Some(queries) = &args.queries {
         for query in queries {

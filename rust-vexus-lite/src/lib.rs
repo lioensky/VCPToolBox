@@ -1163,6 +1163,8 @@ pub struct WatcherConfig {
     pub ignore_folders: Vec<String>,
     pub ignore_prefixes: Vec<String>,
     pub ignore_suffixes: Vec<String>,
+    /// 可选扩展名白名单。为空时保持旧行为：仅监听 .md / .txt。
+    pub extensions: Option<Vec<String>>,
 }
 
 #[napi]
@@ -1191,6 +1193,13 @@ impl VexusWatcher {
         let ignore_folders: HashSet<String> = config.ignore_folders.into_iter().collect();
         let ignore_prefixes = config.ignore_prefixes;
         let ignore_suffixes = config.ignore_suffixes;
+        let allowed_extensions: HashSet<String> = config
+            .extensions
+            .unwrap_or_else(|| vec!["md".to_string(), "txt".to_string()])
+            .into_iter()
+            .map(|ext| ext.trim().trim_start_matches('.').to_lowercase())
+            .filter(|ext| !ext.is_empty())
+            .collect();
 
         let js_cb = Arc::new(js_callback);
         let watcher_ref = self.watcher.clone();
@@ -1199,10 +1208,10 @@ impl VexusWatcher {
             match res {
                 Ok(event) => {
                     if let Some(path) = event.paths.first() {
-                        // 1. 基础后缀拦截：只允许 .md 和 .txt
+                        // 1. 基础后缀拦截：默认只允许 .md/.txt；调用方可通过 extensions 泛化。
                         if let Some(ext) = path.extension() {
                             let ext_str = ext.to_string_lossy().to_lowercase();
-                            if ext_str != "md" && ext_str != "txt" {
+                            if !allowed_extensions.contains(&ext_str) {
                                 return;
                             }
                         } else {

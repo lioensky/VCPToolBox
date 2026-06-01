@@ -60,6 +60,7 @@
     "stylelint": "^16.25.0",
     "tar": "^7.5.13",
     "trash": "^10.0.0",
+    "triviumdb": "^0.7.1",
     "turndown": "^7.2.1",
     "undici": "^7.13.0",
     "user-agents": "^1.1.597",

@@ -4,13 +4,21 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 
 /**
- * 日记本管理模块 (安全加固版)
- * @param {string} dailyNoteRootPath 日记本根目录
+ * 日记/知识库文件管理模块 (安全加固版)
+ * @param {string} dailyNoteRootPath 根目录（日记根目录或 knowledge 根目录）
  * @param {boolean} DEBUG_MODE 是否开启调试模式
+ * @param {{ allowedExtensions?: string, ignoredFolders?: string, resourceLabel?: string }} options 资源配置
  * @returns {express.Router}
  */
-module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
+module.exports = function (dailyNoteRootPath, DEBUG_MODE, options = {}) {
     const router = express.Router();
+    const resourceLabel = options.resourceLabel || '日记';
+    const allowedExtensions = (options.allowedExtensions || 'md,txt')
+        .split(',')
+        .map(ext => ext.trim().replace(/^\./, '').toLowerCase())
+        .filter(Boolean);
+    const allowedExtensionsParam = allowedExtensions.join(',');
+    const ignoredFoldersParam = options.ignoredFolders || 'VectorStore,DebugLog';
 
     // ══════════════════════════════════════════════════
     //  搜索配置
@@ -246,8 +254,8 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
             preview_length: SEARCH_CONFIG.PREVIEW_LENGTH,
             root_path: path.resolve(dailyNoteRootPath),
             max_results: SEARCH_CONFIG.MAX_RESULTS,
-            ignored_folders: "VectorStore,DebugLog",
-            allowed_extensions: "md,txt"
+            ignored_folders: ignoredFoldersParam,
+            allowed_extensions: allowedExtensionsParam
         };
 
         return new Promise((resolve, reject) => {
@@ -393,7 +401,8 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
                     foldersToSearch.push({ name: dir.name, path: fullPath, depth: dir.depth + 1 });
                 } else if (entry.isFile()) {
                     const lower = entry.name.toLowerCase();
-                    if (lower.endsWith('.txt') || lower.endsWith('.md')) {
+                    const ext = path.extname(lower).replace('.', '');
+                    if (allowedExtensions.length === 0 || allowedExtensions.includes(ext)) {
                         try {
                             const stats = await fs.stat(fullPath);
                             if (stats.size <= SEARCH_CONFIG.MAX_FILE_SIZE) {
@@ -668,10 +677,10 @@ module.exports = function (dailyNoteRootPath, DEBUG_MODE) {
 
             await fs.access(specificFolderPath);
             const files = await fs.readdir(specificFolderPath);
-            const noteFiles = files.filter(file =>
-                file.toLowerCase().endsWith('.txt') ||
-                file.toLowerCase().endsWith('.md')
-            );
+            const noteFiles = files.filter(file => {
+                const ext = path.extname(file).replace('.', '').toLowerCase();
+                return allowedExtensions.length === 0 || allowedExtensions.includes(ext);
+            });
 
             const notes = await Promise.all(noteFiles.map(async (file) => {
                 const filePath = path.join(specificFolderPath, file);
