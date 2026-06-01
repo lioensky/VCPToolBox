@@ -605,7 +605,7 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   }
 
   if (key === "fuzzyembedding.threshold") {
-    return { min: 0.97, max: 0.995, step: 0.001 };
+    return { min: 0.96, max: 0.995, step: 0.001 };
   }
 
   if (leafKey === "basemomentum") {
