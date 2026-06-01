@@ -954,6 +954,38 @@ class KnowledgeBaseManager {
     }
 
     /**
+     * 🛡️ 启动全量扫描补洞：判断一个文件在 SQLite 中是否已有完整可用的 chunk 向量。
+     * 旧逻辑只看 mtime/size，若上次 API 失败但 files 记录已写入，会在开机全扫时被误判为“无需处理”。
+     */
+    _hasCompleteStoredVectorsForFile(relPath) {
+        try {
+            const expectedBytes = this.config.dimension * Float32Array.BYTES_PER_ELEMENT;
+            const row = this.db.prepare(`
+                SELECT
+                    COUNT(c.id) AS chunks,
+                    SUM(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END) AS vectors,
+                    SUM(CASE WHEN c.vector IS NOT NULL AND length(c.vector) = ? THEN 1 ELSE 0 END) AS valid_vectors,
+                    SUM(CASE WHEN c.vector IS NOT NULL AND length(c.vector) != ? THEN 1 ELSE 0 END) AS bad_vectors
+                FROM files f
+                LEFT JOIN chunks c ON c.file_id = f.id
+                WHERE f.path = ?
+                GROUP BY f.id
+            `).get(expectedBytes, expectedBytes, relPath);
+
+            if (!row) return false;
+            const chunks = row.chunks || 0;
+            const vectors = row.vectors || 0;
+            const validVectors = row.valid_vectors || 0;
+            const badVectors = row.bad_vectors || 0;
+
+            return chunks > 0 && chunks === vectors && vectors === validVectors && badVectors === 0;
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to check stored vectors for "${relPath}": ${e.message}`);
+            return false;
+        }
+    }
+
+    /**
      * 🧳 文件搬家/复制优化：按 checksum 在 SQLite 中查找可复用的 chunk 向量。
      * 只在 chunk 数量完全一致且所有向量维度有效时命中，避免复用半成品或旧模型残留数据。
      */
@@ -1297,12 +1329,12 @@ class KnowledgeBaseManager {
                     const diaryName = parts.length > 1 ? parts[0] : 'Root';
 
                     const row = checkFile.get(relPath);
-                    if (row && row.mtime === stats.mtimeMs && row.size === stats.size) return;
+                    if (row && row.mtime === stats.mtimeMs && row.size === stats.size && this._hasCompleteStoredVectorsForFile(relPath)) return;
 
                     const content = await fs.readFile(filePath, 'utf-8');
                     const checksum = crypto.createHash('md5').update(content).digest('hex');
 
-                    if (row && row.checksum === checksum) {
+                    if (row && row.checksum === checksum && this._hasCompleteStoredVectorsForFile(relPath)) {
                         this.db.prepare('UPDATE files SET mtime = ?, size = ? WHERE path = ?').run(stats.mtimeMs, stats.size, relPath);
                         return;
                     }
