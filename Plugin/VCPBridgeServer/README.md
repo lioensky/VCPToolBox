@@ -46,7 +46,7 @@ BRIDGE_BIND_HOST=127.0.0.1
 BRIDGE_PORT=3100
 BRIDGE_UPSTREAM_URL=
 BRIDGE_UPSTREAM_TYPE=responses
-BRIDGE_MODEL=gpt-5.3-codex
+BRIDGE_MODEL=gpt-5.5
 BRIDGE_HIJACK_MODE=append
 BRIDGE_SYSTEM_PROMPT=your_rules.txt
 BRIDGE_CLIENT_KEY=<REDACTED_CLIENT_KEY>
@@ -73,6 +73,31 @@ Operational flow:
 6. Use `测试 Provider` to run a read-only upstream model-catalog check.
 7. Configure VCPBridgeServer with `BRIDGE_UPSTREAM_TYPE=responses` and leave
    `BRIDGE_UPSTREAM_URL` empty unless the main service is on a non-default URL.
+
+Codex client config:
+
+```toml
+model_provider = "vcp_bridge"
+model = "gpt-5.5"
+
+[model_providers.vcp_bridge]
+name = "VCP Bridge"
+base_url = "http://127.0.0.1:3100/v1"
+env_key = "VCP_BRIDGE_KEY"
+wire_api = "responses"
+```
+
+Set `VCP_BRIDGE_KEY` to the same value as `BRIDGE_CLIENT_KEY` in your local
+VCPBridgeServer config. Do not paste the key into this file or commit it:
+
+```powershell
+[Environment]::SetEnvironmentVariable("VCP_BRIDGE_KEY", "<your BRIDGE_CLIENT_KEY>", "User")
+```
+
+Restart Codex, or open a fresh Codex session, after changing the config or
+environment variable. Use a model exposed by the local VCPToolBox
+`GET /v1/models` response; when `codex_oauth` is enabled, `gpt-5.5` routes
+through the ChatGPT/Codex OAuth provider.
 
 `VCP_RESPONSES_PROVIDER` is a VCPToolBox main-service setting, not a bridge
 setting. The main `/v1/responses` provider route reads the current
