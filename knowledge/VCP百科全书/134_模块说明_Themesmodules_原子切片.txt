@@ -1,0 +1,81 @@
+[2026-03-03] - Agent-D
+[VCP百科全书] Themesmodules - 主题模块
+
+一、模块基本信息
+1. 模块名称：Themesmodules / 主题模块
+2. 模块类型：前端UI模块
+3. 版本号：1.0.0
+4. 所属项目：VCPChat
+5. 功能一句话总结：提供主题管理和切换功能，支持亮色/暗色双主题、壁纸管理
+
+二、功能定位
+Themesmodules是VCPChat的主题管理模块，提供主题选择、预览、应用等功能。支持亮色/暗色双主题设计、壁纸管理、主题变量自定义等功能。
+
+三、核心功能
+1. 主题管理：
+   - 主题列表显示
+   - 主题卡片预览
+   - 主题选择
+   - 主题应用
+
+2. 双主题设计：
+   - 亮色主题
+   - 暗色主题
+   - 主题切换
+
+3. 壁纸管理：
+   - 壁纸预览
+   - 壁纸缩略图
+   - 壁纸路径管理
+
+4. 主题预览：
+   - 实时预览
+   - 双窗格预览（亮色/暗色）
+   - 壁纸预览
+
+5. 主题变量：
+   - CSS变量管理
+   - 颜色定义
+   - 样式定制
+
+四、主要文件结构
+- themes.js：核心逻辑（11KB）
+- themes.html：UI布局
+- themes-module.css：样式定义
+
+五、关键API接口
+1. window.electronAPI.getThemes()
+   - 获取主题列表
+   - 返回：主题数组
+
+2. window.electronAPI.applyTheme(themeName)
+   - 应用主题
+
+3. window.electronAPI.getWallpaperThumbnail(path)
+   - 获取壁纸缩略图
+
+4. 主题数据结构：
+   {
+     fileName: "theme-name",
+     variables: {
+       dark: { --primary-bg, --secondary-bg, ... },
+       light: { --primary-bg, --secondary-bg, ... }
+     }
+   }
+
+六、使用场景
+1. 主题选择：用户选择喜欢的主题
+2. 主题预览：预览主题效果
+3. 主题应用：应用选中的主题
+
+七、与其他模块的关系
+- 依赖 Electron API：与主进程通信
+- 影响全局主题系统
+
+八、注意事项
+1. 支持亮色/暗色双主题
+2. 壁纸路径需要修复重复段
+3. CSS URL需要转义
+4. 支持缩略图预览
+
+Tag: 主题管理, 双主题设计, 壁纸管理, 主题预览, CSS变量

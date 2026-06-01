@@ -1,0 +1,48 @@
+﻿今日系统整理了BilibiliFetch（Bilibili内容获取插件）的完整使用说明，作为客服知识库。
+
+核心概念：BilibiliFetch是VCP的Bilibili视频内容获取插件，支持视频信息抓取（字幕/弹幕/评论/高能进度条/快照截图/HD高清抽帧）、关键词搜索（视频/UP主）、UP主投稿列表获取，支持长链接、b23.tv短链接和多P分P视频。
+
+插件基本信息：插件名称BilibiliFetch，类型synchronous同步插件，超时时间60秒，入口文件BilibiliFetch.py（Python），版本2.1.0，作者Bocchi777。系统提示词占位符为{{VCPBilibiliFetch}}。依赖：pip install requests Pillow，HD截图功能额外需要ffmpeg。
+
+配置项说明：BILIBILI_COOKIE是必需配置项，在Plugin/BilibiliFetch/config.env中设置，用于访问需要登录的内容（字幕、弹幕、评论、搜索等）。Cookie过期会导致大部分功能失效，需要定期更新。
+
+命令详解：
+
+BilibiliFetch——获取视频详细信息。参数：url（必需，支持完整链接/BV号/b23.tv短链接，多P视频URL中的?p=N参数自动识别）、lang（可选，字幕语言代码，如ai-zh/ai-en/zh-CN，未指定时按优先级自动选择：ai-zh > zh-CN > zh-Hans > 第一个可用语言）、danmaku_num（可选，默认0，获取热门弹幕数量）、comment_num（可选，默认0，获取热门评论数量，按点赞排序）、snapshots（可选，截图时间点秒数，逗号分隔，如10,60,120）、hd_snapshot（可选，默认false，是否启用HD高清截图，需要ffmpeg，失败自动降级到雪碧图裁切）、need_subs（可选，默认true，是否获取字幕，字幕来源优先级：CC字幕 > WBI Player API > AI Summary API）、need_pbp（可选，默认true，是否获取高能进度条数据即弹幕密度最高的时间点）。
+
+调用格式示例：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」BilibiliFetch「末」,
+url:「始」https://www.bilibili.com/video/BV1CC4y1a7ee?p=2「末」,
+danmaku_num:「始」5「末」,
+snapshots:「始」30,120「末」,
+hd_snapshot:「始」true「末」,
+need_pbp:「始」true「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+BilibiliSearch——关键词搜索视频或UP主。参数：action（必需，固定为search）、keyword（必需，搜索关键词）、search_type（可选，默认video，video搜索视频返回标题/UP主/BV号/播放量/发布日期，bili_user搜索用户返回昵称/MID/粉丝数/投稿数/最近投稿）、page（可选，默认1，页码）。
+
+GetUpVideos——获取UP主投稿列表。参数：action（必需，固定为get_up_videos）、mid（必需，UP主的用户ID）、pn（可选，默认1，页码）、ps（可选，默认30，每页数量，最大50）。
+
+重要提示：插件返回多模态结构化数据，包含文本和HTML img标签。必须将返回结果中的img标签原样展示给用户以便渲染快照。B站短链接格式为https://b23.tv/BV号，长链接格式为https://www.bilibili.com/video/BV号。
+
+可能遇到的问题：
+1. 字幕获取失败——视频没有字幕（纯音乐/无字幕视频）或BILIBILI_COOKIE过期，检查Cookie有效性。
+2. 搜索功能失败（WBI签名认证错误）——Cookie过期导致WBI签名认证失败，需要更新Cookie。
+3. HD截图失败——ffmpeg未安装或不在PATH中，插件会自动降级到雪碧图裁切模式，不影响其他功能。
+4. 弹幕/评论获取为空——danmaku_num或comment_num参数设置为0（默认值），需要明确设置数量。
+5. 多P视频获取了错误分P的内容——URL中的?p=N参数会被自动识别，确认URL中包含正确的分P参数。
+6. 超时（60秒）——视频较长或网络较慢，HD截图模式下从视频流抽帧耗时较长，可以减少snapshots的时间点数量。
+7. 依赖未安装——确认已运行pip install requests Pillow，Docker环境需要在容器内安装。
+
+可能的解决办法：
+1. 更新BILIBILI_COOKIE：登录Bilibili网页版，在浏览器开发者工具的Network标签中找到任意请求的Cookie字段，复制完整Cookie字符串到Plugin/BilibiliFetch/config.env的BILIBILI_COOKIE字段。
+2. 安装ffmpeg：Windows下下载ffmpeg.exe放到VCPToolBox/bin/目录；Linux/Docker下运行apt-get install ffmpeg或apk add ffmpeg。
+3. 对于只需要快照不需要字幕的场景，设置need_subs:false可以加快响应速度。
+4. 先使用BilibiliSearch搜索到视频BV号，再用BilibiliFetch获取详细内容，是标准的两步工作流。
+
+关联节点：VCP指令协议语法（调用格式）、分布式架构（超栈追踪图片文件传输）、VSearch（搜索类插件对比）。
+
+信源/出处：Plugin/BilibiliFetch/plugin-manifest.json，Plugin/BilibiliFetch/README.md，Plugin/BilibiliFetch/BilibiliFetch.py。
+
+Tag: BilibiliFetch，Bilibili，视频获取，字幕提取，弹幕，评论，高能进度条，视频截图，HD截图，ffmpeg，BilibiliSearch，UP主，多P视频，b23短链接

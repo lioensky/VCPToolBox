@@ -1,0 +1,114 @@
+[2026-03-03] - Agent-B
+[VCP百科全书] PowerShellExecutor - PowerShell命令执行器
+
+一、插件基本信息
+1. 插件名称：PowerShellExecutor / PowerShell命令执行器
+2. 插件类型：混合服务插件 (hybridservice)
+3. 版本号：1.0.0
+4. 所属模块：VCPDistributedServer/Plugin
+5. 功能一句话总结：在持久化PowerShell会话中执行命令，支持管理员权限和会话管理
+
+二、功能定位
+PowerShellExecutor是一个高级PowerShell命令执行插件，维护一个长期活动的PowerShell窗口，允许连续操作和状态保持。相比OldPowerShellExecutor，该插件支持持久化会话、会话重置、管理员权限启动和灵活的返回模式（delta/full）。支持阻塞式执行并立即返回结果。
+
+适用场景：
+- 需要保持会话状态的连续操作
+- 复杂的多步骤系统管理任务
+- 需要环境变量和工作目录保持的操作
+- 系统管理和配置
+- 进程和服务管理
+
+三、配置参数
+本插件支持config.env配置，可通过returnMode参数覆盖默认值。
+
+主要配置项：
+- returnMode (字符串, 可选): 控制返回内容的模式。'delta'(默认)只返回最新命令的输出；'full'返回整个终端窗口的当前内容
+
+四、调用命令列表
+
+1. PowerShellExecutor - 在持久化PowerShell会话中执行命令
+   功能描述：在一个持久化的PowerShell会话中执行命令。此工具维护一个长期活动的PowerShell窗口，允许连续操作
+   参数列表：
+   - command (字符串, 必需): 要在PowerShell会话中执行的命令
+   - requireAdmin (布尔值, 可选): 如果为true，将尝试以管理员权限启动一个全新的PowerShell会话。这会向用户显示一个GUI确认对话框。默认为false
+   - newSession (布尔值, 可选): 如果为true，将强制关闭当前的PowerShell会话（如果存在）并启动一个全新的会话。这对于重置环境或从错误状态中恢复非常有用。默认为false
+   - returnMode (字符串, 可选): 控制返回内容的模式。'delta'(默认)只返回最新命令的输出；'full'返回整个终端窗口的当前内容。此参数可覆盖在config.env中设置的默认值
+   完整调用格式：
+   <<<[TOOL_REQUEST]>>>
+   tool_name:「始」PowerShellExecutor「末」,
+   command:「始」cd $env:USERPROFILE/Desktop; ls「末」
+   <<<[END_TOOL_REQUEST]>>>
+   返回值说明：返回命令执行结果，格式取决于returnMode参数
+
+五、使用示例
+
+示例1：标准调用 - 列出桌面文件
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PowerShellExecutor「末」,
+command:「始」cd $env:USERPROFILE/Desktop; ls「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例2：启动新会话并请求管理员权限
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PowerShellExecutor「末」,
+command:「始」Get-Process -Name 'winlogon'「末」,
+requireAdmin:「始」true「末」,
+newSession:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例3：返回完整终端内容
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PowerShellExecutor「末」,
+command:「始」Get-ChildItem -Path C:\Users「末」,
+returnMode:「始」full「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例4：重置会话后执行命令
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PowerShellExecutor「末」,
+command:「始」$PSVersionTable「末」,
+newSession:「始」true「末」
+<<<[END_TOOL_REQUEST]>>>
+
+示例5：连续操作 - 保持会话状态
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」PowerShellExecutor「末」,
+command:「始」$myVar = 'Hello'; $myVar「末」,
+returnMode:「始」delta「末」
+<<<[END_TOOL_REQUEST]>>>
+
+六、注意事项与限制
+
+1. 持久化会话机制：
+   - 插件维护一个长期活动的PowerShell窗口
+   - 会话中的变量和工作目录会被保持
+   - 连续调用会在同一会话中执行
+
+2. 返回模式说明：
+   - delta（默认）：只返回最新命令的输出，适合快速反馈
+   - full：返回整个终端窗口的当前内容，包含历史输出
+
+3. 会话管理：
+   - newSession为true时会强制关闭当前会话并创建新会话
+   - 用于重置环境或从错误状态恢复
+   - 新会话会丢失之前的变量和工作目录
+
+4. 管理员权限：
+   - requireAdmin为true时会弹出GUI确认对话框
+   - 用户需要确认才能以管理员权限启动新会话
+   - 仅在newSession为true时有效
+
+5. 超时设置：
+   - 通信超时为600000毫秒（10分钟）
+   - 长期运行的命令需要在超时前完成
+
+6. 与OldPowerShellExecutor的区别：
+   - PowerShellExecutor支持持久化会话
+   - PowerShellExecutor支持会话重置
+   - PowerShellExecutor支持灵活的返回模式
+   - OldPowerShellExecutor支持后台式执行
+
+七、关联插件
+- OldPowerShellExecutor (旧版本，支持后台式执行)
+
+Tag: PowerShell, 命令执行, 持久化会话, 系统管理, Windows命令

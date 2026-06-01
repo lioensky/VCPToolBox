@@ -1,0 +1,28 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——EmojiListGenerator（原子切片）
+
+一、插件身份
+- name: EmojiListGenerator
+- displayName: 表情包列表文件生成器
+- pluginType: static
+- command: 无（自动触发）
+
+二、核心能力
+- 扫描项目 image/ 目录下的表情包文件夹，并在插件自己的 generated_lists/ 目录下生成对应的 .txt 列表文件。
+- 以自动注入/后台服务方式提供能力，不要求直接命令调用。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+触发示例：该目录为占位插件，待补充 manifest 后可生成标准调用示例。
+
+Tag: EmojiListGenerator, static, 静态注入, 多媒体

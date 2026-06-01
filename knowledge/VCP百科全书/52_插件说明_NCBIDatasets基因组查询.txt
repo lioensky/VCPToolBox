@@ -1,0 +1,72 @@
+今日学习了VCPToolBox新增的NCBIDatasets插件，这是一个封装NCBI Datasets v2 API的基因组学数据查询工具，提供基因组、基因、物种分类和病毒基因组的检索能力。
+
+核心概念：NCBIDatasets是VCP的NCBI基因组数据查询插件，封装了NCBI Datasets v2 API的核心功能，支持按物种搜索基因组组装、按基因ID或符号查询基因详情、获取物种分类信息、搜索病毒基因组等，是生物信息学研究的基础数据获取工具。
+
+插件基本信息：插件名称NCBIDatasets，版本0.2.0，类型synchronous同步插件，超时时间30秒，入口文件NCBIDatasets.mjs（Node.js）。系统提示词占位符为{{VCPNCBIDatasets}}。
+
+简明释义：NCBI（美国国家生物技术信息中心）是全球最大的生物序列数据库，收录了数百万个基因组组装、基因和物种信息。这个插件让AI能够直接查询NCBI的基因组数据，在分子生物学、遗传学、微生物学等领域提供精确的基因组学数据支撑。
+
+配置项说明：NCBI_BASE_URL是API基础地址（默认https://api.ncbi.nlm.nih.gov/datasets/v2）；NCBI_API_KEY是可选的API Key（用于提高速率限制）；NCBI_TIMEOUT是HTTP请求超时时间（默认30000毫秒）。
+
+核心命令概览：插件提供约20个命令，按功能分类：
+
+基因组搜索：search_genomes按物种tax_id搜索基因组组装、get_genome_info获取单个基因组详情、get_genome_summary获取基因组摘要统计、get_genome_annotation获取基因组注释、get_assembly_info获取组装元数据、get_assembly_reports获取组装报告、get_assembly_quality获取组装质量评估、search_assemblies高级组装搜索。
+
+基因查询：get_gene_info通过Gene ID或基因符号+物种名查询基因详情、search_genes按基因符号/物种/Gene ID搜索基因。
+
+物种分类：get_organism_info获取物种综合信息（分类地位+可用基因组列表）、search_taxonomy按物种名搜索分类学信息、get_taxonomy_info获取分类单元详情、get_taxonomic_lineage获取完整分类学谱系。
+
+病毒基因组：search_virus_genomes按病毒名称搜索基因组、get_virus_info获取病毒基因组详情。
+
+项目与样本：search_by_bioproject通过BioProject搜索关联数据集、search_by_biosample通过BioSample搜索关联数据集。
+
+使用方法：大部分命令需要提供物种的tax_id（NCBI分类学ID）或基因的Gene ID。如果不知道tax_id，可以先用get_organism_info通过物种名查询。
+
+按物种搜索基因组组装：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」search_genomes「末」,
+tax_id:「始」511145「末」,
+max_results:「始」10「末」,
+assembly_level:「始」chromosome「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+通过基因符号+物种名查询基因：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」get_gene_info「末」,
+gene_symbol:「始」TP53「末」,
+organism:「始」Homo sapiens「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+获取物种综合信息：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」get_organism_info「末」,
+organism:「始」Klebsiella pneumoniae「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+搜索SARS-CoV-2病毒基因组：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」NCBIDatasets「末」,
+command:「始」search_virus_genomes「末」,
+virus_name:「始」SARS-CoV-2「末」,
+max_results:「始」5「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. tax_id未知——使用get_organism_info命令通过物种英文名查询，会返回tax_id和分类信息。
+2. 蛋白质搜索功能不可用——search_proteins和get_protein_info在NCBI v2 API中已被弃用，调用会返回提示信息。
+3. API速率限制——无API Key时NCBI限制请求频率，建议在Plugin/NCBIDatasets/config.env中配置NCBI_API_KEY。
+4. 基因组搜索结果过多——使用assembly_level参数（complete/chromosome/scaffold/contig）和assembly_source参数（refseq/genbank）进行过滤。
+
+可能的解决办法：
+1. 推荐工作流程：先get_organism_info获取物种概况 → search_genomes搜索基因组 → get_genome_info查看详情。
+2. 免费NCBI API Key可在NCBI官网注册获取，配置后可显著提升请求速率。
+3. 使用page_token参数进行翻页，当上次调用返回了next_page_token时带上它获取下一页结果。
+
+关联节点：KEGGSearch通路数据库（配合使用进行通路-基因-物种联动分析）、PubMedSearch文献检索（查找相关文献）、PaperReader论文阅读器（深度阅读基因组学论文）。
+
+信源/出处：Plugin/NCBIDatasets/plugin-manifest.json（147行），Plugin/NCBIDatasets/NCBIDatasets.mjs。
+
+Tag: NCBIDatasets，NCBI，基因组，基因查询，物种分类，病毒基因组，BioProject，分类学谱系，基因组组装，生物信息学

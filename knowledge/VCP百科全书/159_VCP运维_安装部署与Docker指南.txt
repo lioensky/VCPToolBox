@@ -1,0 +1,98 @@
+[2026-03-02] - Nova
+[VCP百科全书] VCP运维——安装部署、Docker容器化与PM2生产环境指南
+
+一、环境要求
+- Node.js 20+
+- Python 3.11+
+- 内存：4GB最低
+- 存储：2GB最低
+- 操作系统：Windows/Linux/macOS
+
+二、四种部署方式
+
+方式一：NPM直接安装（推荐）
+git clone https://github.com/lioensky/VCPToolBox.git
+cd VCPToolBox
+npm install
+pip install -r requirements.txt
+cp config.env.example config.env
+node server.js
+
+方式二：Docker容器化
+docker-compose up --build -d
+docker-compose logs -f
+docker-compose down
+
+方式三：PM2生产环境（推荐生产）
+npx pm2 start server.js --name vcp-toolbox
+npm run start:pm2    ← 启动
+npm run restart:pm2  ← 重启
+npm run stop:pm2     ← 停止
+
+方式四：Poetry虚拟环境（Python依赖隔离）
+poetry install
+poetry run python -c "import numpy; print('OK')"
+
+三、关键配置（config.env）
+API相关：
+- API_Key：后端AI服务API密钥
+- API_URL：后端AI服务API地址
+- PORT：VCP服务器监听端口（默认5890）
+- Key：VCP服务器访问密钥
+
+管理面板：
+- AdminUsername：管理员用户名（默认admin）
+- AdminPassword：管理员密码（默认123456）
+
+调试：
+- DebugMode：调试模式开关
+- ShowVCP：是否在AI回复中显示VCP工具执行过程
+
+循环控制：
+- MaxVCPLoopStream：流式模式最大工具调用循环次数
+- MaxVCPLoopNonStream：非流式模式最大循环次数
+
+分布式：
+- VCP_Key：分布式节点认证密钥（与主服务器一致）
+
+时区：
+- DEFAULT_TIMEZONE：默认时区（回退Asia/Shanghai）
+
+四、前端连接配置
+将前端的API地址指向VCP服务器：
+http://localhost:5890/v1/chat/completions
+使用config.env中的Key作为API密钥。
+
+支持的前端：
+- VCPChat（官方，首选）
+- SillyTavern
+- aio-hub（友情项目）
+- 任何支持OpenAI API格式的客户端
+
+五、管理面板访问
+地址：http://<服务器IP>:<端口>/AdminPanel
+认证：HTTP Basic Auth（AdminUsername/AdminPassword）
+功能：系统监控、全局配置、插件中心、知识库管理、Agent管理、变量编辑器、VCPTavern编辑器
+
+六、分布式节点部署
+1. 复制VCPDistributedServer文件夹到目标机器
+2. npm install
+3. 配置config.env：Main_Server_URL（ws://主服务器IP:8088）、VCP_Key、ServerName
+4. Plugin目录下放置插件（仅支持synchronous+stdio类型）
+5. node VCPDistributedServer.js
+
+七、安全提示
+- 请勿使用非官方/反向代理API
+- VCP拥有底层系统监控权限，使用不可信API可能导致信息泄露
+- 妥善保管API密钥，勿硬编码或提交到公共代码库
+- VCP Auth动态验证码控制高权限工具访问
+- 插件级细粒度授权：可为任意插件的任意单个指令独立引入验证
+
+八、常用运维命令
+Windows启动脚本：start_server.bat / start_vcp_pm2.bat / restart_vcp_pm2.bat / stop_vcp_pm2.bat
+数据库维护：node rebuild_vector_indexes.js / node repair_database.js / node reset_vectordb.js
+Tag索引：node rebuild_tag_index_custom.js / node sync_missing_tags.js
+日记Tag批处理：node diary-tag-batch-processor.js
+
+关联节点：config.env, Docker, PM2, AdminPanel, VCPDistributedServer, 安全机制
+Tag: VCP安装部署, Docker容器化, PM2生产环境, config.env配置, 管理面板, 分布式节点, 安全提示, 运维命令, 环境要求, 前端连接

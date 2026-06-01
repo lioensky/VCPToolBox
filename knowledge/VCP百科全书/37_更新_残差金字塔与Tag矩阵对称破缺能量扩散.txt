@@ -1,0 +1,27 @@
+今日深入研究了VCPToolBox近期新增的残差金字塔（ResidualPyramid）引擎，这是浪潮RAG系统在Tag语义分析层面的一次重大数学升级，用Gram-Schmidt正交化投影替代了传统的余弦相似度Top-K方法。
+
+核心概念：残差金字塔是一个多层级语义能量谱分析引擎，通过正交化投影逐层"剥离"查询向量中已被已知Tag解释的语义分量，精确量化每个Tag的独立能量贡献，并暴露出现有Tag无法覆盖的残差方向。
+
+简明释义：传统方法只看"查询和哪个Tag最像"，但如果两个Tag本身高度相关（比如"机器学习"和"深度学习"），它们会重复解释同一部分语义，导致能量计算失真。残差金字塔的做法是先把所有Tag向量正交化，让每个Tag只代表"别人没有的那部分语义"，然后再看查询在这组正交基上的投影分布，这样就能精确知道"被解释了多少"和"还剩下什么"。
+
+关键原理与逻辑：
+
+第一，Gram-Schmidt正交化投影是整个引擎的数学核心。系统将召回的Tag向量按相关度排序后，使用Modified Gram-Schmidt算法依次处理：将第一个Tag向量t₁归一化为正交基u₁；将第二个Tag向量t₂减去其在u₁上的投影分量，得到正交于u₁的新方向，归一化为u₂；重复此过程构建正交基集合。然后计算查询向量在这组正交基上的投影P = Σ <query, uᵢ> · uᵢ，残差R = query - P。根据毕达哥拉斯定理，||query||² = ||P||² + ||R||²，能量严格守恒，投影能量加残差能量等于原始能量。
+
+第二，金字塔支持最多3层迭代分析。第0层用原始查询向量搜索最近的Tag并计算投影与残差；第1层用第0层的残差向量再次搜索Tag索引，捕获"次级语义"；第2层继续深挖。迭代终止条件是残差能量低于原始能量的10%（minEnergyRatio=0.1）。每层记录energyExplained（本层解释的能量占比）、residualEnergyRatio（剩余残差能量比）和basisCoefficients（每个Tag的独立贡献系数）。
+
+第三，握手分析（Handshake Analysis）是金字塔的辅助诊断模块。它计算查询与每个Tag的差向量delta = query - tag，分析四个指标：方向一致性directionCoherence是所有差向量平均方向的模，高值意味着查询在所有Tag的同一侧偏移，暗示存在明确的未知方向；模式强度patternStrength是差向量之间的两两余弦相似度均值，高值说明Tag之间形成一致的语义模式；新颖度信号noveltySignal等于方向一致性本身；噪音信号noiseSignal = (1 - coherence) × (1 - pairwiseSim)，双低表示杂乱无章。
+
+第四，正交投影和握手分析均支持Rust N-API加速，通过vexus-lite的computeOrthogonalProjection和computeHandshakes接口调用。Rust模块可用时自动调用原生实现，失败时静默回退到纯JS实现。
+
+第五，金字塔最终输出5个综合决策指标：coverage是Tag覆盖率，等于totalExplainedEnergy；novelty是新颖度，等于残差比例×0.7加方向一致性×0.3；coherence是相干度，等于Tag之间的模式强度；tagMemoActivation = coverage × coherence × (1 - noiseSignal)，决定是否激活TagMemo增强流程；expansionSignal等于novelty，决定是否需要扩展搜索新Tag。
+
+应用场景：RAGDiaryPlugin的applyTagBoost函数调用残差金字塔来感应最匹配的语义标签并计算权重；ResultDeduplicator利用正交投影的残差能量来选择最具多样性的检索结果；EPAModule的逻辑深度L和共振R指标为动态参数计算提供输入。
+
+关联节点：浪潮RAG系统、Gram-Schmidt正交化、Tag索引与TagMemo、EPAModule逻辑深度与共振、ResultDeduplicator去重、向量子空间投影、能量守恒、Rust N-API加速vexus-lite。
+
+反思与洞察：残差金字塔的核心洞察在于范式转换——从"最像什么"到"被解释了多少还剩什么"。这使得系统能精确区分"已知领域的细节问题"（高覆盖率+低新颖度）和"全新领域的探索"（低覆盖率+高方向一致性），从而为后续的K值调整、Tag权重分配和检索策略选择提供物理层面的精确依据，而不再依赖经验性阈值。
+
+信源出处：ResidualPyramid.js全文393行，EPAModule.js，Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js第2079-2097行applyTagBoost调用链。
+
+Tag: RAG，残差金字塔，Gram-Schmidt，正交投影，能量谱分析，Tag矩阵，对称破缺，向量子空间，语义残差，Rust加速，tagMemoActivation，握手分析

@@ -1,0 +1,59 @@
+﻿今日系统整理了ServerFileOperator（VCP服务器文件操作器）插件的完整使用说明，作为客服知识库。
+
+核心概念：ServerFileOperator是VCP服务器专用的强大文件系统操作插件，允许AI对受限目录进行读、写、列出、移动、复制、删除等多种文件和目录操作，特别增强了对PDF、Word(.docx)和表格(.xlsx/.csv)文件的自动解析能力。
+
+插件基本信息：插件名称ServerFileOperator（注意：AI调用时tool_name填ServerFileOperator而非FileOperator），类型synchronous同步插件，超时时间300秒，入口文件FileOperator.js（Node.js）。系统提示词占位符为{{VCPServerFileOperator}}。
+
+配置项说明：ALLOWED_DIRECTORIES是逗号分隔的允许进行文件操作的目录绝对路径列表，留空表示允许所有目录（生产环境建议明确指定）；DEFAULT_DOWNLOAD_DIR是DownloadFile命令的默认下载目录；MAX_FILE_SIZE是允许操作的最大文件大小（字节，默认10MB即10485760）；MAX_DIRECTORY_ITEMS是目录列表返回的最大项目数（默认1000）；MAX_SEARCH_RESULTS是文件搜索返回的最大结果数（默认100）；DEBUG_MODE是否开启调试日志（默认true）。以上配置在Plugin/FileOperator/config.env中设置。
+
+完整命令列表：
+ListAllowedDirectories——列出所有被授权访问的根目录及第一层内容，是探索文件系统的安全入口点，无需参数。
+ReadFile——读取文件内容，自动解析PDF/DOCX/XLSX/XLS/CSV格式，参数filePath（必需）、encoding（可选，默认utf8）。
+WebReadFile——从URL地址读取文件，先下载到临时目录再解析，支持ReadFile支持的所有格式，参数url（必需）。
+WriteFile——写入新文件，同名文件自动加序号（file.txt变为file(1).txt），参数filePath（必需）、content（必需）、encoding（可选）。
+WriteEscapedFile——专用于写入含VCP特殊字符的文件（特别是plugin-manifest.json），转义规则：「始exp」→「始」、「末exp」→「末」、<<<[TOOL_REQUEST_EXP]>>>→<<<[TOOL_REQUEST_EXP]>>>，参数filePath（必需）、content（必需）。
+EditFile——覆盖已有文件的全部内容，文件不存在时返回错误（区别于WriteFile），参数filePath（必需）、content（必需）。
+AppendFile——追加内容到文件末尾，文件不存在时自动创建，参数filePath（必需）、content（必需）。
+ApplyDiff——对文件进行差异修改（查找并替换），参数filePath（必需）、searchString（必需）、replaceString（必需）。
+ListDirectory——列出目录内容，参数directoryPath（必需）、showHidden（可选，默认false）。
+FileInfo——获取文件或目录的详细信息（大小、时间、类型等），参数filePath（必需）。
+CopyFile——复制文件，同名自动加序号，参数sourcePath（必需）、destinationPath（必需）。
+MoveFile——移动文件或目录，同名自动加序号，参数sourcePath（必需）、destinationPath（必需）。
+RenameFile——安全重命名，目标名已存在时返回错误（不自动加序号），参数sourcePath（必需）、destinationPath（必需）。
+DeleteFile——删除文件或空目录，参数filePath（必需）。
+CreateDirectory——创建目录（含父目录），参数directoryPath（必需）。
+SearchFiles——递归搜索文件，支持通配符，参数searchPath（必需）、pattern（必需）、options（可选JSON字符串，含caseSensitive/includeHidden/fileType）。
+DownloadFile——异步下载URL文件到本地，立即返回不等待完成，参数url（必需）、downloadDir（可选）。
+UpdateHistory——安全更新JSON格式聊天历史文件中AI发言内容，参数filePath（必需）、searchString（必需）、replaceString（必需）。
+CreateCanvas——在Canvas目录创建文件并通知主程序打开Canvas窗口，参数fileName（必需）、content（必需）。
+
+串行调用示例（一次调用执行多个命令）：
+<<<[TOOL_REQUEST_EXP]>>>
+tool_name:「始」ServerFileOperator「末」,
+command1:「始」CreateDirectory「末」,
+directoryPath1:「始」/path/to/new_folder「末」,
+command2:「始」WriteFile「末」,
+filePath2:「始」/path/to/new_folder/readme.txt「末」,
+content2:「始」这是说明文件「末」
+<<<[END_TOOL_REQUEST_EXP]>>>
+
+可能遇到的问题：
+1. 文件读取失败（权限拒绝）——路径不在ALLOWED_DIRECTORIES白名单内，检查config.env中的ALLOWED_DIRECTORIES配置，或将其留空允许所有目录。
+2. PDF/DOCX解析失败——文件损坏、格式不标准或文件过大超过MAX_FILE_SIZE限制，尝试增大MAX_FILE_SIZE或检查文件完整性。
+3. WriteFile后文件名变了——同名文件已存在，系统自动加了序号，这是正常的安全机制，如需覆盖请使用EditFile命令。
+4. 创建plugin-manifest.json后内容异常——必须使用WriteEscapedFile命令而非WriteFile，否则「始」「末」特殊字符会被VCP解析器误处理。
+5. ApplyDiff修改失败——searchString在文件中不存在或有细微差异（空格、换行等），建议先用ReadFile读取文件确认精确内容后再执行diff。
+6. 文件操作超时——文件过大或磁盘IO慢，可在config.env中增大timeout值（当前默认300000毫秒）。
+
+可能的解决办法：
+1. 先调用ListAllowedDirectories确认可访问的目录范围，再进行文件操作。
+2. 对于大文件操作，先用FileInfo检查文件大小，确认在MAX_FILE_SIZE限制内。
+3. 开启DEBUG_MODE=true后查看服务器日志获取详细错误信息。
+4. 使用SearchFiles命令先定位文件，再进行精确操作，避免路径错误。
+5. 对于重要文件，操作前先用CopyFile备份，再进行EditFile或ApplyDiff修改。
+
+关联节点：VCP指令协议语法（串行调用格式）、同步插件开发规范（插件类型说明）、分布式架构（超栈追踪文件解析）。
+
+信源/出处：Plugin/FileOperator/plugin-manifest.json，Plugin/FileOperator/FileOperator.js，dailynote/VCP开发/插件开发指令集.txt。
+
+Tag: ServerFileOperator，文件操作，ReadFile，WriteFile，EditFile，ApplyDiff，WriteEscapedFile，PDF解析，目录操作，文件管理，VCP文件插件

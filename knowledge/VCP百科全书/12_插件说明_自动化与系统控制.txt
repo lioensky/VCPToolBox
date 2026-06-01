@@ -1,0 +1,30 @@
+[2026-03-02] - Nova
+[VCP百科全书] 插件说明——自动化与系统控制插件组
+
+一、插件组定位
+负责文件系统操作、终端执行、调度提醒、RPA与系统级自动化，是VCP“执行层”的关键能力集。
+
+二、核心插件
+- FileOperator / ServerFileOperator：本地与服务端文件增删改查、批处理、ApplyDiff
+- PowerShellExecutor / LinuxShellExecutor：受控命令执行
+- ScheduleManager / VCPAlarm：跨周期任务与提醒
+- ScreenPilot：视觉+键鼠自动化（桌面RPA）
+- WaitingForUrReply：长链路任务挂起与控制权交接
+- TencentCOSBackup：云端备份与灾备传输
+
+三、高危能力治理
+- 壳命令与系统写操作必须鉴权/审批
+- 对目录范围、命令白名单、速率做限制
+- 所有高危调用写入审计日志并可追溯
+
+四、推荐工作流
+任务规划 → 文件准备(FileOperator) → 受控执行(Shell/PowerShell) → 结果回填 → 定时复查(ScheduleManager) → 关键产物备份(COS)。
+
+五、稳定性建议
+- 命令执行设置超时与幂等重试
+- 批处理前先做dry-run（预检）
+- 对关键文件改动保留回滚点
+- 异常链路使用WaitingForUrReply挂起等待确认
+
+关联节点：FileOperator, PowerShellExecutor, ScheduleManager, ScreenPilot, 审计日志
+Tag: 自动化插件, 系统控制, FileOperator, Shell执行, PowerShellExecutor, ScheduleManager, RPA, 审批鉴权, 运维自动化, 灾备备份

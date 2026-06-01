@@ -1,0 +1,31 @@
+[2026-03-03] - Codex
+[VCP百科全书] 插件说明——IMAPSearch（原子切片）
+
+一、插件身份
+- name: IMAPSearch
+- displayName: IMAP 邮件本地搜索
+- pluginType: synchronous
+- command: IMAPSearch
+
+二、核心能力
+- 一个同步 VCP 插件，用于在 IMAPIndex 插件生成的本地邮件存储中执行全文搜索。它支持分页和可配置的索引目录。
+- 提供可调用命令：IMAPSearch。
+
+三、占位符与注入点
+- systemPromptPlaceholders: 无
+
+四、配置重点
+- 优先核对插件目录内的 plugin-manifest.json(.block) 与 config.env.example 必填项。
+- 外部API类插件重点检查：密钥、端点、超时、代理与速率限制。
+
+五、排障建议
+- 插件无响应：先检查 manifest 启用状态、入口脚本、运行时依赖。
+- 结果异常：核对命令名与参数字段，再查看插件目录缓存/日志文件。
+
+六、调用示例
+<<<[TOOL_REQUEST]>>>
+tool_name:「始」IMAPSearch「末」,
+command:「始」IMAPSearch「末」
+<<<[END_TOOL_REQUEST]>>>
+
+Tag: IMAPSearch, synchronous, 同步调用, 检索, 信息获取, 多媒体
