@@ -159,6 +159,26 @@ test('model map and endpoint builder resolve upstream URLs', () => {
     );
 });
 
+test('runtime config defaults upstream to local VCP server and inherited key', () => {
+    const config = createRuntimeConfig({
+        PORT: 6105,
+        Key: 'main-server-key',
+        BRIDGE_UPSTREAM_URL: '',
+        BRIDGE_UPSTREAM_TYPE: 'chat'
+    });
+
+    const request = buildUpstreamRequest({
+        messages: [{ role: 'user', content: 'hello' }],
+        model: 'gpt-local',
+        body: {},
+        requestHeaders: {}
+    }, config);
+
+    assert.equal(config.upstreamUrl, 'http://127.0.0.1:6105');
+    assert.equal(request.endpoint.url, 'http://127.0.0.1:6105/v1/chat/completions');
+    assert.equal(request.headers.Authorization, 'Bearer main-server-key');
+});
+
 test('buildUpstreamRequest does not expose keys and preserves caller token fallback', () => {
     const config = createRuntimeConfig({
         BRIDGE_UPSTREAM_URL: 'https://api.example.test',
