@@ -199,3 +199,47 @@ test('RAGDiaryPlugin fuzzy embedding lookup reuses near-identical cached text wi
         }
     }
 });
+
+test('RAGDiaryPlugin cached single embedding uses fuzzy hit before API request', async () => {
+    const originalIndex = ragDiaryPlugin.embeddingTextIndex;
+    const originalMaxSize = ragDiaryPlugin.embeddingTextIndexMaxSize;
+    const originalEmbeddingCache = ragDiaryPlugin.cacheManager.caches.get('embedding');
+    const originalGetSingleEmbedding = ragDiaryPlugin.getSingleEmbedding;
+
+    try {
+        ragDiaryPlugin.embeddingTextIndex = new Map();
+        ragDiaryPlugin.embeddingTextIndexMaxSize = 10;
+        ragDiaryPlugin.cacheManager.createCache('embedding', { maxSize: 10, ttl: 60000 });
+        ragDiaryPlugin.getSingleEmbedding = async () => {
+            throw new Error('Embedding API should not be called for fuzzy cache hit');
+        };
+
+        const baseText = [
+            '稳定线治理需要把本地 intake 结果先固化，再逐项处理 review feedback。',
+            '这里的 fuzzy cache 只允许复用高相似度文本的现有向量，不能触发新的 Embedding API。',
+            '命中结果必须来自缓存，并且会写入当前文本的精确 cache key。'
+        ].join('');
+        const nearText = `${baseText}。`;
+        const vector = [0.4, 0.5, 0.6];
+        const baseCacheKey = ragDiaryPlugin.cacheManager.generateKey({ text: baseText.trim() });
+        const nearCacheKey = ragDiaryPlugin.cacheManager.generateKey({ text: nearText.trim() });
+
+        ragDiaryPlugin.cacheManager.set('embedding', baseCacheKey, vector);
+        ragDiaryPlugin._rememberEmbeddingText(baseCacheKey, baseText.trim());
+
+        const result = await ragDiaryPlugin.getSingleEmbeddingCached(nearText);
+
+        assert.equal(result, vector);
+        assert.equal(ragDiaryPlugin.cacheManager.get('embedding', nearCacheKey), vector);
+        assert.equal(ragDiaryPlugin.embeddingTextIndex.get(nearCacheKey), nearText.trim());
+    } finally {
+        ragDiaryPlugin.getSingleEmbedding = originalGetSingleEmbedding;
+        ragDiaryPlugin.embeddingTextIndex = originalIndex;
+        ragDiaryPlugin.embeddingTextIndexMaxSize = originalMaxSize;
+        if (originalEmbeddingCache) {
+            ragDiaryPlugin.cacheManager.caches.set('embedding', originalEmbeddingCache);
+        } else {
+            ragDiaryPlugin.cacheManager.caches.delete('embedding');
+        }
+    }
+});
