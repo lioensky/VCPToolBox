@@ -593,107 +593,112 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   step: number;
 } {
   const key = subKey.toLowerCase();
+  const leafKey = key.split(".").pop() ?? key;
 
   // Wormhole routing explicit ranges (must be checked before generic threshold rules).
-  if (key === "tensionthreshold") {
+  if (leafKey === "tensionthreshold") {
     return { min: 0.5, max: 3, step: 0.01 };
   }
 
-  if (key === "firingthreshold") {
+  if (leafKey === "firingthreshold") {
     return { min: 0, max: 1, step: 0.01 };
   }
 
-  if (key === "basemomentum") {
+  if (key === "fuzzyembedding.threshold") {
+    return { min: 0.96, max: 0.995, step: 0.001 };
+  }
+
+  if (leafKey === "basemomentum") {
     return { min: 1, max: 10, step: 0.1 };
   }
 
-  if (key === "basedecay" || key === "wormholedecay") {
+  if (leafKey === "basedecay" || leafKey === "wormholedecay") {
     return { min: 0, max: 1, step: 0.01 };
   }
 
-  if (key === "maxsafehops") {
+  if (leafKey === "maxsafehops") {
     return { min: 1, max: 20, step: 1 };
   }
 
-  if (key === "maxemergentnodes") {
+  if (leafKey === "maxemergentnodes") {
     return { min: 1, max: 200, step: 1 };
   }
 
-  if (key === "maxneighborspernode") {
+  if (leafKey === "maxneighborspernode") {
     return { min: 1, max: 20, step: 1 };
   }
 
   // 🆕 V8: 测地线混合权重
-  if (key === 'alpha') {
+  if (leafKey === 'alpha') {
     return { min: 0, max: 1, step: 0.01 };
   }
   
   // 🆕 V8: 最小采样密度门槛
-  if (key.includes('samples')) {
+  if (leafKey.includes('samples')) {
     return { min: 1, max: 20, step: 1 };
   }
 
   // 🆕 V8.2: 有序双向势能流形参数
-  if (key === 'forwardgain' || key === 'reversegain'
-      || key === 'minreversegain' || key === 'maxreversegain') {
+  if (leafKey === 'forwardgain' || leafKey === 'reversegain'
+      || leafKey === 'minreversegain' || leafKey === 'maxreversegain') {
     return { min: 0, max: 1.5, step: 0.01 };
   }
-  if (key === 'distancedecay') {
+  if (leafKey === 'distancedecay') {
     return { min: 0, max: 0.5, step: 0.01 };
   }
-  if (key === 'reverseanchorboost' || key === 'semanticgainenabled') {
+  if (leafKey === 'reverseanchorboost' || leafKey === 'semanticgainenabled') {
     return { min: 0, max: 1, step: 1 }; // toggle 用 0/1 表达
   }
-  if (key === 'reverseanchormax') {
+  if (leafKey === 'reverseanchormax') {
     return { min: 1, max: 3, step: 0.05 };
   }
-  if (key === 'semanticgainpeak') {
+  if (leafKey === 'semanticgainpeak') {
     return { min: 0, max: 1, step: 0.01 };
   }
-  if (key === 'semanticgainsigma') {
+  if (leafKey === 'semanticgainsigma') {
     return { min: 0.05, max: 0.6, step: 0.01 };
   }
-  if (key === 'semanticgainlowsimfallback') {
+  if (leafKey === 'semanticgainlowsimfallback') {
     return { min: 0, max: 0.5, step: 0.01 };
   }
-  if (key === 'reverseinversionguard') {
+  if (leafKey === 'reverseinversionguard') {
     return { min: 0.5, max: 1, step: 0.01 };
   }
 
-  if (key === "minlength" || key === "maxscan" || key === "maxlengthdiffabs") {
-    return { min: 1, max: key === "maxscan" ? 1000 : 500, step: 1 };
+  if (leafKey === "minlength" || leafKey === "maxscan" || leafKey === "maxlengthdiffabs") {
+    return { min: 1, max: leafKey === "maxscan" ? 1000 : 500, step: 1 };
   }
 
-  if (key === "maxlengthdiffratio") {
+  if (leafKey === "maxlengthdiffratio") {
     return { min: 0, max: 0.2, step: 0.001 };
   }
 
-  if (key === "shotgundecayfactor") {
+  if (leafKey === "shotgundecayfactor") {
     return { min: 0, max: 1, step: 0.01 };
   }
 
-  if (key === "shotgunhistorysegmentlimit") {
+  if (leafKey === "shotgunhistorysegmentlimit") {
     return { min: 0, max: 10, step: 1 };
   }
 
-  if (key.includes("days")) {
+  if (leafKey.includes("days")) {
     return { min: 1, max: 365, step: 1 };
   }
 
-  if (key.includes("threshold")) {
+  if (leafKey.includes("threshold")) {
     return { min: 0, max: 1, step: 0.01 };
   }
 
-  if (key.includes("hops") || key.includes("nodes") || key.includes("neighbors")) {
-    return { min: 1, max: key.includes('nodes') ? 200 : 20, step: 1 };
+  if (leafKey.includes("hops") || leafKey.includes("nodes") || leafKey.includes("neighbors")) {
+    return { min: 1, max: leafKey.includes('nodes') ? 200 : 20, step: 1 };
   }
 
-  if (key.includes("momentum")) {
+  if (leafKey.includes("momentum")) {
     return { min: 1, max: 10, step: 0.1 };
   }
 
   // 🛠️ 修复：语言补偿器和时间衰减的浮点参数
-  if (key.includes("penalty") || key.includes("score") || key.includes("min")) {
+  if (leafKey.includes("penalty") || leafKey.includes("score") || leafKey.includes("min")) {
     return { min: 0, max: 1, step: 0.01 };
   }
 
