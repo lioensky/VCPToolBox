@@ -4154,7 +4154,7 @@ class RAGDiaryPlugin {
         return results;
     }
 
-    async getSingleEmbeddingCached(text) {
+    async getSingleEmbeddingCached(text, options = {}) {
         if (!text || !text.trim()) return null;
 
         const cacheKey = this.cacheManager.generateKey({ text: text.trim() });
@@ -4168,10 +4168,10 @@ class RAGDiaryPlugin {
             return this.pendingEmbeddingRequests.get(cacheKey);
         }
 
-        const fuzzyMatch = this._findFuzzyEmbeddingFromCache(text);
+        const fuzzyMatch = options.allowFuzzyCache === true
+            ? this._findFuzzyEmbeddingFromCache(text, options.fuzzyOptions || {})
+            : null;
         if (fuzzyMatch && fuzzyMatch.vector) {
-            this.cacheManager.set('embedding', cacheKey, fuzzyMatch.vector);
-            this._rememberEmbeddingText(cacheKey, text.trim());
             console.log(
                 `[RAGDiaryPlugin] Fuzzy embedding cache hit: ` +
                 `sim=${fuzzyMatch.similarity.toFixed(4)}, len=${text.trim().length}/${fuzzyMatch.length}`
