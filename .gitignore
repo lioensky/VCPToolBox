@@ -169,6 +169,7 @@ ip_blacklist.json
 Plugin/AIGentStyle/datasets/
 Plugin/AIGentStyle/outputs/
 Plugin/ArtistMatcher/artist_cache.json
+Plugin/DoubaoGen/.doubao_api_cache.json
 Plugin/DailyNoteWrite/dailynote/
 Plugin/DailyHot/dailyhot_cache.md
 Plugin/EmojiListGenerator/generated_lists/
