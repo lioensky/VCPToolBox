@@ -269,9 +269,11 @@ body {
 
 .main-view {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background-color: var(--bg);
+  overflow: hidden;
 }
 
 .top-bar {
@@ -287,6 +289,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
 .top-bar-left,
@@ -294,9 +298,22 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.top-bar-left {
+  flex: 1 1 auto;
+}
+
+.top-bar-right {
+  flex: 0 0 auto;
 }
 
 .top-bar-editor .editor-filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--text-muted);
 }
@@ -309,7 +326,10 @@ body {
 /* 输入控件 & 按钮 */
 
 .search-input {
+  flex: 1 1 auto;
+  min-width: 0;
   width: min(480px, 60vw);
+  max-width: 100%;
   padding: 6px 10px;
   border-radius: 999px;
   border: 1px solid var(--border-subtle);
@@ -365,6 +385,15 @@ body {
   background-color: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+#create-note-button {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .primary-button {
@@ -425,12 +454,22 @@ body {
 /* 主内容 - 卡片视图 */
 
 .cards-view {
+  --cards-padding-inline-start: 14px;
+  --cards-padding-inline-end: 8px;
+  --scrollbar-size: 4px;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: thin;
+}
+
+.cards-view.single-column-cards {
+  --cards-padding-inline-end: 14px;
+  --scrollbar-size: 0px;
+  scrollbar-width: none;
 }
 
 .cards-layout {
@@ -451,8 +490,10 @@ body {
 }
 
 .cards-pane {
+  --scrollbar-size: 4px;
   min-width: 0;
   min-height: 0;
+  scrollbar-width: thin;
 }
 
 .cards-view.workbench-mode .cards-pane {
@@ -461,7 +502,7 @@ body {
 }
 
 .cards-container {
-  padding: 10px 14px 6px;
+  padding: 10px var(--cards-padding-inline-end) 6px var(--cards-padding-inline-start);
   display: grid;
   grid-auto-rows: minmax(80px, auto);
   gap: 10px;
@@ -637,7 +678,7 @@ body {
 /* 卡片区底部状态栏 */
 
 .cards-footer {
-  padding: 4px 14px 8px;
+  padding: 4px var(--cards-padding-inline-end) 8px var(--cards-padding-inline-start);
   font-size: 11px;
   color: var(--text-muted);
   display: flex;
@@ -713,7 +754,15 @@ body {
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
-  background-color: rgba(148, 163, 184, 0.04);
+  background-color: var(--bg-elevated);
+}
+
+.workbench-pane .workbench-editor-textarea,
+.workbench-pane .workbench-preview,
+.workbench-pane .workbench-empty {
+  border: none;
+  border-radius: 0;
+  background-color: var(--bg-elevated);
 }
 
 .status-text {
@@ -772,10 +821,13 @@ body {
   outline: none;
 }
 
-.editor-textarea:focus,
-.workbench-editor-textarea:focus {
+.editor-textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.workbench-editor-textarea:focus {
+  box-shadow: none;
 }
 
 .editor-preview,
@@ -1049,16 +1101,33 @@ body {
   margin: 4px 0;
 }
 
+.settings-auth-row {
+  align-items: center;
+}
+
 .settings-row input[type="number"],
+.settings-row input[type="text"],
+.settings-row input[type="password"],
 .settings-row select {
   min-width: 80px;
-  max-width: 160px;
+  max-width: 280px;
   padding: 4px 6px;
   border-radius: 6px;
   border: 1px solid var(--border-subtle);
   background-color: var(--bg);
   color: var(--text-main);
   font-size: 13px;
+}
+
+.settings-auth-row input[type="text"],
+.settings-auth-row input[type="password"] {
+  flex: 0 1 260px;
+  width: min(260px, 100%);
+}
+
+.settings-row input[type="text"]::placeholder,
+.settings-row input[type="password"]::placeholder {
+  color: var(--text-muted);
 }
 
 .settings-block-list {
@@ -1072,7 +1141,22 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-top: 6px;
+}
+
+.settings-action-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 
 /* 模态删除确认弹窗 */
@@ -1215,8 +1299,8 @@ body {
 .workbench-preview .markdown-table-scroll::-webkit-scrollbar,
 .settings-view::-webkit-scrollbar,
 .modal-list::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--scrollbar-size, 6px);
+  height: var(--scrollbar-size, 6px);
 }
 
 .sidebar::-webkit-scrollbar-track,
