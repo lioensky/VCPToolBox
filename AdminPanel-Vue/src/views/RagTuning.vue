@@ -343,9 +343,9 @@
                             class="nested-item__slider"
                             type="range"
                             :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 滑杆`"
-                            :min="getSubParamRange(subKey).min"
-                            :max="getSubParamRange(subKey).max"
-                            :step="getSubParamRange(subKey).step"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
                           <input
                             v-model.number="
@@ -354,9 +354,9 @@
                             class="nested-item__number"
                             type="number"
                             :aria-label="`${getNestedMeta(section.name, entry.key, subKey).label} 数值输入`"
-                            :min="getSubParamRange(subKey).min"
-                            :max="getSubParamRange(subKey).max"
-                            :step="getSubParamRange(subKey).step"
+                            :min="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).min"
+                            :max="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).max"
+                            :step="getSubParamRange(`${entry.key}.${subKey}`, (section.raw[entry.key] as Record<string, number>)[subKey]).step"
                           />
                         </div>
                       </div>
