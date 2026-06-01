@@ -326,6 +326,33 @@ function wrapMarkdownArchiveContent(content, url, sourceMode) {
     ].join('\n');
 }
 
+async function getAvailableMarkdownPath(targetDir, safeFileName) {
+    const parsed = path.parse(safeFileName);
+    const baseName = parsed.name || 'webpage';
+    const extName = parsed.ext || '.md';
+
+    for (let index = 0; index < 1000; index++) {
+        const candidateFileName = index === 0 ? `${baseName}${extName}` : `${baseName}(${index})${extName}`;
+        const candidatePath = path.resolve(targetDir, candidateFileName);
+
+        if (!candidatePath.startsWith(targetDir + path.sep)) {
+            throw new Error("目标文件路径越界，已拒绝写入。");
+        }
+
+        try {
+            const handle = await fs.open(candidatePath, 'wx');
+            return { handle, filePath: candidatePath, fileName: candidateFileName };
+        } catch (error) {
+            if (error && error.code === 'EEXIST') {
+                continue;
+            }
+            throw error;
+        }
+    }
+
+    throw new Error("同名文件过多，已拒绝继续自动生成尾缀。");
+}
+
 async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fileName, sourceMode }) {
     const safeFolderName = sanitizeKnowledgeSubfolderName(knowledgeFolder);
     const targetDir = path.resolve(KNOWLEDGE_BASE_DIR, safeFolderName);
@@ -335,26 +362,27 @@ async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fi
     }
 
     const safeFileName = buildSafeMarkdownFileName(content, url, fileName);
-    const targetPath = path.resolve(targetDir, safeFileName);
-
-    if (!targetPath.startsWith(targetDir + path.sep)) {
-        throw new Error("目标文件路径越界，已拒绝写入。");
-    }
-
     const markdownContent = wrapMarkdownArchiveContent(content, url, sourceMode);
     await fs.mkdir(targetDir, { recursive: true });
-    await fs.writeFile(targetPath, markdownContent, 'utf8');
+
+    const { handle, filePath: targetPath, fileName: finalFileName } = await getAvailableMarkdownPath(targetDir, safeFileName);
+    try {
+        await handle.writeFile(markdownContent, 'utf8');
+    } finally {
+        await handle.close();
+    }
 
     return {
         content: [{
             type: 'text',
-            text: `已成功下载网页并保存为 Markdown。\n- 来源URL: ${url}\n- 提取模式: ${sourceMode}\n- knowledge子文件夹: ${safeFolderName}\n- 文件名: ${safeFileName}\n- 保存路径: ${targetPath}\n- 字符数: ${markdownContent.length}`
+            text: `已成功下载网页并保存为 Markdown。\n- 来源URL: ${url}\n- 提取模式: ${sourceMode}\n- knowledge子文件夹: ${safeFolderName}\n- 文件名: ${finalFileName}\n- 保存路径: ${targetPath}\n- 字符数: ${markdownContent.length}`
         }],
         details: {
             sourceUrl: url,
             sourceMode,
             knowledgeFolder: safeFolderName,
-            fileName: safeFileName,
+            fileName: finalFileName,
+            requestedFileName: safeFileName,
             filePath: targetPath,
             relativePath: path.relative(PROJECT_BASE_PATH || process.cwd(), targetPath).replace(/\\/g, '/')
         }
