@@ -1,12 +1,14 @@
 // PM2 Ecosystem Configuration
 // 同时启动主服务 (server.js) 和管理面板 (adminServer.js)
+const MAIN_MAX_MEMORY = process.env.VCP_MAIN_MAX_MEMORY || '1500M';
+
 module.exports = {
   apps: [
     {
       name: 'vcp-main',
       script: 'server.js',
       watch: false,
-      max_memory_restart: '1500M',
+      max_memory_restart: MAIN_MAX_MEMORY,
       kill_timeout: 15000,
       env: {
         NODE_ENV: 'production'
