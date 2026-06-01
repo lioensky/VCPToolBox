@@ -63,6 +63,8 @@ class TDBKnowledgeManager {
             ignorePrefixes: splitList(process.env.TDB_KNOWLEDGE_IGNORE_PREFIXES, []),
             ignoreSuffixes: splitList(process.env.TDB_KNOWLEDGE_IGNORE_SUFFIXES, []),
             syncMode: process.env.TDB_KNOWLEDGE_SYNC_MODE || 'normal',
+            idleUnloadHours: parseFloat(process.env.TDB_KNOWLEDGE_IDLE_UNLOAD_HOURS || '0') || 0,
+            idleSweepIntervalMs: parseInt(process.env.TDB_KNOWLEDGE_IDLE_SWEEP_INTERVAL_MS, 10) || 15 * 60 * 1000,
             ...config
         };
 
@@ -76,6 +78,7 @@ class TDBKnowledgeManager {
         this.watcher = null;
         this.watcherType = null;
         this.safetyWatcher = null;
+        this.idleEvictor = null;
     }
 
     async initialize() {
@@ -100,6 +103,7 @@ class TDBKnowledgeManager {
 
         this._startWatcher();
         if (this.config.fullScanOnStartup) this._scanInitialFiles();
+        this._startIdleEvictor();
 
         this.initialized = true;
         console.log(`[TDBKnowledge] ✅ Ready. root=${this.config.rootPath}, dim=${this.config.dimension}`);
@@ -161,13 +165,65 @@ class TDBKnowledgeManager {
 
     getOrOpenLibrary(library) {
         const safeName = safeLibraryName(library);
-        if (this.libs.has(safeName)) return this.libs.get(safeName);
+        if (this.libs.has(safeName)) {
+            const existing = this.libs.get(safeName);
+            existing.lastUsedAt = Date.now();
+            return existing;
+        }
 
         const dbPath = this._getDbPath(safeName);
         const db = this._openTriviumDb(dbPath);
-        const handle = { name: safeName, path: dbPath, db, openedAt: Date.now(), lastUsedAt: Date.now() };
+        const handle = {
+            name: safeName,
+            path: dbPath,
+            db,
+            openedAt: Date.now(),
+            lastUsedAt: Date.now(),
+            busyCount: 0
+        };
         this.libs.set(safeName, handle);
         return handle;
+    }
+
+    _beginLibraryUse(handle) {
+        if (!handle) return;
+        handle.busyCount = (handle.busyCount || 0) + 1;
+        handle.lastUsedAt = Date.now();
+    }
+
+    _endLibraryUse(handle) {
+        if (!handle) return;
+        handle.busyCount = Math.max(0, (handle.busyCount || 0) - 1);
+        handle.lastUsedAt = Date.now();
+    }
+
+    async closeLibrary(library, options = {}) {
+        const safeName = safeLibraryName(library);
+        const handle = this.libs.get(safeName);
+        if (!handle) return false;
+
+        if ((handle.busyCount || 0) > 0) {
+            return false;
+        }
+
+        const shouldFlush = options.flush !== false;
+        try {
+            if (shouldFlush) this._safeFlush(handle.db);
+        } catch (e) {
+            console.warn(`[TDBKnowledge] Flush before close failed for "${safeName}":`, e.message);
+        }
+
+        try {
+            if (typeof handle.db?.close === 'function') {
+                handle.db.close();
+            }
+        } catch (e) {
+            console.warn(`[TDBKnowledge] Close failed for "${safeName}":`, e.message);
+        }
+
+        this.libs.delete(safeName);
+        console.log(`[TDBKnowledge] 💤 Closed idle library "${safeName}".`);
+        return true;
     }
 
     _openTriviumDb(dbPath) {
@@ -257,10 +313,13 @@ class TDBKnowledgeManager {
         if (old && old.checksum === checksum && old.mtime === stats.mtimeMs && old.size === stats.size) return;
 
         const handle = this.getOrOpenLibrary(library);
-        await this._deleteExistingFileNodes(handle, library, relPath);
+        this._beginLibraryUse(handle);
 
-        const chunks = chunkText(content).filter(Boolean);
-        if (chunks.length === 0) return;
+        try {
+            await this._deleteExistingFileNodes(handle, library, relPath);
+
+            const chunks = chunkText(content).filter(Boolean);
+            if (chunks.length === 0) return;
 
         const textsForEmbedding = [path.basename(relPath), ...chunks];
         const vectors = await getEmbeddingsBatch(textsForEmbedding, {
@@ -288,56 +347,59 @@ class TDBKnowledgeManager {
             });
         }
 
-        const chunkRows = [];
-        for (let i = 0; i < chunks.length; i++) {
-            const vector = chunkVectors[i];
-            if (!vector) continue;
+            const chunkRows = [];
+            for (let i = 0; i < chunks.length; i++) {
+                const vector = chunkVectors[i];
+                if (!vector) continue;
 
-            const text = chunks[i];
-            const nodeId = this._insertNode(handle.db, vector, {
-                type: 'chunk',
-                library,
-                source_path: relPath,
-                chunk_index: i,
-                text_preview: text.slice(0, 500),
-                checksum: crypto.createHash('sha256').update(text).digest('hex'),
-                updated_at: now
-            });
+                const text = chunks[i];
+                const nodeId = this._insertNode(handle.db, vector, {
+                    type: 'chunk',
+                    library,
+                    source_path: relPath,
+                    chunk_index: i,
+                    text_preview: text.slice(0, 500),
+                    checksum: crypto.createHash('sha256').update(text).digest('hex'),
+                    updated_at: now
+                });
 
-            chunkRows.push({ index: i, nodeId, checksum: crypto.createHash('sha256').update(text).digest('hex') });
+                chunkRows.push({ index: i, nodeId, checksum: crypto.createHash('sha256').update(text).digest('hex') });
 
-            if (docNodeId != null) this._safeLink(handle.db, docNodeId, nodeId, 'contains', 1.0);
-            if (chunkRows.length > 1) {
-                const prev = chunkRows[chunkRows.length - 2];
-                this._safeLink(handle.db, prev.nodeId, nodeId, 'next', 0.7);
-                this._safeLink(handle.db, nodeId, prev.nodeId, 'prev', 0.7);
+                if (docNodeId != null) this._safeLink(handle.db, docNodeId, nodeId, 'contains', 1.0);
+                if (chunkRows.length > 1) {
+                    const prev = chunkRows[chunkRows.length - 2];
+                    this._safeLink(handle.db, prev.nodeId, nodeId, 'next', 0.7);
+                    this._safeLink(handle.db, nodeId, prev.nodeId, 'prev', 0.7);
+                }
+
+                this._safeIndexText(handle.db, nodeId, text);
             }
 
-            this._safeIndexText(handle.db, nodeId, text);
+            this._safeBuildTextIndex(handle.db);
+            this._safeFlush(handle.db);
+
+            const tx = this.metaDb.transaction(() => {
+                this.metaDb.prepare(`
+                    INSERT INTO files (library, path, checksum, mtime, size, doc_node_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(library, path) DO UPDATE SET
+                        checksum = excluded.checksum,
+                        mtime = excluded.mtime,
+                        size = excluded.size,
+                        doc_node_id = excluded.doc_node_id,
+                        updated_at = excluded.updated_at
+                `).run(library, relPath, checksum, stats.mtimeMs, stats.size, docNodeId, now);
+
+                this.metaDb.prepare('DELETE FROM chunks WHERE library = ? AND path = ?').run(library, relPath);
+                const insertChunk = this.metaDb.prepare('INSERT INTO chunks (library, path, chunk_index, node_id, checksum) VALUES (?, ?, ?, ?, ?)');
+                for (const row of chunkRows) insertChunk.run(library, relPath, row.index, row.nodeId, row.checksum);
+            });
+            tx();
+
+            console.log(`[TDBKnowledge] ✅ Indexed ${relPath} into "${library}" (${chunkRows.length}/${chunks.length} chunks).`);
+        } finally {
+            this._endLibraryUse(handle);
         }
-
-        this._safeBuildTextIndex(handle.db);
-        this._safeFlush(handle.db);
-
-        const tx = this.metaDb.transaction(() => {
-            this.metaDb.prepare(`
-                INSERT INTO files (library, path, checksum, mtime, size, doc_node_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(library, path) DO UPDATE SET
-                    checksum = excluded.checksum,
-                    mtime = excluded.mtime,
-                    size = excluded.size,
-                    doc_node_id = excluded.doc_node_id,
-                    updated_at = excluded.updated_at
-            `).run(library, relPath, checksum, stats.mtimeMs, stats.size, docNodeId, now);
-
-            this.metaDb.prepare('DELETE FROM chunks WHERE library = ? AND path = ?').run(library, relPath);
-            const insertChunk = this.metaDb.prepare('INSERT INTO chunks (library, path, chunk_index, node_id, checksum) VALUES (?, ?, ?, ?, ?)');
-            for (const row of chunkRows) insertChunk.run(library, relPath, row.index, row.nodeId, row.checksum);
-        });
-        tx();
-
-        console.log(`[TDBKnowledge] ✅ Indexed ${relPath} into "${library}" (${chunkRows.length}/${chunks.length} chunks).`);
     }
 
     _insertNode(db, vector, payload) {
@@ -361,9 +423,14 @@ class TDBKnowledgeManager {
         if (!this._isIndexable(normalizedPath)) return;
         const { library, relPath } = this._resolveLibrary(normalizedPath);
         const handle = this.getOrOpenLibrary(library);
-        await this._deleteExistingFileNodes(handle, library, relPath);
-        this._safeFlush(handle.db);
-        console.log(`[TDBKnowledge] 🧹 Removed ${relPath} from "${library}".`);
+        this._beginLibraryUse(handle);
+        try {
+            await this._deleteExistingFileNodes(handle, library, relPath);
+            this._safeFlush(handle.db);
+            console.log(`[TDBKnowledge] 🧹 Removed ${relPath} from "${library}".`);
+        } finally {
+            this._endLibraryUse(handle);
+        }
     }
 
     _safeDelete(db, nodeId) {
@@ -488,36 +555,40 @@ class TDBKnowledgeManager {
 
     async searchLibrary(library, queryText, queryVector, options = {}) {
         const handle = this.getOrOpenLibrary(library);
-        handle.lastUsedAt = Date.now();
+        this._beginLibraryUse(handle);
 
-        const topK = options.topK || 10;
-        const expandDepth = options.expandDepth ?? 1;
-        const minScore = options.minScore ?? 0.1;
-        const hybridAlpha = options.hybridAlpha ?? 0.7;
-
-        let hits;
         try {
-            hits = this._callDb(handle.db, ['searchHybrid', 'search_hybrid'], [
-                Array.from(queryVector),
-                queryText,
-                topK,
-                expandDepth,
-                minScore,
-                hybridAlpha
-            ]);
-        } catch (e) {
-            hits = this._callDb(handle.db, ['search'], [Array.from(queryVector), topK, expandDepth, minScore], []);
-        }
+            const topK = options.topK || 10;
+            const expandDepth = options.expandDepth ?? 1;
+            const minScore = options.minScore ?? 0.1;
+            const hybridAlpha = options.hybridAlpha ?? 0.7;
 
-        return (hits || []).map(hit => ({
-            library,
-            id: hit.id,
-            score: hit.score,
-            payload: hit.payload || {},
-            text: hit.payload?.text_preview || '',
-            sourceFile: hit.payload?.source_path || '',
-            chunkIndex: hit.payload?.chunk_index
-        }));
+            let hits;
+            try {
+                hits = this._callDb(handle.db, ['searchHybrid', 'search_hybrid'], [
+                    Array.from(queryVector),
+                    queryText,
+                    topK,
+                    expandDepth,
+                    minScore,
+                    hybridAlpha
+                ]);
+            } catch (e) {
+                hits = this._callDb(handle.db, ['search'], [Array.from(queryVector), topK, expandDepth, minScore], []);
+            }
+
+            return (hits || []).map(hit => ({
+                library,
+                id: hit.id,
+                score: hit.score,
+                payload: hit.payload || {},
+                text: hit.payload?.text_preview || '',
+                sourceFile: hit.payload?.source_path || '',
+                chunkIndex: hit.payload?.chunk_index
+            }));
+        } finally {
+            this._endLibraryUse(handle);
+        }
     }
 
     listLibraries() {
@@ -560,6 +631,43 @@ class TDBKnowledgeManager {
 
         walk(this.config.rootPath);
         console.log(`[TDBKnowledge] 🔍 Initial scan queued ${queued} file(s).`);
+    }
+
+    _startIdleEvictor() {
+        if (this.idleEvictor) return;
+        if (!Number.isFinite(this.config.idleUnloadHours) || this.config.idleUnloadHours <= 0) {
+            console.log('[TDBKnowledge] Idle auto-unload disabled.');
+            return;
+        }
+
+        const sweepMs = Math.max(60 * 1000, this.config.idleSweepIntervalMs || 15 * 60 * 1000);
+        this.idleEvictor = setInterval(() => {
+            this._evictIdleLibraries().catch(e => {
+                console.warn('[TDBKnowledge] Idle eviction sweep failed:', e.message);
+            });
+        }, sweepMs);
+
+        if (typeof this.idleEvictor.unref === 'function') this.idleEvictor.unref();
+        console.log(`[TDBKnowledge] 🧹 Idle auto-unload enabled: ${this.config.idleUnloadHours}h, sweep=${Math.round(sweepMs / 1000)}s`);
+    }
+
+    async _evictIdleLibraries() {
+        if (!this.initialized || !this.libs || this.libs.size === 0) return;
+        const idleMs = this.config.idleUnloadHours * 3600 * 1000;
+        if (!Number.isFinite(idleMs) || idleMs <= 0) return;
+        if (this.isProcessing) return;
+
+        const now = Date.now();
+        const candidates = [];
+        for (const [name, handle] of this.libs.entries()) {
+            const lastUsedAt = handle.lastUsedAt || handle.openedAt || now;
+            if ((handle.busyCount || 0) > 0) continue;
+            if (now - lastUsedAt >= idleMs) candidates.push(name);
+        }
+
+        for (const name of candidates) {
+            await this.closeLibrary(name, { flush: true });
+        }
     }
 
     _startWatcher() {
@@ -674,6 +782,10 @@ class TDBKnowledgeManager {
     async shutdown() {
         console.log('[TDBKnowledge] shutting down...');
         if (this.batchTimer) clearTimeout(this.batchTimer);
+        if (this.idleEvictor) {
+            clearInterval(this.idleEvictor);
+            this.idleEvictor = null;
+        }
 
         if (this.safetyWatcher) {
             if (typeof this.safetyWatcher.close === 'function') await this.safetyWatcher.close();
@@ -690,7 +802,9 @@ class TDBKnowledgeManager {
             this.watcher = null;
         }
 
-        for (const handle of this.libs.values()) this._safeFlush(handle.db);
+        for (const name of Array.from(this.libs.keys())) {
+            await this.closeLibrary(name, { flush: true });
+        }
         this.libs.clear();
 
         if (this.metaDb) {
