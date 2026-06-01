@@ -53,6 +53,7 @@
         <!-- 默认模式：搜索框 + 批量选择删除 -->
         <div id="top-bar-default" class="top-bar-row">
           <div class="top-bar-left">
+            <button id="create-note-button" class="icon-button" title="创建新日记">+</button>
             <input
               id="search-input"
               type="search"
@@ -110,24 +111,6 @@
             </div>
           </section>
 
-          <section id="workbench-editor-pane" class="workbench-pane workbench-editor-pane hidden">
-            <div class="workbench-pane-header">
-              <div class="workbench-pane-header-main">
-                <span id="workbench-filename" class="workbench-filename">未打开日记</span>
-                <span id="workbench-dirty-indicator" class="workbench-dirty-indicator hidden">未保存</span>
-              </div>
-              <button id="workbench-save-button" class="primary-button" type="button" disabled>保存</button>
-            </div>
-            <div id="workbench-editor-empty" class="workbench-empty">
-              点击左侧卡片，在这里开始编辑
-            </div>
-            <textarea
-              id="workbench-editor-textarea"
-              class="workbench-editor-textarea hidden"
-              spellcheck="false"
-            ></textarea>
-          </section>
-
           <section id="workbench-preview-pane" class="workbench-pane workbench-preview-pane hidden">
             <div class="workbench-pane-header">
               <div class="workbench-pane-header-main">
@@ -138,6 +121,24 @@
               Markdown 预览会显示在这里
             </div>
             <div id="workbench-preview" class="workbench-preview hidden"></div>
+          </section>
+
+          <section id="workbench-editor-pane" class="workbench-pane workbench-editor-pane hidden">
+            <div class="workbench-pane-header">
+              <div class="workbench-pane-header-main">
+                <span id="workbench-filename" class="workbench-filename">未打开日记</span>
+                <span id="workbench-dirty-indicator" class="workbench-dirty-indicator hidden">未保存</span>
+              </div>
+              <button id="workbench-save-button" class="primary-button hidden" type="button" disabled>保存</button>
+            </div>
+            <div id="workbench-editor-empty" class="workbench-empty">
+              点击左侧卡片，在这里开始编辑
+            </div>
+            <textarea
+              id="workbench-editor-textarea"
+              class="workbench-editor-textarea hidden"
+              spellcheck="false"
+            ></textarea>
           </section>
         </div>
       </section>
@@ -150,6 +151,45 @@
       </section>
 
       <section id="settings-view" class="settings-view hidden">
+        <div class="settings-section settings-auth-section">
+          <h2>内化鉴权</h2>
+          <p class="settings-hint">
+            DailyNotePanel 会将这里保存的账号密码转换为 Basic Auth，并自动附加到日记 API 请求中；
+            未配置鉴权时，面板会在本地拦截业务请求，避免无证访问撞到后台。
+          </p>
+          <label class="settings-row settings-auth-row">
+            <span>账号</span>
+            <input
+              id="fallback-auth-username"
+              type="text"
+              autocomplete="username"
+              spellcheck="false"
+              placeholder="请输入账号"
+            />
+          </label>
+          <label class="settings-row settings-auth-row">
+            <span>密码</span>
+            <input
+              id="fallback-auth-password"
+              type="password"
+              autocomplete="current-password"
+              spellcheck="false"
+              placeholder="请输入密码"
+            />
+          </label>
+          <label class="settings-row">
+            <span>旧版请求模式（兼容侧边栏）</span>
+            <input id="legacy-request-mode" type="checkbox" />
+          </label>
+          <div class="settings-footer">
+            <div class="settings-action-group">
+              <button id="save-auth-btn" class="primary-button" type="button">保存鉴权</button>
+              <button id="clear-auth-btn" class="secondary-button" type="button">清空鉴权</button>
+            </div>
+            <span id="auth-status" class="status-text"></span>
+          </div>
+        </div>
+
         <div class="settings-section">
           <h2>屏蔽的日记本</h2>
           <div id="blocked-notebooks-container" class="settings-block-list">

@@ -1,5 +1,8 @@
 (function () {
   const API_BASE = '/AdminPanel/dailynote_api';
+  const PANEL_SW_URL = '/AdminPanel/DailyNotePanel/sw.js';
+  const AUTH_STORAGE_KEY = 'vcp_fallback_auth';
+  const AUTH_USERNAME_STORAGE_KEY = 'vcp_fallback_auth_username';
 
   // ------- 本地设置 -------
 
@@ -11,7 +14,8 @@
     cardMaxLines: 5,
     pageSize: 100,
     sortMode: 'mtime-desc',     // mtime-desc | mtime-asc | name-asc | name-desc
-    globalFontSize: 16          // 全局基础字体大小（px）
+    globalFontSize: 16,         // 全局基础字体大小（px）
+    legacyRequestMode: false    // 旧版请求模式（兼容侧边栏代理）
   };
 
   function loadSettings() {
@@ -106,10 +110,17 @@
   const cardMaxLinesInput = document.getElementById('card-max-lines');
   const pageSizeInput = document.getElementById('page-size');
   const sortModeSelect = document.getElementById('sort-mode');
+  const createNoteButton = document.getElementById('create-note-button');
   const globalFontSizeInput = document.getElementById('global-font-size');
   const settingsResetBtn = document.getElementById('settings-reset');
   const forceUpdateBtn = document.getElementById('force-update-btn');
   const settingsStatus = document.getElementById('settings-status');
+  const fallbackAuthUsernameInput = document.getElementById('fallback-auth-username');
+  const fallbackAuthPasswordInput = document.getElementById('fallback-auth-password');
+  const saveAuthBtn = document.getElementById('save-auth-btn');
+  const clearAuthBtn = document.getElementById('clear-auth-btn');
+  const authStatus = document.getElementById('auth-status');
+  const legacyRequestModeCheckbox = document.getElementById('legacy-request-mode');
 
   // ------- 运行时状态 -------
 
@@ -166,25 +177,485 @@
   // Markdown 预览渲染器配置状态
   let markdownRendererConfigured = false;
 
+  // 内化鉴权状态
+  let authStatusTimer = null;
+  let authRejected = false;
+  let autoRefreshStarted = false;
+  let hasBootstrappedData = false;
+  let dataBootstrapPromise = null;
+  let serviceWorkerListenersBound = false;
+
   // ------- 工具函数 -------
 
-  async function apiGet(path, options) {
-    const res = await fetch(API_BASE + path, {
-      headers: { 'Accept': 'application/json' },
-      ...(options || {})
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function setAuthStatus(message, durationMs) {
+    if (!authStatus) return;
+
+    authStatus.textContent = message || '';
+    if (authStatusTimer) {
+      clearTimeout(authStatusTimer);
+      authStatusTimer = null;
+    }
+
+    if (message && typeof durationMs === 'number' && durationMs > 0) {
+      authStatusTimer = setTimeout(() => {
+        authStatus.textContent = '';
+        authStatusTimer = null;
+      }, durationMs);
+    }
+  }
+
+  function utf8ToBase64(value) {
+    const source = String(value || '');
+    try {
+      const bytes = new TextEncoder().encode(source);
+      let binary = '';
+      bytes.forEach(byte => {
+        binary += String.fromCharCode(byte);
+      });
+      return btoa(binary);
+    } catch (e) {
+      return btoa(unescape(encodeURIComponent(source)));
+    }
+  }
+
+  function normalizeStoredBasicToken(rawToken) {
+    if (typeof rawToken !== 'string') return '';
+    const trimmed = rawToken.trim();
+    if (!trimmed) return '';
+    return trimmed.replace(/^Basic\s+/i, '').trim();
+  }
+
+  function getStoredAuthToken() {
+    try {
+      return normalizeStoredBasicToken(localStorage.getItem(AUTH_STORAGE_KEY) || '');
+    } catch (e) {
+      console.warn('[DailyNotePanel] Failed to read fallback auth token:', e);
+      return '';
+    }
+  }
+
+  function getStoredAuthUsername() {
+    try {
+      return (localStorage.getItem(AUTH_USERNAME_STORAGE_KEY) || '').trim();
+    } catch (e) {
+      console.warn('[DailyNotePanel] Failed to read fallback auth username:', e);
+      return '';
+    }
+  }
+
+  function hasConfiguredAuth() {
+    return !!getStoredAuthToken();
+  }
+
+  function isLegacyRequestMode() {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const raw = String(params.get('legacyAuth') || '').trim().toLowerCase();
+      if (raw) {
+        return raw === '1' || raw === 'true' || raw === 'yes';
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    return !!(settings && settings.legacyRequestMode);
+  }
+
+  function canUseProtectedApi() {
+    return (hasConfiguredAuth() || isLegacyRequestMode()) && !authRejected;
+  }
+
+  function buildAuthTokenFromCredentials(username, password) {
+    return utf8ToBase64(`${username}:${password}`);
+  }
+
+  function persistAuthCredentials(username, password) {
+    const normalizedUsername = String(username || '').trim();
+    const token = buildAuthTokenFromCredentials(normalizedUsername, String(password || ''));
+    localStorage.setItem(AUTH_STORAGE_KEY, token);
+    if (normalizedUsername) {
+      localStorage.setItem(AUTH_USERNAME_STORAGE_KEY, normalizedUsername);
+    } else {
+      localStorage.removeItem(AUTH_USERNAME_STORAGE_KEY);
+    }
+  }
+
+  function clearStoredAuthCredentials() {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(AUTH_USERNAME_STORAGE_KEY);
+  }
+
+  function populateAuthInputs() {
+    if (fallbackAuthUsernameInput) {
+      fallbackAuthUsernameInput.value = getStoredAuthUsername();
+    }
+    if (fallbackAuthPasswordInput) {
+      fallbackAuthPasswordInput.value = '';
+    }
+  }
+
+  function createAuthGuardError(message, code, status) {
+    const error = new Error(message);
+    error.code = code || 'AUTH_REQUIRED';
+    error.status = status || 401;
+    return error;
+  }
+
+  function isAuthGuardError(error) {
+    return !!(error && (
+      error.code === 'AUTH_REQUIRED' ||
+      error.code === 'AUTH_REJECTED' ||
+      error.status === 401
+    ));
+  }
+
+  function clearNotebookRuntimeState() {
+    notebooks = [];
+    currentNotebook = null;
+    notes = [];
+    filteredNotes = [];
+    currentPage = 1;
+    bulkMode = false;
+    bulkAction = null;
+    selectedSet.clear();
+    notebookCache.clear();
+    notebookLatestMtime.clear();
+    lastNotesFingerprint = null;
+    streamLastFingerprint = null;
+    hasBootstrappedData = false;
+    dataBootstrapPromise = null;
+
+    editorState.folder = null;
+    editorState.file = null;
+    editorState.mode = 'edit';
+
+    if (editorFilenameSpan) {
+      editorFilenameSpan.textContent = '';
+    }
+    if (editorTextarea) {
+      editorTextarea.value = '';
+      editorTextarea.classList.remove('hidden');
+    }
+    if (editorPreview) {
+      editorPreview.innerHTML = '';
+      editorPreview.classList.add('hidden');
+    }
+
+    workbenchMode = false;
+    clearWorkbenchState({ renderCards: false });
+
+    if (searchInput) {
+      searchInput.value = '';
+    }
+
+    if (cardsFeedbackTimer) {
+      clearTimeout(cardsFeedbackTimer);
+      cardsFeedbackTimer = null;
+    }
+    cardsFeedbackMessage = '';
+
+    syncBulkActionButtons();
+    renderNotebookLists();
+    updateBulkActionAvailability();
+    updateSearchUIForCurrentNotebook();
+    updateWorkbenchToggleTitle();
+    renderCards();
+  }
+
+  function enterAuthSafeMode(message) {
+    clearNotebookRuntimeState();
+    syncSettingsUI();
+    showSettingsView();
+    updateWorkbenchLayout();
+    updateWorkbenchDirtyUI();
+    if (message) {
+      setAuthStatus(message);
+    }
+  }
+
+  async function getPanelServiceWorkerTarget() {
+    if (!('serviceWorker' in navigator)) return null;
+
+    if (navigator.serviceWorker.controller) {
+      return navigator.serviceWorker.controller;
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/AdminPanel/DailyNotePanel/');
+      return registration
+        ? (registration.active || registration.waiting || registration.installing || null)
+        : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function postMessageToPanelServiceWorker(payload) {
+    const target = await getPanelServiceWorkerTarget();
+    if (!target) return false;
+
+    try {
+      target.postMessage(payload);
+      return true;
+    } catch (e) {
+      console.warn('[DailyNotePanel] Failed to post message to service worker:', e);
+      return false;
+    }
+  }
+
+  async function hydrateSwAuth() {
+    const token = getStoredAuthToken();
+    if (!token) {
+      return postMessageToPanelServiceWorker({ type: 'CLEAR_AUTH_TOKEN' });
+    }
+    return postMessageToPanelServiceWorker({
+      type: 'SET_AUTH_TOKEN',
+      token
     });
-    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+  }
+
+  function bindServiceWorkerListeners() {
+    if (!('serviceWorker' in navigator) || serviceWorkerListenersBound) return;
+    serviceWorkerListenersBound = true;
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      hydrateSwAuth().catch(e => {
+        console.warn('[DailyNotePanel] controllerchange hydrate failed:', e);
+      });
+    });
+
+    window.addEventListener('storage', event => {
+      if (
+        event.key !== AUTH_STORAGE_KEY &&
+        event.key !== AUTH_USERNAME_STORAGE_KEY
+      ) {
+        return;
+      }
+
+      populateAuthInputs();
+
+      if (!hasConfiguredAuth() && !isLegacyRequestMode()) {
+        authRejected = false;
+        enterAuthSafeMode('内化鉴权已被清空，请重新输入账号和密码');
+        hydrateSwAuth().catch(console.warn);
+        return;
+      }
+
+      authRejected = false;
+      hydrateSwAuth().catch(console.warn);
+      bootstrapProtectedData(true).catch(e => {
+        if (!isAuthGuardError(e)) {
+          console.error('[DailyNotePanel] storage bootstrap error:', e);
+        }
+      });
+    });
+  }
+
+  async function registerPanelServiceWorker() {
+    if (!('serviceWorker' in navigator)) return null;
+
+    bindServiceWorkerListeners();
+
+    try {
+      const registration = await navigator.serviceWorker.register(PANEL_SW_URL);
+      await hydrateSwAuth();
+      return registration;
+    } catch (e) {
+      console.warn('[DailyNotePanel] serviceWorker register failed:', e);
+      return null;
+    }
+  }
+
+  function buildAuthorizedHeaders(inputHeaders) {
+    const headers = new Headers(inputHeaders || {});
+    if (!headers.has('Accept')) {
+      headers.set('Accept', 'application/json');
+    }
+
+    const token = getStoredAuthToken();
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Basic ${token}`);
+    }
+
+    return headers;
+  }
+
+  async function authorizedFetch(path, options) {
+    const opts = { ...(options || {}) };
+    const headers = buildAuthorizedHeaders(opts.headers);
+    const legacyRequestMode = isLegacyRequestMode();
+
+    if (!headers.has('Authorization') && !legacyRequestMode) {
+      authRejected = false;
+      enterAuthSafeMode('未配置内化鉴权，请先在设置页顶部保存账号和密码');
+      throw createAuthGuardError('401 Missing internal auth', 'AUTH_REQUIRED', 401);
+    }
+
+    opts.headers = headers;
+    opts.cache = 'no-store';
+    opts.credentials = 'same-origin';
+
+    const res = await fetch(API_BASE + path, opts);
+
+    if (res.status === 401) {
+      authRejected = true;
+      if (fallbackAuthPasswordInput) {
+        fallbackAuthPasswordInput.value = '';
+      }
+      enterAuthSafeMode('鉴权失败，请检查设置页顶部的账号和密码');
+      throw createAuthGuardError('401 Unauthorized', 'AUTH_REJECTED', 401);
+    }
+
+    if (!res.ok) {
+      throw new Error(res.status + ' ' + res.statusText);
+    }
+
+    authRejected = false;
+    return res;
+  }
+
+  async function apiGet(path, options) {
+    const res = await authorizedFetch(path, {
+      ...(options || {}),
+      headers: {
+        'Accept': 'application/json',
+        ...((options && options.headers) || {})
+      }
+    });
     return res.json();
   }
 
   async function apiPost(path, body) {
-    const res = await fetch(API_BASE + path, {
+    const res = await authorizedFetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
       body: JSON.stringify(body || {})
     });
-    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
     return res.json();
+  }
+
+  function startAutoRefreshLoop() {
+    if (autoRefreshStarted) return;
+    autoRefreshStarted = true;
+    autoRefreshLoop().catch(e => {
+      autoRefreshStarted = false;
+      console.error('[DailyNotePanel] autoRefreshLoop fatal error:', e);
+    });
+  }
+
+  async function bootstrapProtectedData(forceReload) {
+    if (!canUseProtectedApi()) {
+      enterAuthSafeMode(
+        authRejected
+          ? '鉴权失败，请检查设置页顶部的账号和密码'
+          : '未配置内化鉴权，请先在设置页顶部保存账号和密码'
+      );
+      return false;
+    }
+
+    if (dataBootstrapPromise) {
+      return dataBootstrapPromise;
+    }
+
+    dataBootstrapPromise = (async () => {
+      if (forceReload || !hasBootstrappedData) {
+        notebookCache.clear();
+        notebookLatestMtime.clear();
+        lastNotesFingerprint = null;
+        streamLastFingerprint = null;
+        notes = [];
+        filteredNotes = [];
+        currentPage = 1;
+      }
+
+      await loadNotebooks();
+      hasBootstrappedData = true;
+      startAutoRefreshLoop();
+      showCardsView();
+      updateSearchUIForCurrentNotebook();
+      return true;
+    })().finally(() => {
+      dataBootstrapPromise = null;
+    });
+
+    return dataBootstrapPromise;
+  }
+
+  async function handleSaveAuth() {
+    const username = fallbackAuthUsernameInput
+      ? fallbackAuthUsernameInput.value.trim()
+      : '';
+    const password = fallbackAuthPasswordInput
+      ? fallbackAuthPasswordInput.value
+      : '';
+
+    if (!username) {
+      setAuthStatus('请输入账号');
+      if (fallbackAuthUsernameInput) fallbackAuthUsernameInput.focus();
+      return;
+    }
+
+    if (!password) {
+      setAuthStatus('请输入密码');
+      if (fallbackAuthPasswordInput) fallbackAuthPasswordInput.focus();
+      return;
+    }
+
+    try {
+      persistAuthCredentials(username, password);
+      authRejected = false;
+      setAuthStatus('鉴权已保存，正在启动面板…');
+      await hydrateSwAuth();
+      if (fallbackAuthPasswordInput) {
+        fallbackAuthPasswordInput.value = '';
+      }
+      await bootstrapProtectedData(true);
+      setAuthStatus('鉴权已保存并生效', 2500);
+    } catch (e) {
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] save auth error:', e);
+        setAuthStatus('保存鉴权失败，请稍后重试', 3000);
+      }
+    }
+  }
+
+  async function handleClearAuth() {
+    clearStoredAuthCredentials();
+    authRejected = false;
+    populateAuthInputs();
+    await hydrateSwAuth();
+
+    if (isLegacyRequestMode()) {
+      setAuthStatus('已清空面板本地鉴权；当前仍由旧版兼容模式接管', 3200);
+      await bootstrapProtectedData(true);
+      return;
+    }
+
+    enterAuthSafeMode('已清空内化鉴权，请重新输入账号和密码');
+  }
+
+  function padDateTimePart(value) {
+    return String(value).padStart(2, '0');
+  }
+
+  function getFormattedDateTime(date) {
+    const d = date instanceof Date ? date : new Date();
+    return [
+      d.getFullYear(),
+      padDateTimePart(d.getMonth() + 1),
+      padDateTimePart(d.getDate())
+    ].join('-') + '-' + [
+      padDateTimePart(d.getHours()),
+      padDateTimePart(d.getMinutes()),
+      padDateTimePart(d.getSeconds())
+    ].join('_');
   }
 
   function syncBulkActionButtons() {
@@ -535,11 +1006,17 @@
   }
 
   function updateCardsGridColumns() {
+    const cols = Math.max(1, Number(settings.cardsColumns) || DEFAULT_SETTINGS.cardsColumns);
+
+    if (cardsView) {
+      cardsView.classList.toggle('single-column-cards', !workbenchMode && cols === 1);
+    }
+
     if (workbenchMode) {
       cardsContainer.style.gridTemplateColumns = 'minmax(0, 1fr)';
       return;
     }
-    const cols = settings.cardsColumns;
+
     // 使用固定列数，而不是 auto-fill，让设置更直观
     cardsContainer.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
   }
@@ -646,16 +1123,22 @@
   }
 
   function updateBulkActionAvailability() {
-    const disabled = !!workbenchMode;
+    const disabledByAuth = !canUseProtectedApi();
+    const disabled = !!workbenchMode || disabledByAuth;
+
     if (bulkMoveButton) {
       bulkMoveButton.disabled = disabled;
-      bulkMoveButton.title = disabled
+      bulkMoveButton.title = disabledByAuth
+        ? '请先在设置页顶部配置可用的内化鉴权'
+        : disabled
         ? '工作台模式首版暂不支持批量操作'
         : '批量选择转移';
     }
     if (bulkDeleteButton) {
       bulkDeleteButton.disabled = disabled;
-      bulkDeleteButton.title = disabled
+      bulkDeleteButton.title = disabledByAuth
+        ? '请先在设置页顶部配置可用的内化鉴权'
+        : disabled
         ? '工作台模式首版暂不支持批量操作'
         : '批量选择删除';
     }
@@ -663,16 +1146,18 @@
 
   function updateWorkbenchDirtyUI() {
     const hasOpenNote = hasWorkbenchOpenNote();
+    const showDirtyActions = hasOpenNote && workbenchDirty;
     if (workbenchFilenameSpan) {
       workbenchFilenameSpan.textContent = hasOpenNote
         ? `${workbenchState.folder}/${workbenchState.file}`
         : '未打开日记';
     }
     if (workbenchDirtyIndicator) {
-      workbenchDirtyIndicator.classList.toggle('hidden', !hasOpenNote || !workbenchDirty);
+      workbenchDirtyIndicator.classList.toggle('hidden', !showDirtyActions);
     }
     if (workbenchSaveButton) {
-      workbenchSaveButton.disabled = !hasOpenNote;
+      workbenchSaveButton.classList.toggle('hidden', !showDirtyActions);
+      workbenchSaveButton.disabled = !showDirtyActions;
     }
   }
 
@@ -1080,7 +1565,9 @@
       });
       filteredNotes = sortedNotes(notes);
     } catch (e) {
-      console.error('[DailyNotePanel] search error:', e);
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] search error:', e);
+      }
       // 搜索失败时不改变原 notes，只前端退回空过滤
       filteredNotes = sortedNotes(notes);
     }
@@ -1516,6 +2003,50 @@
       });
     }
 
+    if (createNoteButton) {
+      createNoteButton.addEventListener('click', async () => {
+        if (isStreamNotebook(currentNotebook)) {
+          setCardsFeedback('日记流模式下无法创建日记，请选择具体日记本', 3000);
+          return;
+        }
+        if (!currentNotebook) {
+          setCardsFeedback('请先选择一个日记本', 3000);
+          return;
+        }
+
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+        const fileName = `${getFormattedDateTime()}.txt`;
+        const initialContent = `[${dateStr}] - Manual\n\n`;
+
+        try {
+          await apiPost(
+            `/note/${currentNotebook}/${fileName}`,
+            { content: initialContent }
+          );
+          setCardsFeedback('新日记创建成功', 2000);
+
+          // 刷新当前日记本缓存
+          await refreshSingleNotebookCache(currentNotebook);
+          updateSidebarGlow();
+          // 重建视图
+          await rebuildCurrentViewAfterMutation();
+
+          // 根据模式进入编辑界面
+          if (workbenchMode) {
+            openWorkbenchNote(currentNotebook, fileName).catch(console.error);
+          } else {
+            openEditor(currentNotebook, fileName);
+          }
+        } catch (e) {
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] create note error:', e);
+            setCardsFeedback('创建日记失败，请稍后重试');
+          }
+        }
+      });
+    }
+
     if (searchInput) {
       searchInput.addEventListener('input', () => {
         if (isStreamNotebook(currentNotebook)) {
@@ -1615,7 +2146,9 @@
           }
           showCardsView();
         } catch (e) {
-          console.error('[DailyNotePanel] save error:', e);
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] save error:', e);
+          }
         }
       });
     }
@@ -1658,9 +2191,65 @@
     }
     if (backFromSettingsBtn) {
       backFromSettingsBtn.addEventListener('click', () => {
+        if (!canUseProtectedApi()) {
+          showSettingsView();
+          return;
+        }
         showCardsView();
       });
     }
+
+    if (saveAuthBtn) {
+      saveAuthBtn.addEventListener('click', () => {
+        handleSaveAuth().catch(console.error);
+      });
+    }
+
+    if (clearAuthBtn) {
+      clearAuthBtn.addEventListener('click', () => {
+        handleClearAuth().catch(console.error);
+      });
+    }
+
+    if (legacyRequestModeCheckbox) {
+      legacyRequestModeCheckbox.addEventListener('change', () => {
+        settings.legacyRequestMode = !!legacyRequestModeCheckbox.checked;
+        saveSettings(settings);
+        authRejected = false;
+
+        if (settings.legacyRequestMode) {
+          setAuthStatus('已启用旧版请求模式（兼容侧边栏）', 2600);
+          bootstrapProtectedData(true).catch(e => {
+            if (!isAuthGuardError(e)) {
+              console.error('[DailyNotePanel] enable legacy request mode failed:', e);
+            }
+          });
+          return;
+        }
+
+        if (!hasConfiguredAuth()) {
+          setAuthStatus('已关闭旧版请求模式，请配置内化鉴权', 2600);
+          enterAuthSafeMode('已关闭旧版请求模式，请先在设置页顶部输入账号和密码');
+          return;
+        }
+
+        setAuthStatus('已关闭旧版请求模式', 2200);
+        bootstrapProtectedData(true).catch(e => {
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] disable legacy request mode failed:', e);
+          }
+        });
+      });
+    }
+
+    [fallbackAuthUsernameInput, fallbackAuthPasswordInput].forEach(input => {
+      if (!input) return;
+      input.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        handleSaveAuth().catch(console.error);
+      });
+    });
 
     if (autoBlockClustersCheckbox) {
       autoBlockClustersCheckbox.addEventListener('change', () => {
@@ -1822,9 +2411,11 @@
         try {
           result = await apiPost('/delete-batch', { notesToDelete: filesToDelete });
         } catch (e) {
-          console.error('[DailyNotePanel] delete error:', e);
           closeDeleteModal();
-          setCardsFeedback('删除请求失败，请稍后重试');
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] delete error:', e);
+            setCardsFeedback('删除请求失败，请稍后重试');
+          }
           return;
         }
 
@@ -1849,11 +2440,18 @@
         }
         syncBulkActionButtons();
 
-        await refreshFoldersAndRebuild(affectedFolders);
-        if (affectsCurrentWorkbench) {
-          clearWorkbenchState({ renderCards: false });
+        try {
+          await refreshFoldersAndRebuild(affectedFolders);
+          if (affectsCurrentWorkbench) {
+            clearWorkbenchState({ renderCards: false });
+          }
+          setCardsFeedback(buildOperationSummary('删除', deletedCount, errorCount));
+        } catch (e) {
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] delete refresh error:', e);
+            setCardsFeedback('删除已提交，但刷新列表失败，请稍后手动刷新');
+          }
         }
-        setCardsFeedback(buildOperationSummary('删除', deletedCount, errorCount));
       });
     }
 
@@ -1878,9 +2476,11 @@
             targetFolder
           });
         } catch (e) {
-          console.error('[DailyNotePanel] move error:', e);
           closeMoveModal();
-          setCardsFeedback('转移请求失败，请稍后重试');
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] move error:', e);
+            setCardsFeedback('转移请求失败，请稍后重试');
+          }
           return;
         }
 
@@ -1906,11 +2506,18 @@
         }
         syncBulkActionButtons();
 
-        await refreshFoldersAndRebuild(affectedFolders);
-        if (affectsCurrentWorkbench) {
-          clearWorkbenchState({ renderCards: false });
+        try {
+          await refreshFoldersAndRebuild(affectedFolders);
+          if (affectsCurrentWorkbench) {
+            clearWorkbenchState({ renderCards: false });
+          }
+          setCardsFeedback(buildOperationSummary('转移', movedCount, errorCount));
+        } catch (e) {
+          if (!isAuthGuardError(e)) {
+            console.error('[DailyNotePanel] move refresh error:', e);
+            setCardsFeedback('转移已提交，但刷新列表失败，请稍后手动刷新');
+          }
         }
-        setCardsFeedback(buildOperationSummary('转移', movedCount, errorCount));
       });
     }
 
@@ -1945,17 +2552,47 @@
 
   function updateSearchUIForCurrentNotebook() {
     if (!searchInput) return;
+
+    const disabledByAuth = !canUseProtectedApi();
+
+    if (disabledByAuth) {
+      searchInput.disabled = true;
+      searchInput.value = '';
+      searchInput.placeholder = authRejected
+        ? '鉴权失败，请到设置页顶部检查账号和密码'
+        : '请先在设置页顶部配置内化鉴权';
+      if (createNoteButton) {
+        createNoteButton.disabled = true;
+        createNoteButton.title = '请先在设置页顶部配置可用的内化鉴权';
+      }
+      return;
+    }
+
     if (isStreamNotebook(currentNotebook)) {
       searchInput.disabled = true;
       searchInput.value = '';
       searchInput.placeholder = '日记流中不支持搜索，请在具体日记本中搜索';
+      if (createNoteButton) {
+        createNoteButton.disabled = true;
+        createNoteButton.title = '日记流界面不可创建日记，请切换到具体日记本';
+      }
     } else {
       searchInput.disabled = false;
       searchInput.placeholder = '搜索当前日记本 (支持多关键词 AND)';
+      if (createNoteButton) {
+        createNoteButton.disabled = false;
+        createNoteButton.title = '创建新日记';
+      }
     }
   }
 
   function syncSettingsUI() {
+    populateAuthInputs();
+
+    if (legacyRequestModeCheckbox) {
+      legacyRequestModeCheckbox.checked = !!settings.legacyRequestMode;
+    }
+
     autoBlockClustersCheckbox.checked = !!settings.autoBlockClusters;
     themeModeSelect.value = settings.themeMode;
     cardsColumnsInput.value = settings.cardsColumns;
@@ -1968,7 +2605,7 @@
           ? settings.globalFontSize
           : DEFAULT_SETTINGS.globalFontSize;
     }
- 
+
     blockedNotebooksContainer.innerHTML = '';
     notebooks.forEach(nb => {
       const row = document.createElement('label');
@@ -2140,7 +2777,11 @@
       // 初次渲染先基于空缓存构建视图，真正数据交给 autoRefreshLoop 填充
       renderCards();
     } catch (e) {
+      if (isAuthGuardError(e)) {
+        throw e;
+      }
       console.error('[DailyNotePanel] loadNotebooks error:', e);
+      throw e;
     }
   }
 
@@ -2169,7 +2810,11 @@
       );
       notebookLatestMtime.set(notebookName, latest);
     } catch (e) {
+      if (isAuthGuardError(e)) {
+        throw e;
+      }
       console.error('[DailyNotePanel] refreshSingleNotebookCache error:', e);
+      throw e;
     }
   }
 
@@ -2288,7 +2933,9 @@
       populateWorkbenchWithNote(folder, file, data.content || '');
       renderCards();
     } catch (e) {
-      console.error('[DailyNotePanel] openWorkbenchNote error:', e);
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] openWorkbenchNote error:', e);
+      }
     }
   }
 
@@ -2321,8 +2968,10 @@
 
       setCardsFeedback('当前工作台日记已保存', 2000);
     } catch (e) {
-      console.error('[DailyNotePanel] saveWorkbenchNote error:', e);
-      setCardsFeedback('工作台保存失败，请稍后重试');
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] saveWorkbenchNote error:', e);
+        setCardsFeedback('工作台保存失败，请稍后重试');
+      }
     }
   }
 
@@ -2341,7 +2990,9 @@
       editorPreview.classList.add('hidden');
       showEditorView();
     } catch (e) {
-      console.error('[DailyNotePanel] openEditor error:', e);
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] openEditor error:', e);
+      }
     }
   }
 
@@ -2351,22 +3002,27 @@
     const INTERVAL = 10000; // 10 秒
     while (true) {
       try {
+        if (!canUseProtectedApi()) {
+          await wait(1000);
+          continue;
+        }
+
         // 1. 视图隐藏时，短轮询检查
         if (cardsView.classList.contains('hidden')) {
-          await new Promise(r => setTimeout(r, 1000));
+          await wait(1000);
           continue;
         }
 
         // 2. 有搜索词时，暂停轮询（避免覆盖搜索结果），短轮询检查
         if (searchInput && (searchInput.value || '').trim()) {
-          await new Promise(r => setTimeout(r, 1000));
+          await wait(1000);
           continue;
         }
 
         const visible = getVisibleNotebooks();
         // 3. 如果还没有可见日记本（可能加载中），短轮询等待
         if (visible.length === 0) {
-          await new Promise(r => setTimeout(r, 1000));
+          await wait(1000);
           continue;
         }
 
@@ -2381,33 +3037,33 @@
         refreshCurrentViewFromCache();
 
       } catch (e) {
-        console.warn('[DailyNotePanel] autoRefreshLoop error:', e);
+        if (!isAuthGuardError(e)) {
+          console.warn('[DailyNotePanel] autoRefreshLoop error:', e);
+        }
       }
 
       // 6. 执行完一轮后等待 INTERVAL，确保首次立即执行
-      await new Promise(r => setTimeout(r, INTERVAL));
+      await wait(INTERVAL);
     }
   }
 
   // ------- 初始化 -------
 
-  function init() {
+  async function init() {
     applyTheme();
     updateCardsGridColumns();
     bindEvents();
+    syncSettingsUI();
     window.addEventListener('beforeunload', event => {
       if (!workbenchMode || !workbenchDirty) return;
       event.preventDefault();
       event.returnValue = '';
     });
+
     // 默认折叠侧边栏（刷新后自动收起）
     if (sidebar) {
       sidebar.classList.add('collapsed');
     }
-    // 确保 loadNotebooks 完成（notebooks 列表就绪）后再启动轮询
-    loadNotebooks().then(() => {
-      autoRefreshLoop();
-    }).catch(console.error);
 
     showCardsView();
     applyGlobalFontSize();
@@ -2415,17 +3071,31 @@
     updateWorkbenchLayout();
     updateWorkbenchDirtyUI();
 
-    // 注册 Service Worker（PWA）
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/AdminPanel/DailyNotePanel/sw.js').catch(e => {
-        console.warn('[DailyNotePanel] serviceWorker register failed:', e);
-      });
+    await registerPanelServiceWorker();
+    await hydrateSwAuth();
+
+    if (!hasConfiguredAuth() && !isLegacyRequestMode()) {
+      authRejected = false;
+      enterAuthSafeMode('未配置内化鉴权，请先在设置页顶部输入账号和密码');
+      return;
+    }
+
+    authRejected = false;
+    try {
+      await bootstrapProtectedData(true);
+    } catch (e) {
+      if (!isAuthGuardError(e)) {
+        console.error('[DailyNotePanel] init bootstrap failed:', e);
+        enterAuthSafeMode('面板初始化失败，请稍后重试');
+      }
     }
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => {
+      init().catch(console.error);
+    });
   } else {
-    init();
+    init().catch(console.error);
   }
 })();
