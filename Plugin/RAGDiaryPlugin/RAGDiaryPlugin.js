@@ -15,6 +15,7 @@ const AIMemoHandler = require('./AIMemoHandler.js');
 const ContextVectorManager = require('./ContextVectorManager.js');
 const FoldingStore = require('./FoldingStore.js'); // 🌟 V2折叠：SQLite 迷你数据库
 const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存管理器
+const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
 const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
 
@@ -70,6 +71,9 @@ class RAGDiaryPlugin {
 
         // 🌟 V2折叠：FoldingStore 迷你数据库
         this.foldingStore = null;
+
+        // 🧊 冷知识库占位符适配层（[[xx知识库]] / 《《xx知识库》》）
+        this.tdbProcessor = new TDBPlaceholderProcessor(this);
     }
 
     async loadConfig() {
@@ -386,10 +390,19 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] 警告：pushVcpInfo 依赖注入失败或未提供。');
         }
 
+        // 🧊 注入冷知识库管理器（用于 [[xx知识库]] / 《《xx知识库》》 占位符）
+        if (dependencies.tdbKnowledgeManager) {
+            this.tdbProcessor.setTdbKnowledgeManager(dependencies.tdbKnowledgeManager);
+            console.log('[RAGDiaryPlugin] 🧊 TDBKnowledgeManager 依赖已注入，冷知识库占位符已启用。');
+        } else {
+            console.log('[RAGDiaryPlugin] 未注入 TDBKnowledgeManager，[[xx知识库]] 占位符将不可用。');
+        }
+
         // ✅ 关键修复：确保配置加载完成后再处理消息
         console.log('[RAGDiaryPlugin] 开始加载配置...');
         await this.loadConfig();
         await this.loadRagParams();
+        await this.tdbProcessor.loadConfig(); // 🧊 加载 tdb_tags.json（可选）
         this._startRagParamsWatcher();
         this._startRagTagsWatcher();
 
@@ -1297,8 +1310,8 @@ class RAGDiaryPlugin {
                         console.log(`[RAGDiaryPlugin] AIMemo license [[AIMemo=True]] detected (role=${m.role}). ::AIMemo modifier is now active.`);
                     }
 
-                    // 检查 RAG/Meta/AIMemo 占位符
-                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
+                    // 检查 RAG/Meta/AIMemo/冷知识库 占位符
+                    if (/\[\[.*日记本.*\]\]|<<.*日记本.*>>|《《.*日记本.*》》|\{\{.*日记本.*\}\}|\[\[.*知识库.*\]\]|《《.*知识库.*》》|\[\[VCP元思考.*\]\]|\[\[AIMemo=True\]\]/.test(text)) {
                         if (!acc.includes(index)) {
                             acc.push(index);
                             if (m.role === 'user') {
@@ -1449,6 +1462,8 @@ class RAGDiaryPlugin {
                             .replace(/<<.*日记本>>/g, '')
                             .replace(/《《.*日记本.*》》/g, '')
                             .replace(/\{\{.*日记本.*\}\}/g, '')
+                            .replace(/\[\[.*知识库.*\]\]/g, '')
+                            .replace(/《《.*知识库.*》》/g, '')
                     );
                 }
                 return newMessages;
@@ -1578,7 +1593,9 @@ class RAGDiaryPlugin {
                         .replace(/\[\[.*日记本.*\]\]/g, '[RAG处理失败]')
                         .replace(/<<.*日记本>>/g, '[RAG处理失败]')
                         .replace(/《《.*日记本.*》》/g, '[RAG处理失败]')
-                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]'));
+                        .replace(/\{\{.*日记本\}\}/g, '[RAG处理失败]')
+                        .replace(/\[\[.*知识库.*\]\]/g, '[冷知识库处理失败]')
+                        .replace(/《《.*知识库.*》》/g, '[冷知识库处理失败]'));
                 }
             });
             return safeMessages;
@@ -1600,6 +1617,9 @@ class RAGDiaryPlugin {
         const hybridDeclarations = [...processedContent.matchAll(/《《(.*?)日记本(.*?)》》/g)];
         const metaThinkingDeclarations = [...processedContent.matchAll(/\[\[VCP元思考(.*?)\]\]/g)];
         const directDiariesDeclarations = [...processedContent.matchAll(/\{\{(.*?)日记本(.*?)\}\}/g)];
+        // 🧊 冷知识库占位符：[[xx知识库]] 直接检索 / 《《xx知识库》》 门控检索
+        const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[(.*?)知识库(.*?)\]\]/g)];
+        const tdbHybridDeclarations = [...processedContent.matchAll(/《《(.*?)知识库(.*?)》》/g)];
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
         // --- 1. 处理 [[VCP元思考...]] 元思考链 ---
         for (const match of metaThinkingDeclarations) {
@@ -2261,6 +2281,52 @@ class RAGDiaryPlugin {
                     return { placeholder, content: `[处理失败: ${error.message}]` };
                 }
             })());
+        }
+
+        // --- 6. 🧊 处理冷知识库占位符 [[xx知识库]] / 《《xx知识库》》 ---
+        // 复用 host 的向量化 / Rerank / VCPInfo 广播能力；VCPInfo 沿用 RAG_RETRIEVAL_DETAILS 格式（前端二次兼容）。
+        if (this.tdbProcessor && this.tdbProcessor.isEnabled()) {
+            // 6.1 [[xx知识库]] 直接检索
+            for (const match of tdbDirectDeclarations) {
+                const placeholder = match[0];
+                const rawName = match[1];
+                const modifiers = match[2] || '';
+                processingPromises.push((async () => {
+                    try {
+                        const content = await this.tdbProcessor.processDirect(
+                            rawName, modifiers, queryVector, combinedQueryForDisplay, dynamicK
+                        );
+                        return { placeholder, content };
+                    } catch (error) {
+                        console.error(`[RAGDiaryPlugin] 冷知识库 [[${rawName}知识库]] 处理失败:`, error);
+                        return { placeholder, content: `[冷知识库检索失败: ${error.message}]` };
+                    }
+                })());
+            }
+
+            // 6.2 《《xx知识库》》 门控检索
+            for (const match of tdbHybridDeclarations) {
+                const placeholder = match[0];
+                const rawName = match[1];
+                const modifiers = match[2] || '';
+                processingPromises.push((async () => {
+                    try {
+                        const content = await this.tdbProcessor.processHybrid(
+                            rawName, modifiers, queryVector, combinedQueryForDisplay, dynamicK
+                        );
+                        return { placeholder, content };
+                    } catch (error) {
+                        console.error(`[RAGDiaryPlugin] 冷知识库 《《${rawName}知识库》》 处理失败:`, error);
+                        return { placeholder, content: `[冷知识库检索失败: ${error.message}]` };
+                    }
+                })());
+            }
+        } else if (tdbDirectDeclarations.length > 0 || tdbHybridDeclarations.length > 0) {
+            // 未启用冷知识库时，安全移除占位符避免残留
+            console.warn('[RAGDiaryPlugin] 检测到知识库占位符，但 TDB 冷知识库未启用，将清空占位符。');
+            for (const match of [...tdbDirectDeclarations, ...tdbHybridDeclarations]) {
+                processingPromises.push(Promise.resolve({ placeholder: match[0], content: '' }));
+            }
         }
 
         // --- 执行所有任务并替换内容 ---

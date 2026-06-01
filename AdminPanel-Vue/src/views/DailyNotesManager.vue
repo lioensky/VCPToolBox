@@ -16,12 +16,14 @@
           :rag-tags-config="ragTagsConfig"
           :rag-tags-status="ragTagsStatus"
           :rag-tags-status-type="ragTagsStatusType"
+          :mode="resourceMode"
           @clearAllTags="clearAllTags"
           @toggleThreshold="onThresholdToggle"
           @updateThreshold="updateThreshold"
           @addTag="addTag"
           @updateTag="updateTag"
           @removeTag="removeTag"
+          @updateDescription="updateDescription"
           @saveRagTags="saveRagTags"
         />
 
@@ -254,6 +256,10 @@ function updateTag(payload: { index: number; value: string }): void {
 
 function removeTag(index: number): void {
   diaryStore.removeTag(index)
+}
+
+function updateDescription(value: string): void {
+  diaryStore.updateDescription(value)
 }
 
 async function saveRagTags(): Promise<void> {

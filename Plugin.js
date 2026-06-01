@@ -675,6 +675,11 @@ class PluginManager extends EventEmitter {
                     // --- 注入 VectorDBManager ---
                     if (manifest.name === 'RAGDiaryPlugin') {
                         dependencies.vectorDBManager = this.vectorDBManager;
+                        // 🧊 注入冷知识库管理器，供 [[xx知识库]] / 《《xx知识库》》 占位符使用
+                        if (this.tdbKnowledgeManager) {
+                            dependencies.tdbKnowledgeManager = this.tdbKnowledgeManager;
+                            if (this.debugMode) console.log(`[PluginManager] 🧊 Injected TDBKnowledgeManager into RAGDiaryPlugin.`);
+                        }
                     }
 
                     // --- 🌟 ContextBridge 通用依赖注入 ---

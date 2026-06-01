@@ -90,6 +90,7 @@ type RagTagsFolderResponse =
   | {
       tags?: string[];
       threshold?: number;
+      description?: string;
     }
   | string[];
 
@@ -121,6 +122,7 @@ function normalizeRagTagsConfig(config: RagTagsFolderResponse | undefined): RagT
       thresholdEnabled: false,
       threshold: 0.7,
       tags: [],
+      description: "",
     };
   }
 
@@ -129,6 +131,7 @@ function normalizeRagTagsConfig(config: RagTagsFolderResponse | undefined): RagT
       thresholdEnabled: false,
       threshold: 0.7,
       tags: config,
+      description: "",
     };
   }
 
@@ -136,16 +139,22 @@ function normalizeRagTagsConfig(config: RagTagsFolderResponse | undefined): RagT
     thresholdEnabled: config.threshold !== undefined,
     threshold: config.threshold ?? 0.7,
     tags: config.tags || [],
+    description: config.description || "",
   };
 }
 
-function toRagTagsPayload(config: RagTagsConfig): { tags: string[]; threshold?: number } {
-  const payload: { tags: string[]; threshold?: number } = {
+function toRagTagsPayload(config: RagTagsConfig): { tags: string[]; threshold?: number; description?: string } {
+  const payload: { tags: string[]; threshold?: number; description?: string } = {
     tags: config.tags.map((tag) => tag.trim()).filter(Boolean),
   };
 
   if (config.thresholdEnabled) {
     payload.threshold = config.threshold;
+  }
+
+  const description = config.description?.trim();
+  if (description) {
+    payload.description = description;
   }
 
   return payload;
@@ -263,11 +272,12 @@ export const diaryApi = {
 
   async getRagTagsConfig(
     folder: string,
-    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS,
+    endpoint = "/admin_api/rag-tags"
   ): Promise<RagTagsConfig> {
     const response = await requestWithUi<Record<string, RagTagsFolderResponse>>(
       {
-        url: "/admin_api/rag-tags",
+        url: endpoint,
       },
       uiOptions
     );
@@ -277,11 +287,12 @@ export const diaryApi = {
   async saveRagTagsConfig(
     folder: string,
     config: RagTagsConfig,
-    uiOptions: RequestUiOptions = {}
+    uiOptions: RequestUiOptions = {},
+    endpoint = "/admin_api/rag-tags"
   ): Promise<void> {
     const existingConfig = await requestWithUi<Record<string, RagTagsFolderResponse>>(
       {
-        url: "/admin_api/rag-tags",
+        url: endpoint,
       },
       DEFAULT_READ_UI_OPTIONS
     );
@@ -296,7 +307,7 @@ export const diaryApi = {
 
     await requestWithUi(
       {
-        url: "/admin_api/rag-tags",
+        url: endpoint,
         method: "POST",
         body: payload,
       },

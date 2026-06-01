@@ -29,6 +29,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
 const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
 const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
+const KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'knowledge');
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -243,6 +244,121 @@ function isImageUrl(url) {
     } catch {
         return false;
     }
+}
+
+function sanitizeKnowledgeSubfolderName(folderName) {
+    const normalized = String(folderName || '').trim();
+    if (!normalized) {
+        throw new Error("缺少必需的参数: knowledgeFolder（knowledge 根目录下的子文件夹名）");
+    }
+
+    if (
+        normalized.includes('/') ||
+        normalized.includes('\\') ||
+        normalized.includes('..') ||
+        path.isAbsolute(normalized) ||
+        /[\x00-\x1f<>:"|?*]/.test(normalized)
+    ) {
+        throw new Error("knowledgeFolder 只能是 knowledge 根目录下的单层子文件夹名，不能包含路径分隔符、.. 或非法文件名字符。");
+    }
+
+    return normalized;
+}
+
+function sanitizeMarkdownFileName(fileName) {
+    const normalized = String(fileName || '').trim()
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 120)
+        .trim();
+
+    if (!normalized) return '';
+
+    return normalized.toLowerCase().endsWith('.md') ? normalized : `${normalized}.md`;
+}
+
+function extractTitleFromFetchedMarkdown(content, url) {
+    const text = String(content || '');
+    const headingMatch = text.match(/^#\s+(.+)$/m);
+    if (headingMatch) return headingMatch[1].trim();
+
+    const titleLineMatch = text.match(/^(?:标题|Title):\s*(.+)$/mi);
+    if (titleLineMatch) return titleLineMatch[1].trim();
+
+    try {
+        const urlObj = new URL(url);
+        const lastSegment = decodeURIComponent(urlObj.pathname.split('/').filter(Boolean).pop() || '');
+        return lastSegment || urlObj.hostname;
+    } catch {
+        return 'webpage';
+    }
+}
+
+function buildSafeMarkdownFileName(content, url, requestedFileName = '') {
+    const explicitName = sanitizeMarkdownFileName(requestedFileName);
+    if (explicitName) return explicitName;
+
+    const title = extractTitleFromFetchedMarkdown(content, url);
+    const slug = String(title || 'webpage')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 80)
+        .trim() || 'webpage';
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${slug}_${timestamp}.md`;
+}
+
+function wrapMarkdownArchiveContent(content, url, sourceMode) {
+    const fetchedAt = new Date().toISOString();
+    const body = String(content || '').trim();
+
+    return [
+        '---',
+        `source_url: ${JSON.stringify(url)}`,
+        `fetched_at: ${JSON.stringify(fetchedAt)}`,
+        `fetch_mode: ${JSON.stringify(sourceMode)}`,
+        '---',
+        '',
+        body
+    ].join('\n');
+}
+
+async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fileName, sourceMode }) {
+    const safeFolderName = sanitizeKnowledgeSubfolderName(knowledgeFolder);
+    const targetDir = path.resolve(KNOWLEDGE_BASE_DIR, safeFolderName);
+
+    if (!targetDir.startsWith(KNOWLEDGE_BASE_DIR + path.sep) && targetDir !== KNOWLEDGE_BASE_DIR) {
+        throw new Error("目标目录越界，已拒绝写入。");
+    }
+
+    const safeFileName = buildSafeMarkdownFileName(content, url, fileName);
+    const targetPath = path.resolve(targetDir, safeFileName);
+
+    if (!targetPath.startsWith(targetDir + path.sep)) {
+        throw new Error("目标文件路径越界，已拒绝写入。");
+    }
+
+    const markdownContent = wrapMarkdownArchiveContent(content, url, sourceMode);
+    await fs.mkdir(targetDir, { recursive: true });
+    await fs.writeFile(targetPath, markdownContent, 'utf8');
+
+    return {
+        content: [{
+            type: 'text',
+            text: `已成功下载网页并保存为 Markdown。\n- 来源URL: ${url}\n- 提取模式: ${sourceMode}\n- knowledge子文件夹: ${safeFolderName}\n- 文件名: ${safeFileName}\n- 保存路径: ${targetPath}\n- 字符数: ${markdownContent.length}`
+        }],
+        details: {
+            sourceUrl: url,
+            sourceMode,
+            knowledgeFolder: safeFolderName,
+            fileName: safeFileName,
+            filePath: targetPath,
+            relativePath: path.relative(PROJECT_BASE_PATH || process.cwd(), targetPath).replace(/\\/g, '/')
+        }
+    };
 }
 
 function isUsableJinaApiKey(apiKey) {
@@ -779,7 +895,10 @@ async function main() {
 
             const data = JSON.parse(inputData);
             const url = data.url;
-            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', or 'jina'
+            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', 'jina', or 'download'
+            const knowledgeFolder = data.knowledgeFolder || data.folder || data.knowledge_subfolder;
+            const outputFileName = data.fileName || data.filename || data.outputFileName;
+            const downloadSourceMode = data.sourceMode || data.fetchMode || 'jina';
 
             if (!url) {
                 throw new Error("缺少必需的参数: url");
@@ -808,7 +927,46 @@ async function main() {
                 }
 
                 try {
-                    if (mode === 'jina') {
+                    if (mode === 'download') {
+                        const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
+                        if (effectiveSourceMode === 'jina') {
+                            try {
+                                fetchedData = await fetchWithJinaReader(url);
+                            } catch (jinaError) {
+                                console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
+                                try {
+                                    fetchedData = await fetchWithDirectHttp(url);
+                                } catch (directError) {
+                                    console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                                    fetchedData = await fetchWithPuppeteer(url, 'text');
+                                }
+                            }
+                        } else {
+                            try {
+                                fetchedData = await fetchWithDirectHttp(url);
+                            } catch (directError) {
+                                console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                                fetchedData = await fetchWithPuppeteer(url, 'text');
+                            }
+                        }
+
+                        if (typeof fetchedData !== 'string' || !fetchedData.trim()) {
+                            throw new Error("下载模式未提取到可写入的 Markdown 文本。");
+                        }
+
+                        output = {
+                            status: "success",
+                            result: await saveMarkdownToKnowledgeFolder({
+                                url,
+                                content: fetchedData,
+                                knowledgeFolder,
+                                fileName: outputFileName,
+                                sourceMode: effectiveSourceMode
+                            })
+                        };
+                        process.stdout.write(JSON.stringify(output, null, 2));
+                        return;
+                    } else if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
                     } else if (mode === 'text') {
                         try {
@@ -822,7 +980,7 @@ async function main() {
                     }
                 } catch (e) {
                     const proxyPort = process.env.FETCH_PROXY_PORT;
-                    if (proxyPort) {
+                    if (proxyPort && mode !== 'download') {
                         try {
                             fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
                         } catch (proxyError) {

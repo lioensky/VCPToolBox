@@ -18,4 +18,5 @@ export interface RagTagsConfig {
   thresholdEnabled: boolean;
   threshold: number;
   tags: string[];
+  description?: string;
 }

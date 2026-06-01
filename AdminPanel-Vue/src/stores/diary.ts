@@ -31,7 +31,7 @@ const RESOURCE_CONFIG = {
     folderLabel: '知识库',
     itemLabel: '文件',
     basePath: '/admin_api/knowledge',
-    enableRagTags: false,
+    enableRagTags: true,
     enableDiscovery: false,
   },
 } as const
@@ -142,7 +142,8 @@ export const useDiaryStore = defineStore('diary', () => {
     if (!selectedFolder.value || !resourceConfig.value.enableRagTags) return
 
     try {
-      ragTagsConfig.value = await diaryApi.getRagTagsConfig(selectedFolder.value)
+      const endpoint = resourceMode.value === 'knowledge' ? '/admin_api/tdb-tags' : '/admin_api/rag-tags'
+      ragTagsConfig.value = await diaryApi.getRagTagsConfig(selectedFolder.value, undefined, endpoint)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       showMessage(`加载 RAG 标签失败：${errorMessage}`, 'error')
@@ -184,24 +185,33 @@ export const useDiaryStore = defineStore('diary', () => {
     ragTagsConfig.value.tags.splice(index, 1)
   }
 
+  function updateDescription(value: string) {
+    ragTagsConfig.value.description = value
+  }
+
   async function saveRagTags() {
     if (!selectedFolder.value) return false
 
     try {
-      const config: { tags: string[]; threshold?: number } = {
+      const config: { tags: string[]; threshold?: number; description?: string } = {
         tags: ragTagsConfig.value.tags.filter((tag) => tag.trim())
       }
       if (ragTagsConfig.value.thresholdEnabled) {
         config.threshold = ragTagsConfig.value.threshold
       }
+      if (ragTagsConfig.value.description?.trim()) {
+        config.description = ragTagsConfig.value.description.trim()
+      }
 
+      const endpoint = resourceMode.value === 'knowledge' ? '/admin_api/tdb-tags' : '/admin_api/rag-tags'
       await diaryApi.saveRagTagsConfig(selectedFolder.value, {
         thresholdEnabled: ragTagsConfig.value.thresholdEnabled,
         threshold: ragTagsConfig.value.threshold,
-        tags: config.tags
+        tags: config.tags,
+        description: config.description
       }, {
         loadingKey: 'diary.rag-tags.save'
-      })
+      }, endpoint)
 
       ragTagsStatus.value = 'RAG 标签已保存！'
       ragTagsStatusType.value = 'success'
@@ -396,6 +406,7 @@ export const useDiaryStore = defineStore('diary', () => {
     addTag,
     updateTag,
     removeTag,
+    updateDescription,
     saveRagTags,
     getNoteContent,
     saveNoteContent,

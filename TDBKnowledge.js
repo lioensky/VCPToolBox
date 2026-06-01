@@ -416,19 +416,74 @@ class TDBKnowledgeManager {
             model: this.config.model
         });
         if (!queryVector) return [];
+        return this.searchWithVector(queryVector, queryText, options);
+    }
+
+    /**
+     * 🌟 复用已有查询向量进行检索，避免占位符链路（已持有 queryVector）重复 Embedding。
+     * 供 RAGDiaryPlugin 的 [[xx知识库]] / 《《xx知识库》》 占位符管线调用。
+     * @param {Array<number>|Float32Array} queryVector - 已计算好的查询向量
+     * @param {string} queryText - 原始查询文本（用于 BM25 稀疏检索）
+     * @param {object} options - { libraries, topK, expandDepth, minScore, hybridAlpha, expand }
+     */
+    async searchWithVector(queryVector, queryText, options = {}) {
+        if (!this.initialized || !TriviumDB || !queryVector) return [];
 
         const libraries = Array.isArray(options.libraries) && options.libraries.length > 0
             ? options.libraries.map(safeLibraryName)
             : this.listLibraries();
 
+        const safeQueryText = typeof queryText === 'string' ? queryText : '';
         const results = [];
         for (const library of libraries) {
-            results.push(...await this.searchLibrary(library, queryText, queryVector, options));
+            results.push(...await this.searchLibrary(library, safeQueryText, queryVector, options));
         }
 
-        return results
+        let sorted = results
             .sort((a, b) => (b.score || 0) - (a.score || 0))
             .slice(0, options.topK || 10);
+
+        // 🌟 ::Expand 父文档展开：将命中片段替换为其所属完整文档内容（按文件去重，保留最高分）
+        if (options.expand) {
+            sorted = await this._expandHits(sorted);
+        }
+
+        return sorted;
+    }
+
+    /**
+     * 🌟 父文档展开：把命中 chunk 的 text 替换为其所属源文件全文。
+     * hits 已按分数降序，同一文件只保留首个（最高分）命中并展开一次。
+     */
+    async _expandHits(hits) {
+        const fileCache = new Map();
+        const seenFiles = new Set();
+        const out = [];
+
+        for (const hit of hits) {
+            const relPath = hit.sourceFile || hit.payload?.source_path;
+            if (!relPath) {
+                out.push(hit);
+                continue;
+            }
+            if (seenFiles.has(relPath)) continue;
+            seenFiles.add(relPath);
+
+            try {
+                let full = fileCache.get(relPath);
+                if (full === undefined) {
+                    const abs = path.join(this.config.rootPath, relPath);
+                    full = await fs.readFile(abs, 'utf-8');
+                    fileCache.set(relPath, full);
+                }
+                out.push({ ...hit, text: full, _expanded: true });
+            } catch (e) {
+                console.warn(`[TDBKnowledge] Expand failed for "${relPath}": ${e.message}, fallback to chunk.`);
+                out.push(hit);
+            }
+        }
+
+        return out;
     }
 
     async searchLibrary(library, queryText, queryVector, options = {}) {
