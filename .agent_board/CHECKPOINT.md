@@ -1266,6 +1266,205 @@ Next:
 
 Time: 2026-05-25 19:50 Asia/Shanghai.
 
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Created local implementation branch `codex/vcp-bridge-memory-phase1` from clean `main`.
+- Started Phase 1A for the revised VCPBridgeServer memory gateway plan.
+- Confirmed first-stage implementation scope is limited to VCPBridgeServer plugin files,
+  focused tests, and `.agent_board` checkpoints.
+
+Not completed:
+
+- Phase 1A code changes and validation are complete.
+- Phase 1B self-loop guard and validation are complete.
+- Phase 1C doctor endpoints and validation are complete.
+- Phase 2 Responses API compatibility and dropped fields observability are complete.
+
+Next:
+
+1. Start Phase 3 safety and timeout hardening as a separate behavior-affecting stage.
+2. Keep defaults conservative and covered by focused tests.
+3. Inspect diff and run broader validation before any commit.
+
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Completed Phase 3 safety and timeout hardening for `Plugin/VCPBridgeServer`.
+- Added `BRIDGE_CLIENT_KEY` downstream auth support without logging the key.
+- Added browser Origin deny-by-default behavior for unknown origins, preserving
+  loopback origins.
+- Added per-client RPM rate limiting, JSON body-size limit configuration, and
+  split upstream connect/total/idle timeout controls.
+- Added sanitized upstream timeout errors.
+- Fixed IPv6 loopback Origin candidate formatting by bracketing `::1`.
+- Added focused tests for safety defaults, client key auth, Origin guard, rate
+  limit behavior, and connect timeout behavior.
+
+Validation:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node -e "JSON.parse(...plugin-manifest.json...)"`
+- `node --test tests/vcp-bridge-server.test.js` (35 tests passed)
+- `npm test` (100 tests passed)
+- `npm run test:baseline` (14 safety checks passed)
+
+Not completed:
+
+- No commit, push, merge, release, deploy, or production service start.
+- No real bridge/plugin upstream call was executed; tests used local fake fetch
+  responses only.
+
+Next:
+
+1. Inspect final diff and confirm no forbidden paths or secrets changed.
+2. Run any broader local validation that is safe and relevant.
+3. Continue to the next planned phase only if it remains small, local, and
+   reversible.
+
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Completed Phase 4 memory prompt governance.
+- Added `prompts/codex_vcp_memory.balanced.txt`.
+- Added `prompts/codex_vcp_memory.aggressive.txt`.
+- Kept `prompts/codex_vcp_memory.strict.txt` as the default profile prompt.
+- Documented prompt tiers and memory write boundaries in the README.
+- Documented prompt choices in `config.env.example`.
+- Extended prompt loading tests to cover all three prompt files.
+
+Validation:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --test tests/vcp-bridge-server.test.js` (35 tests passed)
+
+Not completed:
+
+- Phase 5 existing Codex memory MCP governance has not started.
+- No commit, push, merge, release, deploy, production service start, or live
+  memory write was performed.
+
+Next:
+
+1. Review `routes/codexMemoryMcp.js` and current Codex memory tests before any
+   Phase 5 edit.
+2. Keep Phase 5 limited to governance clarity and tests unless a specific
+   implementation gap is found.
+
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Completed Phase 5 existing Codex memory MCP governance review.
+- Reviewed `routes/codexMemoryMcp.js`, `tests/codex-memory-mcp.test.js`, and
+  `docs/CODEX_MEMORY_BRIDGE.md`.
+- Added MCP tool annotations:
+  - `record_memory` is write-capable and non-idempotent.
+  - `search_memory` is read-only.
+  - `memory_overview` is read-only.
+- Strengthened MCP initialize instructions and `record_memory` schema
+  descriptions around write boundaries and secret rejection.
+- Documented MCP authentication, loopback mode, per-tool approval
+  recommendations, client config shape, and the current decision not to add a
+  separate `memory_review` tool.
+
+Validation:
+
+- `node --check routes/codexMemoryMcp.js`
+- `node --check tests/codex-memory-mcp.test.js`
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js` (18 tests passed)
+- `node --test tests/vcp-bridge-server.test.js` (35 tests passed)
+- `npm test` (100 tests passed)
+- `npm run test:baseline` (14 safety checks passed)
+
+Not completed:
+
+- No new MCP server was added.
+- No new write path was added.
+- No live memory write, commit, push, merge, release, deploy, or production
+  service start was performed.
+
+Next:
+
+1. Run Codex memory MCP tests and related focused suites.
+2. Run final diff/safety checks.
+
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Completed validation-matrix hardening for `Plugin/VCPBridgeServer`.
+- Added normalization coverage for invalid `BRIDGE_HIJACK_MODE` values.
+- Hardened safe prompt loading so missing relative `.txt` prompt paths inside
+  the plugin directory resolve to an empty prompt instead of inline text.
+- Added focused coverage for upstream HTTP error passthrough, malformed SSE
+  line tolerance, and stalled upstream SSE idle timeout handling.
+- Fixed stream timeout handling so a timeout-triggered stream destroy does not
+  surface as `ERR_STREAM_PREMATURE_CLOSE`.
+- Documented local validation and authenticated diagnostic smoke checks in
+  `Plugin/VCPBridgeServer/README.md`.
+
+Validation:
+
+- `node --test tests/vcp-bridge-server.test.js` (38 tests passed)
+
+Not completed:
+
+- No commit, push, merge, release, deploy, production service start, live
+  upstream bridge call, live MCP client connection, or real memory write was
+  performed.
+- Final broad validation and diff/safety inspection are still pending.
+
+Next:
+
+1. Run syntax checks for the changed bridge and MCP files.
+2. Run focused bridge and Codex memory MCP suites.
+3. Run root `npm test`, `npm run test:baseline`, `git diff --check`, and final
+   diff/status inspection.
+
+Time: 2026-06-01 Asia/Shanghai.
+
+Completed:
+
+- Completed final local validation pass for the VCPBridgeServer memory gateway
+  batch.
+- Removed only the exact Codex test diary files generated by the final
+  `npm test` run.
+- Confirmed no remote write, commit, merge, release, deploy, production service
+  start, live upstream bridge call, live MCP client connection, or real memory
+  write was performed.
+
+Validation:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --check routes/codexMemoryMcp.js`
+- `node --check tests/codex-memory-mcp.test.js`
+- `node -e "JSON.parse(...plugin-manifest.json...)"` (`manifest ok`)
+- `node --test tests/vcp-bridge-server.test.js` (38 tests passed)
+- `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js` (18 tests passed)
+- `npm test` (100 tests passed)
+- `npm run test:baseline` (14 safety checks passed)
+- `git diff --check`
+
+Not completed:
+
+- No commit or push was performed.
+- No live curl smoke against a long-running bridge service was run; equivalent
+  endpoint behavior is covered by local route tests.
+
+Next:
+
+1. Inspect final diff/status.
+2. Decide whether to commit locally or continue with a later phase.
+
 Completed:
 
 - Verified `origin/main` points to `39d860fa07bf55c07acb3eaed70dc9178e81716b`.

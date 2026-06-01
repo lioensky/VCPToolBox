@@ -10,30 +10,48 @@ const SERVER_VERSION = '1.0.0';
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(['2025-03-26', '2025-06-18']);
 const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 const SESSION_HEADER = 'Mcp-Session-Id';
+const SERVER_INSTRUCTIONS = [
+    'Use search_memory for read-only Codex diary semantic recall.',
+    'Use memory_overview for read-only bridge observability and audit summaries.',
+    'Use record_memory only for normal Codex long-term memory candidates that pass durability, validation, reuse, and sensitivity checks.',
+    'record_memory is write-capable and remains gated by CodexMemoryBridge; rejected writes are returned as tool errors.',
+    'Do not use record_memory for dream diary entries, secrets, raw env values, temporary logs, unverified guesses, or private one-off data.'
+].join(' ');
 
 function createToolDefinitions() {
     return [
         {
             name: 'record_memory',
             title: 'Record Codex Memory',
-            description: 'Write normal Codex memory through CodexMemoryBridge. Do not use this for dream diary entries.',
+            description: 'Write-capable. Submit a normal Codex long-term memory candidate through CodexMemoryBridge. The bridge may reject unsafe, unvalidated, non-reusable, secret-bearing, or non-Codex-context writes. Do not use this for dream diary entries.',
+            annotations: {
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false
+            },
             inputSchema: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                    target: { type: 'string', enum: ['process', 'knowledge'] },
-                    title: { type: 'string' },
-                    content: { type: 'string' },
-                    evidence: { type: 'string' },
-                    validated: { type: 'boolean' },
-                    reusable: { type: 'boolean' },
+                    target: {
+                        type: 'string',
+                        enum: ['process', 'knowledge'],
+                        description: 'process for checkpoints/risks/todos/pending/stage conclusions; knowledge for validated reusable conclusions.'
+                    },
+                    title: { type: 'string', description: 'Short durable memory title. Do not include secrets.' },
+                    content: { type: 'string', description: 'Memory body. Must be durable and non-secret.' },
+                    evidence: { type: 'string', description: 'Evidence summary or source proving why this memory is valid.' },
+                    validated: { type: 'boolean', description: 'Required true for knowledge memories.' },
+                    reusable: { type: 'boolean', description: 'Required true for knowledge memories.' },
                     tags: {
+                        description: 'Optional comma-like labels. Avoid private identifiers and secrets.',
                         oneOf: [
                             { type: 'string' },
                             { type: 'array', items: { type: 'string' } }
                         ]
                     },
-                    sensitivity: { type: 'string' }
+                    sensitivity: { type: 'string', description: 'Use none for knowledge memories. High-risk markers such as secret, token, password, credential, or api key are rejected.' }
                 },
                 required: ['target', 'title', 'content', 'evidence', 'validated', 'reusable', 'sensitivity']
             }
@@ -42,6 +60,12 @@ function createToolDefinitions() {
             name: 'search_memory',
             title: 'Search Codex Memory',
             description: 'Semantic search over the Codex process and knowledge diaries. This is not a global full-text search.',
+            annotations: {
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            },
             inputSchema: {
                 type: 'object',
                 additionalProperties: false,
@@ -58,6 +82,12 @@ function createToolDefinitions() {
             name: 'memory_overview',
             title: 'Codex Memory Overview',
             description: 'Operational overview of bridge audits, recall hits, recent files, and adaptive profile.',
+            annotations: {
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            },
             inputSchema: {
                 type: 'object',
                 additionalProperties: false,
@@ -224,7 +254,7 @@ module.exports = function createCodexMemoryMcpRouter(options) {
                         name: SERVER_NAME,
                         version: SERVER_VERSION
                     },
-                    instructions: 'Use record_memory for normal Codex memory writes, search_memory for Codex diary semantic recall, and memory_overview for bridge observability.'
+                    instructions: SERVER_INSTRUCTIONS
                 })
             };
         }

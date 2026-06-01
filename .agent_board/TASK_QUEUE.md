@@ -256,3 +256,31 @@ Updated: 2026-05-26 Asia/Shanghai.
   - `config.env.example` documentation for embedding model backups;
   - local regression test for primary model failure followed by backup model success.
 - Do not wholesale merge `upstream/main`; only this vector resilience package is in scope.
+
+## 2026-06-01 VCPBridgeServer Memory Gateway Phase 1
+
+- Goal: implement the revised `VCPBridgeServer × Codex × VCPToolBox` memory gateway plan in small local patches.
+- Branch: `codex/vcp-bridge-memory-phase1`.
+- Scope for first stage:
+  - Phase 1A: `BRIDGE_PROFILE=codex-vcp-memory`, strict prompt, config/README examples, focused tests.
+  - Phase 1B: self-loop guard.
+  - Phase 1C: basic `/doctor` and `/doctor/codex-config`.
+- Current task:
+  - done: Phase 1A Memory Gateway Profile.
+  - done: Phase 1B Self-loop Guard.
+  - done: Phase 1C Basic Doctor.
+  - done: Phase 2 Responses compatibility and dropped fields observability.
+  - done: Phase 3 safety and timeout hardening.
+  - done: Phase 4 memory prompt governance.
+  - done: Phase 5 existing Codex memory MCP governance review.
+  - done: Phase 6 validation matrix hardening for invalid hijack modes,
+    missing prompt files, upstream HTTP error passthrough, malformed SSE lines,
+    and stalled upstream stream idle timeout.
+  - done: final diff inspection, focused validation, root `npm test`, and
+    production baseline check.
+- Remaining:
+  - todo: decide whether to create a local commit or continue with a later
+    phase; no remote write is approved.
+- Guardrails:
+  - Do not modify `server.js`, `Plugin.js`, existing MCP memory routes, RAGDiaryPlugin, or runtime/state/secret files in this stage.
+  - Do not start production services or execute real bridge/plugin upstream calls.

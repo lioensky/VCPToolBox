@@ -16,16 +16,25 @@
   "hasApiRoutes": false,
   "configSchema": {
     "BRIDGE_ENABLED": { "type": "boolean", "description": "Set true to start the loopback proxy. Defaults to false." },
+    "BRIDGE_PROFILE": { "type": "string", "description": "Optional preset profile. Use codex-vcp-memory for the Codex to VCPToolBox memory gateway defaults." },
     "BRIDGE_BIND_HOST": { "type": "string", "description": "Loopback bind host: 127.0.0.1, localhost, or ::1." },
     "BRIDGE_PORT": { "type": "integer", "description": "Loopback proxy port." },
     "BRIDGE_UPSTREAM_URL": { "type": "string", "description": "Upstream API base URL." },
+    "BRIDGE_REQUIRE_VCP_UPSTREAM": { "type": "boolean", "description": "Require a VCPToolBox upstream when using a VCP-specific profile." },
+    "BRIDGE_CLIENT_KEY": { "type": "string", "description": "Optional client key required from Codex to the bridge." },
     "BRIDGE_UPSTREAM_KEY": { "type": "string", "description": "Optional upstream API key. Leave empty to pass through the caller bearer token." },
     "BRIDGE_UPSTREAM_TYPE": { "type": "string", "description": "Upstream protocol: chat, anthropic, or gemini." },
     "BRIDGE_MODEL": { "type": "string", "description": "Default model when downstream request omits model." },
     "BRIDGE_SYSTEM_PROMPT": { "type": "string", "description": "Prompt text or a .txt filename inside Plugin/VCPBridgeServer." },
     "BRIDGE_HIJACK_MODE": { "type": "string", "description": "off, replace, prepend, or append." },
     "BRIDGE_MODEL_MAP": { "type": "string", "description": "Comma-separated model alias map, e.g. alias:target,old:new." },
-    "BRIDGE_UPSTREAM_TIMEOUT_MS": { "type": "integer", "description": "Upstream fetch timeout in milliseconds." }
+    "BRIDGE_UPSTREAM_TIMEOUT_MS": { "type": "integer", "description": "Legacy upstream fetch timeout in milliseconds." },
+    "BRIDGE_UPSTREAM_CONNECT_TIMEOUT_MS": { "type": "integer", "description": "Timeout for connecting to the upstream and receiving headers." },
+    "BRIDGE_UPSTREAM_TOTAL_TIMEOUT_MS": { "type": "integer", "description": "Total upstream request timeout; 0 disables." },
+    "BRIDGE_UPSTREAM_IDLE_TIMEOUT_MS": { "type": "integer", "description": "Idle timeout while reading upstream response bodies or SSE streams." },
+    "BRIDGE_DENY_BROWSER_ORIGIN": { "type": "boolean", "description": "Reject browser requests with unknown Origin headers." },
+    "BRIDGE_RATE_LIMIT_RPM": { "type": "integer", "description": "Per-client request limit per minute; 0 disables." },
+    "BRIDGE_MAX_BODY_MB": { "type": "integer", "description": "Maximum JSON request body size in megabytes." }
   },
   "defaults": {
     "BRIDGE_ENABLED": false,
@@ -34,7 +43,13 @@
     "BRIDGE_UPSTREAM_TYPE": "chat",
     "BRIDGE_MODEL": "gpt-4.1-mini",
     "BRIDGE_HIJACK_MODE": "off",
-    "BRIDGE_UPSTREAM_TIMEOUT_MS": 120000
+    "BRIDGE_UPSTREAM_TIMEOUT_MS": 120000,
+    "BRIDGE_UPSTREAM_CONNECT_TIMEOUT_MS": 15000,
+    "BRIDGE_UPSTREAM_TOTAL_TIMEOUT_MS": 0,
+    "BRIDGE_UPSTREAM_IDLE_TIMEOUT_MS": 180000,
+    "BRIDGE_DENY_BROWSER_ORIGIN": true,
+    "BRIDGE_RATE_LIMIT_RPM": 60,
+    "BRIDGE_MAX_BODY_MB": 20
   },
   "capabilities": {}
 }

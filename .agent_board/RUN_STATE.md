@@ -719,3 +719,91 @@ Post-D4 next-decision package:
   `tests/embedding-model-fallback.test.js`, plus this `.agent_board` checkpoint.
 - No remote write, branch deletion, production service start, real embedding
   request, or runtime data migration was performed.
+
+2026-06-01 VCPBridgeServer memory gateway phase 1:
+
+- Active branch: `codex/vcp-bridge-memory-phase1`.
+- Active task: Phase 3 safety and timeout hardening completed locally; final
+  diff inspection and broader validation are next.
+- Intended files: `Plugin/VCPBridgeServer/bridgeserver.js`,
+  `Plugin/VCPBridgeServer/config.env.example`,
+  `Plugin/VCPBridgeServer/README.md`,
+  `Plugin/VCPBridgeServer/prompts/codex_vcp_memory.strict.txt`,
+  `tests/vcp-bridge-server.test.js`, and `.agent_board` checkpoint files.
+- Validation target: `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  and `node --test tests/vcp-bridge-server.test.js`.
+- Safety boundary: no changes to main service dispatch, plugin execution dispatch,
+  existing Codex memory MCP route, secrets, env files, runtime state, bridge enablement,
+  or production services.
+- Phase 1A validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --test tests/vcp-bridge-server.test.js` (21 tests passed)
+- Phase 1B validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --test tests/vcp-bridge-server.test.js` (22 tests passed)
+- Phase 1C validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --test tests/vcp-bridge-server.test.js` (26 tests passed)
+- Phase 2 validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --test tests/vcp-bridge-server.test.js` (29 tests passed)
+- Phase 3 validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --check tests/vcp-bridge-server.test.js`
+  - `node -e "JSON.parse(...plugin-manifest.json...)"`
+  - `node --test tests/vcp-bridge-server.test.js` (35 tests passed)
+  - `npm test` (100 tests passed)
+  - `npm run test:baseline` (14 safety checks passed)
+- Phase 3 notes:
+  - Added local client-key enforcement, browser Origin guard, RPM rate limit,
+    body-size limit, split upstream connect/total/idle timeout controls, and
+    sanitized timeout errors.
+  - Fixed allowed Origin generation for IPv6 loopback by bracketing `::1`.
+  - No production service, real upstream bridge call, remote write, secret edit,
+    or runtime/state mutation was performed.
+- Phase 4 validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --check tests/vcp-bridge-server.test.js`
+  - `node --test tests/vcp-bridge-server.test.js` (35 tests passed)
+- Phase 4 notes:
+  - Added balanced and aggressive Codex memory prompt files.
+  - Default profile remains strict.
+  - README now documents prompt tiers and memory write boundaries.
+- Phase 5 validation passed:
+  - `routes/codexMemoryMcp.js` now exposes read-only/write-capable MCP tool
+    annotations and stronger initialize instructions.
+  - `docs/CODEX_MEMORY_BRIDGE.md` now documents authentication, per-tool
+    approval boundaries, MCP client config shape, and the decision not to add
+    `memory_review` yet.
+  - `Plugin/VCPBridgeServer/README.md` now distinguishes the model gateway from
+    the existing native Codex memory MCP route.
+  - `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js` passed 18 tests.
+  - `node --test tests/vcp-bridge-server.test.js` passed 35 tests.
+  - `npm test` passed 100 tests.
+  - `npm run test:baseline` passed 14 safety checks.
+- Phase 6 validation-matrix hardening completed locally:
+  - Invalid `BRIDGE_HIJACK_MODE` now normalizes to `off`.
+  - Missing safe relative `.txt` prompt files now resolve to an empty prompt
+    instead of being treated as inline prompt text.
+  - Upstream non-2xx JSON errors pass through without memory hijack rewriting.
+  - Malformed upstream SSE lines are ignored while valid chunks continue.
+  - Idle timeout now interrupts stalled upstream SSE readers with a sanitized
+    timeout error.
+  - `Plugin/VCPBridgeServer/README.md` now documents local validation commands
+    and authenticated `/health` / `/doctor` / `/doctor/codex-config` smoke
+    checks.
+  - `node --test tests/vcp-bridge-server.test.js` passed 38 tests after this
+    hardening pass.
+- Final local validation passed:
+  - `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+  - `node --check tests/vcp-bridge-server.test.js`
+  - `node --check routes/codexMemoryMcp.js`
+  - `node --check tests/codex-memory-mcp.test.js`
+  - `node -e "JSON.parse(...plugin-manifest.json...)"`
+  - `node --test tests/vcp-bridge-server.test.js` (38 tests passed)
+  - `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js` (18 tests passed)
+  - `npm test` (100 tests passed)
+  - `npm run test:baseline` (14 safety checks passed)
+  - `git diff --check`
+- Test-generated Codex diary files from the final `npm test` run were removed
+  by exact filename only.

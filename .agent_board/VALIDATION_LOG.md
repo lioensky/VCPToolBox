@@ -1814,6 +1814,150 @@ Not validated:
 - No branch, worktree, remote ref, tag, release, deploy, dirty worktree cleanup,
   live DingTalk/MCP/DWS command, or production write was performed.
 
+## 2026-06-01 Asia/Shanghai - VCPBridgeServer Memory Gateway Phase 3
+
+Checks performed:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node -e "JSON.parse(...plugin-manifest.json...)"`
+- `node --test tests/vcp-bridge-server.test.js`
+- `npm test`
+- `npm run test:baseline`
+
+Verified:
+
+- Phase 3 local safety defaults parse correctly.
+- `BRIDGE_CLIENT_KEY` protects local bridge endpoints without exposing the key
+  in error responses.
+- Unknown browser Origins are rejected while same loopback Origin is allowed.
+- RPM rate limiting rejects excess local requests and advertises `Retry-After`.
+- Upstream connect timeout returns a sanitized `connect_timeout` error.
+- Existing Phase 1A/1B/1C/Phase 2 behavior remains covered by the same focused
+  suite; final run passed 35 tests.
+- Existing root local test suite passed 100 tests.
+- Production baseline check passed 14 safety checks over 5163 tracked files.
+
+Not validated:
+
+- No live VCP upstream, bridge plugin, real shell/file operation, deployment,
+  release, remote write, or production service was executed.
+
+## 2026-06-01 Asia/Shanghai - VCPBridgeServer Memory Gateway Phase 4
+
+Checks performed:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --test tests/vcp-bridge-server.test.js`
+
+Verified:
+
+- Strict, balanced, and aggressive memory prompt files can be loaded through the
+  safe relative prompt loader.
+- Balanced and aggressive prompts include explicit memory contamination
+  firewall language.
+- Default `codex-vcp-memory` profile still points to the strict prompt.
+- Focused VCPBridgeServer test suite passed 35 tests.
+
+Not validated:
+
+- No live memory write, MCP client connection, production service start,
+  release, deploy, or remote write was performed.
+
+## 2026-06-01 Asia/Shanghai - VCPBridgeServer Memory Gateway Phase 5
+
+Checks performed:
+
+- `node --check routes/codexMemoryMcp.js`
+- `node --check tests/codex-memory-mcp.test.js`
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js`
+- `node --test tests/vcp-bridge-server.test.js`
+- `npm test`
+- `npm run test:baseline`
+
+Verified:
+
+- Codex memory MCP initialize instructions now identify `record_memory` as
+  write-capable and warn against inappropriate writes.
+- `tools/list` marks `record_memory` as write-capable/non-idempotent, and
+  marks `search_memory` and `memory_overview` as read-only.
+- Existing Codex memory bridge, search, admin, adaptive, recall, and MCP tests
+  passed 18 tests.
+- Focused VCPBridgeServer suite passed 35 tests.
+- Existing root local test suite passed 100 tests.
+- Production baseline check passed 14 safety checks over 5163 tracked files.
+
+Not validated:
+
+- No live memory write, external MCP client connection, production service
+  start, release, deploy, or remote write was performed.
+
+## 2026-06-01 Asia/Shanghai - VCPBridgeServer Validation Matrix Hardening
+
+Checks performed:
+
+- `node --test tests/vcp-bridge-server.test.js`
+
+Verified:
+
+- Invalid `BRIDGE_HIJACK_MODE` values normalize to `off`.
+- Missing safe relative `.txt` prompt files resolve to an empty prompt.
+- Upstream non-2xx JSON errors are passed through without memory hijack
+  rewriting.
+- Malformed SSE lines are ignored while valid upstream chunks continue.
+- A stalled upstream SSE reader is interrupted by the configured idle timeout
+  and returns a sanitized timeout error.
+- Focused VCPBridgeServer suite passed 38 tests.
+
+Not validated:
+
+- No live upstream bridge, real VCP plugin execution, production service start,
+  release, deploy, remote write, or real shell/file/bridge external write was
+  performed.
+- Final broad validation and final diff inspection are still pending.
+
+## 2026-06-01 Asia/Shanghai - VCPBridgeServer Memory Gateway Final Local Validation
+
+Checks performed:
+
+- `node --check Plugin/VCPBridgeServer/bridgeserver.js`
+- `node --check tests/vcp-bridge-server.test.js`
+- `node --check routes/codexMemoryMcp.js`
+- `node --check tests/codex-memory-mcp.test.js`
+- `node -e "JSON.parse(...plugin-manifest.json...)"`
+- `node --test tests/vcp-bridge-server.test.js`
+- `node --test tests/codex-memory-mcp.test.js tests/codex-memory-bridge.test.js tests/codex-memory-search.test.js tests/codex-memory-admin.test.js tests/codex-memory-adaptive.test.js tests/codex-memory-recall.test.js`
+- `npm test`
+- `npm run test:baseline`
+- `git diff --check`
+- Final status/diff inspection and targeted changed-file sensitive-pattern scan.
+
+Verified:
+
+- Changed bridge and MCP files parse successfully.
+- VCPBridgeServer focused suite passed 38 tests.
+- Codex memory MCP/bridge/search/admin/adaptive/recall focused suite passed 18
+  tests.
+- Root local test suite passed 100 tests.
+- Production baseline check passed 14 safety checks over 5163 tracked files.
+- `git diff --check` reported no whitespace errors.
+- Test-generated Codex diary files from the final root test run were removed by
+  exact filename only.
+- Changed-file sensitive-pattern scan found no real secret values; matches were
+  limited to code paths that clear/parse credential fields and a known
+  historical false-positive `sk-` wording in `.agent_board`.
+
+Not validated:
+
+- No live upstream bridge, external MCP client, production service start,
+  release, deploy, remote write, or real shell/file/bridge external write was
+  performed.
+- No long-running manual curl smoke was run; endpoint behavior is covered by
+  the local route tests.
+
 ## 2026-05-28 Asia/Shanghai - Vector Resilience Intake
 
 Checks performed:

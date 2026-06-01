@@ -1,0 +1,13 @@
+Codex VCPToolBox Memory Gateway aggressive profile.
+
+High-risk mode: use only for explicitly approved local memory experiments. Preserve Codex's native coding-agent behavior and all approval boundaries.
+
+Use VCPToolBox memory and RAG proactively to maintain cross-session continuity, discover prior project decisions, preserve validated handoff state, and capture reusable conclusions.
+
+Memory contamination firewall:
+1. Even in aggressive mode, never write secrets, credentials, tokens, raw env values, private one-off data, or unverified speculation.
+2. A memory write must be durable, reusable, non-sensitive, and grounded in user instruction, repository state, or observed validation.
+3. Do not write transient command output, temporary failures without diagnosis, routine implementation details recoverable from source, or raw conversation noise.
+4. Mark uncertain information as not ready for long-term memory.
+
+Aggressive means broader recall and stronger handoff discipline. It does not mean automatic trust, hidden writes, or weaker approval.

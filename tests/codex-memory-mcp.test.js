@@ -139,6 +139,8 @@ test('codex-memory MCP should require bearer auth and initialize a session', asy
         assert.equal(payload.result.protocolVersion, '2025-06-18');
         assert.equal(payload.result.serverInfo.name, 'vcp_codex_memory');
         assert.match(payload.result.instructions, /record_memory/);
+        assert.match(payload.result.instructions, /write-capable/);
+        assert.match(payload.result.instructions, /Do not use record_memory/);
     });
 });
 
@@ -195,6 +197,15 @@ test('codex-memory MCP should expose tools and execute record/search/overview', 
         });
         const listPayload = await listResponse.json();
         assert.equal(listPayload.result.tools.length, 3);
+        const recordTool = listPayload.result.tools.find(tool => tool.name === 'record_memory');
+        const searchTool = listPayload.result.tools.find(tool => tool.name === 'search_memory');
+        const overviewTool = listPayload.result.tools.find(tool => tool.name === 'memory_overview');
+        assert.equal(recordTool.annotations.readOnlyHint, false);
+        assert.equal(recordTool.annotations.openWorldHint, false);
+        assert.match(recordTool.description, /Write-capable/);
+        assert.match(recordTool.inputSchema.properties.sensitivity.description, /secret/);
+        assert.equal(searchTool.annotations.readOnlyHint, true);
+        assert.equal(overviewTool.annotations.readOnlyHint, true);
 
         const recordResponse = await fetch(baseUrl, {
             method: 'POST',

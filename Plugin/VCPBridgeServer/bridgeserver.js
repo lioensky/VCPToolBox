@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { once } = require('events');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { TextDecoder } = require('util');
@@ -10,10 +11,27 @@ const DEFAULT_PORT = 3100;
 const DEFAULT_BIND_HOST = '127.0.0.1';
 const DEFAULT_MODEL = 'gpt-4.1-mini';
 const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
+const DEFAULT_TOTAL_TIMEOUT_MS = 0;
+const DEFAULT_IDLE_TIMEOUT_MS = 180000;
+const DEFAULT_RATE_LIMIT_RPM = 60;
+const DEFAULT_MAX_BODY_MB = 20;
+const CODEX_VCP_MEMORY_PROFILE = 'codex-vcp-memory';
+const CODEX_VCP_MEMORY_PROMPT = 'prompts/codex_vcp_memory.strict.txt';
+const RESPONSE_FIELDS_NOT_SUPPORTED = [
+    'tools',
+    'tool_choice',
+    'parallel_tool_calls',
+    'previous_response_id',
+    'truncation',
+    'reasoning'
+];
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const HIJACK_MODES = new Set(['off', 'replace', 'prepend', 'append']);
 
 let server = null;
 let runtimeConfig = null;
+const rateLimitBuckets = new Map();
 
 function toBoolean(value, fallback = false) {
     if (value === undefined || value === null || value === '') return fallback;
@@ -24,6 +42,11 @@ function toBoolean(value, fallback = false) {
 function toInteger(value, fallback) {
     const parsed = Number.parseInt(value, 10);
     return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function toBoundedInteger(value, fallback, min, max = Number.MAX_SAFE_INTEGER) {
+    const parsed = toInteger(value, fallback);
+    return Math.max(min, Math.min(max, parsed));
 }
 
 function validatePort(value) {
@@ -62,6 +85,53 @@ function sanitizeUrlForLog(value) {
     }
 }
 
+function normalizeHostForCompare(value) {
+    return String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+}
+
+function isLoopbackHost(value) {
+    return LOOPBACK_HOSTS.has(normalizeHostForCompare(value));
+}
+
+function formatOriginHost(host) {
+    const normalized = normalizeHostForCompare(host);
+    return normalized.includes(':') ? `[${normalized}]` : normalized;
+}
+
+function normalizeBearerOrApiKey(headers = {}) {
+    const bearer = extractBearerToken(headers.authorization);
+    return bearer || String(headers['x-api-key'] || '').trim();
+}
+
+function buildAllowedOrigins(config) {
+    const hosts = new Set([config.bindHost]);
+    if (isLoopbackHost(config.bindHost)) {
+        for (const host of LOOPBACK_HOSTS) hosts.add(host);
+    }
+    return Array.from(hosts).map(formatOriginHost).flatMap(host => [
+        `http://${host}:${config.port}`,
+        `https://${host}:${config.port}`
+    ]);
+}
+
+function normalizeOriginForCompare(origin) {
+    const parsed = new URL(origin);
+    const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+    return `${parsed.protocol}//${normalizeHostForCompare(parsed.hostname)}:${port}`;
+}
+
+function isOriginAllowed(origin, config = runtimeConfig) {
+    if (!origin) return true;
+    try {
+        const normalizedOrigin = normalizeOriginForCompare(origin);
+        return buildAllowedOrigins(config)
+            .map(candidate => normalizeOriginForCompare(candidate))
+            .includes(normalizedOrigin);
+    } catch (_error) {
+        return false;
+    }
+}
+
 function normalizeApiType(value) {
     const v = String(value || '').trim().toLowerCase();
     if (v === 'anthropic' || v === 'claude') return 'anthropic';
@@ -69,17 +139,62 @@ function normalizeApiType(value) {
     return 'chat';
 }
 
+function normalizeProfile(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function resolveProfileDefaults(profile) {
+    if (profile === CODEX_VCP_MEMORY_PROFILE) {
+        return {
+            upstreamType: 'chat',
+            hijackMode: 'append',
+            systemPrompt: CODEX_VCP_MEMORY_PROMPT,
+            requireVcpUpstream: true
+        };
+    }
+    return {};
+}
+
+function validateNoSelfLoop(config) {
+    const upstream = new URL(config.upstreamUrl);
+    const upstreamHost = normalizeHostForCompare(upstream.hostname);
+    const bindHost = normalizeHostForCompare(config.bindHost);
+    const upstreamPort = Number(upstream.port || (upstream.protocol === 'https:' ? 443 : 80));
+    const bindPort = Number(config.port);
+    const sameHost = upstreamHost === bindHost || (isLoopbackHost(upstreamHost) && isLoopbackHost(bindHost));
+
+    if (sameHost && upstreamPort === bindPort) {
+        throw new Error('BRIDGE_UPSTREAM_URL points to this bridge itself. Refusing self-loop.');
+    }
+}
+
 function resolveSystemPrompt(raw, pluginDir = __dirname) {
     const trimmed = String(raw || '').trim();
     if (!trimmed) return '';
 
+    if (/^[^:*?"<>|\r\n]+\.txt$/i.test(trimmed) && !path.isAbsolute(trimmed)) {
+        const basePath = path.resolve(pluginDir);
+        const filePath = path.resolve(basePath, trimmed);
+        const relativePath = path.relative(basePath, filePath);
+        const staysInPluginDir = relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+        if (staysInPluginDir && fs.existsSync(filePath)) {
+            return fs.readFileSync(filePath, 'utf8').trim();
+        }
+        if (staysInPluginDir) return '';
+    }
+
     if (/^[^\\/:*?"<>|\r\n]+\.txt$/i.test(trimmed)) {
-        const filePath = path.join(pluginDir, trimmed);
+        const filePath = path.resolve(pluginDir, trimmed);
         if (fs.existsSync(filePath)) {
             return fs.readFileSync(filePath, 'utf8').trim();
         }
     }
     return trimmed;
+}
+
+function normalizeHijackMode(value) {
+    const mode = String(value || '').trim().toLowerCase();
+    return HIJACK_MODES.has(mode) ? mode : 'off';
 }
 
 function parseModelMap(raw) {
@@ -97,6 +212,8 @@ function parseModelMap(raw) {
 
 function createRuntimeConfig(config = {}, options = {}) {
     const pluginDir = options.pluginDir || __dirname;
+    const profile = normalizeProfile(config.BRIDGE_PROFILE);
+    const profileDefaults = resolveProfileDefaults(profile);
     const portValue = (config.BRIDGE_PORT === undefined || config.BRIDGE_PORT === null || config.BRIDGE_PORT === '')
         ? DEFAULT_PORT
         : config.BRIDGE_PORT;
@@ -107,21 +224,47 @@ function createRuntimeConfig(config = {}, options = {}) {
         ? defaultUpstreamUrl
         : config.BRIDGE_UPSTREAM_URL;
     const upstreamKey = config.BRIDGE_UPSTREAM_KEY || (useLocalDefaultUpstream ? (config.Key || process.env.Key || '') : '');
-    return {
+    const upstreamTypeValue = config.BRIDGE_UPSTREAM_TYPE || profileDefaults.upstreamType;
+    const systemPromptValue = config.BRIDGE_SYSTEM_PROMPT || profileDefaults.systemPrompt || '';
+    const hijackModeValue = config.BRIDGE_HIJACK_MODE || profileDefaults.hijackMode || 'off';
+    const requireVcpUpstream = config.BRIDGE_REQUIRE_VCP_UPSTREAM === undefined || config.BRIDGE_REQUIRE_VCP_UPSTREAM === null || config.BRIDGE_REQUIRE_VCP_UPSTREAM === ''
+        ? Boolean(profileDefaults.requireVcpUpstream)
+        : toBoolean(config.BRIDGE_REQUIRE_VCP_UPSTREAM, false);
+    const legacyTimeoutMs = toBoundedInteger(config.BRIDGE_UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000);
+    const bodyLimit = parseBodyLimit(config.BRIDGE_MAX_BODY_MB);
+    const resolvedConfig = {
+        profile,
         enabled: toBoolean(config.BRIDGE_ENABLED, false),
         port: validatePort(portValue),
         bindHost: validateBindHost(config.BRIDGE_BIND_HOST || DEFAULT_BIND_HOST),
         upstreamUrl: normalizeUpstreamUrl(upstreamUrl),
+        clientKey: String(config.BRIDGE_CLIENT_KEY || ''),
         upstreamKey: String(upstreamKey),
-        upstreamType: normalizeApiType(config.BRIDGE_UPSTREAM_TYPE),
+        upstreamType: normalizeApiType(upstreamTypeValue),
+        requireVcpUpstream,
         defaultModel: String(config.BRIDGE_MODEL || DEFAULT_MODEL),
-        systemPrompt: resolveSystemPrompt(config.BRIDGE_SYSTEM_PROMPT || '', pluginDir),
-        hijackMode: String(config.BRIDGE_HIJACK_MODE || 'off').trim().toLowerCase(),
+        systemPrompt: resolveSystemPrompt(systemPromptValue, pluginDir),
+        systemPromptSource: systemPromptValue ? String(systemPromptValue) : null,
+        hijackMode: normalizeHijackMode(hijackModeValue),
         modelMap: parseModelMap(config.BRIDGE_MODEL_MAP || ''),
-        timeoutMs: Math.max(1000, toInteger(config.BRIDGE_UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)),
+        timeoutMs: legacyTimeoutMs,
+        connectTimeoutMs: toBoundedInteger(config.BRIDGE_UPSTREAM_CONNECT_TIMEOUT_MS, Math.min(legacyTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS), 0),
+        totalTimeoutMs: toBoundedInteger(config.BRIDGE_UPSTREAM_TOTAL_TIMEOUT_MS, DEFAULT_TOTAL_TIMEOUT_MS, 0),
+        idleTimeoutMs: toBoundedInteger(config.BRIDGE_UPSTREAM_IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, 0),
+        denyBrowserOrigin: toBoolean(config.BRIDGE_DENY_BROWSER_ORIGIN, true),
+        rateLimitRpm: toBoundedInteger(config.BRIDGE_RATE_LIMIT_RPM, DEFAULT_RATE_LIMIT_RPM, 0, 100000),
+        maxBodyMb: bodyLimit.maxBodyMb,
+        expressJsonLimit: bodyLimit.expressLimit,
         debugMode: Boolean(config.DebugMode),
         fetchImpl: options.fetchImpl || globalThis.fetch
     };
+    validateNoSelfLoop(resolvedConfig);
+    return resolvedConfig;
+}
+
+function parseBodyLimit(raw) {
+    const maxBodyMb = toBoundedInteger(raw, DEFAULT_MAX_BODY_MB, 1, 512);
+    return { maxBodyMb, expressLimit: `${maxBodyMb}mb` };
 }
 
 function resolveModel(model, config = runtimeConfig) {
@@ -133,6 +276,18 @@ function extractBearerToken(authHeader) {
     if (!authHeader) return '';
     const match = String(authHeader).match(/^Bearer\s+(.+)$/i);
     return match ? match[1].trim() : '';
+}
+
+function createTimeoutError(type, ms) {
+    const error = new Error(`Upstream ${type} timeout after ${ms}ms`);
+    error.name = 'BridgeTimeoutError';
+    error.timeoutType = type;
+    return error;
+}
+
+function startTimer(ms, onTimeout) {
+    if (!ms || ms <= 0) return null;
+    return setTimeout(onTimeout, ms);
 }
 
 function normalizeTextContent(content) {
@@ -190,6 +345,21 @@ function extractFromResponsesInput(input) {
     return messages;
 }
 
+function extractFromResponsesBody(body = {}) {
+    const messages = [];
+    const instructions = normalizeTextContent(body.instructions);
+    if (instructions) {
+        messages.push({ role: 'system', content: instructions });
+    }
+    messages.push(...extractFromResponsesInput(body.input));
+    return messages;
+}
+
+function collectDroppedResponseFields(body = {}) {
+    if (!body || typeof body !== 'object') return [];
+    return RESPONSE_FIELDS_NOT_SUPPORTED.filter(key => body[key] !== undefined);
+}
+
 function extractFromAnthropicBody(body = {}) {
     const messages = [];
     const system = normalizeTextContent(body.system);
@@ -220,14 +390,16 @@ function extractFromGeminiBody(body = {}) {
 }
 
 function buildUpstreamChatBody(messages, model, body = {}, config = runtimeConfig) {
+    const maxTokens = body.max_tokens !== undefined ? body.max_tokens : body.max_output_tokens;
     return {
         model: resolveModel(model, config),
         messages,
         stream: body.stream === true,
         ...(body.temperature !== undefined && { temperature: body.temperature }),
         ...(body.top_p !== undefined && { top_p: body.top_p }),
-        ...(body.max_tokens !== undefined && { max_tokens: body.max_tokens }),
-        ...(body.max_completion_tokens !== undefined && { max_completion_tokens: body.max_completion_tokens })
+        ...(maxTokens !== undefined && { max_tokens: maxTokens }),
+        ...(body.max_completion_tokens !== undefined && { max_completion_tokens: body.max_completion_tokens }),
+        ...(body.stream_options !== undefined && { stream_options: body.stream_options })
     };
 }
 
@@ -276,6 +448,113 @@ function resolveUpstreamEndpoint(model, stream, config = runtimeConfig) {
         return { url: `${config.upstreamUrl}/v1beta/models/${resolvedModel}:${action}`, type: 'gemini' };
     }
     return { url: `${config.upstreamUrl}/v1/chat/completions`, type: 'chat' };
+}
+
+function buildCodexConfig(config = runtimeConfig) {
+    return [
+        'model_provider = "vcp_bridge"',
+        `model = "${config.defaultModel}"`,
+        '',
+        '[model_providers.vcp_bridge]',
+        'name = "VCP Bridge"',
+        `base_url = "http://${config.bindHost}:${config.port}/v1"`,
+        'env_key = "VCP_BRIDGE_KEY"',
+        'wire_api = "responses"',
+        ''
+    ].join('\n');
+}
+
+function buildPromptDoctor(config = runtimeConfig) {
+    const prompt = config.systemPrompt || '';
+    return {
+        configured: Boolean(prompt),
+        source: config.systemPromptSource || null,
+        chars: prompt.length,
+        sha256: prompt
+            ? crypto.createHash('sha256').update(prompt, 'utf8').digest('hex')
+            : null
+    };
+}
+
+async function probeUpstreamForDoctor(config = runtimeConfig) {
+    const warnings = [];
+    const upstream = new URL(config.upstreamUrl);
+    const loopback = isLoopbackHost(upstream.hostname);
+    const result = {
+        url: sanitizeUrlForLog(config.upstreamUrl),
+        type: config.upstreamType,
+        loopback,
+        reachable: null,
+        looksLikeVCPToolBox: null,
+        probe: null
+    };
+
+    if (config.upstreamType !== 'chat') {
+        warnings.push('Upstream probe is only available for chat-compatible VCPToolBox mode.');
+        return { upstream: result, warnings };
+    }
+
+    if (!config.upstreamKey) {
+        warnings.push('Upstream probe skipped because no upstream key is configured.');
+        result.looksLikeVCPToolBox = loopback ? null : false;
+        return { upstream: result, warnings };
+    }
+
+    result.probe = '/v1/models';
+    try {
+        const response = await config.fetchImpl(`${config.upstreamUrl}/v1/models`, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${config.upstreamKey}` }
+        });
+        result.reachable = true;
+        result.status = response.status;
+        result.looksLikeVCPToolBox = loopback && response.status < 500;
+        if (!response.ok) {
+            warnings.push(`Upstream /v1/models probe returned HTTP ${response.status}.`);
+        }
+    } catch (error) {
+        result.reachable = false;
+        result.looksLikeVCPToolBox = false;
+        warnings.push(`Upstream probe failed: ${error.message}`);
+    }
+
+    return { upstream: result, warnings };
+}
+
+async function buildDoctorReport(config = runtimeConfig) {
+    const upstreamProbe = await probeUpstreamForDoctor(config);
+    const warnings = [...upstreamProbe.warnings];
+    if (config.profile === CODEX_VCP_MEMORY_PROFILE && config.hijackMode !== 'append') {
+        warnings.push('codex-vcp-memory profile is expected to use BRIDGE_HIJACK_MODE=append.');
+    }
+    if (config.requireVcpUpstream && upstreamProbe.upstream.looksLikeVCPToolBox === false) {
+        warnings.push('BRIDGE_REQUIRE_VCP_UPSTREAM=true but the upstream was not confirmed as VCPToolBox.');
+    }
+
+    return {
+        ok: warnings.length === 0,
+        profile: config.profile || 'default',
+        bridge: {
+            bind: `${config.bindHost}:${config.port}`,
+            loopbackOnly: isLoopbackHost(config.bindHost),
+            clientAuth: config.clientKey ? 'enabled' : 'not_configured',
+            denyBrowserOrigin: config.denyBrowserOrigin,
+            rateLimitRpm: config.rateLimitRpm,
+            maxBodyMb: config.maxBodyMb,
+            upstreamTimeouts: {
+                connectMs: config.connectTimeoutMs,
+                totalMs: config.totalTimeoutMs,
+                idleMs: config.idleTimeoutMs
+            }
+        },
+        upstream: upstreamProbe.upstream,
+        prompt: buildPromptDoctor(config),
+        codex: {
+            recommendedBaseUrl: `http://${config.bindHost}:${config.port}/v1`,
+            wireApi: 'responses'
+        },
+        warnings
+    };
 }
 
 function buildUpstreamRequest({ messages, model, body = {}, requestHeaders = {}, downstreamFormat = 'chat' }, config = runtimeConfig) {
@@ -639,26 +918,60 @@ async function writeSseChunk(res, text) {
     }
 }
 
-async function readSseLines(readable, onLine) {
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    for await (const chunk of readable) {
-        buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-            await onLine(line);
-        }
-    }
-
-    buffer += decoder.decode();
-    if (buffer) {
-        await onLine(buffer);
+function destroyReadable(readable) {
+    try {
+        if (typeof readable?.destroy === 'function') readable.destroy();
+        else if (typeof readable?.cancel === 'function') readable.cancel();
+    } catch (_error) {
+        // ignore cleanup errors
     }
 }
 
-async function streamUpstreamSseToChatSse(readable, upstreamType, res) {
+async function readSseLines(readable, onLine, options = {}) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let idleTimer = null;
+    let timedOut = false;
+    const resetIdleTimer = () => {
+        if (!options.idleTimeoutMs) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            timedOut = true;
+            if (options.abortController && !options.abortController.signal.aborted) {
+                options.abortController.abort();
+            }
+            destroyReadable(readable);
+        }, options.idleTimeoutMs);
+    };
+
+    try {
+        resetIdleTimer();
+        for await (const chunk of readable) {
+            resetIdleTimer();
+            buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                await onLine(line);
+            }
+        }
+
+        buffer += decoder.decode();
+        if (buffer) {
+            await onLine(buffer);
+        }
+    } catch (error) {
+        if (!timedOut) throw error;
+    } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+    }
+
+    if (timedOut) {
+        throw createTimeoutError('idle', options.idleTimeoutMs);
+    }
+}
+
+async function streamUpstreamSseToChatSse(readable, upstreamType, res, options = {}) {
     const created = Math.floor(Date.now() / 1000);
     const responseId = `chatcmpl-${created}`;
     let model = runtimeConfig?.defaultModel || DEFAULT_MODEL;
@@ -676,14 +989,14 @@ async function streamUpstreamSseToChatSse(readable, upstreamType, res) {
             if (!delta) return;
             await writeSseChunk(res, `data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, delta))}\n\n`);
         } catch (_error) {}
-    });
+    }, options);
 
     await writeSseChunk(res, `data: ${JSON.stringify(createChatStreamChunk(responseId, created, model, '', 'stop'))}\n\n`);
     await writeSseChunk(res, 'data: [DONE]\n\n');
     res.end();
 }
 
-async function streamChatSseToResponsesSse(readable, res) {
+async function streamChatSseToResponsesSse(readable, res, options = {}) {
     const created = Math.floor(Date.now() / 1000);
     const responseId = `resp_${created}`;
     const itemId = `msg_${created}`;
@@ -737,7 +1050,7 @@ async function streamChatSseToResponsesSse(readable, res) {
                 delta
             }));
         } catch (_error) {}
-    });
+    }, options);
 
     const text = deltas.join('');
     await writeSseChunk(res, [
@@ -791,8 +1104,88 @@ function shouldTransformResponse(upstreamType, downstreamFormat) {
     return downstreamFormat !== upstreamType;
 }
 
+function getRateLimitKey(req) {
+    return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function checkRateLimit(req, config = runtimeConfig, now = Date.now()) {
+    if (!config.rateLimitRpm) return { allowed: true };
+    const key = getRateLimitKey(req);
+    const windowMs = 60 * 1000;
+    const current = rateLimitBuckets.get(key);
+    const bucket = current && now - current.startedAt < windowMs
+        ? current
+        : { startedAt: now, count: 0 };
+    bucket.count += 1;
+    rateLimitBuckets.set(key, bucket);
+    if (bucket.count > config.rateLimitRpm) {
+        return {
+            allowed: false,
+            retryAfterSeconds: Math.max(1, Math.ceil((bucket.startedAt + windowMs - now) / 1000))
+        };
+    }
+    return { allowed: true };
+}
+
+function createSecurityMiddleware(config = runtimeConfig) {
+    return (req, res, next) => {
+        if (config.denyBrowserOrigin && !isOriginAllowed(req.headers.origin, config)) {
+            return res.status(403).json({ error: { message: 'Browser origin is not allowed.', type: 'forbidden_origin' } });
+        }
+
+        if (config.clientKey) {
+            const token = normalizeBearerOrApiKey(req.headers);
+            if (token !== config.clientKey) {
+                return res.status(401).json({ error: { message: 'Bridge client key required.', type: 'unauthorized' } });
+            }
+        }
+
+        const limit = checkRateLimit(req, config);
+        if (!limit.allowed) {
+            res.setHeader('Retry-After', String(limit.retryAfterSeconds));
+            return res.status(429).json({ error: { message: 'Bridge rate limit exceeded.', type: 'rate_limit_exceeded' } });
+        }
+
+        return next();
+    };
+}
+
+async function streamRawReadable(readable, res, options = {}) {
+    let idleTimer = null;
+    let timedOut = false;
+    const resetIdleTimer = () => {
+        if (!options.idleTimeoutMs) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            timedOut = true;
+            if (options.abortController && !options.abortController.signal.aborted) {
+                options.abortController.abort();
+            }
+            destroyReadable(readable);
+        }, options.idleTimeoutMs);
+    };
+
+    try {
+        resetIdleTimer();
+        for await (const chunk of readable) {
+            resetIdleTimer();
+            res.write(chunk);
+        }
+    } catch (error) {
+        if (!timedOut) throw error;
+    } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+    }
+
+    if (timedOut) {
+        throw createTimeoutError('idle', options.idleTimeoutMs);
+    }
+    res.end();
+}
+
 async function proxyRequest(req, res, payload) {
     const config = runtimeConfig;
+    const droppedFields = Array.isArray(payload.droppedFields) ? payload.droppedFields : [];
     const { endpoint, headers, upstreamBody, downstreamFormat } = buildUpstreamRequest({
         ...payload,
         requestHeaders: req.headers
@@ -800,10 +1193,21 @@ async function proxyRequest(req, res, payload) {
 
     if (config.debugMode) {
         console.log(`[VCPBridgeServer] ${downstreamFormat} -> ${endpoint.type} | ${sanitizeUrlForLog(endpoint.url)} | hijack=${config.hijackMode}`);
+        if (droppedFields.length > 0) {
+            console.warn(`[VCPBridgeServer] responses fields not forwarded: ${droppedFields.join(', ')}`);
+        }
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+    let timeoutType = null;
+    const connectTimer = startTimer(config.connectTimeoutMs, () => {
+        timeoutType = 'connect';
+        controller.abort();
+    });
+    const totalTimer = startTimer(config.totalTimeoutMs, () => {
+        timeoutType = 'total';
+        controller.abort();
+    });
     let upstreamResponse;
     try {
         upstreamResponse = await config.fetchImpl(endpoint.url, {
@@ -813,75 +1217,116 @@ async function proxyRequest(req, res, payload) {
             signal: controller.signal
         });
     } catch (error) {
-        const message = error?.name === 'AbortError' ? 'Upstream fetch timed out' : `Upstream fetch failed: ${error.message}`;
-        return res.status(502).json({ error: { message, type: 'upstream_error' } });
+        const type = timeoutType || error?.timeoutType || 'upstream';
+        const message = error?.name === 'AbortError' || error?.name === 'BridgeTimeoutError'
+            ? `Upstream ${type} timeout`
+            : `Upstream fetch failed: ${error.message}`;
+        if (connectTimer) clearTimeout(connectTimer);
+        if (totalTimer) clearTimeout(totalTimer);
+        return res.status(502).json({ error: { message, type: `${type}_timeout` } });
     } finally {
-        clearTimeout(timeout);
+        if (connectTimer) clearTimeout(connectTimer);
     }
 
-    const contentType = upstreamResponse.headers.get('content-type') || '';
-    const shouldTransform = upstreamResponse.ok && shouldTransformResponse(endpoint.type, downstreamFormat);
-    res.status(upstreamResponse.status);
-    upstreamResponse.headers.forEach((value, key) => {
-        const lower = key.toLowerCase();
-        if (!['content-encoding', 'transfer-encoding', 'content-length'].includes(lower)) {
-            res.setHeader(key, value);
+    try {
+        const streamOptions = { idleTimeoutMs: config.idleTimeoutMs, abortController: controller };
+        const contentType = upstreamResponse.headers.get('content-type') || '';
+        const shouldTransform = upstreamResponse.ok && shouldTransformResponse(endpoint.type, downstreamFormat);
+        res.status(upstreamResponse.status);
+        if (droppedFields.length > 0) {
+            res.setHeader('X-VCP-Bridge-Dropped-Fields', droppedFields.join(','));
         }
-    });
+        upstreamResponse.headers.forEach((value, key) => {
+            const lower = key.toLowerCase();
+            if (!['content-encoding', 'transfer-encoding', 'content-length'].includes(lower)) {
+                res.setHeader(key, value);
+            }
+        });
 
-    if (shouldTransform) {
-        if (contentType.includes('text/event-stream') && upstreamResponse.body && endpoint.type === 'chat' && downstreamFormat === 'responses') {
-            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-            if (typeof res.flushHeaders === 'function') res.flushHeaders();
-            return streamChatSseToResponsesSse(upstreamResponse.body, res);
+        if (shouldTransform) {
+            if (contentType.includes('text/event-stream') && upstreamResponse.body && endpoint.type === 'chat' && downstreamFormat === 'responses') {
+                res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+                if (typeof res.flushHeaders === 'function') res.flushHeaders();
+                return await streamChatSseToResponsesSse(upstreamResponse.body, res, streamOptions);
+            }
+            if (contentType.includes('text/event-stream') && upstreamResponse.body && downstreamFormat === 'chat') {
+                res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+                if (typeof res.flushHeaders === 'function') res.flushHeaders();
+                return await streamUpstreamSseToChatSse(upstreamResponse.body, endpoint.type, res, streamOptions);
+            }
+            const text = await upstreamResponse.text();
+            if (contentType.includes('text/event-stream') && endpoint.type === 'chat' && downstreamFormat === 'responses') {
+                res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+                return res.send(transformChatSseToResponsesSse(text));
+            }
+            if (contentType.includes('text/event-stream') && downstreamFormat === 'chat') {
+                res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+                return res.send(transformUpstreamSseToChatSse(text, endpoint.type));
+            }
+            try {
+                const payloadJson = JSON.parse(text);
+                const transformed = transformUpstreamJsonPayload(payloadJson, endpoint.type, downstreamFormat);
+                res.setHeader('content-type', 'application/json; charset=utf-8');
+                return res.send(JSON.stringify(transformed));
+            } catch (_error) {
+                return res.send(text);
+            }
         }
-        if (contentType.includes('text/event-stream') && upstreamResponse.body && downstreamFormat === 'chat') {
-            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-            if (typeof res.flushHeaders === 'function') res.flushHeaders();
-            return streamUpstreamSseToChatSse(upstreamResponse.body, endpoint.type, res);
-        }
-        const text = await upstreamResponse.text();
-        if (contentType.includes('text/event-stream') && endpoint.type === 'chat' && downstreamFormat === 'responses') {
-            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-            return res.send(transformChatSseToResponsesSse(text));
-        }
-        if (contentType.includes('text/event-stream') && downstreamFormat === 'chat') {
-            res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-            return res.send(transformUpstreamSseToChatSse(text, endpoint.type));
-        }
-        try {
-            const payloadJson = JSON.parse(text);
-            const transformed = transformUpstreamJsonPayload(payloadJson, endpoint.type, downstreamFormat);
-            res.setHeader('content-type', 'application/json; charset=utf-8');
-            return res.send(JSON.stringify(transformed));
-        } catch (_error) {
-            return res.send(text);
-        }
-    }
 
-    if (!upstreamResponse.body) {
-        return res.send(await upstreamResponse.text());
-    }
+        if (!upstreamResponse.body) {
+            return res.send(await upstreamResponse.text());
+        }
 
-    for await (const chunk of upstreamResponse.body) {
-        res.write(chunk);
+        return await streamRawReadable(upstreamResponse.body, res, streamOptions);
+    } catch (error) {
+        const type = timeoutType || error?.timeoutType || 'upstream';
+        const message = error?.name === 'AbortError' || error?.name === 'BridgeTimeoutError'
+            ? `Upstream ${type} timeout`
+            : `Upstream response failed: ${error.message}`;
+        if (!res.headersSent) {
+            return res.status(502).json({ error: { message, type: `${type}_timeout` } });
+        }
+        if (!res.writableEnded) {
+            res.end();
+        }
+        return undefined;
+    } finally {
+        if (totalTimer) clearTimeout(totalTimer);
     }
-    res.end();
 }
 
 function createApp() {
     const app = express();
-    app.use(express.json({ limit: '10mb' }));
+    app.use(express.json({ limit: runtimeConfig.expressJsonLimit }));
+    app.use(createSecurityMiddleware(runtimeConfig));
 
     app.get('/health', (_req, res) => {
         res.json({
             ok: true,
+            profile: runtimeConfig.profile || 'default',
             hijackMode: runtimeConfig.hijackMode,
             hasSystemPrompt: Boolean(runtimeConfig.systemPrompt),
             upstreamType: runtimeConfig.upstreamType,
             upstreamUrl: sanitizeUrlForLog(runtimeConfig.upstreamUrl),
-            modelMap: runtimeConfig.modelMap
+            modelMap: runtimeConfig.modelMap,
+            clientAuth: runtimeConfig.clientKey ? 'enabled' : 'not_configured',
+            denyBrowserOrigin: runtimeConfig.denyBrowserOrigin,
+            rateLimitRpm: runtimeConfig.rateLimitRpm,
+            maxBodyMb: runtimeConfig.maxBodyMb,
+            upstreamTimeouts: {
+                connectMs: runtimeConfig.connectTimeoutMs,
+                totalMs: runtimeConfig.totalTimeoutMs,
+                idleMs: runtimeConfig.idleTimeoutMs
+            }
         });
+    });
+
+    app.get('/doctor', async (_req, res) => {
+        res.json(await buildDoctorReport(runtimeConfig));
+    });
+
+    app.get('/doctor/codex-config', (_req, res) => {
+        res.type('text/plain; charset=utf-8').send(buildCodexConfig(runtimeConfig));
     });
 
     app.post('/v1/chat/completions', async (req, res) => {
@@ -892,9 +1337,10 @@ function createApp() {
 
     app.post('/v1/responses', async (req, res) => {
         const body = req.body || {};
-        const messages = extractFromResponsesInput(body.input);
+        const messages = extractFromResponsesBody(body);
+        const droppedFields = collectDroppedResponseFields(body);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
-        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses' });
+        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses', droppedFields });
     });
 
     app.post('/v1/messages', async (req, res) => {
@@ -933,6 +1379,7 @@ function startServer() {
 
 async function initialize(config = {}, dependencies = {}) {
     await shutdown();
+    rateLimitBuckets.clear();
     runtimeConfig = createRuntimeConfig(config, {
         fetchImpl: dependencies.fetchImpl
     });
@@ -970,19 +1417,34 @@ module.exports = {
         buildChatPayloadFromUpstream,
         buildResponsesPayloadFromUpstream,
         createRuntimeConfig,
+        collectDroppedResponseFields,
+        checkRateLimit,
         extractFromAnthropicBody,
         extractFromGeminiBody,
+        extractFromResponsesBody,
         extractFromResponsesInput,
         transformChatSseToResponsesSse,
         transformUpstreamSseToChatSse,
         transformUpstreamJsonPayload,
         normalizeApiType,
+        normalizeHostForCompare,
+        normalizeHijackMode,
+        normalizeOriginForCompare,
+        normalizeProfile,
         normalizeTextContent,
         parseModelMap,
         resolveModel,
+        resolveProfileDefaults,
         resolveSystemPrompt,
         resolveUpstreamEndpoint,
         sanitizeUrlForLog,
+        isOriginAllowed,
+        buildCodexConfig,
+        buildDoctorReport,
+        buildPromptDoctor,
+        probeUpstreamForDoctor,
+        readSseLines,
+        validateNoSelfLoop,
         isRunning: () => Boolean(server)
     }
 };
