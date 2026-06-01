@@ -1,6 +1,6 @@
 # VCPBridgeServer
 
-VCPBridgeServer is a loopback-only API proxy for local CLI tools that cannot edit their system prompt directly. It can inject or replace system messages and map model names before forwarding requests to an upstream OpenAI-compatible, Anthropic, or Gemini API.
+VCPBridgeServer is a loopback-only API proxy for local CLI tools that cannot edit their system prompt directly. It can inject or replace system messages and map model names before forwarding requests to an upstream OpenAI-compatible, Anthropic, Gemini, or Responses API.
 
 This stable-line version is intentionally conservative: the service is disabled by default and refuses non-loopback bind hosts.
 
@@ -27,6 +27,59 @@ BRIDGE_HIJACK_MODE=prepend
 ```
 
 `BRIDGE_UPSTREAM_KEY` is optional. If it is empty, the proxy passes through the caller's protocol-specific auth header (`Authorization`, `x-api-key`, or `x-goog-api-key`).
+
+## ChatGPT Codex OAuth Provider Split
+
+The bridge does not own OAuth credentials. When Codex needs ChatGPT/Codex
+OAuth, keep the bridge pointed at the VCPToolBox main service and enable the
+provider on the main service:
+
+```env
+# VCPToolBox main service
+VCP_OAUTH_AUTH_CENTER_ENABLED=true
+VCP_OAUTH_TOKEN_ENCRYPTION_KEY=YOUR_LOCAL_OAUTH_LOCK_PASSWORD
+VCP_RESPONSES_PROVIDER=codex_oauth
+
+# VCPBridgeServer
+BRIDGE_ENABLED=true
+BRIDGE_BIND_HOST=127.0.0.1
+BRIDGE_PORT=3100
+BRIDGE_UPSTREAM_URL=
+BRIDGE_UPSTREAM_TYPE=responses
+BRIDGE_MODEL=gpt-5.3-codex
+BRIDGE_HIJACK_MODE=append
+BRIDGE_SYSTEM_PROMPT=prompts/codex_vcp_memory.strict.txt
+BRIDGE_CLIENT_KEY=<REDACTED_CLIENT_KEY>
+```
+
+With this split:
+
+- downstream client calls `POST /v1/responses` on VCPBridgeServer.
+- the bridge injects the configured prompt policy and forwards a Responses
+  request to VCPToolBox main service `POST /v1/responses`.
+- the main service provider calls `OAuthAuthManager.getValidToken('codex_oauth')`
+  and forwards to `https://chatgpt.com/backend-api/codex/responses`.
+
+This preserves the bridge design: no token storage, no OAuth refresh, no
+provider-specific account selection in the bridge process.
+
+Operational flow:
+
+1. Set `VCP_OAUTH_AUTH_CENTER_ENABLED=true` and choose your own local `VCP_OAUTH_TOKEN_ENCRYPTION_KEY` string.
+2. Restart or reload the AdminPanel backend so the OAuth Auth Center route is mounted.
+3. Open VCPToolBox AdminPanel -> OAuth Auth Center.
+4. Log in to `ChatGPT / Codex OAuth`.
+5. In the same Codex card, enable `VCP Responses Provider`.
+6. Use `测试 Provider` to run a read-only upstream model-catalog check.
+7. Configure VCPBridgeServer with `BRIDGE_UPSTREAM_TYPE=responses` and leave
+   `BRIDGE_UPSTREAM_URL` empty unless the main service is on a non-default URL.
+
+`VCP_RESPONSES_PROVIDER` is a VCPToolBox main-service setting, not a bridge
+setting. The main `/v1/responses` provider route reads the current
+`config.env` cascade when handling requests, so saving this key from the
+admin Base Config page is enough for this route to observe the provider choice.
+Long-running callers may still need to reload their own client-side bridge
+configuration if they changed bridge keys or ports.
 
 ## Codex + VCPToolBox Memory Gateway
 
@@ -87,7 +140,7 @@ it can write durable memory through `CodexMemoryBridge`; `search_memory` and
 
 All request bodies are normalized into messages, the configured system prompt policy is applied, then the request is rebuilt for the configured upstream protocol.
 
-For `POST /v1/responses`, the bridge uses both top-level `instructions` and `input` when constructing upstream chat messages. It maps `max_output_tokens` to chat `max_tokens` and preserves `stream_options` for chat-compatible upstreams.
+For `POST /v1/responses`, the bridge uses both top-level `instructions` and `input` when constructing upstream chat messages. It maps `max_output_tokens` to chat `max_tokens` and preserves `stream_options` for chat-compatible upstreams. When `BRIDGE_UPSTREAM_TYPE=responses`, the bridge rebuilds the request as a Responses request and forwards it to the configured upstream Responses API, typically the local VCPToolBox main service.
 
 The bridge does not emulate the full Responses API. Unsupported top-level fields such as `tools`, `tool_choice`, `parallel_tool_calls`, `previous_response_id`, `truncation`, and `reasoning` are not forwarded. When present, they are reported through `X-VCP-Bridge-Dropped-Fields`; in debug mode they are also logged.
 

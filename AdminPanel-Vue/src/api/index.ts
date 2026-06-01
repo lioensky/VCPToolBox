@@ -100,6 +100,9 @@ export type * from './aiImageAgents'
 export { codexImagegenRelayApi } from './codexImagegenRelay'
 export type * from './codexImagegenRelay'
 
+export { oauthAuthApi } from './oauthAuth'
+export type * from './oauthAuth'
+
 export { semanticRouterApi } from './semanticRouter'
 export type * from './semanticRouter'
 

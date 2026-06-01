@@ -207,6 +207,42 @@ test('runtime config defaults upstream to local VCP server and inherited key', (
     assert.equal(request.headers.Authorization, 'Bearer main-server-key');
 });
 
+test('runtime config can target responses upstream without owning provider auth', () => {
+    const config = createRuntimeConfig({
+        PORT: 6105,
+        Key: 'main-server-key',
+        BRIDGE_UPSTREAM_TYPE: 'responses',
+        BRIDGE_UPSTREAM_URL: '',
+        BRIDGE_MODEL: 'gpt-5.3-codex',
+        BRIDGE_SYSTEM_PROMPT: 'bridge rules',
+        BRIDGE_HIJACK_MODE: 'prepend'
+    });
+
+    const request = buildUpstreamRequest({
+        messages: [{ role: 'user', content: 'hello' }],
+        model: 'gpt-5.3-codex',
+        body: { stream: false, reasoning: { effort: 'low' }, store: true },
+        requestHeaders: {},
+        downstreamFormat: 'responses'
+    }, config);
+
+    assert.equal(config.upstreamUrl, 'http://127.0.0.1:6105');
+    assert.equal(config.upstreamType, 'responses');
+    assert.equal(request.endpoint.url, 'http://127.0.0.1:6105/v1/responses');
+    assert.equal(request.headers.Authorization, 'Bearer main-server-key');
+    assert.equal(request.upstreamBody.model, 'gpt-5.3-codex');
+    assert.equal(request.upstreamBody.instructions, 'bridge rules');
+    assert.equal(request.upstreamBody.store, true);
+    assert.deepEqual(request.upstreamBody.reasoning, { effort: 'low' });
+    assert.deepEqual(request.upstreamBody.input, [
+        {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'hello' }]
+        }
+    ]);
+});
+
 test('runtime config applies local safety defaults and explicit overrides', () => {
     const defaults = createRuntimeConfig({});
 
@@ -237,6 +273,62 @@ test('runtime config applies local safety defaults and explicit overrides', () =
     assert.equal(config.rateLimitRpm, 2);
     assert.equal(config.maxBodyMb, 3);
     assert.equal(config.expressJsonLimit, '3mb');
+});
+
+test('bridge responses path forwards to responses upstream without provider credentials', async () => {
+    const port = await getFreePort();
+    const upstreamCalls = [];
+    const fetchImpl = async (url, options = {}) => {
+        upstreamCalls.push({ url, options });
+        return new Response(JSON.stringify({
+            id: 'resp_test',
+            object: 'response',
+            output: []
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_URL: 'http://127.0.0.1:6005',
+            BRIDGE_UPSTREAM_TYPE: 'responses',
+            BRIDGE_UPSTREAM_KEY: 'main-server-key',
+            BRIDGE_SYSTEM_PROMPT: 'bridge rules',
+            BRIDGE_HIJACK_MODE: 'prepend',
+            BRIDGE_MODEL: 'gpt-5.3-codex',
+            BRIDGE_RATE_LIMIT_RPM: 0
+        }, { fetchImpl });
+
+        const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'gpt-5.3-codex',
+                input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+                stream: false,
+                store: true,
+                reasoning: { effort: 'low' }
+            })
+        });
+
+        assert.equal(response.status, 200);
+        assert.equal(upstreamCalls.length, 1);
+        assert.equal(upstreamCalls[0].url, 'http://127.0.0.1:6005/v1/responses');
+        assert.equal(upstreamCalls[0].options.headers.Authorization, 'Bearer main-server-key');
+        assert.equal(upstreamCalls[0].options.headers['ChatGPT-Account-ID'], undefined);
+        const upstreamBody = JSON.parse(upstreamCalls[0].options.body);
+        assert.equal(upstreamBody.instructions, 'bridge rules');
+        assert.equal(upstreamBody.store, true);
+        assert.deepEqual(upstreamBody.reasoning, { effort: 'low' });
+        assert.equal(upstreamBody.input[0].content[0].text, 'hello');
+    } finally {
+        await plugin.shutdown();
+    }
 });
 
 test('codex-vcp-memory profile applies safe memory gateway defaults', () => {
@@ -444,6 +536,45 @@ test('transforms chat completion JSON into responses schema', () => {
     });
 });
 
+test('transforms responses JSON into chat completion schema', () => {
+    const transformed = transformUpstreamJsonPayload({
+        id: 'resp-test',
+        object: 'response',
+        created_at: 1710000000,
+        model: 'gpt-responses-test',
+        output: [
+            {
+                type: 'message',
+                role: 'assistant',
+                content: [
+                    { type: 'output_text', text: 'hello from responses' }
+                ]
+            }
+        ],
+        usage: {
+            input_tokens: 4,
+            output_tokens: 6,
+            total_tokens: 10
+        }
+    }, 'responses', 'chat');
+
+    assert.equal(transformed.object, 'chat.completion');
+    assert.equal(transformed.choices[0].message.role, 'assistant');
+    assert.equal(transformed.choices[0].message.content, 'hello from responses');
+    assert.deepEqual(transformed.usage, {
+        prompt_tokens: 4,
+        completion_tokens: 6,
+        total_tokens: 10
+    });
+
+    const fromOutputText = transformUpstreamJsonPayload({
+        id: 'resp-output-text-test',
+        object: 'response',
+        output_text: 'top-level responses text'
+    }, 'responses', 'chat');
+    assert.equal(fromOutputText.choices[0].message.content, 'top-level responses text');
+});
+
 test('transforms anthropic and gemini JSON into chat completion schema', () => {
     const anthropicChat = transformUpstreamJsonPayload({
         id: 'msg-anthropic-test',
@@ -525,6 +656,25 @@ test('transforms anthropic SSE into chat completion chunks', () => {
     assert.match(transformed, /"object":"chat\.completion\.chunk"/);
     assert.match(transformed, /"model":"claude-test"/);
     assert.match(transformed, /"content":"anthropic "/);
+    assert.match(transformed, /"content":"stream"/);
+    assert.match(transformed, /"finish_reason":"stop"/);
+    assert.match(transformed, /data: \[DONE\]/);
+});
+
+test('transforms responses SSE into chat completion chunks', () => {
+    const transformed = transformUpstreamSseToChatSse([
+        'event: response.output_text.delta',
+        'data: {"type":"response.output_text.delta","delta":"responses "}',
+        '',
+        'event: response.output_text.delta',
+        'data: {"type":"response.output_text.delta","delta":"stream"}',
+        '',
+        'data: [DONE]',
+        ''
+    ].join('\n'), 'responses');
+
+    assert.match(transformed, /"object":"chat\.completion\.chunk"/);
+    assert.match(transformed, /"content":"responses "/);
     assert.match(transformed, /"content":"stream"/);
     assert.match(transformed, /"finish_reason":"stop"/);
     assert.match(transformed, /data: \[DONE\]/);

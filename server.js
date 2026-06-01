@@ -883,6 +883,10 @@ app.use('/mcp/codex-memory', codexMemoryMcpRoutes({
     projectBasePath: __dirname,
     dailyNoteRootPath
 }));
+const createCodexOAuthResponsesRouter = require('./routes/codexOAuthResponses');
+app.use(createCodexOAuthResponsesRouter({
+    projectBasePath: __dirname
+}));
 
 // This function is no longer needed as the EmojiListGenerator plugin handles generation.
 // async function updateAndLoadAgentEmojiList(agentName, dirPath, filePath) { ... }
@@ -910,6 +914,31 @@ app.get('/v1/models', async (req, res) => {
             }
         }
         return modelsData;
+    };
+    const appendCodexOAuthModels = async (modelsData) => {
+        const codexModels = await createCodexOAuthResponsesRouter.fetchCodexOAuthModels({
+            projectBasePath: __dirname
+        });
+        if (!codexModels.length) return modelsData;
+
+        if (!modelsData || typeof modelsData !== 'object') {
+            modelsData = { object: 'list', data: [] };
+        }
+        if (!Array.isArray(modelsData.data)) {
+            modelsData.data = [];
+        }
+
+        const existingIds = new Set(modelsData.data.map(model => model && model.id).filter(Boolean));
+        for (const model of codexModels) {
+            if (!existingIds.has(model.id)) {
+                modelsData.data.push(model);
+                existingIds.add(model.id);
+            }
+        }
+        return modelsData;
+    };
+    const appendVirtualModels = async (modelsData) => {
+        return appendCodexOAuthModels(appendSemanticRouterModels(modelsData));
     };
     try {
         const modelsApiUrl = `${apiUrl}/v1/models`;
@@ -944,7 +973,7 @@ app.get('/v1/models', async (req, res) => {
                     }
                 }
 
-                modelsData = appendSemanticRouterModels(modelsData);
+                modelsData = await appendVirtualModels(modelsData);
 
                 // 设置响应头
                 res.status(apiResponse.status);
@@ -959,14 +988,14 @@ app.get('/v1/models', async (req, res) => {
                 return;
             } catch (parseError) {
                 console.warn('[Models] 解析模型列表响应失败，返回语义路由虚拟模型列表:', parseError.message);
-                const fallbackModelsData = appendSemanticRouterModels({ object: 'list', data: [] });
+                const fallbackModelsData = await appendVirtualModels({ object: 'list', data: [] });
                 if (fallbackModelsData.data.length > 0) {
                     return res.status(200).json(fallbackModelsData);
                 }
             }
         }
 
-        const fallbackModelsData = appendSemanticRouterModels({ object: 'list', data: [] });
+        const fallbackModelsData = await appendVirtualModels({ object: 'list', data: [] });
         if (fallbackModelsData.data.length > 0) {
             return res.status(200).json(fallbackModelsData);
         }

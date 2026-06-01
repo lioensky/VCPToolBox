@@ -136,6 +136,7 @@ function normalizeApiType(value) {
     const v = String(value || '').trim().toLowerCase();
     if (v === 'anthropic' || v === 'claude') return 'anthropic';
     if (v === 'gemini' || v === 'google') return 'gemini';
+    if (v === 'responses' || v === 'openai_responses') return 'responses';
     return 'chat';
 }
 
@@ -218,13 +219,14 @@ function createRuntimeConfig(config = {}, options = {}) {
         ? DEFAULT_PORT
         : config.BRIDGE_PORT;
     const mainServerPort = config.PORT || process.env.PORT || 6005;
+    const upstreamTypeValue = config.BRIDGE_UPSTREAM_TYPE || profileDefaults.upstreamType;
+    const normalizedUpstreamType = normalizeApiType(upstreamTypeValue);
     const defaultUpstreamUrl = `http://127.0.0.1:${mainServerPort}`;
     const useLocalDefaultUpstream = config.BRIDGE_UPSTREAM_URL === undefined || config.BRIDGE_UPSTREAM_URL === null || config.BRIDGE_UPSTREAM_URL === '';
     const upstreamUrl = useLocalDefaultUpstream
         ? defaultUpstreamUrl
         : config.BRIDGE_UPSTREAM_URL;
     const upstreamKey = config.BRIDGE_UPSTREAM_KEY || (useLocalDefaultUpstream ? (config.Key || process.env.Key || '') : '');
-    const upstreamTypeValue = config.BRIDGE_UPSTREAM_TYPE || profileDefaults.upstreamType;
     const systemPromptValue = config.BRIDGE_SYSTEM_PROMPT || profileDefaults.systemPrompt || '';
     const hijackModeValue = config.BRIDGE_HIJACK_MODE || profileDefaults.hijackMode || 'off';
     const requireVcpUpstream = config.BRIDGE_REQUIRE_VCP_UPSTREAM === undefined || config.BRIDGE_REQUIRE_VCP_UPSTREAM === null || config.BRIDGE_REQUIRE_VCP_UPSTREAM === ''
@@ -240,7 +242,7 @@ function createRuntimeConfig(config = {}, options = {}) {
         upstreamUrl: normalizeUpstreamUrl(upstreamUrl),
         clientKey: String(config.BRIDGE_CLIENT_KEY || ''),
         upstreamKey: String(upstreamKey),
-        upstreamType: normalizeApiType(upstreamTypeValue),
+        upstreamType: normalizedUpstreamType,
         requireVcpUpstream,
         defaultModel: String(config.BRIDGE_MODEL || DEFAULT_MODEL),
         systemPrompt: resolveSystemPrompt(systemPromptValue, pluginDir),
@@ -298,6 +300,7 @@ function normalizeTextContent(content) {
             if (typeof item?.text === 'string') return item.text;
             if (item?.type === 'text' && typeof item.text === 'string') return item.text;
             if (item?.type === 'input_text' && typeof item.text === 'string') return item.text;
+            if (item?.type === 'output_text' && typeof item.text === 'string') return item.text;
             return '';
         }).filter(Boolean).join('\n');
     }
@@ -353,6 +356,25 @@ function extractFromResponsesBody(body = {}) {
     }
     messages.push(...extractFromResponsesInput(body.input));
     return messages;
+}
+
+function extractFromResponsesOutput(output) {
+    if (typeof output === 'string') return output;
+    if (!Array.isArray(output)) return '';
+
+    return output.map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        if (typeof item.output_text === 'string') return item.output_text;
+        if (typeof item.text === 'string') return item.text;
+        if (Array.isArray(item.content) || typeof item.content === 'string') {
+            return normalizeTextContent(item.content);
+        }
+        if (Array.isArray(item.message?.content) || typeof item.message?.content === 'string') {
+            return normalizeTextContent(item.message.content);
+        }
+        return '';
+    }).filter(Boolean).join('\n');
 }
 
 function collectDroppedResponseFields(body = {}) {
@@ -439,6 +461,9 @@ function buildUpstreamGeminiBody(messages, _model, body = {}) {
 }
 
 function resolveUpstreamEndpoint(model, stream, config = runtimeConfig) {
+    if (config.upstreamType === 'responses') {
+        return { url: `${config.upstreamUrl}/v1/responses`, type: 'responses' };
+    }
     if (config.upstreamType === 'anthropic') {
         return { url: `${config.upstreamUrl}/v1/messages`, type: 'anthropic' };
     }
@@ -448,6 +473,45 @@ function resolveUpstreamEndpoint(model, stream, config = runtimeConfig) {
         return { url: `${config.upstreamUrl}/v1beta/models/${resolvedModel}:${action}`, type: 'gemini' };
     }
     return { url: `${config.upstreamUrl}/v1/chat/completions`, type: 'chat' };
+}
+
+function normalizeResponseTextContent(content, textType = 'input_text') {
+    if (Array.isArray(content)) {
+        return content.map(part => {
+            if (part && typeof part === 'object' && typeof part.type === 'string') return part;
+            return { type: textType, text: normalizeTextContent(part) };
+        });
+    }
+    return [{ type: textType, text: normalizeTextContent(content) }];
+}
+
+function buildResponsesInputFromMessages(messages) {
+    return messages
+        .filter(message => message.role !== 'system')
+        .map(message => ({
+            type: 'message',
+            role: message.role === 'assistant' ? 'assistant' : 'user',
+            content: normalizeResponseTextContent(message.content, message.role === 'assistant' ? 'output_text' : 'input_text')
+        }));
+}
+
+function buildUpstreamResponsesBody(messages, model, body = {}, config = runtimeConfig) {
+    const systemPrompt = messages
+        .filter(message => message.role === 'system')
+        .map(message => normalizeTextContent(message.content))
+        .filter(Boolean)
+        .join('\n\n');
+    const upstreamBody = {
+        ...body,
+        model: resolveModel(model, config),
+        store: body.store === undefined ? false : body.store
+    };
+
+    if (systemPrompt) upstreamBody.instructions = systemPrompt;
+    upstreamBody.input = buildResponsesInputFromMessages(messages);
+    upstreamBody.stream = body.stream === true;
+
+    return upstreamBody;
 }
 
 function buildCodexConfig(config = runtimeConfig) {
@@ -489,7 +553,7 @@ async function probeUpstreamForDoctor(config = runtimeConfig) {
         probe: null
     };
 
-    if (config.upstreamType !== 'chat') {
+    if (config.upstreamType !== 'chat' && config.upstreamType !== 'responses') {
         warnings.push('Upstream probe is only available for chat-compatible VCPToolBox mode.');
         return { upstream: result, warnings };
     }
@@ -563,7 +627,9 @@ function buildUpstreamRequest({ messages, model, body = {}, requestHeaders = {},
     const endpoint = resolveUpstreamEndpoint(model, stream, config);
     let upstreamBody;
 
-    if (endpoint.type === 'anthropic') {
+    if (endpoint.type === 'responses') {
+        upstreamBody = buildUpstreamResponsesBody(hijackedMessages, model, body, config);
+    } else if (endpoint.type === 'anthropic') {
         upstreamBody = buildUpstreamAnthropicBody(hijackedMessages, model, body, config);
     } else if (endpoint.type === 'gemini') {
         upstreamBody = buildUpstreamGeminiBody(hijackedMessages, model, body, config);
@@ -572,7 +638,11 @@ function buildUpstreamRequest({ messages, model, body = {}, requestHeaders = {},
     }
 
     const headers = { 'Content-Type': 'application/json' };
-    if (endpoint.type === 'anthropic') {
+    if (endpoint.type === 'responses') {
+        headers.Accept = body.stream === true ? 'text/event-stream' : 'application/json';
+        const chatKey = config.upstreamKey || extractBearerToken(requestHeaders.authorization);
+        if (chatKey) headers.Authorization = `Bearer ${chatKey}`;
+    } else if (endpoint.type === 'anthropic') {
         headers['anthropic-version'] = requestHeaders['anthropic-version'] || '2023-06-01';
         const anthropicKey = config.upstreamKey || requestHeaders['x-api-key'];
         if (anthropicKey) headers['x-api-key'] = anthropicKey;
@@ -597,6 +667,10 @@ function extractTextFromUpstreamPayload(payload, upstreamType) {
         const parts = payload.candidates?.[0]?.content?.parts;
         return normalizeTextContent(parts);
     }
+    if (upstreamType === 'responses') {
+        if (typeof payload.output_text === 'string' && payload.output_text) return payload.output_text;
+        return extractFromResponsesOutput(payload.output);
+    }
     return payload.choices?.map(choice => choice?.message?.content || '').filter(Boolean).join('\n') || '';
 }
 
@@ -614,6 +688,14 @@ function extractUsageFromUpstreamPayload(payload, upstreamType) {
             input_tokens: payload.usageMetadata?.promptTokenCount || 0,
             output_tokens: payload.usageMetadata?.candidatesTokenCount || 0,
             total_tokens: payload.usageMetadata?.totalTokenCount || 0
+        };
+    }
+    if (upstreamType === 'responses') {
+        return {
+            input_tokens: payload.usage?.input_tokens || payload.usage?.prompt_tokens || 0,
+            output_tokens: payload.usage?.output_tokens || payload.usage?.completion_tokens || 0,
+            total_tokens: payload.usage?.total_tokens ||
+                (payload.usage?.input_tokens || 0) + (payload.usage?.output_tokens || 0)
         };
     }
     return {
@@ -778,6 +860,15 @@ function extractStreamingTextDelta(payload, upstreamType) {
     }
     if (upstreamType === 'gemini') {
         return normalizeTextContent(payload.candidates?.[0]?.content?.parts);
+    }
+    if (upstreamType === 'responses') {
+        if (payload.type === 'response.output_text.delta' && typeof payload.delta === 'string') {
+            return payload.delta;
+        }
+        if (typeof payload.delta === 'string') {
+            return payload.delta;
+        }
+        return '';
     }
     return payload.choices?.map(choice => choice?.delta?.content || '').join('') || '';
 }
@@ -1413,6 +1504,7 @@ module.exports = {
         buildUpstreamAnthropicBody,
         buildUpstreamChatBody,
         buildUpstreamGeminiBody,
+        buildUpstreamResponsesBody,
         buildUpstreamRequest,
         buildChatPayloadFromUpstream,
         buildResponsesPayloadFromUpstream,
