@@ -954,6 +954,72 @@ class KnowledgeBaseManager {
     }
 
     /**
+     * 🧳 文件搬家/复制优化：按 checksum 在 SQLite 中查找可复用的 chunk 向量。
+     * 只在 chunk 数量完全一致且所有向量维度有效时命中，避免复用半成品或旧模型残留数据。
+     */
+    _findReusableChunkVectors(doc) {
+        try {
+            if (!doc || !doc.checksum || !Array.isArray(doc.chunks) || doc.chunks.length === 0) return null;
+
+            const candidates = this.db.prepare(`
+                SELECT id, path, diary_name
+                FROM files
+                WHERE checksum = ?
+                  AND size = ?
+                  AND path != ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 5
+            `).all(doc.checksum, doc.size, doc.relPath);
+
+            if (!candidates || candidates.length === 0) return null;
+
+            const getChunks = this.db.prepare(`
+                SELECT chunk_index, vector
+                FROM chunks
+                WHERE file_id = ?
+                ORDER BY chunk_index ASC
+            `);
+
+            for (const candidate of candidates) {
+                const rows = getChunks.all(candidate.id);
+                if (rows.length !== doc.chunks.length) continue;
+
+                const vectors = [];
+                let valid = true;
+                for (let i = 0; i < rows.length; i++) {
+                    if (rows[i].chunk_index !== i || !rows[i].vector) {
+                        valid = false;
+                        break;
+                    }
+
+                    const decoded = this._decodeVectorBlob(
+                        rows[i].vector,
+                        this.config.dimension,
+                        `reuse:${candidate.path}:${i}`
+                    );
+
+                    if (!decoded) {
+                        valid = false;
+                        break;
+                    }
+
+                    // 复制一份，避免底层 SQLite Buffer 生命周期/复用导致的隐性别名问题。
+                    vectors.push(new Float32Array(decoded));
+                }
+
+                if (valid) {
+                    console.log(`[KnowledgeBase] ♻️ Reusing ${vectors.length} cached chunk vector(s) for moved/copied file "${doc.relPath}" from "${candidate.path}".`);
+                    return vectors;
+                }
+            }
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to lookup reusable vectors for "${doc?.relPath || 'unknown'}": ${e.message}`);
+        }
+
+        return null;
+    }
+
+    /**
      * 🌟 新增：按文件路径列表获取所有分块及其向量
      * 用于 Time 模式下的二次相关性排序
      */
@@ -1264,15 +1330,28 @@ class KnowledgeBaseManager {
             const allChunksWithMeta = [];
             const uniqueTags = new Set();
 
+            let reusedChunkVectorCount = 0;
             for (const [dName, docs] of docsByDiary) {
                 docs.forEach((doc, dIdx) => {
                     const validChunks = doc.chunks.map(c => this._prepareTextForEmbedding(c)).filter(c => c !== '[EMPTY_CONTENT]');
                     doc.chunks = validChunks;
-                    validChunks.forEach((txt, cIdx) => {
-                        allChunksWithMeta.push({ text: txt, diaryName: dName, doc: doc, chunkIdx: cIdx });
-                    });
+
+                    const reusableVectors = this._findReusableChunkVectors(doc);
+                    if (reusableVectors) {
+                        doc.reusedChunkVectors = reusableVectors;
+                        reusedChunkVectorCount += reusableVectors.length;
+                    } else {
+                        validChunks.forEach((txt, cIdx) => {
+                            allChunksWithMeta.push({ text: txt, diaryName: dName, doc: doc, chunkIdx: cIdx });
+                        });
+                    }
+
                     doc.tags.forEach(t => uniqueTags.add(t));
                 });
+            }
+
+            if (reusedChunkVectorCount > 0) {
+                console.log(`[KnowledgeBase] ♻️ Reused ${reusedChunkVectorCount} chunk vector(s) from SQLite cache; skipped embedding for matching moved/copied content.`);
             }
 
             // Tag 处理
@@ -1393,8 +1472,9 @@ class KnowledgeBaseManager {
 
                         doc.chunks.forEach((txt, i) => {
                             const meta = metaMap.get(`${doc.relPath}:${i}`);
-                            if (meta && meta.vector) { // 🛡️ null 向量的 chunk 自然被跳过，不会写入错误数据
-                                const vecFloat = new Float32Array(meta.vector);
+                            const vectorSource = doc.reusedChunkVectors?.[i] || meta?.vector;
+                            if (vectorSource) { // 🛡️ null 向量的 chunk 自然被跳过，不会写入错误数据
+                                const vecFloat = vectorSource instanceof Float32Array ? vectorSource : new Float32Array(vectorSource);
                                 const vecBuf = Buffer.from(vecFloat.buffer, vecFloat.byteOffset, vecFloat.byteLength);
                                 const r = addChunk.run(fileId, i, txt, vecBuf);
                                 updates.get(dName).push({ id: r.lastInsertRowid, vec: vecFloat });
