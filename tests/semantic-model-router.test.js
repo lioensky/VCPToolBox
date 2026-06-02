@@ -1,7 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 
 const SemanticModelRouter = require('../modules/semanticModelRouter');
+const {
+  mergeConfig,
+  normalizeConfig,
+  readLayeredConfig,
+  resolveLocalConfigPath,
+  writeLocalConfig,
+} = require('../modules/semanticRouterConfig');
 
 function createPluginManager(ragPlugin) {
   return {
@@ -26,6 +36,319 @@ function createVectorRagPlugin(vectorByText) {
     },
   };
 }
+
+function closeRouterWatchers(router) {
+  router.closeWatchers();
+  assert.equal(router.reloadTimer, null);
+  assert.deepEqual(router.watchHandles, []);
+}
+
+async function waitFor(assertion, timeoutMs = 3000) {
+  const startedAt = Date.now();
+  let lastError = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  if (lastError) throw lastError;
+}
+
+test('semantic router config merges local override with array replacement', () => {
+  const merged = mergeConfig(
+    {
+      enabled: true,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          defaultModel: 'base-model',
+          fallbackModels: ['base-fallback'],
+          routes: [
+            {
+              name: 'base',
+              model: 'base-route',
+              description: 'base route',
+            },
+          ],
+        },
+      },
+    },
+    {
+      presets: {
+        default: {
+          defaultModel: 'local-model',
+          fallbackModels: ['local-fallback-1', 'local-fallback-2'],
+        },
+      },
+    }
+  );
+
+  assert.equal(merged.enabled, true);
+  assert.deepEqual(merged.contextWeights, [0.7, 0.3]);
+  assert.equal(merged.presets.default.defaultModel, 'local-model');
+  assert.deepEqual(merged.presets.default.fallbackModels, ['local-fallback-1', 'local-fallback-2']);
+  assert.deepEqual(merged.presets.default.routes, [
+    {
+      name: 'base',
+      model: 'base-route',
+      description: 'base route',
+    },
+  ]);
+});
+
+test('SemanticModelRouter loads ignored local override next to base config', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-local-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'base-model',
+          fallbackModels: ['base-fallback'],
+          routes: [
+            {
+              name: 'base',
+              model: 'base-route',
+              description: 'base route description',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+
+  await writeLocalConfig(configPath, {
+    presets: {
+      default: {
+        defaultModel: 'local-model',
+        fallbackModels: ['local-fallback'],
+      },
+    },
+  });
+
+  const layered = await readLayeredConfig(configPath);
+  assert.equal(layered.hasLocalConfig, true);
+  assert.equal(layered.localConfigPath, resolveLocalConfigPath(configPath));
+  assert.equal(layered.config.presets.default.defaultModel, 'local-model');
+  assert.deepEqual(layered.config.presets.default.fallbackModels, ['local-fallback']);
+  assert.equal(layered.config.presets.default.routes[0].model, 'base-route');
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.equal(router.config.presets.default.defaultModel, 'local-model');
+  assert.deepEqual(router.config.presets.default.fallbackModels, ['local-fallback']);
+
+  closeRouterWatchers(router);
+});
+
+test('SemanticModelRouter keeps one directory watcher for base and local config changes', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-watch-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'base-model',
+          fallbackModels: [],
+          routes: [
+            {
+              name: 'base',
+              model: 'base-route',
+              description: 'base route description',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.deepEqual(
+    router.watchHandles.map(watcher => ({ type: watcher.type, path: watcher.path })),
+    [{ type: 'directory', path: tempDir }]
+  );
+
+  await writeLocalConfig(configPath, {
+    presets: {
+      default: {
+        defaultModel: 'local-model',
+      },
+    },
+  });
+  await router.loadConfig();
+  router.startWatcher();
+
+  assert.equal(router.config.presets.default.defaultModel, 'local-model');
+  assert.equal(router.watchHandles.length, 1);
+
+  closeRouterWatchers(router);
+});
+
+test('SemanticModelRouter reloads when local config is deleted and recreated', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-recreate-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+  const localConfigPath = resolveLocalConfigPath(configPath);
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'base-model',
+          fallbackModels: [],
+          routes: [
+            {
+              name: 'base',
+              model: 'base-route',
+              description: 'base route description',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+
+  await writeLocalConfig(configPath, {
+    presets: {
+      default: {
+        defaultModel: 'local-one',
+      },
+    },
+  });
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.equal(router.config.presets.default.defaultModel, 'local-one');
+
+  await fs.rm(localConfigPath);
+  await waitFor(() => {
+    assert.equal(router.config.presets.default.defaultModel, 'base-model');
+  });
+
+  await writeLocalConfig(configPath, {
+    presets: {
+      default: {
+        defaultModel: 'local-two',
+      },
+    },
+  });
+  await waitFor(() => {
+    assert.equal(router.config.presets.default.defaultModel, 'local-two');
+  });
+
+  closeRouterWatchers(router);
+});
+
+test('SemanticModelRouter falls back to base config when local config is invalid', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-invalid-local-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+  const localConfigPath = resolveLocalConfigPath(configPath);
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'base-model',
+          fallbackModels: ['base-fallback'],
+          routes: [
+            {
+              name: 'base',
+              model: 'base-route',
+              description: 'base route description',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+  await fs.writeFile(localConfigPath, '{ invalid json', 'utf-8');
+
+  const layered = await readLayeredConfig(configPath);
+  assert.equal(layered.hasLocalConfig, true);
+  assert.equal(layered.usesLocalConfig, false);
+  assert.equal(layered.config.presets.default.defaultModel, 'base-model');
+  assert.equal(layered.config.presets.default.routes[0].model, 'base-route');
+  assert.equal(layered.localConfigError.name, 'SyntaxError');
+  assert.equal(typeof layered.localConfigError.message, 'string');
+  assert.notEqual(layered.localConfigError.message.length, 0);
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.equal(router.config.presets.default.defaultModel, 'base-model');
+  assert.equal(router.config.presets.default.routes[0].model, 'base-route');
+
+  closeRouterWatchers(router);
+});
+
+test('semantic router config can preserve disabled routes for admin editing', () => {
+  const rawConfig = {
+    presets: {
+      default: {
+        defaultModel: 'default-model',
+        routes: [
+          {
+            name: 'disabled',
+            model: 'disabled-model',
+            description: 'temporarily disabled route',
+            enabled: false,
+          },
+          {
+            name: 'enabled',
+            model: 'enabled-model',
+            description: 'enabled route',
+          },
+        ],
+      },
+    },
+  };
+
+  assert.deepEqual(
+    normalizeConfig(rawConfig).presets.default.routes.map(route => route.name),
+    ['enabled']
+  );
+  assert.deepEqual(
+    normalizeConfig(rawConfig, { includeDisabledRoutes: true }).presets.default.routes.map(route => route.name),
+    ['disabled', 'enabled']
+  );
+});
 
 test('SemanticModelRouter excludes failoverPool false routes from another route fallback chain', async () => {
   const router = new SemanticModelRouter();

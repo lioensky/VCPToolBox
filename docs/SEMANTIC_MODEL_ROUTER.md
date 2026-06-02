@@ -19,6 +19,7 @@
   - [`AdminPanel-Vue/src/views/SemanticModelRouterEditor.vue`](../AdminPanel-Vue/src/views/SemanticModelRouterEditor.vue)
 - 配置文件：
   - [`SemanticModelRouter.json`](../SemanticModelRouter.json)
+  - `SemanticModelRouter.local.json`（本地覆盖配置，已忽略，不提交）
   - [`SemanticModelRouter.json.example`](../SemanticModelRouter.json.example)
 
 ## 工作方式
@@ -98,6 +99,9 @@
 - `failoverPool: false` 的 route 只在自己被命中时使用，不会进入别的命中场景的容灾池。
 - 路由器只改写真实请求的 `model` 字段，不改写 `messages`、`tools` 等其他负载。
 - 工具循环中的后续 AI 调用复用同一条候选链，不会在每个工具结果后重新做一次语义匹配。
+- [`SemanticModelRouter.json`](../SemanticModelRouter.json) 是仓库默认配置；运行时会自动叠加同目录下的 `SemanticModelRouter.local.json`。
+- `SemanticModelRouter.local.json` 用于保存本地模型偏好、provider 路由和实验配置，已被 `.gitignore` 忽略，AdminPanel 保存时会写入该本地覆盖文件。
+- 覆盖规则：对象字段深度合并，数组字段整体替换；没有 local 文件时只使用仓库默认配置。
 - 如果 [`SemanticModelRouter.json`](../SemanticModelRouter.json) 不存在，运行时会自动生成默认配置。
 
 ## 本地验证
