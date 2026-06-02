@@ -1,42 +1,14 @@
-const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
-
-const DEFAULT_CONFIG = {
-  enabled: true,
-  autoModelName: 'VCPModelAuto',
-  defaultPreset: 'default',
-  matchThreshold: 0.18,
-  contextWeights: [0.7, 0.3],
-  presets: {
-    default: {
-      displayName: 'VCPModelAuto',
-      defaultModel: '',
-      fallbackModels: [],
-      routes: []
-    }
-  }
-};
-
-function isPlainObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function asNonEmptyString(value, fallback = '') {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  const result = [];
-  for (const value of Array.isArray(values) ? values : []) {
-    const item = asNonEmptyString(value);
-    if (!item || seen.has(item)) continue;
-    seen.add(item);
-    result.push(item);
-  }
-  return result;
-}
+const {
+  DEFAULT_CONFIG,
+  asNonEmptyString,
+  ensureBaseConfigFile,
+  normalizeConfig,
+  readLayeredConfig,
+  resolveLocalConfigPath,
+  uniqueStrings,
+} = require('./semanticRouterConfig');
 
 function cosineSimilarity(vectorA, vectorB) {
   if (!Array.isArray(vectorA) && !(vectorA instanceof Float32Array)) return 0;
@@ -100,9 +72,10 @@ function findLastMessageText(messages, role) {
 class SemanticModelRouter {
   constructor() {
     this.configPath = path.join(process.cwd(), 'SemanticModelRouter.json');
+    this.localConfigPath = resolveLocalConfigPath(this.configPath);
     this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     this.debugMode = false;
-    this.watchHandle = null;
+    this.watchHandles = [];
     this.reloadTimer = null;
     this.descriptionVectorCache = new Map();
   }
@@ -114,131 +87,67 @@ class SemanticModelRouter {
   async initialize(configPath = null, debugMode = false) {
     this.setDebugMode(debugMode);
     this.configPath = configPath || this.configPath;
+    this.localConfigPath = resolveLocalConfigPath(this.configPath);
     await this.loadConfig();
     this.startWatcher();
   }
 
   async ensureConfigFile() {
-    try {
-      await fs.access(this.configPath);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-
-      const exampleConfig = {
-        enabled: true,
-        autoModelName: 'VCPModelAuto',
-        defaultPreset: 'default',
-        matchThreshold: 0.18,
-        contextWeights: [0.7, 0.3],
-        presets: {
-          default: {
-            displayName: 'VCPModelAuto',
-            defaultModel: '请填写默认模型ID',
-            fallbackModels: [
-              '请填写容灾备用模型ID-1',
-              '请填写容灾备用模型ID-2'
-            ],
-            routes: [
-              {
-                name: 'coding',
-                model: '请填写代码模型ID',
-                description: '编程、代码修改、调试、架构设计、软件工程任务'
-              },
-              {
-                name: 'creative',
-                model: '请填写创作模型ID',
-                description: '文学创作、角色扮演、剧情续写、情感表达、长文本润色'
-              }
-            ]
-          }
+    const exampleConfig = {
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: '请填写默认模型ID',
+          fallbackModels: [
+            '请填写容灾备用模型ID-1',
+            '请填写容灾备用模型ID-2'
+          ],
+          routes: [
+            {
+              name: 'coding',
+              model: '请填写代码模型ID',
+              description: '编程、代码修改、调试、架构设计、软件工程任务'
+            },
+            {
+              name: 'creative',
+              model: '请填写创作模型ID',
+              description: '文学创作、角色扮演、剧情续写、情感表达、长文本润色'
+            }
+          ]
         }
-      };
+      }
+    };
 
-      await fs.writeFile(this.configPath, JSON.stringify(exampleConfig, null, 2), 'utf-8');
+    const existed = fsSync.existsSync(this.configPath);
+    await ensureBaseConfigFile(this.configPath, exampleConfig);
+    if (!existed) {
       console.log(`[SemanticModelRouter] 未找到配置文件，已创建示例配置: ${this.configPath}`);
     }
   }
 
   normalizeConfig(rawConfig) {
-    const normalized = {
-      ...DEFAULT_CONFIG,
-      ...(isPlainObject(rawConfig) ? rawConfig : {})
-    };
-
-    normalized.enabled = normalized.enabled !== false;
-    normalized.autoModelName = asNonEmptyString(normalized.autoModelName, DEFAULT_CONFIG.autoModelName);
-    normalized.defaultPreset = asNonEmptyString(normalized.defaultPreset, DEFAULT_CONFIG.defaultPreset);
-    normalized.matchThreshold = Number.isFinite(Number(normalized.matchThreshold))
-      ? Number(normalized.matchThreshold)
-      : DEFAULT_CONFIG.matchThreshold;
-
-    normalized.contextWeights = Array.isArray(normalized.contextWeights) && normalized.contextWeights.length > 0
-      ? normalized.contextWeights.map(value => Number(value)).filter(value => Number.isFinite(value) && value >= 0)
-      : DEFAULT_CONFIG.contextWeights;
-
-    if (normalized.contextWeights.length === 0) {
-      normalized.contextWeights = DEFAULT_CONFIG.contextWeights;
-    }
-
-    const rawPresets = isPlainObject(normalized.presets) ? normalized.presets : DEFAULT_CONFIG.presets;
-    normalized.presets = {};
-
-    for (const [presetName, preset] of Object.entries(rawPresets)) {
-      if (!isPlainObject(preset)) continue;
-
-      const safeName = asNonEmptyString(presetName);
-      if (!safeName) continue;
-
-      const routes = Array.isArray(preset.routes)
-        ? preset.routes
-          .filter(route => isPlainObject(route))
-          .map(route => ({
-            name: asNonEmptyString(route.name, route.model || 'unnamed'),
-            model: asNonEmptyString(route.model),
-            description: asNonEmptyString(route.description),
-            failoverPool: route.failoverPool !== false,
-            enabled: route.enabled !== false
-          }))
-          .filter(route => route.model && route.description && route.enabled)
-        : [];
-
-      normalized.presets[safeName] = {
-        displayName: asNonEmptyString(preset.displayName, safeName === normalized.defaultPreset ? normalized.autoModelName : safeName),
-        defaultModel: asNonEmptyString(preset.defaultModel),
-        fallbackModels: uniqueStrings(preset.fallbackModels),
-        matchThreshold: Number.isFinite(Number(preset.matchThreshold))
-          ? Number(preset.matchThreshold)
-          : normalized.matchThreshold,
-        contextWeights: Array.isArray(preset.contextWeights) && preset.contextWeights.length > 0
-          ? preset.contextWeights.map(value => Number(value)).filter(value => Number.isFinite(value) && value >= 0)
-          : normalized.contextWeights,
-        routes
-      };
-    }
-
-    if (!normalized.presets[normalized.defaultPreset]) {
-      const firstPresetName = Object.keys(normalized.presets)[0];
-      if (firstPresetName) {
-        normalized.defaultPreset = firstPresetName;
-      } else {
-        normalized.presets.default = JSON.parse(JSON.stringify(DEFAULT_CONFIG.presets.default));
-        normalized.defaultPreset = DEFAULT_CONFIG.defaultPreset;
-      }
-    }
-
-    return normalized;
+    return normalizeConfig(rawConfig);
   }
 
   async loadConfig() {
     try {
       await this.ensureConfigFile();
-      const content = await fs.readFile(this.configPath, 'utf-8');
-      const rawConfig = JSON.parse(content);
-      this.config = this.normalizeConfig(rawConfig);
+      const result = await readLayeredConfig(this.configPath, { localConfigPath: this.localConfigPath });
+      this.config = result.config;
       this.descriptionVectorCache.clear();
 
+      if (result.localConfigError) {
+        console.warn(
+          `[SemanticModelRouter] 本地覆盖配置解析失败，已回退到默认配置文件: ${result.localConfigError.message}`
+        );
+      }
       console.log(
-        `[SemanticModelRouter] 配置已加载: enabled=${this.config.enabled}, presets=${Object.keys(this.config.presets).length}`
+        `[SemanticModelRouter] 配置已加载: enabled=${this.config.enabled}, presets=${Object.keys(this.config.presets).length}, local=${result.usesLocalConfig}`
       );
     } catch (error) {
       console.error(`[SemanticModelRouter] 加载配置失败，使用内置默认配置: ${error.message}`);
@@ -247,22 +156,53 @@ class SemanticModelRouter {
     }
   }
 
+  scheduleConfigReload() {
+    if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      this.loadConfig()
+        .then(() => this.startWatcher())
+        .catch(error => {
+          console.error('[SemanticModelRouter] 热加载配置失败:', error.message);
+        });
+    }, 250);
+  }
+
   startWatcher() {
-    if (this.watchHandle) return;
+    const watchDir = path.resolve(path.dirname(this.configPath));
+    const targetNames = new Set([
+      path.basename(this.configPath),
+      path.basename(this.localConfigPath),
+    ]);
+
+    if (this.watchHandles.some(entry => entry.type === 'directory' && entry.path === watchDir)) {
+      return;
+    }
 
     try {
-      this.watchHandle = fsSync.watch(this.configPath, { persistent: false }, () => {
-        if (this.reloadTimer) clearTimeout(this.reloadTimer);
-        this.reloadTimer = setTimeout(() => {
-          this.loadConfig().catch(error => {
-            console.error('[SemanticModelRouter] 热加载配置失败:', error.message);
-          });
-        }, 250);
+      if (!fsSync.existsSync(watchDir)) return;
+      const handle = fsSync.watch(watchDir, { persistent: false }, (_eventType, filename) => {
+        const changedName = filename ? filename.toString() : '';
+        if (changedName && !targetNames.has(changedName)) return;
+        this.scheduleConfigReload();
       });
+      this.watchHandles.push({ type: 'directory', path: watchDir, handle });
       console.log('[SemanticModelRouter] 已启用配置热加载。');
     } catch (error) {
-      console.warn(`[SemanticModelRouter] 启用配置热加载失败: ${error.message}`);
+      console.warn(`[SemanticModelRouter] 启用配置热加载失败(${watchDir}): ${error.message}`);
     }
+  }
+
+  closeWatchers() {
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+
+    for (const watcher of this.watchHandles) {
+      watcher.handle.close();
+    }
+    this.watchHandles = [];
   }
 
   getVirtualModels() {

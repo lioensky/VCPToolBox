@@ -4,7 +4,7 @@
       <div>
         <h2>语义模型路由器</h2>
         <p class="description">
-          可视化编辑 <code>SemanticModelRouter.json</code>：管理虚拟模型、预设、候选模型语义描述与容灾链。
+          可视化编辑本地覆盖配置 <code>SemanticModelRouter.local.json</code>：管理虚拟模型、预设、候选模型语义描述与容灾链。
         </p>
       </div>
       <div class="header-actions">

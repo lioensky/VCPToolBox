@@ -44,6 +44,13 @@ export interface SemanticRouterConfigResponse {
   normalizedConfig: SemanticRouterConfig;
   virtualModels: SemanticRouterVirtualModel[];
   path: string;
+  localPath?: string;
+  hasLocalConfig?: boolean;
+  usesLocalConfig?: boolean;
+  localConfigError?: {
+    name?: string;
+    message?: string;
+  } | null;
 }
 
 export interface SemanticRouterSaveResponse {
@@ -51,6 +58,7 @@ export interface SemanticRouterSaveResponse {
   message: string;
   config: SemanticRouterConfig;
   virtualModels: SemanticRouterVirtualModel[];
+  path?: string;
 }
 
 export interface SemanticRouterUpstreamModel {

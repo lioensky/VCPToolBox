@@ -155,6 +155,7 @@ ModelRedirect.json
 agent_map.json
 preprocessor_order.json
 tag-processor-config.env
+SemanticModelRouter.local.json
 
 # ===== 运行时数据 / 缓存 =====
 *.sqlite

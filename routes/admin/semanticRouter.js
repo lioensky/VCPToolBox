@@ -1,118 +1,20 @@
 const express = require('express');
-const fs = require('fs').promises;
 const path = require('path');
+const {
+  DEFAULT_CONFIG,
+  DELETED_PRESETS_FIELD,
+  asNonEmptyString,
+  ensureBaseConfigFile,
+  getDeletedPresets,
+  isPlainObject,
+  normalizeConfig,
+  readLayeredConfig,
+  resolveLocalConfigPath,
+  writeLocalConfig,
+} = require('../../modules/semanticRouterConfig');
 
 const SEMANTIC_ROUTER_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'SemanticModelRouter.json');
-
-const DEFAULT_CONFIG = {
-  enabled: true,
-  autoModelName: 'VCPModelAuto',
-  defaultPreset: 'default',
-  matchThreshold: 0.18,
-  contextWeights: [0.7, 0.3],
-  presets: {
-    default: {
-      displayName: 'VCPModelAuto',
-      defaultModel: '',
-      fallbackModels: [],
-      matchThreshold: 0.18,
-      contextWeights: [0.7, 0.3],
-      routes: [],
-    },
-  },
-};
-
-function isPlainObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function asNonEmptyString(value, fallback = '') {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  const result = [];
-  for (const value of Array.isArray(values) ? values : []) {
-    const item = asNonEmptyString(value);
-    if (!item || seen.has(item)) continue;
-    seen.add(item);
-    result.push(item);
-  }
-  return result;
-}
-
-function normalizeWeights(weights, fallback) {
-  const normalized = Array.isArray(weights) && weights.length > 0
-    ? weights.map(value => Number(value)).filter(value => Number.isFinite(value) && value >= 0)
-    : fallback;
-
-  return normalized.length > 0 ? normalized : fallback;
-}
-
-function normalizeConfig(rawConfig) {
-  const normalized = {
-    ...DEFAULT_CONFIG,
-    ...(isPlainObject(rawConfig) ? rawConfig : {}),
-  };
-
-  normalized.enabled = normalized.enabled !== false;
-  normalized.autoModelName = asNonEmptyString(normalized.autoModelName, DEFAULT_CONFIG.autoModelName);
-  normalized.defaultPreset = asNonEmptyString(normalized.defaultPreset, DEFAULT_CONFIG.defaultPreset);
-  normalized.matchThreshold = Number.isFinite(Number(normalized.matchThreshold))
-    ? Number(normalized.matchThreshold)
-    : DEFAULT_CONFIG.matchThreshold;
-  normalized.contextWeights = normalizeWeights(normalized.contextWeights, DEFAULT_CONFIG.contextWeights);
-
-  const rawPresets = isPlainObject(normalized.presets) ? normalized.presets : DEFAULT_CONFIG.presets;
-  normalized.presets = {};
-
-  for (const [presetName, preset] of Object.entries(rawPresets)) {
-    if (!isPlainObject(preset)) continue;
-
-    const safeName = asNonEmptyString(presetName);
-    if (!safeName) continue;
-
-    const routes = Array.isArray(preset.routes)
-      ? preset.routes
-        .filter(route => isPlainObject(route))
-        .map(route => ({
-          name: asNonEmptyString(route.name, route.model || 'unnamed'),
-          model: asNonEmptyString(route.model),
-          description: asNonEmptyString(route.description),
-          failoverPool: route.failoverPool !== false,
-          enabled: route.enabled !== false,
-        }))
-        .filter(route => route.model && route.description)
-      : [];
-
-    normalized.presets[safeName] = {
-      displayName: asNonEmptyString(
-        preset.displayName,
-        safeName === normalized.defaultPreset ? normalized.autoModelName : safeName
-      ),
-      defaultModel: asNonEmptyString(preset.defaultModel),
-      fallbackModels: uniqueStrings(preset.fallbackModels),
-      matchThreshold: Number.isFinite(Number(preset.matchThreshold))
-        ? Number(preset.matchThreshold)
-        : normalized.matchThreshold,
-      contextWeights: normalizeWeights(preset.contextWeights, normalized.contextWeights),
-      routes,
-    };
-  }
-
-  if (!normalized.presets[normalized.defaultPreset]) {
-    const firstPresetName = Object.keys(normalized.presets)[0];
-    if (firstPresetName) {
-      normalized.defaultPreset = firstPresetName;
-    } else {
-      normalized.presets.default = JSON.parse(JSON.stringify(DEFAULT_CONFIG.presets.default));
-      normalized.defaultPreset = DEFAULT_CONFIG.defaultPreset;
-    }
-  }
-
-  return normalized;
-}
+const SEMANTIC_ROUTER_LOCAL_CONFIG_PATH = resolveLocalConfigPath(SEMANTIC_ROUTER_CONFIG_PATH);
 
 function getVirtualModels(config) {
   if (!config.enabled) return [];
@@ -138,20 +40,35 @@ function getVirtualModels(config) {
 }
 
 async function ensureConfigFile() {
-  try {
-    await fs.access(SEMANTIC_ROUTER_CONFIG_PATH);
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    await fs.writeFile(
-      SEMANTIC_ROUTER_CONFIG_PATH,
-      `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`,
-      'utf-8'
-    );
-  }
+  await ensureBaseConfigFile(SEMANTIC_ROUTER_CONFIG_PATH, DEFAULT_CONFIG);
 }
 
 function getRequestConfig(req) {
   return isPlainObject(req.body?.config) ? req.body.config : req.body;
+}
+
+function applyDeletedPresetTombstones(config, baseConfig, previousLocalConfig = null) {
+  const nextConfig = { ...config };
+  const basePresets = isPlainObject(baseConfig?.presets) ? baseConfig.presets : {};
+  const nextPresets = isPlainObject(nextConfig.presets) ? nextConfig.presets : {};
+  const deletedPresets = new Set(getDeletedPresets(previousLocalConfig));
+
+  for (const presetName of Object.keys(basePresets)) {
+    if (!Object.prototype.hasOwnProperty.call(nextPresets, presetName)) {
+      deletedPresets.add(presetName);
+    }
+  }
+  for (const presetName of Object.keys(nextPresets)) {
+    deletedPresets.delete(presetName);
+  }
+
+  if (deletedPresets.size > 0) {
+    nextConfig[DELETED_PRESETS_FIELD] = Array.from(deletedPresets);
+  } else {
+    delete nextConfig[DELETED_PRESETS_FIELD];
+  }
+
+  return nextConfig;
 }
 
 function buildMessagesForPreview({ userText, assistantText, messages }) {
@@ -206,8 +123,10 @@ module.exports = function (options) {
   router.get('/semantic-router/config', async (req, res) => {
     try {
       await ensureConfigFile();
-      const content = await fs.readFile(SEMANTIC_ROUTER_CONFIG_PATH, 'utf-8');
-      const rawConfig = JSON.parse(content);
+      const layeredConfig = await readLayeredConfig(SEMANTIC_ROUTER_CONFIG_PATH, {
+        localConfigPath: SEMANTIC_ROUTER_LOCAL_CONFIG_PATH,
+      });
+      const rawConfig = layeredConfig.mergedConfig;
       const normalizer = typeof semanticModelRouter?.normalizeConfig === 'function'
         ? semanticModelRouter.normalizeConfig.bind(semanticModelRouter)
         : normalizeConfig;
@@ -221,6 +140,10 @@ module.exports = function (options) {
         normalizedConfig,
         virtualModels,
         path: path.basename(SEMANTIC_ROUTER_CONFIG_PATH),
+        localPath: path.basename(SEMANTIC_ROUTER_LOCAL_CONFIG_PATH),
+        hasLocalConfig: layeredConfig.hasLocalConfig,
+        usesLocalConfig: layeredConfig.usesLocalConfig,
+        localConfigError: layeredConfig.localConfigError,
       });
     } catch (error) {
       console.error('[AdminAPI] Error reading semantic router config:', error);
@@ -244,7 +167,15 @@ module.exports = function (options) {
       const normalizer = typeof semanticModelRouter?.normalizeConfig === 'function'
         ? semanticModelRouter.normalizeConfig.bind(semanticModelRouter)
         : normalizeConfig;
-      const normalizedConfig = normalizer(incomingConfig);
+      const layeredConfig = await readLayeredConfig(SEMANTIC_ROUTER_CONFIG_PATH, {
+        localConfigPath: SEMANTIC_ROUTER_LOCAL_CONFIG_PATH,
+      });
+      const normalizedConfig = applyDeletedPresetTombstones(
+        normalizeConfig(incomingConfig, { includeDisabledRoutes: true }),
+        layeredConfig.baseConfig,
+        layeredConfig.localConfig
+      );
+      const runtimeConfig = normalizer(incomingConfig);
       if (!isPlainObject(normalizedConfig.presets) || Object.keys(normalizedConfig.presets).length === 0) {
         return res.status(400).json({
           error: 'Invalid semantic router config',
@@ -252,24 +183,24 @@ module.exports = function (options) {
         });
       }
 
-      await fs.writeFile(
-        SEMANTIC_ROUTER_CONFIG_PATH,
-        `${JSON.stringify(normalizedConfig, null, 2)}\n`,
-        'utf-8'
-      );
+      await writeLocalConfig(SEMANTIC_ROUTER_CONFIG_PATH, normalizedConfig);
 
       if (typeof semanticModelRouter?.loadConfig === 'function') {
         await semanticModelRouter.loadConfig();
       }
+      if (typeof semanticModelRouter?.startWatcher === 'function') {
+        semanticModelRouter.startWatcher();
+      }
 
-      const activeConfig = semanticModelRouter?.config || normalizedConfig;
+      const activeConfig = semanticModelRouter?.config || runtimeConfig;
       res.json({
         success: true,
-        message: '语义模型路由配置已保存并重新加载。',
+        message: '语义模型路由本地覆盖配置已保存并重新加载。',
         config: activeConfig,
         virtualModels: typeof semanticModelRouter?.getVirtualModels === 'function'
           ? semanticModelRouter.getVirtualModels()
           : getVirtualModels(activeConfig),
+        path: path.basename(SEMANTIC_ROUTER_LOCAL_CONFIG_PATH),
       });
     } catch (error) {
       const isSyntaxOrValidationError = error instanceof SyntaxError || error.name === 'TypeError';
