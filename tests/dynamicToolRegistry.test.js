@@ -1467,6 +1467,50 @@ test('dynamic fold expansion records lastError and falls back on embedding failu
   assert.equal(registry.lastError, 'fold embedding boom');
 });
 
+test('dynamic fold expansion times out description vectors and falls back', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('TimeoutFold', 'Search helper with slow fold description embeddings.', {
+      commandDescription: [
+        'TIMEOUT BASELINE',
+        '    [===vcp_fold: 0.5 ::desc: browser timeout usage ===]',
+        'TIMEOUT BROWSER DETAILS'
+      ].join('\n')
+    })
+  ]);
+  pluginManager.messagePreprocessors = new Map([[
+    'RAGDiaryPlugin',
+    {
+      async getSingleEmbeddingCached(text) {
+        const lower = String(text).toLowerCase();
+        return lower.includes('timeout query') ? [1, 0] : [0, 1];
+      }
+    }
+  ]]);
+  pluginManager.vectorDBManager = {
+    async getPluginDescriptionVector() {
+      return new Promise(() => {});
+    }
+  };
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ classifierTimeoutMs: 20, useRagEmbeddings: false })
+  });
+  await registry.syncFromPluginManager('fold_description_timeout');
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'user', content: '[[VCPDynamicTools:tool=TimeoutFold]] timeout query' }],
+    pluginManager
+  });
+
+  assert.match(injection, /TIMEOUT BASELINE/);
+  assert.equal(injection.includes('TIMEOUT BROWSER DETAILS'), false);
+  assert.match(registry.lastError, /Dynamic tool fold description embedding timed out/);
+});
+
 test('config watcher reloads when fs.watch omits filename', async (t) => {
   const projectRoot = await makeProjectRoot();
   await fs.mkdir(path.join(projectRoot, 'Plugin', 'DynamicToolBridge'), { recursive: true });

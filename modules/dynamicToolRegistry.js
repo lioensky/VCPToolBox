@@ -878,15 +878,20 @@ class DynamicToolRegistry {
                 if (!text) return null;
                 if (vectorCache.has(text)) return vectorCache.get(text);
 
-                let vector;
+                let vectorPromise;
                 if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {
-                    vector = await vectorDBManager.getPluginDescriptionVector(
+                    vectorPromise = vectorDBManager.getPluginDescriptionVector(
                         `dynamic_tool_fold:${text}`,
                         async () => ragPlugin.getSingleEmbeddingCached(text)
                     );
                 } else {
-                    vector = await ragPlugin.getSingleEmbeddingCached(text);
+                    vectorPromise = ragPlugin.getSingleEmbeddingCached(text);
                 }
+                const vector = await withTimeout(
+                    Promise.resolve(vectorPromise),
+                    this.config.classifierTimeoutMs,
+                    'Dynamic tool fold description embedding'
+                );
                 vectorCache.set(text, vector);
                 return vector;
             };
