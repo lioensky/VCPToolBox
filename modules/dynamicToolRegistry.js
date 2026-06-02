@@ -814,8 +814,7 @@ class DynamicToolRegistry {
                 return null;
             }
         }
-        const markerIndex = fullDescription.indexOf('[===vcp_fold:');
-        const foldContent = this._normalizeFoldMarkerLines(markerIndex >= 0 ? fullDescription.slice(markerIndex) : fullDescription);
+        const foldContent = this._normalizeFoldMarkerLines(fullDescription);
         if (!hasFoldMarkers(foldContent)) return null;
         return buildDynamicFoldObject({
             content: foldContent,

@@ -1200,8 +1200,7 @@ test('full description only override does not mark unclassified records as class
 test('dynamic injection expands matching fold blocks with stub embeddings', async () => {
   const projectRoot = await makeProjectRoot();
   const foldUsage = [
-    '[===vcp_fold: 0 ===]',
-    'BASELINE FOLD USAGE',
+    'BASELINE FOLD USAGE BEFORE FIRST MARKER',
     '[===vcp_fold: 0.5 ::desc: browser search details ===]',
     'BROWSER SEARCH DETAILS',
     '[===vcp_fold: 0.95 ::desc: image media workflow ===]',
@@ -1233,7 +1232,7 @@ test('dynamic injection expands matching fold blocks with stub embeddings', asyn
     pluginManager
   });
 
-  assert.match(injection, /BASELINE FOLD USAGE/);
+  assert.match(injection, /BASELINE FOLD USAGE BEFORE FIRST MARKER/);
   assert.match(injection, /BROWSER SEARCH DETAILS/);
   assert.equal(injection.includes('IMAGE MEDIA DETAILS'), false);
   assert.equal(injection.includes('[===vcp_fold:'), false);
@@ -1367,8 +1366,7 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
   const pluginManager = makePluginManager([
     makeManifest('NoRagFold', 'Search helper without RAG.', {
       commandDescription: [
-        '[===vcp_fold: 0 ===]',
-        'NO RAG BASELINE',
+        'NO RAG BASELINE BEFORE FIRST MARKER',
         '[===vcp_fold: 0.5 ::desc: browser usage ===]',
         'NO RAG BROWSER DETAILS'
       ].join('\n')
@@ -1387,7 +1385,7 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
     pluginManager
   });
 
-  assert.match(injection, /NO RAG BASELINE/);
+  assert.match(injection, /NO RAG BASELINE BEFORE FIRST MARKER/);
   assert.equal(injection.includes('NO RAG BROWSER DETAILS'), false);
 });
 
