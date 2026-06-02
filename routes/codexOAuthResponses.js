@@ -75,10 +75,13 @@ function createRuntimeProvider(options = {}) {
 
   const runtimeConfig = readRuntimeConfig(options);
   return createCodexOAuthProvider({
+    oauthAuthManager: options.oauthAuthManager,
+    fetchImpl: options.fetchImpl,
     projectBasePath: options.projectBasePath,
     accountId: runtimeConfig.VCP_CODEX_OAUTH_ACCOUNT_ID || undefined,
     baseUrl: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || undefined,
     clientVersion: runtimeConfig.VCP_CODEX_OAUTH_CLIENT_VERSION || undefined,
+    timeoutMs: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS || undefined,
   });
 }
 
@@ -201,6 +204,14 @@ function buildResponsesBodyFromChatCompletion(chatBody = {}) {
   return responsesBody;
 }
 
+function normalizeResponsesBodyForCodexOAuth(body = {}) {
+  const nextBody = body && typeof body === 'object' ? { ...body } : {};
+  if (typeof nextBody.instructions !== 'string' || !nextBody.instructions.trim()) {
+    nextBody.instructions = DEFAULT_CHAT_COMPLETIONS_INSTRUCTIONS;
+  }
+  return nextBody;
+}
+
 function extractResponsesSseDeltas(sseText = '') {
   const deltas = [];
   let completedResponse = null;
@@ -292,6 +303,27 @@ function transformResponsesSseToChatCompletion(sseText = '', chatBody = {}) {
 
 function looksLikeSsePayload(text = '') {
   return /^\s*(event|data):/m.test(String(text || ''));
+}
+
+function normalizeProviderFailureStatus(status) {
+  const parsed = Number(status);
+  if (Number.isInteger(parsed) && parsed >= 400 && parsed <= 599) {
+    return parsed;
+  }
+  return 502;
+}
+
+function getProviderFailureStatus(error) {
+  return normalizeProviderFailureStatus(error?.statusCode || error?.status);
+}
+
+function sendCodexOAuthProviderFailure(res, status = 502) {
+  return res.status(normalizeProviderFailureStatus(status)).json({
+    error: {
+      message: 'Codex OAuth provider request failed.',
+      type: 'codex_oauth_provider_failed',
+    },
+  });
 }
 
 function writeChatCompletionSse(res, chatPayload) {
@@ -490,12 +522,7 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
 
       if (!upstreamResponse.ok) {
         await upstreamResponse.text().catch(() => '');
-        return res.status(upstreamResponse.status).json({
-          error: {
-            message: 'Codex OAuth provider request failed.',
-            type: 'codex_oauth_provider_failed',
-          },
-        });
+        return sendCodexOAuthProviderFailure(res, upstreamResponse.status);
       }
 
       if (req.body && req.body.stream === true && upstreamResponse.body) {
@@ -515,13 +542,8 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
         return writeChatCompletionSse(res, chatPayload);
       }
       return res.status(upstreamResponse.status).json(chatPayload);
-    } catch (_error) {
-      return res.status(502).json({
-        error: {
-          message: 'Codex OAuth provider request failed.',
-          type: 'codex_oauth_provider_failed',
-        },
-      });
+    } catch (error) {
+      return sendCodexOAuthProviderFailure(res, getProviderFailureStatus(error));
     }
   });
 
@@ -532,7 +554,12 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
 
     try {
       const provider = createRuntimeProvider(options);
-      const upstreamResponse = await provider.forwardResponses(req.body || {}, req.headers || {});
+      const upstreamResponse = await provider.forwardResponses(normalizeResponsesBodyForCodexOAuth(req.body || {}), req.headers || {});
+      if (!upstreamResponse.ok) {
+        await upstreamResponse.text().catch(() => '');
+        return sendCodexOAuthProviderFailure(res, upstreamResponse.status);
+      }
+
       res.status(upstreamResponse.status);
       upstreamResponse.headers.forEach((value, key) => {
         const lower = key.toLowerCase();
@@ -549,13 +576,11 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
         res.write(chunk);
       }
       return res.end();
-    } catch (_error) {
-      return res.status(502).json({
-        error: {
-          message: 'Codex OAuth provider request failed.',
-          type: 'codex_oauth_provider_failed',
-        },
-      });
+    } catch (error) {
+      if (res.headersSent) {
+        return res.end();
+      }
+      return sendCodexOAuthProviderFailure(res, getProviderFailureStatus(error));
     }
   });
 
