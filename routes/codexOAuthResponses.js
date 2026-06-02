@@ -4,6 +4,9 @@ const express = require('express');
 const path = require('path');
 const { parseEnvCascade } = require('../envLoader');
 const { createCodexOAuthProvider } = require('../modules/providers/codexOAuthProvider');
+const {
+  createCodexOAuthTraceStore,
+} = require('../modules/codexOAuthTraceStore');
 
 const DEFAULT_CODEX_OAUTH_MODEL_IDS = [
   'gpt-5.5',
@@ -74,6 +77,9 @@ function createRuntimeProvider(options = {}) {
   }
 
   const runtimeConfig = readRuntimeConfig(options);
+  const traceStore = options.traceStore || createCodexOAuthTraceStore({
+    projectBasePath: options.projectBasePath,
+  });
   return createCodexOAuthProvider({
     oauthAuthManager: options.oauthAuthManager,
     fetchImpl: options.fetchImpl,
@@ -82,6 +88,7 @@ function createRuntimeProvider(options = {}) {
     baseUrl: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || undefined,
     clientVersion: runtimeConfig.VCP_CODEX_OAUTH_CLIENT_VERSION || undefined,
     timeoutMs: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS || undefined,
+    traceObserver: (traceId, stage, metadata) => traceStore.addEvent(traceId, stage, metadata),
   });
 }
 
@@ -375,29 +382,61 @@ function classifyCodexOAuthProviderFailure(input = 502) {
   };
 }
 
-function buildCodexOAuthProviderFailurePayload(input = 502) {
+function buildCodexOAuthProviderFailurePayload(input = 502, traceId = null) {
   const failure = classifyCodexOAuthProviderFailure(input);
-  return {
+  const payload = {
     error: {
       message: failure.message,
       type: 'codex_oauth_provider_failed',
       code: failure.code,
     },
   };
+  if (traceId) {
+    payload.error.trace_id = traceId;
+  }
+  return payload;
 }
 
-function sendCodexOAuthProviderFailure(res, input = 502) {
+function sendCodexOAuthProviderFailure(res, input = 502, traceId = null) {
   const failure = classifyCodexOAuthProviderFailure(input);
-  return res.status(failure.status).json(buildCodexOAuthProviderFailurePayload(input));
+  if (traceId) {
+    res.setHeader('x-vcp-codex-oauth-trace-id', traceId);
+  }
+  return res.status(failure.status).json(buildCodexOAuthProviderFailurePayload(input, traceId));
 }
 
-function endCodexOAuthStreamFailure(res, input = 502) {
-  const payload = buildCodexOAuthProviderFailurePayload(input);
+function endCodexOAuthStreamFailure(res, input = 502, traceId = null) {
+  const payload = buildCodexOAuthProviderFailurePayload(input, traceId);
   try {
     res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
     res.write('data: [DONE]\n\n');
   } catch (_error) {}
   return res.end();
+}
+
+function startCodexOAuthTrace(req, route, traceStore) {
+  const traceId = traceStore.startTrace({
+    route,
+    method: req.method,
+    model: typeof req.body?.model === 'string' ? req.body.model : '',
+    stream: req.body?.stream === true,
+  });
+  traceStore.addEvent(traceId, 'agent_request_received', {
+    route,
+    stream: req.body?.stream === true,
+  });
+  return { traceId };
+}
+
+function finishCodexOAuthTrace(traceStore, traceContext, result = {}) {
+  if (!traceContext?.traceId) return;
+  const failure = result.ok ? null : classifyCodexOAuthProviderFailure(result.error || result.status || 502);
+  traceStore.finishTrace(traceContext.traceId, {
+    ok: Boolean(result.ok),
+    status: result.status || failure?.status || 200,
+    errorCode: failure ? failure.code : null,
+    message: failure ? failure.message : 'Codex OAuth provider request completed.',
+  });
 }
 
 function writeChatCompletionSse(res, chatPayload) {
@@ -580,27 +619,59 @@ async function isCodexOAuthModel(model, options = {}) {
 
 module.exports = function createCodexOAuthResponsesRouter(options = {}) {
   const router = express.Router();
+  const traceStore = options.traceStore || createCodexOAuthTraceStore({
+    projectBasePath: options.projectBasePath,
+  });
 
   router.post(['/v1/chat/completions', '/v1/chatvcp/completions'], async (req, res, next) => {
+    let traceContext = null;
     try {
       if (!(await isCodexOAuthModel(req.body && req.body.model, options))) {
         return next();
       }
 
+      traceContext = startCodexOAuthTrace(req, 'chat_completions_adapter', traceStore);
+      res.setHeader('x-vcp-codex-oauth-trace-id', traceContext.traceId);
       const provider = createRuntimeProvider(options);
       const responsesBody = buildResponsesBodyFromChatCompletion(req.body || {});
+      if (options.codexOAuthProvider) {
+        traceStore.addEvent(traceContext.traceId, 'provider_forward_start', {
+          model: typeof responsesBody.model === 'string' ? responsesBody.model : '',
+          stream: responsesBody.stream === true,
+        });
+      }
       const upstreamResponse = await provider.forwardResponses(responsesBody, {
         ...req.headers,
         accept: 'text/event-stream',
+      }, {
+        traceContext,
       });
+      if (options.codexOAuthProvider) {
+        traceStore.addEvent(traceContext.traceId, 'upstream_headers', {
+          status: upstreamResponse.status,
+          ok: upstreamResponse.ok,
+          contentType: typeof upstreamResponse.headers?.get === 'function' ? upstreamResponse.headers.get('content-type') || '' : '',
+        });
+      }
 
       if (!upstreamResponse.ok) {
         await upstreamResponse.text().catch(() => '');
-        return sendCodexOAuthProviderFailure(res, upstreamResponse.status);
+        traceStore.addEvent(traceContext.traceId, 'upstream_rejected', {
+          status: upstreamResponse.status,
+        });
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: false, status: upstreamResponse.status });
+        return sendCodexOAuthProviderFailure(res, upstreamResponse.status, traceContext.traceId);
       }
 
       if (req.body && req.body.stream === true && upstreamResponse.body) {
+        traceStore.addEvent(traceContext.traceId, 'stream_start', {
+          transform: 'responses_sse_to_chat_sse',
+        });
         await streamResponsesSseAsChatSse(res, upstreamResponse.body, req.body || {});
+        traceStore.addEvent(traceContext.traceId, 'stream_end', {
+          transform: 'responses_sse_to_chat_sse',
+        });
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
         return;
       }
 
@@ -612,16 +683,33 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
         : transformResponsesJsonToChatCompletion(JSON.parse(upstreamText || '{}'), req.body || {});
       if (req.body && req.body.stream === true) {
         if (isUpstreamSse) {
+          traceStore.addEvent(traceContext.traceId, 'stream_buffer_transform', {
+            transform: 'responses_sse_to_chat_sse',
+          });
+          finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
           return writeResponsesSseAsChatSse(res, upstreamText, req.body || {});
         }
+        traceStore.addEvent(traceContext.traceId, 'stream_buffer_transform', {
+          transform: 'responses_json_to_chat_sse',
+        });
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
         return writeChatCompletionSse(res, chatPayload);
       }
+      finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
       return res.status(upstreamResponse.status).json(chatPayload);
     } catch (error) {
-      if (res.headersSent) {
-        return endCodexOAuthStreamFailure(res, error);
+      if (traceContext?.traceId) {
+        traceStore.addEvent(traceContext.traceId, 'request_error', {
+          errorName: error?.name || '',
+          errorCode: error?.code || '',
+          status: error?.statusCode || error?.status || 0,
+        });
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: false, error });
       }
-      return sendCodexOAuthProviderFailure(res, error);
+      if (res.headersSent) {
+        return endCodexOAuthStreamFailure(res, error, traceContext?.traceId || null);
+      }
+      return sendCodexOAuthProviderFailure(res, error, traceContext?.traceId || null);
     }
   });
 
@@ -630,12 +718,34 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       return next();
     }
 
+    const traceContext = startCodexOAuthTrace(req, 'responses_proxy', traceStore);
+    res.setHeader('x-vcp-codex-oauth-trace-id', traceContext.traceId);
     try {
       const provider = createRuntimeProvider(options);
-      const upstreamResponse = await provider.forwardResponses(normalizeResponsesBodyForCodexOAuth(req.body || {}), req.headers || {});
+      const responsesBody = normalizeResponsesBodyForCodexOAuth(req.body || {});
+      if (options.codexOAuthProvider) {
+        traceStore.addEvent(traceContext.traceId, 'provider_forward_start', {
+          model: typeof responsesBody.model === 'string' ? responsesBody.model : '',
+          stream: responsesBody.stream === true,
+        });
+      }
+      const upstreamResponse = await provider.forwardResponses(responsesBody, req.headers || {}, {
+        traceContext,
+      });
+      if (options.codexOAuthProvider) {
+        traceStore.addEvent(traceContext.traceId, 'upstream_headers', {
+          status: upstreamResponse.status,
+          ok: upstreamResponse.ok,
+          contentType: typeof upstreamResponse.headers?.get === 'function' ? upstreamResponse.headers.get('content-type') || '' : '',
+        });
+      }
       if (!upstreamResponse.ok) {
         await upstreamResponse.text().catch(() => '');
-        return sendCodexOAuthProviderFailure(res, upstreamResponse.status);
+        traceStore.addEvent(traceContext.traceId, 'upstream_rejected', {
+          status: upstreamResponse.status,
+        });
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: false, status: upstreamResponse.status });
+        return sendCodexOAuthProviderFailure(res, upstreamResponse.status, traceContext.traceId);
       }
 
       res.status(upstreamResponse.status);
@@ -647,18 +757,35 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       });
 
       if (!upstreamResponse.body) {
-        return res.send(await upstreamResponse.text());
+        const upstreamText = await upstreamResponse.text();
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
+        return res.send(upstreamText);
       }
 
+      let chunks = 0;
+      traceStore.addEvent(traceContext.traceId, 'stream_start', {
+        route: 'responses_proxy',
+      });
       for await (const chunk of upstreamResponse.body) {
+        chunks += 1;
         res.write(chunk);
       }
+      traceStore.addEvent(traceContext.traceId, 'stream_end', {
+        chunks,
+      });
+      finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
       return res.end();
     } catch (error) {
+      traceStore.addEvent(traceContext.traceId, 'request_error', {
+        errorName: error?.name || '',
+        errorCode: error?.code || '',
+        status: error?.statusCode || error?.status || 0,
+      });
+      finishCodexOAuthTrace(traceStore, traceContext, { ok: false, error });
       if (res.headersSent) {
-        return endCodexOAuthStreamFailure(res, error);
+        return endCodexOAuthStreamFailure(res, error, traceContext.traceId);
       }
-      return sendCodexOAuthProviderFailure(res, error);
+      return sendCodexOAuthProviderFailure(res, error, traceContext.traceId);
     }
   });
 

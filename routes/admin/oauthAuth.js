@@ -12,6 +12,9 @@ const {
   DEFAULT_CODEX_OAUTH_MODEL_IDS,
   classifyCodexOAuthProviderFailure,
 } = require('../codexOAuthResponses');
+const {
+  createCodexOAuthTraceStore,
+} = require('../../modules/codexOAuthTraceStore');
 
 module.exports = function createOAuthAuthAdminRoute(options = {}) {
   const router = express.Router();
@@ -33,6 +36,9 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
     projectBasePath: options.projectBasePath,
   });
   const recentSmokeByProvider = options.recentSmokeByProvider || new Map();
+  const traceStore = options.traceStore || createCodexOAuthTraceStore({
+    projectBasePath: options.projectBasePath,
+  });
 
   router.get('/oauth-auth/providers', (_req, res) => {
     res.json({ success: true, providers: manager.getProviderCatalog() });
@@ -125,7 +131,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
       const status = await manager.getStatus('codex_oauth');
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth'), traceStore),
       });
     } catch (error) {
       sendError(res, error);
@@ -155,7 +161,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
 
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth'), traceStore),
       });
     } catch (error) {
       sendError(res, error);
@@ -172,7 +178,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
 
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth'), traceStore),
       });
     } catch (error) {
       sendError(res, error);
@@ -228,7 +234,7 @@ function parseCodexOAuthModelIds(config = {}) {
     .filter(Boolean);
 }
 
-function buildResponsesProviderStatus(config = {}, oauthStatus = {}, recentSmoke = null) {
+function buildResponsesProviderStatus(config = {}, oauthStatus = {}, recentSmoke = null, traceStore = null) {
   const configuredModelIds = parseCodexOAuthModelIds(config);
   const effectiveModelIds = configuredModelIds.length > 0
     ? configuredModelIds
@@ -263,6 +269,9 @@ function buildResponsesProviderStatus(config = {}, oauthStatus = {}, recentSmoke
         hasEffectiveModels: effectiveModelIds.length > 0,
       },
       lastSmoke: recentSmoke || null,
+      recentTraces: traceStore && typeof traceStore.listRecent === 'function'
+        ? traceStore.listRecent(5)
+        : [],
     },
   };
 }

@@ -6,6 +6,7 @@ const path = require('node:path');
 const express = require('express');
 
 const { OAuthAuthError, OAuthAuthManager } = require('../modules/oauthAuthManager');
+const { CodexOAuthTraceStore } = require('../modules/codexOAuthTraceStore');
 const createOAuthAuthAdminRoute = require('../routes/admin/oauthAuth');
 
 function jsonResponse(payload, status = 200) {
@@ -711,6 +712,127 @@ test('oauth auth admin route records sanitized codex provider smoke diagnostics'
     assert.deepEqual(statusPayload.provider.diagnostics.lastSmoke.payloadKeys, ['error', 'status']);
   } finally {
     await closeServer(server);
+  }
+});
+
+test('oauth auth admin route exposes recent sanitized codex provider traces', async () => {
+  const traceStore = new CodexOAuthTraceStore();
+  const traceId = traceStore.startTrace({
+    route: 'responses_proxy',
+    method: 'POST',
+    model: 'gpt-5.4-mini',
+    stream: true,
+  });
+  traceStore.addEvent(traceId, 'token_refresh_success', {
+    accountId: 'codex_abc',
+    tokenExpiresAt: '2026-01-01T01:00:00.000Z',
+  });
+  traceStore.finishTrace(traceId, {
+    ok: false,
+    status: 429,
+    errorCode: 'codex_oauth_rate_limited',
+    message: 'Codex OAuth upstream rate limit was reached.',
+  });
+
+  const manager = {
+    getProviderCatalog() {
+      return [];
+    },
+    async getStatus(provider) {
+      assert.equal(provider, 'codex_oauth');
+      return {
+        provider,
+        authenticated: true,
+        defaultAccountId: 'codex_abc',
+        accounts: [
+          {
+            id: 'codex_abc',
+            provider,
+            displayName: 'Codex Test',
+            isDefault: true,
+            hasRefreshToken: true,
+            hasAccessToken: false,
+          },
+        ],
+      };
+    },
+  };
+
+  const { server, baseUrl } = await startRouteServer(manager, { traceStore });
+  try {
+    const statusResponse = await fetch(`${baseUrl}/oauth-auth/codex_oauth/responses-provider/status`);
+    assert.equal(statusResponse.status, 200);
+    const statusPayload = await statusResponse.json();
+    const traces = statusPayload.provider.diagnostics.recentTraces;
+
+    assert.equal(traces.length, 1);
+    assert.equal(traces[0].traceId, traceId);
+    assert.equal(traces[0].ok, false);
+    assert.equal(traces[0].status, 429);
+    assert.equal(traces[0].errorCode, 'codex_oauth_rate_limited');
+    assert.equal(traces[0].events[0].stage, 'token_refresh_success');
+    assert.equal(JSON.stringify(traces).includes('access-token'), false);
+    assert.equal(JSON.stringify(traces).includes('refresh-token'), false);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('admin panel route wiring passes project base path to oauth admin routes', async () => {
+  const Module = require('node:module');
+  const adminPanelRoutesPath = require.resolve('../routes/adminPanelRoutes');
+  const originalLoad = Module._load;
+  const previousFlag = process.env.VCP_OAUTH_AUTH_CENTER_ENABLED;
+  let capturedOAuthOptions = null;
+
+  Module._load = function patchedLoad(request, parent, isMain) {
+    const normalizedRequest = path.normalize(request);
+    if (
+      normalizedRequest.includes(`${path.sep}routes${path.sep}admin${path.sep}`) &&
+      normalizedRequest.endsWith('.js')
+    ) {
+      return function stubAdminRoute(options = {}) {
+        if (path.basename(normalizedRequest) === 'oauthAuth.js') {
+          capturedOAuthOptions = options;
+        }
+        return express.Router();
+      };
+    }
+    return originalLoad.apply(this, arguments);
+  };
+
+  try {
+    delete require.cache[adminPanelRoutesPath];
+    process.env.VCP_OAUTH_AUTH_CENTER_ENABLED = 'true';
+    const createAdminPanelRoutes = require('../routes/adminPanelRoutes');
+    const projectBasePath = path.join(os.tmpdir(), 'vcp-admin-routes-project-root');
+
+    createAdminPanelRoutes(
+      false,
+      path.join(projectBasePath, 'dailynote'),
+      {},
+      () => '',
+      {},
+      path.join(projectBasePath, 'Agent'),
+      [],
+      path.join(projectBasePath, 'TVStxt'),
+      () => {},
+      {},
+      {},
+      'http://127.0.0.1:0',
+      'test-api-key',
+      projectBasePath
+    );
+
+    assert.equal(capturedOAuthOptions?.projectBasePath, projectBasePath);
+  } finally {
+    if (previousFlag === undefined) {
+      delete process.env.VCP_OAUTH_AUTH_CENTER_ENABLED;
+    } else {
+      process.env.VCP_OAUTH_AUTH_CENTER_ENABLED = previousFlag;
+    }
+    Module._load = originalLoad;
+    delete require.cache[adminPanelRoutesPath];
   }
 });
 

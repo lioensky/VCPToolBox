@@ -382,10 +382,16 @@ class OAuthAuthManager {
       options.githubCopilotClientId ||
       process.env.VCP_GITHUB_COPILOT_OAUTH_CLIENT_ID ||
       DEFAULT_GITHUB_COPILOT_CLIENT_ID;
+    this.traceObserver = typeof options.traceObserver === 'function' ? options.traceObserver : null;
 
     if (typeof this.fetchImpl !== 'function') {
       throw new OAuthAuthError('fetch_unavailable', 'OAuth auth manager requires fetch support.', 500);
     }
+  }
+
+  recordTrace(traceContext, stage, metadata = {}) {
+    if (!this.traceObserver || !traceContext?.traceId) return;
+    this.traceObserver(traceContext.traceId, stage, metadata);
   }
 
   getProviderCatalog() {
@@ -488,7 +494,8 @@ class OAuthAuthManager {
     return { success: true };
   }
 
-  async getValidToken(provider, accountId = null) {
+  async getValidToken(provider, accountId = null, options = {}) {
+    const traceContext = options.traceContext || null;
     const normalizedProvider = normalizeProvider(provider);
     const store = await this.loadStore();
     const accounts = this.getProviderAccounts(store, normalizedProvider);
@@ -498,11 +505,15 @@ class OAuthAuthManager {
       accounts[0];
 
     if (!account) {
+      this.recordTrace(traceContext, 'token_account_missing', {
+        provider: normalizedProvider,
+        accountConfigured: Boolean(accountId),
+      });
       throw new OAuthAuthError('account_not_found', 'No OAuth account is available for this provider.', 404);
     }
 
     if (normalizedProvider === 'codex_oauth') {
-      return this.getValidOpenAiToken(store, account);
+      return this.getValidOpenAiToken(store, account, { traceContext });
     }
     return this.getValidCopilotToken(account);
   }
@@ -810,10 +821,15 @@ class OAuthAuthManager {
     return sanitizeAccount(nextAccount);
   }
 
-  async getValidOpenAiToken(store, account) {
+  async getValidOpenAiToken(store, account, options = {}) {
+    const traceContext = options.traceContext || null;
     const cacheKey = `codex_oauth:${account.id}`;
     const cached = this.accessTokenCache.get(cacheKey);
     if (cached && cached.expiresAt - nowMs() > 60 * 1000) {
+      this.recordTrace(traceContext, 'token_cache_hit', {
+        accountId: account.id,
+        tokenExpiresAt: new Date(cached.expiresAt).toISOString(),
+      });
       return {
         provider: 'codex_oauth',
         account: sanitizeAccount(account),
@@ -823,6 +839,10 @@ class OAuthAuthManager {
     }
 
     if (account.accessToken && account.tokenExpiresAt && new Date(account.tokenExpiresAt).getTime() - nowMs() > 60 * 1000) {
+      this.recordTrace(traceContext, 'token_stored_access_hit', {
+        accountId: account.id,
+        tokenExpiresAt: account.tokenExpiresAt,
+      });
       return {
         provider: 'codex_oauth',
         account: sanitizeAccount(account),
@@ -832,20 +852,37 @@ class OAuthAuthManager {
     }
 
     if (!account.refreshToken) {
+      this.recordTrace(traceContext, 'token_refresh_unavailable', {
+        accountId: account.id,
+      });
       throw new OAuthAuthError('refresh_token_missing', 'OpenAI account does not have a refresh token.', 409);
     }
 
-    const tokenPayload = await this.postForm(
-      'https://auth.openai.com/oauth/token',
-      {
-        grant_type: 'refresh_token',
-        client_id: this.openaiClientId,
-        refresh_token: account.refreshToken,
-        scope: 'openid profile email',
-      },
-      'codex_oauth',
-      'token_refresh'
-    );
+    this.recordTrace(traceContext, 'token_refresh_start', {
+      accountId: account.id,
+    });
+
+    let tokenPayload;
+    try {
+      tokenPayload = await this.postForm(
+        'https://auth.openai.com/oauth/token',
+        {
+          grant_type: 'refresh_token',
+          client_id: this.openaiClientId,
+          refresh_token: account.refreshToken,
+          scope: 'openid profile email',
+        },
+        'codex_oauth',
+        'token_refresh'
+      );
+    } catch (error) {
+      this.recordTrace(traceContext, 'token_refresh_error', {
+        accountId: account.id,
+        status: error?.statusCode || error?.status || 0,
+        errorCode: error?.code || '',
+      });
+      throw error;
+    }
 
     const expiresInSeconds = parsePositiveInteger(tokenPayload.expires_in, 3600);
     const accessToken = tokenPayload.access_token;
@@ -859,6 +896,10 @@ class OAuthAuthManager {
     this.accessTokenCache.set(cacheKey, {
       token: accessToken,
       expiresAt: new Date(account.tokenExpiresAt).getTime(),
+    });
+    this.recordTrace(traceContext, 'token_refresh_success', {
+      accountId: account.id,
+      tokenExpiresAt: account.tokenExpiresAt,
     });
 
     return {
