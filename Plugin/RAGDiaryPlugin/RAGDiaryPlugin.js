@@ -3307,9 +3307,12 @@ class RAGDiaryPlugin {
         if (timeEntries.length > 0) {
             innerContent += '\n【时间范围记忆】\n';
             // 按日期从新到旧排序
-            timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
+            timeEntries.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
             timeEntries.forEach(entry => {
-                innerContent += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                const dateMatch = entry.text.match(/^\[(\d{4}[-.]\d{2}[-.]\d{2})\]/);
+                const datePrefix = entry.date || (dateMatch ? dateMatch[1].replace(/\./g, '-') : '未知日期');
+                const body = entry.text.replace(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*[^\n]*\n?/, '').trim();
+                innerContent += `* [${datePrefix}] ${body}\n`;
             });
         }
 
