@@ -326,6 +326,51 @@ function wrapMarkdownArchiveContent(content, url, sourceMode) {
     ].join('\n');
 }
 
+function isPathInside(baseDir, targetPath) {
+    const relative = path.relative(baseDir, targetPath);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function ensureSafeKnowledgeTargetDir(targetDir) {
+    if (!isPathInside(KNOWLEDGE_BASE_DIR, targetDir)) {
+        throw new Error("目标目录越界，已拒绝写入。");
+    }
+
+    await fs.mkdir(KNOWLEDGE_BASE_DIR, { recursive: true });
+    const baseStats = await fs.lstat(KNOWLEDGE_BASE_DIR);
+    if (baseStats.isSymbolicLink()) {
+        throw new Error("knowledge 根目录是符号链接，已拒绝写入。");
+    }
+
+    let targetStats;
+    try {
+        targetStats = await fs.lstat(targetDir);
+    } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+            throw error;
+        }
+        await fs.mkdir(targetDir);
+        targetStats = await fs.lstat(targetDir);
+    }
+
+    if (targetStats.isSymbolicLink()) {
+        throw new Error("knowledge 子文件夹是符号链接，已拒绝写入。");
+    }
+
+    if (!targetStats.isDirectory()) {
+        throw new Error("knowledge 子文件夹不是目录，已拒绝写入。");
+    }
+
+    const [realBaseDir, realTargetDir] = await Promise.all([
+        fs.realpath(KNOWLEDGE_BASE_DIR),
+        fs.realpath(targetDir)
+    ]);
+
+    if (!isPathInside(realBaseDir, realTargetDir)) {
+        throw new Error("knowledge 子文件夹真实路径越界，已拒绝写入。");
+    }
+}
+
 async function getAvailableMarkdownPath(targetDir, safeFileName) {
     const parsed = path.parse(safeFileName);
     const baseName = parsed.name || 'webpage';
@@ -357,13 +402,9 @@ async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fi
     const safeFolderName = sanitizeKnowledgeSubfolderName(knowledgeFolder);
     const targetDir = path.resolve(KNOWLEDGE_BASE_DIR, safeFolderName);
 
-    if (!targetDir.startsWith(KNOWLEDGE_BASE_DIR + path.sep) && targetDir !== KNOWLEDGE_BASE_DIR) {
-        throw new Error("目标目录越界，已拒绝写入。");
-    }
-
     const safeFileName = buildSafeMarkdownFileName(content, url, fileName);
     const markdownContent = wrapMarkdownArchiveContent(content, url, sourceMode);
-    await fs.mkdir(targetDir, { recursive: true });
+    await ensureSafeKnowledgeTargetDir(targetDir);
 
     const { handle, filePath: targetPath, fileName: finalFileName } = await getAvailableMarkdownPath(targetDir, safeFileName);
     try {
@@ -1082,8 +1123,10 @@ module.exports = {
     sanitizeKnowledgeSubfolderName,
     sanitizeMarkdownFileName,
     buildSafeMarkdownFileName,
+    ensureSafeKnowledgeTargetDir,
     fetchDownloadMarkdownContent,
     getAvailableMarkdownPath,
+    isPathInside,
     saveMarkdownToKnowledgeFolder,
     wrapMarkdownArchiveContent
 };

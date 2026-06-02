@@ -58,6 +58,42 @@ test('sanitizeKnowledgeSubfolderName rejects traversal and nested paths', () => 
     assert.throws(() => sanitizeKnowledgeSubfolderName('nested\\folder'), /knowledgeFolder/);
 });
 
+test('saveMarkdownToKnowledgeFolder rejects symlinked knowledge subfolders', async (t) => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+    await fs.mkdir(path.join(tempRoot, 'knowledge'), { recursive: true });
+    const outsideDir = path.join(tempRoot, 'outside');
+    const linkedDir = path.join(tempRoot, 'knowledge', 'LinkedDocs');
+    await fs.mkdir(outsideDir, { recursive: true });
+
+    try {
+        await fs.symlink(outsideDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+        t.skip(`symlink unavailable in this environment: ${error.message}`);
+        await fs.rm(tempRoot, { recursive: true, force: true });
+        return;
+    }
+
+    t.after(async () => {
+        await fs.rm(tempRoot, { recursive: true, force: true });
+    });
+
+    await assert.rejects(
+        () => saveMarkdownToKnowledgeFolder({
+            url: 'https://example.com/article',
+            content: '# Example',
+            knowledgeFolder: 'LinkedDocs',
+            fileName: 'article.md',
+            sourceMode: 'jina'
+        }),
+        /符号链接|真实路径越界/
+    );
+
+    await assert.rejects(
+        () => fs.access(path.join(outsideDir, 'article.md')),
+        /ENOENT/
+    );
+});
+
 test('fetchDownloadMarkdownContent honors configured proxy after normal download paths fail', async () => {
     const calls = [];
     const content = await fetchDownloadMarkdownContent('https://example.com/proxy-only', 'jina', '7890', {
