@@ -625,10 +625,28 @@ VCP Agent 拥有**硬件底层级分布式系统根权限**：
 | `classifierTimeoutMs` | `30000` | 小模型分类超时时间 |
 | `manualOverrides.excludedOriginKeys` | `[]` | 手动排除的工具 originKey |
 | `manualOverrides.pinnedOriginKeys` | `[]` | 轻量清单中优先展示的工具 originKey |
+| `manualOverrides.descriptionOverrides` | `{}` | 按 `originKey` 覆盖工具的轻量说明、完整说明、分类和关键词 |
 | `smallModel.enabled` | `false` | 是否启用增量小模型分类；可由私有插件配置覆盖 |
 | `smallModel.useMainConfig` | `true` | 是否复用主 `config.env` 的 `API_URL` 和 `API_Key` |
 | `smallModel.model` | `""` | 小模型名称；复用主配置时只需要填写模型名 |
 | `smallModel.endpoint` | `""` | 独立 OpenAI 兼容端点；仅 `useMainConfig=false` 时使用，可填基础地址或完整 `/v1/chat/completions` |
+
+`manualOverrides.descriptionOverrides` 可用于策展单个动态工具的展示和注入说明。键为工具 `originKey`，例如：
+
+```json
+{
+  "manualOverrides": {
+    "descriptionOverrides": {
+      "local:SearchTool": {
+        "brief": "Curated search toolbox.",
+        "fullDescription": "Curated usage instructions.",
+        "categories": ["search"],
+        "keywords": ["search", "curated"]
+      }
+    }
+  }
+}
+```
 
 小模型的独立私有配置位于 `Plugin/DynamicToolBridge/config.env`，模板见 `Plugin/DynamicToolBridge/config.env.example`。默认 `SmallModel_Use_Main_Config=true`，会自动使用主配置的 `API_URL` 与 `API_Key`，因此只需要填写 `SmallModel_Model`。如果需要独立分类端点，设置 `SmallModel_Use_Main_Config=false`，再填写 `SmallModel_Endpoint`、`SmallModel_Model`、`SmallModel_API_Key`。端点固定按 OpenAI 兼容 chat completions 调用；填写基础地址时会自动补全 `/v1/chat/completions`。私有 API Key 不会被写回 `ToolConfigs` 或管理 API 返回体。
 

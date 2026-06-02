@@ -16,6 +16,15 @@ export interface DynamicToolsManualOverrides {
   excludedOriginKeys: string[];
   pinnedOriginKeys: string[];
   categoryAliases: Record<string, string>;
+  descriptionOverrides: Record<
+    string,
+    {
+      brief?: string;
+      fullDescription?: string;
+      categories?: string[];
+      keywords?: string[];
+    }
+  >;
 }
 
 export interface DynamicToolsConfig {

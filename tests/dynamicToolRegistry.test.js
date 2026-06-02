@@ -1047,6 +1047,156 @@ test('hot reload does not overwrite public config during transient parse failure
   );
 });
 
+test('manual description overrides apply without mutating classification cache', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('MappedSearch', 'Original manifest search description.')
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({
+      manualOverrides: {
+        excludedOriginKeys: [],
+        pinnedOriginKeys: [],
+        categoryAliases: {},
+        descriptionOverrides: {
+          'local:MappedSearch': {
+            brief: 'Curated toolbox search.',
+            fullDescription: 'CURATED TOOLBOX-LIKE SEARCH INSTRUCTIONS',
+            categories: ['curated_search'],
+            keywords: ['curated', 'search']
+          }
+        }
+      }
+    }),
+    classifier: async () => ({
+      brief: 'Original classifier brief.',
+      categories: ['original_search'],
+      keywords: ['original'],
+      confidence: 0.9
+    })
+  });
+
+  await registry.syncFromPluginManager('manual_mapping_override');
+  await registry.flushClassificationQueue();
+
+  const state = registry.getAdminState();
+  const record = state.records.find((item) => item.originKey === 'local:MappedSearch');
+  assert.equal(record.brief, 'Curated toolbox search.');
+  assert.deepEqual(record.categories, ['curated_search']);
+  assert.deepEqual(record.keywords, ['curated', 'search']);
+  assert.equal(record.classifiedBy, 'custom_classifier+manual_override');
+
+  const cached = registry.categories.get('local:MappedSearch');
+  assert.equal(cached.brief, 'Original classifier brief.');
+  assert.deepEqual(cached.categories, ['original_search']);
+  assert.deepEqual(cached.keywords, ['original']);
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'assistant', content: '[[VCPDynamicTools:tool=MappedSearch]]' }],
+    pluginManager
+  });
+  assert.match(injection, /Curated toolbox search/);
+  assert.match(injection, /CURATED TOOLBOX-LIKE SEARCH INSTRUCTIONS/);
+  assert.equal(injection.includes('FULL:MappedSearch'), false);
+
+  await registry.updateConfig({
+    manualOverrides: {
+      excludedOriginKeys: [],
+      pinnedOriginKeys: [],
+      categoryAliases: {},
+      descriptionOverrides: {}
+    }
+  });
+
+  const restored = registry.getAdminState().records.find((item) => item.originKey === 'local:MappedSearch');
+  assert.equal(restored.brief, 'Original classifier brief.');
+  assert.deepEqual(restored.categories, ['original_search']);
+  assert.deepEqual(restored.keywords, ['original']);
+  assert.equal(restored.classifiedBy, 'custom_classifier');
+});
+
+test('description overrides are preserved across config writes and hot reload', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('ReloadOverride', 'Original reload override description.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig(),
+    classifier: classifierFactory([])
+  });
+  await registry.syncFromPluginManager('seed_override_preservation');
+  await registry.flushClassificationQueue();
+
+  const saved = await registry.updateConfig({
+    manualOverrides: {
+      excludedOriginKeys: [],
+      pinnedOriginKeys: ['local:ReloadOverride'],
+      categoryAliases: {},
+      descriptionOverrides: {
+        'local:ReloadOverride': {
+          brief: 'Saved override brief.',
+          categories: ['saved_category'],
+          keywords: ['saved_keyword']
+        }
+      }
+    }
+  });
+  assert.equal(saved.manualOverrides.descriptionOverrides['local:ReloadOverride'].brief, 'Saved override brief.');
+
+  const configPath = path.join(projectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+  const diskConfig = JSON.parse(await fs.readFile(configPath, 'utf8'));
+  assert.equal(diskConfig.manualOverrides.descriptionOverrides['local:ReloadOverride'].brief, 'Saved override brief.');
+
+  const reloaded = await registry.reloadConfigFromDisk('description_override_reload');
+  const record = reloaded.records.find((item) => item.originKey === 'local:ReloadOverride');
+  assert.equal(record.brief, 'Saved override brief.');
+  assert.deepEqual(record.categories, ['saved_category']);
+  assert.deepEqual(record.keywords, ['saved_keyword']);
+});
+
+test('full description only override does not mark unclassified records as classified', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('UsageOnlyOverride', 'Search helper with curated usage.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({
+      manualOverrides: {
+        excludedOriginKeys: [],
+        pinnedOriginKeys: [],
+        categoryAliases: {},
+        descriptionOverrides: {
+          'local:UsageOnlyOverride': {
+            fullDescription: 'CURATED USAGE ONLY'
+          }
+        }
+      }
+    })
+  });
+  await registry.syncFromPluginManager('usage_only_override');
+
+  const record = registry.getAdminState().records.find((item) => item.originKey === 'local:UsageOnlyOverride');
+  assert.deepEqual(record.categories, []);
+  assert.deepEqual(record.keywords, []);
+  assert.equal(record.classifiedBy, null);
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'assistant', content: '[[VCPDynamicTools:tool=UsageOnlyOverride]]' }],
+    pluginManager
+  });
+  assert.match(injection, /CURATED USAGE ONLY/);
+});
+
 test('config watcher reloads when fs.watch omits filename', async (t) => {
   const projectRoot = await makeProjectRoot();
   await fs.mkdir(path.join(projectRoot, 'Plugin', 'DynamicToolBridge'), { recursive: true });
