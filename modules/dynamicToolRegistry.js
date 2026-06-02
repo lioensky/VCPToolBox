@@ -1,5 +1,6 @@
 // modules/dynamicToolRegistry.js
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
@@ -237,6 +238,9 @@ class DynamicToolRegistry {
         this._boundPluginManager = null;
         this._toolsChangedHandler = null;
         this._distributedOfflineHandler = null;
+        this._configWatchers = [];
+        this._configReloadTimer = null;
+        this._configReloadPromise = Promise.resolve();
     }
 
     async initialize(options = {}) {
@@ -245,7 +249,8 @@ class DynamicToolRegistry {
             projectBasePath = path.join(__dirname, '..'),
             debugMode = false,
             config = {},
-            classifier = null
+            classifier = null,
+            watchConfigFiles = true
         } = options;
 
         this.debugMode = Boolean(debugMode);
@@ -269,6 +274,8 @@ class DynamicToolRegistry {
         await this._loadCatalog();
         await this._loadCategories();
         this._bindPluginManagerEvents(this.pluginManager);
+        if (watchConfigFiles) this._watchConfigFiles();
+        else this._closeConfigWatchers();
         this.initialized = true;
         return this;
     }
@@ -607,6 +614,26 @@ class DynamicToolRegistry {
         this._applyPrivateConfig();
         await this._queueWrite(this.configPath, this._redactConfig(this.persistedConfig));
         return this._redactConfig(this.config);
+    }
+
+    async reloadConfigFromDisk(reason = 'config_file_changed') {
+        this._configReloadPromise = this._configReloadPromise
+            .catch((error) => {
+                this.lastError = error.message;
+            })
+            .then(async () => {
+                const fileConfig = await this._readJson(this.configPath, null);
+                this.persistedConfig = mergeConfig(DEFAULT_CONFIG, fileConfig, {});
+                this.config = cloneJson(this.persistedConfig);
+                this.privateConfig = await this._readPrivatePluginConfig();
+                this._applyPrivateConfig();
+                await this._writeConfigIfMissingOrSanitized(fileConfig, this.persistedConfig);
+                if (this.pluginManager && this.pluginManager.plugins) {
+                    await this.syncFromPluginManager(reason);
+                }
+                return this.getAdminState();
+            });
+        return this._configReloadPromise;
     }
 
     async forceRebuild(options = {}) {
@@ -1135,6 +1162,61 @@ class DynamicToolRegistry {
         if (delay === 0 && this.classificationTimer.unref) this.classificationTimer.unref();
     }
 
+    _watchConfigFiles() {
+        this._closeConfigWatchers();
+        const watchTargets = [
+            { dir: this.toolConfigsDir, names: new Set([path.basename(this.configPath)]) },
+            { dir: path.dirname(this.privateConfigPath), names: new Set([path.basename(this.privateConfigPath)]) }
+        ];
+
+        for (const target of watchTargets) {
+            try {
+                if (!fsSync.existsSync(target.dir)) continue;
+                const watcher = fsSync.watch(target.dir, (eventType, filename) => {
+                    if (eventType !== 'change' && eventType !== 'rename') return;
+                    if (filename && !target.names.has(String(filename))) return;
+                    this._scheduleConfigReload(`config_${eventType}`);
+                });
+                if (typeof watcher.unref === 'function') watcher.unref();
+                watcher.on('error', (error) => {
+                    this.lastError = error.message;
+                    if (this.debugMode) console.warn('[DynamicToolRegistry] config watcher error:', error.message);
+                });
+                this._configWatchers.push(watcher);
+            } catch (error) {
+                this.lastError = error.message;
+                if (this.debugMode) console.warn('[DynamicToolRegistry] failed to watch config files:', error.message);
+            }
+        }
+    }
+
+    _scheduleConfigReload(reason) {
+        if (this._configReloadTimer) clearTimeout(this._configReloadTimer);
+        this._configReloadTimer = setTimeout(() => {
+            this._configReloadTimer = null;
+            this.reloadConfigFromDisk(reason).catch((error) => {
+                this.lastError = error.message;
+                console.error('[DynamicToolRegistry] config hot reload failed:', error);
+            });
+        }, 100);
+        if (typeof this._configReloadTimer.unref === 'function') this._configReloadTimer.unref();
+    }
+
+    _closeConfigWatchers() {
+        for (const watcher of this._configWatchers) {
+            try {
+                watcher.close();
+            } catch {
+                // Ignore watcher close failures during reinitialization.
+            }
+        }
+        this._configWatchers = [];
+        if (this._configReloadTimer) {
+            clearTimeout(this._configReloadTimer);
+            this._configReloadTimer = null;
+        }
+    }
+
     async _loadCatalog() {
         const data = await this._readJson(this.catalogPath, { version: 1, snapshotId: 0, plugins: {} });
         this.snapshotId = Number(data.snapshotId || 0);
@@ -1236,6 +1318,9 @@ class DynamicToolRegistry {
             ...(this.config.smallModel || {}),
             ...this.privateConfig.smallModel
         };
+        if (this.config.smallModel.endpoint) {
+            this.config.smallModel.endpoint = normalizeOpenAIChatEndpoint(this.config.smallModel.endpoint);
+        }
     }
 
     _redactConfig(config) {

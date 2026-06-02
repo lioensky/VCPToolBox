@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const EventEmitter = require('node:events');
@@ -933,4 +934,107 @@ test('small model uses independent OpenAI endpoint when main config reuse is dis
   assert.equal(requests[0].url, 'https://classifier.local/v1/chat/completions');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer independent-key');
   assert.equal(requests[0].options.body.model, 'independent-classifier');
+});
+
+test('hot reload picks up public and private dynamic tool config files without leaking secrets', async (t) => {
+  const projectRoot = await makeProjectRoot();
+  const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
+  await fs.mkdir(privateConfigDir, { recursive: true });
+
+  const pluginManager = makePluginManager([
+    makeManifest('ReloadSearch', 'Search the web with reloadable config.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  t.after(() => registry._closeConfigWatchers());
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({
+      maxBriefListItems: 7,
+      smallModel: {
+        enabled: false,
+        useMainConfig: true,
+        endpoint: '',
+        model: ''
+      }
+    })
+  });
+
+  assert.ok(registry._configWatchers.length >= 1, 'initialize should start config watchers by default');
+
+  const configPath = path.join(projectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+  await fs.writeFile(configPath, JSON.stringify({
+    version: 1,
+    enabled: true,
+    classificationDebounceMs: 0,
+    maxBriefListItems: 13,
+    maxExpandedPlugins: 3,
+    manualOverrides: {
+      excludedOriginKeys: ['local:ReloadSearch'],
+      pinnedOriginKeys: [],
+      categoryAliases: { web: 'search' }
+    },
+    smallModel: {
+      enabled: false,
+      useMainConfig: true,
+      endpoint: '',
+      model: ''
+    }
+  }, null, 2), 'utf8');
+
+  await fs.writeFile(path.join(privateConfigDir, 'config.env'), [
+    'SmallModel_Enabled=true',
+    'SmallModel_Use_Main_Config=false',
+    'SmallModel_Endpoint=https://reload.local',
+    'SmallModel_Model=reload-classifier',
+    'SmallModel_API_Key=reload-secret'
+  ].join('\n'), 'utf8');
+
+  const state = await registry.reloadConfigFromDisk('test_hot_reload');
+
+  assert.equal(state.config.maxBriefListItems, 13);
+  assert.equal(state.config.manualOverrides.excludedOriginKeys.includes('local:ReloadSearch'), true);
+  assert.equal(state.config.smallModel.enabled, true);
+  assert.equal(state.config.smallModel.endpoint, 'https://reload.local/v1/chat/completions');
+  assert.equal(state.config.smallModel.model, 'reload-classifier');
+  assert.equal(state.config.smallModel.apiKey, undefined);
+  assert.equal(registry.getAdminState().config.smallModel.apiKey, undefined);
+
+  const diskConfig = JSON.parse(await fs.readFile(configPath, 'utf8'));
+  assert.equal(diskConfig.smallModel.apiKey, undefined);
+  assert.notEqual(diskConfig.smallModel.endpoint, 'https://reload.local/v1/chat/completions');
+  assert.notEqual(diskConfig.smallModel.model, 'reload-classifier');
+});
+
+test('config watcher reloads when fs.watch omits filename', async (t) => {
+  const projectRoot = await makeProjectRoot();
+  await fs.mkdir(path.join(projectRoot, 'Plugin', 'DynamicToolBridge'), { recursive: true });
+
+  const watched = [];
+  t.mock.method(fsSync, 'watch', (dir, callback) => {
+    watched.push({ dir, callback });
+    return {
+      unref() {},
+      on() {},
+      close() {}
+    };
+  });
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager: makePluginManager([]),
+    projectBasePath: projectRoot,
+    config: testConfig()
+  });
+
+  const reasons = [];
+  registry._scheduleConfigReload = (reason) => reasons.push(reason);
+
+  assert.equal(watched.length, 2);
+  watched[0].callback('change');
+  watched[0].callback('rename', null);
+  watched[0].callback('change', 'unrelated.json');
+
+  assert.deepEqual(reasons, ['config_change', 'config_rename']);
 });
