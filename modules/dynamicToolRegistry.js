@@ -623,7 +623,7 @@ class DynamicToolRegistry {
             })
             .then(async () => {
                 const configRead = await this._readConfigJsonForReload();
-                if (configRead.status === 'invalid') {
+                if (configRead.status !== 'ok') {
                     return this.getAdminState();
                 }
                 const fileConfig = configRead.value;

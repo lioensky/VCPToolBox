@@ -1036,6 +1036,15 @@ test('hot reload does not overwrite public config during transient parse failure
 
   const recovered = await registry.reloadConfigFromDisk('valid_public_config');
   assert.equal(recovered.config.maxBriefListItems, 19);
+
+  await fs.unlink(configPath);
+  const missing = await registry.reloadConfigFromDisk('missing_public_config');
+
+  assert.equal(missing.config.maxBriefListItems, 19);
+  await assert.rejects(
+    () => fs.readFile(configPath, 'utf8'),
+    (error) => error.code === 'ENOENT'
+  );
 });
 
 test('config watcher reloads when fs.watch omits filename', async (t) => {
