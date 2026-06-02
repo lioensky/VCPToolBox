@@ -1,6 +1,6 @@
 # 日记语义分类工具使用指南
 
-脚本 `diary-semantic-classifier.js` 已创建完成。由于开发环境依赖限制，请在部署了完整依赖的服务器环境中使用。
+脚本 `scripts/diary-semantic-classifier.js` 已创建完成。由于开发环境依赖限制，请在部署了完整依赖的服务器环境中使用。
 警告：使用本脚本时务必注意服务器已经关闭。请勿在服务器运行期间使用此脚本。
 
 ## 1. 准备工作
@@ -29,7 +29,7 @@ npm install
 
 **PowerShell:**
 ```powershell
-node diary-semantic-classifier.js `
+node scripts/diary-semantic-classifier.js `
   --source "小吉的知识" `
   --categories "小吉的日常,小吉的通用知识,小吉的地缘政治,小吉的社会与历史学,小吉的逻辑学与哲学" `
   --filter "小吉的" `
@@ -42,7 +42,7 @@ node diary-semantic-classifier.js `
 
 **PowerShell:**
 ```powershell
-node diary-semantic-classifier.js `
+node scripts/diary-semantic-classifier.js `
   --source "小吉的知识" `
   --categories "小吉的日常,小吉的通用知识,小吉的地缘政治,小吉的社会与历史学,小吉的逻辑学与哲学" `
   --filter "小吉的" `
@@ -56,7 +56,7 @@ node diary-semantic-classifier.js `
 
 **PowerShell:**
 ```powershell
-node diary-semantic-classifier.js `
+node scripts/diary-semantic-classifier.js `
   --source "小吉的知识" `
   --categories "小吉的日常,小吉的通用知识,小吉的地缘政治,小吉的社会与历史学,小吉的逻辑学与哲学" `
   --filter "小吉的" `
