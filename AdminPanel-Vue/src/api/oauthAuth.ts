@@ -60,6 +60,7 @@ export interface CodexResponsesProviderDiagnostics {
     hasEffectiveModels: boolean;
   };
   lastSmoke: CodexResponsesProviderSmokeSummary | null;
+  recentTraces?: CodexOAuthTraceSummary[];
 }
 
 export interface CodexResponsesProviderSmokeSummary {
@@ -72,6 +73,39 @@ export interface CodexResponsesProviderSmokeSummary {
   tokenExpiresAt?: string | null;
   errorCode: string | null;
   message: string;
+}
+
+export interface CodexOAuthTraceSummary {
+  traceId: string;
+  provider: string;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  ok: boolean | null;
+  status: number | null;
+  errorCode: string | null;
+  message: string;
+  metadata: {
+    route?: string;
+    method?: string;
+    model?: string;
+    stream?: boolean;
+  };
+  events: Array<{
+    at: string;
+    stage: string;
+    status?: number;
+    ok?: boolean;
+    contentType?: string;
+    model?: string;
+    stream?: boolean;
+    chunks?: number;
+    timeoutMs?: number;
+    transform?: string;
+    errorName?: string;
+    errorCode?: string;
+    tokenExpiresAt?: string;
+  }>;
 }
 
 export interface OAuthUpstreamSmokeResult {

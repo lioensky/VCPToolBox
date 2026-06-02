@@ -23,7 +23,8 @@ module.exports = function (
   semanticModelRouter,
   modelRedirectHandler,
   apiUrl,
-  apiKey
+  apiKey,
+  projectBasePath = path.join(__dirname, '..')
 ) {
   if (!agentDirPath || typeof agentDirPath !== "string") {
     throw new Error(
@@ -56,6 +57,7 @@ module.exports = function (
     modelRedirectHandler,
     apiUrl,
     apiKey,
+    projectBasePath,
   };
 
   /**

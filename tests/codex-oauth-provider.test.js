@@ -6,7 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { CodexOAuthProvider } = require('../modules/providers/codexOAuthProvider');
+const { CodexOAuthTraceStore } = require('../modules/codexOAuthTraceStore');
 const createCodexOAuthResponsesRouter = require('../routes/codexOAuthResponses');
+const createOAuthAuthAdminRoute = require('../routes/admin/oauthAuth');
 
 function jsonResponse(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {
@@ -209,6 +211,171 @@ test('codex oauth provider keeps timeout active while streaming body is consumed
 
   await assert.rejects(reader.read(), /AbortError|aborted|BodyStreamBuffer was aborted/);
   assert.equal(upstreamSignal.aborted, true);
+});
+
+test('codex oauth responses route records a sanitized real request trace', async () => {
+  const traceStore = new CodexOAuthTraceStore();
+  const oauthAuthManager = {
+    async getValidToken(provider, accountId, options = {}) {
+      assert.equal(provider, 'codex_oauth');
+      assert.equal(accountId, 'codex_account_1');
+      assert.match(options.traceContext.traceId, /^codex_oauth_/);
+      return {
+        accessToken: 'access-token-secret',
+        expiresAt: '2026-01-01T01:00:00.000Z',
+        account: {
+          id: 'codex_account_1',
+          metadata: {
+            chatgptAccountId: 'chatgpt-account-1',
+          },
+        },
+      };
+    },
+  };
+  const fetchImpl = async () => responsesSseResponse([
+    `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'hello' })}\n\n`,
+    `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_trace' } })}\n\n`,
+  ]);
+
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    runtimeConfig: {
+      VCP_RESPONSES_PROVIDER: 'codex_oauth',
+      VCP_CODEX_OAUTH_ACCOUNT_ID: 'codex_account_1',
+    },
+    oauthAuthManager,
+    fetchImpl,
+    traceStore,
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+      },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello', stream: true }),
+    });
+    const traceId = response.headers.get('x-vcp-codex-oauth-trace-id');
+    const text = await response.text();
+    const trace = traceStore.getLatest();
+
+    assert.match(traceId, /^codex_oauth_/);
+    assert.equal(trace.traceId, traceId);
+    assert.equal(trace.ok, true);
+    assert.equal(trace.status, 200);
+    assert.equal(trace.metadata.route, 'responses_proxy');
+    assert.equal(trace.metadata.model, 'gpt-5.4-mini');
+    assert.equal(trace.metadata.stream, true);
+    assert.deepEqual(trace.events.map(event => event.stage), [
+      'agent_request_received',
+      'token_request_start',
+      'token_request_success',
+      'provider_forward_start',
+      'upstream_fetch_start',
+      'upstream_headers',
+      'stream_start',
+      'stream_end',
+    ]);
+    assert.equal(JSON.stringify(trace).includes('access-token-secret'), false);
+    assert.equal(JSON.stringify(trace).includes('Bearer'), false);
+    assert.match(text, /response.output_text.delta/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth real request traces are readable by a separate admin route store', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-oauth-trace-'));
+  await fs.writeFile(path.join(tempDir, 'config.env'), [
+    'VCP_RESPONSES_PROVIDER=codex_oauth',
+    'VCP_CODEX_OAUTH_ACCOUNT_ID=codex_account_1',
+    '',
+  ].join('\n'));
+
+  const oauthAuthManager = {
+    async getValidToken() {
+      return {
+        accessToken: 'access-token-secret',
+        expiresAt: '2026-01-01T01:00:00.000Z',
+        account: {
+          id: 'codex_account_1',
+          metadata: {
+            chatgptAccountId: 'chatgpt-account-1',
+          },
+        },
+      };
+    },
+  };
+
+  const mainApp = express();
+  mainApp.use(express.json());
+  mainApp.use(createCodexOAuthResponsesRouter({
+    projectBasePath: tempDir,
+    runtimeConfig: {
+      VCP_RESPONSES_PROVIDER: 'codex_oauth',
+      VCP_CODEX_OAUTH_ACCOUNT_ID: 'codex_account_1',
+    },
+    oauthAuthManager,
+    fetchImpl: async () => jsonResponse({ id: 'resp_trace_file', object: 'response' }),
+  }));
+
+  const adminManager = {
+    getProviderCatalog() {
+      return [];
+    },
+    async getStatus(provider) {
+      return {
+        provider,
+        authenticated: true,
+        defaultAccountId: 'codex_account_1',
+        accounts: [{
+          id: 'codex_account_1',
+          provider,
+          displayName: 'Codex Test',
+          isDefault: true,
+          hasRefreshToken: true,
+          hasAccessToken: false,
+        }],
+      };
+    },
+  };
+  const adminApp = express();
+  adminApp.use(express.json());
+  adminApp.use(createOAuthAuthAdminRoute({
+    enabled: true,
+    projectBasePath: tempDir,
+    oauthAuthManager: adminManager,
+  }));
+
+  const mainServer = await startServer(mainApp);
+  const adminServer = await startServer(adminApp);
+  try {
+    const response = await fetch(`${mainServer.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello', stream: false }),
+    });
+    assert.equal(response.status, 200);
+    const traceId = response.headers.get('x-vcp-codex-oauth-trace-id');
+
+    const statusResponse = await fetch(`${adminServer.baseUrl}/oauth-auth/codex_oauth/responses-provider/status`);
+    assert.equal(statusResponse.status, 200);
+    const statusPayload = await statusResponse.json();
+    const trace = statusPayload.provider.diagnostics.recentTraces[0];
+
+    assert.equal(trace.traceId, traceId);
+    assert.equal(trace.ok, true);
+    assert.equal(trace.metadata.route, 'responses_proxy');
+    assert.equal(JSON.stringify(trace).includes('access-token-secret'), false);
+  } finally {
+    await closeServer(mainServer.server);
+    await closeServer(adminServer.server);
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('codex oauth model list falls back to configured models without leaking errors', async () => {

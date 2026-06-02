@@ -1475,7 +1475,8 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     semanticModelRouter,
     modelRedirectHandler,
     apiUrl,
-    apiKey
+    apiKey,
+    __dirname
 );
 
 // 新增：引入 VCP 论坛 API 路由

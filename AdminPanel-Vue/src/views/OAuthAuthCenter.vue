@@ -116,6 +116,14 @@
               <span class="material-symbols-outlined">info</span>
               {{ responsesProviderDiagnosticMessage }}
             </div>
+            <div v-if="responsesProviderLatestTrace" class="responses-provider-trace">
+              <span :class="['status-dot', responsesProviderLatestTrace.ok === true ? 'online' : 'offline']"></span>
+              <span>trace={{ responsesProviderLatestTrace.traceId }}</span>
+              <span>route={{ responsesProviderLatestTrace.metadata.route || "-" }}</span>
+              <span>status={{ responsesProviderLatestTrace.status ?? "-" }}</span>
+              <span v-if="responsesProviderLatestTrace.errorCode">code={{ responsesProviderLatestTrace.errorCode }}</span>
+              <span>stages={{ responsesProviderLatestTraceStages }}</span>
+            </div>
             <div class="responses-provider-actions">
               <button
                 v-if="!responsesProviderStatus?.enabled"
@@ -224,6 +232,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   oauthAuthApi,
+  type CodexOAuthTraceSummary,
   type CodexResponsesProviderStatus,
   type CodexResponsesProviderSmokeSummary,
   type OAuthUpstreamSmokeResult,
@@ -323,6 +332,14 @@ const canSmokeResponsesProvider = computed(() =>
 const responsesProviderLastSmoke = computed<CodexResponsesProviderSmokeSummary | null>(() =>
   responsesProviderStatus.value?.diagnostics?.lastSmoke || null
 );
+const responsesProviderLatestTrace = computed<CodexOAuthTraceSummary | null>(() =>
+  responsesProviderStatus.value?.diagnostics?.recentTraces?.[0] || null
+);
+const responsesProviderLatestTraceStages = computed(() => {
+  const trace = responsesProviderLatestTrace.value;
+  if (!trace) return "-";
+  return trace.events.slice(-6).map(event => event.stage).join(">");
+});
 const responsesProviderDiagnosticsOk = computed(() => {
   const checks = responsesProviderStatus.value?.diagnostics?.checks;
   if (!checks) return false;
@@ -836,6 +853,7 @@ onBeforeUnmount(() => {
 }
 
 .responses-provider-diagnostics,
+.responses-provider-trace,
 .responses-provider-diagnostic-message {
   grid-column: 1 / -1;
 }
@@ -854,7 +872,8 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
-.responses-provider-diagnostics {
+.responses-provider-diagnostics,
+.responses-provider-trace {
   gap: var(--space-3);
   flex-wrap: wrap;
   color: var(--secondary-text);

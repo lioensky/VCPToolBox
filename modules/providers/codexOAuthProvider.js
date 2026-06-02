@@ -56,8 +56,10 @@ function wrapResponseBodyWithTimeout(response, timeoutMs, abortController) {
 
 class CodexOAuthProvider {
   constructor(options = {}) {
+    this.traceObserver = typeof options.traceObserver === 'function' ? options.traceObserver : null;
     this.oauthAuthManager = options.oauthAuthManager || createOAuthAuthManager({
       projectBasePath: options.projectBasePath,
+      traceObserver: this.traceObserver,
     });
     this.fetchImpl = options.fetchImpl || globalThis.fetch;
     this.baseUrl = String(
@@ -77,29 +79,62 @@ class CodexOAuthProvider {
     }
   }
 
+  recordTrace(traceContext, stage, metadata = {}) {
+    if (!this.traceObserver || !traceContext?.traceId) return;
+    this.traceObserver(traceContext.traceId, stage, metadata);
+  }
+
   async fetchWithTimeout(url, options = {}) {
+    const traceContext = options.traceContext || null;
+    const fetchOptions = { ...options };
+    const streamHint = Boolean(fetchOptions.streamHint);
+    delete fetchOptions.traceContext;
+    delete fetchOptions.streamHint;
+
     if (!this.timeoutMs || typeof AbortController !== 'function') {
-      return this.fetchImpl(url, options);
+      return this.fetchImpl(url, fetchOptions);
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
+      this.recordTrace(traceContext, 'upstream_fetch_start', {
+        timeoutMs: this.timeoutMs,
+        stream: streamHint,
+      });
       const response = await this.fetchImpl(url, {
-        ...options,
+        ...fetchOptions,
         signal: controller.signal,
       });
       clearTimeout(timeout);
+      this.recordTrace(traceContext, 'upstream_headers', {
+        status: response.status,
+        ok: response.ok,
+        contentType: typeof response.headers?.get === 'function' ? response.headers.get('content-type') || '' : '',
+      });
       return wrapResponseBodyWithTimeout(response, this.timeoutMs, controller);
     } catch (error) {
       clearTimeout(timeout);
+      this.recordTrace(traceContext, 'upstream_fetch_error', {
+        errorName: error?.name || '',
+        errorCode: error?.code || '',
+      });
       throw error;
     }
   }
 
-  async buildAuthHeaders() {
-    const tokenResult = await this.oauthAuthManager.getValidToken('codex_oauth', this.accountId || null);
+  async buildAuthHeaders(traceContext = null) {
+    this.recordTrace(traceContext, 'token_request_start', {
+      accountConfigured: Boolean(this.accountId),
+    });
+    const tokenResult = await this.oauthAuthManager.getValidToken('codex_oauth', this.accountId || null, {
+      traceContext,
+    });
+    this.recordTrace(traceContext, 'token_request_success', {
+      accountId: tokenResult.account?.id || '',
+      tokenExpiresAt: tokenResult.expiresAt || '',
+    });
     const headers = {
       Authorization: `Bearer ${tokenResult.accessToken}`,
       'ChatGPT-Account-ID': tokenResult.account?.metadata?.chatgptAccountId || '',
@@ -114,22 +149,29 @@ class CodexOAuthProvider {
     return headers;
   }
 
-  async fetchModels() {
-    const authHeaders = await this.buildAuthHeaders();
+  async fetchModels(options = {}) {
+    const traceContext = options.traceContext || null;
+    const authHeaders = await this.buildAuthHeaders(traceContext);
     return this.fetchWithTimeout(`${this.baseUrl}/models?client_version=${encodeURIComponent(this.clientVersion)}`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
         ...authHeaders,
       },
+      traceContext,
     });
   }
 
-  async forwardResponses(body = {}, requestHeaders = {}) {
+  async forwardResponses(body = {}, requestHeaders = {}, options = {}) {
+    const traceContext = options.traceContext || null;
     const stream = body.stream === true || String(requestHeaders.accept || '').includes('text/event-stream');
-    const authHeaders = await this.buildAuthHeaders();
+    const authHeaders = await this.buildAuthHeaders(traceContext);
     const upstreamBody = sanitizeResponseBody({
       ...body,
+      stream,
+    });
+    this.recordTrace(traceContext, 'provider_forward_start', {
+      model: typeof upstreamBody.model === 'string' ? upstreamBody.model : '',
       stream,
     });
 
@@ -141,6 +183,8 @@ class CodexOAuthProvider {
         ...authHeaders,
       },
       body: JSON.stringify(upstreamBody),
+      streamHint: stream,
+      traceContext,
     });
   }
 }

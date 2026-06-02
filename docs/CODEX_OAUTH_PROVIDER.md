@@ -60,6 +60,12 @@ OAuth 认证中心的 Codex OAuth Provider 卡片会展示只读诊断信息：
 
 最近一次测试结果只保存在当前后端进程内，服务重启后会清空。诊断信息不会包含 access token、refresh token、完整认证头或原始上游响应体。
 
+## 真实请求链路 Trace
+
+当 VCP 主服务通过 `codex_oauth` 转发真实 `/v1/responses` 或 `chat/completions -> responses` 请求时，后端会为该请求生成一个脱敏 `traceId`，并在响应头 `x-vcp-codex-oauth-trace-id` 中返回。AdminPanel 的 Codex OAuth Provider 卡片会展示最近的真实请求 trace，便于把 VCPChat/agent 侧错误和后端链路阶段对应起来。
+
+trace 以脱敏 bounded 文件形式保存在 `state/oauth-auth/codex-oauth-traces.json`，默认保留最近 20 条，便于主服务写入、AdminPanel 读取。记录的阶段包括请求进入、token 获取/刷新、provider 转发、上游响应头、stream 结束或异常。trace 不包含 access token、refresh token、完整认证头、完整请求体或原始上游响应体。
+
 ## Bridge / Proxy 接入
 
 推荐接入方式是让 `VCPBridgeServer` 的上游指向 VCP 主服务，而不是让 bridge 自己消费 OAuth。
