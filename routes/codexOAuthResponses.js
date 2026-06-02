@@ -211,8 +211,35 @@ function buildResponsesBodyFromChatCompletion(chatBody = {}) {
   return responsesBody;
 }
 
+function normalizeResponsesInputForCodexOAuth(input) {
+  if (typeof input === 'string') {
+    return [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: input }],
+    }];
+  }
+
+  if (!Array.isArray(input)) {
+    return input;
+  }
+
+  return input.map(item => {
+    if (typeof item === 'string') {
+      return {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: item }],
+      };
+    }
+    return item;
+  });
+}
+
 function normalizeResponsesBodyForCodexOAuth(body = {}) {
   const nextBody = body && typeof body === 'object' ? { ...body } : {};
+  nextBody.input = normalizeResponsesInputForCodexOAuth(nextBody.input);
+  nextBody.stream = true;
   if (typeof nextBody.instructions !== 'string' || !nextBody.instructions.trim()) {
     nextBody.instructions = DEFAULT_CHAT_COMPLETIONS_INSTRUCTIONS;
   }
@@ -306,6 +333,25 @@ function transformResponsesSseToChatCompletion(sseText = '', chatBody = {}) {
     model: parsed.model || parsed.completedResponse?.model || chatBody.model,
     output_text: parsed.text,
   }, chatBody);
+}
+
+function transformResponsesSseToResponsesJson(sseText = '', body = {}) {
+  const parsed = extractResponsesSseDeltas(sseText);
+  if (parsed.completedResponse && typeof parsed.completedResponse === 'object') {
+    return {
+      ...parsed.completedResponse,
+      output_text: parsed.text || extractResponsesOutputText(parsed.completedResponse),
+    };
+  }
+
+  return {
+    id: `resp-codex-oauth-${Date.now()}`,
+    object: 'response',
+    created_at: Math.floor(Date.now() / 1000),
+    status: 'completed',
+    model: parsed.model || body.model || 'codex_oauth',
+    output_text: parsed.text,
+  };
 }
 
 function looksLikeSsePayload(text = '') {
@@ -412,6 +458,57 @@ function endCodexOAuthStreamFailure(res, input = 502, traceId = null) {
     res.write('data: [DONE]\n\n');
   } catch (_error) {}
   return res.end();
+}
+
+function redactTraceText(value) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1<redacted>')
+    .replace(/((?:access|refresh)[_-]?token["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, '$1<redacted>')
+    .replace(/secret-[A-Za-z0-9._-]+/gi, '<redacted>');
+}
+
+function truncateTraceText(value, limit = 180) {
+  if (typeof value !== 'string') return '';
+  const normalized = redactTraceText(value).replace(/\s+/g, ' ').trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function summarizeUpstreamRejection(upstreamText = '', contentType = '') {
+  const summary = {
+    upstreamContentType: truncateTraceText(contentType, 120),
+    upstreamPayloadKind: '',
+    upstreamErrorType: '',
+    upstreamErrorCode: '',
+    upstreamErrorMessage: '',
+    upstreamPayloadKeys: '',
+  };
+
+  if (!upstreamText) return summary;
+
+  try {
+    const parsed = JSON.parse(upstreamText);
+    if (!parsed || typeof parsed !== 'object') {
+      summary.upstreamPayloadKind = typeof parsed;
+      return summary;
+    }
+
+    summary.upstreamPayloadKind = Array.isArray(parsed) ? 'array' : 'object';
+    summary.upstreamPayloadKeys = Object.keys(parsed).slice(0, 8).join(',');
+
+    const error = parsed.error && typeof parsed.error === 'object'
+      ? parsed.error
+      : parsed;
+    summary.upstreamErrorType = truncateTraceText(error.type || error.error_type || '', 80);
+    summary.upstreamErrorCode = truncateTraceText(error.code || error.error_code || '', 80);
+    summary.upstreamErrorMessage = truncateTraceText(error.message || error.detail || error.error || '', 220);
+  } catch (_error) {
+    summary.upstreamPayloadKind = looksLikeSsePayload(upstreamText) ? 'sse' : 'text';
+    summary.upstreamErrorMessage = truncateTraceText(upstreamText, 220);
+  }
+
+  return summary;
 }
 
 function startCodexOAuthTrace(req, route, traceStore) {
@@ -655,9 +752,13 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       }
 
       if (!upstreamResponse.ok) {
-        await upstreamResponse.text().catch(() => '');
+        const upstreamText = await upstreamResponse.text().catch(() => '');
+        const upstreamContentType = typeof upstreamResponse.headers?.get === 'function'
+          ? upstreamResponse.headers.get('content-type') || ''
+          : '';
         traceStore.addEvent(traceContext.traceId, 'upstream_rejected', {
           status: upstreamResponse.status,
+          ...summarizeUpstreamRejection(upstreamText, upstreamContentType),
         });
         finishCodexOAuthTrace(traceStore, traceContext, { ok: false, status: upstreamResponse.status });
         return sendCodexOAuthProviderFailure(res, upstreamResponse.status, traceContext.traceId);
@@ -723,6 +824,7 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
     try {
       const provider = createRuntimeProvider(options);
       const responsesBody = normalizeResponsesBodyForCodexOAuth(req.body || {});
+      const clientWantsStream = req.body?.stream === true || String(req.headers?.accept || '').includes('text/event-stream');
       if (options.codexOAuthProvider) {
         traceStore.addEvent(traceContext.traceId, 'provider_forward_start', {
           model: typeof responsesBody.model === 'string' ? responsesBody.model : '',
@@ -740,9 +842,13 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
         });
       }
       if (!upstreamResponse.ok) {
-        await upstreamResponse.text().catch(() => '');
+        const upstreamText = await upstreamResponse.text().catch(() => '');
+        const upstreamContentType = typeof upstreamResponse.headers?.get === 'function'
+          ? upstreamResponse.headers.get('content-type') || ''
+          : '';
         traceStore.addEvent(traceContext.traceId, 'upstream_rejected', {
           status: upstreamResponse.status,
+          ...summarizeUpstreamRejection(upstreamText, upstreamContentType),
         });
         finishCodexOAuthTrace(traceStore, traceContext, { ok: false, status: upstreamResponse.status });
         return sendCodexOAuthProviderFailure(res, upstreamResponse.status, traceContext.traceId);
@@ -760,6 +866,24 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
         const upstreamText = await upstreamResponse.text();
         finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
         return res.send(upstreamText);
+      }
+
+      if (!clientWantsStream) {
+        const upstreamText = await new Response(upstreamResponse.body).text();
+        const upstreamContentType = typeof upstreamResponse.headers?.get === 'function'
+          ? upstreamResponse.headers.get('content-type') || ''
+          : '';
+        const isUpstreamSse = upstreamContentType.includes('text/event-stream') || looksLikeSsePayload(upstreamText);
+        finishCodexOAuthTrace(traceStore, traceContext, { ok: true, status: upstreamResponse.status });
+        if (!isUpstreamSse) {
+          return res.send(upstreamText);
+        }
+        traceStore.addEvent(traceContext.traceId, 'stream_buffer_transform', {
+          transform: 'responses_sse_to_responses_json',
+        });
+        return res
+          .type('application/json')
+          .json(transformResponsesSseToResponsesJson(upstreamText, req.body || {}));
       }
 
       let chunks = 0;

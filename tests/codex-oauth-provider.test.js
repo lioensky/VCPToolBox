@@ -773,17 +773,103 @@ test('codex oauth responses route supplies default instructions for bridge reque
   }
 });
 
-test('codex oauth responses route sanitizes non-2xx upstream responses', async () => {
+test('codex oauth responses route normalizes string input for codex upstream', async () => {
+  const calls = [];
   const app = express();
   app.use(express.json());
   app.use(createCodexOAuthResponsesRouter({
     responsesProvider: 'codex_oauth',
     codexOAuthProvider: {
+      async forwardResponses(body) {
+        calls.push(body);
+        return jsonResponse({ id: 'resp_bridge', model: body.model, output_text: 'ok' });
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4-mini',
+        input: 'hello',
+        stream: false,
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.output_text, 'ok');
+    assert.deepEqual(calls[0].input, [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'hello' }],
+    }]);
+    assert.equal(calls[0].stream, true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth responses route buffers upstream SSE for non-streaming clients', async () => {
+  const calls = [];
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    responsesProvider: 'codex_oauth',
+    codexOAuthProvider: {
+      async forwardResponses(body) {
+        calls.push(body);
+        return responsesSseResponse([
+          `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'O' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'K' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_buffered', model: body.model, status: 'completed', output: [] } })}\n\n`,
+        ]);
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4-mini',
+        input: 'hello',
+        stream: false,
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].stream, true);
+    assert.equal(payload.id, 'resp_buffered');
+    assert.equal(payload.output_text, 'OK');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth responses route sanitizes non-2xx upstream responses', async () => {
+  const traceStore = new CodexOAuthTraceStore();
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    responsesProvider: 'codex_oauth',
+    traceStore,
+    codexOAuthProvider: {
       async forwardResponses() {
         return jsonResponse({
-          error: 'upstream raw failure',
+          error: {
+            type: 'invalid_request_error',
+            code: 'unsupported_parameter',
+            message: 'Unsupported parameter: secret-access-token should not leak in client response.',
+          },
           access_token: 'secret-access-token',
-        }, 401);
+        }, 400);
       },
     },
   }));
@@ -797,11 +883,19 @@ test('codex oauth responses route sanitizes non-2xx upstream responses', async (
     });
     const payload = await response.json();
     const serialized = JSON.stringify(payload);
+    const trace = traceStore.getLatest();
+    const rejectedEvent = trace.events.find(event => event.stage === 'upstream_rejected');
 
-    assert.equal(response.status, 401);
+    assert.equal(response.status, 400);
     assert.equal(payload.error.type, 'codex_oauth_provider_failed');
-    assert.equal(serialized.includes('upstream raw failure'), false);
+    assert.equal(payload.error.trace_id, trace.traceId);
+    assert.equal(rejectedEvent.upstreamErrorType, 'invalid_request_error');
+    assert.equal(rejectedEvent.upstreamErrorCode, 'unsupported_parameter');
+    assert.match(rejectedEvent.upstreamErrorMessage, /Unsupported parameter/);
+    assert.equal(rejectedEvent.upstreamPayloadKeys, 'error,access_token');
+    assert.equal(serialized.includes('Unsupported parameter'), false);
     assert.equal(serialized.includes('secret-access-token'), false);
+    assert.equal(JSON.stringify(trace).includes('secret-access-token'), false);
   } finally {
     await closeServer(server);
   }
