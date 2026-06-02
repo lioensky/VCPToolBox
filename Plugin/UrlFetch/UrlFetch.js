@@ -445,27 +445,27 @@ async function fetchDownloadMarkdownContent(url, downloadSourceMode, proxyPort =
     try {
         if (effectiveSourceMode === 'jina') {
             try {
-                return await readWithJina(url);
+                return { content: await readWithJina(url), sourceMode: 'jina' };
             } catch (jinaError) {
                 console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
                 try {
-                    return await readDirect(url);
+                    return { content: await readDirect(url), sourceMode: 'text' };
                 } catch (directError) {
                     console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                    return await readWithPuppeteer(url, 'text');
+                    return { content: await readWithPuppeteer(url, 'text'), sourceMode: 'text' };
                 }
             }
         }
 
         try {
-            return await readDirect(url);
+            return { content: await readDirect(url), sourceMode: 'text' };
         } catch (directError) {
             console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-            return await readWithPuppeteer(url, 'text');
+            return { content: await readWithPuppeteer(url, 'text'), sourceMode: 'text' };
         }
     } catch (error) {
         if (proxyPort) {
-            return await readWithPuppeteer(url, 'text', proxyPort);
+            return { content: await readWithPuppeteer(url, 'text', proxyPort), sourceMode: 'text' };
         }
         throw error;
     }
@@ -1038,8 +1038,8 @@ async function main() {
 
                 try {
                     if (mode === 'download') {
-                        const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
-                        fetchedData = await fetchDownloadMarkdownContent(url, downloadSourceMode, process.env.FETCH_PROXY_PORT);
+                        const downloadResult = await fetchDownloadMarkdownContent(url, downloadSourceMode, process.env.FETCH_PROXY_PORT);
+                        fetchedData = downloadResult.content;
 
                         if (typeof fetchedData !== 'string' || !fetchedData.trim()) {
                             throw new Error("下载模式未提取到可写入的 Markdown 文本。");
@@ -1052,7 +1052,7 @@ async function main() {
                                 content: fetchedData,
                                 knowledgeFolder,
                                 fileName: outputFileName,
-                                sourceMode: effectiveSourceMode
+                                sourceMode: downloadResult.sourceMode
                             })
                         };
                         process.stdout.write(JSON.stringify(output, null, 2));

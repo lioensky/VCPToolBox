@@ -129,9 +129,20 @@ test('saveMarkdownToKnowledgeFolder rejects symlinked knowledge subfolders', asy
     );
 });
 
-test('fetchDownloadMarkdownContent honors configured proxy after normal download paths fail', async () => {
+test('fetchDownloadMarkdownContent records jina when the Jina reader succeeds', async () => {
+    const result = await fetchDownloadMarkdownContent('https://example.com/jina', 'jina', null, {
+        fetchWithJinaReader: async () => '# Via Jina'
+    });
+
+    assert.deepEqual(result, {
+        content: '# Via Jina',
+        sourceMode: 'jina'
+    });
+});
+
+test('fetchDownloadMarkdownContent honors configured proxy and records text fallback mode', async () => {
     const calls = [];
-    const content = await fetchDownloadMarkdownContent('https://example.com/proxy-only', 'jina', '7890', {
+    const result = await fetchDownloadMarkdownContent('https://example.com/proxy-only', 'jina', '7890', {
         fetchWithJinaReader: async (url) => {
             calls.push(['jina', url]);
             throw new Error('jina blocked');
@@ -149,7 +160,10 @@ test('fetchDownloadMarkdownContent honors configured proxy after normal download
         }
     });
 
-    assert.equal(content, '# Via proxy');
+    assert.deepEqual(result, {
+        content: '# Via proxy',
+        sourceMode: 'text'
+    });
     assert.deepEqual(calls, [
         ['jina', 'https://example.com/proxy-only'],
         ['direct', 'https://example.com/proxy-only'],
