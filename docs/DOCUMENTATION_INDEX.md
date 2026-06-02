@@ -219,7 +219,7 @@
 - **项目README**：[README.md](../README.md)
 - **VCP理论文档**：[VCP.md](../VCP.md)
 - **TagMemo算法深度解析**：[TagMemo_Wave_Algorithm_Deep_Dive.md](../TagMemo_Wave_Algorithm_Deep_Dive.md)
-- **变更日志**：[ChangeLog.md](../ChangeLog.md)
+- **变更日志**：[ChangeLog.md](ChangeLog.md)
 
 ### 外部参考
 

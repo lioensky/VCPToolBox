@@ -319,7 +319,7 @@ await adminConfigApi.saveMainConfig(content, true)
 
 - `../routes/admin/newapiMonitor.js`
 - `../routes/adminPanelRoutes.js`
-- `../NEWAPI_MONITOR_前端接入与配置说明.md`
+- `../../../docs/NEWAPI_MONITOR_前端接入与配置说明.md`
 
 当前可用路由：
 
