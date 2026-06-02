@@ -4,6 +4,7 @@ const fsSync = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
+const { buildDynamicFoldObject, hasFoldMarkers } = require('./foldProtocol');
 
 const PRIVATE_CONFIG_RELATIVE_PATH = path.join('Plugin', 'DynamicToolBridge', 'config.env');
 const LIGHT_LIST_TOKEN_BUDGET = 15;
@@ -534,7 +535,7 @@ class DynamicToolRegistry {
             lines.push('Expanded tool usage:');
             for (const record of expandedRecords) {
                 lines.push(`--- ${record.displayName || record.pluginName} (${record.pluginName}) ---`);
-                lines.push(this._descriptionForInjection(record));
+                lines.push(await this._expandedDescriptionFor(record, { ...options, messages, queryText }));
             }
         }
 
@@ -785,6 +786,212 @@ class DynamicToolRegistry {
     _descriptionForInjection(record) {
         const override = this._descriptionOverrideFor(record.originKey);
         return override.fullDescription || record.fullDescription || record.description || 'No full description available.';
+    }
+
+    _descriptionHasFoldProtocol(fullDescription) {
+        if (typeof fullDescription !== 'string') return false;
+        const trimmed = fullDescription.trim();
+        if (!trimmed) return false;
+        if (hasFoldMarkers(trimmed) || trimmed.includes('[===vcp_fold:')) return true;
+        if (!trimmed.startsWith('{')) return false;
+        try {
+            const parsed = JSON.parse(trimmed);
+            return Boolean(parsed?.vcp_dynamic_fold && Array.isArray(parsed.fold_blocks));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    _parseFoldProtocolDescription(fullDescription, record) {
+        if (typeof fullDescription !== 'string') return null;
+        const trimmed = fullDescription.trim();
+        if (!trimmed) return null;
+        if (trimmed.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (parsed?.vcp_dynamic_fold && Array.isArray(parsed.fold_blocks)) return parsed;
+            } catch (_) {
+                return null;
+            }
+        }
+        const markerIndex = fullDescription.indexOf('[===vcp_fold:');
+        const foldContent = this._normalizeFoldMarkerLines(markerIndex >= 0 ? fullDescription.slice(markerIndex) : fullDescription);
+        if (!hasFoldMarkers(foldContent)) return null;
+        return buildDynamicFoldObject({
+            content: foldContent,
+            pluginDescription: record.description || record.displayName || record.pluginName,
+            strategy: 'toolbox_block_similarity',
+            fallbackContent: fullDescription
+        });
+    }
+
+    _normalizeFoldMarkerLines(content) {
+        return String(content || '').replace(
+            /^\[===vcp_fold:\s*([0-9.]+)\s+===\]\s*$/gm,
+            '[===vcp_fold: $1===]'
+        );
+    }
+
+    async _expandedDescriptionFor(record, options = {}) {
+        const fullDescription = this._descriptionForInjection(record);
+        if (!this._descriptionHasFoldProtocol(fullDescription)) return fullDescription;
+        const foldObj = this._parseFoldProtocolDescription(fullDescription, record);
+        if (!foldObj) return fullDescription;
+        return this._resolveFoldBlocksForInjection(foldObj, options, record, fullDescription);
+    }
+
+    async _resolveFoldBlocksForInjection(foldObj, options, record, originalDescription) {
+        if (!foldObj?.vcp_dynamic_fold || !Array.isArray(foldObj.fold_blocks)) return originalDescription;
+        const blocks = foldObj.fold_blocks.filter((block) => block && typeof block.content === 'string');
+        if (blocks.length === 0) return originalDescription;
+
+        const blocksByThreshold = [...blocks].sort((a, b) => this._foldThreshold(b) - this._foldThreshold(a));
+        const fallbackBlock = [...blocksByThreshold].reverse().find((block) => block.content)
+            || { threshold: 0, content: originalDescription };
+
+        try {
+            const pluginManager = options.pluginManager || this.pluginManager;
+            const ragPlugin = pluginManager?.messagePreprocessors?.get
+                ? pluginManager.messagePreprocessors.get('RAGDiaryPlugin')
+                : null;
+            if (!ragPlugin || typeof ragPlugin.getSingleEmbeddingCached !== 'function') {
+                if (this.debugMode) console.warn('[DynamicToolRegistry] Dynamic fold RAG provider unavailable; using fallback block.');
+                return fallbackBlock.content;
+            }
+
+            const userContent = this._foldContextText(options.messages || [], ragPlugin);
+            if (!userContent) return fallbackBlock.content;
+
+            const userVector = await withTimeout(
+                Promise.resolve(ragPlugin.getSingleEmbeddingCached(userContent)),
+                this.config.classifierTimeoutMs,
+                'Dynamic tool fold user embedding'
+            );
+            if (!Array.isArray(userVector) || userVector.length === 0) return fallbackBlock.content;
+
+            const vectorDBManager = pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
+            const vectorCache = new Map();
+            const getDescriptionVector = async (descriptionText) => {
+                const text = String(descriptionText || '').trim();
+                if (!text) return null;
+                if (vectorCache.has(text)) return vectorCache.get(text);
+
+                let vector;
+                if (vectorDBManager && typeof vectorDBManager.getPluginDescriptionVector === 'function') {
+                    vector = await vectorDBManager.getPluginDescriptionVector(
+                        `dynamic_tool_fold:${text}`,
+                        async () => ragPlugin.getSingleEmbeddingCached(text)
+                    );
+                } else {
+                    vector = await ragPlugin.getSingleEmbeddingCached(text);
+                }
+                vectorCache.set(text, vector);
+                return vector;
+            };
+
+            const toolboxBlockStrategy = foldObj.dynamic_fold_strategy === 'toolbox_block_similarity';
+            let pluginSimilarity = null;
+            const getPluginSimilarity = async () => {
+                if (pluginSimilarity !== null) return pluginSimilarity;
+                const descriptionText = foldObj.plugin_description || record.description || record.displayName || record.pluginName;
+                const descriptionVector = await getDescriptionVector(descriptionText);
+                pluginSimilarity = Array.isArray(descriptionVector)
+                    ? this._cosineSimilarity(descriptionVector, userVector)
+                    : 0;
+                return pluginSimilarity;
+            };
+
+            if (!toolboxBlockStrategy) {
+                const similarity = await getPluginSimilarity();
+                for (const block of blocksByThreshold) {
+                    if (similarity >= this._foldThreshold(block)) return block.content;
+                }
+                return fallbackBlock.content;
+            }
+
+            const includedContents = [];
+            let hiddenBlocksCount = 0;
+            const legacyBlocks = blocks.filter((block) => !String(block.description || '').trim());
+            let activeLegacyBlocks = new Set();
+            if (legacyBlocks.length > 0) {
+                const legacySimilarity = await getPluginSimilarity();
+                const matchedLegacyBlocks = legacyBlocks.filter((block) => legacySimilarity >= this._foldThreshold(block));
+                if (matchedLegacyBlocks.length > 0) {
+                    activeLegacyBlocks = new Set(matchedLegacyBlocks);
+                } else {
+                    const minLegacyThreshold = legacyBlocks.reduce((min, block) => Math.min(min, this._foldThreshold(block)), Infinity);
+                    activeLegacyBlocks = new Set(legacyBlocks.filter((block) => this._foldThreshold(block) <= minLegacyThreshold));
+                }
+            }
+
+            for (const block of blocks) {
+                const description = String(block.description || '').trim();
+                const threshold = this._foldThreshold(block);
+                if (!description) {
+                    if (activeLegacyBlocks.has(block)) {
+                        includedContents.push(block.content);
+                    } else {
+                        hiddenBlocksCount += 1;
+                    }
+                    continue;
+                }
+
+                if (threshold <= 0) {
+                    includedContents.push(block.content);
+                    continue;
+                }
+
+                const descriptionVector = await getDescriptionVector(description);
+                const similarity = Array.isArray(descriptionVector)
+                    ? this._cosineSimilarity(descriptionVector, userVector)
+                    : 0;
+                if (similarity >= threshold) {
+                    includedContents.push(block.content);
+                } else {
+                    hiddenBlocksCount += 1;
+                }
+            }
+
+            let combinedContent = includedContents.filter(Boolean).join('\n\n---\n\n');
+            if (!combinedContent) combinedContent = fallbackBlock.content;
+            if (hiddenBlocksCount > 0) {
+                combinedContent += `\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
+            }
+            return combinedContent;
+        } catch (error) {
+            this.lastError = error.message;
+            if (this.debugMode) console.warn('[DynamicToolRegistry] Dynamic fold expansion failed:', error.message);
+            return fallbackBlock.content;
+        }
+    }
+
+    _foldThreshold(block) {
+        const threshold = Number(block?.threshold);
+        return Number.isFinite(threshold) ? threshold : 0;
+    }
+
+    _foldContextText(messages, ragPlugin) {
+        if (!Array.isArray(messages)) return '';
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (!message || message.role !== 'user') continue;
+            let content = '';
+            if (typeof message.content === 'string') {
+                content = message.content;
+            } else if (Array.isArray(message.content)) {
+                content = message.content
+                    .map((part) => (part && part.type === 'text' ? part.text : ''))
+                    .filter(Boolean)
+                    .join('\n');
+            }
+            content = String(content || '').trim();
+            if (!content || content.startsWith('[系统邀请指令:]') || content.startsWith('[系统提示:]无内容')) continue;
+            if (typeof ragPlugin?.sanitizeForEmbedding === 'function') {
+                return ragPlugin.sanitizeForEmbedding(content, 'user');
+            }
+            return content;
+        }
+        return '';
     }
 
     _applyDescriptionOverrideToClassification(record, classification) {
