@@ -1,11 +1,11 @@
-// check_tagmemo_status.js
-// 用法：node check_tagmemo_status.js
+// scripts/check_tagmemo_status.js
+// 用法：node scripts/check_tagmemo_status.js
 // 快速查看 TagMemo 残差表的更新时间和基本统计
 
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const dbPath = path.join(__dirname, 'VectorStore', 'knowledge_base.sqlite');
+const dbPath = path.join(__dirname, '..', 'VectorStore', 'knowledge_base.sqlite');
 
 if (!require('fs').existsSync(dbPath)) {
     console.error('❌ 数据库不存在:', dbPath);

@@ -443,12 +443,13 @@ Plugin/DailyNote/config.env
 
 ## 8. 辅助脚本与工具
 
-### 8.1 测试文件
+### 8.1 辅助工具与测试文件
 
 | 文件路径 | 职责 |
 |---------|------|
+| `scripts/check_tagmemo_status.js` | TagMemo 状态只读检查 |
 | `test-units.js` | 单元测试 |
-| `example.test.js` | 示例测试 |
+| `scripts/example.test.js` | 示例测试 |
 
 ### 8.2 CI/CD 配置
 
