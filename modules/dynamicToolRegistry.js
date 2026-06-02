@@ -921,13 +921,17 @@ class DynamicToolRegistry {
             const legacyBlocks = blocks.filter((block) => !String(block.description || '').trim());
             let activeLegacyBlocks = new Set();
             if (legacyBlocks.length > 0) {
-                const legacySimilarity = await getPluginSimilarity();
-                const matchedLegacyBlocks = legacyBlocks.filter((block) => legacySimilarity >= this._foldThreshold(block));
-                if (matchedLegacyBlocks.length > 0) {
-                    activeLegacyBlocks = new Set(matchedLegacyBlocks);
-                } else {
-                    const minLegacyThreshold = legacyBlocks.reduce((min, block) => Math.min(min, this._foldThreshold(block)), Infinity);
-                    activeLegacyBlocks = new Set(legacyBlocks.filter((block) => this._foldThreshold(block) <= minLegacyThreshold));
+                activeLegacyBlocks = new Set(legacyBlocks.filter((block) => this._foldThreshold(block) <= 0));
+                const similarityLegacyBlocks = legacyBlocks.filter((block) => this._foldThreshold(block) > 0);
+                if (similarityLegacyBlocks.length > 0) {
+                    const legacySimilarity = await getPluginSimilarity();
+                    const matchedLegacyBlocks = similarityLegacyBlocks.filter((block) => legacySimilarity >= this._foldThreshold(block));
+                    if (matchedLegacyBlocks.length > 0) {
+                        activeLegacyBlocks = new Set([...activeLegacyBlocks, ...matchedLegacyBlocks]);
+                    } else if (activeLegacyBlocks.size === 0) {
+                        const minLegacyThreshold = similarityLegacyBlocks.reduce((min, block) => Math.min(min, this._foldThreshold(block)), Infinity);
+                        activeLegacyBlocks = new Set(similarityLegacyBlocks.filter((block) => this._foldThreshold(block) <= minLegacyThreshold));
+                    }
                 }
             }
 

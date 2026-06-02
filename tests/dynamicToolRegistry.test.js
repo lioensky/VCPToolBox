@@ -1511,6 +1511,55 @@ test('dynamic fold expansion times out description vectors and falls back', asyn
   assert.match(registry.lastError, /Dynamic tool fold description embedding timed out/);
 });
 
+test('dynamic fold expansion does not gate described blocks on baseline similarity', async () => {
+  const projectRoot = await makeProjectRoot();
+  const vectorKeys = [];
+  const pluginManager = makePluginManager([
+    makeManifest('BaselineFold', 'Search helper with baseline and described folds.', {
+      commandDescription: [
+        'BASELINE ALWAYS SHOWN',
+        '    [===vcp_fold: 0.5 ::desc: browser detail usage ===]',
+        'DESCRIBED BROWSER DETAILS'
+      ].join('\n')
+    })
+  ]);
+  pluginManager.messagePreprocessors = new Map([[
+    'RAGDiaryPlugin',
+    {
+      async getSingleEmbeddingCached(text) {
+        const lower = String(text).toLowerCase();
+        return lower.includes('browser detail') || lower.includes('browser query') ? [1, 0] : [0, 1];
+      }
+    }
+  ]]);
+  pluginManager.vectorDBManager = {
+    async getPluginDescriptionVector(descText, rawEmbeddingFn) {
+      vectorKeys.push(descText);
+      if (descText.includes('Search helper with baseline')) {
+        return new Promise(() => {});
+      }
+      return rawEmbeddingFn(descText.replace(/^dynamic_tool_fold:/, ''));
+    }
+  };
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ classifierTimeoutMs: 20, useRagEmbeddings: false })
+  });
+  await registry.syncFromPluginManager('fold_baseline_similarity');
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'user', content: '[[VCPDynamicTools:tool=BaselineFold]] browser query' }],
+    pluginManager
+  });
+
+  assert.match(injection, /BASELINE ALWAYS SHOWN/);
+  assert.match(injection, /DESCRIBED BROWSER DETAILS/);
+  assert.equal(vectorKeys.some((key) => key.includes('Search helper with baseline')), false);
+});
+
 test('config watcher reloads when fs.watch omits filename', async (t) => {
   const projectRoot = await makeProjectRoot();
   await fs.mkdir(path.join(projectRoot, 'Plugin', 'DynamicToolBridge'), { recursive: true });
