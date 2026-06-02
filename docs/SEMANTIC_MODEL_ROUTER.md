@@ -102,6 +102,7 @@
 - [`SemanticModelRouter.json`](../SemanticModelRouter.json) 是仓库默认配置；运行时会自动叠加同目录下的 `SemanticModelRouter.local.json`。
 - `SemanticModelRouter.local.json` 用于保存本地模型偏好、provider 路由和实验配置，已被 `.gitignore` 忽略，AdminPanel 保存时会写入该本地覆盖文件。
 - 覆盖规则：对象字段深度合并，数组字段整体替换；没有 local 文件时只使用仓库默认配置。
+- 如需在 local 覆盖中移除仓库默认 preset，可在顶层写入 `deletedPresets: ["PresetName"]`；AdminPanel 保存时会自动维护该删除标记。
 - 如果 [`SemanticModelRouter.json`](../SemanticModelRouter.json) 不存在，运行时会自动生成默认配置。
 
 ## 本地验证

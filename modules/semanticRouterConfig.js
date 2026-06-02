@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
     },
   },
 };
+const DELETED_PRESETS_FIELD = 'deletedPresets';
 
 function isPlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -51,18 +52,30 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function mergeConfig(baseConfig, localConfig) {
+function getDeletedPresets(config) {
+  return uniqueStrings(config?.[DELETED_PRESETS_FIELD]);
+}
+
+function mergeConfig(baseConfig, localConfig, options = {}) {
   if (!isPlainObject(localConfig)) return cloneJson(baseConfig);
   if (!isPlainObject(baseConfig)) return cloneJson(localConfig);
 
+  const applyPresetDeletions = options.applyPresetDeletions !== false;
   const result = { ...cloneJson(baseConfig) };
   for (const [key, value] of Object.entries(localConfig)) {
-    if (key === 'presets' || Array.isArray(value)) {
+    if (Array.isArray(value)) {
       result[key] = cloneJson(value);
     } else if (isPlainObject(value) && isPlainObject(result[key])) {
-      result[key] = mergeConfig(result[key], value);
+      result[key] = mergeConfig(result[key], value, { applyPresetDeletions: false });
     } else {
       result[key] = cloneJson(value);
+    }
+  }
+  if (applyPresetDeletions) {
+    for (const presetName of getDeletedPresets(localConfig)) {
+      if (isPlainObject(result.presets)) {
+        delete result.presets[presetName];
+      }
     }
   }
   return result;
@@ -202,9 +215,11 @@ async function writeLocalConfig(configPath, config) {
 
 module.exports = {
   DEFAULT_CONFIG,
+  DELETED_PRESETS_FIELD,
   asNonEmptyString,
   cloneJson,
   ensureBaseConfigFile,
+  getDeletedPresets,
   isPlainObject,
   mergeConfig,
   normalizeConfig,

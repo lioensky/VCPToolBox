@@ -58,7 +58,7 @@ async function waitFor(assertion, timeoutMs = 3000) {
   if (lastError) throw lastError;
 }
 
-test('semantic router config merges local override with array and presets replacement', () => {
+test('semantic router config deep-merges preset overrides and replaces arrays', () => {
   const merged = mergeConfig(
     {
       enabled: true,
@@ -102,10 +102,16 @@ test('semantic router config merges local override with array and presets replac
   });
   assert.equal(merged.presets.default.defaultModel, 'local-model');
   assert.deepEqual(merged.presets.default.fallbackModels, ['local-fallback-1', 'local-fallback-2']);
-  assert.equal(merged.presets.default.routes, undefined);
+  assert.deepEqual(merged.presets.default.routes, [
+    {
+      name: 'base',
+      model: 'base-route',
+      description: 'base route',
+    },
+  ]);
 });
 
-test('semantic router local config can remove presets from base config', async () => {
+test('semantic router local config can remove presets from base config with tombstones', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-remove-preset-'));
   const configPath = path.join(tempDir, 'SemanticModelRouter.json');
 
@@ -142,6 +148,7 @@ test('semantic router local config can remove presets from base config', async (
   );
 
   await writeLocalConfig(configPath, {
+    deletedPresets: ['VCPModelCoding'],
     enabled: true,
     autoModelName: 'VCPModelAuto',
     defaultPreset: 'default',
@@ -160,6 +167,7 @@ test('semantic router local config can remove presets from base config', async (
   const layered = await readLayeredConfig(configPath);
   assert.equal(layered.usesLocalConfig, true);
   assert.deepEqual(Object.keys(layered.mergedConfig.presets), ['default']);
+  assert.deepEqual(layered.mergedConfig.deletedPresets, ['VCPModelCoding']);
   assert.equal(layered.config.presets.default.defaultModel, 'local-default-model');
   assert.equal(layered.config.presets.VCPModelCoding, undefined);
 
@@ -171,6 +179,70 @@ test('semantic router local config can remove presets from base config', async (
     router.getVirtualModels().map(model => model.id),
     ['VCPModelAuto']
   );
+
+  closeRouterWatchers(router);
+});
+
+test('semantic router local config deep-merges partial preset overrides', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-partial-preset-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'base-model',
+          fallbackModels: ['base-fallback'],
+          routes: [
+            {
+              name: 'coding',
+              model: 'coding-model',
+              description: 'coding tasks',
+            },
+          ],
+        },
+        VCPModelCreative: {
+          displayName: 'Creative',
+          defaultModel: 'creative-model',
+          fallbackModels: [],
+          routes: [
+            {
+              name: 'creative',
+              model: 'creative-model',
+              description: 'creative tasks',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+
+  await writeLocalConfig(configPath, {
+    presets: {
+      default: {
+        defaultModel: 'local-model',
+      },
+    },
+  });
+
+  const layered = await readLayeredConfig(configPath);
+  assert.equal(layered.config.presets.default.defaultModel, 'local-model');
+  assert.deepEqual(layered.config.presets.default.fallbackModels, ['base-fallback']);
+  assert.equal(layered.config.presets.default.routes[0].model, 'coding-model');
+  assert.equal(layered.config.presets.VCPModelCreative.defaultModel, 'creative-model');
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.equal(router.config.presets.default.routes[0].model, 'coding-model');
+  assert.equal(router.isRoutingModel('VCPModelCreative'), true);
 
   closeRouterWatchers(router);
 });

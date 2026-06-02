@@ -2,8 +2,10 @@ const express = require('express');
 const path = require('path');
 const {
   DEFAULT_CONFIG,
+  DELETED_PRESETS_FIELD,
   asNonEmptyString,
   ensureBaseConfigFile,
+  getDeletedPresets,
   isPlainObject,
   normalizeConfig,
   readLayeredConfig,
@@ -43,6 +45,30 @@ async function ensureConfigFile() {
 
 function getRequestConfig(req) {
   return isPlainObject(req.body?.config) ? req.body.config : req.body;
+}
+
+function applyDeletedPresetTombstones(config, baseConfig, previousLocalConfig = null) {
+  const nextConfig = { ...config };
+  const basePresets = isPlainObject(baseConfig?.presets) ? baseConfig.presets : {};
+  const nextPresets = isPlainObject(nextConfig.presets) ? nextConfig.presets : {};
+  const deletedPresets = new Set(getDeletedPresets(previousLocalConfig));
+
+  for (const presetName of Object.keys(basePresets)) {
+    if (!Object.prototype.hasOwnProperty.call(nextPresets, presetName)) {
+      deletedPresets.add(presetName);
+    }
+  }
+  for (const presetName of Object.keys(nextPresets)) {
+    deletedPresets.delete(presetName);
+  }
+
+  if (deletedPresets.size > 0) {
+    nextConfig[DELETED_PRESETS_FIELD] = Array.from(deletedPresets);
+  } else {
+    delete nextConfig[DELETED_PRESETS_FIELD];
+  }
+
+  return nextConfig;
 }
 
 function buildMessagesForPreview({ userText, assistantText, messages }) {
@@ -141,7 +167,14 @@ module.exports = function (options) {
       const normalizer = typeof semanticModelRouter?.normalizeConfig === 'function'
         ? semanticModelRouter.normalizeConfig.bind(semanticModelRouter)
         : normalizeConfig;
-      const normalizedConfig = normalizeConfig(incomingConfig, { includeDisabledRoutes: true });
+      const layeredConfig = await readLayeredConfig(SEMANTIC_ROUTER_CONFIG_PATH, {
+        localConfigPath: SEMANTIC_ROUTER_LOCAL_CONFIG_PATH,
+      });
+      const normalizedConfig = applyDeletedPresetTombstones(
+        normalizeConfig(incomingConfig, { includeDisabledRoutes: true }),
+        layeredConfig.baseConfig,
+        layeredConfig.localConfig
+      );
       const runtimeConfig = normalizer(incomingConfig);
       if (!isPlainObject(normalizedConfig.presets) || Object.keys(normalizedConfig.presets).length === 0) {
         return res.status(400).json({
