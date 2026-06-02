@@ -29,6 +29,7 @@ const JINA_API_KEY = process.env.JINA_API_KEY;
 const JINA_READER_TIMEOUT_MS = Number(process.env.JINA_READER_TIMEOUT_MS || 20000);
 const DIRECT_FETCH_TIMEOUT_MS = Number(process.env.DIRECT_FETCH_TIMEOUT_MS || 12000);
 const DIRECT_FETCH_MAX_BYTES = Number(process.env.DIRECT_FETCH_MAX_BYTES || 5 * 1024 * 1024);
+const KNOWLEDGE_BASE_DIR = path.resolve(PROJECT_BASE_PATH || process.cwd(), 'knowledge');
 
 puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
@@ -242,6 +243,231 @@ function isImageUrl(url) {
         return IMAGE_EXTENSIONS.some(ext => pathname.endsWith(ext));
     } catch {
         return false;
+    }
+}
+
+function sanitizeKnowledgeSubfolderName(folderName) {
+    const normalized = String(folderName || '').trim();
+    if (!normalized || normalized === '.') {
+        throw new Error("缺少必需的参数: knowledgeFolder（knowledge 根目录下的子文件夹名）");
+    }
+
+    if (
+        normalized.includes('/') ||
+        normalized.includes('\\') ||
+        normalized.includes('..') ||
+        path.isAbsolute(normalized) ||
+        /[\x00-\x1f<>:"|?*]/.test(normalized)
+    ) {
+        throw new Error("knowledgeFolder 只能是 knowledge 根目录下的单层子文件夹名，不能包含路径分隔符、.. 或非法文件名字符。");
+    }
+
+    return normalized;
+}
+
+function sanitizeMarkdownFileName(fileName) {
+    const normalized = String(fileName || '').trim()
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 120)
+        .trim();
+
+    if (!normalized) return '';
+
+    return normalized.toLowerCase().endsWith('.md') ? normalized : `${normalized}.md`;
+}
+
+function extractTitleFromFetchedMarkdown(content, url) {
+    const text = String(content || '');
+    const headingMatch = text.match(/^#\s+(.+)$/m);
+    if (headingMatch) return headingMatch[1].trim();
+
+    const titleLineMatch = text.match(/^(?:标题|Title):\s*(.+)$/mi);
+    if (titleLineMatch) return titleLineMatch[1].trim();
+
+    try {
+        const urlObj = new URL(url);
+        const lastSegment = decodeURIComponent(urlObj.pathname.split('/').filter(Boolean).pop() || '');
+        return lastSegment || urlObj.hostname;
+    } catch {
+        return 'webpage';
+    }
+}
+
+function buildSafeMarkdownFileName(content, url, requestedFileName = '') {
+    const explicitName = sanitizeMarkdownFileName(requestedFileName);
+    if (explicitName) return explicitName;
+
+    const title = extractTitleFromFetchedMarkdown(content, url);
+    const slug = String(title || 'webpage')
+        .replace(/[\\/:*?"<>|]/g, '_')
+        .replace(/[\x00-\x1f]/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 80)
+        .trim() || 'webpage';
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${slug}_${timestamp}.md`;
+}
+
+function wrapMarkdownArchiveContent(content, url, sourceMode) {
+    const fetchedAt = new Date().toISOString();
+    const body = String(content || '').trim();
+
+    return [
+        '---',
+        `source_url: ${JSON.stringify(url)}`,
+        `fetched_at: ${JSON.stringify(fetchedAt)}`,
+        `fetch_mode: ${JSON.stringify(sourceMode)}`,
+        '---',
+        '',
+        body
+    ].join('\n');
+}
+
+function isPathInside(baseDir, targetPath) {
+    const relative = path.relative(baseDir, targetPath);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function ensureSafeKnowledgeTargetDir(targetDir) {
+    if (!isPathInside(KNOWLEDGE_BASE_DIR, targetDir)) {
+        throw new Error("目标目录越界，已拒绝写入。");
+    }
+
+    await fs.mkdir(KNOWLEDGE_BASE_DIR, { recursive: true });
+    const baseStats = await fs.lstat(KNOWLEDGE_BASE_DIR);
+    if (baseStats.isSymbolicLink()) {
+        throw new Error("knowledge 根目录是符号链接，已拒绝写入。");
+    }
+
+    let targetStats;
+    try {
+        targetStats = await fs.lstat(targetDir);
+    } catch (error) {
+        if (!error || error.code !== 'ENOENT') {
+            throw error;
+        }
+        try {
+            await fs.mkdir(targetDir);
+        } catch (mkdirError) {
+            if (!mkdirError || mkdirError.code !== 'EEXIST') {
+                throw mkdirError;
+            }
+        }
+        targetStats = await fs.lstat(targetDir);
+    }
+
+    if (targetStats.isSymbolicLink()) {
+        throw new Error("knowledge 子文件夹是符号链接，已拒绝写入。");
+    }
+
+    if (!targetStats.isDirectory()) {
+        throw new Error("knowledge 子文件夹不是目录，已拒绝写入。");
+    }
+
+    const [realBaseDir, realTargetDir] = await Promise.all([
+        fs.realpath(KNOWLEDGE_BASE_DIR),
+        fs.realpath(targetDir)
+    ]);
+
+    if (!isPathInside(realBaseDir, realTargetDir)) {
+        throw new Error("knowledge 子文件夹真实路径越界，已拒绝写入。");
+    }
+}
+
+async function getAvailableMarkdownPath(targetDir, safeFileName) {
+    const parsed = path.parse(safeFileName);
+    const baseName = parsed.name || 'webpage';
+    const extName = parsed.ext || '.md';
+
+    for (let index = 0; index < 1000; index++) {
+        const candidateFileName = index === 0 ? `${baseName}${extName}` : `${baseName}(${index})${extName}`;
+        const candidatePath = path.resolve(targetDir, candidateFileName);
+
+        if (!candidatePath.startsWith(targetDir + path.sep)) {
+            throw new Error("目标文件路径越界，已拒绝写入。");
+        }
+
+        try {
+            const handle = await fs.open(candidatePath, 'wx');
+            return { handle, filePath: candidatePath, fileName: candidateFileName };
+        } catch (error) {
+            if (error && error.code === 'EEXIST') {
+                continue;
+            }
+            throw error;
+        }
+    }
+
+    throw new Error("同名文件过多，已拒绝继续自动生成尾缀。");
+}
+
+async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fileName, sourceMode }) {
+    const safeFolderName = sanitizeKnowledgeSubfolderName(knowledgeFolder);
+    const targetDir = path.resolve(KNOWLEDGE_BASE_DIR, safeFolderName);
+
+    const safeFileName = buildSafeMarkdownFileName(content, url, fileName);
+    const markdownContent = wrapMarkdownArchiveContent(content, url, sourceMode);
+    await ensureSafeKnowledgeTargetDir(targetDir);
+
+    const { handle, filePath: targetPath, fileName: finalFileName } = await getAvailableMarkdownPath(targetDir, safeFileName);
+    try {
+        await handle.writeFile(markdownContent, 'utf8');
+    } finally {
+        await handle.close();
+    }
+
+    return {
+        content: [{
+            type: 'text',
+            text: `已成功下载网页并保存为 Markdown。\n- 来源URL: ${url}\n- 提取模式: ${sourceMode}\n- knowledge子文件夹: ${safeFolderName}\n- 文件名: ${finalFileName}\n- 保存路径: ${targetPath}\n- 字符数: ${markdownContent.length}`
+        }],
+        details: {
+            sourceUrl: url,
+            sourceMode,
+            knowledgeFolder: safeFolderName,
+            fileName: finalFileName,
+            requestedFileName: safeFileName,
+            filePath: targetPath,
+            relativePath: path.relative(PROJECT_BASE_PATH || process.cwd(), targetPath).replace(/\\/g, '/')
+        }
+    };
+}
+
+async function fetchDownloadMarkdownContent(url, downloadSourceMode, proxyPort = null, fetchers = {}) {
+    const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
+    const readWithJina = fetchers.fetchWithJinaReader || fetchWithJinaReader;
+    const readDirect = fetchers.fetchWithDirectHttp || fetchWithDirectHttp;
+    const readWithPuppeteer = fetchers.fetchWithPuppeteer || fetchWithPuppeteer;
+
+    try {
+        if (effectiveSourceMode === 'jina') {
+            try {
+                return { content: await readWithJina(url), sourceMode: 'jina' };
+            } catch (jinaError) {
+                console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
+                try {
+                    return { content: await readDirect(url), sourceMode: 'text' };
+                } catch (directError) {
+                    console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                    return { content: await readWithPuppeteer(url, 'text'), sourceMode: 'text' };
+                }
+            }
+        }
+
+        try {
+            return { content: await readDirect(url), sourceMode: 'text' };
+        } catch (directError) {
+            console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+            return { content: await readWithPuppeteer(url, 'text'), sourceMode: 'text' };
+        }
+    } catch (error) {
+        if (proxyPort) {
+            return { content: await readWithPuppeteer(url, 'text', proxyPort), sourceMode: 'text' };
+        }
+        throw error;
     }
 }
 
@@ -779,7 +1005,10 @@ async function main() {
 
             const data = JSON.parse(inputData);
             const url = data.url;
-            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', or 'jina'
+            let mode = data.mode || 'text'; // 'text', 'snapshot', 'image', 'jina', or 'download'
+            const knowledgeFolder = data.knowledgeFolder || data.folder || data.knowledge_subfolder;
+            const outputFileName = data.fileName || data.filename || data.outputFileName;
+            const downloadSourceMode = data.sourceMode || data.fetchMode || 'jina';
 
             if (!url) {
                 throw new Error("缺少必需的参数: url");
@@ -808,7 +1037,27 @@ async function main() {
                 }
 
                 try {
-                    if (mode === 'jina') {
+                    if (mode === 'download') {
+                        const downloadResult = await fetchDownloadMarkdownContent(url, downloadSourceMode, process.env.FETCH_PROXY_PORT);
+                        fetchedData = downloadResult.content;
+
+                        if (typeof fetchedData !== 'string' || !fetchedData.trim()) {
+                            throw new Error("下载模式未提取到可写入的 Markdown 文本。");
+                        }
+
+                        output = {
+                            status: "success",
+                            result: await saveMarkdownToKnowledgeFolder({
+                                url,
+                                content: fetchedData,
+                                knowledgeFolder,
+                                fileName: outputFileName,
+                                sourceMode: downloadResult.sourceMode
+                            })
+                        };
+                        process.stdout.write(JSON.stringify(output, null, 2));
+                        return;
+                    } else if (mode === 'jina') {
                         fetchedData = await fetchWithJinaReader(url);
                     } else if (mode === 'text') {
                         try {
@@ -822,7 +1071,7 @@ async function main() {
                     }
                 } catch (e) {
                     const proxyPort = process.env.FETCH_PROXY_PORT;
-                    if (proxyPort) {
+                    if (proxyPort && mode !== 'download') {
                         try {
                             fetchedData = await fetchWithPuppeteer(url, mode, proxyPort);
                         } catch (proxyError) {
@@ -868,8 +1117,22 @@ async function main() {
     });
 }
 
-main().catch(error => {
-    const errorMsgStr = `未处理的插件错误: ${error.message || error}`;
-    process.stdout.write(JSON.stringify({ status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } }));
-    process.exit(1);
-});
+if (require.main === module) {
+    main().catch(error => {
+        const errorMsgStr = `未处理的插件错误: ${error.message || error}`;
+        process.stdout.write(JSON.stringify({ status: "error", error: errorMsgStr, result: { content: [{ type: 'text', text: errorMsgStr }] } }));
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    sanitizeKnowledgeSubfolderName,
+    sanitizeMarkdownFileName,
+    buildSafeMarkdownFileName,
+    ensureSafeKnowledgeTargetDir,
+    fetchDownloadMarkdownContent,
+    getAvailableMarkdownPath,
+    isPathInside,
+    saveMarkdownToKnowledgeFolder,
+    wrapMarkdownArchiveContent
+};
