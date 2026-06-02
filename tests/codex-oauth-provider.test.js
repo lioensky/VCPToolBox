@@ -665,7 +665,80 @@ test('codex oauth responses route preserves provider error status without leakin
 
     assert.equal(response.status, 404);
     assert.equal(payload.error.type, 'codex_oauth_provider_failed');
+    assert.equal(payload.error.code, 'codex_oauth_account_missing');
+    assert.match(payload.error.message, /Sign in and select an account/);
     assert.equal(JSON.stringify(payload).includes('No OAuth account'), false);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth provider failures return actionable sanitized categories', async () => {
+  const rateLimited = createCodexOAuthResponsesRouter.classifyCodexOAuthProviderFailure(429);
+  assert.equal(rateLimited.status, 429);
+  assert.equal(rateLimited.code, 'codex_oauth_rate_limited');
+  assert.match(rateLimited.message, /Retry later/);
+
+  const rejected = createCodexOAuthResponsesRouter.classifyCodexOAuthProviderFailure(400);
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.code, 'codex_oauth_request_rejected');
+  assert.match(rejected.message, /selected model/);
+
+  const timeout = createCodexOAuthResponsesRouter.classifyCodexOAuthProviderFailure(new DOMException('raw abort', 'AbortError'));
+  assert.equal(timeout.status, 504);
+  assert.equal(timeout.code, 'codex_oauth_upstream_timeout');
+  assert.equal(JSON.stringify(timeout).includes('raw abort'), false);
+});
+
+test('codex oauth chat streaming failure after headers sends safe SSE error and done', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    runtimeConfig: {
+      VCP_RESPONSES_PROVIDER: 'codex_oauth',
+      VCP_CODEX_OAUTH_MODELS: 'gpt-5.4-mini',
+    },
+    codexOAuthProvider: {
+      async fetchModels() {
+        return jsonResponse({ models: [{ id: 'gpt-5.4-mini' }] });
+      },
+      async forwardResponses() {
+        const encoder = new TextEncoder();
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'text/event-stream; charset=utf-8' }),
+          body: (async function* () {
+            yield encoder.encode(
+              `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'first' })}\n\n`
+            );
+            throw new DOMException('raw stream abort with private marker', 'AbortError');
+          })(),
+        };
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4-mini',
+        messages: [{ role: 'user', content: 'hello' }],
+        stream: true,
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/event-stream/);
+    assert.match(text, /first/);
+    assert.match(text, /codex_oauth_upstream_timeout/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.equal(text.includes('raw stream abort'), false);
+    assert.equal(text.includes('private marker'), false);
   } finally {
     await closeServer(server);
   }

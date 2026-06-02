@@ -44,6 +44,9 @@ export interface CodexResponsesProviderStatus {
   clientVersion?: string;
   authenticated: boolean;
   defaultAccountId: string | null;
+  configuredModelIds: string[];
+  effectiveModelIds: string[];
+  modelSource: "configured" | "built_in_fallback" | string;
 }
 
 export interface OAuthUpstreamSmokeResult {
