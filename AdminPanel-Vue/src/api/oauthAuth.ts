@@ -47,6 +47,31 @@ export interface CodexResponsesProviderStatus {
   configuredModelIds: string[];
   effectiveModelIds: string[];
   modelSource: "configured" | "built_in_fallback" | string;
+  diagnostics?: CodexResponsesProviderDiagnostics;
+}
+
+export interface CodexResponsesProviderDiagnostics {
+  generatedAt: string;
+  checks: {
+    providerEnabled: boolean;
+    authenticated: boolean;
+    accountConfigured: boolean;
+    configuredAccountValid: boolean;
+    hasEffectiveModels: boolean;
+  };
+  lastSmoke: CodexResponsesProviderSmokeSummary | null;
+}
+
+export interface CodexResponsesProviderSmokeSummary {
+  checkedAt: string;
+  ok: boolean;
+  status: number;
+  contentType: string;
+  payloadKind: string;
+  payloadKeys: string[];
+  tokenExpiresAt?: string | null;
+  errorCode: string | null;
+  message: string;
 }
 
 export interface OAuthUpstreamSmokeResult {

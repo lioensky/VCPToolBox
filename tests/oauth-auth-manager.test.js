@@ -556,6 +556,10 @@ test('oauth auth admin route manages codex responses provider config without tok
     assert.deepEqual(initial.provider.configuredModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
     assert.deepEqual(initial.provider.effectiveModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
     assert.equal(initial.provider.modelSource, 'configured');
+    assert.equal(initial.provider.diagnostics.checks.providerEnabled, false);
+    assert.equal(initial.provider.diagnostics.checks.authenticated, true);
+    assert.equal(initial.provider.diagnostics.checks.hasEffectiveModels, true);
+    assert.equal(initial.provider.diagnostics.lastSmoke, null);
 
     const enableResponse = await fetch(`${baseUrl}/oauth-auth/codex_oauth/responses-provider/enable`, {
       method: 'POST',
@@ -567,6 +571,8 @@ test('oauth auth admin route manages codex responses provider config without tok
     assert.equal(enabled.provider.enabled, true);
     assert.equal(enabled.provider.accountId, 'codex_abc');
     assert.deepEqual(enabled.provider.effectiveModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
+    assert.equal(enabled.provider.diagnostics.checks.providerEnabled, true);
+    assert.equal(enabled.provider.diagnostics.checks.configuredAccountValid, true);
 
     const enabledConfig = await fs.readFile(path.join(tempBasePath, 'config.env'), 'utf8');
     assert.match(enabledConfig, /^VCP_RESPONSES_PROVIDER=codex_oauth$/m);
@@ -581,6 +587,7 @@ test('oauth auth admin route manages codex responses provider config without tok
     const disabled = await disableResponse.json();
     assert.equal(disabled.provider.enabled, false);
     assert.deepEqual(disabled.provider.configuredModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
+    assert.equal(disabled.provider.diagnostics.checks.providerEnabled, false);
 
     const disabledConfig = await fs.readFile(path.join(tempBasePath, 'config.env'), 'utf8');
     assert.match(disabledConfig, /^VCP_RESPONSES_PROVIDER=$/m);
@@ -625,9 +632,85 @@ test('oauth auth admin route reports built-in codex model fallback when no local
     assert.deepEqual(payload.provider.configuredModelIds, []);
     assert.equal(payload.provider.modelSource, 'built_in_fallback');
     assert.ok(payload.provider.effectiveModelIds.includes('gpt-5.4-mini'));
+    assert.equal(payload.provider.diagnostics.checks.configuredAccountValid, false);
+    assert.equal(payload.provider.diagnostics.checks.hasEffectiveModels, true);
   } finally {
     await closeServer(server);
     await fs.rm(tempBasePath, { recursive: true, force: true });
+  }
+});
+
+test('oauth auth admin route records sanitized codex provider smoke diagnostics', async () => {
+  const recentSmokeByProvider = new Map();
+  const manager = {
+    getProviderCatalog() {
+      return [];
+    },
+    async getStatus(provider) {
+      assert.equal(provider, 'codex_oauth');
+      return {
+        provider,
+        authenticated: true,
+        defaultAccountId: 'codex_abc',
+        accounts: [
+          {
+            id: 'codex_abc',
+            provider,
+            displayName: 'Codex Test',
+            isDefault: true,
+            hasRefreshToken: true,
+            hasAccessToken: false,
+          },
+        ],
+      };
+    },
+    async smokeCodexUpstream({ accountId }) {
+      assert.equal(accountId, 'codex_abc');
+      return {
+        provider: 'codex_oauth',
+        account: {
+          id: 'codex_abc',
+          provider: 'codex_oauth',
+          displayName: 'Codex Test',
+          hasRefreshToken: true,
+          hasAccessToken: false,
+        },
+        tokenExpiresAt: '2026-01-01T01:00:00.000Z',
+        upstream: {
+          endpoint: 'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0',
+          status: 429,
+          ok: false,
+          contentType: 'application/json',
+          payload: { kind: 'object', keys: ['error', 'status'] },
+        },
+      };
+    },
+  };
+
+  const { server, baseUrl } = await startRouteServer(manager, { recentSmokeByProvider });
+  try {
+    const smokeResponse = await fetch(`${baseUrl}/oauth-auth/codex_oauth/upstream-smoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'codex_abc' }),
+    });
+    assert.equal(smokeResponse.status, 502);
+    const smokePayload = await smokeResponse.json();
+    assert.equal(smokePayload.success, false);
+    assert.equal(smokePayload.diagnostics.lastSmoke.ok, false);
+    assert.equal(smokePayload.diagnostics.lastSmoke.errorCode, 'codex_oauth_rate_limited');
+    assert.equal(JSON.stringify(smokePayload.diagnostics).includes('access-token'), false);
+    assert.equal(JSON.stringify(smokePayload.diagnostics).includes('refresh-token'), false);
+
+    const statusResponse = await fetch(`${baseUrl}/oauth-auth/codex_oauth/responses-provider/status`);
+    assert.equal(statusResponse.status, 200);
+    const statusPayload = await statusResponse.json();
+    assert.equal(statusPayload.provider.diagnostics.lastSmoke.ok, false);
+    assert.equal(statusPayload.provider.diagnostics.lastSmoke.status, 429);
+    assert.equal(statusPayload.provider.diagnostics.lastSmoke.errorCode, 'codex_oauth_rate_limited');
+    assert.deepEqual(statusPayload.provider.diagnostics.lastSmoke.payloadKeys, ['error', 'status']);
+  } finally {
+    await closeServer(server);
   }
 });
 

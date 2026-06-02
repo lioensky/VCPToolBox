@@ -10,6 +10,7 @@ const {
 } = require('../../modules/oauthAuthManager');
 const {
   DEFAULT_CODEX_OAUTH_MODEL_IDS,
+  classifyCodexOAuthProviderFailure,
 } = require('../codexOAuthResponses');
 
 module.exports = function createOAuthAuthAdminRoute(options = {}) {
@@ -31,6 +32,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
   const manager = options.oauthAuthManager || createOAuthAuthManager({
     projectBasePath: options.projectBasePath,
   });
+  const recentSmokeByProvider = options.recentSmokeByProvider || new Map();
 
   router.get('/oauth-auth/providers', (_req, res) => {
     res.json({ success: true, providers: manager.getProviderCatalog() });
@@ -102,11 +104,17 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
 
       const accountId = req.body && typeof req.body.accountId === 'string' ? req.body.accountId : null;
       const smoke = await manager.smokeCodexUpstream({ accountId });
+      const smokeSummary = buildSmokeSummaryFromResult(smoke);
+      recentSmokeByProvider.set('codex_oauth', smokeSummary);
       res.status(smoke.upstream.ok ? 200 : 502).json({
         success: smoke.upstream.ok,
         smoke,
+        diagnostics: {
+          lastSmoke: smokeSummary,
+        },
       });
     } catch (error) {
+      recentSmokeByProvider.set('codex_oauth', buildSmokeSummaryFromError(error));
       sendError(res, error);
     }
   });
@@ -117,7 +125,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
       const status = await manager.getStatus('codex_oauth');
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
       });
     } catch (error) {
       sendError(res, error);
@@ -147,7 +155,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
 
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
       });
     } catch (error) {
       sendError(res, error);
@@ -164,7 +172,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
 
       res.json({
         success: true,
-        provider: buildResponsesProviderStatus(config, status),
+        provider: buildResponsesProviderStatus(config, status, recentSmokeByProvider.get('codex_oauth')),
       });
     } catch (error) {
       sendError(res, error);
@@ -220,16 +228,24 @@ function parseCodexOAuthModelIds(config = {}) {
     .filter(Boolean);
 }
 
-function buildResponsesProviderStatus(config = {}, oauthStatus = {}) {
+function buildResponsesProviderStatus(config = {}, oauthStatus = {}, recentSmoke = null) {
   const configuredModelIds = parseCodexOAuthModelIds(config);
   const effectiveModelIds = configuredModelIds.length > 0
     ? configuredModelIds
     : DEFAULT_CODEX_OAUTH_MODEL_IDS;
+  const enabled = String(config.VCP_RESPONSES_PROVIDER || '').trim().toLowerCase() === 'codex_oauth';
+  const accountId = config.VCP_CODEX_OAUTH_ACCOUNT_ID || '';
+  const accountIds = new Set(
+    Array.isArray(oauthStatus.accounts)
+      ? oauthStatus.accounts.map(account => account && account.id).filter(Boolean)
+      : []
+  );
+  const configuredAccountValid = !accountId || accountIds.has(accountId);
 
   return {
-    enabled: String(config.VCP_RESPONSES_PROVIDER || '').trim().toLowerCase() === 'codex_oauth',
+    enabled,
     configuredProvider: config.VCP_RESPONSES_PROVIDER || '',
-    accountId: config.VCP_CODEX_OAUTH_ACCOUNT_ID || '',
+    accountId,
     upstreamBaseUrl: config.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || '',
     clientVersion: config.VCP_CODEX_OAUTH_CLIENT_VERSION || '',
     authenticated: Boolean(oauthStatus.authenticated),
@@ -237,7 +253,68 @@ function buildResponsesProviderStatus(config = {}, oauthStatus = {}) {
     configuredModelIds,
     effectiveModelIds,
     modelSource: configuredModelIds.length > 0 ? 'configured' : 'built_in_fallback',
+    diagnostics: {
+      generatedAt: new Date().toISOString(),
+      checks: {
+        providerEnabled: enabled,
+        authenticated: Boolean(oauthStatus.authenticated),
+        accountConfigured: Boolean(accountId || oauthStatus.defaultAccountId),
+        configuredAccountValid,
+        hasEffectiveModels: effectiveModelIds.length > 0,
+      },
+      lastSmoke: recentSmoke || null,
+    },
   };
+}
+
+function buildSmokeSummaryFromResult(smoke = {}) {
+  const upstream = smoke.upstream || {};
+  const failure = upstream.ok
+    ? null
+    : classifyCodexOAuthProviderFailure(upstream.status || 502);
+
+  return {
+    checkedAt: new Date().toISOString(),
+    ok: Boolean(upstream.ok),
+    status: Number.isInteger(upstream.status) ? upstream.status : 0,
+    contentType: upstream.contentType || '',
+    payloadKind: upstream.payload?.kind || '',
+    payloadKeys: Array.isArray(upstream.payload?.keys) ? upstream.payload.keys : [],
+    tokenExpiresAt: smoke.tokenExpiresAt || null,
+    errorCode: failure ? failure.code : null,
+    message: failure ? failure.message : 'Provider connection test passed.',
+  };
+}
+
+function buildSmokeSummaryFromError(error) {
+  const status = error?.statusCode || error?.status || 502;
+  const failure = classifyAdminSmokeFailure(error, status);
+  return {
+    checkedAt: new Date().toISOString(),
+    ok: false,
+    status: failure.status,
+    contentType: '',
+    payloadKind: '',
+    payloadKeys: [],
+    tokenExpiresAt: null,
+    errorCode: failure.code,
+    message: failure.message,
+  };
+}
+
+function classifyAdminSmokeFailure(error, status) {
+  if (error instanceof OAuthAuthError) {
+    if (error.code === 'account_not_found') {
+      return classifyCodexOAuthProviderFailure(404);
+    }
+    if (error.code === 'token_refresh_unavailable') {
+      return classifyCodexOAuthProviderFailure(409);
+    }
+    if (error.code === 'oauth_fetch_failed') {
+      return classifyCodexOAuthProviderFailure(error.statusCode || status);
+    }
+  }
+  return classifyCodexOAuthProviderFailure(status);
 }
 
 async function readTextIfExists(filePath) {

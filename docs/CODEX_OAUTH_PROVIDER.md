@@ -48,6 +48,18 @@
 
 AdminPanel 的 Provider 面板显示的是本地兜底模型来源和数量，例如 `models=configured:n` 或 `models=fallback:n`。实际请求时，如果上游模型目录可用，运行时仍会优先采用上游返回的模型目录。如果没有有效模型，测试 Provider 按钮会被禁用。
 
+## AdminPanel 诊断状态
+
+OAuth 认证中心的 Codex OAuth Provider 卡片会展示只读诊断信息：
+
+- Provider 是否启用。
+- OAuth 账号是否已授权。
+- 配置账号是否仍在授权账号列表中。
+- 是否存在有效模型列表。
+- 最近一次 Provider 测试的状态、错误码、时间和排错提示。
+
+最近一次测试结果只保存在当前后端进程内，服务重启后会清空。诊断信息不会包含 access token、refresh token、完整认证头或原始上游响应体。
+
 ## Bridge / Proxy 接入
 
 推荐接入方式是让 `VCPBridgeServer` 的上游指向 VCP 主服务，而不是让 bridge 自己消费 OAuth。

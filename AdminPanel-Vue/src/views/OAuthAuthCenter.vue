@@ -99,6 +99,23 @@
               <span class="material-symbols-outlined">warning</span>
               {{ responsesProviderWarning }}
             </div>
+            <div class="responses-provider-diagnostics">
+              <span :class="['status-dot', responsesProviderDiagnosticsOk ? 'online' : 'offline']"></span>
+              <span>{{ responsesProviderDiagnosticsSummary }}</span>
+              <span v-if="responsesProviderLastSmoke">
+                last={{ formatDate(responsesProviderLastSmoke.checkedAt) }}
+              </span>
+              <span v-if="responsesProviderLastSmoke">
+                smoke={{ responsesProviderLastSmoke.ok ? "ok" : "fail" }}
+              </span>
+              <span v-if="responsesProviderLastSmoke?.errorCode">
+                code={{ responsesProviderLastSmoke.errorCode }}
+              </span>
+            </div>
+            <div v-if="responsesProviderDiagnosticMessage" class="message message-info responses-provider-diagnostic-message">
+              <span class="material-symbols-outlined">info</span>
+              {{ responsesProviderDiagnosticMessage }}
+            </div>
             <div class="responses-provider-actions">
               <button
                 v-if="!responsesProviderStatus?.enabled"
@@ -208,6 +225,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   oauthAuthApi,
   type CodexResponsesProviderStatus,
+  type CodexResponsesProviderSmokeSummary,
   type OAuthUpstreamSmokeResult,
   type OAuthLoginSession,
   type OAuthProviderId,
@@ -302,6 +320,41 @@ const responsesProviderWarning = computed(() =>
 const canSmokeResponsesProvider = computed(() =>
   Boolean(responsesProviderStatus.value?.enabled && configuredResponsesAccountExists.value && !responsesProviderWarning.value)
 );
+const responsesProviderLastSmoke = computed<CodexResponsesProviderSmokeSummary | null>(() =>
+  responsesProviderStatus.value?.diagnostics?.lastSmoke || null
+);
+const responsesProviderDiagnosticsOk = computed(() => {
+  const checks = responsesProviderStatus.value?.diagnostics?.checks;
+  if (!checks) return false;
+  const configReady = checks.providerEnabled && checks.authenticated && checks.accountConfigured && checks.configuredAccountValid && checks.hasEffectiveModels;
+  return configReady && responsesProviderLastSmoke.value?.ok !== false;
+});
+const responsesProviderDiagnosticsSummary = computed(() => {
+  const checks = responsesProviderStatus.value?.diagnostics?.checks;
+  if (!checks) return "diagnostics=loading";
+  const failed = [
+    checks.providerEnabled ? "" : "provider-off",
+    checks.authenticated ? "" : "auth-missing",
+    checks.accountConfigured ? "" : "account-missing",
+    checks.configuredAccountValid ? "" : "account-invalid",
+    checks.hasEffectiveModels ? "" : "models-missing",
+  ].filter(Boolean);
+  if (responsesProviderLastSmoke.value?.ok === false) {
+    failed.push("smoke-failed");
+  }
+  return failed.length > 0 ? `diagnostics=${failed.join(",")}` : "diagnostics=ready";
+});
+const responsesProviderDiagnosticMessage = computed(() => {
+  if (responsesProviderWarning.value) return "";
+  const lastSmoke = responsesProviderLastSmoke.value;
+  if (!lastSmoke) {
+    return "";
+  }
+  if (lastSmoke.ok) {
+    return `最近一次 Provider 测试通过，token expires=${formatDate(lastSmoke.tokenExpiresAt)}。`;
+  }
+  return getCodexOAuthErrorHint(lastSmoke.errorCode, lastSmoke.message);
+});
 
 function setProviderBusy(provider: OAuthProviderId, value: boolean): void {
   const next = new Set(busyProviders.value);
@@ -432,6 +485,7 @@ async function smokeResponsesProvider(): Promise<void> {
   responsesProviderBusy.value = true;
   try {
     responsesProviderSmoke.value = await oauthAuthApi.smokeCodexUpstream(accountId, {}, { showLoader: false });
+    await refreshResponsesProviderStatusBestEffort();
     showMessage(
       responsesProviderSmoke.value.upstream.ok
         ? "Provider 连接测试通过。"
@@ -439,10 +493,33 @@ async function smokeResponsesProvider(): Promise<void> {
       responsesProviderSmoke.value.upstream.ok ? "success" : "error"
     );
   } catch (error) {
+    await refreshResponsesProviderStatusBestEffort();
     showMessage(`Provider 连接测试失败：${error instanceof Error ? error.message : String(error)}`, "error");
   } finally {
     responsesProviderBusy.value = false;
   }
+}
+
+async function refreshResponsesProviderStatusBestEffort(): Promise<void> {
+  try {
+    await loadResponsesProviderStatus();
+  } catch {
+    // Keep the primary smoke result/error visible even if the follow-up diagnostics refresh fails.
+  }
+}
+
+function getCodexOAuthErrorHint(errorCode?: string | null, fallback = ""): string {
+  const hints: Record<string, string> = {
+    codex_oauth_account_missing: "最近一次 Provider 测试失败：账号缺失或已移除。请重新登录账号，并重新启用 Provider。",
+    codex_oauth_unauthorized: "最近一次 Provider 测试失败：上游拒绝 OAuth 授权。请重新授权该账号。",
+    codex_oauth_refresh_unavailable: "最近一次 Provider 测试失败：refresh token 不可用。请移除账号后重新登录。",
+    codex_oauth_rate_limited: "最近一次 Provider 测试失败：上游限流。请稍后重试，或切换账号/模型。",
+    codex_oauth_request_rejected: "最近一次 Provider 测试失败：上游拒绝请求。请检查模型名和请求格式。",
+    codex_oauth_upstream_timeout: "最近一次 Provider 测试失败：上游超时。请检查网络或 VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS。",
+    codex_oauth_upstream_failed: "最近一次 Provider 测试失败：请检查账号、模型配置、网络和上游可用性。",
+  };
+  if (errorCode && hints[errorCode]) return hints[errorCode];
+  return fallback || "最近一次 Provider 测试失败。请检查账号、模型配置、网络和上游可用性。";
 }
 
 async function startLogin(provider: OAuthProviderId): Promise<void> {
@@ -723,7 +800,8 @@ onBeforeUnmount(() => {
 .responses-provider-main,
 .responses-provider-meta,
 .responses-provider-actions,
-.responses-provider-smoke {
+.responses-provider-smoke,
+.responses-provider-diagnostics {
   display: flex;
   align-items: center;
 }
@@ -757,6 +835,11 @@ onBeforeUnmount(() => {
   grid-column: 1 / -1;
 }
 
+.responses-provider-diagnostics,
+.responses-provider-diagnostic-message {
+  grid-column: 1 / -1;
+}
+
 .responses-provider-actions {
   gap: var(--space-2);
   justify-content: flex-end;
@@ -765,6 +848,13 @@ onBeforeUnmount(() => {
 
 .responses-provider-smoke {
   grid-column: 1 / -1;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.responses-provider-diagnostics {
   gap: var(--space-3);
   flex-wrap: wrap;
   color: var(--secondary-text);
@@ -949,6 +1039,12 @@ button:disabled {
   background: var(--warning-bg);
   border: 1px solid var(--warning-text);
   color: var(--warning-text);
+}
+
+.message-info {
+  background: var(--tertiary-bg);
+  border: 1px solid var(--border-color);
+  color: var(--secondary-text);
 }
 
 .empty-state {
