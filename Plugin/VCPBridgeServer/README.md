@@ -74,6 +74,16 @@ Operational flow:
 7. Configure VCPBridgeServer with `BRIDGE_UPSTREAM_TYPE=responses` and leave
    `BRIDGE_UPSTREAM_URL` empty unless the main service is on a non-default URL.
 
+Model selection:
+
+- The main service first asks the Codex OAuth upstream model catalog.
+- If that catalog is unavailable, `VCP_CODEX_OAUTH_MODELS` is used as the local
+  fallback list.
+- If `VCP_CODEX_OAUTH_MODELS` is empty, the built-in fallback list is exposed.
+- Set `BRIDGE_MODEL` to one of the models exposed by the main service
+  `GET /v1/models` response. `BRIDGE_MODEL_MAP` can still rewrite downstream
+  model aliases before the bridge forwards the request.
+
 Codex client config:
 
 ```toml
@@ -105,6 +115,24 @@ setting. The main `/v1/responses` provider route reads the current
 admin Base Config page is enough for this route to observe the provider choice.
 Long-running callers may still need to reload their own client-side bridge
 configuration if they changed bridge keys or ports.
+
+Troubleshooting:
+
+- `401` from the main service usually means the caller did not provide the VCP
+  main-service key when calling the main service directly.
+- `codex_oauth_provider_failed` with `404` usually means no local Codex OAuth
+  account is available or the configured account id no longer exists.
+- `codex_oauth_provider_failed` with `400` can mean the upstream rejected the
+  request body. The main provider supplies default `instructions` for bridge
+  Responses requests; keep `BRIDGE_UPSTREAM_TYPE=responses` when routing Codex
+  OAuth through the bridge.
+- `codex_oauth_provider_failed` with `502` usually means token refresh,
+  upstream network, timeout, or non-JSON upstream failure. Re-run `测试
+  Provider` in AdminPanel to confirm the OAuth account and upstream model
+  catalog before testing the bridge again.
+- `VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS` controls the main-service Codex OAuth
+  upstream timeout. `BRIDGE_UPSTREAM_TIMEOUT_MS` controls the bridge-to-main
+  request timeout.
 
 ## Supported Downstream Endpoints
 

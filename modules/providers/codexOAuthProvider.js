@@ -4,6 +4,12 @@ const { createOAuthAuthManager } = require('../oauthAuthManager');
 
 const DEFAULT_CODEX_UPSTREAM_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 const DEFAULT_CODEX_CLIENT_VERSION = '1.0.0';
+const DEFAULT_CODEX_UPSTREAM_TIMEOUT_MS = 120000;
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function sanitizeResponseBody(body = {}) {
   const nextBody = body && typeof body === 'object' ? { ...body } : {};
@@ -24,9 +30,34 @@ class CodexOAuthProvider {
     ).replace(/\/+$/, '');
     this.accountId = options.accountId || process.env.VCP_CODEX_OAUTH_ACCOUNT_ID || null;
     this.clientVersion = options.clientVersion || process.env.VCP_CODEX_OAUTH_CLIENT_VERSION || DEFAULT_CODEX_CLIENT_VERSION;
+    this.timeoutMs = parsePositiveInteger(
+      options.timeoutMs || process.env.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS,
+      DEFAULT_CODEX_UPSTREAM_TIMEOUT_MS
+    );
 
     if (typeof this.fetchImpl !== 'function') {
       throw new Error('CodexOAuthProvider requires fetch support.');
+    }
+  }
+
+  async fetchWithTimeout(url, options = {}) {
+    if (!this.timeoutMs || typeof AbortController !== 'function') {
+      return this.fetchImpl(url, options);
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    if (typeof timeout.unref === 'function') {
+      timeout.unref();
+    }
+
+    try {
+      return await this.fetchImpl(url, {
+        ...options,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -48,7 +79,7 @@ class CodexOAuthProvider {
 
   async fetchModels() {
     const authHeaders = await this.buildAuthHeaders();
-    return this.fetchImpl(`${this.baseUrl}/models?client_version=${encodeURIComponent(this.clientVersion)}`, {
+    return this.fetchWithTimeout(`${this.baseUrl}/models?client_version=${encodeURIComponent(this.clientVersion)}`, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -65,7 +96,7 @@ class CodexOAuthProvider {
       stream,
     });
 
-    return this.fetchImpl(`${this.baseUrl}/responses`, {
+    return this.fetchWithTimeout(`${this.baseUrl}/responses`, {
       method: 'POST',
       headers: {
         Accept: stream ? 'text/event-stream' : 'application/json',
@@ -81,5 +112,6 @@ module.exports = {
   CodexOAuthProvider,
   DEFAULT_CODEX_CLIENT_VERSION,
   DEFAULT_CODEX_UPSTREAM_BASE_URL,
+  DEFAULT_CODEX_UPSTREAM_TIMEOUT_MS,
   createCodexOAuthProvider: (options) => new CodexOAuthProvider(options),
 };

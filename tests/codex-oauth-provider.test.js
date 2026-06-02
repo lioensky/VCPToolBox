@@ -135,6 +135,35 @@ test('codex oauth provider fetches and normalizes model catalog', async () => {
   assert.equal(models[1].owned_by, 'codex_oauth');
 });
 
+test('codex oauth provider applies an abort signal to upstream requests', async () => {
+  const oauthAuthManager = {
+    async getValidToken() {
+      return {
+        accessToken: 'access-token-secret',
+        account: { metadata: {} },
+      };
+    },
+  };
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    return jsonResponse({ ok: true });
+  };
+  const provider = new CodexOAuthProvider({
+    oauthAuthManager,
+    fetchImpl,
+    baseUrl: 'https://chatgpt.com/backend-api/codex/',
+    timeoutMs: 5000,
+  });
+
+  const response = await provider.forwardResponses({ model: 'gpt-5.4-mini' });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.signal instanceof AbortSignal, true);
+  assert.equal(calls[0].options.signal.aborted, false);
+});
+
 test('codex oauth model list falls back to configured models without leaking errors', async () => {
   const models = await createCodexOAuthResponsesRouter.fetchCodexOAuthModels({
     runtimeConfig: {
@@ -489,6 +518,107 @@ test('codex oauth responses route is opt-in and returns sanitized failures', asy
     assert.equal(response.status, 502);
     assert.equal(payload.error.type, 'codex_oauth_provider_failed');
     assert.equal(JSON.stringify(payload).includes('raw token failure'), false);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth responses route supplies default instructions for bridge requests', async () => {
+  const calls = [];
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    responsesProvider: 'codex_oauth',
+    codexOAuthProvider: {
+      async forwardResponses(body) {
+        calls.push(body);
+        return jsonResponse({ id: 'resp_bridge', model: body.model, output_text: 'ok' });
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.4-mini',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+        stream: false,
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.output_text, 'ok');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].instructions, 'You are ChatGPT, a helpful assistant.');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth responses route sanitizes non-2xx upstream responses', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    responsesProvider: 'codex_oauth',
+    codexOAuthProvider: {
+      async forwardResponses() {
+        return jsonResponse({
+          error: 'upstream raw failure',
+          access_token: 'secret-access-token',
+        }, 401);
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }),
+    });
+    const payload = await response.json();
+    const serialized = JSON.stringify(payload);
+
+    assert.equal(response.status, 401);
+    assert.equal(payload.error.type, 'codex_oauth_provider_failed');
+    assert.equal(serialized.includes('upstream raw failure'), false);
+    assert.equal(serialized.includes('secret-access-token'), false);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('codex oauth responses route preserves provider error status without leaking details', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    responsesProvider: 'codex_oauth',
+    codexOAuthProvider: {
+      async forwardResponses() {
+        const error = new Error('No OAuth account is available for this provider.');
+        error.statusCode = 404;
+        throw error;
+      },
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 404);
+    assert.equal(payload.error.type, 'codex_oauth_provider_failed');
+    assert.equal(JSON.stringify(payload).includes('No OAuth account'), false);
   } finally {
     await closeServer(server);
   }

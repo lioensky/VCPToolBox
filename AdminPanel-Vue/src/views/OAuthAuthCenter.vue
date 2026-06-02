@@ -99,7 +99,8 @@
                 v-if="!responsesProviderStatus?.enabled"
                 class="secondary-button compact"
                 type="button"
-                :disabled="responsesProviderBusy || !provider.status?.authenticated"
+                :disabled="responsesProviderBusy || !canEnableResponsesProvider"
+                :title="canEnableResponsesProvider ? '启用 Provider' : '请先完成 Codex OAuth 授权'"
                 @click="enableResponsesProvider"
               >
                 <span class="material-symbols-outlined">power_settings_new</span>
@@ -110,6 +111,7 @@
                 class="danger-button compact"
                 type="button"
                 :disabled="responsesProviderBusy"
+                title="停用 Provider"
                 @click="disableResponsesProvider"
               >
                 <span class="material-symbols-outlined">power_settings_new</span>
@@ -127,7 +129,8 @@
               <button
                 class="secondary-button compact"
                 type="button"
-                :disabled="responsesProviderBusy || !responsesProviderStatus?.enabled || !provider.status?.authenticated"
+                :disabled="responsesProviderBusy || !canSmokeResponsesProvider"
+                :title="canSmokeResponsesProvider ? '测试 Provider' : '请先启用 Provider 并完成授权'"
                 @click="smokeResponsesProvider"
               >
                 <span class="material-symbols-outlined">network_check</span>
@@ -252,6 +255,15 @@ const providerCards = computed(() =>
     status: statuses.value[provider.id],
   }))
 );
+const codexAccounts = computed(() => statuses.value.codex_oauth?.accounts || []);
+const codexDefaultAccountId = computed(() => {
+  const status = statuses.value.codex_oauth;
+  return status?.defaultAccountId || status?.accounts.find((account) => account.isDefault)?.id || status?.accounts[0]?.id || "";
+});
+const canEnableResponsesProvider = computed(() => Boolean(codexDefaultAccountId.value));
+const canSmokeResponsesProvider = computed(() =>
+  Boolean(responsesProviderStatus.value?.enabled && codexAccounts.value.length > 0)
+);
 
 function setProviderBusy(provider: OAuthProviderId, value: boolean): void {
   const next = new Set(busyProviders.value);
@@ -325,7 +337,11 @@ async function loadResponsesProviderStatus(): Promise<void> {
 }
 
 async function enableResponsesProvider(): Promise<void> {
-  const accountId = statuses.value.codex_oauth?.defaultAccountId || null;
+  const accountId = codexDefaultAccountId.value || null;
+  if (!accountId) {
+    showMessage("请先完成 Codex OAuth 授权。", "error");
+    return;
+  }
   responsesProviderBusy.value = true;
   try {
     responsesProviderStatus.value = await oauthAuthApi.enableCodexResponsesProvider(accountId, {}, { showLoader: false });
@@ -339,6 +355,9 @@ async function enableResponsesProvider(): Promise<void> {
 }
 
 async function disableResponsesProvider(): Promise<void> {
+  if (!window.confirm("确定停用 Codex OAuth Responses Provider？")) {
+    return;
+  }
   responsesProviderBusy.value = true;
   try {
     responsesProviderStatus.value = await oauthAuthApi.disableCodexResponsesProvider({}, { showLoader: false });
@@ -354,8 +373,12 @@ async function disableResponsesProvider(): Promise<void> {
 async function smokeResponsesProvider(): Promise<void> {
   const accountId =
     responsesProviderStatus.value?.accountId ||
-    statuses.value.codex_oauth?.defaultAccountId ||
+    codexDefaultAccountId.value ||
     null;
+  if (!responsesProviderStatus.value?.enabled || !accountId) {
+    showMessage("请先启用 Provider 并完成 Codex OAuth 授权。", "error");
+    return;
+  }
   responsesProviderBusy.value = true;
   try {
     responsesProviderSmoke.value = await oauthAuthApi.smokeCodexUpstream(accountId, {}, { showLoader: false });
@@ -456,6 +479,19 @@ async function setDefault(provider: OAuthProviderId, accountId: string): Promise
 }
 
 async function removeAccount(provider: OAuthProviderId, accountId: string): Promise<void> {
+  const removingActiveCodexProviderAccount =
+    provider === "codex_oauth" &&
+    responsesProviderStatus.value?.enabled &&
+    (
+      responsesProviderStatus.value.accountId === accountId ||
+      (!responsesProviderStatus.value.accountId && codexDefaultAccountId.value === accountId)
+    );
+  const prompt = removingActiveCodexProviderAccount
+    ? "这个账号正在被 Codex OAuth Responses Provider 使用，移除后 Provider 可能无法继续转发。确定移除？"
+    : "确定移除这个 OAuth 账号？";
+  if (!window.confirm(prompt)) {
+    return;
+  }
   setProviderBusy(provider, true);
   try {
     const accounts = await oauthAuthApi.removeAccount(provider, accountId, {}, { showLoader: false });
@@ -471,6 +507,10 @@ async function removeAccount(provider: OAuthProviderId, accountId: string): Prom
           }
         : null,
     };
+    if (provider === "codex_oauth") {
+      responsesProviderSmoke.value = null;
+      await loadResponsesProviderStatus();
+    }
     showMessage("账号已移除。", "success");
   } catch (error) {
     showMessage(`移除账号失败：${error instanceof Error ? error.message : String(error)}`, "error");
