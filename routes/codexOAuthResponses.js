@@ -313,17 +313,91 @@ function normalizeProviderFailureStatus(status) {
   return 502;
 }
 
-function getProviderFailureStatus(error) {
-  return normalizeProviderFailureStatus(error?.statusCode || error?.status);
+function classifyCodexOAuthProviderFailure(input = 502) {
+  const status = normalizeProviderFailureStatus(
+    typeof input === 'number' ? input : input?.statusCode || input?.status
+  );
+  const errorName = typeof input === 'object' && input ? String(input.name || '') : '';
+  const errorCode = typeof input === 'object' && input ? String(input.code || '') : '';
+
+  if (errorName === 'AbortError' || errorCode === 'ABORT_ERR' || status === 408 || status === 504) {
+    return {
+      status: (errorName === 'AbortError' || errorCode === 'ABORT_ERR') && status === 502 ? 504 : status,
+      code: 'codex_oauth_upstream_timeout',
+      message: 'Codex OAuth upstream request timed out. Check upstream network and timeout settings.',
+    };
+  }
+
+  if (status === 404) {
+    return {
+      status,
+      code: 'codex_oauth_account_missing',
+      message: 'Codex OAuth account is missing or not selected. Sign in and select an account in AdminPanel.',
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      status,
+      code: 'codex_oauth_unauthorized',
+      message: 'Codex OAuth authorization was rejected by the upstream service. Re-authenticate the account in AdminPanel.',
+    };
+  }
+
+  if (status === 409) {
+    return {
+      status,
+      code: 'codex_oauth_refresh_unavailable',
+      message: 'Codex OAuth token refresh is unavailable. Remove and re-authorize the account in AdminPanel.',
+    };
+  }
+
+  if (status === 429) {
+    return {
+      status,
+      code: 'codex_oauth_rate_limited',
+      message: 'Codex OAuth upstream rate limit was reached. Retry later or switch to another account/model.',
+    };
+  }
+
+  if (status === 400) {
+    return {
+      status,
+      code: 'codex_oauth_request_rejected',
+      message: 'Codex OAuth upstream rejected the request. Check the selected model and request format.',
+    };
+  }
+
+  return {
+    status,
+    code: 'codex_oauth_upstream_failed',
+    message: 'Codex OAuth provider request failed. Check OAuth account, model configuration, and upstream network.',
+  };
 }
 
-function sendCodexOAuthProviderFailure(res, status = 502) {
-  return res.status(normalizeProviderFailureStatus(status)).json({
+function buildCodexOAuthProviderFailurePayload(input = 502) {
+  const failure = classifyCodexOAuthProviderFailure(input);
+  return {
     error: {
-      message: 'Codex OAuth provider request failed.',
+      message: failure.message,
       type: 'codex_oauth_provider_failed',
+      code: failure.code,
     },
-  });
+  };
+}
+
+function sendCodexOAuthProviderFailure(res, input = 502) {
+  const failure = classifyCodexOAuthProviderFailure(input);
+  return res.status(failure.status).json(buildCodexOAuthProviderFailurePayload(input));
+}
+
+function endCodexOAuthStreamFailure(res, input = 502) {
+  const payload = buildCodexOAuthProviderFailurePayload(input);
+  try {
+    res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+    res.write('data: [DONE]\n\n');
+  } catch (_error) {}
+  return res.end();
 }
 
 function writeChatCompletionSse(res, chatPayload) {
@@ -526,7 +600,8 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       }
 
       if (req.body && req.body.stream === true && upstreamResponse.body) {
-        return streamResponsesSseAsChatSse(res, upstreamResponse.body, req.body || {});
+        await streamResponsesSseAsChatSse(res, upstreamResponse.body, req.body || {});
+        return;
       }
 
       const upstreamText = await upstreamResponse.text();
@@ -543,7 +618,10 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       }
       return res.status(upstreamResponse.status).json(chatPayload);
     } catch (error) {
-      return sendCodexOAuthProviderFailure(res, getProviderFailureStatus(error));
+      if (res.headersSent) {
+        return endCodexOAuthStreamFailure(res, error);
+      }
+      return sendCodexOAuthProviderFailure(res, error);
     }
   });
 
@@ -578,9 +656,9 @@ module.exports = function createCodexOAuthResponsesRouter(options = {}) {
       return res.end();
     } catch (error) {
       if (res.headersSent) {
-        return res.end();
+        return endCodexOAuthStreamFailure(res, error);
       }
-      return sendCodexOAuthProviderFailure(res, getProviderFailureStatus(error));
+      return sendCodexOAuthProviderFailure(res, error);
     }
   });
 
@@ -598,3 +676,4 @@ module.exports.transformResponsesJsonToChatCompletion = transformResponsesJsonTo
 module.exports.transformResponsesSseToChatCompletion = transformResponsesSseToChatCompletion;
 module.exports.looksLikeSsePayload = looksLikeSsePayload;
 module.exports.isCodexOAuthModel = isCodexOAuthModel;
+module.exports.classifyCodexOAuthProviderFailure = classifyCodexOAuthProviderFailure;

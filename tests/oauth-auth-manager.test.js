@@ -519,6 +519,7 @@ test('oauth auth admin route manages codex responses provider config without tok
   await fs.writeFile(path.join(tempBasePath, 'config.env'), [
     'PORT=6005',
     'VCP_RESPONSES_PROVIDER=',
+    'VCP_CODEX_OAUTH_MODELS=gpt-5.4-mini,gpt-5.3-codex',
     '',
   ].join('\n'), 'utf8');
 
@@ -552,6 +553,9 @@ test('oauth auth admin route manages codex responses provider config without tok
     assert.equal(initialResponse.status, 200);
     const initial = await initialResponse.json();
     assert.equal(initial.provider.enabled, false);
+    assert.deepEqual(initial.provider.configuredModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
+    assert.deepEqual(initial.provider.effectiveModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
+    assert.equal(initial.provider.modelSource, 'configured');
 
     const enableResponse = await fetch(`${baseUrl}/oauth-auth/codex_oauth/responses-provider/enable`, {
       method: 'POST',
@@ -562,6 +566,7 @@ test('oauth auth admin route manages codex responses provider config without tok
     const enabled = await enableResponse.json();
     assert.equal(enabled.provider.enabled, true);
     assert.equal(enabled.provider.accountId, 'codex_abc');
+    assert.deepEqual(enabled.provider.effectiveModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
 
     const enabledConfig = await fs.readFile(path.join(tempBasePath, 'config.env'), 'utf8');
     assert.match(enabledConfig, /^VCP_RESPONSES_PROVIDER=codex_oauth$/m);
@@ -575,10 +580,51 @@ test('oauth auth admin route manages codex responses provider config without tok
     assert.equal(disableResponse.status, 200);
     const disabled = await disableResponse.json();
     assert.equal(disabled.provider.enabled, false);
+    assert.deepEqual(disabled.provider.configuredModelIds, ['gpt-5.4-mini', 'gpt-5.3-codex']);
 
     const disabledConfig = await fs.readFile(path.join(tempBasePath, 'config.env'), 'utf8');
     assert.match(disabledConfig, /^VCP_RESPONSES_PROVIDER=$/m);
     assert.match(disabledConfig, /^VCP_CODEX_OAUTH_ACCOUNT_ID=codex_abc$/m);
+  } finally {
+    await closeServer(server);
+    await fs.rm(tempBasePath, { recursive: true, force: true });
+  }
+});
+
+test('oauth auth admin route reports built-in codex model fallback when no local models are configured', async () => {
+  const tempBasePath = await fs.mkdtemp(path.join(os.tmpdir(), 'oauth-admin-provider-models-'));
+  await fs.writeFile(path.join(tempBasePath, 'config.env'), [
+    'VCP_RESPONSES_PROVIDER=codex_oauth',
+    'VCP_CODEX_OAUTH_ACCOUNT_ID=codex_abc',
+    'VCP_CODEX_OAUTH_MODELS=',
+    '',
+  ].join('\n'), 'utf8');
+
+  const manager = {
+    getProviderCatalog() {
+      return [];
+    },
+    async getStatus(provider) {
+      assert.equal(provider, 'codex_oauth');
+      return {
+        provider,
+        authenticated: true,
+        defaultAccountId: 'codex_abc',
+        accounts: [],
+      };
+    },
+  };
+
+  const { server, baseUrl } = await startRouteServer(manager, { projectBasePath: tempBasePath });
+  try {
+    const response = await fetch(`${baseUrl}/oauth-auth/codex_oauth/responses-provider/status`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+
+    assert.equal(payload.provider.enabled, true);
+    assert.deepEqual(payload.provider.configuredModelIds, []);
+    assert.equal(payload.provider.modelSource, 'built_in_fallback');
+    assert.ok(payload.provider.effectiveModelIds.includes('gpt-5.4-mini'));
   } finally {
     await closeServer(server);
     await fs.rm(tempBasePath, { recursive: true, force: true });

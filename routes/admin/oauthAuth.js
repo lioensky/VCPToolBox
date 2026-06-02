@@ -8,6 +8,9 @@ const {
   OAuthAuthError,
   createOAuthAuthManager,
 } = require('../../modules/oauthAuthManager');
+const {
+  DEFAULT_CODEX_OAUTH_MODEL_IDS,
+} = require('../codexOAuthResponses');
 
 module.exports = function createOAuthAuthAdminRoute(options = {}) {
   const router = express.Router();
@@ -114,15 +117,7 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
       const status = await manager.getStatus('codex_oauth');
       res.json({
         success: true,
-        provider: {
-          enabled: String(config.VCP_RESPONSES_PROVIDER || '').trim().toLowerCase() === 'codex_oauth',
-          configuredProvider: config.VCP_RESPONSES_PROVIDER || '',
-          accountId: config.VCP_CODEX_OAUTH_ACCOUNT_ID || '',
-          upstreamBaseUrl: config.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || '',
-          clientVersion: config.VCP_CODEX_OAUTH_CLIENT_VERSION || '',
-          authenticated: status.authenticated,
-          defaultAccountId: status.defaultAccountId || null,
-        },
+        provider: buildResponsesProviderStatus(config, status),
       });
     } catch (error) {
       sendError(res, error);
@@ -148,16 +143,11 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
         VCP_RESPONSES_PROVIDER: 'codex_oauth',
         VCP_CODEX_OAUTH_ACCOUNT_ID: accountId,
       });
+      const config = await readResponsesProviderConfig(options);
 
       res.json({
         success: true,
-        provider: {
-          enabled: true,
-          configuredProvider: 'codex_oauth',
-          accountId,
-          authenticated: true,
-          defaultAccountId: status.defaultAccountId || null,
-        },
+        provider: buildResponsesProviderStatus(config, status),
       });
     } catch (error) {
       sendError(res, error);
@@ -170,16 +160,11 @@ module.exports = function createOAuthAuthAdminRoute(options = {}) {
       await updateMainConfig(options, {
         VCP_RESPONSES_PROVIDER: '',
       });
+      const config = await readResponsesProviderConfig(options);
 
       res.json({
         success: true,
-        provider: {
-          enabled: false,
-          configuredProvider: '',
-          accountId: '',
-          authenticated: status.authenticated,
-          defaultAccountId: status.defaultAccountId || null,
-        },
+        provider: buildResponsesProviderStatus(config, status),
       });
     } catch (error) {
       sendError(res, error);
@@ -224,6 +209,34 @@ async function readResponsesProviderConfig(options = {}) {
   return {
     ...process.env,
     ...env,
+  };
+}
+
+function parseCodexOAuthModelIds(config = {}) {
+  const raw = config.VCP_CODEX_OAUTH_MODELS || config.VCP_CODEX_OAUTH_MODEL_LIST || '';
+  return String(raw)
+    .split(',')
+    .map(model => model.trim())
+    .filter(Boolean);
+}
+
+function buildResponsesProviderStatus(config = {}, oauthStatus = {}) {
+  const configuredModelIds = parseCodexOAuthModelIds(config);
+  const effectiveModelIds = configuredModelIds.length > 0
+    ? configuredModelIds
+    : DEFAULT_CODEX_OAUTH_MODEL_IDS;
+
+  return {
+    enabled: String(config.VCP_RESPONSES_PROVIDER || '').trim().toLowerCase() === 'codex_oauth',
+    configuredProvider: config.VCP_RESPONSES_PROVIDER || '',
+    accountId: config.VCP_CODEX_OAUTH_ACCOUNT_ID || '',
+    upstreamBaseUrl: config.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || '',
+    clientVersion: config.VCP_CODEX_OAUTH_CLIENT_VERSION || '',
+    authenticated: Boolean(oauthStatus.authenticated),
+    defaultAccountId: oauthStatus.defaultAccountId || null,
+    configuredModelIds,
+    effectiveModelIds,
+    modelSource: configuredModelIds.length > 0 ? 'configured' : 'built_in_fallback',
   };
 }
 

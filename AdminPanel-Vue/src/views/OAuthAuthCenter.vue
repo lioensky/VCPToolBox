@@ -93,6 +93,11 @@
             <div class="responses-provider-meta">
               <span>provider={{ responsesProviderStatus?.configuredProvider || "-" }}</span>
               <span>account={{ responsesProviderStatus?.accountId || responsesProviderStatus?.defaultAccountId || "-" }}</span>
+              <span>models={{ responsesProviderModelSummary }}</span>
+            </div>
+            <div v-if="responsesProviderWarning" class="message message-warning responses-provider-warning">
+              <span class="material-symbols-outlined">warning</span>
+              {{ responsesProviderWarning }}
             </div>
             <div class="responses-provider-actions">
               <button
@@ -130,7 +135,7 @@
                 class="secondary-button compact"
                 type="button"
                 :disabled="responsesProviderBusy || !canSmokeResponsesProvider"
-                :title="canSmokeResponsesProvider ? '测试 Provider' : '请先启用 Provider 并完成授权'"
+                :title="canSmokeResponsesProvider ? '测试 Provider' : responsesProviderWarning || '请先启用 Provider 并完成授权'"
                 @click="smokeResponsesProvider"
               >
                 <span class="material-symbols-outlined">network_check</span>
@@ -261,8 +266,41 @@ const codexDefaultAccountId = computed(() => {
   return status?.defaultAccountId || status?.accounts.find((account) => account.isDefault)?.id || status?.accounts[0]?.id || "";
 });
 const canEnableResponsesProvider = computed(() => Boolean(codexDefaultAccountId.value));
+const configuredResponsesAccountId = computed(() =>
+  responsesProviderStatus.value?.accountId || responsesProviderStatus.value?.defaultAccountId || ""
+);
+const configuredResponsesAccountExists = computed(() => {
+  const configuredAccountId = configuredResponsesAccountId.value;
+  return Boolean(configuredAccountId && codexAccounts.value.some((account) => account.id === configuredAccountId));
+});
+const responsesProviderAccountWarning = computed(() => {
+  if (!responsesProviderStatus.value?.enabled) return "";
+  if (codexAccounts.value.length === 0) {
+    return "Provider 已启用，但当前没有 Codex OAuth 授权账号。请先登录账号。";
+  }
+  if (responsesProviderStatus.value.accountId && !configuredResponsesAccountExists.value) {
+    return "Provider 配置的账号已不在授权列表中。请重新启用 Provider 或重新登录该账号。";
+  }
+  return "";
+});
+const responsesProviderModelSummary = computed(() => {
+  const effectiveModels = responsesProviderStatus.value?.effectiveModelIds || [];
+  if (effectiveModels.length === 0) return "-";
+  const source = responsesProviderStatus.value?.modelSource === "configured" ? "configured" : "fallback";
+  return `${source}:${effectiveModels.length}`;
+});
+const responsesProviderModelWarning = computed(() => {
+  if (!responsesProviderStatus.value?.enabled) return "";
+  if ((responsesProviderStatus.value.effectiveModelIds || []).length === 0) {
+    return "Provider 已启用，但没有可用模型。请在 Base Config 中配置 VCP_CODEX_OAUTH_MODELS。";
+  }
+  return "";
+});
+const responsesProviderWarning = computed(() =>
+  responsesProviderAccountWarning.value || responsesProviderModelWarning.value
+);
 const canSmokeResponsesProvider = computed(() =>
-  Boolean(responsesProviderStatus.value?.enabled && codexAccounts.value.length > 0)
+  Boolean(responsesProviderStatus.value?.enabled && configuredResponsesAccountExists.value && !responsesProviderWarning.value)
 );
 
 function setProviderBusy(provider: OAuthProviderId, value: boolean): void {
@@ -342,6 +380,14 @@ async function enableResponsesProvider(): Promise<void> {
     showMessage("请先完成 Codex OAuth 授权。", "error");
     return;
   }
+  const currentProvider = responsesProviderStatus.value?.configuredProvider?.trim() || "";
+  const currentAccountId = responsesProviderStatus.value?.accountId?.trim() || "";
+  const willOverwrite =
+    (currentProvider && currentProvider !== "codex_oauth") ||
+    (currentAccountId && currentAccountId !== accountId);
+  if (willOverwrite && !window.confirm("启用 Codex OAuth Provider 会覆盖当前 Responses Provider 配置。确定继续？")) {
+    return;
+  }
   responsesProviderBusy.value = true;
   try {
     responsesProviderStatus.value = await oauthAuthApi.enableCodexResponsesProvider(accountId, {}, { showLoader: false });
@@ -377,6 +423,10 @@ async function smokeResponsesProvider(): Promise<void> {
     null;
   if (!responsesProviderStatus.value?.enabled || !accountId) {
     showMessage("请先启用 Provider 并完成 Codex OAuth 授权。", "error");
+    return;
+  }
+  if (responsesProviderWarning.value) {
+    showMessage(responsesProviderWarning.value, "error");
     return;
   }
   responsesProviderBusy.value = true;
@@ -703,6 +753,10 @@ onBeforeUnmount(() => {
   font-size: var(--font-size-helper);
 }
 
+.responses-provider-warning {
+  grid-column: 1 / -1;
+}
+
 .responses-provider-actions {
   gap: var(--space-2);
   justify-content: flex-end;
@@ -889,6 +943,12 @@ button:disabled {
   background: var(--danger-bg);
   border: 1px solid var(--danger-border);
   color: var(--danger-text);
+}
+
+.message-warning {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-text);
+  color: var(--warning-text);
 }
 
 .empty-state {
