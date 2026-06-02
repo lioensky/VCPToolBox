@@ -248,7 +248,7 @@ function isImageUrl(url) {
 
 function sanitizeKnowledgeSubfolderName(folderName) {
     const normalized = String(folderName || '').trim();
-    if (!normalized) {
+    if (!normalized || normalized === '.') {
         throw new Error("缺少必需的参数: knowledgeFolder（knowledge 根目录下的子文件夹名）");
     }
 

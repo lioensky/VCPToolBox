@@ -53,6 +53,7 @@ test('saveMarkdownToKnowledgeFolder writes markdown without overwriting existing
 
 test('sanitizeKnowledgeSubfolderName rejects traversal and nested paths', () => {
     assert.equal(sanitizeKnowledgeSubfolderName('TDBdocs'), 'TDBdocs');
+    assert.throws(() => sanitizeKnowledgeSubfolderName('.'), /knowledgeFolder/);
     assert.throws(() => sanitizeKnowledgeSubfolderName('../outside'), /knowledgeFolder/);
     assert.throws(() => sanitizeKnowledgeSubfolderName('nested/folder'), /knowledgeFolder/);
     assert.throws(() => sanitizeKnowledgeSubfolderName('nested\\folder'), /knowledgeFolder/);
