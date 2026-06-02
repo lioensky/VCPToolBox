@@ -622,7 +622,11 @@ class DynamicToolRegistry {
                 this.lastError = error.message;
             })
             .then(async () => {
-                const fileConfig = await this._readJson(this.configPath, null);
+                const configRead = await this._readConfigJsonForReload();
+                if (configRead.status === 'invalid') {
+                    return this.getAdminState();
+                }
+                const fileConfig = configRead.value;
                 this.persistedConfig = mergeConfig(DEFAULT_CONFIG, fileConfig, {});
                 this.config = cloneJson(this.persistedConfig);
                 this.privateConfig = await this._readPrivatePluginConfig();
@@ -1284,6 +1288,20 @@ class DynamicToolRegistry {
                 if (this.debugMode) console.warn(`[DynamicToolRegistry] ${this.lastError}`);
             }
             return fallback;
+        }
+    }
+
+    async _readConfigJsonForReload() {
+        try {
+            const content = await fs.readFile(this.configPath, 'utf8');
+            return { status: 'ok', value: JSON.parse(content) };
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return { status: 'missing', value: null };
+            }
+            this.lastError = `Failed to read ${path.basename(this.configPath)}: ${error.message}`;
+            if (this.debugMode) console.warn(`[DynamicToolRegistry] ${this.lastError}`);
+            return { status: 'invalid', value: null };
         }
     }
 

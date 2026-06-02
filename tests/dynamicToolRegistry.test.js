@@ -1007,6 +1007,37 @@ test('hot reload picks up public and private dynamic tool config files without l
   assert.notEqual(diskConfig.smallModel.model, 'reload-classifier');
 });
 
+test('hot reload does not overwrite public config during transient parse failures', async () => {
+  const projectRoot = await makeProjectRoot();
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager: makePluginManager([]),
+    projectBasePath: projectRoot,
+    config: testConfig({ maxBriefListItems: 17 }),
+    watchConfigFiles: false
+  });
+
+  const configPath = path.join(projectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+  const partialConfig = '{"version":1,"enabled":true,"maxBriefListItems":';
+  await fs.writeFile(configPath, partialConfig, 'utf8');
+
+  const state = await registry.reloadConfigFromDisk('partial_public_config');
+
+  assert.equal(state.config.maxBriefListItems, 17);
+  assert.match(registry.lastError, /Failed to read dynamic_tool_bridge\.config\.json/);
+  assert.equal(await fs.readFile(configPath, 'utf8'), partialConfig);
+
+  await fs.writeFile(configPath, JSON.stringify({
+    version: 1,
+    enabled: true,
+    classificationDebounceMs: 0,
+    maxBriefListItems: 19
+  }, null, 2), 'utf8');
+
+  const recovered = await registry.reloadConfigFromDisk('valid_public_config');
+  assert.equal(recovered.config.maxBriefListItems, 19);
+});
+
 test('config watcher reloads when fs.watch omits filename', async (t) => {
   const projectRoot = await makeProjectRoot();
   await fs.mkdir(path.join(projectRoot, 'Plugin', 'DynamicToolBridge'), { recursive: true });
