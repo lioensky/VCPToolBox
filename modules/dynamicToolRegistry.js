@@ -850,6 +850,7 @@ class DynamicToolRegistry {
         const blocksByThreshold = [...blocks].sort((a, b) => this._foldThreshold(b) - this._foldThreshold(a));
         const fallbackBlock = [...blocksByThreshold].reverse().find((block) => block.content)
             || { threshold: 0, content: originalDescription };
+        const baselineFallbackContent = this._foldBaselineFallbackContent(blocks, fallbackBlock.content);
 
         try {
             const pluginManager = options.pluginManager || this.pluginManager;
@@ -858,18 +859,18 @@ class DynamicToolRegistry {
                 : null;
             if (!ragPlugin || typeof ragPlugin.getSingleEmbeddingCached !== 'function') {
                 if (this.debugMode) console.warn('[DynamicToolRegistry] Dynamic fold RAG provider unavailable; using fallback block.');
-                return fallbackBlock.content;
+                return baselineFallbackContent;
             }
 
             const userContent = this._foldContextText(options.messages || [], ragPlugin);
-            if (!userContent) return fallbackBlock.content;
+            if (!userContent) return baselineFallbackContent;
 
             const userVector = await withTimeout(
                 Promise.resolve(ragPlugin.getSingleEmbeddingCached(userContent)),
                 this.config.classifierTimeoutMs,
                 'Dynamic tool fold user embedding'
             );
-            if (!Array.isArray(userVector) || userVector.length === 0) return fallbackBlock.content;
+            if (!Array.isArray(userVector) || userVector.length === 0) return baselineFallbackContent;
 
             const vectorDBManager = pluginManager?.vectorDBManager || ragPlugin.vectorDBManager;
             const vectorCache = new Map();
@@ -913,7 +914,7 @@ class DynamicToolRegistry {
                 for (const block of blocksByThreshold) {
                     if (similarity >= this._foldThreshold(block)) return block.content;
                 }
-                return fallbackBlock.content;
+                return baselineFallbackContent;
             }
 
             const includedContents = [];
@@ -964,7 +965,7 @@ class DynamicToolRegistry {
             }
 
             let combinedContent = includedContents.filter(Boolean).join('\n\n---\n\n');
-            if (!combinedContent) combinedContent = fallbackBlock.content;
+            if (!combinedContent) combinedContent = baselineFallbackContent;
             if (hiddenBlocksCount > 0) {
                 combinedContent += `\n\n*(提示：当前上下文中还隐藏收纳了另外 ${hiddenBlocksCount} 个工具模块分组，您可以通过明确提问或强调相关语境来获得展开。)*`;
             }
@@ -972,13 +973,22 @@ class DynamicToolRegistry {
         } catch (error) {
             this.lastError = error.message;
             if (this.debugMode) console.warn('[DynamicToolRegistry] Dynamic fold expansion failed:', error.message);
-            return fallbackBlock.content;
+            return baselineFallbackContent;
         }
     }
 
     _foldThreshold(block) {
         const threshold = Number(block?.threshold);
         return Number.isFinite(threshold) ? threshold : 0;
+    }
+
+    _foldBaselineFallbackContent(blocks, fallbackContent) {
+        const baselineContents = asArray(blocks)
+            .filter((block) => this._foldThreshold(block) <= 0 && typeof block.content === 'string' && block.content.trim())
+            .map((block) => block.content);
+        return baselineContents.length > 0
+            ? baselineContents.join('\n\n---\n\n')
+            : fallbackContent;
     }
 
     _foldContextText(messages, ragPlugin) {

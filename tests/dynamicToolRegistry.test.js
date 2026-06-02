@@ -1387,6 +1387,7 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
     pluginManager
   });
 
+  assert.match(injection, /NO RAG BASELINE BEFORE FIRST MARKER/);
   assert.match(injection, /NO RAG LEGACY BASELINE/);
   assert.equal(injection.includes('NO RAG BROWSER DETAILS'), false);
   assert.equal(injection.includes('[===vcp_fold:'), false);
