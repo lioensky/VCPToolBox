@@ -75,10 +75,13 @@ function createRuntimeProvider(options = {}) {
 
   const runtimeConfig = readRuntimeConfig(options);
   return createCodexOAuthProvider({
+    oauthAuthManager: options.oauthAuthManager,
+    fetchImpl: options.fetchImpl,
     projectBasePath: options.projectBasePath,
     accountId: runtimeConfig.VCP_CODEX_OAUTH_ACCOUNT_ID || undefined,
     baseUrl: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL || undefined,
     clientVersion: runtimeConfig.VCP_CODEX_OAUTH_CLIENT_VERSION || undefined,
+    timeoutMs: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS || undefined,
   });
 }
 

@@ -706,6 +706,77 @@ test('codex oauth responses route can enable from config.env without process env
   }
 });
 
+test('codex oauth responses route threads config.env timeout into provider', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-oauth-timeout-'));
+  await fs.writeFile(path.join(tempDir, 'config.env'), [
+    'VCP_RESPONSES_PROVIDER=codex_oauth',
+    'VCP_CODEX_OAUTH_ACCOUNT_ID=codex_from_config',
+    'VCP_CODEX_OAUTH_UPSTREAM_BASE_URL=https://codex.example/backend',
+    'VCP_CODEX_OAUTH_CLIENT_VERSION=9.9.9',
+    'VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS=7777',
+    '',
+  ].join('\n'));
+
+  const previousEnv = {
+    VCP_RESPONSES_PROVIDER: process.env.VCP_RESPONSES_PROVIDER,
+    VCP_CODEX_OAUTH_ACCOUNT_ID: process.env.VCP_CODEX_OAUTH_ACCOUNT_ID,
+    VCP_CODEX_OAUTH_UPSTREAM_BASE_URL: process.env.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL,
+    VCP_CODEX_OAUTH_CLIENT_VERSION: process.env.VCP_CODEX_OAUTH_CLIENT_VERSION,
+    VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS: process.env.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS,
+  };
+  for (const key of Object.keys(previousEnv)) {
+    delete process.env[key];
+  }
+
+  const calls = [];
+  const app = express();
+  app.use(express.json());
+  app.use(createCodexOAuthResponsesRouter({
+    projectBasePath: tempDir,
+    oauthAuthManager: {
+      async getValidToken(provider, accountId) {
+        assert.equal(provider, 'codex_oauth');
+        assert.equal(accountId, 'codex_from_config');
+        return {
+          accessToken: 'access-token-secret',
+          account: { metadata: { chatgptAccountId: 'chatgpt-account-1' } },
+        };
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      return jsonResponse({ ok: true });
+    },
+  }));
+
+  const { server, baseUrl } = await startServer(app);
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.4-mini' }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload, { ok: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://codex.example/backend/responses');
+    assert.equal(calls[0].options.signal instanceof AbortSignal, true);
+    assert.equal(calls[0].options.signal.aborted, false);
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 async function startServer(app) {
   const server = await new Promise((resolve) => {
     const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
