@@ -1,3 +1,4 @@
+const express = require('express');
 const path = require('path');
 
 /**
@@ -10,16 +11,129 @@ const path = require('path');
  * 设计要点：
  * - 不移动现有的 DailyNotePanel 前端目录和官方 routes/dailyNotesRoutes.js 文件
  * - 仅仅是“接线”：利用 projectBasePath 去 require / 挂载
- * - 第一阶段使用测试前缀：
- *   - 页面：      /DailyNotePanel2
- *   - 日记 API：  /dailynote_api2
- *   通过 plugin-manifest.json 的 PanelPathPrefix / ApiPathPrefix 可调整
+ * - 兼容 AdminPanel 独立 server 后主服务对 /AdminPanel 的整体重定向
  *
  * 重要：
- * - adminAuth 在 server.js 里是全局中间件，按路径前缀判断是否需要 BasicAuth。
- *   只要最终前缀仍然是 /DailyNotePanel* /dailynote_api*，就会被自动保护。
- *   本插件不重复实现认证逻辑。
+ * - adminAuth 在 server.js / adminServer.js 里是全局中间件，按路径前缀判断是否需要 BasicAuth。
+ * - 本插件不重复实现认证逻辑，只确保自己的 /AdminPanel/DailyNotePanel 与
+ *   /AdminPanel/dailynote_api 路由不会被更宽的 /AdminPanel 重定向或 SPA 兜底提前吞掉。
  */
+
+function getExpressStack(app) {
+  const router = app && (app._router || app.router);
+  if (!router || !Array.isArray(router.stack)) return null;
+  return router.stack;
+}
+
+function normalizePrefix(prefix) {
+  const value = String(prefix || '').trim();
+  if (!value || value === '/') return '/';
+  return value.replace(/\/+$/, '');
+}
+
+function prefixContainsPath(prefix, requestPath) {
+  const normalizedPrefix = normalizePrefix(prefix);
+  const normalizedPath = String(requestPath || '');
+  if (normalizedPrefix === '/') return true;
+  return normalizedPath === normalizedPrefix || normalizedPath.startsWith(`${normalizedPrefix}/`);
+}
+
+function layerMatchesPath(layer, requestPath) {
+  if (!layer) return false;
+
+  if (typeof layer.match === 'function') {
+    try {
+      return !!layer.match(requestPath);
+    } catch {
+      // Express internals can throw on unusual layers; keep the route-order check conservative.
+    }
+  }
+
+  if (typeof layer.path === 'string') {
+    return prefixContainsPath(layer.path, requestPath);
+  }
+
+  if (layer.regexp) {
+    const regexpText = String(layer.regexp);
+    if (regexpText.includes('\\/AdminPanel')) {
+      return prefixContainsPath('/AdminPanel', requestPath);
+    }
+  }
+
+  return false;
+}
+
+function isSpecificAdminPanelLayer(layer, samplePaths) {
+  const matchesDailyNotePath = samplePaths.some((samplePath) => layerMatchesPath(layer, samplePath));
+  if (!matchesDailyNotePath) return false;
+
+  return !layerMatchesPath(layer, '/__dailynote_panel_route_probe__');
+}
+
+function hoistDailyNoteRoutesBeforeAdminPanelCatchAll(app, routeEntries, debug) {
+  const stack = getExpressStack(app);
+  if (!stack) {
+    if (debug) {
+      console.warn('[DailyNotePanelRouter] Express router stack is unavailable; skip route hoist.');
+    }
+    return;
+  }
+
+  const selectedLayers = routeEntries
+    .map((entry) => ({
+      ...entry,
+      index: stack.findIndex((layer) => layer && layer.handle === entry.handle),
+    }))
+    .filter((entry) => entry.index >= 0)
+    .sort((a, b) => a.index - b.index);
+
+  if (selectedLayers.length !== routeEntries.length) {
+    if (debug) {
+      console.warn('[DailyNotePanelRouter] Could not find all mounted route layers; skip route hoist.');
+    }
+    return;
+  }
+
+  const firstDailyNoteIndex = selectedLayers[0].index;
+  let lastAdminAuthIndex = -1;
+  for (let i = 0; i < firstDailyNoteIndex; i += 1) {
+    const layer = stack[i];
+    if (layer && layer.handle && layer.handle.name === 'adminAuth') {
+      lastAdminAuthIndex = i;
+    }
+  }
+
+  const searchStartIndex = lastAdminAuthIndex >= 0 ? lastAdminAuthIndex + 1 : 0;
+  const samplePaths = routeEntries.flatMap((entry) => {
+    const prefix = normalizePrefix(entry.prefix);
+    return [prefix, `${prefix}/__dailynote_panel_route_probe__`];
+  });
+
+  let insertIndex = -1;
+  for (let i = searchStartIndex; i < firstDailyNoteIndex; i += 1) {
+    if (isSpecificAdminPanelLayer(stack[i], samplePaths)) {
+      insertIndex = i;
+      break;
+    }
+  }
+
+  if (insertIndex < 0) {
+    if (debug) {
+      console.log('[DailyNotePanelRouter] No earlier /AdminPanel catch-all layer found; route hoist is not needed.');
+    }
+    return;
+  }
+
+  const layersToMove = selectedLayers.map((entry) => stack[entry.index]);
+  for (const entry of [...selectedLayers].sort((a, b) => b.index - a.index)) {
+    stack.splice(entry.index, 1);
+  }
+  stack.splice(insertIndex, 0, ...layersToMove);
+
+  if (debug) {
+    console.log(`[DailyNotePanelRouter] Hoisted ${layersToMove.length} route layer(s) before AdminPanel catch-all.`);
+  }
+}
 
 /**
  * 旧式 service 插件接口：
@@ -54,7 +168,8 @@ function registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath) {
   if (debug) {
     console.log(`[DailyNotePanelRouter] Serving static DailyNotePanel from: ${panelDir} at prefix: ${panelPrefix}`);
   }
-  app.use(panelPrefix, require('express').static(panelDir));
+  const panelStaticMiddleware = express.static(panelDir);
+  app.use(panelPrefix, panelStaticMiddleware);
 
   // 2. 挂载专供 DailyNotePanel 使用的一套 dailynote API
   const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(projectBasePath, 'dailynote');
@@ -72,6 +187,15 @@ function registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath) {
   }
   app.use(apiPrefix, dailyNotesRoutes);
 
+  hoistDailyNoteRoutesBeforeAdminPanelCatchAll(
+    app,
+    [
+      { prefix: panelPrefix, handle: panelStaticMiddleware },
+      { prefix: apiPrefix, handle: dailyNotesRoutes },
+    ],
+    debug
+  );
+
   if (debug) {
     console.log('[DailyNotePanelRouter] Route registration completed.');
   }
@@ -79,4 +203,9 @@ function registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath) {
 
 module.exports = {
   registerRoutes,
+  _private: {
+    hoistDailyNoteRoutesBeforeAdminPanelCatchAll,
+    layerMatchesPath,
+    normalizePrefix,
+  },
 };
