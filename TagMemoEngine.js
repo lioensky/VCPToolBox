@@ -611,8 +611,8 @@ class TagMemoEngine {
      *
      * @param {Array<{id: BigInt|Number, score: Number}>} candidates - 原始 KNN 搜索结果
      * @param {object} options - 配置项
-     * @param {number} [options.alpha=0.3] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)
-     * @param {number} [options.minGeoSamples=4] - 最小采样密度门槛
+     * @param {number} [options.alpha] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.alpha
+     * @param {number} [options.minGeoSamples] - 最小采样密度门槛，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.minGeoSamples
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
@@ -624,8 +624,17 @@ class TagMemoEngine {
             return candidates;
         }
 
-        const alpha = Math.max(0, Math.min(1, options.alpha ?? 0.3));
-        const minGeoSamples = options.minGeoSamples ?? 4;
+        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        const rawAlpha = options.alpha ?? geoConfig.alpha;
+        const rawMinGeoSamples = options.minGeoSamples ?? geoConfig.minGeoSamples;
+
+        if (!Number.isFinite(Number(rawAlpha)) || !Number.isFinite(Number(rawMinGeoSamples))) {
+            console.warn('[TagMemoEngine] geodesicRerank missing valid alpha/minGeoSamples config; falling back to original order.');
+            return candidates;
+        }
+
+        const alpha = Math.max(0, Math.min(1, Number(rawAlpha)));
+        const minGeoSamples = Math.max(1, Math.floor(Number(rawMinGeoSamples)));
 
         try {
             // Step 1: 批量查询 chunk_id → file_id 映射（chunked IN，避免 SQLite 参数数量上限）

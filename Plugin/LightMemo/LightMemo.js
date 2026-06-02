@@ -396,8 +396,8 @@ class LightMemoPlugin {
 
             const geoConfig = this.vectorDBManager.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             const reranked = this.vectorDBManager.geodesicRerank(geoInput, {
-                alpha: geoConfig.alpha ?? 0.3,
-                minGeoSamples: geoConfig.minGeoSamples ?? 4
+                alpha: geoConfig.alpha,
+                minGeoSamples: geoConfig.minGeoSamples
             });
 
             // Map results back with geodesic metadata

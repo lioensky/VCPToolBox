@@ -331,7 +331,7 @@ export const PARAM_METADATA: Record<string, Record<string, ParamMeta>> = {
       label: "测地线混合权重 (α)",
       summary: "测地线分数在最终排序中的占比。0=纯KNN余弦距离，1=纯测地线Tag地形距离。",
       logic: "调高：更信任 Tag 拓扑关联，被语义山峰遮挡的记忆更容易浮出；调低：更保守，主要依赖原始向量相似度。",
-      range: "建议区间: 0.1 ~ 0.5 (默认 0.3)",
+      range: "建议区间: 0.1 ~ 0.6；当前默认由 rag_params.json 中的 KnowledgeBaseManager.geodesicRerank.alpha 决定",
       tone: "sensitive",
     },
     "geodesicRerank.minGeoSamples": {
@@ -631,7 +631,7 @@ export function getSubParamRange(subKey: string, subVal?: unknown): {
   }
 
   // 🆕 V8: 测地线混合权重
-  if (leafKey === 'alpha') {
+  if (key === "geodesicrerank.alpha") {
     return { min: 0, max: 1, step: 0.01 };
   }
   

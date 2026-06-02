@@ -2833,11 +2833,12 @@ class RAGDiaryPlugin {
         let tagWeight = tagMemoWeightMatch ? parseFloat(tagMemoWeightMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
 
         // 🌟 V8: 构建 geodesicRerank 选项（传递给 search 的第 7 参数）
+        // alpha / minGeoSamples 默认值统一由 rag_params.json: KnowledgeBaseManager.geodesicRerank 热参数提供
         const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
         const geoOptions = useGeodesicRerank ? {
             geodesicRerank: true,
-            geoAlpha: geoConfig.alpha ?? 0.3,
-            minGeoSamples: geoConfig.minGeoSamples ?? 4
+            geoAlpha: geoConfig.alpha,
+            minGeoSamples: geoConfig.minGeoSamples
         } : undefined;
 
         // 🌟 解析 Truncate 阈值

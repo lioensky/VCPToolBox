@@ -602,9 +602,10 @@ class KnowledgeBaseManager {
 
         // 🌟 V8: 测地线重排（只重排，不截断）— 在 hydrate 之前执行
         if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+            const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             results = this.tagMemoEngine.geodesicRerank(results, {
-                alpha: options.geoAlpha,
-                minGeoSamples: options.minGeoSamples
+                alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
+                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
             });
         }
 
@@ -727,9 +728,10 @@ class KnowledgeBaseManager {
 
         // 🌟 V8: 测地线重排（只重排，不截断）— 对合并后的全局结果执行
         if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+            const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             allResults = this.tagMemoEngine.geodesicRerank(allResults, {
-                alpha: options.geoAlpha,
-                minGeoSamples: options.minGeoSamples
+                alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
+                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
             });
         }
 
@@ -814,7 +816,11 @@ class KnowledgeBaseManager {
      */
     geodesicRerank(candidates, options = {}) {
         if (!this.tagMemoEngine) return candidates;
-        return this.tagMemoEngine.geodesicRerank(candidates, options);
+        const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
+        return this.tagMemoEngine.geodesicRerank(candidates, {
+            alpha: options.alpha ?? options.geoAlpha ?? geoConfig.alpha,
+            minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
+        });
     }
 
     /**
