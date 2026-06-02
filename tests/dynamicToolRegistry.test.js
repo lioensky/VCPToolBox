@@ -1201,9 +1201,9 @@ test('dynamic injection expands matching fold blocks with stub embeddings', asyn
   const projectRoot = await makeProjectRoot();
   const foldUsage = [
     'BASELINE FOLD USAGE BEFORE FIRST MARKER',
-    '[===vcp_fold: 0.5 ::desc: browser search details ===]',
+    '    [===vcp_fold: 0.5 ::desc: browser search details ===]',
     'BROWSER SEARCH DETAILS',
-    '[===vcp_fold: 0.95 ::desc: image media workflow ===]',
+    '    [===vcp_fold: 0.95 ::desc: image media workflow ===]',
     'IMAGE MEDIA DETAILS'
   ].join('\n');
   const pluginManager = makePluginManager([
@@ -1367,7 +1367,7 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
     makeManifest('NoRagFold', 'Search helper without RAG.', {
       commandDescription: [
         'NO RAG BASELINE BEFORE FIRST MARKER',
-        '[===vcp_fold: 0.5 ::desc: browser usage ===]',
+        '    [===vcp_fold: 0.5 ::desc: browser usage ===]',
         'NO RAG BROWSER DETAILS'
       ].join('\n')
     })
