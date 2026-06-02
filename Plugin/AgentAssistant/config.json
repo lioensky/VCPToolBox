@@ -1,0 +1,16 @@
+{
+    "maxHistoryRounds": 7,
+    "contextTtlHours": 24,
+    "globalSystemPrompt": "",
+    "agents": [
+        {
+            "baseName": "Nova",
+            "chineseName": "Nova",
+            "modelId": "gpt-5.4",
+            "description": "基于已注册 Agent \"Nova\" 创建的助手，请补充模型 ID 和更详细的说明。",
+            "systemPrompt": "{{Nova}}",
+            "maxOutputTokens": 8000,
+            "temperature": 0.7
+        }
+    ]
+}
