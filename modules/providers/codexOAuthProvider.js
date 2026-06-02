@@ -17,6 +17,43 @@ function sanitizeResponseBody(body = {}) {
   return nextBody;
 }
 
+function wrapResponseBodyWithTimeout(response, timeoutMs, abortController) {
+  if (!response?.body || typeof response.body.getReader !== 'function' || typeof ReadableStream !== 'function' || typeof Response !== 'function') {
+    return response;
+  }
+
+  const reader = response.body.getReader();
+
+  const body = new ReadableStream({
+    async pull(controller) {
+      const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+      try {
+        const { done, value } = await reader.read();
+        clearTimeout(timeout);
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        clearTimeout(timeout);
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      if (typeof reader.cancel === 'function') {
+        await reader.cancel(reason);
+      }
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 class CodexOAuthProvider {
   constructor(options = {}) {
     this.oauthAuthManager = options.oauthAuthManager || createOAuthAuthManager({
@@ -47,17 +84,17 @@ class CodexOAuthProvider {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-    if (typeof timeout.unref === 'function') {
-      timeout.unref();
-    }
 
     try {
-      return await this.fetchImpl(url, {
+      const response = await this.fetchImpl(url, {
         ...options,
         signal: controller.signal,
       });
-    } finally {
       clearTimeout(timeout);
+      return wrapResponseBodyWithTimeout(response, this.timeoutMs, controller);
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
     }
   }
 

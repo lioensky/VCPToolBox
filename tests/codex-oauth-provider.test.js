@@ -164,6 +164,53 @@ test('codex oauth provider applies an abort signal to upstream requests', async 
   assert.equal(calls[0].options.signal.aborted, false);
 });
 
+test('codex oauth provider keeps timeout active while streaming body is consumed', async () => {
+  const oauthAuthManager = {
+    async getValidToken() {
+      return {
+        accessToken: 'access-token-secret',
+        account: { metadata: {} },
+      };
+    },
+  };
+  let upstreamSignal = null;
+  const fetchImpl = async (_url, options = {}) => {
+    upstreamSignal = options.signal;
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"delta":"first"}\n\n'));
+      },
+      pull() {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, 200);
+          upstreamSignal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        });
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    });
+  };
+  const provider = new CodexOAuthProvider({
+    oauthAuthManager,
+    fetchImpl,
+    baseUrl: 'https://chatgpt.com/backend-api/codex/',
+    timeoutMs: 30,
+  });
+
+  const response = await provider.forwardResponses({ model: 'gpt-5.4-mini', stream: true });
+  const reader = response.body.getReader();
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  assert.equal(upstreamSignal.aborted, false);
+
+  await assert.rejects(reader.read(), /AbortError|aborted|BodyStreamBuffer was aborted/);
+  assert.equal(upstreamSignal.aborted, true);
+});
+
 test('codex oauth model list falls back to configured models without leaking errors', async () => {
   const models = await createCodexOAuthResponsesRouter.fetchCodexOAuthModels({
     runtimeConfig: {
