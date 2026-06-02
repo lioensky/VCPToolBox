@@ -51,6 +51,40 @@ test('saveMarkdownToKnowledgeFolder writes markdown without overwriting existing
     assert.equal(second.details.relativePath.replace(/\\/g, '/'), 'knowledge/WebDocs/article(1).md');
 });
 
+test('saveMarkdownToKnowledgeFolder handles concurrent creation of a new knowledge subfolder', async (t) => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+    t.after(async () => {
+        await fs.rm(tempRoot, { recursive: true, force: true });
+    });
+
+    const [first, second] = await Promise.all([
+        saveMarkdownToKnowledgeFolder({
+            url: 'https://example.com/a',
+            content: '# A',
+            knowledgeFolder: 'ConcurrentDocs',
+            fileName: 'article.md',
+            sourceMode: 'jina'
+        }),
+        saveMarkdownToKnowledgeFolder({
+            url: 'https://example.com/b',
+            content: '# B',
+            knowledgeFolder: 'ConcurrentDocs',
+            fileName: 'article.md',
+            sourceMode: 'jina'
+        })
+    ]);
+
+    const savedNames = [first.details.fileName, second.details.fileName].sort();
+    assert.deepEqual(savedNames, ['article(1).md', 'article.md']);
+
+    const savedContents = await Promise.all([
+        fs.readFile(first.details.filePath, 'utf8'),
+        fs.readFile(second.details.filePath, 'utf8')
+    ]);
+    assert.equal(savedContents.some(content => content.includes('# A')), true);
+    assert.equal(savedContents.some(content => content.includes('# B')), true);
+});
+
 test('sanitizeKnowledgeSubfolderName rejects traversal and nested paths', () => {
     assert.equal(sanitizeKnowledgeSubfolderName('TDBdocs'), 'TDBdocs');
     assert.throws(() => sanitizeKnowledgeSubfolderName('.'), /knowledgeFolder/);

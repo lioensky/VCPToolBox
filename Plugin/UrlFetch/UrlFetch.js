@@ -349,7 +349,13 @@ async function ensureSafeKnowledgeTargetDir(targetDir) {
         if (!error || error.code !== 'ENOENT') {
             throw error;
         }
-        await fs.mkdir(targetDir);
+        try {
+            await fs.mkdir(targetDir);
+        } catch (mkdirError) {
+            if (!mkdirError || mkdirError.code !== 'EEXIST') {
+                throw mkdirError;
+            }
+        }
         targetStats = await fs.lstat(targetDir);
     }
 
