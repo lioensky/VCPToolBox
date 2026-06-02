@@ -24,7 +24,8 @@ const DEFAULT_CONFIG = Object.freeze({
     manualOverrides: {
         excludedOriginKeys: [],
         pinnedOriginKeys: [],
-        categoryAliases: {}
+        categoryAliases: {},
+        descriptionOverrides: {}
     },
     smallModel: {
         enabled: false,
@@ -533,7 +534,7 @@ class DynamicToolRegistry {
             lines.push('Expanded tool usage:');
             for (const record of expandedRecords) {
                 lines.push(`--- ${record.displayName || record.pluginName} (${record.pluginName}) ---`);
-                lines.push(record.fullDescription || record.description || 'No full description available.');
+                lines.push(this._descriptionForInjection(record));
             }
         }
 
@@ -549,7 +550,7 @@ class DynamicToolRegistry {
     getAdminState() {
         const records = this._getAdminRecords()
             .map((record) => {
-                const classification = this.categories.get(record.originKey);
+                const classification = this._adminClassificationFor(record);
                 return {
                     originKey: record.originKey,
                     pluginName: record.pluginName,
@@ -760,6 +761,44 @@ class DynamicToolRegistry {
     _isAvailable(record) {
         const excluded = new Set(asArray(this.config.manualOverrides?.excludedOriginKeys));
         return record.enabled !== false && record.online !== false && !excluded.has(record.originKey);
+    }
+
+    _descriptionOverrideFor(originKey) {
+        const overrides = this.config.manualOverrides?.descriptionOverrides;
+        const value = overrides && typeof overrides === 'object' ? overrides[originKey] : null;
+        if (!value || typeof value !== 'object') {
+            return {
+                brief: '',
+                fullDescription: '',
+                categories: [],
+                keywords: []
+            };
+        }
+        return {
+            brief: typeof value.brief === 'string' ? cleanText(value.brief, 240) : '',
+            fullDescription: typeof value.fullDescription === 'string' ? value.fullDescription : '',
+            categories: asArray(value.categories).map(String).map((item) => item.trim()).filter(Boolean),
+            keywords: asArray(value.keywords).map(String).map((item) => item.trim()).filter(Boolean)
+        };
+    }
+
+    _descriptionForInjection(record) {
+        const override = this._descriptionOverrideFor(record.originKey);
+        return override.fullDescription || record.fullDescription || record.description || 'No full description available.';
+    }
+
+    _applyDescriptionOverrideToClassification(record, classification) {
+        const base = classification || this._fallbackClassify(record);
+        const override = this._descriptionOverrideFor(record.originKey);
+        const categories = override.categories.length > 0 ? override.categories : base.categories;
+        const hasOverride = Boolean(override.brief || override.categories.length > 0 || override.keywords.length > 0);
+        return {
+            ...base,
+            brief: override.brief ? this._compactBrief(record, categories, override.brief) : base.brief,
+            categories,
+            keywords: override.keywords.length > 0 ? override.keywords : base.keywords,
+            classifiedBy: hasOverride ? `${base.classifiedBy || 'keyword_fallback'}+manual_override` : base.classifiedBy
+        };
     }
 
     async _classifyRecord(record, reason) {
@@ -1104,7 +1143,20 @@ class DynamicToolRegistry {
     }
 
     _classificationFor(record) {
-        return this.categories.get(record.originKey) || this._fallbackClassify(record);
+        return this._applyDescriptionOverrideToClassification(
+            record,
+            this.categories.get(record.originKey) || this._fallbackClassify(record)
+        );
+    }
+
+    _adminClassificationFor(record) {
+        const classification = this.categories.get(record.originKey);
+        if (classification) return this._applyDescriptionOverrideToClassification(record, classification);
+        const override = this._descriptionOverrideFor(record.originKey);
+        if (override.brief || override.categories.length > 0 || override.keywords.length > 0) {
+            return this._applyDescriptionOverrideToClassification(record, this._fallbackClassify(record));
+        }
+        return null;
     }
 
     _categoryMatches(actual, requested) {

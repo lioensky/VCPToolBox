@@ -281,6 +281,7 @@ function createDefaultConfig(): DynamicToolsConfig {
       excludedOriginKeys: [],
       pinnedOriginKeys: [],
       categoryAliases: {},
+      descriptionOverrides: {},
     },
     smallModel: {
       enabled: false,
@@ -306,6 +307,7 @@ function normalizeConfig(config: DynamicToolsConfig | null | undefined): Dynamic
         ? config.manualOverrides.pinnedOriginKeys
         : [],
       categoryAliases: config?.manualOverrides?.categoryAliases || {},
+      descriptionOverrides: config?.manualOverrides?.descriptionOverrides || {},
     },
     smallModel: {
       ...defaults.smallModel,
