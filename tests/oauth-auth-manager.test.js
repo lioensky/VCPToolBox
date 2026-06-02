@@ -144,6 +144,48 @@ test('oauth auth manager reports pending codex device authorization without savi
   }
 });
 
+test('oauth auth manager accepts nested OpenAI pending device authorization payload', async () => {
+  const tempBasePath = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-oauth-auth-nested-pending-test-'));
+  const fetchImpl = async (url) => {
+    if (url === 'https://auth.openai.com/api/accounts/deviceauth/usercode') {
+      return jsonResponse({
+        device_auth_id: 'device-nested-pending',
+        user_code: 'NEST-1234',
+        interval: 3,
+        expires_in: 600,
+      });
+    }
+
+    if (url === 'https://auth.openai.com/api/accounts/deviceauth/token') {
+      return jsonResponse({
+        error: {
+          message: 'Device authorization is pending. Please try again.',
+          type: 'invalid_request_error',
+          code: 'deviceauth_authorization_pending',
+        },
+      }, 403);
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const manager = new OAuthAuthManager({
+      projectBasePath: tempBasePath,
+      fetchImpl,
+      tokenEncryptionKey: 'unit-test-oauth-token-encryption-key',
+    });
+    const login = await manager.startLogin('codex_oauth');
+    const poll = await manager.pollForAccount('codex_oauth', login.sessionId);
+
+    assert.equal(poll.status, 'pending');
+    assert.equal(poll.retryAfterSeconds, 3);
+    assert.deepEqual(await manager.listAccounts('codex_oauth'), []);
+  } finally {
+    await fs.rm(tempBasePath, { recursive: true, force: true });
+  }
+});
+
 test('oauth auth manager refuses to persist token secrets without encryption key', async () => {
   const tempBasePath = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-oauth-auth-key-test-'));
   try {

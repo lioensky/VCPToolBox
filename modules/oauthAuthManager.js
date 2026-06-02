@@ -1026,9 +1026,15 @@ class OAuthAuthManager {
 }
 
 function isPendingDevicePayload(payload) {
+  const nestedError = payload && payload.error && typeof payload.error === 'object'
+    ? payload.error
+    : {};
   return payload && (
     payload.error === 'authorization_pending' ||
     payload.error === 'slow_down' ||
+    nestedError.code === 'deviceauth_authorization_pending' ||
+    nestedError.code === 'authorization_pending' ||
+    nestedError.code === 'slow_down' ||
     payload.status === 'pending'
   );
 }
