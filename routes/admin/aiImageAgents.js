@@ -15,6 +15,32 @@ const express = require('express');
 const { executeAiImagePipelineV2 } = require('../../modules/aiImagePipelineExecutor');
 const { getClientIp } = require('../../modules/toolExecution');
 
+const SERUM_BOTTLE_SECRETLESS_MODE = 'serum_bottle_secretless_internal_execute';
+const SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN = 'DoubaoGen';
+const SERUM_BOTTLE_SECRETLESS_ROUTE_IDS = Object.freeze(new Set([
+  'serum_bottle_vcptoolbox_route_owner_runtime',
+  'serum_bottle_secretless_option_a',
+  'secretless_serum_option_a',
+]));
+const SERUM_BOTTLE_SECRETLESS_FORBIDDEN_PAYLOAD_KEYS = Object.freeze(new Set([
+  'adminusername',
+  'adminpassword',
+  'basicauthheader',
+  'authorizationheader',
+  'authorization',
+  'basicauth',
+  'auth',
+  'bearertoken',
+  'token',
+  'secretenvvarvalue',
+  'apikey',
+  'accesstoken',
+  'refreshtoken',
+  'password',
+  'cookie',
+  'headers',
+]));
+
 const AUTHORIZED_DOUBAO_PROJECT_BASE_PATH_OVERRIDES = Object.freeze({
   'AUTH-DRAFT-NATIVE-DOUBAO-SEEDREAM5-RETRY-20260526-003':
     'A:\\agent-image-lab\\agent-image-lab-v0.2\\runs\\real_generation\\v0_6_73_real_vcp_agent_generation_retry_003',
@@ -58,6 +84,13 @@ function createAiImageAgentsRouter(options = {}) {
     sendJson(res, response);
   });
 
+  if (options.enableSerumBottleSecretlessInternalRoute === true) {
+    router.post('/execute/serum-bottle-secretless', async (req, res) => {
+      const response = await handleSerumBottleSecretlessExecutionRequest(req, options);
+      sendJson(res, response);
+    });
+  }
+
   return router;
 }
 
@@ -75,9 +108,7 @@ function createAiImageAgentsRouter(options = {}) {
  */
 async function handleAiImagePipelineRequest(req, options = {}) {
   try {
-    const body = req && req.body && typeof req.body === 'object'
-      ? req.body
-      : {};
+    const body = getRequestBody(req);
 
     const routeInput = normalizeRouteInput(body);
     const executionContext = buildAiImageExecutionContext(req, routeInput);
@@ -182,6 +213,311 @@ async function handleAiImagePipelineRequest(req, options = {}) {
   }
 }
 
+async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
+  try {
+    const body = getRequestBody(req);
+    const routeInput = normalizeRouteInput(body);
+    const gate = validateSerumBottleSecretlessExecutionRequest(body, routeInput, options);
+
+    if (gate.ok !== true) {
+      return createSerumBottleSecretlessFailure(gate.status, gate.detail);
+    }
+
+    let authorizationResult;
+    try {
+      authorizationResult = await options.authorizeSerumBottleSecretlessExecution({
+        mode: SERUM_BOTTLE_SECRETLESS_MODE,
+        routeId: gate.routeId,
+        taskId: routeInput.taskId || null,
+        pipelineId: routeInput.pipelineId || null,
+        receiptRef: gate.receiptRef,
+        artifactRecordRef: gate.artifactRecordRef,
+        nonSecretPayloadHash: gate.nonSecretPayloadHash,
+        budget: gate.budget,
+        requestIp: getClientIp(req),
+      });
+    } catch (error) {
+      return createSerumBottleSecretlessFailure(
+        'serum_bottle_secretless_internal_authorization_failed_closed',
+        { authorizationError: error instanceof Error ? error.name : 'unknown_error' }
+      );
+    }
+
+    const authorization = normalizeSerumBottleSecretlessAuthorizationResult(authorizationResult);
+    if (authorization.ok !== true) {
+      return createSerumBottleSecretlessFailure('serum_bottle_secretless_internal_authorization_denied');
+    }
+
+    const delegatedRequest = {
+      ...(req || {}),
+      adminAuthUser: authorization.operatorId,
+      body: {
+        ...body,
+        dryRun: false,
+        confirm: true,
+        context: {
+          ...(body.context && typeof body.context === 'object' ? body.context : {}),
+          operator: null,
+          routeId: gate.routeId,
+          serumBottleSecretless: true,
+          serumBottleSecretlessAuthorizationId: authorization.publicReceipt.authorizationId,
+        },
+      },
+    };
+
+    const response = await handleAiImagePipelineRequest(delegatedRequest, {
+      ...options,
+      forceDryRun: false,
+      requireNativeDoubaoSecretlessRuntimeDelegate: true,
+    });
+
+    if (response && response.result && typeof response.result === 'object') {
+      response.result.serumBottleSecretlessAuthorization = authorization.publicReceipt;
+    }
+
+    return response;
+  } catch (error) {
+    return createSerumBottleSecretlessFailure(
+      'serum_bottle_secretless_route_failed',
+      { routeError: error instanceof Error ? error.name : 'unknown_error' }
+    );
+  }
+}
+
+function getRequestBody(req) {
+  return req && req.body && typeof req.body === 'object'
+    ? req.body
+    : {};
+}
+
+function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options) {
+  const forbiddenPayloadKeys = collectForbiddenSecretPayloadKeys(body);
+  if (forbiddenPayloadKeys.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_contains_forbidden_secret_key',
+      detail: { forbiddenPayloadKeys },
+    };
+  }
+
+  const routeId = readFirstString(
+    body.routeId,
+    body.route_id,
+    body.context && body.context.routeId,
+    body.context && body.context.route_id
+  );
+  if (!SERUM_BOTTLE_SECRETLESS_ROUTE_IDS.has(routeId)) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_route_scope_not_authorized',
+      detail: { routeId: routeId || null },
+    };
+  }
+
+  const budget = resolveSerumBottleSecretlessBudget(body);
+  if (
+    budget.maxProviderCalls !== 1 ||
+    budget.maxPluginCalls !== 1 ||
+    budget.maxApiCalls !== 1 ||
+    budget.maxImages !== 1 ||
+    budget.retryAllowed !== false
+  ) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_budget_not_exact',
+      detail: { budget },
+    };
+  }
+
+  const pluginSteps = collectPluginSteps(routeInput);
+  if (
+    pluginSteps.length !== 1 ||
+    pluginSteps[0] !== SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN
+  ) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_plugin_scope_not_authorized',
+      detail: { requiredPlugins: pluginSteps },
+    };
+  }
+
+  if (!options.pluginManager || typeof options.pluginManager.processToolCall !== 'function') {
+    return { ok: false, status: 'serum_bottle_secretless_plugin_manager_missing' };
+  }
+
+  if (typeof options.nativeDoubaoSecretlessRuntimeDelegate !== 'function') {
+    return { ok: false, status: 'serum_bottle_secretless_native_delegate_missing' };
+  }
+
+  if (typeof options.authorizeSerumBottleSecretlessExecution !== 'function') {
+    return { ok: false, status: 'serum_bottle_secretless_internal_authorizer_missing' };
+  }
+
+  return {
+    ok: true,
+    routeId,
+    budget,
+    receiptRef: readFirstString(body.receiptRef, body.receipt_ref, body.context && body.context.receiptRef, body.context && body.context.receipt_ref),
+    artifactRecordRef: readFirstString(
+      body.artifactRecordRef,
+      body.artifact_record_ref,
+      body.context && body.context.artifactRecordRef,
+      body.context && body.context.artifact_record_ref
+    ),
+    nonSecretPayloadHash: readFirstString(
+      body.nonSecretPayloadHash,
+      body.non_secret_payload_hash,
+      body.context && body.context.nonSecretPayloadHash,
+      body.context && body.context.non_secret_payload_hash
+    ),
+  };
+}
+
+function resolveSerumBottleSecretlessBudget(body = {}) {
+  const context = body.context && typeof body.context === 'object'
+    ? body.context
+    : {};
+  const sources = [
+    body,
+    body.budget,
+    body.executionBudget,
+    body.execution_budget,
+    context,
+    context.budget,
+    context.executionBudget,
+    context.execution_budget,
+  ].filter((source) => source && typeof source === 'object');
+
+  return {
+    maxProviderCalls: readNumericBudget(sources, 'maxProviderCalls', 'max_provider_calls'),
+    maxPluginCalls: readNumericBudget(sources, 'maxPluginCalls', 'max_plugin_calls'),
+    maxApiCalls: readNumericBudget(sources, 'maxApiCalls', 'max_api_calls'),
+    maxImages: readNumericBudget(sources, 'maxImages', 'max_images'),
+    retryAllowed: readBooleanBudget(sources, 'retryAllowed', 'retry_allowed'),
+  };
+}
+
+function readNumericBudget(sources, camelKey, snakeKey) {
+  const value = readFirstDefinedFromSources(sources, camelKey, snakeKey);
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readBooleanBudget(sources, camelKey, snakeKey) {
+  const value = readFirstDefinedFromSources(sources, camelKey, snakeKey);
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') {
+      return true;
+    }
+    if (normalized === 'false') {
+      return false;
+    }
+  }
+  return null;
+}
+
+function readFirstDefinedFromSources(sources, camelKey, snakeKey) {
+  for (const source of sources) {
+    if (Object.prototype.hasOwnProperty.call(source, camelKey)) {
+      return source[camelKey];
+    }
+    if (Object.prototype.hasOwnProperty.call(source, snakeKey)) {
+      return source[snakeKey];
+    }
+  }
+  return undefined;
+}
+
+function readFirstString(...values) {
+  for (const value of values) {
+    const normalized = normalizeOptionalString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function normalizePayloadKey(key) {
+  return String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function collectForbiddenSecretPayloadKeys(value, path = 'body', result = []) {
+  if (!value || typeof value !== 'object') {
+    return result;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectForbiddenSecretPayloadKeys(item, `${path}[${index}]`, result));
+    return result;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const keyPath = `${path}.${key}`;
+    if (SERUM_BOTTLE_SECRETLESS_FORBIDDEN_PAYLOAD_KEYS.has(normalizePayloadKey(key))) {
+      result.push(keyPath);
+    }
+    collectForbiddenSecretPayloadKeys(nestedValue, keyPath, result);
+  }
+
+  return result;
+}
+
+function normalizeSerumBottleSecretlessAuthorizationResult(result) {
+  if (!result || result.ok !== true) {
+    return { ok: false };
+  }
+
+  const authorizationId = readFirstString(
+    result.authorizationId,
+    result.authorization_id,
+    result.executionAuthorizationId,
+    result.execution_authorization_id
+  );
+  if (!authorizationId) {
+    return { ok: false };
+  }
+
+  return {
+    ok: true,
+    operatorId: readFirstString(result.operatorId, result.operator_id) || 'serum-bottle-secretless-internal',
+    publicReceipt: {
+      authorizationId,
+      receiptId: readFirstString(result.receiptId, result.receipt_id),
+    },
+  };
+}
+
+function createSerumBottleSecretlessFailure(status, detail = {}) {
+  return {
+    ok: false,
+    mode: SERUM_BOTTLE_SECRETLESS_MODE,
+    result: {
+      ok: false,
+      status,
+      mode: SERUM_BOTTLE_SECRETLESS_MODE,
+      provider_contact_performed: false,
+      plugin_call_performed: false,
+      api_call_performed: false,
+      image_generation_performed: false,
+      output_write_performed: false,
+      secret_value_read_performed: false,
+      authorization_header_constructed: false,
+      ...detail,
+    },
+  };
+}
+
 function normalizePathForComparison(value) {
   return typeof value === 'string'
     ? value.trim().replace(/\//g, '\\').replace(/\\+$/, '')
@@ -212,18 +548,22 @@ function resolveAuthorizedDoubaoProjectBasePathOverride(routeInput = {}) {
 }
 
 function collectRequiredPlugins(routeInput = {}) {
+  return Array.from(new Set(collectPluginSteps(routeInput)));
+}
+
+function collectPluginSteps(routeInput = {}) {
   const steps = Array.isArray(routeInput.plan && routeInput.plan.steps)
     ? routeInput.plan.steps
     : [];
-  const plugins = new Set();
+  const plugins = [];
 
   for (const step of steps) {
     if (step && typeof step.plugin === 'string' && step.plugin.trim()) {
-      plugins.add(step.plugin.trim());
+      plugins.push(step.plugin.trim());
     }
   }
 
-  return Array.from(plugins);
+  return plugins;
 }
 
 async function ensureRequiredPluginsRegistered(routeInput, pluginManager) {
@@ -304,8 +644,8 @@ function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
  */
 function normalizeRouteInput(body = {}) {
   return {
-    pipelineId: body.pipelineId,
-    taskId: body.taskId,
+    pipelineId: body.pipelineId || body.pipeline_id,
+    taskId: body.taskId || body.task_id,
     plan: body.plan || {},
     requestFlags: body.requestFlags || {},
     context: {
@@ -346,6 +686,25 @@ function buildAiImageExecutionContext(req, routeInput = {}) {
   const invocationId = normalizeOptionalString(routeInput && routeInput.pipelineId);
   if (invocationId) {
     executionContext.invocationId = invocationId;
+  }
+
+  const routeContext = routeInput && routeInput.context && typeof routeInput.context === 'object'
+    ? routeInput.context
+    : {};
+  const routeId = readFirstString(routeContext.routeId, routeContext.route_id);
+  if (routeId) {
+    executionContext.routeId = routeId;
+  }
+
+  if (routeContext.serumBottleSecretless === true) {
+    executionContext.serumBottleSecretless = true;
+  }
+
+  const serumBottleSecretlessAuthorizationId = normalizeOptionalString(
+    routeContext.serumBottleSecretlessAuthorizationId
+  );
+  if (serumBottleSecretlessAuthorizationId) {
+    executionContext.serumBottleSecretlessAuthorizationId = serumBottleSecretlessAuthorizationId;
   }
 
   return executionContext;
@@ -401,8 +760,10 @@ function sendJson(res, payload) {
 module.exports = {
   createAiImageAgentsRouter,
   handleAiImagePipelineRequest,
+  handleSerumBottleSecretlessExecutionRequest,
   createNativeDoubaoDelegatePluginManagerFacade,
   resolveAuthorizedDoubaoProjectBasePathOverride,
+  validateSerumBottleSecretlessExecutionRequest,
   collectRequiredPlugins,
   ensureRequiredPluginsRegistered,
   normalizeRouteInput,
