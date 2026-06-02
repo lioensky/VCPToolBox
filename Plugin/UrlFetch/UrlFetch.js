@@ -389,6 +389,41 @@ async function saveMarkdownToKnowledgeFolder({ url, content, knowledgeFolder, fi
     };
 }
 
+async function fetchDownloadMarkdownContent(url, downloadSourceMode, proxyPort = null, fetchers = {}) {
+    const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
+    const readWithJina = fetchers.fetchWithJinaReader || fetchWithJinaReader;
+    const readDirect = fetchers.fetchWithDirectHttp || fetchWithDirectHttp;
+    const readWithPuppeteer = fetchers.fetchWithPuppeteer || fetchWithPuppeteer;
+
+    try {
+        if (effectiveSourceMode === 'jina') {
+            try {
+                return await readWithJina(url);
+            } catch (jinaError) {
+                console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
+                try {
+                    return await readDirect(url);
+                } catch (directError) {
+                    console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+                    return await readWithPuppeteer(url, 'text');
+                }
+            }
+        }
+
+        try {
+            return await readDirect(url);
+        } catch (directError) {
+            console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
+            return await readWithPuppeteer(url, 'text');
+        }
+    } catch (error) {
+        if (proxyPort) {
+            return await readWithPuppeteer(url, 'text', proxyPort);
+        }
+        throw error;
+    }
+}
+
 function isUsableJinaApiKey(apiKey) {
     return typeof apiKey === 'string' &&
         apiKey.trim() &&
@@ -957,26 +992,7 @@ async function main() {
                 try {
                     if (mode === 'download') {
                         const effectiveSourceMode = downloadSourceMode === 'text' ? 'text' : 'jina';
-                        if (effectiveSourceMode === 'jina') {
-                            try {
-                                fetchedData = await fetchWithJinaReader(url);
-                            } catch (jinaError) {
-                                console.error(`Jina 下载路径失败，回退 text: ${jinaError.message}`);
-                                try {
-                                    fetchedData = await fetchWithDirectHttp(url);
-                                } catch (directError) {
-                                    console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                                    fetchedData = await fetchWithPuppeteer(url, 'text');
-                                }
-                            }
-                        } else {
-                            try {
-                                fetchedData = await fetchWithDirectHttp(url);
-                            } catch (directError) {
-                                console.error(`直接读取快速路径失败，回退 Puppeteer: ${directError.message}`);
-                                fetchedData = await fetchWithPuppeteer(url, 'text');
-                            }
-                        }
+                        fetchedData = await fetchDownloadMarkdownContent(url, downloadSourceMode, process.env.FETCH_PROXY_PORT);
 
                         if (typeof fetchedData !== 'string' || !fetchedData.trim()) {
                             throw new Error("下载模式未提取到可写入的 Markdown 文本。");
@@ -1066,6 +1082,7 @@ module.exports = {
     sanitizeKnowledgeSubfolderName,
     sanitizeMarkdownFileName,
     buildSafeMarkdownFileName,
+    fetchDownloadMarkdownContent,
     getAvailableMarkdownPath,
     saveMarkdownToKnowledgeFolder,
     wrapMarkdownArchiveContent

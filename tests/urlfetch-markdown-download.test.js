@@ -8,6 +8,7 @@ const tempRoot = path.join(os.tmpdir(), `vcptoolbox-urlfetch-${process.pid}`);
 process.env.PROJECT_BASE_PATH = tempRoot;
 
 const {
+    fetchDownloadMarkdownContent,
     saveMarkdownToKnowledgeFolder,
     sanitizeKnowledgeSubfolderName
 } = require('../Plugin/UrlFetch/UrlFetch.js');
@@ -55,4 +56,33 @@ test('sanitizeKnowledgeSubfolderName rejects traversal and nested paths', () => 
     assert.throws(() => sanitizeKnowledgeSubfolderName('../outside'), /knowledgeFolder/);
     assert.throws(() => sanitizeKnowledgeSubfolderName('nested/folder'), /knowledgeFolder/);
     assert.throws(() => sanitizeKnowledgeSubfolderName('nested\\folder'), /knowledgeFolder/);
+});
+
+test('fetchDownloadMarkdownContent honors configured proxy after normal download paths fail', async () => {
+    const calls = [];
+    const content = await fetchDownloadMarkdownContent('https://example.com/proxy-only', 'jina', '7890', {
+        fetchWithJinaReader: async (url) => {
+            calls.push(['jina', url]);
+            throw new Error('jina blocked');
+        },
+        fetchWithDirectHttp: async (url) => {
+            calls.push(['direct', url]);
+            throw new Error('direct blocked');
+        },
+        fetchWithPuppeteer: async (url, mode, proxyPort) => {
+            calls.push(['puppeteer', url, mode, proxyPort || null]);
+            if (!proxyPort) {
+                throw new Error('puppeteer without proxy blocked');
+            }
+            return '# Via proxy';
+        }
+    });
+
+    assert.equal(content, '# Via proxy');
+    assert.deepEqual(calls, [
+        ['jina', 'https://example.com/proxy-only'],
+        ['direct', 'https://example.com/proxy-only'],
+        ['puppeteer', 'https://example.com/proxy-only', 'text', null],
+        ['puppeteer', 'https://example.com/proxy-only', 'text', '7890']
+    ]);
 });
