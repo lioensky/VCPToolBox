@@ -30,9 +30,14 @@ services:
       #0- ./image:/usr/src/app/image # 映射整个 image 目录，包括 fluxgen 等子目录
 
       - .:/usr/src/app
+      # SQLite/WAL 不建议放在 Docker Desktop 的跨系统 bind mount 上；使用命名卷避免宿主机文件同步层导致数据库损坏。
+      - vcp_vectorstore:/usr/src/app/VectorStore
       # 保持 node_modules 独立于容器，避免本地开发环境的 node_modules 覆盖容器内的。添加pydeps兼容科学计算器依赖。
       - /usr/src/app/pydeps
       - /usr/src/app/node_modules
+      
+volumes:
+  vcp_vectorstore:
     
     # The command is defined in the Dockerfile's CMD instruction.
     restart: unless-stopped

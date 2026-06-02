@@ -4,7 +4,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::sync::{Arc, RwLock};
 use usearch::Index;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
+use std::time::Duration;
 
 /// 搜索结果 (返回 ID 而非 Tag 文本)
 /// 上层 JS 会拿着 ID 去 SQLite 里查具体的文本内容
@@ -586,6 +587,33 @@ impl VexusIndex {
     }
 }
 
+fn configure_sqlite_connection(conn: &Connection, readonly: bool) -> rusqlite::Result<()> {
+    conn.busy_timeout(Duration::from_secs(30))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "query_only", if readonly { "ON" } else { "OFF" })?;
+    Ok(())
+}
+
+fn open_sqlite_readonly(db_path: &str) -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    configure_sqlite_connection(&conn, true)?;
+    Ok(conn)
+}
+
+fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    configure_sqlite_connection(&conn, false)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(conn)
+}
+
 pub struct IntrinsicResidualTask {
     db_path: String,
     dimensions: u32,
@@ -604,8 +632,8 @@ impl Task for IntrinsicResidualTask {
         let max_k = self.max_svd_rank as usize;
         let min_n = self.min_neighbors as usize;
 
-        let conn = Connection::open(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB open failed: {}", e)))?;
+        let conn = open_sqlite_readwrite(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
 
         // 1. 加载所有 Tag 向量
         let mut tag_vectors: std::collections::HashMap<i64, Vec<f32>> = 
@@ -816,8 +844,8 @@ impl Task for PairwiseSimTask {
         let start = Instant::now();
         let dim = self.dimensions as usize;
 
-        let mut conn = Connection::open(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB open failed: {}", e)))?;
+        let mut conn = open_sqlite_readwrite(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
 
         // ====================================================================
         // Step 1: 加载 Tag 向量到内存 HashMap
@@ -1065,8 +1093,8 @@ impl Task for RecoverTask {
     type JsValue = u32;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let conn = Connection::open(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("Failed to open DB: {}", e)))?;
+        let conn = open_sqlite_readonly(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("Failed to open/config DB readonly: {}", e)))?;
 
         let sql: String;
         

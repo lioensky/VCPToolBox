@@ -40,6 +40,9 @@ class KnowledgeBaseManager {
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
+            deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
+            maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
+            deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
@@ -66,6 +69,8 @@ class KnowledgeBaseManager {
         };
 
         this.db = null;
+        this.dbPath = null;
+        this.databaseCorruptionDetected = false;
         this.diaryIndices = new Map();
         this.diaryIndexLastUsed = new Map(); // 🌟 记录每个索引的最后使用时间
         this.idleSweepTimer = null;
@@ -78,6 +83,9 @@ class KnowledgeBaseManager {
         this.batchTimer = null;
         this.isProcessing = false;
         this.saveTimers = new Map();
+        this.pendingDeletes = new Set();
+        this.deleteBatchTimer = null;
+        this.isProcessingDeletes = false;
         this.tagMemoEngine = null;
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
@@ -92,11 +100,8 @@ class KnowledgeBaseManager {
         await fs.mkdir(this.config.storePath, { recursive: true });
 
         const dbPath = path.join(this.config.storePath, 'knowledge_base.sqlite');
-        this.db = new Database(dbPath); // 同步连接
-        this.db.pragma('journal_mode = WAL');
-        this.db.pragma('synchronous = NORMAL');
-        // 🛡️ SQLite 默认不启用外键；必须显式开启，避免文件删除后 chunks/file_tags 残留。
-        this.db.pragma('foreign_keys = ON');
+        this.dbPath = dbPath;
+        this.db = this._openDatabaseWithRecovery(dbPath); // 同步连接
 
         this._initSchema();
         this._cleanupDatabaseOrphans();
@@ -261,6 +266,120 @@ class KnowledgeBaseManager {
             this.db.prepare("ALTER TABLE file_tags ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
         } catch (e) {
             // 如果列已存在，SQLite 会报错，忽略即可
+        }
+    }
+
+    _openDatabaseWithRecovery(dbPath) {
+        let db = new Database(dbPath);
+        try {
+            this._configureDatabaseConnection(db);
+            this._assertDatabaseIntegrity(db);
+            return db;
+        } catch (e) {
+            if (!this._isSqliteCorruptionError(e)) {
+                try { db.close(); } catch (_) { }
+                throw e;
+            }
+
+            console.error('[KnowledgeBase] ❌ SQLite database corruption detected during startup.');
+            console.error(`[KnowledgeBase] Corruption details: ${e.message || e}`);
+            try { db.close(); } catch (_) { }
+
+            const backupBase = this._quarantineSqliteDatabase(dbPath, 'startup-corrupt');
+            console.warn(
+                `[KnowledgeBase] 🧯 Corrupt SQLite database quarantined as "${path.basename(backupBase)}*". ` +
+                'A fresh database will be created and rebuilt from dailynote files.'
+            );
+
+            db = new Database(dbPath);
+            this._configureDatabaseConnection(db);
+            this._assertDatabaseIntegrity(db);
+            return db;
+        }
+    }
+
+    _configureDatabaseConnection(db) {
+        db.pragma('journal_mode = WAL');
+        db.pragma('synchronous = NORMAL');
+        // 🛡️ SQLite 默认不启用外键；必须显式开启，避免文件删除后 chunks/file_tags 残留。
+        db.pragma('foreign_keys = ON');
+    }
+
+    _assertDatabaseIntegrity(db) {
+        const row = db.prepare('PRAGMA quick_check').get();
+        const result = row ? Object.values(row)[0] : 'ok';
+        if (result !== 'ok') {
+            const error = new Error(`SQLite quick_check failed: ${result}`);
+            error.code = 'SQLITE_CORRUPT';
+            throw error;
+        }
+    }
+
+    _isSqliteCorruptionError(e) {
+        const message = String(e?.message || e || '');
+        return e?.code === 'SQLITE_CORRUPT' ||
+            e?.code === 'SQLITE_NOTADB' ||
+            /database disk image is malformed|file is not a database|database corruption|quick_check failed/i.test(message);
+    }
+
+    _quarantineSqliteDatabase(dbPath, reason = 'corrupt') {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupBase = `${dbPath}.${reason}.${timestamp}.bak`;
+        const relatedFiles = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
+
+        for (const file of relatedFiles) {
+            if (!fsSync.existsSync(file)) continue;
+            const suffix = file === dbPath ? '' : path.basename(file).slice(path.basename(dbPath).length);
+            const target = `${backupBase}${suffix}`;
+            try {
+                fsSync.renameSync(file, target);
+                console.warn(`[KnowledgeBase] 🧯 Quarantined "${path.basename(file)}" -> "${path.basename(target)}"`);
+            } catch (err) {
+                console.error(`[KnowledgeBase] ❌ Failed to quarantine "${file}": ${err.message}`);
+                throw err;
+            }
+        }
+
+        return backupBase;
+    }
+
+    async _handleRuntimeSqliteCorruption(error, batchFiles = []) {
+        if (this.databaseCorruptionDetected) return;
+        this.databaseCorruptionDetected = true;
+
+        console.error('[KnowledgeBase] 🚨 SQLite database corruption detected at runtime; batch processing is paused.');
+        console.error(`[KnowledgeBase] Runtime corruption details: ${error?.message || error}`);
+        console.error(
+            '[KnowledgeBase] Recovery: stop the process, backup VectorStore, then restart. ' +
+            'On restart the corrupt knowledge_base.sqlite will be quarantined and rebuilt from dailynote files.'
+        );
+
+        if (batchFiles.length > 0) {
+            console.error(
+                `[KnowledgeBase] 🛡️ ${batchFiles.length} file(s) were NOT marked as permanently failed because the failure is database-level, not file-level.`
+            );
+        }
+
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+        this.pendingFiles.clear();
+        this.fileRetryCount.clear();
+
+        try {
+            if (this.watcher) {
+                if (this.watcherType === 'rust') {
+                    const stopWatch = this.watcher.stopWatch || this.watcher.stop_watch;
+                    if (typeof stopWatch === 'function') stopWatch.call(this.watcher);
+                } else if (typeof this.watcher.close === 'function') {
+                    await this.watcher.close();
+                }
+                this.watcher = null;
+                console.error('[KnowledgeBase] 🛑 File watcher stopped to prevent retry storms against a corrupt SQLite database.');
+            }
+        } catch (watchErr) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to stop watcher after SQLite corruption: ${watchErr.message}`);
         }
     }
 
@@ -1235,7 +1354,7 @@ class KnowledgeBaseManager {
 
                             const { event, path: filePath } = JSON.parse(jsonPayload);
                             if (event === 'unlink') {
-                                this._handleDelete(filePath);
+                                this._queueDelete(filePath);
                             } else {
                                 handleFileWithLock(filePath);
                             }
@@ -1303,8 +1422,48 @@ class KnowledgeBaseManager {
             ignored: ignoredPatterns,
             ignoreInitial: !this.config.fullScanOnStartup
         });
-        this.watcher.on('add', handleChokidarFile).on('change', handleChokidarFile).on('unlink', fp => this._handleDelete(fp));
+        this.watcher.on('add', handleChokidarFile).on('change', handleChokidarFile).on('unlink', fp => this._queueDelete(fp));
         this.watcherType = 'chokidar';
+    }
+
+    _queueDelete(filePath) {
+        this.pendingDeletes.add(filePath);
+        if (this.pendingDeletes.size >= this.config.maxDeleteBatchSize) {
+            this._flushDeleteBatch();
+        } else {
+            this._scheduleDeleteBatch();
+        }
+    }
+
+    _scheduleDeleteBatch() {
+        if (this.deleteBatchTimer) clearTimeout(this.deleteBatchTimer);
+        this.deleteBatchTimer = setTimeout(() => this._flushDeleteBatch(), this.config.deleteBatchWindow);
+    }
+
+    async _flushDeleteBatch() {
+        if (this.isProcessingDeletes || this.pendingDeletes.size === 0 || this.databaseCorruptionDetected) return;
+        this.isProcessingDeletes = true;
+
+        const batchFiles = Array.from(this.pendingDeletes).slice(0, this.config.maxDeleteBatchSize);
+        if (this.deleteBatchTimer) {
+            clearTimeout(this.deleteBatchTimer);
+            this.deleteBatchTimer = null;
+        }
+
+        try {
+            await this._handleDeleteBatch(batchFiles);
+            batchFiles.forEach(f => this.pendingDeletes.delete(f));
+        } catch (e) {
+            console.error('[KnowledgeBase] ❌ Delete batch failed:', e);
+            if (this._isSqliteCorruptionError(e)) {
+                await this._handleRuntimeSqliteCorruption(e, []);
+            }
+        } finally {
+            this.isProcessingDeletes = false;
+            if (!this.databaseCorruptionDetected && this.pendingDeletes.size > 0) {
+                setImmediate(() => this._flushDeleteBatch());
+            }
+        }
     }
 
     _scheduleBatch() {
@@ -1619,23 +1778,27 @@ class KnowledgeBaseManager {
                 console.error('Stack Trace:', e.stack);
             }
 
-            // 🛡️ 核心修复：重试计数，防止确定性失败导致无限循环
-            const MAX_FILE_RETRIES = 3;
-            batchFiles.forEach(f => {
-                const count = (this.fileRetryCount.get(f) || 0) + 1;
-                if (count >= MAX_FILE_RETRIES) {
-                    console.error(`[KnowledgeBase] ⛔ File "${f}" failed ${MAX_FILE_RETRIES} times. Removing from queue permanently.`);
-                    this.pendingFiles.delete(f);
-                    this.fileRetryCount.delete(f);
-                } else {
-                    this.fileRetryCount.set(f, count);
-                    console.warn(`[KnowledgeBase] ⚠️ File "${f}" retry ${count}/${MAX_FILE_RETRIES}.`);
-                }
-            });
+            if (this._isSqliteCorruptionError(e)) {
+                await this._handleRuntimeSqliteCorruption(e, batchFiles);
+            } else {
+                // 🛡️ 核心修复：重试计数，防止确定性失败导致无限循环
+                const MAX_FILE_RETRIES = 3;
+                batchFiles.forEach(f => {
+                    const count = (this.fileRetryCount.get(f) || 0) + 1;
+                    if (count >= MAX_FILE_RETRIES) {
+                        console.error(`[KnowledgeBase] ⛔ File "${f}" failed ${MAX_FILE_RETRIES} times. Removing from queue permanently.`);
+                        this.pendingFiles.delete(f);
+                        this.fileRetryCount.delete(f);
+                    } else {
+                        this.fileRetryCount.set(f, count);
+                        console.warn(`[KnowledgeBase] ⚠️ File "${f}" retry ${count}/${MAX_FILE_RETRIES}.`);
+                    }
+                });
+            }
         }
         finally {
             this.isProcessing = false;
-            if (this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
+            if (!this.databaseCorruptionDetected && this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
         }
     }
 
@@ -1651,36 +1814,101 @@ class KnowledgeBaseManager {
     }
 
     async _handleDelete(filePath) {
-        const relPath = path.relative(this.config.rootPath, filePath);
-        try {
-            const row = this.db.prepare('SELECT id, diary_name FROM files WHERE path = ?').get(relPath);
-            if (!row) return;
-            const chunkIds = this.db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(row.id);
+        await this._handleDeleteBatch([filePath]);
+    }
 
-            // 🛡️ 不依赖 SQLite 外键级联：历史数据库/连接若未开启 foreign_keys，会留下 file_tags/chunks 垃圾，
-            // 大批量移动后会让 TagMemo 的延迟矩阵重建扫描膨胀数据，造成 CPU 长时间跑满。
+    async _handleDeleteBatch(filePaths) {
+        const relPaths = [...new Set(filePaths.map(filePath => path.relative(this.config.rootPath, filePath)))];
+        if (relPaths.length === 0) return;
+
+        try {
+            const rows = this._queryByChunks(
+                'SELECT id, diary_name FROM files WHERE path',
+                relPaths
+            );
+            if (rows.length === 0) return;
+
+            const fileIds = rows.map(row => row.id);
+            const diaryByFileId = new Map(rows.map(row => [row.id, row.diary_name]));
+            const chunkRows = this._queryByChunks(
+                'SELECT c.id, c.file_id, f.diary_name FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.file_id',
+                fileIds
+            );
+
+            const chunkIdsByDiary = new Map();
+            for (const row of chunkRows) {
+                const diaryName = row.diary_name || diaryByFileId.get(row.file_id);
+                if (!diaryName) continue;
+                if (!chunkIdsByDiary.has(diaryName)) chunkIdsByDiary.set(diaryName, []);
+                chunkIdsByDiary.get(diaryName).push(row.id);
+            }
+
             const deleteTransaction = this.db.transaction(() => {
-                this.db.prepare('DELETE FROM file_tags WHERE file_id = ?').run(row.id);
-                this.db.prepare('DELETE FROM chunks WHERE file_id = ?').run(row.id);
-                this.db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
+                const deleteFileTags = (ids) => {
+                    if (ids.length === 0) return;
+                    const placeholders = ids.map(() => '?').join(',');
+                    this.db.prepare(`DELETE FROM file_tags WHERE file_id IN (${placeholders})`).run(...ids);
+                };
+                const deleteChunks = (ids) => {
+                    if (ids.length === 0) return;
+                    const placeholders = ids.map(() => '?').join(',');
+                    this.db.prepare(`DELETE FROM chunks WHERE file_id IN (${placeholders})`).run(...ids);
+                };
+                const deleteFiles = (ids) => {
+                    if (ids.length === 0) return;
+                    const placeholders = ids.map(() => '?').join(',');
+                    this.db.prepare(`DELETE FROM files WHERE id IN (${placeholders})`).run(...ids);
+                };
+
+                for (let i = 0; i < fileIds.length; i += 500) {
+                    const batch = fileIds.slice(i, i + 500);
+                    // 🛡️ 不依赖 SQLite 外键级联：历史数据库/连接若未开启 foreign_keys，会留下 file_tags/chunks 垃圾。
+                    deleteFileTags(batch);
+                    deleteChunks(batch);
+                    deleteFiles(batch);
+                }
             });
             deleteTransaction();
 
-            const idx = await this._getOrLoadDiaryIndex(row.diary_name);
-            if (idx && idx.remove) {
-                chunkIds.forEach(c => {
-                    try {
-                        idx.remove(c.id);
-                    } catch (e) {
-                        // 删除事件可能乱序/重复；向量不存在不应导致错误风暴或后续处理停滞。
-                        if (e.message && !/not found|missing|absent/i.test(e.message)) {
-                            console.warn(`[KnowledgeBase] ⚠️ Failed to remove vector ${c.id} from "${row.diary_name}": ${e.message}`);
-                        }
-                    }
-                });
-                this._scheduleIndexSave(row.diary_name);
+            let totalChunks = 0;
+            for (const chunkIds of chunkIdsByDiary.values()) totalChunks += chunkIds.length;
+
+            if (rows.length > 1) {
+                console.warn(`[KnowledgeBase] 🧹 Batched delete removed ${rows.length} file record(s), ${totalChunks} chunk vector(s).`);
             }
-        } catch (e) { console.error(`[KnowledgeBase] Delete error:`, e); }
+
+            for (const [diaryName, chunkIds] of chunkIdsByDiary) {
+                if (chunkIds.length >= this.config.deleteRebuildThreshold) {
+                    // 大目录删除时逐个 remove 上万向量会长时间阻塞事件循环；直接丢弃该日记索引，后续从 SQLite 干净重建。
+                    this.diaryIndices.delete(diaryName);
+                    this.diaryIndexLastUsed.delete(diaryName);
+                    this._deletePersistedDiaryIndex(diaryName);
+                    console.warn(
+                        `[KnowledgeBase] 🧹 Large delete in "${diaryName}" (${chunkIds.length} vectors). ` +
+                        'Dropped in-memory/persisted diary index; it will be rebuilt from SQLite on next search.'
+                    );
+                    continue;
+                }
+
+                const idx = await this._getOrLoadDiaryIndex(diaryName);
+                if (idx && idx.remove) {
+                    chunkIds.forEach(id => {
+                        try {
+                            idx.remove(id);
+                        } catch (e) {
+                            // 删除事件可能乱序/重复；向量不存在不应导致错误风暴或后续处理停滞。
+                            if (e.message && !/not found|missing|absent/i.test(e.message)) {
+                                console.warn(`[KnowledgeBase] ⚠️ Failed to remove vector ${id} from "${diaryName}": ${e.message}`);
+                            }
+                        }
+                    });
+                    this._scheduleIndexSave(diaryName);
+                }
+            }
+        } catch (e) {
+            console.error(`[KnowledgeBase] Delete error:`, e);
+            if (this._isSqliteCorruptionError(e)) throw e;
+        }
     }
 
     _scheduleIndexSave(name) {
@@ -1878,6 +2106,14 @@ class KnowledgeBaseManager {
             this.ragParamsWatcher.close();
             this.ragParamsWatcher = null;
         }
+        if (this.deleteBatchTimer) {
+            clearTimeout(this.deleteBatchTimer);
+            this.deleteBatchTimer = null;
+        }
+        if (this.pendingDeletes.size > 0 && !this.databaseCorruptionDetected) {
+            await this._flushDeleteBatch();
+        }
+
         // 🌟 停止空闲扫描
         if (this.idleSweepTimer) {
             clearInterval(this.idleSweepTimer);
