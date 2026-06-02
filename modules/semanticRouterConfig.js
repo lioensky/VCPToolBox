@@ -57,7 +57,7 @@ function mergeConfig(baseConfig, localConfig) {
 
   const result = { ...cloneJson(baseConfig) };
   for (const [key, value] of Object.entries(localConfig)) {
-    if (Array.isArray(value)) {
+    if (key === 'presets' || Array.isArray(value)) {
       result[key] = cloneJson(value);
     } else if (isPlainObject(value) && isPlainObject(result[key])) {
       result[key] = mergeConfig(result[key], value);

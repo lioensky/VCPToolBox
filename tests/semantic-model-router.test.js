@@ -58,10 +58,14 @@ async function waitFor(assertion, timeoutMs = 3000) {
   if (lastError) throw lastError;
 }
 
-test('semantic router config merges local override with array replacement', () => {
+test('semantic router config merges local override with array and presets replacement', () => {
   const merged = mergeConfig(
     {
       enabled: true,
+      featureFlags: {
+        baseOnly: true,
+        shared: 'base',
+      },
       contextWeights: [0.7, 0.3],
       presets: {
         default: {
@@ -78,6 +82,9 @@ test('semantic router config merges local override with array replacement', () =
       },
     },
     {
+      featureFlags: {
+        shared: 'local',
+      },
       presets: {
         default: {
           defaultModel: 'local-model',
@@ -89,15 +96,83 @@ test('semantic router config merges local override with array replacement', () =
 
   assert.equal(merged.enabled, true);
   assert.deepEqual(merged.contextWeights, [0.7, 0.3]);
+  assert.deepEqual(merged.featureFlags, {
+    baseOnly: true,
+    shared: 'local',
+  });
   assert.equal(merged.presets.default.defaultModel, 'local-model');
   assert.deepEqual(merged.presets.default.fallbackModels, ['local-fallback-1', 'local-fallback-2']);
-  assert.deepEqual(merged.presets.default.routes, [
-    {
-      name: 'base',
-      model: 'base-route',
-      description: 'base route',
+  assert.equal(merged.presets.default.routes, undefined);
+});
+
+test('semantic router local config can remove presets from base config', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'semantic-router-remove-preset-'));
+  const configPath = path.join(tempDir, 'SemanticModelRouter.json');
+
+  await fs.writeFile(
+    configPath,
+    JSON.stringify({
+      enabled: true,
+      autoModelName: 'VCPModelAuto',
+      defaultPreset: 'default',
+      matchThreshold: 0.18,
+      contextWeights: [0.7, 0.3],
+      presets: {
+        default: {
+          displayName: 'VCPModelAuto',
+          defaultModel: 'default-model',
+          fallbackModels: [],
+          routes: [],
+        },
+        VCPModelCoding: {
+          displayName: 'Coding',
+          defaultModel: 'coding-model',
+          fallbackModels: [],
+          routes: [
+            {
+              name: 'coding',
+              model: 'coding-model',
+              description: 'coding tasks',
+            },
+          ],
+        },
+      },
+    }),
+    'utf-8'
+  );
+
+  await writeLocalConfig(configPath, {
+    enabled: true,
+    autoModelName: 'VCPModelAuto',
+    defaultPreset: 'default',
+    matchThreshold: 0.18,
+    contextWeights: [0.7, 0.3],
+    presets: {
+      default: {
+        displayName: 'VCPModelAuto',
+        defaultModel: 'local-default-model',
+        fallbackModels: [],
+        routes: [],
+      },
     },
-  ]);
+  });
+
+  const layered = await readLayeredConfig(configPath);
+  assert.equal(layered.usesLocalConfig, true);
+  assert.deepEqual(Object.keys(layered.mergedConfig.presets), ['default']);
+  assert.equal(layered.config.presets.default.defaultModel, 'local-default-model');
+  assert.equal(layered.config.presets.VCPModelCoding, undefined);
+
+  const router = new SemanticModelRouter();
+  await router.initialize(configPath, false);
+  assert.equal(router.config.presets.VCPModelCoding, undefined);
+  assert.equal(router.isRoutingModel('VCPModelCoding'), false);
+  assert.deepEqual(
+    router.getVirtualModels().map(model => model.id),
+    ['VCPModelAuto']
+  );
+
+  closeRouterWatchers(router);
 });
 
 test('SemanticModelRouter loads ignored local override next to base config', async () => {
@@ -135,6 +210,13 @@ test('SemanticModelRouter loads ignored local override next to base config', asy
       default: {
         defaultModel: 'local-model',
         fallbackModels: ['local-fallback'],
+        routes: [
+          {
+            name: 'local',
+            model: 'local-route',
+            description: 'local route description',
+          },
+        ],
       },
     },
   });
@@ -144,12 +226,13 @@ test('SemanticModelRouter loads ignored local override next to base config', asy
   assert.equal(layered.localConfigPath, resolveLocalConfigPath(configPath));
   assert.equal(layered.config.presets.default.defaultModel, 'local-model');
   assert.deepEqual(layered.config.presets.default.fallbackModels, ['local-fallback']);
-  assert.equal(layered.config.presets.default.routes[0].model, 'base-route');
+  assert.equal(layered.config.presets.default.routes[0].model, 'local-route');
 
   const router = new SemanticModelRouter();
   await router.initialize(configPath, false);
   assert.equal(router.config.presets.default.defaultModel, 'local-model');
   assert.deepEqual(router.config.presets.default.fallbackModels, ['local-fallback']);
+  assert.equal(router.config.presets.default.routes[0].model, 'local-route');
 
   closeRouterWatchers(router);
 });
