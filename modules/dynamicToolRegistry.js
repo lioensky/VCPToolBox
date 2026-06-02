@@ -826,7 +826,7 @@ class DynamicToolRegistry {
 
     _normalizeFoldMarkerLines(content) {
         return String(content || '').replace(
-            /^\s*\[===vcp_fold:\s*([0-9.]+)(?:\s*::desc:\s*(.*?)\s*)?===\]\s*$/gm,
+            /^\s*\[===vcp_fold:\s*([0-9.]+)(?:\s*::desc:\s*(.*?))?\s*===\]\s*$/gm,
             (_, threshold, description) => {
                 const desc = typeof description === 'string' ? description.trim() : '';
                 return desc ? `[===vcp_fold: ${threshold} ::desc: ${desc}===]` : `[===vcp_fold: ${threshold}===]`;

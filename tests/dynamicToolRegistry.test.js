@@ -1367,6 +1367,8 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
     makeManifest('NoRagFold', 'Search helper without RAG.', {
       commandDescription: [
         'NO RAG BASELINE BEFORE FIRST MARKER',
+        '    [===vcp_fold: 0 ===]',
+        'NO RAG LEGACY BASELINE',
         '    [===vcp_fold: 0.5 ::desc: browser usage ===]',
         'NO RAG BROWSER DETAILS'
       ].join('\n')
@@ -1385,8 +1387,9 @@ test('dynamic fold expansion falls back without a RAG provider', async () => {
     pluginManager
   });
 
-  assert.match(injection, /NO RAG BASELINE BEFORE FIRST MARKER/);
+  assert.match(injection, /NO RAG LEGACY BASELINE/);
   assert.equal(injection.includes('NO RAG BROWSER DETAILS'), false);
+  assert.equal(injection.includes('[===vcp_fold:'), false);
 });
 
 test('dynamic fold expansion keeps legacy threshold block semantics', async () => {
