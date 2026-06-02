@@ -3625,20 +3625,37 @@ class RAGDiaryPlugin {
         return diariesInRange;
     }
 
+    _formatResultPathLine(result) {
+        const rawPath = result?.fullPath || result?.sourceFile || result?.path || '';
+        if (!rawPath) return '';
+
+        const normalizedPath = String(rawPath).replace(/\\/g, '/');
+        const localUrl = normalizedPath.startsWith('file://')
+            ? normalizedPath
+            : `file:///${normalizedPath}`;
+
+        return `    [路径: ${localUrl}]\n`;
+    }
+
+    _formatMemoryEntry(result, { prefix = '* ', text = null } = {}) {
+        const body = text !== null ? text : (result?.text || '').trim();
+        return `${prefix}${body}\n${this._formatResultPathLine(result)}`;
+    }
+
     formatStandardResults(searchResults, displayName, metadata) {
         const mainResults = searchResults ? searchResults.filter(r => r.source !== 'associate') : [];
         const associateResults = searchResults ? searchResults.filter(r => r.source === 'associate') : [];
 
         let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
         if (mainResults.length > 0) {
-            innerContent += mainResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += mainResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
 
         if (associateResults.length > 0) {
             innerContent += `\n\n【联想共现记忆 (${associateResults.length}条, 多条记忆交叉关联)】\n`;
-            innerContent += associateResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += associateResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
         }
 
         innerContent += `\n[--- 记忆片段结束 ---]\n`;
@@ -3670,7 +3687,8 @@ class RAGDiaryPlugin {
             ragEntries.forEach(entry => {
                 const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
+                innerContent += this._formatMemoryEntry(entry, { text: body });
             });
         }
 
@@ -3682,7 +3700,7 @@ class RAGDiaryPlugin {
                 const dateMatch = entry.text.match(/^\[(\d{4}[-.]\d{2}[-.]\d{2})\]/);
                 const datePrefix = entry.date || (dateMatch ? dateMatch[1].replace(/\./g, '-') : '未知日期');
                 const body = entry.text.replace(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*[^\n]*\n?/, '').trim();
-                innerContent += `* [${datePrefix}] ${body}\n`;
+                innerContent += this._formatMemoryEntry(entry, { text: `[${datePrefix}] ${body}` });
             });
         }
 
@@ -3691,7 +3709,8 @@ class RAGDiaryPlugin {
             associateEntries.forEach(entry => {
                 const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
+                innerContent += this._formatMemoryEntry(entry, { text: body });
             });
         }
 
@@ -3716,7 +3735,7 @@ class RAGDiaryPlugin {
 
         innerContent += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
         if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += searchResults.map(r => this._formatMemoryEntry(r).trimEnd()).join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
@@ -4096,6 +4115,8 @@ class RAGDiaryPlugin {
                 score: r.score || undefined,
                 source: r.source || undefined,
                 date: r.date || undefined,
+                fullPath: r.fullPath || undefined,
+                sourceFile: r.sourceFile || undefined,
             };
 
             // ✅ 新增：包含Tag相关信息（如果存在）
