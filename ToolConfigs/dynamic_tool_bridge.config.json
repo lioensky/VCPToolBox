@@ -12,7 +12,8 @@
   "manualOverrides": {
     "excludedOriginKeys": [],
     "pinnedOriginKeys": [],
-    "categoryAliases": {}
+    "categoryAliases": {},
+    "descriptionOverrides": {}
   },
   "smallModel": {
     "enabled": false,

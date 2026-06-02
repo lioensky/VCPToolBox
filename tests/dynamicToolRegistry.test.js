@@ -848,3 +848,321 @@ test('small model uses independent OpenAI endpoint when main config reuse is dis
   assert.equal(requests[0].options.headers.Authorization, 'Bearer independent-key');
   assert.equal(requests[0].options.body.model, 'independent-classifier');
 });
+
+test('hot reload picks up public and private dynamic tool config files without leaking secrets', async () => {
+  const projectRoot = await makeProjectRoot();
+  const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
+  await fs.mkdir(privateConfigDir, { recursive: true });
+
+  const pluginManager = makePluginManager([
+    makeManifest('ReloadSearch', 'Search the web with reloadable config.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ maxBriefListItems: 7, smallModel: { enabled: false, useMainConfig: true, endpoint: '', model: '' } })
+  });
+
+  const configPath = path.join(projectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+  await fs.writeFile(configPath, JSON.stringify({
+    version: 1,
+    enabled: true,
+    maxBriefListItems: 13,
+    maxExpandedPlugins: 3,
+    manualOverrides: {
+      excludedOriginKeys: ['local:ReloadSearch'],
+      pinnedOriginKeys: [],
+      categoryAliases: { web: 'search' }
+    },
+    smallModel: {
+      enabled: false,
+      useMainConfig: true,
+      endpoint: '',
+      model: ''
+    }
+  }, null, 2), 'utf8');
+
+  await fs.writeFile(path.join(privateConfigDir, 'config.env'), [
+    'SmallModel_Enabled=true',
+    'SmallModel_Use_Main_Config=false',
+    'SmallModel_Endpoint=https://reload.local',
+    'SmallModel_Model=reload-classifier',
+    'SmallModel_API_Key=reload-secret'
+  ].join('\n'), 'utf8');
+
+  const state = await registry.reloadConfigFromDisk('test_hot_reload');
+
+  assert.equal(state.config.maxBriefListItems, 13);
+  assert.equal(state.config.manualOverrides.excludedOriginKeys.includes('local:ReloadSearch'), true);
+  assert.equal(state.config.smallModel.enabled, true);
+  assert.equal(state.config.smallModel.endpoint, 'https://reload.local/v1/chat/completions');
+  assert.equal(state.config.smallModel.model, 'reload-classifier');
+  assert.equal(state.config.smallModel.apiKey, undefined);
+  assert.equal(registry.getAdminState().config.smallModel.apiKey, undefined);
+});
+
+test('dynamic injection reuses toolbox fold blocks for granular expanded tool usage', async () => {
+  const projectRoot = await makeProjectRoot();
+  const manifest = makeManifest('FoldSearch', 'Search public references with fold blocks.');
+  const pluginManager = makePluginManager([manifest]);
+  pluginManager.getIndividualPluginDescriptions = () => new Map([
+    ['VCPFoldSearch', [
+      '[===vcp_fold:0.0 ::desc: quick start===]',
+      'BASIC SEARCH USAGE',
+      '[===vcp_fold:0.2 ::desc: browser search details===]',
+      'BROWSER SEARCH DETAILS',
+      '[===vcp_fold:0.95 ::desc: irrelevant media workflow===]',
+      'IRRELEVANT MEDIA WORKFLOW'
+    ].join('\n')]
+  ]);
+  pluginManager.messagePreprocessors = new Map([
+    ['RAGDiaryPlugin', {
+      async getSingleEmbeddingCached(text) {
+        const lower = String(text).toLowerCase();
+        if (lower.includes('browser') || lower.includes('search') || lower.includes('reference')) return [1, 0];
+        if (lower.includes('media')) return [0, 1];
+        return [0.1, 0.1];
+      }
+    }]
+  ]);
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ maxExpandedPlugins: 1 }),
+    classifier: async () => ({
+      categories: ['search'],
+      keywords: ['browser', 'search'],
+      brief: 'Searches references.',
+      confidence: 0.9
+    })
+  });
+  await registry.syncFromPluginManager('fold_blocks');
+  await registry.flushClassificationQueue();
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'user', content: 'Use browser search for public references.' }],
+    pluginManager
+  });
+
+  assert.match(injection, /BASIC SEARCH USAGE/);
+  assert.match(injection, /BROWSER SEARCH DETAILS/);
+  assert.equal(injection.includes('IRRELEVANT MEDIA WORKFLOW'), false);
+});
+
+test('dynamic fold expansion uses plugin manager vector DB cache for fixed block vectors', async () => {
+  const projectRoot = await makeProjectRoot();
+  const manifest = makeManifest('CachedFoldSearch', 'Search public references with cached fold blocks.');
+  const pluginManager = makePluginManager([manifest]);
+  pluginManager.getIndividualPluginDescriptions = () => new Map([
+    ['VCPCachedFoldSearch', [
+      '[===vcp_fold:0.0 ::desc: quick start===]',
+      'CACHED BASIC SEARCH USAGE',
+      '[===vcp_fold:0.2 ::desc: browser search details===]',
+      'CACHED BROWSER SEARCH DETAILS',
+      '[===vcp_fold:0.95 ::desc: irrelevant media workflow===]',
+      'CACHED IRRELEVANT MEDIA WORKFLOW'
+    ].join('\n')]
+  ]);
+
+  const rawEmbeddingCalls = [];
+  const descriptionVectorCalls = [];
+  const vectorCache = new Map();
+  pluginManager.vectorDBManager = {
+    async getPluginDescriptionVector(text, getEmbeddingFn) {
+      descriptionVectorCalls.push(String(text));
+      if (vectorCache.has(text)) return vectorCache.get(text);
+      const vector = await getEmbeddingFn(text);
+      vectorCache.set(text, vector);
+      return vector;
+    }
+  };
+  pluginManager.messagePreprocessors = new Map([
+    ['RAGDiaryPlugin', {
+      async getSingleEmbeddingCached(text) {
+        rawEmbeddingCalls.push(String(text));
+        const lower = String(text).toLowerCase();
+        if (lower.includes('browser') || lower.includes('search') || lower.includes('reference')) return [1, 0];
+        if (lower.includes('media')) return [0, 1];
+        return [0.1, 0.1];
+      }
+    }]
+  ]);
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ maxExpandedPlugins: 1 }),
+    classifier: async () => ({
+      categories: ['search'],
+      keywords: ['browser', 'search'],
+      brief: 'Searches references.',
+      confidence: 0.9
+    })
+  });
+  await registry.syncFromPluginManager('fold_vector_cache');
+  await registry.flushClassificationQueue();
+
+  const options = {
+    messages: [{ role: 'user', content: 'Use browser search for public references.' }],
+    pluginManager
+  };
+  const firstInjection = await registry.buildInjection(options);
+  const secondInjection = await registry.buildInjection(options);
+
+  assert.match(firstInjection, /CACHED BROWSER SEARCH DETAILS/);
+  assert.match(secondInjection, /CACHED BROWSER SEARCH DETAILS/);
+  assert.equal(
+    descriptionVectorCalls.filter((text) => text.includes('dynamic_tool_fold:browser search details')).length,
+    2
+  );
+  assert.equal(
+    rawEmbeddingCalls.filter((text) => text.includes('dynamic_tool_fold:browser search details')).length,
+    1
+  );
+  assert.equal(
+    rawEmbeddingCalls.filter((text) => text.includes('dynamic_tool_fold:irrelevant media workflow')).length,
+    1
+  );
+});
+
+test('manual description overrides make dynamic tools behave like editable toolbox mappings', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('MappedSearch', 'Original manifest search description.')
+  ]);
+  const registry = new DynamicToolRegistry();
+
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({
+      manualOverrides: {
+        excludedOriginKeys: [],
+        pinnedOriginKeys: [],
+        categoryAliases: {},
+        descriptionOverrides: {
+          'local:MappedSearch': {
+            brief: 'Curated toolbox search.',
+            fullDescription: 'CURATED TOOLBOX-LIKE SEARCH INSTRUCTIONS',
+            categories: ['search'],
+            keywords: ['curated', 'search']
+          }
+        }
+      }
+    }),
+    classifier: classifierFactory([])
+  });
+
+  await registry.syncFromPluginManager('manual_mapping_override');
+  await registry.flushClassificationQueue();
+
+  const state = registry.getAdminState();
+  const record = state.records.find((item) => item.originKey === 'local:MappedSearch');
+  assert.equal(record.brief, 'Curated toolbox search.');
+  assert.deepEqual(record.categories, ['search']);
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'assistant', content: '[[VCPDynamicTools:tool=MappedSearch]]' }],
+    pluginManager
+  });
+  assert.match(injection, /Curated toolbox search/);
+  assert.match(injection, /CURATED TOOLBOX-LIKE SEARCH INSTRUCTIONS/);
+  assert.equal(injection.includes('FULL:MappedSearch'), false);
+});
+
+test('hot reloaded description overrides refresh existing classification cache', async () => {
+  const projectRoot = await makeProjectRoot();
+  const pluginManager = makePluginManager([
+    makeManifest('OverrideOnly', 'Original search description.')
+  ]);
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig(),
+    classifier: async () => ({
+      brief: 'Old classifier brief.',
+      categories: ['oldcat'],
+      keywords: ['oldkw'],
+      confidence: 0.9
+    })
+  });
+
+  await registry.syncFromPluginManager('seed_old_classification');
+  await registry.flushClassificationQueue();
+  assert.equal(registry.getAdminState().records[0].brief, 'Old classifier brief.');
+
+  const configPath = path.join(projectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+  await fs.writeFile(configPath, JSON.stringify({
+    ...registry.getAdminState().config,
+    manualOverrides: {
+      excludedOriginKeys: [],
+      pinnedOriginKeys: [],
+      categoryAliases: {},
+      descriptionOverrides: {
+        'local:OverrideOnly': {
+          brief: 'New hot override brief.',
+          categories: ['newcat'],
+          keywords: ['newkw']
+        }
+      }
+    }
+  }, null, 2), 'utf8');
+
+  const state = await registry.reloadConfigFromDisk('hot_override_reload');
+  const record = state.records.find((item) => item.originKey === 'local:OverrideOnly');
+  assert.equal(record.brief, 'New hot override brief.');
+  assert.deepEqual(record.categories, ['newcat']);
+  assert.deepEqual(record.keywords, ['newkw']);
+});
+
+test('dynamic fold expansion matches toolbox legacy blocks without descriptions', async () => {
+  const projectRoot = await makeProjectRoot();
+  const manifest = makeManifest('LegacyFoldSearch', 'Search public references with legacy fold blocks.');
+  const pluginManager = makePluginManager([manifest]);
+  pluginManager.getIndividualPluginDescriptions = () => new Map([
+    ['VCPLegacyFoldSearch', [
+      '[===vcp_fold:0.0===]',
+      'LEGACY BASIC USAGE',
+      '[===vcp_fold:0.5===]',
+      'LEGACY ADVANCED USAGE WITH TERMS THAT DO NOT MATCH QUERY'
+    ].join('\n')]
+  ]);
+  pluginManager.messagePreprocessors = new Map([
+    ['RAGDiaryPlugin', {
+      async getSingleEmbeddingCached(text) {
+        const lower = String(text).toLowerCase();
+        if (lower.includes('public references') || lower.includes('search')) return [1, 0];
+        if (lower.includes('advanced usage')) return [0, 1];
+        return [0.1, 0.1];
+      }
+    }]
+  ]);
+
+  const registry = new DynamicToolRegistry();
+  await registry.initialize({
+    pluginManager,
+    projectBasePath: projectRoot,
+    config: testConfig({ maxExpandedPlugins: 1 }),
+    classifier: async () => ({
+      categories: ['search'],
+      keywords: ['search'],
+      brief: 'Searches references.',
+      confidence: 0.9
+    })
+  });
+  await registry.syncFromPluginManager('legacy_fold_blocks');
+  await registry.flushClassificationQueue();
+
+  const injection = await registry.buildInjection({
+    messages: [{ role: 'user', content: 'Need search over public references.' }],
+    pluginManager
+  });
+
+  assert.match(injection, /LEGACY BASIC USAGE/);
+  assert.match(injection, /LEGACY ADVANCED USAGE WITH TERMS THAT DO NOT MATCH QUERY/);
+});
