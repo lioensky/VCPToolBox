@@ -565,33 +565,34 @@ function writeChatCompletionSse(res, chatPayload) {
 }
 
 function writeResponsesSseAsChatSse(res, sseText = '', chatBody = {}) {
-  const created = Math.floor(Date.now() / 1000);
-  const id = `chatcmpl-${created}`;
-  const parsed = extractResponsesSseDeltas(sseText);
-  const model = parsed.model || parsed.completedResponse?.model || chatBody.model || 'codex_oauth';
-
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.write(transformResponsesSseToChatSseText(sseText, chatBody));
+  res.end();
+}
 
-  for (const delta of parsed.deltas) {
-    res.write(`data: ${JSON.stringify({
-      id,
-      object: 'chat.completion.chunk',
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: { content: delta },
-          finish_reason: null,
-        },
-      ],
-    })}\n\n`);
-  }
+function transformResponsesSseToChatSseText(sseText = '', chatBody = {}) {
+  const created = Math.floor(Date.now() / 1000);
+  const id = `chatcmpl-${created}`;
+  const parsed = extractResponsesSseDeltas(sseText);
+  const model = parsed.model || parsed.completedResponse?.model || chatBody.model || 'codex_oauth';
+  const chunks = parsed.deltas.map(delta => `data: ${JSON.stringify({
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: { content: delta },
+        finish_reason: null,
+      },
+    ],
+  })}\n\n`);
 
-  res.write(`data: ${JSON.stringify({
+  chunks.push(`data: ${JSON.stringify({
     id,
     object: 'chat.completion.chunk',
     created,
@@ -604,8 +605,8 @@ function writeResponsesSseAsChatSse(res, sseText = '', chatBody = {}) {
       },
     ],
   })}\n\n`);
-  res.write('data: [DONE]\n\n');
-  res.end();
+  chunks.push('data: [DONE]\n\n');
+  return chunks.join('');
 }
 
 function writeChatSseDelta(res, { id, created, model, delta = '', finishReason = null }) {
@@ -925,6 +926,7 @@ module.exports.DEFAULT_CODEX_OAUTH_MODEL_IDS = DEFAULT_CODEX_OAUTH_MODEL_IDS;
 module.exports.buildResponsesBodyFromChatCompletion = buildResponsesBodyFromChatCompletion;
 module.exports.transformResponsesJsonToChatCompletion = transformResponsesJsonToChatCompletion;
 module.exports.transformResponsesSseToChatCompletion = transformResponsesSseToChatCompletion;
+module.exports.transformResponsesSseToChatSseText = transformResponsesSseToChatSseText;
 module.exports.looksLikeSsePayload = looksLikeSsePayload;
 module.exports.isCodexOAuthModel = isCodexOAuthModel;
 module.exports.classifyCodexOAuthProviderFailure = classifyCodexOAuthProviderFailure;

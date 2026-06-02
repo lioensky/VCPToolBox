@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const finalContextStore = require('./finalContextStore.js');
+const agentManager = require('./agentManager.js');
 
 // 🌟 核心网络优化：引入防御性长连接池 (Keep-Alive Pool)
 // 解决 "-1s Socket Hang Up" 与上游代理秒断僵尸连接的问题
@@ -30,6 +31,9 @@ const ToolCallParser = require('./vcpLoop/toolCallParser');
 const ToolExecutor = require('./vcpLoop/toolExecutor');
 const StreamHandler = require('./handlers/streamHandler');
 const NonStreamHandler = require('./handlers/nonStreamHandler');
+const codexOAuthResponses = require('../routes/codexOAuthResponses');
+const { createCodexOAuthProvider } = require('./providers/codexOAuthProvider');
+const { createCodexOAuthTraceStore } = require('./codexOAuthTraceStore');
 
 const VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER = '[[VCPToolUse=Forbidden]]';
 
@@ -43,6 +47,60 @@ function normalizeClientIp(ip) {
     return ip.substr(7);
   }
   return ip || 'unknown';
+}
+
+function getMessageTextContent(message = {}) {
+  if (typeof message.content === 'string') return message.content;
+  if (!Array.isArray(message.content)) return '';
+  return message.content
+    .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('\n');
+}
+
+function messageHasAgentPlaceholder(message, alias) {
+  const text = getMessageTextContent(message);
+  if (!text) return false;
+  return text.includes(`{{${alias}}}`) || text.includes(`{{agent:${alias}}}`);
+}
+
+function normalizeAgentModelRequest(body, semanticModelRouter, debugMode = false) {
+  if (!body || typeof body.model !== 'string' || !Array.isArray(body.messages)) {
+    return body;
+  }
+
+  const requestedModel = body.model.trim();
+  if (!requestedModel || !agentManager.isAgent(requestedModel)) {
+    return body;
+  }
+
+  const messages = body.messages.slice();
+  const hasAgentPrompt = messages.some(message => {
+    if (!message || (message.role !== 'system' && message.role !== 'user')) return false;
+    return messageHasAgentPlaceholder(message, requestedModel);
+  });
+
+  if (!hasAgentPrompt) {
+    messages.unshift({ role: 'system', content: `{{${requestedModel}}}` });
+  }
+
+  const routingModel =
+    semanticModelRouter?.config?.autoModelName ||
+    process.env.VCP_AGENT_BACKEND_MODEL ||
+    process.env.VCP_DEFAULT_AGENT_MODEL ||
+    'VCPModelAuto';
+
+  const normalizedBody = {
+    ...body,
+    model: routingModel,
+    messages,
+  };
+
+  if (debugMode) {
+    console.log(`[AgentModel] 请求模型 '${requestedModel}' 已作为 Agent 展开并转交给 '${routingModel}'`);
+  }
+
+  return normalizedBody;
 }
 
 class ResponseReplayCache {
@@ -729,6 +787,8 @@ class ChatCompletionHandler {
     }
 
     try {
+      originalBody = normalizeAgentModelRequest(originalBody, semanticModelRouter, DEBUG_MODE);
+
       if (originalBody.model) {
         const originalModel = originalBody.model;
         const isSemanticRoutingModel = semanticModelRouter && typeof semanticModelRouter.isRoutingModel === 'function'
@@ -999,36 +1059,39 @@ class ChatCompletionHandler {
 
       await writeDebugLog('LogOutputAfterProcessing', finalUpstreamBody);
 
-      let firstAiAPIResponse = await fetchWithRetry(
-        `${apiUrl}/v1/chat/completions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-            ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
-            Accept: willStreamResponse ? 'text/event-stream' : req.headers['accept'] || 'application/json',
+      let firstAiAPIResponse = await fetchCodexOAuthChatCompletion(finalUpstreamBody, req, this.config);
+      if (!firstAiAPIResponse) {
+        firstAiAPIResponse = await fetchWithRetry(
+          `${apiUrl}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+              ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+              Accept: willStreamResponse ? 'text/event-stream' : req.headers['accept'] || 'application/json',
+            },
+            body: JSON.stringify(finalUpstreamBody),
+            signal: abortController.signal,
           },
-          body: JSON.stringify(finalUpstreamBody),
-          signal: abortController.signal,
-        },
-        {
-          retries: apiRetries,
-          delay: apiRetryDelay,
-          debugMode: DEBUG_MODE,
-          modelFallbackCandidates: semanticModelFallbackCandidates,
-          onRetry: async (attempt, errorInfo) => {
-            if (!res.headersSent && isOriginalRequestStreaming) {
-              if (DEBUG_MODE)
-                console.log(`[VCP Retry] First retry attempt (#${attempt}). Sending 200 OK to client to establish stream.`);
-              res.status(200);
-              res.setHeader('Content-Type', 'text/event-stream');
-              res.setHeader('Cache-Control', 'no-cache');
-              res.setHeader('Connection', 'keep-alive');
-            }
+          {
+            retries: apiRetries,
+            delay: apiRetryDelay,
+            debugMode: DEBUG_MODE,
+            modelFallbackCandidates: semanticModelFallbackCandidates,
+            onRetry: async (attempt, errorInfo) => {
+              if (!res.headersSent && isOriginalRequestStreaming) {
+                if (DEBUG_MODE)
+                  console.log(`[VCP Retry] First retry attempt (#${attempt}). Sending 200 OK to client to establish stream.`);
+                res.status(200);
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+              }
+            },
           },
-        },
-      );
+        );
+      }
 
       const isUpstreamStreaming =
         willStreamResponse && firstAiAPIResponse.headers.get('content-type')?.includes('text/event-stream');
@@ -1259,6 +1322,111 @@ class ChatCompletionHandler {
   }
 }
 
+function buildCodexOAuthProviderOptions(config = {}, traceStore) {
+  const projectBasePath = config.projectBasePath || path.resolve(__dirname, '..');
+  const runtimeConfig = codexOAuthResponses.readRuntimeConfig({ projectBasePath });
+  return {
+    projectBasePath,
+    accountId: runtimeConfig.VCP_CODEX_OAUTH_ACCOUNT_ID,
+    baseUrl: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_BASE_URL,
+    clientVersion: runtimeConfig.VCP_CODEX_OAUTH_CLIENT_VERSION,
+    timeoutMs: runtimeConfig.VCP_CODEX_OAUTH_UPSTREAM_TIMEOUT_MS,
+    traceObserver: (traceId, stage, metadata) => traceStore.addEvent(traceId, stage, metadata),
+  };
+}
+
+async function fetchCodexOAuthChatCompletion(body = {}, req, config = {}) {
+  if (!(await codexOAuthResponses.isCodexOAuthModel(body.model, {
+    projectBasePath: config.projectBasePath || path.resolve(__dirname, '..'),
+  }))) {
+    return null;
+  }
+
+  const projectBasePath = config.projectBasePath || path.resolve(__dirname, '..');
+  const traceStore = config.codexOAuthTraceStore || createCodexOAuthTraceStore({ projectBasePath });
+  const traceId = traceStore.startTrace({
+    route: 'agent_chat_completions_adapter',
+    model: typeof body.model === 'string' ? body.model : '',
+    stream: body.stream === true,
+  });
+  traceStore.addEvent(traceId, 'agent_request_received', {
+    method: req?.method || 'POST',
+    path: req?.path || '/v1/chat/completions',
+    model: typeof body.model === 'string' ? body.model : '',
+    stream: body.stream === true,
+  });
+
+  const provider = config.codexOAuthProvider || createCodexOAuthProvider(
+    buildCodexOAuthProviderOptions(config, traceStore)
+  );
+  const responsesBody = codexOAuthResponses.buildResponsesBodyFromChatCompletion(body);
+  const upstreamResponse = await provider.forwardResponses(responsesBody, {
+    accept: 'text/event-stream',
+  }, {
+    traceContext: { traceId },
+  });
+
+  if (!upstreamResponse.ok) {
+    await upstreamResponse.text().catch(() => '');
+    traceStore.addEvent(traceId, 'upstream_rejected', {
+      status: upstreamResponse.status,
+    });
+    traceStore.finishTrace(traceId, {
+      ok: false,
+      status: upstreamResponse.status,
+      errorCode: 'codex_oauth_provider_failed',
+      message: 'Codex OAuth provider request failed.',
+    });
+    return new Response(JSON.stringify({
+      error: {
+        type: 'codex_oauth_provider_failed',
+        message: 'Codex OAuth provider request failed.',
+        trace_id: traceId,
+      },
+    }), {
+      status: codexOAuthResponses.classifyCodexOAuthProviderFailure(upstreamResponse.status).status,
+      headers: {
+        'content-type': 'application/json',
+        'x-vcp-codex-oauth-trace-id': traceId,
+      },
+    });
+  }
+
+  const upstreamText = await upstreamResponse.text();
+  const upstreamContentType = typeof upstreamResponse.headers?.get === 'function'
+    ? upstreamResponse.headers.get('content-type') || ''
+    : '';
+  const isUpstreamSse = upstreamContentType.includes('text/event-stream') ||
+    codexOAuthResponses.looksLikeSsePayload(upstreamText);
+  traceStore.finishTrace(traceId, { ok: true, status: upstreamResponse.status });
+
+  if (body.stream === true) {
+    const sseText = isUpstreamSse
+      ? codexOAuthResponses.transformResponsesSseToChatSseText(upstreamText, body)
+      : `data: ${JSON.stringify(codexOAuthResponses.transformResponsesJsonToChatCompletion(JSON.parse(upstreamText || '{}'), body))}\n\ndata: [DONE]\n\n`;
+    return new Response(sseText, {
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'x-vcp-codex-oauth-trace-id': traceId,
+      },
+    });
+  }
+
+  const chatPayload = isUpstreamSse
+    ? codexOAuthResponses.transformResponsesSseToChatCompletion(upstreamText, body)
+    : codexOAuthResponses.transformResponsesJsonToChatCompletion(JSON.parse(upstreamText || '{}'), body);
+  return new Response(JSON.stringify(chatPayload), {
+    status: upstreamResponse.status,
+    headers: {
+      'content-type': 'application/json',
+      'x-vcp-codex-oauth-trace-id': traceId,
+    },
+  });
+}
+
 ChatCompletionHandler._buildExecutionContext = buildExecutionContext;
+ChatCompletionHandler._fetchCodexOAuthChatCompletion = fetchCodexOAuthChatCompletion;
+ChatCompletionHandler._normalizeAgentModelRequest = normalizeAgentModelRequest;
 
 module.exports = ChatCompletionHandler;

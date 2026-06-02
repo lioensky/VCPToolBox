@@ -9,6 +9,8 @@ const { CodexOAuthProvider } = require('../modules/providers/codexOAuthProvider'
 const { CodexOAuthTraceStore } = require('../modules/codexOAuthTraceStore');
 const createCodexOAuthResponsesRouter = require('../routes/codexOAuthResponses');
 const createOAuthAuthAdminRoute = require('../routes/admin/oauthAuth');
+const ChatCompletionHandler = require('../modules/chatCompletionHandler');
+const agentManager = require('../modules/agentManager');
 
 function jsonResponse(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {
@@ -931,6 +933,97 @@ test('codex oauth responses route preserves provider error status without leakin
     assert.equal(JSON.stringify(payload).includes('No OAuth account'), false);
   } finally {
     await closeServer(server);
+  }
+});
+
+test('codex oauth agent chat fetch uses provider after VCP preprocessing selects codex model', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-oauth-agent-chat-'));
+  await fs.writeFile(path.join(tempDir, 'config.env'), [
+    'VCP_RESPONSES_PROVIDER=codex_oauth',
+    'VCP_CODEX_OAUTH_MODELS=gpt-5.4-mini',
+  ].join('\n'));
+
+  const calls = [];
+  const traceStore = new CodexOAuthTraceStore();
+  const response = await ChatCompletionHandler._fetchCodexOAuthChatCompletion({
+    model: 'gpt-5.4-mini',
+    stream: false,
+    messages: [
+      { role: 'system', content: 'Expanded Nova prompt' },
+      { role: 'user', content: 'Reply OK' },
+    ],
+  }, {
+    method: 'POST',
+    path: '/v1/chat/completions',
+  }, {
+    projectBasePath: tempDir,
+    codexOAuthTraceStore: traceStore,
+    codexOAuthProvider: {
+      async forwardResponses(body) {
+        calls.push(body);
+        return responsesSseResponse([
+          `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'OK' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_agent', model: body.model, status: 'completed', output: [] } })}\n\n`,
+        ]);
+      },
+    },
+  });
+
+  const payload = await response.json();
+  const trace = traceStore.getLatest();
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'gpt-5.4-mini');
+  assert.equal(calls[0].instructions, 'Expanded Nova prompt');
+  assert.equal(payload.choices[0].message.content, 'OK');
+  assert.equal(trace.metadata.route, 'agent_chat_completions_adapter');
+  assert.equal(trace.ok, true);
+  assert.equal(trace.events.some(event => event.stage === 'agent_request_received'), true);
+});
+
+test('agent model requests inject agent prompt before semantic codex routing', () => {
+  const alias = 'Nova';
+  const previousMapValue = agentManager.agentMap.get(alias);
+  const hadMapValue = agentManager.agentMap.has(alias);
+
+  try {
+    agentManager.agentMap.set(alias, 'Nova.txt');
+
+    const normalized = ChatCompletionHandler._normalizeAgentModelRequest({
+      model: alias,
+      stream: false,
+      messages: [
+        { role: 'user', content: 'Reply OK' },
+      ],
+    }, {
+      config: { autoModelName: 'VCPModelAuto' },
+    });
+
+    assert.equal(normalized.model, 'VCPModelAuto');
+    assert.equal(normalized.messages.length, 2);
+    assert.deepEqual(normalized.messages[0], { role: 'system', content: '{{Nova}}' });
+    assert.deepEqual(normalized.messages[1], { role: 'user', content: 'Reply OK' });
+
+    const alreadyPrompted = ChatCompletionHandler._normalizeAgentModelRequest({
+      model: alias,
+      messages: [
+        { role: 'system', content: '{{Nova}}' },
+        { role: 'user', content: 'Reply OK' },
+      ],
+    }, {
+      config: { autoModelName: 'VCPModelAuto' },
+    });
+
+    assert.equal(alreadyPrompted.model, 'VCPModelAuto');
+    assert.equal(alreadyPrompted.messages.length, 2);
+    assert.equal(alreadyPrompted.messages[0].content, '{{Nova}}');
+  } finally {
+    if (hadMapValue) {
+      agentManager.agentMap.set(alias, previousMapValue);
+    } else {
+      agentManager.agentMap.delete(alias);
+    }
   }
 });
 
