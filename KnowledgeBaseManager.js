@@ -43,6 +43,13 @@ class KnowledgeBaseManager {
             deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
             maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
             deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
+            // 🛡️ Rust 派生表写入租约：避免 rusqlite 与 better-sqlite3 双写 WAL 竞态
+            rustWriteLeaseGraceMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_GRACE_MS, 10) || 5000,
+            rustWriteLeaseCooldownMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_COOLDOWN_MS, 10) || 2000,
+            rustWriteLeaseRetryMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_RETRY_MS, 10) || 1000,
+            rustWriteLeaseTtlMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_TTL_MS, 10) || 10 * 60 * 1000,
+            rustWriteLeaseMaxWaitMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_MAX_WAIT_MS, 10) || 30 * 60 * 1000,
+            rustWriteLeasePendingThreshold: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_PENDING_THRESHOLD, 10) || 0,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
@@ -90,6 +97,12 @@ class KnowledgeBaseManager {
         this.resultDeduplicator = null; // ✅ Tagmemo v4
         this.ragParams = {}; // ✅ 新增：用于存储热调控参数
         this.ragParamsWatcher = null;
+
+        // 🛡️ SQLite Rust 写租约门控：Rust 派生表写入前必须向 JS 主调度器申请窗口。
+        this.rustWriteLease = null;
+        this.lastJsWriteFinishedAt = 0;
+        this.lastRustWriteFinishedAt = 0;
+        this._rustLeaseWaitLogAt = 0;
 
     }
 
@@ -148,7 +161,7 @@ class KnowledgeBaseManager {
         await this.loadRagParams();
 
         // 初始化浪潮引擎
-        this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams);
+        this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams, this);
         await this.tagMemoEngine.initialize();
         this._cleanupStalePairwiseSimilarityModels();
 
@@ -381,6 +394,125 @@ class KnowledgeBaseManager {
         } catch (watchErr) {
             console.warn(`[KnowledgeBase] ⚠️ Failed to stop watcher after SQLite corruption: ${watchErr.message}`);
         }
+    }
+
+    _delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    _isRustWriteLeaseExpired(now = Date.now()) {
+        return this.rustWriteLease &&
+            now - this.rustWriteLease.startedAt > (this.rustWriteLease.ttlMs || this.config.rustWriteLeaseTtlMs);
+    }
+
+    _canGrantRustWriteLease(options = {}) {
+        if (this.databaseCorruptionDetected) return { ok: false, reason: 'database-corruption' };
+
+        const now = Date.now();
+        if (this._isRustWriteLeaseExpired(now)) {
+            console.error(
+                `[KnowledgeBase] 🚨 Rust write lease "${this.rustWriteLease.owner}" exceeded TTL; force-releasing stale lease.`
+            );
+            this.rustWriteLease = null;
+            this.lastRustWriteFinishedAt = now;
+        }
+
+        if (this.rustWriteLease) return { ok: false, reason: `rust-lease-active:${this.rustWriteLease.owner}` };
+        if (this.isProcessing) return { ok: false, reason: 'js-batch-processing' };
+        if (this.isProcessingDeletes) return { ok: false, reason: 'js-delete-processing' };
+        if (this.pendingDeletes.size > 0) return { ok: false, reason: `pending-deletes:${this.pendingDeletes.size}` };
+
+        const threshold = options.pendingThreshold ?? this.config.rustWriteLeasePendingThreshold;
+        if (threshold >= 0 && this.pendingFiles.size > threshold) {
+            return { ok: false, reason: `pending-files:${this.pendingFiles.size}>${threshold}` };
+        }
+
+        const graceMs = options.graceMs ?? this.config.rustWriteLeaseGraceMs;
+        const sinceJsWrite = now - this.lastJsWriteFinishedAt;
+        if (this.lastJsWriteFinishedAt > 0 && sinceJsWrite < graceMs) {
+            return { ok: false, reason: `js-write-cooldown:${graceMs - sinceJsWrite}ms` };
+        }
+
+        const sinceRustWrite = now - this.lastRustWriteFinishedAt;
+        if (this.lastRustWriteFinishedAt > 0 && sinceRustWrite < this.config.rustWriteLeaseCooldownMs) {
+            return { ok: false, reason: `rust-write-cooldown:${this.config.rustWriteLeaseCooldownMs - sinceRustWrite}ms` };
+        }
+
+        return { ok: true, reason: 'ok' };
+    }
+
+    async requestRustWriteLease(owner, options = {}) {
+        const startedWaitAt = Date.now();
+        const retryMs = options.retryMs ?? this.config.rustWriteLeaseRetryMs;
+        const maxWaitMs = options.maxWaitMs ?? this.config.rustWriteLeaseMaxWaitMs;
+        const ttlMs = options.ttlMs ?? this.config.rustWriteLeaseTtlMs;
+
+        while (true) {
+            const decision = this._canGrantRustWriteLease(options);
+            if (decision.ok) {
+                this.rustWriteLease = {
+                    owner,
+                    startedAt: Date.now(),
+                    ttlMs
+                };
+                console.log(`[KnowledgeBase] 🦀🔐 Rust SQLite write lease granted to "${owner}".`);
+                return {
+                    owner,
+                    release: () => this.releaseRustWriteLease(owner)
+                };
+            }
+
+            if (Date.now() - startedWaitAt >= maxWaitMs) {
+                console.warn(
+                    `[KnowledgeBase] 🦀⏳ Rust SQLite write lease "${owner}" timed out after ${maxWaitMs}ms; last reason=${decision.reason}.`
+                );
+                return null;
+            }
+
+            const now = Date.now();
+            if (now - this._rustLeaseWaitLogAt > 30000) {
+                this._rustLeaseWaitLogAt = now;
+                console.log(
+                    `[KnowledgeBase] 🦀⏳ Rust SQLite write lease "${owner}" waiting: ${decision.reason}. ` +
+                    `pendingFiles=${this.pendingFiles.size}, pendingDeletes=${this.pendingDeletes.size}`
+                );
+            }
+
+            await this._delay(retryMs);
+        }
+    }
+
+    releaseRustWriteLease(owner) {
+        if (!this.rustWriteLease) return;
+        if (this.rustWriteLease.owner !== owner) {
+            console.warn(
+                `[KnowledgeBase] ⚠️ Ignored Rust write lease release from "${owner}"; active owner is "${this.rustWriteLease.owner}".`
+            );
+            return;
+        }
+
+        this.rustWriteLease = null;
+        this.lastRustWriteFinishedAt = Date.now();
+        console.log(`[KnowledgeBase] 🦀🔓 Rust SQLite write lease released by "${owner}".`);
+
+        if (!this.databaseCorruptionDetected) {
+            if (this.pendingDeletes.size > 0) {
+                setTimeout(() => this._flushDeleteBatch(), this.config.rustWriteLeaseCooldownMs);
+            }
+            if (this.pendingFiles.size > 0) {
+                setTimeout(() => this._flushBatch(), this.config.rustWriteLeaseCooldownMs);
+            }
+        }
+    }
+
+    _deferBatchForRustLease(type = 'batch') {
+        const owner = this.rustWriteLease?.owner || 'unknown';
+        const delay = this.config.rustWriteLeaseCooldownMs;
+        console.log(`[KnowledgeBase] 🦀⏸️ Deferring ${type} while Rust SQLite write lease is active (${owner}).`);
+        setTimeout(() => {
+            if (type === 'delete') this._flushDeleteBatch();
+            else this._flushBatch();
+        }, delay);
     }
 
     _decodeVectorBlob(blob, dim, label = 'vector') {
@@ -1442,6 +1574,10 @@ class KnowledgeBaseManager {
 
     async _flushDeleteBatch() {
         if (this.isProcessingDeletes || this.pendingDeletes.size === 0 || this.databaseCorruptionDetected) return;
+        if (this.rustWriteLease) {
+            this._deferBatchForRustLease('delete');
+            return;
+        }
         this.isProcessingDeletes = true;
 
         const batchFiles = Array.from(this.pendingDeletes).slice(0, this.config.maxDeleteBatchSize);
@@ -1460,6 +1596,7 @@ class KnowledgeBaseManager {
             }
         } finally {
             this.isProcessingDeletes = false;
+            this.lastJsWriteFinishedAt = Date.now();
             if (!this.databaseCorruptionDetected && this.pendingDeletes.size > 0) {
                 setImmediate(() => this._flushDeleteBatch());
             }
@@ -1473,6 +1610,10 @@ class KnowledgeBaseManager {
 
     async _flushBatch() {
         if (this.isProcessing || this.pendingFiles.size === 0) return;
+        if (this.rustWriteLease) {
+            this._deferBatchForRustLease('batch');
+            return;
+        }
         this.isProcessing = true;
 
         // 1. 📋 准备批次：先从队列中取出，但不立即永久删除
@@ -1798,6 +1939,7 @@ class KnowledgeBaseManager {
         }
         finally {
             this.isProcessing = false;
+            this.lastJsWriteFinishedAt = Date.now();
             if (!this.databaseCorruptionDetected && this.pendingFiles.size > 0) setImmediate(() => this._flushBatch());
         }
     }

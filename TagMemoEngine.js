@@ -8,11 +8,12 @@ const EPAModule = require('./EPAModule');
 const ResidualPyramid = require('./ResidualPyramid');
 
 class TagMemoEngine {
-    constructor(db, tagIndex, config, ragParams) {
+    constructor(db, tagIndex, config, ragParams, knowledgeBaseManager = null) {
         this.db = db;
         this.tagIndex = tagIndex;
         this.config = config;
         this.ragParams = ragParams;
+        this.knowledgeBaseManager = knowledgeBaseManager;
 
         this.epa = null;
         this.residualPyramid = null;
@@ -1002,13 +1003,31 @@ class TagMemoEngine {
         }
     }
 
+    async _withRustWriteLease(owner, fn, options = {}) {
+        if (!this.knowledgeBaseManager || typeof this.knowledgeBaseManager.requestRustWriteLease !== 'function') {
+            return await fn();
+        }
+
+        const lease = await this.knowledgeBaseManager.requestRustWriteLease(owner, options);
+        if (!lease) {
+            console.warn(`[TagMemoEngine] 🦀⏳ Rust write lease denied/timed out for "${owner}"; deferring this run.`);
+            return null;
+        }
+
+        try {
+            return await fn();
+        } finally {
+            lease.release();
+        }
+    }
+
     /**
      * 🌟 V8.2-γ: 触发 Rust 预计算成对语义相似度
      * - 默认增量模式（跳过已缓存且 model_sig 一致的 pair）
      * - 与 doMatrixRebuild 共用 _isMatrixRebuilding 锁
      */
     async recomputePairwiseSimilarities(opts = {}) {
-        const { fullRebuild = false, blocking = false, minSimilarity = 0.05 } = opts;
+        const { fullRebuild = false, blocking = false, minSimilarity = 0.05, leaseAlreadyHeld = false } = opts;
 
         if (!this.tagIndex || !this.tagIndex.computePairwiseSimilarities) {
             console.warn('[TagMemoEngine] ⚠️ computePairwiseSimilarities is not available in VexusIndex (Rust binary may need rebuild)');
@@ -1022,29 +1041,34 @@ class TagMemoEngine {
             return null;
         }
 
-        console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
-        try {
-            const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-            const result = await this.tagIndex.computePairwiseSimilarities(
-                dbPath,
-                this.modelSig,
-                minSimilarity,
-                fullRebuild
-            );
-            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
-            this._checkpointAfterRustWrite('pairwise sim');
-            console.log(
-                `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
-                `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
-                `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
-                `elapsed=${result.elapsedMs.toFixed(2)}ms`
-            );
-            return result;
-        } catch (e) {
-            console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
-            if (e.stack) console.error(e.stack);
-            return null;
-        }
+        const run = async () => {
+            console.log(`[TagMemoEngine] ⚡ V8.2 Triggering Rust pairwise similarity precomputation (model_sig=${this.modelSig}, fullRebuild=${fullRebuild})...`);
+            try {
+                const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
+                const result = await this.tagIndex.computePairwiseSimilarities(
+                    dbPath,
+                    this.modelSig,
+                    minSimilarity,
+                    fullRebuild
+                );
+                // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+                this._checkpointAfterRustWrite('pairwise sim');
+                console.log(
+                    `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
+                    `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
+                    `skipped=${result.skippedCount}, stored=${result.storedCount}, ` +
+                    `elapsed=${result.elapsedMs.toFixed(2)}ms`
+                );
+                return result;
+            } catch (e) {
+                console.error('[TagMemoEngine] ❌ V8.2 Rust pairwise sim failed:', e.message || e);
+                if (e.stack) console.error(e.stack);
+                return null;
+            }
+        };
+
+        if (leaseAlreadyHeld) return await run();
+        return await this._withRustWriteLease('tagmemo:pairwise-sim', run, { pendingThreshold: 0 });
     }
 
     // 🌟 TagMemo V7: 加载内生残差
@@ -1121,13 +1145,22 @@ class TagMemoEngine {
         this._isMatrixRebuilding = true;
 
         try {
-            // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
-            // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
-            await this.recomputePairwiseSimilarities({ blocking: true });
-            this.loadPairwiseSimilarities();
-            await this.recomputeIntrinsicResiduals();
-            this.loadIntrinsicResiduals();
-            this.buildDirectedCooccurrenceMatrix();
+            const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
+                // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
+                // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
+                await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true });
+                this.loadPairwiseSimilarities();
+                await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
+                this.loadIntrinsicResiduals();
+                this.buildDirectedCooccurrenceMatrix();
+                return true;
+            }, { pendingThreshold: 0 });
+
+            if (!rebuilt) {
+                this._accumulatedTagChanges += changesAtStart;
+                this._scheduleMatrixRebuildTimer(300000);
+                return;
+            }
         } finally {
             this._isMatrixRebuilding = false;
             if (this._accumulatedTagChanges > 0) {
@@ -1153,27 +1186,35 @@ class TagMemoEngine {
     }
 
     // 🌟 TagMemo V7: 触发 Rust 预计算内生残差
-    async recomputeIntrinsicResiduals() {
+    async recomputeIntrinsicResiduals(opts = {}) {
+        const { leaseAlreadyHeld = false } = opts;
         if (!this.tagIndex || !this.tagIndex.computeIntrinsicResiduals) {
             console.warn('[TagMemoEngine] computeIntrinsicResiduals is not available in VexusIndex');
             return;
         }
-        
-        console.log('[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation...');
-        try {
-            const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-            const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
-            // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
-            // 否则在 Docker bind mount 等虚拟文件系统上会读到不一致的页视图（SQLITE_CORRUPT 幻觉）
-            this._checkpointAfterRustWrite('intrinsic residuals');
-            console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
-            
-            // 重新加载结果
-            this.loadIntrinsicResiduals();
-        } catch (e) {
-            console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
-            if (e.stack) console.error(e.stack);
-        }
+
+        const run = async () => {
+            console.log('[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation...');
+            try {
+                const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
+                const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
+                // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+                // 否则在 Docker bind mount 等虚拟文件系统上会读到不一致的页视图（SQLITE_CORRUPT 幻觉）
+                this._checkpointAfterRustWrite('intrinsic residuals');
+                console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
+
+                // 重新加载结果
+                this.loadIntrinsicResiduals();
+                return result;
+            } catch (e) {
+                console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
+                if (e.stack) console.error(e.stack);
+                return null;
+            }
+        };
+
+        if (leaseAlreadyHeld) return await run();
+        return await this._withRustWriteLease('tagmemo:intrinsic-residuals', run, { pendingThreshold: 0 });
     }
 }
 
