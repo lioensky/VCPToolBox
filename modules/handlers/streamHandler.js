@@ -258,7 +258,23 @@ class StreamHandler {
       }
       currentMessagesForLoop.push(...assistantMessages);
 
-      const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(currentAIContentForLoop);
+      // --- 预处理：为裸 tool_name: 块自动包裹 <<<[TOOL_REQUEST]>>> 标记 ---
+      // AI 模型可能输出不带块标记的 tool_name: 格式，需要兼容处理
+      let contentForParsing = currentAIContentForLoop;
+      if (contentForParsing && !contentForParsing.includes('<<<[TOOL_REQUEST]>>>')) {
+        // 匹配从 tool_name: 开始、到内容末尾的工具调用块
+        // 格式: tool_name:xxx,\nfield:value,\nfield:value,...
+        const toolBlockRegex = /(?:^|\n)(tool_name\s*:\s*[^\n]+(?:\n\s*\w+\s*:\s*[^\n]+)*)/;
+        const match = contentForParsing.match(toolBlockRegex);
+        if (match) {
+          const toolBlock = match[1];
+          const beforeBlock = contentForParsing.substring(0, match.index + (match[0].startsWith('\n') ? 1 : 0));
+          contentForParsing = beforeBlock + '\n<<<[TOOL_REQUEST]>>>\n' + toolBlock.trim() + '\n<<<[END_TOOL_REQUEST]>>>';
+          if (DEBUG_MODE) console.log('[VCP Stream Loop] Auto-wrapped bare tool_name block with TOOL_REQUEST markers.');
+        }
+      }
+
+      const toolCalls = vcpToolUseForbidden ? [] : ToolCallParser.parse(contentForParsing);
       if (toolCalls.length === 0) {
         if (DEBUG_MODE) console.log('[VCP Stream Loop] No tool calls found. Exiting loop.');
         if (!res.writableEnded) {
