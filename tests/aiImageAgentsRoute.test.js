@@ -1,7 +1,12 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const Module = require('node:module');
 const test = require('node:test');
 const express = require('express');
+const {
+    createNativeImageDelegateRegistry,
+    registerSerumBottleSecretlessDoubaoDelegate,
+} = require('../modules/nativeImageDelegateRegistry');
 
 const routePath = require.resolve('../routes/admin/aiImageAgents');
 
@@ -28,7 +33,7 @@ async function withRouteModule(stub, run) {
 }
 
 function createSerumBottleSecretlessBody(overrides = {}) {
-    return {
+    const body = {
         pipeline_id: 'serum-pipe-1',
         task_id: 'AUTH-DRAFT-SECRETLESS-SERUM-OPTION-A-VCPTB-IMPLEMENT-20260602-001',
         route_id: 'serum_bottle_vcptoolbox_route_owner_runtime',
@@ -39,11 +44,81 @@ function createSerumBottleSecretlessBody(overrides = {}) {
         retry_allowed: false,
         receipt_ref: 'reports/runtime_to_review_v1/serum_bottle_exact_live_probe_receipt_20260601_attempt_004.json',
         artifact_record_ref: 'reports/runtime_to_review_v1/serum_bottle_exact_live_probe_artifact_record_20260601_attempt_004.json',
-        non_secret_payload_hash: 'sha256:test-only-non-secret-payload',
         plan: {
-            steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'serum bottle test prompt' }]
+            steps: [{
+                type: 'generate_image',
+                plugin: 'DoubaoGen',
+                prompt: 'serum bottle test prompt',
+                model: 'doubao-seedream-5-0-260128',
+                output_directory_ref: 'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_007/'
+            }]
         },
         ...overrides
+    };
+
+    if (!Object.prototype.hasOwnProperty.call(overrides, 'non_secret_payload_hash')) {
+        body.non_secret_payload_hash = hashCanonicalPayload(body);
+    }
+
+    return body;
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        const keys = Object.keys(value).sort();
+        return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function hashCanonicalPayload(body) {
+    const bodyWithoutHash = { ...body };
+    delete bodyWithoutHash.non_secret_payload_hash;
+    delete bodyWithoutHash.nonSecretPayloadHash;
+    return crypto.createHash('sha256').update(canonicalJson(bodyWithoutHash)).digest('hex');
+}
+
+function createSerumBottleSecretlessOptions(overrides = {}) {
+    const registry = createNativeImageDelegateRegistry();
+    registerSerumBottleSecretlessDoubaoDelegate(
+        registry,
+        overrides.delegateHandler || (async () => ({
+            ok: true,
+            result: {
+                ok: true,
+                imageUrl: 'file:///tmp/serum.png',
+                sha256: 'a'.repeat(64),
+                mime: 'image/png',
+                width: 1024,
+                height: 1536,
+            },
+            provider_contact_performed: true,
+            plugin_call_performed: true,
+            api_call_performed: true,
+            image_generation_performed: true,
+        })),
+        { enabled: overrides.delegateEnabled !== false }
+    );
+
+    return {
+        enableAiImageRealExecution: overrides.enableAiImageRealExecution !== false,
+        enableNativeDoubaoSecretlessRuntimeDelegate:
+            overrides.enableNativeDoubaoSecretlessRuntimeDelegate !== false,
+        nativeImageDelegateRegistry: registry,
+        async authorizeSerumBottleSecretlessExecution(request) {
+            if (typeof overrides.authorizeSerumBottleSecretlessExecution === 'function') {
+                return overrides.authorizeSerumBottleSecretlessExecution(request);
+            }
+            return {
+                ok: true,
+                operatorId: 'vcptoolbox-internal-serum',
+                authorizationId: 'serum-internal-auth-001',
+                receiptId: 'serum-internal-receipt-001'
+            };
+        }
     };
 }
 
@@ -113,21 +188,10 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
             return { ok: true, mode: 'real_execution', receiptId: 'stubbed-execution-receipt' };
         }
     }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
-        const pluginManager = {
-            getPlugin(name) {
-                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-            },
-            processToolCall() {}
-        };
-
         const result = await handleSerumBottleSecretlessExecutionRequest({
             ip: '::ffff:10.0.0.21',
             body: createSerumBottleSecretlessBody()
-        }, {
-            pluginManager,
-            async nativeDoubaoSecretlessRuntimeDelegate() {
-                return { ok: true, result: { ok: true, content: 'stubbed' } };
-            },
+        }, createSerumBottleSecretlessOptions({
             async authorizeSerumBottleSecretlessExecution(request) {
                 events.push('authorizer');
                 authorizerCalls.push(request);
@@ -138,7 +202,7 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
                     receiptId: 'serum-internal-receipt-001'
                 };
             }
-        });
+        }));
 
         assert.equal(result.ok, true);
         assert.deepEqual(events, ['authorizer', 'executor']);
@@ -159,7 +223,8 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
             ticket: undefined
         });
         assert.equal(calls[0].options.dryRun, false);
-        assert.notEqual(calls[0].options.pluginManager, pluginManager);
+        assert.equal(typeof calls[0].options.pluginManager.processToolCall, 'function');
+        assert.equal(typeof calls[0].options.pluginManager.getPlugin, 'undefined');
         assert.deepEqual(calls[0].options.executionContext, {
             requestSource: 'ai-image-pipeline',
             operatorId: 'vcptoolbox-internal-serum',
@@ -186,19 +251,9 @@ test('aiImageAgents serum-bottle secretless internal router exposes only exact s
             return { ok: true, mode: 'real_execution', receiptId: 'stubbed-execution-receipt' };
         }
     }, async ({ createSerumBottleSecretlessInternalRouter }) => {
-        const pluginManager = {
-            getPlugin(name) {
-                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-            },
-            processToolCall() {}
-        };
         const app = express();
         app.use(express.json());
-        app.use('/internal/ai-image-agents', createSerumBottleSecretlessInternalRouter({
-            pluginManager,
-            async nativeDoubaoSecretlessRuntimeDelegate() {
-                return { ok: true, result: { ok: true, content: 'stubbed' } };
-            },
+        app.use('/internal/ai-image-agents', createSerumBottleSecretlessInternalRouter(createSerumBottleSecretlessOptions({
             async authorizeSerumBottleSecretlessExecution(request) {
                 authorizerCalls.push(request);
                 return {
@@ -208,7 +263,7 @@ test('aiImageAgents serum-bottle secretless internal router exposes only exact s
                     receiptId: 'serum-internal-receipt-001'
                 };
             }
-        }));
+        })));
 
         const server = await new Promise((resolve) => {
             const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
@@ -247,19 +302,12 @@ test('aiImageAgents serum-bottle secretless helper fails closed when internal au
             return { ok: true, mode: 'real_execution' };
         }
     }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const options = createSerumBottleSecretlessOptions();
+        delete options.authorizeSerumBottleSecretlessExecution;
+
         const result = await handleSerumBottleSecretlessExecutionRequest({
             body: createSerumBottleSecretlessBody()
-        }, {
-            pluginManager: {
-                getPlugin(name) {
-                    return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-                },
-                processToolCall() {}
-            },
-            async nativeDoubaoSecretlessRuntimeDelegate() {
-                return { ok: true, result: { ok: true } };
-            }
-        });
+        }, options);
 
         assert.equal(result.ok, false);
         assert.equal(result.result.status, 'serum_bottle_secretless_internal_authorizer_missing');
@@ -269,7 +317,7 @@ test('aiImageAgents serum-bottle secretless helper fails closed when internal au
     });
 });
 
-test('aiImageAgents serum-bottle secretless helper reaches native delegate gate when plugin manager and authorizer are injected', async () => {
+test('aiImageAgents serum-bottle secretless helper fails closed when native delegate registry is missing', async () => {
     const calls = [];
     const authorizerCalls = [];
 
@@ -282,12 +330,8 @@ test('aiImageAgents serum-bottle secretless helper reaches native delegate gate 
         const result = await handleSerumBottleSecretlessExecutionRequest({
             body: createSerumBottleSecretlessBody()
         }, {
-            pluginManager: {
-                getPlugin(name) {
-                    return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-                },
-                processToolCall() {}
-            },
+            enableAiImageRealExecution: true,
+            enableNativeDoubaoSecretlessRuntimeDelegate: true,
             async authorizeSerumBottleSecretlessExecution(request) {
                 authorizerCalls.push(request);
                 return {
@@ -300,7 +344,7 @@ test('aiImageAgents serum-bottle secretless helper reaches native delegate gate 
         });
 
         assert.equal(result.ok, false);
-        assert.equal(result.result.status, 'serum_bottle_secretless_native_delegate_missing');
+        assert.equal(result.result.status, 'serum_bottle_secretless_native_delegate_registry_missing');
         assert.equal(result.result.provider_contact_performed, false);
         assert.equal(result.result.authorization_header_constructed, false);
         assert.equal(calls.length, 0);
@@ -322,21 +366,12 @@ test('aiImageAgents serum-bottle secretless helper rejects budget drift before s
             body: createSerumBottleSecretlessBody({
                 max_provider_calls: 2
             })
-        }, {
-            pluginManager: {
-                getPlugin(name) {
-                    return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-                },
-                processToolCall() {}
-            },
-            async nativeDoubaoSecretlessRuntimeDelegate() {
-                return { ok: true, result: { ok: true } };
-            },
+        }, createSerumBottleSecretlessOptions({
             async authorizeSerumBottleSecretlessExecution(request) {
                 authorizerCalls.push(request);
                 return { ok: true, authorizationId: 'should-not-run' };
             }
-        });
+        }));
 
         assert.equal(result.ok, false);
         assert.equal(result.result.status, 'serum_bottle_secretless_budget_not_exact');
@@ -372,25 +407,16 @@ test('aiImageAgents serum-bottle secretless helper rejects multiple plugin steps
                     ]
                 }
             })
-        }, {
-            pluginManager: {
-                getPlugin(name) {
-                    return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-                },
-                processToolCall() {}
-            },
-            async nativeDoubaoSecretlessRuntimeDelegate() {
-                return { ok: true, result: { ok: true } };
-            },
+        }, createSerumBottleSecretlessOptions({
             async authorizeSerumBottleSecretlessExecution(request) {
                 authorizerCalls.push(request);
                 return { ok: true, authorizationId: 'should-not-run' };
             }
-        });
+        }));
 
         assert.equal(result.ok, false);
-        assert.equal(result.result.status, 'serum_bottle_secretless_plugin_scope_not_authorized');
-        assert.deepEqual(result.result.requiredPlugins, ['DoubaoGen', 'DoubaoGen']);
+        assert.equal(result.result.status, 'serum_bottle_secretless_payload_schema_invalid');
+        assert.equal(result.result.reason, 'exactly_one_plan_step_required');
         assert.equal(result.result.provider_contact_performed, false);
         assert.equal(calls.length, 0);
         assert.equal(authorizerCalls.length, 0);
@@ -438,21 +464,12 @@ test('aiImageAgents serum-bottle secretless helper rejects recursive secret-bear
         }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
             const result = await handleSerumBottleSecretlessExecutionRequest({
                 body: createSerumBottleSecretlessBody(item.bodyPatch)
-            }, {
-                pluginManager: {
-                    getPlugin(name) {
-                        return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
-                    },
-                    processToolCall() {}
-                },
-                async nativeDoubaoSecretlessRuntimeDelegate() {
-                    return { ok: true, result: { ok: true } };
-                },
+            }, createSerumBottleSecretlessOptions({
                 async authorizeSerumBottleSecretlessExecution(request) {
                     authorizerCalls.push(request);
                     return { ok: true, authorizationId: 'should-not-run' };
                 }
-            });
+            }));
 
             assert.equal(result.ok, false, item.name);
             assert.equal(
@@ -469,6 +486,169 @@ test('aiImageAgents serum-bottle secretless helper rejects recursive secret-bear
             );
         });
     }
+});
+
+test('aiImageAgents serum-bottle secretless helper fails closed when delegate is disabled', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2() {
+            throw new Error('executor_should_not_run');
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const result = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, createSerumBottleSecretlessOptions({ delegateEnabled: false }));
+
+        assert.equal(result.ok, false);
+        assert.equal(result.result.status, 'serum_bottle_secretless_native_delegate_missing');
+        assert.equal(result.result.provider_contact_performed, false);
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper requires real execution and delegate flags', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2() {
+            throw new Error('executor_should_not_run');
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const realExecutionOff = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, createSerumBottleSecretlessOptions({ enableAiImageRealExecution: false }));
+
+        assert.equal(realExecutionOff.ok, false);
+        assert.equal(realExecutionOff.result.status, 'serum_bottle_secretless_real_execution_flag_disabled');
+
+        const delegateFlagOff = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, createSerumBottleSecretlessOptions({ enableNativeDoubaoSecretlessRuntimeDelegate: false }));
+
+        assert.equal(delegateFlagOff.ok, false);
+        assert.equal(delegateFlagOff.result.status, 'serum_bottle_secretless_native_delegate_flag_disabled');
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper rejects unknown fields and command override', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2() {
+            throw new Error('executor_should_not_run');
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const unknownTopLevel = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody({ unexpected_field: 'blocked' })
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(unknownTopLevel.ok, false);
+        assert.equal(unknownTopLevel.result.status, 'serum_bottle_secretless_payload_unknown_fields');
+        assert.deepEqual(unknownTopLevel.result.unknownFields, ['body.unexpected_field']);
+
+        const bodyWithCommandOverride = createSerumBottleSecretlessBody();
+        bodyWithCommandOverride.plan.steps[0].command = 'edit';
+        bodyWithCommandOverride.non_secret_payload_hash = hashCanonicalPayload(bodyWithCommandOverride);
+
+        const commandOverride = await handleSerumBottleSecretlessExecutionRequest({
+            body: bodyWithCommandOverride
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(commandOverride.ok, false);
+        assert.equal(commandOverride.result.status, 'serum_bottle_secretless_payload_unknown_fields');
+        assert.deepEqual(commandOverride.result.unknownFields, ['body.plan.steps[0].command']);
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper rejects non-Doubao plugin and non-allowlisted model', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2() {
+            throw new Error('executor_should_not_run');
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const nonDoubao = createSerumBottleSecretlessBody();
+        nonDoubao.plan.steps[0].plugin = 'FluxGen';
+        nonDoubao.non_secret_payload_hash = hashCanonicalPayload(nonDoubao);
+
+        const nonDoubaoResult = await handleSerumBottleSecretlessExecutionRequest({
+            body: nonDoubao
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(nonDoubaoResult.ok, false);
+        assert.equal(nonDoubaoResult.result.status, 'serum_bottle_secretless_plugin_scope_not_authorized');
+        assert.deepEqual(nonDoubaoResult.result.requiredPlugins, ['FluxGen']);
+
+        const badModel = createSerumBottleSecretlessBody();
+        badModel.plan.steps[0].model = 'not-allowed-model';
+        badModel.non_secret_payload_hash = hashCanonicalPayload(badModel);
+
+        const badModelResult = await handleSerumBottleSecretlessExecutionRequest({
+            body: badModel
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(badModelResult.ok, false);
+        assert.equal(badModelResult.result.status, 'serum_bottle_secretless_model_not_allowed');
+        assert.equal(badModelResult.result.modelId, 'not-allowed-model');
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper rejects canonical payload hash mismatch', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2() {
+            throw new Error('executor_should_not_run');
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const result = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody({
+                non_secret_payload_hash: '0'.repeat(64)
+            })
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(result.ok, false);
+        assert.equal(result.result.status, 'serum_bottle_secretless_non_secret_payload_hash_mismatch');
+        assert.match(result.result.expectedPayloadHash, /^[a-f0-9]{64}$/);
+        assert.equal(result.result.receivedPayloadHash, '0'.repeat(64));
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper records bound delegate and artifact evidence on success', async () => {
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            await options.pluginManager.processToolCall(
+                'DoubaoGen',
+                { command: 'generate', prompt: input.plan.steps[0].prompt, model: input.plan.steps[0].model },
+                '127.0.0.1',
+                options.executionContext
+            );
+            return {
+                ok: true,
+                mode: 'real_execution',
+                images: [{
+                    plugin: 'DoubaoGen',
+                    sha256: 'b'.repeat(64),
+                    mime: 'image/png',
+                    dimensions: { width: 1024, height: 1536 },
+                }],
+            };
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const result = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, createSerumBottleSecretlessOptions());
+
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.result.serumBottleSecretlessRuntimeEvidence, {
+            routeId: 'serum_bottle_vcptoolbox_route_owner_runtime',
+            delegateId: 'serum_bottle_secretless_doubao_v1',
+            providerId: 'doubao',
+            pluginId: 'DoubaoGen',
+            apiId: 'generate_image',
+            internalCommand: 'generate',
+            providerCalls: 1,
+            pluginCalls: 1,
+            apiCalls: 1,
+            images: 1,
+            artifact: {
+                sha256: 'b'.repeat(64),
+                mime: 'image/png',
+                dimensions: { width: 1024, height: 1536 },
+            },
+        });
+    });
 });
 
 test('aiImageAgents execute route stays dry-run when no trusted or fallback operator is available', async () => {

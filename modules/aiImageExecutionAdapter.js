@@ -200,7 +200,14 @@ function extractImageFromBody(body) {
   const filename = body.filename || body.fileName  || null;
 
   if (url || path || filename) {
-    return { url, path, filename };
+    return {
+      url,
+      path,
+      filename,
+      sha256: body.sha256 || body.hash || body.checksum || null,
+      mime: body.mime || body.mimeType || body.contentType || null,
+      dimensions: normalizeImageDimensions(body.dimensions || body),
+    };
   }
 
   // DoubaoGen 风格：{ details: { imageUrls, serverPath, fileName } }
@@ -219,6 +226,14 @@ function extractImageFromBody(body) {
   }
 
   return null;
+}
+
+function normalizeImageDimensions(body) {
+  if (!body || typeof body !== 'object') return null;
+  const width = Number(body.width);
+  const height = Number(body.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  return { width, height };
 }
 
 function parsePluginResult(result) {

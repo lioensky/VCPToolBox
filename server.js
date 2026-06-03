@@ -1691,8 +1691,16 @@ async function initialize() {
       enableSerumBottleSecretlessInternalRoute: true,
       pluginManager,
       requireNativeDoubaoSecretlessRuntimeDelegate: true,
+      enableAiImageRealExecution: process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true',
+      enableNativeDoubaoSecretlessRuntimeDelegate:
+        process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true',
       authorizeSerumBottleSecretlessExecution,
     };
+    const {
+      createNativeImageDelegateRegistry,
+      registerSerumBottleSecretlessDoubaoDelegate,
+    } = require('./modules/nativeImageDelegateRegistry');
+    routeOptions.nativeImageDelegateRegistry = createNativeImageDelegateRegistry();
 
     if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
       const {
@@ -1700,13 +1708,16 @@ async function initialize() {
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
 
       if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
-        routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
+        registerSerumBottleSecretlessDoubaoDelegate(
+          routeOptions.nativeImageDelegateRegistry,
           createNativeDoubaoSecretlessRuntimeDelegate({
             enabled: true,
             pluginManager,
             requestIp: '127.0.0.1',
             bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
-          });
+          }),
+          { enabled: true }
+        );
         console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
       } else {
         console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
