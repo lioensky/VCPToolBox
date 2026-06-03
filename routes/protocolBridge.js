@@ -4,9 +4,12 @@
 // 这样所有 VCP 能力（插件、RAG、角色分割等）对所有协议客户端透明可用。
 
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 
 const DEBUG_MODE = (process.env.DebugMode || 'False').toLowerCase() === 'true';
+const RESPONSE_RETRY_SUPPRESSION_WINDOW_MS = parseInt(process.env.PROTOCOL_BRIDGE_RETRY_SUPPRESSION_MS || '15000', 10);
+const recentResponsesRequests = new Map();
 
 // ============================================================
 // 消息提取工具函数（从各协议格式提取为统一 messages 数组）
@@ -27,6 +30,7 @@ function normalizeTextContent(content) {
                 if (item && typeof item === 'object') {
                     if (item.type === 'text' && typeof item.text === 'string') return item.text;
                     if (item.type === 'input_text' && typeof item.text === 'string') return item.text;
+                    if (item.type === 'output_text' && typeof item.text === 'string') return item.text;
                 }
                 return '';
             })
@@ -48,6 +52,125 @@ function normalizeMessageRole(role) {
 }
 
 // ============================================================
+// 请求稳定标识（降低客户端重试导致的重复预处理）
+// ============================================================
+
+function buildStableRequestId(prefix, payload) {
+    const hash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify(payload || {}))
+        .digest('hex')
+        .slice(0, 24);
+    return `${prefix}_${hash}`;
+}
+
+function isSuppressedDuplicateResponsesRequest(requestId) {
+    if (!requestId || RESPONSE_RETRY_SUPPRESSION_WINDOW_MS <= 0) return false;
+
+    const now = Date.now();
+    for (const [key, value] of recentResponsesRequests.entries()) {
+        if (now - value.lastSeenAt > RESPONSE_RETRY_SUPPRESSION_WINDOW_MS * 4) {
+            recentResponsesRequests.delete(key);
+        }
+    }
+
+    const entry = recentResponsesRequests.get(requestId);
+    if (entry && now - entry.lastSeenAt <= RESPONSE_RETRY_SUPPRESSION_WINDOW_MS) {
+        entry.lastSeenAt = now;
+        entry.count += 1;
+        return true;
+    }
+
+    recentResponsesRequests.set(requestId, { lastSeenAt: now, count: 1 });
+    return false;
+}
+
+function buildImmediateResponsesPayload(model, text, status = 'completed') {
+    const response = buildBaseResponsesEnvelope(model || 'unknown');
+    response.status = status;
+    response.output_text = text || '';
+    response.output[0].content[0].text = response.output_text;
+    return response;
+}
+
+function sendImmediateResponsesResult(res, { model, text, stream }) {
+    const responsePayload = buildImmediateResponsesPayload(model, text, 'completed');
+    const item = responsePayload.output[0];
+    const part = item.content[0];
+
+    if (!stream) {
+        return res.status(200).json(responsePayload);
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+
+    const writeEvent = (eventName, data) => {
+        res.write(`event: ${eventName}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    writeEvent('response.created', {
+        type: 'response.created',
+        response: {
+            id: responsePayload.id,
+            object: responsePayload.object,
+            created_at: responsePayload.created_at,
+            status: 'in_progress',
+            model: responsePayload.model,
+            usage: buildResponsesUsage(null)
+        }
+    });
+    writeEvent('response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: item.id, type: item.type, role: item.role, content: [] }
+    });
+    writeEvent('response.content_part.added', {
+        type: 'response.content_part.added',
+        item_id: item.id,
+        output_index: 0,
+        content_index: 0,
+        part: { type: part.type, text: '' }
+    });
+    if (responsePayload.output_text) {
+        writeEvent('response.output_text.delta', {
+            type: 'response.output_text.delta',
+            item_id: item.id,
+            output_index: 0,
+            content_index: 0,
+            delta: responsePayload.output_text
+        });
+    }
+    writeEvent('response.output_text.done', {
+        type: 'response.output_text.done',
+        item_id: item.id,
+        output_index: 0,
+        content_index: 0,
+        text: responsePayload.output_text
+    });
+    writeEvent('response.content_part.done', {
+        type: 'response.content_part.done',
+        item_id: item.id,
+        output_index: 0,
+        content_index: 0,
+        part
+    });
+    writeEvent('response.output_item.done', {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item
+    });
+    writeEvent('response.completed', {
+        type: 'response.completed',
+        response: responsePayload
+    });
+    return res.end();
+}
+
+// ============================================================
 // OpenAI Responses API (/v1/responses) 消息提取
 // ============================================================
 
@@ -66,15 +189,15 @@ function extractMessagesFromResponsesInput(input) {
         if (!item || typeof item !== 'object') continue;
 
         const role = normalizeMessageRole(item.role || (item.type === 'message' ? 'user' : null));
-        const content = normalizeTextContent(item.content);
+        const content = normalizeTextContent(item.content || item.output);
 
         if (role && content) {
             messages.push({ role, content });
             continue;
         }
 
-        if (item.type === 'message' && Array.isArray(item.content)) {
-            const nestedContent = normalizeTextContent(item.content);
+        if (item.type === 'message' && (Array.isArray(item.content) || Array.isArray(item.output))) {
+            const nestedContent = normalizeTextContent(item.content || item.output);
             if (nestedContent) {
                 messages.push({
                     role: normalizeMessageRole(item.role || 'user'),
@@ -258,18 +381,76 @@ function buildGeminiApiOutput(chatResponse) {
 // SSE 流式响应转换
 // ============================================================
 
+function buildResponsesUsage(usage) {
+    return {
+        input_tokens: usage?.prompt_tokens || usage?.input_tokens || 0,
+        output_tokens: usage?.completion_tokens || usage?.output_tokens || 0,
+        total_tokens: usage?.total_tokens || ((usage?.input_tokens || 0) + (usage?.output_tokens || 0)),
+        input_tokens_details: usage?.prompt_tokens_details || usage?.input_tokens_details || {},
+        output_tokens_details: usage?.completion_tokens_details || usage?.output_tokens_details || {}
+    };
+}
+
+function buildBaseResponsesEnvelope(model) {
+    return {
+        id: `resp_${Date.now()}`,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        status: 'in_progress',
+        model,
+        output: [
+            {
+                id: `msg_${Date.now()}`,
+                type: 'message',
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'output_text',
+                        text: '',
+                        annotations: []
+                    }
+                ]
+            }
+        ],
+        output_text: '',
+        usage: buildResponsesUsage(null)
+    };
+}
+
 /**
- * 将 chat completion SSE 流转换为 Responses API SSE 流
+ * 将 chat completion SSE 流转换为 Responses API SSE 流。
+ * 结构对齐原始 hackserver.js 的 Responses envelope：同一个 responsePayload 持续更新，
+ * 最终 response.completed/response.failed 都携带完整 payload，避免 Codex 判定“无终态断流”。
  */
 function createResponsesStreamTransformer(res, model) {
-    const responseId = `resp_${Date.now()}`;
-    const itemId = `msg_${Date.now()}`;
-    let accumulatedText = '';
+    const responsePayload = buildBaseResponsesEnvelope(model);
+    const itemId = responsePayload.output[0].id;
     let headersSent = false;
+    let terminalEventSent = false;
+    let finalUsage = null;
 
     function writeSseEvent(eventName, data) {
+        if (res.destroyed || res.writableEnded) return false;
         res.write(`event: ${eventName}\n`);
         res.write(`data: ${JSON.stringify(data)}\n\n`);
+        return true;
+    }
+
+    function finalizeCompletedPayload(usage) {
+        responsePayload.status = 'completed';
+        responsePayload.output[0].content[0].text = responsePayload.output_text;
+        if (usage) responsePayload.usage = buildResponsesUsage(usage);
+        return responsePayload;
+    }
+
+    function finalizeFailedPayload(errorMessage) {
+        responsePayload.status = 'failed';
+        responsePayload.output[0].content[0].text = responsePayload.output_text;
+        responsePayload.error = {
+            code: 'protocol_bridge_stream_error',
+            message: errorMessage || 'Protocol bridge stream ended before completion.'
+        };
+        return responsePayload;
     }
 
     return {
@@ -283,12 +464,12 @@ function createResponsesStreamTransformer(res, model) {
             writeSseEvent('response.created', {
                 type: 'response.created',
                 response: {
-                    id: responseId,
-                    object: 'response',
-                    created_at: Math.floor(Date.now() / 1000),
+                    id: responsePayload.id,
+                    object: responsePayload.object,
+                    created_at: responsePayload.created_at,
                     status: 'in_progress',
-                    model,
-                    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+                    model: responsePayload.model,
+                    usage: buildResponsesUsage(null)
                 }
             });
 
@@ -308,8 +489,9 @@ function createResponsesStreamTransformer(res, model) {
         },
 
         onDelta(delta) {
+            if (terminalEventSent || res.destroyed || res.writableEnded) return;
             if (!headersSent) this.onStart();
-            accumulatedText += delta;
+            responsePayload.output_text += delta;
             writeSseEvent('response.output_text.delta', {
                 type: 'response.output_text.delta',
                 item_id: itemId,
@@ -319,15 +501,26 @@ function createResponsesStreamTransformer(res, model) {
             });
         },
 
+        onUsage(usage) {
+            if (usage) finalUsage = usage;
+        },
+
+        onModel(upstreamModel) {
+            if (upstreamModel) responsePayload.model = upstreamModel;
+        },
+
         onEnd(usage) {
+            if (terminalEventSent || res.destroyed || res.writableEnded) return;
             if (!headersSent) this.onStart();
+
+            const completedPayload = finalizeCompletedPayload(usage || finalUsage);
 
             writeSseEvent('response.output_text.done', {
                 type: 'response.output_text.done',
                 item_id: itemId,
                 output_index: 0,
                 content_index: 0,
-                text: accumulatedText
+                text: responsePayload.output_text
             });
 
             writeSseEvent('response.content_part.done', {
@@ -335,44 +528,35 @@ function createResponsesStreamTransformer(res, model) {
                 item_id: itemId,
                 output_index: 0,
                 content_index: 0,
-                part: { type: 'output_text', text: accumulatedText }
+                part: { type: 'output_text', text: responsePayload.output_text }
             });
 
             writeSseEvent('response.output_item.done', {
                 type: 'response.output_item.done',
                 output_index: 0,
-                item: {
-                    id: itemId,
-                    type: 'message',
-                    role: 'assistant',
-                    content: [{ type: 'output_text', text: accumulatedText, annotations: [] }]
-                }
+                item: responsePayload.output[0]
             });
 
+            terminalEventSent = true;
             writeSseEvent('response.completed', {
                 type: 'response.completed',
-                response: {
-                    id: responseId,
-                    object: 'response',
-                    created_at: Math.floor(Date.now() / 1000),
-                    status: 'completed',
-                    model,
-                    output: [{
-                        id: itemId,
-                        type: 'message',
-                        role: 'assistant',
-                        content: [{ type: 'output_text', text: accumulatedText, annotations: [] }]
-                    }],
-                    output_text: accumulatedText,
-                    usage: {
-                        input_tokens: usage?.prompt_tokens || 0,
-                        output_tokens: usage?.completion_tokens || 0,
-                        total_tokens: usage?.total_tokens || 0
-                    }
-                }
+                response: completedPayload
             });
 
-            res.end();
+            if (!res.destroyed && !res.writableEnded) res.end();
+        },
+
+        onError(errorMessage) {
+            if (terminalEventSent || res.destroyed || res.writableEnded) return;
+            if (!headersSent) this.onStart();
+
+            terminalEventSent = true;
+            writeSseEvent('response.failed', {
+                type: 'response.failed',
+                response: finalizeFailedPayload(errorMessage)
+            });
+
+            if (!res.destroyed && !res.writableEnded) res.end();
         }
     };
 }
@@ -511,13 +695,27 @@ async function forwardToChatCompletions(req, res, {
     if (typeof topP !== 'undefined') chatBody.top_p = topP;
     if (typeof maxTokens !== 'undefined') chatBody.max_tokens = maxTokens;
 
-    // 保留原始请求中可能有用的字段（如 requestId、messageId 等 VCP 特有字段）
+    // 保留原始请求中可能有用的字段（如 requestId、messageId 等 VCP 特有字段）。
+    // Codex Responses API 通常不会带 VCP 自定义 ID；为同构重试生成稳定 ID，便于主链路识别/缓存/中断追踪。
     if (originalBody?.requestId) chatBody.requestId = originalBody.requestId;
-    if (originalBody?.messageId) chatBody.messageId = originalBody.messageId;
+    if (originalBody?.messageId) {
+        chatBody.messageId = originalBody.messageId;
+    } else if (outputFormat === 'responses') {
+        chatBody.messageId = buildStableRequestId('responses', {
+            model: chatBody.model,
+            messages: chatBody.messages,
+            temperature: chatBody.temperature,
+            top_p: chatBody.top_p,
+            max_tokens: chatBody.max_tokens,
+            stream: chatBody.stream
+        });
+    }
 
     if (DEBUG_MODE) {
         console.log(`[ProtocolBridge] Forwarding ${outputFormat} request to local /v1/chat/completions (model: ${chatBody.model}, stream: ${chatBody.stream}, messages: ${messages.length})`);
     }
+
+    let activeTransformer = null;
 
     try {
         const { default: fetch } = await import('node-fetch');
@@ -571,6 +769,7 @@ async function forwardToChatCompletions(req, res, {
         switch (outputFormat) {
             case 'responses':
                 transformer = createResponsesStreamTransformer(res, chatBody.model);
+                activeTransformer = transformer;
                 break;
             case 'anthropic':
                 transformer = createAnthropicStreamTransformer(res, chatBody.model);
@@ -612,12 +811,16 @@ async function forwardToChatCompletions(req, res, {
 
                 try {
                     const json = JSON.parse(data);
-                    const delta = json?.choices?.[0]?.delta?.content;
+                    const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content;
                     if (typeof delta === 'string' && delta.length > 0) {
                         transformer.onDelta(delta);
                     }
                     if (json?.usage) {
                         lastUsage = json.usage;
+                        if (typeof transformer.onUsage === 'function') transformer.onUsage(json.usage);
+                    }
+                    if (json?.model && typeof transformer.onModel === 'function') {
+                        transformer.onModel(json.model);
                     }
                 } catch (e) {
                     // 忽略解析错误
@@ -629,7 +832,9 @@ async function forwardToChatCompletions(req, res, {
 
     } catch (error) {
         console.error(`[ProtocolBridge] Error forwarding to local chat completions:`, error.message);
-        if (!res.headersSent) {
+        if (activeTransformer && typeof activeTransformer.onError === 'function') {
+            activeTransformer.onError(error.message);
+        } else if (!res.headersSent) {
             res.status(502).json({
                 error: {
                     message: `Protocol bridge internal forward failed: ${error.message}`,
@@ -664,6 +869,28 @@ router.post('/v1/responses', async (req, res) => {
     }
 
     const wantsStream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+    if (!body.messageId && !body.requestId) {
+        body.messageId = buildStableRequestId('responses', {
+            model: body.model || 'gpt-4.1-mini',
+            messages,
+            temperature: body.temperature,
+            top_p: body.top_p,
+            max_tokens: body.max_output_tokens || body.max_tokens,
+            stream: wantsStream
+        });
+    }
+
+    const stableRequestId = body.messageId || body.requestId;
+    if (isSuppressedDuplicateResponsesRequest(stableRequestId)) {
+        if (DEBUG_MODE) {
+            console.warn(`[ProtocolBridge] Suppressed duplicate /v1/responses retry: ${stableRequestId}`);
+        }
+        return sendImmediateResponsesResult(res, {
+            model: body.model || 'gpt-4.1-mini',
+            stream: wantsStream,
+            text: '[VCP_PROTOCOL_BRIDGE] 检测到客户端短时间内重复提交同一 Responses 请求；已抑制重复转发以避免重复触发 RAG 与上游重试。请稍后重试或检查上游 API 可用性。'
+        });
+    }
 
     await forwardToChatCompletions(req, res, {
         messages,

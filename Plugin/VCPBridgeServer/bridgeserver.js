@@ -94,6 +94,253 @@ function extractBearerToken(authHeader) {
 }
 
 // ============================================================
+// Responses API 响应转换工具
+// ============================================================
+
+function buildResponsesUsage(usage) {
+    return {
+        input_tokens: usage?.prompt_tokens || usage?.input_tokens || 0,
+        output_tokens: usage?.completion_tokens || usage?.output_tokens || 0,
+        total_tokens: usage?.total_tokens || ((usage?.input_tokens || 0) + (usage?.output_tokens || 0)),
+        input_tokens_details: usage?.prompt_tokens_details || usage?.input_tokens_details || {},
+        output_tokens_details: usage?.completion_tokens_details || usage?.output_tokens_details || {}
+    };
+}
+
+function buildBaseResponsesEnvelope(model) {
+    return {
+        id: `resp_${Date.now()}`,
+        object: 'response',
+        created_at: Math.floor(Date.now() / 1000),
+        status: 'in_progress',
+        model,
+        output: [{
+            id: `msg_${Date.now()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '', annotations: [] }]
+        }],
+        output_text: '',
+        usage: buildResponsesUsage(null)
+    };
+}
+
+function writeResponsesSseEvent(res, eventName, data) {
+    if (res.destroyed || res.writableEnded) return false;
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    return true;
+}
+
+function safeJsonParse(text) {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+}
+
+function extractTextFromProtocolResponse(raw, apiType) {
+    if (apiType === 'anthropic') {
+        const content = raw?.content;
+        return Array.isArray(content) ? content.map(item => item?.text || '').join('') : '';
+    }
+    if (apiType === 'gemini') {
+        const parts = raw?.candidates?.[0]?.content?.parts;
+        return Array.isArray(parts) ? parts.map(part => part?.text || '').join('') : '';
+    }
+    return raw?.choices?.[0]?.message?.content || '';
+}
+
+function extractUsageFromProtocolResponse(raw, apiType) {
+    if (apiType === 'anthropic') {
+        return {
+            input_tokens: raw?.usage?.input_tokens || 0,
+            output_tokens: raw?.usage?.output_tokens || 0,
+            total_tokens: (raw?.usage?.input_tokens || 0) + (raw?.usage?.output_tokens || 0)
+        };
+    }
+    if (apiType === 'gemini') {
+        return {
+            prompt_tokens: raw?.usageMetadata?.promptTokenCount || 0,
+            completion_tokens: raw?.usageMetadata?.candidatesTokenCount || 0,
+            total_tokens: raw?.usageMetadata?.totalTokenCount || 0
+        };
+    }
+    return raw?.usage || null;
+}
+
+function extractStreamDeltaByProtocol(eventJson, apiType) {
+    if (apiType === 'anthropic') {
+        return eventJson?.delta?.text || eventJson?.content_block?.text || '';
+    }
+    if (apiType === 'gemini') {
+        const parts = eventJson?.candidates?.[0]?.content?.parts;
+        return Array.isArray(parts) ? parts.map(part => part?.text || '').join('') : '';
+    }
+    return eventJson?.choices?.[0]?.delta?.content || eventJson?.choices?.[0]?.message?.content || '';
+}
+
+function extractStreamUsageByProtocol(eventJson, apiType) {
+    if (apiType === 'gemini' && eventJson?.usageMetadata) {
+        return {
+            prompt_tokens: eventJson.usageMetadata.promptTokenCount || 0,
+            completion_tokens: eventJson.usageMetadata.candidatesTokenCount || 0,
+            total_tokens: eventJson.usageMetadata.totalTokenCount || 0
+        };
+    }
+    return eventJson?.usage || null;
+}
+
+async function* iterateUpstreamSseJson(readableStream) {
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    for await (const chunk of readableStream) {
+        buffer += decoder.decode(chunk, { stream: true });
+
+        while (true) {
+            const newlineIndex = buffer.indexOf('\n');
+            if (newlineIndex === -1) break;
+
+            const line = buffer.slice(0, newlineIndex).trimEnd();
+            buffer = buffer.slice(newlineIndex + 1);
+
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+            const data = trimmed.slice(5).trim();
+            if (data === '[DONE]') return;
+
+            const json = safeJsonParse(data);
+            if (json) yield json;
+        }
+    }
+}
+
+function buildResponsesOutput(raw, apiType, fallbackModel) {
+    const text = extractTextFromProtocolResponse(raw, apiType);
+    const responsePayload = buildBaseResponsesEnvelope(raw?.model || fallbackModel);
+    responsePayload.status = 'completed';
+    responsePayload.output[0].content[0].text = text;
+    responsePayload.output_text = text;
+    responsePayload.usage = buildResponsesUsage(extractUsageFromProtocolResponse(raw, apiType));
+    return responsePayload;
+}
+
+async function sendResponsesStreamFromProtocol(res, upstreamResponse, { model, apiType }) {
+    res.status(upstreamResponse.status);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+
+    const responsePayload = buildBaseResponsesEnvelope(model);
+    const itemId = responsePayload.output[0].id;
+    let finalUsage = null;
+
+    writeResponsesSseEvent(res, 'response.created', {
+        type: 'response.created',
+        response: {
+            id: responsePayload.id,
+            object: responsePayload.object,
+            created_at: responsePayload.created_at,
+            status: 'in_progress',
+            model: responsePayload.model,
+            usage: buildResponsesUsage(null)
+        }
+    });
+
+    writeResponsesSseEvent(res, 'response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: itemId, type: 'message', role: 'assistant', content: [] }
+    });
+
+    writeResponsesSseEvent(res, 'response.content_part.added', {
+        type: 'response.content_part.added',
+        item_id: itemId,
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: '' }
+    });
+
+    try {
+        for await (const eventJson of iterateUpstreamSseJson(upstreamResponse.body)) {
+            const delta = extractStreamDeltaByProtocol(eventJson, apiType);
+            if (typeof delta === 'string' && delta.length > 0) {
+                responsePayload.output_text += delta;
+                writeResponsesSseEvent(res, 'response.output_text.delta', {
+                    type: 'response.output_text.delta',
+                    item_id: itemId,
+                    output_index: 0,
+                    content_index: 0,
+                    delta
+                });
+            }
+
+            const usage = extractStreamUsageByProtocol(eventJson, apiType);
+            if (usage) finalUsage = usage;
+            if (eventJson?.model) responsePayload.model = eventJson.model;
+        }
+
+        responsePayload.status = 'completed';
+        responsePayload.output[0].content[0].text = responsePayload.output_text;
+        if (finalUsage) responsePayload.usage = buildResponsesUsage(finalUsage);
+
+        writeResponsesSseEvent(res, 'response.output_text.done', {
+            type: 'response.output_text.done',
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            text: responsePayload.output_text
+        });
+
+        writeResponsesSseEvent(res, 'response.content_part.done', {
+            type: 'response.content_part.done',
+            item_id: itemId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: 'output_text', text: responsePayload.output_text }
+        });
+
+        writeResponsesSseEvent(res, 'response.output_item.done', {
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: responsePayload.output[0]
+        });
+
+        writeResponsesSseEvent(res, 'response.completed', {
+            type: 'response.completed',
+            response: responsePayload
+        });
+    } catch (error) {
+        responsePayload.status = 'failed';
+        responsePayload.output[0].content[0].text = responsePayload.output_text;
+        responsePayload.error = {
+            code: 'vcp_bridge_stream_error',
+            message: error.message || 'VCP bridge stream failed before completion.'
+        };
+        writeResponsesSseEvent(res, 'response.failed', {
+            type: 'response.failed',
+            response: responsePayload
+        });
+    }
+
+    if (!res.destroyed && !res.writableEnded) res.end();
+}
+
+async function sendResponsesJsonFromProtocol(res, upstreamResponse, { model, apiType }) {
+    const rawText = await upstreamResponse.text();
+    const rawJson = safeJsonParse(rawText);
+
+    if (!upstreamResponse.ok) {
+        return res.status(upstreamResponse.status).type('application/json').send(rawJson || rawText);
+    }
+
+    return res.status(upstreamResponse.status).json(buildResponsesOutput(rawJson || {}, apiType, model));
+}
+
+// ============================================================
 // System Prompt 劫持逻辑
 // ============================================================
 
@@ -142,6 +389,7 @@ function normalizeTextContent(content) {
             if (typeof item === 'string') return item;
             if (item?.type === 'text' && typeof item.text === 'string') return item.text;
             if (item?.type === 'input_text' && typeof item.text === 'string') return item.text;
+            if (item?.type === 'output_text' && typeof item.text === 'string') return item.text;
             return '';
         }).filter(Boolean).join('\n');
     }
@@ -156,7 +404,7 @@ function extractFromResponsesInput(input) {
         if (!item || typeof item !== 'object') continue;
         let role = item.role || (item.type === 'message' ? 'user' : null);
         if (role === 'developer') role = 'system';
-        const content = normalizeTextContent(item.content);
+        const content = normalizeTextContent(item.content || item.output);
         if (role && content) messages.push({ role, content });
     }
     return messages;
@@ -321,7 +569,22 @@ async function proxyRequest(req, res, { messages, model, body, downstreamFormat 
         return res.status(502).json({ error: { message: `Upstream fetch failed: ${err.message}`, type: 'upstream_error' } });
     }
 
-    // 6. 透传响应（保持原始格式，不做响应转换）
+    // 6. Responses API 下游必须返回 Responses 格式，不能裸透传 chat/anthropic/gemini SSE。
+    if (downstreamFormat === 'responses') {
+        const fallbackModel = resolveModel(model);
+        if (stream && upstreamResponse.body) {
+            return sendResponsesStreamFromProtocol(res, upstreamResponse, {
+                model: fallbackModel,
+                apiType: endpoint.type
+            });
+        }
+        return sendResponsesJsonFromProtocol(res, upstreamResponse, {
+            model: fallbackModel,
+            apiType: endpoint.type
+        });
+    }
+
+    // 7. 其他协议暂时透传响应（保持原始格式，不做响应转换）
     res.status(upstreamResponse.status);
     upstreamResponse.headers.forEach((value, key) => {
         const lower = key.toLowerCase();
