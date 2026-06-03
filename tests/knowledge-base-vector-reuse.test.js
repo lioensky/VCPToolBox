@@ -1,11 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
+const fs = require('node:fs');
+const path = require('node:path');
 
 process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP = 'false';
 process.env.VECTORDB_DIMENSION = '3';
 
 const knowledgeBaseManager = require('../KnowledgeBaseManager.js');
+const TagMemoEngine = require('../TagMemoEngine.js');
 
 function vectorBuffer(values) {
     const vector = new Float32Array(values);
@@ -160,4 +163,171 @@ test('_findReusableChunkVectors requires opt-in and skips invalid matching check
 
         assert.equal(noMatch, null);
     });
+});
+
+test('KnowledgeBaseManager geodesicRerank uses configured defaults and explicit overrides', async () => {
+    const previousTagMemoEngine = knowledgeBaseManager.tagMemoEngine;
+    const previousRagParams = knowledgeBaseManager.ragParams;
+
+    const calls = [];
+    knowledgeBaseManager.ragParams = {
+        KnowledgeBaseManager: {
+            geodesicRerank: {
+                alpha: 0.62,
+                minGeoSamples: 7
+            }
+        }
+    };
+    knowledgeBaseManager.tagMemoEngine = {
+        geodesicRerank(candidates, options) {
+            calls.push({ candidates, options });
+            return candidates;
+        }
+    };
+
+    try {
+        const candidates = [{ id: 1, score: 0.4 }];
+
+        knowledgeBaseManager.geodesicRerank(candidates);
+        assert.deepEqual(calls.at(-1).options, { alpha: 0.62, minGeoSamples: 7 });
+
+        knowledgeBaseManager.geodesicRerank(candidates, { geoAlpha: 0.25 });
+        assert.deepEqual(calls.at(-1).options, { alpha: 0.25, minGeoSamples: 7 });
+
+        knowledgeBaseManager.geodesicRerank(candidates, { alpha: 0.33, minGeoSamples: 3 });
+        assert.deepEqual(calls.at(-1).options, { alpha: 0.33, minGeoSamples: 3 });
+    } finally {
+        knowledgeBaseManager.tagMemoEngine = previousTagMemoEngine;
+        knowledgeBaseManager.ragParams = previousRagParams;
+    }
+});
+
+test('KnowledgeBaseManager search path passes geodesic tuning from ragParams when options omit it', async () => {
+    const previousGetOrLoadDiaryIndex = knowledgeBaseManager._getOrLoadDiaryIndex;
+    const previousTagMemoEngine = knowledgeBaseManager.tagMemoEngine;
+    const previousRagParams = knowledgeBaseManager.ragParams;
+    const previousDb = knowledgeBaseManager.db;
+    const previousConfig = { ...knowledgeBaseManager.config };
+
+    let capturedOptions = null;
+    knowledgeBaseManager.config = { ...knowledgeBaseManager.config, dimension: 3 };
+    knowledgeBaseManager.ragParams = {
+        KnowledgeBaseManager: {
+            geodesicRerank: {
+                alpha: 0.71,
+                minGeoSamples: 6
+            }
+        }
+    };
+    knowledgeBaseManager.tagMemoEngine = {
+        lastEnergyField: new Map([[1, 1]]),
+        geodesicRerank(candidates, options) {
+            capturedOptions = options;
+            return [];
+        }
+    };
+    knowledgeBaseManager._getOrLoadDiaryIndex = async () => ({
+        stats: () => ({ totalVectors: 1 }),
+        search: () => [{ id: 1, score: 0.5 }]
+    });
+    knowledgeBaseManager.db = {
+        prepare() {
+            return {
+                get: () => null,
+                all: () => []
+            };
+        }
+    };
+
+    try {
+        await knowledgeBaseManager._searchSpecificIndex(
+            'Diary',
+            [1, 0, 0],
+            3,
+            0,
+            [],
+            1.33,
+            { geodesicRerank: true }
+        );
+
+        assert.deepEqual(capturedOptions, { alpha: 0.71, minGeoSamples: 6 });
+    } finally {
+        knowledgeBaseManager._getOrLoadDiaryIndex = previousGetOrLoadDiaryIndex;
+        knowledgeBaseManager.tagMemoEngine = previousTagMemoEngine;
+        knowledgeBaseManager.ragParams = previousRagParams;
+        knowledgeBaseManager.db = previousDb;
+        knowledgeBaseManager.config = previousConfig;
+    }
+});
+
+test('TagMemoEngine geodesicRerank falls back when geodesic tuning is missing or invalid', () => {
+    const engine = new TagMemoEngine(null, null, { dimension: 3 }, { KnowledgeBaseManager: {} });
+    const candidates = [{ id: 1, score: 0.4 }];
+    engine.lastEnergyField = new Map([[1, 1]]);
+
+    assert.equal(engine.geodesicRerank(candidates), candidates);
+
+    engine.ragParams = {
+        KnowledgeBaseManager: {
+            geodesicRerank: {
+                alpha: 'not-a-number',
+                minGeoSamples: 4
+            }
+        }
+    };
+
+    assert.equal(engine.geodesicRerank(candidates), candidates);
+});
+
+test('TagMemoEngine geodesicRerank clamps alpha and floors minGeoSamples from ragParams', () => {
+    const engine = new TagMemoEngine(null, null, { dimension: 3 }, {
+        KnowledgeBaseManager: {
+            geodesicRerank: {
+                alpha: 2,
+                minGeoSamples: 1.8
+            }
+        }
+    });
+    engine.lastEnergyField = new Map([
+        [100, 1],
+        [200, 0.1]
+    ]);
+    engine._queryByChunks = (sqlPrefix, values) => {
+        if (sqlPrefix.includes('SELECT id, file_id FROM chunks')) {
+            return values.map(id => ({ id, file_id: id + 10 }));
+        }
+        if (sqlPrefix.includes('SELECT file_id, tag_id FROM file_tags')) {
+            return [
+                { file_id: 11, tag_id: 100 },
+                { file_id: 12, tag_id: 200 }
+            ];
+        }
+        return [];
+    };
+
+    const reranked = engine.geodesicRerank([
+        { id: 1, score: 0.2 },
+        { id: 2, score: 0.9 }
+    ]);
+
+    assert.equal(reranked[0].id, 1);
+    assert.equal(reranked[0].score, 1);
+    assert.equal(reranked[0].original_knn_score, 0.2);
+    assert.equal(reranked[0].geo_hit_count, 1);
+});
+
+test('RAGDiary and LightMemo pass geodesic tuning without hardcoded defaults', () => {
+    const repoRoot = path.join(__dirname, '..');
+    const ragSource = fs.readFileSync(path.join(repoRoot, 'Plugin', 'RAGDiaryPlugin', 'RAGDiaryPlugin.js'), 'utf8');
+    const lightMemoSource = fs.readFileSync(path.join(repoRoot, 'Plugin', 'LightMemo', 'LightMemo.js'), 'utf8');
+
+    assert.match(ragSource, /geoAlpha:\s*geoConfig\.alpha/);
+    assert.match(ragSource, /minGeoSamples:\s*geoConfig\.minGeoSamples/);
+    assert.doesNotMatch(ragSource, /geoConfig\.alpha\s*\?\?\s*0\.3/);
+    assert.doesNotMatch(ragSource, /geoConfig\.minGeoSamples\s*\?\?\s*4/);
+
+    assert.match(lightMemoSource, /alpha:\s*geoConfig\.alpha/);
+    assert.match(lightMemoSource, /minGeoSamples:\s*geoConfig\.minGeoSamples/);
+    assert.doesNotMatch(lightMemoSource, /geoConfig\.alpha\s*\?\?\s*0\.3/);
+    assert.doesNotMatch(lightMemoSource, /geoConfig\.minGeoSamples\s*\?\?\s*4/);
 });
