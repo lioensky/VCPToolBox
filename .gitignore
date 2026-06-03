@@ -198,6 +198,8 @@ image/通用表情包/*
 
 # 忽略 FluxGen 生成的图片
 image/fluxgen/
+# 忽略 B站截图的图片
+image/bilibili/
 
 # ===== IDE / OS 文件 =====
 .vscode/
