@@ -1,0 +1,15 @@
+# 忽略所有文件
+*
+
+# 排除 .gitignore 自身
+!.gitignore
+
+# 排除项目自带且已追踪的 Agent 配置文件
+!Aemeath.txt
+!DreamNova.txt
+!Hornet.txt
+!MemoMaster.txt
+!Metis.txt
+!Nova.txt
+!ThemeMaidCoco.txt
+!Weiming.txt
