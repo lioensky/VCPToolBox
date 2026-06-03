@@ -1335,10 +1335,26 @@ class TagMemoEngine {
         }
 
         const run = async () => {
-            console.log('[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation...');
+            const irConfig = this.ragParams?.KnowledgeBaseManager?.intrinsicResidual || {};
+            const maxBasis = Number.isFinite(Number(irConfig.maxBasis))
+                ? Math.max(1, Math.floor(Number(irConfig.maxBasis)))
+                : 4;
+            const minNeighbors = Number.isFinite(Number(irConfig.minNeighbors))
+                ? Math.max(1, Math.floor(Number(irConfig.minNeighbors)))
+                : 3;
+            const method = process.env.TAGMEMO_IR_METHOD || irConfig.method || 'anchored_gs';
+            console.log(
+                `[TagMemoEngine] ⚡ Triggering Rust intrinsic residual precomputation ` +
+                `(method=${method}, maxBasis=${maxBasis}, minNeighbors=${minNeighbors}, model_sig=${this.modelSig})...`
+            );
             try {
                 const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
-                const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
+                const result = await this.tagIndex.computeIntrinsicResiduals(
+                    dbPath,
+                    maxBasis,
+                    minNeighbors,
+                    this.modelSig
+                );
                 if (!result) return null;
                 console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
 

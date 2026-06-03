@@ -129,7 +129,7 @@ export declare class VexusIndex {
    */
   publishEpaBasisCache(dbPath: string): EpaBasisResult
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
-  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
+  computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null, modelSig?: string | undefined | null): Promise<unknown>
   /**
    * 🌟 TagMemo V8.2: 预计算 Tag 对的语义距离（成对余弦相似度）
    *
