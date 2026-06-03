@@ -1561,7 +1561,7 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
 const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
-    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-007';
+    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-008';
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
     'serum_bottle_vcptoolbox_route_owner_runtime',
     'serum_bottle_secretless_option_a',
