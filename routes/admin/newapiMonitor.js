@@ -374,10 +374,60 @@ function buildSummaryPayload(trendItems, realtimeStatBody) {
     };
 }
 
+function normalizeErrorStatus(error) {
+    const status = Number(error && (error.status || (error.response && error.response.status)));
+    return Number.isFinite(status) && status > 0 ? status : null;
+}
+
+function sanitizeRequestUrl(value) {
+    if (typeof value !== 'string' || !value.trim()) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(value);
+        parsed.username = '';
+        parsed.password = '';
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString();
+    } catch (error) {
+        return value.split(/[?#]/)[0] || null;
+    }
+}
+
+function buildSafeErrorLog(error) {
+    const config = error && error.config ? error.config : {};
+    const safeLog = {
+        message: error && error.message ? error.message : 'Unknown error'
+    };
+    const status = normalizeErrorStatus(error);
+
+    if (status) {
+        safeLog.status = status;
+    }
+    if (error && typeof error.code === 'string' && error.code) {
+        safeLog.code = error.code;
+    }
+    if (error && error.cause && typeof error.cause.code === 'string' && error.cause.code) {
+        safeLog.causeCode = error.cause.code;
+    }
+    if (typeof config.method === 'string' && config.method) {
+        safeLog.method = config.method.toUpperCase();
+    }
+
+    const safeUrl = sanitizeRequestUrl(config.url);
+    if (safeUrl) {
+        safeLog.url = safeUrl;
+    }
+
+    return safeLog;
+}
+
 function handleRouteError(routeName, error, res) {
-    const status = safeNumber(error && error.status, 500);
+    const status = normalizeErrorStatus(error) || 500;
     const message = error && error.message ? error.message : 'Unknown error';
-    console.error(`[NewApiMonitor] ${routeName} failed:`, error);
+    console.error(`[NewApiMonitor] ${routeName} failed:`, buildSafeErrorLog(error));
     res.status(status).json({
         success: false,
         error: message
