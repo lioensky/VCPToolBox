@@ -1005,9 +1005,19 @@ class TagMemoEngine {
     _checkpointAfterRustWrite(tag) {
         try {
             this.db.pragma('wal_checkpoint(TRUNCATE)');
+            return true;
         } catch (e) {
             console.warn(`[TagMemoEngine] ⚠️ wal_checkpoint after ${tag} failed: ${e.message}`);
+            return false;
         }
+    }
+
+    _assertHealthyAfterRustWrite(tag) {
+        const reason = `Rust write "${tag}"`;
+        if (this.knowledgeBaseManager && typeof this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy === 'function') {
+            return this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy(reason);
+        }
+        return this._checkpointAfterRustWrite(tag);
     }
 
     async _withRustWriteLease(owner, fn, options = {}) {
@@ -1022,7 +1032,13 @@ class TagMemoEngine {
         }
 
         try {
-            return await fn();
+            const result = await fn();
+            const healthy = this._assertHealthyAfterRustWrite(owner);
+            if (!healthy) {
+                console.error(`[TagMemoEngine] 🚨 Database health check failed before releasing Rust write lease "${owner}".`);
+                return null;
+            }
+            return result;
         } finally {
             lease.release();
         }
@@ -1059,6 +1075,7 @@ class TagMemoEngine {
                     fullRebuild
                 );
                 // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
+                // Rust 侧已分段 checkpoint；这里再做 JS 侧 checkpoint 作为跨连接屏障。
                 this._checkpointAfterRustWrite('pairwise sim');
                 console.log(
                     `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +

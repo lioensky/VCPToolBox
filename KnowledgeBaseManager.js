@@ -44,8 +44,9 @@ class KnowledgeBaseManager {
             maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
             deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
             // 🛡️ Rust 派生表写入租约：避免 rusqlite 与 better-sqlite3 双写 WAL 竞态
-            rustWriteLeaseGraceMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_GRACE_MS, 10) || 5000,
-            rustWriteLeaseCooldownMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_COOLDOWN_MS, 10) || 2000,
+            rustWriteLeaseGraceMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_GRACE_MS, 10) || 30000,
+            rustWriteLeaseCooldownMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_COOLDOWN_MS, 10) || 10000,
+            rustWriteLeaseCheckpointBeforeGrant: (process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_CHECKPOINT_BEFORE_GRANT || 'true').toLowerCase() === 'true',
             rustWriteLeaseRetryMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_RETRY_MS, 10) || 1000,
             rustWriteLeaseTtlMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_TTL_MS, 10) || 10 * 60 * 1000,
             rustWriteLeaseMaxWaitMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_MAX_WAIT_MS, 10) || 30 * 60 * 1000,
@@ -320,6 +321,21 @@ class KnowledgeBaseManager {
         }
     }
 
+    checkpointAndAssertDatabaseHealthy(reason = 'manual-checkpoint') {
+        if (!this.db) return false;
+        try {
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+            this._assertDatabaseIntegrity(this.db);
+            return true;
+        } catch (e) {
+            console.error(`[KnowledgeBase] 🚨 SQLite checkpoint/quick_check failed after ${reason}: ${e.message || e}`);
+            if (this._isSqliteCorruptionError(e)) {
+                this.databaseCorruptionDetected = true;
+            }
+            return false;
+        }
+    }
+
     _isSqliteCorruptionError(e) {
         const message = String(e?.message || e || '');
         return e?.code === 'SQLITE_CORRUPT' ||
@@ -442,6 +458,14 @@ class KnowledgeBaseManager {
         while (true) {
             const decision = this._canGrantRustWriteLease(options);
             if (decision.ok) {
+                if (this.config.rustWriteLeaseCheckpointBeforeGrant) {
+                    const healthy = this.checkpointAndAssertDatabaseHealthy(`granting Rust lease "${owner}"`);
+                    if (!healthy) {
+                        console.error(`[KnowledgeBase] 🦀🚫 Rust SQLite write lease "${owner}" denied because database health check failed.`);
+                        return null;
+                    }
+                }
+
                 this.rustWriteLease = {
                     owner,
                     startedAt: Date.now(),

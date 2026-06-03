@@ -626,7 +626,7 @@ fn configure_sqlite_connection(conn: &Connection, readonly: bool) -> rusqlite::R
 fn open_sqlite_readonly(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open_with_flags(
         db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     configure_sqlite_connection(&conn, true)?;
     Ok(conn)
@@ -635,12 +635,21 @@ fn open_sqlite_readonly(db_path: &str) -> rusqlite::Result<Connection> {
 fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
     let conn = Connection::open_with_flags(
         db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_WRITE,
     )?;
     configure_sqlite_connection(&conn, false)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(conn)
+}
+
+fn checkpoint_sqlite_wal(conn: &Connection, mode: &str) -> rusqlite::Result<()> {
+    let sql = match mode {
+        "TRUNCATE" => "PRAGMA wal_checkpoint(TRUNCATE)",
+        "FULL" => "PRAGMA wal_checkpoint(FULL)",
+        _ => "PRAGMA wal_checkpoint(PASSIVE)",
+    };
+    conn.execute_batch(sql)
 }
 
 /// 🌟 EPA: Rust 侧 K-Means + 加权 PCA + kv_store 写入任务
@@ -1426,36 +1435,49 @@ impl Task for PairwiseSimTask {
         }
 
         // ====================================================================
-        // Step 5: 事务批量写入（chunks(1000)）
+        // Step 5: 流式分包写入
         // ====================================================================
         let stored_count = to_insert.len() as u32;
 
         if !to_insert.is_empty() {
-            let tx = conn
-                .transaction()
-                .map_err(|e| Error::from_reason(format!("Begin tx failed: {}", e)))?;
+            const WRITE_CHUNK_SIZE: usize = 1000;
+            const CHECKPOINT_EVERY_CHUNKS: usize = 8;
 
-            {
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT OR REPLACE INTO tag_pair_similarity \
-                         (tag_a, tag_b, similarity, model_sig, computed_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                    )
-                    .map_err(|e| Error::from_reason(format!("Prepare insert failed: {}", e)))?;
+            for (chunk_index, chunk) in to_insert.chunks(WRITE_CHUNK_SIZE).enumerate() {
+                {
+                    let tx = conn
+                        .transaction()
+                        .map_err(|e| Error::from_reason(format!("Begin tx chunk {} failed: {}", chunk_index, e)))?;
 
-                for chunk in to_insert.chunks(1000) {
-                    for (a, b, sim, ts) in chunk {
-                        stmt.execute(rusqlite::params![a, b, sim, &self.model_sig, ts])
-                            .map_err(|e| {
-                                Error::from_reason(format!("Insert pair failed: {}", e))
-                            })?;
+                    {
+                        let mut stmt = tx
+                            .prepare(
+                                "INSERT OR REPLACE INTO tag_pair_similarity \
+                                 (tag_a, tag_b, similarity, model_sig, computed_at) \
+                                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                            )
+                            .map_err(|e| Error::from_reason(format!("Prepare insert chunk {} failed: {}", chunk_index, e)))?;
+
+                        for (a, b, sim, ts) in chunk {
+                            stmt.execute(rusqlite::params![a, b, sim, &self.model_sig, ts])
+                                .map_err(|e| {
+                                    Error::from_reason(format!("Insert pair chunk {} failed: {}", chunk_index, e))
+                                })?;
+                        }
                     }
+
+                    tx.commit()
+                        .map_err(|e| Error::from_reason(format!("Commit tx chunk {} failed: {}", chunk_index, e)))?;
+                }
+
+                if (chunk_index + 1) % CHECKPOINT_EVERY_CHUNKS == 0 {
+                    checkpoint_sqlite_wal(&conn, "PASSIVE")
+                        .map_err(|e| Error::from_reason(format!("Passive WAL checkpoint after chunk {} failed: {}", chunk_index, e)))?;
                 }
             }
 
-            tx.commit()
-                .map_err(|e| Error::from_reason(format!("Commit tx failed: {}", e)))?;
+            checkpoint_sqlite_wal(&conn, "TRUNCATE")
+                .map_err(|e| Error::from_reason(format!("Final WAL checkpoint failed: {}", e)))?;
         }
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
