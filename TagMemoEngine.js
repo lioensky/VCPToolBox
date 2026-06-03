@@ -185,20 +185,8 @@ class TagMemoEngine {
             const coreRange = config.coreBoostRange || [1.20, 1.40];
             const dynamicCoreBoostFactor = coreRange[0] + (coreMetric * (coreRange[1] - coreRange[0]));
 
-            const epaWorldviewLogging = config.epaWorldviewLogging ?? true;
-            if (epaWorldviewLogging) {
-                const axesSummary = (epaResult.dominantAxes || [])
-                    .slice(0, 3)
-                    .map(axis => `${axis.label}:${Number(axis.energy || 0).toFixed(3)}`)
-                    .join(', ');
-                console.log(
-                    `[TagMemo-EPA] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, ` +
-                    `Entropy=${entropyPenalty.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}, ` +
-                    `Axes=[${axesSummary || 'None'}]`
-                );
-            }
-
             if (debug) {
+                console.log(`[TagMemo-V6] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
                 console.log(`[TagMemo-V6] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
                 console.log(`[TagMemo-V6] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
             }
