@@ -166,6 +166,7 @@ test('aiImageAgents execute route allows real execution from trusted admin attri
         });
         assert.equal(calls[0].options.dryRun, false);
         assert.equal(calls[0].options.pluginManager, pluginManager);
+        assert.equal(calls[0].options.allowExecutionWithoutEnvGate, undefined);
         assert.equal(calls[0].options.requestIp, '10.0.0.5');
         assert.deepEqual(calls[0].options.executionContext, {
             requestSource: 'ai-image-pipeline',
@@ -224,6 +225,7 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
             ticket: undefined
         });
         assert.equal(calls[0].options.dryRun, false);
+        assert.equal(calls[0].options.allowExecutionWithoutEnvGate, true);
         assert.equal(typeof calls[0].options.pluginManager.processToolCall, 'function');
         assert.equal(typeof calls[0].options.pluginManager.getPlugin, 'undefined');
         assert.deepEqual(calls[0].options.executionContext, {

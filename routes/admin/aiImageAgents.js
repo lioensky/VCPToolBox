@@ -261,6 +261,12 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       }
 
       executorOptions.pluginManager = options.pluginManager;
+      if (
+        options.allowSerumBottleSecretlessPipelineExecution === true &&
+        executorOptions.executionContext.serumBottleSecretless === true
+      ) {
+        executorOptions.allowExecutionWithoutEnvGate = true;
+      }
     }
 
     const result = await executeAiImagePipelineV2(routeInput, executorOptions);
@@ -342,6 +348,7 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
       forceDryRun: false,
       requireNativeDoubaoSecretlessRuntimeDelegate: false,
       skipRequiredPluginRegistration: true,
+      allowSerumBottleSecretlessPipelineExecution: true,
     });
 
     if (response && response.result && typeof response.result === 'object') {
