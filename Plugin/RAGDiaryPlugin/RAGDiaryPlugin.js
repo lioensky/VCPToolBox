@@ -2335,14 +2335,19 @@ class RAGDiaryPlugin {
         console.log(`[RAGDiaryPlugin] Total results to replace: ${results.length}`);
 
         for (const result of results) {
+            const placeholder = typeof result?.placeholder === 'string' ? result.placeholder : '';
+            const replacementContent = result?.content === undefined || result?.content === null
+                ? ''
+                : String(result.content);
+
             const beforeLength = processedContent.length;
-            processedContent = processedContent.replace(result.placeholder, result.content);
+            processedContent = processedContent.replace(placeholder, replacementContent);
             const afterLength = processedContent.length;
 
-            if (beforeLength === afterLength && result.placeholder.length > 0) {
-                console.warn(`[RAGDiaryPlugin] ⚠️ Placeholder not found in content: "${result.placeholder.substring(0, 50)}..."`);
+            if (beforeLength === afterLength && placeholder.length > 0) {
+                console.warn(`[RAGDiaryPlugin] ⚠️ Placeholder not found in content: "${placeholder.substring(0, 50)}..."`);
             } else {
-                console.log(`[RAGDiaryPlugin] ✓ Replaced placeholder: "${result.placeholder.substring(0, 50)}..." with ${result.content.length} chars`);
+                console.log(`[RAGDiaryPlugin] ✓ Replaced placeholder: "${placeholder.substring(0, 50)}..." with ${replacementContent.length} chars`);
             }
         }
 

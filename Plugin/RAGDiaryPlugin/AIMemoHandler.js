@@ -233,7 +233,19 @@ class AIMemoHandler {
         const aiResponse = await this._callAIModel(prompt, config);
 
         if (!aiResponse) {
-            return '[AI模型调用失败]';
+            const content = '[AI模型调用失败]';
+            return {
+                content,
+                vcpInfo: {
+                    type: 'AI_MEMO_RETRIEVAL',
+                    dbNames: dbNames,
+                    query: combinedQueryForDisplay,
+                    mode: 'aggregated_single_failed',
+                    diaryCount: dbNames.length,
+                    fileCount: diaryFiles.length,
+                    error: 'AI模型调用失败'
+                }
+            };
         }
 
         const extractedMemories = this._extractMemories(aiResponse);
