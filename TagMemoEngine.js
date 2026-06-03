@@ -35,6 +35,11 @@ class TagMemoEngine {
         this.modelSig = this._computeModelSig();
         // 是否在本进程内已经触发过冷启动 sim 预计算
         this._pairSimColdStartDone = false;
+        this._postStartupDerivedRefreshTimer = null;
+        this._derivedTaskQueue = [];
+        this._derivedTaskRunning = false;
+        this._derivedTaskTimer = null;
+        this._derivedTaskSeq = 0;
     }
 
     /**
@@ -94,7 +99,7 @@ class TagMemoEngine {
             vexusIndex: this.tagIndex,
             nodeResidual: this.ragParams.KnowledgeBaseManager?.nodeResidualGain || 0.05,
             withRustWriteLease: (owner, fn, options = {}) => this._withRustWriteLease(owner, fn, options),
-            afterRustWrite: (tag) => this._checkpointAfterRustWrite(tag),
+            deferRustRecompute: true,
         });
         await this.epa.initialize();
 
@@ -102,19 +107,16 @@ class TagMemoEngine {
             dimension: this.config.dimension
         });
 
-        // 🌟 V8.2-γ: 冷启动钩子
-        // 若 tag_pair_similarity 表为空（首次启动 / 模型签名变化），
-        // 必须 await 阻塞预计算，否则 buildDirectedCooccurrenceMatrix 拿到的 getSim() 全是 fallback，
-        // semanticGain 会均匀压平整张矩阵，当天召回质量异常。
+        // 🌟 V8.2-γ: 冷启动只做检测，不在 initialize() 内阻塞派生计算。
+        // 大库下 pairwise/EPA 派生写会延后到 System Ready + startup cooldown 后由后台刷新触发，
+        // 以避免和启动 full scan / 小巴士主写产生 WAL/checkpoint 竞态。
         try {
             const cnt = this.db.prepare(
                 'SELECT COUNT(*) as c FROM tag_pair_similarity WHERE model_sig = ?'
             ).get(this.modelSig)?.c || 0;
 
             if (cnt === 0) {
-                console.log(`[TagMemoEngine] 🧊 V8.2 cold start: pairwise similarity cache empty for model_sig=${this.modelSig}, computing now...`);
-                await this.recomputePairwiseSimilarities({ blocking: true });
-                this._pairSimColdStartDone = true;
+                console.log(`[TagMemoEngine] 🧊 V8.2 cold start: pairwise similarity cache empty for model_sig=${this.modelSig}; will refresh after startup cooldown.`);
             } else {
                 console.log(`[TagMemoEngine] 🌡️ V8.2 warm start: ${cnt} cached pairwise similarities for model_sig=${this.modelSig}`);
             }
@@ -958,7 +960,8 @@ class TagMemoEngine {
 
     // 🌟 V8.2-γ: 加载持久化的 Tag 对语义相似度到内存 Map
     // 矩阵构建是热路径，不能每对 pair 查 SQLite。
-    loadPairwiseSimilarities() {
+    loadPairwiseSimilarities(options = {}) {
+        const { failOnCorruption = false } = options;
         try {
             const rows = this.db.prepare(
                 'SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?'
@@ -969,9 +972,15 @@ class TagMemoEngine {
                 this.tagPairSimilarities.set(`${row.tag_a}:${row.tag_b}`, row.similarity);
             }
             console.log(`[TagMemoEngine] ✅ V8.2 Loaded ${this.tagPairSimilarities.size} pairwise similarities (model_sig=${this.modelSig})`);
+            return true;
         } catch (e) {
             console.warn('[TagMemoEngine] ⚠️ V8.2 pairwise similarity table not yet available:', e.message);
             this.tagPairSimilarities = new Map();
+            if (failOnCorruption && this.knowledgeBaseManager?._isSqliteCorruptionError?.(e)) {
+                this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading pairwise similarities');
+                throw e;
+            }
+            return false;
         }
     }
 
@@ -987,29 +996,12 @@ class TagMemoEngine {
     }
 
     /**
-     * 🛡️ V8.2-fix: Rust 任务（独立 SQLite 连接）写入完成后，
-     * 强制 better-sqlite3 走一次 wal_checkpoint(TRUNCATE)，把 -wal/-shm 清空。
-     *
-     * 背景：Rust 端通过 rusqlite 开新连接做 DELETE+INSERT 后 commit，会写到 -wal。
-     * JS 端 better-sqlite3 是另一个进程内连接，下次读取时本应通过 -shm 的 mmap
-     * frame index 拿到新数据。但在虚拟化/网络文件系统（典型如 Docker Desktop on
-     * Windows/macOS 的 bind mount 走 9P/grpc-fuse）上，跨进程 mmap 共享内存
-     * 一致性保证不足，会让 JS 端读到"半新半旧"的页视图，进而触发 SQLITE_CORRUPT
-     * 这种"幻觉损坏"——整库元数据 / sqlite_master 完好，但特定表 BTree 遍历必崩。
-     *
-     * TRUNCATE 模式会强制把 WAL 全部回写主库并把 -wal 截断到 0 字节，下一次读
-     * 直接走主库的"经典模式"，绕开 mmap 同步路径。
-     *
-     * 健康环境下代价 ~50-200ms（取决于 WAL 累积量），属于可忽略量级。
+     * 🛡️ SQLite 写后验收统一入口。
+     * 不在 TagMemoEngine 内直接 checkpoint，避免 EPA / matrix rebuild 路径出现
+     * TagMemoEngine 与 KnowledgeBaseManager 双重 TRUNCATE checkpoint。
      */
     _checkpointAfterRustWrite(tag) {
-        try {
-            this.db.pragma('wal_checkpoint(TRUNCATE)');
-            return true;
-        } catch (e) {
-            console.warn(`[TagMemoEngine] ⚠️ wal_checkpoint after ${tag} failed: ${e.message}`);
-            return false;
-        }
+        return this._assertHealthyAfterRustWrite(tag);
     }
 
     _assertHealthyAfterRustWrite(tag) {
@@ -1074,9 +1066,7 @@ class TagMemoEngine {
                     minSimilarity,
                     fullRebuild
                 );
-                // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
-                // Rust 侧已分段 checkpoint；这里再做 JS 侧 checkpoint 作为跨连接屏障。
-                this._checkpointAfterRustWrite('pairwise sim');
+                if (!result) return null;
                 console.log(
                     `[TagMemoEngine] ✅ V8.2 Rust pairwise sim done: ` +
                     `pairs=${result.pairCount}, computed=${result.computedCount}, ` +
@@ -1096,7 +1086,8 @@ class TagMemoEngine {
     }
 
     // 🌟 TagMemo V7: 加载内生残差
-    loadIntrinsicResiduals() {
+    loadIntrinsicResiduals(options = {}) {
+        const { failOnCorruption = false } = options;
         try {
             const rows = this.db.prepare(
                 'SELECT tag_id, residual_energy FROM tag_intrinsic_residuals'
@@ -1109,9 +1100,15 @@ class TagMemoEngine {
                 this.tagIntrinsicResiduals.set(row.tag_id, clamped);
             }
             console.log(`[TagMemoEngine] ✅ Loaded ${this.tagIntrinsicResiduals.size} intrinsic residuals`);
+            return true;
         } catch (e) {
             console.warn('[TagMemoEngine] ⚠️ No intrinsic residuals available:', e.message);
             this.tagIntrinsicResiduals = null;
+            if (failOnCorruption && this.knowledgeBaseManager?._isSqliteCorruptionError?.(e)) {
+                this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading intrinsic residuals');
+                throw e;
+            }
+            return false;
         }
     }
 
@@ -1172,10 +1169,14 @@ class TagMemoEngine {
             const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
                 // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
                 // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
-                await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true });
-                this.loadPairwiseSimilarities();
-                await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
-                this.loadIntrinsicResiduals();
+                const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true });
+                if (!pairResult) return false;
+                this.loadPairwiseSimilarities({ failOnCorruption: true });
+
+                const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
+                if (!intrinsicResult) return false;
+                this.loadIntrinsicResiduals({ failOnCorruption: true });
+
                 this.buildDirectedCooccurrenceMatrix();
                 return true;
             }, { pendingThreshold: 0 });
@@ -1222,13 +1223,11 @@ class TagMemoEngine {
             try {
                 const dbPath = path.join(path.dirname(this.db.name), 'knowledge_base.sqlite');
                 const result = await this.tagIndex.computeIntrinsicResiduals(dbPath);
-                // 🛡️ V8.2-fix: Rust 用独立连接写完后，强制本连接同步 -wal 视图
-                // 否则在 Docker bind mount 等虚拟文件系统上会读到不一致的页视图（SQLITE_CORRUPT 幻觉）
-                this._checkpointAfterRustWrite('intrinsic residuals');
+                if (!result) return null;
                 console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
 
                 // 重新加载结果
-                this.loadIntrinsicResiduals();
+                this.loadIntrinsicResiduals({ failOnCorruption: true });
                 return result;
             } catch (e) {
                 console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
@@ -1239,6 +1238,122 @@ class TagMemoEngine {
 
         if (leaseAlreadyHeld) return await run();
         return await this._withRustWriteLease('tagmemo:intrinsic-residuals', run, { pendingThreshold: 0 });
+    }
+
+    schedulePostStartupDerivedRefresh(delayMs = 300000) {
+        if (this._postStartupDerivedRefreshTimer) {
+            clearTimeout(this._postStartupDerivedRefreshTimer);
+        }
+
+        this._postStartupDerivedRefreshTimer = setTimeout(() => {
+            this._postStartupDerivedRefreshTimer = null;
+            console.log('[TagMemoEngine] 🌙 Post-startup derived refresh window opened.');
+            this._enqueueDerivedTask('epa-basis', async () => {
+                if (this.epa && typeof this.epa.refreshInBackground === 'function') {
+                    return await this.epa.refreshInBackground();
+                }
+                return false;
+            });
+            this._enqueueDerivedTask('matrix-rebuild', async () => {
+                await this.doMatrixRebuild();
+                return true;
+            });
+        }, Math.max(0, delayMs));
+
+        if (this._postStartupDerivedRefreshTimer.unref) this._postStartupDerivedRefreshTimer.unref();
+        console.log(`[TagMemoEngine] 🕒 Post-startup derived refresh scheduled after ${Math.round(delayMs / 1000)}s.`);
+    }
+
+    _enqueueDerivedTask(type, run, options = {}) {
+        const existing = this._derivedTaskQueue.find(task => task.type === type && task.status === 'queued');
+        if (existing) {
+            existing.run = run;
+            existing.updatedAt = Date.now();
+            return existing.id;
+        }
+
+        const task = {
+            id: `${type}-${Date.now()}-${++this._derivedTaskSeq}`,
+            type,
+            run,
+            status: 'queued',
+            attempts: 0,
+            maxAttempts: options.maxAttempts ?? 3,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+        this._derivedTaskQueue.push(task);
+        this._scheduleDerivedTaskPump(0);
+        return task.id;
+    }
+
+    _scheduleDerivedTaskPump(delayMs = 1000) {
+        if (this._derivedTaskTimer) clearTimeout(this._derivedTaskTimer);
+        this._derivedTaskTimer = setTimeout(() => {
+            this._derivedTaskTimer = null;
+            this._processDerivedTaskQueue();
+        }, Math.max(0, delayMs));
+        if (this._derivedTaskTimer.unref) this._derivedTaskTimer.unref();
+    }
+
+    _getDerivedTaskBlockReason() {
+        const kb = this.knowledgeBaseManager;
+        if (!kb) return null;
+        if (kb.databaseCorruptionDetected || kb.dbHealthState === 'corrupt') return 'database-corruption';
+        if (kb.dbHealthState && kb.dbHealthState !== 'healthy') return `database-${kb.dbHealthState}`;
+        if (kb.rustWriteLease) return `rust-lease-active:${kb.rustWriteLease.owner}`;
+        if (kb.isProcessing) return 'js-batch-processing';
+        if (kb.isProcessingDeletes) return 'js-delete-processing';
+        if (kb.pendingDeletes?.size > 0) return `pending-deletes:${kb.pendingDeletes.size}`;
+        if (kb.pendingFiles?.size > 0) return `pending-files:${kb.pendingFiles.size}`;
+        return null;
+    }
+
+    async _processDerivedTaskQueue() {
+        if (this._derivedTaskRunning) return;
+        const task = this._derivedTaskQueue.find(item => item.status === 'queued');
+        if (!task) return;
+
+        const blockReason = this._getDerivedTaskBlockReason();
+        if (blockReason) {
+            console.log(`[TagMemoEngine] 🕒 Derived task queue waiting: ${blockReason}. queued=${this._derivedTaskQueue.length}`);
+            this._scheduleDerivedTaskPump(30000);
+            return;
+        }
+
+        this._derivedTaskRunning = true;
+        task.status = 'running';
+        task.attempts++;
+        task.updatedAt = Date.now();
+
+        try {
+            console.log(`[TagMemoEngine] ▶️ Derived task started: ${task.type} (${task.id})`);
+            const ok = await task.run();
+            if (ok === false || ok === null) {
+                throw new Error(`derived task returned ${ok}`);
+            }
+            task.status = 'done';
+            task.updatedAt = Date.now();
+            this._derivedTaskQueue = this._derivedTaskQueue.filter(item => item.id !== task.id);
+            console.log(`[TagMemoEngine] ✅ Derived task finished: ${task.type} (${task.id})`);
+        } catch (e) {
+            task.updatedAt = Date.now();
+            if (task.attempts >= task.maxAttempts) {
+                task.status = 'failed';
+                console.warn(`[TagMemoEngine] ⚠️ Derived task failed permanently: ${task.type} (${task.id}): ${e.message || e}`);
+                this._derivedTaskQueue = this._derivedTaskQueue.filter(item => item.id !== task.id);
+            } else {
+                task.status = 'queued';
+                const backoffMs = Math.min(15 * 60 * 1000, 60000 * task.attempts);
+                console.warn(`[TagMemoEngine] ⚠️ Derived task failed, will retry in ${Math.round(backoffMs / 1000)}s: ${task.type} (${task.id}): ${e.message || e}`);
+                this._scheduleDerivedTaskPump(backoffMs);
+            }
+        } finally {
+            this._derivedTaskRunning = false;
+            if (this._derivedTaskQueue.some(item => item.status === 'queued')) {
+                this._scheduleDerivedTaskPump(this._derivedTaskTimer ? 30000 : 1000);
+            }
+        }
     }
 }
 

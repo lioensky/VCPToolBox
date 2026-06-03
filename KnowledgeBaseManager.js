@@ -51,6 +51,7 @@ class KnowledgeBaseManager {
             rustWriteLeaseTtlMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_TTL_MS, 10) || 10 * 60 * 1000,
             rustWriteLeaseMaxWaitMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_MAX_WAIT_MS, 10) || 30 * 60 * 1000,
             rustWriteLeasePendingThreshold: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_PENDING_THRESHOLD, 10) || 0,
+            derivedStartupCooldownMs: parseInt(process.env.KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS, 10) || 5 * 60 * 1000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
@@ -79,6 +80,9 @@ class KnowledgeBaseManager {
         this.db = null;
         this.dbPath = null;
         this.databaseCorruptionDetected = false;
+        this.dbHealthState = 'healthy'; // healthy | suspect | recovering | corrupt
+        this._recoveringDatabaseConnection = false;
+        this.startupCompletedAt = 0;
         this.diaryIndices = new Map();
         this.diaryIndexLastUsed = new Map(); // 🌟 记录每个索引的最后使用时间
         this.idleSweepTimer = null;
@@ -171,7 +175,12 @@ class KnowledgeBaseManager {
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
 
         this.initialized = true;
+        this.startupCompletedAt = Date.now();
         console.log('[KnowledgeBase] ✅ System Ready');
+
+        if (this.tagMemoEngine && typeof this.tagMemoEngine.schedulePostStartupDerivedRefresh === 'function') {
+            this.tagMemoEngine.schedulePostStartupDerivedRefresh(this.config.derivedStartupCooldownMs);
+        }
     }
 
     /**
@@ -326,13 +335,64 @@ class KnowledgeBaseManager {
         try {
             this.db.pragma('wal_checkpoint(TRUNCATE)');
             this._assertDatabaseIntegrity(this.db);
+            this.dbHealthState = 'healthy';
             return true;
         } catch (e) {
             console.error(`[KnowledgeBase] 🚨 SQLite checkpoint/quick_check failed after ${reason}: ${e.message || e}`);
-            if (this._isSqliteCorruptionError(e)) {
-                this.databaseCorruptionDetected = true;
+            if (!this._isSqliteCorruptionError(e)) return false;
+
+            this.dbHealthState = 'suspect';
+            return this._recoverSuspectDatabaseConnection(reason, e);
+        }
+    }
+
+    _rebindDatabaseConnection(db) {
+        this.db = db;
+
+        if (this.tagMemoEngine) {
+            this.tagMemoEngine.db = db;
+            if (this.tagMemoEngine.epa) this.tagMemoEngine.epa.db = db;
+            if (this.tagMemoEngine.residualPyramid) this.tagMemoEngine.residualPyramid.db = db;
+        }
+
+        if (this.resultDeduplicator) {
+            this.resultDeduplicator.db = db;
+            if (this.resultDeduplicator.epa) this.resultDeduplicator.epa.db = db;
+            if (this.resultDeduplicator.residualCalculator) this.resultDeduplicator.residualCalculator.db = db;
+        }
+    }
+
+    _recoverSuspectDatabaseConnection(reason, firstError) {
+        if (!this.dbPath || this._recoveringDatabaseConnection) return false;
+
+        this._recoveringDatabaseConnection = true;
+        this.dbHealthState = 'recovering';
+
+        const oldDb = this.db;
+        try {
+            console.warn(`[KnowledgeBase] 🩺 SQLite suspect state after ${reason}; reopening connection for second-stage verification...`);
+            try { oldDb?.close(); } catch (closeErr) {
+                console.warn(`[KnowledgeBase] ⚠️ Failed to close suspect SQLite connection cleanly: ${closeErr.message}`);
             }
+
+            const reopened = new Database(this.dbPath);
+            this._configureDatabaseConnection(reopened);
+            reopened.pragma('wal_checkpoint(TRUNCATE)');
+            this._assertDatabaseIntegrity(reopened);
+
+            this._rebindDatabaseConnection(reopened);
+            this.dbHealthState = 'healthy';
+            this.databaseCorruptionDetected = false;
+            console.warn('[KnowledgeBase] ✅ SQLite suspect verification passed after reopen; treating as transient WAL/SHM view issue.');
+            return true;
+        } catch (secondError) {
+            console.error(`[KnowledgeBase] 🚨 SQLite second-stage verification failed after ${reason}: ${secondError.message || secondError}`);
+            console.error(`[KnowledgeBase] First-stage failure was: ${firstError?.message || firstError}`);
+            this.dbHealthState = 'corrupt';
+            this.databaseCorruptionDetected = true;
             return false;
+        } finally {
+            this._recoveringDatabaseConnection = false;
         }
     }
 
@@ -414,9 +474,16 @@ class KnowledgeBaseManager {
     }
 
     _canGrantRustWriteLease(options = {}) {
-        if (this.databaseCorruptionDetected) return { ok: false, reason: 'database-corruption' };
+        if (this.databaseCorruptionDetected || this.dbHealthState === 'corrupt') return { ok: false, reason: 'database-corruption' };
+        if (this.dbHealthState !== 'healthy') return { ok: false, reason: `database-${this.dbHealthState}` };
 
         const now = Date.now();
+        if (this.startupCompletedAt > 0) {
+            const sinceStartupReady = now - this.startupCompletedAt;
+            if (sinceStartupReady < this.config.derivedStartupCooldownMs) {
+                return { ok: false, reason: `startup-cooldown:${this.config.derivedStartupCooldownMs - sinceStartupReady}ms` };
+            }
+        }
         if (this._isRustWriteLeaseExpired(now)) {
             console.error(
                 `[KnowledgeBase] 🚨 Rust write lease "${this.rustWriteLease.owner}" exceeded TTL; force-releasing stale lease.`

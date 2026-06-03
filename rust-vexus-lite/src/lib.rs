@@ -833,13 +833,12 @@ impl Task for EpaBasisTask {
 
         let start = Instant::now();
         let dim = self.dimensions as usize;
-        let mut conn = open_sqlite_readwrite(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
-
         let mut tag_names = Vec::new();
         let mut tag_vectors = Vec::new();
 
         {
+            let conn = open_sqlite_readonly(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB readonly open/config failed: {}", e)))?;
             let mut stmt = conn
                 .prepare("SELECT name, vector FROM tags WHERE vector IS NOT NULL")
                 .map_err(|e| Error::from_reason(format!("Prepare tags failed: {}", e)))?;
@@ -991,6 +990,8 @@ impl Task for EpaBasisTask {
             tag_count
         );
 
+        let mut conn = open_sqlite_readwrite(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
         let tx = conn
             .transaction()
             .map_err(|e| Error::from_reason(format!("EPA cache transaction failed: {}", e)))?;
@@ -1035,13 +1036,14 @@ impl Task for IntrinsicResidualTask {
         let max_k = self.max_svd_rank as usize;
         let min_n = self.min_neighbors as usize;
 
-        let conn = open_sqlite_readwrite(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
-
-        // 1. 加载所有 Tag 向量
-        let mut tag_vectors: std::collections::HashMap<i64, Vec<f32>> = 
+        // 1. 加载所有 Tag 向量。只读阶段使用只读连接；计算完成后再打开短写连接发布结果。
+        let mut tag_vectors: std::collections::HashMap<i64, Vec<f32>> =
+            std::collections::HashMap::new();
+        let mut adjacency: std::collections::HashMap<i64, std::collections::HashSet<i64>> =
             std::collections::HashMap::new();
         {
+            let conn = open_sqlite_readonly(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB readonly open/config failed: {}", e)))?;
             let mut stmt = conn.prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
                 .map_err(|e| Error::from_reason(format!("Prepare failed: {}", e)))?;
             let rows = stmt.query_map([], |row| {
@@ -1059,13 +1061,9 @@ impl Task for IntrinsicResidualTask {
                     }
                 }
             }
-        }
 
-        // 2. 加载共现矩阵以构建邻居关系
-        // 🛡️ 优化：避免大表自连接导致的笛卡尔积爆炸。采用逐文件读取并在 Rust 侧构建邻接关系。
-        let mut adjacency: std::collections::HashMap<i64, std::collections::HashSet<i64>> =
-            std::collections::HashMap::new();
-        {
+            // 2. 加载共现矩阵以构建邻居关系
+            // 🛡️ 优化：避免大表自连接导致的笛卡尔积爆炸。采用逐文件读取并在 Rust 侧构建邻接关系。
             let mut stmt = conn.prepare(
                 "SELECT file_id, tag_id FROM file_tags ORDER BY file_id"
             ).map_err(|e| Error::from_reason(format!("Prepare adjacency query failed: {}", e)))?;
@@ -1186,7 +1184,8 @@ impl Task for IntrinsicResidualTask {
             let min_r = results.iter().map(|r| r.1).fold(f64::MAX, f64::min);
             let range = max_r - min_r;
 
-            let mut conn = conn; // 让 conn 可变以开始事务
+            let mut conn = open_sqlite_readwrite(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
             let tx = conn.transaction()
                 .map_err(|e| Error::from_reason(format!("Transaction failed: {}", e)))?;
 
@@ -1247,14 +1246,15 @@ impl Task for PairwiseSimTask {
         let start = Instant::now();
         let dim = self.dimensions as usize;
 
-        let mut conn = open_sqlite_readwrite(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
-
         // ====================================================================
-        // Step 1: 加载 Tag 向量到内存 HashMap
+        // Step 1-3: 只读加载 Tag 向量、共现 pair 与缓存集合
         // ====================================================================
         let mut tag_vectors: HashMap<i64, Vec<f32>> = HashMap::new();
+        let mut pair_set: HashSet<(i64, i64)> = HashSet::new();
+        let mut cached: HashSet<(i64, i64)> = HashSet::new();
         {
+            let conn = open_sqlite_readonly(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB readonly open/config failed: {}", e)))?;
             let mut stmt = conn
                 .prepare("SELECT id, vector FROM tags WHERE vector IS NOT NULL")
                 .map_err(|e| Error::from_reason(format!("Prepare tags query failed: {}", e)))?;
@@ -1275,15 +1275,12 @@ impl Task for PairwiseSimTask {
                     }
                 }
             }
-        }
 
-        // ====================================================================
-        // Step 2: 在 Rust 侧聚合 file_tags，构建实际共现的 (tag_a, tag_b) 集合
-        // 单文件 Tag 数 > 100 的脏文件跳过（与 JS/V7 守恒）
-        // 约定 tag_a < tag_b
-        // ====================================================================
-        let mut pair_set: HashSet<(i64, i64)> = HashSet::new();
-        {
+            // ====================================================================
+            // Step 2: 在 Rust 侧聚合 file_tags，构建实际共现的 (tag_a, tag_b) 集合
+            // 单文件 Tag 数 > 100 的脏文件跳过（与 JS/V7 守恒）
+            // 约定 tag_a < tag_b
+            // ====================================================================
             let mut stmt = conn
                 .prepare("SELECT file_id, tag_id FROM file_tags ORDER BY file_id")
                 .map_err(|e| Error::from_reason(format!("Prepare file_tags query failed: {}", e)))?;
@@ -1338,13 +1335,9 @@ impl Task for PairwiseSimTask {
         // 如果此时先 DELETE 旧模型行，而本轮 pair_set 又为 0，就会造成旧缓存被清空且新缓存未生成。
         // 旧模型行的安全清理交给 JS 侧在确认当前 model_sig 已有可用缓存后执行。
         // ====================================================================
-        if self.full_rebuild {
-            conn.execute("DELETE FROM tag_pair_similarity", [])
-                .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
-        }
-
-        let mut cached: HashSet<(i64, i64)> = HashSet::new();
         {
+            let conn = open_sqlite_readonly(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB readonly open/config failed: {}", e)))?;
             let mut stmt = conn
                 .prepare(
                     "SELECT tag_a, tag_b FROM tag_pair_similarity WHERE model_sig = ?1",
@@ -1439,9 +1432,19 @@ impl Task for PairwiseSimTask {
         // ====================================================================
         let stored_count = to_insert.len() as u32;
 
-        if !to_insert.is_empty() {
+        if !to_insert.is_empty() || self.full_rebuild {
             const WRITE_CHUNK_SIZE: usize = 1000;
-            const CHECKPOINT_EVERY_CHUNKS: usize = 8;
+            let passive_checkpoint_every_chunks = std::env::var("VEXUS_PAIRWISE_PASSIVE_CHECKPOINT_EVERY_CHUNKS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            let mut conn = open_sqlite_readwrite(&self.db_path)
+                .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
+
+            if self.full_rebuild {
+                conn.execute("DELETE FROM tag_pair_similarity", [])
+                    .map_err(|e| Error::from_reason(format!("Full rebuild clear failed: {}", e)))?;
+            }
 
             for (chunk_index, chunk) in to_insert.chunks(WRITE_CHUNK_SIZE).enumerate() {
                 {
@@ -1470,14 +1473,16 @@ impl Task for PairwiseSimTask {
                         .map_err(|e| Error::from_reason(format!("Commit tx chunk {} failed: {}", chunk_index, e)))?;
                 }
 
-                if (chunk_index + 1) % CHECKPOINT_EVERY_CHUNKS == 0 {
+                if passive_checkpoint_every_chunks > 0
+                    && (chunk_index + 1) % passive_checkpoint_every_chunks == 0
+                {
                     checkpoint_sqlite_wal(&conn, "PASSIVE")
                         .map_err(|e| Error::from_reason(format!("Passive WAL checkpoint after chunk {} failed: {}", chunk_index, e)))?;
                 }
             }
 
-            checkpoint_sqlite_wal(&conn, "TRUNCATE")
-                .map_err(|e| Error::from_reason(format!("Final WAL checkpoint failed: {}", e)))?;
+            // 最终 TRUNCATE checkpoint 由 JS coordinator 统一执行，避免 Rust/JS 跨连接轮流 TRUNCATE
+            // 导致 better-sqlite3 旧连接看到 transient malformed 视图。
         }
 
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;

@@ -41,6 +41,11 @@ class EPAModule {
 
             let loadedFromRust = false;
 
+            if (this.config.deferRustRecompute) {
+                console.log('[EPA] 🕒 No cached basis; Rust recompute deferred until post-startup refresh window.');
+                return false;
+            }
+
             if (this.config.vexusIndex && typeof this.config.vexusIndex.computeEpaBasis === 'function') {
                 loadedFromRust = await this._recomputeWithRust(tags.length);
             }
@@ -243,6 +248,61 @@ class EPAModule {
         }
 
         return await run();
+    }
+
+    async refreshInBackground() {
+        try {
+            const tags = this.db.prepare(`SELECT id, name, vector FROM tags WHERE vector IS NOT NULL`).all();
+            if (tags.length < 8) {
+                console.log('[EPA] Background refresh skipped: not enough tag vectors.');
+                return false;
+            }
+
+            // P2 止血版：EPA 后台刷新采用 snapshot → compute → short publish。
+            // 不再让 Rust computeEpaBasis 在 JS 写租约内覆盖整个长计算周期；
+            // 长计算阶段只使用内存快照，最终 kv_store 写入才通过短写租约发布。
+            const computed = this._computeBasisFromSnapshot(tags);
+            if (!computed) return false;
+
+            await this._publishBasisCacheWithLease();
+
+            this.initialized = true;
+            console.log('[EPA] ✅ Background basis refresh complete.');
+            return true;
+        } catch (e) {
+            console.warn('[EPA] ⚠️ Background refresh failed:', e.message || e);
+            return false;
+        }
+    }
+
+    _computeBasisFromSnapshot(tags) {
+        const clusterData = this._clusterTags(tags, Math.min(tags.length, this.config.clusterCount));
+        const svdResult = this._computeWeightedPCA(clusterData);
+        const { U, S, meanVector, labels } = svdResult;
+        const K = this._selectBasisDimension(S);
+
+        this.orthoBasis = U.slice(0, K);
+        this.basisEnergies = S.slice(0, K);
+        this.basisMean = meanVector;
+        this.basisLabels = labels ? labels.slice(0, K) : clusterData.labels.slice(0, K);
+        this._refreshFlattenedBasisCache();
+        return true;
+    }
+
+    async _publishBasisCacheWithLease() {
+        const publish = async () => {
+            await this._saveToCache();
+            return true;
+        };
+
+        if (this.config.withRustWriteLease) {
+            return await this.config.withRustWriteLease('tagmemo:epa-basis-publish', publish, {
+                pendingThreshold: 0,
+                ttlMs: 60 * 1000
+            });
+        }
+
+        return await publish();
     }
 
     _refreshFlattenedBasisCache() {
