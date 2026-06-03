@@ -752,6 +752,7 @@ class TagMemoEngine {
     //   7) tags.vector 重写时 DELETE 涉及该 tag 的 sim 行 (在 KnowledgeBaseManager 中处理)
     // ============================================================
     buildDirectedCooccurrenceMatrix() {
+        const matrixBuildStartedAt = Date.now();
         console.log('[TagMemoEngine] 🧠 V8.2 Building ORDERED-BIDIRECTIONAL tag co-occurrence matrix (γ)...');
         try {
             // 势能参数
@@ -834,6 +835,11 @@ class TagMemoEngine {
             let anchorBoostedEdges = 0;
             let invertedClampedEdges = 0;
 
+            const progressIntervalFiles = parseInt(process.env.TAGMEMO_MATRIX_PROGRESS_INTERVAL_FILES, 10) || 5000;
+            let processedOrderedFiles = 0;
+            let skippedOrderedFiles = 0;
+            let orderedPairOps = 0;
+
             const addEdge = (from, to, weight) => {
                 if (!Number.isFinite(weight) || weight <= 0) return false;
                 if (!matrix.has(from)) matrix.set(from, new Map());
@@ -843,8 +849,22 @@ class TagMemoEngine {
             };
 
             const processFileGroup = (tags, fid) => {
+                processedOrderedFiles++;
                 const n = tags.length;
-                if (n < 2 || n > 100) return; // 性能保护
+                if (n < 2) return;
+                if (n > 100) {
+                    skippedOrderedFiles++;
+                    return;
+                } // 性能保护
+
+                orderedPairOps += (n * (n - 1)) / 2;
+                if (processedOrderedFiles % progressIntervalFiles === 0) {
+                    console.log(
+                        `[TagMemoEngine] 🧭 Matrix ordered progress: files=${processedOrderedFiles}, ` +
+                        `skipped=${skippedOrderedFiles}, pairOps≈${Math.round(orderedPairOps)}, ` +
+                        `sources=${matrix.size}, elapsed=${Date.now() - matrixBuildStartedAt}ms`
+                    );
+                }
 
                 for (let i = 0; i < n; i++) {
                     for (let j = i + 1; j < n; j++) {
@@ -934,14 +954,26 @@ class TagMemoEngine {
             const LEGACY_PHI = 0.7;
             let legacyFileId = -1;
             let legacyTags = [];
+            let legacyProcessedFiles = 0;
             let legacySkippedFiles = 0;
+            let legacyPairOps = 0;
 
             const processLegacyFileGroup = (tags) => {
+                legacyProcessedFiles++;
                 const n = tags.length;
                 if (n < 2) return;
                 if (n > 100) {
                     legacySkippedFiles++;
                     return;
+                }
+
+                legacyPairOps += (n * (n - 1)) / 2;
+                if (legacyProcessedFiles % progressIntervalFiles === 0) {
+                    console.log(
+                        `[TagMemoEngine] 🧭 Matrix legacy progress: files=${legacyProcessedFiles}, ` +
+                        `skipped=${legacySkippedFiles}, pairOps≈${Math.round(legacyPairOps)}, ` +
+                        `sources=${matrix.size}, elapsed=${Date.now() - matrixBuildStartedAt}ms`
+                    );
                 }
 
                 const weightBase = LEGACY_PHI * LEGACY_PHI;
@@ -981,8 +1013,9 @@ class TagMemoEngine {
                 `reverseGain=${reverseGain.toFixed(3)}, distanceDecay=${DISTANCE_DECAY}, ` +
                 `semGain=${SEM_GAIN_ENABLED ? `bell(peak=${SEM_PEAK}, σ=${SEM_SIGMA})` : 'disabled'}, ` +
                 `anchorBoost=${REVERSE_ANCHOR_BOOST ? `≤${REVERSE_ANCHOR_MAX}x` : 'disabled'}, ` +
-                `legacySkippedFiles=${legacySkippedFiles}, ` +
-                `simCacheSize=${this.tagPairSimilarities.size}`
+                `orderedFiles=${processedOrderedFiles}, orderedSkippedFiles=${skippedOrderedFiles}, orderedPairOps≈${Math.round(orderedPairOps)}, ` +
+                `legacyFiles=${legacyProcessedFiles}, legacySkippedFiles=${legacySkippedFiles}, legacyPairOps≈${Math.round(legacyPairOps)}, ` +
+                `simCacheSize=${this.tagPairSimilarities.size}, elapsed=${Date.now() - matrixBuildStartedAt}ms`
             );
         } catch (e) {
             console.error('[TagMemoEngine] ❌ Failed to build V8.2 ordered-bidirectional matrix:', e);

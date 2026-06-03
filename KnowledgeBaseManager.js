@@ -89,6 +89,8 @@ class KnowledgeBaseManager {
         this.tagIndex = null;
         this.watcher = null;
         this.initialized = false;
+        this.eventLoopWatchdogTimer = null;
+        this._lastEventLoopWatchdogAt = 0;
         this.diaryNameVectorCache = new Map();
         this.pendingFiles = new Set();
         this.fileRetryCount = new Map(); // 🛡️ 文件重试计数器，防止无限循环
@@ -173,6 +175,7 @@ class KnowledgeBaseManager {
         this._startWatcher();
         this._startRagParamsWatcher();
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
+        this._startEventLoopWatchdog(); // 🛡️ 运行期无日志卡死定位：记录主线程长阻塞
 
         this.initialized = true;
         this.startupCompletedAt = Date.now();
@@ -466,6 +469,34 @@ class KnowledgeBaseManager {
 
     _delay(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    _startEventLoopWatchdog() {
+        if (this.eventLoopWatchdogTimer) return;
+
+        const intervalMs = parseInt(process.env.KNOWLEDGEBASE_EVENT_LOOP_WATCHDOG_MS, 10) || 5000;
+        const warnLagMs = parseInt(process.env.KNOWLEDGEBASE_EVENT_LOOP_WATCHDOG_WARN_LAG_MS, 10) || 2000;
+        this._lastEventLoopWatchdogAt = Date.now();
+
+        this.eventLoopWatchdogTimer = setInterval(() => {
+            const now = Date.now();
+            const expected = this._lastEventLoopWatchdogAt + intervalMs;
+            const lag = now - expected;
+            this._lastEventLoopWatchdogAt = now;
+
+            if (lag >= warnLagMs) {
+                console.warn(
+                    `[KnowledgeBase] 🧯 Event loop lag detected: ${lag}ms. ` +
+                    `state: pendingFiles=${this.pendingFiles.size}, pendingDeletes=${this.pendingDeletes.size}, ` +
+                    `isProcessing=${this.isProcessing}, isProcessingDeletes=${this.isProcessingDeletes}, ` +
+                    `rustLease=${this.rustWriteLease?.owner || 'none'}, loadedIndices=${this.diaryIndices.size}, ` +
+                    `saveTimers=${this.saveTimers.size}, dbHealth=${this.dbHealthState}`
+                );
+            }
+        }, intervalMs);
+
+        if (this.eventLoopWatchdogTimer.unref) this.eventLoopWatchdogTimer.unref();
+        console.log(`[KnowledgeBase] 🧯 Event loop watchdog started (interval=${intervalMs}ms, warnLag=${warnLagMs}ms).`);
     }
 
     _isRustWriteLeaseExpired(now = Date.now()) {
@@ -2155,6 +2186,7 @@ class KnowledgeBaseManager {
         if (this.saveTimers.has(name)) return;
         const delay = this.config.indexSaveDelay;
         const timer = setTimeout(() => {
+            console.log(`[KnowledgeBase] 💾 Save timer fired: ${name}`);
             this._saveIndexToDisk(name);
             this.saveTimers.delete(name);
         }, delay);
@@ -2162,22 +2194,33 @@ class KnowledgeBaseManager {
     }
 
     _saveIndexToDisk(name) {
-        const shouldPersist = name === 'global_tags' 
+        const shouldPersist = name === 'global_tags'
             ? (this.config.persistTagIndex || this.config.persistFolders.has('global_tags'))
             : (this.config.persistDefault || this.config.persistFolders.has(name) || name.endsWith('簇'));
 
         if (!shouldPersist) return;
+        const startedAt = Date.now();
         try {
             if (name === 'global_tags') {
+                let stats = null;
+                try { stats = this.tagIndex?.stats ? this.tagIndex.stats() : null; } catch (_) { }
+                console.log(`[KnowledgeBase] 💾 Saving index start: ${name}, vectors=${stats?.totalVectors ?? 'unknown'}`);
                 if (this.tagIndex) this.tagIndex.save(path.join(this.config.storePath, 'index_global_tags.usearch'));
             } else {
                 const safeName = crypto.createHash('md5').update(name).digest('hex');
                 const idx = this.diaryIndices.get(name);
                 if (idx && idx.save) {
+                    let stats = null;
+                    try { stats = idx.stats ? idx.stats() : null; } catch (_) { }
+                    console.log(`[KnowledgeBase] 💾 Saving index start: ${name}, vectors=${stats?.totalVectors ?? 'unknown'}`);
                     idx.save(path.join(this.config.storePath, `index_diary_${safeName}.usearch`));
                 }
             }
-            console.log(`[KnowledgeBase] 💾 Saved index: ${name}`);
+            const elapsed = Date.now() - startedAt;
+            console.log(`[KnowledgeBase] 💾 Saved index: ${name}, elapsed=${elapsed}ms`);
+            if (elapsed > 5000) {
+                console.warn(`[KnowledgeBase] 🧯 Slow synchronous index save detected: ${name}, elapsed=${elapsed}ms`);
+            }
         } catch (e) { console.error(`[KnowledgeBase] Save failed for ${name}:`, e); }
     }
 
@@ -2289,9 +2332,13 @@ class KnowledgeBaseManager {
 
     // 🌟 扫描并卸载空闲超时的索引
     _evictIdleIndices() {
+        const sweepStartedAt = Date.now();
         const now = Date.now();
         const ttl = this.config.indexIdleTTL;
         let evictedCount = 0;
+        if (this.diaryIndexLastUsed.size > 0) {
+            console.log(`[KnowledgeBase] 🧹 Idle sweep tick: tracked=${this.diaryIndexLastUsed.size}, loaded=${this.diaryIndices.size}`);
+        }
 
         for (const [diaryName, lastUsed] of this.diaryIndexLastUsed) {
             if (now - lastUsed < ttl) continue;
@@ -2319,7 +2366,7 @@ class KnowledgeBaseManager {
         }
 
         if (evictedCount > 0) {
-            console.log(`[KnowledgeBase] 🧹 Idle sweep complete: evicted ${evictedCount} index(es), ${this.diaryIndices.size} remaining in memory.`);
+            console.log(`[KnowledgeBase] 🧹 Idle sweep complete: evicted ${evictedCount} index(es), ${this.diaryIndices.size} remaining in memory, elapsed=${Date.now() - sweepStartedAt}ms.`);
         }
     }
 
@@ -2352,6 +2399,11 @@ class KnowledgeBaseManager {
         if (this.idleSweepTimer) {
             clearInterval(this.idleSweepTimer);
             this.idleSweepTimer = null;
+        }
+
+        if (this.eventLoopWatchdogTimer) {
+            clearInterval(this.eventLoopWatchdogTimer);
+            this.eventLoopWatchdogTimer = null;
         }
 
         // 确保所有待保存的索引都被写入磁盘
