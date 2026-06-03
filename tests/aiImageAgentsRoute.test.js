@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const test = require('node:test');
+const express = require('express');
 
 const routePath = require.resolve('../routes/admin/aiImageAgents');
 
@@ -172,6 +173,68 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
             authorizationId: 'serum-internal-auth-001',
             receiptId: 'serum-internal-receipt-001'
         });
+    });
+});
+
+test('aiImageAgents serum-bottle secretless internal router exposes only exact secretless route without Authorization header', async (t) => {
+    const calls = [];
+    const authorizerCalls = [];
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution', receiptId: 'stubbed-execution-receipt' };
+        }
+    }, async ({ createSerumBottleSecretlessInternalRouter }) => {
+        const pluginManager = {
+            getPlugin(name) {
+                return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+            },
+            processToolCall() {}
+        };
+        const app = express();
+        app.use(express.json());
+        app.use('/internal/ai-image-agents', createSerumBottleSecretlessInternalRouter({
+            pluginManager,
+            async nativeDoubaoSecretlessRuntimeDelegate() {
+                return { ok: true, result: { ok: true, content: 'stubbed' } };
+            },
+            async authorizeSerumBottleSecretlessExecution(request) {
+                authorizerCalls.push(request);
+                return {
+                    ok: true,
+                    operatorId: 'vcptoolbox-internal-serum',
+                    authorizationId: 'serum-internal-auth-001',
+                    receiptId: 'serum-internal-receipt-001'
+                };
+            }
+        }));
+
+        const server = await new Promise((resolve) => {
+            const instance = app.listen(0, '127.0.0.1', () => resolve(instance));
+        });
+        t.after(() => new Promise((resolve) => server.close(resolve)));
+
+        const baseUrl = `http://127.0.0.1:${server.address().port}`;
+        const response = await fetch(`${baseUrl}/internal/ai-image-agents/execute/serum-bottle-secretless`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(createSerumBottleSecretlessBody())
+        });
+        const body = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(body.ok, true);
+        assert.equal(authorizerCalls.length, 1);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options.executionContext.operatorId, 'vcptoolbox-internal-serum');
+
+        const ordinaryExecuteResponse = await fetch(`${baseUrl}/internal/ai-image-agents/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dryRun: false, confirm: true })
+        });
+        assert.equal(ordinaryExecuteResponse.status, 404);
     });
 });
 

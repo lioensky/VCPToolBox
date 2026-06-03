@@ -94,6 +94,17 @@ function createAiImageAgentsRouter(options = {}) {
   return router;
 }
 
+function createSerumBottleSecretlessInternalRouter(options = {}) {
+  const router = express.Router();
+
+  router.post('/execute/serum-bottle-secretless', async (req, res) => {
+    const response = await handleSerumBottleSecretlessExecutionRequest(req, options);
+    sendJson(res, response);
+  });
+
+  return router;
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────
 
 /**
@@ -759,6 +770,7 @@ function sendJson(res, payload) {
 // ── 导出 ─────────────────────────────────────────────────────────────────
 module.exports = {
   createAiImageAgentsRouter,
+  createSerumBottleSecretlessInternalRouter,
   handleAiImagePipelineRequest,
   handleSerumBottleSecretlessExecutionRequest,
   createNativeDoubaoDelegatePluginManagerFacade,

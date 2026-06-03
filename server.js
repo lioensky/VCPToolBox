@@ -641,6 +641,11 @@ const apiUrl = process.env.API_URL;
 const serverKey = process.env.Key;
 
 const cachedEmojiLists = new Map();
+const SERUM_BOTTLE_SECRETLESS_INTERNAL_ROUTE_PATH = '/internal/ai-image-agents/execute/serum-bottle-secretless';
+
+function isSerumBottleSecretlessInternalRoute(req) {
+    return req && req.path === SERUM_BOTTLE_SECRETLESS_INTERNAL_ROUTE_PATH;
+}
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
@@ -842,6 +847,14 @@ app.use((req, res, next) => {
     // Skip bearer token check for admin panel API and static files, as they use basic auth or no auth
     if (req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel')) {
         return next();
+    }
+
+    if (isSerumBottleSecretlessInternalRoute(req)) {
+        if (isLoopbackSocket(req)) {
+            return next();
+        }
+
+        return res.status(403).json({ error: 'Forbidden' });
     }
 
     const imageServicePathRegex = /^\/pw=[^/]+\/images\//;
@@ -1671,7 +1684,10 @@ async function initialize() {
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
     if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
-      const { createAiImageAgentsRouter } = require('./routes/admin/aiImageAgents');
+      const {
+        createAiImageAgentsRouter,
+        createSerumBottleSecretlessInternalRouter,
+      } = require('./routes/admin/aiImageAgents');
       const {
         createNativeDoubaoSecretlessRuntimeDelegate,
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
@@ -1701,6 +1717,12 @@ async function initialize() {
         }
       }
 
+      if (routeOptions.enableSerumBottleSecretlessInternalRoute === true) {
+        app.use(
+          '/internal/ai-image-agents',
+          createSerumBottleSecretlessInternalRouter(routeOptions)
+        );
+      }
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
