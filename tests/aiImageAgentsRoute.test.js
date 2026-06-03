@@ -269,6 +269,45 @@ test('aiImageAgents serum-bottle secretless helper fails closed when internal au
     });
 });
 
+test('aiImageAgents serum-bottle secretless helper reaches native delegate gate when plugin manager and authorizer are injected', async () => {
+    const calls = [];
+    const authorizerCalls = [];
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            calls.push({ input, options });
+            return { ok: true, mode: 'real_execution' };
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const result = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, {
+            pluginManager: {
+                getPlugin(name) {
+                    return name === 'DoubaoGen' ? { name: 'DoubaoGen' } : null;
+                },
+                processToolCall() {}
+            },
+            async authorizeSerumBottleSecretlessExecution(request) {
+                authorizerCalls.push(request);
+                return {
+                    ok: true,
+                    operatorId: 'vcptoolbox-internal-serum',
+                    authorizationId: 'serum-internal-auth-001',
+                    receiptId: 'serum-internal-receipt-001'
+                };
+            }
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.result.status, 'serum_bottle_secretless_native_delegate_missing');
+        assert.equal(result.result.provider_contact_performed, false);
+        assert.equal(result.result.authorization_header_constructed, false);
+        assert.equal(calls.length, 0);
+        assert.equal(authorizerCalls.length, 0);
+    });
+});
+
 test('aiImageAgents serum-bottle secretless helper rejects budget drift before stubbed execution', async () => {
     const calls = [];
     const authorizerCalls = [];

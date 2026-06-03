@@ -1689,17 +1689,15 @@ async function initialize() {
     const routeOptions = {
       auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
       enableSerumBottleSecretlessInternalRoute: true,
+      pluginManager,
+      requireNativeDoubaoSecretlessRuntimeDelegate: true,
+      authorizeSerumBottleSecretlessExecution,
     };
 
     if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
       const {
         createNativeDoubaoSecretlessRuntimeDelegate,
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
-
-      routeOptions.pluginManager = pluginManager;
-      routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
-      routeOptions.authorizeSerumBottleSecretlessExecution =
-        authorizeSerumBottleSecretlessExecution;
 
       if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
         routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
