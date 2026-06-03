@@ -9,6 +9,14 @@ echo.
 echo Working directory: %CD%
 echo.
 
+REM Increase libuv worker pool before PM2 starts Node processes.
+REM This must be set before node.exe starts; setting it inside JS is usually too late.
+set UV_THREADPOOL_SIZE=64
+echo [Runtime] UV_THREADPOOL_SIZE=%UV_THREADPOOL_SIZE%
+echo [Runtime] Enlarged Node.js libuv worker pool to reduce native async task starvation.
+echo [Runtime] If CPU contention is too high, try 32; if native tasks still stall, try 128 temporarily.
+echo.
+
 REM 0. Check if AdminPanel-Vue frontend is built
 if not exist "AdminPanel-Vue\dist\index.html" (
     echo [Build] AdminPanel-Vue frontend not found, building...

@@ -216,11 +216,26 @@ class EPAModule {
 
     async _recomputeWithRust(tagCount) {
         const run = async () => {
-            const result = await this.config.vexusIndex.computeEpaBasis(
-                this.db.name,
-                this.config.clusterCount,
-                this.config.maxBasisDim
+            console.log(
+                `[EPA] 🦀 computeEpaBasis JS call starting: db=${this.db.name}, ` +
+                `tagCount=${tagCount}, clusters=${this.config.clusterCount}, maxBasis=${this.config.maxBasisDim}`
             );
+
+            let taskPromise;
+            try {
+                taskPromise = this.config.vexusIndex.computeEpaBasis(
+                    this.db.name,
+                    this.config.clusterCount,
+                    this.config.maxBasisDim
+                );
+            } catch (e) {
+                console.error('[EPA] 🦀 computeEpaBasis JS call threw synchronously before returning AsyncTask:', e.message || e);
+                throw e;
+            }
+
+            console.log('[EPA] 🦀 computeEpaBasis JS call returned; awaiting Rust AsyncTask result...');
+            const result = await taskPromise;
+            console.log('[EPA] 🦀 computeEpaBasis await resolved.');
 
             if (!result || !result.success) {
                 console.warn(`[EPA] Rust basis recompute skipped/failed: ${result?.message || 'unknown reason'}`);
@@ -256,6 +271,16 @@ class EPAModule {
             if (tagCount < 8) {
                 console.log('[EPA] Background refresh skipped: not enough tag vectors.');
                 return false;
+            }
+
+            // 🛡️ P0: 已确认卡死点在 post-startup 的 tagmemo:epa-basis Rust 写租约之后。
+            // EPA 已在 initialize() 命中缓存时，运行期后台刷新不是必需项；默认跳过，避免 Rust computeEpaBasis
+            // 在 10–30 分钟窗口内概率进入无日志长运行/卡死。需要强制刷新时显式设置：
+            // KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE=true
+            const allowBackgroundRecompute = (process.env.KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE || 'false').toLowerCase() === 'true';
+            if (!allowBackgroundRecompute && this.initialized) {
+                console.log(`[EPA] 🛡️ Background basis refresh skipped: cached EPA basis is active (tagCount=${tagCount}). Set KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE=true to force recompute.`);
+                return true;
             }
 
             // 🛡️ P0: 运行一段时间后“无日志卡死”的主要嫌疑点。

@@ -679,6 +679,14 @@ fn f32_slice_to_base64(values: &[f32]) -> String {
 }
 
 fn choose_initial_centroids(vectors: &[Vec<f32>], k: usize, dim: usize) -> Vec<Vec<f32>> {
+    let started_at = std::time::Instant::now();
+    println!(
+        "[Vexus-Lite][EPA] choose_initial_centroids started: vectors={}, k={}, dim={}",
+        vectors.len(),
+        k,
+        dim
+    );
+
     let mut centroids = Vec::with_capacity(k);
     if vectors.is_empty() || k == 0 {
         return centroids;
@@ -722,7 +730,22 @@ fn choose_initial_centroids(vectors: &[Vec<f32>], k: usize, dim: usize) -> Vec<V
         }
 
         centroids.push(vectors[farthest_idx].clone());
+
+        if centroids.len() % 8 == 0 || centroids.len() == k {
+            println!(
+                "[Vexus-Lite][EPA] choose_initial_centroids progress: {}/{} elapsed={:.2}ms",
+                centroids.len(),
+                k,
+                started_at.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
+
+    println!(
+        "[Vexus-Lite][EPA] choose_initial_centroids finished: k={} elapsed={:.2}ms",
+        centroids.len(),
+        started_at.elapsed().as_secs_f64() * 1000.0
+    );
 
     centroids
 }
@@ -746,11 +769,19 @@ fn cluster_epa_tags(
     k: usize,
     dim: usize,
 ) -> (Vec<Vec<f32>>, Vec<usize>, Vec<String>) {
+    let started_at = std::time::Instant::now();
+    println!(
+        "[Vexus-Lite][EPA] cluster_epa_tags started: vectors={}, k={}, dim={}",
+        vectors.len(),
+        k,
+        dim
+    );
+
     let mut centroids = choose_initial_centroids(vectors, k, dim);
     let mut assignments = vec![0usize; vectors.len()];
     let mut cluster_sizes = vec![0usize; k];
 
-    for _ in 0..50 {
+    for iter in 0..50 {
         let mut changed = 0usize;
         cluster_sizes.fill(0);
 
@@ -793,6 +824,16 @@ fn cluster_epa_tags(
         }
 
         centroids = new_centroids;
+
+        if iter == 0 || (iter + 1) % 5 == 0 || changed == 0 {
+            println!(
+                "[Vexus-Lite][EPA] cluster_epa_tags progress: iter={}/50 changed={} elapsed={:.2}ms",
+                iter + 1,
+                changed,
+                started_at.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
         if changed == 0 {
             break;
         }
@@ -820,6 +861,13 @@ fn cluster_epa_tags(
         labels.push(names.get(best_idx).cloned().unwrap_or_else(|| "Unknown".to_string()));
     }
 
+    println!(
+        "[Vexus-Lite][EPA] cluster_epa_tags finished: vectors={}, k={} elapsed={:.2}ms",
+        vectors.len(),
+        k,
+        started_at.elapsed().as_secs_f64() * 1000.0
+    );
+
     (centroids, cluster_sizes, labels)
 }
 
@@ -833,6 +881,14 @@ impl Task for EpaBasisTask {
 
         let start = Instant::now();
         let dim = self.dimensions as usize;
+        println!(
+            "[Vexus-Lite][EPA] compute_epa_basis started: db={}, dim={}, cluster_count={}, max_basis_dim={}",
+            self.db_path,
+            dim,
+            self.cluster_count,
+            self.max_basis_dim
+        );
+
         let mut tag_names = Vec::new();
         let mut tag_vectors = Vec::new();
 
@@ -862,6 +918,12 @@ impl Task for EpaBasisTask {
             }
         }
 
+        println!(
+            "[Vexus-Lite][EPA] loaded tag vectors: count={} elapsed={:.2}ms",
+            tag_vectors.len(),
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+
         let tag_count = tag_vectors.len();
         if tag_count < 8 {
             return Ok(EpaBasisResult {
@@ -875,7 +937,17 @@ impl Task for EpaBasisTask {
         }
 
         let k_clusters = std::cmp::min(tag_count, self.cluster_count as usize);
+        println!(
+            "[Vexus-Lite][EPA] clustering phase started: tag_count={}, k_clusters={}, elapsed={:.2}ms",
+            tag_count,
+            k_clusters,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         let (centroids, weights, labels) = cluster_epa_tags(&tag_vectors, &tag_names, k_clusters, dim);
+        println!(
+            "[Vexus-Lite][EPA] clustering phase finished: elapsed={:.2}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         let total_weight: usize = weights.iter().sum();
 
         if total_weight == 0 {
@@ -908,11 +980,22 @@ impl Task for EpaBasisTask {
             }
         }
 
+        println!(
+            "[Vexus-Lite][EPA] SVD phase started: matrix={}x{}, elapsed={:.2}ms",
+            k_clusters,
+            dim,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         let matrix = DMatrix::from_row_slice(k_clusters, dim, &matrix_data);
         let svd = matrix.svd(false, true);
         let v_t = svd
             .v_t
             .ok_or_else(|| Error::from_reason("EPA SVD failed to compute V^T".to_string()))?;
+
+        println!(
+            "[Vexus-Lite][EPA] SVD phase finished: elapsed={:.2}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
 
         let singular_values = svd.singular_values.as_slice();
         let max_basis = std::cmp::min(
@@ -990,6 +1073,11 @@ impl Task for EpaBasisTask {
             tag_count
         );
 
+        println!(
+            "[Vexus-Lite][EPA] cache publish phase started: selected_k={}, elapsed={:.2}ms",
+            selected_k,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         let mut conn = open_sqlite_readwrite(&self.db_path)
             .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
         let tx = conn
@@ -1002,6 +1090,14 @@ impl Task for EpaBasisTask {
         .map_err(|e| Error::from_reason(format!("EPA cache write failed: {}", e)))?;
         tx.commit()
             .map_err(|e| Error::from_reason(format!("EPA cache commit failed: {}", e)))?;
+
+        println!(
+            "[Vexus-Lite][EPA] compute_epa_basis finished: tag_count={}, clusters={}, basis={} elapsed={:.2}ms",
+            tag_count,
+            k_clusters,
+            selected_k,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
 
         Ok(EpaBasisResult {
             success: true,
