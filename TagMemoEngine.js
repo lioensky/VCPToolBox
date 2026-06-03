@@ -57,6 +57,29 @@ class TagMemoEngine {
         return this._envFlag('TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE', false);
     }
 
+    _hasWarmDerivedCaches() {
+        const epaReady = !!(this.epa && this.epa.initialized && this.epa.orthoBasis && this.epa.orthoBasis.length > 0);
+        const pairwiseReady = this.tagPairSimilarities instanceof Map && this.tagPairSimilarities.size > 0;
+        const intrinsicReady = this.tagIntrinsicResiduals instanceof Map && this.tagIntrinsicResiduals.size > 0;
+        const matrixReady = this.tagCooccurrenceMatrix instanceof Map && this.tagCooccurrenceMatrix.size > 0;
+        return { epaReady, pairwiseReady, intrinsicReady, matrixReady };
+    }
+
+    _shouldSkipPostStartupDerivedRefresh() {
+        const epaHotOff = !this._isEpaBackgroundRecomputeEnabled();
+        const irHotOff = !this._isIntrinsicResidualRecomputeEnabled();
+        const caches = this._hasWarmDerivedCaches();
+        const noTagChanges = this._accumulatedTagChanges <= 0;
+
+        return {
+            skip: epaHotOff && irHotOff && noTagChanges && caches.epaReady && caches.pairwiseReady && caches.intrinsicReady && caches.matrixReady,
+            epaHotOff,
+            irHotOff,
+            noTagChanges,
+            ...caches
+        };
+    }
+
     /**
      * 🌟 V8.2: 计算 embedding 模型签名（必须包含维度，
      * 防止 VECTORDB_DIMENSION 切换后读到维度错位的 BLOB）
@@ -1402,6 +1425,15 @@ class TagMemoEngine {
         this._postStartupDerivedRefreshTimer = setTimeout(() => {
             this._postStartupDerivedRefreshTimer = null;
             console.log('[TagMemoEngine] 🌙 Post-startup derived refresh window opened.');
+
+            const skipDecision = this._shouldSkipPostStartupDerivedRefresh();
+            if (skipDecision.skip) {
+                console.log(
+                    '[TagMemoEngine] 🛡️ Post-startup derived refresh skipped: warm EPA/pairwise/IR/matrix caches are already loaded, ' +
+                    'EPA/IR hot recompute switches are false, and no tag changes accumulated.'
+                );
+                return;
+            }
 
             if (this._isEpaBackgroundRecomputeEnabled()) {
                 this._enqueueDerivedTask('epa-basis', async () => {
