@@ -11,6 +11,15 @@
 const DOUBAO_TOOL_NAME = 'DoubaoGen';
 const DEFAULT_REQUEST_IP = '127.0.0.1';
 const DEFAULT_REQUEST_SOURCE = 'agent-image-lab-secretless-runtime';
+const SECRETLESS_SERUM_ALLOWED_SIZE = '1920x1920';
+const SECRETLESS_SERUM_SIZE_OVERRIDE_KEYS = [
+  'resolution',
+  'Resolution',
+  'size',
+  'Size',
+  'image_size',
+  'imageSize',
+];
 
 const ALLOWED_COMMANDS = new Set([
   'generate',
@@ -74,6 +83,11 @@ function createNativeDoubaoSecretlessRuntimeDelegate(options = {}) {
       });
     }
 
+    for (const key of SECRETLESS_SERUM_SIZE_OVERRIDE_KEYS) {
+      delete toolArgs[key];
+    }
+    toolArgs.size = SECRETLESS_SERUM_ALLOWED_SIZE;
+
     const requestIp = normalizeNonEmptyString(request.requestIp, defaultRequestIp);
     const inputExecutionContext = request.executionContext && typeof request.executionContext === 'object'
       ? request.executionContext
@@ -108,4 +122,5 @@ module.exports = {
   createNativeDoubaoSecretlessRuntimeDelegate,
   DOUBAO_TOOL_NAME,
   ALLOWED_COMMANDS,
+  SECRETLESS_SERUM_ALLOWED_SIZE,
 };
