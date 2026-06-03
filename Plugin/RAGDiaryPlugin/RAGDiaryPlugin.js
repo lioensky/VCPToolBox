@@ -4194,11 +4194,29 @@ class RAGDiaryPlugin {
         }
 
         try {
-            // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾、token 精确切分、429 退避
-            const results = await getEmbeddingsBatch([text], { apiUrl, apiKey });
-            const vector = results[0];
+            const normalizedText = String(text).trim();
+            const chunks = chunkText(normalizedText);
+            if (chunks.length === 0) {
+                console.error('[RAGDiaryPlugin] getSingleEmbedding: text became empty after chunking.');
+                return null;
+            }
+
+            if (chunks.length > 1) {
+                console.warn(
+                    `[RAGDiaryPlugin] getSingleEmbedding: input exceeds safe embedding window; ` +
+                    `split into ${chunks.length} chunks and will merge by token-weighted average.`
+                );
+            }
+
+            // 🌟 统一调用 EmbeddingUtils：自动享受模型容灾链、并发批量、token 精确切分、429 退避。
+            // 对超长用户/AI 上下文，先按 TextChunker 的 safeMaxTokens 切分，再对各 chunk 向量做 token 加权平均，
+            // 避免单条 6800+ token 文本被 EmbeddingUtils 直接跳过导致 RAG 查询向量为 null。
+            const results = await getEmbeddingsBatch(chunks, { apiUrl, apiKey });
+            const weights = chunks.map(chunk => Math.max(1, this._estimateTokens(chunk)));
+            const vector = this._getWeightedAverageVector(results, weights);
+
             if (!vector) {
-                console.error('[RAGDiaryPlugin] getSingleEmbedding: EmbeddingUtils returned null for the input text.');
+                console.error('[RAGDiaryPlugin] getSingleEmbedding: EmbeddingUtils returned no usable vectors for the input text/chunks.');
             }
             return vector || null;
         } catch (error) {
