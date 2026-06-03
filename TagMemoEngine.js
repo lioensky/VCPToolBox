@@ -1262,41 +1262,51 @@ class TagMemoEngine {
         }
     }
 
-    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
-    scheduleMatrixRebuild(changeCount = 1) {
-        if (changeCount <= 0) return; 
-        
-        this._accumulatedTagChanges += changeCount;
-        
-        // 动态计算 1% 阈值
-        let threshold = 50; 
+    _getMatrixRebuildThreshold() {
+        let threshold = 50;
         try {
             const totalTags = this.db.prepare('SELECT COUNT(*) as count FROM tags').get()?.count || 0;
             threshold = Math.max(10, Math.min(200, Math.floor(totalTags * 0.01)));
         } catch (e) { /* ignore */ }
+        return threshold;
+    }
+
+    _scheduleThresholdMatrixRebuild(threshold, delayMs = 300000, reason = 'threshold') {
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+        }
+
+        this._matrixRebuildTimer = setTimeout(() => {
+            console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
+            this.doMatrixRebuild();
+        }, delayMs);
+
+        if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
+
+        if (!this._matrixRebuildScheduleLogged) {
+            console.log(`[TagMemoEngine] 🛡️ Matrix rebuild ${reason}: ${this._accumulatedTagChanges} >= ${threshold}. Scheduled after ${Math.round(delayMs / 1000)}s of quiescence.`);
+            this._matrixRebuildScheduleLogged = true;
+        }
+    }
+
+    _ensureMatrixRebuildScheduledIfThreshold(reason = 'threshold') {
+        const threshold = this._getMatrixRebuildThreshold();
 
         // 仅在达到阈值后，才进入防抖逻辑（实现“大变动后的冷静期”）
         if (this._accumulatedTagChanges >= threshold) {
-            // 无论如何先清除旧计时器，实现“滑动窗口”防抖
-            if (this._matrixRebuildTimer) {
-                clearTimeout(this._matrixRebuildTimer);
-            }
-
-            // 设定 5 分钟（300,000ms）的冷却防抖
-            const COOLING_DELAY = 300000; 
-            this._matrixRebuildTimer = setTimeout(() => {
-                console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
-                this.doMatrixRebuild();
-            }, COOLING_DELAY);
-            
-            if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
-
-            // 仅在本轮防抖第一次达到阈值时提示
-            if (!this._matrixRebuildScheduleLogged) {
-                console.log(`[TagMemoEngine] 🛡️ Threshold reached. Matrix rebuild scheduled after 5min of quiescence.`);
-                this._matrixRebuildScheduleLogged = true;
-            }
+            this._scheduleThresholdMatrixRebuild(threshold, 300000, reason);
+            return true;
         }
+
+        return false;
+    }
+
+    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
+    scheduleMatrixRebuild(changeCount = 1) {
+        if (changeCount <= 0) return;
+
+        this._accumulatedTagChanges += changeCount;
+        this._ensureMatrixRebuildScheduledIfThreshold('threshold reached');
         // 低于阈值时不执行任何操作，不计入倒计时。
     }
 
@@ -1446,10 +1456,35 @@ class TagMemoEngine {
                 console.log('[TagMemoEngine] 🛡️ EPA background hot recompute skipped: KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE=false.');
             }
 
-            this._enqueueDerivedTask('matrix-rebuild', async () => {
-                await this.doMatrixRebuild();
-                return true;
-            });
+            const forceBootstrapMatrixRebuild = !skipDecision.pairwiseReady || !skipDecision.matrixReady;
+            const forceFullDerivedRefresh = this._isEpaBackgroundRecomputeEnabled() && this._isIntrinsicResidualRecomputeEnabled();
+            if (forceBootstrapMatrixRebuild || forceFullDerivedRefresh) {
+                if (forceFullDerivedRefresh) {
+                    console.log(
+                        '[TagMemoEngine] 🔥 Full derived refresh requested: ' +
+                        'KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE=true and TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=true. ' +
+                        'Matrix/IR pipeline will run after startup cooldown.'
+                    );
+                } else {
+                    console.log(
+                        '[TagMemoEngine] 🧊 Post-startup matrix bootstrap required: ' +
+                        `pairwiseReady=${skipDecision.pairwiseReady}, matrixReady=${skipDecision.matrixReady}.`
+                    );
+                }
+                this._enqueueDerivedTask('matrix-rebuild', async () => {
+                    await this.doMatrixRebuild();
+                    return true;
+                });
+            } else if (this._accumulatedTagChanges > 0) {
+                const scheduled = this._ensureMatrixRebuildScheduledIfThreshold('post-startup accumulated changes');
+                if (!scheduled) {
+                    const threshold = this._getMatrixRebuildThreshold();
+                    console.log(
+                        `[TagMemoEngine] 🛡️ Post-startup matrix rebuild delegated to threshold scheduler: ` +
+                        `${this._accumulatedTagChanges}/${threshold} accumulated tag changes; below threshold, no rebuild scheduled.`
+                    );
+                }
+            }
         }, Math.max(0, delayMs));
 
         if (this._postStartupDerivedRefreshTimer.unref) this._postStartupDerivedRefreshTimer.unref();
