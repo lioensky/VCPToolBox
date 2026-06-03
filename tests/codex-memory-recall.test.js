@@ -142,6 +142,46 @@ test('RAGDiaryPlugin cache key should include shotgun tuning snapshot', () => {
     assert.notEqual(tunedShotgunKey, baselineKey);
 });
 
+test('RAGDiaryPlugin time-aware formatter falls back to dates parsed from text', () => {
+    const content = ragDiaryPlugin.formatCombinedTimeAwareResults(
+        [
+            {
+                source: 'time',
+                text: '[2026.06.01] - 晨间记录\n今天继续做 R15 intake。'
+            },
+            {
+                source: 'time',
+                text: '2026.06.02 - 无括号记录\n这条也应该按日期排序。'
+            },
+            {
+                source: 'time',
+                date: '2026-05-01',
+                text: '[2026-05-01] - 旧记录\n旧的显式日期记录。'
+            },
+            {
+                source: 'time',
+                text: '没有日期头的散记'
+            }
+        ],
+        [{ start: new Date(Date.UTC(2026, 5, 1)), end: new Date(Date.UTC(2026, 5, 2)) }],
+        PROCESS_DIARY_NAME,
+        { dbName: PROCESS_DIARY_NAME, modifiers: '::Time', k: 2 }
+    );
+
+    assert.match(content, /\* \[2026-06-02\] 这条也应该按日期排序。/);
+    assert.match(content, /\* \[2026-06-01\] 今天继续做 R15 intake。/);
+    assert.ok(
+        content.indexOf('* [2026-06-02] 这条也应该按日期排序。') <
+            content.indexOf('* [2026-06-01] 今天继续做 R15 intake。')
+    );
+    assert.ok(
+        content.indexOf('* [2026-06-01] 今天继续做 R15 intake。') <
+            content.indexOf('* [2026-05-01] 旧的显式日期记录。')
+    );
+    assert.match(content, /\* \[未知日期\] 没有日期头的散记/);
+    assert.doesNotMatch(content, /\[undefined\]/);
+});
+
 test('RAGDiaryPlugin fuzzy embedding lookup reuses near-identical cached text without API', () => {
     const originalIndex = ragDiaryPlugin.embeddingTextIndex;
     const originalMaxSize = ragDiaryPlugin.embeddingTextIndexMaxSize;
