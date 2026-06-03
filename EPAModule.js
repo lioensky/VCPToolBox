@@ -252,22 +252,47 @@ class EPAModule {
 
     async refreshInBackground() {
         try {
-            const tags = this.db.prepare(`SELECT id, name, vector FROM tags WHERE vector IS NOT NULL`).all();
-            if (tags.length < 8) {
+            const tagCount = this.db.prepare(`SELECT COUNT(*) as count FROM tags WHERE vector IS NOT NULL`).get()?.count || 0;
+            if (tagCount < 8) {
                 console.log('[EPA] Background refresh skipped: not enough tag vectors.');
                 return false;
             }
 
-            // P2 止血版：EPA 后台刷新采用 snapshot → compute → short publish。
-            // 不再让 Rust computeEpaBasis 在 JS 写租约内覆盖整个长计算周期；
-            // 长计算阶段只使用内存快照，最终 kv_store 写入才通过短写租约发布。
+            // 🛡️ P0: 运行一段时间后“无日志卡死”的主要嫌疑点。
+            // 旧逻辑会在 post-startup derived refresh 中把所有 tag 向量拉到 JS，
+            // 然后用 JS K-Means/PCA 做 50 轮 tags × clusters × dim 级同步计算。
+            // 大库下 Node 主线程会长时间被纯 CPU 循环占满，表现为 HTTP/日志/定时器全停。
+            // 优先走 Rust AsyncTask：计算在线程池中执行，不阻塞事件循环；完成后再从缓存加载。
+            if (this.config.vexusIndex && typeof this.config.vexusIndex.computeEpaBasis === 'function') {
+                const loadedFromRust = await this._recomputeWithRust(tagCount);
+                if (loadedFromRust) {
+                    this.initialized = true;
+                    console.log('[EPA] ✅ Background basis refresh complete via Rust async compute.');
+                    return true;
+                }
+                console.warn('[EPA] ⚠️ Rust background refresh failed; falling back to bounded JS snapshot compute.');
+            }
+
+            const maxJsTags = parseInt(process.env.EPA_JS_FALLBACK_MAX_TAGS, 10) || 2000;
+            const tags = this._loadBoundedTagSnapshot(maxJsTags);
+            if (tags.length < 8) {
+                console.log('[EPA] Background JS fallback skipped: bounded snapshot has not enough tag vectors.');
+                return false;
+            }
+
+            console.warn(
+                `[EPA] 🧯 Running bounded JS EPA fallback with ${tags.length}/${tagCount} tag vectors. ` +
+                `Set EPA_JS_FALLBACK_MAX_TAGS to tune; rebuild Rust module to avoid JS CPU stalls.`
+            );
+
+            const startedAt = Date.now();
             const computed = this._computeBasisFromSnapshot(tags);
             if (!computed) return false;
 
             await this._publishBasisCacheWithLease();
 
             this.initialized = true;
-            console.log('[EPA] ✅ Background basis refresh complete.');
+            console.log(`[EPA] ✅ Background basis refresh complete via bounded JS fallback in ${Date.now() - startedAt}ms.`);
             return true;
         } catch (e) {
             console.warn('[EPA] ⚠️ Background refresh failed:', e.message || e);
@@ -275,7 +300,28 @@ class EPAModule {
         }
     }
 
+    _loadBoundedTagSnapshot(limit) {
+        const rows = this.db.prepare(`
+            SELECT id, name, vector
+            FROM tags
+            WHERE vector IS NOT NULL
+            ORDER BY id
+        `).all();
+
+        if (rows.length <= limit) return rows;
+
+        // 稳定均匀采样，避免随机采样导致每次后台刷新结果剧烈波动。
+        const sampled = [];
+        const step = rows.length / limit;
+        for (let i = 0; i < limit; i++) {
+            sampled.push(rows[Math.floor(i * step)]);
+        }
+        return sampled;
+    }
+
     _computeBasisFromSnapshot(tags) {
+        const startedAt = Date.now();
+        console.log(`[EPA] 🧮 JS basis snapshot compute started: tags=${tags.length}, dim=${this.config.dimension}, clusters=${Math.min(tags.length, this.config.clusterCount)}`);
         const clusterData = this._clusterTags(tags, Math.min(tags.length, this.config.clusterCount));
         const svdResult = this._computeWeightedPCA(clusterData);
         const { U, S, meanVector, labels } = svdResult;
@@ -286,6 +332,7 @@ class EPAModule {
         this.basisMean = meanVector;
         this.basisLabels = labels ? labels.slice(0, K) : clusterData.labels.slice(0, K);
         this._refreshFlattenedBasisCache();
+        console.log(`[EPA] 🧮 JS basis snapshot compute finished: basis=${K}, elapsed=${Date.now() - startedAt}ms`);
         return true;
     }
 
@@ -332,6 +379,7 @@ class EPAModule {
      * 🌟 优化：带收敛检测和权重的 K-Means
      */
     _clusterTags(tags, k) {
+        const startedAt = Date.now();
         const dim = this.config.dimension;
         const vectors = tags.map(t => {
             const buf = t.vector;
@@ -351,6 +399,9 @@ class EPAModule {
         const tolerance = 1e-4; // 收敛阈值
 
         for (let iter = 0; iter < maxIter; iter++) {
+            if (iter === 0 || (iter + 1) % 10 === 0) {
+                console.log(`[EPA] 🧮 JS K-Means progress: iter=${iter + 1}/${maxIter}, tags=${vectors.length}, clusters=${k}, elapsed=${Date.now() - startedAt}ms`);
+            }
             const clusters = Array.from({ length: k }, () => []);
             let movement = 0;
 
@@ -395,6 +446,8 @@ class EPAModule {
             }
         }
 
+        console.log(`[EPA] 🧮 JS K-Means assignment complete: elapsed=${Date.now() - startedAt}ms`);
+
         // 命名逻辑不变
         const labels = centroids.map(c => {
             let maxSim = -Infinity, closest = 'Unknown';
@@ -419,9 +472,11 @@ class EPAModule {
      * 4. Power Iteration 提取特征向量
      */
     _computeWeightedPCA(clusterData) {
+        const startedAt = Date.now();
         const { vectors, weights } = clusterData;
         const n = vectors.length;
         const dim = this.config.dimension;
+        console.log(`[EPA] 🧮 JS weighted PCA started: clusters=${n}, dim=${dim}, maxBasis=${this.config.maxBasisDim}`);
         const totalWeight = weights.reduce((a, b) => a + b, 0);
 
         // 1. 计算全局加权平均向量
@@ -466,6 +521,9 @@ class EPAModule {
         const maxBasis = Math.min(n, this.config.maxBasisDim);
 
         for (let k = 0; k < maxBasis; k++) {
+            if (k === 0 || (k + 1) % 8 === 0) {
+                console.log(`[EPA] 🧮 JS weighted PCA progress: basis=${k + 1}/${maxBasis}, elapsed=${Date.now() - startedAt}ms`);
+            }
             const { vector: v, value } = this._powerIteration(gramCopy, n, eigenvectors);
             if (value < 1e-6) break; // 特征值太小
 
@@ -505,6 +563,7 @@ class EPAModule {
             return basis;
         });
 
+        console.log(`[EPA] 🧮 JS weighted PCA finished: basis=${U.length}, elapsed=${Date.now() - startedAt}ms`);
         return { U, S: eigenvalues, meanVector, labels: clusterData.labels };
     }
 
