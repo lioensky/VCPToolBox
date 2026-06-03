@@ -52,6 +52,128 @@ function normalizeMessageRole(role) {
 }
 
 // ============================================================
+// 原生工具字段保护/转换（不进入 messages/RAG，只在转发前加回请求体）
+// ============================================================
+
+function normalizeToolParameters(parameters) {
+    if (parameters && typeof parameters === 'object') return parameters;
+    return { type: 'object', properties: {} };
+}
+
+function toOpenAiChatTool(tool) {
+    if (!tool || typeof tool !== 'object') return null;
+
+    if (tool.type === 'function' && tool.function?.name) {
+        return {
+            type: 'function',
+            function: {
+                name: tool.function.name,
+                ...(tool.function.description && { description: tool.function.description }),
+                parameters: normalizeToolParameters(tool.function.parameters || tool.function.input_schema)
+            }
+        };
+    }
+
+    if ((tool.type === 'function' || !tool.type) && tool.name) {
+        return {
+            type: 'function',
+            function: {
+                name: tool.name,
+                ...(tool.description && { description: tool.description }),
+                parameters: normalizeToolParameters(tool.parameters || tool.input_schema || tool.schema)
+            }
+        };
+    }
+
+    return null;
+}
+
+function extractProtectedTools(body) {
+    const tools = [];
+
+    if (Array.isArray(body?.tools)) {
+        for (const tool of body.tools) {
+            const functionDeclarations = tool?.functionDeclarations || tool?.function_declarations;
+            if (Array.isArray(functionDeclarations)) {
+                for (const declaration of functionDeclarations) {
+                    const converted = toOpenAiChatTool(declaration);
+                    if (converted) tools.push(converted);
+                }
+                continue;
+            }
+
+            const converted = toOpenAiChatTool(tool);
+            if (converted) tools.push(converted);
+        }
+    }
+
+    if (Array.isArray(body?.functions)) {
+        for (const fn of body.functions) {
+            const converted = toOpenAiChatTool({ type: 'function', ...fn });
+            if (converted) tools.push(converted);
+        }
+    }
+
+    return tools;
+}
+
+function normalizeToolChoice(toolChoice, body) {
+    if (!toolChoice && body?.toolConfig?.functionCallingConfig) {
+        const config = body.toolConfig.functionCallingConfig;
+        const mode = String(config.mode || '').toUpperCase();
+        if (mode === 'NONE') return 'none';
+        if (mode === 'ANY') {
+            const allowed = Array.isArray(config.allowedFunctionNames) ? config.allowedFunctionNames.filter(Boolean) : [];
+            if (allowed.length === 1) {
+                return { type: 'function', function: { name: allowed[0] } };
+            }
+            return 'required';
+        }
+        if (mode === 'AUTO') return 'auto';
+    }
+
+    if (!toolChoice) return undefined;
+    if (typeof toolChoice === 'string') return toolChoice;
+    if (typeof toolChoice !== 'object') return undefined;
+
+    if (toolChoice.type === 'function' && toolChoice.function?.name) {
+        return { type: 'function', function: { name: toolChoice.function.name } };
+    }
+
+    if (toolChoice.type === 'function' && toolChoice.name) {
+        return { type: 'function', function: { name: toolChoice.name } };
+    }
+
+    if (toolChoice.type === 'tool' && toolChoice.name) {
+        return { type: 'function', function: { name: toolChoice.name } };
+    }
+
+    if (toolChoice.type === 'auto') return 'auto';
+    if (toolChoice.type === 'any') return 'required';
+    if (toolChoice.type === 'none') return 'none';
+
+    return undefined;
+}
+
+function attachProtectedToolFields(chatBody, originalBody) {
+    const tools = extractProtectedTools(originalBody);
+    if (tools.length > 0) {
+        chatBody.tools = tools;
+    }
+
+    const toolChoice = normalizeToolChoice(originalBody?.tool_choice, originalBody);
+    if (toolChoice !== undefined) {
+        chatBody.tool_choice = toolChoice;
+    }
+
+    if (typeof originalBody?.parallel_tool_calls === 'boolean') {
+        chatBody.parallel_tool_calls = originalBody.parallel_tool_calls;
+    }
+
+    return chatBody;
+}
+
+// ============================================================
 // 请求稳定标识（降低客户端重试导致的重复预处理）
 // ============================================================
 
@@ -694,6 +816,9 @@ async function forwardToChatCompletions(req, res, {
     if (typeof temperature !== 'undefined') chatBody.temperature = temperature;
     if (typeof topP !== 'undefined') chatBody.top_p = topP;
     if (typeof maxTokens !== 'undefined') chatBody.max_tokens = maxTokens;
+
+    // 原生 function tools 字段不参与 messages/RAG/变量处理；在转发本地 chat 链路前作为受保护字段加回。
+    attachProtectedToolFields(chatBody, originalBody);
 
     // 保留原始请求中可能有用的字段（如 requestId、messageId 等 VCP 特有字段）。
     // Codex Responses API 通常不会带 VCP 自定义 ID；为同构重试生成稳定 ID，便于主链路识别/缓存/中断追踪。
