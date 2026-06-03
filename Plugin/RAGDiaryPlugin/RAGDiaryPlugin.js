@@ -3255,20 +3255,52 @@ class RAGDiaryPlugin {
         return diariesInRange;
     }
 
+    _getSafeRelativeResultPath(result) {
+        const candidates = [
+            { value: result?.fullPath, allowBasename: true },
+            { value: result?.sourceFile, allowBasename: false }
+        ];
+
+        for (const candidate of candidates) {
+            if (typeof candidate.value !== 'string' || !candidate.value.trim()) continue;
+
+            const normalizedPath = candidate.value.trim().replace(/\\/g, '/');
+            if (!normalizedPath || normalizedPath.startsWith('file://')) continue;
+            if (/[\x00-\x1F\x7F]/.test(normalizedPath)) continue;
+            if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(normalizedPath)) continue;
+            if (path.isAbsolute(normalizedPath) || /^[A-Za-z]:/.test(normalizedPath)) continue;
+            if (!candidate.allowBasename && !normalizedPath.includes('/')) continue;
+
+            const segments = normalizedPath.split('/').filter(Boolean);
+            if (segments.length === 0 || segments.some(segment => segment === '..' || segment === '.')) continue;
+
+            return segments.join('/');
+        }
+
+        return '';
+    }
+
+    _formatMemoryEntry(result, { prefix = '* ', text = null } = {}) {
+        const body = text !== null ? text : (result?.text || '').trim();
+        const safePath = this._getSafeRelativeResultPath(result);
+        const pathLine = safePath ? `\n    [路径: ${safePath}]` : '';
+        return `${prefix}${body}${pathLine}`;
+    }
+
     formatStandardResults(searchResults, displayName, metadata) {
         const mainResults = searchResults ? searchResults.filter(r => r.source !== 'associate') : [];
         const associateResults = searchResults ? searchResults.filter(r => r.source === 'associate') : [];
 
         let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
         if (mainResults.length > 0) {
-            innerContent += mainResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += mainResults.map(r => this._formatMemoryEntry(r)).join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
 
         if (associateResults.length > 0) {
             innerContent += `\n\n【联想共现记忆 (${associateResults.length}条, 多条记忆交叉关联)】\n`;
-            innerContent += associateResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += associateResults.map(r => this._formatMemoryEntry(r)).join('\n');
         }
 
         innerContent += `\n[--- 记忆片段结束 ---]\n`;
@@ -3309,7 +3341,8 @@ class RAGDiaryPlugin {
             ragEntries.forEach(entry => {
                 const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
+                innerContent += `${this._formatMemoryEntry(entry, { text: body })}\n`;
             });
         }
 
@@ -3320,7 +3353,7 @@ class RAGDiaryPlugin {
             timeEntries.forEach(entry => {
                 const datePrefix = getTimeEntryDate(entry) || '未知日期';
                 const body = entry.text.replace(/^\[?\d{4}[-.]\d{2}[-.]\d{2}\]?\s*-\s*[^\n]*\n?/, '').trim();
-                innerContent += `* [${datePrefix}] ${body}\n`;
+                innerContent += `${this._formatMemoryEntry(entry, { text: `[${datePrefix}] ${body}` })}\n`;
             });
         }
 
@@ -3329,7 +3362,8 @@ class RAGDiaryPlugin {
             associateEntries.forEach(entry => {
                 const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                const body = `${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}`;
+                innerContent += `${this._formatMemoryEntry(entry, { text: body })}\n`;
             });
         }
 
@@ -3354,7 +3388,7 @@ class RAGDiaryPlugin {
 
         innerContent += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
         if (searchResults && searchResults.length > 0) {
-            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += searchResults.map(r => this._formatMemoryEntry(r)).join('\n');
         } else {
             innerContent += "没有找到直接相关的记忆片段。";
         }
