@@ -1546,6 +1546,104 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
     res.status(200).json({ status: "success", message: "Callback received and processed" });
 });
 
+const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
+const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
+    'serum_bottle_vcptoolbox_route_owner_runtime',
+    'serum_bottle_secretless_option_a',
+    'secretless_serum_option_a',
+]);
+const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_FORBIDDEN_KEYS = new Set([
+    'adminusername',
+    'adminpassword',
+    'basicauthheader',
+    'authorizationheader',
+    'authorization',
+    'basicauth',
+    'auth',
+    'bearertoken',
+    'token',
+    'secretenvvarvalue',
+    'apikey',
+    'accesstoken',
+    'refreshtoken',
+    'password',
+    'cookie',
+    'headers',
+]);
+
+function normalizeSerumBottleSecretlessAuthorizerKey(key) {
+    return String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function containsSerumBottleSecretlessForbiddenAuthorizerKey(value) {
+    if (!value || typeof value !== 'object') {
+        return false;
+    }
+
+    if (Array.isArray(value)) {
+        return value.some((item) => containsSerumBottleSecretlessForbiddenAuthorizerKey(item));
+    }
+
+    return Object.entries(value).some(([key, nestedValue]) => (
+        SERUM_BOTTLE_SECRETLESS_AUTHORIZER_FORBIDDEN_KEYS.has(
+            normalizeSerumBottleSecretlessAuthorizerKey(key)
+        ) ||
+        containsSerumBottleSecretlessForbiddenAuthorizerKey(nestedValue)
+    ));
+}
+
+function hasSerumBottleSecretlessExactBudget(budget = {}) {
+    return (
+        budget.maxProviderCalls === 1 &&
+        budget.maxPluginCalls === 1 &&
+        budget.maxApiCalls === 1 &&
+        budget.maxImages === 1 &&
+        budget.retryAllowed === false
+    );
+}
+
+function isNonEmptyString(value) {
+    return typeof value === 'string' && value.trim() !== '';
+}
+
+async function authorizeSerumBottleSecretlessExecution(request = {}) {
+    if (
+        !request ||
+        typeof request !== 'object' ||
+        containsSerumBottleSecretlessForbiddenAuthorizerKey(request) ||
+        request.mode !== SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE ||
+        !SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS.has(request.routeId) ||
+        !hasSerumBottleSecretlessExactBudget(request.budget) ||
+        !isNonEmptyString(request.receiptRef) ||
+        !isNonEmptyString(request.artifactRecordRef) ||
+        !isNonEmptyString(request.nonSecretPayloadHash)
+    ) {
+        return { ok: false };
+    }
+
+    const authorizationSeed = JSON.stringify({
+        mode: request.mode,
+        routeId: request.routeId,
+        taskId: request.taskId || null,
+        pipelineId: request.pipelineId || null,
+        receiptRef: request.receiptRef,
+        artifactRecordRef: request.artifactRecordRef,
+        nonSecretPayloadHash: request.nonSecretPayloadHash,
+        budget: request.budget,
+    });
+
+    return {
+        ok: true,
+        operatorId: 'vcptoolbox-serum-bottle-secretless-internal',
+        authorizationId: `serum-bottle-secretless-${crypto
+            .createHash('sha256')
+            .update(authorizationSeed)
+            .digest('hex')
+            .slice(0, 24)}`,
+        receiptId: request.receiptRef,
+    };
+}
+
 
 async function initialize() {
     console.log('开始初始化向量数据库...');
@@ -1585,6 +1683,9 @@ async function initialize() {
       if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
         routeOptions.pluginManager = pluginManager;
         routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
+        routeOptions.enableSerumBottleSecretlessInternalRoute = true;
+        routeOptions.authorizeSerumBottleSecretlessExecution =
+          authorizeSerumBottleSecretlessExecution;
 
         if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
           routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
