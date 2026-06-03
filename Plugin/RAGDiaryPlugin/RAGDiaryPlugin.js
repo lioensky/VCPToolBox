@@ -3266,6 +3266,7 @@ class RAGDiaryPlugin {
 
             const normalizedPath = candidate.value.trim().replace(/\\/g, '/');
             if (!normalizedPath || normalizedPath.startsWith('file://')) continue;
+            if (/[\x00-\x1F\x7F]/.test(normalizedPath)) continue;
             if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(normalizedPath)) continue;
             if (path.isAbsolute(normalizedPath) || /^[A-Za-z]:/.test(normalizedPath)) continue;
             if (!candidate.allowBasename && !normalizedPath.includes('/')) continue;
