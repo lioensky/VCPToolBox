@@ -1560,6 +1560,8 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 });
 
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
+    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-007';
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
     'serum_bottle_vcptoolbox_route_owner_runtime',
     'serum_bottle_secretless_option_a',
@@ -1625,6 +1627,8 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
         typeof request !== 'object' ||
         containsSerumBottleSecretlessForbiddenAuthorizerKey(request) ||
         request.mode !== SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE ||
+        request.activationPackageId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
+        request.taskId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
         !SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS.has(request.routeId) ||
         !hasSerumBottleSecretlessExactBudget(request.budget) ||
         !isNonEmptyString(request.receiptRef) ||
@@ -1636,6 +1640,7 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
 
     const authorizationSeed = JSON.stringify({
         mode: request.mode,
+        activationPackageId: request.activationPackageId,
         routeId: request.routeId,
         taskId: request.taskId || null,
         pipelineId: request.pipelineId || null,

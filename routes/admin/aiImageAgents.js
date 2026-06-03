@@ -27,6 +27,16 @@ const SERUM_BOTTLE_SECRETLESS_MODE = 'serum_bottle_secretless_internal_execute';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN = 'DoubaoGen';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_STEP_TYPE = 'generate_image';
 const SERUM_BOTTLE_SECRETLESS_MAX_PROMPT_LENGTH = 1200;
+const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
+  'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-007';
+const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
+  'secretless-serum-live-probe-attempt-007';
+const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_007.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_007.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
+  'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_007/';
 const SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX =
   'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_MODELS = Object.freeze(new Set([
@@ -283,6 +293,7 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
     try {
       authorizationResult = await options.authorizeSerumBottleSecretlessExecution({
         mode: SERUM_BOTTLE_SECRETLESS_MODE,
+        activationPackageId: gate.activationPackageId,
         routeId: gate.routeId,
         taskId: routeInput.taskId || null,
         pipelineId: routeInput.pipelineId || null,
@@ -373,6 +384,15 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
     };
   }
 
+  const exactBinding = validateSerumBottleSecretlessExactBinding(body, routeInput, schema.outputDirectoryRef);
+  if (exactBinding.ok !== true) {
+    return {
+      ok: false,
+      status: exactBinding.status,
+      detail: exactBinding.detail,
+    };
+  }
+
   if (options.enableAiImageRealExecution !== true) {
     return { ok: false, status: 'serum_bottle_secretless_real_execution_flag_disabled' };
   }
@@ -438,6 +458,7 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
 
   return {
     ok: true,
+    activationPackageId: SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID,
     routeId,
     budget,
     outputDirectoryRef: schema.outputDirectoryRef,
@@ -455,6 +476,60 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
       body.context && body.context.non_secret_payload_hash
     ),
   };
+}
+
+function validateSerumBottleSecretlessExactBinding(body, routeInput, outputDirectoryRef) {
+  const taskId = readFirstString(body.taskId, body.task_id, routeInput && routeInput.taskId);
+  const pipelineId = readFirstString(body.pipelineId, body.pipeline_id, routeInput && routeInput.pipelineId);
+  const receiptRef = readFirstString(body.receiptRef, body.receipt_ref);
+  const artifactRecordRef = readFirstString(body.artifactRecordRef, body.artifact_record_ref);
+
+  const mismatches = [];
+  if (taskId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID) {
+    mismatches.push({
+      field: 'task_id',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID,
+      received: taskId || null,
+    });
+  }
+  if (pipelineId !== SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID) {
+    mismatches.push({
+      field: 'pipeline_id',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID,
+      received: pipelineId || null,
+    });
+  }
+  if (receiptRef !== SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF) {
+    mismatches.push({
+      field: 'receipt_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF,
+      received: receiptRef || null,
+    });
+  }
+  if (artifactRecordRef !== SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF) {
+    mismatches.push({
+      field: 'artifact_record_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF,
+      received: artifactRecordRef || null,
+    });
+  }
+  if (outputDirectoryRef !== SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF) {
+    mismatches.push({
+      field: 'output_directory_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF,
+      received: outputDirectoryRef || null,
+    });
+  }
+
+  if (mismatches.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_exact_activation_binding_mismatch',
+      detail: { mismatches },
+    };
+  }
+
+  return { ok: true };
 }
 
 function resolveSerumBottleSecretlessBudget(body = {}) {
