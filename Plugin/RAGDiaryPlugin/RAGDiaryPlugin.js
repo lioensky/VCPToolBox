@@ -3283,6 +3283,15 @@ class RAGDiaryPlugin {
             const d = new Date(date);
             return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
         }
+        const getTimeEntryDate = (entry) => {
+            if (entry?.date) return entry.date;
+            const dateMatch = entry?.text?.match(/^\[(\d{4}[-.]\d{2}[-.]\d{2})\]/);
+            return dateMatch ? dateMatch[1].replace(/\./g, '-') : null;
+        };
+        const getTimeEntryTimestamp = (entry) => {
+            const date = getTimeEntryDate(entry);
+            return date ? new Date(date).getTime() : 0;
+        };
 
         let innerContent = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
 
@@ -3307,10 +3316,9 @@ class RAGDiaryPlugin {
         if (timeEntries.length > 0) {
             innerContent += '\n【时间范围记忆】\n';
             // 按日期从新到旧排序
-            timeEntries.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+            timeEntries.sort((a, b) => getTimeEntryTimestamp(b) - getTimeEntryTimestamp(a));
             timeEntries.forEach(entry => {
-                const dateMatch = entry.text.match(/^\[(\d{4}[-.]\d{2}[-.]\d{2})\]/);
-                const datePrefix = entry.date || (dateMatch ? dateMatch[1].replace(/\./g, '-') : '未知日期');
+                const datePrefix = getTimeEntryDate(entry) || '未知日期';
                 const body = entry.text.replace(/^\[\d{4}[-.]\d{2}[-.]\d{2}\]\s*-\s*[^\n]*\n?/, '').trim();
                 innerContent += `* [${datePrefix}] ${body}\n`;
             });

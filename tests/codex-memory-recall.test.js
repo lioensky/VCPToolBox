@@ -151,6 +151,11 @@ test('RAGDiaryPlugin time-aware formatter falls back to dates parsed from text',
             },
             {
                 source: 'time',
+                date: '2026-05-01',
+                text: '[2026-05-01] - 旧记录\n旧的显式日期记录。'
+            },
+            {
+                source: 'time',
                 text: '没有日期头的散记'
             }
         ],
@@ -160,6 +165,10 @@ test('RAGDiaryPlugin time-aware formatter falls back to dates parsed from text',
     );
 
     assert.match(content, /\* \[2026-06-01\] 今天继续做 R15 intake。/);
+    assert.ok(
+        content.indexOf('* [2026-06-01] 今天继续做 R15 intake。') <
+            content.indexOf('* [2026-05-01] 旧的显式日期记录。')
+    );
     assert.match(content, /\* \[未知日期\] 没有日期头的散记/);
     assert.doesNotMatch(content, /\[undefined\]/);
 });
