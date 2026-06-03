@@ -52,6 +52,17 @@ pub struct IntrinsicResidualResult {
     pub elapsed_ms: f64,
 }
 
+/// 🌟 EPA Rust 基底重算结果
+#[napi(object)]
+pub struct EpaBasisResult {
+    pub success: bool,
+    pub message: String,
+    pub tag_count: u32,
+    pub cluster_count: u32,
+    pub basis_count: u32,
+    pub elapsed_ms: f64,
+}
+
 /// 🌟 TagMemo V8.2: 成对语义距离预计算结果
 #[napi(object)]
 pub struct PairwiseSimResult {
@@ -540,6 +551,24 @@ impl VexusIndex {
         })
     }
 
+    /// 🌟 EPA: Rust 侧重算基底并写入 kv_store(epa_basis_cache)
+    ///
+    /// 注意：该任务会通过独立 rusqlite 连接写 SQLite，JS 调用方必须先获取 Rust 写租约。
+    #[napi]
+    pub fn compute_epa_basis(
+        &self,
+        db_path: String,
+        cluster_count: u32,
+        max_basis_dim: u32,
+    ) -> AsyncTask<EpaBasisTask> {
+        AsyncTask::new(EpaBasisTask {
+            db_path,
+            dimensions: self.dimensions,
+            cluster_count: cluster_count.max(8),
+            max_basis_dim: max_basis_dim.max(1),
+        })
+    }
+
     /// 预计算任务：矩阵内生残差 (TagMemo V7)
     #[napi]
     pub fn compute_intrinsic_residuals(
@@ -612,6 +641,371 @@ fn open_sqlite_readwrite(db_path: &str) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(conn)
+}
+
+/// 🌟 EPA: Rust 侧 K-Means + 加权 PCA + kv_store 写入任务
+pub struct EpaBasisTask {
+    db_path: String,
+    dimensions: u32,
+    cluster_count: u32,
+    max_basis_dim: u32,
+}
+
+fn json_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn f32_slice_to_base64(values: &[f32]) -> String {
+    use base64::Engine;
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn choose_initial_centroids(vectors: &[Vec<f32>], k: usize, dim: usize) -> Vec<Vec<f32>> {
+    let mut centroids = Vec::with_capacity(k);
+    if vectors.is_empty() || k == 0 {
+        return centroids;
+    }
+
+    let mut first_idx = 0usize;
+    let mut best_norm = f64::MIN;
+    for (idx, vector) in vectors.iter().enumerate() {
+        let mut norm = 0.0f64;
+        for value in vector {
+            norm += (*value as f64) * (*value as f64);
+        }
+        if norm > best_norm {
+            best_norm = norm;
+            first_idx = idx;
+        }
+    }
+    centroids.push(vectors[first_idx].clone());
+
+    while centroids.len() < k {
+        let mut farthest_idx = 0usize;
+        let mut farthest_score = f64::MIN;
+
+        for (idx, vector) in vectors.iter().enumerate() {
+            let mut best_sim = f64::MIN;
+            for centroid in &centroids {
+                let mut dot = 0.0f64;
+                for d in 0..dim {
+                    dot += (vector[d] as f64) * (centroid[d] as f64);
+                }
+                if dot > best_sim {
+                    best_sim = dot;
+                }
+            }
+
+            let score = -best_sim;
+            if score > farthest_score {
+                farthest_score = score;
+                farthest_idx = idx;
+            }
+        }
+
+        centroids.push(vectors[farthest_idx].clone());
+    }
+
+    centroids
+}
+
+fn normalize_f32_vector(vector: &mut [f32]) {
+    let mut mag = 0.0f64;
+    for value in vector.iter() {
+        mag += (*value as f64) * (*value as f64);
+    }
+    let mag = mag.sqrt();
+    if mag > 1e-9 {
+        for value in vector.iter_mut() {
+            *value = (*value as f64 / mag) as f32;
+        }
+    }
+}
+
+fn cluster_epa_tags(
+    vectors: &[Vec<f32>],
+    names: &[String],
+    k: usize,
+    dim: usize,
+) -> (Vec<Vec<f32>>, Vec<usize>, Vec<String>) {
+    let mut centroids = choose_initial_centroids(vectors, k, dim);
+    let mut assignments = vec![0usize; vectors.len()];
+    let mut cluster_sizes = vec![0usize; k];
+
+    for _ in 0..50 {
+        let mut changed = 0usize;
+        cluster_sizes.fill(0);
+
+        for (idx, vector) in vectors.iter().enumerate() {
+            let mut best_k = 0usize;
+            let mut best_sim = f64::MIN;
+
+            for (centroid_idx, centroid) in centroids.iter().enumerate() {
+                let mut dot = 0.0f64;
+                for d in 0..dim {
+                    dot += (vector[d] as f64) * (centroid[d] as f64);
+                }
+                if dot > best_sim {
+                    best_sim = dot;
+                    best_k = centroid_idx;
+                }
+            }
+
+            if assignments[idx] != best_k {
+                assignments[idx] = best_k;
+                changed += 1;
+            }
+            cluster_sizes[best_k] += 1;
+        }
+
+        let mut new_centroids = vec![vec![0.0f32; dim]; k];
+        for (idx, vector) in vectors.iter().enumerate() {
+            let cluster_idx = assignments[idx];
+            for d in 0..dim {
+                new_centroids[cluster_idx][d] += vector[d];
+            }
+        }
+
+        for cluster_idx in 0..k {
+            if cluster_sizes[cluster_idx] == 0 {
+                new_centroids[cluster_idx] = centroids[cluster_idx].clone();
+                continue;
+            }
+            normalize_f32_vector(&mut new_centroids[cluster_idx]);
+        }
+
+        centroids = new_centroids;
+        if changed == 0 {
+            break;
+        }
+    }
+
+    cluster_sizes.fill(0);
+    for assignment in &assignments {
+        cluster_sizes[*assignment] += 1;
+    }
+
+    let mut labels = Vec::with_capacity(k);
+    for centroid in &centroids {
+        let mut best_idx = 0usize;
+        let mut best_sim = f64::MIN;
+        for (idx, vector) in vectors.iter().enumerate() {
+            let mut dot = 0.0f64;
+            for d in 0..dim {
+                dot += (centroid[d] as f64) * (vector[d] as f64);
+            }
+            if dot > best_sim {
+                best_sim = dot;
+                best_idx = idx;
+            }
+        }
+        labels.push(names.get(best_idx).cloned().unwrap_or_else(|| "Unknown".to_string()));
+    }
+
+    (centroids, cluster_sizes, labels)
+}
+
+impl Task for EpaBasisTask {
+    type Output = EpaBasisResult;
+    type JsValue = EpaBasisResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        use nalgebra::DMatrix;
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let dim = self.dimensions as usize;
+        let mut conn = open_sqlite_readwrite(&self.db_path)
+            .map_err(|e| Error::from_reason(format!("DB open/config failed: {}", e)))?;
+
+        let mut tag_names = Vec::new();
+        let mut tag_vectors = Vec::new();
+
+        {
+            let mut stmt = conn
+                .prepare("SELECT name, vector FROM tags WHERE vector IS NOT NULL")
+                .map_err(|e| Error::from_reason(format!("Prepare tags failed: {}", e)))?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))
+                .map_err(|e| Error::from_reason(format!("Query tags failed: {}", e)))?;
+
+            for row in rows {
+                if let Ok((name, bytes)) = row {
+                    if bytes.len() != dim * 4 {
+                        continue;
+                    }
+                    let mut vector: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+                        .collect();
+                    normalize_f32_vector(&mut vector);
+                    tag_names.push(name);
+                    tag_vectors.push(vector);
+                }
+            }
+        }
+
+        let tag_count = tag_vectors.len();
+        if tag_count < 8 {
+            return Ok(EpaBasisResult {
+                success: false,
+                message: "not enough tag vectors".to_string(),
+                tag_count: tag_count as u32,
+                cluster_count: 0,
+                basis_count: 0,
+                elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+            });
+        }
+
+        let k_clusters = std::cmp::min(tag_count, self.cluster_count as usize);
+        let (centroids, weights, labels) = cluster_epa_tags(&tag_vectors, &tag_names, k_clusters, dim);
+        let total_weight: usize = weights.iter().sum();
+
+        if total_weight == 0 {
+            return Ok(EpaBasisResult {
+                success: false,
+                message: "empty EPA clusters".to_string(),
+                tag_count: tag_count as u32,
+                cluster_count: k_clusters as u32,
+                basis_count: 0,
+                elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+            });
+        }
+
+        let mut mean = vec![0.0f32; dim];
+        for (idx, centroid) in centroids.iter().enumerate() {
+            let weight = weights[idx] as f32;
+            for d in 0..dim {
+                mean[d] += centroid[d] * weight;
+            }
+        }
+        for value in &mut mean {
+            *value /= total_weight as f32;
+        }
+
+        let mut matrix_data = Vec::with_capacity(k_clusters * dim);
+        for (idx, centroid) in centroids.iter().enumerate() {
+            let scale = (weights[idx] as f32).sqrt();
+            for d in 0..dim {
+                matrix_data.push((centroid[d] - mean[d]) * scale);
+            }
+        }
+
+        let matrix = DMatrix::from_row_slice(k_clusters, dim, &matrix_data);
+        let svd = matrix.svd(false, true);
+        let v_t = svd
+            .v_t
+            .ok_or_else(|| Error::from_reason("EPA SVD failed to compute V^T".to_string()))?;
+
+        let singular_values = svd.singular_values.as_slice();
+        let max_basis = std::cmp::min(
+            std::cmp::min(singular_values.len(), self.max_basis_dim as usize),
+            k_clusters,
+        );
+
+        let total_energy: f64 = singular_values
+            .iter()
+            .take(max_basis)
+            .map(|value| {
+                let v = *value as f64;
+                v * v
+            })
+            .sum();
+
+        let mut selected_k = max_basis;
+        if total_energy > 1e-12 {
+            let mut cumulative = 0.0f64;
+            for (idx, value) in singular_values.iter().take(max_basis).enumerate() {
+                let v = *value as f64;
+                cumulative += v * v;
+                if cumulative / total_energy > 0.95 {
+                    selected_k = std::cmp::max(idx + 1, std::cmp::min(8, max_basis));
+                    break;
+                }
+            }
+        }
+
+        let mut basis_b64 = Vec::with_capacity(selected_k);
+        let mut energies = Vec::with_capacity(selected_k);
+        for i in 0..selected_k {
+            let mut basis = Vec::with_capacity(dim);
+            for d in 0..dim {
+                basis.push(v_t[(i, d)]);
+            }
+            normalize_f32_vector(&mut basis);
+            basis_b64.push(f32_slice_to_base64(&basis));
+
+            let s = singular_values[i] as f64;
+            energies.push(s * s);
+        }
+
+        let labels_json = labels
+            .iter()
+            .take(selected_k)
+            .map(|label| format!("\"{}\"", json_escape(label)))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let basis_json = basis_b64
+            .iter()
+            .map(|basis| format!("\"{}\"", basis))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let energies_json = energies
+            .iter()
+            .map(|energy| energy.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0);
+
+        let cache_json = format!(
+            "{{\"basis\":[{}],\"mean\":\"{}\",\"energies\":[{}],\"labels\":[{}],\"timestamp\":{},\"tagCount\":{}}}",
+            basis_json,
+            f32_slice_to_base64(&mean),
+            energies_json,
+            labels_json,
+            timestamp,
+            tag_count
+        );
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::from_reason(format!("EPA cache transaction failed: {}", e)))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["epa_basis_cache", cache_json],
+        )
+        .map_err(|e| Error::from_reason(format!("EPA cache write failed: {}", e)))?;
+        tx.commit()
+            .map_err(|e| Error::from_reason(format!("EPA cache commit failed: {}", e)))?;
+
+        Ok(EpaBasisResult {
+            success: true,
+            message: "ok".to_string(),
+            tag_count: tag_count as u32,
+            cluster_count: k_clusters as u32,
+            basis_count: selected_k as u32,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
 }
 
 pub struct IntrinsicResidualTask {

@@ -25,7 +25,7 @@ class TagMemoEngine {
         this._matrixRebuildTimer = null;
         this._matrixRebuildScheduleLogged = false;
         this._isMatrixRebuilding = false;
-        // 🌟 V8: 距离场缓存（供测地线重排使用）
+        // 🌟 V8: 最近一次距离场缓存（仅保留兼容/诊断用途；搜索链路必须使用查询级 energyField，避免 await 并发污染）
         this.lastEnergyField = null;
 
         // 🌟 V8.2-γ: 持久化的 Tag 对语义距离 (内存 Map: "a:b" → cosineSim)
@@ -93,6 +93,8 @@ class TagMemoEngine {
             dimension: this.config.dimension,
             vexusIndex: this.tagIndex,
             nodeResidual: this.ragParams.KnowledgeBaseManager?.nodeResidualGain || 0.05,
+            withRustWriteLease: (owner, fn, options = {}) => this._withRustWriteLease(owner, fn, options),
+            afterRustWrite: (tag) => this._checkpointAfterRustWrite(tag),
         });
         await this.epa.initialize();
 
@@ -140,6 +142,9 @@ class TagMemoEngine {
 
     /**
      * 🌟 TagMemo 浪潮 + EPA + Residual Pyramid + Worldview Gating + LIF Spike Propagation (V6)
+     *
+     * 返回值中的 energyField 是查询级距离场。不要依赖 lastEnergyField 参与搜索重排：
+     * lastEnergyField 只是兼容/诊断缓存，在全局搜索 await 间隙会被其他并发查询覆盖。
      */
     applyTagBoost(vector, baseTagBoost, coreTags = [], coreBoostFactor = 1.33) {
         const debug = false;
@@ -180,8 +185,20 @@ class TagMemoEngine {
             const coreRange = config.coreBoostRange || [1.20, 1.40];
             const dynamicCoreBoostFactor = coreRange[0] + (coreMetric * (coreRange[1] - coreRange[0]));
 
+            const epaWorldviewLogging = config.epaWorldviewLogging ?? true;
+            if (epaWorldviewLogging) {
+                const axesSummary = (epaResult.dominantAxes || [])
+                    .slice(0, 3)
+                    .map(axis => `${axis.label}:${Number(axis.energy || 0).toFixed(3)}`)
+                    .join(', ');
+                console.log(
+                    `[TagMemo-EPA] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, ` +
+                    `Entropy=${entropyPenalty.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}, ` +
+                    `Axes=[${axesSummary || 'None'}]`
+                );
+            }
+
             if (debug) {
-                console.log(`[TagMemo-V6] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
                 console.log(`[TagMemo-V6] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplainedEnergy * 100).toFixed(1)}%`);
                 console.log(`[TagMemo-V6] Effective Boost: ${effectiveTagBoost.toFixed(3)}, Dynamic Core Boost: ${dynamicCoreBoostFactor.toFixed(3)}`);
             }
@@ -454,7 +471,7 @@ class TagMemoEngine {
             injectGhosts(hardGhostObjects, true);
             injectGhosts(softGhostObjects, false);
 
-            if (allTags.length === 0) return { vector: originalFloat32, info: null };
+            if (allTags.length === 0) return { vector: originalFloat32, info: null, energyField: this.lastEnergyField };
 
             // [5] 批量获取向量与名称（chunked IN，避免 SQLite 参数数量上限）
             const dbTagIds = allTags.filter(t => t.id > 0).map(t => t.id);
@@ -531,7 +548,7 @@ class TagMemoEngine {
                 mag = Math.sqrt(mag);
                 if (mag > 1e-9) for (let d = 0; d < dim; d++) contextVec[d] /= mag;
             } else {
-                return { vector: originalFloat32, info: null };
+                return { vector: originalFloat32, info: null, energyField: this.lastEnergyField };
             }
 
             // [6] 最终融合 (clamp 防止外推：boost > 1 时原向量会被反向叠加)
@@ -548,6 +565,7 @@ class TagMemoEngine {
 
             return {
                 vector: fused,
+                energyField: this.lastEnergyField,
                 info: {
                     // 🌟 标记核心 Tag 召回情况 (安全映射)
                     coreTagsMatched: deduplicatedTags.filter(t => t.isCore && t.name).map(t => t.name),
@@ -578,7 +596,7 @@ class TagMemoEngine {
 
         } catch (e) {
             console.error('[TagMemoEngine] TagMemo V6 CRITICAL FAIL:', e);
-            return { vector: originalFloat32, info: null };
+            return { vector: originalFloat32, info: null, energyField: null };
         }
     }
 
@@ -617,8 +635,10 @@ class TagMemoEngine {
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
+        const energyField = options.energyField || this.lastEnergyField;
+
         // L0: 距离场为空 → 整体退化
-        if (!this.lastEnergyField || this.lastEnergyField.size === 0) {
+        if (!energyField || energyField.size === 0) {
             return candidates;
         }
         if (!candidates || candidates.length === 0) {
@@ -662,7 +682,6 @@ class TagMemoEngine {
             }
 
             // Step 3: 对每个候选计算 geoScore
-            const energyField = this.lastEnergyField;
             let maxGeo = 0;
             const geoData = candidates.map(c => {
                 const chunkId = Number(c.id);

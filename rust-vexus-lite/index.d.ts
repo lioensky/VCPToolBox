@@ -38,6 +38,15 @@ export interface IntrinsicResidualResult {
   skippedCount: number
   elapsedMs: number
 }
+/** 🌟 EPA Rust 基底重算结果 */
+export interface EpaBasisResult {
+  success: boolean
+  message: string
+  tagCount: number
+  clusterCount: number
+  basisCount: number
+  elapsedMs: number
+}
 /** 🌟 TagMemo V8.2: 成对语义距离预计算结果 */
 export interface PairwiseSimResult {
   pairCount: number
@@ -101,6 +110,12 @@ export declare class VexusIndex {
   computeHandshakes(query: Float32Array, flattenedTags: Float32Array, nTags: number): HandshakeResult
   /** 高性能 EPA 投影 */
   project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
+  /**
+   * 🌟 EPA: Rust 侧重算基底并写入 kv_store(epa_basis_cache)
+   *
+   * 注意：该任务会通过独立 rusqlite 连接写 SQLite，JS 调用方必须先获取 Rust 写租约。
+   */
+  computeEpaBasis(dbPath: string, clusterCount: number, maxBasisDim: number): Promise<unknown>
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
   computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
   /**

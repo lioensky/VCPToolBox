@@ -264,14 +264,6 @@ class KnowledgeBaseManager {
             CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag_id);
             CREATE INDEX IF NOT EXISTS idx_file_tags_composite ON file_tags(tag_id, file_id);
             
-            -- TagMemo V7: 检查并添加 position 列（针对现有数据库）
-            BEGIN;
-            SELECT CASE WHEN count(*) = 0 THEN 
-                'ALTER TABLE file_tags ADD COLUMN position INTEGER NOT NULL DEFAULT 0' 
-            ELSE 
-                'SELECT 1' 
-            END FROM pragma_table_info('file_tags') WHERE name='position';
-            COMMIT;
         `);
         
         // 🛠️ 核心修复：由于 db.exec 不支持动态执行 SELECT 返回的 SQL，我们手动补丁
@@ -821,6 +813,7 @@ class KnowledgeBaseManager {
         // 🛠️ 修复 1: 安全的 Float32Array 转换
         let searchVecFloat;
         let tagInfo = null;
+        let energyField = null;
 
         try {
             if (tagBoost > 0 && this.tagMemoEngine) {
@@ -828,6 +821,7 @@ class KnowledgeBaseManager {
                 const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
                 searchVecFloat = boostResult.vector;
                 tagInfo = boostResult.info;
+                energyField = boostResult.energyField || null;
             } else {
                 searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
             }
@@ -852,11 +846,13 @@ class KnowledgeBaseManager {
         }
 
         // 🌟 V8: 测地线重排（只重排，不截断）— 在 hydrate 之前执行
-        if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+        // 使用查询级 energyField，避免全局 lastEnergyField 在 await 间隙被并发搜索覆盖。
+        if (options?.geodesicRerank && energyField) {
             const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             results = this.tagMemoEngine.geodesicRerank(results, {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
-                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
+                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
+                energyField
             });
         }
 
@@ -949,11 +945,13 @@ class KnowledgeBaseManager {
         // 优化2：使用 Promise.all 并行搜索
         let searchVecFloat;
         let tagInfo = null;
+        let energyField = null;
 
         if (tagBoost > 0 && this.tagMemoEngine) {
             const boostResult = this.tagMemoEngine.applyTagBoost(new Float32Array(vector), tagBoost, coreTags, coreBoostFactor);
             searchVecFloat = boostResult.vector;
             tagInfo = boostResult.info;
+            energyField = boostResult.energyField || null;
         } else {
             searchVecFloat = vector instanceof Float32Array ? vector : new Float32Array(vector);
         }
@@ -978,11 +976,13 @@ class KnowledgeBaseManager {
         allResults.sort((a, b) => b.score - a.score);
 
         // 🌟 V8: 测地线重排（只重排，不截断）— 对合并后的全局结果执行
-        if (options?.geodesicRerank && this.tagMemoEngine?.lastEnergyField) {
+        // 使用查询级 energyField，避免 _getOrLoadDiaryIndex / Promise.all 期间并发搜索覆盖 lastEnergyField。
+        if (options?.geodesicRerank && energyField) {
             const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
             allResults = this.tagMemoEngine.geodesicRerank(allResults, {
                 alpha: options.geoAlpha ?? options.alpha ?? geoConfig.alpha,
-                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
+                minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
+                energyField
             });
         }
 
@@ -1070,7 +1070,8 @@ class KnowledgeBaseManager {
         const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
         return this.tagMemoEngine.geodesicRerank(candidates, {
             alpha: options.alpha ?? options.geoAlpha ?? geoConfig.alpha,
-            minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples
+            minGeoSamples: options.minGeoSamples ?? geoConfig.minGeoSamples,
+            energyField: options.energyField
         });
     }
 

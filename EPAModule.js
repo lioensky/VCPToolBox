@@ -10,7 +10,7 @@ class EPAModule {
         this.config = {
             maxBasisDim: config.maxBasisDim || 64,
             minVarianceRatio: config.minVarianceRatio || 0.01,
-            clusterCount: config.clusterCount || 32,
+            clusterCount: config.clusterCount || 64,
             dimension: config.dimension || 3072,
             strictOrthogonalization: config.strictOrthogonalization !== undefined ? config.strictOrthogonalization : true,
             vexusIndex: config.vexusIndex || null,
@@ -21,6 +21,7 @@ class EPAModule {
         this.basisMean = null;       // 🌟 新增：全局加权平均向量 (用于中心化)
         this.basisLabels = null;     // 基底标签
         this.basisEnergies = null;   // 特征值 (方差贡献)
+        this._flattenedBasisCache = null; // Rust 投影复用的扁平化基底，避免每次查询重新分配
 
         this.initialized = false;
     }
@@ -38,24 +39,34 @@ class EPAModule {
             const tags = this.db.prepare(`SELECT id, name, vector FROM tags WHERE vector IS NOT NULL`).all();
             if (tags.length < 8) return false;
 
-            // 1. 鲁棒 K-Means 聚类 (提取加权质心)
-            const clusterData = this._clusterTags(tags, Math.min(tags.length, this.config.clusterCount));
+            let loadedFromRust = false;
 
-            // 2. 🌟 计算 SVD (加权中心化 PCA)
-            // 相比之前的纯 SVD，这里先去中心化，再加权，更能提取差异特征
-            const svdResult = this._computeWeightedPCA(clusterData);
+            if (this.config.vexusIndex && typeof this.config.vexusIndex.computeEpaBasis === 'function') {
+                loadedFromRust = await this._recomputeWithRust(tags.length);
+            }
 
-            const { U, S, meanVector, labels } = svdResult;
+            if (!loadedFromRust) {
+                // 1. 鲁棒 K-Means 聚类 (提取加权质心)
+                const clusterData = this._clusterTags(tags, Math.min(tags.length, this.config.clusterCount));
 
-            // 3. 选择主成分
-            const K = this._selectBasisDimension(S);
+                // 2. 🌟 计算 SVD (加权中心化 PCA)
+                // 相比之前的纯 SVD，这里先去中心化，再加权，更能提取差异特征
+                const svdResult = this._computeWeightedPCA(clusterData);
 
-            this.orthoBasis = U.slice(0, K);
-            this.basisEnergies = S.slice(0, K);
-            this.basisMean = meanVector; // 保存平均向量用于投影时的去中心化
-            this.basisLabels = labels ? labels.slice(0, K) : clusterData.labels.slice(0, K);
+                const { U, S, meanVector, labels } = svdResult;
 
-            await this._saveToCache();
+                // 3. 选择主成分
+                const K = this._selectBasisDimension(S);
+
+                this.orthoBasis = U.slice(0, K);
+                this.basisEnergies = S.slice(0, K);
+                this.basisMean = meanVector; // 保存平均向量用于投影时的去中心化
+                this.basisLabels = labels ? labels.slice(0, K) : clusterData.labels.slice(0, K);
+                this._refreshFlattenedBasisCache();
+
+                await this._saveToCache();
+            }
+
             this.initialized = true;
             return true;
         } catch (e) {
@@ -80,11 +91,7 @@ class EPAModule {
         // 🌟 优先使用 Rust 高性能投影
         if (this.config.vexusIndex && typeof this.config.vexusIndex.project === 'function') {
             try {
-                // 扁平化基底
-                const flattenedBasis = new Float32Array(K * dim);
-                for (let k = 0; k < K; k++) {
-                    flattenedBasis.set(this.orthoBasis[k], k * dim);
-                }
+                const flattenedBasis = this._getFlattenedBasis();
 
                 const result = this.config.vexusIndex.project(
                     vec,
@@ -201,6 +208,65 @@ class EPAModule {
     }
 
     // --- 数学核心优化 ---
+
+    async _recomputeWithRust(tagCount) {
+        const run = async () => {
+            const result = await this.config.vexusIndex.computeEpaBasis(
+                this.db.name,
+                this.config.clusterCount,
+                this.config.maxBasisDim
+            );
+
+            if (!result || !result.success) {
+                console.warn(`[EPA] Rust basis recompute skipped/failed: ${result?.message || 'unknown reason'}`);
+                return false;
+            }
+
+            if (this.config.afterRustWrite) {
+                this.config.afterRustWrite('epa basis');
+            }
+
+            if (await this._loadFromCache({ expectedTagCount: tagCount })) {
+                console.log(
+                    `[EPA] 🦀 Rust basis ready: tags=${result.tagCount}, clusters=${result.clusterCount}, ` +
+                    `basis=${result.basisCount}, elapsed=${result.elapsedMs.toFixed(2)}ms`
+                );
+                return true;
+            }
+
+            console.warn('[EPA] Rust basis recompute finished but cache reload failed; falling back to JS.');
+            return false;
+        };
+
+        if (this.config.withRustWriteLease) {
+            return await this.config.withRustWriteLease('tagmemo:epa-basis', run, { pendingThreshold: 0 });
+        }
+
+        return await run();
+    }
+
+    _refreshFlattenedBasisCache() {
+        if (!this.orthoBasis || this.orthoBasis.length === 0) {
+            this._flattenedBasisCache = null;
+            return null;
+        }
+
+        const K = this.orthoBasis.length;
+        const dim = this.orthoBasis[0].length;
+        const flattened = new Float32Array(K * dim);
+        for (let k = 0; k < K; k++) {
+            flattened.set(this.orthoBasis[k], k * dim);
+        }
+        this._flattenedBasisCache = flattened;
+        return flattened;
+    }
+
+    _getFlattenedBasis() {
+        if (!this._flattenedBasisCache) {
+            return this._refreshFlattenedBasisCache();
+        }
+        return this._flattenedBasisCache;
+    }
 
     /**
      * 🌟 优化：带收敛检测和权重的 K-Means
@@ -453,7 +519,7 @@ class EPAModule {
         } catch (e) { console.error('[EPA] Save cache error:', e); }
     }
 
-    async _loadFromCache() {
+    async _loadFromCache(options = {}) {
         try {
             const row = this.db.prepare("SELECT value FROM kv_store WHERE key = ?").get('epa_basis_cache');
             if (!row) return false;
@@ -461,6 +527,7 @@ class EPAModule {
 
             // 简单校验
             if (!data.mean) return false; // 旧缓存格式不兼容
+            if (options.expectedTagCount && data.tagCount && data.tagCount !== options.expectedTagCount) return false;
 
             this.orthoBasis = data.basis.map(b64 => {
                 const buf = Buffer.from(b64, 'base64');
@@ -474,6 +541,7 @@ class EPAModule {
 
             this.basisEnergies = new Float32Array(data.energies);
             this.basisLabels = data.labels;
+            this._refreshFlattenedBasisCache();
             return true;
         } catch (e) { return false; }
     }
