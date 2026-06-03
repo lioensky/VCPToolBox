@@ -151,6 +151,10 @@ test('RAGDiaryPlugin time-aware formatter falls back to dates parsed from text',
             },
             {
                 source: 'time',
+                text: '2026.06.02 - 无括号记录\n这条也应该按日期排序。'
+            },
+            {
+                source: 'time',
                 date: '2026-05-01',
                 text: '[2026-05-01] - 旧记录\n旧的显式日期记录。'
             },
@@ -164,7 +168,12 @@ test('RAGDiaryPlugin time-aware formatter falls back to dates parsed from text',
         { dbName: PROCESS_DIARY_NAME, modifiers: '::Time', k: 2 }
     );
 
+    assert.match(content, /\* \[2026-06-02\] 这条也应该按日期排序。/);
     assert.match(content, /\* \[2026-06-01\] 今天继续做 R15 intake。/);
+    assert.ok(
+        content.indexOf('* [2026-06-02] 这条也应该按日期排序。') <
+            content.indexOf('* [2026-06-01] 今天继续做 R15 intake。')
+    );
     assert.ok(
         content.indexOf('* [2026-06-01] 今天继续做 R15 intake。') <
             content.indexOf('* [2026-05-01] 旧的显式日期记录。')
