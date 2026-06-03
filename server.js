@@ -1682,49 +1682,53 @@ async function initialize() {
     pluginManager.setWebSocketServer(webSocketServer);
 
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
-    // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
-    if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
-      const {
-        createAiImageAgentsRouter,
-        createSerumBottleSecretlessInternalRouter,
-      } = require('./routes/admin/aiImageAgents');
+    const {
+      createAiImageAgentsRouter,
+      createSerumBottleSecretlessInternalRouter,
+    } = require('./routes/admin/aiImageAgents');
+    const routeOptions = {
+      auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
+    };
+
+    if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
       const {
         createNativeDoubaoSecretlessRuntimeDelegate,
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
 
-      const routeOptions = {
-        auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
-      };
+      routeOptions.pluginManager = pluginManager;
+      routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
+      routeOptions.enableSerumBottleSecretlessInternalRoute = true;
+      routeOptions.authorizeSerumBottleSecretlessExecution =
+        authorizeSerumBottleSecretlessExecution;
 
-      if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
-        routeOptions.pluginManager = pluginManager;
-        routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
-        routeOptions.enableSerumBottleSecretlessInternalRoute = true;
-        routeOptions.authorizeSerumBottleSecretlessExecution =
-          authorizeSerumBottleSecretlessExecution;
-
-        if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
-          routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
-            createNativeDoubaoSecretlessRuntimeDelegate({
-              enabled: true,
-              pluginManager,
-              requestIp: '127.0.0.1',
-              bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
-            });
-          console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
-        } else {
-          console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
-        }
+      if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
+        routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
+          createNativeDoubaoSecretlessRuntimeDelegate({
+            enabled: true,
+            pluginManager,
+            requestIp: '127.0.0.1',
+            bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
+          });
+        console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
+      } else {
+        console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
       }
+    }
 
-      if (routeOptions.enableSerumBottleSecretlessInternalRoute === true) {
-        app.use(
-          '/internal/ai-image-agents',
-          createSerumBottleSecretlessInternalRouter(routeOptions)
-        );
-      }
+    if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
+
+    // The secretless route is intentionally independent from admin auth.
+    // It is loopback-only in the general auth middleware and fails closed unless
+    // the real execution delegate has been explicitly enabled.
+    if (routeOptions.enableSerumBottleSecretlessInternalRoute === true) {
+      app.use(
+        '/internal/ai-image-agents',
+        createSerumBottleSecretlessInternalRouter(routeOptions)
+      );
+    }
+
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
     // 挂载 VCP 论坛 API 路由
