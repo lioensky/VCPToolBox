@@ -28,15 +28,15 @@ const SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN = 'DoubaoGen';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_STEP_TYPE = 'generate_image';
 const SERUM_BOTTLE_SECRETLESS_MAX_PROMPT_LENGTH = 1200;
 const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
-  'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-010';
+  'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-011';
 const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
-  'secretless-serum-live-probe-attempt-010';
+  'secretless-serum-live-probe-attempt-011';
 const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
-  'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_010.json';
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_011.json';
 const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
-  'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_010.json';
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_011.json';
 const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
-  'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_010/';
+  'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_011/';
 const SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX =
   'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_MODELS = Object.freeze(new Set([
