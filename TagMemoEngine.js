@@ -920,26 +920,57 @@ class TagMemoEngine {
             if (fileTags.length > 0) processFileGroup(fileTags, currentFileId);
 
             // ---------- Step 2: 旧数据 (position=0) 回退为无向等权重 ----------
+            // 🛡️ CPU loop/卡死修复：
+            // 旧实现使用 file_tags 自连接 + GROUP BY，在旧库或 position=0 数据较多时会产生巨大的 O(N²)
+            // 同步 SQLite 执行计划；Node 主线程卡在 better-sqlite3 内部时不会输出任何新日志，看起来像“无日志高占用”。
+            // 改为与 Rust/V8.2 主路径一致的逐文件流式聚合，并保留单文件 Tag 数 ≤100 的守恒保护。
             const legacyStmt = this.db.prepare(`
-                SELECT ft1.tag_id as tag1, ft2.tag_id as tag2, COUNT(ft1.file_id) as cnt
-                FROM file_tags ft1
-                JOIN file_tags ft2
-                    ON ft1.file_id = ft2.file_id
-                    AND ft1.tag_id < ft2.tag_id
-                WHERE ft1.position = 0 OR ft2.position = 0
-                GROUP BY ft1.tag_id, ft2.tag_id
+                SELECT file_id, tag_id
+                FROM file_tags
+                WHERE position = 0
+                ORDER BY file_id
             `);
 
             const LEGACY_PHI = 0.7;
-            for (const row of legacyStmt.iterate()) {
-                // legacy 数据天然无方向，仍走 sim 调制保持语义一致性
-                const sim = getSimSafe(row.tag1, row.tag2);
-                const semGain = semanticGain(sim);
-                const weight = row.cnt * LEGACY_PHI * LEGACY_PHI * semGain;
+            let legacyFileId = -1;
+            let legacyTags = [];
+            let legacySkippedFiles = 0;
 
-                if (addEdge(row.tag1, row.tag2, weight)) forwardEdges++;
-                if (addEdge(row.tag2, row.tag1, weight)) backwardEdges++;
+            const processLegacyFileGroup = (tags) => {
+                const n = tags.length;
+                if (n < 2) return;
+                if (n > 100) {
+                    legacySkippedFiles++;
+                    return;
+                }
+
+                const weightBase = LEGACY_PHI * LEGACY_PHI;
+                for (let i = 0; i < n; i++) {
+                    for (let j = i + 1; j < n; j++) {
+                        const tag1 = tags[i];
+                        const tag2 = tags[j];
+                        if (tag1 === tag2) continue;
+
+                        // legacy 数据天然无方向，仍走 sim 调制保持语义一致性
+                        const sim = getSimSafe(tag1, tag2);
+                        const semGain = semanticGain(sim);
+                        const weight = weightBase * semGain;
+
+                        if (addEdge(tag1, tag2, weight)) forwardEdges++;
+                        if (addEdge(tag2, tag1, weight)) backwardEdges++;
+                    }
+                }
+            };
+
+            for (const row of legacyStmt.iterate()) {
+                if (row.file_id !== legacyFileId) {
+                    if (legacyTags.length > 0) processLegacyFileGroup(legacyTags);
+                    legacyFileId = row.file_id;
+                    legacyTags = [];
+                }
+                legacyTags.push(row.tag_id);
             }
+            if (legacyTags.length > 0) processLegacyFileGroup(legacyTags);
 
             this.tagCooccurrenceMatrix = matrix;
 
@@ -950,6 +981,7 @@ class TagMemoEngine {
                 `reverseGain=${reverseGain.toFixed(3)}, distanceDecay=${DISTANCE_DECAY}, ` +
                 `semGain=${SEM_GAIN_ENABLED ? `bell(peak=${SEM_PEAK}, σ=${SEM_SIGMA})` : 'disabled'}, ` +
                 `anchorBoost=${REVERSE_ANCHOR_BOOST ? `≤${REVERSE_ANCHOR_MAX}x` : 'disabled'}, ` +
+                `legacySkippedFiles=${legacySkippedFiles}, ` +
                 `simCacheSize=${this.tagPairSimilarities.size}`
             );
         } catch (e) {
@@ -962,7 +994,8 @@ class TagMemoEngine {
     // 矩阵构建是热路径，不能每对 pair 查 SQLite。
     loadPairwiseSimilarities(options = {}) {
         const { failOnCorruption = false } = options;
-        try {
+
+        const doLoad = () => {
             const rows = this.db.prepare(
                 'SELECT tag_a, tag_b, similarity FROM tag_pair_similarity WHERE model_sig = ?'
             ).all(this.modelSig);
@@ -971,15 +1004,38 @@ class TagMemoEngine {
             for (const row of rows) {
                 this.tagPairSimilarities.set(`${row.tag_a}:${row.tag_b}`, row.similarity);
             }
-            console.log(`[TagMemoEngine] ✅ V8.2 Loaded ${this.tagPairSimilarities.size} pairwise similarities (model_sig=${this.modelSig})`);
+            return this.tagPairSimilarities.size;
+        };
+
+        try {
+            const count = doLoad();
+            console.log(`[TagMemoEngine] ✅ V8.2 Loaded ${count} pairwise similarities (model_sig=${this.modelSig})`);
             return true;
         } catch (e) {
-            console.warn('[TagMemoEngine] ⚠️ V8.2 pairwise similarity table not yet available:', e.message);
             this.tagPairSimilarities = new Map();
-            if (failOnCorruption && this.knowledgeBaseManager?._isSqliteCorruptionError?.(e)) {
-                this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading pairwise similarities');
+            const isCorruption = this.knowledgeBaseManager?._isSqliteCorruptionError?.(e);
+
+            if (failOnCorruption && isCorruption) {
+                // 🛡️ P0: 单次 malformed 多为跨连接 WAL/SHM 瞬态视图问题。
+                // 先走二阶段健康检查 (suspect → 重开连接 → 复检)；复检通过 (连接已重绑定到健康连接)
+                // 则用健康连接重试一次加载，避免把可恢复的瞬态故障误判为派生任务失败。
+                const recovered = this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading pairwise similarities');
+                if (recovered) {
+                    try {
+                        const count = doLoad();
+                        console.warn(`[TagMemoEngine] ♻️ V8.2 Reloaded ${count} pairwise similarities after suspect recovery (model_sig=${this.modelSig}).`);
+                        return true;
+                    } catch (retryErr) {
+                        console.error('[TagMemoEngine] ❌ V8.2 pairwise similarity reload still failed after suspect recovery:', retryErr.message || retryErr);
+                        this.tagPairSimilarities = new Map();
+                        throw retryErr;
+                    }
+                }
+                // 二阶段复检仍失败 → 视为真正损坏，向上抛出以中止派生链。
                 throw e;
             }
+
+            console.warn('[TagMemoEngine] ⚠️ V8.2 pairwise similarity table not yet available:', e.message);
             return false;
         }
     }
@@ -1009,7 +1065,9 @@ class TagMemoEngine {
         if (this.knowledgeBaseManager && typeof this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy === 'function') {
             return this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy(reason);
         }
-        return this._checkpointAfterRustWrite(tag);
+        // 无 KnowledgeBaseManager coordinator 的测试/降级环境中，不能递归调用自身；
+        // 此时没有统一 checkpoint 裁决者，只能视为软通过。
+        return true;
     }
 
     async _withRustWriteLease(owner, fn, options = {}) {
@@ -1088,26 +1146,47 @@ class TagMemoEngine {
     // 🌟 TagMemo V7: 加载内生残差
     loadIntrinsicResiduals(options = {}) {
         const { failOnCorruption = false } = options;
-        try {
+
+        const doLoad = () => {
             const rows = this.db.prepare(
                 'SELECT tag_id, residual_energy FROM tag_intrinsic_residuals'
             ).all();
-            
+
             this.tagIntrinsicResiduals = new Map();
             for (const row of rows) {
                 // 归一化到 [0.5, 2.0] 范围，避免极端值
                 const clamped = Math.max(0.5, Math.min(2.0, row.residual_energy));
                 this.tagIntrinsicResiduals.set(row.tag_id, clamped);
             }
-            console.log(`[TagMemoEngine] ✅ Loaded ${this.tagIntrinsicResiduals.size} intrinsic residuals`);
+            return this.tagIntrinsicResiduals.size;
+        };
+
+        try {
+            const count = doLoad();
+            console.log(`[TagMemoEngine] ✅ Loaded ${count} intrinsic residuals`);
             return true;
         } catch (e) {
-            console.warn('[TagMemoEngine] ⚠️ No intrinsic residuals available:', e.message);
             this.tagIntrinsicResiduals = null;
-            if (failOnCorruption && this.knowledgeBaseManager?._isSqliteCorruptionError?.(e)) {
-                this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading intrinsic residuals');
+            const isCorruption = this.knowledgeBaseManager?._isSqliteCorruptionError?.(e);
+
+            if (failOnCorruption && isCorruption) {
+                // 🛡️ P0: 同 pairwise，单次 malformed 先二阶段复检，通过后用健康连接重试一次加载。
+                const recovered = this.knowledgeBaseManager.checkpointAndAssertDatabaseHealthy('loading intrinsic residuals');
+                if (recovered) {
+                    try {
+                        const count = doLoad();
+                        console.warn(`[TagMemoEngine] ♻️ Reloaded ${count} intrinsic residuals after suspect recovery.`);
+                        return true;
+                    } catch (retryErr) {
+                        console.error('[TagMemoEngine] ❌ Intrinsic residual reload still failed after suspect recovery:', retryErr.message || retryErr);
+                        this.tagIntrinsicResiduals = null;
+                        throw retryErr;
+                    }
+                }
                 throw e;
             }
+
+            console.warn('[TagMemoEngine] ⚠️ No intrinsic residuals available:', e.message);
             return false;
         }
     }
@@ -1168,13 +1247,17 @@ class TagMemoEngine {
         try {
             const rebuilt = await this._withRustWriteLease('tagmemo:matrix-rebuild', async () => {
                 // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
-                // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
+                // 顺序：sim 预计算 → 屏障 → 加载 sim Map → 内生残差预计算/屏障/加载 → 构建 V8.2 双向矩阵
                 const pairResult = await this.recomputePairwiseSimilarities({ blocking: true, leaseAlreadyHeld: true });
                 if (!pairResult) return false;
+                // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障（含 suspect 重开），再用健康连接读取派生表，
+                // 避免跨连接 WAL/SHM 瞬态视图触发读端 malformed。屏障失败即中止本轮，不继续后续阶段。
+                if (!this._assertHealthyAfterRustWrite('pairwise-sim load barrier')) return false;
                 this.loadPairwiseSimilarities({ failOnCorruption: true });
 
                 const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
                 if (!intrinsicResult) return false;
+                if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return false;
                 this.loadIntrinsicResiduals({ failOnCorruption: true });
 
                 this.buildDirectedCooccurrenceMatrix();
@@ -1226,6 +1309,8 @@ class TagMemoEngine {
                 if (!result) return null;
                 console.log(`[TagMemoEngine] ✅ Rust precomputation complete: ${result.computedCount} computed, ${result.skippedCount} skipped in ${result.elapsedMs.toFixed(2)}ms`);
 
+                // 🛡️ P0: Rust 写后先 checkpoint + 健康屏障，再读取，避免读端瞬态 malformed。
+                if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return null;
                 // 重新加载结果
                 this.loadIntrinsicResiduals({ failOnCorruption: true });
                 return result;
