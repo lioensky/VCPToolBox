@@ -42,6 +42,21 @@ class TagMemoEngine {
         this._derivedTaskSeq = 0;
     }
 
+    _envFlag(name, defaultValue = false) {
+        const raw = process.env[name];
+        if (raw === undefined || raw === null || raw === '') return defaultValue;
+        const normalized = String(raw).trim().toLowerCase();
+        return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+    }
+
+    _isEpaBackgroundRecomputeEnabled() {
+        return this._envFlag('KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE', false);
+    }
+
+    _isIntrinsicResidualRecomputeEnabled() {
+        return this._envFlag('TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE', false);
+    }
+
     /**
      * 🌟 V8.2: 计算 embedding 模型签名（必须包含维度，
      * 防止 VECTORDB_DIMENSION 切换后读到维度错位的 BLOB）
@@ -1288,10 +1303,15 @@ class TagMemoEngine {
                 if (!this._assertHealthyAfterRustWrite('pairwise-sim load barrier')) return false;
                 this.loadPairwiseSimilarities({ failOnCorruption: true });
 
-                const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
-                if (!intrinsicResult) return false;
-                if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return false;
-                this.loadIntrinsicResiduals({ failOnCorruption: true });
+                if (this._isIntrinsicResidualRecomputeEnabled()) {
+                    const intrinsicResult = await this.recomputeIntrinsicResiduals({ leaseAlreadyHeld: true });
+                    if (!intrinsicResult) return false;
+                    if (!this._assertHealthyAfterRustWrite('intrinsic-residuals load barrier')) return false;
+                    this.loadIntrinsicResiduals({ failOnCorruption: true });
+                } else {
+                    console.log('[TagMemoEngine] 🛡️ Intrinsic residual hot recompute skipped: TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE=false. Loading existing residual cache only.');
+                    this.loadIntrinsicResiduals({ failOnCorruption: true });
+                }
 
                 this.buildDirectedCooccurrenceMatrix();
                 return true;
@@ -1382,12 +1402,18 @@ class TagMemoEngine {
         this._postStartupDerivedRefreshTimer = setTimeout(() => {
             this._postStartupDerivedRefreshTimer = null;
             console.log('[TagMemoEngine] 🌙 Post-startup derived refresh window opened.');
-            this._enqueueDerivedTask('epa-basis', async () => {
-                if (this.epa && typeof this.epa.refreshInBackground === 'function') {
-                    return await this.epa.refreshInBackground();
-                }
-                return false;
-            });
+
+            if (this._isEpaBackgroundRecomputeEnabled()) {
+                this._enqueueDerivedTask('epa-basis', async () => {
+                    if (this.epa && typeof this.epa.refreshInBackground === 'function') {
+                        return await this.epa.refreshInBackground();
+                    }
+                    return false;
+                });
+            } else {
+                console.log('[TagMemoEngine] 🛡️ EPA background hot recompute skipped: KNOWLEDGEBASE_EPA_BACKGROUND_RECOMPUTE=false.');
+            }
+
             this._enqueueDerivedTask('matrix-rebuild', async () => {
                 await this.doMatrixRebuild();
                 return true;
