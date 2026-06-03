@@ -260,21 +260,59 @@ test('KnowledgeBaseManager search path passes geodesic tuning from ragParams whe
     }
 });
 
-test('TagMemoEngine geodesicRerank falls back when geodesic tuning is missing or invalid', () => {
+test('TagMemoEngine geodesicRerank preserves legacy defaults when geodesic tuning is missing', () => {
     const engine = new TagMemoEngine(null, null, { dimension: 3 }, { KnowledgeBaseManager: {} });
-    const candidates = [{ id: 1, score: 0.4 }];
-    engine.lastEnergyField = new Map([[1, 1]]);
+    engine.lastEnergyField = new Map([
+        [100, 1],
+        [101, 1],
+        [102, 1],
+        [103, 1],
+        [200, 0.1],
+        [201, 0.1],
+        [202, 0.1],
+        [203, 0.1]
+    ]);
+    engine._queryByChunks = (sqlPrefix, values) => {
+        if (sqlPrefix.includes('SELECT id, file_id FROM chunks')) {
+            return values.map(id => ({ id, file_id: id + 10 }));
+        }
+        if (sqlPrefix.includes('SELECT file_id, tag_id FROM file_tags')) {
+            return [
+                { file_id: 11, tag_id: 100 },
+                { file_id: 11, tag_id: 101 },
+                { file_id: 11, tag_id: 102 },
+                { file_id: 11, tag_id: 103 },
+                { file_id: 12, tag_id: 200 },
+                { file_id: 12, tag_id: 201 },
+                { file_id: 12, tag_id: 202 },
+                { file_id: 12, tag_id: 203 }
+            ];
+        }
+        return [];
+    };
 
-    assert.equal(engine.geodesicRerank(candidates), candidates);
+    const reranked = engine.geodesicRerank([
+        { id: 1, score: 0.2 },
+        { id: 2, score: 0.3 }
+    ]);
 
-    engine.ragParams = {
+    assert.equal(reranked[0].id, 1);
+    assert.ok(Math.abs(reranked[0].score - 0.44) < 1e-12);
+    assert.equal(reranked[0].geo_hit_count, 4);
+    assert.equal(reranked[1].id, 2);
+});
+
+test('TagMemoEngine geodesicRerank falls back when geodesic tuning is invalid', () => {
+    const engine = new TagMemoEngine(null, null, { dimension: 3 }, {
         KnowledgeBaseManager: {
             geodesicRerank: {
                 alpha: 'not-a-number',
                 minGeoSamples: 4
             }
         }
-    };
+    });
+    const candidates = [{ id: 1, score: 0.4 }];
+    engine.lastEnergyField = new Map([[1, 1]]);
 
     assert.equal(engine.geodesicRerank(candidates), candidates);
 });

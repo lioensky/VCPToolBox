@@ -609,8 +609,8 @@ class TagMemoEngine {
      *
      * @param {Array<{id: BigInt|Number, score: Number}>} candidates - 原始 KNN 搜索结果
      * @param {object} options - 配置项
-     * @param {number} [options.alpha] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.alpha
-     * @param {number} [options.minGeoSamples] - 最小采样密度门槛，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.minGeoSamples
+     * @param {number} [options.alpha] - 测地线分数混合权重 (0=纯KNN, 1=纯测地线)，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.alpha，缺省时保留旧默认 0.3
+     * @param {number} [options.minGeoSamples] - 最小采样密度门槛，默认读取 rag_params.json: KnowledgeBaseManager.geodesicRerank.minGeoSamples，缺省时保留旧默认 4
      * @returns {Array} 重排后的完整数组（不截断）
      */
     geodesicRerank(candidates, options = {}) {
@@ -623,11 +623,11 @@ class TagMemoEngine {
         }
 
         const geoConfig = this.ragParams?.KnowledgeBaseManager?.geodesicRerank || {};
-        const rawAlpha = options.alpha ?? geoConfig.alpha;
-        const rawMinGeoSamples = options.minGeoSamples ?? geoConfig.minGeoSamples;
+        const rawAlpha = options.alpha ?? geoConfig.alpha ?? 0.3;
+        const rawMinGeoSamples = options.minGeoSamples ?? geoConfig.minGeoSamples ?? 4;
 
         if (!Number.isFinite(Number(rawAlpha)) || !Number.isFinite(Number(rawMinGeoSamples))) {
-            console.warn('[TagMemoEngine] geodesicRerank missing valid alpha/minGeoSamples config; falling back to original order.');
+            console.warn('[TagMemoEngine] geodesicRerank has invalid alpha/minGeoSamples config; falling back to original order.');
             return candidates;
         }
 
