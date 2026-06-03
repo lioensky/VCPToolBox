@@ -34,23 +34,23 @@ async function withRouteModule(stub, run) {
 
 function createSerumBottleSecretlessBody(overrides = {}) {
     const body = {
-        pipeline_id: 'secretless-serum-live-probe-attempt-011',
-        task_id: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-011',
+        pipeline_id: 'secretless-serum-live-probe-attempt-012',
+        task_id: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-012',
         route_id: 'serum_bottle_vcptoolbox_route_owner_runtime',
         max_provider_calls: 1,
         max_plugin_calls: 1,
         max_api_calls: 1,
         max_images: 1,
         retry_allowed: false,
-        receipt_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_011.json',
-        artifact_record_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_011.json',
+        receipt_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_012.json',
+        artifact_record_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_012.json',
         plan: {
             steps: [{
                 type: 'generate_image',
                 plugin: 'DoubaoGen',
                 prompt: 'serum bottle test prompt',
                 model: 'doubao-seedream-5-0-260128',
-                output_directory_ref: 'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_011/'
+                output_directory_ref: 'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_012/'
             }]
         },
         ...overrides
@@ -208,7 +208,7 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
         assert.equal(result.ok, true);
         assert.deepEqual(events, ['authorizer', 'executor']);
         assert.equal(authorizerCalls.length, 1);
-        assert.equal(authorizerCalls[0].activationPackageId, 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-011');
+        assert.equal(authorizerCalls[0].activationPackageId, 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-012');
         assert.equal(authorizerCalls[0].routeId, 'serum_bottle_vcptoolbox_route_owner_runtime');
         assert.deepEqual(authorizerCalls[0].budget, {
             maxProviderCalls: 1,
@@ -231,8 +231,8 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
         assert.deepEqual(calls[0].options.executionContext, {
             requestSource: 'ai-image-pipeline',
             operatorId: 'vcptoolbox-internal-serum',
-            taskId: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-011',
-            invocationId: 'secretless-serum-live-probe-attempt-011',
+            taskId: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-012',
+            invocationId: 'secretless-serum-live-probe-attempt-012',
             routeId: 'serum_bottle_vcptoolbox_route_owner_runtime',
             serumBottleSecretless: true,
             serumBottleSecretlessAuthorizationId: 'serum-internal-auth-001'
@@ -617,17 +617,17 @@ test('aiImageAgents serum-bottle secretless helper rejects non-exact activation 
         }
     }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
         const staleActivationBody = createSerumBottleSecretlessBody({
-            pipeline_id: 'secretless-serum-live-probe-attempt-010',
-            task_id: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-010',
-            receipt_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_010.json',
-            artifact_record_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_010.json',
+            pipeline_id: 'secretless-serum-live-probe-attempt-011',
+            task_id: 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-011',
+            receipt_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_011.json',
+            artifact_record_ref: 'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_011.json',
             plan: {
                 steps: [{
                     type: 'generate_image',
                     plugin: 'DoubaoGen',
                     prompt: 'serum bottle test prompt',
                     model: 'doubao-seedream-5-0-260128',
-                    output_directory_ref: 'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_010/'
+                    output_directory_ref: 'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_011/'
                 }]
             },
         });
