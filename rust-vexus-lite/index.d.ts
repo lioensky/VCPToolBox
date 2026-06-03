@@ -46,6 +46,12 @@ export interface EpaBasisResult {
   clusterCount: number
   basisCount: number
   elapsedMs: number
+  algorithm: string
+  phaseSummary: string
+  anchorCount: number
+  representativeSampleCount: number
+  densityBucketCount: number
+  publishElapsedMs: number
 }
 /** 🌟 TagMemo V8.2: 成对语义距离预计算结果 */
 export interface PairwiseSimResult {
@@ -111,11 +117,17 @@ export declare class VexusIndex {
   /** 高性能 EPA 投影 */
   project(vector: Float32Array, flattenedBasis: Float32Array, meanVector: Float32Array, k: number): ProjectResult
   /**
-   * 🌟 EPA: Rust 侧重算基底并写入 kv_store(epa_basis_cache)
+   * 🌟 EPA: Rust 侧重算基底并暂存在 Rust 内存中。
    *
-   * 注意：该任务会通过独立 rusqlite 连接写 SQLite，JS 调用方必须先获取 Rust 写租约。
+   * 计算阶段只读 SQLite，不持有 JS 写租约；调用方应在结果成功后短租约调用 publish_epa_basis_cache。
    */
   computeEpaBasis(dbPath: string, clusterCount: number, maxBasisDim: number): Promise<unknown>
+  /**
+   * 🌟 EPA: 发布最近一次 Rust 计算完成的 EPA cache。
+   *
+   * 该方法执行短 SQLite 写入，JS 调用方必须先获取 Rust 写租约。
+   */
+  publishEpaBasisCache(dbPath: string): EpaBasisResult
   /** 预计算任务：矩阵内生残差 (TagMemo V7) */
   computeIntrinsicResiduals(dbPath: string, maxSvdRank?: number | undefined | null, minNeighbors?: number | undefined | null): Promise<unknown>
   /**

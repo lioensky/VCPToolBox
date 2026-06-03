@@ -214,55 +214,99 @@ class EPAModule {
 
     // --- 数学核心优化 ---
 
+    _shouldLogRustSummary(scope) {
+        const raw = (process.env.RUST_LOG_SUMMARY_WHITELIST || 'epa.compute,epa.publish').trim();
+        if (!raw || raw.toLowerCase() === 'false' || raw === '0') return false;
+        if (raw === '*' || raw.toLowerCase() === 'all') return true;
+        return raw.split(',')
+            .map(item => item.trim().toLowerCase())
+            .filter(Boolean)
+            .includes(scope.toLowerCase());
+    }
+
+    _logRustEpaSummary(scope, result) {
+        if (!this._shouldLogRustSummary(scope) || !result) return;
+        const summary = result.phaseSummary || result.phase_summary || 'n/a';
+        const algorithm = result.algorithm || 'unknown';
+        const anchors = result.anchorCount ?? result.anchor_count ?? 0;
+        const samples = result.representativeSampleCount ?? result.representative_sample_count ?? result.clusterCount ?? 0;
+        const buckets = result.densityBucketCount ?? result.density_bucket_count ?? 0;
+        const publishElapsed = result.publishElapsedMs ?? result.publish_elapsed_ms ?? 0;
+        console.log(
+            `[EPA] 🦀 Rust summary [${scope}]: algorithm=${algorithm}, ` +
+            `tags=${result.tagCount ?? result.tag_count ?? 0}, buckets=${buckets}, anchors=${anchors}, ` +
+            `samples=${samples}, basis=${result.basisCount ?? result.basis_count ?? 0}, ` +
+            `elapsed=${Number(result.elapsedMs ?? result.elapsed_ms ?? 0).toFixed(2)}ms, ` +
+            `publish=${Number(publishElapsed).toFixed(2)}ms, phases=${summary}`
+        );
+    }
+
     async _recomputeWithRust(tagCount) {
-        const run = async () => {
-            console.log(
-                `[EPA] 🦀 computeEpaBasis JS call starting: db=${this.db.name}, ` +
-                `tagCount=${tagCount}, clusters=${this.config.clusterCount}, maxBasis=${this.config.maxBasisDim}`
+        console.log(
+            `[EPA] 🦀 computeEpaBasis JS call starting without write lease: db=${this.db.name}, ` +
+            `tagCount=${tagCount}, clusters=${this.config.clusterCount}, maxBasis=${this.config.maxBasisDim}`
+        );
+
+        let taskPromise;
+        try {
+            taskPromise = this.config.vexusIndex.computeEpaBasis(
+                this.db.name,
+                this.config.clusterCount,
+                this.config.maxBasisDim
             );
+        } catch (e) {
+            console.error('[EPA] 🦀 computeEpaBasis JS call threw synchronously before returning AsyncTask:', e.message || e);
+            throw e;
+        }
 
-            let taskPromise;
-            try {
-                taskPromise = this.config.vexusIndex.computeEpaBasis(
-                    this.db.name,
-                    this.config.clusterCount,
-                    this.config.maxBasisDim
-                );
-            } catch (e) {
-                console.error('[EPA] 🦀 computeEpaBasis JS call threw synchronously before returning AsyncTask:', e.message || e);
-                throw e;
-            }
+        console.log('[EPA] 🦀 computeEpaBasis JS call returned; awaiting Rust read-only compute result...');
+        const result = await taskPromise;
+        console.log('[EPA] 🦀 computeEpaBasis read-only compute resolved.');
+        this._logRustEpaSummary('epa.compute', result);
 
-            console.log('[EPA] 🦀 computeEpaBasis JS call returned; awaiting Rust AsyncTask result...');
-            const result = await taskPromise;
-            console.log('[EPA] 🦀 computeEpaBasis await resolved.');
+        if (!result || !result.success) {
+            console.warn(`[EPA] Rust basis recompute skipped/failed: ${result?.message || 'unknown reason'}`);
+            return false;
+        }
 
-            if (!result || !result.success) {
-                console.warn(`[EPA] Rust basis recompute skipped/failed: ${result?.message || 'unknown reason'}`);
+        if (typeof this.config.vexusIndex.publishEpaBasisCache !== 'function') {
+            console.warn('[EPA] Rust basis compute finished but publishEpaBasisCache is unavailable; rebuild rust-vexus-lite.');
+            return false;
+        }
+
+        const publish = async () => {
+            console.log('[EPA] 🦀 Publishing Rust EPA basis cache under short write lease...');
+            const publishResult = this.config.vexusIndex.publishEpaBasisCache(this.db.name);
+            this._logRustEpaSummary('epa.publish', publishResult);
+            if (!publishResult || !publishResult.success) {
+                console.warn(`[EPA] Rust EPA cache publish skipped/failed: ${publishResult?.message || 'unknown reason'}`);
                 return false;
             }
-
             if (this.config.afterRustWrite) {
                 this.config.afterRustWrite('epa basis');
             }
-
-            if (await this._loadFromCache({ expectedTagCount: tagCount })) {
-                console.log(
-                    `[EPA] 🦀 Rust basis ready: tags=${result.tagCount}, clusters=${result.clusterCount}, ` +
-                    `basis=${result.basisCount}, elapsed=${result.elapsedMs.toFixed(2)}ms`
-                );
-                return true;
-            }
-
-            console.warn('[EPA] Rust basis recompute finished but cache reload failed; falling back to JS.');
-            return false;
+            return publishResult;
         };
 
-        if (this.config.withRustWriteLease) {
-            return await this.config.withRustWriteLease('tagmemo:epa-basis', run, { pendingThreshold: 0 });
+        const publishResult = this.config.withRustWriteLease
+            ? await this.config.withRustWriteLease('tagmemo:epa-basis-publish', publish, {
+                pendingThreshold: 0,
+                ttlMs: 60 * 1000
+            })
+            : await publish();
+
+        if (!publishResult) return false;
+
+        if (await this._loadFromCache({ expectedTagCount: tagCount })) {
+            console.log(
+                `[EPA] 🦀 Rust basis ready: tags=${publishResult.tagCount}, clusters=${publishResult.clusterCount}, ` +
+                `basis=${publishResult.basisCount}, elapsed=${publishResult.elapsedMs.toFixed(2)}ms`
+            );
+            return true;
         }
 
-        return await run();
+        console.warn('[EPA] Rust basis publish finished but cache reload failed; falling back to JS.');
+        return false;
     }
 
     async refreshInBackground() {
@@ -287,7 +331,7 @@ class EPAModule {
             // 旧逻辑会在 post-startup derived refresh 中把所有 tag 向量拉到 JS，
             // 然后用 JS K-Means/PCA 做 50 轮 tags × clusters × dim 级同步计算。
             // 大库下 Node 主线程会长时间被纯 CPU 循环占满，表现为 HTTP/日志/定时器全停。
-            // 优先走 Rust AsyncTask：计算在线程池中执行，不阻塞事件循环；完成后再从缓存加载。
+            // Rust EPA 已拆成：长耗时只读计算（无写租约） + 短写发布（tagmemo:epa-basis-publish）。
             if (this.config.vexusIndex && typeof this.config.vexusIndex.computeEpaBasis === 'function') {
                 const loadedFromRust = await this._recomputeWithRust(tagCount);
                 if (loadedFromRust) {

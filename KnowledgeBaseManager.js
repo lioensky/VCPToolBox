@@ -341,9 +341,15 @@ class KnowledgeBaseManager {
             this.dbHealthState = 'healthy';
             return true;
         } catch (e) {
-            console.error(`[KnowledgeBase] 🚨 SQLite checkpoint/quick_check failed after ${reason}: ${e.message || e}`);
-            if (!this._isSqliteCorruptionError(e)) return false;
+            if (!this._isSqliteCorruptionError(e)) {
+                console.error(`[KnowledgeBase] 🚨 SQLite checkpoint/quick_check failed after ${reason}: ${e.message || e}`);
+                return false;
+            }
 
+            // 🛡️ better-sqlite3 与 rusqlite 跨连接 WAL/SHM 交接后，旧连接偶发看到
+            // "database disk image is malformed" 的瞬态视图；先按 suspect 处理，只有二阶段
+            // 重开连接复检失败才升级为真正 corruption，避免把可恢复误报打成 ERROR。
+            console.warn(`[KnowledgeBase] 🩺 SQLite checkpoint/quick_check reported suspect state after ${reason}: ${e.message || e}`);
             this.dbHealthState = 'suspect';
             return this._recoverSuspectDatabaseConnection(reason, e);
         }

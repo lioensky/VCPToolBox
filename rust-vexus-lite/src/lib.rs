@@ -61,6 +61,12 @@ pub struct EpaBasisResult {
     pub cluster_count: u32,
     pub basis_count: u32,
     pub elapsed_ms: f64,
+    pub algorithm: String,
+    pub phase_summary: String,
+    pub anchor_count: u32,
+    pub representative_sample_count: u32,
+    pub density_bucket_count: u32,
+    pub publish_elapsed_ms: f64,
 }
 
 /// 🌟 TagMemo V8.2: 成对语义距离预计算结果
@@ -87,6 +93,7 @@ pub struct VexusStats {
 pub struct VexusIndex {
     index: Arc<RwLock<Index>>,
     dimensions: u32,
+    epa_pending_cache: Arc<std::sync::Mutex<Option<EpaPendingCache>>>,
 }
 
 #[napi]
@@ -112,6 +119,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -150,6 +158,7 @@ impl VexusIndex {
         Ok(Self {
             index: Arc::new(RwLock::new(index)),
             dimensions: dim,
+            epa_pending_cache: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -551,9 +560,9 @@ impl VexusIndex {
         })
     }
 
-    /// 🌟 EPA: Rust 侧重算基底并写入 kv_store(epa_basis_cache)
+    /// 🌟 EPA: Rust 侧重算基底并暂存在 Rust 内存中。
     ///
-    /// 注意：该任务会通过独立 rusqlite 连接写 SQLite，JS 调用方必须先获取 Rust 写租约。
+    /// 计算阶段只读 SQLite，不持有 JS 写租约；调用方应在结果成功后短租约调用 publish_epa_basis_cache。
     #[napi]
     pub fn compute_epa_basis(
         &self,
@@ -561,11 +570,95 @@ impl VexusIndex {
         cluster_count: u32,
         max_basis_dim: u32,
     ) -> AsyncTask<EpaBasisTask> {
+        println!(
+            "[Vexus-Lite][EPA] compute_epa_basis task accepted: db={}, cluster_count={}, max_basis_dim={}",
+            db_path,
+            cluster_count,
+            max_basis_dim
+        );
         AsyncTask::new(EpaBasisTask {
             db_path,
             dimensions: self.dimensions,
             cluster_count: cluster_count.max(8),
             max_basis_dim: max_basis_dim.max(1),
+            pending_cache: self.epa_pending_cache.clone(),
+        })
+    }
+
+    /// 🌟 EPA: 发布最近一次 Rust 计算完成的 EPA cache。
+    ///
+    /// 该方法执行短 SQLite 写入，JS 调用方必须先获取 Rust 写租约。
+    #[napi]
+    pub fn publish_epa_basis_cache(&self, db_path: String) -> Result<EpaBasisResult> {
+        let pending = {
+            let mut guard = self.epa_pending_cache
+                .lock()
+                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
+            guard.take()
+        };
+
+        let pending = match pending {
+            Some(cache) => cache,
+            None => {
+                return Ok(EpaBasisResult {
+                    success: false,
+                    message: "no pending EPA basis cache to publish".to_string(),
+                    tag_count: 0,
+                    cluster_count: 0,
+                    basis_count: 0,
+                    elapsed_ms: 0.0,
+                    algorithm: "density-residual-sampling".to_string(),
+                    phase_summary: "publish=no_pending_cache".to_string(),
+                    anchor_count: 0,
+                    representative_sample_count: 0,
+                    density_bucket_count: 0,
+                    publish_elapsed_ms: 0.0,
+                });
+            }
+        };
+
+        println!(
+            "[Vexus-Lite][EPA] publish_epa_basis_cache started: db={}, tags={}, clusters={}, basis={}",
+            db_path,
+            pending.tag_count,
+            pending.cluster_count,
+            pending.basis_count
+        );
+
+        let started_at = std::time::Instant::now();
+        let mut conn = open_sqlite_readwrite(&db_path)
+            .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| Error::from_reason(format!("EPA cache transaction failed: {}", e)))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["epa_basis_cache", pending.cache_json],
+        )
+        .map_err(|e| Error::from_reason(format!("EPA cache write failed: {}", e)))?;
+        tx.commit()
+            .map_err(|e| Error::from_reason(format!("EPA cache commit failed: {}", e)))?;
+
+        let publish_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "[Vexus-Lite][EPA] publish_epa_basis_cache finished: publish_elapsed={:.2}ms, compute_elapsed={:.2}ms",
+            publish_ms,
+            pending.elapsed_ms
+        );
+
+        Ok(EpaBasisResult {
+            success: true,
+            message: "ok".to_string(),
+            tag_count: pending.tag_count,
+            cluster_count: pending.cluster_count,
+            basis_count: pending.basis_count,
+            elapsed_ms: pending.elapsed_ms + publish_ms,
+            algorithm: pending.algorithm,
+            phase_summary: format!("{};publish={:.2}ms", pending.phase_summary, publish_ms),
+            anchor_count: pending.anchor_count,
+            representative_sample_count: pending.representative_sample_count,
+            density_bucket_count: pending.density_bucket_count,
+            publish_elapsed_ms: publish_ms,
         })
     }
 
@@ -652,12 +745,29 @@ fn checkpoint_sqlite_wal(conn: &Connection, mode: &str) -> rusqlite::Result<()> 
     conn.execute_batch(sql)
 }
 
-/// 🌟 EPA: Rust 侧 K-Means + 加权 PCA + kv_store 写入任务
+/// 🌟 EPA: Rust 侧 K-Means + 加权 PCA 计算结果暂存。
+pub struct EpaPendingCache {
+    cache_json: String,
+    tag_count: u32,
+    cluster_count: u32,
+    basis_count: u32,
+    elapsed_ms: f64,
+    algorithm: String,
+    phase_summary: String,
+    anchor_count: u32,
+    representative_sample_count: u32,
+    density_bucket_count: u32,
+}
+
+/// 🌟 EPA: Rust 侧 K-Means + 加权 PCA 计算任务。
+///
+/// 注意：该任务只读 SQLite 并把结果暂存在 Rust 内存，不写 kv_store；写入由 publish_epa_basis_cache 在短租约内完成。
 pub struct EpaBasisTask {
     db_path: String,
     dimensions: u32,
     cluster_count: u32,
     max_basis_dim: u32,
+    pending_cache: Arc<std::sync::Mutex<Option<EpaPendingCache>>>,
 }
 
 fn json_escape(value: &str) -> String {
@@ -678,78 +788,6 @@ fn f32_slice_to_base64(values: &[f32]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-fn choose_initial_centroids(vectors: &[Vec<f32>], k: usize, dim: usize) -> Vec<Vec<f32>> {
-    let started_at = std::time::Instant::now();
-    println!(
-        "[Vexus-Lite][EPA] choose_initial_centroids started: vectors={}, k={}, dim={}",
-        vectors.len(),
-        k,
-        dim
-    );
-
-    let mut centroids = Vec::with_capacity(k);
-    if vectors.is_empty() || k == 0 {
-        return centroids;
-    }
-
-    let mut first_idx = 0usize;
-    let mut best_norm = f64::MIN;
-    for (idx, vector) in vectors.iter().enumerate() {
-        let mut norm = 0.0f64;
-        for value in vector {
-            norm += (*value as f64) * (*value as f64);
-        }
-        if norm > best_norm {
-            best_norm = norm;
-            first_idx = idx;
-        }
-    }
-    centroids.push(vectors[first_idx].clone());
-
-    while centroids.len() < k {
-        let mut farthest_idx = 0usize;
-        let mut farthest_score = f64::MIN;
-
-        for (idx, vector) in vectors.iter().enumerate() {
-            let mut best_sim = f64::MIN;
-            for centroid in &centroids {
-                let mut dot = 0.0f64;
-                for d in 0..dim {
-                    dot += (vector[d] as f64) * (centroid[d] as f64);
-                }
-                if dot > best_sim {
-                    best_sim = dot;
-                }
-            }
-
-            let score = -best_sim;
-            if score > farthest_score {
-                farthest_score = score;
-                farthest_idx = idx;
-            }
-        }
-
-        centroids.push(vectors[farthest_idx].clone());
-
-        if centroids.len() % 8 == 0 || centroids.len() == k {
-            println!(
-                "[Vexus-Lite][EPA] choose_initial_centroids progress: {}/{} elapsed={:.2}ms",
-                centroids.len(),
-                k,
-                started_at.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-    }
-
-    println!(
-        "[Vexus-Lite][EPA] choose_initial_centroids finished: k={} elapsed={:.2}ms",
-        centroids.len(),
-        started_at.elapsed().as_secs_f64() * 1000.0
-    );
-
-    centroids
-}
-
 fn normalize_f32_vector(vector: &mut [f32]) {
     let mut mag = 0.0f64;
     for value in vector.iter() {
@@ -763,112 +801,225 @@ fn normalize_f32_vector(vector: &mut [f32]) {
     }
 }
 
-fn cluster_epa_tags(
+struct EpaDensityBucket {
+    count: usize,
+    sum: Vec<f32>,
+    best_idx: usize,
+    best_residual: f64,
+    samples: Vec<(usize, f64)>,
+}
+
+struct EpaAnchorCandidate {
+    key: u16,
+    density: usize,
+    centroid: Vec<f32>,
+    label_idx: usize,
+    base_score: f64,
+}
+
+fn epa_projection_bit(vector: &[f32], mean: &[f32], bit: usize, dim: usize) -> bool {
+    let mut acc = 0.0f64;
+    let mut state = (bit as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for _ in 0..16 {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let idx = (state as usize) % dim;
+        let sign = if (state & 0x8000_0000_0000_0000) == 0 { 1.0 } else { -1.0 };
+        acc += ((vector[idx] - mean[idx]) as f64) * sign;
+    }
+    acc >= 0.0
+}
+
+fn epa_density_key(vector: &[f32], mean: &[f32], dim: usize) -> u16 {
+    let mut key = 0u16;
+    for bit in 0..12 {
+        if epa_projection_bit(vector, mean, bit, dim) {
+            key |= 1u16 << bit;
+        }
+    }
+    key
+}
+
+fn epa_residual_norm(vector: &[f32], mean: &[f32], dim: usize) -> f64 {
+    let mut norm = 0.0f64;
+    for d in 0..dim {
+        let v = (vector[d] - mean[d]) as f64;
+        norm += v * v;
+    }
+    norm.sqrt()
+}
+
+fn epa_centered_cosine(a: &[f32], b: &[f32], mean: &[f32], dim: usize) -> f64 {
+    let mut dot = 0.0f64;
+    let mut na = 0.0f64;
+    let mut nb = 0.0f64;
+    for d in 0..dim {
+        let av = (a[d] - mean[d]) as f64;
+        let bv = (b[d] - mean[d]) as f64;
+        dot += av * bv;
+        na += av * av;
+        nb += bv * bv;
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom > 1e-12 { dot / denom } else { 0.0 }
+}
+
+fn select_epa_density_residual_samples(
     vectors: &[Vec<f32>],
     names: &[String],
-    k: usize,
+    requested_anchors: usize,
     dim: usize,
-) -> (Vec<Vec<f32>>, Vec<usize>, Vec<String>) {
+) -> (Vec<Vec<f32>>, Vec<usize>, Vec<String>, usize, usize, usize) {
+    use std::collections::{HashMap, HashSet};
+
     let started_at = std::time::Instant::now();
+    let tag_count = vectors.len();
+    let anchor_count = requested_anchors.clamp(8, 128).min(tag_count);
+    let samples_per_anchor = std::env::var("EPA_RUST_SAMPLES_PER_ANCHOR")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(32)
+        .clamp(4, 128);
+
     println!(
-        "[Vexus-Lite][EPA] cluster_epa_tags started: vectors={}, k={}, dim={}",
-        vectors.len(),
-        k,
+        "[Vexus-Lite][EPA] density-residual sampling started: tags={}, anchors={}, samples_per_anchor={}, dim={}",
+        tag_count,
+        anchor_count,
+        samples_per_anchor,
         dim
     );
 
-    let mut centroids = choose_initial_centroids(vectors, k, dim);
-    let mut assignments = vec![0usize; vectors.len()];
-    let mut cluster_sizes = vec![0usize; k];
-
-    for iter in 0..50 {
-        let mut changed = 0usize;
-        cluster_sizes.fill(0);
-
-        for (idx, vector) in vectors.iter().enumerate() {
-            let mut best_k = 0usize;
-            let mut best_sim = f64::MIN;
-
-            for (centroid_idx, centroid) in centroids.iter().enumerate() {
-                let mut dot = 0.0f64;
-                for d in 0..dim {
-                    dot += (vector[d] as f64) * (centroid[d] as f64);
-                }
-                if dot > best_sim {
-                    best_sim = dot;
-                    best_k = centroid_idx;
-                }
-            }
-
-            if assignments[idx] != best_k {
-                assignments[idx] = best_k;
-                changed += 1;
-            }
-            cluster_sizes[best_k] += 1;
-        }
-
-        let mut new_centroids = vec![vec![0.0f32; dim]; k];
-        for (idx, vector) in vectors.iter().enumerate() {
-            let cluster_idx = assignments[idx];
-            for d in 0..dim {
-                new_centroids[cluster_idx][d] += vector[d];
-            }
-        }
-
-        for cluster_idx in 0..k {
-            if cluster_sizes[cluster_idx] == 0 {
-                new_centroids[cluster_idx] = centroids[cluster_idx].clone();
-                continue;
-            }
-            normalize_f32_vector(&mut new_centroids[cluster_idx]);
-        }
-
-        centroids = new_centroids;
-
-        if iter == 0 || (iter + 1) % 5 == 0 || changed == 0 {
-            println!(
-                "[Vexus-Lite][EPA] cluster_epa_tags progress: iter={}/50 changed={} elapsed={:.2}ms",
-                iter + 1,
-                changed,
-                started_at.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        if changed == 0 {
-            break;
+    let mut mean = vec![0.0f32; dim];
+    for vector in vectors {
+        for d in 0..dim {
+            mean[d] += vector[d];
         }
     }
-
-    cluster_sizes.fill(0);
-    for assignment in &assignments {
-        cluster_sizes[*assignment] += 1;
+    for value in &mut mean {
+        *value /= tag_count as f32;
     }
 
-    let mut labels = Vec::with_capacity(k);
-    for centroid in &centroids {
-        let mut best_idx = 0usize;
-        let mut best_sim = f64::MIN;
-        for (idx, vector) in vectors.iter().enumerate() {
-            let mut dot = 0.0f64;
-            for d in 0..dim {
-                dot += (centroid[d] as f64) * (vector[d] as f64);
-            }
-            if dot > best_sim {
-                best_sim = dot;
-                best_idx = idx;
-            }
+    let mut buckets: HashMap<u16, EpaDensityBucket> = HashMap::new();
+    for (idx, vector) in vectors.iter().enumerate() {
+        let key = epa_density_key(vector, &mean, dim);
+        let residual = epa_residual_norm(vector, &mean, dim);
+        let bucket = buckets.entry(key).or_insert_with(|| EpaDensityBucket {
+            count: 0,
+            sum: vec![0.0f32; dim],
+            best_idx: idx,
+            best_residual: residual,
+            samples: Vec::with_capacity(samples_per_anchor),
+        });
+
+        bucket.count += 1;
+        for d in 0..dim {
+            bucket.sum[d] += vector[d];
         }
-        labels.push(names.get(best_idx).cloned().unwrap_or_else(|| "Unknown".to_string()));
+
+        if residual > bucket.best_residual {
+            bucket.best_residual = residual;
+            bucket.best_idx = idx;
+        }
+
+        bucket.samples.push((idx, residual));
+        bucket.samples.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if bucket.samples.len() > samples_per_anchor {
+            bucket.samples.pop();
+        }
     }
 
     println!(
-        "[Vexus-Lite][EPA] cluster_epa_tags finished: vectors={}, k={} elapsed={:.2}ms",
-        vectors.len(),
-        k,
+        "[Vexus-Lite][EPA] density buckets built: buckets={}, elapsed={:.2}ms",
+        buckets.len(),
         started_at.elapsed().as_secs_f64() * 1000.0
     );
 
-    (centroids, cluster_sizes, labels)
+    let mut candidates = Vec::with_capacity(buckets.len());
+    for (key, bucket) in &buckets {
+        if bucket.count == 0 {
+            continue;
+        }
+
+        let mut centroid = bucket.sum.clone();
+        for value in &mut centroid {
+            *value /= bucket.count as f32;
+        }
+        normalize_f32_vector(&mut centroid);
+
+        let density = bucket.count as f64;
+        let residual = bucket.best_residual.max(1e-9);
+        let base_score = density.powf(0.65) * residual.powf(0.35);
+
+        candidates.push(EpaAnchorCandidate {
+            key: *key,
+            density: bucket.count,
+            centroid,
+            label_idx: bucket.best_idx,
+            base_score,
+        });
+    }
+
+    candidates.sort_by(|a, b| b.base_score.partial_cmp(&a.base_score).unwrap_or(std::cmp::Ordering::Equal));
+    let candidate_limit = std::env::var("EPA_RUST_ANCHOR_CANDIDATE_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(512)
+        .clamp(anchor_count, 4096);
+    candidates.truncate(candidate_limit);
+
+    let mut selected: Vec<EpaAnchorCandidate> = Vec::with_capacity(anchor_count);
+    while selected.len() < anchor_count && !candidates.is_empty() {
+        let mut best_idx = 0usize;
+        let mut best_score = f64::MIN;
+
+        for (idx, candidate) in candidates.iter().enumerate() {
+            let mut max_sim = 0.0f64;
+            for chosen in &selected {
+                let sim = epa_centered_cosine(&candidate.centroid, &chosen.centroid, &mean, dim).max(0.0);
+                if sim > max_sim {
+                    max_sim = sim;
+                }
+            }
+
+            let diversity_decay = (-3.0 * max_sim * max_sim).exp();
+            let score = candidate.base_score * diversity_decay;
+            if score > best_score {
+                best_score = score;
+                best_idx = idx;
+            }
+        }
+
+        selected.push(candidates.swap_remove(best_idx));
+    }
+
+    let mut representative_tag_indices = HashSet::new();
+    let mut anchor_vectors = Vec::with_capacity(selected.len());
+    let mut weights = Vec::with_capacity(selected.len());
+    let mut labels = Vec::with_capacity(selected.len());
+
+    for anchor in &selected {
+        labels.push(names.get(anchor.label_idx).cloned().unwrap_or_else(|| "Unknown".to_string()));
+        anchor_vectors.push(anchor.centroid.clone());
+        weights.push(anchor.density.max(1));
+
+        if let Some(bucket) = buckets.get(&anchor.key) {
+            for (idx, _residual) in &bucket.samples {
+                representative_tag_indices.insert(*idx);
+            }
+        }
+        representative_tag_indices.insert(anchor.label_idx);
+    }
+
+    println!(
+        "[Vexus-Lite][EPA] density-residual sampling finished: anchors={}, representative_tags={}, svd_rows={}, elapsed={:.2}ms",
+        selected.len(),
+        representative_tag_indices.len(),
+        anchor_vectors.len(),
+        started_at.elapsed().as_secs_f64() * 1000.0
+    );
+
+    (anchor_vectors, weights, labels, selected.len(), representative_tag_indices.len(), buckets.len())
 }
 
 impl Task for EpaBasisTask {
@@ -933,19 +1084,35 @@ impl Task for EpaBasisTask {
                 cluster_count: 0,
                 basis_count: 0,
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+                algorithm: "density-residual-sampling".to_string(),
+                phase_summary: "load=not_enough_vectors".to_string(),
+                anchor_count: 0,
+                representative_sample_count: 0,
+                density_bucket_count: 0,
+                publish_elapsed_ms: 0.0,
             });
         }
 
-        let k_clusters = std::cmp::min(tag_count, self.cluster_count as usize);
+        let requested_anchors = std::cmp::min(tag_count, self.cluster_count as usize);
         println!(
-            "[Vexus-Lite][EPA] clustering phase started: tag_count={}, k_clusters={}, elapsed={:.2}ms",
+            "[Vexus-Lite][EPA] density-residual sampling phase started: tag_count={}, requested_anchors={}, elapsed={:.2}ms",
             tag_count,
-            k_clusters,
+            requested_anchors,
             start.elapsed().as_secs_f64() * 1000.0
         );
-        let (centroids, weights, labels) = cluster_epa_tags(&tag_vectors, &tag_names, k_clusters, dim);
+        let (centroids, weights, labels, anchor_count, representative_tag_count, density_bucket_count) = select_epa_density_residual_samples(
+            &tag_vectors,
+            &tag_names,
+            requested_anchors,
+            dim,
+        );
+        let k_clusters = centroids.len();
         println!(
-            "[Vexus-Lite][EPA] clustering phase finished: elapsed={:.2}ms",
+            "[Vexus-Lite][EPA] density-residual sampling phase finished: buckets={}, anchors={}, representative_tags={}, svd_rows={}, elapsed={:.2}ms",
+            density_bucket_count,
+            anchor_count,
+            representative_tag_count,
+            k_clusters,
             start.elapsed().as_secs_f64() * 1000.0
         );
         let total_weight: usize = weights.iter().sum();
@@ -958,6 +1125,12 @@ impl Task for EpaBasisTask {
                 cluster_count: k_clusters as u32,
                 basis_count: 0,
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+                algorithm: "density-residual-sampling".to_string(),
+                phase_summary: "sampling=empty_clusters".to_string(),
+                anchor_count: anchor_count as u32,
+                representative_sample_count: k_clusters as u32,
+                density_bucket_count: density_bucket_count as u32,
+                publish_elapsed_ms: 0.0,
             });
         }
 
@@ -1064,48 +1237,77 @@ impl Task for EpaBasisTask {
             .unwrap_or(0);
 
         let cache_json = format!(
-            "{{\"basis\":[{}],\"mean\":\"{}\",\"energies\":[{}],\"labels\":[{}],\"timestamp\":{},\"tagCount\":{}}}",
+            "{{\"basis\":[{}],\"mean\":\"{}\",\"energies\":[{}],\"labels\":[{}],\"timestamp\":{},\"tagCount\":{},\"epaAlgorithm\":\"density-residual-sampling\",\"anchorCount\":{},\"representativeSampleCount\":{},\"densityBucketCount\":{},\"svdRows\":{}}}",
             basis_json,
             f32_slice_to_base64(&mean),
             energies_json,
             labels_json,
             timestamp,
-            tag_count
+            tag_count,
+            anchor_count,
+            representative_tag_count,
+            density_bucket_count,
+            k_clusters
         );
 
-        println!(
-            "[Vexus-Lite][EPA] cache publish phase started: selected_k={}, elapsed={:.2}ms",
-            selected_k,
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-        let mut conn = open_sqlite_readwrite(&self.db_path)
-            .map_err(|e| Error::from_reason(format!("DB write open/config failed: {}", e)))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| Error::from_reason(format!("EPA cache transaction failed: {}", e)))?;
-        tx.execute(
-            "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["epa_basis_cache", cache_json],
-        )
-        .map_err(|e| Error::from_reason(format!("EPA cache write failed: {}", e)))?;
-        tx.commit()
-            .map_err(|e| Error::from_reason(format!("EPA cache commit failed: {}", e)))?;
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        {
+            let mut guard = self.pending_cache
+                .lock()
+                .map_err(|e| Error::from_reason(format!("EPA pending cache lock failed: {}", e)))?;
+            *guard = Some(EpaPendingCache {
+                cache_json,
+                tag_count: tag_count as u32,
+                cluster_count: k_clusters as u32,
+                basis_count: selected_k as u32,
+                elapsed_ms,
+                algorithm: "density-residual-sampling".to_string(),
+                phase_summary: format!(
+                    "load_tags={};buckets={};representative_tags={};anchors={};svd_rows={};basis={};compute={:.2}ms",
+                    tag_count,
+                    density_bucket_count,
+                    representative_tag_count,
+                    anchor_count,
+                    k_clusters,
+                    selected_k,
+                    elapsed_ms
+                ),
+                anchor_count: anchor_count as u32,
+                representative_sample_count: representative_tag_count as u32,
+                density_bucket_count: density_bucket_count as u32,
+            });
+        }
 
         println!(
-            "[Vexus-Lite][EPA] compute_epa_basis finished: tag_count={}, clusters={}, basis={} elapsed={:.2}ms",
+            "[Vexus-Lite][EPA] compute_epa_basis finished and cached in Rust memory: tag_count={}, clusters={}, basis={} elapsed={:.2}ms",
             tag_count,
             k_clusters,
             selected_k,
-            start.elapsed().as_secs_f64() * 1000.0
+            elapsed_ms
         );
 
         Ok(EpaBasisResult {
             success: true,
-            message: "ok".to_string(),
+            message: "computed_pending_publish".to_string(),
             tag_count: tag_count as u32,
             cluster_count: k_clusters as u32,
             basis_count: selected_k as u32,
-            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms,
+            algorithm: "density-residual-sampling".to_string(),
+            phase_summary: format!(
+                "load_tags={};buckets={};representative_tags={};anchors={};svd_rows={};basis={};compute={:.2}ms",
+                tag_count,
+                density_bucket_count,
+                representative_tag_count,
+                anchor_count,
+                k_clusters,
+                selected_k,
+                elapsed_ms
+            ),
+            anchor_count: anchor_count as u32,
+            representative_sample_count: representative_tag_count as u32,
+            density_bucket_count: density_bucket_count as u32,
+            publish_elapsed_ms: 0.0,
         })
     }
 
@@ -1156,6 +1358,50 @@ impl Task for IntrinsicResidualTask {
                         tag_vectors.insert(id, vec);
                     }
                 }
+            }
+
+            let force_recompute = std::env::var("TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE")
+                .map(|value| {
+                    let normalized = value.trim().to_ascii_lowercase();
+                    normalized == "true" || normalized == "1" || normalized == "yes"
+                })
+                .unwrap_or(false);
+
+            if !force_recompute && !tag_vectors.is_empty() {
+                let cached_count: u32 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM tag_intrinsic_residuals WHERE tag_id IN (SELECT id FROM tags WHERE vector IS NOT NULL)",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                    .max(0) as u32;
+                let tag_count = tag_vectors.len() as u32;
+
+                if cached_count >= tag_count {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    println!(
+                        "[Vexus-Lite][IntrinsicResidual] cache complete; skipping full recompute: cached={}, tags={}, elapsed={:.2}ms",
+                        cached_count,
+                        tag_count,
+                        elapsed
+                    );
+
+                    return Ok(IntrinsicResidualResult {
+                        tag_count,
+                        computed_count: 0,
+                        skipped_count: tag_count,
+                        elapsed_ms: elapsed,
+                    });
+                }
+
+                println!(
+                    "[Vexus-Lite][IntrinsicResidual] cache incomplete; recomputing missing/stale residuals: cached={}, tags={}, force=false",
+                    cached_count,
+                    tag_count
+                );
+            } else if force_recompute {
+                println!("[Vexus-Lite][IntrinsicResidual] force recompute enabled by TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE.");
             }
 
             // 2. 加载共现矩阵以构建邻居关系
@@ -1212,6 +1458,15 @@ impl Task for IntrinsicResidualTask {
         let max_neighbors = 100; // 🌟 V7.5: 限制邻居基数，防止 SVD 爆炸
 
         for (&tag_id, tag_vec) in &tag_vectors {
+            if (computed + skipped) > 0 && (computed + skipped) % 1000 == 0 {
+                println!(
+                    "[Vexus-Lite][IntrinsicResidual] progress: processed={}, computed={}, skipped={}, elapsed={:.2}ms",
+                    computed + skipped,
+                    computed,
+                    skipped,
+                    start.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             let neighbors = match adjacency.get(&tag_id) {
                 Some(n) => n,
                 None => { skipped += 1; continue; }
