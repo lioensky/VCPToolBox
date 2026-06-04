@@ -63,3 +63,21 @@ test('admin ai image real execution receives native Doubao delegate option', () 
         /registerSerumBottleSecretlessDoubaoDelegate\(\s+routeOptions\.nativeImageDelegateRegistry,\s+nativeDoubaoSecretlessRuntimeDelegate,\s+\{ enabled: true \}\s+\);/
     );
 });
+
+test('secretless internal route follows ai image agents route flag', () => {
+    const serverSource = read('server.js');
+
+    assert.match(
+        serverSource,
+        /const enableAiImageAgentsRoute = process\.env\.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true';/
+    );
+    assert.match(
+        serverSource,
+        /enableSerumBottleSecretlessInternalRoute: enableAiImageAgentsRoute,/
+    );
+    assert.match(serverSource, /if \(enableAiImageAgentsRoute\) \{/);
+    assert.doesNotMatch(
+        serverSource,
+        /enableSerumBottleSecretlessInternalRoute: true,/
+    );
+});

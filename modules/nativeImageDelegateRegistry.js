@@ -5,6 +5,12 @@ const SERUM_BOTTLE_SECRETLESS_PROVIDER_ID = 'doubao';
 const SERUM_BOTTLE_SECRETLESS_PLUGIN_ID = 'DoubaoGen';
 const SERUM_BOTTLE_SECRETLESS_API_ID = 'generate_image';
 const SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND = 'generate';
+const SERUM_BOTTLE_SECRETLESS_ALLOWED_COMMANDS = Object.freeze([
+  'generate',
+  'edit',
+  'compose',
+  'group',
+]);
 
 function normalizeString(value) {
   return typeof value === 'string' && value.trim()
@@ -47,6 +53,11 @@ class NativeImageDelegateRegistry {
       pluginId: normalizeString(delegate.pluginId),
       apiId: normalizeString(delegate.apiId),
       internalCommand: normalizeString(delegate.internalCommand),
+      allowedCommands: new Set(
+        Array.isArray(delegate.allowedCommands) && delegate.allowedCommands.length > 0
+          ? delegate.allowedCommands.map((item) => normalizeString(item)).filter(Boolean)
+          : [normalizeString(delegate.internalCommand)].filter(Boolean)
+      ),
       enabled: delegate.enabled === true,
       handler,
     });
@@ -94,11 +105,20 @@ class NativeImageDelegateRegistry {
     const toolArgs = request.toolArgs && typeof request.toolArgs === 'object'
       ? { ...request.toolArgs }
       : {};
-    if (toolArgs.command !== delegate.internalCommand) {
+    const requiredCommand = normalizeString(binding.internalCommand);
+    if (requiredCommand && toolArgs.command !== requiredCommand) {
       return failClosed('native_image_delegate_registry_command_not_allowed', {
         delegateId,
         command: toolArgs.command || null,
-        requiredCommand: delegate.internalCommand,
+        requiredCommand,
+      });
+    }
+
+    if (!requiredCommand && !delegate.allowedCommands.has(toolArgs.command)) {
+      return failClosed('native_image_delegate_registry_command_not_allowed', {
+        delegateId,
+        command: toolArgs.command || null,
+        allowedCommands: Array.from(delegate.allowedCommands),
       });
     }
 
@@ -135,6 +155,7 @@ function registerSerumBottleSecretlessDoubaoDelegate(registry, handler, options 
     pluginId: SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
     apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
     internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+    allowedCommands: options.allowedCommands || SERUM_BOTTLE_SECRETLESS_ALLOWED_COMMANDS,
     enabled: options.enabled === true,
     handler,
   });
@@ -149,4 +170,5 @@ module.exports = {
   SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
   SERUM_BOTTLE_SECRETLESS_API_ID,
   SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+  SERUM_BOTTLE_SECRETLESS_ALLOWED_COMMANDS,
 };

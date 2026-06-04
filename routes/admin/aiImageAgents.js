@@ -275,6 +275,7 @@ async function handleAiImagePipelineRequest(req, options = {}) {
       executorOptions.pluginManager = requireNativeDoubaoSecretlessRuntimeDelegate
         ? createNativeDoubaoDelegatePluginManagerFacade({
             nativeImageDelegateRegistry: options.nativeImageDelegateRegistry,
+            strictInternalCommand: false,
           })
         : options.pluginManager;
       if (
@@ -340,6 +341,7 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
 
     const delegateFacade = createNativeDoubaoDelegatePluginManagerFacade({
       nativeImageDelegateRegistry: options.nativeImageDelegateRegistry,
+      strictInternalCommand: true,
     });
 
     const delegatedRequest = {
@@ -967,6 +969,7 @@ async function ensureRequiredPluginsRegistered(routeInput, pluginManager) {
 
 function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
   const nativeImageDelegateRegistry = options.nativeImageDelegateRegistry || null;
+  const strictInternalCommand = options.strictInternalCommand === true;
   const invocationEvidence = [];
 
   return {
@@ -978,7 +981,7 @@ function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
       const normalizedToolArgs = toolArgs && typeof toolArgs === 'object'
         ? { ...toolArgs }
         : {};
-      if (normalizedToolArgs.command !== SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND) {
+      if (strictInternalCommand && normalizedToolArgs.command !== SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND) {
         throw new Error(`native_doubao_delegate_command_not_allowed:${normalizedToolArgs.command || '<empty>'}`);
       }
 
@@ -991,8 +994,10 @@ function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
         delegateId: SERUM_BOTTLE_SECRETLESS_DELEGATE_ID,
         providerId: SERUM_BOTTLE_SECRETLESS_PROVIDER_ID,
         pluginId: SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
-        apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
-        internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+        ...(strictInternalCommand ? {
+          apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
+          internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+        } : {}),
       }, {
         toolName,
         toolArgs: normalizedToolArgs,

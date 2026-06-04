@@ -1702,9 +1702,10 @@ async function initialize() {
       createAiImageAgentsRouter,
       createSerumBottleSecretlessInternalRouter,
     } = require('./routes/admin/aiImageAgents');
+    const enableAiImageAgentsRoute = process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true';
     const routeOptions = {
       auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
-      enableSerumBottleSecretlessInternalRoute: true,
+      enableSerumBottleSecretlessInternalRoute: enableAiImageAgentsRoute,
       pluginManager,
       requireNativeDoubaoSecretlessRuntimeDelegate: true,
       enableAiImageRealExecution: process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true',
@@ -1742,7 +1743,7 @@ async function initialize() {
       }
     }
 
-    if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
+    if (enableAiImageAgentsRoute) {
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
 

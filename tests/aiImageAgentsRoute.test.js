@@ -247,6 +247,68 @@ test('aiImageAgents execute route sends required native executions through deleg
     });
 });
 
+test('aiImageAgents required native delegate facade allows Doubao edit command', async () => {
+    const rawPluginCalls = [];
+    const registry = createNativeImageDelegateRegistry();
+    const rawPluginManager = {
+        async processToolCall(toolName, toolArgs, requestIp, executionContext) {
+            rawPluginCalls.push({ toolName, toolArgs, requestIp, executionContext });
+            return {
+                ok: true,
+                imageUrl: 'file:///tmp/native-admin-edit.png',
+                sha256: 'e'.repeat(64),
+                mime: 'image/png',
+                width: 1920,
+                height: 1920,
+            };
+        }
+    };
+    const nativeDelegate = createNativeDoubaoSecretlessRuntimeDelegate({
+        enabled: true,
+        pluginManager: rawPluginManager,
+        requestIp: '127.0.0.1',
+        bridgeId: 'test_admin_native_edit_delegate'
+    });
+    registerSerumBottleSecretlessDoubaoDelegate(registry, nativeDelegate, { enabled: true });
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            const delegateResult = await options.pluginManager.processToolCall(
+                'DoubaoGen',
+                { command: 'edit', prompt: input.plan.steps[0].prompt, size: '1x1' },
+                options.requestIp,
+                options.executionContext
+            );
+            return { ok: true, mode: 'real_execution', delegateResult };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.9',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-native-admin-edit',
+                taskId: 'task-native-admin-edit',
+                dryRun: false,
+                confirm: true,
+                plan: {
+                    steps: [{ type: 'edit_image', plugin: 'DoubaoGen', prompt: 'native admin edit test' }]
+                }
+            }
+        }, {
+            pluginManager: rawPluginManager,
+            nativeImageDelegateRegistry: registry,
+            nativeDoubaoSecretlessRuntimeDelegate: nativeDelegate,
+            requireNativeDoubaoSecretlessRuntimeDelegate: true
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(rawPluginCalls.length, 1);
+        assert.equal(rawPluginCalls[0].toolArgs.command, 'edit');
+        assert.equal(rawPluginCalls[0].toolArgs.size, SECRETLESS_SERUM_ALLOWED_SIZE);
+        assert.equal(rawPluginCalls[0].executionContext.bridgeId, 'test_admin_native_edit_delegate');
+    });
+});
+
 test('aiImageAgents serum-bottle secretless helper authorizes internally before stubbed execution', async () => {
     const calls = [];
     const authorizerCalls = [];
