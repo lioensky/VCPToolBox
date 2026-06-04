@@ -13,6 +13,8 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { executeAiImagePipelineV2 } = require('../../modules/aiImagePipelineExecutor');
 const { getClientIp } = require('../../modules/toolExecution');
 const {
@@ -39,6 +41,8 @@ const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
   'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_013/';
 const SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX =
   'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_';
+const SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX = 'image/doubaogen/';
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_MODELS = Object.freeze(new Set([
   'doubao-seedream-5-0-260128',
 ]));
@@ -354,7 +358,11 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
     if (response && response.result && typeof response.result === 'object') {
       response.result.serumBottleSecretlessAuthorization = authorization.publicReceipt;
       response.result.serumBottleSecretlessRuntimeEvidence =
-        buildSerumBottleSecretlessRuntimeEvidence(response.result, delegateFacade.getInvocationEvidence());
+        buildSerumBottleSecretlessRuntimeEvidence(
+          response.result,
+          delegateFacade.getInvocationEvidence(),
+          options.serumBottleSecretlessArtifactEvidenceReader
+        );
     }
 
     return response;
@@ -1000,7 +1008,11 @@ function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
   };
 }
 
-function buildSerumBottleSecretlessRuntimeEvidence(result = {}, invocationEvidence = []) {
+function buildSerumBottleSecretlessRuntimeEvidence(
+  result = {},
+  invocationEvidence = [],
+  artifactEvidenceReader = readSerumBottleSecretlessArtifactEvidence
+) {
   const latest = invocationEvidence.length > 0
     ? invocationEvidence[invocationEvidence.length - 1]
     : null;
@@ -1008,10 +1020,15 @@ function buildSerumBottleSecretlessRuntimeEvidence(result = {}, invocationEviden
     ? result.images
     : [];
   const firstImage = images[0] || {};
-  const dimensions = normalizeImageDimensions(firstImage.dimensions || {
+  const resultDimensions = normalizeImageDimensions(firstImage.dimensions || {
     width: firstImage.width,
     height: firstImage.height,
   });
+  const resultSha256 = readFirstString(firstImage.sha256, firstImage.hash, firstImage.checksum);
+  const resultMime = readFirstString(firstImage.mime, firstImage.mimeType, firstImage.contentType);
+  const fileEvidence = (!resultSha256 || !resultMime || !resultDimensions)
+    ? safeReadArtifactEvidence(artifactEvidenceReader, firstImage)
+    : null;
 
   return {
     routeId: 'serum_bottle_vcptoolbox_route_owner_runtime',
@@ -1025,11 +1042,116 @@ function buildSerumBottleSecretlessRuntimeEvidence(result = {}, invocationEviden
     apiCalls: latest && latest.api_call_performed ? 1 : 0,
     images: images.length,
     artifact: {
-      sha256: readFirstString(firstImage.sha256, firstImage.hash, firstImage.checksum),
-      mime: readFirstString(firstImage.mime, firstImage.mimeType, firstImage.contentType),
-      dimensions,
+      sha256: resultSha256 || (fileEvidence && fileEvidence.sha256) || null,
+      mime: resultMime || (fileEvidence && fileEvidence.mime) || null,
+      dimensions: resultDimensions || (fileEvidence && fileEvidence.dimensions) || null,
     },
   };
+}
+
+function safeReadArtifactEvidence(reader, image) {
+  if (typeof reader !== 'function') {
+    return null;
+  }
+  try {
+    return normalizeArtifactEvidence(reader(image));
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeArtifactEvidence(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  return {
+    sha256: readFirstString(value.sha256, value.hash, value.checksum),
+    mime: readFirstString(value.mime, value.mimeType, value.contentType),
+    dimensions: normalizeImageDimensions(value.dimensions || {
+      width: value.width,
+      height: value.height,
+    }),
+  };
+}
+
+function readSerumBottleSecretlessArtifactEvidence(image = {}) {
+  const artifactPath = readFirstString(image.path, image.filePath, image.localPath);
+  if (!artifactPath) {
+    return null;
+  }
+
+  const normalizedPath = artifactPath.replace(/\\/g, '/');
+  if (normalizedPath.includes('\0') ||
+      path.isAbsolute(normalizedPath) ||
+      normalizedPath.split('/').includes('..') ||
+      !normalizedPath.startsWith(SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX)) {
+    return null;
+  }
+
+  const resolved = path.resolve(PROJECT_ROOT, normalizedPath);
+  const relative = path.relative(PROJECT_ROOT, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  const bytes = fs.readFileSync(resolved);
+  const detected = detectImageEvidence(bytes);
+  return {
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    mime: detected.mime,
+    dimensions: detected.dimensions,
+  };
+}
+
+function detectImageEvidence(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 24) {
+    throw new Error('artifact_evidence_unsupported_image');
+  }
+  if (bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') {
+    return {
+      mime: 'image/png',
+      dimensions: {
+        width: bytes.readUInt32BE(16),
+        height: bytes.readUInt32BE(20),
+      },
+    };
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return {
+      mime: 'image/jpeg',
+      dimensions: readJpegDimensions(bytes),
+    };
+  }
+  throw new Error('artifact_evidence_unsupported_image');
+}
+
+function readJpegDimensions(bytes) {
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      throw new Error('artifact_evidence_invalid_jpeg_marker');
+    }
+    const marker = bytes[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || offset + length > bytes.length) {
+      throw new Error('artifact_evidence_invalid_jpeg_segment');
+    }
+    if ((marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf)) {
+      return {
+        width: bytes.readUInt16BE(offset + 5),
+        height: bytes.readUInt16BE(offset + 3),
+      };
+    }
+    offset += length;
+  }
+  throw new Error('artifact_evidence_jpeg_dimensions_missing');
 }
 
 function normalizeImageDimensions(value) {

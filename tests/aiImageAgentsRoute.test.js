@@ -108,6 +108,8 @@ function createSerumBottleSecretlessOptions(overrides = {}) {
         enableNativeDoubaoSecretlessRuntimeDelegate:
             overrides.enableNativeDoubaoSecretlessRuntimeDelegate !== false,
         nativeImageDelegateRegistry: registry,
+        serumBottleSecretlessArtifactEvidenceReader:
+            overrides.serumBottleSecretlessArtifactEvidenceReader,
         async authorizeSerumBottleSecretlessExecution(request) {
             if (typeof overrides.authorizeSerumBottleSecretlessExecution === 'function') {
                 return overrides.authorizeSerumBottleSecretlessExecution(request);
@@ -695,6 +697,54 @@ test('aiImageAgents serum-bottle secretless helper records bound delegate and ar
                 mime: 'image/png',
                 dimensions: { width: 1024, height: 1536 },
             },
+        });
+    });
+});
+
+test('aiImageAgents serum-bottle secretless helper fills missing artifact evidence from restricted reader', async () => {
+    const evidenceReaderCalls = [];
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            await options.pluginManager.processToolCall(
+                'DoubaoGen',
+                { command: 'generate', prompt: input.plan.steps[0].prompt, model: input.plan.steps[0].model },
+                '127.0.0.1',
+                options.executionContext
+            );
+            return {
+                ok: true,
+                mode: 'real_execution',
+                images: [{
+                    plugin: 'DoubaoGen',
+                    path: 'image/doubaogen/generated-as-png-name.png',
+                    sha256: null,
+                    mime: null,
+                    dimensions: null,
+                }],
+            };
+        }
+    }, async ({ handleSerumBottleSecretlessExecutionRequest }) => {
+        const result = await handleSerumBottleSecretlessExecutionRequest({
+            body: createSerumBottleSecretlessBody()
+        }, createSerumBottleSecretlessOptions({
+            serumBottleSecretlessArtifactEvidenceReader(image) {
+                evidenceReaderCalls.push(image);
+                return {
+                    sha256: 'c'.repeat(64),
+                    mime: 'image/jpeg',
+                    dimensions: { width: 1920, height: 1920 },
+                };
+            },
+        }));
+
+        assert.equal(result.ok, true);
+        assert.equal(evidenceReaderCalls.length, 1);
+        assert.equal(evidenceReaderCalls[0].path, 'image/doubaogen/generated-as-png-name.png');
+        assert.deepEqual(result.result.serumBottleSecretlessRuntimeEvidence.artifact, {
+            sha256: 'c'.repeat(64),
+            mime: 'image/jpeg',
+            dimensions: { width: 1920, height: 1920 },
         });
     });
 });
