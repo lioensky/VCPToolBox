@@ -46,3 +46,20 @@ test('secretless serum internal POST remains behind bearer auth', () => {
     );
     assert.match(serverSource, /authHeader !== `Bearer \$\{serverKey\}`/);
 });
+
+test('admin ai image real execution receives native Doubao delegate option', () => {
+    const serverSource = read('server.js');
+
+    assert.match(
+        serverSource,
+        /const nativeDoubaoSecretlessRuntimeDelegate = createNativeDoubaoSecretlessRuntimeDelegate\(\{/
+    );
+    assert.match(
+        serverSource,
+        /routeOptions\.nativeDoubaoSecretlessRuntimeDelegate = nativeDoubaoSecretlessRuntimeDelegate;/
+    );
+    assert.match(
+        serverSource,
+        /registerSerumBottleSecretlessDoubaoDelegate\(\s+routeOptions\.nativeImageDelegateRegistry,\s+nativeDoubaoSecretlessRuntimeDelegate,\s+\{ enabled: true \}\s+\);/
+    );
+});

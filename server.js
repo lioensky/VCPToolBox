@@ -1724,14 +1724,16 @@ async function initialize() {
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
 
       if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
+        const nativeDoubaoSecretlessRuntimeDelegate = createNativeDoubaoSecretlessRuntimeDelegate({
+          enabled: true,
+          pluginManager,
+          requestIp: '127.0.0.1',
+          bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
+        });
+        routeOptions.nativeDoubaoSecretlessRuntimeDelegate = nativeDoubaoSecretlessRuntimeDelegate;
         registerSerumBottleSecretlessDoubaoDelegate(
           routeOptions.nativeImageDelegateRegistry,
-          createNativeDoubaoSecretlessRuntimeDelegate({
-            enabled: true,
-            pluginManager,
-            requestIp: '127.0.0.1',
-            bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
-          }),
+          nativeDoubaoSecretlessRuntimeDelegate,
           { enabled: true }
         );
         console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
