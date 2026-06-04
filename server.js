@@ -1561,7 +1561,15 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
 const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
-    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-013';
+    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-015';
+const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
+    'secretless-serum-live-probe-attempt-015';
+const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_015.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_015.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
+    'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_015/';
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
     'serum_bottle_vcptoolbox_route_owner_runtime',
     'serum_bottle_secretless_option_a',
@@ -1629,7 +1637,11 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
         request.mode !== SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE ||
         request.activationPackageId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
         request.taskId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
+        request.pipelineId !== SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID ||
         !SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS.has(request.routeId) ||
+        request.receiptRef !== SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF ||
+        request.artifactRecordRef !== SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF ||
+        request.outputDirectoryRef !== SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF ||
         !hasSerumBottleSecretlessExactBudget(request.budget) ||
         !isNonEmptyString(request.receiptRef) ||
         !isNonEmptyString(request.artifactRecordRef) ||
@@ -1646,6 +1658,7 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
         pipelineId: request.pipelineId || null,
         receiptRef: request.receiptRef,
         artifactRecordRef: request.artifactRecordRef,
+        outputDirectoryRef: request.outputDirectoryRef,
         nonSecretPayloadHash: request.nonSecretPayloadHash,
         budget: request.budget,
     });
