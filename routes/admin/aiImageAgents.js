@@ -365,6 +365,10 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
     });
 
     if (response && response.result && typeof response.result === 'object') {
+      const outputRefs = collectSerumBottleSecretlessOutputRefs(response.result);
+      if (outputRefs.length > 0) {
+        response.result.outputRefs = outputRefs;
+      }
       response.result.serumBottleSecretlessAuthorization = authorization.publicReceipt;
       response.result.serumBottleSecretlessRuntimeEvidence =
         buildSerumBottleSecretlessRuntimeEvidence(
@@ -1050,12 +1054,80 @@ function buildSerumBottleSecretlessRuntimeEvidence(
     pluginCalls: latest && latest.plugin_call_performed ? 1 : 0,
     apiCalls: latest && latest.api_call_performed ? 1 : 0,
     images: images.length,
+    outputRefs: collectSerumBottleSecretlessOutputRefs(result),
     artifact: {
       sha256: resultSha256 || (fileEvidence && fileEvidence.sha256) || null,
       mime: resultMime || (fileEvidence && fileEvidence.mime) || null,
       dimensions: resultDimensions || (fileEvidence && fileEvidence.dimensions) || null,
     },
   };
+}
+
+function collectSerumBottleSecretlessOutputRefs(result = {}) {
+  const refs = [];
+  if (Array.isArray(result.outputRefs)) {
+    refs.push(...result.outputRefs);
+  }
+  if (Array.isArray(result.output_refs)) {
+    refs.push(...result.output_refs);
+  }
+
+  const images = Array.isArray(result.images)
+    ? result.images
+    : [];
+  for (const image of images) {
+    refs.push(readFirstString(
+      image && image.outputRef,
+      image && image.output_ref,
+      image && image.path,
+      image && image.filePath,
+      image && image.localPath
+    ));
+  }
+
+  return Array.from(new Set(
+    refs
+      .map((ref) => normalizeSerumBottleSecretlessOutputRef(ref))
+      .filter(Boolean)
+  ));
+}
+
+function normalizeSerumBottleSecretlessOutputRef(value) {
+  const raw = readFirstString(value);
+  if (!raw || raw.includes('\0')) {
+    return null;
+  }
+
+  let normalized = raw.replace(/\\/g, '/');
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+    return null;
+  }
+
+  if (path.isAbsolute(raw) || path.isAbsolute(normalized)) {
+    const relative = path.relative(PROJECT_ROOT, raw).replace(/\\/g, '/');
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+    normalized = relative;
+  }
+
+  if (
+    normalized.includes(':') ||
+    normalized.startsWith('/') ||
+    normalized.startsWith('\\') ||
+    normalized.split('/').includes('..')
+  ) {
+    return null;
+  }
+
+  if (
+    !normalized.startsWith(SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX) &&
+    !normalized.startsWith(SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX)
+  ) {
+    return null;
+  }
+
+  return normalized;
 }
 
 function safeReadArtifactEvidence(reader, image) {

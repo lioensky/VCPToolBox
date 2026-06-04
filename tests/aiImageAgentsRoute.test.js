@@ -669,6 +669,7 @@ test('aiImageAgents serum-bottle secretless helper records bound delegate and ar
                 mode: 'real_execution',
                 images: [{
                     plugin: 'DoubaoGen',
+                    path: 'image/doubaogen/generated-serum.png',
                     sha256: 'b'.repeat(64),
                     mime: 'image/png',
                     dimensions: { width: 1024, height: 1536 },
@@ -681,6 +682,9 @@ test('aiImageAgents serum-bottle secretless helper records bound delegate and ar
         }, createSerumBottleSecretlessOptions());
 
         assert.equal(result.ok, true);
+        assert.deepEqual(result.result.outputRefs, [
+            'image/doubaogen/generated-serum.png'
+        ]);
         assert.deepEqual(result.result.serumBottleSecretlessRuntimeEvidence, {
             routeId: 'serum_bottle_vcptoolbox_route_owner_runtime',
             delegateId: 'serum_bottle_secretless_doubao_v1',
@@ -692,6 +696,9 @@ test('aiImageAgents serum-bottle secretless helper records bound delegate and ar
             pluginCalls: 1,
             apiCalls: 1,
             images: 1,
+            outputRefs: [
+                'image/doubaogen/generated-serum.png'
+            ],
             artifact: {
                 sha256: 'b'.repeat(64),
                 mime: 'image/png',
@@ -739,8 +746,14 @@ test('aiImageAgents serum-bottle secretless helper fills missing artifact eviden
         }));
 
         assert.equal(result.ok, true);
+        assert.deepEqual(result.result.outputRefs, [
+            'image/doubaogen/generated-as-png-name.png'
+        ]);
         assert.equal(evidenceReaderCalls.length, 1);
         assert.equal(evidenceReaderCalls[0].path, 'image/doubaogen/generated-as-png-name.png');
+        assert.deepEqual(result.result.serumBottleSecretlessRuntimeEvidence.outputRefs, [
+            'image/doubaogen/generated-as-png-name.png'
+        ]);
         assert.deepEqual(result.result.serumBottleSecretlessRuntimeEvidence.artifact, {
             sha256: 'c'.repeat(64),
             mime: 'image/jpeg',
