@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-
 import axios from 'axios';
 import https from 'https';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -8,7 +7,6 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 // --- 1. 配置加载与初始化 ---
-
 const {
     CHANNELS,
     PROXY_AGENT,
@@ -16,7 +14,8 @@ const {
     PROJECT_BASE_PATH,
     SERVER_PORT,
     IMAGESERVER_IMAGE_KEY,
-    VAR_HTTP_URL
+    VAR_HTTP_URL,
+    USE_PUBLIC_URL
 } = (() => {
     // ─── 渠道解析 ───
     let channels = [];
@@ -60,6 +59,9 @@ const {
     // ─── 分布式图床 ───
     const distServers = (process.env.DIST_IMAGE_SERVERS || '').split(',').map(s => s.trim()).filter(Boolean);
 
+    // ─── 解析 USE_PUBLIC_URL 环境变量 ───
+    const usePublicUrl = (process.env.USE_PUBLIC_URL || 'true').toLowerCase() === 'true';
+
     return {
         CHANNELS: channels,
         PROXY_AGENT: agent,
@@ -67,7 +69,8 @@ const {
         PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH,
         SERVER_PORT: process.env.SERVER_PORT,
         IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY || process.env.Image_Key || process.env.IMAGE_KEY || process.env.ImageServerKey || '',
-        VAR_HTTP_URL: process.env.VarHttpUrl
+        VAR_HTTP_URL: process.env.VarHttpUrl,
+        USE_PUBLIC_URL: usePublicUrl
     };
 })();
 
@@ -211,10 +214,9 @@ async function processApiResponseAndSaveImage(message, originalArgs, showBase64)
     if (!imageUrl) {
         throw new Error(
             `API 未返回图片。可能原因：提示词触发安全审核、渠道不支持图像生成、` +
-            `或响应格式不在已知解析范围内。\n模型返回内容: ${
-                typeof message.content === 'string'
-                    ? message.content.substring(0, 500)
-                    : JSON.stringify(message.content)?.substring(0, 500)
+            `或响应格式不在已知解析范围内。\n模型返回内容: ${typeof message.content === 'string'
+                ? message.content.substring(0, 500)
+                : JSON.stringify(message.content)?.substring(0, 500)
             }`
         );
     }
@@ -246,7 +248,16 @@ async function processApiResponseAndSaveImage(message, originalArgs, showBase64)
     await fs.writeFile(localImagePath, imageBuffer);
 
     const relativePathForUrl = path.join('nanobananagen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+
+    // ─── 动态决定输出的 URL 格式 ───
+    let accessibleImageUrl;
+    if (USE_PUBLIC_URL) {
+        // 当 USE_PUBLIC_URL 为 true 时，不输出端口，保持 "//" 拼接
+        accessibleImageUrl = `${VAR_HTTP_URL}//pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    } else {
+        // 当 USE_PUBLIC_URL 为 false 时，输出带有端口的完整路径
+        accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    }
 
     const modelResponseText = cleanTextContent || "图片已成功处理！";
     const finalResponseText = `${modelResponseText}\n\n**图片详情:**\n- 提示词: ${originalArgs.prompt}\n- 可访问URL: ${accessibleImageUrl}\n\n请利用可访问url将图片转发给用户`;
