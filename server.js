@@ -1561,15 +1561,15 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
 const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
-    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-017';
+    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-018';
 const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
-    'secretless-serum-live-probe-attempt-017';
+    'secretless-serum-live-probe-attempt-018';
 const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
-    'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_017.json';
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_018.json';
 const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
-    'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_017.json';
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_018.json';
 const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
-    'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_017/';
+    'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_018/';
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
     'serum_bottle_vcptoolbox_route_owner_runtime',
     'serum_bottle_secretless_option_a',
