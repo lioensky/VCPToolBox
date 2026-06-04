@@ -449,7 +449,7 @@ async function processEditRequest(args, showBase64) {
     formData.append('user', args.user || 'VCPToolBox');
     formData.append('n', String(Math.min(Math.max(parseInt(args.n || args.count || '1', 10) || 1, 1), 1)));
     formData.append('response_format', args.response_format || 'b64_json');
-    formData.append('num_inference_steps', String(Math.max(4, Math.min(25, parseInt(args.num_inference_steps, 10) || 4))));
+    formData.append('num_inference_steps', String(Math.max(10, Math.min(50, parseInt(args.num_inference_steps, 10) || 10))));
     formData.append('seed', String(parseInt(args.seed, 10) || 0));
     formData.append('guidance_scale', String(parseFloat(args.guidance_scale) || 1));
     formData.append('negative_prompt', typeof args.negative_prompt === 'string' ? args.negative_prompt : '');

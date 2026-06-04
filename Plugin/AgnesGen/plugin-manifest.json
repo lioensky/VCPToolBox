@@ -1,0 +1,34 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "AgnesGen",
+  "version": "1.0.0",
+  "displayName": "Agnes Image 2.1 Flash 绘图",
+  "description": "调用 Sapiens AI Agnes Image 2.1 Flash 模型进行文生图和图生图。适合高信息密度图像、复杂构图、创意设计、营销素材和图像转换任务。",
+  "author": "VCP Team",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node AgnesGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 180000
+  },
+  "configSchema": {
+    "AGNES_API_KEY": "string(必需)，Agnes/Sapiens AI API Bearer Token",
+    "AGNES_API_ENDPOINT": "string(可选)，默认 https://apihub.agnes-ai.com/v1/images/generations",
+    "AGNES_MODEL_ID": "string(可选)，默认 agnes-image-2.1-flash",
+    "AGNES_DEFAULT_SIZE": "string(可选)，默认 1024x1024",
+    "HTTP_PROXY": "string(可选)，网络代理地址，例如 http://127.0.0.1:7890，留空则不使用代理",
+    "USE_PUBLIC_URL": "string(可选)，是否使用公网地址返回图片URL，true 使用 VarHttpsUrl，false 使用 VarHttpUrl（局域网），默认 false"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "GenerateImage",
+        "description": "【统一文生图/图生图/多图参考】调用此工具使用 Agnes Image 2.1 Flash。无图片时自动文生图；提供 image/image_url/image_1/image_url_1/image_base64_1 等图片字段时自动进入图生图或多图参考模式。Agnes Image 2.1 Flash 对高信息密度图像、复杂视觉细节、丰富构图和清晰语义对齐进行了优化，适合创意设计、营销素材、海报草图、复杂场景生成、风格迁移、重新打光和背景转换。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesGen「末」,\ncommand:「始」generate / edit / compose「末」,\nprompt:「始」(必需) 用于生成、编辑或合成图片的自然语言描述，支持中文或英文。建议结构：[Subject] + [Scene / Environment] + [Style] + [Lighting] + [Composition] + [Quality Requirements]。图生图时请明确需要改变什么、需要保持什么不变。「末」,\nsize:「始」(可选) 统一尺寸字段，也兼容 resolution 和 image_size。可写 1024x1024、1024x768、768x1024、1536x1024、adaptive 等，默认 1024x1024。「末」,\nimage:「始」(编辑/合成时必需) 单图 URL/base64/data URI，或图片数组，例如 [\"url1\",\"url2\"]。也兼容 image_url、image_1、image_2、image_url_1、image_base64_1 等字段。「末」,\nshowbase64:「始」(可选) 是否在返回结果中附带 base64 图片数据供直接查看，默认 false。可填 true 或 false。「末」\n<<<[END_TOOL_REQUEST]>>>\n\n重要提示给AI：\n1. AgnesGen 不支持 negative_prompt 专用字段；如需规避内容，请直接写入 prompt，例如 \"avoid blurry details, distorted hands, low quality text\"。\n2. 执行完毕后，您将收到生成图片的可访问URL。请直接为用户以 Markdown 图片或 HTML `<img>` 标签展示，不要只描述图片内容。\n3. 高信息密度图像建议在 prompt 中清晰描述主体、背景环境、重要次要细节、风格光照、构图限制；图生图任务需要说明哪些内容应保持不变。",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」A luminous floating city above a misty canyon at sunrise, cinematic realism, wide-angle composition, rich architectural details, soft golden light, high visual density「末」,\nsize:「始」1024x768「末」,\nshowbase64:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>\n\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」AgnesGen「末」,\ncommand:「始」edit「末」,\nprompt:「始」Transform the scene into a rain-soaked cyberpunk night with neon reflections while preserving the original composition and main subject layout.「末」,\nsize:「始」1024x768「末」,\nimage:「始」https://example.com/input-image.png「末」,\nshowbase64:「始」false「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}
