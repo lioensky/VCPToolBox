@@ -30,5 +30,5 @@ test('secretless serum server authorizer binding matches route exact activation'
     );
 
     assert.equal(serverActivationId, routeActivationId);
-    assert.equal(routeActivationId, 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-012');
+    assert.equal(routeActivationId, 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-013');
 });
