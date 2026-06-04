@@ -97,6 +97,7 @@ async function executeAiImagePipelineV2(input = {}, options = {}) {
     state,
     plan: normalizedInput.plan,
     requestFlags: normalizedInput.requestFlags,
+    allowExecutionWithoutEnvGate: options.allowExecutionWithoutEnvGate === true,
   });
 
   // 4. 审计记录

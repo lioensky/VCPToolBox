@@ -78,12 +78,13 @@ function evaluatePipelineSafety(input = {}) {
   const state = input.state || {};
   const plan = input.plan || {};
   const flags = input.requestFlags || {};
+  const allowExecutionWithoutEnvGate = input.allowExecutionWithoutEnvGate === true;
   const reasons = [];
   const requiredApprovals = [];
 
   // ── 1. 环境变量门禁 ────────────────────────────────────────────
   const envAllow = String(process.env.AIGENT_PIPELINE_ALLOW_EXECUTION || 'false').toLowerCase();
-  const envEnabled = envAllow === 'true' || envAllow === '1';
+  const envEnabled = allowExecutionWithoutEnvGate || envAllow === 'true' || envAllow === '1';
 
   if (!envEnabled) {
     reasons.push('env:AIGENT_PIPELINE_ALLOW_EXECUTION 未设为 true');

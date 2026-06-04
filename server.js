@@ -641,6 +641,11 @@ const apiUrl = process.env.API_URL;
 const serverKey = process.env.Key;
 
 const cachedEmojiLists = new Map();
+const SERUM_BOTTLE_SECRETLESS_INTERNAL_ROUTE_PATH = '/internal/ai-image-agents/execute/serum-bottle-secretless';
+
+function isSerumBottleSecretlessInternalRoute(req) {
+    return req && req.path === SERUM_BOTTLE_SECRETLESS_INTERNAL_ROUTE_PATH;
+}
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
@@ -842,6 +847,12 @@ app.use((req, res, next) => {
     // Skip bearer token check for admin panel API and static files, as they use basic auth or no auth
     if (req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel')) {
         return next();
+    }
+
+    if (isSerumBottleSecretlessInternalRoute(req)) {
+        if (req.method === 'HEAD' && isLoopbackSocket(req)) {
+            return next();
+        }
     }
 
     const imageServicePathRegex = /^\/pw=[^/]+\/images\//;
@@ -1547,6 +1558,16 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 });
 
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE = 'serum_bottle_secretless_internal_execute';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
+    'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-018';
+const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
+    'secretless-serum-live-probe-attempt-018';
+const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_018.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
+    'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_018.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
+    'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_018/';
 const SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS = new Set([
     'serum_bottle_vcptoolbox_route_owner_runtime',
     'serum_bottle_secretless_option_a',
@@ -1612,7 +1633,13 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
         typeof request !== 'object' ||
         containsSerumBottleSecretlessForbiddenAuthorizerKey(request) ||
         request.mode !== SERUM_BOTTLE_SECRETLESS_AUTHORIZER_MODE ||
+        request.activationPackageId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
+        request.taskId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID ||
+        request.pipelineId !== SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID ||
         !SERUM_BOTTLE_SECRETLESS_AUTHORIZED_ROUTE_IDS.has(request.routeId) ||
+        request.receiptRef !== SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF ||
+        request.artifactRecordRef !== SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF ||
+        request.outputDirectoryRef !== SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF ||
         !hasSerumBottleSecretlessExactBudget(request.budget) ||
         !isNonEmptyString(request.receiptRef) ||
         !isNonEmptyString(request.artifactRecordRef) ||
@@ -1623,11 +1650,13 @@ async function authorizeSerumBottleSecretlessExecution(request = {}) {
 
     const authorizationSeed = JSON.stringify({
         mode: request.mode,
+        activationPackageId: request.activationPackageId,
         routeId: request.routeId,
         taskId: request.taskId || null,
         pipelineId: request.pipelineId || null,
         receiptRef: request.receiptRef,
         artifactRecordRef: request.artifactRecordRef,
+        outputDirectoryRef: request.outputDirectoryRef,
         nonSecretPayloadHash: request.nonSecretPayloadHash,
         budget: request.budget,
     });
@@ -1669,40 +1698,65 @@ async function initialize() {
     pluginManager.setWebSocketServer(webSocketServer);
 
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
-    // 条件挂载 AI Image Agents route — 默认关闭，env flag 开启
-    if (process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true') {
-      const { createAiImageAgentsRouter } = require('./routes/admin/aiImageAgents');
+    const {
+      createAiImageAgentsRouter,
+      createSerumBottleSecretlessInternalRouter,
+    } = require('./routes/admin/aiImageAgents');
+    const enableAiImageAgentsRoute = process.env.ENABLE_AI_IMAGE_AGENTS_ROUTE === 'true';
+    const routeOptions = {
+      auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
+      enableSerumBottleSecretlessInternalRoute: enableAiImageAgentsRoute,
+      pluginManager,
+      requireNativeDoubaoSecretlessRuntimeDelegate: true,
+      enableAiImageRealExecution: process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true',
+      enableNativeDoubaoSecretlessRuntimeDelegate:
+        process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true',
+      authorizeSerumBottleSecretlessExecution,
+    };
+    const {
+      createNativeImageDelegateRegistry,
+      registerSerumBottleSecretlessDoubaoDelegate,
+    } = require('./modules/nativeImageDelegateRegistry');
+    routeOptions.nativeImageDelegateRegistry = createNativeImageDelegateRegistry();
+
+    if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
       const {
         createNativeDoubaoSecretlessRuntimeDelegate,
       } = require('./modules/nativeDoubaoSecretlessRuntimeDelegate');
 
-      const routeOptions = {
-        auditFilePath: path.join(__dirname, 'state', 'ai-image-pipelines', 'audit.jsonl'),
-      };
-
-      if (process.env.ENABLE_AI_IMAGE_REAL_EXECUTION === 'true') {
-        routeOptions.pluginManager = pluginManager;
-        routeOptions.requireNativeDoubaoSecretlessRuntimeDelegate = true;
-        routeOptions.enableSerumBottleSecretlessInternalRoute = true;
-        routeOptions.authorizeSerumBottleSecretlessExecution =
-          authorizeSerumBottleSecretlessExecution;
-
-        if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
-          routeOptions.nativeDoubaoSecretlessRuntimeDelegate =
-            createNativeDoubaoSecretlessRuntimeDelegate({
-              enabled: true,
-              pluginManager,
-              requestIp: '127.0.0.1',
-              bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
-            });
-          console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
-        } else {
-          console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
-        }
+      if (process.env.ENABLE_NATIVE_DOUBAO_SECRETLESS_RUNTIME_DELEGATE === 'true') {
+        const nativeDoubaoSecretlessRuntimeDelegate = createNativeDoubaoSecretlessRuntimeDelegate({
+          enabled: true,
+          pluginManager,
+          requestIp: '127.0.0.1',
+          bridgeId: 'server_ai_image_agents_native_doubao_secretless_runtime_delegate',
+        });
+        routeOptions.nativeDoubaoSecretlessRuntimeDelegate = nativeDoubaoSecretlessRuntimeDelegate;
+        registerSerumBottleSecretlessDoubaoDelegate(
+          routeOptions.nativeImageDelegateRegistry,
+          nativeDoubaoSecretlessRuntimeDelegate,
+          { enabled: true }
+        );
+        console.log('[server] AI Image Agent real execution ENABLED (native Doubao secretless delegate injected)');
+      } else {
+        console.warn('[server] AI Image Agent real execution requested but native Doubao secretless delegate is disabled; route remains fail-closed');
       }
+    }
 
+    if (enableAiImageAgentsRoute) {
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
+
+    // The secretless route keeps only its HEAD health surface loopback-only.
+    // Real POST execution must pass the existing bearer middleware above before
+    // the exact activation and delegate gates are evaluated.
+    if (routeOptions.enableSerumBottleSecretlessInternalRoute === true) {
+      app.use(
+        '/internal/ai-image-agents',
+        createSerumBottleSecretlessInternalRouter(routeOptions)
+      );
+    }
+
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
     // 挂载 VCP 论坛 API 路由

@@ -159,6 +159,32 @@ assert('step with no agent and no plugin → no external', () => {
   }
 });
 
+// ── 测试 7：内部 exact route 可替代 env 门禁，但仍要求 request flags ──
+assert('internal exact execution bypass + request flags → ALLOW without env', () => {
+  delete process.env.AIGENT_PIPELINE_ALLOW_EXECUTION;
+
+  const decision = evaluatePipelineSafety({
+    state: {},
+    plan: {
+      steps: [
+        { type: 'generate_image', plugin: 'DoubaoGen', prompt: 'a red apple' },
+      ],
+    },
+    requestFlags: {
+      execute_pipeline: true,
+      confirm_external_effects: true,
+    },
+    allowExecutionWithoutEnvGate: true,
+  });
+
+  if (decision.action !== SAFETY_ACTION.ALLOW) {
+    throw new Error(`expected ALLOW, got ${decision.action}`);
+  }
+  if (decision.reasons.includes('env:AIGENT_PIPELINE_ALLOW_EXECUTION 未设为 true')) {
+    throw new Error(`should not include env gate reason: ${JSON.stringify(decision.reasons)}`);
+  }
+});
+
 // ── 清理 ──
 delete process.env.AIGENT_PIPELINE_ALLOW_EXECUTION;
 

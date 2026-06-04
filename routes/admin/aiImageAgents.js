@@ -12,11 +12,73 @@
  */
 
 const express = require('express');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { executeAiImagePipelineV2 } = require('../../modules/aiImagePipelineExecutor');
 const { getClientIp } = require('../../modules/toolExecution');
+const {
+  SERUM_BOTTLE_SECRETLESS_DELEGATE_ID,
+  SERUM_BOTTLE_SECRETLESS_PROVIDER_ID,
+  SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
+  SERUM_BOTTLE_SECRETLESS_API_ID,
+  SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+} = require('../../modules/nativeImageDelegateRegistry');
 
 const SERUM_BOTTLE_SECRETLESS_MODE = 'serum_bottle_secretless_internal_execute';
 const SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN = 'DoubaoGen';
+const SERUM_BOTTLE_SECRETLESS_ALLOWED_STEP_TYPE = 'generate_image';
+const SERUM_BOTTLE_SECRETLESS_MAX_PROMPT_LENGTH = 1200;
+const SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID =
+  'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-018';
+const SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID =
+  'secretless-serum-live-probe-attempt-018';
+const SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF =
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_receipt_20260603_attempt_018.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF =
+  'reports/runtime_to_review_v1/secretless_serum_live_probe_artifact_record_20260603_attempt_018.json';
+const SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF =
+  'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_018/';
+const SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX =
+  'runs/real_generation/runtime_to_review_v1_guarded_live_probe_serum_bottle_secretless_attempt_';
+const SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX = 'image/doubaogen/';
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const SERUM_BOTTLE_SECRETLESS_ALLOWED_MODELS = Object.freeze(new Set([
+  'doubao-seedream-5-0-260128',
+]));
+const SERUM_BOTTLE_SECRETLESS_BODY_KEYS = Object.freeze(new Set([
+  'pipeline_id',
+  'pipelineId',
+  'task_id',
+  'taskId',
+  'route_id',
+  'routeId',
+  'max_provider_calls',
+  'maxProviderCalls',
+  'max_plugin_calls',
+  'maxPluginCalls',
+  'max_api_calls',
+  'maxApiCalls',
+  'max_images',
+  'maxImages',
+  'retry_allowed',
+  'retryAllowed',
+  'receipt_ref',
+  'receiptRef',
+  'artifact_record_ref',
+  'artifactRecordRef',
+  'plan',
+  'non_secret_payload_hash',
+  'nonSecretPayloadHash',
+]));
+const SERUM_BOTTLE_SECRETLESS_STEP_KEYS = Object.freeze(new Set([
+  'type',
+  'plugin',
+  'prompt',
+  'model',
+  'output_directory_ref',
+  'outputDirectoryRef',
+]));
 const SERUM_BOTTLE_SECRETLESS_ROUTE_IDS = Object.freeze(new Set([
   'serum_bottle_vcptoolbox_route_owner_runtime',
   'serum_bottle_secretless_option_a',
@@ -85,11 +147,30 @@ function createAiImageAgentsRouter(options = {}) {
   });
 
   if (options.enableSerumBottleSecretlessInternalRoute === true) {
-    router.post('/execute/serum-bottle-secretless', async (req, res) => {
+    router.head('/execute/serum-bottle-secretless', (_req, res) => {
+    res.status(204).end();
+  });
+
+  router.post('/execute/serum-bottle-secretless', async (req, res) => {
       const response = await handleSerumBottleSecretlessExecutionRequest(req, options);
       sendJson(res, response);
     });
   }
+
+  return router;
+}
+
+function createSerumBottleSecretlessInternalRouter(options = {}) {
+  const router = express.Router();
+
+  router.head('/execute/serum-bottle-secretless', (_req, res) => {
+    res.status(204).end();
+  });
+
+  router.post('/execute/serum-bottle-secretless', async (req, res) => {
+    const response = await handleSerumBottleSecretlessExecutionRequest(req, options);
+    sendJson(res, response);
+  });
 
   return router;
 }
@@ -136,20 +217,22 @@ async function handleAiImagePipelineRequest(req, options = {}) {
     );
 
     if (allowRealExecution) {
-      const pluginLoad = await ensureRequiredPluginsRegistered(routeInput, options.pluginManager);
-      if (pluginLoad.ok !== true) {
-        return {
-          ok: false,
-          mode: 'requested_execute',
-          result: {
+      if (options.skipRequiredPluginRegistration !== true) {
+        const pluginLoad = await ensureRequiredPluginsRegistered(routeInput, options.pluginManager);
+        if (pluginLoad.ok !== true) {
+          return {
             ok: false,
-            status: 'plugin_not_registered',
             mode: 'requested_execute',
-            errors: pluginLoad.errors,
-            missingPlugins: pluginLoad.missingPlugins,
-            pluginLoadAttempted: pluginLoad.loadAttempted,
-          },
-        };
+            result: {
+              ok: false,
+              status: 'plugin_not_registered',
+              mode: 'requested_execute',
+              errors: pluginLoad.errors,
+              missingPlugins: pluginLoad.missingPlugins,
+              pluginLoadAttempted: pluginLoad.loadAttempted,
+            },
+          };
+        }
       }
 
       // route 内部覆盖 requestFlags — 不信任前端自由传入
@@ -189,12 +272,18 @@ async function handleAiImagePipelineRequest(req, options = {}) {
         executorOptions.executionContext.doubaoProjectBasePathOverride = projectBasePathOverride.path;
       }
 
-      executorOptions.pluginManager = hasNativeDoubaoSecretlessRuntimeDelegate
+      executorOptions.pluginManager = requireNativeDoubaoSecretlessRuntimeDelegate
         ? createNativeDoubaoDelegatePluginManagerFacade({
-            pluginManager: options.pluginManager,
-            nativeDoubaoSecretlessRuntimeDelegate: options.nativeDoubaoSecretlessRuntimeDelegate,
+            nativeImageDelegateRegistry: options.nativeImageDelegateRegistry,
+            strictInternalCommand: false,
           })
         : options.pluginManager;
+      if (
+        options.allowSerumBottleSecretlessPipelineExecution === true &&
+        executorOptions.executionContext.serumBottleSecretless === true
+      ) {
+        executorOptions.allowExecutionWithoutEnvGate = true;
+      }
     }
 
     const result = await executeAiImagePipelineV2(routeInput, executorOptions);
@@ -227,11 +316,13 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
     try {
       authorizationResult = await options.authorizeSerumBottleSecretlessExecution({
         mode: SERUM_BOTTLE_SECRETLESS_MODE,
+        activationPackageId: gate.activationPackageId,
         routeId: gate.routeId,
         taskId: routeInput.taskId || null,
         pipelineId: routeInput.pipelineId || null,
         receiptRef: gate.receiptRef,
         artifactRecordRef: gate.artifactRecordRef,
+        outputDirectoryRef: gate.outputDirectoryRef,
         nonSecretPayloadHash: gate.nonSecretPayloadHash,
         budget: gate.budget,
         requestIp: getClientIp(req),
@@ -247,6 +338,11 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
     if (authorization.ok !== true) {
       return createSerumBottleSecretlessFailure('serum_bottle_secretless_internal_authorization_denied');
     }
+
+    const delegateFacade = createNativeDoubaoDelegatePluginManagerFacade({
+      nativeImageDelegateRegistry: options.nativeImageDelegateRegistry,
+      strictInternalCommand: true,
+    });
 
     const delegatedRequest = {
       ...(req || {}),
@@ -267,12 +363,25 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
 
     const response = await handleAiImagePipelineRequest(delegatedRequest, {
       ...options,
+      pluginManager: delegateFacade,
       forceDryRun: false,
-      requireNativeDoubaoSecretlessRuntimeDelegate: true,
+      requireNativeDoubaoSecretlessRuntimeDelegate: false,
+      skipRequiredPluginRegistration: true,
+      allowSerumBottleSecretlessPipelineExecution: true,
     });
 
     if (response && response.result && typeof response.result === 'object') {
+      const outputRefs = collectSerumBottleSecretlessOutputRefs(response.result);
+      if (outputRefs.length > 0) {
+        response.result.outputRefs = outputRefs;
+      }
       response.result.serumBottleSecretlessAuthorization = authorization.publicReceipt;
+      response.result.serumBottleSecretlessRuntimeEvidence =
+        buildSerumBottleSecretlessRuntimeEvidence(
+          response.result,
+          delegateFacade.getInvocationEvidence(),
+          options.serumBottleSecretlessArtifactEvidenceReader
+        );
     }
 
     return response;
@@ -298,6 +407,32 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
       status: 'serum_bottle_secretless_payload_contains_forbidden_secret_key',
       detail: { forbiddenPayloadKeys },
     };
+  }
+
+  const schema = validateSerumBottleSecretlessPayloadSchema(body);
+  if (schema.ok !== true) {
+    return {
+      ok: false,
+      status: schema.status,
+      detail: schema.detail,
+    };
+  }
+
+  const exactBinding = validateSerumBottleSecretlessExactBinding(body, routeInput, schema.outputDirectoryRef);
+  if (exactBinding.ok !== true) {
+    return {
+      ok: false,
+      status: exactBinding.status,
+      detail: exactBinding.detail,
+    };
+  }
+
+  if (options.enableAiImageRealExecution !== true) {
+    return { ok: false, status: 'serum_bottle_secretless_real_execution_flag_disabled' };
+  }
+
+  if (options.enableNativeDoubaoSecretlessRuntimeDelegate !== true) {
+    return { ok: false, status: 'serum_bottle_secretless_native_delegate_flag_disabled' };
   }
 
   const routeId = readFirstString(
@@ -341,11 +476,13 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
     };
   }
 
-  if (!options.pluginManager || typeof options.pluginManager.processToolCall !== 'function') {
-    return { ok: false, status: 'serum_bottle_secretless_plugin_manager_missing' };
+  const nativeImageDelegateRegistry = options.nativeImageDelegateRegistry;
+  if (!nativeImageDelegateRegistry || typeof nativeImageDelegateRegistry.invokeBoundDelegate !== 'function') {
+    return { ok: false, status: 'serum_bottle_secretless_native_delegate_registry_missing' };
   }
 
-  if (typeof options.nativeDoubaoSecretlessRuntimeDelegate !== 'function') {
+  if (typeof nativeImageDelegateRegistry.hasCallable !== 'function' ||
+      nativeImageDelegateRegistry.hasCallable(SERUM_BOTTLE_SECRETLESS_DELEGATE_ID) !== true) {
     return { ok: false, status: 'serum_bottle_secretless_native_delegate_missing' };
   }
 
@@ -355,8 +492,10 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
 
   return {
     ok: true,
+    activationPackageId: SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID,
     routeId,
     budget,
+    outputDirectoryRef: schema.outputDirectoryRef,
     receiptRef: readFirstString(body.receiptRef, body.receipt_ref, body.context && body.context.receiptRef, body.context && body.context.receipt_ref),
     artifactRecordRef: readFirstString(
       body.artifactRecordRef,
@@ -371,6 +510,60 @@ function validateSerumBottleSecretlessExecutionRequest(body, routeInput, options
       body.context && body.context.non_secret_payload_hash
     ),
   };
+}
+
+function validateSerumBottleSecretlessExactBinding(body, routeInput, outputDirectoryRef) {
+  const taskId = readFirstString(body.taskId, body.task_id, routeInput && routeInput.taskId);
+  const pipelineId = readFirstString(body.pipelineId, body.pipeline_id, routeInput && routeInput.pipelineId);
+  const receiptRef = readFirstString(body.receiptRef, body.receipt_ref);
+  const artifactRecordRef = readFirstString(body.artifactRecordRef, body.artifact_record_ref);
+
+  const mismatches = [];
+  if (taskId !== SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID) {
+    mismatches.push({
+      field: 'task_id',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_ACTIVATION_ID,
+      received: taskId || null,
+    });
+  }
+  if (pipelineId !== SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID) {
+    mismatches.push({
+      field: 'pipeline_id',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_PIPELINE_ID,
+      received: pipelineId || null,
+    });
+  }
+  if (receiptRef !== SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF) {
+    mismatches.push({
+      field: 'receipt_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_RECEIPT_REF,
+      received: receiptRef || null,
+    });
+  }
+  if (artifactRecordRef !== SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF) {
+    mismatches.push({
+      field: 'artifact_record_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_ARTIFACT_RECORD_REF,
+      received: artifactRecordRef || null,
+    });
+  }
+  if (outputDirectoryRef !== SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF) {
+    mismatches.push({
+      field: 'output_directory_ref',
+      expected: SERUM_BOTTLE_SECRETLESS_EXACT_OUTPUT_DIRECTORY_REF,
+      received: outputDirectoryRef || null,
+    });
+  }
+
+  if (mismatches.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_exact_activation_binding_mismatch',
+      detail: { mismatches },
+    };
+  }
+
+  return { ok: true };
 }
 
 function resolveSerumBottleSecretlessBudget(body = {}) {
@@ -395,6 +588,180 @@ function resolveSerumBottleSecretlessBudget(body = {}) {
     maxImages: readNumericBudget(sources, 'maxImages', 'max_images'),
     retryAllowed: readBooleanBudget(sources, 'retryAllowed', 'retry_allowed'),
   };
+}
+
+function validateSerumBottleSecretlessPayloadSchema(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_schema_invalid',
+      detail: { reason: 'body_must_be_object' },
+    };
+  }
+
+  const unknownBodyKeys = Object.keys(body).filter((key) => !SERUM_BOTTLE_SECRETLESS_BODY_KEYS.has(key));
+  if (unknownBodyKeys.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_unknown_fields',
+      detail: { unknownFields: unknownBodyKeys.map((key) => `body.${key}`) },
+    };
+  }
+
+  const steps = body.plan && Array.isArray(body.plan.steps)
+    ? body.plan.steps
+    : null;
+  if (!steps || steps.length !== 1 || !steps[0] || typeof steps[0] !== 'object' || Array.isArray(steps[0])) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_schema_invalid',
+      detail: { reason: 'exactly_one_plan_step_required' },
+    };
+  }
+
+  const planKeys = Object.keys(body.plan || {});
+  const unknownPlanKeys = planKeys.filter((key) => key !== 'steps');
+  if (unknownPlanKeys.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_unknown_fields',
+      detail: { unknownFields: unknownPlanKeys.map((key) => `body.plan.${key}`) },
+    };
+  }
+
+  const step = steps[0];
+  const unknownStepKeys = Object.keys(step).filter((key) => !SERUM_BOTTLE_SECRETLESS_STEP_KEYS.has(key));
+  if (unknownStepKeys.length > 0) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_payload_unknown_fields',
+      detail: { unknownFields: unknownStepKeys.map((key) => `body.plan.steps[0].${key}`) },
+    };
+  }
+
+  if (step.type !== SERUM_BOTTLE_SECRETLESS_ALLOWED_STEP_TYPE) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_api_scope_not_authorized',
+      detail: { apiId: step.type || null },
+    };
+  }
+
+  if (step.plugin !== SERUM_BOTTLE_SECRETLESS_ALLOWED_PLUGIN) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_plugin_scope_not_authorized',
+      detail: { requiredPlugins: [step.plugin || null] },
+    };
+  }
+
+  if (typeof step.prompt !== 'string' || !step.prompt.trim()) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_prompt_invalid',
+      detail: { reason: 'prompt_required' },
+    };
+  }
+
+  if (step.prompt.length > SERUM_BOTTLE_SECRETLESS_MAX_PROMPT_LENGTH) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_prompt_too_long',
+      detail: {
+        maxPromptLength: SERUM_BOTTLE_SECRETLESS_MAX_PROMPT_LENGTH,
+        promptLength: step.prompt.length,
+      },
+    };
+  }
+
+  const model = readFirstString(step.model, body.model_id, body.modelId);
+  if (!model || !SERUM_BOTTLE_SECRETLESS_ALLOWED_MODELS.has(model)) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_model_not_allowed',
+      detail: { modelId: model || null },
+    };
+  }
+
+  const outputDirectoryRef = readFirstString(step.output_directory_ref, step.outputDirectoryRef);
+  const outputRef = validateSerumBottleSecretlessOutputDirectoryRef(outputDirectoryRef);
+  if (outputRef.ok !== true) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_output_directory_ref_invalid',
+      detail: outputRef.detail,
+    };
+  }
+
+  const payloadHash = readFirstString(body.non_secret_payload_hash, body.nonSecretPayloadHash);
+  if (!payloadHash) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_non_secret_payload_hash_missing',
+      detail: {},
+    };
+  }
+
+  const bodyWithoutHash = { ...body };
+  delete bodyWithoutHash.non_secret_payload_hash;
+  delete bodyWithoutHash.nonSecretPayloadHash;
+  const expectedPayloadHash = hashCanonicalPayload(bodyWithoutHash);
+  if (payloadHash !== expectedPayloadHash) {
+    return {
+      ok: false,
+      status: 'serum_bottle_secretless_non_secret_payload_hash_mismatch',
+      detail: { expectedPayloadHash, receivedPayloadHash: payloadHash },
+    };
+  }
+
+  return {
+    ok: true,
+    outputDirectoryRef,
+  };
+}
+
+function validateSerumBottleSecretlessOutputDirectoryRef(value) {
+  const outputDirectoryRef = readFirstString(value);
+  if (!outputDirectoryRef) {
+    return { ok: false, detail: { reason: 'output_directory_ref_required' } };
+  }
+
+  if (
+    outputDirectoryRef.includes(':') ||
+    outputDirectoryRef.startsWith('/') ||
+    outputDirectoryRef.startsWith('\\') ||
+    outputDirectoryRef.includes('..')
+  ) {
+    return { ok: false, detail: { reason: 'output_directory_ref_must_be_repo_relative' } };
+  }
+
+  const normalized = outputDirectoryRef.replace(/\\/g, '/');
+  if (!normalized.startsWith(SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX) || !normalized.endsWith('/')) {
+    return {
+      ok: false,
+      detail: {
+        reason: 'output_directory_ref_prefix_not_allowed',
+        requiredPrefix: SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX,
+      },
+    };
+  }
+
+  return { ok: true, outputDirectoryRef: normalized };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashCanonicalPayload(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
 function readNumericBudget(sources, camelKey, snakeKey) {
@@ -601,23 +968,39 @@ async function ensureRequiredPluginsRegistered(routeInput, pluginManager) {
 }
 
 function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
-  const pluginManager = options.pluginManager || null;
-  const nativeDoubaoSecretlessRuntimeDelegate =
-    options.nativeDoubaoSecretlessRuntimeDelegate;
+  const nativeImageDelegateRegistry = options.nativeImageDelegateRegistry || null;
+  const strictInternalCommand = options.strictInternalCommand === true;
+  const invocationEvidence = [];
 
   return {
     async processToolCall(toolName, toolArgs, requestIp, executionContext) {
-      if (toolName !== 'DoubaoGen') {
+      if (toolName !== SERUM_BOTTLE_SECRETLESS_PLUGIN_ID) {
         throw new Error(`native_doubao_delegate_tool_not_allowed:${toolName || '<empty>'}`);
       }
 
-      if (typeof nativeDoubaoSecretlessRuntimeDelegate !== 'function') {
-        throw new Error('native_doubao_secretless_runtime_delegate_not_callable');
+      const normalizedToolArgs = toolArgs && typeof toolArgs === 'object'
+        ? { ...toolArgs }
+        : {};
+      if (strictInternalCommand && normalizedToolArgs.command !== SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND) {
+        throw new Error(`native_doubao_delegate_command_not_allowed:${normalizedToolArgs.command || '<empty>'}`);
       }
 
-      const delegateResult = await nativeDoubaoSecretlessRuntimeDelegate({
+      if (!nativeImageDelegateRegistry ||
+          typeof nativeImageDelegateRegistry.invokeBoundDelegate !== 'function') {
+        throw new Error('native_image_delegate_registry_not_callable');
+      }
+
+      const delegateResult = await nativeImageDelegateRegistry.invokeBoundDelegate({
+        delegateId: SERUM_BOTTLE_SECRETLESS_DELEGATE_ID,
+        providerId: SERUM_BOTTLE_SECRETLESS_PROVIDER_ID,
+        pluginId: SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
+        ...(strictInternalCommand ? {
+          apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
+          internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+        } : {}),
+      }, {
         toolName,
-        toolArgs,
+        toolArgs: normalizedToolArgs,
         requestIp,
         executionContext,
       });
@@ -627,14 +1010,250 @@ function createNativeDoubaoDelegatePluginManagerFacade(options = {}) {
         throw new Error(blocker || 'native_doubao_secretless_runtime_delegate_failed_closed');
       }
 
+      invocationEvidence.push({
+        delegateId: SERUM_BOTTLE_SECRETLESS_DELEGATE_ID,
+        providerId: SERUM_BOTTLE_SECRETLESS_PROVIDER_ID,
+        pluginId: SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
+        apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
+        internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+        provider_contact_performed: delegateResult.provider_contact_performed === true,
+        plugin_call_performed: delegateResult.plugin_call_performed === true,
+        api_call_performed: delegateResult.api_call_performed === true,
+        image_generation_performed: delegateResult.image_generation_performed === true,
+      });
+
       return delegateResult.result;
     },
-    getPlugin(name) {
-      return pluginManager && typeof pluginManager.getPlugin === 'function'
-        ? pluginManager.getPlugin(name)
-        : null;
+    getInvocationEvidence() {
+      return invocationEvidence.slice();
     },
   };
+}
+
+function buildSerumBottleSecretlessRuntimeEvidence(
+  result = {},
+  invocationEvidence = [],
+  artifactEvidenceReader = readSerumBottleSecretlessArtifactEvidence
+) {
+  const latest = invocationEvidence.length > 0
+    ? invocationEvidence[invocationEvidence.length - 1]
+    : null;
+  const images = Array.isArray(result.images)
+    ? result.images
+    : [];
+  const firstImage = images[0] || {};
+  const resultDimensions = normalizeImageDimensions(firstImage.dimensions || {
+    width: firstImage.width,
+    height: firstImage.height,
+  });
+  const resultSha256 = readFirstString(firstImage.sha256, firstImage.hash, firstImage.checksum);
+  const resultMime = readFirstString(firstImage.mime, firstImage.mimeType, firstImage.contentType);
+  const fileEvidence = (!resultSha256 || !resultMime || !resultDimensions)
+    ? safeReadArtifactEvidence(artifactEvidenceReader, firstImage)
+    : null;
+
+  return {
+    routeId: 'serum_bottle_vcptoolbox_route_owner_runtime',
+    delegateId: SERUM_BOTTLE_SECRETLESS_DELEGATE_ID,
+    providerId: SERUM_BOTTLE_SECRETLESS_PROVIDER_ID,
+    pluginId: SERUM_BOTTLE_SECRETLESS_PLUGIN_ID,
+    apiId: SERUM_BOTTLE_SECRETLESS_API_ID,
+    internalCommand: SERUM_BOTTLE_SECRETLESS_INTERNAL_COMMAND,
+    providerCalls: latest && latest.provider_contact_performed ? 1 : 0,
+    pluginCalls: latest && latest.plugin_call_performed ? 1 : 0,
+    apiCalls: latest && latest.api_call_performed ? 1 : 0,
+    images: images.length,
+    outputRefs: collectSerumBottleSecretlessOutputRefs(result),
+    artifact: {
+      sha256: resultSha256 || (fileEvidence && fileEvidence.sha256) || null,
+      mime: resultMime || (fileEvidence && fileEvidence.mime) || null,
+      dimensions: resultDimensions || (fileEvidence && fileEvidence.dimensions) || null,
+    },
+  };
+}
+
+function collectSerumBottleSecretlessOutputRefs(result = {}) {
+  const refs = [];
+  if (Array.isArray(result.outputRefs)) {
+    refs.push(...result.outputRefs);
+  }
+  if (Array.isArray(result.output_refs)) {
+    refs.push(...result.output_refs);
+  }
+
+  const images = Array.isArray(result.images)
+    ? result.images
+    : [];
+  for (const image of images) {
+    refs.push(readFirstString(
+      image && image.outputRef,
+      image && image.output_ref,
+      image && image.path,
+      image && image.filePath,
+      image && image.localPath
+    ));
+  }
+
+  return Array.from(new Set(
+    refs
+      .map((ref) => normalizeSerumBottleSecretlessOutputRef(ref))
+      .filter(Boolean)
+  ));
+}
+
+function normalizeSerumBottleSecretlessOutputRef(value) {
+  const raw = readFirstString(value);
+  if (!raw || raw.includes('\0')) {
+    return null;
+  }
+
+  let normalized = raw.replace(/\\/g, '/');
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+    return null;
+  }
+
+  if (path.isAbsolute(raw) || path.isAbsolute(normalized)) {
+    const relative = path.relative(PROJECT_ROOT, raw).replace(/\\/g, '/');
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+    normalized = relative;
+  }
+
+  if (
+    normalized.includes(':') ||
+    normalized.startsWith('/') ||
+    normalized.startsWith('\\') ||
+    normalized.split('/').includes('..')
+  ) {
+    return null;
+  }
+
+  if (
+    !normalized.startsWith(SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX) &&
+    !normalized.startsWith(SERUM_BOTTLE_SECRETLESS_OUTPUT_REF_PREFIX)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function safeReadArtifactEvidence(reader, image) {
+  if (typeof reader !== 'function') {
+    return null;
+  }
+  try {
+    return normalizeArtifactEvidence(reader(image));
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeArtifactEvidence(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  return {
+    sha256: readFirstString(value.sha256, value.hash, value.checksum),
+    mime: readFirstString(value.mime, value.mimeType, value.contentType),
+    dimensions: normalizeImageDimensions(value.dimensions || {
+      width: value.width,
+      height: value.height,
+    }),
+  };
+}
+
+function readSerumBottleSecretlessArtifactEvidence(image = {}) {
+  const artifactPath = readFirstString(image.path, image.filePath, image.localPath);
+  if (!artifactPath) {
+    return null;
+  }
+
+  const normalizedPath = artifactPath.replace(/\\/g, '/');
+  if (normalizedPath.includes('\0') ||
+      path.isAbsolute(normalizedPath) ||
+      normalizedPath.split('/').includes('..') ||
+      !normalizedPath.startsWith(SERUM_BOTTLE_SECRETLESS_ARTIFACT_PATH_PREFIX)) {
+    return null;
+  }
+
+  const resolved = path.resolve(PROJECT_ROOT, normalizedPath);
+  const relative = path.relative(PROJECT_ROOT, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  const bytes = fs.readFileSync(resolved);
+  const detected = detectImageEvidence(bytes);
+  return {
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    mime: detected.mime,
+    dimensions: detected.dimensions,
+  };
+}
+
+function detectImageEvidence(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 24) {
+    throw new Error('artifact_evidence_unsupported_image');
+  }
+  if (bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') {
+    return {
+      mime: 'image/png',
+      dimensions: {
+        width: bytes.readUInt32BE(16),
+        height: bytes.readUInt32BE(20),
+      },
+    };
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    return {
+      mime: 'image/jpeg',
+      dimensions: readJpegDimensions(bytes),
+    };
+  }
+  throw new Error('artifact_evidence_unsupported_image');
+}
+
+function readJpegDimensions(bytes) {
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      throw new Error('artifact_evidence_invalid_jpeg_marker');
+    }
+    const marker = bytes[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || offset + length > bytes.length) {
+      throw new Error('artifact_evidence_invalid_jpeg_segment');
+    }
+    if ((marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf)) {
+      return {
+        width: bytes.readUInt16BE(offset + 5),
+        height: bytes.readUInt16BE(offset + 3),
+      };
+    }
+    offset += length;
+  }
+  throw new Error('artifact_evidence_jpeg_dimensions_missing');
+}
+
+function normalizeImageDimensions(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const width = Number(value.width);
+  const height = Number(value.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return null;
+  }
+  return { width, height };
 }
 
 // ── 输入处理 ─────────────────────────────────────────────────────────────
@@ -759,11 +1378,14 @@ function sendJson(res, payload) {
 // ── 导出 ─────────────────────────────────────────────────────────────────
 module.exports = {
   createAiImageAgentsRouter,
+  createSerumBottleSecretlessInternalRouter,
   handleAiImagePipelineRequest,
   handleSerumBottleSecretlessExecutionRequest,
   createNativeDoubaoDelegatePluginManagerFacade,
   resolveAuthorizedDoubaoProjectBasePathOverride,
   validateSerumBottleSecretlessExecutionRequest,
+  validateSerumBottleSecretlessPayloadSchema,
+  hashCanonicalPayload,
   collectRequiredPlugins,
   ensureRequiredPluginsRegistered,
   normalizeRouteInput,

@@ -114,3 +114,70 @@ test('aiImagePipelineExecutor forwards governance attribution into executeImageP
         }
     }
 });
+
+test('aiImagePipelineExecutor allows exact internal env-gate bypass only when explicitly supplied', async () => {
+    const previousAllow = process.env.AIGENT_PIPELINE_ALLOW_EXECUTION;
+    delete process.env.AIGENT_PIPELINE_ALLOW_EXECUTION;
+
+    const calls = [];
+    const auditFilePath = path.join(
+        os.tmpdir(),
+        `ai-image-pipeline-audit-internal-${process.pid}-${Date.now()}.jsonl`
+    );
+
+    try {
+        await withExecutorModule({
+            async executeImagePlan(plan, options) {
+                calls.push({ plan, options });
+                return {
+                    ok: true,
+                    images: [{ plugin: 'DoubaoGen', path: 'A:\\images\\internal.png' }],
+                    errors: [],
+                    steps: [{ index: 0, ok: true, plugin: 'DoubaoGen' }]
+                };
+            }
+        }, async ({ executeAiImagePipelineV2 }) => {
+            const pluginManager = { processToolCall() {} };
+            const result = await executeAiImagePipelineV2({
+                pipelineId: 'pipe-internal',
+                taskId: 'task-internal',
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'trusted internal execution' }]
+                },
+                requestFlags: {
+                    execute_pipeline: true,
+                    confirm_external_effects: true
+                }
+            }, {
+                dryRun: false,
+                pluginManager,
+                auditFilePath,
+                requestIp: '127.0.0.1',
+                allowExecutionWithoutEnvGate: true,
+                executionContext: {
+                    requestSource: 'ai-image-pipeline',
+                    operatorId: 'vcptoolbox-internal-serum',
+                    serumBottleSecretless: true,
+                    taskId: 'task-internal',
+                    invocationId: 'pipe-internal'
+                }
+            });
+
+            assert.equal(result.ok, true);
+            assert.equal(result.mode, 'real_execution');
+            assert.equal(result.safety.action, 'allow');
+            assert.equal(result.safety.reasons.includes('env:AIGENT_PIPELINE_ALLOW_EXECUTION 未设为 true'), false);
+            assert.equal(calls.length, 1);
+        });
+    } finally {
+        if (previousAllow === undefined) {
+            delete process.env.AIGENT_PIPELINE_ALLOW_EXECUTION;
+        } else {
+            process.env.AIGENT_PIPELINE_ALLOW_EXECUTION = previousAllow;
+        }
+
+        if (fs.existsSync(auditFilePath)) {
+            fs.unlinkSync(auditFilePath);
+        }
+    }
+});
