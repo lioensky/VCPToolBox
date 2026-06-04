@@ -163,6 +163,10 @@ function createAiImageAgentsRouter(options = {}) {
 function createSerumBottleSecretlessInternalRouter(options = {}) {
   const router = express.Router();
 
+  router.head('/execute/serum-bottle-secretless', (_req, res) => {
+    res.status(204).end();
+  });
+
   router.post('/execute/serum-bottle-secretless', async (req, res) => {
     const response = await handleSerumBottleSecretlessExecutionRequest(req, options);
     sendJson(res, response);
