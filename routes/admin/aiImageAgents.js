@@ -313,6 +313,7 @@ async function handleSerumBottleSecretlessExecutionRequest(req, options = {}) {
         pipelineId: routeInput.pipelineId || null,
         receiptRef: gate.receiptRef,
         artifactRecordRef: gate.artifactRecordRef,
+        outputDirectoryRef: gate.outputDirectoryRef,
         nonSecretPayloadHash: gate.nonSecretPayloadHash,
         budget: gate.budget,
         requestIp: getClientIp(req),
