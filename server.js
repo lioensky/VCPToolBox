@@ -850,11 +850,9 @@ app.use((req, res, next) => {
     }
 
     if (isSerumBottleSecretlessInternalRoute(req)) {
-        if (isLoopbackSocket(req)) {
+        if (req.method === 'HEAD' && isLoopbackSocket(req)) {
             return next();
         }
-
-        return res.status(403).json({ error: 'Forbidden' });
     }
 
     const imageServicePathRegex = /^\/pw=[^/]+\/images\//;
@@ -1746,9 +1744,9 @@ async function initialize() {
       app.use('/admin_api/ai-image-agents', createAiImageAgentsRouter(routeOptions));
     }
 
-    // The secretless route is intentionally independent from admin auth.
-    // It is loopback-only in the general auth middleware and fails closed unless
-    // the real execution delegate has been explicitly enabled.
+    // The secretless route keeps only its HEAD health surface loopback-only.
+    // Real POST execution must pass the existing bearer middleware above before
+    // the exact activation and delegate gates are evaluated.
     if (routeOptions.enableSerumBottleSecretlessInternalRoute === true) {
       app.use(
         '/internal/ai-image-agents',

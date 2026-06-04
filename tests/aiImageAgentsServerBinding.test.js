@@ -32,3 +32,17 @@ test('secretless serum server authorizer binding matches route exact activation'
     assert.equal(serverActivationId, routeActivationId);
     assert.equal(routeActivationId, 'AUTH-SECRETLESS-SERUM-LIVE-PROBE-20260603-018');
 });
+
+test('secretless serum internal POST remains behind bearer auth', () => {
+    const serverSource = read('server.js');
+
+    assert.match(
+        serverSource,
+        /if \(isSerumBottleSecretlessInternalRoute\(req\)\) \{\s+if \(req\.method === 'HEAD' && isLoopbackSocket\(req\)\) \{\s+return next\(\);\s+\}\s+\}/
+    );
+    assert.doesNotMatch(
+        serverSource,
+        /if \(isSerumBottleSecretlessInternalRoute\(req\)\) \{\s+if \(isLoopbackSocket\(req\)\) \{\s+return next\(\);\s+\}\s+return res\.status\(403\)/
+    );
+    assert.match(serverSource, /authHeader !== `Bearer \$\{serverKey\}`/);
+});

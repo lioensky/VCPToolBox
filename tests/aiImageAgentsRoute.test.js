@@ -246,7 +246,7 @@ test('aiImageAgents serum-bottle secretless helper authorizes internally before 
     });
 });
 
-test('aiImageAgents serum-bottle secretless internal router exposes only exact secretless route without Authorization header', async (t) => {
+test('aiImageAgents serum-bottle secretless internal router exposes only exact route while server middleware owns auth', async (t) => {
     const calls = [];
     const authorizerCalls = [];
 
