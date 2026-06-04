@@ -7,6 +7,10 @@ const {
     createNativeImageDelegateRegistry,
     registerSerumBottleSecretlessDoubaoDelegate,
 } = require('../modules/nativeImageDelegateRegistry');
+const {
+    createNativeDoubaoSecretlessRuntimeDelegate,
+    SECRETLESS_SERUM_ALLOWED_SIZE,
+} = require('../modules/nativeDoubaoSecretlessRuntimeDelegate');
 
 const routePath = require.resolve('../routes/admin/aiImageAgents');
 
@@ -176,6 +180,70 @@ test('aiImageAgents execute route allows real execution from trusted admin attri
             taskId: 'task-1',
             invocationId: 'pipe-1'
         });
+    });
+});
+
+test('aiImageAgents execute route sends required native executions through delegate facade', async () => {
+    const rawPluginCalls = [];
+    const registry = createNativeImageDelegateRegistry();
+    const rawPluginManager = {
+        async processToolCall(toolName, toolArgs, requestIp, executionContext) {
+            rawPluginCalls.push({ toolName, toolArgs, requestIp, executionContext });
+            return {
+                ok: true,
+                imageUrl: 'file:///tmp/native-admin-serum.png',
+                sha256: 'd'.repeat(64),
+                mime: 'image/png',
+                width: 1920,
+                height: 1920,
+            };
+        }
+    };
+    const nativeDelegate = createNativeDoubaoSecretlessRuntimeDelegate({
+        enabled: true,
+        pluginManager: rawPluginManager,
+        requestIp: '127.0.0.1',
+        bridgeId: 'test_admin_native_delegate'
+    });
+    registerSerumBottleSecretlessDoubaoDelegate(registry, nativeDelegate, { enabled: true });
+
+    await withRouteModule({
+        async executeAiImagePipelineV2(input, options) {
+            assert.notEqual(options.pluginManager, rawPluginManager);
+            const delegateResult = await options.pluginManager.processToolCall(
+                'DoubaoGen',
+                { command: 'generate', prompt: input.plan.steps[0].prompt, size: '1x1' },
+                options.requestIp,
+                options.executionContext
+            );
+            return { ok: true, mode: 'real_execution', delegateResult };
+        }
+    }, async ({ handleAiImagePipelineRequest }) => {
+        const result = await handleAiImagePipelineRequest({
+            ip: '::ffff:10.0.0.8',
+            adminAuthUser: 'admin-root',
+            body: {
+                pipelineId: 'pipe-native-admin',
+                taskId: 'task-native-admin',
+                dryRun: false,
+                confirm: true,
+                plan: {
+                    steps: [{ type: 'generate_image', plugin: 'DoubaoGen', prompt: 'native admin test' }]
+                }
+            }
+        }, {
+            pluginManager: rawPluginManager,
+            nativeImageDelegateRegistry: registry,
+            nativeDoubaoSecretlessRuntimeDelegate: nativeDelegate,
+            requireNativeDoubaoSecretlessRuntimeDelegate: true
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(rawPluginCalls.length, 1);
+        assert.equal(rawPluginCalls[0].toolName, 'DoubaoGen');
+        assert.equal(rawPluginCalls[0].toolArgs.size, SECRETLESS_SERUM_ALLOWED_SIZE);
+        assert.equal(rawPluginCalls[0].executionContext.requestSource, 'agent-image-lab-secretless-runtime');
+        assert.equal(rawPluginCalls[0].executionContext.bridgeId, 'test_admin_native_delegate');
     });
 });
 

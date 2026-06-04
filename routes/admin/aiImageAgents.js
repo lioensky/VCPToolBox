@@ -272,7 +272,11 @@ async function handleAiImagePipelineRequest(req, options = {}) {
         executorOptions.executionContext.doubaoProjectBasePathOverride = projectBasePathOverride.path;
       }
 
-      executorOptions.pluginManager = options.pluginManager;
+      executorOptions.pluginManager = requireNativeDoubaoSecretlessRuntimeDelegate
+        ? createNativeDoubaoDelegatePluginManagerFacade({
+            nativeImageDelegateRegistry: options.nativeImageDelegateRegistry,
+          })
+        : options.pluginManager;
       if (
         options.allowSerumBottleSecretlessPipelineExecution === true &&
         executorOptions.executionContext.serumBottleSecretless === true
