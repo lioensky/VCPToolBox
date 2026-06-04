@@ -625,8 +625,8 @@ function setExclusiveSuffix(key: SuffixKey, value: boolean): void {
   }
 }
 
-function sanitizeNumber(value: string): string {
-  const trimmed = value.trim();
+function sanitizeNumber(value: unknown): string {
+  const trimmed = String(value ?? "").trim();
   if (!trimmed) {
     return "";
   }
