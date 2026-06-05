@@ -394,22 +394,36 @@ class OneRingPreprocessor {
         // 关键原因：AI 回复入库是异步 DB 写入，不会回写给前端历史；
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
         const now = formatOneRingTimestamp();
-        const lastUserIdx = [...patchMessages].map((m, i) => ({ m, i }))
-            .filter(({ m }) => m.role === 'user')
-            .pop();
+        const realUserEntries = [...patchMessages].map((m, i) => ({ m, i }))
+            .filter(({ m }) => m && m.role === 'user')
+            .map(({ m, i }) => ({
+                m,
+                i,
+                classified: classifyUserContent(m.content, defaultUserName, agentName)
+            }))
+            .filter(({ classified }) => !!classified);
 
-        if (lastUserIdx) {
-            const classified = classifyUserContent(patchMessages[lastUserIdx.i].content, defaultUserName, agentName);
-            if (classified && !isFreshShortContext) {
-                this._recordUserMessage(
-                    agentName,
-                    frontendSource,
-                    classified.senderName,
-                    classified.cleanText,
-                    now,
-                    threshold
-                );
-            }
+        const lastRealUserIdx = realUserEntries.pop();
+
+        if (lastRealUserIdx && !isFreshShortContext) {
+            this._recordUserMessage(
+                agentName,
+                frontendSource,
+                lastRealUserIdx.classified.senderName,
+                lastRealUserIdx.classified.cleanText,
+                now,
+                threshold
+            );
+        }
+
+        if (!isFreshShortContext) {
+            this._recordIncomingAssistantContext(
+                agentName,
+                frontendSource,
+                patchMessages,
+                now,
+                threshold
+            );
         }
 
         patchMessages = patchMessages.map((m) => {
@@ -825,6 +839,30 @@ class OneRingPreprocessor {
                     classifiedAssistant.senderName
                 );
             }
+        }
+    }
+
+    _recordIncomingAssistantContext(agentName, frontendSource, messages, timestamp, threshold = 0.92) {
+        if (!Array.isArray(messages)) return;
+
+        for (const m of messages) {
+            if (!m || m.role !== 'assistant') continue;
+
+            const classified = classifyUserContent(m.content, agentName, agentName);
+            if (!classified) continue;
+
+            // 群聊/AA 中 assistant role 可能承载别的 Agent 发言，必须入库给 OneRing 时间线。
+            // 纯 Direct assistant 默认由 final callback 记录，避免当前目标 AI 的回复被重复同步。
+            if (classified.source === 'Direct' && classified.senderName === agentName) continue;
+
+            this._recordAssistantMessage(
+                agentName,
+                frontendSource,
+                classified.cleanText,
+                timestamp,
+                threshold,
+                classified.senderName
+            );
         }
     }
 
