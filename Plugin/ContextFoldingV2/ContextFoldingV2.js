@@ -6,6 +6,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const dotenv = require('dotenv');
 const chokidar = require('chokidar');
+const { findLastRealUserMessage } = require('../../modules/messageProcessor.js');
 
 const FOLDING_PREFIX = '[VCP上下文语义折叠-本层摘要:';
 // 使用 [\s\S]+? 而非 .+? 以兼容模型输出多行摘要的情况
@@ -320,33 +321,29 @@ class ContextFoldingV2 {
     }
 
     /**
-     * 获取上下文参考向量（最新 user + 最新 AI 消息的加权平均）
+     * 获取上下文参考向量（最新真实 user + 最新 AI 消息的加权平均）
      */
     async _getContextVector(messages, bridge) {
-        // 查找最新的 user 和 assistant 消息
-        let lastUserContent = null;
-        let lastAiContent = null;
+        // 复用中央管线的真实 user 定位规则，避免 ContextFoldingV2 与 messageProcessor 后续规则漂移。
+        // OneRing 尾部来源标记不参与上下文参考向量，避免时间戳/前端来源扰动折叠决策。
+        const lastUserMessage = findLastRealUserMessage(messages, {
+            sanitize: (text, role) => bridge.sanitize(this._sanitizeOneRingMarkers(text), role)
+        });
 
+        if (!lastUserMessage.sanitizedContent) return null;
+
+        // 查找最新的 assistant 消息
+        let lastAiContent = null;
         for (let i = messages.length - 1; i >= 0; i--) {
             const msg = messages[i];
-            if (msg.role === 'user' && !lastUserContent) {
-                const c = this._getContent(msg);
-                // 跳过系统邀请指令
-                if (!c.startsWith('[系统邀请指令:]') && !c.trim().startsWith('[系统提示:]无内容')) {
-                    lastUserContent = c;
-                }
-            }
-            if (msg.role === 'assistant' && !lastAiContent) {
+            if (msg.role === 'assistant') {
                 lastAiContent = this._getContent(msg);
+                break;
             }
-            if (lastUserContent && lastAiContent) break;
         }
 
-        if (!lastUserContent) return null;
-
         // 净化
-        // OneRing 尾部来源标记不参与上下文参考向量，避免时间戳/前端来源扰动折叠决策。
-        const sanitizedUser = bridge.sanitize(this._sanitizeOneRingMarkers(lastUserContent), 'user');
+        const sanitizedUser = lastUserMessage.sanitizedContent;
         const sanitizedAi = lastAiContent ? bridge.sanitize(this._sanitizeOneRingMarkers(lastAiContent), 'assistant') : null;
 
         // 向量化
