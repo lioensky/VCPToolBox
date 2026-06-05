@@ -229,6 +229,17 @@
             </button>
             <button
               type="button"
+              @click="togglePlaceholderSidebar"
+              class="btn-secondary btn-sm btn-sm-touch"
+              :class="{ active: isPlaceholderSidebarOpen }"
+              aria-label="切换常用占位符侧栏"
+              :title="isPlaceholderSidebarOpen ? '收起常用占位符' : '展开常用占位符'"
+            >
+              <span class="material-symbols-outlined">data_object</span>
+              占位符
+            </button>
+            <button
+              type="button"
               @click="saveAgentFile"
               :disabled="!fileDirty || isSavingFile"
               class="btn-success btn-sm btn-sm-touch"
@@ -241,27 +252,140 @@
       </template>
 
       <template #right-content>
-        <div class="agent-file-editor">
-          <div class="agent-editor-controls">
-            <span class="editing-file-display">
-              <span class="material-symbols-outlined">description</span>
-              {{ editingFile || "未选择文件" }}
-              <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
+        <div class="agent-file-workspace" :class="{ 'placeholder-sidebar-collapsed': !isPlaceholderSidebarOpen }">
+          <div class="agent-file-editor">
+            <div class="agent-editor-controls">
+              <span class="editing-file-display">
+                <span class="material-symbols-outlined">description</span>
+                {{ editingFile || "未选择文件" }}
+                <span v-if="fileDirty" class="dirty-indicator">（未保存）</span>
+              </span>
+            </div>
+            <textarea
+              ref="fileContentEditorRef"
+              v-model="fileContent"
+              spellcheck="false"
+              rows="20"
+              placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt / .md 文件…"
+              class="file-content-editor"
+            ></textarea>
+            <span
+              v-if="fileStatusMessage"
+              :class="['status-message', fileStatusType]"
+            >
+              {{ fileStatusMessage }}
             </span>
           </div>
-          <textarea
-            v-model="fileContent"
-            spellcheck="false"
-            rows="20"
-            placeholder="从左侧选择一个 Agent 以编辑其关联的 .txt / .md 文件…"
-            class="file-content-editor"
-          ></textarea>
-          <span
-            v-if="fileStatusMessage"
-            :class="['status-message', fileStatusType]"
+
+          <button
+            v-if="!isPlaceholderSidebarOpen"
+            type="button"
+            class="placeholder-sidebar-rail"
+            aria-label="展开常用占位符侧栏"
+            title="展开常用占位符"
+            @click="isPlaceholderSidebarOpen = true"
           >
-            {{ fileStatusMessage }}
-          </span>
+            <span class="material-symbols-outlined">data_object</span>
+            <span>占位符</span>
+            <span class="material-symbols-outlined">chevron_left</span>
+          </button>
+
+          <aside class="placeholder-sidebar" :aria-hidden="!isPlaceholderSidebarOpen">
+            <header class="placeholder-sidebar-header">
+              <div>
+                <span class="eyebrow">Quick Insert</span>
+                <h4>常用占位符</h4>
+              </div>
+              <button
+                type="button"
+                class="placeholder-sidebar-close"
+                aria-label="收起常用占位符侧栏"
+                @click="isPlaceholderSidebarOpen = false"
+              >
+                <span class="material-symbols-outlined">chevron_right</span>
+              </button>
+            </header>
+
+            <div class="placeholder-search">
+              <span class="material-symbols-outlined search-icon">search</span>
+              <input
+                v-model="placeholderQuery"
+                type="text"
+                placeholder="搜索占位符…"
+              />
+              <button
+                v-if="placeholderQuery"
+                type="button"
+                class="search-clear"
+                aria-label="清除搜索"
+                @click="placeholderQuery = ''"
+              >
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div
+              v-if="isLoadingCommonPlaceholders"
+              class="placeholder-sidebar-status"
+              role="status"
+              aria-live="polite"
+            >
+              正在加载占位符…
+            </div>
+
+            <div
+              v-else-if="placeholderLoadError"
+              class="placeholder-sidebar-status error"
+              role="status"
+              aria-live="polite"
+            >
+              {{ placeholderLoadError }}
+            </div>
+
+            <template v-else>
+              <section
+                v-for="group in filteredPlaceholderGroups"
+                :key="group.key"
+                class="placeholder-group"
+              >
+                <button
+                  type="button"
+                  class="placeholder-group-title"
+                  :aria-expanded="!collapsedPlaceholderGroups[group.key]"
+                  @click="togglePlaceholderGroup(group.key)"
+                >
+                  <span class="material-symbols-outlined">{{ group.icon }}</span>
+                  <span>{{ group.title }}</span>
+                  <span class="placeholder-count">{{ group.items.length }}</span>
+                  <span class="material-symbols-outlined group-chevron">expand_more</span>
+                </button>
+
+                <div
+                  v-show="!collapsedPlaceholderGroups[group.key]"
+                  class="placeholder-chip-list"
+                >
+                  <button
+                    v-for="item in group.items"
+                    :key="`${group.key}-${item.token}`"
+                    type="button"
+                    class="placeholder-chip"
+                    :title="item.description || item.token"
+                    @click="insertPlaceholderAtCursor(item.token)"
+                  >
+                    <code>{{ item.token }}</code>
+                    <span v-if="item.description">{{ item.description }}</span>
+                  </button>
+                </div>
+              </section>
+
+              <div
+                v-if="filteredPlaceholderGroups.length === 0"
+                class="placeholder-sidebar-status"
+              >
+                没有匹配的占位符。
+              </div>
+            </template>
+          </aside>
         </div>
       </template>
     </DualPaneEditor>
@@ -287,9 +411,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
-import { agentApi } from "@/api";
+import { agentApi, placeholderApi, toolboxApi } from "@/api";
 import DualPaneEditor from "@/components/DualPaneEditor.vue";
 import DiarySyntaxEditorModal from "./AgentFilesEditor/DiarySyntaxEditorModal.vue";
 import { askConfirm } from "@/platform/feedback/feedbackBus";
@@ -304,6 +428,19 @@ const logger = createLogger("AgentFilesEditor");
 
 interface AgentMapDraft extends AgentMapEntry {
   localId: string;
+}
+
+interface QuickPlaceholderItem {
+  token: string;
+  description: string;
+  source: "toolbox" | "env";
+}
+
+interface QuickPlaceholderGroup {
+  key: "toolbox" | "env";
+  title: string;
+  icon: string;
+  items: QuickPlaceholderItem[];
 }
 
 let nextAgentMapDraftId = 0;
@@ -335,6 +472,17 @@ const isSavingMap = ref(false);
 const isSavingFile = ref(false);
 const initialAgentMapSnapshot = ref("[]");
 const isDiarySyntaxEditorOpen = ref(false);
+const isPlaceholderSidebarOpen = ref(true);
+const isLoadingCommonPlaceholders = ref(false);
+const placeholderLoadError = ref("");
+const placeholderQuery = ref("");
+const toolboxPlaceholders = ref<QuickPlaceholderItem[]>([]);
+const envPlaceholders = ref<QuickPlaceholderItem[]>([]);
+const fileContentEditorRef = ref<HTMLTextAreaElement | null>(null);
+const collapsedPlaceholderGroups = ref<Record<string, boolean>>({
+  toolbox: false,
+  env: false,
+});
 
 const agentFilesDatalistId = "agent-file-options";
 const AGENT_FILE_EXTENSION_PATTERN = /\.(txt|md)$/i;
@@ -504,6 +652,134 @@ function deduplicateAgentFiles(files: readonly string[]): string[] {
   return [...uniqueFiles.values()].sort((left, right) =>
     left.localeCompare(right, undefined, { sensitivity: "base" })
   );
+}
+
+function normalizePlaceholderToken(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return trimmed.startsWith("{{") && trimmed.endsWith("}}") ? trimmed : `{{${trimmed}}}`;
+}
+
+function isTargetEnvPlaceholderName(name: string): boolean {
+  const normalized = name.replace(/^\{\{|\}\}$/g, "");
+  return /^(Tar|Var|Sar)/.test(normalized);
+}
+
+function matchesPlaceholderQuery(item: QuickPlaceholderItem, normalizedQuery: string): boolean {
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return `${item.token}\n${item.description}`.toLowerCase().includes(normalizedQuery);
+}
+
+const placeholderGroups = computed<QuickPlaceholderGroup[]>(() => [
+  {
+    key: "toolbox",
+    title: "Toolbox 占位符",
+    icon: "inventory_2",
+    items: toolboxPlaceholders.value,
+  },
+  {
+    key: "env",
+    title: "Tar / Var / Sar 变量",
+    icon: "tune",
+    items: envPlaceholders.value,
+  },
+]);
+
+const filteredPlaceholderGroups = computed<QuickPlaceholderGroup[]>(() => {
+  const query = placeholderQuery.value.trim().toLowerCase();
+
+  return placeholderGroups.value
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => matchesPlaceholderQuery(item, query)),
+    }))
+    .filter((group) => group.items.length > 0);
+});
+
+function togglePlaceholderSidebar(): void {
+  isPlaceholderSidebarOpen.value = !isPlaceholderSidebarOpen.value;
+}
+
+function togglePlaceholderGroup(groupKey: string): void {
+  collapsedPlaceholderGroups.value = {
+    ...collapsedPlaceholderGroups.value,
+    [groupKey]: !collapsedPlaceholderGroups.value[groupKey],
+  };
+}
+
+async function loadCommonPlaceholders(): Promise<void> {
+  isLoadingCommonPlaceholders.value = true;
+  placeholderLoadError.value = "";
+
+  try {
+    const [toolboxMap, placeholders] = await Promise.all([
+      toolboxApi.getToolboxMap({ showLoader: false, loadingKey: "agent-files.toolbox-placeholders.load" }),
+      placeholderApi.getPlaceholders({ showLoader: false, loadingKey: "agent-files.env-placeholders.load" }),
+    ]);
+
+    toolboxPlaceholders.value = Object.entries(toolboxMap || {})
+      .map(([alias, value]) => {
+        const token = normalizePlaceholderToken(alias);
+        return {
+          token,
+          description: [value?.file, value?.description].filter(Boolean).join(" · "),
+          source: "toolbox" as const,
+        };
+      })
+      .filter((item) => item.token.length > 0)
+      .sort((left, right) => left.token.localeCompare(right.token, undefined, { sensitivity: "base" }));
+
+    envPlaceholders.value = placeholders
+      .filter((placeholder) => isTargetEnvPlaceholderName(placeholder.name))
+      .map((placeholder) => ({
+        token: normalizePlaceholderToken(placeholder.name),
+        description: placeholder.description || placeholder.preview || placeholder.type,
+        source: "env" as const,
+      }))
+      .filter((item) => item.token.length > 0)
+      .sort((left, right) => left.token.localeCompare(right.token, undefined, { sensitivity: "base" }));
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error("Failed to load common placeholders:", errorMessage);
+    placeholderLoadError.value = `加载常用占位符失败: ${errorMessage}`;
+  } finally {
+    isLoadingCommonPlaceholders.value = false;
+  }
+}
+
+async function insertPlaceholderAtCursor(token: string): Promise<void> {
+  if (!token) {
+    return;
+  }
+
+  const editor = fileContentEditorRef.value;
+  if (!editor) {
+    fileContent.value = `${fileContent.value}${token}`;
+    showMessage(`已插入 ${token}`, "success");
+    return;
+  }
+
+  const selectionStart = editor.selectionStart ?? fileContent.value.length;
+  const selectionEnd = editor.selectionEnd ?? selectionStart;
+  const before = fileContent.value.slice(0, selectionStart);
+  const after = fileContent.value.slice(selectionEnd);
+  const previousScrollTop = editor.scrollTop;
+  const previousScrollLeft = editor.scrollLeft;
+  fileContent.value = `${before}${token}${after}`;
+
+  await nextTick();
+  editor.focus({ preventScroll: true });
+  const nextCursor = selectionStart + token.length;
+  editor.setSelectionRange(nextCursor, nextCursor);
+  editor.scrollTop = previousScrollTop;
+  editor.scrollLeft = previousScrollLeft;
+  showMessage(`已插入 ${token}`, "success");
 }
 
 function buildAgentMapPayload(): Record<string, string> {
@@ -773,7 +1049,7 @@ async function refreshAll(): Promise<void> {
     }
   }
 
-  await Promise.all([loadAvailableFiles(), loadAgentMap()]);
+  await Promise.all([loadAvailableFiles(), loadAgentMap(), loadCommonPlaceholders()]);
   if (editingFile.value) {
     await selectAgentFile(editingFile.value);
   }
@@ -813,7 +1089,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent): void {
 }
 
 onMounted(() => {
-  void Promise.all([loadAvailableFiles(), loadAgentMap()]);
+  void Promise.all([loadAvailableFiles(), loadAgentMap(), loadCommonPlaceholders()]);
   document.addEventListener("keydown", handleKeydown);
   window.addEventListener("beforeunload", handleBeforeUnload);
 });
@@ -989,10 +1265,24 @@ onBeforeRouteLeave(async () => {
   margin-top: 8px;
 }
 
+.agent-file-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  gap: var(--space-3);
+  min-height: 0;
+  flex: 1;
+}
+
+.agent-file-workspace.placeholder-sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: var(--space-2);
+}
+
 .agent-file-editor {
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -1053,6 +1343,257 @@ onBeforeRouteLeave(async () => {
   padding: 12px;
   background: var(--tertiary-bg);
   border-radius: var(--radius-sm);
+}
+
+.placeholder-sidebar-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 180px;
+  padding: 10px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--tertiary-bg);
+  color: var(--secondary-text);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.placeholder-sidebar-rail:hover {
+  color: var(--primary-text);
+  border-color: var(--highlight-text);
+  background: color-mix(in srgb, var(--button-bg) 10%, var(--tertiary-bg));
+}
+
+.placeholder-sidebar-rail .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 18px !important;
+  writing-mode: horizontal-tb;
+}
+
+.placeholder-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--secondary-bg);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.placeholder-sidebar-collapsed .placeholder-sidebar {
+  display: none;
+}
+
+.placeholder-sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--tertiary-bg);
+}
+
+.placeholder-sidebar-header h4 {
+  margin: 2px 0 0;
+  color: var(--primary-text);
+  font-size: var(--font-size-body);
+}
+
+.placeholder-sidebar-header .eyebrow {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.placeholder-sidebar-close {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--secondary-bg);
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+
+.placeholder-sidebar-close:hover {
+  color: var(--primary-text);
+  border-color: var(--highlight-text);
+}
+
+.placeholder-search {
+  position: relative;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.placeholder-search input {
+  width: 100%;
+  padding: 8px 32px 8px 34px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--primary-text);
+}
+
+.placeholder-search input:focus-visible {
+  outline: 2px solid var(--highlight-text);
+  outline-offset: 2px;
+  border-color: var(--highlight-text);
+}
+
+.placeholder-search .search-icon {
+  position: absolute;
+  top: 50%;
+  left: 22px;
+  transform: translateY(-50%);
+  color: var(--secondary-text);
+  font-size: 18px !important;
+  pointer-events: none;
+}
+
+.placeholder-search .search-clear {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  transform: translateY(-50%);
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--secondary-text);
+  cursor: pointer;
+}
+
+.placeholder-search .search-clear:hover {
+  color: var(--primary-text);
+}
+
+.placeholder-search .search-clear .material-symbols-outlined {
+  font-size: 16px !important;
+}
+
+.placeholder-sidebar-status {
+  margin: var(--space-3);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+  line-height: 1.5;
+}
+
+.placeholder-sidebar-status.error {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger-color) 34%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: var(--primary-text);
+}
+
+.placeholder-group {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.placeholder-group:last-child {
+  border-bottom: none;
+}
+
+.placeholder-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--primary-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.placeholder-group-title:hover {
+  background: var(--tertiary-bg);
+}
+
+.placeholder-group-title .material-symbols-outlined {
+  color: var(--highlight-text);
+  font-size: 18px !important;
+}
+
+.placeholder-count {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--button-bg);
+  color: var(--on-accent-text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+}
+
+.group-chevron {
+  transition: transform 0.2s ease;
+}
+
+.placeholder-group-title[aria-expanded="false"] .group-chevron {
+  transform: rotate(-90deg);
+}
+
+.placeholder-chip-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.placeholder-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--primary-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.placeholder-chip:hover {
+  border-color: var(--highlight-text);
+  background: color-mix(in srgb, var(--button-bg) 8%, var(--input-bg));
+}
+
+.placeholder-chip code {
+  color: var(--highlight-text);
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: var(--font-size-helper);
+  word-break: break-all;
+}
+
+.placeholder-chip span {
+  color: var(--secondary-text);
+  font-size: var(--font-size-caption);
+  line-height: 1.4;
 }
 
 /* .empty-state 已在全局 layout.css 中统一定义 */
@@ -1199,8 +1740,27 @@ onBeforeRouteLeave(async () => {
     grid-column: span 2;
   }
 
+  .agent-file-workspace {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .agent-file-workspace.placeholder-sidebar-collapsed {
+    gap: var(--space-2);
+  }
+
   .agent-file-editor {
     height: 100%;
+  }
+
+  .placeholder-sidebar-rail {
+    min-height: 40px;
+    writing-mode: horizontal-tb;
+  }
+
+  .placeholder-sidebar {
+    max-height: 360px;
   }
 
   .file-content-editor {
