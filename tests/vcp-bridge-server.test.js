@@ -899,6 +899,105 @@ test('responses retry suppression returns synthetic JSON only when enabled', asy
     }
 });
 
+test('responses retry suppression does not record upstream fetch failures', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async () => {
+        upstreamCount += 1;
+        if (upstreamCount === 1) {
+            throw new Error('temporary upstream failure');
+        }
+        return new Response(JSON.stringify({
+            id: 'chatcmpl-retry-after-fetch-failure',
+            object: 'chat.completion',
+            model: 'gpt-route',
+            choices: [{ message: { role: 'assistant', content: 'retry succeeded' } }]
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat',
+            BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS: 30000
+        }, { fetchImpl: fakeFetch });
+
+        const requestBody = { model: 'gpt-route', input: 'repeat after failure' };
+        const first = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        const second = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        assert.equal(upstreamCount, 2);
+        assert.equal(first.status, 502);
+        assert.equal((await second.json()).output_text, 'retry succeeded');
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('responses retry suppression does not record upstream error status', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async () => {
+        upstreamCount += 1;
+        if (upstreamCount === 1) {
+            return new Response(JSON.stringify({ error: { message: 'upstream busy' } }), {
+                status: 500,
+                headers: { 'content-type': 'application/json' }
+            });
+        }
+        return new Response(JSON.stringify({
+            id: 'chatcmpl-retry-after-error-status',
+            object: 'chat.completion',
+            model: 'gpt-route',
+            choices: [{ message: { role: 'assistant', content: 'retry succeeded' } }]
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat',
+            BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS: 30000
+        }, { fetchImpl: fakeFetch });
+
+        const requestBody = { model: 'gpt-route', input: 'repeat after error status' };
+        const first = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        const second = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        assert.equal(upstreamCount, 2);
+        assert.equal(first.status, 500);
+        assert.equal((await second.json()).output_text, 'retry succeeded');
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
 test('responses retry suppression skips explicit message ids', async () => {
     const port = await getFreePort();
     let upstreamCount = 0;

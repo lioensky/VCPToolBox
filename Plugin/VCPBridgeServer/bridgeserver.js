@@ -175,15 +175,18 @@ function getResponsesRetrySuppressionKey(body, messages, stream, config = runtim
     });
 }
 
-function isSuppressedDuplicateResponsesRequest(requestId, config = runtimeConfig, now = Date.now()) {
-    const windowMs = config?.responsesRetrySuppressionMs || 0;
-    if (!requestId || windowMs <= 0) return false;
-
+function pruneRecentResponsesRequests(windowMs, now = Date.now()) {
     for (const [key, value] of recentResponsesRequests.entries()) {
         if (now - value.lastSeenAt > windowMs * 4) {
             recentResponsesRequests.delete(key);
         }
     }
+}
+
+function isSuppressedDuplicateResponsesRequest(requestId, config = runtimeConfig, now = Date.now()) {
+    const windowMs = config?.responsesRetrySuppressionMs || 0;
+    if (!requestId || windowMs <= 0) return false;
+    pruneRecentResponsesRequests(windowMs, now);
 
     const entry = recentResponsesRequests.get(requestId);
     if (entry && now - entry.lastSeenAt <= windowMs) {
@@ -192,8 +195,14 @@ function isSuppressedDuplicateResponsesRequest(requestId, config = runtimeConfig
         return true;
     }
 
-    recentResponsesRequests.set(requestId, { lastSeenAt: now, count: 1 });
     return false;
+}
+
+function rememberSuccessfulResponsesRequest(requestId, config = runtimeConfig, now = Date.now()) {
+    const windowMs = config?.responsesRetrySuppressionMs || 0;
+    if (!requestId || windowMs <= 0) return;
+    pruneRecentResponsesRequests(windowMs, now);
+    recentResponsesRequests.set(requestId, { lastSeenAt: now, count: 1 });
 }
 
 function extractBearerToken(authHeader) {
@@ -1297,6 +1306,9 @@ function createApp() {
             return sendSuppressedResponsesResult(res, { model: body.model, stream });
         }
         await proxyRequest(req, res, { messages, model: body.model, body: requestBody, downstreamFormat: 'responses' });
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+            rememberSuccessfulResponsesRequest(suppressionKey, runtimeConfig);
+        }
     });
 
     app.post('/v1/messages', async (req, res) => {
