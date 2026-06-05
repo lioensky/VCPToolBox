@@ -735,21 +735,6 @@ class ChatCompletionHandler {
 
       await writeDebugLog('LogInput', originalBody);
 
-      // --- 角色分割处理 (Role Divider) - 初始阶段 ---
-      // 移动到最前端，确保拆分出的楼层能享受后续所有解析功能
-      if (enableRoleDivider) {
-        if (DEBUG_MODE) console.log('[Server] Applying Role Divider processing (Initial Stage)...');
-        // skipCount: 1 to exclude the initial SystemPrompt from splitting
-        originalBody.messages = roleDivider.process(originalBody.messages, {
-          ignoreList: roleDividerIgnoreList,
-          switches: roleDividerSwitches,
-          scanSwitches: roleDividerScanSwitches,
-          removeDisabledTags: roleDividerRemoveDisabledTags,
-          skipCount: 1
-        });
-        if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
-      }
-
       const vcpToolUseForbidden = consumeVcpToolUseForbiddenPlaceholder(originalBody.messages);
       if (vcpToolUseForbidden && DEBUG_MODE) {
         console.log(`[VCPToolUse] Detected ${VCP_TOOL_USE_FORBIDDEN_PLACEHOLDER} in top-level system prompt. Tool parsing/execution is disabled for this request.`);
@@ -968,6 +953,26 @@ class ChatCompletionHandler {
           }
         }
         if (DEBUG_MODE) console.log(`[Server] TransBase64+ cleanup and media restore complete.`);
+      }
+
+      // --- Detector / SuperDetector 后置处理 ---
+      // 保证所有消息预处理器执行完成后，再统一应用 Detector 与 SuperDetector；
+      // Role Divider 必须在其后作为最终消息拆分步骤。
+      processedMessages = messageProcessor.applyDetectorsToMessages(processedMessages, processingContext);
+      if (DEBUG_MODE) await writeDebugLog('LogAfterDetectors', processedMessages);
+
+      // --- 角色分割处理 (Role Divider) - 最终阶段 ---
+      if (enableRoleDivider) {
+        if (DEBUG_MODE) console.log('[Server] Applying Role Divider processing (Final Stage)...');
+        // skipCount: 1 to exclude the initial SystemPrompt from splitting
+        processedMessages = roleDivider.process(processedMessages, {
+          ignoreList: roleDividerIgnoreList,
+          switches: roleDividerSwitches,
+          scanSwitches: roleDividerScanSwitches,
+          removeDisabledTags: roleDividerRemoveDisabledTags,
+          skipCount: 1
+        });
+        if (DEBUG_MODE) await writeDebugLog('LogAfterFinalRoleDivider', processedMessages);
       }
 
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables

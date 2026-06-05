@@ -495,8 +495,57 @@ async function resolveDynamicFoldProtocol(foldObj, context, placeholderKey) {
     }
 }
 
+function applyDetectorRules(text, role, context = {}) {
+    const { detectors = [], superDetectors = [] } = context;
+    if (text == null) return '';
+
+    let processedText = String(text);
+
+    if (role === 'system') {
+        for (const rule of detectors) {
+            if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
+                processedText = processedText.replaceAll(rule.detector, rule.output);
+            }
+        }
+    }
+
+    for (const rule of superDetectors) {
+        if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
+            processedText = processedText.replaceAll(rule.detector, rule.output);
+        }
+    }
+
+    return processedText;
+}
+
+function applyDetectorsToMessages(messages, context = {}) {
+    if (!Array.isArray(messages)) {
+        return messages;
+    }
+
+    return messages.map((message) => {
+        const newMessage = JSON.parse(JSON.stringify(message));
+
+        if (typeof newMessage.content === 'string') {
+            newMessage.content = applyDetectorRules(newMessage.content, newMessage.role, context);
+        } else if (Array.isArray(newMessage.content)) {
+            newMessage.content = newMessage.content.map((part) => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    return {
+                        ...part,
+                        text: applyDetectorRules(part.text, newMessage.role, context)
+                    };
+                }
+                return part;
+            });
+        }
+
+        return newMessage;
+    });
+}
+
 async function replaceOtherVariables(text, model, role, context) {
-    const { pluginManager, cachedEmojiLists, detectors, superDetectors, DEBUG_MODE } = context;
+    const { pluginManager, cachedEmojiLists, DEBUG_MODE } = context;
     if (text == null) return '';
     let processedText = String(text);
 
@@ -652,17 +701,6 @@ async function replaceOtherVariables(text, model, role, context) {
         } else if (processedText && typeof processedText === 'string' && processedText.includes('{{Image_Key}}')) {
             if (DEBUG_MODE) console.warn('[replaceOtherVariables] {{Image_Key}} placeholder found in text, but ImageServer plugin or its Image_Key is not resolved. Placeholder will not be replaced.');
         }
-        for (const rule of detectors) {
-            if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-                processedText = processedText.replaceAll(rule.detector, rule.output);
-            }
-        }
-    }
-
-    for (const rule of superDetectors) {
-        if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
-            processedText = processedText.replaceAll(rule.detector, rule.output);
-        }
     }
 
     // 同时兼容标准双花括号、异常三花括号、以及被字符串转义后常见的四花括号格式
@@ -744,6 +782,8 @@ module.exports = {
     replaceAgentVariables: resolveAllVariables,
     replaceOtherVariables,
     replacePriorityVariables,
+    applyDetectorRules,
+    applyDetectorsToMessages,
     extractTextFromMessageContent,
     isSystemNotificationText,
     isBetaSystemUserText,
