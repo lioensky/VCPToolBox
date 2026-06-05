@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "tailTagPlacement": "inline",
+  "maxContextBlocks": 10,
+  "timeInsert": true,
+  "description": {
+    "enabled": "OneRing 热开关。false 时插件直接透传 messages，不再读取 ONERING_ENABLED 环境开关。",
+    "tailTagPlacement": "OneRing 来源标记输出位置。inline=继续追加到原 user/assistant 块内部；system_user_block=从原块剥离后追加独立 user 伪系统提示块，降低 assistant 块内部来源标记导致的 AI 幻觉风险。",
+    "maxContextBlocks": "最大补充后上下文 block 数。block 指 role=user 或 role=assistant 的消息块；若当前 post 已经接近或超过该数量，OneRing 不再继续插入补充消息。",
+    "timeInsert": "是否允许基于时间戳顺序进行 Post 内插入。true=按时间线合并补入消息；false=不做时间线内插入。"
+  }
+}

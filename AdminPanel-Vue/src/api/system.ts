@@ -7,6 +7,9 @@ import {
 import type { UserAuthCodeResponse } from "@/types/api.auth";
 import type {
   FinalContextResponse,
+  OneRingConfig,
+  OneRingConfigResponse,
+  OneRingConfigSaveResponse,
   PM2Process,
   PM2ProcessesResponse,
   RawSystemResourcesResponse,
@@ -15,7 +18,7 @@ import type {
   SystemResources,
 } from "@/types/api.system";
 
-export type { FinalContextResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
+export type { FinalContextResponse, OneRingConfig, OneRingConfigResponse, OneRingConfigSaveResponse, ServerLogQuery, ServerLogResponse } from "@/types/api.system";
 export type { UserAuthCodeResponse } from "@/types/api.auth";
 
 export type SystemResourcesResponse = SystemResources;
@@ -120,6 +123,35 @@ export const systemApi = {
     return requestWithUi<FinalContextResponse>(
       {
         url: "/admin_api/final-context",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async getOneRingConfig(
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = DEFAULT_READ_UI_OPTIONS
+  ): Promise<OneRingConfigResponse> {
+    return requestWithUi<OneRingConfigResponse>(
+      {
+        url: "/admin_api/onering-config",
+        ...requestContext,
+      },
+      uiOptions
+    );
+  },
+
+  async saveOneRingConfig(
+    config: OneRingConfig,
+    requestContext: HttpRequestContext = {},
+    uiOptions: RequestUiOptions = {}
+  ): Promise<OneRingConfigSaveResponse> {
+    return requestWithUi<OneRingConfigSaveResponse>(
+      {
+        url: "/admin_api/onering-config",
+        method: "PUT",
+        body: config,
         ...requestContext,
       },
       uiOptions

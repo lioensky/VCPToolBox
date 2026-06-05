@@ -136,6 +136,28 @@ export interface FinalContextResponse {
   snapshot?: FinalContextSnapshot;
 }
 
+export interface OneRingConfig {
+  enabled: boolean;
+  tailTagPlacement: 'inline' | 'system_user_block';
+  maxContextBlocks: number;
+  timeInsert: boolean;
+}
+
+export interface OneRingConfigResponse {
+  success?: boolean;
+  config: OneRingConfig;
+  raw?: Record<string, unknown>;
+  path?: string;
+  message?: string;
+}
+
+export interface OneRingConfigSaveResponse {
+  success?: boolean;
+  config: OneRingConfig;
+  path?: string;
+  message?: string;
+}
+
 export interface SystemMonitorResponse {
   system: SystemResources;
   pm2?: PM2Process[];

@@ -11,6 +11,10 @@
         </div>
 
         <div class="context-actions">
+          <button type="button" class="btn-secondary" @click="openOneRingConfigModal" :disabled="isOneRingConfigLoading">
+            <span class="material-symbols-outlined" :class="{ spinning: isOneRingConfigLoading }">settings</span>
+            ORing配置
+          </button>
           <button type="button" class="btn-secondary" @click="loadSnapshot" :disabled="isLoading">
             <span class="material-symbols-outlined" :class="{ spinning: isLoading }">sync</span>
             刷新
@@ -102,10 +106,10 @@
             :key="`jump-${block.index}`"
             type="button"
             class="jump-chip"
-            :class="[roleClass(block.role), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
+            :class="[roleClass(block.role), userBlockJumpClass(block), { matched: isBlockMatched(block.index), active: activeBlockIndex === block.index }]"
             @click="scrollToBlock(block.index)"
           >
-            #{{ block.index }} {{ normalizeRoleLabel(block.role) }}
+            #{{ block.index }} {{ jumpBlockLabel(block) }}
           </button>
         </nav>
 
@@ -121,6 +125,9 @@
               <div class="block-identity">
                 <span class="block-index">#{{ block.index }}</span>
                 <span class="block-role">{{ normalizeRoleLabel(block.role) }}</span>
+                <span v-if="getUserBlockBadge(block)" class="block-badge" :class="getUserBlockBadge(block)?.className">
+                  {{ getUserBlockBadge(block)?.label }}
+                </span>
                 <span class="block-type">{{ block.contentType }}</span>
               </div>
               <div class="block-meta">
@@ -145,13 +152,68 @@
         </main>
       </template>
     </div>
+
+    <div v-if="showOneRingConfigModal" class="modal-backdrop" @click.self="closeOneRingConfigModal">
+      <section class="onering-modal" role="dialog" aria-modal="true" aria-labelledby="onering-config-title">
+        <header class="modal-header">
+          <div>
+            <h3 id="onering-config-title">OneRing 热配置</h3>
+            <p>保存后会写入 Plugin/OneRing/OneRingConfig.json，运行中的 OneRing 会通过 chokidar 自动热加载。</p>
+          </div>
+          <button type="button" class="icon-button" aria-label="关闭" @click="closeOneRingConfigModal">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+
+        <div class="modal-body">
+          <label class="config-toggle-row">
+            <input v-model="oneRingConfigDraft.enabled" type="checkbox" />
+            <span>
+              <strong>启用 OneRing</strong>
+              <small>false 时插件直接透传 messages。</small>
+            </span>
+          </label>
+
+          <label class="config-field">
+            <span>来源标记输出位置</span>
+            <select v-model="oneRingConfigDraft.tailTagPlacement">
+              <option value="inline">inline：追加到原 user/assistant 块内部</option>
+              <option value="system_user_block">system_user_block：拆成独立 user 伪系统提示块</option>
+            </select>
+          </label>
+
+          <label class="config-field">
+            <span>最大补充后上下文 block 数</span>
+            <input v-model.number="oneRingConfigDraft.maxContextBlocks" type="number" min="1" step="1" />
+          </label>
+
+          <label class="config-toggle-row">
+            <input v-model="oneRingConfigDraft.timeInsert" type="checkbox" />
+            <span>
+              <strong>允许时间线内插入</strong>
+              <small>true 时按 OneRing 时间戳合并补入消息；false 时不做时间线内插入。</small>
+            </span>
+          </label>
+        </div>
+
+        <footer class="modal-actions">
+          <button type="button" class="btn-secondary" @click="closeOneRingConfigModal" :disabled="isOneRingConfigSaving">
+            取消
+          </button>
+          <button type="button" class="btn-primary" @click="saveOneRingConfig" :disabled="isOneRingConfigSaving">
+            <span v-if="isOneRingConfigSaving" class="material-symbols-outlined spinning">sync</span>
+            保存
+          </button>
+        </footer>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { systemApi } from '@/api'
-import type { FinalContextBlockSummary, FinalContextSnapshot } from '@/types/api.system'
+import type { FinalContextBlockSummary, FinalContextSnapshot, OneRingConfig } from '@/types/api.system'
 import { copyToClipboard, showMessage } from '@/utils'
 
 const snapshot = ref<FinalContextSnapshot | null>(null)
@@ -160,6 +222,18 @@ const isLoading = ref(false)
 const searchText = ref('')
 const activeBlockIndex = ref<number | null>(null)
 const blockRefs = new Map<number, Element>()
+
+const defaultOneRingConfig: OneRingConfig = {
+  enabled: true,
+  tailTagPlacement: 'inline',
+  maxContextBlocks: 10,
+  timeInsert: true,
+}
+
+const showOneRingConfigModal = ref(false)
+const isOneRingConfigLoading = ref(false)
+const isOneRingConfigSaving = ref(false)
+const oneRingConfigDraft = ref<OneRingConfig>({ ...defaultOneRingConfig })
 
 const blocks = computed(() => snapshot.value?.summary.blocks ?? [])
 
@@ -225,6 +299,29 @@ function normalizeRoleLabel(role: string): string {
 
 function roleClass(role: string): string {
   return `role-${String(role || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`
+}
+
+function getUserBlockBadge(block: FinalContextBlockSummary): { label: string; className: string } | null {
+  if (block.role !== 'user') return null
+  const text = String(block.text || '').trimStart()
+  if (text.startsWith('[系统提示')) {
+    return { label: '伪系统块', className: 'badge-pseudo-system' }
+  }
+  if (text.startsWith('[系统通知')) {
+    return { label: '携带通知栏', className: 'badge-system-notice' }
+  }
+  return null
+}
+
+function jumpBlockLabel(block: FinalContextBlockSummary): string {
+  const badge = getUserBlockBadge(block)
+  if (badge) return badge.label
+  return normalizeRoleLabel(block.role)
+}
+
+function userBlockJumpClass(block: FinalContextBlockSummary): string | null {
+  const badge = getUserBlockBadge(block)
+  return badge ? `jump-${badge.className}` : null
 }
 
 function attachmentCountsText(block: FinalContextBlockSummary): string {
@@ -307,6 +404,58 @@ function jumpMatch(direction: 1 | -1) {
       : (currentMatchPosition + direction + matches.length) % matches.length
 
   scrollToBlock(matches[nextPosition].index)
+}
+
+async function openOneRingConfigModal() {
+  showOneRingConfigModal.value = true
+  isOneRingConfigLoading.value = true
+  try {
+    const response = await systemApi.getOneRingConfig(
+      {},
+      {
+        showLoader: false,
+        suppressErrorMessage: true,
+      }
+    )
+    oneRingConfigDraft.value = {
+      enabled: response.config.enabled,
+      tailTagPlacement: response.config.tailTagPlacement,
+      maxContextBlocks: response.config.maxContextBlocks,
+      timeInsert: response.config.timeInsert,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showMessage(`加载 OneRing 配置失败：${message}`, 'error')
+  } finally {
+    isOneRingConfigLoading.value = false
+  }
+}
+
+function closeOneRingConfigModal() {
+  if (isOneRingConfigSaving.value) return
+  showOneRingConfigModal.value = false
+}
+
+async function saveOneRingConfig() {
+  const normalizedConfig: OneRingConfig = {
+    enabled: Boolean(oneRingConfigDraft.value.enabled),
+    tailTagPlacement: oneRingConfigDraft.value.tailTagPlacement === 'system_user_block' ? 'system_user_block' : 'inline',
+    maxContextBlocks: Math.max(1, Math.floor(Number(oneRingConfigDraft.value.maxContextBlocks) || defaultOneRingConfig.maxContextBlocks)),
+    timeInsert: Boolean(oneRingConfigDraft.value.timeInsert),
+  }
+
+  isOneRingConfigSaving.value = true
+  try {
+    const response = await systemApi.saveOneRingConfig(normalizedConfig, {}, { showLoader: false })
+    oneRingConfigDraft.value = { ...response.config }
+    showOneRingConfigModal.value = false
+    showMessage(response.message || 'OneRing 配置已保存', 'success')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    showMessage(`保存 OneRing 配置失败：${message}`, 'error')
+  } finally {
+    isOneRingConfigSaving.value = false
+  }
 }
 
 async function copyVisibleText() {
@@ -461,6 +610,18 @@ onMounted(() => {
   border-color: var(--highlight-text);
 }
 
+.jump-chip.jump-badge-pseudo-system {
+  border-color: var(--info-text);
+  background: color-mix(in srgb, var(--info-bg) 70%, var(--tertiary-bg));
+  color: var(--info-text);
+}
+
+.jump-chip.jump-badge-system-notice {
+  border-color: var(--warning-text);
+  background: color-mix(in srgb, var(--warning-bg) 70%, var(--tertiary-bg));
+  color: var(--warning-text);
+}
+
 .jump-chip.active {
   background: var(--button-bg);
   color: var(--on-accent-text);
@@ -508,6 +669,28 @@ onMounted(() => {
   font-weight: 700;
 }
 
+.block-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-helper);
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.badge-pseudo-system {
+  color: var(--info-text);
+  background: var(--info-bg);
+  border-color: var(--info-text);
+}
+
+.badge-system-notice {
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border-color: var(--warning-text);
+}
+
 .block-type,
 .block-meta {
   color: var(--secondary-text);
@@ -552,6 +735,119 @@ onMounted(() => {
 
 .role-tool .block-role {
   color: var(--warning-text);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.onering-modal {
+  width: min(620px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--secondary-bg);
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-header,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h3 {
+  margin: 0;
+}
+
+.modal-header p {
+  margin: 4px 0 0;
+  color: var(--secondary-text);
+  font-size: var(--font-size-helper);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--tertiary-bg);
+  color: var(--primary-text);
+  cursor: pointer;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 16px;
+}
+
+.config-field,
+.config-toggle-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.config-field {
+  flex-direction: column;
+}
+
+.config-field span,
+.config-toggle-row strong {
+  color: var(--primary-text);
+}
+
+.config-field input,
+.config-field select {
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--primary-text);
+}
+
+.config-toggle-row {
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+}
+
+.config-toggle-row input {
+  margin-top: 3px;
+}
+
+.config-toggle-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-toggle-row small {
+  color: var(--secondary-text);
+}
+
+.modal-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 0;
 }
 
 .empty-state {

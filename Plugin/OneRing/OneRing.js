@@ -3,6 +3,9 @@
 // 触发语法：系统提示词中包含 [[OneRing::AgentName::Frontend]]
 // Only 模式：[[OneRing::AgentName::Frontend::Only]] 或独立 [[OneRing::Only]] 只入库/标记，不做跨端上下文追加。
 
+const fs = require('fs');
+const path = require('path');
+const chokidar = require('chokidar');
 const db = require('./OneRingDB.js');
 const fuzzy = require('./OneRingFuzzy.js');
 const snapshot = require('./OneRingSnapshot.js');
@@ -246,9 +249,107 @@ function replaceOnlyTriggerWithNotice(content, triggerText) {
 }
 
 // ─── 模块状态 ─────────────────────────────────────────────────────────────────
+const HOT_CONFIG_FILE_NAME = 'OneRingConfig.json';
+const DEFAULT_HOT_CONFIG = Object.freeze({
+    enabled: true,
+    tailTagPlacement: 'inline',
+    maxContextBlocks: 10,
+    timeInsert: true
+});
+const TAIL_TAG_PLACEMENT_INLINE = 'inline';
+const TAIL_TAG_PLACEMENT_SYSTEM_USER_BLOCK = 'system_user_block';
+
 let config = {};
 let projectBasePath = '';
 let debugMode = false;
+let hotConfig = { ...DEFAULT_HOT_CONFIG };
+let hotConfigPath = path.join(__dirname, HOT_CONFIG_FILE_NAME);
+let hotConfigWatcher = null;
+
+function toBoolean(value, defaultValue = true) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return defaultValue;
+}
+
+function toPositiveInteger(value, defaultValue) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function normalizeTailTagPlacement(value) {
+    const normalized = String(value || DEFAULT_HOT_CONFIG.tailTagPlacement).trim().toLowerCase();
+    if (['system_user_block', 'system-user-block', 'user_block', 'user-block', 'pseudo_system_user'].includes(normalized)) {
+        return TAIL_TAG_PLACEMENT_SYSTEM_USER_BLOCK;
+    }
+    return TAIL_TAG_PLACEMENT_INLINE;
+}
+
+function normalizeHotConfig(raw = {}) {
+    return {
+        enabled: toBoolean(raw.enabled, DEFAULT_HOT_CONFIG.enabled),
+        tailTagPlacement: normalizeTailTagPlacement(raw.tailTagPlacement),
+        maxContextBlocks: toPositiveInteger(raw.maxContextBlocks, DEFAULT_HOT_CONFIG.maxContextBlocks),
+        timeInsert: toBoolean(raw.timeInsert, DEFAULT_HOT_CONFIG.timeInsert)
+    };
+}
+
+function readHotConfigFile() {
+    try {
+        if (!fs.existsSync(hotConfigPath)) {
+            hotConfig = { ...DEFAULT_HOT_CONFIG };
+            console.warn(`[OneRing] Hot config not found at ${hotConfigPath}, using defaults.`);
+            return;
+        }
+        const parsed = JSON.parse(fs.readFileSync(hotConfigPath, 'utf8'));
+        hotConfig = normalizeHotConfig(parsed);
+        console.log(`[OneRing] Hot config loaded: enabled=${hotConfig.enabled}, tailTagPlacement=${hotConfig.tailTagPlacement}, maxContextBlocks=${hotConfig.maxContextBlocks}, timeInsert=${hotConfig.timeInsert}`);
+    } catch (e) {
+        console.error(`[OneRing] Failed to load hot config "${hotConfigPath}", keeping previous config:`, e.message);
+    }
+}
+
+function setupHotConfigWatcher() {
+    if (hotConfigWatcher) {
+        hotConfigWatcher.close().catch(() => {});
+        hotConfigWatcher = null;
+    }
+
+    readHotConfigFile();
+
+    hotConfigWatcher = chokidar.watch(hotConfigPath, {
+        persistent: true,
+        ignoreInitial: true,
+        awaitWriteFinish: {
+            stabilityThreshold: 300,
+            pollInterval: 100
+        }
+    });
+
+    hotConfigWatcher
+        .on('add', readHotConfigFile)
+        .on('change', readHotConfigFile)
+        .on('unlink', () => {
+            hotConfig = { ...DEFAULT_HOT_CONFIG };
+            console.warn(`[OneRing] Hot config removed, using defaults until ${HOT_CONFIG_FILE_NAME} is restored.`);
+        })
+        .on('error', (error) => {
+            console.error('[OneRing] Hot config watcher error:', error.message);
+        });
+}
+
+function getOneRingMaxContextBlocks() {
+    return hotConfig.maxContextBlocks;
+}
+
+function isOneRingTimeInsertEnabled() {
+    return hotConfig.timeInsert;
+}
 
 function getOneRingMaxDbRecords() {
     const value = parseInt(config.ONERING_MAX_DB_RECORDS ?? '100', 10);
@@ -396,8 +497,7 @@ function dedupeAdjacentSimilarConversation(messages, threshold = 0.98) {
 class OneRingPreprocessor {
     async processMessages(messages, requestConfig) {
         const cfg = { ...config, ...requestConfig };
-        const enabled = String(cfg.ONERING_ENABLED ?? 'true').toLowerCase() !== 'false';
-        if (!enabled) return messages;
+        if (!hotConfig.enabled) return messages;
 
         // ── 1. 检测触发语法 ──────────────────────────────────────────────────
         const systemMsg = messages.find(m => m.role === 'system');
@@ -421,7 +521,7 @@ class OneRingPreprocessor {
         const threshold = parseFloat(cfg.ONERING_DEDUP_SIMILARITY ?? '0.92');
         const maxUnknownRatio = parseFloat(cfg.ONERING_MAX_UNKNOWN_RATIO ?? '0.35');
         const allowPatch = String(cfg.ONERING_ALLOW_CONTEXT_PATCH ?? 'true').toLowerCase() !== 'false';
-        const maxBlocks = parseInt(cfg.ONERING_MAX_CONTEXT_BLOCKS ?? '20', 10);
+        const maxBlocks = getOneRingMaxContextBlocks();
         const recordOnly = String(cfg.ONERING_RECORD_ONLY ?? 'true').toLowerCase() !== 'false';
         const snapshotMaxBlocks = parseInt(cfg.ONERING_POST_SNAPSHOT_MAX_BLOCKS ?? '20', 10);
         const outputDedupeThreshold = parseFloat(cfg.ONERING_OUTPUT_DEDUP_SIMILARITY ?? '0.98');
@@ -448,7 +548,7 @@ class OneRingPreprocessor {
                 const reason = onlyMode ? 'trigger Only mode' : 'ONERING_RECORD_ONLY';
                 console.log(`[OneRing] Record-only mode enabled by ${reason} for agent="${agentName}" frontend="${frontendSource}"`);
             }
-            return this._processRecordOnlyMessages(
+            const result = this._processRecordOnlyMessages(
                 messages,
                 agentName,
                 frontendSource,
@@ -457,6 +557,7 @@ class OneRingPreprocessor {
                 snapshotMaxBlocks,
                 outputDedupeThreshold
             );
+            return this._applyTailTagPlacement(result);
         }
 
         // ── 3. 从 DB 查询同信道历史，做 diff（优先快照精确编辑，兜底 fuzzy）────
@@ -654,7 +755,7 @@ class OneRingPreprocessor {
             if (debugMode) console.warn('[OneRing] Failed to attach non-enumerable meta:', e.message);
         }
 
-        return patchMessages;
+        return this._applyTailTagPlacement(patchMessages);
     }
 
     /**
@@ -665,7 +766,9 @@ class OneRingPreprocessor {
     _doFuzzyTimestampPatch(messages, agentName, frontendSource, maxBlocks, threshold = 0.92) {
         const histMsgs = messages.filter(m => m.role === 'user' || m.role === 'assistant');
         const remaining = Math.max(0, maxBlocks - histMsgs.length);
-        if (remaining <= 0) return mergeConversationByOneRingTimestamp(messages);
+        if (remaining <= 0) return isOneRingTimeInsertEnabled()
+            ? mergeConversationByOneRingTimestamp(messages)
+            : messages;
 
         let dbHistory = [];
         try {
@@ -687,7 +790,9 @@ class OneRingPreprocessor {
             });
         });
 
-        if (missing.length === 0) return mergeConversationByOneRingTimestamp(messages);
+        if (missing.length === 0) return isOneRingTimeInsertEnabled()
+            ? mergeConversationByOneRingTimestamp(messages)
+            : messages;
 
         const padded = missing.slice(-remaining).map(item => ({
             role: item.role,
@@ -696,7 +801,9 @@ class OneRingPreprocessor {
 
         if (debugMode) console.log(`[OneRing] Fuzzy patch: ${padded.length} missing blocks补入上下文`);
 
-        const patched = mergeConversationByOneRingTimestamp([...messages, ...padded]);
+        const patched = isOneRingTimeInsertEnabled()
+            ? mergeConversationByOneRingTimestamp([...messages, ...padded])
+            : [...messages, ...padded];
         try {
             Object.defineProperty(patched, '__oneRingInjectedCount', {
                 value: padded.length,
@@ -707,6 +814,58 @@ class OneRingPreprocessor {
             if (debugMode) console.warn('[OneRing] Failed to attach patch injected count:', e.message);
         }
         return patched;
+    }
+
+    _applyTailTagPlacement(messages) {
+        if (!Array.isArray(messages) || hotConfig.tailTagPlacement !== TAIL_TAG_PLACEMENT_SYSTEM_USER_BLOCK) {
+            return messages;
+        }
+
+        const result = [];
+        for (const message of messages) {
+            if (!message || message.role !== 'assistant') {
+                result.push(message);
+                continue;
+            }
+
+            const meta = getOneRingTailMeta(message.content);
+            if (!meta) {
+                result.push(message);
+                continue;
+            }
+
+            result.push({
+                ...message,
+                content: this._stripTailTagFromContent(message.content)
+            });
+            result.push({
+                role: 'user',
+                content: `[系统提示:][OneRing通知:上一条消息由${meta.senderName}于${meta.timestamp}发送于${meta.frontendSource}]`
+            });
+        }
+
+        if (messages.__oneRingMeta) {
+            this._attachMeta(result, messages.__oneRingMeta.agentName, messages.__oneRingMeta.frontendSource);
+        }
+        return result;
+    }
+
+    _stripTailTagFromContent(content) {
+        if (typeof content === 'string') {
+            return stripOneRingTailTagText(content);
+        }
+        if (Array.isArray(content)) {
+            return content.map((part) => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    return { ...part, text: stripOneRingTailTagText(part.text) };
+                }
+                return part;
+            });
+        }
+        if (content && typeof content === 'object' && typeof content.text === 'string') {
+            return { ...content, text: stripOneRingTailTagText(content.text) };
+        }
+        return content;
     }
 
     _attachMeta(messages, agentName, frontendSource) {
@@ -1126,10 +1285,16 @@ class OneRingPreprocessor {
         }
         projectBasePath = config.PROJECT_BASE_PATH || '';
         this._projectBasePath = projectBasePath;
+        hotConfigPath = path.join(projectBasePath || path.join(__dirname, '..', '..'), 'Plugin', 'OneRing', HOT_CONFIG_FILE_NAME);
+        setupHotConfigWatcher();
         console.log(`[OneRing] Initialized. agent-scoped SQLite at ${projectBasePath}/Plugin/OneRing/data/`);
     }
 
     shutdown() {
+        if (hotConfigWatcher) {
+            hotConfigWatcher.close().catch(() => {});
+            hotConfigWatcher = null;
+        }
         db.closeAll();
         console.log('[OneRing] Shutdown, all DB connections closed.');
     }

@@ -3,7 +3,7 @@
   "name": "OneRing",
   "version": "0.1.0",
   "displayName": "OneRing 统一上下文",
-  "description": "实验级统一上下文系统。通过 [[OneRing::Agent::Frontend]] 系统提示词语法触发，为唯一 Agent 维护跨前端/群聊/私聊的统一终极上下文。基于 SQLite 记录每条 User/Assistant 发言，标注时间戳、来源对象、前端来源，利用 fuzzy diff 进行历史比对更新，并在实际发送时为消息追加 [OneRing通知:...] 尾部标记。AI 回复以异步方式在响应完成后入库。",
+  "description": "实验级统一上下文系统。通过 [[OneRing::Agent::Frontend]] 系统提示词语法触发，为唯一 Agent 维护跨前端/群聊/私聊的统一终极上下文。基于 SQLite 记录每条 User/Assistant 发言，标注时间戳、来源对象、前端来源，利用 fuzzy diff 进行历史比对更新，并在实际发送时为消息追加或拆分 [OneRing通知:...] 来源标记。运行热开关、最大补充上下文数、时间线插入和来源标记输出位置由 OneRingConfig.json 通过 chokidar 热加载控制。AI 回复以异步方式在响应完成后入库。",
   "author": "VCPToolBox",
   "pluginType": "messagePreprocessor",
   "entryPoint": {
@@ -14,11 +14,6 @@
     "protocol": "direct"
   },
   "configSchema": {
-    "ONERING_ENABLED": {
-      "type": "boolean",
-      "description": "系统总开关，实际由系统占位符 [[OneRing::Agent::Frontend]] 精细化控制",
-      "default": "true"
-    },
     "ONERING_USER_NAME": {
       "type": "string",
       "description": "用于记录真正用户发言的标记名",
@@ -26,17 +21,7 @@
     },
     "ONERING_ALLOW_CONTEXT_PATCH": {
       "type": "boolean",
-      "description": "是否允许跨端补充",
-      "default": "true"
-    },
-    "ONERING_MAX_CONTEXT_BLOCKS": {
-      "type": "integer",
-      "description": "最大补充后上下文 block 数",
-      "default": "20"
-    },
-    "ONERING_TIME_INSERT": {
-      "type": "boolean",
-      "description": "是否允许 Post 内补充（基于时间戳顺序的插入）",
+      "description": "是否允许跨端补充。补充数量上限由 OneRingConfig.json 的 maxContextBlocks 热配置控制",
       "default": "true"
     },
     "ONERING_MAX_UNKNOWN_RATIO": {
