@@ -100,7 +100,7 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
 
 function getOneRingTailMeta(content) {
     const text = fuzzy.extractText(content);
-    const m = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})发送于([\s\S]*?)\]\s*$/.exec(text);
+    const m = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)发送于([\s\S]*?)\]\s*$/.exec(text);
     return m ? {
         senderName: m[1].trim(),
         timestamp: m[2].trim(),
@@ -210,9 +210,9 @@ function getOneRingMaxDbRecords() {
 
 /**
  * 生成 OneRing 使用的本地时间戳。
- * 必须与尾标、DB timestamp 完全一致；跨端补充依赖 YYYY-MM-DD HH:mm:ss 字符串排序和区间查询。
+ * 必须与尾标、DB timestamp 完全一致；跨端补充依赖 YYYY-MM-DD HH:mm:ss(.SSS) 字符串排序和区间查询。
  */
-function formatOneRingTimestamp(date = new Date()) {
+function formatOneRingTimestamp(date = new Date(), includeMilliseconds = false) {
     const timeZone = config.DEFAULT_TIMEZONE || process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
     try {
         const parts = new Intl.DateTimeFormat('en-CA', {
@@ -228,12 +228,19 @@ function formatOneRingTimestamp(date = new Date()) {
             if (part.type !== 'literal') acc[part.type] = part.value;
             return acc;
         }, {});
-        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+        const ms = includeMilliseconds ? `.${String(date.getMilliseconds()).padStart(3, '0')}` : '';
+        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}${ms}`;
     } catch (e) {
         if (debugMode) console.warn(`[OneRing] Invalid DEFAULT_TIMEZONE="${timeZone}", fallback to local time:`, e.message);
         const pad = (n) => String(n).padStart(2, '0');
-        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        const ms = includeMilliseconds ? `.${String(date.getMilliseconds()).padStart(3, '0')}` : '';
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${ms}`;
     }
+}
+
+function createOneRingTimestampSequencer(baseDate = new Date()) {
+    let offsetMs = 0;
+    return () => formatOneRingTimestamp(new Date(baseDate.getTime() + offsetMs++), true);
 }
 
 function mergeConversationByOneRingTimestamp(messages) {
@@ -408,7 +415,8 @@ class OneRingPreprocessor {
         // ── 5. 为当前 post 的 user/assistant 历史块补齐尾部标记 ───────────────
         // 关键原因：AI 回复入库是异步 DB 写入，不会回写给前端历史；
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
-        const now = formatOneRingTimestamp();
+        const nextTimestamp = createOneRingTimestampSequencer();
+        const now = nextTimestamp();
         const realUserEntries = [...patchMessages].map((m, i) => ({ m, i }))
             .filter(({ m }) => m && m.role === 'user')
             .map(({ m, i }) => ({
@@ -436,7 +444,7 @@ class OneRingPreprocessor {
                 agentName,
                 frontendSource,
                 patchMessages,
-                now,
+                nextTimestamp,
                 threshold
             );
         }
@@ -457,7 +465,7 @@ class OneRingPreprocessor {
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || now, frontendSource)
+                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
                 };
             }
 
@@ -472,7 +480,7 @@ class OneRingPreprocessor {
 
             return {
                 ...m,
-                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || now, frontendSource)
+                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
             };
         });
 
@@ -551,10 +559,10 @@ class OneRingPreprocessor {
     }
 
     _processRecordOnlyMessages(messages, agentName, frontendSource, defaultUserName, threshold) {
-        const now = formatOneRingTimestamp();
+        const nextTimestamp = createOneRingTimestampSequencer();
         let result = Array.isArray(messages) ? [...messages] : messages;
 
-        this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, now, threshold);
+        this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold);
 
         result = result.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
@@ -572,7 +580,7 @@ class OneRingPreprocessor {
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || now, frontendSource)
+                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
                 };
             }
 
@@ -587,14 +595,14 @@ class OneRingPreprocessor {
 
             return {
                 ...m,
-                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || now, frontendSource)
+                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
             };
         });
 
         return this._attachMeta(result, agentName, frontendSource);
     }
 
-    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, timestamp, threshold) {
+    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold) {
         if (!Array.isArray(messages)) return;
 
         const postBlocks = messages
@@ -649,11 +657,11 @@ class OneRingPreprocessor {
                         senderName: block.senderName || defaultUserName,
                         frontendSource,
                         content: block.text,
-                        timestamp,
+                        timestamp: nextTimestamp(),
                         maxRecords: getOneRingMaxDbRecords(),
                     }, projectBasePath);
                 } else if (block.role === 'assistant') {
-                    this._recordAssistantMessage(agentName, frontendSource, block.text, timestamp, threshold, block.senderName || agentName);
+                    this._recordAssistantMessage(agentName, frontendSource, block.text, nextTimestamp(), threshold, block.senderName || agentName);
                 }
             }
 
@@ -667,7 +675,7 @@ class OneRingPreprocessor {
                         frontendSource,
                         lastUser.senderName || defaultUserName,
                         lastUser.text,
-                        timestamp,
+                        nextTimestamp(),
                         threshold
                     );
                 }
@@ -833,7 +841,7 @@ class OneRingPreprocessor {
      * 记录 post 中已经存在的真实块；跨端补充由 _doFreshShortContextPatch 负责。
      */
     _recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold = 0.92) {
-        const now = formatOneRingTimestamp();
+        const nextTimestamp = createOneRingTimestampSequencer();
         for (const block of historyBlocks) {
             if (block.role === 'user') {
                 const classified = classifyUserContent(block.text, defaultUserName, agentName);
@@ -843,7 +851,7 @@ class OneRingPreprocessor {
                     frontendSource,
                     classified.senderName,
                     classified.cleanText,
-                    now,
+                    nextTimestamp(),
                     threshold
                 );
             } else if (block.role === 'assistant' && typeof block.text === 'string' && block.text.trim()) {
@@ -853,7 +861,7 @@ class OneRingPreprocessor {
                     agentName,
                     frontendSource,
                     classifiedAssistant.cleanText,
-                    now,
+                    nextTimestamp(),
                     threshold,
                     classifiedAssistant.senderName
                 );
@@ -878,7 +886,7 @@ class OneRingPreprocessor {
                 agentName,
                 frontendSource,
                 classified.cleanText,
-                timestamp,
+                typeof timestamp === 'function' ? timestamp() : timestamp,
                 threshold,
                 classified.senderName
             );
