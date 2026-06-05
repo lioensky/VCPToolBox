@@ -62,6 +62,7 @@ async function main() {
             const industry = data.industry;
 
             const authInfoLevel = data.auth_info_level;
+            const fullContent = data.full_content === true || data.full_content === 'true';
 
             if (!query) {
                 throw new Error("Missing required argument: query");
@@ -239,7 +240,7 @@ async function main() {
                     apiResult.WebResults.forEach((item, index) => {
                         const title = item.Title || '无标题';
                         const url = item.Url || '';
-                        const content = item.Content || '';
+                        const content = fullContent ? (item.Content || '') : (item.Snippet || '');
                         const publishTime = item.PublishTime || '';
                         const siteName = item.SiteName || '';
                         const authInfo = item.AuthInfoDes || '';
@@ -275,7 +276,11 @@ async function main() {
                 const cleanData = JSON.parse(JSON.stringify(apiResult));
                 if (cleanData.WebResults) {
                     cleanData.WebResults = cleanData.WebResults.map(item => {
-                        const { LogoUrl, Summary, ...rest } = item;
+                        if (fullContent) {
+                            const { LogoUrl, Summary, Snippet, ...rest } = item;
+                            return rest;
+                        }
+                        const { LogoUrl, Summary, Content, ...rest } = item;
                         return rest;
                     });
                 }
