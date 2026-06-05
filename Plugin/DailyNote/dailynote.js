@@ -1049,7 +1049,30 @@ async function main() {
             const args = JSON.parse(inputData);
             const { command, ...parameters } = args;
 
-            switch (command) {
+            // 鲁棒性兼容：AI 有时会遗漏 command，但参数形态已经足够明确。
+            // - 含 content/contentText/Content 时，视为 create
+            // - 含 target + replace 时，视为 update
+            // 若 command 显式提供，则仍以显式 command 为准。
+            let normalizedCommand = command;
+            if (!normalizedCommand) {
+                const hasCreateContent =
+                    typeof parameters.contentText === 'string' ||
+                    typeof parameters.Content === 'string' ||
+                    typeof parameters.content === 'string';
+                const hasUpdateTargetReplace =
+                    typeof parameters.target === 'string' &&
+                    typeof parameters.replace === 'string';
+
+                if (hasUpdateTargetReplace) {
+                    normalizedCommand = 'update';
+                    debugLog("No command provided; inferred 'update' from target/replace arguments.");
+                } else if (hasCreateContent) {
+                    normalizedCommand = 'create';
+                    debugLog("No command provided; inferred 'create' from content arguments.");
+                }
+            }
+
+            switch (normalizedCommand) {
                 case 'create':
                     result = await handleCreateCommand(parameters);
                     break;
@@ -1057,7 +1080,7 @@ async function main() {
                     result = await handleUpdateCommand(parameters);
                     break;
                 default:
-                    result = { status: "error", error: `Unknown command: '${command}'. Use 'create' or 'update'.` };
+                    result = { status: "error", error: `Unknown command: '${normalizedCommand}'. Use 'create' or 'update'.` };
             }
         } catch (error) {
             console.error("[DailyNote] Error processing request:", error.message);
