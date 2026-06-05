@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { getEmbeddingsBatch } = require('../EmbeddingUtils');
+const { chunkText } = require('../TextChunker');
 const ragDiaryPlugin = require('../Plugin/RAGDiaryPlugin/RAGDiaryPlugin');
 
 async function withEmbeddingEnv(vars, fn) {
@@ -209,4 +210,52 @@ test('RAGDiaryPlugin rejects partial vectors for split single embeddings', async
   });
 
   assert.ok(requestCount >= 3);
+});
+
+test('RAGDiaryPlugin uses token-weighted average for split single embeddings', async (t) => {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/v1/embeddings');
+
+    const body = await readJsonBody(req);
+    requests.push({ model: body.model, input: body.input });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      data: body.input.map((text, index) => ({
+        index,
+        embedding: [String(text).length, 1],
+      })),
+    }));
+  });
+
+  const port = await listen(server);
+  t.after(() => server.close());
+
+  await withEmbeddingEnv({
+    EMBEDDING_API_URL: `http://127.0.0.1:${port}`,
+    WhitelistEmbeddingModel: 'rag-shared-model',
+  }, async () => {
+    const longText = Array.from(
+      { length: 80 },
+      (_, index) => `sentence ${index} ${'alpha '.repeat(100)}.`
+    ).join(' ');
+    const chunks = chunkText(longText);
+    assert.ok(chunks.length > 1);
+
+    const weights = chunks.map(chunk => Math.max(1, ragDiaryPlugin._estimateTokens(chunk)));
+    const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+    const expectedFirstDimension = chunks.reduce((sum, chunk, index) => {
+      return sum + String(chunk).length * (weights[index] / weightSum);
+    }, 0);
+
+    const single = await ragDiaryPlugin.getSingleEmbedding(longText);
+    assert.ok(single);
+    assert.equal(single.length, 2);
+    assert.ok(Math.abs(single[0] - expectedFirstDimension) < 1e-9);
+    assert.equal(single[1], 1);
+  });
+
+  assert.ok(requests.length > 0);
 });
