@@ -277,6 +277,31 @@ test('image generation plugins only return base64 previews when explicitly reque
   assert.doesNotMatch(zImageSource, /const base64Image = imageBuffer\.toString\('base64'\);/);
 });
 
+test('NanoBananaGen2 public URL mode is explicit and keeps local URL default', () => {
+  const nanoSource = fs.readFileSync(path.join(repoRoot, 'Plugin', 'NanoBananaGen2', 'NanoBananaGen.mjs'), 'utf8');
+  const configExample = fs.readFileSync(path.join(repoRoot, 'Plugin', 'NanoBananaGen2', 'config.env.example'), 'utf8');
+  const manifest = fs.readFileSync(path.join(repoRoot, 'Plugin', 'NanoBananaGen2', 'plugin-manifest.json'), 'utf8');
+
+  assert.match(nanoSource, /VAR_HTTPS_URL:\s*process\.env\.VarHttpsUrl/);
+  assert.match(nanoSource, /USE_PUBLIC_URL:\s*usePublicUrl/);
+  assert.match(nanoSource, /normalizeBoolean\(process\.env\.USE_PUBLIC_URL,\s*false\)/);
+  assert.match(nanoSource, /function buildAccessibleImageUrl\(relativePathForUrl\)/);
+  assert.match(nanoSource, /function validateAccessibleImageUrlConfig\(\)/);
+  assert.match(nanoSource, /\$\{publicBaseUrl\}\/pw=\$\{IMAGESERVER_IMAGE_KEY\}\/images\/\$\{relativePathForUrl\}/);
+  assert.match(nanoSource, /\$\{localBaseUrl\}:\$\{SERVER_PORT\}\/pw=\$\{IMAGESERVER_IMAGE_KEY\}\/images\/\$\{relativePathForUrl\}/);
+  assert.match(nanoSource, /USE_PUBLIC_URL=true 时必须提供 VarHttpsUrl/);
+  for (const functionName of ['generateImage', 'editImage', 'composeImage']) {
+    const start = nanoSource.indexOf(`async function ${functionName}(args)`);
+    assert.notEqual(start, -1);
+    const nextFunction = nanoSource.indexOf('\nasync function ', start + 1);
+    const body = nanoSource.slice(start, nextFunction === -1 ? undefined : nextFunction);
+    assert.ok(body.indexOf('validateAccessibleImageUrlConfig();') < body.indexOf('callApi(payload)'));
+  }
+  assert.match(configExample, /USE_PUBLIC_URL=false/);
+  assert.match(manifest, /"USE_PUBLIC_URL"/);
+  assert.match(manifest, /"default": false/);
+});
+
 test('DailyNote adds structured success metadata while preserving legacy fields', () => {
   const source = fs.readFileSync(path.join(repoRoot, 'Plugin', 'DailyNote', 'dailynote.js'), 'utf8');
 
