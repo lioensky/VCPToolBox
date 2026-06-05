@@ -3840,7 +3840,8 @@ class RAGDiaryPlugin {
     }
 
     async getSingleEmbedding(text) {
-        if (!text) {
+        const normalizedText = String(text || '').trim();
+        if (!normalizedText) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
             return null;
         }
@@ -3852,7 +3853,7 @@ class RAGDiaryPlugin {
             return null;
         }
 
-        const textChunks = chunkText(text);
+        const textChunks = chunkText(normalizedText);
         if (!textChunks || textChunks.length === 0) {
             console.log('[RAGDiaryPlugin] Text chunking resulted in no chunks.');
             return null;

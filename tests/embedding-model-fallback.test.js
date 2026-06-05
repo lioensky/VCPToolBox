@@ -156,7 +156,7 @@ test('RAGDiaryPlugin embedding methods use shared EmbeddingUtils backend', async
     EMBEDDING_API_URL: `http://127.0.0.1:${port}`,
     WhitelistEmbeddingModel: 'rag-shared-model',
   }, async () => {
-    const single = await ragDiaryPlugin.getSingleEmbedding('hello');
+    const single = await ragDiaryPlugin.getSingleEmbedding('  hello  ');
     assert.deepEqual(single, [1, 1, 5]);
 
     const batch = await ragDiaryPlugin.getBatchEmbeddings(['alpha', '', 'beta']);
