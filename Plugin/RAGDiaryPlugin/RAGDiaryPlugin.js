@@ -3871,8 +3871,9 @@ class RAGDiaryPlugin {
 
             if (vectors.length === 1) return vectors[0];
 
-            console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one.`);
-            return this._getAverageVector(vectors);
+            const weights = textChunks.map(chunk => Math.max(1, this._estimateTokens(chunk)));
+            console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one with token weights.`);
+            return this._getWeightedAverageVector(vectors, weights);
         } catch (error) {
             console.error('[RAGDiaryPlugin] getSingleEmbedding failed via EmbeddingUtils:', error.message);
             return null;
