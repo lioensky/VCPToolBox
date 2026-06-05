@@ -1,0 +1,20 @@
+# Ignore new local Agent files by default.
+*
+
+# Keep this rule file and tracked project Agent configs visible.
+!.gitignore
+!AIImageGenExpert.txt
+!Aemeath.txt
+!AuditMaster.txt
+!DreamNova.txt
+!Hornet.txt
+!MemoMaster.txt
+!MemoriaSorter.txt
+!Metis.txt
+!Muse.txt
+!Nova.txt
+!ThemeMaidCoco.txt
+!Weiming.txt
+!动力猛兽.txt
+!小秋.txt
+!诺宝.txt
