@@ -21,39 +21,69 @@ const DISCARD_PATTERNS = [
     /邀请.{1,20}发言/,
 ];
 
-// AA 通讯中心私聊标记
-const AA_COMM_REGEX = /\[Tips:这是一条来自AgentAssistant通讯中心\s+([^\s,，的]+)/;
+// AA 通讯中心私聊标记。
+// 例：[Tips:这是一条来自AgentAssistant通讯中心 小克 的联络，你可以直接正常回复...]
+const AA_COMM_REGEX = /\[Tips:这是一条来自AgentAssistant通讯中心\s+([\s\S]*?)\s+的联络[^\]]*\]/;
 
 // 群聊发言头标记，如 [莱恩的发言]: 或 [小克的发言]:
 const GROUPCHAT_SENDER_REGEX = /^\s*\[([^\]]{1,30})的发言\]\s*[:：]\s*/;
+
+function stripOneRingTailTagText(text) {
+    return typeof text === 'string' ? text.replace(fuzzy.ONERING_TAIL_REGEX, '').trim() : '';
+}
+
+function isUnresolvedTemplateName(name) {
+    return !name || /\$\{[^}]+\}/.test(name) || /\{\{[^}]+\}\}/.test(name);
+}
 
 /**
  * 从 user 消息内容中提取"净内容"和"来源信息"。
  * 返回 null 表示该消息应丢弃。
  */
-function classifyUserContent(rawContent, defaultUserName) {
+function classifyUserContent(rawContent, defaultUserName, registeredAgentName = null) {
     let text = typeof rawContent === 'string' ? rawContent
         : fuzzy.extractText(rawContent);
 
-    // 1. 剥离系统通知栏（可能出现在任意位置）
-    text = text.replace(fuzzy.SYSTEM_NOTICE_REGEX, '').trim();
+    // 1. 剥离系统通知栏与既有 OneRing 尾标，避免二次入库污染 cleanText。
+    text = stripOneRingTailTagText(text.replace(fuzzy.SYSTEM_NOTICE_REGEX, ''));
 
     // 2. 检查丢弃模式
     for (const pat of DISCARD_PATTERNS) {
         if (pat.test(text)) return null;
     }
 
-    // 3. AA 通讯私聊
+    // 3. AA 通讯中心来源头：提取实际 senderName，但保留开头标记入库正文。
+    //    这些头部标记是上下文语义的一部分；OneRing 尾标只负责机器可读来源追踪。
+    let aaSenderName = null;
     const aaMatch = AA_COMM_REGEX.exec(text);
     if (aaMatch) {
-        return { senderName: aaMatch[1], source: 'AA', cleanText: text };
+        const candidate = aaMatch[1].trim();
+        if (!isUnresolvedTemplateName(candidate)) {
+            aaSenderName = candidate;
+        } else if (registeredAgentName) {
+            // AA 头存在但 senderName 模板未解析时，不应落回 username；
+            // 这是 AA 信道消息，退回当前 OneRing 注册 Agent 作为保守来源。
+            aaSenderName = registeredAgentName;
+        }
     }
 
-    // 4. 群聊发言头
-    const gcMatch = GROUPCHAT_SENDER_REGEX.exec(text);
-    if (gcMatch) {
-        const cleanText = text.replace(GROUPCHAT_SENDER_REGEX, '').trim();
-        return { senderName: gcMatch[1], source: 'GroupChat', cleanText };
+    // 4. 群聊发言头可能连续嵌套，如 [莱恩的发言]: [小克的发言]: 正文。
+    //    最后一个发言头才是当前消息真实说话者；但所有开头标记都保留在 cleanText 中。
+    let groupSenderName = null;
+    let scanText = text;
+    let gcMatch = GROUPCHAT_SENDER_REGEX.exec(scanText);
+    while (gcMatch) {
+        groupSenderName = gcMatch[1].trim();
+        scanText = scanText.replace(GROUPCHAT_SENDER_REGEX, '').trim();
+        gcMatch = GROUPCHAT_SENDER_REGEX.exec(scanText);
+    }
+
+    if (groupSenderName) {
+        return { senderName: groupSenderName, source: aaSenderName ? 'AA+GroupChat' : 'GroupChat', cleanText: text };
+    }
+
+    if (aaSenderName) {
+        return { senderName: aaSenderName, source: 'AA', cleanText: text };
     }
 
     // 5. 普通用户发言
@@ -91,6 +121,30 @@ function appendTailTag(content, senderName, timestamp, frontendSource) {
             }
         }
         result.push({ type: 'text', text: tag.trim() });
+        return result;
+    }
+    return content;
+}
+
+/**
+ * 替换或附加 OneRing 尾部标记。
+ * 用于修正旧上下文中曾经打错 senderName/frontendSource 的尾标。
+ */
+function upsertTailTag(content, senderName, timestamp, frontendSource) {
+    const tag = `[OneRing通知:${senderName}于${timestamp}发送于${frontendSource}]`;
+    if (typeof content === 'string') {
+        const stripped = stripOneRingTailTagText(content);
+        return `${stripped}\n${tag}`;
+    }
+    if (Array.isArray(content)) {
+        const result = [...content];
+        for (let i = result.length - 1; i >= 0; i--) {
+            if (result[i] && result[i].type === 'text' && typeof result[i].text === 'string') {
+                result[i] = { ...result[i], text: `${stripOneRingTailTagText(result[i].text)}\n${tag}` };
+                return result;
+            }
+        }
+        result.push({ type: 'text', text: tag });
         return result;
     }
     return content;
@@ -345,7 +399,7 @@ class OneRingPreprocessor {
             .pop();
 
         if (lastUserIdx) {
-            const classified = classifyUserContent(patchMessages[lastUserIdx.i].content, defaultUserName);
+            const classified = classifyUserContent(patchMessages[lastUserIdx.i].content, defaultUserName, agentName);
             if (classified && !isFreshShortContext) {
                 this._recordUserMessage(
                     agentName,
@@ -360,21 +414,33 @@ class OneRingPreprocessor {
 
         patchMessages = patchMessages.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
-            if (hasOneRingTailTag(m.content)) return m;
 
+            const existingMeta = getOneRingTailMeta(m.content);
             if (m.role === 'assistant') {
+                if (
+                    existingMeta &&
+                    existingMeta.senderName === agentName &&
+                    existingMeta.frontendSource === frontendSource
+                ) return m;
+
                 return {
                     ...m,
-                    content: appendTailTag(m.content, agentName, now, frontendSource)
+                    content: upsertTailTag(m.content, agentName, existingMeta?.timestamp || now, frontendSource)
                 };
             }
 
-            const classified = classifyUserContent(m.content, defaultUserName);
+            const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
+
+            if (
+                existingMeta &&
+                existingMeta.senderName === classified.senderName &&
+                existingMeta.frontendSource === frontendSource
+            ) return m;
 
             return {
                 ...m,
-                content: appendTailTag(m.content, classified.senderName, now, frontendSource)
+                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || now, frontendSource)
             };
         });
 
@@ -456,21 +522,33 @@ class OneRingPreprocessor {
 
         result = result.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
-            if (hasOneRingTailTag(m.content)) return m;
 
+            const existingMeta = getOneRingTailMeta(m.content);
             if (m.role === 'assistant') {
+                if (
+                    existingMeta &&
+                    existingMeta.senderName === agentName &&
+                    existingMeta.frontendSource === frontendSource
+                ) return m;
+
                 return {
                     ...m,
-                    content: appendTailTag(m.content, agentName, now, frontendSource)
+                    content: upsertTailTag(m.content, agentName, existingMeta?.timestamp || now, frontendSource)
                 };
             }
 
-            const classified = classifyUserContent(m.content, defaultUserName);
+            const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
+
+            if (
+                existingMeta &&
+                existingMeta.senderName === classified.senderName &&
+                existingMeta.frontendSource === frontendSource
+            ) return m;
 
             return {
                 ...m,
-                content: appendTailTag(m.content, classified.senderName, now, frontendSource)
+                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || now, frontendSource)
             };
         });
 
@@ -486,7 +564,7 @@ class OneRingPreprocessor {
                 const tailMeta = getOneRingTailMeta(m.content);
                 const rawText = fuzzy.extractText(m.content);
                 if (m.role === 'user') {
-                    const classified = classifyUserContent(rawText, defaultUserName);
+                    const classified = classifyUserContent(rawText, defaultUserName, agentName);
                     if (!classified) return null;
                     return {
                         role: m.role,
@@ -716,7 +794,7 @@ class OneRingPreprocessor {
         const now = formatOneRingTimestamp();
         for (const block of historyBlocks) {
             if (block.role === 'user') {
-                const classified = classifyUserContent(block.text, defaultUserName);
+                const classified = classifyUserContent(block.text, defaultUserName, agentName);
                 if (!classified) continue;
                 this._recordUserMessage(
                     agentName,
