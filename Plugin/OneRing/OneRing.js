@@ -36,8 +36,10 @@ const AA_COMM_REGEX = /\[Tips:这是一条来自AgentAssistant通讯中心\s+([\
 // 群聊发言头标记，如 [莱恩的发言]: 或 [小克的发言]:
 const GROUPCHAT_SENDER_REGEX = /^\s*\[([^\]]{1,30})的发言\]\s*[:：]\s*/;
 
+const ONERING_TAIL_STACK_REGEX = /(?:\s*\[OneRing通知:[\s\S]*?于\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?发送于[^\]]*?\]\s*)+$/;
+
 function stripOneRingTailTagText(text) {
-    return typeof text === 'string' ? text.replace(fuzzy.ONERING_TAIL_REGEX, '').trim() : '';
+    return typeof text === 'string' ? text.replace(ONERING_TAIL_STACK_REGEX, '').trim() : '';
 }
 
 function isUnresolvedTemplateName(name) {
@@ -100,11 +102,16 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
 
 function getOneRingTailMeta(content) {
     const text = fuzzy.extractText(content);
-    const m = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)发送于([\s\S]*?)\]\s*$/.exec(text);
-    return m ? {
-        senderName: m[1].trim(),
-        timestamp: m[2].trim(),
-        frontendSource: m[3].trim()
+    const re = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)发送于([^\]]*?)\]/g;
+    let m;
+    let last = null;
+    while ((m = re.exec(text)) !== null) {
+        last = m;
+    }
+    return last ? {
+        senderName: last[1].trim(),
+        timestamp: last[2].trim(),
+        frontendSource: last[3].trim()
     } : null;
 }
 
@@ -417,7 +424,9 @@ class OneRingPreprocessor {
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
         const nextTimestamp = createOneRingTimestampSequencer();
         const now = nextTimestamp();
-        const realUserEntries = [...patchMessages].map((m, i) => ({ m, i }))
+        // 入库必须以“实际 post 传入的上下文”为真相；
+        // patchMessages 可能已经包含 DB 补齐块，不能再反向同步进 DB。
+        const realUserEntries = [...messages].map((m, i) => ({ m, i }))
             .filter(({ m }) => m && m.role === 'user')
             .map(({ m, i }) => ({
                 m,
@@ -443,7 +452,7 @@ class OneRingPreprocessor {
             this._recordIncomingAssistantContext(
                 agentName,
                 frontendSource,
-                patchMessages,
+                messages,
                 nextTimestamp,
                 threshold
             );
@@ -457,30 +466,32 @@ class OneRingPreprocessor {
                 const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
                 if (!classifiedAssistant) return m;
 
-                if (
-                    existingMeta &&
-                    existingMeta.senderName === classifiedAssistant.senderName &&
-                    existingMeta.frontendSource === frontendSource
-                ) return m;
+                if (existingMeta && existingMeta.senderName === classifiedAssistant.senderName) return m;
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
+                    content: upsertTailTag(
+                        m.content,
+                        classifiedAssistant.senderName,
+                        existingMeta?.timestamp || nextTimestamp(),
+                        existingMeta?.frontendSource || frontendSource
+                    )
                 };
             }
 
             const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
 
-            if (
-                existingMeta &&
-                existingMeta.senderName === classified.senderName &&
-                existingMeta.frontendSource === frontendSource
-            ) return m;
+            if (existingMeta && existingMeta.senderName === classified.senderName) return m;
 
             return {
                 ...m,
-                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
+                content: upsertTailTag(
+                    m.content,
+                    classified.senderName,
+                    existingMeta?.timestamp || nextTimestamp(),
+                    existingMeta?.frontendSource || frontendSource
+                )
             };
         });
 
@@ -539,7 +550,7 @@ class OneRingPreprocessor {
 
         const padded = candidates.slice(-remaining).map(item => ({
             role: item.role,
-            content: `${item.content}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
+            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
         }));
 
         return mergeConversationByOneRingTimestamp([...messages, ...padded]);
@@ -572,30 +583,32 @@ class OneRingPreprocessor {
                 const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
                 if (!classifiedAssistant) return m;
 
-                if (
-                    existingMeta &&
-                    existingMeta.senderName === classifiedAssistant.senderName &&
-                    existingMeta.frontendSource === frontendSource
-                ) return m;
+                if (existingMeta && existingMeta.senderName === classifiedAssistant.senderName) return m;
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
+                    content: upsertTailTag(
+                        m.content,
+                        classifiedAssistant.senderName,
+                        existingMeta?.timestamp || nextTimestamp(),
+                        existingMeta?.frontendSource || frontendSource
+                    )
                 };
             }
 
             const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
 
-            if (
-                existingMeta &&
-                existingMeta.senderName === classified.senderName &&
-                existingMeta.frontendSource === frontendSource
-            ) return m;
+            if (existingMeta && existingMeta.senderName === classified.senderName) return m;
 
             return {
                 ...m,
-                content: upsertTailTag(m.content, classified.senderName, existingMeta?.timestamp || nextTimestamp(), frontendSource)
+                content: upsertTailTag(
+                    m.content,
+                    classified.senderName,
+                    existingMeta?.timestamp || nextTimestamp(),
+                    existingMeta?.frontendSource || frontendSource
+                )
             };
         });
 
@@ -696,7 +709,7 @@ class OneRingPreprocessor {
 
         const systemMsg = messages.find(m => m.role === 'system');
         const systemText = systemMsg ? fuzzy.extractText(systemMsg.content) : '';
-        const triggerMatch = TRIGGER_REGEX.exec(systemText);
+        const triggerMatch = getLastTriggerMatch(systemText);
         const noticeMatch = /\[OneRing系统已启动，当前Agent([\s\S]*?)，当前客户端([\s\S]*?)，所有上下文OneRing信息来源标记由系统生成无需你自动输出。\]/.exec(systemText);
 
         const agentName = attachedMeta?.agentName || (triggerMatch ? triggerMatch[1].trim() : null) || (noticeMatch ? noticeMatch[1].trim() : null);
@@ -791,7 +804,7 @@ class OneRingPreprocessor {
 
         const padded = candidates.map(item => ({
             role: item.role,
-            content: `${item.content}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
+            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
         }));
 
         return mergeConversationByOneRingTimestamp([...messages, ...padded]);
@@ -829,7 +842,7 @@ class OneRingPreprocessor {
 
         const padded = candidates.map(item => ({
             role: item.role,
-            content: `${item.content}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
+            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
         }));
 
         return mergeConversationByOneRingTimestamp([...messages, ...padded]);

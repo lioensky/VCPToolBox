@@ -4,7 +4,7 @@
 // 设计为可独立升级：未来可替换为向量相似度或更复杂的 diff 算法，只要保持导出接口不变。
 
 // 需要在比对前剥离的标记（尾部 OneRing 标记、群聊头标记、系统通知栏）
-const ONERING_TAIL_REGEX = /\[OneRing通知:[^\]]*\]\s*$/;
+const ONERING_TAIL_REGEX = /(?:\s*\[OneRing通知:[^\]]*\]\s*)+$/;
 const SYSTEM_NOTICE_REGEX = /\[系统通知\][\s\S]*?\[系统通知结束\]/g;
 const GROUPCHAT_HEAD_REGEX = /^\s*\[[^\]]{1,30}的发言\]\s*[:：]\s*/;
 
