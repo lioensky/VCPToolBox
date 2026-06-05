@@ -281,6 +281,53 @@ function mergeConversationByOneRingTimestamp(messages) {
     ];
 }
 
+function choosePreferredDuplicateMessage(prev, current) {
+    const prevMeta = getOneRingTailMeta(prev?.content);
+    const currentMeta = getOneRingTailMeta(current?.content);
+
+    // 优先保留带 OneRing 时间戳的记录，保证跨端时间线稳定。
+    if (!prevMeta && currentMeta) return current;
+    if (prevMeta && !currentMeta) return prev;
+
+    // 两者都有时间戳时保留更早的原始时间点；编辑 update 不应改变时间戳。
+    if (prevMeta && currentMeta) {
+        if (prevMeta.timestamp <= currentMeta.timestamp) return prev;
+        return current;
+    }
+
+    // 都无尾标时保留信息量更大的文本。
+    const prevText = fuzzy.normalize(fuzzy.extractText(prev?.content));
+    const currentText = fuzzy.normalize(fuzzy.extractText(current?.content));
+    return currentText.length > prevText.length ? current : prev;
+}
+
+function dedupeAdjacentSimilarConversation(messages, threshold = 0.98) {
+    if (!Array.isArray(messages)) return messages;
+
+    const result = [];
+    for (const message of messages) {
+        if (!message || (message.role !== 'user' && message.role !== 'assistant')) {
+            result.push(message);
+            continue;
+        }
+
+        const prev = result[result.length - 1];
+        if (
+            prev &&
+            prev.role === message.role &&
+            (prev.role === 'user' || prev.role === 'assistant') &&
+            fuzzy.similarity(fuzzy.extractText(prev.content), fuzzy.extractText(message.content)) >= threshold
+        ) {
+            result[result.length - 1] = choosePreferredDuplicateMessage(prev, message);
+            continue;
+        }
+
+        result.push(message);
+    }
+
+    return result;
+}
+
 class OneRingPreprocessor {
     async processMessages(messages, requestConfig) {
         const cfg = { ...config, ...requestConfig };
@@ -307,6 +354,7 @@ class OneRingPreprocessor {
         const maxBlocks = parseInt(cfg.ONERING_MAX_CONTEXT_BLOCKS ?? '20', 10);
         const recordOnly = String(cfg.ONERING_RECORD_ONLY ?? 'true').toLowerCase() !== 'false';
         const snapshotMaxBlocks = parseInt(cfg.ONERING_POST_SNAPSHOT_MAX_BLOCKS ?? '20', 10);
+        const outputDedupeThreshold = parseFloat(cfg.ONERING_OUTPUT_DEDUP_SIMILARITY ?? '0.98');
 
         if (debugMode) console.log(`[OneRing] Triggered for agent="${agentName}" frontend="${frontendSource}"`);
 
@@ -336,7 +384,8 @@ class OneRingPreprocessor {
                 frontendSource,
                 defaultUserName,
                 threshold,
-                snapshotMaxBlocks
+                snapshotMaxBlocks,
+                outputDedupeThreshold
             );
         }
 
@@ -485,6 +534,8 @@ class OneRingPreprocessor {
             };
         });
 
+        patchMessages = dedupeAdjacentSimilarConversation(patchMessages, outputDedupeThreshold);
+
         try {
             snapshot.saveSnapshotFromDb(
                 agentName,
@@ -565,7 +616,7 @@ class OneRingPreprocessor {
         return messages;
     }
 
-    _processRecordOnlyMessages(messages, agentName, frontendSource, defaultUserName, threshold, maxSnapshotBlocks = 20) {
+    _processRecordOnlyMessages(messages, agentName, frontendSource, defaultUserName, threshold, maxSnapshotBlocks = 20, outputDedupeThreshold = 0.98) {
         const nextTimestamp = createOneRingTimestampSequencer();
         let result = Array.isArray(messages) ? [...messages] : messages;
 
@@ -624,6 +675,8 @@ class OneRingPreprocessor {
                 )
             };
         });
+
+        result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
 
         try {
             snapshot.saveSnapshotFromDb(
