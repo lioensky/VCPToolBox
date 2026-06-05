@@ -24,13 +24,23 @@ OneRing 通过系统提示词中的占位符激活：
 [[OneRing::小克::Vchat::Only]]
 ```
 
+或者保持主触发占位符不变，额外增减一个独立 Only 占位符：
+
+```text
+[[OneRing::小克::Vchat]]
+[[OneRing::Only]]
+```
+
+这种写法适合把 `[[OneRing::小克::Vchat]]` 固定在 Agent 系统提示词中；需要临时只写库不追加时只加入 `[[OneRing::Only]]`，恢复普通模式时只删除 `[[OneRing::Only]]`，无需频繁改动 Agent/frontend 触发占位符。
+
 语义：
 
 - `小克`：当前要维护统一上下文的 Agent 名称。
 - `Vchat`：当前请求来源前端。
 - `Only`：可选模式。启用后不做跨端上下文追加、不做最近历史补齐，只以最终 post 为真相同步同端 DB，并为本次 post 补 OneRing 尾标供 AI 回复 hook 入库。
+- `[[OneRing::Only]]`：独立模式开关。它不会单独触发 OneRing，必须与 `[[OneRing::Agent::Frontend]]` 或 `[[OneRing::Agent::Frontend::Only]]` 一起出现才生效。
 
-没有该占位符时，插件直接跳过，不影响任何请求，也不会入库。
+没有 Agent/frontend 触发占位符时，插件直接跳过，不影响任何请求，也不会入库。
 
 检测完成后，OneRing 会把占位符替换为系统可见提示词：
 
@@ -44,19 +54,26 @@ Only 模式会替换为：
 [OneRing系统已启动，当前Agent小克，当前客户端Vchat，当前模式Only，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]
 ```
 
+独立 `[[OneRing::Only]]` 还会被替换为：
+
+```text
+[OneRing Only模式已启动：本次只入库/标记，不做跨端上下文追加。]
+```
+
 替换只发生在完成触发识别之后，不会破坏 OneRing 的实际逻辑。后端会优先通过不可枚举的 `__oneRingMeta` 保存 AgentName / frontendSource；该元数据不会被 `JSON.stringify(messages)` 发送给上游模型。由于后续预处理器可能通过深拷贝丢失不可枚举元数据，替换提示词本身也保留了“当前Agent/当前客户端”字段，供响应 hook 兜底恢复入库目标。
 
 ---
 
 ## 当前实现形态
 
-OneRing 由三部分组成：
+OneRing 由四部分组成：
 
 | 文件 | 职责 |
 |------|------|
 | `OneRing.js` | 主预处理器：触发检测、消息来源判断、用户入库、尾部标记、跨端补充入口、AI 回复入库接口 |
 | `OneRingDB.js` | SQLite 操作层：按 Agent 独立建库，记录 User / Assistant 消息 |
 | `OneRingFuzzy.js` | 独立 fuzzy diff 模块：内容净化、相似度计算、上下文数组比对 |
+| `OneRingSnapshot.js` | 同来源 post 快照模块：保存上一轮真实同端上下文，基于 role/hash 锚点识别 retry 编辑并按 dbId 精确 UPDATE |
 
 预处理器顺序建议为：
 
@@ -261,11 +278,20 @@ user -> assistant -> user
 
 ## Only 模式：只入库/只标记
 
-使用：
+使用方式一：直接写在主触发占位符中。
 
 ```text
 [[OneRing::小克::Vchat::Only]]
 ```
+
+使用方式二：主触发占位符固定不变，额外加入独立开关。
+
+```text
+[[OneRing::小克::Vchat]]
+[[OneRing::Only]]
+```
+
+方式二适合日常操作：`[[OneRing::小克::Vchat]]` 长期保留，用户只需要增减 `[[OneRing::Only]]` 就能切换“只写库不追加”。
 
 Only 模式适合“不希望 OneRing 改写上下文，只希望统一入库”的端：
 
@@ -275,9 +301,50 @@ Only 模式适合“不希望 OneRing 改写上下文，只希望统一入库”
 - 仍替换系统提示词，用于响应 hook 识别 Agent/frontend。
 - 仍为当前 post 的 `user/assistant` 补 OneRing 尾标。
 - 以最终 post 中的同端 `user/assistant` 历史为真相，同步更新 DB。
-- 对同端 retry / 编辑使用 fuzzy diff 更新已有记录。
+- 对同端 retry / 编辑优先使用 post 快照 + `dbId` 精确更新；快照不足时回退 fuzzy diff。
 - 对新增 `user` / `assistant` 补写入库。
 - AI 最终回复仍由 Stream/NonStream hook 异步入库。
+
+---
+
+## Post 快照编辑识别
+
+OneRing 会为每个 `Agent + frontendSource` 保存最近一次真实同端 post 的位置快照，用于专门处理“用户编辑旧上下文后点击 retry”的场景。
+
+核心规则：
+
+- 快照只记录当前前端真实带来的 `user/assistant` 块，不记录跨端补齐后插入的垫片。
+- 快照按归一化后的 `role + contentHash` 做锚点对齐。
+- 下一轮同来源 post 到来时，如果有足够完全一致锚点，就认为两个数组属于同一上下文推进/编辑链。
+- 位置相同但 hash 变化的块会按旧快照中的 `dbId` 更新 `messages.content`。
+- 编辑更新绝不修改原始 `timestamp`，避免时间线跳位。
+- 快照默认只保留尾部 `20` 块，由 `ONERING_POST_SNAPSHOT_MAX_BLOCKS` 控制。
+
+因此，如果上下文形态从：
+
+```text
+1 2 3 4 5 6 7
+```
+
+变成：
+
+```text
+1 2 3' 4 5 6' 7
+```
+
+只要锚点足够可靠，`3` 和 `6` 会被识别为编辑并按原 `dbId` UPDATE；即使 `3'` / `6'` 改动很小或完全重写，也不会再受 fuzzy 相似度上下限盲区影响。
+
+---
+
+## 最终输出去重
+
+在返回上游模型之前，OneRing 会做一层相邻近重复去重：
+
+- 只处理相邻且同 role 的 `user/user` 或 `assistant/assistant`。
+- 默认相似度阈值为 `ONERING_OUTPUT_DEDUP_SIMILARITY=0.98`。
+- 优先保留带 OneRing 尾标的消息。
+- 两条都有尾标时保留更早 timestamp 的消息，保证时间线稳定。
+- 该机制主要防止“当前上下文块 + DB 补齐块”在极端情况下几乎重复并相邻出现。
 
 ---
 
@@ -322,16 +389,20 @@ ONERING_TIME_INSERT=true
 ONERING_MAX_UNKNOWN_RATIO=0.35
 ONERING_DEDUP_SIMILARITY=0.92
 ONERING_RECORD_ONLY=true
+ONERING_POST_SNAPSHOT_MAX_BLOCKS=20
+ONERING_OUTPUT_DEDUP_SIMILARITY=0.98
 ```
 
 说明：
 
-- `ONERING_ENABLED` 是总开关，但实际触发仍依赖 `[[OneRing::Agent::Frontend]]` 或 `[[OneRing::Agent::Frontend::Only]]`。
+- `ONERING_ENABLED` 是总开关，但实际触发仍依赖 `[[OneRing::Agent::Frontend]]` 或 `[[OneRing::Agent::Frontend::Only]]`；独立 `[[OneRing::Only]]` 只是模式开关，不会单独触发。
 - `ONERING_MAX_CONTEXT_BLOCKS` 默认建议为 `10`，避免过度消耗 token；需要更长跨端补齐时再手动调高。
 - `ONERING_ALLOW_CONTEXT_PATCH=false` 会关闭普通模式下的跨端补齐。
 - `ONERING_TIME_INSERT=false` 只关闭时间戳夹缝插入；最近历史补齐仍由 `ONERING_ALLOW_CONTEXT_PATCH` 控制。
-- `ONERING_RECORD_ONLY` 保留为兼容配置；推荐使用显式 `::Only` 模式表达“只入库不追加”。
+- `ONERING_RECORD_ONLY` 保留为兼容配置；推荐使用显式 `::Only` 或独立 `[[OneRing::Only]]` 模式表达“只入库不追加”。
 - `ONERING_DEDUP_SIMILARITY` 用于 retry、编辑、重复发送判断。
+- `ONERING_POST_SNAPSHOT_MAX_BLOCKS` 控制每个 Agent/frontend 保存的 post 快照尾部窗口大小，默认 `20`。
+- `ONERING_OUTPUT_DEDUP_SIMILARITY` 控制最终输出相邻同 role 近重复去重阈值，默认 `0.98`。
 
 ---
 

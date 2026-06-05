@@ -1,7 +1,7 @@
 'use strict';
 // OneRing.js — 统一上下文预处理器主模块
 // 触发语法：系统提示词中包含 [[OneRing::AgentName::Frontend]]
-// Only 模式：[[OneRing::AgentName::Frontend::Only]] 只入库/标记，不做跨端上下文追加。
+// Only 模式：[[OneRing::AgentName::Frontend::Only]] 或独立 [[OneRing::Only]] 只入库/标记，不做跨端上下文追加。
 
 const db = require('./OneRingDB.js');
 const fuzzy = require('./OneRingFuzzy.js');
@@ -10,10 +10,18 @@ const snapshot = require('./OneRingSnapshot.js');
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
 const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
 const TRIGGER_GLOBAL_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/g;
+const ONLY_TRIGGER_GLOBAL_REGEX = /\[\[OneRing::Only\]\]/gi;
 
 function getLastTriggerMatch(systemText) {
     if (typeof systemText !== 'string') return null;
     const matches = [...systemText.matchAll(TRIGGER_GLOBAL_REGEX)];
+    if (matches.length === 0) return null;
+    return matches[matches.length - 1];
+}
+
+function getLastOnlyTriggerMatch(systemText) {
+    if (typeof systemText !== 'string') return null;
+    const matches = [...systemText.matchAll(ONLY_TRIGGER_GLOBAL_REGEX)];
     if (matches.length === 0) return null;
     return matches[matches.length - 1];
 }
@@ -206,6 +214,37 @@ function replaceTriggerWithNotice(content, triggerText, agentName, frontendSourc
     return content;
 }
 
+function replaceOnlyTriggerWithNotice(content, triggerText) {
+    const notice = '[OneRing Only模式已启动：本次只入库/标记，不做跨端上下文追加。]';
+
+    if (typeof content === 'string') {
+        return replaceLastOccurrence(content, triggerText, notice);
+    }
+
+    if (Array.isArray(content)) {
+        const result = [...content];
+        for (let i = result.length - 1; i >= 0; i--) {
+            const part = result[i];
+            if (
+                part &&
+                part.type === 'text' &&
+                typeof part.text === 'string' &&
+                part.text.includes(triggerText)
+            ) {
+                result[i] = { ...part, text: replaceLastOccurrence(part.text, triggerText, notice) };
+                return result;
+            }
+        }
+        return result;
+    }
+
+    if (content && typeof content === 'object' && typeof content.text === 'string') {
+        return { ...content, text: replaceLastOccurrence(content.text, triggerText, notice) };
+    }
+
+    return content;
+}
+
 // ─── 模块状态 ─────────────────────────────────────────────────────────────────
 let config = {};
 let projectBasePath = '';
@@ -342,11 +381,16 @@ class OneRingPreprocessor {
         const triggerMatch = getLastTriggerMatch(systemText);
         if (!triggerMatch) return messages;
 
+        const onlyTriggerMatch = getLastOnlyTriggerMatch(systemText);
         const agentName = triggerMatch[1].trim();
         const frontendSource = triggerMatch[2].trim();
         const triggerMode = (triggerMatch[3] || '').trim();
-        const onlyMode = triggerMode.toLowerCase() === 'only';
-        systemMsg.content = replaceTriggerWithNotice(systemMsg.content, triggerMatch[0], agentName, frontendSource, triggerMode);
+        const onlyMode = triggerMode.toLowerCase() === 'only' || !!onlyTriggerMatch;
+        const effectiveTriggerMode = onlyMode && !triggerMode ? 'Only' : triggerMode;
+        systemMsg.content = replaceTriggerWithNotice(systemMsg.content, triggerMatch[0], agentName, frontendSource, effectiveTriggerMode);
+        if (onlyTriggerMatch) {
+            systemMsg.content = replaceOnlyTriggerWithNotice(systemMsg.content, onlyTriggerMatch[0]);
+        }
         const defaultUserName = cfg.ONERING_USER_NAME || 'Ryan';
         const threshold = parseFloat(cfg.ONERING_DEDUP_SIMILARITY ?? '0.92');
         const maxUnknownRatio = parseFloat(cfg.ONERING_MAX_UNKNOWN_RATIO ?? '0.35');
