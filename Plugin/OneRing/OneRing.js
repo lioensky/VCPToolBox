@@ -48,7 +48,8 @@ const AA_COMM_REGEX = /\[Tips:这是一条来自AgentAssistant通讯中心\s+([\
 // 群聊发言头标记，如 [莱恩的发言]: 或 [小克的发言]:
 const GROUPCHAT_SENDER_REGEX = /^\s*\[([^\]]{1,30})的发言\]\s*[:：]\s*/;
 
-const ONERING_TAIL_STACK_REGEX = /(?:\s*\[OneRing通知:[\s\S]*?于\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?发送于[^\]]*?\]\s*)+$/;
+const NEW_CONVERSATION_START_SUFFIX = '；这是一个新对话的起点';
+const ONERING_TAIL_STACK_REGEX = /(?:\s*\[OneRing通知:[\s\S]*?于\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?发送于[^\]]*?(?:；这是一个新对话的起点)?\]\s*)+$/;
 
 function stripOneRingTailTagText(text) {
     return typeof text === 'string' ? text.replace(ONERING_TAIL_STACK_REGEX, '').trim() : '';
@@ -68,6 +69,9 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
 
     // 1. 剥离系统通知栏与既有 OneRing 尾标，避免二次入库污染 cleanText。
     text = stripOneRingTailTagText(text.replace(fuzzy.SYSTEM_NOTICE_REGEX, ''));
+
+    // 系统通知 user 块剥离通知后无正文时，直接丢弃，不入库也不补尾标。
+    if (!text.trim()) return null;
 
     // 2. 检查丢弃模式
     for (const pat of DISCARD_PATTERNS) {
@@ -114,7 +118,7 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
 
 function getOneRingTailMeta(content) {
     const text = fuzzy.extractText(content);
-    const re = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)发送于([^\]]*?)\]/g;
+    const re = /\[OneRing通知:([\s\S]*?)于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?)发送于([^\]；]*?)(；这是一个新对话的起点)?\]/g;
     let m;
     let last = null;
     while ((m = re.exec(text)) !== null) {
@@ -123,7 +127,8 @@ function getOneRingTailMeta(content) {
     return last ? {
         senderName: last[1].trim(),
         timestamp: last[2].trim(),
-        frontendSource: last[3].trim()
+        frontendSource: last[3].trim(),
+        isNewConversationStart: !!last[4]
     } : null;
 }
 
@@ -135,8 +140,9 @@ function hasOneRingTailTag(content) {
  * 为消息附加 OneRing 尾部标记。
  * 只在 cleanText 末尾追加，不影响原消息开头，对下游处理透明。
  */
-function appendTailTag(content, senderName, timestamp, frontendSource) {
-    const tag = `\n[OneRing通知:${senderName}于${timestamp}发送于${frontendSource}]`;
+function appendTailTag(content, senderName, timestamp, frontendSource, isNewConversationStart = false) {
+    const newConversationSuffix = isNewConversationStart ? NEW_CONVERSATION_START_SUFFIX : '';
+    const tag = `\n[OneRing通知:${senderName}于${timestamp}发送于${frontendSource}${newConversationSuffix}]`;
     if (typeof content === 'string') return content + tag;
     if (Array.isArray(content)) {
         // 找最后一个 text part 追加
@@ -157,8 +163,9 @@ function appendTailTag(content, senderName, timestamp, frontendSource) {
  * 替换或附加 OneRing 尾部标记。
  * 用于修正旧上下文中曾经打错 senderName/frontendSource 的尾标。
  */
-function upsertTailTag(content, senderName, timestamp, frontendSource) {
-    const tag = `[OneRing通知:${senderName}于${timestamp}发送于${frontendSource}]`;
+function upsertTailTag(content, senderName, timestamp, frontendSource, isNewConversationStart = false) {
+    const newConversationSuffix = isNewConversationStart ? NEW_CONVERSATION_START_SUFFIX : '';
+    const tag = `[OneRing通知:${senderName}于${timestamp}发送于${frontendSource}${newConversationSuffix}]`;
     if (typeof content === 'string') {
         const stripped = stripOneRingTailTagText(content);
         return `${stripped}\n${tag}`;
@@ -530,13 +537,15 @@ class OneRingPreprocessor {
 
         // ── 2. 提取本次 post 的 user/assistant 历史块（忽略 system）──────────
         const historyBlocks = messages
-            .filter(m => m.role === 'user' || m.role === 'assistant')
-            .map(m => {
+            .map((m, index) => ({ m, index }))
+            .filter(({ m }) => m && (m.role === 'user' || m.role === 'assistant'))
+            .map(({ m, index }) => {
                 const tailMeta = getOneRingTailMeta(m.content);
                 return {
                     role: m.role,
                     text: fuzzy.extractText(m.content),
                     frontendSource: tailMeta?.frontendSource || null,
+                    index,
                     _msg: m
                 };
             });
@@ -595,7 +604,8 @@ class OneRingPreprocessor {
             // 注意：长上下文无匹配时不补充；只有短新 user 场景可以尝试接入同 Agent 既有时间线。
             if (dbBlocks.length === 0 && historyBlocks.length <= 4) {
                 isFreshShortContext = true;
-                const freshStats = this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold);
+                const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
+                const freshStats = this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold, newConversationStartUserIndex);
                 summaryStats.dbInserted += freshStats.inserted || 0;
                 summaryStats.dbUpdated += freshStats.updated || 0;
             } else if (dbBlocks.length > 0) {
@@ -650,6 +660,8 @@ class OneRingPreprocessor {
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
         const nextTimestamp = createOneRingTimestampSequencer();
         const now = nextTimestamp();
+        const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
+
         // 入库必须以“实际 post 传入的上下文”为真相；
         // patchMessages 可能已经包含 DB 补齐块，不能再反向同步进 DB。
         const realUserEntries = [...messages].map((m, i) => ({ m, i }))
@@ -670,7 +682,8 @@ class OneRingPreprocessor {
                 lastRealUserIdx.classified.senderName,
                 lastRealUserIdx.classified.cleanText,
                 now,
-                threshold
+                threshold,
+                lastRealUserIdx.i === newConversationStartUserIndex
             );
             if (userRecordResult === 'insert') summaryStats.dbInserted++;
             if (userRecordResult === 'update') summaryStats.dbUpdated++;
@@ -712,7 +725,13 @@ class OneRingPreprocessor {
             const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
 
-            if (existingMeta && existingMeta.senderName === classified.senderName) return m;
+            const originalIndex = messages.indexOf(m);
+            const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
+            if (
+                existingMeta &&
+                existingMeta.senderName === classified.senderName &&
+                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart)
+            ) return m;
 
             return {
                 ...m,
@@ -720,7 +739,8 @@ class OneRingPreprocessor {
                     m.content,
                     classified.senderName,
                     existingMeta?.timestamp || nextTimestamp(),
-                    existingMeta?.frontendSource || frontendSource
+                    existingMeta?.frontendSource || frontendSource,
+                    shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
                 )
             };
         });
@@ -868,6 +888,32 @@ class OneRingPreprocessor {
         return content;
     }
 
+    _detectNewConversationStartUserIndex(messages, defaultUserName, agentName) {
+        if (!Array.isArray(messages)) return -1;
+
+        const effectiveBlocks = [];
+        for (let i = 0; i < messages.length; i++) {
+            const message = messages[i];
+            if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
+
+            if (message.role === 'assistant') {
+                effectiveBlocks.push({ role: 'assistant', index: i });
+                continue;
+            }
+
+            const classified = classifyUserContent(message.content, defaultUserName, agentName);
+            if (!classified) {
+                // 纯系统通知 user 块在新对话起点判定中也被忽略。
+                continue;
+            }
+
+            effectiveBlocks.push({ role: 'user', index: i, classified });
+        }
+
+        if (effectiveBlocks.length !== 1 || effectiveBlocks[0].role !== 'user') return -1;
+        return effectiveBlocks[0].index;
+    }
+
     _attachMeta(messages, agentName, frontendSource) {
         try {
             Object.defineProperty(messages, '__oneRingMeta', {
@@ -913,7 +959,8 @@ class OneRingPreprocessor {
             console.error('[OneRing] Record-only snapshot edit failed:', e.message);
         }
 
-        const syncStats = this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks);
+        const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(result, defaultUserName, agentName);
+        const syncStats = this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks, newConversationStartUserIndex);
         summaryStats.dbInserted += syncStats.inserted || 0;
         summaryStats.dbUpdated += syncStats.updated || 0;
         summaryStats.fuzzyEdited += syncStats.fuzzyEdited || 0;
@@ -942,7 +989,13 @@ class OneRingPreprocessor {
             const classified = classifyUserContent(m.content, defaultUserName, agentName);
             if (!classified) return m;
 
-            if (existingMeta && existingMeta.senderName === classified.senderName) return m;
+            const originalIndex = result.indexOf(m);
+            const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
+            if (
+                existingMeta &&
+                existingMeta.senderName === classified.senderName &&
+                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart)
+            ) return m;
 
             return {
                 ...m,
@@ -950,7 +1003,8 @@ class OneRingPreprocessor {
                     m.content,
                     classified.senderName,
                     existingMeta?.timestamp || nextTimestamp(),
-                    existingMeta?.frontendSource || frontendSource
+                    existingMeta?.frontendSource || frontendSource,
+                    shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
                 )
             };
         });
@@ -982,8 +1036,9 @@ class OneRingPreprocessor {
         if (!Array.isArray(messages)) return [];
 
         return messages
-            .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
-            .map(m => {
+            .map((m, index) => ({ m, index }))
+            .filter(({ m }) => m && (m.role === 'user' || m.role === 'assistant'))
+            .map(({ m, index }) => {
                 const tailMeta = getOneRingTailMeta(m.content);
                 const rawText = fuzzy.extractText(m.content);
                 if (m.role === 'user') {
@@ -993,7 +1048,8 @@ class OneRingPreprocessor {
                         role: m.role,
                         text: classified.cleanText,
                         senderName: classified.senderName,
-                        frontendSource: tailMeta?.frontendSource || null
+                        frontendSource: tailMeta?.frontendSource || null,
+                        index
                     };
                 }
                 const classified = classifyUserContent(rawText, agentName, agentName);
@@ -1002,7 +1058,8 @@ class OneRingPreprocessor {
                     role: m.role,
                     text: classified.cleanText,
                     senderName: classified.senderName,
-                    frontendSource: tailMeta?.frontendSource || null
+                    frontendSource: tailMeta?.frontendSource || null,
+                    index
                 };
             })
             .filter(Boolean)
@@ -1010,7 +1067,7 @@ class OneRingPreprocessor {
             .filter(block => block.text);
     }
 
-    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null) {
+    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null, newConversationStartUserIndex = -1) {
         const stats = { inserted: 0, updated: 0, fuzzyEdited: 0 };
         if (!Array.isArray(messages)) return stats;
 
@@ -1039,15 +1096,17 @@ class OneRingPreprocessor {
 
             for (const block of diffResult.newBlocks) {
                 if (block.role === 'user') {
-                    db.insertMessage(agentName, {
-                        role: 'user',
-                        senderName: block.senderName || defaultUserName,
+                    const userResult = this._recordUserMessage(
+                        agentName,
                         frontendSource,
-                        content: block.text,
-                        timestamp: nextTimestamp(),
-                        maxRecords: getOneRingMaxDbRecords(),
-                    }, projectBasePath);
-                    stats.inserted++;
+                        block.senderName || defaultUserName,
+                        block.text,
+                        nextTimestamp(),
+                        threshold,
+                        block.index === newConversationStartUserIndex
+                    );
+                    if (userResult === 'insert') stats.inserted++;
+                    if (userResult === 'update') stats.updated++;
                 } else if (block.role === 'assistant') {
                     const assistantResult = this._recordAssistantMessage(agentName, frontendSource, block.text, nextTimestamp(), threshold, block.senderName || agentName);
                     if (assistantResult === 'insert') stats.inserted++;
@@ -1066,7 +1125,8 @@ class OneRingPreprocessor {
                         lastUser.senderName || defaultUserName,
                         lastUser.text,
                         nextTimestamp(),
-                        threshold
+                        threshold,
+                        lastUser.index === newConversationStartUserIndex
                     );
                     if (userResult === 'insert') stats.inserted++;
                     if (userResult === 'update') stats.updated++;
@@ -1154,7 +1214,7 @@ class OneRingPreprocessor {
      * 用于 user/assistant 块都很少、同前端 DB 为空的初次对话场景。
      * 记录 post 中已经存在的真实块；跨端补充由 _doFreshShortContextPatch 负责。
      */
-    _recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold = 0.92) {
+    _recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold = 0.92, newConversationStartUserIndex = -1) {
         const stats = { inserted: 0, updated: 0 };
         const nextTimestamp = createOneRingTimestampSequencer();
         for (const block of historyBlocks) {
@@ -1167,7 +1227,8 @@ class OneRingPreprocessor {
                     classified.senderName,
                     classified.cleanText,
                     nextTimestamp(),
-                    threshold
+                    threshold,
+                    block.index === newConversationStartUserIndex
                 );
                 if (userResult === 'insert') stats.inserted++;
                 if (userResult === 'update') stats.updated++;
@@ -1249,14 +1310,17 @@ class OneRingPreprocessor {
      * user 发言入库（在 processMessages 内部确认要入库时调用）。
      * 最近同前端 user 块高度相似时执行 UPDATE，避免 retry / 重新发送导致重复写入。
      */
-    _recordUserMessage(agentName, frontendSource, senderName, cleanText, timestamp, threshold = 0.92) {
+    _recordUserMessage(agentName, frontendSource, senderName, cleanText, timestamp, threshold = 0.92, isNewConversationStart = false) {
         try {
+            const dbContent = isNewConversationStart
+                ? upsertTailTag(cleanText, senderName, timestamp, frontendSource, true)
+                : cleanText;
             const recent = db.getRecentMessagesByFrontend(agentName, frontendSource, 12, projectBasePath)
                 .filter(item => item.role === 'user')
                 .slice(-1)[0];
 
             if (recent && fuzzy.similarity(cleanText, recent.content) >= threshold) {
-                db.updateMessageById(agentName, recent.id, cleanText, projectBasePath);
+                db.updateMessageById(agentName, recent.id, dbContent, projectBasePath);
                 if (debugMode) console.log(`[OneRing] Updated recent user message dbId=${recent.id}`);
                 return 'update';
             }
@@ -1265,7 +1329,7 @@ class OneRingPreprocessor {
                 role: 'user',
                 senderName,
                 frontendSource,
-                content: cleanText,
+                content: dbContent,
                 timestamp,
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
