@@ -28,7 +28,6 @@
 | 建议包 | upstream commits | 范围 | 原因 |
 |--------|------------------|------|------|
 | R16E RAGDiary 用户输入块向量化流程 | `46250ad7` | `Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js` | 单文件但影响 RAGDiary 召回/向量化语义，需先审行为和测试入口。 |
-| R16F2 Bridge Responses retry suppression | `cca1c915` partial | `Plugin/VCPBridgeServer/bridgeserver.js` | R16F1 function tool 字段兼容已由 #130 吸收；剩余 retry suppression 影响 Responses 重试/重复请求语义，需单独 preflight。本地没有 `routes/protocolBridge.js`，不能 raw apply 上游范围。 |
 | R16G 配置样例补齐 | `e9c98eaa`, possibly `70a49e08` | `config.env.example`, plugin `.example` | 只改 example 较安全，但需确认变量已有代码消费，避免文档过度承诺。 |
 | R16H Agent 编辑器右侧栏 | `c2f3b1a9` | `AdminPanel-Vue/src/*`, `AdminPanel-Vue/dist/*` | 只能考虑源码部分，必须排除 `AdminPanel-Vue/dist/*`，需要前端验证。 |
 
@@ -38,6 +37,7 @@
 |------------------|------|
 | `79764f12`, `7702a533`, `d3f58c7e` | R16A 已拆包吸收 ignore 安全子集并合并到 `main`。`Plugin/SkillBridge/skill-index.txt` 删除没有执行，需要单独确认。 |
 | `e01d05fb` | R16F1 已由 #130 吸收并合并到 `main`：`Plugin/VCPBridgeServer/bridgeserver.js` 保留 `tools` / `functions` / `tool_choice` / `parallel_tool_calls` 为受保护字段，只在构建 chat/Anthropic/Gemini upstream body 时加回，不进入 `messages` / RAG 文本流。验证：`node --test tests/vcp-bridge-server.test.js`，23/23。合并提交：`afadc7cd`。 |
+| `cca1c915` partial | R16F2 已由本地默认关闭 opt-in retry suppression 实现覆盖并合并到 `main`。#132 先做 preflight；#133 在 `Plugin/VCPBridgeServer/bridgeserver.js` 增加 `BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS`，默认 `0` 关闭，仅作用于 `/v1/responses`，显式 `requestId` / `messageId` 跳过，命中时返回带 `metadata.vcp_bridge_suppressed_duplicate=true` 的 synthetic Responses JSON/SSE；P2 修正为仅在上游成功后记录 suppression key，避免失败重试被 synthetic 200 掩盖。验证：`node --test tests/vcp-bridge-server.test.js`，29/29；CI `build_and_test (20.x)` / `detect_docker_changes` / `docker_build` 通过。合并提交：`d9fcfd9a`。 |
 | `ef4a458d`, `fcfcc918`, `d6f051f5` | R15A/R15B/R15C 已通过本地安全改写吸收。`git cherry` 仍显示 `+` 是 hash 不同，不代表未吸收。 |
 | `567cf29b` | R13 已核销目录整理安全子集，剩余不继续按目录整理吸收。 |
 | `631076b4` | 删除临时文件。若本地没有该文件，可台账核销，不需要代码包。 |
@@ -57,7 +57,7 @@
 1. R16C VCPToolBridge manifest version。
 2. R16B TagMemo 启动/自检轻量优化。
 3. R16D NanoBananaGen2 public URL switch 的本地修正版。
-4. R16E/R16F2 先做 preflight。
+4. R16E 先做 preflight。
 
 ## 7. 验证建议
 
