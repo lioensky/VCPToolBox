@@ -332,6 +332,105 @@ test('buildUpstreamRequest selects auth header by upstream protocol', () => {
     assert.equal(geminiRequest.headers.Authorization, undefined);
 });
 
+test('buildUpstreamRequest preserves protected function tool fields outside messages', () => {
+    const messages = [{ role: 'user', content: 'use the tool' }];
+    const toolsBody = {
+        tools: [
+            {
+                type: 'function',
+                function: {
+                    name: 'lookup_weather',
+                    description: 'Lookup weather.',
+                    parameters: {
+                        type: 'object',
+                        properties: { city: { type: 'string' } },
+                        required: ['city']
+                    }
+                }
+            },
+            {
+                functionDeclarations: [
+                    {
+                        name: 'gemini_lookup',
+                        description: 'Lookup through Gemini declaration.',
+                        parameters: { type: 'object', properties: { query: { type: 'string' } } }
+                    }
+                ]
+            }
+        ],
+        functions: [
+            {
+                name: 'legacy_lookup',
+                input_schema: { type: 'object', properties: { term: { type: 'string' } } }
+            }
+        ],
+        tool_choice: { type: 'tool', name: 'legacy_lookup' },
+        parallel_tool_calls: false
+    };
+
+    const chatRequest = buildUpstreamRequest({
+        messages,
+        model: 'gpt-tools',
+        body: toolsBody,
+        requestHeaders: {}
+    }, createRuntimeConfig({
+        BRIDGE_UPSTREAM_URL: 'https://chat.example.test',
+        BRIDGE_UPSTREAM_TYPE: 'chat'
+    }));
+
+    assert.deepEqual(chatRequest.upstreamBody.messages, messages);
+    assert.equal(chatRequest.upstreamBody.tools.length, 3);
+    assert.equal(chatRequest.upstreamBody.tools[0].type, 'function');
+    assert.equal(chatRequest.upstreamBody.tools[0].function.name, 'lookup_weather');
+    assert.equal(chatRequest.upstreamBody.tools[1].function.name, 'gemini_lookup');
+    assert.equal(chatRequest.upstreamBody.tools[2].function.name, 'legacy_lookup');
+    assert.deepEqual(chatRequest.upstreamBody.tool_choice, { type: 'function', function: { name: 'legacy_lookup' } });
+    assert.equal(chatRequest.upstreamBody.parallel_tool_calls, false);
+
+    const anthropicRequest = buildUpstreamRequest({
+        messages,
+        model: 'claude-tools',
+        body: toolsBody,
+        requestHeaders: {}
+    }, createRuntimeConfig({
+        BRIDGE_UPSTREAM_URL: 'https://anthropic.example.test',
+        BRIDGE_UPSTREAM_TYPE: 'anthropic'
+    }));
+
+    assert.equal(anthropicRequest.upstreamBody.tools.length, 3);
+    assert.equal(anthropicRequest.upstreamBody.tools[0].name, 'lookup_weather');
+    assert.deepEqual(anthropicRequest.upstreamBody.tools[2].input_schema, toolsBody.functions[0].input_schema);
+    assert.deepEqual(anthropicRequest.upstreamBody.tool_choice, toolsBody.tool_choice);
+    assert.equal(anthropicRequest.upstreamBody.messages[0].content, 'use the tool');
+
+    const geminiRequest = buildUpstreamRequest({
+        messages,
+        model: 'gemini-tools',
+        body: {
+            tools: toolsBody.tools,
+            toolConfig: {
+                functionCallingConfig: {
+                    mode: 'ANY',
+                    allowedFunctionNames: ['gemini_lookup']
+                }
+            }
+        },
+        requestHeaders: {}
+    }, createRuntimeConfig({
+        BRIDGE_UPSTREAM_URL: 'https://gemini.example.test',
+        BRIDGE_UPSTREAM_TYPE: 'gemini'
+    }));
+
+    assert.deepEqual(geminiRequest.upstreamBody.contents, [
+        { role: 'user', parts: [{ text: 'use the tool' }] }
+    ]);
+    assert.equal(geminiRequest.upstreamBody.tools.length, 1);
+    assert.equal(geminiRequest.upstreamBody.tools[0].functionDeclarations.length, 2);
+    assert.equal(geminiRequest.upstreamBody.tools[0].functionDeclarations[0].name, 'lookup_weather');
+    assert.equal(geminiRequest.upstreamBody.tools[0].functionDeclarations[1].name, 'gemini_lookup');
+    assert.deepEqual(geminiRequest.upstreamBody.toolConfig.functionCallingConfig.allowedFunctionNames, ['gemini_lookup']);
+});
+
 test('transforms chat completion JSON into responses schema', () => {
     const transformed = transformUpstreamJsonPayload({
         id: 'chatcmpl-test',

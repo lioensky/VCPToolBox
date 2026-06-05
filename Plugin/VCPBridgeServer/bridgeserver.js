@@ -240,8 +240,150 @@ function extractFromGeminiBody(body = {}) {
     return messages;
 }
 
+function normalizeToolParameters(parameters) {
+    if (parameters && typeof parameters === 'object') return parameters;
+    return { type: 'object', properties: {} };
+}
+
+function toOpenAiChatTool(tool) {
+    if (!tool || typeof tool !== 'object') return null;
+
+    if (tool.type === 'function' && tool.function?.name) {
+        return {
+            type: 'function',
+            function: {
+                name: tool.function.name,
+                ...(tool.function.description && { description: tool.function.description }),
+                parameters: normalizeToolParameters(tool.function.parameters || tool.function.input_schema)
+            }
+        };
+    }
+
+    if ((tool.type === 'function' || !tool.type) && tool.name) {
+        return {
+            type: 'function',
+            function: {
+                name: tool.name,
+                ...(tool.description && { description: tool.description }),
+                parameters: normalizeToolParameters(tool.parameters || tool.input_schema || tool.schema)
+            }
+        };
+    }
+
+    return null;
+}
+
+function extractProtectedTools(body) {
+    const tools = [];
+
+    if (Array.isArray(body?.tools)) {
+        for (const tool of body.tools) {
+            const functionDeclarations = tool?.functionDeclarations || tool?.function_declarations;
+            if (Array.isArray(functionDeclarations)) {
+                for (const declaration of functionDeclarations) {
+                    const converted = toOpenAiChatTool(declaration);
+                    if (converted) tools.push(converted);
+                }
+                continue;
+            }
+
+            const converted = toOpenAiChatTool(tool);
+            if (converted) tools.push(converted);
+        }
+    }
+
+    if (Array.isArray(body?.functions)) {
+        for (const fn of body.functions) {
+            const converted = toOpenAiChatTool({ type: 'function', ...fn });
+            if (converted) tools.push(converted);
+        }
+    }
+
+    return tools;
+}
+
+function normalizeToolChoice(toolChoice, body) {
+    if (!toolChoice && body?.toolConfig?.functionCallingConfig) {
+        const config = body.toolConfig.functionCallingConfig;
+        const mode = String(config.mode || '').toUpperCase();
+        if (mode === 'NONE') return 'none';
+        if (mode === 'ANY') {
+            const allowed = Array.isArray(config.allowedFunctionNames) ? config.allowedFunctionNames.filter(Boolean) : [];
+            if (allowed.length === 1) {
+                return { type: 'function', function: { name: allowed[0] } };
+            }
+            return 'required';
+        }
+        if (mode === 'AUTO') return 'auto';
+    }
+
+    if (!toolChoice) return undefined;
+    if (typeof toolChoice === 'string') return toolChoice;
+    if (typeof toolChoice !== 'object') return undefined;
+
+    if (toolChoice.type === 'function' && toolChoice.function?.name) {
+        return { type: 'function', function: { name: toolChoice.function.name } };
+    }
+    if (toolChoice.type === 'function' && toolChoice.name) {
+        return { type: 'function', function: { name: toolChoice.name } };
+    }
+    if (toolChoice.type === 'tool' && toolChoice.name) {
+        return { type: 'function', function: { name: toolChoice.name } };
+    }
+    if (toolChoice.type === 'auto') return 'auto';
+    if (toolChoice.type === 'any') return 'required';
+    if (toolChoice.type === 'none') return 'none';
+
+    return undefined;
+}
+
+function attachProtectedChatToolFields(targetBody, sourceBody) {
+    const tools = extractProtectedTools(sourceBody);
+    if (tools.length > 0) targetBody.tools = tools;
+
+    const toolChoice = normalizeToolChoice(sourceBody?.tool_choice, sourceBody);
+    if (toolChoice !== undefined) targetBody.tool_choice = toolChoice;
+
+    if (typeof sourceBody?.parallel_tool_calls === 'boolean') {
+        targetBody.parallel_tool_calls = sourceBody.parallel_tool_calls;
+    }
+
+    return targetBody;
+}
+
+function attachProtectedAnthropicToolFields(targetBody, sourceBody) {
+    const tools = extractProtectedTools(sourceBody).map(tool => ({
+        name: tool.function.name,
+        ...(tool.function.description && { description: tool.function.description }),
+        input_schema: normalizeToolParameters(tool.function.parameters)
+    }));
+
+    if (tools.length > 0) targetBody.tools = tools;
+    if (sourceBody?.tool_choice) targetBody.tool_choice = sourceBody.tool_choice;
+
+    return targetBody;
+}
+
+function attachProtectedGeminiToolFields(targetBody, sourceBody) {
+    const functionDeclarations = extractProtectedTools(sourceBody).map(tool => ({
+        name: tool.function.name,
+        ...(tool.function.description && { description: tool.function.description }),
+        parameters: normalizeToolParameters(tool.function.parameters)
+    }));
+
+    if (functionDeclarations.length > 0) {
+        targetBody.tools = [{ functionDeclarations }];
+    }
+
+    if (sourceBody?.toolConfig) {
+        targetBody.toolConfig = sourceBody.toolConfig;
+    }
+
+    return targetBody;
+}
+
 function buildUpstreamChatBody(messages, model, body = {}, config = runtimeConfig) {
-    return {
+    const result = {
         model: resolveModel(model, config),
         messages,
         stream: body.stream === true,
@@ -250,6 +392,7 @@ function buildUpstreamChatBody(messages, model, body = {}, config = runtimeConfi
         ...(body.max_tokens !== undefined && { max_tokens: body.max_tokens }),
         ...(body.max_completion_tokens !== undefined && { max_completion_tokens: body.max_completion_tokens })
     };
+    return attachProtectedChatToolFields(result, body);
 }
 
 function buildUpstreamAnthropicBody(messages, model, body = {}, config = runtimeConfig) {
@@ -266,7 +409,7 @@ function buildUpstreamAnthropicBody(messages, model, body = {}, config = runtime
     };
     if (system) result.system = system;
     if (body.temperature !== undefined) result.temperature = body.temperature;
-    return result;
+    return attachProtectedAnthropicToolFields(result, body);
 }
 
 function buildUpstreamGeminiBody(messages, _model, body = {}) {
@@ -284,7 +427,7 @@ function buildUpstreamGeminiBody(messages, _model, body = {}) {
         generationConfig.maxOutputTokens = body.max_output_tokens || body.max_tokens;
     }
     if (Object.keys(generationConfig).length > 0) result.generationConfig = generationConfig;
-    return result;
+    return attachProtectedGeminiToolFields(result, body);
 }
 
 function resolveUpstreamEndpoint(model, stream, config = runtimeConfig) {
