@@ -475,47 +475,51 @@ class OneRingPreprocessor {
     }
 
     /**
-     * 跨端时间戳插入：在 post 的相邻消息时间戳之间，查询其他前端的消息并插入。
+     * 跨端时间戳补齐。
+     * 不假设 user/assistant 轮流结构；群聊和 Agent 自聊可能连续出现多个 assistant。
+     * 因此时间戳才是唯一排序真相：查询当前已知时间范围内的其他前端消息，
+     * 与当前上下文去重合并后统一按 OneRing 尾标时间排序。
      */
     async _doCrossFrontendPatch(messages, agentName, frontendSource, maxBlocks) {
-        // 从尾部标记中提取时间戳（已入库的历史消息上应有 OneRing 尾部标记）
-        const getTs = (content) => {
-            const text = fuzzy.extractText(content);
-            const m = /\[OneRing通知:[\s\S]*?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[\s\S]*?\]/.exec(text);
-            return m ? m[1] : null;
-        };
-
         const histMsgs = messages.filter(m => m.role === 'user' || m.role === 'assistant');
-        if (histMsgs.length < 2) return messages;
+        const timestamped = histMsgs
+            .map(m => ({ message: m, meta: getOneRingTailMeta(m.content) }))
+            .filter(item => item.meta && item.meta.timestamp);
 
-        let insertions = []; // { afterIndex, message }
+        if (timestamped.length < 2) return mergeConversationByOneRingTimestamp(messages);
 
-        for (let i = 0; i < histMsgs.length - 1; i++) {
-            const tsA = getTs(histMsgs[i].content);
-            const tsB = getTs(histMsgs[i + 1].content);
-            if (!tsA || !tsB) continue;
+        const timestamps = timestamped.map(item => item.meta.timestamp).sort();
+        const tsStart = timestamps[0];
+        const tsEnd = timestamps[timestamps.length - 1];
+        if (!tsStart || !tsEnd || tsStart === tsEnd) return mergeConversationByOneRingTimestamp(messages);
 
-            const crossMsgs = db.getMessagesBetweenTimestamps(agentName, tsA, tsB, frontendSource, this._projectBasePath);
-            for (const cm of crossMsgs) {
-                const tag = `\n[OneRing通知:${cm.senderName || '?'}于${cm.timestamp}发送于${cm.frontendSource || '?'}]`;
-                insertions.push({
-                    afterOriginalIndex: messages.indexOf(histMsgs[i]),
-                    message: { role: cm.role, content: cm.content + tag }
+        const seen = new Set(histMsgs.map(m => `${m.role}:${fuzzy.normalize(fuzzy.extractText(m.content))}`));
+        let candidates = [];
+
+        try {
+            candidates = db.getMessagesBetweenTimestamps(agentName, tsStart, tsEnd, frontendSource, this._projectBasePath)
+                .filter(item => {
+                    const key = `${item.role}:${fuzzy.normalize(item.content)}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
                 });
-            }
+        } catch (e) {
+            console.error('[OneRing] Cross frontend timestamp query failed:', e.message);
+            return mergeConversationByOneRingTimestamp(messages);
         }
 
-        if (insertions.length === 0) return messages;
+        if (candidates.length === 0) return mergeConversationByOneRingTimestamp(messages);
 
-        // 应用插入，同时检查总块数不超过 maxBlocks
-        let result = [...messages];
-        let insertOffset = 0;
-        for (const ins of insertions) {
-            if (result.filter(m => m.role === 'user' || m.role === 'assistant').length >= maxBlocks) break;
-            result.splice(ins.afterOriginalIndex + 1 + insertOffset, 0, ins.message);
-            insertOffset++;
-        }
-        return result;
+        const remaining = Math.max(0, maxBlocks - histMsgs.length);
+        if (remaining <= 0) return mergeConversationByOneRingTimestamp(messages);
+
+        const padded = candidates.slice(-remaining).map(item => ({
+            role: item.role,
+            content: `${item.content}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
+        }));
+
+        return mergeConversationByOneRingTimestamp([...messages, ...padded]);
     }
 
     _attachMeta(messages, agentName, frontendSource) {
