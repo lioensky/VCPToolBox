@@ -16,7 +16,9 @@ const {
     PROJECT_BASE_PATH,
     SERVER_PORT,
     IMAGESERVER_IMAGE_KEY,
-    VAR_HTTP_URL
+    VAR_HTTP_URL,
+    VAR_HTTPS_URL,
+    USE_PUBLIC_URL
 } = (() => {
     // ─── 渠道解析 ───
     let channels = [];
@@ -59,6 +61,7 @@ const {
 
     // ─── 分布式图床 ───
     const distServers = (process.env.DIST_IMAGE_SERVERS || '').split(',').map(s => s.trim()).filter(Boolean);
+    const usePublicUrl = normalizeBoolean(process.env.USE_PUBLIC_URL, false);
 
     return {
         CHANNELS: channels,
@@ -67,9 +70,20 @@ const {
         PROJECT_BASE_PATH: process.env.PROJECT_BASE_PATH,
         SERVER_PORT: process.env.SERVER_PORT,
         IMAGESERVER_IMAGE_KEY: process.env.IMAGESERVER_IMAGE_KEY || process.env.Image_Key || process.env.IMAGE_KEY || process.env.ImageServerKey || '',
-        VAR_HTTP_URL: process.env.VarHttpUrl
+        VAR_HTTP_URL: process.env.VarHttpUrl,
+        VAR_HTTPS_URL: process.env.VarHttpsUrl,
+        USE_PUBLIC_URL: usePublicUrl
     };
 })();
+
+function normalizeBoolean(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+    return defaultValue;
+}
 
 /**
  * 随机选择一个渠道（URL + KEY 绑定）并从该渠道的模型池随机选一个模型
@@ -94,6 +108,25 @@ const ALLOWED_INPUT_IMAGE_MIME_TYPES = new Set([
 function isPathInside(childPath, parentPath) {
     const relative = path.relative(parentPath, childPath);
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function buildAccessibleImageUrl(relativePathForUrl) {
+    if (USE_PUBLIC_URL) {
+        const publicBaseUrl = String(VAR_HTTPS_URL || '').trim().replace(/\/+$/, '');
+        if (!publicBaseUrl) {
+            throw new Error('NanoBananaGen2 Plugin Error: USE_PUBLIC_URL=true 时必须提供 VarHttpsUrl。');
+        }
+        return `${publicBaseUrl}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+    }
+
+    const localBaseUrl = String(VAR_HTTP_URL || '').trim().replace(/\/+$/, '');
+    return `${localBaseUrl}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
+}
+
+function validateAccessibleImageUrlConfig() {
+    if (USE_PUBLIC_URL && !String(VAR_HTTPS_URL || '').trim()) {
+        throw new Error('NanoBananaGen2 Plugin Error: USE_PUBLIC_URL=true 时必须提供 VarHttpsUrl。');
+    }
 }
 
 // --- 2. 核心功能函数 ---
@@ -272,12 +305,11 @@ async function processApiResponseAndSaveImage(message, originalArgs, showBase64 
     const generatedFileName = `${uuidv4()}.${extension}`;
     const imageDir = path.join(PROJECT_BASE_PATH, 'image', 'nanobananagen');
     const localImagePath = path.join(imageDir, generatedFileName);
+    const relativePathForUrl = path.join('nanobananagen', generatedFileName).replace(/\\/g, '/');
+    const accessibleImageUrl = buildAccessibleImageUrl(relativePathForUrl);
 
     await fs.mkdir(imageDir, { recursive: true });
     await fs.writeFile(localImagePath, imageBuffer);
-
-    const relativePathForUrl = path.join('nanobananagen', generatedFileName).replace(/\\/g, '/');
-    const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativePathForUrl}`;
 
     const modelResponseText = cleanTextContent || "图片已成功处理！";
     const finalResponseText = `${modelResponseText}\n\n**图片详情:**\n- 提示词: ${originalArgs.prompt}\n- 可访问URL: ${accessibleImageUrl}\n\n请利用可访问url将图片转发给用户`;
@@ -429,6 +461,7 @@ async function generateImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
+    validateAccessibleImageUrlConfig();
 
     const payload = {
         "stream": false,
@@ -454,6 +487,7 @@ async function editImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
+    validateAccessibleImageUrlConfig();
 
     const imageInputs = collectImageInputs(args);
     if (imageInputs.length > 1) {
@@ -502,6 +536,7 @@ async function composeImage(args) {
     if (!args.prompt || typeof args.prompt !== 'string') {
         throw new Error("参数错误: 'prompt' 是必需的字符串。");
     }
+    validateAccessibleImageUrlConfig();
 
     const imageInputs = collectImageInputs(args);
     if (imageInputs.length === 0) {

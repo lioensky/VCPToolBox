@@ -21,7 +21,7 @@
 |--------|------------------|------|------|------|
 | R16B TagMemo 启动/自检轻量优化 | `3ceedf22`, `59f34856`, `0094f190` | `TagMemoEngine.js` | 可合并成一个小包 | 单文件，同一主题：启动后派生刷新、自检简化、日志降噪。核心路径，需手工适配和本地验证，不 raw cherry-pick。 |
 | R16C VCPToolBridge manifest version | `1fc2b56c` | `Plugin/VCPToolBridge/index.js` | 已在本分支实施 | 只给导出的 plugin manifest 增加 `version: plugin.version || "1.0.0"`。不改变执行分发，见 `UPSTREAM_ABSORB_R16C_VCPTOOLBRIDGE_VERSION_20260605.md`。 |
-| R16D NanoBananaGen2 public URL switch | `8977a56a` | `Plugin/NanoBananaGen2/NanoBananaGen.mjs`, `Plugin/NanoBananaGen2/config.env.example` | 可吸收但需修正 | upstream 默认 `USE_PUBLIC_URL=true`、URL 拼接和注释不完全一致。建议做本地修正版，不原样吸收。 |
+| R16D NanoBananaGen2 public URL switch | `8977a56a` | `Plugin/NanoBananaGen2/NanoBananaGen.mjs`, `Plugin/NanoBananaGen2/config.env.example`, `Plugin/NanoBananaGen2/plugin-manifest.json`, `Plugin/NanoBananaGen2/README.md`, `tests/gptimagegen-safety.test.js` | 已在 R16D 分支实施 | 采用本地修正版：默认 `USE_PUBLIC_URL=false`，显式公网模式使用 `VarHttpsUrl`，并补 manifest、README 与静态回归。见 `UPSTREAM_ABSORB_R16D_NANOBANANA_PUBLIC_URL_20260605.md`。 |
 
 ## 3. 需要先做 preflight 的候选
 

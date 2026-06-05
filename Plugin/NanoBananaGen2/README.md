@@ -132,6 +132,7 @@ API_CHANNELS=https://openrouter.ai/api/v1|sk-or-key|google/gemini-2.5-flash-imag
 |------|------|--------|------|
 | `NanoBananaProxy` | ❌ | — | 代理地址，如 `http://127.0.0.1:7890` |
 | `DIST_IMAGE_SERVERS` | ❌ | — | 分布式图床地址，用于 `file://` 路径降级处理 |
+| `USE_PUBLIC_URL` | ❌ | `false` | 是否使用公网地址返回图片 URL。`false` 使用 `VarHttpUrl:SERVER_PORT`，`true` 使用全局 `VarHttpsUrl` |
 
 ---
 
