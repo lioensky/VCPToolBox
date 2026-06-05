@@ -19,8 +19,6 @@
 
 | 建议包 | upstream commits | 范围 | 结论 | 说明 |
 |--------|------------------|------|------|------|
-| R16C VCPToolBridge manifest version | `1fc2b56c` | `Plugin/VCPToolBridge/index.js` | 已在本分支实施 | 只给导出的 plugin manifest 增加 `version: plugin.version || "1.0.0"`。不改变执行分发，见 `UPSTREAM_ABSORB_R16C_VCPTOOLBRIDGE_VERSION_20260605.md`。 |
-| R16D NanoBananaGen2 public URL switch | `8977a56a` | `Plugin/NanoBananaGen2/NanoBananaGen.mjs`, `Plugin/NanoBananaGen2/config.env.example`, `Plugin/NanoBananaGen2/plugin-manifest.json`, `Plugin/NanoBananaGen2/README.md`, `tests/gptimagegen-safety.test.js` | 已在 R16D 分支实施 | 采用本地修正版：默认 `USE_PUBLIC_URL=false`，显式公网模式使用 `VarHttpsUrl`，并补 manifest、README 与静态回归。见 `UPSTREAM_ABSORB_R16D_NANOBANANA_PUBLIC_URL_20260605.md`。 |
 
 ## 3. 需要先做 preflight 的候选
 
@@ -33,6 +31,8 @@
 |------------------|------|
 | `79764f12`, `7702a533`, `d3f58c7e` | R16A 已拆包吸收 ignore 安全子集并合并到 `main`。`Plugin/SkillBridge/skill-index.txt` 删除没有执行，需要单独确认。 |
 | `3ceedf22`, `59f34856`, `0094f190` | R16B 已由 #125 本地延迟派生刷新实现覆盖并合并到 `main`。本地实现将 TagMemo 启动期 EPA / pairwise / intrinsic residual / matrix 等派生刷新改为 post-startup 延迟路径，避免初始化时阻塞；P1 fallback matrix 修正已包含在 #125 中，cold-start 或 modelSig 变更且 pairwise similarity 为空时不暴露由 `SEM_LOW_FALLBACK` 构建的 degraded matrix，改为延迟到派生刷新完成后再建矩阵。验证：`node --check TagMemoEngine.js KnowledgeBaseManager.js`；`git diff --check`；PR CI 通过。合并提交：`d112e4bd`。 |
+| `1fc2b56c` | R16C 已由 #123 吸收并合并到 `main`：`Plugin/VCPToolBridge/index.js` 在 `handleGetManifests()` 导出的每个 plugin manifest 中补 `version: plugin.version || "1.0.0"`，只扩展清单字段，不改变执行分发。验证与说明见 `UPSTREAM_ABSORB_R16C_VCPTOOLBRIDGE_VERSION_20260605.md`。合并提交：`9ea73357`。 |
+| `8977a56a` | R16D 已由 #124 本地安全化吸收并合并到 `main`：NanoBananaGen2 增加 `USE_PUBLIC_URL` opt-in 开关，默认保持 `false`，显式公网模式使用全局 `VarHttpsUrl`，并补 README、manifest、example 与 `tests/gptimagegen-safety.test.js` 静态回归。验证与说明见 `UPSTREAM_ABSORB_R16D_NANOBANANA_PUBLIC_URL_20260605.md`。合并提交：`f6e4e7f7`。 |
 | `46250ad7` | R16E 已拆成 #127 和 #128 吸收并合并到 `main`：#127 引入 split single embedding 的 token-weighted merge；#128 补 single embedding 输入 trim/normalization。保留本地更严格的 partial failure 拒绝策略，不吸收上游对部分 chunk 失败仍返回向量的宽松行为。合并提交：`cd2f68f0`, `291802e0`。 |
 | `e01d05fb` | R16F1 已由 #130 吸收并合并到 `main`：`Plugin/VCPBridgeServer/bridgeserver.js` 保留 `tools` / `functions` / `tool_choice` / `parallel_tool_calls` 为受保护字段，只在构建 chat/Anthropic/Gemini upstream body 时加回，不进入 `messages` / RAG 文本流。验证：`node --test tests/vcp-bridge-server.test.js`，23/23。合并提交：`afadc7cd`。 |
 | `cca1c915` partial | R16F2 已由本地默认关闭 opt-in retry suppression 实现覆盖并合并到 `main`。#132 先做 preflight；#133 在 `Plugin/VCPBridgeServer/bridgeserver.js` 增加 `BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS`，默认 `0` 关闭，仅作用于 `/v1/responses`，显式 `requestId` / `messageId` 跳过，命中时返回带 `metadata.vcp_bridge_suppressed_duplicate=true` 的 synthetic Responses JSON/SSE；P2 修正为仅在上游成功后记录 suppression key，避免失败重试被 synthetic 200 掩盖。验证：`node --test tests/vcp-bridge-server.test.js`，29/29；CI `build_and_test (20.x)` / `detect_docker_changes` / `docker_build` 通过。合并提交：`d9fcfd9a`。 |
@@ -54,10 +54,7 @@
 
 ## 6. 推荐顺序
 
-1. R16C VCPToolBridge manifest version。
-2. R16D NanoBananaGen2 public URL switch 的本地修正版。
-
-R16B 已由 #125 核销，不再作为后续实现候选。
+R16B/R16C/R16D 已分别由 #125/#123/#124 核销，不再作为后续实现候选。
 
 ## 7. 验证建议
 
