@@ -46,6 +46,16 @@ class NonStreamHandler {
     const aiResponseText = responseBuffer.toString('utf-8');
     let firstResponseRawDataForClientAndDiary = aiResponseText;
     let chatLogs = [];
+    let oneRingAssistantTurnParts = [];
+
+    const recordOneRingAIResponse = (aiText, phaseLabel) => {
+      const oneRingModule = pluginManager?.messagePreprocessors?.get?.('OneRing');
+      if (oneRingModule && typeof oneRingModule.recordAIResponseFromMessages === 'function') {
+        oneRingModule.recordAIResponseFromMessages(originalBody.messages, aiText).catch(e =>
+          console.error(`[OneRing NonStream] Error recording AI response (${phaseLabel}):`, e),
+        );
+      }
+    };
 
     let fullContentFromAI = '';
     const extractedMessage = (rawResponseText) => {
@@ -56,16 +66,23 @@ class NonStreamHandler {
         return null;
       }
     };
+    const extractVisibleContent = (message, fallbackText = '') => {
+      if (!message) return fallbackText;
+      // P0 安全修复：OneRing 入库和 VCP 循环只使用可见正文 content。
+      // reasoning_content 只能作为调试/日志字段存在，不能进入持久化上下文。
+      return message.content || '';
+    };
 
     const initMessage = extractedMessage(aiResponseText);
-    const hideReasoning = (process.env.HIDE_NONSTREAM_REASONING || 'true').toLowerCase() !== 'false';
     if (initMessage) {
-      // 默认隐藏非流式思维链（HIDE_NONSTREAM_REASONING=true），避免 Gemini 等模型的推理内容泄露到正文
-      fullContentFromAI = (hideReasoning ? '' : (initMessage.reasoning_content || '')) + (initMessage.content || '');
+      fullContentFromAI = extractVisibleContent(initMessage);
     } else {
       fullContentFromAI = aiResponseText;
     }
     if (writeChatLog) chatLogs.push({ request: originalBody, response: initMessage || fullContentFromAI});
+    if (fullContentFromAI && fullContentFromAI.trim()) {
+      oneRingAssistantTurnParts.push(fullContentFromAI);
+    }
 
     let recursionDepth = 0;
     const maxRecursion = maxVCPLoopNonStream || 5;
@@ -148,9 +165,12 @@ class NonStreamHandler {
             const recursionText = recursionBuffer.toString('utf-8');
             const recursionMessage = extractedMessage(recursionText);
             if (recursionMessage) {
-              currentAIContentForLoop = '\n' + (recursionMessage.content || '');
+              currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
             } else {
               currentAIContentForLoop = '\n' + recursionText;
+            }
+            if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
+              oneRingAssistantTurnParts.push(currentAIContentForLoop);
             }
             if (writeChatLog) {
               chatLogs.push({
@@ -256,9 +276,12 @@ class NonStreamHandler {
         const recursionText = recursionBuffer.toString('utf-8');
         const recursionMessage = extractedMessage(recursionText);
         if (recursionMessage) {
-          currentAIContentForLoop = '\n' + (recursionMessage.content || '');
+          currentAIContentForLoop = '\n' + extractVisibleContent(recursionMessage);
         } else {
           currentAIContentForLoop = '\n' + recursionText;
+        }
+        if (currentAIContentForLoop && currentAIContentForLoop.trim()) {
+          oneRingAssistantTurnParts.push(currentAIContentForLoop);
         }
         if (writeChatLog) {
           chatLogs.push({
@@ -297,6 +320,7 @@ class NonStreamHandler {
     }
 
     if (writeChatLog) writeChatLog(originalBody, chatLogs);
+    recordOneRingAIResponse(oneRingAssistantTurnParts.join('\n'), 'final_turn');
     if (!res.writableEnded && !res.destroyed) {
       res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
     }

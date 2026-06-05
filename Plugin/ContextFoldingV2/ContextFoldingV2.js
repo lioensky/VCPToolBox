@@ -14,6 +14,8 @@ const FOLDING_REGEX = /\[VCP上下文语义折叠-本层摘要:([\s\S]+?)\]/;
 const ACTIVATION_PLACEHOLDER = '{{ContextFoldingV2}}';
 const ACTIVATION_PLACEHOLDER_BRACKET = '[[ContextFoldingV2]]';
 
+const ONERING_TAIL_REGEX = /\s*\[OneRing通知:[\s\S]*?\]\s*$/g;
+
 class ContextFoldingV2 {
     constructor() {
         this.name = 'ContextFoldingV2';
@@ -231,7 +233,9 @@ class ContextFoldingV2 {
                 if (content.startsWith(FOLDING_PREFIX)) continue;
 
                 // 净化并计算哈希
-                const sanitized = bridge.sanitize(content, 'assistant');
+                // OneRing 会在消息尾部追加 [OneRing通知:...] 来源标记；折叠查询/哈希/向量化时必须先剥离，
+                // 否则同一正文会因尾部时间戳/前端来源变化而无法命中 FoldingStore。
+                const sanitized = bridge.sanitize(this._sanitizeOneRingMarkers(content), 'assistant');
                 if (!sanitized || sanitized.length < 10) continue;
 
                 const hash = store.hashContent(sanitized);
@@ -341,8 +345,9 @@ class ContextFoldingV2 {
         if (!lastUserContent) return null;
 
         // 净化
-        const sanitizedUser = bridge.sanitize(lastUserContent, 'user');
-        const sanitizedAi = lastAiContent ? bridge.sanitize(lastAiContent, 'assistant') : null;
+        // OneRing 尾部来源标记不参与上下文参考向量，避免时间戳/前端来源扰动折叠决策。
+        const sanitizedUser = bridge.sanitize(this._sanitizeOneRingMarkers(lastUserContent), 'user');
+        const sanitizedAi = lastAiContent ? bridge.sanitize(this._sanitizeOneRingMarkers(lastAiContent), 'assistant') : null;
 
         // 向量化
         // ContextFoldingV2 在 RAGDiaryPlugin 之后执行：先尝试精确缓存，再尝试高阈值 fuzzy 复用 RAG 刚生成的近似向量，
@@ -621,6 +626,15 @@ class ContextFoldingV2 {
     // ═══════════════════════════════════════════════════
     // 工具方法
     // ═══════════════════════════════════════════════════
+
+    /**
+     * 剥离 OneRing 尾部来源标记。
+     * 仅用于 ContextFoldingV2 的查询/哈希/向量化净化链路，不修改真实消息内容。
+     */
+    _sanitizeOneRingMarkers(text) {
+        if (typeof text !== 'string') return text;
+        return text.replace(ONERING_TAIL_REGEX, '').trim();
+    }
 
     /**
      * 从消息中提取文本内容（兼容字符串和多模态数组格式）
