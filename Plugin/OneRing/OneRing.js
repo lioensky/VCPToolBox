@@ -5,6 +5,7 @@
 
 const db = require('./OneRingDB.js');
 const fuzzy = require('./OneRingFuzzy.js');
+const snapshot = require('./OneRingSnapshot.js');
 
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
 const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
@@ -305,6 +306,7 @@ class OneRingPreprocessor {
         const allowPatch = String(cfg.ONERING_ALLOW_CONTEXT_PATCH ?? 'true').toLowerCase() !== 'false';
         const maxBlocks = parseInt(cfg.ONERING_MAX_CONTEXT_BLOCKS ?? '20', 10);
         const recordOnly = String(cfg.ONERING_RECORD_ONLY ?? 'true').toLowerCase() !== 'false';
+        const snapshotMaxBlocks = parseInt(cfg.ONERING_POST_SNAPSHOT_MAX_BLOCKS ?? '20', 10);
 
         if (debugMode) console.log(`[OneRing] Triggered for agent="${agentName}" frontend="${frontendSource}"`);
 
@@ -333,17 +335,28 @@ class OneRingPreprocessor {
                 agentName,
                 frontendSource,
                 defaultUserName,
-                threshold
+                threshold,
+                snapshotMaxBlocks
             );
         }
 
-        // ── 3. 从 DB 查询同信道历史，做 fuzzy diff ──────────────────────────
-        let shouldTimeInsertPatch = false;
-        let shouldRecentTopUp = false;
+        // ── 3. 从 DB 查询同信道历史，做 diff（优先快照精确编辑，兜底 fuzzy）────
         let patchMessages = messages;
         let isFreshShortContext = false;
+        const localPostBlocks = this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
 
         try {
+            const snapshotResult = snapshot.applySnapshotEdits(
+                agentName,
+                frontendSource,
+                localPostBlocks,
+                projectBasePath,
+                { debug: debugMode }
+            );
+            if (debugMode && snapshotResult.reliable) {
+                console.log(`[OneRing] Snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
+            }
+
             const dbBlocks = db.getRecentMessagesByFrontend(agentName, frontendSource, maxBlocks * 2, projectBasePath);
 
             // 全新短上下文：DB 尚无同前端记录，且 post 内历史块很少。
@@ -352,9 +365,6 @@ class OneRingPreprocessor {
             if (dbBlocks.length === 0 && historyBlocks.length <= 4) {
                 isFreshShortContext = true;
                 this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold);
-                if (allowPatch) {
-                    patchMessages = this._doFreshShortContextPatch(messages, agentName, frontendSource, maxBlocks);
-                }
             } else if (dbBlocks.length > 0) {
                 // 同前端 DB 只与当前前端/无尾标块对齐；跨端注入块不能参与 diff，
                 // 否则第二轮以后会把上轮补入的手机/其他端历史误判为结构错位。
@@ -375,44 +385,24 @@ class OneRingPreprocessor {
                     console.log(`[OneRing] diff: matched=${diffResult.matchedCount} unknown=${diffResult.unknownCount} new=${diffResult.newBlocks.length} edited=${diffResult.editedBlocks.length} unknownRatio=${unknownRatio.toFixed(2)} reliable=${diffResult.reliable} patchSafe=${patchSafe}`);
                 }
 
-                if (unknownRatio <= maxUnknownRatio && patchSafe) {
-                    // 只有可靠 diff 才更新被编辑的历史消息；极短新 post 只允许补上下文，不允许误覆盖旧 DB。
-                    if (diffResult.reliable) {
-                        for (const edited of diffResult.editedBlocks) {
-                            db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
-                            if (debugMode) console.log(`[OneRing] Updated edited block dbId=${edited.dbId}`);
-                        }
-                    }
-                    // 允许跨端补充
-                    if (allowPatch) {
-                        // 与 fresh 分支保持一致：只要允许上下文补充，就持续用最近全局历史补齐。
-                        // 否则默认 ONERING_RECORD_ONLY=true 会导致“PC 首轮有手机上下文，第二轮以后消失”。
-                        shouldRecentTopUp = true;
-                        if (String(cfg.ONERING_TIME_INSERT ?? 'true').toLowerCase() !== 'false') {
-                            shouldTimeInsertPatch = true;
-                        }
+                if (unknownRatio <= maxUnknownRatio && patchSafe && diffResult.reliable) {
+                    // 只有可靠 diff 才更新被编辑的历史消息；极短新 post 不允许误覆盖旧 DB。
+                    for (const edited of diffResult.editedBlocks) {
+                        db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
+                        if (debugMode) console.log(`[OneRing] Updated edited block dbId=${edited.dbId}`);
                     }
                 } else {
-                    if (debugMode) console.log(`[OneRing] Unknown ratio too high or unreliable diff, skipping patch.`);
+                    if (debugMode) console.log(`[OneRing] Unreliable diff, skipping edit update.`);
                 }
             }
         } catch (e) {
             console.error('[OneRing] DB diff error, skipping patch:', e.message);
         }
 
-        // ── 4. 跨端补充（时间戳插入 + 最近历史补齐）────────────────────────
-        if (shouldTimeInsertPatch || shouldRecentTopUp) {
+        // ── 4. 跨端历史补全：fuzzy 反查每条 DB 历史是否在上下文存在，缺失的按时间戳补入 ──
+        if (allowPatch) {
             try {
-                if (shouldTimeInsertPatch && historyBlocks.length >= 2) {
-                    patchMessages = await this._doCrossFrontendPatch(
-                        messages, agentName, frontendSource, maxBlocks
-                    );
-                }
-                if (shouldRecentTopUp) {
-                    patchMessages = this._doRecentContextTopUp(
-                        patchMessages, agentName, frontendSource, maxBlocks
-                    );
-                }
+                patchMessages = this._doFuzzyTimestampPatch(messages, agentName, frontendSource, maxBlocks, threshold);
             } catch (e) {
                 console.error('[OneRing] Patch error, using original messages:', e.message);
                 patchMessages = messages;
@@ -496,6 +486,18 @@ class OneRingPreprocessor {
         });
 
         try {
+            snapshot.saveSnapshotFromDb(
+                agentName,
+                frontendSource,
+                localPostBlocks,
+                projectBasePath,
+                { debug: debugMode, maxSnapshotBlocks: snapshotMaxBlocks }
+            );
+        } catch (e) {
+            console.error('[OneRing] Snapshot save failed:', e.message);
+        }
+
+        try {
             Object.defineProperty(patchMessages, '__oneRingMeta', {
                 value: { agentName, frontendSource },
                 enumerable: false,
@@ -509,49 +511,43 @@ class OneRingPreprocessor {
     }
 
     /**
-     * 跨端时间戳补齐。
-     * 不假设 user/assistant 轮流结构；群聊和 Agent 自聊可能连续出现多个 assistant。
-     * 因此时间戳才是唯一排序真相：查询当前已知时间范围内的其他前端消息，
-     * 与当前上下文去重合并后统一按 OneRing 尾标时间排序。
+     * 核心补全逻辑：fuzzy 仔细检查 DB 历史中每条消息是否在上下文已存在，
+     * 将缺失的块按时间戳合并补入上下文。
+     * 不依赖已有尾标时间戳，用 fuzzy 相似度比对实现去重。
      */
-    async _doCrossFrontendPatch(messages, agentName, frontendSource, maxBlocks) {
+    _doFuzzyTimestampPatch(messages, agentName, frontendSource, maxBlocks, threshold = 0.92) {
         const histMsgs = messages.filter(m => m.role === 'user' || m.role === 'assistant');
-        const timestamped = histMsgs
-            .map(m => ({ message: m, meta: getOneRingTailMeta(m.content) }))
-            .filter(item => item.meta && item.meta.timestamp);
-
-        if (timestamped.length < 2) return mergeConversationByOneRingTimestamp(messages);
-
-        const timestamps = timestamped.map(item => item.meta.timestamp).sort();
-        const tsStart = timestamps[0];
-        const tsEnd = timestamps[timestamps.length - 1];
-        if (!tsStart || !tsEnd || tsStart === tsEnd) return mergeConversationByOneRingTimestamp(messages);
-
-        const seen = new Set(histMsgs.map(m => `${m.role}:${fuzzy.normalize(fuzzy.extractText(m.content))}`));
-        let candidates = [];
-
-        try {
-            candidates = db.getMessagesBetweenTimestamps(agentName, tsStart, tsEnd, frontendSource, this._projectBasePath)
-                .filter(item => {
-                    const key = `${item.role}:${fuzzy.normalize(item.content)}`;
-                    if (seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                });
-        } catch (e) {
-            console.error('[OneRing] Cross frontend timestamp query failed:', e.message);
-            return mergeConversationByOneRingTimestamp(messages);
-        }
-
-        if (candidates.length === 0) return mergeConversationByOneRingTimestamp(messages);
-
         const remaining = Math.max(0, maxBlocks - histMsgs.length);
         if (remaining <= 0) return mergeConversationByOneRingTimestamp(messages);
 
-        const padded = candidates.slice(-remaining).map(item => ({
+        let dbHistory = [];
+        try {
+            dbHistory = db.getRecentMessages(agentName, maxBlocks * 3, projectBasePath);
+        } catch (e) {
+            console.error('[OneRing] Fuzzy patch DB query failed:', e.message);
+            return messages;
+        }
+
+        if (dbHistory.length === 0) return messages;
+
+        // 为每条 DB 历史 fuzzy 反查是否在当前上下文中已存在
+        const missing = dbHistory.filter(dbItem => {
+            const dbKey = fuzzy.normalize(dbItem.content);
+            if (!dbKey) return false;
+            return !histMsgs.some(m => {
+                const postKey = fuzzy.normalize(fuzzy.extractText(m.content));
+                return m.role === dbItem.role && fuzzy.similarity(dbKey, postKey) >= threshold;
+            });
+        });
+
+        if (missing.length === 0) return mergeConversationByOneRingTimestamp(messages);
+
+        const padded = missing.slice(-remaining).map(item => ({
             role: item.role,
             content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
         }));
+
+        if (debugMode) console.log(`[OneRing] Fuzzy patch: ${padded.length} missing blocks补入上下文`);
 
         return mergeConversationByOneRingTimestamp([...messages, ...padded]);
     }
@@ -569,11 +565,28 @@ class OneRingPreprocessor {
         return messages;
     }
 
-    _processRecordOnlyMessages(messages, agentName, frontendSource, defaultUserName, threshold) {
+    _processRecordOnlyMessages(messages, agentName, frontendSource, defaultUserName, threshold, maxSnapshotBlocks = 20) {
         const nextTimestamp = createOneRingTimestampSequencer();
         let result = Array.isArray(messages) ? [...messages] : messages;
 
-        this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold);
+        const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
+
+        try {
+            const snapshotResult = snapshot.applySnapshotEdits(
+                agentName,
+                frontendSource,
+                postBlocks,
+                projectBasePath,
+                { debug: debugMode }
+            );
+            if (debugMode && snapshotResult.reliable) {
+                console.log(`[OneRing] Record-only snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
+            }
+        } catch (e) {
+            console.error('[OneRing] Record-only snapshot edit failed:', e.message);
+        }
+
+        this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks);
 
         result = result.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
@@ -612,13 +625,25 @@ class OneRingPreprocessor {
             };
         });
 
+        try {
+            snapshot.saveSnapshotFromDb(
+                agentName,
+                frontendSource,
+                postBlocks,
+                projectBasePath,
+                { debug: debugMode, maxSnapshotBlocks }
+            );
+        } catch (e) {
+            console.error('[OneRing] Record-only snapshot save failed:', e.message);
+        }
+
         return this._attachMeta(result, agentName, frontendSource);
     }
 
-    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold) {
-        if (!Array.isArray(messages)) return;
+    _extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName) {
+        if (!Array.isArray(messages)) return [];
 
-        const postBlocks = messages
+        return messages
             .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
             .map(m => {
                 const tailMeta = getOneRingTailMeta(m.content);
@@ -645,6 +670,14 @@ class OneRingPreprocessor {
             .filter(Boolean)
             .filter(block => !block.frontendSource || block.frontendSource === frontendSource)
             .filter(block => block.text);
+    }
+
+    _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null) {
+        if (!Array.isArray(messages)) return;
+
+        const postBlocks = Array.isArray(precomputedPostBlocks)
+            ? precomputedPostBlocks
+            : this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
 
         if (postBlocks.length === 0) return;
 
@@ -767,85 +800,6 @@ class OneRingPreprocessor {
         } catch (e) {
             console.error('[OneRing] Failed to record AI response:', e.message);
         }
-    }
-
-    /**
-     * 最近上下文补齐。
-     * 时间戳夹缝插入只能补「两个已有尾标时间之间」的跨端消息；
-     * 当前端已经有少量同端 DB 后，第三轮等短上下文不会再走 fresh 分支，
-     * 因此需要在可靠 diff 后继续用全局最近历史补到 maxBlocks。
-     */
-    _doRecentContextTopUp(messages, agentName, frontendSource, maxBlocks) {
-        const currentBlocks = messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
-        const remaining = Math.max(0, maxBlocks - currentBlocks);
-        if (remaining <= 0) return mergeConversationByOneRingTimestamp(messages);
-
-        const seen = new Set(messages
-            .filter(m => m.role === 'user' || m.role === 'assistant')
-            .map(m => `${m.role}:${fuzzy.normalize(fuzzy.extractText(m.content))}`)
-        );
-
-        let candidates = [];
-        try {
-            candidates = db.getRecentMessages(agentName, maxBlocks * 3, projectBasePath)
-                .filter(item => {
-                    const key = `${item.role}:${fuzzy.normalize(item.content)}`;
-                    if (seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                })
-                .slice(-remaining);
-        } catch (e) {
-            console.error('[OneRing] Recent context top-up query failed:', e.message);
-            return messages;
-        }
-
-        if (candidates.length === 0) return mergeConversationByOneRingTimestamp(messages);
-
-        const padded = candidates.map(item => ({
-            role: item.role,
-            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
-        }));
-
-        return mergeConversationByOneRingTimestamp([...messages, ...padded]);
-    }
-
-    /**
-     * 全新短上下文补充。
-     * 当当前前端尚无历史、post 很短时，从同 Agent 的全局最近消息中取历史垫片，
-     * 插入到最后一个 user 之前，让全新对话也能接上统一时间线。
-     */
-    _doFreshShortContextPatch(messages, agentName, frontendSource, maxBlocks) {
-        const currentBlocks = messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
-        const remaining = Math.max(0, maxBlocks - currentBlocks);
-        if (remaining <= 0) return mergeConversationByOneRingTimestamp(messages);
-
-        let candidates = [];
-        const seenFresh = new Set(messages
-            .filter(m => m.role === 'user' || m.role === 'assistant')
-            .map(m => `${m.role}:${fuzzy.normalize(fuzzy.extractText(m.content))}`));
-        try {
-            candidates = db.getRecentMessages(agentName, remaining * 2, projectBasePath)
-                .filter(item => {
-                    const key = `${item.role}:${fuzzy.normalize(item.content)}`;
-                    if (seenFresh.has(key)) return false;
-                    seenFresh.add(key);
-                    return true;
-                })
-                .slice(-remaining);
-        } catch (e) {
-            console.error('[OneRing] Fresh short context patch query failed:', e.message);
-            return messages;
-        }
-
-        if (candidates.length === 0) return mergeConversationByOneRingTimestamp(messages);
-
-        const padded = candidates.map(item => ({
-            role: item.role,
-            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
-        }));
-
-        return mergeConversationByOneRingTimestamp([...messages, ...padded]);
     }
 
     /**
