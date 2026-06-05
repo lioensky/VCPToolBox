@@ -2,6 +2,10 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const {
+  extractTextFromMessageContent,
+  findLastRealUserMessage
+} = require('./messageProcessor.js');
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -63,34 +67,24 @@ function cosineSimilarity(vectorA, vectorB) {
     : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-function extractTextFromContent(content) {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-
-  return content
-    .map(part => {
-      if (!part || typeof part !== 'object') return '';
-      if (part.type === 'text' && typeof part.text === 'string') return part.text;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function findLastMessageText(messages, role) {
+function findLastMessageText(messages, role, ragPlugin = null) {
   if (!Array.isArray(messages)) return '';
+
+  if (role === 'user') {
+    const lastUserMessage = findLastRealUserMessage(messages, {
+      sanitize: ragPlugin && typeof ragPlugin.sanitizeForEmbedding === 'function'
+        ? ragPlugin.sanitizeForEmbedding.bind(ragPlugin)
+        : null
+    });
+    return lastUserMessage.sanitizedContent || '';
+  }
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (!message || message.role !== role) continue;
 
-    const text = extractTextFromContent(message.content).trim();
+    const text = extractTextFromMessageContent(message.content).trim();
     if (!text) continue;
-
-    if (role === 'user') {
-      if (text.startsWith('[系统提示:]') || text.startsWith('[系统邀请指令:]')) continue;
-      if (text.startsWith('<!-- VCP_TOOL_PAYLOAD -->')) continue;
-    }
 
     return text;
   }
@@ -348,13 +342,12 @@ class SemanticModelRouter {
   }
 
   async buildContextVector(messages, ragPlugin, preset) {
-    let userContent = findLastMessageText(messages, 'user');
+    let userContent = findLastMessageText(messages, 'user', ragPlugin);
     let aiContent = findLastMessageText(messages, 'assistant');
 
     if (!userContent && !aiContent) return null;
 
     if (typeof ragPlugin.sanitizeForEmbedding === 'function') {
-      userContent = userContent ? ragPlugin.sanitizeForEmbedding(userContent, 'user') : '';
       aiContent = aiContent ? ragPlugin.sanitizeForEmbedding(aiContent, 'assistant') : '';
     }
 

@@ -18,6 +18,10 @@ const CacheManager = require('./CacheManager.js'); // 🌟 新增：统一缓存
 const TDBPlaceholderProcessor = require('./TDBPlaceholderProcessor.js'); // 🧊 冷知识库占位符适配层
 const { chunkText } = require('../../TextChunker.js');
 const { getEmbeddingsBatch } = require('../../EmbeddingUtils.js');
+const {
+    findLastRealUserMessage,
+    isBetaSystemUserText
+} = require('../../modules/messageProcessor.js');
 
 
 const dayjs = require('dayjs');
@@ -1280,12 +1284,7 @@ class RAGDiaryPlugin {
             //    避免运行时注入的系统通知里恰好携带的占位符模式被误解析。
             //    （例：用户消息末尾被追加 [系统通知]当前时间 [[XXX日记本]] [系统通知结束]）
             const SYSTEM_PREFIX_REGEX = /^\s*\[系统[^\]]*\]/;
-            const SYSTEM_NOTIFICATION_REGEX = /^\s*\[系统通知\]/; // 🚫 BETA 黑名单
-            const isBetaSystemUser = (text) => {
-                if (!text) return false;
-                if (SYSTEM_NOTIFICATION_REGEX.test(text)) return false; // 🚫 [系统通知] 不参与 BETA 解析
-                return SYSTEM_PREFIX_REGEX.test(text);
-            };
+            const isBetaSystemUser = isBetaSystemUserText;
 
             let isAIMemoLicensed = false; // <--- AIMemo许可证 [[AIMemo=True]] 检测标志
             const targetSystemMessageIndices = messages.reduce((acc, m, index) => {
@@ -1333,29 +1332,16 @@ class RAGDiaryPlugin {
             // 始终寻找最后一个用户消息和最后一个AI消息，以避免注入污染。
             // V3.4: 跳过特殊的 "系统邀请指令" user 消息
             // 🧪 BETA: 同时跳过通过 BETA 通道识别为占位符承载体的 user 消息（[系统xxx]，但 [系统通知] 除外）
-            //          [系统通知] 开头的消息保持原行为：仅在向量化时清理通知块（_stripSystemNotification），仍可作为查询源
-            const lastUserMessageIndex = messages.findLastIndex(m => {
-                if (m.role !== 'user') {
-                    return false;
-                }
-                const content = this._extractTextFromContent(m.content);
-                if (!content) return false;
-                // 🧪 BETA: 跳过 BETA 占位符承载体（避免占位符承载体被错当作真实用户输入向量化）
-                if (isBetaSystemUser(content)) {
-                    return false;
-                }
-                return !content.trim().startsWith('[系统提示:]无内容');
+            // ✅ 统一修复：如果独立 [系统通知] 块清理后为空，继续向前寻找真正 user 输入。
+            const lastUserMessage = findLastRealUserMessage(messages, {
+                sanitize: this.sanitizeForEmbedding.bind(this)
             });
+            const lastUserMessageIndex = lastUserMessage.index;
             const lastAiMessageIndex = messages.findLastIndex(m => m.role === 'assistant');
             const assistantMessageCount = messages.filter(m => m.role === 'assistant').length;
 
-            let userContent = '';
+            let userContent = lastUserMessage.sanitizedContent || '';
             let aiContent = null;
-
-            if (lastUserMessageIndex > -1) {
-                const lastUserMessage = messages[lastUserMessageIndex];
-                userContent = this._extractTextFromContent(lastUserMessage.content);
-            }
 
             if (lastAiMessageIndex > -1) {
                 const lastAiMessage = messages[lastAiMessageIndex];
@@ -1368,14 +1354,8 @@ class RAGDiaryPlugin {
             const hasValidUserMessage = lastUserMessageIndex > -1 && !!userContent?.trim();
             const isFreshTimeConversationStart = hasValidUserMessage && assistantMessageCount < 3;
 
-            // V3.1: 在向量化之前，清理userContent和aiContent中的HTML标签和emoji
-            if (userContent) {
-                const originalUserContent = userContent;
-                userContent = this.sanitizeForEmbedding(userContent, 'user');
-                if (originalUserContent.length !== userContent.length) {
-                    console.log('[RAGDiaryPlugin] User content was sanitized (SystemNotification + HTML + Emoji removed).');
-                }
-            }
+            // V3.1: userContent 已由 findLastRealUserMessage 通过统一 sanitizer 净化；
+            // 这里仅保留 assistant 净化，避免重复处理并确保独立 [系统通知] 空块不会被误当作查询。
             // 🌟 V6: 解析并剥离 AI 锚点 (Ghost Nodes)
             const anchorRegex = /\[@(!)?([^\]]+)\]/g;
             const hardTagNames = [];
