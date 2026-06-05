@@ -8,6 +8,14 @@ const fuzzy = require('./OneRingFuzzy.js');
 
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
 const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
+const TRIGGER_GLOBAL_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/g;
+
+function getLastTriggerMatch(systemText) {
+    if (typeof systemText !== 'string') return null;
+    const matches = [...systemText.matchAll(TRIGGER_GLOBAL_REGEX)];
+    if (matches.length === 0) return null;
+    return matches[matches.length - 1];
+}
 
 // ─── 消息来源分类：需要丢弃的模式 ────────────────────────────────────────────
 // 心跳/系统类消息，直接丢弃不入库
@@ -151,33 +159,40 @@ function upsertTailTag(content, senderName, timestamp, frontendSource) {
 }
 
 // ─── 系统提示词替换 ─────────────────────────────────────────────────────────────
+function replaceLastOccurrence(text, search, replacement) {
+    if (typeof text !== 'string' || !search) return text;
+    const idx = text.lastIndexOf(search);
+    if (idx < 0) return text;
+    return text.slice(0, idx) + replacement + text.slice(idx + search.length);
+}
+
 function replaceTriggerWithNotice(content, triggerText, agentName, frontendSource, mode) {
     const modeNotice = mode ? `，当前模式${mode}` : '';
     const notice = `[OneRing系统已启动，当前Agent${agentName}，当前客户端${frontendSource}${modeNotice}，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]`;
 
     if (typeof content === 'string') {
-        return content.replace(triggerText, notice);
+        return replaceLastOccurrence(content, triggerText, notice);
     }
 
     if (Array.isArray(content)) {
-        let replaced = false;
-        return content.map(part => {
+        const result = [...content];
+        for (let i = result.length - 1; i >= 0; i--) {
+            const part = result[i];
             if (
-                !replaced &&
                 part &&
                 part.type === 'text' &&
                 typeof part.text === 'string' &&
                 part.text.includes(triggerText)
             ) {
-                replaced = true;
-                return { ...part, text: part.text.replace(triggerText, notice) };
+                result[i] = { ...part, text: replaceLastOccurrence(part.text, triggerText, notice) };
+                return result;
             }
-            return part;
-        });
+        }
+        return result;
     }
 
     if (content && typeof content === 'object' && typeof content.text === 'string') {
-        return { ...content, text: content.text.replace(triggerText, notice) };
+        return { ...content, text: replaceLastOccurrence(content.text, triggerText, notice) };
     }
 
     return content;
@@ -262,7 +277,7 @@ class OneRingPreprocessor {
         if (!systemMsg) return messages;
 
         const systemText = fuzzy.extractText(systemMsg.content);
-        const triggerMatch = TRIGGER_REGEX.exec(systemText);
+        const triggerMatch = getLastTriggerMatch(systemText);
         if (!triggerMatch) return messages;
 
         const agentName = triggerMatch[1].trim();
