@@ -41,6 +41,7 @@ class KnowledgeBaseManager {
             maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
             indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
             tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
+            derivedStartupCooldownMs: parseInt(process.env.KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS, 10) || 5 * 60 * 1000,
             // 🌟 索引空闲自动卸载：默认 2 小时未使用则从内存中卸载
             indexIdleTTL: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_TTL_MS, 10) || 2 * 60 * 60 * 1000,
             indexIdleSweepInterval: parseInt(process.env.KNOWLEDGEBASE_INDEX_IDLE_SWEEP_MS, 10) || 10 * 60 * 1000,
@@ -75,6 +76,7 @@ class KnowledgeBaseManager {
         this.tagIndex = null;
         this.watcher = null;
         this.initialized = false;
+        this.startupCompletedAt = 0;
         this.diaryNameVectorCache = new Map();
         this.pendingFiles = new Set();
         this.fileRetryCount = new Map(); // 🛡️ 文件重试计数器，防止无限循环
@@ -146,7 +148,7 @@ class KnowledgeBaseManager {
         await this.loadRagParams();
 
         // 初始化浪潮引擎
-        this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams);
+        this.tagMemoEngine = new TagMemoEngine(this.db, this.tagIndex, this.config, this.ragParams, this);
         await this.tagMemoEngine.initialize();
         this._cleanupStalePairwiseSimilarityModels();
 
@@ -155,7 +157,12 @@ class KnowledgeBaseManager {
         this._startIdleSweep(); // 🌟 启动空闲索引自动卸载
 
         this.initialized = true;
+        this.startupCompletedAt = Date.now();
         console.log('[KnowledgeBase] ✅ System Ready');
+
+        if (this.tagMemoEngine && typeof this.tagMemoEngine.schedulePostStartupDerivedRefresh === 'function') {
+            this.tagMemoEngine.schedulePostStartupDerivedRefresh(this.config.derivedStartupCooldownMs);
+        }
     }
 
     /**

@@ -8,11 +8,12 @@ const EPAModule = require('./EPAModule');
 const ResidualPyramid = require('./ResidualPyramid');
 
 class TagMemoEngine {
-    constructor(db, tagIndex, config, ragParams) {
+    constructor(db, tagIndex, config, ragParams, knowledgeBaseManager = null) {
         this.db = db;
         this.tagIndex = tagIndex;
         this.config = config;
         this.ragParams = ragParams;
+        this.knowledgeBaseManager = knowledgeBaseManager;
 
         this.epa = null;
         this.residualPyramid = null;
@@ -34,6 +35,27 @@ class TagMemoEngine {
         this.modelSig = this._computeModelSig();
         // 是否在本进程内已经触发过冷启动 sim 预计算
         this._pairSimColdStartDone = false;
+        this._postStartupDerivedRefreshTimer = null;
+        this._derivedRefreshRunning = false;
+    }
+
+    _hasWarmDerivedCaches() {
+        const epaReady = !!(this.epa && this.epa.initialized && this.epa.orthoBasis && this.epa.orthoBasis.length > 0);
+        const pairwiseReady = this.tagPairSimilarities instanceof Map && this.tagPairSimilarities.size > 0;
+        const intrinsicReady = this.tagIntrinsicResiduals instanceof Map && this.tagIntrinsicResiduals.size > 0;
+        const matrixReady = this.tagCooccurrenceMatrix instanceof Map && this.tagCooccurrenceMatrix.size > 0;
+        return { epaReady, pairwiseReady, intrinsicReady, matrixReady };
+    }
+
+    _shouldSkipPostStartupDerivedRefresh() {
+        const caches = this._hasWarmDerivedCaches();
+        const noTagChanges = this._accumulatedTagChanges <= 0;
+
+        return {
+            skip: noTagChanges && caches.epaReady && caches.pairwiseReady && caches.intrinsicReady && caches.matrixReady,
+            noTagChanges,
+            ...caches
+        };
     }
 
     /**
@@ -97,19 +119,16 @@ class TagMemoEngine {
             dimension: this.config.dimension
         });
 
-        // 🌟 V8.2-γ: 冷启动钩子
-        // 若 tag_pair_similarity 表为空（首次启动 / 模型签名变化），
-        // 必须 await 阻塞预计算，否则 buildDirectedCooccurrenceMatrix 拿到的 getSim() 全是 fallback，
-        // semanticGain 会均匀压平整张矩阵，当天召回质量异常。
+        // 🌟 V8.2-γ: 冷启动只做检测，不在 initialize() 内阻塞派生计算。
+        // 大库下 pairwise / intrinsic residual 派生刷新会延后到 System Ready + startup cooldown 后触发，
+        // 避免启动 full scan 与派生写入争用数据库。
         try {
             const cnt = this.db.prepare(
                 'SELECT COUNT(*) as c FROM tag_pair_similarity WHERE model_sig = ?'
             ).get(this.modelSig)?.c || 0;
 
             if (cnt === 0) {
-                console.log(`[TagMemoEngine] 🧊 V8.2 cold start: pairwise similarity cache empty for model_sig=${this.modelSig}, computing now...`);
-                await this.recomputePairwiseSimilarities({ blocking: true });
-                this._pairSimColdStartDone = true;
+                console.log(`[TagMemoEngine] 🧊 V8.2 cold start: pairwise similarity cache empty for model_sig=${this.modelSig}; will refresh after startup cooldown.`);
             } else {
                 console.log(`[TagMemoEngine] 🌡️ V8.2 warm start: ${cnt} cached pairwise similarities for model_sig=${this.modelSig}`);
             }
@@ -118,11 +137,16 @@ class TagMemoEngine {
         }
 
         // 加载矩阵依赖的持久化底座：边相似度 + 节点内生残差
-        this.loadPairwiseSimilarities();
+        const pairwiseCount = this.loadPairwiseSimilarities();
         this.loadIntrinsicResiduals();
 
-        // 启动时构建共现矩阵：确保 reverseAnchorBoost 能吃到已加载残差
-        this.buildDirectedCooccurrenceMatrix();
+        // 启动时只在 pairwise 底座可用时构建矩阵，避免冷启动延期期间暴露 fallback-built matrix。
+        if (pairwiseCount > 0) {
+            this.buildDirectedCooccurrenceMatrix();
+        } else {
+            this.tagCooccurrenceMatrix = null;
+            console.log('[TagMemoEngine] 🧊 V8.2 matrix build deferred: pairwise similarity cache is empty.');
+        }
     }
 
     /**
@@ -742,6 +766,12 @@ class TagMemoEngine {
     buildDirectedCooccurrenceMatrix() {
         console.log('[TagMemoEngine] 🧠 V8.2 Building ORDERED-BIDIRECTIONAL tag co-occurrence matrix (γ)...');
         try {
+            if (!(this.tagPairSimilarities instanceof Map) || this.tagPairSimilarities.size === 0) {
+                this.tagCooccurrenceMatrix = null;
+                console.log('[TagMemoEngine] 🧊 V8.2 matrix build skipped: pairwise similarity cache is empty.');
+                return false;
+            }
+
             // 势能参数
             const PHI_MAX = 0.9;
             const PHI_MIN = 0.5;
@@ -943,7 +973,10 @@ class TagMemoEngine {
         } catch (e) {
             console.error('[TagMemoEngine] ❌ Failed to build V8.2 ordered-bidirectional matrix:', e);
             this.tagCooccurrenceMatrix = new Map();
+            return false;
         }
+
+        return true;
     }
 
     // 🌟 V8.2-γ: 加载持久化的 Tag 对语义相似度到内存 Map
@@ -959,9 +992,11 @@ class TagMemoEngine {
                 this.tagPairSimilarities.set(`${row.tag_a}:${row.tag_b}`, row.similarity);
             }
             console.log(`[TagMemoEngine] ✅ V8.2 Loaded ${this.tagPairSimilarities.size} pairwise similarities (model_sig=${this.modelSig})`);
+            return this.tagPairSimilarities.size;
         } catch (e) {
             console.warn('[TagMemoEngine] ⚠️ V8.2 pairwise similarity table not yet available:', e.message);
             this.tagPairSimilarities = new Map();
+            return 0;
         }
     }
 
@@ -1065,41 +1100,51 @@ class TagMemoEngine {
         }
     }
 
-    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
-    scheduleMatrixRebuild(changeCount = 1) {
-        if (changeCount <= 0) return; 
-        
-        this._accumulatedTagChanges += changeCount;
-        
-        // 动态计算 1% 阈值
-        let threshold = 50; 
+    _getMatrixRebuildThreshold() {
+        let threshold = 50;
         try {
             const totalTags = this.db.prepare('SELECT COUNT(*) as count FROM tags').get()?.count || 0;
             threshold = Math.max(10, Math.min(200, Math.floor(totalTags * 0.01)));
         } catch (e) { /* ignore */ }
+        return threshold;
+    }
+
+    _scheduleThresholdMatrixRebuild(threshold, delayMs = 300000, reason = 'threshold') {
+        if (this._matrixRebuildTimer) {
+            clearTimeout(this._matrixRebuildTimer);
+        }
+
+        this._matrixRebuildTimer = setTimeout(() => {
+            console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
+            this.doMatrixRebuild();
+        }, delayMs);
+
+        if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
+
+        if (!this._matrixRebuildScheduleLogged) {
+            console.log(`[TagMemoEngine] 🛡️ Matrix rebuild ${reason}: ${this._accumulatedTagChanges} >= ${threshold}. Scheduled after ${Math.round(delayMs / 1000)}s of quiescence.`);
+            this._matrixRebuildScheduleLogged = true;
+        }
+    }
+
+    _ensureMatrixRebuildScheduledIfThreshold(reason = 'threshold') {
+        const threshold = this._getMatrixRebuildThreshold();
 
         // 仅在达到阈值后，才进入防抖逻辑（实现“大变动后的冷静期”）
         if (this._accumulatedTagChanges >= threshold) {
-            // 无论如何先清除旧计时器，实现“滑动窗口”防抖
-            if (this._matrixRebuildTimer) {
-                clearTimeout(this._matrixRebuildTimer);
-            }
-
-            // 设定 5 分钟（300,000ms）的冷却防抖
-            const COOLING_DELAY = 300000; 
-            this._matrixRebuildTimer = setTimeout(() => {
-                console.log(`[TagMemoEngine] 📈 Changes reached threshold (${this._accumulatedTagChanges} >= ${threshold}) and quiet period finished. Rebuilding matrix...`);
-                this.doMatrixRebuild();
-            }, COOLING_DELAY);
-            
-            if (this._matrixRebuildTimer.unref) this._matrixRebuildTimer.unref();
-
-            // 仅在本轮防抖第一次达到阈值时提示
-            if (!this._matrixRebuildScheduleLogged) {
-                console.log(`[TagMemoEngine] 🛡️ Threshold reached. Matrix rebuild scheduled after 5min of quiescence.`);
-                this._matrixRebuildScheduleLogged = true;
-            }
+            this._scheduleThresholdMatrixRebuild(threshold, 300000, reason);
+            return true;
         }
+
+        return false;
+    }
+
+    // 🌟 TagMemo V7.7: 混合调度器 (阈值门槛 + 滑动窗口防抖)
+    scheduleMatrixRebuild(changeCount = 1) {
+        if (changeCount <= 0) return;
+
+        this._accumulatedTagChanges += changeCount;
+        this._ensureMatrixRebuildScheduledIfThreshold('threshold reached');
         // 低于阈值时不执行任何操作，不计入倒计时。
     }
 
@@ -1122,7 +1167,12 @@ class TagMemoEngine {
             // 🌟 V8.2-γ: 先补齐底座，再构建矩阵
             // 顺序：sim 预计算 → 加载 sim Map → 内生残差预计算/加载 → 构建 V8.2 双向矩阵
             await this.recomputePairwiseSimilarities({ blocking: true });
-            this.loadPairwiseSimilarities();
+            const pairwiseCount = this.loadPairwiseSimilarities();
+            if (pairwiseCount <= 0) {
+                this.tagCooccurrenceMatrix = null;
+                console.warn('[TagMemoEngine] ⚠️ Matrix rebuild deferred: pairwise similarity cache is still empty after recompute.');
+                return;
+            }
             await this.recomputeIntrinsicResiduals();
             this.loadIntrinsicResiduals();
             this.buildDirectedCooccurrenceMatrix();
@@ -1171,6 +1221,70 @@ class TagMemoEngine {
         } catch (e) {
             console.error('[TagMemoEngine] ❌ Rust precomputation failed:', e.message || e);
             if (e.stack) console.error(e.stack);
+        }
+    }
+
+    schedulePostStartupDerivedRefresh(delayMs = 300000) {
+        if (this._postStartupDerivedRefreshTimer) {
+            clearTimeout(this._postStartupDerivedRefreshTimer);
+        }
+
+        this._postStartupDerivedRefreshTimer = setTimeout(() => {
+            this._postStartupDerivedRefreshTimer = null;
+            this._runPostStartupDerivedRefresh();
+        }, Math.max(0, delayMs));
+
+        if (this._postStartupDerivedRefreshTimer.unref) this._postStartupDerivedRefreshTimer.unref();
+        console.log(`[TagMemoEngine] 🕒 Post-startup derived refresh scheduled after ${Math.round(delayMs / 1000)}s.`);
+    }
+
+    _getDerivedRefreshBlockReason() {
+        const kb = this.knowledgeBaseManager;
+        if (!kb) return null;
+        if (kb.isProcessing) return 'js-batch-processing';
+        if (kb.pendingFiles?.size > 0) return `pending-files:${kb.pendingFiles.size}`;
+        return null;
+    }
+
+    async _runPostStartupDerivedRefresh() {
+        if (this._derivedRefreshRunning) return;
+
+        const blockReason = this._getDerivedRefreshBlockReason();
+        if (blockReason) {
+            console.log(`[TagMemoEngine] 🕒 Post-startup derived refresh waiting: ${blockReason}.`);
+            this.schedulePostStartupDerivedRefresh(30000);
+            return;
+        }
+
+        this._derivedRefreshRunning = true;
+        try {
+            console.log('[TagMemoEngine] 🌙 Post-startup derived refresh window opened.');
+
+            const skipDecision = this._shouldSkipPostStartupDerivedRefresh();
+            if (skipDecision.skip) {
+                console.log('[TagMemoEngine] 🛡️ Post-startup derived refresh skipped: warm EPA/pairwise/IR/matrix caches are already loaded and no tag changes accumulated.');
+                return;
+            }
+
+            const forceBootstrapRebuild = !skipDecision.pairwiseReady || !skipDecision.matrixReady;
+            if (forceBootstrapRebuild) {
+                console.log(
+                    '[TagMemoEngine] 🧊 Post-startup matrix bootstrap required: ' +
+                    `pairwiseReady=${skipDecision.pairwiseReady}, intrinsicReady=${skipDecision.intrinsicReady}, matrixReady=${skipDecision.matrixReady}.`
+                );
+                await this.doMatrixRebuild();
+            } else if (this._accumulatedTagChanges > 0) {
+                const scheduled = this._ensureMatrixRebuildScheduledIfThreshold('post-startup accumulated changes');
+                if (!scheduled) {
+                    const threshold = this._getMatrixRebuildThreshold();
+                    console.log(
+                        `[TagMemoEngine] 🛡️ Post-startup matrix rebuild delegated to threshold scheduler: ` +
+                        `${this._accumulatedTagChanges}/${threshold} accumulated tag changes; below threshold, no rebuild scheduled.`
+                    );
+                }
+            }
+        } finally {
+            this._derivedRefreshRunning = false;
         }
     }
 }
