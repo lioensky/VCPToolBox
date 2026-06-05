@@ -417,15 +417,18 @@ class OneRingPreprocessor {
 
             const existingMeta = getOneRingTailMeta(m.content);
             if (m.role === 'assistant') {
+                const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
+                if (!classifiedAssistant) return m;
+
                 if (
                     existingMeta &&
-                    existingMeta.senderName === agentName &&
+                    existingMeta.senderName === classifiedAssistant.senderName &&
                     existingMeta.frontendSource === frontendSource
                 ) return m;
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, agentName, existingMeta?.timestamp || now, frontendSource)
+                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || now, frontendSource)
                 };
             }
 
@@ -525,15 +528,18 @@ class OneRingPreprocessor {
 
             const existingMeta = getOneRingTailMeta(m.content);
             if (m.role === 'assistant') {
+                const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
+                if (!classifiedAssistant) return m;
+
                 if (
                     existingMeta &&
-                    existingMeta.senderName === agentName &&
+                    existingMeta.senderName === classifiedAssistant.senderName &&
                     existingMeta.frontendSource === frontendSource
                 ) return m;
 
                 return {
                     ...m,
-                    content: upsertTailTag(m.content, agentName, existingMeta?.timestamp || now, frontendSource)
+                    content: upsertTailTag(m.content, classifiedAssistant.senderName, existingMeta?.timestamp || now, frontendSource)
                 };
             }
 
@@ -573,9 +579,12 @@ class OneRingPreprocessor {
                         frontendSource: tailMeta?.frontendSource || null
                     };
                 }
+                const classified = classifyUserContent(rawText, agentName, agentName);
+                if (!classified) return null;
                 return {
                     role: m.role,
-                    text: fuzzy.normalize(rawText),
+                    text: classified.cleanText,
+                    senderName: classified.senderName,
                     frontendSource: tailMeta?.frontendSource || null
                 };
             })
@@ -611,7 +620,7 @@ class OneRingPreprocessor {
                         maxRecords: getOneRingMaxDbRecords(),
                     }, projectBasePath);
                 } else if (block.role === 'assistant') {
-                    this._recordAssistantMessage(agentName, frontendSource, block.text, timestamp, threshold);
+                    this._recordAssistantMessage(agentName, frontendSource, block.text, timestamp, threshold, block.senderName || agentName);
                 }
             }
 
@@ -805,15 +814,21 @@ class OneRingPreprocessor {
                     threshold
                 );
             } else if (block.role === 'assistant' && typeof block.text === 'string' && block.text.trim()) {
-                this.recordAIResponse({
+                const classifiedAssistant = classifyUserContent(block.text, agentName, agentName);
+                if (!classifiedAssistant) continue;
+                this._recordAssistantMessage(
                     agentName,
-                    frontendSource
-                }, block.text).catch(e => console.error('[OneRing] Failed to record fresh assistant block:', e.message));
+                    frontendSource,
+                    classifiedAssistant.cleanText,
+                    now,
+                    threshold,
+                    classifiedAssistant.senderName
+                );
             }
         }
     }
 
-    _recordAssistantMessage(agentName, frontendSource, cleanText, timestamp, threshold = 0.92) {
+    _recordAssistantMessage(agentName, frontendSource, cleanText, timestamp, threshold = 0.92, senderName = agentName) {
         try {
             const recent = db.getRecentMessagesByFrontend(agentName, frontendSource, 12, projectBasePath)
                 .filter(item => item.role === 'assistant')
@@ -827,13 +842,13 @@ class OneRingPreprocessor {
 
             db.insertMessage(agentName, {
                 role: 'assistant',
-                senderName: agentName,
+                senderName,
                 frontendSource,
                 content: cleanText,
                 timestamp,
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
-            if (debugMode) console.log(`[OneRing] Recorded assistant message for agent=${agentName}, frontend=${frontendSource}`);
+            if (debugMode) console.log(`[OneRing] Recorded assistant message for agent=${agentName}, sender=${senderName}, frontend=${frontendSource}`);
         } catch (e) {
             console.error('[OneRing] Failed to record assistant message:', e.message);
         }
