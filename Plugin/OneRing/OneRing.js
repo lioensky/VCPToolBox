@@ -340,6 +340,32 @@ function choosePreferredDuplicateMessage(prev, current) {
     return currentText.length > prevText.length ? current : prev;
 }
 
+function logOneRingSummary(agentName, frontendSource, mode, stats = {}) {
+    const injected = stats.injected || 0;
+    const dbInserted = stats.dbInserted || 0;
+    const dbUpdated = stats.dbUpdated || 0;
+    const snapshotEdited = stats.snapshotEdited || 0;
+    const fuzzyEdited = stats.fuzzyEdited || 0;
+    const outputDeduped = stats.outputDeduped || 0;
+    const snapshotSaved = stats.snapshotSaved || 0;
+
+    if (
+        injected === 0 &&
+        dbInserted === 0 &&
+        dbUpdated === 0 &&
+        snapshotEdited === 0 &&
+        fuzzyEdited === 0 &&
+        outputDeduped === 0 &&
+        snapshotSaved === 0
+    ) return;
+
+    console.log(
+        `[OneRing] Summary agent="${agentName}" frontend="${frontendSource}" mode=${mode}: ` +
+        `注入=${injected}条, 写库insert=${dbInserted}条, 写库update=${dbUpdated}条, ` +
+        `快照编辑=${snapshotEdited}条, fuzzy编辑=${fuzzyEdited}条, 输出去重=${outputDeduped}条, 快照保存=${snapshotSaved}条`
+    );
+}
+
 function dedupeAdjacentSimilarConversation(messages, threshold = 0.98) {
     if (!Array.isArray(messages)) return messages;
 
@@ -437,6 +463,15 @@ class OneRingPreprocessor {
         let patchMessages = messages;
         let isFreshShortContext = false;
         const localPostBlocks = this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
+        const summaryStats = {
+            injected: 0,
+            dbInserted: 0,
+            dbUpdated: 0,
+            snapshotEdited: 0,
+            fuzzyEdited: 0,
+            outputDeduped: 0,
+            snapshotSaved: 0
+        };
 
         try {
             const snapshotResult = snapshot.applySnapshotEdits(
@@ -446,6 +481,8 @@ class OneRingPreprocessor {
                 projectBasePath,
                 { debug: debugMode }
             );
+            summaryStats.snapshotEdited += snapshotResult.editedCount || 0;
+            summaryStats.dbUpdated += snapshotResult.editedCount || 0;
             if (debugMode && snapshotResult.reliable) {
                 console.log(`[OneRing] Snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
             }
@@ -457,7 +494,9 @@ class OneRingPreprocessor {
             // 注意：长上下文无匹配时不补充；只有短新 user 场景可以尝试接入同 Agent 既有时间线。
             if (dbBlocks.length === 0 && historyBlocks.length <= 4) {
                 isFreshShortContext = true;
-                this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold);
+                const freshStats = this._recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold);
+                summaryStats.dbInserted += freshStats.inserted || 0;
+                summaryStats.dbUpdated += freshStats.updated || 0;
             } else if (dbBlocks.length > 0) {
                 // 同前端 DB 只与当前前端/无尾标块对齐；跨端注入块不能参与 diff，
                 // 否则第二轮以后会把上轮补入的手机/其他端历史误判为结构错位。
@@ -482,6 +521,8 @@ class OneRingPreprocessor {
                     // 只有可靠 diff 才更新被编辑的历史消息；极短新 post 不允许误覆盖旧 DB。
                     for (const edited of diffResult.editedBlocks) {
                         db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
+                        summaryStats.fuzzyEdited++;
+                        summaryStats.dbUpdated++;
                         if (debugMode) console.log(`[OneRing] Updated edited block dbId=${edited.dbId}`);
                     }
                 } else {
@@ -496,6 +537,7 @@ class OneRingPreprocessor {
         if (allowPatch) {
             try {
                 patchMessages = this._doFuzzyTimestampPatch(messages, agentName, frontendSource, maxBlocks, threshold);
+                summaryStats.injected += patchMessages.__oneRingInjectedCount || 0;
             } catch (e) {
                 console.error('[OneRing] Patch error, using original messages:', e.message);
                 patchMessages = messages;
@@ -521,7 +563,7 @@ class OneRingPreprocessor {
         const lastRealUserIdx = realUserEntries.pop();
 
         if (lastRealUserIdx && !isFreshShortContext) {
-            this._recordUserMessage(
+            const userRecordResult = this._recordUserMessage(
                 agentName,
                 frontendSource,
                 lastRealUserIdx.classified.senderName,
@@ -529,16 +571,20 @@ class OneRingPreprocessor {
                 now,
                 threshold
             );
+            if (userRecordResult === 'insert') summaryStats.dbInserted++;
+            if (userRecordResult === 'update') summaryStats.dbUpdated++;
         }
 
         if (!isFreshShortContext) {
-            this._recordIncomingAssistantContext(
+            const incomingAssistantStats = this._recordIncomingAssistantContext(
                 agentName,
                 frontendSource,
                 messages,
                 nextTimestamp,
                 threshold
             );
+            summaryStats.dbInserted += incomingAssistantStats.inserted || 0;
+            summaryStats.dbUpdated += incomingAssistantStats.updated || 0;
         }
 
         patchMessages = patchMessages.map((m) => {
@@ -578,19 +624,25 @@ class OneRingPreprocessor {
             };
         });
 
+        const beforeDedupeCount = patchMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
         patchMessages = dedupeAdjacentSimilarConversation(patchMessages, outputDedupeThreshold);
+        const afterDedupeCount = patchMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
+        summaryStats.outputDeduped += Math.max(0, beforeDedupeCount - afterDedupeCount);
 
         try {
-            snapshot.saveSnapshotFromDb(
+            const snapshotSaveResult = snapshot.saveSnapshotFromDb(
                 agentName,
                 frontendSource,
                 localPostBlocks,
                 projectBasePath,
                 { debug: debugMode, maxSnapshotBlocks: snapshotMaxBlocks }
             );
+            summaryStats.snapshotSaved += snapshotSaveResult.savedCount || 0;
         } catch (e) {
             console.error('[OneRing] Snapshot save failed:', e.message);
         }
+
+        logOneRingSummary(agentName, frontendSource, 'normal', summaryStats);
 
         try {
             Object.defineProperty(patchMessages, '__oneRingMeta', {
@@ -644,7 +696,17 @@ class OneRingPreprocessor {
 
         if (debugMode) console.log(`[OneRing] Fuzzy patch: ${padded.length} missing blocks补入上下文`);
 
-        return mergeConversationByOneRingTimestamp([...messages, ...padded]);
+        const patched = mergeConversationByOneRingTimestamp([...messages, ...padded]);
+        try {
+            Object.defineProperty(patched, '__oneRingInjectedCount', {
+                value: padded.length,
+                enumerable: false,
+                configurable: true
+            });
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Failed to attach patch injected count:', e.message);
+        }
+        return patched;
     }
 
     _attachMeta(messages, agentName, frontendSource) {
