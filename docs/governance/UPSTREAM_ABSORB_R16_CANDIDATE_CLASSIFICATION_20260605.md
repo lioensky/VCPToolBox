@@ -38,6 +38,7 @@
 | `cca1c915` partial | R16F2 已由本地默认关闭 opt-in retry suppression 实现覆盖并合并到 `main`。#132 先做 preflight；#133 在 `Plugin/VCPBridgeServer/bridgeserver.js` 增加 `BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS`，默认 `0` 关闭，仅作用于 `/v1/responses`，显式 `requestId` / `messageId` 跳过，命中时返回带 `metadata.vcp_bridge_suppressed_duplicate=true` 的 synthetic Responses JSON/SSE；P2 修正为仅在上游成功后记录 suppression key，避免失败重试被 synthetic 200 掩盖。验证：`node --test tests/vcp-bridge-server.test.js`，29/29；CI `build_and_test (20.x)` / `detect_docker_changes` / `docker_build` 通过。合并提交：`d9fcfd9a`。 |
 | `e9c98eaa`, `70a49e08` | R16G 配置样例补齐已核销：`e9c98eaa` 中 RAGDiaryPlugin 的 `FOLDING_STORE_MAX_ENTRIES` / `FOLDING_STORE_EVICT_COUNT` 已由 #126 吸收并合并到 `main`，且代码消费点在 `Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js`；根 `config.env.example` 中 `KNOWLEDGEBASE_REUSE_CHUNK_VECTORS` 已由 #129 覆盖并合并到 `main`，消费点在 `KnowledgeBaseManager.js`。剩余上游 `VarUserName` 与 `TAGMEMO_INTRINSIC_RESIDUAL_FORCE_RECOMPUTE` 当前没有本地代码消费点，暂不写入 example，避免配置样例承诺未实现行为。 |
 | `c2f3b1a9` | R16H Agent 编辑器右侧栏已由 #137 preflight + #138 source-only 实现覆盖并合并到 `main`。只吸收 `AdminPanel-Vue/src/views/AgentFilesEditor.vue` 和 `AdminPanel-Vue/src/views/AgentFilesEditor/DiarySyntaxEditorModal.vue`，继续排除 `AdminPanel-Vue/dist/*`；#138 增加 Agent 编辑器常用占位符侧栏，复用 `placeholderApi` / `toolboxApi`，并保留 `fileDirty`、保存与离开确认行为。验证：`AdminPanel-Vue` 下 `npm run build` 通过；CI `build_and_test (20.x)` / `detect_docker_changes` / `docker_build` 通过。合并提交：`4d27af13`, `62483687`。 |
+| `f3aa67ee` | R16J 已由 #142 preflight 评估并合并到 `main`，暂不吸收默认运行顺序配置。`preprocessor_order.json` 是运行态顺序文件，本地已有显式顺序且包含 `CapturePreprocessor` / `WorkspaceInjector`；upstream payload 引入尚未吸收的 `OneRing` 并改变 `VCPTavern` / `ImageProcessor` 相对顺序，因此不 raw-merge、不提交 upstream 默认文件。验证与说明见 `UPSTREAM_ABSORB_R16J_PREPROCESSOR_ORDER_PREFLIGHT_20260606.md`。合并提交：`450ffad0`。 |
 | `ef4a458d`, `fcfcc918`, `d6f051f5` | R15A/R15B/R15C 已通过本地安全改写吸收。`git cherry` 仍显示 `+` 是 hash 不同，不代表未吸收。 |
 | `567cf29b` | R13 已核销目录整理安全子集，剩余不继续按目录整理吸收。 |
 | `631076b4` | 删除临时文件。若本地没有该文件，可台账核销，不需要代码包。 |
@@ -48,7 +49,6 @@
 |------------------|------|
 | `7e81eeb8`, `720bdd27`, `dcfeb30e`, `1287c4e6`, `e6e74868`, `05494743`, `2c4411dd`, `7a4d11db`, `e5feeddc` | Docker/Rust/TDB/EPA/TagMemo 大包，含 `.node` 二进制、Rust、数据库/索引语义、配置样例。必须专项设计，不直接吸收。 |
 | `344833a0`, `6b8e4892`, `0af2d18b` | 新 Agnes 图片插件并改 ZImageTurboGen，属于新能力/生图插件面，需单独设计和安全审查。 |
-| `f3aa67ee` | 新增 `preprocessor_order.json`，属于运行顺序配置，不应直接提交默认运行态配置。 |
 | `e4205294`, `ad92d9b6`, `5b26680a`, `d558e20a`, `64d9edcf`, `481835ea`, `be74076d`, `64cee8fc`, `e628d98b` | OneRing 新系统大包，涉及新插件、handlers、ContextFolding、README、后续多轮 bugfix。不能混入普通吸收。 |
 | `7eac079d` | 文档/算法说明更新，可能有参考价值，但不是优先代码吸收项。 |
 
