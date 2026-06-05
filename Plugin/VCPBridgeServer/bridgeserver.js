@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { once } = require('events');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { TextDecoder } = require('util');
@@ -14,6 +15,7 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 let server = null;
 let runtimeConfig = null;
+const recentResponsesRequests = new Map();
 
 function toBoolean(value, fallback = false) {
     if (value === undefined || value === null || value === '') return fallback;
@@ -96,6 +98,27 @@ function parseModelMap(raw) {
     }, {});
 }
 
+function stableStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map(key => {
+            return `${JSON.stringify(key)}:${stableStringify(value[key])}`;
+        }).join(',')}}`;
+    }
+    return JSON.stringify(value);
+}
+
+function buildStableRequestId(prefix, payload) {
+    const hash = crypto
+        .createHash('sha256')
+        .update(stableStringify(payload || {}))
+        .digest('hex')
+        .slice(0, 24);
+    return `${prefix}_${hash}`;
+}
+
 function createRuntimeConfig(config = {}, options = {}) {
     const pluginDir = options.pluginDir || __dirname;
     const portValue = (config.BRIDGE_PORT === undefined || config.BRIDGE_PORT === null || config.BRIDGE_PORT === '')
@@ -120,6 +143,10 @@ function createRuntimeConfig(config = {}, options = {}) {
         hijackMode: String(config.BRIDGE_HIJACK_MODE || 'off').trim().toLowerCase(),
         modelMap: parseModelMap(config.BRIDGE_MODEL_MAP || ''),
         timeoutMs: Math.max(1000, toInteger(config.BRIDGE_UPSTREAM_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)),
+        responsesRetrySuppressionMs: Math.max(0, toInteger(
+            config.BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS ?? process.env.BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS,
+            0
+        )),
         debugMode: Boolean(config.DebugMode),
         fetchImpl: options.fetchImpl || globalThis.fetch
     };
@@ -128,6 +155,45 @@ function createRuntimeConfig(config = {}, options = {}) {
 function resolveModel(model, config = runtimeConfig) {
     const candidate = model || config.defaultModel;
     return config.modelMap[candidate] || candidate;
+}
+
+function getResponsesRetrySuppressionKey(body, messages, stream, config = runtimeConfig) {
+    if (!config || config.responsesRetrySuppressionMs <= 0) return null;
+    if (body?.requestId || body?.messageId) return null;
+
+    const requestBody = {
+        ...body,
+        model: resolveModel(body?.model, config),
+        stream
+    };
+    delete requestBody.requestId;
+    delete requestBody.messageId;
+
+    return buildStableRequestId('responses', {
+        requestBody,
+        messages
+    });
+}
+
+function isSuppressedDuplicateResponsesRequest(requestId, config = runtimeConfig, now = Date.now()) {
+    const windowMs = config?.responsesRetrySuppressionMs || 0;
+    if (!requestId || windowMs <= 0) return false;
+
+    for (const [key, value] of recentResponsesRequests.entries()) {
+        if (now - value.lastSeenAt > windowMs * 4) {
+            recentResponsesRequests.delete(key);
+        }
+    }
+
+    const entry = recentResponsesRequests.get(requestId);
+    if (entry && now - entry.lastSeenAt <= windowMs) {
+        entry.lastSeenAt = now;
+        entry.count += 1;
+        return true;
+    }
+
+    recentResponsesRequests.set(requestId, { lastSeenAt: now, count: 1 });
+    return false;
 }
 
 function extractBearerToken(authHeader) {
@@ -697,6 +763,101 @@ function createResponsesStreamEvent(type, data) {
     return `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 }
 
+function buildSuppressedResponsesPayload(model, text) {
+    const created = Math.floor(Date.now() / 1000);
+    const responseId = `resp_suppressed_${created}`;
+    const itemId = `msg_suppressed_${created}`;
+    return {
+        id: responseId,
+        object: 'response',
+        created_at: created,
+        status: 'completed',
+        model: model || runtimeConfig?.defaultModel || DEFAULT_MODEL,
+        output: [
+            {
+                id: itemId,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text, annotations: [] }]
+            }
+        ],
+        output_text: text,
+        usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        metadata: {
+            vcp_bridge_suppressed_duplicate: true
+        }
+    };
+}
+
+function buildSuppressedResponsesSse(payload) {
+    const item = payload.output[0];
+    const part = item.content[0];
+    return [
+        createResponsesStreamEvent('response.created', {
+            response: {
+                id: payload.id,
+                object: payload.object,
+                created_at: payload.created_at,
+                status: 'in_progress',
+                model: payload.model,
+                output: []
+            }
+        }),
+        createResponsesStreamEvent('response.output_item.added', {
+            output_index: 0,
+            item: { id: item.id, type: item.type, status: 'in_progress', role: item.role, content: [] }
+        }),
+        createResponsesStreamEvent('response.content_part.added', {
+            item_id: item.id,
+            output_index: 0,
+            content_index: 0,
+            part: { type: part.type, text: '', annotations: [] }
+        }),
+        createResponsesStreamEvent('response.output_text.delta', {
+            item_id: item.id,
+            output_index: 0,
+            content_index: 0,
+            delta: payload.output_text
+        }),
+        createResponsesStreamEvent('response.output_text.done', {
+            item_id: item.id,
+            output_index: 0,
+            content_index: 0,
+            text: payload.output_text
+        }),
+        createResponsesStreamEvent('response.content_part.done', {
+            item_id: item.id,
+            output_index: 0,
+            content_index: 0,
+            part
+        }),
+        createResponsesStreamEvent('response.output_item.done', {
+            output_index: 0,
+            item
+        }),
+        createResponsesStreamEvent('response.completed', {
+            response: payload
+        }),
+        'data: [DONE]\n\n'
+    ].join('');
+}
+
+function sendSuppressedResponsesResult(res, { model, stream }) {
+    const payload = buildSuppressedResponsesPayload(
+        model,
+        '[VCPBridgeServer] Duplicate /v1/responses request suppressed by opt-in retry guard.'
+    );
+    if (!stream) {
+        return res.status(200).json(payload);
+    }
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    return res.send(buildSuppressedResponsesSse(payload));
+}
+
 function createChatStreamChunk(id, created, model, content, finishReason = null) {
     return {
         id,
@@ -1127,7 +1288,15 @@ function createApp() {
         const body = req.body || {};
         const messages = extractFromResponsesInput(body.input);
         const stream = body.stream === true || String(req.headers.accept || '').includes('text/event-stream');
-        await proxyRequest(req, res, { messages, model: body.model, body: { ...body, stream }, downstreamFormat: 'responses' });
+        const requestBody = { ...body, stream };
+        const suppressionKey = getResponsesRetrySuppressionKey(requestBody, messages, stream, runtimeConfig);
+        if (isSuppressedDuplicateResponsesRequest(suppressionKey, runtimeConfig)) {
+            if (runtimeConfig.debugMode) {
+                console.warn(`[VCPBridgeServer] Suppressed duplicate /v1/responses request: ${suppressionKey}`);
+            }
+            return sendSuppressedResponsesResult(res, { model: body.model, stream });
+        }
+        await proxyRequest(req, res, { messages, model: body.model, body: requestBody, downstreamFormat: 'responses' });
     });
 
     app.post('/v1/messages', async (req, res) => {
@@ -1166,6 +1335,7 @@ function startServer() {
 
 async function initialize(config = {}, dependencies = {}) {
     await shutdown();
+    recentResponsesRequests.clear();
     runtimeConfig = createRuntimeConfig(config, {
         fetchImpl: dependencies.fetchImpl
     });

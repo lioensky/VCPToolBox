@@ -778,6 +778,230 @@ test('responses endpoint returns responses schema when upstream is chat', async 
     }
 });
 
+test('responses retry suppression is opt-in and disabled by default', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async (_url, options) => {
+        upstreamCount += 1;
+        const body = JSON.parse(options.body);
+        assert.equal(body.messages[0].content, 'repeat me');
+        return new Response(JSON.stringify({
+            id: `chatcmpl-repeat-${upstreamCount}`,
+            object: 'chat.completion',
+            model: 'gpt-route',
+            choices: [{ message: { role: 'assistant', content: `route answer ${upstreamCount}` } }]
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat'
+        }, { fetchImpl: fakeFetch });
+
+        const requestBody = { model: 'gpt-route', input: 'repeat me' };
+        const first = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        const second = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        assert.equal(upstreamCount, 2);
+        assert.equal((await first.json()).output_text, 'route answer 1');
+        assert.equal((await second.json()).output_text, 'route answer 2');
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('responses retry suppression returns synthetic JSON only when enabled', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async (_url, options) => {
+        upstreamCount += 1;
+        const body = JSON.parse(options.body);
+        assert.match(body.messages[0].content, /repeat me|different request/);
+        return new Response(JSON.stringify({
+            id: 'chatcmpl-suppression-test',
+            object: 'chat.completion',
+            model: 'gpt-route',
+            choices: [{ message: { role: 'assistant', content: 'route answer' } }]
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat',
+            BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS: 30000
+        }, { fetchImpl: fakeFetch });
+
+        const requestBody = { model: 'gpt-route', input: 'repeat me' };
+        const first = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        const second = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        const distinct = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-route', input: 'different request' })
+        });
+        const distinctTool = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'gpt-route',
+                input: 'repeat me',
+                tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }]
+            })
+        });
+        const distinctInstructions = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                model: 'gpt-route',
+                instructions: 'answer tersely',
+                input: 'repeat me'
+            })
+        });
+
+        assert.equal(upstreamCount, 4);
+        assert.equal((await first.json()).output_text, 'route answer');
+        const suppressed = await second.json();
+        assert.equal(suppressed.metadata.vcp_bridge_suppressed_duplicate, true);
+        assert.match(suppressed.output_text, /Duplicate \/v1\/responses request suppressed/);
+        assert.equal((await distinct.json()).output_text, 'route answer');
+        assert.equal((await distinctTool.json()).output_text, 'route answer');
+        assert.equal((await distinctInstructions.json()).output_text, 'route answer');
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('responses retry suppression skips explicit message ids', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async () => {
+        upstreamCount += 1;
+        return new Response(JSON.stringify({
+            id: `chatcmpl-explicit-${upstreamCount}`,
+            object: 'chat.completion',
+            model: 'gpt-route',
+            choices: [{ message: { role: 'assistant', content: `explicit ${upstreamCount}` } }]
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+        });
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat',
+            BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS: 30000
+        }, { fetchImpl: fakeFetch });
+
+        for (const messageId of ['client-a', 'client-b']) {
+            const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ model: 'gpt-route', input: 'repeat me', messageId })
+            });
+            assert.match((await response.json()).output_text, /explicit/);
+        }
+
+        assert.equal(upstreamCount, 2);
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
+test('responses retry suppression returns complete synthetic SSE when enabled', async () => {
+    const port = await getFreePort();
+    let upstreamCount = 0;
+    const fakeFetch = async (_url, options) => {
+        upstreamCount += 1;
+        const body = JSON.parse(options.body);
+        assert.equal(body.stream, true);
+        return createDelayedSseResponse([
+            [
+                'data: {"model":"gpt-route","choices":[{"delta":{"content":"stream "}}]}',
+                ''
+            ].join('\n'),
+            [
+                'data: {"choices":[{"delta":{"content":"answer"}}]}',
+                '',
+                'data: [DONE]',
+                ''
+            ].join('\n')
+        ]);
+    };
+
+    try {
+        await plugin.initialize({
+            BRIDGE_ENABLED: true,
+            BRIDGE_BIND_HOST: '127.0.0.1',
+            BRIDGE_PORT: port,
+            BRIDGE_UPSTREAM_TYPE: 'chat',
+            BRIDGE_RESPONSES_RETRY_SUPPRESSION_MS: 30000
+        }, { fetchImpl: fakeFetch });
+
+        const requestBody = { model: 'gpt-route', input: 'repeat stream', stream: true };
+        const first = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: {
+                accept: 'text/event-stream',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        await first.text();
+
+        const second = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+            method: 'POST',
+            headers: {
+                accept: 'text/event-stream',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        const payload = await second.text();
+
+        assert.equal(upstreamCount, 1);
+        assert.match(second.headers.get('content-type'), /text\/event-stream/);
+        assert.match(payload, /event: response\.created/);
+        assert.match(payload, /event: response\.output_text\.delta/);
+        assert.match(payload, /event: response\.completed/);
+        assert.match(payload, /vcp_bridge_suppressed_duplicate/);
+        assert.match(payload, /data: \[DONE\]/);
+    } finally {
+        await plugin.shutdown();
+    }
+});
+
 test('responses endpoint returns responses SSE when upstream streams chat chunks', async () => {
     const port = await getFreePort();
     const fakeFetch = async (_url, options) => {
