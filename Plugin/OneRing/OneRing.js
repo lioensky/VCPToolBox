@@ -727,6 +727,15 @@ class OneRingPreprocessor {
         let result = Array.isArray(messages) ? [...messages] : messages;
 
         const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
+        const summaryStats = {
+            injected: 0,
+            dbInserted: 0,
+            dbUpdated: 0,
+            snapshotEdited: 0,
+            fuzzyEdited: 0,
+            outputDeduped: 0,
+            snapshotSaved: 0
+        };
 
         try {
             const snapshotResult = snapshot.applySnapshotEdits(
@@ -736,6 +745,8 @@ class OneRingPreprocessor {
                 projectBasePath,
                 { debug: debugMode }
             );
+            summaryStats.snapshotEdited += snapshotResult.editedCount || 0;
+            summaryStats.dbUpdated += snapshotResult.editedCount || 0;
             if (debugMode && snapshotResult.reliable) {
                 console.log(`[OneRing] Record-only snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
             }
@@ -743,7 +754,10 @@ class OneRingPreprocessor {
             console.error('[OneRing] Record-only snapshot edit failed:', e.message);
         }
 
-        this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks);
+        const syncStats = this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks);
+        summaryStats.dbInserted += syncStats.inserted || 0;
+        summaryStats.dbUpdated += syncStats.updated || 0;
+        summaryStats.fuzzyEdited += syncStats.fuzzyEdited || 0;
 
         result = result.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
@@ -782,19 +796,25 @@ class OneRingPreprocessor {
             };
         });
 
+        const beforeDedupeCount = result.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
         result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
+        const afterDedupeCount = result.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
+        summaryStats.outputDeduped += Math.max(0, beforeDedupeCount - afterDedupeCount);
 
         try {
-            snapshot.saveSnapshotFromDb(
+            const snapshotSaveResult = snapshot.saveSnapshotFromDb(
                 agentName,
                 frontendSource,
                 postBlocks,
                 projectBasePath,
                 { debug: debugMode, maxSnapshotBlocks }
             );
+            summaryStats.snapshotSaved += snapshotSaveResult.savedCount || 0;
         } catch (e) {
             console.error('[OneRing] Record-only snapshot save failed:', e.message);
         }
+
+        logOneRingSummary(agentName, frontendSource, 'record-only', summaryStats);
 
         return this._attachMeta(result, agentName, frontendSource);
     }
@@ -832,13 +852,14 @@ class OneRingPreprocessor {
     }
 
     _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null) {
-        if (!Array.isArray(messages)) return;
+        const stats = { inserted: 0, updated: 0, fuzzyEdited: 0 };
+        if (!Array.isArray(messages)) return stats;
 
         const postBlocks = Array.isArray(precomputedPostBlocks)
             ? precomputedPostBlocks
             : this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
 
-        if (postBlocks.length === 0) return;
+        if (postBlocks.length === 0) return stats;
 
         try {
             const dbBlocks = db.getRecentMessagesByFrontend(
@@ -852,6 +873,8 @@ class OneRingPreprocessor {
 
             for (const edited of diffResult.editedBlocks) {
                 db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
+                stats.updated++;
+                stats.fuzzyEdited++;
                 if (debugMode) console.log(`[OneRing] Only mode updated edited block dbId=${edited.dbId}`);
             }
 
@@ -865,8 +888,11 @@ class OneRingPreprocessor {
                         timestamp: nextTimestamp(),
                         maxRecords: getOneRingMaxDbRecords(),
                     }, projectBasePath);
+                    stats.inserted++;
                 } else if (block.role === 'assistant') {
-                    this._recordAssistantMessage(agentName, frontendSource, block.text, nextTimestamp(), threshold, block.senderName || agentName);
+                    const assistantResult = this._recordAssistantMessage(agentName, frontendSource, block.text, nextTimestamp(), threshold, block.senderName || agentName);
+                    if (assistantResult === 'insert') stats.inserted++;
+                    if (assistantResult === 'update') stats.updated++;
                 }
             }
 
@@ -875,7 +901,7 @@ class OneRingPreprocessor {
             if (diffResult.unknownCount > 0 && postBlocks.length <= 2) {
                 const lastUser = [...postBlocks].reverse().find(block => block.role === 'user');
                 if (lastUser) {
-                    this._recordUserMessage(
+                    const userResult = this._recordUserMessage(
                         agentName,
                         frontendSource,
                         lastUser.senderName || defaultUserName,
@@ -883,11 +909,14 @@ class OneRingPreprocessor {
                         nextTimestamp(),
                         threshold
                     );
+                    if (userResult === 'insert') stats.inserted++;
+                    if (userResult === 'update') stats.updated++;
                 }
             }
         } catch (e) {
             console.error('[OneRing] Only mode DB sync failed:', e.message);
         }
+        return stats;
     }
 
     /**
@@ -967,12 +996,13 @@ class OneRingPreprocessor {
      * 记录 post 中已经存在的真实块；跨端补充由 _doFreshShortContextPatch 负责。
      */
     _recordFreshShortContext(agentName, frontendSource, defaultUserName, historyBlocks, threshold = 0.92) {
+        const stats = { inserted: 0, updated: 0 };
         const nextTimestamp = createOneRingTimestampSequencer();
         for (const block of historyBlocks) {
             if (block.role === 'user') {
                 const classified = classifyUserContent(block.text, defaultUserName, agentName);
                 if (!classified) continue;
-                this._recordUserMessage(
+                const userResult = this._recordUserMessage(
                     agentName,
                     frontendSource,
                     classified.senderName,
@@ -980,10 +1010,12 @@ class OneRingPreprocessor {
                     nextTimestamp(),
                     threshold
                 );
+                if (userResult === 'insert') stats.inserted++;
+                if (userResult === 'update') stats.updated++;
             } else if (block.role === 'assistant' && typeof block.text === 'string' && block.text.trim()) {
                 const classifiedAssistant = classifyUserContent(block.text, agentName, agentName);
                 if (!classifiedAssistant) continue;
-                this._recordAssistantMessage(
+                const assistantResult = this._recordAssistantMessage(
                     agentName,
                     frontendSource,
                     classifiedAssistant.cleanText,
@@ -991,12 +1023,16 @@ class OneRingPreprocessor {
                     threshold,
                     classifiedAssistant.senderName
                 );
+                if (assistantResult === 'insert') stats.inserted++;
+                if (assistantResult === 'update') stats.updated++;
             }
         }
+        return stats;
     }
 
     _recordIncomingAssistantContext(agentName, frontendSource, messages, timestamp, threshold = 0.92) {
-        if (!Array.isArray(messages)) return;
+        const stats = { inserted: 0, updated: 0 };
+        if (!Array.isArray(messages)) return stats;
 
         for (const m of messages) {
             if (!m || m.role !== 'assistant') continue;
@@ -1008,7 +1044,7 @@ class OneRingPreprocessor {
             // 纯 Direct assistant 默认由 final callback 记录，避免当前目标 AI 的回复被重复同步。
             if (classified.source === 'Direct' && classified.senderName === agentName) continue;
 
-            this._recordAssistantMessage(
+            const assistantResult = this._recordAssistantMessage(
                 agentName,
                 frontendSource,
                 classified.cleanText,
@@ -1016,7 +1052,10 @@ class OneRingPreprocessor {
                 threshold,
                 classified.senderName
             );
+            if (assistantResult === 'insert') stats.inserted++;
+            if (assistantResult === 'update') stats.updated++;
         }
+        return stats;
     }
 
     _recordAssistantMessage(agentName, frontendSource, cleanText, timestamp, threshold = 0.92, senderName = agentName) {
@@ -1028,7 +1067,7 @@ class OneRingPreprocessor {
             if (recent && fuzzy.similarity(cleanText, recent.content) >= threshold) {
                 db.updateMessageById(agentName, recent.id, cleanText, projectBasePath);
                 if (debugMode) console.log(`[OneRing] Updated recent assistant message dbId=${recent.id}`);
-                return;
+                return 'update';
             }
 
             db.insertMessage(agentName, {
@@ -1040,8 +1079,10 @@ class OneRingPreprocessor {
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
             if (debugMode) console.log(`[OneRing] Recorded assistant message for agent=${agentName}, sender=${senderName}, frontend=${frontendSource}`);
+            return 'insert';
         } catch (e) {
             console.error('[OneRing] Failed to record assistant message:', e.message);
+            return 'error';
         }
     }
 
@@ -1058,7 +1099,7 @@ class OneRingPreprocessor {
             if (recent && fuzzy.similarity(cleanText, recent.content) >= threshold) {
                 db.updateMessageById(agentName, recent.id, cleanText, projectBasePath);
                 if (debugMode) console.log(`[OneRing] Updated recent user message dbId=${recent.id}`);
-                return;
+                return 'update';
             }
 
             db.insertMessage(agentName, {
@@ -1070,8 +1111,10 @@ class OneRingPreprocessor {
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
             if (debugMode) console.log(`[OneRing] Recorded user message for agent=${agentName}, sender=${senderName}, frontend=${frontendSource}`);
+            return 'insert';
         } catch (e) {
             console.error('[OneRing] Failed to record user message:', e.message);
+            return 'error';
         }
     }
 
