@@ -310,7 +310,16 @@ class TDBKnowledgeManager {
         const checksum = crypto.createHash('sha256').update(content).digest('hex');
 
         const old = this.metaDb.prepare('SELECT checksum, mtime, size FROM files WHERE library = ? AND path = ?').get(library, relPath);
-        if (old && old.checksum === checksum && old.mtime === stats.mtimeMs && old.size === stats.size) return;
+        // 内容去重：checksum + size 一致即认为文件未改变，跳过昂贵的重新 Embedding。
+        // 当 mtime 因 git pull / 文件复制等操作被刷新但内容未变时，仅同步 metaDb 中的时间戳。
+        // 与 KnowledgeBaseManager（热记忆系统）的增量判断逻辑对齐。
+        if (old && old.checksum === checksum && old.size === stats.size) {
+            if (old.mtime !== stats.mtimeMs) {
+                this.metaDb.prepare('UPDATE files SET mtime = ?, updated_at = ? WHERE library = ? AND path = ?')
+                    .run(stats.mtimeMs, Math.floor(Date.now() / 1000), library, relPath);
+            }
+            return;
+        }
 
         const handle = this.getOrOpenLibrary(library);
         this._beginLibraryUse(handle);
