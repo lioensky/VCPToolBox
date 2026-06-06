@@ -3,6 +3,8 @@
 // 职责：内容归一化、相似度计算、上下文数组比对定位。
 // 设计为可独立升级：未来可替换为向量相似度或更复杂的 diff 算法，只要保持导出接口不变。
 
+const crypto = require('crypto');
+
 // 需要在比对前剥离的标记（尾部 OneRing 标记、群聊头标记、系统通知栏）
 const ONERING_TAIL_REGEX = /(?:\s*\[OneRing通知:[^\]]*\]\s*)+$/;
 const SYSTEM_NOTICE_REGEX = /\[系统通知\][\s\S]*?\[系统通知结束\]/g;
@@ -21,6 +23,14 @@ function normalize(text) {
     // 折叠多余空白
     t = t.replace(/\s+/g, ' ').trim();
     return t;
+}
+
+function normalizedHashFromKey(normalizedText) {
+    return crypto.createHash('sha1').update(typeof normalizedText === 'string' ? normalizedText : '').digest('hex');
+}
+
+function normalizedHash(text) {
+    return normalizedHashFromKey(normalize(text));
 }
 
 /**
@@ -110,6 +120,23 @@ function diffContext(postBlocks, dbBlocks, threshold) {
         return result;
     }
 
+    const preparedPostBlocks = postBlocks.map(pb => {
+        const normalizedText = normalize(pb.text);
+        return {
+            ...pb,
+            normalizedText,
+            normalizedHash: normalizedHashFromKey(normalizedText)
+        };
+    });
+    const preparedDbBlocks = dbBlocks.map(dbItem => {
+        const normalizedText = normalize(dbItem.content);
+        return {
+            ...dbItem,
+            normalizedText,
+            normalizedHash: normalizedHashFromKey(normalizedText)
+        };
+    });
+
     // 低于该相似度时，不再把同角色差异直接视为“编辑”。
     // 这能保护“同端只 post 单条新消息/尾部窗口”时不误覆盖 DB 早期旧消息。
     const editFloor = Math.max(0.55, threshold - 0.25);
@@ -121,9 +148,9 @@ function diffContext(postBlocks, dbBlocks, threshold) {
     const maxStart = Math.max(0, dbBlocks.length - 1);
     for (let start = 0; start <= maxStart; start++) {
         let score = 0;
-        for (let pi = 0; pi < postBlocks.length; pi++) {
-            const dbItem = dbBlocks[start + pi];
-            const pb = postBlocks[pi];
+        for (let pi = 0; pi < preparedPostBlocks.length; pi++) {
+            const dbItem = preparedDbBlocks[start + pi];
+            const pb = preparedPostBlocks[pi];
             if (!dbItem) {
                 score -= 0.25;
                 continue;
@@ -132,7 +159,9 @@ function diffContext(postBlocks, dbBlocks, threshold) {
                 score -= 1;
                 continue;
             }
-            score += similarity(pb.text, dbItem.content);
+            score += pb.normalizedHash === dbItem.normalizedHash
+                ? 1
+                : similarity(pb.normalizedText, dbItem.normalizedText);
         }
         if (score >= bestScore) {
             bestScore = score;
@@ -141,14 +170,14 @@ function diffContext(postBlocks, dbBlocks, threshold) {
     }
 
     let di = bestStart;
-    for (let pi = 0; pi < postBlocks.length; pi++) {
-        const pb = postBlocks[pi];
-        if (di >= dbBlocks.length) {
+    for (let pi = 0; pi < preparedPostBlocks.length; pi++) {
+        const pb = preparedPostBlocks[pi];
+        if (di >= preparedDbBlocks.length) {
             result.newBlocks.push({ ...pb, postIndex: pi });
             continue;
         }
 
-        const dbItem = dbBlocks[di];
+        const dbItem = preparedDbBlocks[di];
         if (dbItem.role !== pb.role) {
             result.unknownCount++;
             result.reliable = false;
@@ -156,7 +185,9 @@ function diffContext(postBlocks, dbBlocks, threshold) {
             continue;
         }
 
-        const sim = similarity(pb.text, dbItem.content);
+        const sim = pb.normalizedHash === dbItem.normalizedHash
+            ? 1
+            : similarity(pb.normalizedText, dbItem.normalizedText);
         if (sim >= threshold) {
             result.matchedCount++;
         } else if (sim >= editFloor) {
@@ -179,6 +210,8 @@ function diffContext(postBlocks, dbBlocks, threshold) {
 
 module.exports = {
     normalize,
+    normalizedHash,
+    normalizedHashFromKey,
     similarity,
     extractText,
     diffContext,
