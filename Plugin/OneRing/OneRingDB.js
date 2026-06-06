@@ -101,7 +101,7 @@ function updateMessageContent(id, content) {
 
 function updateMessageById(agentName, id, content, projectBasePath) {
     const db = getDb(agentName, projectBasePath);
-    db.prepare(`UPDATE messages SET content=? WHERE id=?`).run(content, id);
+    return db.prepare(`UPDATE messages SET content=? WHERE id=?`).run(content, id);
 }
 
 function insertPostTurn(agentName, { turnId, frontendSource, requestHash, requestBlockCount, status = 'pending', responseMessageId = null, responseContentHash = null, createdAt, updatedAt }, projectBasePath) {
@@ -150,7 +150,7 @@ function getRecentCompletedPostTurn(agentName, frontendSource, limit = 20, proje
 
 function completePostTurn(agentName, turnId, responseMessageId, responseContentHash, completedAt, projectBasePath) {
     const db = getDb(agentName, projectBasePath);
-    db.prepare(
+    return db.prepare(
         `UPDATE postTurns
          SET status='completed', responseMessageId=?, responseContentHash=?, completedAt=?, updatedAt=?
          WHERE agentName=? AND turnId=?`

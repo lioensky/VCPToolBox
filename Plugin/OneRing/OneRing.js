@@ -2224,7 +2224,10 @@ class OneRingPreprocessor {
      */
     async recordAIResponseFromMessages(messages, aiText) {
         const meta = this._extractMetaFromMessages(messages);
-        if (!meta || !meta.agentName || typeof aiText !== 'string') return;
+        if (!meta || !meta.agentName || typeof aiText !== 'string') {
+            console.warn(`[OneRing] post回复未写入OneRing：hook已收到但元信息无效或回复不是字符串 meta=${meta ? JSON.stringify(meta) : 'null'} aiTextType=${typeof aiText}`);
+            return;
+        }
 
         const text = aiText.trim();
         if (text.length === 0) {
@@ -2235,40 +2238,67 @@ class OneRingPreprocessor {
                     if (debugMode) console.warn('[OneRing] Failed to mark empty assistant turn aborted:', e.message);
                 }
             }
+            console.warn(`[OneRing] post回复未写入OneRing：hook已收到但AI回复正文为空 agent=${meta.agentName} frontend=${meta.frontendSource} turn=${meta.turnId || 'none'}`);
             return;
         }
 
         try {
             if (meta.responseMessageIdToUpdate) {
                 const responseId = Number(meta.responseMessageIdToUpdate);
-                db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                if (!Number.isFinite(responseId) || responseId <= 0) {
+                    console.warn(`[OneRing] post回复未写入OneRing：retry目标dbId无效 agent=${meta.agentName} frontend=${meta.frontendSource} responseMessageIdToUpdate=${meta.responseMessageIdToUpdate}`);
+                    return;
+                }
+
+                const updateResult = db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                if (!updateResult || updateResult.changes <= 0) {
+                    console.warn(`[OneRing] post回复未写入OneRing：retry更新未命中记录 agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${responseId} turn=${meta.turnId || 'none'} textLen=${aiText.length}`);
+                    return;
+                }
+
                 try {
                     native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
                 } catch (nativeError) {
                     if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
                 }
+                let turnCompleted = false;
                 if (meta.turnId) {
-                    db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                    const completeResult = db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                    turnCompleted = !!completeResult && completeResult.changes > 0;
+                    if (!turnCompleted) {
+                        console.warn(`[OneRing] post回复写入OneRing成功但turn未完成：agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${responseId} turn=${meta.turnId}`);
+                    }
                 }
-                if (debugMode) console.log(`[OneRing] Updated assistant response by turn binding agent=${meta.agentName} dbId=${responseId}`);
+                console.log(`[OneRing] post回复写入OneRing成功：agent=${meta.agentName} frontend=${meta.frontendSource} mode=update dbId=${responseId} turn=${meta.turnId || 'none'} turnCompleted=${turnCompleted} textLen=${aiText.length}`);
                 return;
             }
 
+            const timestamp = formatOneRingTimestamp();
             const result = db.insertMessage(meta.agentName, {
                 role: 'assistant',
                 senderName: meta.agentName,
                 frontendSource: meta.frontendSource,
                 content: aiText,
-                timestamp: formatOneRingTimestamp(),
+                timestamp,
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
             const insertedId = Number(result?.lastInsertRowid || 0);
-            if (meta.turnId && insertedId > 0) {
-                db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+            if (!Number.isFinite(insertedId) || insertedId <= 0) {
+                console.warn(`[OneRing] post回复未写入OneRing：insert未返回有效rowid agent=${meta.agentName} frontend=${meta.frontendSource} turn=${meta.turnId || 'none'} changes=${result?.changes ?? 'unknown'} textLen=${aiText.length}`);
+                return;
             }
-            if (debugMode) console.log(`[OneRing] Recorded assistant response for agent=${meta.agentName}`);
+
+            let turnCompleted = false;
+            if (meta.turnId) {
+                const completeResult = db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                turnCompleted = !!completeResult && completeResult.changes > 0;
+                if (!turnCompleted) {
+                    console.warn(`[OneRing] post回复写入OneRing成功但turn未完成：agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${insertedId} turn=${meta.turnId}`);
+                }
+            }
+            console.log(`[OneRing] post回复写入OneRing成功：agent=${meta.agentName} frontend=${meta.frontendSource} mode=insert dbId=${insertedId} timestamp="${timestamp}" turn=${meta.turnId || 'none'} turnCompleted=${turnCompleted} textLen=${aiText.length}`);
         } catch (e) {
-            console.error('[OneRing] Failed to record AI response:', e.message);
+            console.warn(`[OneRing] post回复未写入OneRing：写库异常 agent=${meta.agentName} frontend=${meta.frontendSource} turn=${meta.turnId || 'none'} textLen=${aiText.length} error=${e.message}`);
         }
     }
 
@@ -2276,38 +2306,67 @@ class OneRingPreprocessor {
      * 兼容旧调用：AI 回复入库（异步，fire-and-forget）。
      */
     async recordAIResponse(meta, aiText) {
-        if (!meta || !meta.agentName || typeof aiText !== 'string' || aiText.trim().length === 0) return;
+        if (!meta || !meta.agentName || typeof aiText !== 'string' || aiText.trim().length === 0) {
+            console.warn(`[OneRing] post回复未写入OneRing：兼容入口参数无效 meta=${meta ? JSON.stringify(meta) : 'null'} aiTextType=${typeof aiText} textLen=${typeof aiText === 'string' ? aiText.trim().length : 'n/a'}`);
+            return;
+        }
         try {
             if (meta.responseMessageIdToUpdate) {
                 const responseId = Number(meta.responseMessageIdToUpdate);
-                db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                if (!Number.isFinite(responseId) || responseId <= 0) {
+                    console.warn(`[OneRing] post回复未写入OneRing：兼容入口retry目标dbId无效 agent=${meta.agentName} frontend=${meta.frontendSource} responseMessageIdToUpdate=${meta.responseMessageIdToUpdate}`);
+                    return;
+                }
+
+                const updateResult = db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                if (!updateResult || updateResult.changes <= 0) {
+                    console.warn(`[OneRing] post回复未写入OneRing：兼容入口retry更新未命中记录 agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${responseId} turn=${meta.turnId || 'none'} textLen=${aiText.length}`);
+                    return;
+                }
+
                 try {
                     native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
                 } catch (nativeError) {
                     if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
                 }
+                let turnCompleted = false;
                 if (meta.turnId) {
-                    db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                    const completeResult = db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                    turnCompleted = !!completeResult && completeResult.changes > 0;
+                    if (!turnCompleted) {
+                        console.warn(`[OneRing] post回复写入OneRing成功但turn未完成：兼容入口 agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${responseId} turn=${meta.turnId}`);
+                    }
                 }
-                if (debugMode) console.log(`[OneRing] Updated assistant response by explicit turn binding agent=${meta.agentName} dbId=${responseId}`);
+                console.log(`[OneRing] post回复写入OneRing成功：agent=${meta.agentName} frontend=${meta.frontendSource} mode=compat-update dbId=${responseId} turn=${meta.turnId || 'none'} turnCompleted=${turnCompleted} textLen=${aiText.length}`);
                 return;
             }
 
+            const timestamp = formatOneRingTimestamp();
             const result = db.insertMessage(meta.agentName, {
                 role: 'assistant',
                 senderName: meta.agentName,
                 frontendSource: meta.frontendSource,
                 content: aiText,
-                timestamp: formatOneRingTimestamp(),
+                timestamp,
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
             const insertedId = Number(result?.lastInsertRowid || 0);
-            if (meta.turnId && insertedId > 0) {
-                db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+            if (!Number.isFinite(insertedId) || insertedId <= 0) {
+                console.warn(`[OneRing] post回复未写入OneRing：兼容入口insert未返回有效rowid agent=${meta.agentName} frontend=${meta.frontendSource} turn=${meta.turnId || 'none'} changes=${result?.changes ?? 'unknown'} textLen=${aiText.length}`);
+                return;
             }
-            if (debugMode) console.log(`[OneRing] Recorded assistant response for agent=${meta.agentName}`);
+
+            let turnCompleted = false;
+            if (meta.turnId) {
+                const completeResult = db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                turnCompleted = !!completeResult && completeResult.changes > 0;
+                if (!turnCompleted) {
+                    console.warn(`[OneRing] post回复写入OneRing成功但turn未完成：兼容入口 agent=${meta.agentName} frontend=${meta.frontendSource} dbId=${insertedId} turn=${meta.turnId}`);
+                }
+            }
+            console.log(`[OneRing] post回复写入OneRing成功：agent=${meta.agentName} frontend=${meta.frontendSource} mode=compat-insert dbId=${insertedId} timestamp="${timestamp}" turn=${meta.turnId || 'none'} turnCompleted=${turnCompleted} textLen=${aiText.length}`);
         } catch (e) {
-            console.error('[OneRing] Failed to record AI response:', e.message);
+            console.warn(`[OneRing] post回复未写入OneRing：兼容入口写库异常 agent=${meta.agentName} frontend=${meta.frontendSource} turn=${meta.turnId || 'none'} textLen=${aiText.length} error=${e.message}`);
         }
     }
 
