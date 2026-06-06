@@ -1601,103 +1601,107 @@ class RAGDiaryPlugin {
         const tdbDirectDeclarations = [...processedContent.matchAll(/\[\[(.*?)知识库(.*?)\]\]/g)];
         const tdbHybridDeclarations = [...processedContent.matchAll(/《《(.*?)知识库(.*?)》》/g)];
         console.log(`[RAGDiaryPlugin] Found ${directDiariesDeclarations.length} {{...}} declarations`);
+
+        // --- 收集所有占位符处理任务：元思考 / RAG / AIMemo / 冷知识库 最后统一合并注入 ---
+        const aiMemoRequests = [];
+        const processingPromises = [];
+
         // --- 1. 处理 [[VCP元思考...]] 元思考链 ---
+        // 🌟 性能优化：元思考不再阻塞后续日记/RAG任务收集，而是加入同一批 processingPromises 并发执行。
         for (const match of metaThinkingDeclarations) {
             const placeholder = match[0];
             const modifiersAndParams = match[1] || '';
 
-            // 静默处理元思考占位符
+            processingPromises.push((async () => {
+                // 静默处理元思考占位符
 
-            // 解析参数：链名称和修饰符
-            // 格式: [[VCP元思考:<链名称>::<修饰符>]]
-            // 示例: [[VCP元思考:creative_writing::Group]]
-            //      [[VCP元思考::Group]]  (使用默认链)
-            //      [[VCP元思考::Auto::Group]]  (自动模式)
+                // 解析参数：链名称和修饰符
+                // 格式: [[VCP元思考:<链名称>::<修饰符>]]
+                // 示例: [[VCP元思考:creative_writing::Group]]
+                //      [[VCP元思考::Group]]  (使用默认链)
+                //      [[VCP元思考::Auto::Group]]  (自动模式)
 
-            let chainName = 'default';
-            let useGroup = false;
-            let isAutoMode = false;
-            let autoThreshold = 0.65; // 默认自动切换阈值
-            let autoWhitelist = null; // 🌟 auto 白名单
-            let autoBlacklist = null; // 🌟 auto 黑名单
+                let chainName = 'default';
+                let useGroup = false;
+                let isAutoMode = false;
+                let autoThreshold = 0.65; // 默认自动切换阈值
+                let autoWhitelist = null; // 🌟 auto 白名单
+                let autoBlacklist = null; // 🌟 auto 黑名单
 
-            // 分析修饰符字符串
-            if (modifiersAndParams) {
-                // 移除开头的所有冒号，然后按 :: 分割
-                const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
+                // 分析修饰符字符串
+                if (modifiersAndParams) {
+                    // 移除开头的所有冒号，然后按 :: 分割
+                    const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
 
-                for (const part of parts) {
-                    const lowerPart = part.toLowerCase();
+                    for (const part of parts) {
+                        const lowerPart = part.toLowerCase();
 
-                    if (lowerPart.startsWith('auto')) {
-                        isAutoMode = true;
-                        // 🌟 新语法: auto[:阈值][:范围]
-                        // 示例: auto:0.65:Coding,investigation (白名单)
-                        //       auto:0.65:!disco (黑名单)
-                        //       auto:!disco (黑名单+默认阈值)
-                        const autoMatch = part.match(/^auto(?::([\d.]+))?(?::(.+))?$/i);
-                        if (autoMatch) {
-                            if (autoMatch[1]) {
-                                const parsedThreshold = parseFloat(autoMatch[1]);
-                                if (!isNaN(parsedThreshold)) {
-                                    autoThreshold = parsedThreshold;
+                        if (lowerPart.startsWith('auto')) {
+                            isAutoMode = true;
+                            // 🌟 新语法: auto[:阈值][:范围]
+                            // 示例: auto:0.65:Coding,investigation (白名单)
+                            //       auto:0.65:!disco (黑名单)
+                            //       auto:!disco (黑名单+默认阈值)
+                            const autoMatch = part.match(/^auto(?::([\d.]+))?(?::(.+))?$/i);
+                            if (autoMatch) {
+                                if (autoMatch[1]) {
+                                    const parsedThreshold = parseFloat(autoMatch[1]);
+                                    if (!isNaN(parsedThreshold)) {
+                                        autoThreshold = parsedThreshold;
+                                    }
+                                }
+                                if (autoMatch[2]) {
+                                    const scopePart = autoMatch[2];
+                                    if (scopePart.startsWith('!')) {
+                                        autoBlacklist = scopePart.slice(1).split(',').map(s => s.trim()).filter(Boolean);
+                                        console.log(`[RAGDiaryPlugin] Auto 黑名单: ${autoBlacklist.join(', ')}`);
+                                    } else {
+                                        autoWhitelist = scopePart.split(',').map(s => s.trim()).filter(Boolean);
+                                        console.log(`[RAGDiaryPlugin] Auto 白名单: ${autoWhitelist.join(', ')}`);
+                                    }
                                 }
                             }
-                            if (autoMatch[2]) {
-                                const scopePart = autoMatch[2];
-                                if (scopePart.startsWith('!')) {
-                                    autoBlacklist = scopePart.slice(1).split(',').map(s => s.trim()).filter(Boolean);
-                                    console.log(`[RAGDiaryPlugin] Auto 黑名单: ${autoBlacklist.join(', ')}`);
-                                } else {
-                                    autoWhitelist = scopePart.split(',').map(s => s.trim()).filter(Boolean);
-                                    console.log(`[RAGDiaryPlugin] Auto 白名单: ${autoWhitelist.join(', ')}`);
-                                }
+                            // 在自动模式下，链名称将由auto逻辑决定
+                            chainName = 'default';
+                        } else if (lowerPart === 'group') {
+                            useGroup = true;
+                        } else if (part) {
+                            // 如果不是 Auto 模式，才接受指定的链名称
+                            if (!isAutoMode) {
+                                chainName = part;
                             }
-                        }
-                        // 在自动模式下，链名称将由auto逻辑决定
-                        chainName = 'default';
-                    } else if (lowerPart === 'group') {
-                        useGroup = true;
-                    } else if (part) {
-                        // 如果不是 Auto 模式，才接受指定的链名称
-                        if (!isAutoMode) {
-                            chainName = part;
                         }
                     }
                 }
-            }
 
-            // 参数已解析，开始处理
+                // 参数已解析，开始处理
 
-            try {
-                const metaResult = await this.metaThinkingManager.processMetaThinkingChain(
-                    chainName,
-                    queryVector,
-                    userContent,
-                    aiContent,
-                    combinedQueryForDisplay,
-                    null, // kSequence现在从JSON配置中获取，不再从占位符传递
-                    useGroup,
-                    isAutoMode,
-                    autoThreshold,
-                    autoWhitelist,
-                    autoBlacklist
-                );
+                try {
+                    const metaResult = await this.metaThinkingManager.processMetaThinkingChain(
+                        chainName,
+                        queryVector,
+                        userContent,
+                        aiContent,
+                        combinedQueryForDisplay,
+                        null, // kSequence现在从JSON配置中获取，不再从占位符传递
+                        useGroup,
+                        isAutoMode,
+                        autoThreshold,
+                        autoWhitelist,
+                        autoBlacklist
+                    );
 
-                processedContent = processedContent.replace(placeholder, metaResult);
-                // 元思考链处理完成（静默）
-            } catch (error) {
-                console.error(`[RAGDiaryPlugin] 处理VCP元思考链时发生错误:`, error);
-                processedContent = processedContent.replace(
-                    placeholder,
-                    `[VCP元思考链处理失败: ${error.message}]`
-                );
-            }
+                    // 元思考链处理完成（静默），等待最后统一替换注入
+                    return { placeholder, content: metaResult };
+                } catch (error) {
+                    console.error(`[RAGDiaryPlugin] 处理VCP元思考链时发生错误:`, error);
+                    return {
+                        placeholder,
+                        content: `[VCP元思考链处理失败: ${error.message}]`
+                    };
+                }
+            })());
         }
-
-        // --- 收集所有 AIMemo 请求以便聚合处理 ---
-        const aiMemoRequests = [];
-        const processingPromises = [];
 
         // --- 1. 收集 [[...]] 中的 AIMemo 请求 ---
         for (const match of ragDeclarations) {
