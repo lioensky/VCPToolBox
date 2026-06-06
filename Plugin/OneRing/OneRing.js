@@ -647,16 +647,36 @@ class OneRingPreprocessor {
             snapshotSaved: 0
         };
 
+        let snapshotEditTimestampBindings = { boundTimestampsByIndex: {} };
+        let snapshotApplyResult = null;
         try {
             const snapshotResult = snapshot.applySnapshotEdits(
                 agentName,
                 frontendSource,
                 localPostBlocks,
                 projectBasePath,
-                { debug: debugMode }
+                { debug: debugMode, deferUpdate: true }
             );
+            snapshotApplyResult = snapshotResult;
             summaryStats.snapshotEdited += snapshotResult.editedCount || 0;
             summaryStats.dbUpdated += snapshotResult.editedCount || 0;
+            const pendingSnapshotEdits = snapshotResult.pendingEdits || [];
+            snapshotEditTimestampBindings = this._bindSnapshotEditsByOldHash(
+                agentName,
+                frontendSource,
+                pendingSnapshotEdits,
+                'snapshot-edit'
+            );
+            this._scheduleMessageContentUpdates(
+                agentName,
+                pendingSnapshotEdits
+                    .map(edit => {
+                        const bound = snapshotEditTimestampBindings.boundTimestampsByIndex?.[edit.index];
+                        return bound?.dbId ? { dbId: bound.dbId, content: edit.text } : null;
+                    })
+                    .filter(Boolean),
+                'snapshot-edit'
+            );
             if (debugMode && snapshotResult.reliable) {
                 console.log(`[OneRing] Snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
             }
@@ -673,35 +693,11 @@ class OneRingPreprocessor {
                 summaryStats.dbInserted += freshStats.inserted || 0;
                 summaryStats.dbUpdated += freshStats.updated || 0;
             } else if (dbBlocks.length > 0) {
-                // 同前端 DB 只与当前前端/无尾标块对齐；跨端注入块不能参与 diff，
-                // 否则第二轮以后会把上轮补入的手机/其他端历史误判为结构错位。
-                const diffBlocks = historyBlocks.filter(block =>
-                    !block.frontendSource || block.frontendSource === frontendSource
-                );
-                const diffResult = fuzzy.diffContext(diffBlocks, dbBlocks, threshold);
-
-                const totalPost = diffBlocks.length;
-                const unmatchedCount = diffResult.unknownCount + diffResult.newBlocks.length;
-                const isShortPost = totalPost <= 2;
-                const unknownRatio = isShortPost
-                    ? 0 // 新 user / 极短对话豁免：允许尝试补充
-                    : unmatchedCount / totalPost;
-                const patchSafe = diffResult.reliable || isShortPost;
-
+                // normal 模式不再使用 fuzzy diff 推断编辑。
+                // 编辑由 snapshot.applySnapshotEdits() 的结构对齐 + 旧 hash 回查 messages 处理；
+                // 新 user 由后续 _recordUserMessage() 按 post time 写库。
                 if (debugMode) {
-                    console.log(`[OneRing] diff: matched=${diffResult.matchedCount} unknown=${diffResult.unknownCount} new=${diffResult.newBlocks.length} edited=${diffResult.editedBlocks.length} unknownRatio=${unknownRatio.toFixed(2)} reliable=${diffResult.reliable} patchSafe=${patchSafe}`);
-                }
-
-                if (unknownRatio <= maxUnknownRatio && patchSafe && diffResult.reliable) {
-                    // 只有可靠 diff 才更新被编辑的历史消息；极短新 post 不允许误覆盖旧 DB。
-                    for (const edited of diffResult.editedBlocks) {
-                        db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
-                        summaryStats.fuzzyEdited++;
-                        summaryStats.dbUpdated++;
-                        if (debugMode) console.log(`[OneRing] Updated edited block dbId=${edited.dbId}`);
-                    }
-                } else {
-                    if (debugMode) console.log(`[OneRing] Unreliable diff, skipping edit update.`);
+                    console.log('[OneRing] Normal mode DB diff skipped: hash/snapshot/turn pipeline is authoritative.');
                 }
             }
         } catch (e) {
@@ -766,7 +762,10 @@ class OneRingPreprocessor {
         }
 
         const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, localPostBlocks, threshold);
-        const timestampBindings = exactTimestampBindings.boundTimestampsByIndex || {};
+        const timestampBindings = {
+            ...(exactTimestampBindings.boundTimestampsByIndex || {}),
+            ...(snapshotEditTimestampBindings.boundTimestampsByIndex || {})
+        };
         patchMessages = patchMessages.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
 
@@ -857,15 +856,9 @@ class OneRingPreprocessor {
 
         logOneRingSummary(agentName, frontendSource, 'normal', summaryStats);
 
-        try {
-            Object.defineProperty(patchMessages, '__oneRingMeta', {
-                value: { agentName, frontendSource },
-                enumerable: false,
-                configurable: true
-            });
-        } catch (e) {
-            if (debugMode) console.warn('[OneRing] Failed to attach non-enumerable meta:', e.message);
-        }
+        const retryTargetTurn = this._findRetryTargetTurn(agentName, frontendSource, localPostBlocks, snapshotApplyResult);
+        const turnMeta = this._createPendingTurn(agentName, frontendSource, localPostBlocks, retryTargetTurn);
+        this._attachMeta(patchMessages, agentName, frontendSource, turnMeta);
 
         return this._applyTailTagPlacement(patchMessages);
     }
@@ -992,7 +985,12 @@ class OneRingPreprocessor {
         }
 
         if (messages.__oneRingMeta) {
-            this._attachMeta(result, messages.__oneRingMeta.agentName, messages.__oneRingMeta.frontendSource);
+            this._attachMeta(
+                result,
+                messages.__oneRingMeta.agentName,
+                messages.__oneRingMeta.frontendSource,
+                { ...messages.__oneRingMeta }
+            );
         }
         return result;
     }
@@ -1055,7 +1053,12 @@ class OneRingPreprocessor {
         }
 
         if (messages.__oneRingMeta) {
-            this._attachMeta(result, messages.__oneRingMeta.agentName, messages.__oneRingMeta.frontendSource);
+            this._attachMeta(
+                result,
+                messages.__oneRingMeta.agentName,
+                messages.__oneRingMeta.frontendSource,
+                { ...messages.__oneRingMeta }
+            );
         }
         return result;
     }
@@ -1086,10 +1089,71 @@ class OneRingPreprocessor {
         return effectiveBlocks[0].index;
     }
 
-    _attachMeta(messages, agentName, frontendSource) {
+    _createPostRequestHash(postBlocks) {
+        const normalizedBlocks = (Array.isArray(postBlocks) ? postBlocks : []).map(block => ({
+            role: block.role,
+            senderName: block.senderName || null,
+            frontendSource: block.frontendSource || null,
+            hash: snapshot.contentHash(block.text || '')
+        }));
+        return snapshot.contentHash(JSON.stringify(normalizedBlocks));
+    }
+
+    _createTurnId(agentName, frontendSource, requestHash) {
+        const safeAgent = String(agentName || 'agent').replace(/[^\w.-]+/g, '_');
+        const safeFrontend = String(frontendSource || 'frontend').replace(/[^\w.-]+/g, '_');
+        return `${safeAgent}:${safeFrontend}:${Date.now()}:${requestHash.slice(0, 16)}:${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    _findRetryTargetTurn(agentName, frontendSource, postBlocks, snapshotResult = null) {
+        try {
+            const recentTurns = db.getRecentCompletedPostTurn(agentName, frontendSource, 5, projectBasePath);
+            if (!recentTurns || recentTurns.length === 0) return null;
+
+            // 可靠快照编辑说明当前 post 与上一轮 post 有确定性结构对应，可复用最近 completed turn 的 AI 回复。
+            if (snapshotResult && snapshotResult.reliable && (snapshotResult.editedCount || 0) > 0) {
+                return recentTurns[0] || null;
+            }
+
+            // 极短 retry：如单 user g -> g2，没有 hash 锚点，但同前端最近 completed turn 块数一致时，
+            // 这是用户改写刚才唯一输入并重试的常见模式。
+            const blockCount = Array.isArray(postBlocks) ? postBlocks.length : 0;
+            const latest = recentTurns[0] || null;
+            if (latest && blockCount > 0 && blockCount <= 2 && Number(latest.requestBlockCount) === blockCount) {
+                return latest;
+            }
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Retry target turn lookup failed:', e.message);
+        }
+        return null;
+    }
+
+    _createPendingTurn(agentName, frontendSource, postBlocks, retryTargetTurn = null) {
+        const requestHash = this._createPostRequestHash(postBlocks);
+        const nowIso = new Date().toISOString();
+        const turnId = this._createTurnId(agentName, frontendSource, requestHash);
+        db.insertPostTurn(agentName, {
+            turnId,
+            frontendSource,
+            requestHash,
+            requestBlockCount: Array.isArray(postBlocks) ? postBlocks.length : 0,
+            status: 'pending',
+            createdAt: nowIso,
+            updatedAt: nowIso
+        }, projectBasePath);
+
+        return {
+            turnId,
+            requestHash,
+            responseMessageIdToUpdate: retryTargetTurn?.responseMessageId || null,
+            retryOfTurnId: retryTargetTurn?.turnId || null
+        };
+    }
+
+    _attachMeta(messages, agentName, frontendSource, extraMeta = {}) {
         try {
             Object.defineProperty(messages, '__oneRingMeta', {
-                value: { agentName, frontendSource },
+                value: { agentName, frontendSource, ...extraMeta },
                 enumerable: false,
                 configurable: true
             });
@@ -1097,6 +1161,84 @@ class OneRingPreprocessor {
             if (debugMode) console.warn('[OneRing] Failed to attach non-enumerable meta:', e.message);
         }
         return messages;
+    }
+
+    _bindSnapshotEditsByOldHash(agentName, frontendSource, edits, source = 'snapshot-old-hash') {
+        const stats = { boundTimestampsByIndex: {} };
+        const items = (Array.isArray(edits) ? edits : [])
+            .filter(item => item && item.oldHash && item.role && Number.isInteger(Number(item.index)));
+
+        if (items.length === 0) return stats;
+
+        try {
+            const conn = db.getDb(agentName, projectBasePath);
+            const rows = conn.prepare(
+                `SELECT id, role, senderName, frontendSource, content, timestamp
+                 FROM messages
+                 WHERE agentName=? AND frontendSource=?
+                 ORDER BY timestamp DESC, id DESC
+                 LIMIT ?`
+            ).all(agentName, frontendSource, Math.max(items.length * 8, 80));
+
+            const usedIds = new Set();
+            for (const item of items) {
+                const matched = rows.find(row =>
+                    row.role === item.role &&
+                    !usedIds.has(row.id) &&
+                    snapshot.contentHash(row.content) === item.oldHash
+                );
+                if (!matched) continue;
+                usedIds.add(matched.id);
+                stats.boundTimestampsByIndex[item.index] = {
+                    dbId: matched.id,
+                    oldDbId: item.oldDbId || null,
+                    timestamp: matched.timestamp,
+                    senderName: matched.senderName,
+                    frontendSource: matched.frontendSource || frontendSource,
+                    source
+                };
+            }
+        } catch (e) {
+            if (debugMode) console.warn(`[OneRing] Snapshot old-hash timestamp binding failed source=${source}:`, e.message);
+        }
+
+        return stats;
+    }
+
+    _bindTimestampsByKnownDbIds(agentName, frontendSource, edits, source = 'known-dbid') {
+        const stats = { boundTimestampsByIndex: {} };
+        const items = (Array.isArray(edits) ? edits : [])
+            .filter(item => item && item.dbId && Number.isInteger(Number(item.index)));
+
+        if (items.length === 0) return stats;
+
+        const uniqueIds = [...new Set(items.map(item => Number(item.dbId)))];
+        try {
+            const conn = db.getDb(agentName, projectBasePath);
+            const placeholders = uniqueIds.map(() => '?').join(',');
+            const rows = conn.prepare(
+                `SELECT id, role, senderName, frontendSource, timestamp
+                 FROM messages
+                 WHERE agentName=? AND id IN (${placeholders})`
+            ).all(agentName, ...uniqueIds);
+            const rowById = new Map(rows.map(row => [Number(row.id), row]));
+
+            for (const item of items) {
+                const row = rowById.get(Number(item.dbId));
+                if (!row) continue;
+                stats.boundTimestampsByIndex[item.index] = {
+                    dbId: row.id,
+                    timestamp: row.timestamp,
+                    senderName: row.senderName,
+                    frontendSource: row.frontendSource || frontendSource,
+                    source
+                };
+            }
+        } catch (e) {
+            if (debugMode) console.warn(`[OneRing] Known-dbId timestamp binding failed source=${source}:`, e.message);
+        }
+
+        return stats;
     }
 
     _processOnlyMessagesForUpstream(messages, agentName, frontendSource, defaultUserName, outputDedupeThreshold = 0.98) {
@@ -1116,7 +1258,39 @@ class OneRingPreprocessor {
         // _processRecordOnlyMessages() 完成。若某块已有旧尾标，暂不在快速路径改写，
         // 后台严格绑定阶段会在无可信 bound 时剥离，或用真库时间修正。
         result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
-        return this._attachMeta(result, agentName, frontendSource);
+        const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
+        const retryTargetTurn = this._findRetryTargetTurn(agentName, frontendSource, postBlocks, null);
+        const turnMeta = this._createPendingTurn(agentName, frontendSource, postBlocks, retryTargetTurn);
+        return this._attachMeta(result, agentName, frontendSource, turnMeta);
+    }
+
+    _scheduleMessageContentUpdates(agentName, updates, reason = 'async-update') {
+        const items = (Array.isArray(updates) ? updates : [updates])
+            .filter(item => item && item.dbId && typeof item.content === 'string');
+
+        if (items.length === 0) return;
+
+        const run = () => {
+            for (const item of items) {
+                try {
+                    db.updateMessageById(agentName, item.dbId, item.content, projectBasePath);
+                    try {
+                        native.updateMessageById(projectBasePath, config, agentName, item.dbId, item.content);
+                    } catch (nativeError) {
+                        if (debugMode) console.warn(`[OneRingNative] async update cache failed reason=${reason} dbId=${item.dbId}:`, nativeError.message);
+                    }
+                    if (debugMode) console.log(`[OneRing] Async message update completed reason=${reason} dbId=${item.dbId}`);
+                } catch (e) {
+                    console.error(`[OneRing] Async message update failed reason=${reason} dbId=${item.dbId}:`, e.message);
+                }
+            }
+        };
+
+        if (typeof setImmediate === 'function') {
+            setImmediate(run);
+        } else {
+            setTimeout(run, 0);
+        }
     }
 
     _scheduleRecordOnlyPersistence(messages, agentName, frontendSource, defaultUserName, threshold, maxSnapshotBlocks = 20, outputDedupeThreshold = 0.98) {
@@ -1160,16 +1334,36 @@ class OneRingPreprocessor {
             snapshotSaved: 0
         };
 
+        let snapshotEditTimestampBindings = { boundTimestampsByIndex: {} };
+        let snapshotApplyResult = null;
         try {
             const snapshotResult = snapshot.applySnapshotEdits(
                 agentName,
                 frontendSource,
                 postBlocks,
                 projectBasePath,
-                { debug: debugMode }
+                { debug: debugMode, deferUpdate: true }
             );
+            snapshotApplyResult = snapshotResult;
             summaryStats.snapshotEdited += snapshotResult.editedCount || 0;
             summaryStats.dbUpdated += snapshotResult.editedCount || 0;
+            const pendingSnapshotEdits = snapshotResult.pendingEdits || [];
+            snapshotEditTimestampBindings = this._bindSnapshotEditsByOldHash(
+                agentName,
+                frontendSource,
+                pendingSnapshotEdits,
+                'record-only-snapshot-edit'
+            );
+            this._scheduleMessageContentUpdates(
+                agentName,
+                pendingSnapshotEdits
+                    .map(edit => {
+                        const bound = snapshotEditTimestampBindings.boundTimestampsByIndex?.[edit.index];
+                        return bound?.dbId ? { dbId: bound.dbId, content: edit.text } : null;
+                    })
+                    .filter(Boolean),
+                'record-only-snapshot-edit'
+            );
             if (debugMode && snapshotResult.reliable) {
                 console.log(`[OneRing] Record-only snapshot edit diff: edited=${snapshotResult.editedCount} exact=${snapshotResult.exactMatches} comparable=${snapshotResult.comparable} offset=${snapshotResult.offset}`);
             }
@@ -1219,7 +1413,11 @@ class OneRingPreprocessor {
         // 1. 只信任 messages 真库 exact/fuzzy 命中；
         // 2. snapshot append 只负责识别新增/编辑，不再把 post 阶段生成的时间戳写回输出尾标；
         // 3. 新 user 若刚刚插入成功，也必须在真库中再次 exact/fuzzy 绑定后才可标记。
-        const timestampBindings = exactTimestampBindings.boundTimestampsByIndex || {};
+        const timestampBindings = {
+            ...(exactTimestampBindings.boundTimestampsByIndex || {}),
+            ...(syncStats?.boundTimestampsByIndex || {}),
+            ...(snapshotEditTimestampBindings.boundTimestampsByIndex || {})
+        };
         const exactBoundValues = Object.values(exactTimestampBindings.boundTimestampsByIndex || {});
         const exactSourceCounts = exactBoundValues.reduce((acc, binding) => {
             const source = binding?.source || 'exact';
@@ -1324,7 +1522,9 @@ class OneRingPreprocessor {
         logOneRingSummary(agentName, frontendSource, 'record-only', summaryStats);
         timing.finish(`inserted=${summaryStats.dbInserted} updated=${summaryStats.dbUpdated} snapshotSaved=${summaryStats.snapshotSaved}`);
 
-        return this._attachMeta(result, agentName, frontendSource);
+        const retryTargetTurn = this._findRetryTargetTurn(agentName, frontendSource, postBlocks, snapshotApplyResult);
+        const turnMeta = this._createPendingTurn(agentName, frontendSource, postBlocks, retryTargetTurn);
+        return this._attachMeta(result, agentName, frontendSource, turnMeta);
     }
 
     _extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName) {
@@ -1367,6 +1567,41 @@ class OneRingPreprocessor {
         const blocks = Array.isArray(postBlocks) ? postBlocks : [];
         if (blocks.length === 0) return stats;
 
+        const nativeBoundIds = new Set();
+        try {
+            const nativeResult = native.bindTimestampsForPostBlocks({
+                projectBasePath,
+                config,
+                agentName,
+                frontendSource,
+                postBlocks: blocks,
+                // 时间戳真相只允许 message 库 hash 命中；threshold > 1 可禁用 native fuzzy fallback，
+                // 但 native exact 分支不依赖 threshold，仍会返回 hash 精确绑定。
+                threshold: 1.000001,
+                limit: Math.max(blocks.length * 4, 40)
+            });
+            if (nativeResult && Array.isArray(nativeResult.bindings)) {
+                for (const binding of nativeResult.bindings) {
+                    stats.boundTimestampsByIndex[binding.index] = {
+                        dbId: binding.dbId,
+                        timestamp: binding.timestamp,
+                        senderName: binding.senderName,
+                        frontendSource: binding.frontendSource || frontendSource,
+                        source: binding.source || 'native'
+                    };
+                    if (binding.dbId) nativeBoundIds.add(binding.dbId);
+                }
+                if (debugMode || (nativeResult.elapsedMs || 0) >= 50) {
+                    console.log(`[OneRingNative] timestamp bind native bound=${nativeResult.bindings.length}/${blocks.length} elapsed=${(nativeResult.elapsedMs || 0).toFixed(1)}ms phase=${nativeResult.phaseSummary || ''}`);
+                }
+                // Rust cache 可能落后于 JS better-sqlite3 写入（例如刚完成的 AI final hook）。
+                // 只有完整绑定才直接返回；不完整时继续查 messages 真库补齐未绑定块。
+                if (nativeResult.bindings.length >= blocks.length) return stats;
+            }
+        } catch (nativeError) {
+            if (debugMode) console.warn('[OneRingNative] timestamp bind failed, falling back to JS:', nativeError.message);
+        }
+
         let recentRows = [];
         try {
             recentRows = db.getRecentMessagesByFrontend(
@@ -1380,7 +1615,7 @@ class OneRingPreprocessor {
             return stats;
         }
 
-        const usedExactIds = new Set();
+        const usedExactIds = new Set(nativeBoundIds);
         const exactCandidates = recentRows
             .map(row => ({
                 row,
@@ -1389,28 +1624,14 @@ class OneRingPreprocessor {
             .filter(candidate => candidate.row && candidate.hash);
 
         for (const block of blocks) {
+            if (stats.boundTimestampsByIndex[block.index]) continue;
             const blockHash = snapshot.contentHash(block.text);
             let matched = exactCandidates.find(candidate =>
                 candidate.row.role === block.role &&
                 candidate.hash === blockHash &&
                 !usedExactIds.has(candidate.row.id)
             );
-            let matchSource = 'exact';
-
-            if (!matched) {
-                matched = exactCandidates
-                    .filter(candidate =>
-                        candidate.row.role === block.role &&
-                        !usedExactIds.has(candidate.row.id)
-                    )
-                    .map(candidate => ({
-                        ...candidate,
-                        similarity: fuzzy.similarity(block.text, candidate.row.content)
-                    }))
-                    .filter(candidate => candidate.similarity >= threshold)
-                    .sort((a, b) => b.similarity - a.similarity)[0] || null;
-                matchSource = matched ? 'fuzzy' : 'none';
-            }
+            const matchSource = 'exact';
 
             if (!matched) continue;
 
@@ -1454,6 +1675,20 @@ class OneRingPreprocessor {
             .filter(candidate => candidate.row && candidate.hash);
 
         const lastUserBlock = [...blocks].reverse().find(block => block.role === 'user') || null;
+        let positionalRowsAfterSnapshot = [];
+        try {
+            const snapshotRows = snapshot.loadSnapshot(agentName, frontendSource, projectBasePath);
+            const lastMappedSnapshotRow = [...snapshotRows].reverse().find(row => row && row.dbId) || null;
+            if (lastMappedSnapshotRow) {
+                const anchorIndex = recentRows.findIndex(row => row.id === lastMappedSnapshotRow.dbId);
+                if (anchorIndex >= 0) {
+                    positionalRowsAfterSnapshot = recentRows.slice(anchorIndex + 1);
+                }
+            }
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Snapshot append positional binding unavailable:', e.message);
+        }
+        let positionalCursor = 0;
 
         for (const block of blocks) {
             const recordStart = process.hrtime.bigint();
@@ -1483,41 +1718,45 @@ class OneRingPreprocessor {
             // - 上轮异步 AI 回复 f：已经由 handler final callback 入 message 库，但不在上一轮 post 快照；
             // - 本轮最后真实 user g：应作为新消息写库。
             //
-            // 对非最后 user 的新增块，先在 messages 真库小窗口中 fuzzy 绑定/更新，避免直接落入全量 Rust diff。
-            // UPDATE 只改 content，不改 timestamp，保持 message 时间戳真相。
+            // 对非最后 user 的新增块，优先使用“上一轮快照尾部 dbId 之后的 message 位置窗口”确定性绑定。
+            // 只要位置候选存在且角色一致，hash 不同就是用户编辑，直接 UPDATE content，timestamp 不变。
+            // 这里不需要 fuzzy；fuzzy 只保留给快照无法可靠对齐的兜底路径。
             const mayBeExistingMessageAfterPreviousPost = !(block.role === 'user' && block === lastUserBlock);
             if (mayBeExistingMessageAfterPreviousPost) {
-                const fuzzyMatched = exactCandidates
-                    .filter(candidate =>
-                        candidate.row.role === block.role &&
-                        !usedExactIds.has(candidate.row.id)
-                    )
-                    .map(candidate => ({
-                        ...candidate,
-                        similarity: fuzzy.similarity(block.text, candidate.row.content)
-                    }))
-                    .filter(candidate => candidate.similarity >= threshold)
-                    .sort((a, b) => b.similarity - a.similarity)[0] || null;
+                while (
+                    positionalCursor < positionalRowsAfterSnapshot.length &&
+                    usedExactIds.has(positionalRowsAfterSnapshot[positionalCursor].id)
+                ) {
+                    positionalCursor++;
+                }
 
-                if (fuzzyMatched) {
-                    usedExactIds.add(fuzzyMatched.row.id);
-                    db.updateMessageById(agentName, fuzzyMatched.row.id, block.text, projectBasePath);
-                    try {
-                        native.updateMessageById(projectBasePath, config, agentName, fuzzyMatched.row.id, block.text);
-                    } catch (nativeError) {
-                        if (debugMode) console.warn('[OneRingNative] snapshot append fuzzy update cache failed:', nativeError.message);
+                const positionalRow = positionalRowsAfterSnapshot[positionalCursor] || null;
+                if (positionalRow && positionalRow.role === block.role) {
+                    positionalCursor++;
+                    usedExactIds.add(positionalRow.id);
+
+                    const positionalHash = snapshot.contentHash(positionalRow.content);
+                    if (positionalHash !== blockHash) {
+                        this._scheduleMessageContentUpdates(
+                            agentName,
+                            [{ dbId: positionalRow.id, content: block.text }],
+                            'snapshot-append-positional'
+                        );
+                        stats.updated++;
+                        stats.fuzzyEdited++;
+                    } else {
+                        stats.exactBound++;
                     }
-                    stats.updated++;
-                    stats.fuzzyEdited++;
+
                     stats.boundTimestampsByIndex[block.index] = {
-                        dbId: fuzzyMatched.row.id,
-                        timestamp: fuzzyMatched.row.timestamp,
-                        senderName: fuzzyMatched.row.senderName,
-                        frontendSource: fuzzyMatched.row.frontendSource || frontendSource,
-                        source: 'snapshot-fuzzy-update'
+                        dbId: positionalRow.id,
+                        timestamp: positionalRow.timestamp,
+                        senderName: positionalRow.senderName,
+                        frontendSource: positionalRow.frontendSource || frontendSource,
+                        source: positionalHash === blockHash ? 'snapshot-positional-exact' : 'snapshot-positional-update'
                     };
-                    const updateMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
-                    if (debugMode || updateMs >= 50) console.log(`[OneRingTiming] updateSnapshotAppendBlockFuzzy role=${block.role} dbId=${fuzzyMatched.row.id} sim=${fuzzyMatched.similarity.toFixed(4)} ms=${updateMs.toFixed(1)} timestamp=${fuzzyMatched.row.timestamp} index=${block.index}`);
+                    const bindMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                    if (debugMode || bindMs >= 50) console.log(`[OneRingTiming] bindSnapshotAppendBlockPositional role=${block.role} dbId=${positionalRow.id} changed=${positionalHash !== blockHash} ms=${bindMs.toFixed(1)} timestamp=${positionalRow.timestamp} index=${block.index}`);
                     continue;
                 }
             }
@@ -1579,7 +1818,7 @@ class OneRingPreprocessor {
         }
 
         try {
-            const dbLimit = Math.max(postBlocks.length * 2, 20);
+            const dbLimit = Math.max(postBlocks.length * 4, 40);
             const dbBlocks = db.getRecentMessagesByFrontend(
                 agentName,
                 frontendSource,
@@ -1588,48 +1827,25 @@ class OneRingPreprocessor {
             );
             timing.mark('getRecentMessagesByFrontend', `limit=${dbLimit} rows=${dbBlocks.length}`);
 
-            let diffResult = null;
-            let nativeDiffUsed = false;
-            try {
-                diffResult = native.diffFrontendContext({
-                    projectBasePath,
-                    config,
-                    agentName,
-                    frontendSource,
-                    postBlocks,
-                    threshold,
-                    limit: dbLimit
-                });
-                nativeDiffUsed = !!diffResult;
-            } catch (nativeError) {
-                if (debugMode) console.warn('[OneRingNative] diff failed, falling back to JS fuzzy:', nativeError.message);
-            }
-            if (!diffResult) {
-                diffResult = fuzzy.diffContext(postBlocks, dbBlocks, threshold);
-            }
-            timing.mark('diffContext', `engine=${nativeDiffUsed ? 'rust' : 'js'} matched=${diffResult.matchedCount} unknown=${diffResult.unknownCount} edited=${diffResult.editedBlocks.length} new=${diffResult.newBlocks.length}${diffResult.phaseSummary ? ` nativePhase=${diffResult.phaseSummary}` : ''}`);
+            const existingHashesByRole = dbBlocks.reduce((acc, row) => {
+                if (!acc[row.role]) acc[row.role] = new Set();
+                acc[row.role].add(snapshot.contentHash(row.content));
+                return acc;
+            }, {});
+            const lastUser = [...postBlocks].reverse().find(block => block.role === 'user') || null;
+            let skippedKnown = 0;
+            let skippedUnknown = 0;
 
-            for (const edited of diffResult.editedBlocks) {
-                const updateStart = process.hrtime.bigint();
-                db.updateMessageById(agentName, edited.dbId, edited.newText, projectBasePath);
-                try {
-                    native.updateMessageById(projectBasePath, config, agentName, edited.dbId, edited.newText);
-                } catch (nativeError) {
-                    if (debugMode) console.warn('[OneRingNative] update cache failed:', nativeError.message);
+            for (const block of postBlocks) {
+                const roleHashes = existingHashesByRole[block.role] || new Set();
+                const blockHash = snapshot.contentHash(block.text);
+                if (roleHashes.has(blockHash)) {
+                    skippedKnown++;
+                    continue;
                 }
-                stats.updated++;
-                stats.fuzzyEdited++;
-                const updateMs = Number(process.hrtime.bigint() - updateStart) / 1e6;
-                if (debugMode || updateMs >= 50) console.log(`[OneRingTiming] updateEditedBlock dbId=${edited.dbId} ms=${updateMs.toFixed(1)} textLen=${String(edited.newText || '').length}`);
-                if (debugMode) console.log(`[OneRing] Only mode updated edited block dbId=${edited.dbId}`);
-            }
-            timing.mark('updateEditedBlocks', `count=${diffResult.editedBlocks.length}`);
 
-            let newUserCount = 0;
-            let newAssistantCount = 0;
-            for (const block of diffResult.newBlocks) {
-                const recordStart = process.hrtime.bigint();
-                if (block.role === 'user') {
+                if (lastUser && block === lastUser) {
+                    const recordStart = process.hrtime.bigint();
                     const userResult = this._recordUserMessage(
                         agentName,
                         frontendSource,
@@ -1641,44 +1857,16 @@ class OneRingPreprocessor {
                     );
                     if (userResult === 'insert') stats.inserted++;
                     if (userResult === 'update') stats.updated++;
-                    newUserCount++;
                     const recordMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
-                    if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordNewBlock role=user result=${userResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
-                } else if (block.role === 'assistant') {
-                    const assistantResult = this._recordAssistantMessage(agentName, frontendSource, block.text, nextTimestamp(), threshold, block.senderName || agentName);
-                    if (assistantResult === 'insert') stats.inserted++;
-                    if (assistantResult === 'update') stats.updated++;
-                    newAssistantCount++;
-                    const recordMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
-                    if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordNewBlock role=assistant result=${assistantResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+                    if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordLastUnknownUserHashOnly result=${userResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+                } else {
+                    skippedUnknown++;
                 }
             }
-            timing.mark('recordNewBlocks', `users=${newUserCount} assistants=${newAssistantCount}`);
 
-            // 单条/极短 post 在低相似度下会被 diff 保守标为 unknown。
-            // Only 模式以最终 post 为真相，因此兜底记录最后一个 user，避免新消息漏记。
-            if (diffResult.unknownCount > 0 && postBlocks.length <= 2) {
-                const lastUser = [...postBlocks].reverse().find(block => block.role === 'user');
-                if (lastUser) {
-                    const fallbackStart = process.hrtime.bigint();
-                    const userResult = this._recordUserMessage(
-                        agentName,
-                        frontendSource,
-                        lastUser.senderName || defaultUserName,
-                        lastUser.text,
-                        nextTimestamp(),
-                        threshold,
-                        lastUser.index === newConversationStartUserIndex
-                    );
-                    if (userResult === 'insert') stats.inserted++;
-                    if (userResult === 'update') stats.updated++;
-                    const fallbackMs = Number(process.hrtime.bigint() - fallbackStart) / 1e6;
-                    if (debugMode || fallbackMs >= 50) console.log(`[OneRingTiming] fallbackLastUser result=${userResult} ms=${fallbackMs.toFixed(1)} textLen=${String(lastUser.text || '').length} index=${lastUser.index}`);
-                }
-            }
-            timing.mark('fallbackUnknownShortPost', `unknown=${diffResult.unknownCount}`);
+            timing.mark('hashOnlySync', `known=${skippedKnown} unknownSkipped=${skippedUnknown} inserted=${stats.inserted} updated=${stats.updated}`);
         } catch (e) {
-            console.error('[OneRing] Only mode DB sync failed:', e.message);
+            console.error('[OneRing] Only mode hash-only DB sync failed:', e.message);
         }
         timing.finish(`inserted=${stats.inserted} updated=${stats.updated} fuzzyEdited=${stats.fuzzyEdited}`);
         return stats;
@@ -1696,7 +1884,7 @@ class OneRingPreprocessor {
         const systemMsg = messages.find(m => m.role === 'system');
         const systemText = systemMsg ? fuzzy.extractText(systemMsg.content) : '';
         const triggerMatch = getLastTriggerMatch(systemText);
-        const noticeMatch = /\[OneRing系统已启动，当前Agent([\s\S]*?)，当前客户端([\s\S]*?)，所有上下文OneRing信息来源标记由系统生成无需你自动输出。\]/.exec(systemText);
+        const noticeMatch = /\[OneRing系统已启动，当前Agent([\s\S]*?)，当前客户端([\s\S]*?)(?:，当前模式[\s\S]*?)?，所有上下文OneRing信息来源标记由系统生成无需你自动输出。\]/.exec(systemText);
 
         const agentName = attachedMeta?.agentName || (triggerMatch ? triggerMatch[1].trim() : null) || (noticeMatch ? noticeMatch[1].trim() : null);
         const frontendSourceFromTrigger = attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || (noticeMatch ? noticeMatch[2].trim() : null);
@@ -1709,7 +1897,11 @@ class OneRingPreprocessor {
             agentName,
             frontendSource: tailMeta ? tailMeta.frontendSource : frontendSourceFromTrigger,
             lastUserSenderName: tailMeta ? tailMeta.senderName : null,
-            lastUserTimestamp: tailMeta ? tailMeta.timestamp : null
+            lastUserTimestamp: tailMeta ? tailMeta.timestamp : null,
+            turnId: attachedMeta?.turnId || null,
+            requestHash: attachedMeta?.requestHash || null,
+            retryOfTurnId: attachedMeta?.retryOfTurnId || null,
+            responseMessageIdToUpdate: attachedMeta?.responseMessageIdToUpdate || null
         };
     }
 
@@ -1718,10 +1910,37 @@ class OneRingPreprocessor {
      */
     async recordAIResponseFromMessages(messages, aiText) {
         const meta = this._extractMetaFromMessages(messages);
-        if (!meta || !meta.agentName || typeof aiText !== 'string' || aiText.trim().length === 0) return;
+        if (!meta || !meta.agentName || typeof aiText !== 'string') return;
+
+        const text = aiText.trim();
+        if (text.length === 0) {
+            if (meta.turnId) {
+                try {
+                    db.markPostTurnAborted(meta.agentName, meta.turnId, new Date().toISOString(), projectBasePath);
+                } catch (e) {
+                    if (debugMode) console.warn('[OneRing] Failed to mark empty assistant turn aborted:', e.message);
+                }
+            }
+            return;
+        }
 
         try {
-            db.insertMessage(meta.agentName, {
+            if (meta.responseMessageIdToUpdate) {
+                const responseId = Number(meta.responseMessageIdToUpdate);
+                db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                try {
+                    native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
+                } catch (nativeError) {
+                    if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
+                }
+                if (meta.turnId) {
+                    db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                }
+                if (debugMode) console.log(`[OneRing] Updated assistant response by turn binding agent=${meta.agentName} dbId=${responseId}`);
+                return;
+            }
+
+            const result = db.insertMessage(meta.agentName, {
                 role: 'assistant',
                 senderName: meta.agentName,
                 frontendSource: meta.frontendSource,
@@ -1729,6 +1948,10 @@ class OneRingPreprocessor {
                 timestamp: formatOneRingTimestamp(),
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
+            const insertedId = Number(result?.lastInsertRowid || 0);
+            if (meta.turnId && insertedId > 0) {
+                db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+            }
             if (debugMode) console.log(`[OneRing] Recorded assistant response for agent=${meta.agentName}`);
         } catch (e) {
             console.error('[OneRing] Failed to record AI response:', e.message);
@@ -1741,7 +1964,22 @@ class OneRingPreprocessor {
     async recordAIResponse(meta, aiText) {
         if (!meta || !meta.agentName || typeof aiText !== 'string' || aiText.trim().length === 0) return;
         try {
-            db.insertMessage(meta.agentName, {
+            if (meta.responseMessageIdToUpdate) {
+                const responseId = Number(meta.responseMessageIdToUpdate);
+                db.updateMessageById(meta.agentName, responseId, aiText, projectBasePath);
+                try {
+                    native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
+                } catch (nativeError) {
+                    if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
+                }
+                if (meta.turnId) {
+                    db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+                }
+                if (debugMode) console.log(`[OneRing] Updated assistant response by explicit turn binding agent=${meta.agentName} dbId=${responseId}`);
+                return;
+            }
+
+            const result = db.insertMessage(meta.agentName, {
                 role: 'assistant',
                 senderName: meta.agentName,
                 frontendSource: meta.frontendSource,
@@ -1749,6 +1987,10 @@ class OneRingPreprocessor {
                 timestamp: formatOneRingTimestamp(),
                 maxRecords: getOneRingMaxDbRecords(),
             }, projectBasePath);
+            const insertedId = Number(result?.lastInsertRowid || 0);
+            if (meta.turnId && insertedId > 0) {
+                db.completePostTurn(meta.agentName, meta.turnId, insertedId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
+            }
             if (debugMode) console.log(`[OneRing] Recorded assistant response for agent=${meta.agentName}`);
         } catch (e) {
             console.error('[OneRing] Failed to record AI response:', e.message);

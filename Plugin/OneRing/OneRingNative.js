@@ -114,29 +114,9 @@ function normalizeDiffResult(nativeResult) {
     };
 }
 
-function diffFrontendContext({ projectBasePath, config, agentName, frontendSource, postBlocks, threshold, limit }) {
-    const engine = getEngine(projectBasePath, config);
-    if (!engine) return null;
-
-    const dbPath = getAgentDbPath(projectBasePath, agentName);
-    if (process.env.ONERING_NATIVE_TRACE === 'true') {
-        console.log(`[OneRingNative] diffFrontendContext start agent="${agentName}" frontend="${frontendSource}" blocks=${Array.isArray(postBlocks) ? postBlocks.length : 0} limit=${limit}`);
-    }
-    const nativeResult = engine.diffFrontendContext({
-        dbPath,
-        agentName,
-        frontendSource,
-        postBlocks: toNativePostBlocks(postBlocks),
-        threshold,
-        limit
-    });
-
-    const normalized = normalizeDiffResult(nativeResult);
-    if (process.env.ONERING_NATIVE_TRACE === 'true') {
-        console.log(`[OneRingNative] diffFrontendContext done agent="${agentName}" frontend="${frontendSource}" elapsed=${normalized?.elapsedMs || 0}ms phase=${normalized?.phaseSummary || ''}`);
-    }
-    return normalized;
-}
+// diff 和 timestamp bind 已由 JS hash-only 路径完全接管，native 路径退出 OneRing 处理链。
+function diffFrontendContext() { return null; }
+function bindTimestampsForPostBlocks() { return null; }
 
 function loadAgent(projectBasePath, config, agentName, maxRecords = 256) {
     const engine = getEngine(projectBasePath, config);
@@ -169,6 +149,7 @@ module.exports = {
     getEngine,
     loadAgent,
     diffFrontendContext,
+    bindTimestampsForPostBlocks,
     updateMessageById,
     getStatus
 };

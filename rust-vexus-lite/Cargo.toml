@@ -34,9 +34,6 @@ rusqlite = { version = "0.29", features = ["bundled"] }
 # 高性能跨平台文件监听
 notify = "6.1"
 
-# 并行计算（OneRing diff / 批量相似度）
-rayon = "1.10"
-
 [build-dependencies]
 napi-build = "2.1"
 

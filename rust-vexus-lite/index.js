@@ -310,8 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { OneRingEngine, VexusIndex, VexusWatcher } = nativeBinding
+const { VexusIndex, VexusWatcher } = nativeBinding
 
-module.exports.OneRingEngine = OneRingEngine
 module.exports.VexusIndex = VexusIndex
 module.exports.VexusWatcher = VexusWatcher

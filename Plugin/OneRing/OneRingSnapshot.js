@@ -176,7 +176,8 @@ function applySnapshotEdits(agentName, frontendSource, postBlocks, projectBasePa
         editedCount: 0,
         skippedCount: 0,
         editedPostIndices: [],
-        editedDbIds: []
+        editedDbIds: [],
+        pendingEdits: []
     };
 
     if (!alignment.reliable) return result;
@@ -202,27 +203,36 @@ function applySnapshotEdits(agentName, frontendSource, postBlocks, projectBasePa
 
         if (old.contentHash === cur.hash) continue;
 
-        if (!old.dbId || !hasMessageId(agentName, old.dbId, projectBasePath)) {
+        if (old.dbId && !hasMessageId(agentName, old.dbId, projectBasePath)) {
             result.skippedCount++;
             continue;
         }
 
         edits.push({
             postIndex: cur.postIndex,
+            index: cur.index,
+            role: cur.role,
+            oldHash: old.contentHash,
+            oldDbId: old.dbId || null,
             dbId: old.dbId,
             text: cur.text
         });
     }
 
     if (edits.length > 0) {
-        tx(edits);
+        if (options.deferUpdate) {
+            result.pendingEdits = edits;
+        } else {
+            tx(edits);
+        }
         result.editedCount = edits.length;
         result.editedPostIndices = edits.map(edit => edit.postIndex);
         result.editedDbIds = edits.map(edit => edit.dbId);
     }
 
     if (debug && result.editedCount > 0) {
-        console.log(`[OneRingSnapshot] Updated ${result.editedCount} edited blocks by snapshot for agent="${agentName}" frontend="${frontendSource}" dbIds=${result.editedDbIds.join(',')}`);
+        const mode = options.deferUpdate ? 'Scheduled' : 'Updated';
+        console.log(`[OneRingSnapshot] ${mode} ${result.editedCount} edited blocks by snapshot for agent="${agentName}" frontend="${frontendSource}" dbIds=${result.editedDbIds.join(',')}`);
     }
 
     return result;
