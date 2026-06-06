@@ -228,6 +228,122 @@ function applySnapshotEdits(agentName, frontendSource, postBlocks, projectBasePa
     return result;
 }
 
+/**
+ * 基于上一轮 post 快照识别“正常累积/窗口推进”。
+ *
+ * 这是 record-only 的快速路径：
+ * - 只用 role+normalized content hash 做 O(n*m) 轻量比较；
+ * - 只信任与上一轮快照尾部连续重叠的场景；
+ * - 只把重叠窗口之后的当前 post 块判定为新增；
+ * - 无法证明是正常追加时返回 reliable=false，让上层回退 DB fuzzy/Rust diff。
+ */
+function detectSnapshotAppend(agentName, frontendSource, postBlocks, projectBasePath, options = {}) {
+    const debug = !!options.debug;
+    const snapshotRows = loadSnapshot(agentName, frontendSource, projectBasePath);
+    const currentBlocks = buildBlocksWithHash(postBlocks);
+    const result = {
+        reliable: false,
+        mode: 'unknown',
+        reason: 'not_evaluated',
+        exactMatches: 0,
+        overlapCount: 0,
+        oldStart: 0,
+        currentStart: 0,
+        newBlocks: []
+    };
+    if (snapshotRows.length === 0 || currentBlocks.length === 0) {
+        result.reason = 'empty_snapshot_or_current';
+        return result;
+    }
+
+    let best = {
+        oldStart: 0,
+        currentStart: 0,
+        overlapCount: 0,
+        score: -Infinity
+    };
+
+    for (let oldStart = 0; oldStart < snapshotRows.length; oldStart++) {
+        for (let currentStart = 0; currentStart < currentBlocks.length; currentStart++) {
+            let overlapCount = 0;
+            while (
+                oldStart + overlapCount < snapshotRows.length &&
+                currentStart + overlapCount < currentBlocks.length
+            ) {
+                const old = snapshotRows[oldStart + overlapCount];
+                const cur = currentBlocks[currentStart + overlapCount];
+                if (!old || !cur || old.role !== cur.role || old.contentHash !== cur.hash) break;
+                overlapCount++;
+            }
+
+            if (overlapCount === 0) continue;
+
+            // 只偏好“旧快照尾部连续命中”的窗口；这是正常追加/滑窗推进的必要条件。
+            const reachesOldTail = oldStart + overlapCount === snapshotRows.length;
+            const startsCurrentHead = currentStart === 0;
+            const tailBonus = reachesOldTail ? 1000 : 0;
+            const headBonus = startsCurrentHead ? 100 : 0;
+            const score = overlapCount * 10 + tailBonus + headBonus - oldStart * 0.001 - currentStart * 0.01;
+
+            if (score > best.score) {
+                best = { oldStart, currentStart, overlapCount, score };
+            }
+        }
+    }
+
+    result.oldStart = best.oldStart;
+    result.currentStart = best.currentStart;
+    result.exactMatches = best.overlapCount;
+    result.overlapCount = best.overlapCount;
+
+    const reachesOldTail = best.oldStart + best.overlapCount === snapshotRows.length;
+    const startsCurrentHead = best.currentStart === 0;
+    const minReliableOverlap = Math.min(snapshotRows.length, currentBlocks.length) <= 1 ? 1 : 2;
+    const overlapRows = snapshotRows.slice(best.oldStart, best.oldStart + best.overlapCount);
+    const mappedOverlapCount = overlapRows.filter(row => row && row.dbId).length;
+
+    if (!reachesOldTail || !startsCurrentHead || best.overlapCount < minReliableOverlap) {
+        result.reason = 'no_reliable_tail_overlap';
+        if (debug) {
+            console.log(`[OneRingSnapshot] Append fast-path miss agent="${agentName}" frontend="${frontendSource}" reason=${result.reason} overlap=${best.overlapCount} oldStart=${best.oldStart} currentStart=${best.currentStart}`);
+        }
+        return result;
+    }
+
+    if (debug && mappedOverlapCount < overlapRows.length) {
+        console.log(`[OneRingSnapshot] Append fast-path accepting exact overlap with partial dbId mapping agent="${agentName}" frontend="${frontendSource}" mapped=${mappedOverlapCount}/${overlapRows.length}`);
+    }
+
+    const newStart = best.currentStart + best.overlapCount;
+    const newBlocks = currentBlocks.slice(newStart).map(block => ({
+        role: block.role,
+        text: block.text,
+        senderName: block.senderName,
+        frontendSource: block.frontendSource,
+        index: block.index,
+        postIndex: block.postIndex
+    }));
+
+    result.reliable = true;
+    result.newBlocks = newBlocks;
+    if (newBlocks.length === 0) {
+        result.mode = best.oldStart === 0 && snapshotRows.length === currentBlocks.length
+            ? 'same'
+            : 'window-same';
+    } else {
+        result.mode = best.oldStart === 0
+            ? 'append'
+            : 'window-append';
+    }
+    result.reason = 'snapshot_tail_exact';
+
+    if (debug) {
+        console.log(`[OneRingSnapshot] Append fast-path hit agent="${agentName}" frontend="${frontendSource}" mode=${result.mode} overlap=${best.overlapCount} oldStart=${best.oldStart} new=${newBlocks.length}`);
+    }
+
+    return result;
+}
+
 function findBestDbWindow(currentBlocks, dbRows) {
     if (currentBlocks.length === 0 || !Array.isArray(dbRows) || dbRows.length === 0) return 0;
 
@@ -364,5 +480,6 @@ module.exports = {
     contentHash,
     loadSnapshot,
     applySnapshotEdits,
+    detectSnapshotAppend,
     saveSnapshotFromDb
 };

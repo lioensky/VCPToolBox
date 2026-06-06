@@ -546,6 +546,7 @@ class OneRingPreprocessor {
     async processMessages(messages, requestConfig) {
         const cfg = { ...config, ...requestConfig };
         if (!hotConfig.enabled) return messages;
+        messages = this._sanitizeMessagesBeforeOneRing(messages);
 
         // ── 1. 检测触发语法 ──────────────────────────────────────────────────
         const systemMsg = messages.find(m => m.role === 'system');
@@ -764,6 +765,8 @@ class OneRingPreprocessor {
             summaryStats.dbUpdated += incomingAssistantStats.updated || 0;
         }
 
+        const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, localPostBlocks, threshold);
+        const timestampBindings = exactTimestampBindings.boundTimestampsByIndex || {};
         patchMessages = patchMessages.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
 
@@ -772,15 +775,30 @@ class OneRingPreprocessor {
                 const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
                 if (!classifiedAssistant) return m;
 
-                if (existingMeta && existingMeta.senderName === classifiedAssistant.senderName) return m;
+                const originalIndex = messages.indexOf(m);
+                const bound = originalIndex >= 0 ? (timestampBindings[originalIndex] || null) : null;
+                if (
+                    existingMeta &&
+                    existingMeta.senderName === classifiedAssistant.senderName &&
+                    (!bound || (
+                        existingMeta.timestamp === bound.timestamp &&
+                        existingMeta.frontendSource === (bound.frontendSource || frontendSource)
+                    ))
+                ) return m;
+
+                if (!bound) {
+                    return existingMeta
+                        ? { ...m, content: this._stripTailTagFromContent(m.content) }
+                        : m;
+                }
 
                 return {
                     ...m,
                     content: upsertTailTag(
                         m.content,
                         classifiedAssistant.senderName,
-                        existingMeta?.timestamp || nextTimestamp(),
-                        existingMeta?.frontendSource || frontendSource
+                        bound.timestamp,
+                        bound.frontendSource || frontendSource
                     )
                 };
             }
@@ -790,19 +808,30 @@ class OneRingPreprocessor {
 
             const originalIndex = messages.indexOf(m);
             const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
+            const bound = originalIndex >= 0 ? (timestampBindings[originalIndex] || null) : null;
             if (
                 existingMeta &&
                 existingMeta.senderName === classified.senderName &&
-                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart)
+                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart) &&
+                (!bound || (
+                    existingMeta.timestamp === bound.timestamp &&
+                    existingMeta.frontendSource === (bound.frontendSource || frontendSource)
+                ))
             ) return m;
+
+            if (!bound) {
+                return existingMeta
+                    ? { ...m, content: this._stripTailTagFromContent(m.content) }
+                    : m;
+            }
 
             return {
                 ...m,
                 content: upsertTailTag(
                     m.content,
                     classified.senderName,
-                    existingMeta?.timestamp || nextTimestamp(),
-                    existingMeta?.frontendSource || frontendSource,
+                    bound.timestamp,
+                    bound.frontendSource || frontendSource,
                     shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
                 )
             };
@@ -986,6 +1015,51 @@ class OneRingPreprocessor {
         return content;
     }
 
+    _sanitizeMessagesBeforeOneRing(messages) {
+        if (!Array.isArray(messages)) return messages;
+
+        let removedLeadingSystemUser = 0;
+        let removedEmptySystemNoticeUser = 0;
+        const result = [];
+        let seenConversation = false;
+
+        for (const message of messages) {
+            if (!message || message.role !== 'user') {
+                result.push(message);
+                if (message && (message.role === 'assistant' || message.role === 'user')) {
+                    seenConversation = true;
+                }
+                continue;
+            }
+
+            const rawText = fuzzy.extractText(message.content);
+            const textWithoutSystemNotice = stripOneRingTailTagText(rawText.replace(fuzzy.SYSTEM_NOTICE_REGEX, ''));
+            const isEmptyAfterSystemNotice = !textWithoutSystemNotice.trim() && rawText !== textWithoutSystemNotice;
+            if (isEmptyAfterSystemNotice) {
+                removedEmptySystemNoticeUser++;
+                continue;
+            }
+
+            const isLeadingSystemUser = !seenConversation && DISCARD_PATTERNS.some(pattern => pattern.test(textWithoutSystemNotice));
+            if (isLeadingSystemUser) {
+                removedLeadingSystemUser++;
+                continue;
+            }
+
+            result.push(message);
+            seenConversation = true;
+        }
+
+        if (debugMode && (removedLeadingSystemUser > 0 || removedEmptySystemNoticeUser > 0)) {
+            console.log(`[OneRing] Sanitized incoming user blocks: leadingSystem=${removedLeadingSystemUser}, emptySystemNotice=${removedEmptySystemNoticeUser}`);
+        }
+
+        if (messages.__oneRingMeta) {
+            this._attachMeta(result, messages.__oneRingMeta.agentName, messages.__oneRingMeta.frontendSource);
+        }
+        return result;
+    }
+
     _detectNewConversationStartUserIndex(messages, defaultUserName, agentName) {
         if (!Array.isArray(messages)) return -1;
 
@@ -1026,54 +1100,21 @@ class OneRingPreprocessor {
     }
 
     _processOnlyMessagesForUpstream(messages, agentName, frontendSource, defaultUserName, outputDedupeThreshold = 0.98) {
-        const nextTimestamp = createOneRingTimestampSequencer();
         let result = Array.isArray(messages) ? [...messages] : messages;
-        const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(result, defaultUserName, agentName);
 
-        result = result.map((m) => {
-            if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
-
-            const existingMeta = getOneRingTailMeta(m.content);
-            if (m.role === 'assistant') {
-                const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
-                if (!classifiedAssistant) return m;
-
-                if (existingMeta && existingMeta.senderName === classifiedAssistant.senderName) return m;
-
-                return {
-                    ...m,
-                    content: upsertTailTag(
-                        m.content,
-                        classifiedAssistant.senderName,
-                        existingMeta?.timestamp || nextTimestamp(),
-                        existingMeta?.frontendSource || frontendSource
-                    )
-                };
-            }
-
-            const classified = classifyUserContent(m.content, defaultUserName, agentName);
-            if (!classified) return m;
-
-            const originalIndex = result.indexOf(m);
-            const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
-            if (
-                existingMeta &&
-                existingMeta.senderName === classified.senderName &&
-                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart)
-            ) return m;
-
-            return {
-                ...m,
-                content: upsertTailTag(
-                    m.content,
-                    classified.senderName,
-                    existingMeta?.timestamp || nextTimestamp(),
-                    existingMeta?.frontendSource || frontendSource,
-                    shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
-                )
-            };
-        });
-
+        // Only + asyncOnlyMode 的上游快速返回阶段不能生成任何新时间戳。
+        // 原因：此阶段尚未完成 snapshot/messages 绑定；若直接 nextTimestamp()，
+        // 会把仅存在于前端 post 或 snapshot(dbId=null) 的历史块误标成当前 post 时间。
+        //
+        // OneRing 时间戳真相只能来自：
+        // 1) messages 真库 hash 命中；
+        // 2) messages 真库 fuzzy 命中；
+        // 3) snapshot append 明确识别出的“最后新增真实 user”写库结果；
+        // 4) assistant final callback 写库结果。
+        //
+        // 因此这里仅做输出去重和 meta 附着；真正的补标/纠标由后台
+        // _processRecordOnlyMessages() 完成。若某块已有旧尾标，暂不在快速路径改写，
+        // 后台严格绑定阶段会在无可信 bound 时剥离，或用真库时间修正。
         result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
         return this._attachMeta(result, agentName, frontendSource);
     }
@@ -1138,12 +1179,57 @@ class OneRingPreprocessor {
         timing.mark('snapshotApply', `edited=${summaryStats.snapshotEdited}`);
 
         const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(result, defaultUserName, agentName);
-        const syncStats = this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks, newConversationStartUserIndex);
+        let syncStats = null;
+        try {
+            const appendResult = snapshot.detectSnapshotAppend(
+                agentName,
+                frontendSource,
+                postBlocks,
+                projectBasePath,
+                { debug: debugMode }
+            );
+            timing.mark('snapshotAppendDetect', `reliable=${appendResult.reliable} mode=${appendResult.mode} overlap=${appendResult.overlapCount || 0} new=${appendResult.newBlocks?.length || 0} reason=${appendResult.reason}`);
+            if (appendResult.reliable) {
+                syncStats = this._recordSnapshotAppendBlocks(
+                    agentName,
+                    frontendSource,
+                    defaultUserName,
+                    appendResult.newBlocks || [],
+                    nextTimestamp,
+                    threshold,
+                    newConversationStartUserIndex
+                );
+                syncStats.snapshotFastPath = true;
+            }
+        } catch (e) {
+            console.error('[OneRing] Record-only snapshot append detection failed:', e.message);
+            timing.mark('snapshotAppendDetect', 'error');
+        }
+
+        if (!syncStats) {
+            syncStats = this._syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, result, nextTimestamp, threshold, postBlocks, newConversationStartUserIndex);
+        }
         summaryStats.dbInserted += syncStats.inserted || 0;
         summaryStats.dbUpdated += syncStats.updated || 0;
         summaryStats.fuzzyEdited += syncStats.fuzzyEdited || 0;
-        timing.mark('syncRecordOnlyPostWithDb', `inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
+        timing.mark('syncRecordOnlyPostWithDb', `engine=${syncStats.snapshotFastPath ? 'snapshot' : 'fuzzy'} inserted=${syncStats.inserted || 0} updated=${syncStats.updated || 0} fuzzyEdited=${syncStats.fuzzyEdited || 0}`);
 
+        const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, postBlocks, threshold);
+        // 时间戳绑定原则：
+        // 1. 只信任 messages 真库 exact/fuzzy 命中；
+        // 2. snapshot append 只负责识别新增/编辑，不再把 post 阶段生成的时间戳写回输出尾标；
+        // 3. 新 user 若刚刚插入成功，也必须在真库中再次 exact/fuzzy 绑定后才可标记。
+        const timestampBindings = exactTimestampBindings.boundTimestampsByIndex || {};
+        const exactBoundValues = Object.values(exactTimestampBindings.boundTimestampsByIndex || {});
+        const exactSourceCounts = exactBoundValues.reduce((acc, binding) => {
+            const source = binding?.source || 'exact';
+            acc[source] = (acc[source] || 0) + 1;
+            return acc;
+        }, {});
+        timing.mark(
+            'exactTimestampBind',
+            `bound=${exactBoundValues.length} exact=${exactSourceCounts.exact || 0} fuzzy=${exactSourceCounts.fuzzy || 0}`
+        );
         result = result.map((m) => {
             if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
 
@@ -1152,15 +1238,30 @@ class OneRingPreprocessor {
                 const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
                 if (!classifiedAssistant) return m;
 
-                if (existingMeta && existingMeta.senderName === classifiedAssistant.senderName) return m;
+                const originalIndex = result.indexOf(m);
+                const bound = timestampBindings[originalIndex] || null;
+                if (
+                    existingMeta &&
+                    existingMeta.senderName === classifiedAssistant.senderName &&
+                    (!bound || (
+                        existingMeta.timestamp === bound.timestamp &&
+                        existingMeta.frontendSource === (bound.frontendSource || frontendSource)
+                    ))
+                ) return m;
+
+                if (!bound) {
+                    return existingMeta
+                        ? { ...m, content: this._stripTailTagFromContent(m.content) }
+                        : m;
+                }
 
                 return {
                     ...m,
                     content: upsertTailTag(
                         m.content,
                         classifiedAssistant.senderName,
-                        existingMeta?.timestamp || nextTimestamp(),
-                        existingMeta?.frontendSource || frontendSource
+                        bound.timestamp,
+                        bound.frontendSource || frontendSource
                     )
                 };
             }
@@ -1170,19 +1271,30 @@ class OneRingPreprocessor {
 
             const originalIndex = result.indexOf(m);
             const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
+            const bound = timestampBindings[originalIndex] || null;
             if (
                 existingMeta &&
                 existingMeta.senderName === classified.senderName &&
-                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart)
+                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart) &&
+                (!bound || (
+                    existingMeta.timestamp === bound.timestamp &&
+                    existingMeta.frontendSource === (bound.frontendSource || frontendSource)
+                ))
             ) return m;
+
+            if (!bound) {
+                return existingMeta
+                    ? { ...m, content: this._stripTailTagFromContent(m.content) }
+                    : m;
+            }
 
             return {
                 ...m,
                 content: upsertTailTag(
                     m.content,
                     classified.senderName,
-                    existingMeta?.timestamp || nextTimestamp(),
-                    existingMeta?.frontendSource || frontendSource,
+                    bound.timestamp,
+                    bound.frontendSource || frontendSource,
                     shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
                 )
             };
@@ -1248,6 +1360,207 @@ class OneRingPreprocessor {
             .filter(Boolean)
             .filter(block => !block.frontendSource || block.frontendSource === frontendSource)
             .filter(block => block.text);
+    }
+
+    _bindExactTimestampsForPostBlocks(agentName, frontendSource, postBlocks, threshold = 0.92) {
+        const stats = { boundTimestampsByIndex: {} };
+        const blocks = Array.isArray(postBlocks) ? postBlocks : [];
+        if (blocks.length === 0) return stats;
+
+        let recentRows = [];
+        try {
+            recentRows = db.getRecentMessagesByFrontend(
+                agentName,
+                frontendSource,
+                Math.max(blocks.length * 4, 40),
+                projectBasePath
+            );
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Exact timestamp binding DB query failed:', e.message);
+            return stats;
+        }
+
+        const usedExactIds = new Set();
+        const exactCandidates = recentRows
+            .map(row => ({
+                row,
+                hash: snapshot.contentHash(row.content)
+            }))
+            .filter(candidate => candidate.row && candidate.hash);
+
+        for (const block of blocks) {
+            const blockHash = snapshot.contentHash(block.text);
+            let matched = exactCandidates.find(candidate =>
+                candidate.row.role === block.role &&
+                candidate.hash === blockHash &&
+                !usedExactIds.has(candidate.row.id)
+            );
+            let matchSource = 'exact';
+
+            if (!matched) {
+                matched = exactCandidates
+                    .filter(candidate =>
+                        candidate.row.role === block.role &&
+                        !usedExactIds.has(candidate.row.id)
+                    )
+                    .map(candidate => ({
+                        ...candidate,
+                        similarity: fuzzy.similarity(block.text, candidate.row.content)
+                    }))
+                    .filter(candidate => candidate.similarity >= threshold)
+                    .sort((a, b) => b.similarity - a.similarity)[0] || null;
+                matchSource = matched ? 'fuzzy' : 'none';
+            }
+
+            if (!matched) continue;
+
+            usedExactIds.add(matched.row.id);
+            stats.boundTimestampsByIndex[block.index] = {
+                dbId: matched.row.id,
+                timestamp: matched.row.timestamp,
+                senderName: matched.row.senderName,
+                frontendSource: matched.row.frontendSource || frontendSource,
+                source: matchSource
+            };
+        }
+
+        return stats;
+    }
+
+    _recordSnapshotAppendBlocks(agentName, frontendSource, defaultUserName, newBlocks, nextTimestamp, threshold, newConversationStartUserIndex = -1) {
+        const stats = { inserted: 0, updated: 0, fuzzyEdited: 0, exactBound: 0, boundTimestampsByIndex: {} };
+        let newUserCount = 0;
+        let newAssistantCount = 0;
+        const blocks = Array.isArray(newBlocks) ? newBlocks : [];
+        const usedExactIds = new Set();
+
+        let recentRows = [];
+        try {
+            recentRows = db.getRecentMessagesByFrontend(
+                agentName,
+                frontendSource,
+                Math.max(blocks.length * 4, 24),
+                projectBasePath
+            );
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Snapshot append exact DB binding failed, will record candidates:', e.message);
+        }
+
+        const exactCandidates = recentRows
+            .map(row => ({
+                row,
+                hash: snapshot.contentHash(row.content)
+            }))
+            .filter(candidate => candidate.row && candidate.hash);
+
+        const lastUserBlock = [...blocks].reverse().find(block => block.role === 'user') || null;
+
+        for (const block of blocks) {
+            const recordStart = process.hrtime.bigint();
+            const blockHash = snapshot.contentHash(block.text);
+            const exact = exactCandidates.find(candidate =>
+                candidate.row.role === block.role &&
+                candidate.hash === blockHash &&
+                !usedExactIds.has(candidate.row.id)
+            );
+
+            if (exact) {
+                usedExactIds.add(exact.row.id);
+                stats.exactBound++;
+                stats.boundTimestampsByIndex[block.index] = {
+                    dbId: exact.row.id,
+                    timestamp: exact.row.timestamp,
+                    senderName: exact.row.senderName,
+                    frontendSource: exact.row.frontendSource || frontendSource,
+                    source: 'snapshot-exact'
+                };
+                const bindMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                if (debugMode || bindMs >= 50) console.log(`[OneRingTiming] bindSnapshotAppendBlockExact role=${block.role} dbId=${exact.row.id} ms=${bindMs.toFixed(1)} timestamp=${exact.row.timestamp} index=${block.index}`);
+                continue;
+            }
+
+            // Snapshot append 已证明“旧 post 尾部 == 当前 post 头部”，因此 newBlocks 通常是：
+            // - 上轮异步 AI 回复 f：已经由 handler final callback 入 message 库，但不在上一轮 post 快照；
+            // - 本轮最后真实 user g：应作为新消息写库。
+            //
+            // 对非最后 user 的新增块，先在 messages 真库小窗口中 fuzzy 绑定/更新，避免直接落入全量 Rust diff。
+            // UPDATE 只改 content，不改 timestamp，保持 message 时间戳真相。
+            const mayBeExistingMessageAfterPreviousPost = !(block.role === 'user' && block === lastUserBlock);
+            if (mayBeExistingMessageAfterPreviousPost) {
+                const fuzzyMatched = exactCandidates
+                    .filter(candidate =>
+                        candidate.row.role === block.role &&
+                        !usedExactIds.has(candidate.row.id)
+                    )
+                    .map(candidate => ({
+                        ...candidate,
+                        similarity: fuzzy.similarity(block.text, candidate.row.content)
+                    }))
+                    .filter(candidate => candidate.similarity >= threshold)
+                    .sort((a, b) => b.similarity - a.similarity)[0] || null;
+
+                if (fuzzyMatched) {
+                    usedExactIds.add(fuzzyMatched.row.id);
+                    db.updateMessageById(agentName, fuzzyMatched.row.id, block.text, projectBasePath);
+                    try {
+                        native.updateMessageById(projectBasePath, config, agentName, fuzzyMatched.row.id, block.text);
+                    } catch (nativeError) {
+                        if (debugMode) console.warn('[OneRingNative] snapshot append fuzzy update cache failed:', nativeError.message);
+                    }
+                    stats.updated++;
+                    stats.fuzzyEdited++;
+                    stats.boundTimestampsByIndex[block.index] = {
+                        dbId: fuzzyMatched.row.id,
+                        timestamp: fuzzyMatched.row.timestamp,
+                        senderName: fuzzyMatched.row.senderName,
+                        frontendSource: fuzzyMatched.row.frontendSource || frontendSource,
+                        source: 'snapshot-fuzzy-update'
+                    };
+                    const updateMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                    if (debugMode || updateMs >= 50) console.log(`[OneRingTiming] updateSnapshotAppendBlockFuzzy role=${block.role} dbId=${fuzzyMatched.row.id} sim=${fuzzyMatched.similarity.toFixed(4)} ms=${updateMs.toFixed(1)} timestamp=${fuzzyMatched.row.timestamp} index=${block.index}`);
+                    continue;
+                }
+            }
+
+            if (block.role === 'user' && block === lastUserBlock) {
+                const ts = nextTimestamp();
+                const userResult = this._recordUserMessage(
+                    agentName,
+                    frontendSource,
+                    block.senderName || defaultUserName,
+                    block.text,
+                    ts,
+                    threshold,
+                    block.index === newConversationStartUserIndex
+                );
+                if (userResult === 'insert') stats.inserted++;
+                if (userResult === 'update') stats.updated++;
+                stats.boundTimestampsByIndex[block.index] = {
+                    timestamp: ts,
+                    senderName: block.senderName || defaultUserName,
+                    frontendSource,
+                    source: 'snapshot-post'
+                };
+                newUserCount++;
+                const recordMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordSnapshotAppendBlock role=user result=${userResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+            } else if (block.role === 'user') {
+                const skipMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                if (debugMode || skipMs >= 50) console.log(`[OneRingTiming] skipSnapshotAppendNonTailUserNoExact role=user ms=${skipMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+            } else if (block.role === 'assistant') {
+                // 正常推进中的 assistant 候选必须优先由 final callback 写库并提供真实时间戳。
+                // 快照快速路径未精确命中 DB 时，不在这里插入 assistant，避免重复 f 和 post 时间戳污染。
+                newAssistantCount++;
+                const skipMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                if (debugMode || skipMs >= 50) console.log(`[OneRingTiming] skipSnapshotAppendAssistantNoExact role=assistant ms=${skipMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+            }
+        }
+
+        if (debugMode || blocks.length > 0) {
+            console.log(`[OneRing] Snapshot append fast-path recorded users=${newUserCount} assistants=${newAssistantCount} exactBound=${stats.exactBound} inserted=${stats.inserted} updated=${stats.updated}`);
+        }
+
+        return stats;
     }
 
     _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null, newConversationStartUserIndex = -1) {
