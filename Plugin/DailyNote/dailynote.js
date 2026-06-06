@@ -24,6 +24,7 @@ const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLower
 
 // Fuzzy Diff for Update Failures
 const FUZZY_DIFF_ENABLED = (process.env.DAILY_NOTE_FUZZY_DIFF || "false").toLowerCase() === "true";
+const UPDATE_FAILURE_HINT = "请检查字段或标点符号是否与原文一致；若多次失败，可尝试使用 DailyNoteManager 插件 list 对应文件夹/日期，以检索日记原文状态后再重试。";
 
 // 忽略的文件夹列表
 const IGNORED_FOLDERS = ['MusicDiary'];
@@ -959,9 +960,10 @@ async function handleUpdateCommand(args) {
                 : maid
                     ? `maid '${maid}'`
                     : '';
-            const errorMessage = scopeDescription
+            const baseErrorMessage = scopeDescription
                 ? `Target content not found in any diary files for ${scopeDescription}.`
                 : 'Target content not found in any diary files.';
+            const errorMessage = `${baseErrorMessage} ${UPDATE_FAILURE_HINT}`;
 
             // Layer 3: Emergency Fallback
             if (FUZZY_DIFF_ENABLED && !bestCandidate) {
