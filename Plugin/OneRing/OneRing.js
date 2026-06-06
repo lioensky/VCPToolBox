@@ -51,9 +51,52 @@ const GROUPCHAT_SENDER_REGEX = /^\s*\[([^\]]{1,30})的发言\]\s*[:：]\s*/;
 
 const NEW_CONVERSATION_START_SUFFIX = '；这是一个新对话的起点';
 const ONERING_TAIL_STACK_REGEX = /(?:\s*\[OneRing通知:[\s\S]*?于\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{3})?发送于[^\]]*?(?:；这是一个新对话的起点)?\]\s*)+$/;
+const LEADING_SYSTEM_NOTICE_REGEX = /^\s*\[系统通知\][\s\S]*?\[系统通知结束\]\s*/;
 
 function stripOneRingTailTagText(text) {
     return typeof text === 'string' ? text.replace(ONERING_TAIL_STACK_REGEX, '').trim() : '';
+}
+
+function stripLeadingSystemNoticeText(text) {
+    if (typeof text !== 'string') return '';
+    let result = text;
+    while (LEADING_SYSTEM_NOTICE_REGEX.test(result)) {
+        result = result.replace(LEADING_SYSTEM_NOTICE_REGEX, '');
+    }
+    return result.trim();
+}
+
+function sanitizeUserTextAtPipelineEntry(text) {
+    return stripOneRingTailTagText(stripLeadingSystemNoticeText(text));
+}
+
+function sanitizeUserContentAtPipelineEntry(content) {
+    if (typeof content === 'string') {
+        return sanitizeUserTextAtPipelineEntry(content);
+    }
+    if (Array.isArray(content)) {
+        return content
+            .map((part) => {
+                if (part && part.type === 'text' && typeof part.text === 'string') {
+                    return { ...part, text: sanitizeUserTextAtPipelineEntry(part.text) };
+                }
+                return part;
+            })
+            .filter((part) => !(part && part.type === 'text' && typeof part.text === 'string' && !part.text.trim()));
+    }
+    if (content && typeof content === 'object' && typeof content.text === 'string') {
+        return { ...content, text: sanitizeUserTextAtPipelineEntry(content.text) };
+    }
+    return content;
+}
+
+function hasUserTextContent(content) {
+    return !!fuzzy.extractText(content).trim();
+}
+
+function hasLeadingGroupChatSender(content) {
+    const text = stripOneRingTailTagText(stripLeadingSystemNoticeText(fuzzy.extractText(content)));
+    return GROUPCHAT_SENDER_REGEX.test(text);
 }
 
 function isUnresolvedTemplateName(name) {
@@ -68,8 +111,8 @@ function classifyUserContent(rawContent, defaultUserName, registeredAgentName = 
     let text = typeof rawContent === 'string' ? rawContent
         : fuzzy.extractText(rawContent);
 
-    // 1. 剥离系统通知栏与既有 OneRing 尾标，避免二次入库污染 cleanText。
-    text = stripOneRingTailTagText(text.replace(fuzzy.SYSTEM_NOTICE_REGEX, ''));
+    // 1. 剥离开头系统通知栏与既有 OneRing 尾标，避免二次入库污染 cleanText。
+    text = sanitizeUserTextAtPipelineEntry(text);
 
     // 系统通知 user 块剥离通知后无正文时，直接丢弃，不入库也不补尾标。
     if (!text.trim()) return null;
@@ -135,6 +178,48 @@ function getOneRingTailMeta(content) {
 
 function hasOneRingTailTag(content) {
     return !!getOneRingTailMeta(content);
+}
+
+function markOneRingInjectedFromDb(message) {
+    if (!message || typeof message !== 'object') return message;
+    try {
+        Object.defineProperty(message, '__oneRingInjectedFromDb', {
+            value: true,
+            enumerable: false,
+            configurable: true
+        });
+    } catch (e) {
+        if (debugMode) console.warn('[OneRing] Failed to mark injected DB message:', e.message);
+    }
+    return message;
+}
+
+function isOneRingInjectedFromDb(message) {
+    return !!(message && message.__oneRingInjectedFromDb === true);
+}
+
+function markOneRingTimelineMeta(message, meta) {
+    if (!message || typeof message !== 'object' || !meta || !meta.timestamp) return message;
+    try {
+        Object.defineProperty(message, '__oneRingTimelineMeta', {
+            value: {
+                timestamp: meta.timestamp,
+                senderName: meta.senderName || '?',
+                frontendSource: meta.frontendSource || '?',
+                isNewConversationStart: !!meta.isNewConversationStart,
+                source: meta.source || 'timeline'
+            },
+            enumerable: false,
+            configurable: true
+        });
+    } catch (e) {
+        if (debugMode) console.warn('[OneRing] Failed to mark timeline meta:', e.message);
+    }
+    return message;
+}
+
+function getOneRingTimelineMeta(message) {
+    return message && message.__oneRingTimelineMeta ? message.__oneRingTimelineMeta : null;
 }
 
 /**
@@ -263,6 +348,8 @@ const DEFAULT_HOT_CONFIG = Object.freeze({
     tailTagPlacement: 'inline',
     maxContextBlocks: 10,
     timeInsert: true,
+    timeInsertPrepend: true,
+    timeInsertMiddle: true,
     asyncOnlyMode: true
 });
 const TAIL_TAG_PLACEMENT_INLINE = 'inline';
@@ -305,6 +392,8 @@ function normalizeHotConfig(raw = {}) {
         tailTagPlacement: normalizeTailTagPlacement(raw.tailTagPlacement),
         maxContextBlocks: toPositiveInteger(raw.maxContextBlocks, DEFAULT_HOT_CONFIG.maxContextBlocks),
         timeInsert: toBoolean(raw.timeInsert, DEFAULT_HOT_CONFIG.timeInsert),
+        timeInsertPrepend: toBoolean(raw.timeInsertPrepend, DEFAULT_HOT_CONFIG.timeInsertPrepend),
+        timeInsertMiddle: toBoolean(raw.timeInsertMiddle, DEFAULT_HOT_CONFIG.timeInsertMiddle),
         asyncOnlyMode: toBoolean(raw.asyncOnlyMode, DEFAULT_HOT_CONFIG.asyncOnlyMode)
     };
 }
@@ -403,32 +492,112 @@ function createOneRingTimestampSequencer(baseDate = new Date()) {
 
 function mergeConversationByOneRingTimestamp(messages) {
     if (!Array.isArray(messages)) return messages;
+
     const nonConversation = messages.filter(m => !m || (m.role !== 'user' && m.role !== 'assistant'));
     const conversation = messages
         .map((message, index) => {
             const meta = message && (message.role === 'user' || message.role === 'assistant')
-                ? getOneRingTailMeta(message.content)
+                ? (getOneRingTimelineMeta(message) || getOneRingTailMeta(message.content))
                 : null;
             return {
                 message,
                 index,
-                timestamp: meta?.timestamp || null
+                timestamp: meta?.timestamp || null,
+                injectedFromDb: isOneRingInjectedFromDb(message)
             };
         })
         .filter(item => item.message && (item.message.role === 'user' || item.message.role === 'assistant'));
 
-    conversation.sort((a, b) => {
-        // 无时间戳的当前轮消息应排在已知历史之后；同一时间戳保持原始稳定顺序。
-        const ta = a.timestamp || '9999-12-31 23:59:59';
-        const tb = b.timestamp || '9999-12-31 23:59:59';
-        if (ta !== tb) return ta < tb ? -1 : 1;
-        return a.index - b.index;
-    });
+    const postItems = conversation.filter(item => !item.injectedFromDb);
+    const injectedItems = conversation
+        .filter(item => item.injectedFromDb && item.timestamp)
+        .sort((a, b) => {
+            if (a.timestamp !== b.timestamp) return a.timestamp < b.timestamp ? -1 : 1;
+            return a.index - b.index;
+        });
 
-    return [
+    // post 原始 user/assistant 顺序是绝对真相，任何时间戳排序都不能重排 post 本体。
+    // DB 补入块的三种合法位置（受 hotConfig 控制）：
+    //   1. prepend（allowPrepend=true）：时间戳严格早于 post 第一条带可信时间戳块 → prepend 到前面
+    //   2. insert（allowInsert=true）：时间戳严格介于两个相邻均带可信时间戳的 post 块之间 → 中间插入
+    //   3. 其他（无法定位）→ 直接丢弃，保守不插
+    const allowPrepend = hotConfig.timeInsertPrepend !== false;
+    const allowInsert = hotConfig.timeInsertMiddle !== false;
+
+    if (injectedItems.length === 0) {
+        return [
+            ...nonConversation,
+            ...postItems.map(item => item.message)
+        ];
+    }
+
+    const firstAnchoredPost = postItems.find(item => !!item.timestamp) || null;
+    const firstAnchorTs = firstAnchoredPost ? firstAnchoredPost.timestamp : null;
+
+    const prependItems = [];
+    const insertsAfterPostIndex = new Map();
+    let conservativeInserted = 0;
+    let conservativeSkipped = 0;
+
+    for (const injected of injectedItems) {
+        if (allowPrepend && firstAnchorTs && injected.timestamp < firstAnchorTs) {
+            prependItems.push(injected);
+            conservativeInserted++;
+            continue;
+        }
+
+        if (allowInsert && postItems.length >= 2) {
+            let inserted = false;
+            for (let i = 0; i < postItems.length - 1; i++) {
+                const left = postItems[i];
+                const right = postItems[i + 1];
+                if (!left.timestamp || !right.timestamp) continue;
+                const minTs = left.timestamp <= right.timestamp ? left.timestamp : right.timestamp;
+                const maxTs = left.timestamp <= right.timestamp ? right.timestamp : left.timestamp;
+                if (injected.timestamp > minTs && injected.timestamp < maxTs) {
+                    if (!insertsAfterPostIndex.has(i)) insertsAfterPostIndex.set(i, []);
+                    insertsAfterPostIndex.get(i).push(injected);
+                    conservativeInserted++;
+                    inserted = true;
+                    break;
+                }
+            }
+            if (inserted) continue;
+        }
+
+        conservativeSkipped++;
+    }
+
+    if (debugMode && (conservativeInserted > 0 || conservativeSkipped > 0)) {
+        console.log(`[OneRing] Conservative timestamp merge: prepend=${prependItems.length}, midInserted=${conservativeInserted - prependItems.length}, skipped=${conservativeSkipped}, postOrderPreserved=true`);
+    }
+
+    const mergedConversation = [];
+    for (let i = 0; i < postItems.length; i++) {
+        mergedConversation.push(postItems[i].message);
+        const inserts = insertsAfterPostIndex.get(i) || [];
+        for (const ins of inserts) {
+            mergedConversation.push(ins.message);
+        }
+    }
+
+    const result = [
         ...nonConversation,
-        ...conversation.map(item => item.message)
+        ...prependItems.map(item => item.message),
+        ...mergedConversation
     ];
+
+    try {
+        Object.defineProperty(result, '__oneRingInjectedCount', {
+            value: result.filter(message => isOneRingInjectedFromDb(message)).length,
+            enumerable: false,
+            configurable: true
+        });
+    } catch (e) {
+        if (debugMode) console.warn('[OneRing] Failed to attach merged injected count:', e.message);
+    }
+
+    return result;
 }
 
 function choosePreferredDuplicateMessage(prev, current) {
@@ -704,18 +873,7 @@ class OneRingPreprocessor {
             console.error('[OneRing] DB diff error, skipping patch:', e.message);
         }
 
-        // ── 4. 跨端历史补全：fuzzy 反查每条 DB 历史是否在上下文存在，缺失的按时间戳补入 ──
-        if (allowPatch) {
-            try {
-                patchMessages = this._doFuzzyTimestampPatch(messages, agentName, frontendSource, maxBlocks, threshold);
-                summaryStats.injected += patchMessages.__oneRingInjectedCount || 0;
-            } catch (e) {
-                console.error('[OneRing] Patch error, using original messages:', e.message);
-                patchMessages = messages;
-            }
-        }
-
-        // ── 5. 为当前 post 的 user/assistant 历史块补齐尾部标记 ───────────────
+        // ── 4. 为当前 post 的 user/assistant 历史块补齐尾部标记 ───────────────
         // 关键原因：AI 回复入库是异步 DB 写入，不会回写给前端历史；
         // 下一轮前端带回来的 assistant 历史可能没有 OneRing 标记，因此这里必须补标。
         const nextTimestamp = createOneRingTimestampSequencer();
@@ -723,118 +881,85 @@ class OneRingPreprocessor {
         const newConversationStartUserIndex = this._detectNewConversationStartUserIndex(messages, defaultUserName, agentName);
 
         // 入库必须以“实际 post 传入的上下文”为真相；
-        // patchMessages 可能已经包含 DB 补齐块，不能再反向同步进 DB。
-        const realUserEntries = [...messages].map((m, i) => ({ m, i }))
-            .filter(({ m }) => m && m.role === 'user')
-            .map(({ m, i }) => ({
-                m,
-                i,
-                classified: classifyUserContent(m.content, defaultUserName, agentName)
-            }))
-            .filter(({ classified }) => !!classified);
+        // DB 补齐必须在 post 本体写库/补标之后进行，否则前端不回传 OneRing 时间戳时，
+        // prepend / middle insert 没有可信 post 时间锚点，时间线合并会失效。
+        const tailPostBatch = this._findTailPostBatch(messages, defaultUserName, agentName);
 
-        const lastRealUserIdx = realUserEntries.pop();
+        const currentPostTimestampBindings = { boundTimestampsByIndex: {} };
 
-        if (lastRealUserIdx && !isFreshShortContext) {
+        if (tailPostBatch?.user && !isFreshShortContext) {
             const userRecordResult = this._recordUserMessage(
                 agentName,
                 frontendSource,
-                lastRealUserIdx.classified.senderName,
-                lastRealUserIdx.classified.cleanText,
+                tailPostBatch.user.classified.senderName,
+                tailPostBatch.user.classified.cleanText,
                 now,
                 threshold,
-                lastRealUserIdx.i === newConversationStartUserIndex
+                tailPostBatch.user.index === newConversationStartUserIndex
             );
-            if (userRecordResult === 'insert') summaryStats.dbInserted++;
+            if (userRecordResult === 'insert') {
+                summaryStats.dbInserted++;
+                // 这是本轮 post 抵达后新生成的权威时间戳，前端不会自带；
+                // 必须立即作为尾标绑定，否则后续 DB 补全没有当前 post 的可信时间锚点。
+                currentPostTimestampBindings.boundTimestampsByIndex[tailPostBatch.user.index] = {
+                    timestamp: now,
+                    senderName: tailPostBatch.user.classified.senderName,
+                    frontendSource,
+                    source: 'current-post-user'
+                };
+            }
             if (userRecordResult === 'update') summaryStats.dbUpdated++;
         }
 
-        if (!isFreshShortContext) {
-            const incomingAssistantStats = this._recordIncomingAssistantContext(
+        if (tailPostBatch && !isFreshShortContext) {
+            const tailAssistantStats = this._recordTailPostAssistantBatch(
                 agentName,
                 frontendSource,
-                messages,
+                tailPostBatch.assistants,
                 nextTimestamp,
                 threshold
             );
-            summaryStats.dbInserted += incomingAssistantStats.inserted || 0;
-            summaryStats.dbUpdated += incomingAssistantStats.updated || 0;
+            summaryStats.dbInserted += tailAssistantStats.inserted || 0;
+            summaryStats.dbUpdated += tailAssistantStats.updated || 0;
+            Object.assign(
+                currentPostTimestampBindings.boundTimestampsByIndex,
+                tailAssistantStats.boundTimestampsByIndex || {}
+            );
         }
 
         const exactTimestampBindings = this._bindExactTimestampsForPostBlocks(agentName, frontendSource, localPostBlocks, threshold);
         const timestampBindings = {
+            ...(currentPostTimestampBindings.boundTimestampsByIndex || {}),
             ...(exactTimestampBindings.boundTimestampsByIndex || {}),
             ...(snapshotEditTimestampBindings.boundTimestampsByIndex || {})
         };
-        patchMessages = patchMessages.map((m) => {
-            if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
+        patchMessages = this._markTimelineBindings(
+            patchMessages,
+            messages,
+            timestampBindings,
+            defaultUserName,
+            agentName,
+            frontendSource,
+            newConversationStartUserIndex
+        );
 
-            const existingMeta = getOneRingTailMeta(m.content);
-            if (m.role === 'assistant') {
-                const classifiedAssistant = classifyUserContent(m.content, agentName, agentName);
-                if (!classifiedAssistant) return m;
-
-                const originalIndex = messages.indexOf(m);
-                const bound = originalIndex >= 0 ? (timestampBindings[originalIndex] || null) : null;
-                if (
-                    existingMeta &&
-                    existingMeta.senderName === classifiedAssistant.senderName &&
-                    (!bound || (
-                        existingMeta.timestamp === bound.timestamp &&
-                        existingMeta.frontendSource === (bound.frontendSource || frontendSource)
-                    ))
-                ) return m;
-
-                if (!bound) {
-                    return existingMeta
-                        ? { ...m, content: this._stripTailTagFromContent(m.content) }
-                        : m;
-                }
-
-                return {
-                    ...m,
-                    content: upsertTailTag(
-                        m.content,
-                        classifiedAssistant.senderName,
-                        bound.timestamp,
-                        bound.frontendSource || frontendSource
-                    )
-                };
+        // ── 5. 跨端历史补全：先基于统一时间线元数据判定注入点，最后再统一写 OneRing 尾标 ──
+        if (allowPatch) {
+            try {
+                patchMessages = this._doFuzzyTimestampPatch(patchMessages, agentName, frontendSource, maxBlocks, threshold);
+                summaryStats.injected += patchMessages.__oneRingInjectedCount || 0;
+            } catch (e) {
+                console.error('[OneRing] Patch error, using timestamped post messages:', e.message);
             }
+        }
 
-            const classified = classifyUserContent(m.content, defaultUserName, agentName);
-            if (!classified) return m;
-
-            const originalIndex = messages.indexOf(m);
-            const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
-            const bound = originalIndex >= 0 ? (timestampBindings[originalIndex] || null) : null;
-            if (
-                existingMeta &&
-                existingMeta.senderName === classified.senderName &&
-                (!shouldMarkNewConversationStart || existingMeta.isNewConversationStart) &&
-                (!bound || (
-                    existingMeta.timestamp === bound.timestamp &&
-                    existingMeta.frontendSource === (bound.frontendSource || frontendSource)
-                ))
-            ) return m;
-
-            if (!bound) {
-                return existingMeta
-                    ? { ...m, content: this._stripTailTagFromContent(m.content) }
-                    : m;
-            }
-
-            return {
-                ...m,
-                content: upsertTailTag(
-                    m.content,
-                    classified.senderName,
-                    bound.timestamp,
-                    bound.frontendSource || frontendSource,
-                    shouldMarkNewConversationStart || existingMeta?.isNewConversationStart
-                )
-            };
-        });
+        patchMessages = this._upsertTimelineTailTags(
+            patchMessages,
+            defaultUserName,
+            agentName,
+            frontendSource,
+            newConversationStartUserIndex
+        );
 
         const beforeDedupeCount = patchMessages.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
         patchMessages = dedupeAdjacentSimilarConversation(patchMessages, outputDedupeThreshold);
@@ -934,9 +1059,14 @@ class OneRingPreprocessor {
             ? mergeConversationByOneRingTimestamp(messages)
             : messages;
 
-        const padded = missing.slice(-remaining).map(item => ({
+        const padded = missing.slice(-remaining).map(item => markOneRingTimelineMeta(markOneRingInjectedFromDb({
             role: item.role,
-            content: `${stripOneRingTailTagText(item.content)}\n[OneRing通知:${item.senderName || item.agentName || '?'}于${item.timestamp}发送于${item.frontendSource || '?'}]`
+            content: stripOneRingTailTagText(item.content)
+        }), {
+            timestamp: item.timestamp,
+            senderName: item.senderName || item.agentName || '?',
+            frontendSource: item.frontendSource || '?',
+            source: 'db-injected'
         }));
 
         if (debugMode) console.log(`[OneRing] Fuzzy patch: ${padded.length} missing blocks补入上下文`);
@@ -946,7 +1076,7 @@ class OneRingPreprocessor {
             : [...messages, ...padded];
         try {
             Object.defineProperty(patched, '__oneRingInjectedCount', {
-                value: padded.length,
+                value: patched.filter(message => isOneRingInjectedFromDb(message)).length,
                 enumerable: false,
                 configurable: true
             });
@@ -954,6 +1084,65 @@ class OneRingPreprocessor {
             if (debugMode) console.warn('[OneRing] Failed to attach patch injected count:', e.message);
         }
         return patched;
+    }
+
+    _markTimelineBindings(messages, originalMessages, timestampBindings, defaultUserName, agentName, frontendSource, newConversationStartUserIndex = -1) {
+        if (!Array.isArray(messages)) return messages;
+        return messages.map((m) => {
+            if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
+
+            const originalIndex = Array.isArray(originalMessages) ? originalMessages.indexOf(m) : -1;
+            const bound = originalIndex >= 0 ? (timestampBindings[originalIndex] || null) : null;
+            const existingMeta = getOneRingTailMeta(m.content);
+            if (!bound && !existingMeta) return m;
+
+            const classified = m.role === 'assistant'
+                ? classifyUserContent(m.content, agentName, agentName)
+                : classifyUserContent(m.content, defaultUserName, agentName);
+            if (!classified) return m;
+
+            const shouldMarkNewConversationStart = originalIndex === newConversationStartUserIndex;
+            return markOneRingTimelineMeta(m, {
+                timestamp: bound?.timestamp || existingMeta?.timestamp,
+                senderName: bound?.senderName || existingMeta?.senderName || classified.senderName,
+                frontendSource: bound?.frontendSource || existingMeta?.frontendSource || frontendSource,
+                isNewConversationStart: shouldMarkNewConversationStart || existingMeta?.isNewConversationStart,
+                source: bound?.source || 'existing-tail'
+            });
+        });
+    }
+
+    _upsertTimelineTailTags(messages, defaultUserName, agentName, frontendSource, newConversationStartUserIndex = -1) {
+        if (!Array.isArray(messages)) return messages;
+        return messages.map((m, index) => {
+            if (!m || (m.role !== 'user' && m.role !== 'assistant')) return m;
+
+            const timelineMeta = getOneRingTimelineMeta(m);
+            const existingMeta = getOneRingTailMeta(m.content);
+            const meta = timelineMeta || existingMeta;
+            if (!meta) {
+                return existingMeta
+                    ? { ...m, content: this._stripTailTagFromContent(m.content) }
+                    : m;
+            }
+
+            const classified = m.role === 'assistant'
+                ? classifyUserContent(m.content, agentName, agentName)
+                : classifyUserContent(m.content, defaultUserName, agentName);
+            if (!classified) return m;
+
+            const isNewConversationStart = !!meta.isNewConversationStart || index === newConversationStartUserIndex;
+            return {
+                ...m,
+                content: upsertTailTag(
+                    m.content,
+                    meta.senderName || classified.senderName,
+                    meta.timestamp,
+                    meta.frontendSource || frontendSource,
+                    m.role === 'user' && isNewConversationStart
+                )
+            };
+        });
     }
 
     _applyTailTagPlacement(messages) {
@@ -1013,43 +1202,129 @@ class OneRingPreprocessor {
         return content;
     }
 
-    _sanitizeMessagesBeforeOneRing(messages) {
-        if (!Array.isArray(messages)) return messages;
+    _findTailPostBatch(messages, defaultUserName, agentName) {
+        if (!Array.isArray(messages)) return null;
+        const tailAssistants = [];
+        let foundUser = null;
+        let abandonedAssistantCount = 0;
+        let skippedSystemUserCount = 0;
 
-        let removedLeadingSystemUser = 0;
-        let removedEmptySystemNoticeUser = 0;
-        const result = [];
-        let seenConversation = false;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const message = messages[i];
+            if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue;
 
-        for (const message of messages) {
-            if (!message || message.role !== 'user') {
-                result.push(message);
-                if (message && (message.role === 'assistant' || message.role === 'user')) {
-                    seenConversation = true;
+            if (message.role === 'assistant') {
+                if (hasLeadingGroupChatSender(message.content)) {
+                    const classifiedAssistant = classifyUserContent(message.content, agentName, agentName);
+                    if (classifiedAssistant) {
+                        tailAssistants.unshift({
+                            message,
+                            index: i,
+                            classified: classifiedAssistant
+                        });
+                    } else {
+                        abandonedAssistantCount++;
+                    }
+                } else {
+                    abandonedAssistantCount++;
                 }
                 continue;
             }
 
-            const rawText = fuzzy.extractText(message.content);
-            const textWithoutSystemNotice = stripOneRingTailTagText(rawText.replace(fuzzy.SYSTEM_NOTICE_REGEX, ''));
-            const isEmptyAfterSystemNotice = !textWithoutSystemNotice.trim() && rawText !== textWithoutSystemNotice;
-            if (isEmptyAfterSystemNotice) {
-                removedEmptySystemNoticeUser++;
+            const classifiedUser = classifyUserContent(message.content, defaultUserName, agentName);
+            if (!classifiedUser) {
+                skippedSystemUserCount++;
                 continue;
             }
 
-            const isLeadingSystemUser = !seenConversation && DISCARD_PATTERNS.some(pattern => pattern.test(textWithoutSystemNotice));
-            if (isLeadingSystemUser) {
-                removedLeadingSystemUser++;
-                continue;
-            }
-
-            result.push(message);
-            seenConversation = true;
+            foundUser = {
+                message,
+                index: i,
+                classified: classifiedUser
+            };
+            break;
         }
 
-        if (debugMode && (removedLeadingSystemUser > 0 || removedEmptySystemNoticeUser > 0)) {
-            console.log(`[OneRing] Sanitized incoming user blocks: leadingSystem=${removedLeadingSystemUser}, emptySystemNotice=${removedEmptySystemNoticeUser}`);
+        if (!foundUser) {
+            if (debugMode && (tailAssistants.length > 0 || abandonedAssistantCount > 0 || skippedSystemUserCount > 0)) {
+                console.log(`[OneRing] Tail post batch not found: assistants=${tailAssistants.length}, abandonedAssistants=${abandonedAssistantCount}, skippedSystemUsers=${skippedSystemUserCount}`);
+            }
+            return null;
+        }
+
+        if (debugMode && (tailAssistants.length > 0 || abandonedAssistantCount > 0 || skippedSystemUserCount > 0)) {
+            console.log(`[OneRing] Tail post batch: userIndex=${foundUser.index}, assistants=${tailAssistants.length}, abandonedAssistants=${abandonedAssistantCount}, skippedSystemUsers=${skippedSystemUserCount}`);
+        }
+
+        return {
+            user: foundUser,
+            assistants: tailAssistants
+        };
+    }
+
+    _recordTailPostAssistantBatch(agentName, frontendSource, assistants, nextTimestamp, threshold = 0.92) {
+        const stats = { inserted: 0, updated: 0, boundTimestampsByIndex: {} };
+        const blocks = Array.isArray(assistants) ? assistants : [];
+        for (const assistant of blocks) {
+            if (!assistant?.classified) continue;
+            const ts = typeof nextTimestamp === 'function' ? nextTimestamp() : nextTimestamp;
+            const assistantResult = this._recordAssistantMessage(
+                agentName,
+                frontendSource,
+                assistant.classified.cleanText,
+                ts,
+                threshold,
+                assistant.classified.senderName
+            );
+            if (assistantResult === 'insert') stats.inserted++;
+            if (assistantResult === 'update') stats.updated++;
+            if (assistantResult === 'insert' || assistantResult === 'update') {
+                stats.boundTimestampsByIndex[assistant.index] = {
+                    timestamp: ts,
+                    senderName: assistant.classified.senderName,
+                    frontendSource,
+                    source: 'tail-post-group-assistant'
+                };
+            }
+        }
+        return stats;
+    }
+
+    _sanitizeMessagesBeforeOneRing(messages) {
+        if (!Array.isArray(messages)) return messages;
+
+        let removedSystemUser = 0;
+        let removedEmptyUser = 0;
+        let strippedUserContent = 0;
+        const result = [];
+
+        for (const message of messages) {
+            if (!message || message.role !== 'user') {
+                result.push(message);
+                continue;
+            }
+
+            const originalText = fuzzy.extractText(message.content);
+            const sanitizedContent = sanitizeUserContentAtPipelineEntry(message.content);
+            const sanitizedText = fuzzy.extractText(sanitizedContent);
+            const shouldDropSystemPromptUser = DISCARD_PATTERNS.some(pattern => pattern.test(sanitizedText));
+
+            if (shouldDropSystemPromptUser) {
+                removedSystemUser++;
+                continue;
+            }
+
+            if (!hasUserTextContent(sanitizedContent)) {
+                removedEmptyUser++;
+                continue;
+            }
+
+            if (originalText !== sanitizedText) strippedUserContent++;
+            result.push({ ...message, content: sanitizedContent });
+        }
+
+        if (debugMode && (removedSystemUser > 0 || removedEmptyUser > 0 || strippedUserContent > 0)) {
+            console.log(`[OneRing] Sanitized incoming user blocks: removedSystem=${removedSystemUser}, removedEmpty=${removedEmptyUser}, stripped=${strippedUserContent}`);
         }
 
         if (messages.__oneRingMeta) {
@@ -1499,6 +1774,11 @@ class OneRingPreprocessor {
         });
         timing.mark('tailTagUpsert');
 
+        if (isOneRingTimeInsertEnabled()) {
+            result = mergeConversationByOneRingTimestamp(result);
+            timing.mark('timestampMerge');
+        }
+
         const beforeDedupeCount = result.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
         result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
         const afterDedupeCount = result.filter(m => m && (m.role === 'user' || m.role === 'assistant')).length;
@@ -1804,7 +2084,7 @@ class OneRingPreprocessor {
 
     _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null, newConversationStartUserIndex = -1) {
         const timing = createOneRingTimingProbe('record-only-sync-inner', { agentName, frontendSource });
-        const stats = { inserted: 0, updated: 0, fuzzyEdited: 0 };
+        const stats = { inserted: 0, updated: 0, fuzzyEdited: 0, boundTimestampsByIndex: {} };
         if (!Array.isArray(messages)) return stats;
 
         const postBlocks = Array.isArray(precomputedPostBlocks)
@@ -1832,9 +2112,14 @@ class OneRingPreprocessor {
                 acc[row.role].add(snapshot.contentHash(row.content));
                 return acc;
             }, {});
-            const lastUser = [...postBlocks].reverse().find(block => block.role === 'user') || null;
+            const tailPostBatch = this._findTailPostBatch(messages, defaultUserName, agentName);
+            const allowedTailIndexes = new Set([
+                ...(tailPostBatch?.user ? [tailPostBatch.user.index] : []),
+                ...((tailPostBatch?.assistants || []).map(item => item.index))
+            ]);
             let skippedKnown = 0;
             let skippedUnknown = 0;
+            let skippedNonTail = 0;
 
             for (const block of postBlocks) {
                 const roleHashes = existingHashesByRole[block.role] || new Set();
@@ -1844,27 +2129,56 @@ class OneRingPreprocessor {
                     continue;
                 }
 
-                if (lastUser && block === lastUser) {
+                if (!allowedTailIndexes.has(block.index)) {
+                    skippedNonTail++;
+                    continue;
+                }
+
+                if (tailPostBatch?.user && block.index === tailPostBatch.user.index) {
                     const recordStart = process.hrtime.bigint();
+                    const ts = nextTimestamp();
                     const userResult = this._recordUserMessage(
                         agentName,
                         frontendSource,
-                        block.senderName || defaultUserName,
-                        block.text,
-                        nextTimestamp(),
+                        tailPostBatch.user.classified.senderName,
+                        tailPostBatch.user.classified.cleanText,
+                        ts,
                         threshold,
                         block.index === newConversationStartUserIndex
                     );
                     if (userResult === 'insert') stats.inserted++;
                     if (userResult === 'update') stats.updated++;
+                    if (userResult === 'insert' || userResult === 'update') {
+                        stats.boundTimestampsByIndex[block.index] = {
+                            timestamp: ts,
+                            senderName: tailPostBatch.user.classified.senderName,
+                            frontendSource,
+                            source: 'hash-only-post-user'
+                        };
+                    }
                     const recordMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
-                    if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordLastUnknownUserHashOnly result=${userResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+                    if (debugMode || recordMs >= 50) console.log(`[OneRingTiming] recordTailUserHashOnly result=${userResult} ms=${recordMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
+                    continue;
+                }
+
+                const tailAssistant = (tailPostBatch?.assistants || []).find(item => item.index === block.index) || null;
+                if (tailAssistant) {
+                    const assistantStats = this._recordTailPostAssistantBatch(
+                        agentName,
+                        frontendSource,
+                        [tailAssistant],
+                        nextTimestamp,
+                        threshold
+                    );
+                    stats.inserted += assistantStats.inserted || 0;
+                    stats.updated += assistantStats.updated || 0;
+                    Object.assign(stats.boundTimestampsByIndex, assistantStats.boundTimestampsByIndex || {});
                 } else {
                     skippedUnknown++;
                 }
             }
 
-            timing.mark('hashOnlySync', `known=${skippedKnown} unknownSkipped=${skippedUnknown} inserted=${stats.inserted} updated=${stats.updated}`);
+            timing.mark('hashOnlySync', `known=${skippedKnown} nonTailSkipped=${skippedNonTail} unknownSkipped=${skippedUnknown} inserted=${stats.inserted} updated=${stats.updated}`);
         } catch (e) {
             console.error('[OneRing] Only mode hash-only DB sync failed:', e.message);
         }
@@ -1890,8 +2204,8 @@ class OneRingPreprocessor {
         const frontendSourceFromTrigger = attachedMeta?.frontendSource || (triggerMatch ? triggerMatch[2].trim() : null) || (noticeMatch ? noticeMatch[2].trim() : null);
         if (!agentName || !frontendSourceFromTrigger) return null;
 
-        const lastUser = [...messages].reverse().find(m => m.role === 'user');
-        const tailMeta = lastUser ? getOneRingTailMeta(lastUser.content) : null;
+        const tailPostBatch = this._findTailPostBatch(messages, config.ONERING_USER_NAME || 'Ryan', agentName);
+        const tailMeta = tailPostBatch?.user ? getOneRingTailMeta(tailPostBatch.user.message.content) : null;
 
         return {
             agentName,
