@@ -557,6 +557,34 @@ function getOneRingMaxDbRecords() {
     return Number.isFinite(value) ? value : 100;
 }
 
+function getOneRingSingleAnchorAssistantOptions() {
+    const threshold = parseFloat(config.ONERING_SINGLE_ANCHOR_ASSISTANT_FUZZY_THRESHOLD ?? '0.95');
+    return {
+        enabled: String(config.ONERING_SINGLE_ANCHOR_ASSISTANT_FUZZY_UPDATE ?? 'true').toLowerCase() !== 'false',
+        freshnessSeconds: toPositiveInteger(config.ONERING_SINGLE_ANCHOR_FRESHNESS_SECONDS, 1800),
+        threshold: Number.isFinite(threshold) && threshold > 0 ? threshold : 0.95,
+        minAssistantChars: toPositiveInteger(config.ONERING_SINGLE_ANCHOR_ASSISTANT_MIN_CHARS, 60),
+        candidateLimit: toPositiveInteger(config.ONERING_SINGLE_ANCHOR_ASSISTANT_CANDIDATE_LIMIT, 5)
+    };
+}
+
+function parseOneRingLocalTimestampMs(timestamp) {
+    if (typeof timestamp !== 'string') return NaN;
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(timestamp.trim());
+    if (!match) return NaN;
+
+    const [, year, month, day, hour, minute, second, millisecond = '0'] = match;
+    return new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute),
+        Number(second),
+        Number(millisecond.padEnd(3, '0'))
+    ).getTime();
+}
+
 /**
  * 生成 OneRing 使用的本地时间戳。
  * 必须与尾标、DB timestamp 完全一致；跨端补充依赖 YYYY-MM-DD HH:mm:ss(.SSS) 字符串排序和区间查询。
@@ -1868,11 +1896,20 @@ class OneRingPreprocessor {
                 return recentTurns[0] || null;
             }
 
-            // 极短 retry：如单 user g -> g2，没有 hash 锚点，但同前端最近 completed turn 块数一致时，
-            // 这是用户改写刚才唯一输入并重试的常见模式。
+            // 极短 retry 保守判定：
+            // 旧逻辑只要求 blockCount 一致，通用客户端无 hash 包体时会把连续短新对话误判为 retry，
+            // 导致 post 回复 update 上一轮 assistant。这里改为必须 requestHash 完全一致。
+            // 用户改写内容时 requestHash 会变化，不再误复用最近 completed turn。
             const blockCount = Array.isArray(postBlocks) ? postBlocks.length : 0;
             const latest = recentTurns[0] || null;
-            if (latest && blockCount > 0 && blockCount <= 2 && Number(latest.requestBlockCount) === blockCount) {
+            const requestHash = this._createPostRequestHash(postBlocks);
+            if (
+                latest &&
+                blockCount > 0 &&
+                blockCount <= 2 &&
+                Number(latest.requestBlockCount) === blockCount &&
+                latest.requestHash === requestHash
+            ) {
                 return latest;
             }
         } catch (e) {
@@ -2200,7 +2237,12 @@ class OneRingPreprocessor {
                     appendResult.newBlocks || [],
                     nextTimestamp,
                     threshold,
-                    newConversationStartUserIndex
+                    newConversationStartUserIndex,
+                    {
+                        overlapCount: appendResult.overlapCount || 0,
+                        mode: appendResult.mode || null,
+                        hasClientTimestampTruth: (effectiveClientTimestampBindingInfo?.bindings || []).length > 0
+                    }
                 );
                 syncStats.snapshotFastPath = true;
             }
@@ -2726,12 +2768,16 @@ class OneRingPreprocessor {
         return stats;
     }
 
-    _recordSnapshotAppendBlocks(agentName, frontendSource, defaultUserName, newBlocks, nextTimestamp, threshold, newConversationStartUserIndex = -1) {
+    _recordSnapshotAppendBlocks(agentName, frontendSource, defaultUserName, newBlocks, nextTimestamp, threshold, newConversationStartUserIndex = -1, appendMeta = {}) {
         const stats = { inserted: 0, updated: 0, fuzzyEdited: 0, exactBound: 0, boundTimestampsByIndex: {} };
         let newUserCount = 0;
         let newAssistantCount = 0;
         const blocks = Array.isArray(newBlocks) ? newBlocks : [];
         const usedExactIds = new Set();
+        const isSingleAnchorShortAppend =
+            !appendMeta?.hasClientTimestampTruth &&
+            Number(appendMeta?.overlapCount || 0) === 1 &&
+            blocks.length <= 3;
 
         let recentRows = [];
         try {
@@ -2754,12 +2800,14 @@ class OneRingPreprocessor {
 
         const lastUserBlock = [...blocks].reverse().find(block => block.role === 'user') || null;
         let positionalRowsAfterSnapshot = [];
+        let singleAnchorDbRow = null;
         try {
             const snapshotRows = snapshot.loadSnapshot(agentName, frontendSource, projectBasePath);
             const lastMappedSnapshotRow = [...snapshotRows].reverse().find(row => row && row.dbId) || null;
             if (lastMappedSnapshotRow) {
                 const anchorIndex = recentRows.findIndex(row => row.id === lastMappedSnapshotRow.dbId);
                 if (anchorIndex >= 0) {
+                    singleAnchorDbRow = recentRows[anchorIndex] || null;
                     positionalRowsAfterSnapshot = recentRows.slice(anchorIndex + 1);
                 }
             }
@@ -2865,6 +2913,31 @@ class OneRingPreprocessor {
                 const skipMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
                 if (debugMode || skipMs >= 50) console.log(`[OneRingTiming] skipSnapshotAppendNonTailUserNoExact role=user ms=${skipMs.toFixed(1)} textLen=${String(block.text || '').length} index=${block.index}`);
             } else if (block.role === 'assistant') {
+                const singleAnchorMatch = isSingleAnchorShortAppend
+                    ? this._trySingleAnchorAssistantFuzzyUpdate(agentName, frontendSource, block, singleAnchorDbRow, usedExactIds)
+                    : null;
+                if (singleAnchorMatch) {
+                    const matched = singleAnchorMatch.row;
+                    usedExactIds.add(matched.id);
+                    this._scheduleMessageContentUpdates(
+                        agentName,
+                        [{ dbId: matched.id, content: block.text }],
+                        'snapshot-append-single-anchor-assistant-fuzzy'
+                    );
+                    stats.updated++;
+                    stats.fuzzyEdited++;
+                    stats.boundTimestampsByIndex[block.index] = {
+                        dbId: matched.id,
+                        timestamp: matched.timestamp,
+                        senderName: matched.senderName,
+                        frontendSource: matched.frontendSource || frontendSource,
+                        source: 'snapshot-single-anchor-assistant-fuzzy-update'
+                    };
+                    const updateMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
+                    console.log(`[OneRing] Single-anchor assistant fuzzy update dbId=${matched.id} sim=${singleAnchorMatch.sim.toFixed(4)} ageSec=${singleAnchorMatch.ageSec.toFixed(1)} ms=${updateMs.toFixed(1)} index=${block.index}`);
+                    continue;
+                }
+
                 // 正常推进中的 assistant 候选必须优先由 final callback 写库并提供真实时间戳。
                 // 快照快速路径未精确命中 DB 时，不在这里插入 assistant，避免重复 f 和 post 时间戳污染。
                 newAssistantCount++;
@@ -2878,6 +2951,53 @@ class OneRingPreprocessor {
         }
 
         return stats;
+    }
+
+    _trySingleAnchorAssistantFuzzyUpdate(agentName, frontendSource, block, anchorDbRow, usedExactIds) {
+        const options = getOneRingSingleAnchorAssistantOptions();
+        if (!options.enabled) return null;
+        if (!block || block.role !== 'assistant') return null;
+        if (String(block.text || '').length < options.minAssistantChars) return null;
+        if (!anchorDbRow || anchorDbRow.role !== 'user' || !anchorDbRow.timestamp) return null;
+
+        const anchorMs = parseOneRingLocalTimestampMs(anchorDbRow.timestamp);
+        if (!Number.isFinite(anchorMs)) return null;
+
+        const ageMs = Date.now() - anchorMs;
+        if (ageMs < 0 || ageMs > options.freshnessSeconds * 1000) return null;
+
+        try {
+            const conn = db.getDb(agentName, projectBasePath);
+            const rows = conn.prepare(
+                `SELECT id, role, senderName, frontendSource, content, timestamp
+                 FROM messages
+                 WHERE agentName=? AND frontendSource=? AND role='assistant' AND timestamp>?
+                 ORDER BY timestamp ASC, id ASC
+                 LIMIT ?`
+            ).all(agentName, frontendSource, anchorDbRow.timestamp, options.candidateLimit);
+
+            const matches = rows
+                .filter(row => row && !usedExactIds.has(row.id))
+                .map(row => ({
+                    row,
+                    sim: fuzzy.similarity(block.text, row.content),
+                    ageSec: ageMs / 1000
+                }))
+                .filter(item => item.sim >= options.threshold)
+                .sort((a, b) => b.sim - a.sim);
+
+            if (matches.length !== 1) {
+                if (debugMode && matches.length > 1) {
+                    console.log(`[OneRing] Single-anchor assistant fuzzy update skipped: ambiguous matches=${matches.length} anchorDbId=${anchorDbRow.id} index=${block.index}`);
+                }
+                return null;
+            }
+
+            return matches[0];
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Single-anchor assistant fuzzy update lookup failed:', e.message);
+            return null;
+        }
     }
 
     _syncRecordOnlyPostWithDb(agentName, frontendSource, defaultUserName, messages, nextTimestamp, threshold, precomputedPostBlocks = null, newConversationStartUserIndex = -1) {
