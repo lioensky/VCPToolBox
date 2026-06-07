@@ -610,6 +610,19 @@ class ChatCompletionHandler {
 
     const id = req.body.requestId || req.body.messageId;
     let originalBody = req.body;
+    const vcpchatExtensions = originalBody && typeof originalBody === 'object'
+      ? originalBody.vcpchatExtensions
+      : null;
+    if (vcpchatExtensions !== undefined) {
+      delete originalBody.vcpchatExtensions;
+      const bindingCount = Array.isArray(vcpchatExtensions?.messageTimestampBindings)
+        ? vcpchatExtensions.messageTimestampBindings.length
+        : 0;
+      console.log(`[VCPChatExtensions] Intercepted and stripped vcpchatExtensions before upstream forwarding. timestampBindings=${bindingCount}`);
+    }
+    const requestPreprocessorConfig = vcpchatExtensions
+      ? { vcpchatExtensions }
+      : {};
     const isOriginalRequestStreaming = originalBody.stream === true;
     const responseCacheKey = this.responseReplayCache.buildKey(clientIp, id);
 
@@ -786,7 +799,7 @@ class ChatCompletionHandler {
       if (pluginManager.messagePreprocessors.has('VCPTavern')) {
         if (DEBUG_MODE) console.log(`[Server] Calling priority message preprocessor: VCPTavern`);
         try {
-          tavernProcessedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', originalBody.messages);
+          tavernProcessedMessages = await pluginManager.executeMessagePreprocessor('VCPTavern', originalBody.messages, requestPreprocessorConfig);
         } catch (pluginError) {
           console.error(`[Server] Error in priority preprocessor VCPTavern:`, pluginError);
         }
@@ -899,7 +912,7 @@ class ChatCompletionHandler {
         if (pluginManager.messagePreprocessors.has(processorName)) {
           if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${processorName}`);
           try {
-            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages);
+            processedMessages = await pluginManager.executeMessagePreprocessor(processorName, processedMessages, requestPreprocessorConfig);
           } catch (pluginError) {
             console.error(`[Server] Error in preprocessor ${processorName}:`, pluginError);
           }
@@ -913,7 +926,7 @@ class ChatCompletionHandler {
 
         if (DEBUG_MODE) console.log(`[Server] Calling message preprocessor: ${name}`);
         try {
-          processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages);
+          processedMessages = await pluginManager.executeMessagePreprocessor(name, processedMessages, requestPreprocessorConfig);
         } catch (pluginError) {
           console.error(`[Server] Error in preprocessor ${name}:`, pluginError);
         }

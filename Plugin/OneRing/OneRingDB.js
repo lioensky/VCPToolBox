@@ -104,6 +104,11 @@ function updateMessageById(agentName, id, content, projectBasePath) {
     return db.prepare(`UPDATE messages SET content=? WHERE id=?`).run(content, id);
 }
 
+function updateMessageTimestampById(agentName, id, timestamp, projectBasePath) {
+    const db = getDb(agentName, projectBasePath);
+    return db.prepare(`UPDATE messages SET timestamp=? WHERE agentName=? AND id=?`).run(timestamp, agentName, id);
+}
+
 function insertPostTurn(agentName, { turnId, frontendSource, requestHash, requestBlockCount, status = 'pending', responseMessageId = null, responseContentHash = null, createdAt, updatedAt }, projectBasePath) {
     const db = getDb(agentName, projectBasePath);
     db.prepare(
@@ -214,6 +219,7 @@ module.exports = {
     getDb,
     insertMessage,
     updateMessageById,
+    updateMessageTimestampById,
     insertPostTurn,
     getPostTurn,
     getRecentCompletedPostTurn,
