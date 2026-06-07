@@ -101,7 +101,7 @@ function updateMessageContent(id, content) {
 
 function updateMessageById(agentName, id, content, projectBasePath) {
     const db = getDb(agentName, projectBasePath);
-    return db.prepare(`UPDATE messages SET content=? WHERE id=?`).run(content, id);
+    return db.prepare(`UPDATE messages SET content=? WHERE agentName=? AND id=?`).run(content, agentName, id);
 }
 
 function updateMessageTimestampById(agentName, id, timestamp, projectBasePath) {

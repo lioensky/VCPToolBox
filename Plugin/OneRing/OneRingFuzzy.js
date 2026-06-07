@@ -5,21 +5,21 @@
 
 const crypto = require('crypto');
 
-// 需要在比对前剥离的标记（尾部 OneRing 标记、群聊头标记、系统通知栏）
+// 需要在比对前剥离的标记（尾部 OneRing 标记、系统通知栏）
+// 群聊头 [xxx的发言]: 是真实上下文正文的一部分，必须参与 DB/snapshot/exact hash，不能在 normalize 中剥离。
 const ONERING_TAIL_REGEX = /(?:\s*\[OneRing通知:[^\]]*\]\s*)+$/;
 const SYSTEM_NOTICE_REGEX = /\[系统通知\][\s\S]*?\[系统通知结束\]/g;
 const GROUPCHAT_HEAD_REGEX = /^\s*\[[^\]]{1,30}的发言\]\s*[:：]\s*/;
 
 /**
- * 归一化：剥离所有可能由各预处理器/群聊系统注入的标记，得到纯净内容用于比对。
- * 这是鲁棒性的核心——无论标记是否入库，比对时都先归一化。
+ * 归一化：只剥离 OneRing/服务端临时标记，保留真实上下文内容用于比对。
+ * 群聊头 [xxx的发言]: 是 AI 实际看到的正文，也是区分说话者的关键信息，不能剥离。
  */
 function normalize(text) {
     if (typeof text !== 'string') return '';
     let t = text;
     t = t.replace(SYSTEM_NOTICE_REGEX, '');
     t = t.replace(ONERING_TAIL_REGEX, '');
-    t = t.replace(GROUPCHAT_HEAD_REGEX, '');
     // 折叠多余空白
     t = t.replace(/\s+/g, ' ').trim();
     return t;

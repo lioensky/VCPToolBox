@@ -5,14 +5,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const chokidar = require('chokidar');
 const db = require('./OneRingDB.js');
 const fuzzy = require('./OneRingFuzzy.js');
 const snapshot = require('./OneRingSnapshot.js');
 const native = require('./OneRingNative.js');
-const timelineCommon = require('./OneRingTimelineCommon.js');
-const { RawClientTimelineStrategy, probeRawClientTimestampBindings } = require('./OneRingRawClientTimeline.js');
-const { ServerInferredTimelineStrategy } = require('./OneRingServerInferredTimeline.js');
 
 // ─── 触发语法解析 ────────────────────────────────────────────────────────────
 const TRIGGER_REGEX = /\[\[OneRing::([^:]+?)::([^:\]]+?)(?:::([^\]]+?))?\]\]/;
@@ -622,6 +620,166 @@ function createOneRingTimestampSequencer(baseDate = new Date()) {
     return () => formatOneRingTimestamp(new Date(baseDate.getTime() + offsetMs++), true);
 }
 
+function rawSha256(text) {
+    return crypto.createHash('sha256').update(typeof text === 'string' ? text : '').digest('hex');
+}
+
+function findClientRawHashMatchVariant(text, sentHash) {
+    const rawText = typeof text === 'string' ? text : '';
+    const targetHash = normalizeClientSentHash(sentHash);
+    if (!targetHash) return null;
+
+    const trimEndWhitespaceText = rawText.replace(/[\s\u00a0\u3000]+$/u, '');
+    const trailingWhitespaceSuffixes = [
+        ' ',
+        '  ',
+        '   ',
+        '\t',
+        '\u00a0',
+        '\u3000',
+        '\n',
+        '\n\n',
+        '\r\n',
+        '\r\n\r\n',
+        ' \n',
+        ' \r\n',
+        '\u00a0\n',
+        '\u3000\n'
+    ];
+
+    const variants = [
+        { text: rawText, variant: 'raw' },
+        // VCPChat 文本框/渲染层偶发只在末尾多/少空白；
+        // 这里仅容忍尾部空白差异，不折叠正文内部空格，避免破坏 raw hash 权威性。
+        { text: trimEndWhitespaceText, variant: 'trim-end-whitespace' },
+        ...trailingWhitespaceSuffixes.flatMap((suffix) => ([
+            { text: `${rawText}${suffix}`, variant: `append-trailing-ws-${JSON.stringify(suffix)}` },
+            { text: `${trimEndWhitespaceText}${suffix}`, variant: `trim-end-then-append-trailing-ws-${JSON.stringify(suffix)}` }
+        ]))
+    ];
+
+    for (const candidate of variants) {
+        const hash = rawSha256(candidate.text);
+        if (hash === targetHash) {
+            return {
+                hash,
+                variant: candidate.variant,
+                addedChars: candidate.text.length - rawText.length
+            };
+        }
+    }
+
+    return null;
+}
+
+function normalizeClientSentHash(hash) {
+    if (typeof hash !== 'string') return '';
+    const trimmed = hash.trim().toLowerCase();
+    const normalized = trimmed.startsWith('sha256:') ? trimmed.slice(7) : trimmed;
+    return /^[a-f0-9]{64}$/.test(normalized) ? normalized : '';
+}
+
+function getClientTimestampBindingsFromConfig(cfg = {}) {
+    const ext = cfg && typeof cfg === 'object' ? cfg.vcpchatExtensions : null;
+    const bindings = ext && Array.isArray(ext.messageTimestampBindings)
+        ? ext.messageTimestampBindings
+        : [];
+    if (bindings.length === 0) return { schemaVersion: null, messageMetadataMode: null, rawCount: 0, bindings: [] };
+
+    const valid = bindings
+        .map((binding) => {
+            if (!binding || typeof binding !== 'object') return null;
+            const role = binding.role === 'user' || binding.role === 'assistant' ? binding.role : null;
+            const index = Number(binding.sentMessageIndex);
+            const timestampMs = Number(binding.timestamp);
+            const sentHash = normalizeClientSentHash(binding.sentMessageHash);
+            if (!role || !Number.isInteger(index) || index < 0 || !Number.isFinite(timestampMs) || timestampMs <= 0 || !sentHash) {
+                return null;
+            }
+            return {
+                messageId: typeof binding.messageId === 'string' ? binding.messageId : null,
+                role,
+                index,
+                timestampMs,
+                timestamp: formatOneRingTimestamp(new Date(timestampMs), true),
+                timestampIso: typeof binding.timestampIso === 'string' ? binding.timestampIso : null,
+                source: typeof binding.source === 'string' ? binding.source : 'client',
+                sentHash
+            };
+        })
+        .filter(Boolean);
+
+    return {
+        schemaVersion: ext?.schemaVersion ?? null,
+        messageMetadataMode: ext?.messageMetadataMode || null,
+        rawCount: bindings.length,
+        bindings: valid
+    };
+}
+
+function probeRawClientTimestampBindings(messages, bindingInfo, agentName, frontendSource, stage = 'raw-entry') {
+    const clientBindings = Array.isArray(bindingInfo?.bindings) ? bindingInfo.bindings : [];
+    if (!Array.isArray(messages) || clientBindings.length === 0) return;
+
+    const stats = {
+        total: clientBindings.length,
+        rawMatched: 0,
+        normalizedMatched: 0,
+        missingIndex: 0,
+        roleMismatch: 0,
+        rawMissByRole: { user: 0, assistant: 0 },
+        rawMatchedByRole: { user: 0, assistant: 0 },
+        samples: []
+    };
+
+    for (const binding of clientBindings) {
+        const message = messages[binding.index];
+        if (!message) {
+            stats.missingIndex++;
+            continue;
+        }
+        if (message.role !== binding.role) {
+            stats.roleMismatch++;
+            continue;
+        }
+
+        const rawText = fuzzy.extractText(message.content);
+        const rawHash = rawSha256(rawText);
+        const normalizedHash = snapshot.contentHash(rawText);
+        const variantMatch = findClientRawHashMatchVariant(rawText, binding.sentHash);
+        const rawMatched = !!variantMatch;
+        const normalizedMatched = normalizedHash === binding.sentHash;
+
+        if (rawMatched) {
+            stats.rawMatched++;
+            stats.rawMatchedByRole[binding.role]++;
+        } else {
+            stats.rawMissByRole[binding.role]++;
+        }
+        if (normalizedMatched) stats.normalizedMatched++;
+
+        if (!rawMatched && stats.samples.length < 5) {
+            const tailCodes = [...rawText.slice(-12)].map(ch => ch.codePointAt(0).toString(16)).join(',');
+            const head = JSON.stringify(rawText.slice(0, 40));
+            const tail = JSON.stringify(rawText.slice(-40));
+            stats.samples.push(
+                `idx=${binding.index} role=${binding.role} client=${binding.sentHash.slice(0, 10)} raw=${rawHash.slice(0, 10)} norm=${normalizedHash.slice(0, 10)} rawLen=${rawText.length} tailCodes=[${tailCodes}] head=${head} tail=${tail}`
+            );
+        }
+    }
+
+    console.log(
+        `[OneRingProbe] ${stage} client hash rawProbe agent="${agentName}" frontend="${frontendSource}" ` +
+        `rawMatched=${stats.rawMatched}/${stats.total} normalizedMatched=${stats.normalizedMatched}/${stats.total} ` +
+        `rawMatchedByRole=user:${stats.rawMatchedByRole.user},assistant:${stats.rawMatchedByRole.assistant} ` +
+        `rawMissByRole=user:${stats.rawMissByRole.user},assistant:${stats.rawMissByRole.assistant} ` +
+        `missingIndex=${stats.missingIndex} roleMismatch=${stats.roleMismatch}`
+    );
+    if (stats.samples.length > 0) {
+        console.log(`[OneRingProbe] ${stage} raw mismatch samples: ${stats.samples.join(' | ')}`);
+    }
+}
+
 function mergeConversationByOneRingTimestamp(messages) {
     if (!Array.isArray(messages)) return messages;
 
@@ -862,13 +1020,12 @@ class OneRingPreprocessor {
     async processMessages(messages, requestConfig) {
         const cfg = { ...config, ...requestConfig };
         if (!hotConfig.enabled) return messages;
-        const clientTimestampBindingInfo = timelineCommon.getClientTimestampBindingsFromConfig(cfg, formatOneRingTimestamp);
-        const timelineStrategy = this._createTimelineStrategy(clientTimestampBindingInfo);
-        const hasClientTimestampTruth = timelineStrategy.hasClientTimestampTruth;
+        const clientTimestampBindingInfo = getClientTimestampBindingsFromConfig(cfg);
+        const hasClientTimestampTruth = (clientTimestampBindingInfo.bindings || []).length > 0;
         const originalMessages = Array.isArray(messages) ? messages : null;
         const workingView = hasClientTimestampTruth
             ? null
-            : timelineStrategy.buildWorkingView(messages);
+            : this._buildOneRingWorkingView(messages);
         messages = workingView ? workingView.workingMessages : messages;
 
         // ── 1. 检测触发语法：只检查开头连续 system 前缀 ────────────────────────
@@ -900,11 +1057,7 @@ class OneRingPreprocessor {
 
         if (clientTimestampBindingInfo.rawCount > 0) {
             console.log(`[OneRing] Detected ${clientTimestampBindingInfo.bindings.length}/${clientTimestampBindingInfo.rawCount} client safe timestamp hash bindings for agent="${agentName}" frontend="${frontendSource}" schema=${clientTimestampBindingInfo.schemaVersion ?? 'unknown'} mode=${clientTimestampBindingInfo.messageMetadataMode || 'unknown'}`);
-            if (typeof timelineStrategy.probe === 'function') {
-                timelineStrategy.probe(originalMessages || messages, agentName, frontendSource, hasClientTimestampTruth ? 'raw-authoritative' : 'working-view');
-            } else {
-                probeRawClientTimestampBindings(originalMessages || messages, clientTimestampBindingInfo, agentName, frontendSource, hasClientTimestampTruth ? 'raw-authoritative' : 'working-view');
-            }
+            probeRawClientTimestampBindings(originalMessages || messages, clientTimestampBindingInfo, agentName, frontendSource, hasClientTimestampTruth ? 'raw-authoritative' : 'working-view');
         }
 
         if (debugMode) console.log(`[OneRing] Triggered for agent="${agentName}" frontend="${frontendSource}"`);
@@ -952,9 +1105,7 @@ class OneRingPreprocessor {
                     outputDedupeThreshold,
                     clientTimestampBindingInfo
                 );
-                const restoredResult = timelineStrategy.restoreWorkingViewToOriginalMessages
-                    ? timelineStrategy.restoreWorkingViewToOriginalMessages(originalMessages, result, workingView)
-                    : this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
+                const restoredResult = this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
                 return this._applyTailTagPlacement(restoredResult);
             }
 
@@ -968,9 +1119,7 @@ class OneRingPreprocessor {
                 outputDedupeThreshold,
                 clientTimestampBindingInfo
             );
-            const restoredResult = timelineStrategy.restoreWorkingViewToOriginalMessages
-                ? timelineStrategy.restoreWorkingViewToOriginalMessages(originalMessages, result, workingView)
-                : this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
+            const restoredResult = this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
             return this._applyTailTagPlacement(restoredResult);
         }
 
@@ -979,17 +1128,19 @@ class OneRingPreprocessor {
         let isFreshShortContext = false;
         const localPostBlocks = this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
         const clientTimestampBindings = hasClientTimestampTruth
-            ? timelineStrategy.bindRawMessages(
+            ? this._bindClientTimestampForRawMessages(
                 agentName,
                 frontendSource,
                 messages,
+                clientTimestampBindingInfo,
                 defaultUserName,
                 'client-verified-raw-hash'
             )
-            : timelineStrategy.bindPostBlocks(
+            : this._bindClientTimestampForPostBlocks(
                 agentName,
                 frontendSource,
                 localPostBlocks,
+                clientTimestampBindingInfo,
                 'client-verified-hash'
             );
         const summaryStats = {
@@ -1120,7 +1271,7 @@ class OneRingPreprocessor {
             ...(snapshotEditTimestampBindings.boundTimestampsByIndex || {}),
             ...(clientTimestampBindings.boundTimestampsByIndex || {})
         };
-        timelineStrategy.scheduleTimestampCorrections?.(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'normal-client-hash');
+        this._scheduleClientTimestampCorrections(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'normal-client-hash');
         patchMessages = this._markTimelineBindings(
             patchMessages,
             messages,
@@ -1173,47 +1324,8 @@ class OneRingPreprocessor {
         const turnMeta = this._createPendingTurn(agentName, frontendSource, localPostBlocks, retryTargetTurn);
         this._attachMeta(patchMessages, agentName, frontendSource, turnMeta);
 
-        patchMessages = timelineStrategy.restoreWorkingViewToOriginalMessages
-            ? timelineStrategy.restoreWorkingViewToOriginalMessages(originalMessages, patchMessages, workingView)
-            : this._restoreWorkingViewToOriginalMessages(originalMessages, patchMessages, workingView);
+        patchMessages = this._restoreWorkingViewToOriginalMessages(originalMessages, patchMessages, workingView);
         return this._applyTailTagPlacement(patchMessages);
-    }
-
-    _createRawClientTimelineStrategy(bindingInfo) {
-        return new RawClientTimelineStrategy({
-            bindingInfo,
-            projectBasePath,
-            debug: debugMode,
-            discardPatterns: DISCARD_PATTERNS,
-            classifyUserContent,
-            classifyAssistantContent
-        });
-    }
-
-    _createServerInferredTimelineStrategy(bindingInfo) {
-        return new ServerInferredTimelineStrategy({
-            bindingInfo,
-            debug: debugMode,
-            discardPatterns: DISCARD_PATTERNS,
-            sanitizeUserContentAtPipelineEntry,
-            hasUserTextContent,
-            markOneRingOriginalIndex,
-            getOneRingOriginalIndex,
-            markOneRingWorkingKey,
-            getOneRingWorkingKey,
-            isOneRingInjectedFromDb,
-            getOneRingTimelineMeta,
-            getOneRingTailMeta,
-            cloneMessageWithOneRingMetadata,
-            upsertTailTag,
-            attachMeta: this._attachMeta.bind(this)
-        });
-    }
-
-    _createTimelineStrategy(bindingInfo) {
-        return (bindingInfo?.bindings || []).length > 0
-            ? this._createRawClientTimelineStrategy(bindingInfo)
-            : this._createServerInferredTimelineStrategy(bindingInfo);
     }
 
     /**
@@ -1876,24 +1988,6 @@ class OneRingPreprocessor {
 
         try {
             const conn = db.getDb(agentName, projectBasePath);
-            const candidateIds = [...new Set(items
-                .flatMap(item => [item.dbId, item.oldDbId])
-                .map(id => Number(id))
-                .filter(id => Number.isInteger(id) && id > 0)
-            )];
-            const directRowsById = new Map();
-            if (candidateIds.length > 0) {
-                const placeholders = candidateIds.map(() => '?').join(',');
-                const directRows = conn.prepare(
-                    `SELECT id, role, senderName, frontendSource, content, timestamp
-                     FROM messages
-                     WHERE agentName=? AND id IN (${placeholders})`
-                ).all(agentName, ...candidateIds);
-                for (const row of directRows) {
-                    directRowsById.set(Number(row.id), row);
-                }
-            }
-
             const rows = conn.prepare(
                 `SELECT id, role, senderName, frontendSource, content, timestamp
                  FROM messages
@@ -1903,64 +1997,22 @@ class OneRingPreprocessor {
             ).all(agentName, frontendSource, Math.max(items.length * 8, 80));
 
             const usedIds = new Set();
-            let directBound = 0;
-            let directHashMismatch = 0;
-            let fallbackBound = 0;
-
-            const bindMatchedRow = (item, matched, bindSource) => {
-                usedIds.add(Number(matched.id));
+            for (const item of items) {
+                const matched = rows.find(row =>
+                    row.role === item.role &&
+                    !usedIds.has(row.id) &&
+                    snapshot.contentHash(row.content) === item.oldHash
+                );
+                if (!matched) continue;
+                usedIds.add(matched.id);
                 stats.boundTimestampsByIndex[item.index] = {
                     dbId: matched.id,
                     oldDbId: item.oldDbId || null,
                     timestamp: matched.timestamp,
                     senderName: matched.senderName,
                     frontendSource: matched.frontendSource || frontendSource,
-                    source: bindSource
+                    source
                 };
-            };
-
-            for (const item of items) {
-                // Snapshot edit 已经由 post 差分确认旧块位置，且快照行保存了 dbId。
-                // UPDATE content 时必须优先信任该 dbId；oldHash 搜索只作为快照 dbId 缺失/失效时的兜底。
-                // 这里绝不修改 timestamp；只有 raw-client 权威时间戳校正路径允许覆盖 timestamp。
-                const preferredIds = [item.dbId, item.oldDbId]
-                    .map(id => Number(id))
-                    .filter(id => Number.isInteger(id) && id > 0);
-
-                let directMatched = null;
-                for (const preferredId of preferredIds) {
-                    if (usedIds.has(preferredId)) continue;
-                    const row = directRowsById.get(preferredId);
-                    if (!row || row.role !== item.role) continue;
-                    directMatched = row;
-                    break;
-                }
-
-                if (directMatched) {
-                    if (snapshot.contentHash(directMatched.content) !== item.oldHash) {
-                        directHashMismatch++;
-                        if (debugMode) {
-                            console.warn(`[OneRing] Snapshot edit dbId direct bind hash mismatch source=${source} dbId=${directMatched.id} role=${item.role}; preserving dbId binding because snapshot post-diff is authoritative.`);
-                        }
-                    }
-                    directBound++;
-                    bindMatchedRow(item, directMatched, `${source}-dbid`);
-                    continue;
-                }
-
-                const matched = rows.find(row =>
-                    row.role === item.role &&
-                    !usedIds.has(Number(row.id)) &&
-                    snapshot.contentHash(row.content) === item.oldHash
-                );
-                if (!matched) continue;
-
-                fallbackBound++;
-                bindMatchedRow(item, matched, source);
-            }
-
-            if (debugMode && (directBound > 0 || fallbackBound > 0 || directHashMismatch > 0)) {
-                console.log(`[OneRing] Snapshot edit binding source=${source}: directDbId=${directBound}, fallbackOldHash=${fallbackBound}, directHashMismatch=${directHashMismatch}, total=${items.length}`);
             }
         } catch (e) {
             if (debugMode) console.warn(`[OneRing] Snapshot old-hash timestamp binding failed source=${source}:`, e.message);
@@ -2022,19 +2074,20 @@ class OneRingPreprocessor {
         // _processRecordOnlyMessages() 完成。若某块已有旧尾标，暂不在快速路径改写，
         // 后台严格绑定阶段会在无可信 bound 时剥离，或用真库时间修正。
         const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
-        const timelineStrategy = this._createTimelineStrategy(clientTimestampBindingInfo);
-        const clientTimestampBindings = timelineStrategy.hasClientTimestampTruth
-            ? timelineStrategy.bindRawMessages(
+        const clientTimestampBindings = (clientTimestampBindingInfo?.bindings || []).length > 0
+            ? this._bindClientTimestampForRawMessages(
                 agentName,
                 frontendSource,
                 result,
+                clientTimestampBindingInfo,
                 defaultUserName,
                 'only-client-verified-raw-hash'
             )
-            : timelineStrategy.bindPostBlocks(
+            : this._bindClientTimestampForPostBlocks(
                 agentName,
                 frontendSource,
                 postBlocks,
+                clientTimestampBindingInfo,
                 'only-client-verified-hash'
             );
         if (clientTimestampBindings.verifiedBindings.length > 0) {
@@ -2054,7 +2107,7 @@ class OneRingPreprocessor {
                 frontendSource,
                 this._detectNewConversationStartUserIndex(result, defaultUserName, agentName)
             );
-            timelineStrategy.scheduleTimestampCorrections?.(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'only-client-hash');
+            this._scheduleClientTimestampCorrections(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'only-client-hash');
         }
         result = dedupeAdjacentSimilarConversation(result, outputDedupeThreshold);
         const retryTargetTurn = this._findRetryTargetTurn(agentName, frontendSource, postBlocks, null);
@@ -2122,22 +2175,23 @@ class OneRingPreprocessor {
         const nextTimestamp = createOneRingTimestampSequencer();
         let result = Array.isArray(messages) ? [...messages] : messages;
 
-        const effectiveClientTimestampBindingInfo = clientTimestampBindingInfo || timelineCommon.getClientTimestampBindingsFromConfig({}, formatOneRingTimestamp);
+        const effectiveClientTimestampBindingInfo = clientTimestampBindingInfo || getClientTimestampBindingsFromConfig({});
         const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
-        const timelineStrategy = this._createTimelineStrategy(effectiveClientTimestampBindingInfo);
-        const clientTimestampBindings = timelineStrategy.hasClientTimestampTruth
-            ? timelineStrategy.bindRawMessages(
+        const clientTimestampBindings = (effectiveClientTimestampBindingInfo?.bindings || []).length > 0
+            ? this._bindClientTimestampForRawMessages(
                 agentName,
                 frontendSource,
                 result,
+                effectiveClientTimestampBindingInfo,
                 defaultUserName,
                 'record-only-client-verified-raw-hash',
                 { suppressLog: suppressClientBindingLog }
             )
-            : timelineStrategy.bindPostBlocks(
+            : this._bindClientTimestampForPostBlocks(
                 agentName,
                 frontendSource,
                 postBlocks,
+                effectiveClientTimestampBindingInfo,
                 'record-only-client-verified-hash',
                 { suppressLog: suppressClientBindingLog }
             );
@@ -2213,8 +2267,7 @@ class OneRingPreprocessor {
                     {
                         overlapCount: appendResult.overlapCount || 0,
                         mode: appendResult.mode || null,
-                        hasClientTimestampTruth: (effectiveClientTimestampBindingInfo?.bindings || []).length > 0,
-                        clientTimestampBindings: clientTimestampBindings.boundTimestampsByIndex || {}
+                        hasClientTimestampTruth: (effectiveClientTimestampBindingInfo?.bindings || []).length > 0
                     }
                 );
                 syncStats.snapshotFastPath = true;
@@ -2243,7 +2296,7 @@ class OneRingPreprocessor {
             ...(snapshotEditTimestampBindings.boundTimestampsByIndex || {}),
             ...(clientTimestampBindings.boundTimestampsByIndex || {})
         };
-        timelineStrategy.scheduleTimestampCorrections?.(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'record-only-client-hash');
+        this._scheduleClientTimestampCorrections(agentName, frontendSource, clientTimestampBindings.verifiedBindings, 'record-only-client-hash');
         const exactBoundValues = Object.values(exactTimestampBindings.boundTimestampsByIndex || {});
         const exactSourceCounts = exactBoundValues.reduce((acc, binding) => {
             const source = binding?.source || 'exact';
@@ -2389,6 +2442,193 @@ class OneRingPreprocessor {
             .filter(Boolean)
             .filter(block => !block.frontendSource || block.frontendSource === frontendSource)
             .filter(block => block.text);
+    }
+
+    _bindClientTimestampForRawMessages(agentName, frontendSource, messages, bindingInfo, defaultUserName, source = 'client-verified-raw-hash', options = {}) {
+        const stats = { boundTimestampsByIndex: {}, verifiedBindings: [] };
+        const clientBindings = Array.isArray(bindingInfo?.bindings) ? bindingInfo.bindings : [];
+        if (!Array.isArray(messages) || clientBindings.length === 0) return stats;
+
+        let hashMismatch = 0;
+        let missingIndex = 0;
+        let roleMismatch = 0;
+        let unrecordable = 0;
+
+        for (const binding of clientBindings) {
+            const message = messages[binding.index];
+            if (!message) {
+                missingIndex++;
+                continue;
+            }
+            if (message.role !== binding.role) {
+                roleMismatch++;
+                continue;
+            }
+
+            const rawText = fuzzy.extractText(message.content);
+            const hashMatch = findClientRawHashMatchVariant(rawText, binding.sentHash);
+            if (!hashMatch) {
+                hashMismatch++;
+                continue;
+            }
+
+            const classified = message.role === 'assistant'
+                ? classifyAssistantContent(message.content, agentName)
+                : classifyUserContent(message.content, defaultUserName, agentName);
+            if (!classified) {
+                unrecordable++;
+                continue;
+            }
+
+            const verified = {
+                ...binding,
+                agentName,
+                frontendSource,
+                text: rawText,
+                hash: hashMatch.hash,
+                hashVariant: hashMatch.variant,
+                hashVariantAddedChars: hashMatch.addedChars
+            };
+            stats.verifiedBindings.push(verified);
+            stats.boundTimestampsByIndex[binding.index] = {
+                timestamp: binding.timestamp,
+                senderName: classified.senderName || (message.role === 'assistant' ? agentName : '?'),
+                frontendSource,
+                source,
+                messageId: binding.messageId || null,
+                sentHash: binding.sentHash,
+                hashVariant: hashMatch.variant
+            };
+        }
+
+        if (!options.suppressLog && (stats.verifiedBindings.length > 0 || hashMismatch > 0 || missingIndex > 0 || roleMismatch > 0 || unrecordable > 0)) {
+            console.log(`[OneRing] Client timestamp raw hash binding verified=${stats.verifiedBindings.length}/${clientBindings.length} missingIndex=${missingIndex} roleMismatch=${roleMismatch} hashMismatch=${hashMismatch} unrecordable=${unrecordable} agent="${agentName}" frontend="${frontendSource}"`);
+        }
+
+        return stats;
+    }
+
+    _bindClientTimestampForPostBlocks(agentName, frontendSource, postBlocks, bindingInfo, source = 'client-verified-hash', options = {}) {
+        const stats = { boundTimestampsByIndex: {}, verifiedBindings: [] };
+        const blocks = Array.isArray(postBlocks) ? postBlocks : [];
+        const clientBindings = Array.isArray(bindingInfo?.bindings) ? bindingInfo.bindings : [];
+        if (blocks.length === 0 || clientBindings.length === 0) return stats;
+
+        const blockByIndex = new Map(blocks.map(block => [block.index, block]));
+        let hashMismatch = 0;
+        let missingIndex = 0;
+        let roleMismatch = 0;
+
+        for (const binding of clientBindings) {
+            const block = blockByIndex.get(binding.index);
+            if (!block) {
+                missingIndex++;
+                continue;
+            }
+            if (block.role !== binding.role) {
+                roleMismatch++;
+                continue;
+            }
+            const hashMatch = findClientRawHashMatchVariant(block.text, binding.sentHash);
+            if (!hashMatch) {
+                hashMismatch++;
+                continue;
+            }
+            const blockHash = hashMatch.hash;
+
+            const verified = {
+                ...binding,
+                agentName,
+                frontendSource,
+                text: block.text,
+                hash: blockHash,
+                hashVariant: hashMatch.variant,
+                hashVariantAddedChars: hashMatch.addedChars
+            };
+            stats.verifiedBindings.push(verified);
+            stats.boundTimestampsByIndex[block.index] = {
+                timestamp: binding.timestamp,
+                senderName: block.senderName || (block.role === 'assistant' ? agentName : '?'),
+                frontendSource,
+                source,
+                messageId: binding.messageId || null,
+                sentHash: binding.sentHash,
+                hashVariant: hashMatch.variant
+            };
+        }
+
+        if (!options.suppressLog && (stats.verifiedBindings.length > 0 || hashMismatch > 0 || missingIndex > 0 || roleMismatch > 0)) {
+            console.log(`[OneRing] Client timestamp hash binding verified=${stats.verifiedBindings.length}/${clientBindings.length} missingIndex=${missingIndex} roleMismatch=${roleMismatch} hashMismatch=${hashMismatch} agent="${agentName}" frontend="${frontendSource}"`);
+            if (debugMode && hashMismatch > 0) {
+                const mismatchSamples = clientBindings
+                    .map(binding => {
+                        const block = blockByIndex.get(binding.index);
+                        if (!block || block.role !== binding.role) return null;
+                        const serverHash = rawSha256(block.text);
+                        const variantMatch = findClientRawHashMatchVariant(block.text, binding.sentHash);
+                        return !variantMatch
+                            ? `idx=${binding.index} role=${binding.role} client=${binding.sentHash.slice(0, 10)} server=${serverHash.slice(0, 10)} textLen=${String(block.text || '').length}`
+                            : null;
+                    })
+                    .filter(Boolean)
+                    .slice(0, 5);
+                if (mismatchSamples.length > 0) {
+                    console.log(`[OneRing] Client timestamp hash mismatch samples: ${mismatchSamples.join(' | ')}`);
+                }
+            }
+        }
+
+        return stats;
+    }
+
+    _scheduleClientTimestampCorrections(agentName, frontendSource, verifiedBindings, reason = 'client-timestamp-correction') {
+        const items = (Array.isArray(verifiedBindings) ? verifiedBindings : [])
+            .filter(item => item && item.hash && item.role && item.timestamp);
+
+        if (items.length === 0) return;
+
+        const run = () => {
+            try {
+                const conn = db.getDb(agentName, projectBasePath);
+                const recentRows = db.getRecentMessagesByFrontend(
+                    agentName,
+                    frontendSource,
+                    Math.max(items.length * 8, 80),
+                    projectBasePath
+                );
+                const usedIds = new Set();
+
+                for (const item of items) {
+                    const matched = recentRows.find(row => {
+                        if (!row || row.role !== item.role || usedIds.has(row.id)) return false;
+                        // verified.hash 可能来自“客户端 raw variant”（如末尾空格/换行），
+                        // DB row.content 则是服务端最终入库文本；修正阶段必须复用同一套 variant 规则。
+                        return rawSha256(row.content) === item.hash ||
+                            !!findClientRawHashMatchVariant(row.content, item.sentHash || item.hash);
+                    });
+                    if (!matched) continue;
+                    usedIds.add(matched.id);
+
+                    if (matched.timestamp !== item.timestamp) {
+                        db.updateMessageTimestampById(agentName, matched.id, item.timestamp, projectBasePath);
+                        if (debugMode) {
+                            console.log(`[OneRing] Async client timestamp correction reason=${reason} dbId=${matched.id} old="${matched.timestamp}" new="${item.timestamp}" role=${item.role}`);
+                        }
+                    }
+                }
+
+                // 保持连接初始化副作用明确，避免 linter 误判 conn 未使用。
+                void conn;
+            } catch (e) {
+                console.error(`[OneRing] Async client timestamp correction failed reason=${reason}:`, e.message);
+            }
+        };
+
+        if (typeof setImmediate === 'function') {
+            setImmediate(run);
+        } else {
+            setTimeout(run, 0);
+        }
     }
 
     _bindExactTimestampsForPostBlocks(agentName, frontendSource, postBlocks, threshold = 0.92) {
@@ -2675,8 +2915,7 @@ class OneRingPreprocessor {
             }
 
             if (block.role === 'user' && block === lastUserBlock) {
-                const clientBound = appendMeta?.clientTimestampBindings?.[block.index] || null;
-                const ts = clientBound?.timestamp || nextTimestamp();
+                const ts = nextTimestamp();
                 const userResult = this._recordUserMessage(
                     agentName,
                     frontendSource,
@@ -2692,7 +2931,7 @@ class OneRingPreprocessor {
                     timestamp: ts,
                     senderName: block.senderName || defaultUserName,
                     frontendSource,
-                    source: clientBound ? 'snapshot-post-client-verified' : 'snapshot-post'
+                    source: 'snapshot-post'
                 };
                 newUserCount++;
                 const recordMs = Number(process.hrtime.bigint() - recordStart) / 1e6;
