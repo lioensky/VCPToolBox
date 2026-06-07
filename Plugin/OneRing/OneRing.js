@@ -2834,6 +2834,14 @@ class OneRingPreprocessor {
         };
     }
 
+    extractMetaFromMessages(messages) {
+        return this._extractMetaFromMessages(messages);
+    }
+
+    async recordAIResponseWithMeta(meta, aiText) {
+        return this.recordAIResponse(meta, aiText);
+    }
+
     /**
      * AI 回复入库（异步，fire-and-forget，供 Stream/NonStream handler 在最终回复完成后调用）。
      */

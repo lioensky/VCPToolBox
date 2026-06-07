@@ -992,6 +992,19 @@ class ChatCompletionHandler {
 
       originalBody.messages = processedMessages;
 
+      let oneRingResponseMeta = null;
+      try {
+        const oneRingModule = pluginManager?.messagePreprocessors?.get?.('OneRing');
+        if (oneRingModule && typeof oneRingModule.extractMetaFromMessages === 'function') {
+          oneRingResponseMeta = oneRingModule.extractMetaFromMessages(processedMessages);
+          if (DEBUG_MODE && oneRingResponseMeta) {
+            console.log(`[OneRing] Frozen response meta before upstream fetch: agent=${oneRingResponseMeta.agentName} frontend=${oneRingResponseMeta.frontendSource} turn=${oneRingResponseMeta.turnId || 'none'}`);
+          }
+        }
+      } catch (oneRingMetaError) {
+        console.warn('[OneRing] Failed to freeze response meta before upstream fetch:', oneRingMetaError.message);
+      }
+
       const willStreamResponse = isOriginalRequestStreaming;
       const finalUpstreamBody = { ...originalBody, stream: willStreamResponse };
 
@@ -1133,7 +1146,8 @@ class ChatCompletionHandler {
         isToolResultError,
         formatToolResult,
         vcpToolUseForbidden,
-        semanticModelFallbackCandidates
+        semanticModelFallbackCandidates,
+        oneRingResponseMeta
       };
 
       if (isUpstreamStreaming) {

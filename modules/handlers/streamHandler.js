@@ -38,7 +38,8 @@ class StreamHandler {
       _refreshRagBlocksIfNeeded,
       fetchWithRetry,
       vcpToolUseForbidden,
-      semanticModelFallbackCandidates
+      semanticModelFallbackCandidates,
+      oneRingResponseMeta
     } = this.context;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || this.context.forceShowVCP;
@@ -54,8 +55,16 @@ class StreamHandler {
 
     const recordOneRingAIResponse = (aiText, phaseLabel) => {
       const oneRingModule = pluginManager?.messagePreprocessors?.get?.('OneRing');
-      if (oneRingModule && typeof oneRingModule.recordAIResponseFromMessages === 'function') {
-        oneRingModule.recordAIResponseFromMessages(originalBody.messages, aiText).catch(e =>
+      if (!oneRingModule) return;
+
+      const recordPromise = oneRingResponseMeta && typeof oneRingModule.recordAIResponseWithMeta === 'function'
+        ? oneRingModule.recordAIResponseWithMeta(oneRingResponseMeta, aiText)
+        : (typeof oneRingModule.recordAIResponseFromMessages === 'function'
+          ? oneRingModule.recordAIResponseFromMessages(originalBody.messages, aiText)
+          : null);
+
+      if (recordPromise && typeof recordPromise.catch === 'function') {
+        recordPromise.catch(e =>
           console.error(`[OneRing Stream] Error recording AI response (${phaseLabel}):`, e),
         );
       }
