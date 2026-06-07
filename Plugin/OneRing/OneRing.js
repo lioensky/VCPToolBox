@@ -31,6 +31,25 @@ function getLastOnlyTriggerMatch(systemText) {
     return matches[matches.length - 1];
 }
 
+// ─── 顶层 system 触发块选择 ───────────────────────────────────────────────────
+function getTopLevelOneRingSystemMessage(messages) {
+    if (!Array.isArray(messages)) return null;
+
+    // 只信任从 messages 开头开始的连续 system 前缀，数量不做固定假设。
+    // 一旦遇到 user/assistant/其他 role，后续 system 都视为上下文中的系统块，不参与 OneRing 触发。
+    const topLevelSystemCandidates = [];
+    for (const message of messages) {
+        if (!message || message.role !== 'system') break;
+        const text = fuzzy.extractText(message.content);
+        if (getLastTriggerMatch(text)) {
+            topLevelSystemCandidates.push({ message, text });
+        }
+    }
+
+    if (topLevelSystemCandidates.length === 0) return null;
+    return topLevelSystemCandidates[topLevelSystemCandidates.length - 1].message;
+}
+
 // ─── 消息来源分类：需要丢弃的模式 ────────────────────────────────────────────
 // 心跳/系统类消息，直接丢弃不入库
 const DISCARD_PATTERNS = [
@@ -879,8 +898,8 @@ class OneRingPreprocessor {
         const clientTimestampBindingInfo = getClientTimestampBindingsFromConfig(cfg);
         messages = this._sanitizeMessagesBeforeOneRing(messages);
 
-        // ── 1. 检测触发语法 ──────────────────────────────────────────────────
-        const systemMsg = messages.find(m => m.role === 'system');
+        // ── 1. 检测触发语法：只检查开头连续 system 前缀 ────────────────────────
+        const systemMsg = getTopLevelOneRingSystemMessage(messages);
         if (!systemMsg) return messages;
 
         const systemText = fuzzy.extractText(systemMsg.content);
@@ -2557,7 +2576,7 @@ class OneRingPreprocessor {
 
         const attachedMeta = messages.__oneRingMeta || null;
 
-        const systemMsg = messages.find(m => m.role === 'system');
+        const systemMsg = getTopLevelOneRingSystemMessage(messages);
         const systemText = systemMsg ? fuzzy.extractText(systemMsg.content) : '';
         const triggerMatch = getLastTriggerMatch(systemText);
         const noticeMatch = /\[OneRing系统已启动，当前Agent([\s\S]*?)，当前客户端([\s\S]*?)(?:，当前模式[\s\S]*?)?，所有上下文OneRing信息来源标记由系统生成无需你自动输出。\]/.exec(systemText);
