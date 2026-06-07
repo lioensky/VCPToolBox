@@ -266,6 +266,24 @@ function getOneRingTimelineMeta(message) {
     return message && message.__oneRingTimelineMeta ? message.__oneRingTimelineMeta : null;
 }
 
+function markOneRingOriginalIndex(message, originalIndex) {
+    if (!message || typeof message !== 'object' || !Number.isInteger(originalIndex)) return message;
+    try {
+        Object.defineProperty(message, '__oneRingOriginalIndex', {
+            value: originalIndex,
+            enumerable: false,
+            configurable: true
+        });
+    } catch (e) {
+        if (debugMode) console.warn('[OneRing] Failed to mark original index:', e.message);
+    }
+    return message;
+}
+
+function getOneRingOriginalIndex(message) {
+    return Number.isInteger(message?.__oneRingOriginalIndex) ? message.__oneRingOriginalIndex : -1;
+}
+
 /**
  * 为消息附加 OneRing 尾部标记。
  * 只在 cleanText 末尾追加，不影响原消息开头，对下游处理透明。
@@ -896,7 +914,12 @@ class OneRingPreprocessor {
         const cfg = { ...config, ...requestConfig };
         if (!hotConfig.enabled) return messages;
         const clientTimestampBindingInfo = getClientTimestampBindingsFromConfig(cfg);
-        messages = this._sanitizeMessagesBeforeOneRing(messages);
+        const hasClientTimestampTruth = (clientTimestampBindingInfo.bindings || []).length > 0;
+        const originalMessages = Array.isArray(messages) ? messages : null;
+        const workingView = hasClientTimestampTruth
+            ? null
+            : this._buildOneRingWorkingView(messages);
+        messages = workingView ? workingView.workingMessages : messages;
 
         // ── 1. 检测触发语法：只检查开头连续 system 前缀 ────────────────────────
         const systemMsg = getTopLevelOneRingSystemMessage(messages);
@@ -927,7 +950,7 @@ class OneRingPreprocessor {
 
         if (clientTimestampBindingInfo.rawCount > 0) {
             console.log(`[OneRing] Detected ${clientTimestampBindingInfo.bindings.length}/${clientTimestampBindingInfo.rawCount} client safe timestamp hash bindings for agent="${agentName}" frontend="${frontendSource}" schema=${clientTimestampBindingInfo.schemaVersion ?? 'unknown'} mode=${clientTimestampBindingInfo.messageMetadataMode || 'unknown'}`);
-            probeRawClientTimestampBindings(messages, clientTimestampBindingInfo, agentName, frontendSource, 'after-sanitize');
+            probeRawClientTimestampBindings(originalMessages || messages, clientTimestampBindingInfo, agentName, frontendSource, hasClientTimestampTruth ? 'raw-authoritative' : 'working-view');
         }
 
         if (debugMode) console.log(`[OneRing] Triggered for agent="${agentName}" frontend="${frontendSource}"`);
@@ -975,7 +998,8 @@ class OneRingPreprocessor {
                     outputDedupeThreshold,
                     clientTimestampBindingInfo
                 );
-                return this._applyTailTagPlacement(result);
+                const restoredResult = this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
+                return this._applyTailTagPlacement(restoredResult);
             }
 
             const result = this._processRecordOnlyMessages(
@@ -988,20 +1012,30 @@ class OneRingPreprocessor {
                 outputDedupeThreshold,
                 clientTimestampBindingInfo
             );
-            return this._applyTailTagPlacement(result);
+            const restoredResult = this._restoreWorkingViewToOriginalMessages(originalMessages, result, workingView);
+            return this._applyTailTagPlacement(restoredResult);
         }
 
         // ── 3. 从 DB 查询同信道历史，做 diff（优先快照精确编辑，兜底 fuzzy）────
         let patchMessages = messages;
         let isFreshShortContext = false;
         const localPostBlocks = this._extractLocalPostBlocks(messages, agentName, frontendSource, defaultUserName);
-        const clientTimestampBindings = this._bindClientTimestampForPostBlocks(
-            agentName,
-            frontendSource,
-            localPostBlocks,
-            clientTimestampBindingInfo,
-            'client-verified-hash'
-        );
+        const clientTimestampBindings = hasClientTimestampTruth
+            ? this._bindClientTimestampForRawMessages(
+                agentName,
+                frontendSource,
+                messages,
+                clientTimestampBindingInfo,
+                defaultUserName,
+                'client-verified-raw-hash'
+            )
+            : this._bindClientTimestampForPostBlocks(
+                agentName,
+                frontendSource,
+                localPostBlocks,
+                clientTimestampBindingInfo,
+                'client-verified-hash'
+            );
         const summaryStats = {
             injected: 0,
             dbInserted: 0,
@@ -1183,6 +1217,7 @@ class OneRingPreprocessor {
         const turnMeta = this._createPendingTurn(agentName, frontendSource, localPostBlocks, retryTargetTurn);
         this._attachMeta(patchMessages, agentName, frontendSource, turnMeta);
 
+        patchMessages = this._restoreWorkingViewToOriginalMessages(originalMessages, patchMessages, workingView);
         return this._applyTailTagPlacement(patchMessages);
     }
 
@@ -1488,18 +1523,27 @@ class OneRingPreprocessor {
         return stats;
     }
 
-    _sanitizeMessagesBeforeOneRing(messages) {
-        if (!Array.isArray(messages)) return messages;
+    _buildOneRingWorkingView(messages) {
+        if (!Array.isArray(messages)) return null;
 
         let removedSystemUser = 0;
         let removedEmptyUser = 0;
         let strippedUserContent = 0;
-        const result = [];
+        const workingMessages = [];
+        const workingToOriginalIndex = [];
+        const originalToWorkingIndex = new Map();
+        const removedItems = [];
 
-        for (const message of messages) {
+        messages.forEach((message, originalIndex) => {
             if (!message || message.role !== 'user') {
-                result.push(message);
-                continue;
+                const workingMessage = message && typeof message === 'object'
+                    ? { ...message }
+                    : message;
+                markOneRingOriginalIndex(workingMessage, originalIndex);
+                originalToWorkingIndex.set(originalIndex, workingMessages.length);
+                workingToOriginalIndex.push(originalIndex);
+                workingMessages.push(workingMessage);
+                return;
             }
 
             const originalText = fuzzy.extractText(message.content);
@@ -1509,31 +1553,138 @@ class OneRingPreprocessor {
 
             if (shouldDropSystemPromptUser) {
                 removedSystemUser++;
-                continue;
+                removedItems.push({ originalIndex, message, reason: 'system-user' });
+                return;
             }
 
             if (!hasUserTextContent(sanitizedContent)) {
                 removedEmptyUser++;
-                continue;
+                removedItems.push({ originalIndex, message, reason: 'empty-user' });
+                return;
             }
 
             if (originalText !== sanitizedText) strippedUserContent++;
-            result.push({ ...message, content: sanitizedContent });
-        }
+            const workingMessage = markOneRingOriginalIndex({ ...message, content: sanitizedContent }, originalIndex);
+            originalToWorkingIndex.set(originalIndex, workingMessages.length);
+            workingToOriginalIndex.push(originalIndex);
+            workingMessages.push(workingMessage);
+        });
 
         if (debugMode && (removedSystemUser > 0 || removedEmptyUser > 0 || strippedUserContent > 0)) {
-            console.log(`[OneRing] Sanitized incoming user blocks: removedSystem=${removedSystemUser}, removedEmpty=${removedEmptyUser}, stripped=${strippedUserContent}`);
+            console.log(`[OneRing] Built reversible working view: removedSystem=${removedSystemUser}, removedEmpty=${removedEmptyUser}, stripped=${strippedUserContent}, original=${messages.length}, working=${workingMessages.length}`);
         }
 
         if (messages.__oneRingMeta) {
             this._attachMeta(
-                result,
+                workingMessages,
                 messages.__oneRingMeta.agentName,
                 messages.__oneRingMeta.frontendSource,
                 { ...messages.__oneRingMeta }
             );
         }
+
+        return {
+            originalMessages: messages,
+            workingMessages,
+            workingToOriginalIndex,
+            originalToWorkingIndex,
+            removedItems
+        };
+    }
+
+    _sanitizeMessagesBeforeOneRing(messages) {
+        const view = this._buildOneRingWorkingView(messages);
+        return view ? view.workingMessages : messages;
+    }
+
+    _restoreWorkingViewToOriginalMessages(originalMessages, processedMessages, workingView) {
+        if (!workingView || !Array.isArray(originalMessages) || !Array.isArray(processedMessages)) {
+            return processedMessages;
+        }
+
+        const restored = [...originalMessages];
+        const injectedBeforeOriginalIndex = new Map();
+        const injectedAtEnd = [];
+        let pendingInjected = [];
+
+        const flushPendingBefore = (originalIndex) => {
+            if (pendingInjected.length === 0 || !Number.isInteger(originalIndex)) return;
+            if (!injectedBeforeOriginalIndex.has(originalIndex)) {
+                injectedBeforeOriginalIndex.set(originalIndex, []);
+            }
+            injectedBeforeOriginalIndex.get(originalIndex).push(...pendingInjected);
+            pendingInjected = [];
+        };
+
+        for (const message of processedMessages) {
+            if (!message) continue;
+
+            if (isOneRingInjectedFromDb(message)) {
+                pendingInjected.push(message);
+                continue;
+            }
+
+            const originalIndex = getOneRingOriginalIndex(message);
+            if (!Number.isInteger(originalIndex) || originalIndex < 0 || originalIndex >= originalMessages.length) {
+                continue;
+            }
+
+            flushPendingBefore(originalIndex);
+            restored[originalIndex] = this._mergeProcessedMessageOntoOriginal(originalMessages[originalIndex], message);
+        }
+
+        if (pendingInjected.length > 0) {
+            injectedAtEnd.push(...pendingInjected);
+        }
+
+        const result = [];
+        for (let i = 0; i < restored.length; i++) {
+            const before = injectedBeforeOriginalIndex.get(i) || [];
+            result.push(...before);
+            result.push(restored[i]);
+        }
+        result.push(...injectedAtEnd);
+
+        if (processedMessages.__oneRingMeta) {
+            this._attachMeta(
+                result,
+                processedMessages.__oneRingMeta.agentName,
+                processedMessages.__oneRingMeta.frontendSource,
+                { ...processedMessages.__oneRingMeta }
+            );
+        }
+
+        try {
+            Object.defineProperty(result, '__oneRingInjectedCount', {
+                value: result.filter(message => isOneRingInjectedFromDb(message)).length,
+                enumerable: false,
+                configurable: true
+            });
+        } catch (e) {
+            if (debugMode) console.warn('[OneRing] Failed to attach restored injected count:', e.message);
+        }
+
         return result;
+    }
+
+    _mergeProcessedMessageOntoOriginal(originalMessage, processedMessage) {
+        if (!originalMessage || !processedMessage || originalMessage.role !== 'user') {
+            return processedMessage;
+        }
+
+        const meta = getOneRingTimelineMeta(processedMessage) || getOneRingTailMeta(processedMessage.content);
+        if (!meta) return originalMessage;
+
+        return {
+            ...originalMessage,
+            content: upsertTailTag(
+                originalMessage.content,
+                meta.senderName,
+                meta.timestamp,
+                meta.frontendSource,
+                !!meta.isNewConversationStart
+            )
+        };
     }
 
     _detectNewConversationStartUserIndex(messages, defaultUserName, agentName) {
@@ -1731,13 +1882,22 @@ class OneRingPreprocessor {
         // _processRecordOnlyMessages() 完成。若某块已有旧尾标，暂不在快速路径改写，
         // 后台严格绑定阶段会在无可信 bound 时剥离，或用真库时间修正。
         const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
-        const clientTimestampBindings = this._bindClientTimestampForPostBlocks(
-            agentName,
-            frontendSource,
-            postBlocks,
-            clientTimestampBindingInfo,
-            'only-client-verified-hash'
-        );
+        const clientTimestampBindings = (clientTimestampBindingInfo?.bindings || []).length > 0
+            ? this._bindClientTimestampForRawMessages(
+                agentName,
+                frontendSource,
+                result,
+                clientTimestampBindingInfo,
+                defaultUserName,
+                'only-client-verified-raw-hash'
+            )
+            : this._bindClientTimestampForPostBlocks(
+                agentName,
+                frontendSource,
+                postBlocks,
+                clientTimestampBindingInfo,
+                'only-client-verified-hash'
+            );
         if (clientTimestampBindings.verifiedBindings.length > 0) {
             const timestamped = this._markTimelineBindings(
                 result,
@@ -1825,14 +1985,24 @@ class OneRingPreprocessor {
 
         const effectiveClientTimestampBindingInfo = clientTimestampBindingInfo || getClientTimestampBindingsFromConfig({});
         const postBlocks = this._extractLocalPostBlocks(result, agentName, frontendSource, defaultUserName);
-        const clientTimestampBindings = this._bindClientTimestampForPostBlocks(
-            agentName,
-            frontendSource,
-            postBlocks,
-            effectiveClientTimestampBindingInfo,
-            'record-only-client-verified-hash',
-            { suppressLog: suppressClientBindingLog }
-        );
+        const clientTimestampBindings = (effectiveClientTimestampBindingInfo?.bindings || []).length > 0
+            ? this._bindClientTimestampForRawMessages(
+                agentName,
+                frontendSource,
+                result,
+                effectiveClientTimestampBindingInfo,
+                defaultUserName,
+                'record-only-client-verified-raw-hash',
+                { suppressLog: suppressClientBindingLog }
+            )
+            : this._bindClientTimestampForPostBlocks(
+                agentName,
+                frontendSource,
+                postBlocks,
+                effectiveClientTimestampBindingInfo,
+                'record-only-client-verified-hash',
+                { suppressLog: suppressClientBindingLog }
+            );
         timing.mark('extractPostBlocks', `blocks=${postBlocks.length}`);
         const summaryStats = {
             injected: 0,
@@ -2077,6 +2247,70 @@ class OneRingPreprocessor {
             .filter(Boolean)
             .filter(block => !block.frontendSource || block.frontendSource === frontendSource)
             .filter(block => block.text);
+    }
+
+    _bindClientTimestampForRawMessages(agentName, frontendSource, messages, bindingInfo, defaultUserName, source = 'client-verified-raw-hash', options = {}) {
+        const stats = { boundTimestampsByIndex: {}, verifiedBindings: [] };
+        const clientBindings = Array.isArray(bindingInfo?.bindings) ? bindingInfo.bindings : [];
+        if (!Array.isArray(messages) || clientBindings.length === 0) return stats;
+
+        let hashMismatch = 0;
+        let missingIndex = 0;
+        let roleMismatch = 0;
+        let unrecordable = 0;
+
+        for (const binding of clientBindings) {
+            const message = messages[binding.index];
+            if (!message) {
+                missingIndex++;
+                continue;
+            }
+            if (message.role !== binding.role) {
+                roleMismatch++;
+                continue;
+            }
+
+            const rawText = fuzzy.extractText(message.content);
+            const hashMatch = findClientRawHashMatchVariant(rawText, binding.sentHash);
+            if (!hashMatch) {
+                hashMismatch++;
+                continue;
+            }
+
+            const classified = message.role === 'assistant'
+                ? classifyAssistantContent(message.content, agentName)
+                : classifyUserContent(message.content, defaultUserName, agentName);
+            if (!classified) {
+                unrecordable++;
+                continue;
+            }
+
+            const verified = {
+                ...binding,
+                agentName,
+                frontendSource,
+                text: rawText,
+                hash: hashMatch.hash,
+                hashVariant: hashMatch.variant,
+                hashVariantAddedChars: hashMatch.addedChars
+            };
+            stats.verifiedBindings.push(verified);
+            stats.boundTimestampsByIndex[binding.index] = {
+                timestamp: binding.timestamp,
+                senderName: classified.senderName || (message.role === 'assistant' ? agentName : '?'),
+                frontendSource,
+                source,
+                messageId: binding.messageId || null,
+                sentHash: binding.sentHash,
+                hashVariant: hashMatch.variant
+            };
+        }
+
+        if (!options.suppressLog && (stats.verifiedBindings.length > 0 || hashMismatch > 0 || missingIndex > 0 || roleMismatch > 0 || unrecordable > 0)) {
+            console.log(`[OneRing] Client timestamp raw hash binding verified=${stats.verifiedBindings.length}/${clientBindings.length} missingIndex=${missingIndex} roleMismatch=${roleMismatch} hashMismatch=${hashMismatch} unrecordable=${unrecordable} agent="${agentName}" frontend="${frontendSource}"`);
+        }
+
+        return stats;
     }
 
     _bindClientTimestampForPostBlocks(agentName, frontendSource, postBlocks, bindingInfo, source = 'client-verified-hash', options = {}) {

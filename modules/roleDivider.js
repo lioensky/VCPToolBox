@@ -36,6 +36,28 @@ function normalizeForIgnore(text) {
 }
 
 /**
+ * Copy non-enumerable array metadata produced by upstream preprocessors.
+ * OneRing attaches __oneRingMeta to the messages array itself; roleDivider may
+ * return a new array, so metadata must be preserved explicitly.
+ */
+function copyArrayMetadata(source, target) {
+    if (!Array.isArray(source) || !Array.isArray(target)) return target;
+
+    for (const key of Object.getOwnPropertyNames(source)) {
+        if (/^(?:length|\d+)$/.test(key)) continue;
+        const descriptor = Object.getOwnPropertyDescriptor(source, key);
+        if (!descriptor) continue;
+        try {
+            Object.defineProperty(target, key, descriptor);
+        } catch (e) {
+            // Keep role divider pure and non-fatal; metadata is best-effort.
+        }
+    }
+
+    return target;
+}
+
+/**
  * Process a single message content and split it into multiple messages if tags are present.
  * @param {Object} message - The original message object {role, content}.
  * @param {Object} options - Configuration options.
@@ -373,7 +395,7 @@ function process(messages, { ignoreList = [], switches = { system: true, assista
         const processed = processSingleMessage(msg, { ignoreList, switches, scanSwitches, removeDisabledTags });
         newMessages.push(...processed);
     }
-    return newMessages;
+    return copyArrayMetadata(messages, newMessages);
 }
 
 module.exports = {
