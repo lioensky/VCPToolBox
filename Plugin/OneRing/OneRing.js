@@ -9,7 +9,6 @@ const chokidar = require('chokidar');
 const db = require('./OneRingDB.js');
 const fuzzy = require('./OneRingFuzzy.js');
 const snapshot = require('./OneRingSnapshot.js');
-const native = require('./OneRingNative.js');
 const timelineCommon = require('./OneRingTimelineCommon.js');
 const { RawClientTimelineStrategy, probeRawClientTimestampBindings } = require('./OneRingRawClientTimeline.js');
 const { ServerInferredTimelineStrategy } = require('./OneRingServerInferredTimeline.js');
@@ -2072,11 +2071,6 @@ class OneRingPreprocessor {
             for (const item of items) {
                 try {
                     db.updateMessageById(agentName, item.dbId, item.content, projectBasePath);
-                    try {
-                        native.updateMessageById(projectBasePath, config, agentName, item.dbId, item.content);
-                    } catch (nativeError) {
-                        if (debugMode) console.warn(`[OneRingNative] async update cache failed reason=${reason} dbId=${item.dbId}:`, nativeError.message);
-                    }
                     if (debugMode) console.log(`[OneRing] Async message update completed reason=${reason} dbId=${item.dbId}`);
                 } catch (e) {
                     console.error(`[OneRing] Async message update failed reason=${reason} dbId=${item.dbId}:`, e.message);
@@ -2396,41 +2390,6 @@ class OneRingPreprocessor {
         const blocks = Array.isArray(postBlocks) ? postBlocks : [];
         if (blocks.length === 0) return stats;
 
-        const nativeBoundIds = new Set();
-        try {
-            const nativeResult = native.bindTimestampsForPostBlocks({
-                projectBasePath,
-                config,
-                agentName,
-                frontendSource,
-                postBlocks: blocks,
-                // 时间戳真相只允许 message 库 hash 命中；threshold > 1 可禁用 native fuzzy fallback，
-                // 但 native exact 分支不依赖 threshold，仍会返回 hash 精确绑定。
-                threshold: 1.000001,
-                limit: Math.max(blocks.length * 4, 40)
-            });
-            if (nativeResult && Array.isArray(nativeResult.bindings)) {
-                for (const binding of nativeResult.bindings) {
-                    stats.boundTimestampsByIndex[binding.index] = {
-                        dbId: binding.dbId,
-                        timestamp: binding.timestamp,
-                        senderName: binding.senderName,
-                        frontendSource: binding.frontendSource || frontendSource,
-                        source: binding.source || 'native'
-                    };
-                    if (binding.dbId) nativeBoundIds.add(binding.dbId);
-                }
-                if (debugMode || (nativeResult.elapsedMs || 0) >= 50) {
-                    console.log(`[OneRingNative] timestamp bind native bound=${nativeResult.bindings.length}/${blocks.length} elapsed=${(nativeResult.elapsedMs || 0).toFixed(1)}ms phase=${nativeResult.phaseSummary || ''}`);
-                }
-                // Rust cache 可能落后于 JS better-sqlite3 写入（例如刚完成的 AI final hook）。
-                // 只有完整绑定才直接返回；不完整时继续查 messages 真库补齐未绑定块。
-                if (nativeResult.bindings.length >= blocks.length) return stats;
-            }
-        } catch (nativeError) {
-            if (debugMode) console.warn('[OneRingNative] timestamp bind failed, falling back to JS:', nativeError.message);
-        }
-
         let recentRows = [];
         let jsExactMatched = 0;
         let jsExactMissed = 0;
@@ -2454,7 +2413,7 @@ class OneRingPreprocessor {
             return stats;
         }
 
-        const usedExactIds = new Set(nativeBoundIds);
+        const usedExactIds = new Set();
         const exactCandidates = recentRows
             .map(row => ({
                 row,
@@ -2990,11 +2949,6 @@ class OneRingPreprocessor {
                     return;
                 }
 
-                try {
-                    native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
-                } catch (nativeError) {
-                    if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
-                }
                 let turnCompleted = false;
                 if (meta.turnId) {
                     const completeResult = db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
@@ -3058,11 +3012,6 @@ class OneRingPreprocessor {
                     return;
                 }
 
-                try {
-                    native.updateMessageById(projectBasePath, config, meta.agentName, responseId, aiText);
-                } catch (nativeError) {
-                    if (debugMode) console.warn(`[OneRingNative] assistant retry update cache failed dbId=${responseId}:`, nativeError.message);
-                }
                 let turnCompleted = false;
                 if (meta.turnId) {
                     const completeResult = db.completePostTurn(meta.agentName, meta.turnId, responseId, snapshot.contentHash(aiText), new Date().toISOString(), projectBasePath);
@@ -3278,13 +3227,6 @@ class OneRingPreprocessor {
         this._projectBasePath = projectBasePath;
         hotConfigPath = path.join(projectBasePath || path.join(__dirname, '..', '..'), 'Plugin', 'OneRing', HOT_CONFIG_FILE_NAME);
         setupHotConfigWatcher();
-        try {
-            native.getEngine(projectBasePath, config);
-            const status = native.getStatus();
-            console.log(`[OneRing] Native engine status: available=${status.available}, loaded=${status.loaded}, error=${status.error || 'none'}`);
-        } catch (e) {
-            console.warn('[OneRing] Native engine initialization failed, JS fallback will be used:', e.message);
-        }
         console.log(`[OneRing] Initialized. agent-scoped SQLite at ${projectBasePath}/Plugin/OneRing/data/`);
     }
 
