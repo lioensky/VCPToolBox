@@ -202,6 +202,28 @@ function consumeVcpToolUseForbiddenPlaceholder(messages) {
 }
 
 /**
+ * Copy non-enumerable array metadata produced by upstream preprocessors.
+ * OneRing attaches __oneRingMeta to the messages array itself; any pipeline
+ * step that returns a fresh array must preserve it explicitly.
+ */
+function copyArrayMetadata(source, target) {
+  if (!Array.isArray(source) || !Array.isArray(target)) return target;
+
+  for (const key of Object.getOwnPropertyNames(source)) {
+    if (/^(?:length|\d+)$/.test(key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (!descriptor) continue;
+    try {
+      Object.defineProperty(target, key, descriptor);
+    } catch (e) {
+      // Metadata preservation is best-effort and must not break request flow.
+    }
+  }
+
+  return target;
+}
+
+/**
  * 检测工具返回结果是否为错误
  * @param {any} result - 工具返回的结果
  * @returns {boolean} - 是否为错误结果
@@ -971,7 +993,12 @@ class ChatCompletionHandler {
       // --- Detector / SuperDetector 后置处理 ---
       // 保证所有消息预处理器执行完成后，再统一应用 Detector 与 SuperDetector；
       // Role Divider 必须在其后作为最终消息拆分步骤。
-      processedMessages = messageProcessor.applyDetectorsToMessages(processedMessages, processingContext);
+      // Detector 会返回 fresh array；必须显式保护 OneRing 等预处理器挂在数组上的非枚举元数据。
+      const messagesBeforeDetectors = processedMessages;
+      processedMessages = copyArrayMetadata(
+        messagesBeforeDetectors,
+        messageProcessor.applyDetectorsToMessages(processedMessages, processingContext)
+      );
       if (DEBUG_MODE) await writeDebugLog('LogAfterDetectors', processedMessages);
 
       // --- 角色分割处理 (Role Divider) - 最终阶段 ---
