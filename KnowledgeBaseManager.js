@@ -43,6 +43,7 @@ class KnowledgeBaseManager {
             deleteBatchWindow: parseInt(process.env.KNOWLEDGEBASE_DELETE_BATCH_WINDOW_MS, 10) || 1000,
             maxDeleteBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_DELETE_BATCH_SIZE, 10) || 2000,
             deleteRebuildThreshold: parseInt(process.env.KNOWLEDGEBASE_DELETE_REBUILD_THRESHOLD, 10) || 5000,
+            migrationCacheTtlMs: parseInt(process.env.KNOWLEDGEBASE_MIGRATION_CACHE_TTL_MS, 10) || 2 * 60 * 1000,
             // 🛡️ Rust 派生表写入租约：避免 rusqlite 与 better-sqlite3 双写 WAL 竞态
             rustWriteLeaseGraceMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_GRACE_MS, 10) || 30000,
             rustWriteLeaseCooldownMs: parseInt(process.env.KNOWLEDGEBASE_RUST_WRITE_LEASE_COOLDOWN_MS, 10) || 10000,
@@ -272,10 +273,30 @@ class KnowledgeBaseManager {
                 value TEXT,
                 vector BLOB
             );
+            -- 🧳 文件移动墓碑缓存：删除事件先到时，短期保留 chunk 向量供新路径复用。
+            CREATE TABLE IF NOT EXISTS migration_deleted_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                old_path TEXT NOT NULL,
+                old_diary_name TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS migration_deleted_chunks (
+                cache_file_id INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                vector BLOB NOT NULL,
+                PRIMARY KEY (cache_file_id, chunk_index),
+                FOREIGN KEY(cache_file_id) REFERENCES migration_deleted_files(id) ON DELETE CASCADE
+            );
             CREATE INDEX IF NOT EXISTS idx_files_diary ON files(diary_name);
             CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
             CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag_id);
             CREATE INDEX IF NOT EXISTS idx_file_tags_composite ON file_tags(tag_id, file_id);
+            CREATE INDEX IF NOT EXISTS idx_migration_deleted_lookup ON migration_deleted_files(checksum, size, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_migration_deleted_expiry ON migration_deleted_files(expires_at);
             
         `);
         
@@ -285,6 +306,8 @@ class KnowledgeBaseManager {
         } catch (e) {
             // 如果列已存在，SQLite 会报错，忽略即可
         }
+
+        this._cleanupExpiredMigrationCache();
     }
 
     _openDatabaseWithRecovery(dbPath) {
@@ -1371,8 +1394,42 @@ class KnowledgeBaseManager {
         }
     }
 
+    _decodeReusableChunkRows(rows, expectedChunkCount, labelPrefix) {
+        if (!rows || rows.length !== expectedChunkCount) return null;
+
+        const vectors = [];
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].chunk_index !== i || !rows[i].vector) return null;
+
+            const decoded = this._decodeVectorBlob(
+                rows[i].vector,
+                this.config.dimension,
+                `${labelPrefix}:${i}`
+            );
+
+            if (!decoded) return null;
+
+            // 复制一份，避免底层 SQLite Buffer 生命周期/复用导致的隐性别名问题。
+            vectors.push(new Float32Array(decoded));
+        }
+
+        return vectors;
+    }
+
+    _cleanupExpiredMigrationCache(now = Date.now()) {
+        try {
+            const result = this.db.prepare('DELETE FROM migration_deleted_files WHERE expires_at < ?').run(now);
+            if (result.changes > 0) {
+                console.log(`[KnowledgeBase] 🧹 Cleaned ${result.changes} expired migration cache file tombstone(s).`);
+            }
+        } catch (e) {
+            console.warn(`[KnowledgeBase] ⚠️ Failed to cleanup migration cache: ${e.message}`);
+        }
+    }
+
     /**
      * 🧳 文件搬家/复制优化：按 checksum 在 SQLite 中查找可复用的 chunk 向量。
+     * 优先查仍存在的活文件；如果删除事件先到，再查短期 migration_deleted_* 墓碑缓存。
      * 只在 chunk 数量完全一致且所有向量维度有效时命中，避免复用半成品或旧模型残留数据。
      */
     _findReusableChunkVectors(doc) {
@@ -1389,8 +1446,6 @@ class KnowledgeBaseManager {
                 LIMIT 5
             `).all(doc.checksum, doc.size, doc.relPath);
 
-            if (!candidates || candidates.length === 0) return null;
-
             const getChunks = this.db.prepare(`
                 SELECT chunk_index, vector
                 FROM chunks
@@ -1400,33 +1455,45 @@ class KnowledgeBaseManager {
 
             for (const candidate of candidates) {
                 const rows = getChunks.all(candidate.id);
-                if (rows.length !== doc.chunks.length) continue;
+                const vectors = this._decodeReusableChunkRows(rows, doc.chunks.length, `reuse:${candidate.path}`);
 
-                const vectors = [];
-                let valid = true;
-                for (let i = 0; i < rows.length; i++) {
-                    if (rows[i].chunk_index !== i || !rows[i].vector) {
-                        valid = false;
-                        break;
-                    }
-
-                    const decoded = this._decodeVectorBlob(
-                        rows[i].vector,
-                        this.config.dimension,
-                        `reuse:${candidate.path}:${i}`
-                    );
-
-                    if (!decoded) {
-                        valid = false;
-                        break;
-                    }
-
-                    // 复制一份，避免底层 SQLite Buffer 生命周期/复用导致的隐性别名问题。
-                    vectors.push(new Float32Array(decoded));
+                if (vectors) {
+                    console.log(`[KnowledgeBase] ♻️ Reusing ${vectors.length} cached chunk vector(s) for moved/copied file "${doc.relPath}" from live record "${candidate.path}".`);
+                    return vectors;
                 }
+            }
 
-                if (valid) {
-                    console.log(`[KnowledgeBase] ♻️ Reusing ${vectors.length} cached chunk vector(s) for moved/copied file "${doc.relPath}" from "${candidate.path}".`);
+            const now = Date.now();
+            this._cleanupExpiredMigrationCache(now);
+
+            const tombstones = this.db.prepare(`
+                SELECT id, old_path, old_diary_name
+                FROM migration_deleted_files
+                WHERE checksum = ?
+                  AND size = ?
+                  AND old_path != ?
+                  AND chunk_count = ?
+                  AND expires_at >= ?
+                ORDER BY deleted_at DESC, id DESC
+                LIMIT 5
+            `).all(doc.checksum, doc.size, doc.relPath, doc.chunks.length, now);
+
+            if (!tombstones || tombstones.length === 0) return null;
+
+            const getCachedChunks = this.db.prepare(`
+                SELECT chunk_index, vector
+                FROM migration_deleted_chunks
+                WHERE cache_file_id = ?
+                ORDER BY chunk_index ASC
+            `);
+
+            for (const tombstone of tombstones) {
+                const rows = getCachedChunks.all(tombstone.id);
+                const vectors = this._decodeReusableChunkRows(rows, doc.chunks.length, `migration:${tombstone.old_path}`);
+
+                if (vectors) {
+                    vectors._migrationCacheId = tombstone.id;
+                    console.log(`[KnowledgeBase] ♻️ Reusing ${vectors.length} cached chunk vector(s) for moved file "${doc.relPath}" from recently deleted "${tombstone.old_path}".`);
                     return vectors;
                 }
             }
@@ -1806,6 +1873,7 @@ class KnowledgeBaseManager {
                     const reusableVectors = this._findReusableChunkVectors(doc);
                     if (reusableVectors) {
                         doc.reusedChunkVectors = reusableVectors;
+                        doc.migrationCacheId = reusableVectors._migrationCacheId || null;
                         reusedChunkVectorCount += reusableVectors.length;
                     } else {
                         validChunks.forEach((txt, cIdx) => {
@@ -1896,6 +1964,7 @@ class KnowledgeBaseManager {
                 const delRels = this.db.prepare('DELETE FROM file_tags WHERE file_id = ?');
                 const addChunk = this.db.prepare('INSERT INTO chunks (file_id, chunk_index, content, vector) VALUES (?, ?, ?, ?)');
                 const addRel = this.db.prepare('INSERT OR IGNORE INTO file_tags (file_id, tag_id, position) VALUES (?, ?, ?)');
+                const consumeMigrationCache = this.db.prepare('DELETE FROM migration_deleted_files WHERE id = ?');
 
                 // 在事务前构建索引
                 const metaMap = new Map();
@@ -1955,6 +2024,10 @@ class KnowledgeBaseManager {
                                 actualTagChanges++;
                             }
                         });
+
+                        if (doc.migrationCacheId) {
+                            consumeMigrationCache.run(doc.migrationCacheId);
+                        }
                     });
                 }
 
@@ -2094,7 +2167,7 @@ class KnowledgeBaseManager {
 
         try {
             const rows = this._queryByChunks(
-                'SELECT id, diary_name FROM files WHERE path',
+                'SELECT id, path, diary_name, checksum, size FROM files WHERE path',
                 relPaths
             );
             if (rows.length === 0) return;
@@ -2102,7 +2175,7 @@ class KnowledgeBaseManager {
             const fileIds = rows.map(row => row.id);
             const diaryByFileId = new Map(rows.map(row => [row.id, row.diary_name]));
             const chunkRows = this._queryByChunks(
-                'SELECT c.id, c.file_id, f.diary_name FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.file_id',
+                'SELECT c.id, c.file_id, c.chunk_index, c.vector, f.diary_name FROM chunks c JOIN files f ON c.file_id = f.id WHERE c.file_id',
                 fileIds
             );
 
@@ -2115,6 +2188,39 @@ class KnowledgeBaseManager {
             }
 
             const deleteTransaction = this.db.transaction(() => {
+                const nowMs = Date.now();
+                const expiresAt = nowMs + this.config.migrationCacheTtlMs;
+                const insertMigrationFile = this.db.prepare(`
+                    INSERT INTO migration_deleted_files
+                    (old_path, old_diary_name, checksum, size, chunk_count, deleted_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                `);
+                const insertMigrationChunk = this.db.prepare(`
+                    INSERT INTO migration_deleted_chunks (cache_file_id, chunk_index, vector)
+                    VALUES (?, ?, ?)
+                `);
+
+                for (const row of rows) {
+                    const chunks = chunkRows
+                        .filter(c => c.file_id === row.id && c.vector)
+                        .sort((a, b) => a.chunk_index - b.chunk_index);
+
+                    if (chunks.length === 0) continue;
+                    const cacheRes = insertMigrationFile.run(
+                        row.path,
+                        row.diary_name,
+                        row.checksum,
+                        row.size,
+                        chunks.length,
+                        nowMs,
+                        expiresAt
+                    );
+
+                    for (const chunk of chunks) {
+                        insertMigrationChunk.run(cacheRes.lastInsertRowid, chunk.chunk_index, chunk.vector);
+                    }
+                }
+
                 const deleteFileTags = (ids) => {
                     if (ids.length === 0) return;
                     const placeholders = ids.map(() => '?').join(',');
